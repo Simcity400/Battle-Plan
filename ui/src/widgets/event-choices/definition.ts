@@ -3,6 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { columnsControl } from '../../families/settingsControls.ts';
 import {
   LOG_TABLE_BASE,
+  LOG_SEARCH_OPTION,
   logActionColumn,
   logCountryColumn,
   logDateColumn,
@@ -21,17 +22,17 @@ export const EVENT_KINDS: readonly { value: string; label: string; event: Script
 export const AWAITING = { value: 'awaiting', label: 'Awaiting choice only', hint: 'Only events still awaiting a choice at the moment shown.' } as const;
 
 export const EVENT_CHOICES_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn(),
+  logDateColumn({ sortable: true }),
   logKindColumn({ minWidth: 44, maxWidth: 50 }),
-  logCountryColumn({ minWidth: 52 }),
-  logItemColumn({ label: 'Event', minWidth: 200 }),
+  logCountryColumn({ sortable: true, minWidth: 52 }),
+  logItemColumn({ sortable: true, label: 'Event', minWidth: 200 }),
   {
     key: 'choice',
     label: 'Choice',
     as: 'plain',
     offered: OFFERED.text,
     priority: 1,
-    sortable: false,
+    sortable: true,
     text: true,
     grow: 1,
     minWidth: 180,
@@ -40,6 +41,7 @@ export const EVENT_CHOICES_COLUMNS: readonly TableColumnSpec[] = [
 ];
 
 export const OPTIONS: readonly OptionField[] = [
+  LOG_SEARCH_OPTION,
   ...EVENT_KINDS.map(kind => ({ key: kind.value, section: 'options' as const, label: kind.label, kind: 'toggle' as const, default: true })),
   { key: AWAITING.value, section: 'options', label: AWAITING.label, hint: AWAITING.hint, kind: 'toggle', default: false },
   { key: 'artwork', section: 'options', label: 'Game artwork', kind: 'toggle', default: true },

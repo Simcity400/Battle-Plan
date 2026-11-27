@@ -17,7 +17,7 @@ import {
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, validateRowTailReply, type DatedLogRow, type TailReply } from '../../families/table/rowSource.ts';
-import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptEventKind, ScriptPageRow } from '../../generated/dashboard';
@@ -42,6 +42,8 @@ import { AWAITING, EVENT_CHOICES_COLUMNS, EVENT_KINDS } from './definition.ts';
 import type { EventDetailSubject } from './EventDetailWindow.tsx';
 
 export interface EventChoicesProjectionOptions {
+  readonly byDate?: boolean;
+  readonly search?: string;
   readonly events: readonly ScriptEventKind[];
   readonly awaiting: boolean;
   readonly artwork: boolean;
@@ -219,22 +221,21 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
         columns: EVENT_CHOICES_COLUMNS,
         rows: [],
         hour,
-        hideHeader: true,
-        unsorted: true,
-        dateGrouped: true,
+        searchable: true, search: options.search ?? '',
+        dateGrouped: options.byDate !== false,
         empty: 'No recorded events match these settings.',
       };
     }
     const refused = readView.refused('main');
     if (refused !== undefined) {
-      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused };
+      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, searchable: true, search: options.search ?? '', dateGrouped: options.byDate !== false, refused };
     }
     const source = readView.rows<ScriptPageRow & DatedLogRow>('main');
     if (!source) {
-      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true };
+      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, searchable: true, search: options.search ?? '', dateGrouped: options.byDate !== false };
     }
     if (source.refused !== null) {
-      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused: source.refused };
+      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, searchable: true, search: options.search ?? '', dateGrouped: options.byDate !== false, refused: source.refused };
     }
     const boundary = newIdentityBoundary();
     let nextAwaitingChange = Infinity;
@@ -279,9 +280,8 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       rows,
       slots,
       hour,
-      hideHeader: true,
-      unsorted: true,
-      dateGrouped: true,
+      searchable: true, search: options.search ?? '',
+      dateGrouped: options.byDate !== false,
       windowOffset,
       totalRows,
       ...(gapBefore?.length ? { gapBefore } : {}),
@@ -306,6 +306,8 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
   columns: EVENT_CHOICES_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {
+    const { sort } = tableSettingsOf(ctx.options[TABLE_SETTINGS_KEY], EVENT_CHOICES_COLUMNS, LOG_TABLE_BASE);
+    const search = typeof ctx.options.search === 'string' ? ctx.options.search : '';
     const events = EVENT_KINDS.filter(kind => ctx.options[kind.value] !== false).map(kind => kind.event);
     if (!events.length) {
       return { owner: `${ctx.track.source.id}:${ctx.branch.id}:event-choices:empty`, entries: [], allowEmptyFollow: true };
@@ -316,7 +318,7 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
     const awaiting = ctx.options[AWAITING.value] === true;
     const selection = occurrenceSelection(ctx);
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:event-choices:${events.join(',')}:${awaiting}:${selection ? JSON.stringify(selection) : 'all'}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:event-choices:${events.join(',')}:${awaiting}:${selection ? JSON.stringify(selection) : 'all'}:${JSON.stringify([search, sort])}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -328,7 +330,7 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
             branchId: ctx.branch.id,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ask: {
+            ask: { search, sort,
               ...(events.length === EVENT_KINDS.length ? {} : { events }),
               ...(awaiting ? { statuses: ['awaiting'] } : {}),
               ...selection,
@@ -344,6 +346,6 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
   projection: eventChoicesProjection,
   projectionOptions(ctx): EventChoicesProjectionOptions {
     const events = EVENT_KINDS.filter(kind => ctx.options[kind.value] !== false).map(kind => kind.event);
-    return { events, awaiting: ctx.options[AWAITING.value] === true, artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch), hover: hoverTextOf(ctx.options) };
+    return { byDate: ctx.settings.sort.column === 'date', search: typeof ctx.options.search === 'string' ? ctx.options.search : '', events, awaiting: ctx.options[AWAITING.value] === true, artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch), hover: hoverTextOf(ctx.options) };
   },
 };

@@ -18,6 +18,31 @@ function memoryStorage() {
   };
 }
 
+test('old log layouts load without search and each widget keeps its own search across save and reload', () => {
+  const storage = memoryStorage();
+  const { library } = loadLayouts(storage);
+  const kinds = ['decisions', 'event-choices', 'event-feed', 'market-ledger', 'decisions'] as const;
+  const widgets = library.layouts[0].template.widgets;
+  for (const [index, kind] of kinds.entries()) {
+    widgets[index].kind = kind;
+    widgets[index].configVersion = widgetDefinition(kind)!.version;
+    delete widgets[index].options;
+  }
+  assert.equal(saveLayouts(library, storage), null);
+  const old = loadLayouts(storage);
+  assert.equal(old.warning, null);
+  const fields = kinds.map(kind => widgetDefinition(kind)!.options!);
+  const restored = old.library.layouts[0].template.widgets;
+  for (const [index, options] of fields.entries()) assert.equal(resolveOptions(options, restored[index].options).search, '');
+  restored[0].options = setOption(fields[0], undefined, 'search', '  first match  ')!;
+  restored[1].options = setOption(fields[1], undefined, 'search', 'second match')!;
+  assert.equal(saveLayouts(old.library, storage), null);
+  const saved = loadLayouts(storage).library.layouts[0].template.widgets;
+  assert.deepEqual(fields.map((options, index) => resolveOptions(options, saved[index].options).search), ['first match', 'second match', '', '', '']);
+  assert.equal(saved[0].options?.search, 'first match');
+  assert.equal(saved[4].options?.search, undefined, 'another Decisions widget on the same page has no search');
+});
+
 test('a page is at its default until its saved layouts differ from the designed arrangement', () => {
   const storage = memoryStorage();
   assert.equal(layoutsAtDefault('overview', storage), true, 'nothing saved');

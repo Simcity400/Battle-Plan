@@ -289,6 +289,8 @@ export interface TableModel {
   readonly unsorted?: boolean;
   readonly productTieBreak?: boolean;
   readonly populationPartial?: string;
+  readonly searchable?: boolean;
+  readonly search?: string;
   readonly dateGrouped?: boolean;
   readonly dayDividersOnly?: boolean;
   readonly rhythm?: TableRhythm;

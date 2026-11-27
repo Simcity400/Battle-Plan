@@ -409,10 +409,10 @@ fn branch_id(text: &str) -> io::Result<u64> {
 fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContext, list: Option<List>, asked: (Option<&[Country]>, Option<&GroupSelection>), cancelled: &AtomicBool) -> io::Result<Prepared> {
     let selection = dashboard_world::products::group_members::dated(source, query, context, asked.0, asked.1, cancelled)?;
     let content = Arc::new(super::resolve_content(source, context));
-    let scanned = index::scanned_for(source, query, branch, cancelled)?;
+    let scanned = index::scanned_for(source, query, branch, content.as_ref().as_ref().ok(), cancelled)?;
     let (index, feed) = match list {
-        Some(List::Decisions) => (index::decisions_for(source, query, branch, cancelled)?, None),
-        Some(List::EventChoices) => (index::choices_for(source, query, branch, cancelled)?, None),
+        Some(List::Decisions) => (index::decisions_for(source, query, branch, content.as_ref().as_ref().ok(), cancelled)?, None),
+        Some(List::EventChoices) => (index::choices_for(source, query, branch, content.as_ref().as_ref().ok(), cancelled)?, None),
         None => {
             let feed = index::feed_for(source, query, branch, context, content.as_ref().as_ref().ok(), cancelled)?;
             (Arc::clone(&feed.index), Some(feed))
@@ -430,10 +430,11 @@ struct Window<'p> {
     sort: Option<&'p OccurrenceSort>,
     offset: Option<&'p str>,
     limit: u32,
+    sortable: &'p [&'p str],
 }
 
 fn answer(index: &Index<Item>, query: &Query<'_>, window: &Window<'_>, hour: i32, kinds: Option<&[u16]>, states: Option<&[u8]>, live_first: bool, chips: &[Chip]) -> io::Result<Answer> {
-    let (order, newest) = occurrences::order(window.sort, &[])?;
+    let (order, newest) = occurrences::order(window.sort, window.sortable)?;
     let (offset, limit) = occurrences::window(window.offset, window.limit)?;
     index.ask(
         &query.holders,
@@ -508,7 +509,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
     dashboard_text::metadata::check_cancel(cancelled)?;
     let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
     let kinds = feed_kinds(&params.categories, params.exclude.as_deref())?;
-    let (order, _newest) = occurrences::order(params.sort.as_ref(), &[])?;
+    let (order, _newest) = occurrences::order(params.sort.as_ref(), &["country", "item"])?;
     let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
     let opened = params.row.is_some();
     let (total, reply_offset, live_total, unattributed, gaps, base_next, planned) = if let Some(row_key) = params.row.as_deref() {
@@ -527,9 +528,6 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             None => (0, 0, 0, 0, Vec::new(), None, Vec::new()),
         }
     } else {
-        let Order::Date(direction) = order else {
-            return Err(invalid("The event feed only supports date order"));
-        };
         let ask = Ask {
             hour,
             from: params.from,
@@ -546,11 +544,15 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             limit,
             chips: &[],
         };
-        let (folded, live, unattributed, mut next) = feed.index.with_dated(&query.holders, &ask, |dated| {
+        let (folded, live, unattributed, mut next) = if let Order::Date(direction) = order { feed.index.with_dated(&query.holders, &ask, |dated| {
             let (live, unattributed, until) = (dated.live, dated.unattributed, dated.until);
             let folded = fold::page(feed, dated, direction, offset, limit, params.expanded.as_deref(), params.full.as_deref());
             (folded, live, unattributed, until)
-        })?;
+        })? } else {
+            let answer = feed.index.ask(&query.holders, &ask)?;
+            let lines = answer.rows.iter().map(|shown| PlannedLine::Event { at: shown.at, ordinal: shown.ordinal, parent: None }).collect();
+            (fold::FoldedPage { total: answer.total, offset: answer.offset, lines, gaps: answer.gaps }, answer.live, answer.unattributed, answer.next_change)
+        };
         for line in &folded.lines {
             if let PlannedLine::Event { at, .. } = line {
                 let entry = feed.index.get(*at);
@@ -818,7 +820,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         (None, List::EventChoices) => None,
     };
     let (chips, keys) = chips(list);
-    let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
+    let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit, sortable: if list == List::Decisions { &["country", "item", "cost", "status"] } else { &["country", "item", "choice"] } };
     let mut answer = answer(&prepared.index, query, &window, hour, kinds.as_deref(), states.as_deref(), true, &chips)?;
     let opened_row = only_row(&prepared.scanned, &prepared.index, params.row.as_deref(), &mut answer, hour);
     let read = index::read_events(query, &locators(&prepared.index, &answer, hour))?;
@@ -1105,8 +1107,8 @@ impl Product for EventFeedKinds {
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = branch_id(&params.branch_id)?;
         let query = dashboard_base::queries::query(source, branch)?;
-        let scanned = index::scanned_for(source, &query, branch, cancelled)?;
         let content = super::resolve_content(source, context);
+        let scanned = index::scanned_for(source, &query, branch, content.as_ref().ok(), cancelled)?;
         let feed = index::feed_for(source, &query, branch, context, content.as_ref().ok(), cancelled)?;
         let mut first = scanned.observed_kinds();
         for at in 0..feed.index.len() {

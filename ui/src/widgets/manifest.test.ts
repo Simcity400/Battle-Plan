@@ -61,6 +61,7 @@ function otherValue(field: OptionField): OptionValue {
     case 'toggle': return !field.default;
     case 'choice': return field.choices.find(choice => choice.value !== field.default)?.value ?? field.default;
     case 'number': return field.default === field.min ? field.max : field.min;
+    case 'text': return 'sample text'.slice(0, field.maxLength);
     case 'content-choice':
     case 'content-set': return 'GER';
     case 'regions': return 'r:3a:16';

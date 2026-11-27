@@ -6,11 +6,11 @@ use super::{
     fold::{FoldMeta, group_of},
     row::{Columns, FeedEvent, Slot},
 };
-use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals}, products::LoadContext, queries::country_ids::Names};
+use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals, capture_isolated}, products::LoadContext, queries::country_ids::Names};
 use dashboard_query::{
     Query,
     identity::Holder,
-    log::{Reader, occurrence::{Index, Occurrence, Role, SearchText}},
+    log::{Reader, occurrence::{Index, Occurrence, Role, SearchText, SortKey}},
     series::MissingSpan,
 };
 use replay_data::{event_feed_rows::EventFeedCoverage, rows::FeedEventRow};
@@ -97,6 +97,9 @@ struct Brief {
     option: Option<i32>,
     days: Option<i32>,
     token: Option<String>,
+    costs: [Option<Option<i64>>; 2],
+    name: Option<String>,
+    choice: Option<String>,
 }
 
 pub(crate) struct Scanned {
@@ -291,9 +294,10 @@ impl Feed {
 #[derive(Default)]
 struct Branch {
     scanned: Option<Arc<Scanned>>,
+    binding: Option<Weak<Catalogue>>,
     decisions: Option<Arc<Index<Item>>>,
     choices: Option<Arc<Index<Item>>>,
-    feed: Option<(Option<Weak<Catalogue>>, Arc<Feed>)>,
+    feed: Option<Arc<Feed>>,
 }
 
 #[derive(Default)]
@@ -331,7 +335,7 @@ fn text_of(token: Option<&str>, tags: impl Iterator<Item = String>) -> Box<str> 
     text.join(" ").into_boxed_str()
 }
 
-fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &Names) -> Occurrence<Item> {
+fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &Names, name: Option<&str>) -> Occurrence<Item> {
     let tags = |roles: &[Role]| roles.iter().filter_map(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)).map(str::to_owned)).collect::<Vec<_>>();
     let (date, roles, valid_clock): (i32, Vec<Role>, bool) = if !event.derived() {
         let ally = event.cause.and_then(|cause| cause.ally).and_then(|ally| slot_of(ally.slot));
@@ -354,14 +358,20 @@ fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &
         (date, vec![Role::dated(actor, date, at.hour), Role::dated(target, date, at.hour)], shown <= event.read_hour)
     };
     let token = event.token.as_deref().and_then(|bytes| std::str::from_utf8(bytes).ok());
-    let text = SearchText::from(text_of(token, tags(&roles).into_iter()));
-    Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text, payload: Item::Log { head: at, edges: Box::new([]), valid_clock } }
+    let label = kind.row_label();
+    let name = if kind.scripted() { name.or(label) } else { label.or(name) };
+    let text = SearchText::from(text_of(token, tags(&roles).into_iter().chain(name.map(str::to_owned))));
+    let sort_keys = Box::new([SortKey::text(roles.first().and_then(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)))), SortKey::text(name)]);
+    Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys, text, payload: Item::Log { head: at, edges: Box::new([]), valid_clock } }
 }
 
-fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool) -> io::Result<Scanned> {
+fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Scanned> {
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let columns = Columns::new()?;
+    let presenter = super::text::Presenter::new(query, catalogue.cloned(), super::text::kept_naming(source))
+        .without_effects()
+        .without_artwork();
     let names = Names::new(&query.holders);
     let mut runs: Vec<u32> = query.timeline.stretches.iter().map(|stretch| stretch.run).collect();
     runs.sort_unstable();
@@ -391,8 +401,15 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
             if decision_state::applies(&event) && event.lifecycle.is_some() {
                 lifecycles.push(event.clone());
             }
+            let item = super::present(&event, &names, &presenter, &mut Notices::default())?.and_then(|row| row.item);
+            let name = item.as_ref().filter(|item| !item.gaps.iter().any(|gap| gap.field == super::EventFeedGapField::Title)).and_then(|item| item.name.clone());
+            let choice = event.option.filter(|&option| option >= 0).and_then(|option| {
+                let item = item.as_ref()?;
+                if item.gaps.iter().any(|gap| gap.field == super::EventFeedGapField::Option && gap.ordinal == Some(option as u32)) { return None; }
+                item.options.as_ref()?.iter().find(|held| held.ordinal == option as u32)?.name.clone()
+            });
             if !internal(kind) {
-                native.push(feed_occurrence(&event, kind, at, &names));
+                native.push(feed_occurrence(&event, kind, at, &names, name.as_deref()));
             }
             briefs.push(Brief {
                 at,
@@ -405,6 +422,9 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
                 option: event.option,
                 days: event.days,
                 token: event.token.as_deref().and_then(|bytes| std::str::from_utf8(bytes).ok()).map(str::to_owned),
+                costs: event.costs,
+                name,
+                choice,
             });
             Ok(())
         })?;
@@ -433,6 +453,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let mut partial_reads: Vec<i32> = incomplete.iter().filter(|(_, _, read)| read.coverage != Some(complete)).map(|(_, _, read)| read.read_hour).collect();
     partial_reads.sort_unstable();
     partial_reads.dedup();
+    for brief in &mut briefs { if partial_reads.binary_search(&brief.at.hour).is_ok() { brief.costs = [None, None]; } }
     let held: Vec<(i32, i32)> = choice_breaks.iter().map(|&(first, last, _)| (first, last)).collect();
     let breaks = spans(held.clone());
     let decision_lost = incomplete.iter().filter(|(_, _, read)| read.refusals != Some(0)).map(|&(hour, ..)| (hour, hour));
@@ -591,6 +612,24 @@ fn choice_status(edges: &[&Brief], observed: i32, breaks: &[(i32, i32)], hour: i
 }
 
 
+fn cost_key(edges: &[&Brief]) -> SortKey {
+    let (mut totals, mut missing) = ([None::<i64>; 2], false);
+    let mut steps = BTreeMap::new();
+    for edge in edges {
+        let proven = edge.costs.iter().any(|cost| matches!(cost, Some(Some(_))));
+        let chargeable = matches!(edge.kind, EventFeedKind::DecisionSelected | EventFeedKind::DecisionTimeoutEffect);
+        missing |= (chargeable && !proven) || (proven && edge.costs.iter().any(Option::is_none));
+        for (total, cost) in totals.iter_mut().zip(edge.costs) {
+            if let Some(value) = cost.flatten().filter(|value| *value != 0) {
+                *total = total.unwrap_or(0).checked_add(value);
+                missing |= total.is_none();
+            }
+        }
+        steps.insert(edge.at.hour, (!missing).then(|| totals[0].or(totals[1]).and_then(i64::checked_neg)).flatten());
+    }
+    SortKey::dated_numbers(steps)
+}
+
 fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i32, u8)]>) -> Occurrence<Item> {
     let roles: Vec<Role> = card.edges.iter().flat_map(|e| e.slots.iter().map(|&slot| Role::dated(slot, e.hour, e.at.hour.max(head.at.hour)))).filter(|r| r.slot.is_some()).collect();
     let mut by_read: Vec<&Brief> = card.edges.clone();
@@ -609,6 +648,7 @@ fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i
             .map(str::to_owned)
             .collect();
         words.extend(tags);
+        words.extend(by_read[at..end].iter().flat_map(|edge| edge.name.iter().chain(edge.choice.iter())).cloned());
         if !words.is_empty() { parts.push((observed, words.join(" ").into_boxed_str())); }
         at = end;
     }
@@ -617,6 +657,18 @@ fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i
     } else {
         SearchText::dated(parts)
     };
+    let primary = head.slots[usize::from(script_opener(head.kind))];
+    let mut sort_keys = vec![SortKey::text(primary.and_then(|slot| names.slot_tag(slot, head.hour))), SortKey::text(head.name.as_deref())];
+    if script_opener(head.kind) || chosen(head) {
+        sort_keys.push(SortKey::dated_text(by_read.iter().filter(|edge| chosen(edge)).map(|edge| (edge.at.hour, edge.choice.as_deref().map(Into::into))).collect::<BTreeMap<_, _>>()));
+    } else {
+        sort_keys.push(cost_key(&by_read));
+        sort_keys.push(SortKey::dated_text(states.iter().map(|&(at, code)| (at, match ScriptStatus::of_code(code) {
+            Some(ScriptStatus::Active) => Some("Running".into()),
+            Some(ScriptStatus::NotRecorded) | None => None,
+            Some(status) => Some(format!("{status:?}").into_boxed_str()),
+        }))));
+    }
     Occurrence {
         id: head.at.key,
         date: head.hour,
@@ -624,8 +676,8 @@ fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i
         kind: kind_code(head.kind),
         roles: roles.into_boxed_slice(),
         subjects: Box::new([]),
+        sort_keys: sort_keys.into_boxed_slice(),
         states,
-        sort_keys: Box::new([]),
         text,
         payload: Item::Log { head: head.at, edges: card.edges.iter().map(|edge| edge.at).collect(), valid_clock: true },
     }
@@ -705,7 +757,8 @@ fn family_occurrence(query: &Query<'_>, family: families::FamilyRow, slot: Optio
             .collect()
     };
     let name = row.item.as_ref().and_then(|item| item.name.clone());
-    let text = SearchText::from(text_of(name.as_deref(), row.tags.iter().cloned()));
+    let label = row.kind.row_label();
+    let text = SearchText::from(text_of(name.as_deref(), row.tags.iter().cloned().chain(label.map(str::to_owned))));
     Occurrence {
         id: family_id(&row.id),
         date: row.hour,
@@ -714,7 +767,7 @@ fn family_occurrence(query: &Query<'_>, family: families::FamilyRow, slot: Optio
         roles: roles.into_boxed_slice(),
         subjects: Box::new([]),
         states: Box::new([]),
-        sort_keys: Box::new([]),
+        sort_keys: Box::new([SortKey::text(row.participants.as_ref().map(|roles| roles[0].clone()).unwrap_or_else(|| row.tags.first().cloned())), SortKey::text(label.map(str::to_owned).or(name))]),
         text,
         payload: Item::Family(Box::new(family)),
     }
@@ -746,6 +799,8 @@ fn script_feed(scanned: &Scanned) -> Vec<Occurrence<Item>> {
         let observed = occurrence.observed;
         let candidates = chosen_edges.iter().map(|edge| edge.at.hour).chain(break_after(&scanned.breaks, observed)).collect();
         occurrence.states = transitions(observed, candidates, |hour| Some(choice_status(chosen_edges, observed, &scanned.breaks, hour)));
+        let prior = match &occurrence.text { SearchText::Static(text) => vec![(observed, text.clone())], SearchText::Dated(steps) => steps.to_vec() };
+        occurrence.text = SearchText::dated(prior.into_iter().chain(chosen_edges.iter().filter_map(|edge| edge.choice.as_deref().map(|text| (edge.at.hour, text.into())))));
         if let Item::Log { edges, .. } = &mut occurrence.payload {
             *edges = chosen_edges.iter().map(|edge| edge.at).collect();
         }
@@ -870,11 +925,14 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     Ok(Feed { index, notices: refused, warnings, unattributed, unrecorded, countries, fold_meta, unsettled })
 }
 
-fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, cancelled: &AtomicBool) -> io::Result<Arc<Scanned>> {
+fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, catalogue: Option<&Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<Scanned>> {
+    let binding = held.binding.as_ref().and_then(Weak::upgrade);
+    if held.binding.is_some() != catalogue.is_some() || !same_content(binding.as_ref(), catalogue) { *held = Branch { binding: catalogue.map(Arc::downgrade), ..Branch::default() }; }
     if let Some(found) = &held.scanned {
         return Ok(Arc::clone(found));
     }
-    let made = Arc::new(match scan(source, query, branch, cancelled) {
+    let (scanned, _) = capture_isolated(|| scan(source, query, branch, catalogue, cancelled));
+    let made = Arc::new(match scanned {
         Ok(made) => made,
         Err(error) if error.kind() == io::ErrorKind::InvalidData && !cancelled.load(std::sync::atomic::Ordering::Relaxed) => Scanned::refused(query.timeline.first, query.timeline.last, &error.to_string()),
         Err(error) => return Err(error),
@@ -883,31 +941,31 @@ fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, c
     Ok(made)
 }
 
-pub(crate) fn scanned_for(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<Scanned>> {
+pub(crate) fn scanned_for(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<Scanned>> {
     let kept = branch_of(source, branch);
     let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
-    scanned(source, query, branch, &mut held, cancelled)
+    scanned(source, query, branch, &mut held, catalogue, cancelled)
 }
 
-pub(crate) fn decisions_for(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<Index<Item>>> {
+pub(crate) fn decisions_for(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<Index<Item>>> {
     let kept = branch_of(source, branch);
     let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
+    let scanned = scanned(source, query, branch, &mut held, catalogue, cancelled)?;
     if let Some(found) = &held.decisions {
         return Ok(Arc::clone(found));
     }
-    let scanned = scanned(source, query, branch, &mut held, cancelled)?;
     let made = Arc::new(decisions(&scanned, &Names::new(&query.holders))?);
     held.decisions = Some(Arc::clone(&made));
     Ok(made)
 }
 
-pub(crate) fn choices_for(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<Index<Item>>> {
+pub(crate) fn choices_for(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<Index<Item>>> {
     let kept = branch_of(source, branch);
     let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
+    let scanned = scanned(source, query, branch, &mut held, catalogue, cancelled)?;
     if let Some(found) = &held.choices {
         return Ok(Arc::clone(found));
     }
-    let scanned = scanned(source, query, branch, &mut held, cancelled)?;
     let made = Arc::new(choices(&scanned, &Names::new(&query.holders))?);
     held.choices = Some(Arc::clone(&made));
     Ok(made)
@@ -916,16 +974,13 @@ pub(crate) fn choices_for(source: &Source, query: &Query<'_>, branch: u64, cance
 pub(crate) fn feed_for(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContext, catalogue: Option<&Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<Feed>> {
     let kept = branch_of(source, branch);
     let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((made_with, found)) = &held.feed
-        && made_with.as_ref().and_then(Weak::upgrade).as_ref().map(Arc::as_ptr) == catalogue.map(Arc::as_ptr)
-        && made_with.is_some() == catalogue.is_some()
-    {
+    let scanned = scanned(source, query, branch, &mut held, catalogue, cancelled)?;
+    if let Some(found) = &held.feed {
         return Ok(Arc::clone(found));
     }
-    let scanned = scanned(source, query, branch, &mut held, cancelled)?;
     let made = Arc::new(feed(source, query, context, &scanned, cancelled)?);
     if !made.unsettled {
-        held.feed = Some((catalogue.map(Arc::downgrade), Arc::clone(&made)));
+        held.feed = Some(Arc::clone(&made));
     }
     Ok(made)
 }
@@ -939,11 +994,13 @@ pub fn kept(source: &Source) -> Vec<u64> {
     branches
 }
 
-pub fn warm(source: &Source, branch: u64) -> io::Result<()> {
+pub fn warm(source: &Source, branch: u64, context: &LoadContext) -> io::Result<()> {
+    let Ok(catalogue) = super::resolve_content(source, context) else { return Ok(()) };
     let query = dashboard_base::queries::query(source, branch)?;
     let cancelled = AtomicBool::new(false);
-    decisions_for(source, &query, branch, &cancelled)?;
-    choices_for(source, &query, branch, &cancelled)?;
+    decisions_for(source, &query, branch, Some(&catalogue), &cancelled)?;
+    choices_for(source, &query, branch, Some(&catalogue), &cancelled)?;
+    feed_for(source, &query, branch, context, Some(&catalogue), &cancelled)?;
     Ok(())
 }
 

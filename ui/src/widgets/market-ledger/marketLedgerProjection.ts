@@ -20,13 +20,15 @@ import {
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
-import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue } from '../../families/value.ts';
 import { formatFixed5Amount, formatScalar } from '../../families/valueFormat.ts';
 import type { MarketContractEvent, MarketContractItem, MarketContractRow, MarketContractStatus, MarketEventsMore, MarketLedgerLine } from '../../generated/dashboard';
 import { MARKET_LEDGER_COLUMNS } from './definition.ts';
 
 export interface MarketLedgerProjectionOptions {
+  readonly byDate?: boolean;
+  readonly search?: string;
   readonly perspective: string | null;
   readonly selectionEmpty: string | null;
   readonly expanded?: readonly string[];
@@ -376,23 +378,22 @@ export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptio
         columns: MARKET_LEDGER_COLUMNS,
         rows: [],
         hour,
-        hideHeader: true,
-        unsorted: true,
-        dateGrouped: true,
+        searchable: true, search: options.search ?? '',
+        dateGrouped: options.byDate !== false,
         empty: options.selectionEmpty,
         emptyKind: 'unavailable',
       };
     }
     const refused = readView.refused('main');
     if (refused !== undefined) {
-      return { columns: MARKET_LEDGER_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused };
+      return { columns: MARKET_LEDGER_COLUMNS, rows: [], hour, searchable: true, search: options.search ?? '', dateGrouped: options.byDate !== false, refused };
     }
     const source = readView.rows<MarketLedgerLine & DatedLogRow>('main');
     if (!source) {
-      return { columns: MARKET_LEDGER_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true };
+      return { columns: MARKET_LEDGER_COLUMNS, rows: [], hour, searchable: true, search: options.search ?? '', dateGrouped: options.byDate !== false };
     }
     if (source.refused !== null) {
-      return { columns: MARKET_LEDGER_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused: source.refused };
+      return { columns: MARKET_LEDGER_COLUMNS, rows: [], hour, searchable: true, search: options.search ?? '', dateGrouped: options.byDate !== false, refused: source.refused };
     }
     const boundary = newIdentityBoundary();
     const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
@@ -409,9 +410,8 @@ export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptio
       rows,
       slots,
       hour,
-      hideHeader: true,
-      unsorted: true,
-      dateGrouped: true,
+      searchable: true, search: options.search ?? '',
+      dateGrouped: options.byDate !== false,
       windowOffset,
       totalRows,
       ...(gapBefore?.length ? { gapBefore } : {}),
@@ -434,8 +434,12 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
   columns: MARKET_LEDGER_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {
+    const { sort } = tableSettingsOf(ctx.options[TABLE_SETTINGS_KEY], MARKET_LEDGER_COLUMNS, LOG_TABLE_BASE);
+    const search = typeof ctx.options.search === 'string' ? ctx.options.search : '';
     const all = ctx.countries.all;
     const tags = all ? null : ctx.countries.tags;
+    const ref = tags && tags.length === 1 ? countryFromKey(tags[0]!) : null;
+    const perspective = typeof ref === 'string' ? ref : null;
     if (!all && (!tags || tags.length === 0)) {
       return { owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:empty`, entries: [], allowEmptyFollow: true };
     }
@@ -450,7 +454,7 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
     const expanded = opened.map(key => key.slice(GROUP.length));
     const full = contentSet(ctx.options.full).filter(key => opened.includes(key)).map(key => key.slice(GROUP.length));
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:${statuses.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}:${full.join(',')}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:${statuses.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}:${full.join(',')}:${JSON.stringify([search, sort, perspective])}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -462,7 +466,7 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
             branchId: ctx.branch.id,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ask: { ...(statuses.length === 5 ? {} : { statuses }), ...selection, ...(expanded.length ? { expanded } : {}), ...(full.length ? { full } : {}) },
+            ask: { search, sort, ...(perspective ? { perspective } : {}), ...(statuses.length === 5 ? {} : { statuses }), ...selection, ...(expanded.length ? { expanded } : {}), ...(full.length ? { full } : {}) },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
@@ -481,7 +485,7 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
           ? 'This group has no members in this campaign.'
           : 'Choose a country in the widget settings.')
       : null;
-    return {
+    return { byDate: ctx.settings.sort.column === 'date', search: typeof ctx.options.search === 'string' ? ctx.options.search : '',
       perspective,
       selectionEmpty,
       expanded: contentSet(ctx.options.expanded),

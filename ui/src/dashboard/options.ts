@@ -18,6 +18,7 @@ export type OptionField = FieldBase & (
   | { kind: 'toggle'; default: boolean }
   | { kind: 'choice'; choices: readonly { value: string; label: string }[]; default: string; titleChoice?: true }
   | { kind: 'number'; min: number; max: number; step: number; unit?: string; default: number | null }
+  | { kind: 'text'; maxLength: number; default: string }
   | { kind: 'content-choice'; automatic: string; default: ''; titleChoice?: false; catalogue?: boolean }
   | { kind: 'content-set'; automatic: string; default: ''; catalogue?: boolean }
   | { kind: 'regions'; automatic: string; default: ''; sea?: boolean }
@@ -93,6 +94,7 @@ export function validOption(field: OptionField, value: unknown): value is Option
     case 'toggle': return typeof value === 'boolean';
     case 'choice': return typeof value === 'string' && field.choices.some(choice => choice.value === value);
     case 'content-choice': return typeof value === 'string';
+    case 'text': return typeof value === 'string' && value.length <= field.maxLength;
     case 'content-set':
     case 'regions': {
       if (typeof value !== 'string') return false;
@@ -109,7 +111,8 @@ export function resolveOptions(fields: readonly OptionField[] = [], stored?: Wid
   const resolved: Record<string, OptionValue> = {};
   for (const field of fields) {
     const at = field.storeAs ?? field.key;
-    const value = stored && Object.hasOwn(stored, at) ? stored[at] : undefined;
+    const raw = stored && Object.hasOwn(stored, at) ? stored[at] : undefined;
+    const value = field.kind === 'text' && typeof raw === 'string' ? raw.trim() : raw;
     resolved[field.key] = validOption(field, value) ? value : field.default;
   }
   return resolved;
@@ -117,6 +120,7 @@ export function resolveOptions(fields: readonly OptionField[] = [], stored?: Wid
 
 export function setOption(fields: readonly OptionField[] = [], stored: WidgetOptions | undefined, key: string, value: OptionValue): WidgetOptions | null {
   const field = fields.find(item => item.key === key);
+  if (field?.kind === 'text' && typeof value === 'string') value = value.trim();
   if (!field || !validOption(field, value)) return null;
   const at = field.storeAs ?? key;
   const next: Record<string, OptionValue> = { ...stored };

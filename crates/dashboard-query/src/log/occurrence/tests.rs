@@ -259,8 +259,8 @@ fn cutoff_aware_sort_keys_order_ongoing_rows_at_the_asked_hour_and_support_text_
         Occurrence {
             subjects: Box::new([101, 202]),
             sort_keys: Box::new([
-                SortKey::dated_numbers([(100, Some(50)), (130, Some(500))]),
-                SortKey::dated_text([(100, Some("gdynia".into())), (140, Some("Alpha".into()))]),
+                SortKey::dated_numbers([(100, Some(50)), (130, Some(500))]).shared(),
+                SortKey::dated_text([(100, Some("gdynia".into())), (140, Some("Alpha".into()))]).shared(),
             ]),
             ..occurrence(1, 100, 100)
         },

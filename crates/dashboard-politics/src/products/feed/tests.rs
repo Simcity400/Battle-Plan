@@ -17,6 +17,71 @@ fn column(name: &str) -> usize {
     dashboard_declare::field(TableId::FeedEvents, name).unwrap()
 }
 
+fn whole_log_search_sort(product: &str) {
+    use dashboard_base::{products::LoadContext, test_fixtures::{CAMPAIGN, ownership_frame, records}};
+    use replay_data::{event_feed_rows::{EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript, EventWindows}, rows::{Recorded, TableRows}};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+    let frames = (100..=106).map(|hour| {
+        let mut frame = ownership_frame(1, hour, 9001);
+        frame.metrics.table_ns[TableId::EventFeedHistory.index()] = 1;
+        let tokens = match hour { 100 => b"alpha".as_slice(), 101 => b"bravo".as_slice(), _ => b"zulu".as_slice() };
+        let events = if hour <= 102 { vec![EventFeedEvent {
+            generation: 1, sequence: (hour - 99) as u64, hour,
+            source: if product == "event-choices-tail" { EventFeedSource::ScriptEvent } else { EventFeedSource::DecisionSelected },
+            actor: if product == "event-choices-tail" { EventFeedCountry::default() } else { EventFeedCountry { reference: if hour == 100 { 66 } else { 9001 }, id: if hour == 100 { 66 } else { 9001 }, instance: 1 } },
+            target: if product == "event-choices-tail" { EventFeedCountry { reference: if hour == 100 { 66 } else { 9001 }, id: if hour == 100 { 66 } else { 9001 }, instance: 1 } } else { EventFeedCountry::default() }, cause: Recorded::NotRecorded,
+            script: Some(EventFeedScript { token_len: tokens.len() as u32, scope_unrecorded: true, ..Default::default() }),
+        }] } else { Vec::new() };
+        let count = events.len() as u64;
+        *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+            generation: 1, read_hour: hour, coverage: EventFeedCoverage::Complete,
+            counts: Some(EventFeedCounts { acquired: count, settled: count, failed: 0, rejected: 0 }),
+            outstanding: 0, failure: None, script_refusals: 0, events, script_tokens: tokens.to_vec(), script_scopes: Vec::new(),
+            windows: Recorded::Value(EventWindows { verdicts: Ok(Vec::new()), presentations: Vec::new(), presentations_unrecorded: None }),
+        }]));
+        frame
+    }).collect();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Arc::new(dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: product.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap());
+    let context = LoadContext { content: None };
+    let cancel = AtomicBool::new(false);
+    let panel = |extra: serde_json::Value| {
+        let mut ask = serde_json::json!({ "panel": product, "branchId": "1", "limit": 2 });
+        if product == "event-feed-tail" { ask["categories"] = serde_json::json!(["politics"]); }
+        ask.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        match product {
+            "decisions-tail" => super::decisions_dated_panel(&source, &context, &ask).unwrap(),
+            "event-choices-tail" => super::event_choices_dated_panel(&source, &context, &ask).unwrap(),
+            _ => super::event_feed_dated_panel(&source, &context, &ask).unwrap(),
+        }
+    };
+    let by_date = panel(serde_json::json!({}));
+    let baseline = (by_date.exact().unwrap().cold)(106, &cancel).unwrap();
+    assert_eq!(baseline["total"], "3");
+    let hours = |reply: &serde_json::Value| reply["rows"].as_array().unwrap().iter().map(|r| r["hour"].as_i64().unwrap()).collect::<Vec<_>>();
+    assert_eq!(hours(&baseline), [102, 101]);
+    let searched = panel(serde_json::json!({ "search": "alpha" }));
+    assert_eq!(hours(&(searched.exact().unwrap().cold)(106, &cancel).unwrap()), [100]);
+    let future = panel(serde_json::json!({ "search": "zulu" }));
+    assert_eq!((future.exact().unwrap().cold)(101, &cancel).unwrap()["total"], "0");
+    let sorted = panel(serde_json::json!({ "sort": { "column": "country", "direction": "descending" } }));
+    let exact = sorted.exact().unwrap();
+    assert_eq!(hours(&(exact.cold)(106, &cancel).unwrap()), [100, 102]);
+    for hour in 100..=106 {
+        assert_eq!(*(exact.advance)(hour, hour == 100, &cancel, None).value, (exact.cold)(hour, &cancel), "{product} at {hour}");
+    }
+}
+
+#[test]
+fn decisions_searches_beyond_page_two_and_sorts_the_whole_log_while_playing() { whole_log_search_sort("decisions-tail"); }
+
+#[test]
+fn event_choices_searches_beyond_page_two_and_sorts_the_whole_log_while_playing() { whole_log_search_sort("event-choices-tail"); }
+
+#[test]
+fn event_feed_searches_beyond_page_two_and_sorts_the_whole_log_while_playing() { whole_log_search_sort("event-feed-tail"); }
+
 fn row(generation: u64, sequence: u64, set: &[(&str, Cell)]) -> Row {
     let mut cells = vec![Cell::Unrecorded; TableId::FeedEvents.field_count()];
     for (name, cell) in set {
@@ -388,22 +453,6 @@ fn scripted_text_not_expanded_is_marked_where_it_stood_never_as_an_authored_elli
         ]
     );
     assert_ne!(SCRIPTED_GAP, '\u{2026}');
-}
-
-#[test]
-fn the_feed_index_warmed_at_open_holds_the_branch_until_forgotten() {
-    use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-    use replay::campaign::Replay;
-    use std::sync::{Arc, atomic::AtomicBool};
-    let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
-    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let source = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "feed-index-warm".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-    assert!(super::index::kept(&source).is_empty(), "nothing is kept before the open reads ahead");
-    super::index::warm(&source, 1).unwrap();
-    assert_eq!(super::index::kept(&source), [1]);
-    dashboard_base::queries::forget(&source);
-    crate::forget(&source);
-    assert!(super::index::kept(&source).is_empty(), "forgotten with the recording's index");
 }
 
 #[test]
@@ -2160,6 +2209,9 @@ fn a_followed_decisions_tail_carries_the_warnings_the_exact_read_gives_at_each_h
         assert_eq!(art(&held), hour >= 100, "the decision's mod art is named from the hour it is listed, at {hour}");
         assert_eq!(read.fresh, hour != 101, "hour 101 holds the reply read at 100, with its warnings");
     }
+    super::index::forget(&source);
+    assert!(!art(&exact(99)), "a cold exact read before the decision does not credit its art");
+    assert!(art(&exact(100)), "the exact read credits the art once the decision is listed");
 }
 
 #[test]
