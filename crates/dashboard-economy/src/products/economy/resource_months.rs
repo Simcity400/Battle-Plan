@@ -167,7 +167,7 @@ fn held(source: &Source, query: &Query<'_>, country: &Country, load: &LoadContex
     let measure = series.measure("net").ok_or_else(|| dashboard_core::invalid("Resource balance has no net"))?;
     let parts = series.parts.ok_or_else(|| dashboard_core::invalid("Resource balance has no parts"))?;
     let mut warnings = Vec::new();
-    let tokens = crate::products::convoys::resource_tokens(query, None, &mut warnings)?;
+    let tokens = crate::products::convoys::resource_tokens(source, query, None, &mut warnings)?;
     let (infos, notes) = ResourceNaming::stored(source, load).infos(&tokens, cancelled)?;
     warnings.extend(notes);
     let (from, to) = (query.timeline.first, query.timeline.last);

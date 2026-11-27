@@ -884,12 +884,11 @@ fn region_names(source: &Source, context: &LoadContext, regions: &BTreeSet<u32>,
     }
 }
 
-pub(crate) fn resource_tokens(query: &Query<'_>, ids: Option<&BTreeSet<u32>>, warnings: &mut Vec<String>) -> io::Result<Vec<(u32, String)>> {
-    let Some(stretch) = query.timeline.stretches.last() else { return Ok(Vec::new()) };
-    let recording = query.replay.recording();
-    let wanted: Vec<u128> = ids.into_iter().flatten().map(|&id| u128::from(id)).collect();
-    let keys = if ids.is_some() { read::Keys::These(&wanted) } else { read::Keys::All };
-    let definitions = read::at(recording, stretch.run, &[read::Read { table: TableId::ResourceDefinitions, columns: None, keys }], stretch.last)?;
+#[derive(Default)]
+struct RecordedResourceTokens(HashMap<(u32, i32), BTreeMap<u32, Option<String>>>);
+
+fn read_resource_tokens(recording: &Recording, (run, hour): (u32, i32)) -> io::Result<BTreeMap<u32, Option<String>>> {
+    let definitions = read::at(recording, run, &[read::Read::all(TableId::ResourceDefinitions)], hour)?;
     let token = dashboard_declare::field(TableId::ResourceDefinitions, "token")?;
     let view = definitions[0].view();
     let tokens: Vec<(u32, u32)> = definitions[0].rows.iter().filter_map(|&(key, slot)| Some((key as u32, u32::try_from(view.number(token, slot)?).ok()?))).collect();
@@ -897,21 +896,33 @@ pub(crate) fn resource_tokens(query: &Query<'_>, ids: Option<&BTreeSet<u32>>, wa
     keys.sort_unstable();
     keys.dedup();
     let literal = dashboard_declare::field(TableId::LexicalTokens, "literal")?;
-    let lexical = read::at(recording, stretch.run, &[read::Read { table: TableId::LexicalTokens, columns: None, keys: read::Keys::These(&keys) }], stretch.last)?;
+    let lexical = read::at(recording, run, &[read::Read { table: TableId::LexicalTokens, columns: None, keys: read::Keys::These(&keys) }], hour)?;
     let view = lexical[0].view();
     let spelled: HashMap<u32, String> = lexical[0]
         .rows
         .iter()
         .filter_map(|&(key, slot)| Some((key as u32, std::str::from_utf8(read::text(&view, literal, slot)?).ok().filter(|text| !text.is_empty())?.to_owned())))
         .collect();
+    Ok(tokens.into_iter().map(|(id, token)| (id, spelled.get(&token).cloned())).collect())
+}
+
+pub(crate) fn resource_tokens(source: &Source, query: &Query<'_>, ids: Option<&BTreeSet<u32>>, warnings: &mut Vec<String>) -> io::Result<Vec<(u32, String)>> {
+    let Some(stretch) = query.timeline.stretches.last() else { return Ok(Vec::new()) };
+    let point = (stretch.run, stretch.last);
+    let state = source.state::<RecordedResourceTokens>();
+    let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tokens = match state.0.entry(point) {
+        std::collections::hash_map::Entry::Occupied(held) => held.into_mut(),
+        std::collections::hash_map::Entry::Vacant(open) => open.insert(read_resource_tokens(query.replay.recording(), point)?),
+    };
     let listed: Vec<u32> = match ids {
         Some(ids) => ids.iter().copied().collect(),
-        None => tokens.iter().map(|&(id, _)| id).collect(),
+        None => tokens.keys().copied().collect(),
     };
     let mut out = Vec::new();
     let mut unnamed = 0usize;
     for id in listed {
-        match tokens.iter().find(|(held, _)| *held == id).and_then(|(_, token)| spelled.get(token)) {
+        match tokens.get(&id).and_then(Option::as_ref) {
             Some(token) => out.push((id, token.clone())),
             None => unnamed += 1,
         }
@@ -1144,7 +1155,19 @@ fn listed_since(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams,
 
 type HeldTrade = ((i32, i32, Option<u32>), DayInputs);
 
-fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, cancelled: &AtomicBool, stepped: Option<(&mut at_hour::DatedStep<'_>, &mut Option<HeldTrade>)>) -> io::Result<ConvoyHealthReply> {
+struct NamedResources {
+    generation: Option<Arc<dashboard_base::presentation::Presented>>,
+    naming: ResourceNaming,
+    refusals: catalogue::OwnRefusals,
+}
+
+#[derive(Default)]
+struct TradePlayback {
+    day: Option<HeldTrade>,
+    resources: Option<NamedResources>,
+}
+
+fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, cancelled: &AtomicBool, stepped: Option<(&mut at_hour::DatedStep<'_>, &mut TradePlayback)>) -> io::Result<ConvoyHealthReply> {
     let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
     let query = dashboard_base::queries::query(source, branch)?;
     let from = params.from.unwrap_or(query.timeline.first).max(query.timeline.first);
@@ -1156,6 +1179,7 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         let (a, b) = (gap.first.max(from), gap.last.min(reach));
         (a <= b).then_some(HourSpan { first_hour: a, last_hour: b })
     }).collect();
+    let mut resource_names = None;
     let (mut history, mut gathered, mut known, mut unheld) = match params.view {
         ConvoyView::Regions => {
             let step = stepped.map(|(step, _)| step);
@@ -1166,10 +1190,12 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         ConvoyView::Trade => {
             let inputs = if let Some((_, held)) = stepped {
                 let day = (from, reach, query.timeline.at(to).map(|stretch| stretch.run));
-                if held.as_ref().is_none_or(|(span, _)| *span != day) {
-                    *held = Some((day, window(source, &query, params, from, reach, cancelled, None)?.inputs));
+                if held.day.as_ref().is_none_or(|(span, _)| *span != day) {
+                    if held.day.as_ref().is_some_and(|(span, _)| span.2 != day.2) { held.resources = None; }
+                    held.day = Some((day, window(source, &query, params, from, reach, cancelled, None)?.inputs));
                 }
-                held.as_ref().expect("trade day").1.clone()
+                resource_names = Some(&mut held.resources);
+                held.day.as_ref().expect("trade day").1.clone()
             } else {
                 window(source, &query, params, from, reach, cancelled, None)?.inputs
             };
@@ -1295,8 +1321,26 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
     let mut leases: Vec<ConvoyLease> = leases.into_iter().filter(|(key, lease)| listed(key, |done| &done.leases) || !lease.bad.is_empty()).map(|(_, lease)| lease).collect();
     let resources = if params.view == ConvoyView::Trade {
         let shown: BTreeSet<u32> = deals.iter().flat_map(|deal| deal.resource.iter().filter_map(|run| u32::try_from(run.2).ok())).collect();
-        let tokens = resource_tokens(&query, Some(&shown), &mut warnings)?;
-        let (infos, notes) = ResourceNaming::stored(source, context).infos(&tokens, cancelled)?;
+        let tokens = resource_tokens(source, &query, Some(&shown), &mut warnings)?;
+        let generation = resource_names.as_ref().and_then(|_| match &context.content {
+            Some(content) => source.recorded_presented(&content.options).ok().map(Some),
+            None => Some(None),
+        });
+        let (infos, notes) = if let (Some(slot), Some(generation)) = (resource_names, generation) {
+            let held = match slot {
+                Some(held) if held.generation.as_ref().map(Arc::as_ptr) == generation.as_ref().map(Arc::as_ptr) => {
+                    catalogue::credit(&held.refusals);
+                    held
+                }
+                slot => {
+                    let (naming, refusals) = catalogue::capture(|| ResourceNaming::stored(source, context));
+                    slot.insert(NamedResources { generation, naming, refusals })
+                }
+            };
+            held.naming.infos(&tokens, cancelled)?
+        } else {
+            ResourceNaming::stored(source, context).infos(&tokens, cancelled)?
+        };
         warnings.extend(notes);
         infos.into_iter().map(|info| ConvoyResource { id: info.id, token: info.token, name: info.name }).collect()
     } else {
@@ -1381,14 +1425,14 @@ impl Product for ConvoyHealth {
 }
 
 pub(crate) fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
-    let trade = Mutex::new(None);
+    let trade = Mutex::new(TradePlayback::default());
     at_hour::stepped_day_panel::<ConvoyHealth>(source, load, asked, ("from", "to"),
         |_, reply| reply.last_hour, |_, _| {}, move |source, params, load, cancelled, mut step| {
             let mut held = trade.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if step.step.is_none_or(|input| input.step.reset() || input.step.gap()) { *held = None; }
+            if step.step.is_none_or(|input| input.step.reset() || input.step.gap()) { *held = TradePlayback::default(); }
             let result = dashboard_text::metadata::check_cancel(cancelled)
                 .and_then(|()| health(source, params, load, cancelled, Some((&mut step, &mut held))));
-            if result.is_err() { *held = None; }
+            if result.is_err() { *held = TradePlayback::default(); }
             result
         })
 }
@@ -1402,6 +1446,7 @@ type CachedRuns = dashboard_base::queries::RunCache<RunKey, RunConvoys>;
 
 pub(crate) fn forget(source: &dashboard_base::Source) {
     CachedRuns::forget(source);
+    source.state::<RecordedResourceTokens>().lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.clear();
 }
 
 #[derive(Clone)]

@@ -323,6 +323,19 @@ fn a_failed_convoy_read_can_be_rebuilt() {
 }
 
 #[test]
+fn terminal_resource_tokens_keep_the_requested_identities_and_warning_count() {
+    let source = synthetic("convoy-resource-tokens", &[(0, true, vec![])]);
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let mut warnings = Vec::new();
+    let all = resource_tokens(&source, &query, None, &mut warnings).unwrap();
+    assert!(all.is_empty());
+    assert!(warnings.is_empty());
+    let selected = resource_tokens(&source, &query, Some(&BTreeSet::from([1, 2])), &mut warnings).unwrap();
+    assert!(selected.is_empty());
+    assert_eq!(warnings, ["2 recorded resources have no recorded definition or token; they are not named"]);
+}
+
+#[test]
 fn recording_gaps_are_not_mislabelled_as_unheld_tag_hours() {
     let reply = health_of(&gapped(), &ConvoyHealthParams { regions: Some(vec![17]), ..regions(24, 45) });
     let region = reply.regions.iter().find(|r| r.region == 17).unwrap();
