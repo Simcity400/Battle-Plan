@@ -25,7 +25,7 @@ use dashboard_text::metadata::check_cancel;
 use replay_data::rows::{DivisionEventRow, DivisionHistoryRow, DivisionRow, TableId, TableRows, tables};
 use replay_frame::frame::TableView;
 use replay_lanes::{lanes::{self, Cell, Keys as LaneKeys}, points};
-use replay_recording::columnar_frames::{Damage, DamageScope, Recording};
+use replay_recording::columnar_frames::Recording;
 use roster::{Roster, Scope};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -355,25 +355,26 @@ fn battle_entries(
         .collect())
 }
 
-fn award_token_changes(recording: &Recording, run: u32, tokens: &[u128], first: i32, last: i32) -> io::Result<Vec<(u32, i32)>> {
+pub(in crate::products::divisions) fn award_token_changes(
+    recording: &Recording,
+    run: u32,
+    tokens: &[u128],
+    first: i32,
+    last: i32,
+) -> io::Result<(Vec<(u32, i32)>, Vec<lanes::StatusRun>)> {
     if tokens.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let mut changes = Vec::new();
-    let read = dashboard_query::cost::storage(|| {
-        points::cells(recording, run, TableId::LexicalTokens, &[0], LaneKeys::These(tokens), first, last, None, &mut |hour, key, _| {
+    let mut statuses = Vec::new();
+    dashboard_query::cost::storage(|| {
+        points::cells(recording, run, TableId::LexicalTokens, &[0], LaneKeys::These(tokens), first, last, Some(&mut statuses), &mut |hour, key, _| {
             changes.push((key as u32, hour));
             true
         })
-    });
-    match read {
-        Ok(_) => {
-            changes.sort_unstable();
-            Ok(changes)
-        }
-        Err(error) if matches!(Damage::of(&error).map(|damage| &damage.scope), Some(DamageScope::Withheld { .. })) => Ok(Vec::new()),
-        Err(error) => Err(error),
-    }
+    })?;
+    changes.sort_unstable();
+    Ok((changes, statuses))
 }
 
 fn history_lanes(query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<(lanes::History, Vec<(u32, i32)>, Vec<lanes::StatusRun>)> {
@@ -397,16 +398,7 @@ fn history_lanes(query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Resu
         .collect();
     tokens.sort_unstable();
     tokens.dedup();
-    let changes = award_token_changes(recording, run, &tokens, first, last)?;
-    let statuses = if tokens.is_empty() {
-        Vec::new()
-    } else {
-        match dashboard_query::read::statuses(recording, run, TableId::LexicalTokens, first, last) {
-            Ok(statuses) => statuses,
-            Err(error) if matches!(Damage::of(&error).map(|damage| &damage.scope), Some(DamageScope::Withheld { .. })) => Vec::new(),
-            Err(error) => return Err(error),
-        }
-    };
+    let (changes, statuses) = award_token_changes(recording, run, &tokens, first, last)?;
     Ok((history, changes, statuses))
 }
 
