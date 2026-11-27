@@ -16,31 +16,28 @@ mod tests;
 enum Key {
     Land(u64, i32, Option<i32>),
     Naval(u64, i32),
-    Report(u64, i32),
+    Report(u64),
 }
 
 impl Key {
-    fn start(self) -> i32 {
-        match self { Self::Land(_, start, _) | Self::Naval(_, start) | Self::Report(_, start) => start }
-    }
-
     fn id(self) -> String {
         match self {
             Self::Land(id, start, None) => format!("battle:{id}:{start}"),
             Self::Land(id, start, Some(written)) => format!("battle:{id}:{start}:{written}"),
             Self::Naval(id, start) => battle_id(id, start),
-            Self::Report(id, _) => format!("result:{id}"),
+            Self::Report(id) => format!("result:{id}"),
         }
     }
 }
 
 struct Battle {
     key: Key,
+    date: i32,
     observed: i32,
     province: Option<u32>,
     port_strike: bool,
     reports: Vec<u64>,
-    live_last: Option<i32>,
+    live_hours: Option<(i32, i32)>,
 }
 
 pub type Title = Result<Arc<str>, Arc<str>>;
@@ -62,8 +59,8 @@ impl Names {
     }
 
     fn install(&mut self, battle: Battle, title: Title) {
-        if let Key::Naval(combat, _) = battle.key && let Some(last) = battle.live_last {
-            self.live.insert((combat, battle.observed), (last, title.clone()));
+        if let Key::Naval(combat, _) = battle.key && let Some((first, last)) = battle.live_hours {
+            self.live.insert((combat, first), (last, title.clone()));
         }
         for report in battle.reports {
             self.titles.insert(format!("result:{report}"), title.clone());
@@ -95,7 +92,7 @@ fn number(battles: Vec<(Battle, Result<String, String>)>) -> Names {
         }
     }
     for (base, mut group) in groups {
-        group.sort_unstable_by_key(|battle| (battle.key.start(), battle.key));
+        group.sort_unstable_by_key(|battle| (battle.date, battle.key));
         let repeated = group.len() > 1;
         for (i, battle) in group.into_iter().enumerate() {
             let title = if repeated { format!("{} {base}", ordinal(i + 1)).into() } else { Arc::from(base.as_str()) };
@@ -107,13 +104,13 @@ fn number(battles: Vec<(Battle, Result<String, String>)>) -> Names {
 
 fn join(source: &Source, query: &Query<'_>, content: &Content, cancelled: &AtomicBool) -> io::Result<Names> {
     let mut battles: Vec<_> = land::battles(source, query, cancelled)?.into_iter().map(|battle| Battle {
-        key: Key::Land(battle.combat, battle.start, battle.written), observed: battle.observed, province: battle.province,
-        reports: Vec::new(), port_strike: false, live_last: None,
+        key: Key::Land(battle.combat, battle.start, battle.written), date: battle.start, observed: battle.observed, province: battle.province,
+        reports: Vec::new(), port_strike: false, live_hours: None,
     }).collect();
     battles.extend(naval::battles(source, query, cancelled)?.into_iter().map(|battle| Battle {
-        key: match battle.battle { naval::Battle::Live(id, start) => Key::Naval(id, start), naval::Battle::Result(id, start) => Key::Report(id, start) },
-        observed: battle.observed, province: battle.province, reports: battle.reports,
-        port_strike: battle.port_strike, live_last: battle.live_last,
+        key: match battle.battle { naval::Battle::Live(id, start) => Key::Naval(id, start), naval::Battle::Result(id, _) => Key::Report(id) },
+        date: battle.date, observed: battle.observed, province: battle.province, reports: battle.reports,
+        port_strike: battle.port_strike, live_hours: battle.live_hours,
     }));
     battles.sort_unstable_by_key(|battle| battle.observed);
     let mut pending = battles.into_iter().peekable();

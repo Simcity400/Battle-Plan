@@ -8,6 +8,9 @@ Resolve a naval title from the battle province's region before considering a pro
 
 The dashboard joins the land and naval battle logs to place-name history at each battle's first recorded observation. Equal plain titles share one ordinal sequence per recorded timeline, including its ancestors and gaps. A single battle keeps its plain title. A missing place keeps its reason. The map and dashboard use that revision's title index.
 
+Numbering uses the retained result identity where available and the live battle identity otherwise, folding a linked report into its live battle.
+A date change on merge keeps the same battle and its first observed place and date.
+
 The air graph's channels, colours and scale come from recorded executable tables, and the daily air reader uses the latest pass that visited the viewed country at the selected hour. Report combat window table gaps only while a combat is selected. Refusals survive both render paths, and matching absent inputs never substitute authored examples or previous rows.
 
 [Window assets](../../crates/viewer-combat/src/assets.rs) · [Battle titles](../../crates/dashboard/src/products/battle_names.rs) · [Air history](../../crates/viewer-combat/src/air_menu/history.rs) · [Combat availability](../../crates/viewer-combat/src/availability.rs)
