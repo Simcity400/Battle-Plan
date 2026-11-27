@@ -112,7 +112,7 @@ test('autonomy lines registers in TIME_CHART_VIEWS and uses autonomy-lines tiles
   assert.equal(main?.shape, 'pixel-binned');
   if (main?.shape === 'pixel-binned') {
     assert.equal(main.family.kind, 'autonomy-lines');
-    assert.ok((main.top?.n ?? 0) > 1500, 'every subject the recording holds, with no cap below the population');
+    assert.equal(main.top, undefined, 'the full population has no limit');
     assert.equal(main.headQuery, null);
   }
   assert.equal(head?.shape, 'point');
@@ -356,4 +356,17 @@ test('a quiet stretch of played hours makes zero extra requests for autonomy lin
   await Promise.resolve();
   assert.equal(requests, 0, '30 quiet played hours make zero extra requests');
   target.dispose();
+});
+
+test('All subjects and selected overlords request the full historical population without a limit', () => {
+  for (const countriesAre of ['subjects', 'overlords']) {
+    const base = makeCtx({ countriesAre });
+    const contexts = [base, { ...base, countries: { ...base.countries, all: false, filter: { ...base.countries.filter, passing: { AAA: [[100, 600]] as const } } } }];
+    for (const ctx of countriesAre === 'overlords' ? contexts : [base]) {
+      const read = autonomyLinesDeclaration.sources(ctx, { following: true, staticSpan: null }).entries[0]!.read;
+      assert.equal(read.shape, 'pixel-binned');
+      assert.equal('top' in read, false);
+      assert.deepEqual('coverage' in read && read.coverage, { mode: 'population', form: 'all' });
+    }
+  }
 });

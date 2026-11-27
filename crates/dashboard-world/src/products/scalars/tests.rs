@@ -92,7 +92,7 @@ fn tension_markers_keep_the_witness_at_their_hour_and_report_an_unread_listing()
         "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
     for hour in 101..=103 {
         let reply = WorldTensionStack::load(&source, &WorldTensionStackParams {
-            branch_id: "1".into(), first_hour: 100, last_hour: hour, layers: 1, values: Default::default(), countries: None,
+            branch_id: "1".into(), first_hour: 100, last_hour: hour, layers: Some(1), values: Default::default(), countries: None,
             top: None, group: None, width: None, include_stack: Some(false), piece: None, include_events: Some(true),
         }, &LoadContext { content: None }, &cancelled).unwrap();
         assert_eq!(reply.events.len(), 2);
@@ -147,7 +147,7 @@ fn world_tension_playback_visits_only_slot_and_event_edits_entering_or_expiring(
         let mut total = 0;
         for &hour in &played {
             let (reply, visited) = counted(|| WorldTensionStack::load(&source, &WorldTensionStackParams {
-                branch_id: "1".into(), first_hour: hour - 10, last_hour: hour, layers, values: TensionValueMode::Recorded,
+                branch_id: "1".into(), first_hour: hour - 10, last_hour: hour, layers: Some(layers), values: TensionValueMode::Recorded,
                 countries: None, top: None, group: None, width: None, include_stack: Some(stack), piece: None, include_events: Some(!stack),
             }, &load, &cancelled).unwrap());
             if stack {
@@ -170,7 +170,7 @@ fn world_tension_playback_visits_only_slot_and_event_edits_entering_or_expiring(
     }
     for hour in [136, 133, 141, 132] {
         let reply = WorldTensionStack::load(&source, &WorldTensionStackParams {
-            branch_id: "1".into(), first_hour: hour - 10, last_hour: hour, layers: 2, values: TensionValueMode::Recorded,
+            branch_id: "1".into(), first_hour: hour - 10, last_hour: hour, layers: Some(2), values: TensionValueMode::Recorded,
             countries: None, top: None, group: None, width: None, include_stack: Some(false), piece: None, include_events: Some(true),
         }, &load, &cancelled).unwrap();
         assert_eq!(reply.events.iter().map(|e| e.hour).collect::<Vec<_>>(), (hour - 10..=hour).collect::<Vec<_>>());
@@ -182,7 +182,7 @@ fn world_tension_playback_visits_only_slot_and_event_edits_entering_or_expiring(
     for (countries, group, top) in [(None, None, Some(2)), (Some(vec!["GER".into()]), None, None), (None, Some(group), None)] {
         for (first, last) in [(100, 110), (100, 114), (100, 111), (124, 131), (132, 136), (104, 144), (118, 134), (100, 110)] {
             let params = WorldTensionStackParams {
-                branch_id: "1".into(), first_hour: first, last_hour: last, layers: 2, values: TensionValueMode::Recorded,
+                branch_id: "1".into(), first_hour: first, last_hour: last, layers: Some(2), values: TensionValueMode::Recorded,
                 countries: countries.clone(), top, group: group.clone(), width: None, include_stack: Some(true), piece: None, include_events: Some(true),
             };
             world_tension_stack::forget(&cold);
@@ -462,7 +462,10 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
         _ => None,
     };
     let no_change = |_: u32, _: i32| None;
-    let out = compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
+    let all = compute_stack(&input, 10, 25, None, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
+    assert_eq!(all.bands.len(), 3);
+    assert!(all.other.is_none());
+    let out = compute_stack(&input, 10, 25, Some(2), TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
     assert_eq!(out.end_hour, Some(25));
     assert_eq!(out.capped_end_tension, Some(100.0));
     assert_eq!(out.capped_end_tension_raw.as_deref(), Some("100000"));
@@ -487,7 +490,7 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
     assert_eq!(other.values_raw, [Some("0".into()), Some("2000000".into())]);
     assert_eq!(out.next_change_hour, Some(30));
 
-    let rec = compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    let rec = compute_stack(&input, 10, 25, Some(2), TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(rec.total, [Some(25.0), Some(100.0)]);
     assert_eq!(rec.total_raw, [Some("25000".into()), Some("100000".into())]);
     assert_eq!(rec.capped_end_tension_raw.as_deref(), Some("100000"));
@@ -523,7 +526,7 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
     };
 
     let no_change = |_: u32, _: i32| None;
-    let out = compute_stack(&input, 10, 19, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    let out = compute_stack(&input, 10, 19, Some(5), TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(out.total, [Some(6.5)]);
     assert_eq!(out.bands.len(), 3);
     assert_eq!(out.bands[0].end_value, Some(4.0));
@@ -532,20 +535,20 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
     assert_eq!(out.bands[2].end_raw.as_deref(), Some("-50000"));
     assert!(out.other.is_none());
 
-    let out2 = compute_stack(&input, 10, 19, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    let out2 = compute_stack(&input, 10, 19, Some(2), TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(out2.total, [Some(6.5)]);
     assert_eq!(out2.bands.len(), 2);
     let other2 = out2.other.unwrap();
     assert_eq!(other2.count, 1);
     assert_eq!(other2.end_value, Some(-0.5));
 
-    let share = compute_stack(&input, 10, 19, 2, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
+    let share = compute_stack(&input, 10, 19, Some(2), TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
     assert_eq!(share.total, [Some(6.5)]);
     assert!((share.bands[0].end_value.unwrap() - 4.0).abs() < 1e-9);
     assert!((share.bands[1].end_value.unwrap() - 3.0).abs() < 1e-9);
     assert!((share.other.unwrap().end_value.unwrap() - (-0.5)).abs() < 1e-9);
 
-    let rec_25 = compute_stack(&input, 10, 25, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    let rec_25 = compute_stack(&input, 10, 25, Some(5), TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(rec_25.end_hour, Some(25));
     assert_eq!(rec_25.capped_end_tension, None);
     assert_eq!(rec_25.total.last().copied().flatten(), None);
@@ -554,7 +557,7 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
     assert_eq!(rec_25.bands[1].end_raw, None);
     assert_eq!(rec_25.bands[2].end_value, None);
 
-    let gap = compute_stack(&input, 10, 32, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    let gap = compute_stack(&input, 10, 32, Some(2), TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(gap.end_hour, None);
     assert_eq!(gap.capped_end_tension, None);
     assert_eq!(gap.total.last().copied().flatten(), None);
@@ -586,14 +589,14 @@ fn world_tension_stack_states_the_recorded_world_scalar_and_each_missing_reason_
     };
     let no_change = |_: u32, _: i32| None;
 
-    let all = compute_stack(&input, 10, 12, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    let all = compute_stack(&input, 10, 12, Some(5), TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(all.total, [Some(100.0)], "a recorded world tension of 100% is 100%, not the uncapped 125% sum");
     assert_eq!(all.total_raw, [Some("100000".into())]);
     assert_eq!(all.capped_end_tension_raw.as_deref(), Some("100000"));
     assert_eq!(all.end_missing, None);
 
     let japan: HashSet<&str> = ["JAP"].into_iter().collect();
-    let one = compute_stack(&input, 10, 12, 5, TensionValueMode::Recorded, Some(&japan), None, None, 200, tag_of, no_change);
+    let one = compute_stack(&input, 10, 12, Some(5), TensionValueMode::Recorded, Some(&japan), None, None, 200, tag_of, no_change);
     assert_eq!(one.total, [Some(100.0)], "one selected contributor of 20% does not make the world 20%");
     assert_eq!(one.bands.len(), 1);
     assert_eq!(one.bands[0].end_raw.as_deref(), Some("2000000"));
@@ -601,10 +604,10 @@ fn world_tension_stack_states_the_recorded_world_scalar_and_each_missing_reason_
     assert_eq!(other.count, 2);
     assert_eq!(other.end_raw.as_deref(), Some("10500000"));
     let held = StackInput { aggregates_complete: &[(10, 19)], ..input };
-    let after = compute_stack(&held, 10, 21, 5, TensionValueMode::Recorded, Some(&japan), None, None, 200, tag_of, no_change);
+    let after = compute_stack(&held, 10, 21, Some(5), TensionValueMode::Recorded, Some(&japan), None, None, 200, tag_of, no_change);
     assert_eq!(after.other.unwrap().count, 1, "Other counts nonzero contributors at the witnessed ranking hour");
 
-    let gap = compute_stack(&input, 10, 17, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    let gap = compute_stack(&input, 10, 17, Some(5), TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(gap.end_missing.as_deref(), Some("World tension withheld"), "the world end states why it is not known");
     let ita = gap.bands.iter().find(|band| band.slot == 3).unwrap();
     assert_eq!(ita.end_raw, None);
@@ -613,7 +616,7 @@ fn world_tension_stack_states_the_recorded_world_scalar_and_each_missing_reason_
     assert_eq!(ger.end_raw.as_deref(), Some("10000000"), "a witnessed contribution keeps its value beside an unread world scalar");
     assert_eq!(ger.end_missing, None);
 
-    let share_gap = compute_stack(&input, 10, 17, 5, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
+    let share_gap = compute_stack(&input, 10, 17, Some(5), TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
     let ger_share = share_gap.bands.iter().find(|band| band.slot == 1).unwrap();
     assert_eq!(ger_share.end_value, None);
     assert_eq!(ger_share.end_missing.as_deref(), Some("World tension withheld"), "a share of an unread world tension says why");
@@ -639,7 +642,7 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
         &input,
         0,
         79,
-        5,
+        Some(5),
         TensionValueMode::Recorded,
         None,
         None,
@@ -691,7 +694,7 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
         "synthetic.battleplan".into(), std::sync::Arc::new(replay), &cancelled).unwrap();
     for (first, last) in [(10, 301), (11, 302), (15, 306), (89, 378), (10, 308), (10, 197)] {
         let out = WorldTensionStack::load(&source, &WorldTensionStackParams {
-            branch_id: "1".into(), first_hour: first, last_hour: last, layers: 2, values: TensionValueMode::Recorded,
+            branch_id: "1".into(), first_hour: first, last_hour: last, layers: Some(2), values: TensionValueMode::Recorded,
             countries: None, top: None, group: None, width: Some(120), include_stack: Some(true), piece: None, include_events: Some(false),
         }, &LoadContext { content: None }, &cancelled).unwrap();
         assert!(out.downsampled);
@@ -705,7 +708,7 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
         }
     }
     let read = |branch: u64, hour, piece| WorldTensionStack::load(&source, &WorldTensionStackParams {
-        branch_id: branch.to_string(), first_hour: 10, last_hour: hour, layers: 2, values: TensionValueMode::Recorded,
+        branch_id: branch.to_string(), first_hour: 10, last_hour: hour, layers: Some(2), values: TensionValueMode::Recorded,
         countries: None, top: None, group: None, width: Some(120), include_stack: Some(true), include_events: Some(true), piece,
     }, &LoadContext { content: None }, &cancelled).unwrap();
     for (branch, hour) in (245..=365).map(|h| (1, h)).chain([(2, 281), (2, 278), (2, 283), (1, 251)]) {
@@ -749,7 +752,7 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
         &input,
         10,
         20,
-        5,
+        Some(5),
         TensionValueMode::Recorded,
         None,
         None,
@@ -765,7 +768,7 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
         &input,
         10,
         30,
-        5,
+        Some(5),
         TensionValueMode::Recorded,
         None,
         None,
@@ -820,7 +823,7 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
         "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
     for (stack, events, mode) in [(true, true, TensionValueMode::Share), (true, false, TensionValueMode::Recorded), (false, true, TensionValueMode::Share)] {
         let read = |last_hour, top| WorldTensionStack::load(&source, &WorldTensionStackParams {
-            branch_id: "1".into(), first_hour: 100, last_hour, layers: 1, values: mode, countries: None,
+            branch_id: "1".into(), first_hour: 100, last_hour, layers: Some(1), values: mode, countries: None,
             top, group: None, width: None, include_stack: Some(stack), piece: None, include_events: Some(events),
         }, &LoadContext { content: None }, &cancelled).unwrap();
         let ranked = read(101, Some(1));
@@ -882,7 +885,7 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
         _ => None,
     };
     let gf = DatedGroupFilter::new(&members, GroupMembership::Hour, &holders);
-    let out = compute_stack(&input, 10, 30, 5, TensionValueMode::Recorded, None, Some(&gf), None, 200, tag_of, |_, _| None);
+    let out = compute_stack(&input, 10, 30, Some(5), TensionValueMode::Recorded, None, Some(&gf), None, 200, tag_of, |_, _| None);
     assert_eq!(out.bands.len(), 2);
     assert_eq!(out.hours, [10, 25, 28]);
     let former = out.bands.iter().find(|b| b.tag.as_deref() == Some("GER")).unwrap();
@@ -891,7 +894,7 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
     assert_eq!(ita.values, [None, Some(3.0), Some(3.0)]);
     assert_eq!(out.total, [None, None, None], "the world line is the recorded world scalar, never the members' subtotal");
 
-    let top_out = compute_stack(&input, 10, 30, 5, TensionValueMode::Recorded, None, None, Some(2), 200, tag_of, |_, _| None);
+    let top_out = compute_stack(&input, 10, 30, Some(5), TensionValueMode::Recorded, None, None, Some(2), 200, tag_of, |_, _| None);
     assert_eq!(top_out.bands.len(), 2);
     assert!(top_out.other.is_none(), "Top-N selection omits Other band");
 
@@ -900,10 +903,10 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
     ]);
     let partial = StackInput { slots: &partial_slots, aggregates_complete: &[(10, 23)], ..input };
     let selection = ["GER", "ITA"].into_iter().collect();
-    let named = compute_stack(&partial, 10, 30, 1, TensionValueMode::Recorded, Some(&selection), None, None, 200, tag_of, |_, _| None);
+    let named = compute_stack(&partial, 10, 30, Some(1), TensionValueMode::Recorded, Some(&selection), None, None, 200, tag_of, |_, _| None);
     assert_eq!(named.bands[0].slot, 1, "the selected leader at the last complete read keeps its band");
     for (countries, group) in [(Some(&selection), None), (None, Some(&gf)), (None, None)] {
-        let full = compute_stack(&partial, 10, 30, 5, TensionValueMode::Recorded, countries, group, None, 200, tag_of, |_, _| None);
+        let full = compute_stack(&partial, 10, 30, Some(5), TensionValueMode::Recorded, countries, group, None, 200, tag_of, |_, _| None);
         assert_eq!(full.bands.iter().map(|band| band.slot).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(full.bands[1].end_value, Some(9.0));
     }

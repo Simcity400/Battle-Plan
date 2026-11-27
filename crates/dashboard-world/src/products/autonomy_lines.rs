@@ -50,7 +50,6 @@ struct TileAsk {
     #[serde(default)]
     countries: Vec<Country>,
     within: Option<Vec<(Country, Vec<HourSpan>)>>,
-    top: Option<u32>,
     hour: Option<f64>,
 }
 
@@ -145,7 +144,6 @@ fn subjects_by_hour(
     timeline_last: i32,
     unheld: &[(i32, i32)],
     hour: i32,
-    limit: usize,
 ) -> (Vec<u32>, i32, i32) {
     let mut subjects = Vec::new();
     let mut from = timeline_first;
@@ -169,7 +167,6 @@ fn subjects_by_hour(
             until = until.min(began.saturating_sub(1));
         }
     }
-    subjects.truncate(limit);
     (subjects, from.min(hour), until.max(hour))
 }
 
@@ -247,14 +244,7 @@ pub fn tile(
     });
     let subject_spans = subject_spans_from_held(&query.timeline.stretches, &held, overlords.as_ref());
 
-    let (asks, within, ranking): (Vec<Ask>, Vec<(Country, Vec<Span>)>, Option<TileRanking>) = if let Some(top) = ask.top {
-        if !ask.countries.is_empty() {
-            return Err(invalid("A top of autonomy tiles names no country: the ranking names them"));
-        }
-        let limit = usize::try_from(top)
-            .ok()
-            .filter(|n| *n >= 1)
-            .ok_or_else(|| invalid("A top names one country or more"))?;
+    let (asks, within, ranking): (Vec<Ask>, Vec<(Country, Vec<Span>)>, Option<TileRanking>) = if ask.countries.is_empty() {
         let hour = hour_of(ask.hour, "hour")?;
         if hour < query.timeline.first || hour > query.timeline.last {
             (
@@ -287,7 +277,6 @@ pub fn tile(
                 query.timeline.last,
                 &unheld,
                 hour,
-                limit,
             );
             let asks: Vec<Ask> = active.iter().map(|&slot| Ask::whole(&Country::Slot(slot))).collect();
             let within: Vec<(Country, Vec<Span>)> = active
@@ -360,8 +349,17 @@ mod tests {
         let query = dashboard_base::queries::query(&source, 1).unwrap();
         let ask = serde_json::json!({
             "branchId": "1", "family": { "kind": SERIES, "overlords": [["AAA", [{"firstHour": 101, "lastHour": 103}]]] },
-            "binHours": 1, "index": 0, "top": 2, "hour": 103
+            "binHours": 1, "index": 0, "hour": 103
         });
+        let all = tile(&source, &query, &serde_json::json!({
+            "branchId": "1", "family": { "kind": SERIES }, "binHours": 1, "index": 0, "hour": 103
+        }), &cancelled).unwrap();
+        assert_eq!(all.lines.len(), 2);
+        assert!(all.lines.iter().any(|line| line.country == Country::Slot(8)));
+        let selected = tile(&source, &query, &serde_json::json!({
+            "branchId": "1", "family": { "kind": SERIES }, "binHours": 1, "index": 0, "countries": [8]
+        }), &cancelled).unwrap();
+        assert_eq!(selected.lines.len(), 1);
         let reply = tile(&source, &query, &ask, &cancelled).unwrap();
         assert_eq!(reply.lines.iter().map(|line| &line.country).collect::<Vec<_>>(), [&Country::Slot(8)]);
         assert_eq!(reply.lines[0].missing.iter().map(|gap| (gap.first_hour, gap.last_hour)).collect::<Vec<_>>(), [(101, 102)]);
@@ -391,14 +389,14 @@ mod tests {
         assert_eq!(pairs(&spans[&20]), vec![(100, 179)]);
         assert_eq!(pairs(&spans[&30]), vec![(120, 199)]);
 
-        assert_eq!(subjects_by_hour(&spans, |_| true, 100, 199, &[], 110, 1500), (vec![20], 100, 119));
-        assert_eq!(subjects_by_hour(&spans, |_| true, 100, 199, &[], 150, 1500), (vec![20, 30], 120, 199));
+        assert_eq!(subjects_by_hour(&spans, |_| true, 100, 199, &[], 110), (vec![20], 100, 119));
+        assert_eq!(subjects_by_hour(&spans, |_| true, 100, 199, &[], 150), (vec![20, 30], 120, 199));
         assert_eq!(
-            subjects_by_hour(&spans, |_| true, 100, 199, &[], 185, 1500),
+            subjects_by_hour(&spans, |_| true, 100, 199, &[], 185),
             (vec![20, 30], 120, 199),
             "a subject that became independent at 180 keeps its recorded history",
         );
-        assert_eq!(subjects_by_hour(&spans, |_| true, 100, 199, &[(160, 165)], 150, 1500), (vec![20, 30], 120, 159));
+        assert_eq!(subjects_by_hour(&spans, |_| true, 100, 199, &[(160, 165)], 150), (vec![20, 30], 120, 159));
 
         let moved = RunSubjects {
             relations: vec![(1, 2, vec![(100, 149, cell(100, 150))]), (4, 2, vec![(150, 199, cell(150, 0))])],

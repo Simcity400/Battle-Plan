@@ -48,7 +48,8 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
                 Some(top) => Some(top.as_u64().and_then(|top| usize::try_from(top).ok()).filter(|top| *top >= 1).ok_or_else(|| invalid("A followed top names one row or more"))?),
             };
             let parts = series.parts.is_some();
-            if let (Some(n), false, true) = (top, parts, tags.is_empty()) {
+            if !parts && tags.is_empty() && (top.is_some() || !params.as_object().is_some_and(|params| params.contains_key("reads"))) {
+                let n = top.unwrap_or(usize::MAX);
                 if scope == CoverageScope::Row {
                     return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
                 }

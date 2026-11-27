@@ -61,7 +61,7 @@ const COLOURED = 8;
 
 export interface EquipmentProducedLinesOptions {
   readonly tags: readonly string[];
-  readonly top: number | null;
+  readonly top: ReturnType<typeof chartTopOf>;
   readonly count: ProducedCount;
   readonly measure: ProducedMeasure;
   readonly equipmentLabel: string;
@@ -399,7 +399,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
       ...(fromHour !== undefined ? { fromHour } : {}),
     };
     const headCoverage: SourceCoverage = top !== null
-      ? { mode: 'population', form: 'top', limit: top }
+      ? top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }
       : group
         ? { mode: 'population', form: 'all' }
         : { mode: 'keyed', keys: tags };
@@ -430,7 +430,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
       read: {
         shape: 'pixel-binned',
         coverage: top !== null
-          ? { mode: 'population', form: 'top', limit: top }
+          ? top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }
           : { mode: 'keyed', keys: tags },
         family: tileFamily as unknown as Readonly<Record<string, unknown>>,
         tags,

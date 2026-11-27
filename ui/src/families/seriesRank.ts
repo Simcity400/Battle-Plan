@@ -13,7 +13,7 @@ export function rankSource(
   group: GroupSelection | null = null,
   measures: readonly string[] = [],
 ): SourceEntry[] {
-  if (top === null && !group && !countries.length) return [];
+  if (coverage.mode === 'keyed' && top === null && !group && !countries.length) return [];
   const params = {
     branchId: ctx.branch.id, family,
     ...(top !== null ? { top } : group ? { group } : { countries: countries.map(countryFromKey) }),

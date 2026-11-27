@@ -55,7 +55,9 @@ pub struct WorldTensionStackParams {
     pub branch_id: String,
     pub first_hour: i32,
     pub last_hour: i32,
-    pub layers: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub layers: Option<u32>,
     #[serde(default)]
     pub values: TensionValueMode,
     #[serde(default)]
@@ -936,7 +938,7 @@ pub(super) fn compute_stack(
     input: &StackInput<'_>,
     first: i32,
     last: i32,
-    layers: usize,
+    layers: Option<usize>,
     mode: TensionValueMode,
     filter: Option<&HashSet<&str>>,
     group_filter: Option<&DatedGroupFilter>,
@@ -966,7 +968,7 @@ fn compute_window(
     input: &StackInput<'_>,
     first: i32,
     last: i32,
-    layers: usize,
+    layers: Option<usize>,
     mode: TensionValueMode,
     filter: Option<&dyn Fn(&str) -> bool>,
     group_filter: Option<&DatedGroupFilter>,
@@ -1015,7 +1017,7 @@ fn compute_window(
         let reason = reason_at(input.aggregates_missing, last).unwrap_or(CONTRIBUTION_UNKNOWN);
         return StackOutput { refused: Some(reason.to_owned()), next_change_hour: next_change, ..Default::default() };
     }
-    let ranked = playback.ranking.top(top_limit.unwrap_or(layers));
+    let ranked = playback.ranking.top(top_limit.or(layers));
     let top_slots = top_limit.map(|_| ranked.iter().copied().collect());
     let Some(max_points) = max_points else {
         return StackOutput { top_slots, next_change_hour: next_change, ..Default::default() };
@@ -1225,11 +1227,11 @@ impl Product for WorldTensionStack {
         if params.first_hour > params.last_hour {
             return Err("Invalid world tension time range");
         }
-        if params.layers == 0 || params.layers > 1500 {
+        if params.layers == Some(0) {
             return Err("Invalid world tension layer count");
         }
         if let Some(top) = params.top
-            && (top == 0 || top > 1500)
+            && top == 0
         {
             return Err("Invalid world tension top count");
         }
@@ -1419,7 +1421,7 @@ impl Product for WorldTensionStack {
                 &mut playback, &input,
                 first,
                 last,
-                params.layers as usize,
+                params.layers.map(|layers| layers as usize),
                 params.values,
                 filter,
                 group_filter.as_deref(),

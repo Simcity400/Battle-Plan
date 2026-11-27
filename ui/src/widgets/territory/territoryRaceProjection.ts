@@ -21,8 +21,6 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { valueFromRawBigInt, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 
-const ALL_POPULATION_TOP = 10_000;
-
 export interface TerritoryRaceOptions {
   readonly mode: 'countries' | 'factions';
   readonly measure: TerritoryMeasure;
@@ -127,7 +125,7 @@ function territoryRaceSources(ctx: FamilyPlanContext): SourcePlan {
   if (isFactionTotalsSelection(ctx.widget.countries)) {
     return factionTotalsSources('territory:race', ctx, 'territory', seriesMeasure);
   }
-  const top = ctx.countries.top ?? (ctx.countries.all ? Math.max(ALL_POPULATION_TOP, ctx.countries.every.length) : null);
+  const top = ctx.countries.top;
   const group = top == null ? groupSelection(ctx.widget.countries) : null;
   const tags = top == null && !group ? ctx.countries.tags : [];
   const coverage: SourceCoverage = ctx.countries.top != null
@@ -135,7 +133,7 @@ function territoryRaceSources(ctx: FamilyPlanContext): SourcePlan {
     : ctx.countries.all || group
       ? { mode: 'population', form: 'all' }
       : { mode: 'keyed', keys: tags };
-  const emptyExplicit = top == null && !group && !tags.length;
+  const emptyExplicit = !ctx.countries.all && top == null && !group && !tags.length;
   return {
     owner: `territory:race:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${seriesMeasure}`,
     entries: rankSource(ctx, 'main', { kind: 'territory', measure: seriesMeasure }, coverage, tags, top, group),

@@ -150,12 +150,12 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
             }
         }
     };
+    let population = ask.top.is_some() || (ask.group.is_none() && ask.countries.is_empty());
     let (asked, mut refused, top) = match (ask.top, countries.is_empty()) {
         (Some(_), false) => return Err(invalid("A rank names a top or countries, not both")),
-        (None, true) => return Err(invalid("A rank names a top or countries")),
         (Some(0), true) => return Err(invalid(format!("A ranked {} names a top of at least 1", line.series.kind))),
-        (Some(n), true) => match line.rank_at(hour, n as usize, ask.least)? {
-            Ok(ranked) => (ranked, None, Some(n as usize)),
+        (_, true) => match line.population_at(hour, ask.top.map(|n| n as usize), ask.least)? {
+            Ok(ranked) => (ranked, None, Some(ask.top.map(|n| n as usize))),
             Err(reason) => (Vec::new(), Some(reason), None),
         },
         (None, false) => (countries, None, None),
@@ -171,13 +171,12 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         .collect();
     let (asked, slots): (Vec<Country>, Vec<Option<u32>>) = asked.into_iter().unzip();
     let reads: Vec<SeriesRead> = asked.iter().map(|country| SeriesRead { country: country.clone(), hour, part: None }).collect();
-    let unnamed: Vec<(usize, u32)> = match ask.top {
-        Some(_) => asked.iter().enumerate().filter_map(|(at, country)| match country {
+    let unnamed: Vec<(usize, u32)> = if population {
+        asked.iter().enumerate().filter_map(|(at, country)| match country {
             Country::Slot(slot) if line.query.holders.tag_at(country, hour).is_none() => Some((at, *slot)),
             _ => None,
-        }).collect(),
-        None => Vec::new(),
-    };
+        }).collect()
+    } else { Vec::new() };
     let mut columns = vec![line.states(&reads, None)?];
     for detail in details {
         columns.push(detail.states(&reads, None)?);
@@ -197,7 +196,7 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         slots[at] = Some(slot);
     }
     let mut order: Vec<usize> = (0..asked.len()).collect();
-    if ask.top.is_none() {
+    if !population {
         let value = |at: usize| columns[0][at].run.as_ref().and_then(|run| run.value_raw.parse::<i64>().ok());
         order.sort_by(|&a, &b| match (value(a), value(b)) {
             (Some(x), Some(y)) => (if ask.least { x.cmp(&y) } else { y.cmp(&x) }).then_with(|| asked[a].cmp(&asked[b])),
@@ -218,7 +217,7 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         let window = crate::tile::RANK_PROOF_HOURS;
         let within = (held.0.max(hour.saturating_sub(window)), held.1.min(hour.saturating_add(window)));
         line.rank_holds(hour, n, ask.least, within, super::RankProof::Order(&asked), &|| Ok(()))?
-    } else if ask.top.is_some() {
+    } else if population {
         line.query.timeline.unheld.iter().find(|gap| gap.first <= hour && hour <= gap.last)
             .map_or((hour, hour), |gap| (gap.first.max(held.0), gap.last.min(held.1)))
     } else {

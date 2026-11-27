@@ -49,7 +49,7 @@ const SUCCESS_NOTE = 'Success includes critical success and excludes limited suc
 
 export interface RaidTallyLinesOptions {
   readonly tags: readonly string[];
-  readonly top: number | null;
+  readonly top: ReturnType<typeof chartTopOf>;
   readonly metric: RaidTallyMetric;
   readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership: Readonly<Record<string, HourRanges>> | null;
@@ -588,11 +588,11 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
           read: {
             shape: 'branch-to-hour',
             coverage: top !== null
-              ? { mode: 'population', form: 'top', limit: top }
+              ? top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }
               : { mode: 'keyed', keys: tags },
             product: 'raid-tally',
             followQuery: null,
-            params: { branchId: ctx.branch.id, countries, top, metric },
+            params: { branchId: ctx.branch.id, countries, ...(top === 'all' ? {} : { top }), metric },
             buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
             provenInterval: raidTallyProof,
             dynamicKeys: ['hour'],
@@ -605,7 +605,7 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
           read: {
             shape: 'exact-hover',
             product: 'raid-tally-at',
-            params: { branchId: ctx.branch.id, countries, ...(top !== null ? { top } : {}), metric },
+            params: { branchId: ctx.branch.id, countries, ...(typeof top === 'number' ? { top } : {}), metric },
             validate: validateRaidTallyAt,
           },
         },

@@ -54,7 +54,7 @@ const COLOURED = 8;
 
 export interface NavalLossesLinesOptions {
   readonly tags: readonly string[];
-  readonly top: number | null;
+  readonly top: ReturnType<typeof chartTopOf>;
   readonly kind: NavalKind;
   readonly attribution: NavalAttribution;
   readonly period: NavalPeriod;
@@ -400,7 +400,7 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
         read: {
           shape: 'pixel-binned',
           coverage: top !== null
-            ? { mode: 'population', form: 'top', limit: top }
+            ? top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }
             : { mode: 'keyed', keys: tags },
           family: tileFamily as unknown as Readonly<Record<string, unknown>>,
           tags,

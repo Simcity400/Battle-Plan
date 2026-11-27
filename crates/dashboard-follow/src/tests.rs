@@ -837,7 +837,7 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
         _ => panic!("a ranked series"),
     }
     let unranked = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "ownedArea" }, "hour": 5 } });
-    assert!(crate::parse(&unranked, &nobody()).is_err(), "a series asked for no tags ranks a top");
+    assert!(crate::parse(&unranked, &nobody()).is_ok(), "a series without countries or a top follows the full population");
     let ranked = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-game-scores", "measure": "total" }, "top": 10 } });
     match crate::parse(&ranked, &nobody()).unwrap() {
         Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false, .. }, .. } => assert_eq!((series.kind, measure.name), ("country-game-scores", "total")),

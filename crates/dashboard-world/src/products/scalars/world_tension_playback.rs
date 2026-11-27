@@ -261,8 +261,12 @@ impl Ranking {
         self.unknown != 0
     }
 
-    pub(super) fn top(&self, limit: usize) -> Vec<u32> {
-        self.ordered.iter().take(limit).map(|order| order.3).collect()
+    pub(super) fn top(&self, limit: Option<usize>) -> Vec<u32> {
+        let slots = self.ordered.iter().map(|order| order.3);
+        match limit {
+            Some(limit) => slots.take(limit).collect(),
+            None => slots.collect(),
+        }
     }
 
     pub(super) fn other(&self, shown: &[u32]) -> (bool, u32) {

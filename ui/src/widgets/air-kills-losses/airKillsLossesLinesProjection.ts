@@ -62,7 +62,7 @@ const AIR_LEDGER_NOTE = 'Loss totals include corrections.';
 
 export interface AirKillsLossesLinesOptions {
   readonly tags: readonly string[];
-  readonly top: number | null;
+  readonly top: ReturnType<typeof chartTopOf>;
   readonly rankMetric: MilitaryAirMetric;
   readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership: Readonly<Record<string, HourRanges>> | null;
@@ -477,7 +477,7 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
       read: {
         shape: 'pixel-binned',
         coverage: top !== null
-          ? { mode: 'population', form: 'top', limit: top }
+          ? top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }
           : { mode: 'keyed', keys: tags },
         family: tileFamily(name) as unknown as Readonly<Record<string, unknown>>,
         tags,
@@ -487,7 +487,7 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
       },
     });
     const headCoverage = top !== null
-      ? { mode: 'population' as const, form: 'top' as const, limit: top }
+      ? top === 'all' ? { mode: 'population' as const, form: 'all' as const } : { mode: 'population' as const, form: 'top' as const, limit: top }
       : group
         ? { mode: 'population' as const, form: 'all' as const }
         : { mode: 'keyed' as const, keys: tags };

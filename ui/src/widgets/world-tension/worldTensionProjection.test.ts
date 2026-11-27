@@ -658,6 +658,7 @@ describe('world-tension projections', () => {
       gateSpan: (a: number, b: number) => ({ firstHour: a, lastHour: b }),
     } as never, { width: 800, height: 300, following: false, staticSpan: null });
     assert.ok(plan.entries.some(e => e.name === 'hover' && e.read.shape === 'exact-hover'), 'lines view declares exact-hover entry');
+    assert.equal('layers' in (plan.entries[0]!.read as { params: object }).params, false, 'All lines has no layer limit');
   });
 
   it('S14 + R3-S11: keys world-tension bands and audit rows by slot (even when two slots share a tag), and includes secondary country and place in events table rowKey', () => {
