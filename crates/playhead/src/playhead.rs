@@ -504,7 +504,9 @@ struct Jobs {
     joins: VecDeque<Job>,
     seq: u64,
     running: usize,
+    lent_busy: usize,
     stop: bool,
+    lent_stop: bool,
 }
 
 impl Jobs {
@@ -1768,21 +1770,29 @@ impl Drop for WorkerExit {
 }
 
 fn lent_worker(shared: Arc<Shared>, exited: Arc<AtomicBool>) {
+    struct LentBusy<'a>(&'a Shared);
+    impl Drop for LentBusy<'_> {
+        fn drop(&mut self) {
+            lock(&self.0.jobs).lent_busy -= 1;
+        }
+    }
     let _exit = WorkerExit { shared: Arc::clone(&shared), exited };
     loop {
         let job = {
             let mut jobs = lock(&shared.jobs);
             loop {
-                if jobs.stop {
+                if jobs.stop || jobs.lent_stop {
                     return;
                 }
                 if let Some(job) = pop_lent(&mut jobs) {
                     jobs.running += 1;
+                    jobs.lent_busy += 1;
                     break job;
                 }
                 jobs = shared.lent_work.wait(jobs).unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         };
+        let _busy = LentBusy(&shared);
         if let Some(done) = shared.run(job) {
             shared.nudge(|control| control.done.push(done));
         }
@@ -1839,8 +1849,7 @@ impl Drop for LentWorkers {
         if self.handles.is_empty() {
             return;
         }
-        lock(&self.shared.jobs).stop = true;
-        self.shared.work.notify_all();
+        lock(&self.shared.jobs).lent_stop = true;
         self.shared.lent_work.notify_all();
         for (handle, _) in self.handles.drain(..) {
             let _ = handle.join();
@@ -2074,13 +2083,14 @@ impl Stepper {
                 continue;
             }
             if self.lent.reap() > 0 {
-                let pending = {
+                let (busy, pending) = {
                     let jobs = lock(&self.shared.jobs);
-                    jobs.joins.len() + jobs.heap.iter().filter(|queued| queued.rank.0 <= 1).count()
+                    let urgent = jobs.heap.iter().filter(|queued| queued.rank.0 <= 1).count();
+                    (jobs.lent_busy, jobs.joins.len() + urgent)
                 };
                 if pending > 0 {
                     let cap = self.lent_cap(true);
-                    self.lent.ensure(pending.min(cap));
+                    self.lent.ensure((busy + pending).min(cap));
                 }
             }
             let mut moved = !lands.is_empty();
@@ -2256,7 +2266,11 @@ impl Stepper {
 
     fn lend_seek_threads(&mut self, tables: usize) {
         let own = 1 + self.helpers.len() + self.shared.settings.fetch_threads;
-        let want = tables.saturating_sub(own).min(self.lent_cap(false));
+        let (busy, urgent) = {
+            let jobs = lock(&self.shared.jobs);
+            (jobs.lent_busy, jobs.heap.iter().filter(|queued| queued.rank.0 <= 1).count())
+        };
+        let want = tables.saturating_sub(own).max(busy + urgent.saturating_sub(own)).min(self.lent_cap(false));
         self.lent.ensure(want);
     }
 
@@ -2660,7 +2674,14 @@ impl Stepper {
     }
 
     fn lend_join_threads(&mut self, joins: usize) {
-        let want = joins.min(self.lent_cap(true));
+        if joins == 0 {
+            return;
+        }
+        let (busy, queued) = {
+            let jobs = lock(&self.shared.jobs);
+            (jobs.lent_busy, jobs.joins.len())
+        };
+        let want = (busy + queued).min(self.lent_cap(true));
         self.lent.ensure(want);
     }
 
