@@ -450,7 +450,9 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             entry.matched |= matched;
             entry.line.country = entry.line.country.or(line.country);
             entry.line.building = entry.line.building.or(line.building);
+            let mut part_known = false;
             if let Some(part) = steps.remove(&line.id) {
+                part_known = part.first_known_owner.is_some();
                 if let (Some(owner), Some(at)) = (line.country, part.first_known_owner) { entry.matched |= is_owner(owner, at); }
                 entry.history.read.extend(part.read);
                 entry.history.purpose.extend(part.purpose);
@@ -460,7 +462,11 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
                 entry.history.before_observation = min_opt(entry.history.before_observation, part.before_observation);
             }
             if stretch.first <= line.last && line.last <= stretch.last {
-                entry.history.read.push((line.last, Some(line.output_reason), line.had_output));
+                let unknown = replay_data::rows::ConstructionProjectRow::OUTPUT_OWNER_UNKNOWN;
+                let unread = replay_data::rows::ConstructionProjectRow::OUTPUT_NOT_RECORDED;
+                let end_known = !line.output_alone || part_known || (line.output_reason != unknown && line.output_reason != unread);
+                let end_reason = if line.had_output && !end_known { unknown } else { line.output_reason };
+                entry.history.read.push((line.last, Some(end_reason), line.had_output));
             }
         }
     }
