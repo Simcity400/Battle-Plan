@@ -536,7 +536,9 @@ test('every multi and filter view says whether it draws one hour or history, and
     if (policy?.mode !== 'multi' && policy?.mode !== 'filter') continue;
     const name = `${entry.kind}/${view}`;
     declared.push(`${name}:${policy.content}`);
-    if (policy.mode === 'multi' && policy.datedAtHour && policy.content !== 'hour') contradictions.push(`${name} resolves membership at the hour, so it draws one hour`);
+    const dated = policy.mode === 'multi' && policy.datedAtHour === true;
+    if (dated && policy.content !== 'hour') contradictions.push(`${name} resolves membership at the hour, so it draws one hour`);
+    if (!dated && (spec.family === 'time-chart' || spec.family === 'timeline') && policy.content !== 'history') contradictions.push(`${name} draws over time, so it draws history`);
     const options = resolveOptions(familyViewOptionFields(entry.kind, view), view === DEFAULT_VIEW ? {} : { [entry.viewOption ?? 'view']: view });
     const shapes = new Set<string>();
     for (const [following, time] of [[true, { mode: 'follow' }], [false, { mode: 'range', firstOffset: 100, lastOffset: 900 }]] as const) {

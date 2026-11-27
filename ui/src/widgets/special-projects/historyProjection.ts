@@ -2,7 +2,7 @@ import { colour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { productIconArt } from '../../families/art/provider.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
-import { inHourRanges, type HourRanges } from '../../families/holders.ts';
+import { inHourRanges, withoutHourRanges, type HourRanges } from '../../families/holders.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { clipSpansToHour, countryLook, inHourSpans, nextBoundaryAfter, spanStart, timelineModel } from '../../families/timeline/helpers.ts';
@@ -125,7 +125,8 @@ function projectLane(readView: BoundedReadView, sourceKey: string, reply: Specia
   const info = reply.presentations[latest.presentation]!;
   const icon = productIconArt(readView, info.icon, info.iconMissing);
   const fill = colour(options.surface, ordinal);
-  const ranges = options.membership?.[sourceKey] ?? options.membership?.[reply.tag];
+  const listed = options.membership?.[sourceKey] ?? options.membership?.[reply.tag];
+  const ranges = listed && withoutHourRanges(listed, options.unobserved);
   const stretches: [number, number, boolean, number, number][] = [];
   for (const status of project.statuses) {
     if (status.firstHour > hour) break;

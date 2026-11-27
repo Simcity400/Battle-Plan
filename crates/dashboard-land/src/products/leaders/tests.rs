@@ -1065,7 +1065,7 @@ fn top_general_follows_recorded_faction_membership() {
 }
 
 #[test]
-fn group_leader_choices_follow_member_slots_through_a_rename_and_mark_a_roster_gap() {
+fn group_leader_choices_follow_member_slots_through_a_rename_over_observed_service_and_mark_a_roster_gap() {
     use super::career::{LeaderChoices, LeaderChoicesParams};
     use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures::{CAMPAIGN, ownership_frame, snapshot_records}};
     use dashboard_world::products::group_members::UNKNOWN;
@@ -1075,7 +1075,7 @@ fn group_leader_choices_follow_member_slots_through_a_rename_and_mark_a_roster_g
     use std::sync::{Arc, atomic::AtomicBool};
 
     let leader = |id, owner| UnitLeaderRow { id, owner, skill_valid: 1, kind: KIND_ARMY, ..Default::default() };
-    let (home, renamed, unrelated, unread) = (leader(1, 9001), leader(2, 44), leader(3, 66), leader(4, 55));
+    let (home, renamed, unrelated, unread, away) = (leader(1, 9001), leader(2, 44), leader(3, 66), leader(4, 9001), leader(5, 44));
     let frames: Vec<_> = (150..=255).map(|hour| {
         let mut frame = ownership_frame(1, hour, 9001);
         if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
@@ -1089,7 +1089,7 @@ fn group_leader_choices_follow_member_slots_through_a_rename_and_mark_a_roster_g
         }
         let mut members = vec![FactionMemberRow { faction: 9, country: 9001, ordinal: 0 }];
         if (200..=250).contains(&hour) {
-            members.push(FactionMemberRow { faction: 9, country: 44, ordinal: 1 });
+            members.insert(0, FactionMemberRow { faction: 9, country: 44, ordinal: 1 });
         }
         *frame.tables[TableId::FactionMembers.index()] = if hour == 253 {
             TableView::Unavailable { reason: "roster unavailable".into() }
@@ -1103,6 +1103,8 @@ fn group_leader_choices_follow_member_slots_through_a_rename_and_mark_a_roster_g
         let mut leaders = vec![home.clone(), renamed.clone()];
         if hour <= 210 { leaders.push(unrelated.clone()); }
         if hour == 253 { leaders.push(unread.clone()); }
+        if hour <= 190 || hour == 255 { leaders.push(away.clone()); }
+        leaders.sort_by_key(|row| row.id);
         *frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(leaders));
         frame
     }).collect();
@@ -1111,20 +1113,28 @@ fn group_leader_choices_follow_member_slots_through_a_rename_and_mark_a_roster_g
     let source = Arc::new(Source::from_replay(SourceKey { source_id: "group-choices".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap());
     let load = LoadContext { content: None };
     let reference = |row: &UnitLeaderRow| super::handle(row).to_string();
-    let mut expected = vec![
-        (reference(&home), None, Some("GER".to_owned()), 255, None),
-        (reference(&renamed), None, Some("VIC".to_owned()), 255, None),
-        (reference(&unread), None, Some("CTL".to_owned()), 253, Some(UNKNOWN.to_owned())),
-    ];
-    expected.sort_by_key(|choice| choice.0.parse::<u64>().unwrap_or_default());
+    let group = |id: &str, membership: &str| LeaderChoicesParams {
+        branch_id: "1".into(),
+        selection: serde_json::from_value(serde_json::json!({"kind":"group","group":{"type":"faction","id":id,"membership":membership}})).unwrap(),
+    };
     for membership in ["hour", "ever"] {
-        let selection: LeaderSelection = serde_json::from_value(serde_json::json!({"kind":"group","group":{"type":"faction","id":"9","membership":membership}})).unwrap();
-        let params = LeaderChoicesParams { branch_id: "1".into(), selection };
+        let mut expected = vec![
+            (reference(&home), None, Some("GER".to_owned()), 255, None),
+            (reference(&renamed), None, Some("VIC".to_owned()), 255, None),
+            (reference(&unread), None, Some("GER".to_owned()), 253, Some(UNKNOWN.to_owned())),
+        ];
+        if membership == "ever" {
+            expected.push((reference(&away), None, Some("VIC".to_owned()), 255, Some(UNKNOWN.to_owned())));
+        }
+        expected.sort_by_key(|choice| choice.0.parse::<u64>().unwrap_or_default());
+        let params = group("9", membership);
         assert_eq!(LeaderChoices::validate(&params), Ok(()));
         let reply = LeaderChoices::load(&source, &params, &load, &cancelled).unwrap();
         assert_eq!(reply.choices, expected,
-            "{membership}: a member renamed while in the group keeps its general; the earlier holder of its new tag, never a member, does not qualify; a general seen only in a roster gap is offered as not recorded");
+            "{membership}: a member renamed while in the group keeps its general; the earlier holder of its new tag, never a member, does not qualify;              a general of a member seen only in a roster gap is not recorded, never a confirmed member; a general absent while its country was a member does not qualify");
     }
+    let absent = LeaderChoices::load(&source, &group("8", "hour"), &load, &cancelled).unwrap_err();
+    assert!(dashboard_core::refusal(&absent).is_some(), "a faction absent from the branch is refused once, never every general marked not recorded: {absent}");
 }
 
 #[test]

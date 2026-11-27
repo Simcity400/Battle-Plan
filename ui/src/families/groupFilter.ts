@@ -4,7 +4,7 @@ import type { CountrySelection, GroupMembership } from '../dashboard/model';
 import { NO_MEMBERS } from '../dashboard/noMembers.ts';
 import type { CountryGroupReply, CountryIdentityHistory, MembershipRun } from '../generated/dashboard';
 import type { FamilyBodyStatus } from './plan.ts';
-import { inHourRanges, nextMembershipChange, nextRangesChange, type HourRanges } from './holders.ts';
+import { inHourRanges, nextMembershipChange, nextRangesChange, withoutHourRanges, type HourRanges } from './holders.ts';
 
 export const GROUP_UNAVAILABLE = 'Group membership is unavailable at this time.';
 const MEMBERS_UNAVAILABLE = 'Group members are unavailable at this time.';
@@ -361,7 +361,8 @@ export function groupSpanCover(selection: CountrySelection, groups: CountryGroup
   if (!runs) return null;
   const raw = groupUnobserved(groups, selection.group);
   if (selection.membership === 'hour') {
-    return { members: runs.map(run => [run.firstHour, run.lastHour] as const), unobserved: raw.map(span => [span.firstHour, span.lastHour] as const) };
+    const unobserved = mergedRanges(raw.map(span => [span.firstHour, span.lastHour] as const));
+    return { members: withoutHourRanges(runs.map(run => [run.firstHour, run.lastHour] as const), unobserved), unobserved };
   }
   const unknownFrom = everKnownBefore(raw);
   let firstJoin = Infinity;
@@ -386,8 +387,10 @@ export function groupSpanStateAt(cover: GroupSpanCover, first: number, hour: num
   return { kind: 'empty', from: -Infinity, until: Math.min(member, unread) - 1 };
 }
 
-export function groupSpanBodyStatus(kind: GroupSpanState['kind'] | null, selection: CountrySelection, startsLater: boolean): FamilyBodyStatus | null {
+export function groupSpanBodyStatus(kind: GroupSpanState['kind'] | null, cover: GroupSpanCover | null, selection: CountrySelection, startsLater: boolean): FamilyBodyStatus | null {
+  if (!cover) return null;
   if (kind === 'unrecorded') return { kind: 'not-recorded', reason: selection.kind === 'group' && selection.membership === 'ever' ? EVER_UNRECORDED : GROUP_UNAVAILABLE };
-  if (kind === 'empty') return { kind: 'no-members', reason: startsLater ? NO_MEMBERS.span : NO_MEMBERS.yet };
-  return null;
+  if (kind !== 'empty') return null;
+  if (!cover.members.length && !cover.unobserved.length) return { kind: 'no-members', reason: NO_MEMBERS.ever };
+  return { kind: 'no-members', reason: startsLater ? NO_MEMBERS.span : NO_MEMBERS.yet };
 }

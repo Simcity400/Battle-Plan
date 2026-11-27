@@ -2396,10 +2396,10 @@ test('history content is admitted by membership over the hours it covers, never 
   assert.equal(worldFilter(selection, [], groups, 1000).reason, NO_MEMBERS.hour, 'at the range end the member has already left');
   const range = groupSpanStateAt(cover, 0, 1000);
   assert.equal(range.kind, 'members', 'a member that joins and leaves inside the range keeps its history shown');
-  assert.equal(groupSpanBodyStatus(range.kind, selection, false), null);
+  assert.equal(groupSpanBodyStatus(range.kind, cover, selection, false), null);
   const after = groupSpanStateAt(cover, 500, 1000);
-  assert.deepEqual(groupSpanBodyStatus(after.kind, selection, true), { kind: 'no-members', reason: NO_MEMBERS.span }, 'a range after it left has no member');
-  assert.deepEqual(groupSpanBodyStatus(groupSpanStateAt(cover, 0, 150).kind, selection, false), { kind: 'no-members', reason: NO_MEMBERS.yet });
+  assert.deepEqual(groupSpanBodyStatus(after.kind, cover, selection, true), { kind: 'no-members', reason: NO_MEMBERS.span }, 'a range after it left has no member');
+  assert.deepEqual(groupSpanBodyStatus(groupSpanStateAt(cover, 0, 150).kind, cover, selection, false), { kind: 'no-members', reason: NO_MEMBERS.yet });
   assert.deepEqual([groupSpanStateAt(cover, 0, 100), groupSpanStateAt(cover, 0, 200)], [
     { kind: 'empty', from: -Infinity, until: 199 },
     { kind: 'members', from: 200, until: Infinity },
@@ -2410,12 +2410,26 @@ test('history content is admitted by membership over the hours it covers, never 
   const everCover = groupSpanCover(ever, gapped)!;
   assert.equal(everStateAt(everBounds(ever, gapped)!, 1000).kind, 'unrecorded', 'at one hour past the gap members so far are unknown');
   assert.equal(groupSpanStateAt(everCover, 0, 1000).kind, 'members', 'history before the gap stays shown');
-  assert.deepEqual(groupSpanBodyStatus(groupSpanStateAt(everCover, 900, 1000).kind, ever, true), { kind: 'not-recorded', reason: EVER_UNRECORDED });
+  assert.deepEqual(groupSpanBodyStatus(groupSpanStateAt(everCover, 900, 1000).kind, everCover, ever, true), { kind: 'not-recorded', reason: EVER_UNRECORDED });
 
-  const unread = groupSpanCover(selection, everFaction([{ firstHour: 500, lastHour: 550 }], []))!;
-  assert.deepEqual(groupSpanStateAt(unread, 0, 1000), { kind: 'unrecorded', from: 500, until: Infinity });
-  assert.deepEqual(groupSpanBodyStatus('unrecorded', selection, false), { kind: 'not-recorded', reason: GROUP_UNAVAILABLE });
+  const empty = everFaction([{ firstHour: 500, lastHour: 550 }], []);
+  assert.equal(resolveCountries(selection, [], empty, 1000, Number.MAX_SAFE_INTEGER).reason, 'Group membership is incomplete for this campaign.', 'the campaign-wide reason the dated state comes before');
+  const unread = groupSpanCover(selection, empty)!;
+  assert.deepEqual([groupSpanStateAt(unread, 0, 400), groupSpanStateAt(unread, 0, 1000)], [
+    { kind: 'empty', from: -Infinity, until: 499 },
+    { kind: 'unrecorded', from: 500, until: Infinity },
+  ]);
+  assert.deepEqual([groupSpanBodyStatus('empty', unread, selection, false), groupSpanBodyStatus('unrecorded', unread, selection, false)], [
+    { kind: 'no-members', reason: NO_MEMBERS.yet },
+    { kind: 'not-recorded', reason: GROUP_UNAVAILABLE },
+  ], 'before the gap no member was observed; from it membership is not recorded');
+  const never = groupSpanCover(selection, everFaction([], []))!;
+  assert.deepEqual(groupSpanBodyStatus(groupSpanStateAt(never, 0, 1000).kind, never, selection, false), { kind: 'no-members', reason: NO_MEMBERS.ever });
+  const bridged = groupSpanCover(selection, everFaction([{ firstHour: 10, lastHour: 10 }], [{ tag: 'AAA', firstHour: 9, lastHour: 11 }]))!;
+  assert.deepEqual([groupSpanStateAt(bridged, 10, 10).kind, groupSpanStateAt(bridged, 10, 11).kind], ['unrecorded', 'members'],
+    'a member run joined across an unread hour is no evidence inside it');
   assert.equal(groupSpanCover({ kind: 'group', group: { type: 'top', count: 3 }, membership: 'hour', aggregate: false }, groups), null, 'a ranked group has no membership to admit by');
+  assert.equal(groupSpanBodyStatus('empty', null, selection, false), null);
 });
 
 test('points keyboard navigation supports async next-change focus without activating, activates off-nav plot hours on Enter, and drops stale replies', () => {

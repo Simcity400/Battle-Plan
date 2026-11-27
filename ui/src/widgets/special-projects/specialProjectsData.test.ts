@@ -188,7 +188,7 @@ test('History marks a group roster gap as not recorded: bars cut by it have unce
       statuses: [{ firstHour: 10, lastHour: 200, readHour: 10, presentation: 0, progress: 30, state: 'running', iterations: null, scientistRead: null, lastScientistRead: null }] }],
   };
   const panels = new Map<string, unknown>([['projects:AAA', reply]]);
-  const options = { tags: ['AAA'], membership: { AAA: [[0, 49], [80, 300]] as const }, unobserved: [[50, 79]] as const, firstHour: 0, branchFirstHour: 0, surface: '#111111' };
+  const options = { tags: ['AAA'], membership: { AAA: [[0, 300]] as const }, unobserved: [[50, 79]] as const, firstHour: 0, branchFirstHour: 0, surface: '#111111' };
   const view = createBoundedReadView({ hour: 100, panels });
   const model = specialProjectsHistoryProjection.project(view, options);
   const lane = model.lanes[0]!;

@@ -1301,6 +1301,9 @@ impl Product for LeaderChoices {
             LeaderSelection::Group { group } => Some(super::membership::Roster::load(source, &query, load, group, cancelled)?),
             _ => None,
         };
+        if let Some(reason) = roster.as_deref().and_then(super::membership::Roster::refused) {
+            return Err(dashboard_core::refused(reason));
+        }
         let content = Content::load(source, load);
         let names = Names::new(&query.holders);
         let recording = query.replay.recording();
@@ -1315,9 +1318,14 @@ impl Product for LeaderChoices {
                 let hour = end.min(i64::from(stretch.last));
                 if first <= i64::from(stretch.last) && hour >= i64::from(stretch.first) {
                     last.insert(key, (stretch.run, hour as i32));
-                    if roster.is_some() {
-                        lives.entry(key).or_default().push((first.max(i64::from(stretch.first)) as i32, hour as i32));
-                    }
+                }
+            }
+            if roster.is_some() {
+                let (from, to) = (i64::from(stretch.first), i64::from(stretch.last));
+                let found = dashboard_query::cost::storage(|| replay_lanes::lanes::presences(recording, stretch.run, TableId::UnitLeaders, (0, u128::MAX), from, to))?;
+                for (key, spans) in found {
+                    let held = lives.entry(key).or_default();
+                    held.extend(spans.into_iter().filter(|&(a, b)| a <= to && b >= from).map(|(a, b)| (a.max(from) as i32, b.min(to) as i32)));
                 }
             }
         }
@@ -1363,14 +1371,13 @@ impl Product for LeaderChoices {
                 {
                     continue;
                 }
-                let missing = match (roster.as_deref(), slot) {
-                    (None, _) => None,
-                    (Some(roster), Some(slot)) => match roster.served(slot, lives.get(&key).map(Vec::as_slice).unwrap_or_default()) {
+                let missing = match roster.as_deref() {
+                    None => None,
+                    Some(roster) => match roster.served(slot, lives.get(&key).map(Vec::as_slice).unwrap_or_default()) {
                         Served::Member => None,
                         Served::Unknown(reason) => Some(reason.to_owned()),
                         Served::Never => continue,
                     },
-                    (Some(_), None) => continue,
                 };
                 choices.push((key.to_string(), named.get(&(hour, character)).cloned(), tag, hour, missing));
             }

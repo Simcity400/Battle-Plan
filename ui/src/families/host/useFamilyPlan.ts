@@ -1096,8 +1096,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, [spanCover, spanFirst, following, active, runtime.clock, trackOffset, moment]);
   const spanKind = useSyncExternalStore(spanClock.subscribe, spanClock.read, spanClock.read);
   const spanBody = useMemo(
-    () => groupSpanBodyStatus(spanKind, widget.countries, spanFirst > firstHour),
-    [spanKind, widget.countries, spanFirst, firstHour],
+    () => groupSpanBodyStatus(spanKind, spanCover, widget.countries, spanFirst > firstHour),
+    [spanKind, spanCover, widget.countries, spanFirst, firstHour],
   );
 
   const everDates = useMemo(() => ((isMulti || isFilter) && !history ? everBounds(widget.countries, groups.data) : null), [isMulti, isFilter, history, widget.countries, groups.data]);
@@ -1178,15 +1178,15 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return compiledFollow.refused ? { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused } : null;
   })();
   const outcome = ((): FamilyBodyStatus | null => {
+    if (history && spanBody) return spanBody;
     if (isFilter) {
       if (filterMatch?.reason) return { kind: 'refused', reason: filterMatch.reason };
       if (countriesState.reason) return { kind: 'refused', reason: countriesState.reason };
-      if (spanBody ?? everBody) return spanBody ?? everBody;
+      if (everBody) return everBody;
     }
 
     if (isMulti && history) {
       if (countriesState.reason) return { kind: 'empty', message: countriesState.reason };
-      if (spanBody) return spanBody;
     } else if (isMulti) {
       if (incompleteBody) return incompleteBody;
       if (countriesState.reason) return { kind: 'empty', message: countriesState.reason };

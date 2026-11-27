@@ -14,6 +14,7 @@ pub(super) enum Served<'a> {
 
 #[derive(Default)]
 pub(super) struct Roster {
+    refused: Option<String>,
     slots: HashMap<u32, Vec<HourSpan>>,
     unknown: Vec<MissingSpan>,
     edges: Vec<i32>,
@@ -37,6 +38,7 @@ impl Roster {
             Ok(Some(selection)) => selection,
             Err(ref error) if let Some(reason) = dashboard_core::refusal(error) => {
                 roster.unknown.push(MissingSpan { first_hour: first, last_hour: last, reason: reason.to_owned() });
+                roster.refused = Some(reason.to_owned());
                 return Ok(roster);
             }
             Err(error) => return Err(error),
@@ -85,14 +87,33 @@ impl Roster {
         Ok(roster)
     }
 
-    pub(super) fn served(&self, slot: u32, life: &[(i32, i32)]) -> Served<'_> {
-        let spans = self.slots.get(&slot).map(Vec::as_slice).unwrap_or_default();
-        if life.iter().any(|&(first, last)| spans.get(spans.partition_point(|span| span.last_hour < first)).is_some_and(|span| span.first_hour <= last)) {
-            return Served::Member;
+    pub(super) fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
+    }
+
+    pub(super) fn served(&self, slot: Option<u32>, life: &[(i32, i32)]) -> Served<'_> {
+        let spans = slot.and_then(|slot| self.slots.get(&slot)).map(Vec::as_slice).unwrap_or_default();
+        for &(first, last) in life {
+            for span in spans[spans.partition_point(|span| span.last_hour < first)..].iter().take_while(|span| span.first_hour <= last) {
+                if self.observed_within(span.first_hour.max(first), span.last_hour.min(last)) {
+                    return Served::Member;
+                }
+            }
         }
         life.iter()
             .find_map(|&(first, last)| self.unknown.get(self.unknown.partition_point(|gap| gap.last_hour < first)).filter(|gap| gap.first_hour <= last))
             .map_or(Served::Never, |gap| Served::Unknown(&gap.reason))
+    }
+
+    fn observed_within(&self, first: i32, last: i32) -> bool {
+        let mut at = i64::from(first);
+        for gap in self.unknown[self.unknown.partition_point(|gap| gap.last_hour < first)..].iter().take_while(|gap| gap.first_hour <= last) {
+            if i64::from(gap.first_hour) > at {
+                return true;
+            }
+            at = at.max(i64::from(gap.last_hour) + 1);
+        }
+        at <= i64::from(last)
     }
 
     pub(super) fn includes(&self, slot: u32, hour: i32) -> bool {
