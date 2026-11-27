@@ -565,7 +565,7 @@ fn ends_through(frame: &DecodedFrame, ends: &BTreeSet<TableId>) -> i32 {
     through
 }
 
-fn world_valid_through(frame: &DecodedFrame, world: &WorldReads) -> i32 {
+pub(super) fn world_valid_through(frame: &DecodedFrame, world: &WorldReads) -> i32 {
     if world.undeclared {
         return frame.hour;
     }

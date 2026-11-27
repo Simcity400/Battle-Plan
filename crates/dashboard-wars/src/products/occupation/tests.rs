@@ -157,11 +157,12 @@ mod reply {
         let live = Cells::default();
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let at = dashboard_base::products::at_hour::At { owner: None, holders: &holders, hour: 500, context: &learning, cancelled: &cancelled, live: &live };
-        assert_eq!(states::OccupiedStates::valid_through(&timed, &params, &at), 511, "a timed war relation holds until the hour before it ends");
+        assert_eq!(states::world_valid_through(&timed, &learning.world.lock().unwrap()), 511, "a timed war relation holds until the hour before it ends");
+        assert_eq!(states::OccupiedStates::valid_through(&timed, &params, &at), 500, "an unsettled judgement expires after the hour");
         learning.world.lock().unwrap().ends.clear();
         learning.world.lock().unwrap().undeclared = true;
         assert_eq!(projected(TableId::States, &world), None, "a read declaring nothing reads every field");
-        assert_eq!(states::OccupiedStates::valid_through(&timed, &params, &at), 500, "an undeclared read expires after the hour");
+        assert_eq!(states::world_valid_through(&timed, &learning.world.lock().unwrap()), 500, "an undeclared read expires after the hour");
         let mut moved = frame();
         fn held(frame: &mut DecodedFrame, table: TableId) -> &mut TableRows {
             match &mut *frame.tables[table.index()] { TableView::Complete(rows) => rows, _ => unreachable!() }
