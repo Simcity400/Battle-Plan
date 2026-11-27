@@ -79,6 +79,48 @@ fn recording() -> Source {
     Source::from_replay(dashboard_base::SourceKey { source_id: "politics".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
+#[test]
+fn exile_playback_recomputes_for_host_edits_and_matches_the_exact_reply() {
+    use dashboard_base::{products::{LoadContext, at_hour::exact_panel}, test_fixtures::{played, records, streamed}};
+    use replay_data::rows::CountryStabilityInputRow;
+    use serde_json::json;
+
+    let frames = (FIRST..=LAST).map(|hour| {
+        let mut frame = frame(hour);
+        set(&mut frame, TableId::CountryStabilityInputs, TableRows::CountryStabilityInputs(vec![
+            CountryStabilityInputRow {
+                country: GER,
+                stability_raw: i64::from(hour >= 105),
+                exile_host: Recorded::Value((hour >= 110).then_some(ENG as i32)),
+                exile_legitimacy: Recorded::Value(Some(700)),
+                keys: vec![u32::MAX; CountryStabilityInputRow::KEY_NAMES.len()],
+                ..Default::default()
+            }
+        ]));
+        if (115..117).contains(&hour) {
+            *frame.tables[TableId::CountryStabilityInputs.index()] = TableView::Unavailable { reason: "stability input unavailable".into() };
+        }
+        frame
+    }).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "exile-playback".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+    let panel = exact_panel::<state::PoliticsState>(&source, &LoadContext { content: None }, &json!({"branchId":"1", "view":"exiles"})).unwrap();
+    let exact = panel.exact().unwrap();
+    let token = AtomicBool::new(false);
+    let reads = played(source.replay_ref(), exact, FIRST, LAST);
+    let at = |hour| reads.iter().find(|read| read.hour == hour).unwrap();
+    assert_eq!(at(105).product_calls, 0, "stability is outside the exile reply");
+    assert_eq!(at(110).product_calls, 1, "the host edit adds an exile");
+    assert_eq!(at(110).value.as_ref().as_ref().unwrap()["exiles"][0]["host"], "ENG");
+    for read in reads {
+        let cold = (exact.cold)(read.hour, &token);
+        let stepped = streamed(&read.value, read.fresh);
+        assert_eq!(serde_json::to_vec(&stepped).unwrap(), serde_json::to_vec(&streamed(&cold, read.fresh)).unwrap(), "step at {}", read.hour);
+        let exact_stepped = (exact.advance)(read.hour, true, &token, None);
+        assert_eq!(serde_json::to_vec(&*exact_stepped.value).unwrap(), serde_json::to_vec(&cold).unwrap(), "live cells at {}", read.hour);
+    }
+}
+
 fn run(first: i32, last: i32, value: impl ToString) -> PoliticsRun {
     PoliticsRun { first_hour: first, last_hour: last, value: value.to_string() }
 }
