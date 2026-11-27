@@ -273,12 +273,12 @@ const REPAIR_COLS: [usize; 5] = [col::REPAIR_LEVELS, col::ADDED_REPAIR, col::UNA
 fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32) -> io::Result<ReasonSteps> {
     let columns = [
         col::OUTPUT_ALONE, col::COUNTRY, col::BUILDING_TYPE, col::REMAINING, col::REPAIR_LEVELS, col::BUILT, col::REPAIRED, col::ADDED_NEW, col::ADDED_REPAIR, col::POSSIBLE,
-        col::UNACCOUNTED_NEW, col::UNACCOUNTED_REPAIR, col::CONSTRUCTION_RAW, col::REPAIR_RAW, col::OUTPUT_SINCE, col::OBSERVED_SINCE_CREATION, col::OUTPUT_REASON, col::FIRST_REPAIR_TICK,
+        col::UNACCOUNTED_NEW, col::UNACCOUNTED_REPAIR, col::END, col::CONSTRUCTION_RAW, col::REPAIR_RAW, col::OUTPUT_SINCE, col::OBSERVED_SINCE_CREATION, col::OUTPUT_REASON, col::FIRST_REPAIR_TICK,
     ];
     let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(query.replay.recording(), run, TableId::ConstructionProjects, &columns, Keys::These(ids), first, last))?;
     let at = |column: usize| history.columns.binary_search(&column).map_err(|_| dashboard_core::invalid("A construction project column was not read"));
-    let (alone, owner, btype, reason, since, obs, repair, rem, rep_lvl) = (
-        at(col::OUTPUT_ALONE)?, at(col::COUNTRY)?, at(col::BUILDING_TYPE)?, at(col::OUTPUT_REASON)?, at(col::OUTPUT_SINCE)?,
+    let (alone, owner, btype, ended, reason, since, obs, repair, rem, rep_lvl) = (
+        at(col::OUTPUT_ALONE)?, at(col::COUNTRY)?, at(col::BUILDING_TYPE)?, at(col::END)?, at(col::OUTPUT_REASON)?, at(col::OUTPUT_SINCE)?,
         at(col::OBSERVED_SINCE_CREATION)?, at(col::FIRST_REPAIR_TICK)?, at(col::REMAINING)?, at(col::REPAIR_LEVELS)?,
     );
     let new_at = NEW_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
@@ -286,11 +286,16 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
     let number = |cells: &[Cell], at: usize| match cells.get(at) { Some(Cell::Number(value)) => Some(*value), _ => None };
     let unknown_owner = replay_data::rows::ConstructionProjectRow::OUTPUT_OWNER_UNKNOWN;
     let unread_output = replay_data::rows::ConstructionProjectRow::OUTPUT_NOT_RECORDED;
+    let open = i64::from(replay_data::rows::ConstructionProjectRow::OPEN);
     let mut out = ReasonSteps::new();
     for (key, steps) in &history.keys {
         let held = out.entry(*key as u64).or_default();
-        let (mut prev_new, mut prev_repair, mut repairs_cleared) = ([0_i64; NEW_COLS.len()], [0_i64; REPAIR_COLS.len()], false);
+        let (mut prev_new, mut prev_repair, mut repairs_cleared, mut pending_new) = ([0_i64; NEW_COLS.len()], [0_i64; REPAIR_COLS.len()], false, None);
         for step in steps {
+            if let Some(at) = pending_new.take() && at < step.hour {
+                if held.purpose.last().is_none_or(|&(_, prev)| prev) { held.purpose.push((at, false)); }
+                repairs_cleared = false;
+            }
             let Some(cells) = step.cells.as_deref() else { continue };
             let building = number(cells, btype).and_then(|v| u32::try_from(v).ok());
             if held.buildings.last().is_none_or(|&(_, prev)| prev != building) { held.buildings.push((step.hour, building)); }
@@ -316,16 +321,18 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
             let mut new_grew = false;
             for (slot, &column) in new_at.iter().enumerate() {
                 if let Some(value) = number(cells, column) {
-                    if value > 0 && held.first_new.is_none() { held.first_new = Some(step.hour); }
-                    if slot >= 4 && value > prev_new[slot] { new_grew = true; }
+                    let raw = slot == 5;
+                    if (if raw { value != 0 } else { value > 0 }) && held.first_new.is_none() { held.first_new = Some(step.hour); }
+                    if (slot == 4 && value > prev_new[slot]) || (raw && value != prev_new[slot]) { new_grew = true; }
                     prev_new[slot] = value;
                 }
             }
             let mut repair_grew = tick == Some(step.hour);
             for (slot, &column) in repair_at.iter().enumerate() {
                 if let Some(value) = number(cells, column) {
-                    if value > 0 && held.first_repair.is_none() { held.first_repair = Some(step.hour); }
-                    if slot >= 3 && value > prev_repair[slot] { repair_grew = true; }
+                    let raw = slot == 4;
+                    if (if raw { value != 0 } else { value > 0 }) && held.first_repair.is_none() { held.first_repair = Some(step.hour); }
+                    if (slot == 3 && value > prev_repair[slot]) || (raw && value != prev_repair[slot]) { repair_grew = true; }
                     prev_repair[slot] = value;
                 }
             }
@@ -344,6 +351,12 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
             if let Some(is_repair) = active && held.purpose.last().is_none_or(|&(_, prev)| prev != is_repair) {
                 held.purpose.push((step.hour, is_repair));
             }
+            if repairs_cleared && rem_now > 0 && number(cells, ended) == Some(open) {
+                pending_new = Some(step.hour.saturating_add(1));
+            }
+        }
+        if let Some(at) = pending_new && at <= last && held.purpose.last().is_none_or(|&(_, prev)| prev) {
+            held.purpose.push((at, false));
         }
     }
     Ok(out)
