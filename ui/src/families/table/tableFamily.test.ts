@@ -44,6 +44,8 @@ import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partia
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, glideCrossing, hasGlideCrossing, hitFamilyTable, NO_GLIDE, tableGlide } from './painter.ts';
+import { combinedPaneRows, resolvePanes } from './panes.ts';
+import { createPlanAuditVerifier } from '../host/auditBinding.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
 import { TREE_CHEVRON_LANE } from './layout.ts';
@@ -6257,4 +6259,176 @@ test('tableHostAdapter.deriveAuditRows matches the painted lane columns without 
   };
   checkAtWidth(822, ['date', 'kind', 'country', 'entry', 'place', 'status'], 'flagName', 'wide table');
   checkAtWidth(420, ['date', 'kind', 'country', 'entry', 'status'], 'flag', 'narrow table');
+});
+
+test('resolvePanes namespaces pane-local headers for paint and exact audit while still rejecting duplicates inside one pane', async () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true, minWidth: 100 },
+    { key: 'share', label: 'Share', as: 'plain', offered: ['plain'], priority: 1, numeric: true, minWidth: 80 },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'compact', barsBehind: 'off', sort: { column: 'share', direction: 'descending' } });
+  const row = (key: string, name: string, share: number, group?: { readonly key: string; readonly label: string }): TableRow => ({
+    key,
+    name,
+    ...(group ? { group } : {}),
+    cells: {
+      name: { value: knownValue(name) },
+      share: { value: knownValue(share), format: 'integer' },
+    },
+  });
+  const sharedGroup = { key: 'side', label: 'Share of the side' } as const;
+  const twoSideModel: TableModel = {
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      {
+        key: 'opposing',
+        title: { name: knownValue('Alpha') },
+        totalRow: row('total:opposing', 'Share of the war', 60),
+        rows: [row('opposing:AAA', 'Alpha', 60, sharedGroup)],
+      },
+      {
+        key: 'viewpoint',
+        title: { name: knownValue('Beta') },
+        totalRow: row('total:viewpoint', 'Share of the war', 40),
+        rows: [row('viewpoint:BBB', 'Beta', 40, sharedGroup)],
+      },
+    ],
+  };
+
+  const panes = resolvePanes(twoSideModel, settings, undefined, 'standard');
+  const paneGroupKeys = panes.map(pane => pane.rows.find(item => item.kind === 'group-header')?.key);
+  assert.deepEqual(paneGroupKeys, ['pane:opposing:group:side', 'pane:viewpoint:group:side'], 'each pane carries its own composite key for the local group header');
+  const flatRows = combinedPaneRows(panes);
+  assert.deepEqual(
+    flatRows.filter(item => item.kind === 'group-header').map(item => item.key),
+    ['pane:opposing', 'pane:opposing:group:side', 'pane:viewpoint', 'pane:viewpoint:group:side'],
+    'combinedPaneRows keeps the pane-qualified group header keys beside each pane header',
+  );
+
+  const projection = registerFamilyProjection({
+    kind: 'test-panes-audit-group-collision',
+    family: 'table',
+    project: () => twoSideModel,
+  });
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 640, height: 240, dpr: 1 });
+    const painted = lane.paint({
+      label: 'two-sided-audit',
+      binding: {
+        family: 'table' as const,
+        kind: projection.kind,
+        options: NO_OPTIONS,
+        settings,
+        sources: NO_SOURCES,
+        width: 640,
+        height: 240,
+        scrollLeft: 0,
+        scrollTop: 0,
+        theme: TEST_THEME,
+        reducedMotion: true,
+        audit: true,
+        auditId: 1,
+      },
+      hour: 100,
+      speed: 0,
+      seek: 1,
+    });
+    const verifier = createPlanAuditVerifier<TableModel, Record<string, never>>();
+    const exact = await verifier(100, {
+      projection,
+      options: NO_OPTIONS,
+      exactReadView: async hour => createBoundedReadView({ hour }),
+      deriveRows: (model, hour, fields) => tableHostAdapter.deriveAuditRows!(model, hour, {
+        settings,
+        expanded: {},
+        viewport: { width: 640, height: 240, scrollLeft: 0, scrollTop: 0, dpr: 1, zoomWindow: null },
+        theme: TEST_THEME,
+        fields: fields ?? {},
+      }),
+    }, 1, Object.fromEntries(Object.entries(painted.fields).map(([k, v]) => [k, v.value])));
+    assert.ok(exact, 'verifier returns an exact map for two panes with the same local group key');
+    assert.ok(exact.values.has('pane:opposing:group:side:group'));
+    assert.ok(exact.values.has('pane:viewpoint:group:side:group'));
+    const auditField = painted.fields.audit?.value as { readonly rows: readonly { readonly row: string; readonly key: string; readonly value?: string }[] } | undefined;
+    assert.ok(auditField, 'painted picture emits audit rows');
+    assert.equal(pictureError('table', auditField.rows, exact), null, 'painted audit matches exact verifier output');
+  } finally {
+    recording.restore();
+  }
+
+  const colonPanes = resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      { key: 'a', title: { name: knownValue('A') }, rows: [row('a:1', 'One', 1, { key: 'b', label: 'B' })] },
+      { key: 'a:group:b', title: { name: knownValue('AB') }, rows: [row('ab:1', 'Two', 2)] },
+    ],
+  }, settings, undefined, 'standard');
+  const colonKeys = combinedPaneRows(colonPanes).filter(item => item.kind === 'group-header').map(item => item.key);
+  assert.equal(new Set(colonKeys).size, colonKeys.length, 'pane keys containing colons never collide with pane-local row keys');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [{
+      key: 'left',
+      title: { name: knownValue('Left') },
+      rows: [row('left:A', 'A1', 10, sharedGroup), row('left:A', 'A2', 5, sharedGroup)],
+    }],
+  }, settings, undefined, 'standard'), /duplicate row key left:A/, 'duplicate data row inside one pane is rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    slots: [
+      { kind: 'loading', key: 'loading:0' },
+      { kind: 'loading', key: 'loading:0' },
+    ],
+    panes: [{
+      key: 'left',
+      title: { name: knownValue('Left') },
+      rows: [],
+    }],
+  }, settings, undefined, 'standard'), /duplicate row key loading:0/, 'duplicate loading slot inside one pane is rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    slots: [
+      { kind: 'data', row: row('x', 'Alpha', 10) },
+      { kind: 'refused', key: 'x', reason: 'Not recorded' },
+    ],
+    panes: [{
+      key: 'left',
+      title: { name: knownValue('Left') },
+      rows: [],
+    }],
+  }, settings, undefined, 'standard'), /duplicate row key x/, 'mixed-kind duplicate local key inside one pane is rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      { key: 'left', title: { name: knownValue('Left') }, rows: [row('shared', 'A', 10)] },
+      { key: 'right', title: { name: knownValue('Right') }, rows: [row('shared', 'B', 5)] },
+    ],
+  }, settings, undefined, 'standard'), /already in another pane/, 'duplicate data row across panes is still rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      { key: 'same', title: { name: knownValue('One') }, rows: [row('one:A', 'A', 10)] },
+      { key: 'same', title: { name: knownValue('Two') }, rows: [row('two:B', 'B', 5)] },
+    ],
+  }, settings, undefined, 'standard'), /duplicate pane key/, 'duplicate pane key across panes is rejected');
 });
