@@ -1146,7 +1146,7 @@ impl Engine {
             let head = lanes.get(table).and_then(Lane::head);
             for &query in &index.standing {
                 let followed = self.slab[query].as_mut().expect("a followed list");
-                if followed.late.is_some_and(|late| late < sent) {
+                if followed.reading.is_none() && followed.late.is_some_and(|late| late < sent) {
                     mark(&mut self.slab, &mut self.marked, query);
                     continue;
                 }

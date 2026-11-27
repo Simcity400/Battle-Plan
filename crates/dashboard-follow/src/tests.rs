@@ -190,10 +190,10 @@ fn harness(pages: &Arc<Recording>) -> Harness {
 }
 
 fn stepping(pages: &Arc<Recording>, every: Hour) -> Harness {
-    stepping_with(pages, every, Playhead::log_reads)
+    stepping_with(pages, every, Timeline::whole(&**pages).unwrap(), Playhead::log_reads)
 }
 
-fn stepping_with(pages: &Arc<Recording>, every: Hour, logs: impl FnOnce(&Playhead) -> LogReads) -> Harness {
+fn stepping_with(pages: &Arc<Recording>, every: Hour, timeline: Timeline, logs: impl FnOnce(&Playhead) -> LogReads) -> Harness {
     let follow = Follow::new(0);
     let (send, played) = mpsc::channel();
     let heads = Arc::new(Mutex::new((0, 0)));
@@ -212,7 +212,7 @@ fn stepping_with(pages: &Arc<Recording>, every: Hour, logs: impl FnOnce(&Playhea
         inner(step, lanes);
     });
     let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: RING, speed: f64::from(every), rate: 1.0, ..Settings::default() };
-    let playhead = Arc::new(Playhead::new(Arc::clone(pages) as Arc<dyn Pages>, Timeline::whole(&**pages).unwrap(), settings, Some(hook)).unwrap());
+    let playhead = Arc::new(Playhead::new(Arc::clone(pages) as Arc<dyn Pages>, timeline, settings, Some(hook)).unwrap());
     let reader = playhead.declare(Vec::new(), None).unwrap();
     let consumer = playhead.consumer(reader);
     let weak = Arc::downgrade(&playhead);
@@ -1427,7 +1427,7 @@ fn a_listed_read_that_lands_after_read_ahead_answers_the_hour_it_was_asked_for()
     let (columns, fewer) = (vec![0, 1, 2], vec![0, 2]);
     let (listed, listed_fewer) = (listed_at(&pages, &columns), listed_at(&pages, &fewer));
     let reads = held_reads(&pages);
-    let mut harness = stepping_with(&pages, 1, |_| reads.rows.log_reads());
+    let mut harness = stepping_with(&pages, 1, Timeline::whole(&*pages).unwrap(), |_| reads.rows.log_reads());
     reads.gate.close();
     harness.follow.follow(2, Query::Cells { table: TABLE, columns: columns.clone(), rows: Rows::Listed }).unwrap();
     harness.seek(ASKED);
@@ -1483,6 +1483,43 @@ fn a_listed_read_that_lands_after_read_ahead_answers_the_hour_it_was_asked_for()
 }
 
 #[test]
+fn a_list_read_again_at_a_new_piece_after_a_late_answer_answers_that_piece() {
+    const ASKED: Hour = 300;
+    const ENTERED: Hour = 305;
+    let pages = record_log();
+    let columns = vec![0, 1, 2];
+    let listed = listed_at(&pages, &columns);
+    let reads = held_reads(&pages);
+    let pieces = vec![playhead::Piece { run: 0, first: 0, last: ENTERED - 2 }, playhead::Piece { run: 0, first: ENTERED, last: HOURS as Hour - 1 }];
+    let mut harness = stepping_with(&pages, 1, Timeline::new(&*pages, pieces).unwrap(), |_| reads.rows.log_reads());
+    reads.gate.close();
+    harness.follow.follow(2, Query::Cells { table: TABLE, columns: columns.clone(), rows: Rows::Listed }).unwrap();
+    harness.seek(ASKED);
+    let mut played = since_the_reset(harness.play(ASKED));
+    reads.gate.wait_entered(1);
+    while played.last().is_none_or(|played| played.stats.last < ENTERED - 2) {
+        played.push(harness.played.recv().unwrap());
+    }
+    reads.gate.open_one();
+    let late = loop {
+        let next = harness.played.recv().unwrap();
+        if let Some((_, hour, _)) = next.answers().into_iter().find(|(id, ..)| *id == 2) {
+            break (hour, next.stats.last);
+        }
+    };
+    assert_eq!(late, (ASKED, ENTERED - 2), "the first piece's last hour carries the late answer");
+    played = harness.play(ENTERED + 2);
+    assert!(played.iter().any(|played| played.stats.gap), "the gap between the pieces");
+    reads.gate.wait_entered(2);
+    assert!(played.iter().flat_map(Played::answers).all(|(id, hour, _)| id != 2 || hour < ENTERED), "the new piece's list waits for its rows");
+    reads.gate.open();
+    let next = harness.played.recv().unwrap();
+    let answers = next.answers();
+    let Some((_, hour, answer)) = answers.iter().find(|(id, ..)| *id == 2) else { panic!("the rows read at the new piece answer it: {answers:?}") };
+    assert_eq!((*hour, held_rows(answer)), (ENTERED, listed(ENTERED)));
+}
+
+#[test]
 fn a_listed_read_held_across_a_seek_or_an_unfollow_answers_only_what_is_asked_now() {
     const FIRST: Hour = 300;
     const SOUGHT: Hour = 900;
@@ -1490,7 +1527,7 @@ fn a_listed_read_held_across_a_seek_or_an_unfollow_answers_only_what_is_asked_no
     let columns = vec![0, 1, 2];
     let listed = listed_at(&pages, &columns);
     let reads = held_reads(&pages);
-    let mut harness = stepping_with(&pages, 1, |_| reads.rows.log_reads());
+    let mut harness = stepping_with(&pages, 1, Timeline::whole(&*pages).unwrap(), |_| reads.rows.log_reads());
     reads.gate.close();
     for id in [2, 3] {
         harness.follow.follow(id, Query::Cells { table: TABLE, columns: columns.clone(), rows: Rows::Listed }).unwrap();
