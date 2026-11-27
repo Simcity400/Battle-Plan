@@ -586,8 +586,16 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
                 live_gaps.extend_from_slice(&gaps[start..]);
             }
         }
+        let battles = history(TableId::NavalBattles, &[0, 3, 4, 5, 6])?;
+        let results = history(TableId::NavalResults, &[0, 1, 4, 8])?;
+        let has_live = !battles.keys.is_empty();
+        let has_results = !results.keys.is_empty();
+        if !has_live && !has_results {
+            continue;
+        }
         let links = queries::links(source, span.run)?;
-        let participants = history(TableId::NavalCombatParticipants, &[0, 1, dashboard_declare::field(TableId::NavalCombatParticipants, "state")?])?;
+        let ancillary = |needed, table, columns: &[usize]| if needed { history(table, columns) } else { Ok(History::default()) };
+        let participants = ancillary(has_live, TableId::NavalCombatParticipants, &[0, 1, dashboard_declare::field(TableId::NavalCombatParticipants, "state")?])?;
         let sunk = sunk_ships(&participants);
         let mut prices = Prices::default();
         if !sunk.is_empty() && absent(TableId::NavalCombatShips).is_none() && absent(TableId::VariantStats).is_none() {
@@ -610,8 +618,8 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             span,
             query.timeline.last,
             &links,
-            &history(TableId::NavalBattles, &[0, 3, 4, 5, 6])?,
-            &history(TableId::NavalCombats, &[0])?,
+            &battles,
+            &ancillary(has_live, TableId::NavalCombats, &[0])?,
             &participants,
             &prices,
         );
@@ -619,9 +627,9 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             &mut lines,
             span,
             &links,
-            &history(TableId::NavalResults, &[0, 1, 4, 8])?,
-            &history(TableId::NavalResultObservations, &[0, 1, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14])?,
-            &history(TableId::NavalResultCountries, &[0])?,
+            &results,
+            &ancillary(has_results, TableId::NavalResultObservations, &[0, 1, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14])?,
+            &ancillary(has_results, TableId::NavalResultCountries, &[0])?,
         );
     }
     let mut entries = Vec::with_capacity(lines.len());
