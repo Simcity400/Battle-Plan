@@ -146,7 +146,7 @@ fn decorated_source(frames: Vec<replay_frame::frame::DecodedFrame>) -> dashboard
 fn a_quiet_hour_of_decorated_divisions_visits_no_row_while_a_division_moves_and_tokens_stay_unread() {
     use super::careers::{DecoratedDivisions, DecoratedDivisionsParams, DecoratedRank};
     use dashboard_base::{products::{LoadContext, at_hour::frame_panel}, test_fixtures::{materialized_frame, played}};
-    use replay_data::rows::{TableId, TableRows};
+    use replay_data::rows::{DivisionTemplateIconRow, TableId, TableRows};
     use replay_frame::frame::TableView;
     use std::sync::Arc;
     const FIRST: i32 = 1_000;
@@ -154,13 +154,18 @@ fn a_quiet_hour_of_decorated_divisions_visits_no_row_while_a_division_moves_and_
     const VETERAN: i32 = 1_015;
     let source = Arc::new(decorated_source((FIRST..=LAST).map(|hour| {
         let mut frame = decorated_world(hour, |id| if id == 1 && hour >= VETERAN { 300 } else { 30 * id as i64 });
-        *frame.tables[TableId::DivisionTemplateIcons.index()] = TableView::Complete(TableRows::DivisionTemplateIcons(Vec::new()));
+        if let TableView::Complete(TableRows::Divisions(rows)) = &mut *frame.tables[TableId::Divisions.index()] {
+            rows[0].template = 2;
+        }
+        *frame.tables[TableId::DivisionTemplateIcons.index()] = TableView::Complete(TableRows::DivisionTemplateIcons(vec![
+            DivisionTemplateIconRow { template: 2, custom_icon: i32::from(hour >= FIRST + 5), ..Default::default() },
+        ]));
         if (FIRST + 8..FIRST + 10).contains(&hour) {
             *frame.tables[TableId::Divisions.index()] = TableView::Unavailable { reason: "damaged division census".into() };
         }
         frame
     }).collect()));
-    let asked = serde_json::to_value(DecoratedDivisionsParams { branch_id: "1".into(), countries: None, by: DecoratedRank::Experience, descending: true, count: 2 }).unwrap();
+    let asked = serde_json::to_value(DecoratedDivisionsParams { branch_id: "1".into(), countries: None, by: DecoratedRank::Medals, descending: true, count: 2 }).unwrap();
     let load = LoadContext { content: None };
     let registered = crate::registrations::DIVISIONS_CAREERS_DECORATEDDIVISIONS.panel.unwrap();
     let panel = (registered.open)(&source, &load, &asked).unwrap();
@@ -171,8 +176,9 @@ fn a_quiet_hour_of_decorated_divisions_visits_no_row_while_a_division_moves_and_
         value.as_ref().as_ref().unwrap()["divisions"].as_array().unwrap().iter().map(|row| row["division"].as_str().unwrap().to_owned()).collect()
     };
     let at = |hour: i32| reads.iter().position(|read| read.hour == hour).unwrap();
-    assert_eq!(ranked(&reads[1].value), ["3", "2"], "the two most experienced, from the populated recording");
-    assert_eq!(ranked(&reads[at(VETERAN)].value), ["1", "3"], "a ranked measure that changes is ranked again");
+    assert_eq!(ranked(&reads[1].value), ["3", "2"], "experience breaks the medal tie");
+    assert_eq!(reads[at(FIRST + 5)].product_calls, 0, "a template used only outside the cut cannot affect the reply");
+    assert_eq!(ranked(&reads[at(VETERAN)].value), ["1", "3"], "a candidate outside the cut can win the experience tiebreak");
     for read in &reads {
         let expected = materialized_frame(&mut *original, source.replay_ref(), 1, read.hour);
         assert_eq!(*read.value, expected, "played reply at {}", read.hour);
