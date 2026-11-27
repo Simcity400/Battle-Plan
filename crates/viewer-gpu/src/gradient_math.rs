@@ -55,13 +55,13 @@ impl FieldDefines {
 
     #[cfg(any(test, feature = "test-support"))]
     pub const TEST: Self = Self {
-        center: 2.0,
+        center: 2.5,
         country_thickness: [5.0, 25.0],
         country_area: [300.0, 9000.0],
-        strategic_thickness: 150.0,
-        optimization_range: 30.0,
+        strategic_thickness: 140.0,
+        optimization_range: 29.0,
         navy_neutral: [51, 63, 89],
-        mode_thickness_max: 12.0,
+        mode_thickness_max: 14.0,
     };
 }
 

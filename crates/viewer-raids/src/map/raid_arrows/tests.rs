@@ -92,8 +92,8 @@ fn speed_defines() -> SpeedDefines {
         land_speed_modifier: 50_000,
         naval_speed_modifier: 50_000,
         naval_transfer_base_speed: 1_000_000,
-        raid_unit_speed_multiplier: 10_000,
-        ace_wing_size: 10_000_000,
+        raid_unit_speed_multiplier: 13_000,
+        ace_wing_size: 8_000_000,
         ace_wing_size_max_bonus: 150_000,
     }
 }
@@ -104,7 +104,7 @@ fn the_raid_unit_speed_takes_each_native_branch() {
     let none = SpeedInputs::default();
     assert_eq!(
         raid_unit_speed(SpeedBranch::Convoys, &none, 150_000, &defines),
-        75_000
+        97_500
     );
     let transports = SpeedInputs {
         transport_speeds: vec![300_000, 500_000, 500_000, 400_000],
@@ -116,15 +116,15 @@ fn the_raid_unit_speed_takes_each_native_branch() {
     };
     assert_eq!(
         raid_unit_speed(SpeedBranch::TransportPlanes, &fallback, 100_000, &defines),
-        10_000
+        13_000
     );
     assert_eq!(
         raid_unit_speed(SpeedBranch::TransportPlanes, &transports, 100_000, &defines),
-        25_000
+        32_500
     );
     assert_eq!(
         raid_unit_speed(SpeedBranch::TransportPlanes, &none, 100_000, &defines),
-        10_000
+        13_000
     );
     let wing = SpeedInputs {
         wing_max_speed: Some(600_000),
@@ -138,7 +138,7 @@ fn the_raid_unit_speed_takes_each_native_branch() {
     };
     assert_eq!(
         raid_unit_speed(SpeedBranch::Unit, &wing, 100_000, &defines),
-        36_900
+        47_970
     );
     let dead = SpeedInputs {
         ace_alive: Some(0),
@@ -146,7 +146,7 @@ fn the_raid_unit_speed_takes_each_native_branch() {
     };
     assert_eq!(
         raid_unit_speed(SpeedBranch::Unit, &dead, 100_000, &defines),
-        30_000
+        39_000
     );
     let army = SpeedInputs {
         army_max_speed: Some(400_000),
@@ -154,14 +154,20 @@ fn the_raid_unit_speed_takes_each_native_branch() {
     };
     assert_eq!(
         raid_unit_speed(SpeedBranch::Unit, &army, 100_000, &defines),
-        20_000
+        26_000
     );
     assert_eq!(
         raid_unit_speed(SpeedBranch::Unit, &none, 100_000, &defines),
         0
     );
-    assert_eq!(ace_wing_scale(0, 10_000_000, 150_000), 100_000);
-    assert_eq!(ace_wing_scale(200, 10_000_000, 150_000), 50_000);
+    assert_eq!(
+        ace_wing_scale(0, defines.ace_wing_size, defines.ace_wing_size_max_bonus),
+        100_000
+    );
+    assert_eq!(
+        ace_wing_scale(160, defines.ace_wing_size, defines.ace_wing_size_max_bonus),
+        50_000
+    );
 }
 
 #[test]
@@ -326,7 +332,7 @@ fn a_wing_ace_with_an_unresolved_wing_scales_by_one() {
     };
     assert_eq!(
         raid_unit_speed(SpeedBranch::Unit, &inputs, 100_000, &defines),
-        33_000
+        42_900
     );
 }
 

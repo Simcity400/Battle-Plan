@@ -240,8 +240,8 @@ impl FlightDefines {
     fn fixture() -> Self {
         let sizing = FamilyDefines {
             factor: 1,
-            triple: 3,
-            limit: 2,
+            triple: 4,
+            limit: 5,
         };
         let stepped = SteppedFamily { sizing, single: 1 };
         Self {
@@ -3926,7 +3926,7 @@ impl AircraftPlan {
                     &defines,
                     Some(Band {
                         offset: 0.0,
-                        explosion_delay: 0.6,
+                        explosion_delay: 0.45,
                     }),
                     frame,
                     &|_| None,

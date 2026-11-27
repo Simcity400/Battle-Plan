@@ -59,8 +59,8 @@ fn defines() -> ModeDefines {
         diplomacy_thickness: 12.0,
         resistance_thickness: 5.0,
         scripted_thickness: 25.0,
-        very_good_opinion: 50,
-        very_bad_opinion: -50,
+        very_good_opinion: 47,
+        very_bad_opinion: -47,
         resistance_colors: ColorList(vec![
             0.0, 0.0, 1.0, 0.0, 0.0,
             0.0, 1.0, 1.0, 0.0, 0.0,
@@ -425,7 +425,7 @@ fn diplomacy_takes_the_first_relation_that_holds() {
     assert_eq!(good.color(&defines), Ok(Some(DIPLOMACY_GOOD)));
     assert_eq!(
         Relation {
-            opinion: 50,
+            opinion: defines.very_good_opinion,
             ..good
         }
         .color(&defines),
@@ -433,7 +433,7 @@ fn diplomacy_takes_the_first_relation_that_holds() {
     );
     assert_eq!(
         Relation {
-            opinion: -51,
+            opinion: defines.very_bad_opinion - 1,
             ..good
         }
         .color(&defines),

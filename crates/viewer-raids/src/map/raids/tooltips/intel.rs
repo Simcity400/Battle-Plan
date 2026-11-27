@@ -361,7 +361,7 @@ mod tests {
         let d = Defines {
             base_counter: 100001,
             operative_base: 0,
-            stacking: 50000,
+            stacking: 40_000,
             ..Default::default()
         };
         let mut row = RaidIntelInputRow {
@@ -394,7 +394,7 @@ mod tests {
         );
         let d = Defines {
             base_counter: 10,
-            stacking: 50_000,
+            stacking: 40_000,
             foreign_agent: 50_000,
             ..Default::default()
         };
@@ -403,7 +403,7 @@ mod tests {
             operatives: operatives.to_vec(),
             ..Default::default()
         };
-        assert_eq!(defense(&row, &d), Ok(187_510));
+        assert_eq!(defense(&row, &d), Ok(180_010));
     }
 
     #[test]

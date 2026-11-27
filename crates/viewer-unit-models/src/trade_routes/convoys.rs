@@ -441,9 +441,9 @@ mod tests {
             scale_factor: 1.,
             max: 5,
             speed: 1.,
-            sleep: 3.,
+            sleep: 3.5,
             route_offset: 0.,
-            cutoff: 100.,
+            cutoff: 115.,
         }
     }
     #[test]

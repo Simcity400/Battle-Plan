@@ -251,10 +251,11 @@ fn the_sprawl_gate_is_water_relative_and_independent_of_transient_map_objects() 
         }
         .on(MapSize::TEST, MapDefines::test())
     };
+    let edge = viewer_gpu::camera::WATER_HEIGHT + MapDefines::test().sprawl_cutoff;
     assert!(!draws_city_sprawl(&at(302.960)));
     assert!(draws_city_sprawl(&at(50.178)));
-    assert!(draws_city_sprawl(&at(229.4)));
-    assert!(!draws_city_sprawl(&at(229.6)));
+    assert!(draws_city_sprawl(&at(edge - 0.1)));
+    assert!(!draws_city_sprawl(&at(edge + 0.1)));
     let mut camera = at(50.178);
     camera.defines.map_objects_cutoff = 1.0;
     assert!(

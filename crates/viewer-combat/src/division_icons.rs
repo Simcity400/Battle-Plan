@@ -237,7 +237,7 @@ mod tests {
             armour_icons: [0.6, 0.25, 0.6, 0.25],
             piercing_thresholds: THRESHOLDS.to_vec(),
             air_superiority: [62_500_000, 75_000],
-            fuel_penalty_start_ratio: 25_000,
+            fuel_penalty_start_ratio: 27_000,
             ..LandDefines::default()
         }
     }

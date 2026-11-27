@@ -20,8 +20,13 @@ BATTLEPLAN_USER_DIR, else the Paradox user folder):
 - `copied-text`: prose shared with the installation, or three consecutive substantial script
   lines shared in the same order. A single identifier or interface element name is allowed.
 - `game-value`: `KEY = number` where KEY is one of the game's or a mod's defines and the number is
-  a value they give it, other than 0, 1 and -1. A test needs a value, not the game's: use an
-  obviously made-up one, or read the number from a fixture we wrote when the test is about it.
+  a value they give it, other than 0, 1 and -1, or a struct field `field: number` (raw or fixed5
+  `/100_000`, skipping 0, 1 and -1 before and after scaling) in Rust test or test-support code
+  whose upper-cased name or same-file struct define binding matches an installed define. Struct
+  bindings match by bare struct name within one file (`Self` mapped to its enclosing `impl`) and
+  deliberately do not resolve Rust module paths, imports, or re-exports. A test needs a value, not
+  the game's: use an obviously made-up one, or read the number from a fixture we wrote when the
+  test is about it.
 It reads the installation and writes nothing there. Its index lives outside the repository in
 --cache (default: the user's cache folder) and is rebuilt per game or mod only when Steam's
 manifest for it, or the size or time of a file of a mod outside Steam, changes; an explicit run
@@ -35,6 +40,7 @@ with REF; without it the whole tree is compared.
 Findings print as `<file>:<line>: <kind> <detail>` and never quote game text. Exits 1 on any.
 """
 import argparse
+import bisect
 from collections import Counter
 from contextlib import closing
 import hashlib
@@ -84,6 +90,14 @@ SKIPPED_DIRS = {".git", ".svn"}
 DEFINE = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\s*=\s*(-?(?:[0-9]+\.?[0-9]*|\.[0-9]+))(?![\w.])")
 TRIVIAL_VALUES = {0.0, 1.0, -1.0}
 VANILLA_CONST = re.compile(r"\bconst\s+(VANILLA(?:_[A-Z0-9_]+)?)\b")
+BRACE = re.compile(r"[{}]")
+IMPL_HDR = re.compile(r"\s*(?:#\[[^\]]*\]\s*)*(?:unsafe\s+)?impl\b")
+TYPE_TAIL = re.compile(r"([A-Z][A-Za-z0-9_]*)$")
+STRUCT_LIT = re.compile(r"(?:^|(?P<delim>[;{}()\[\],=?*+\-!&|:]|(?<!-)>))\s*(?:(?:return|break|yield|&(?:\s*mut)?)\s+)*(?:(?:::)?(?:[A-Za-z_][A-Za-z0-9_]*::)*)([A-Z][A-Za-z0-9_]*)(?:\s*(?:::\s*)?<[^;{}]*>)?\s*$")
+FIELD_START = re.compile(r"(?:r#)?([a-z_][a-z0-9_]*)\s*:(?!:)")
+DEFINE_STR = re.compile(r'"([A-Z][A-Z0-9_]{2,})"')
+RUST_NUM = re.compile(r"^([+-]?)\s*(?:0[xX](_*[0-9a-fA-F][0-9a-fA-F_]*)|0[oO](_*[0-7][0-7_]*)|0[bB](_*[01][01_]*)|([0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][+-]?[0-9_]+)?|\.[0-9][0-9_]*(?:[eE][+-]?[0-9_]+)?))(?:_?(?:[iu](?:8|16|32|64|128|size)|f(?:32|64)))?$")
+FIXED5_MUL = re.compile(r"^(.+?)\s*\*\s*(.+)$")
 TEST_CRATE_SUFFIXES = ("-test-support", "-tests")
 TEST_CRATES = {"synthetic-game"}
 
@@ -157,10 +171,10 @@ def asset_kind(name, head):
     return "binary" if is_binary(head) else None
 
 
-def tree_findings(files, rules):
+def tree_findings(files, rules, *, tree=None):
     """`asset`, `embedded` and `stale-allow` findings for (name, bytes) pairs: an entry that
     matches no file is stale."""
-    found = offenders(files, rules)
+    found = offenders(files, rules, tree=tree)
     names = {name for name, _ in files}
     found += [f"{ALLOW_NAME}: stale-allow {glob}{f' {kind}' if kind else ''} matches no file"
               for glob, kind, _ in rules if (glob not in names and not ("*" in glob and any(glob_match(name, glob) for name in names)))]
@@ -570,7 +584,113 @@ class Index:
             self.db.execute("DELETE FROM roots WHERE id = ?", (root,))
         self.db.commit()
 
-def install_findings(index, files, rules, active):
+def _struct_literals(code):
+    """Sorted `(open_pos, close_pos, bare_struct_name)` spans (`Self` mapped to enclosing `impl`)."""
+    stack, impls, literals = [], [], []
+    for match in BRACE.finditer(code):
+        pos = match.start()
+        if match.group() == "{":
+            header = code[max(code.rfind(";", 0, pos), code.rfind("{", 0, pos), code.rfind("}", 0, pos)) + 1:pos]
+            if IMPL_HDR.match(header):
+                head = re.split(r"\bwhere\b", header, maxsplit=1)[0]
+                while (s := re.sub(r"<[^<>]*>", "", head)) != head:
+                    head = s
+                tail = TYPE_TAIL.search(re.split(r"\bfor\b", head)[-1].rstrip().removesuffix("::"))
+                target = tail.group(1) if tail else None
+                stack.append((pos, "impl", target))
+                if target:
+                    impls.append(target)
+                continue
+            hit = STRUCT_LIT.search(header)
+            name = hit.group(2) if hit and (hit.group("delim") != ":" or (stack and stack[-1][1] == "struct")) else None
+            name = impls[-1] if name == "Self" and impls else name
+            stack.append((pos, "struct" if name else "other", name))
+        elif stack:
+            open_pos, kind, name = stack.pop()
+            if kind == "impl" and name and impls:
+                impls.pop()
+            elif kind == "struct" and name and not re.match(r"\s*=>", code[pos + 1:]):
+                literals.append((open_pos, pos, name))
+    return sorted(literals)
+
+
+def _struct_fields(code, open_pos, close_pos):
+    """Yield `(field_start, field_name, expr_start, expr_end)` for top-level fields in a struct literal."""
+    pos = open_pos + 1
+    while pos < close_pos:
+        while pos < close_pos and (code[pos].isspace() or code.startswith("#[", pos)):
+            pos = PATTERNS.closing(code, pos + 1, "[", "]") if code.startswith("#[", pos) else pos + 1
+        depth, angles, idx = 0, 0, pos
+        while idx < close_pos:
+            ch = code[idx]
+            if ch in "([{": depth += 1
+            elif ch in ")]}":
+                if not depth: break
+                depth -= 1
+            elif ch == "<" and not depth and (angles or code[pos:idx].rstrip().endswith("::")): angles += 1
+            elif ch == ">" and not depth and angles and not (idx > pos and code[idx - 1] in "-="): angles -= 1
+            elif ch == "," and not depth and not angles: break
+            idx += 1
+        if (m := FIELD_START.match(code, pos, idx)):
+            yield m.start(1), m.group(1), m.end(), idx
+        pos = idx + 1
+
+
+def _parse_rust_number(expr):
+    def scalar(part):
+        if not (m := RUST_NUM.fullmatch(part)):
+            return None
+        sign = -1 if m.group(1) == "-" else 1
+        for group, base in ((2, 16), (3, 8), (4, 2)):
+            if m.group(group) is not None:
+                return sign * int(m.group(group).replace("_", ""), base), True
+        raw = m.group(5).replace("_", "")
+        return (sign * float(raw), False) if any(c in raw for c in ".eE") else (sign * int(raw, 10), True)
+
+    if (parsed := scalar(expr)) is not None:
+        return parsed
+    if (mul := FIXED5_MUL.fullmatch(expr)):
+        l, r = scalar(mul.group(1).strip()), scalar(mul.group(2).strip())
+        return (l[0] * r[0], True) if l and r and l[1] and r[1] and 100_000 in (l[0], r[0]) else None
+    return None
+
+
+def struct_game_values(name, tree, installed):
+    """(line, field, key) for each Rust test/test-support struct field whose numeric literal
+    matches an installed define (raw or fixed5 `/100_000`, skipping trivial values)."""
+    text = tree.text(name)
+    if not text:
+        return []
+    code, test = tree.code(name, False), tree.is_test_file(name)
+    test_spans = () if test else tree.spans(name, False)[0]
+    if not test and not test_spans:
+        return []
+    literals, bindings, parsed_fields = _struct_literals(code), {}, []
+    for open_pos, close_pos, sname in literals:
+        for field_start, field, expr_start, expr_end in _struct_fields(code, open_pos, close_pos):
+            parsed_fields.append((sname, field_start, field, expr_start, expr_end))
+            for key in DEFINE_STR.finditer(text, expr_start, expr_end):
+                idx = bisect.bisect_right(literals, key.start(), key=lambda item: item[0])
+                if code[key.start()] == '"' and next((literals[i][0] for i in range(idx - 1, -1, -1) if literals[i][1] > key.start()), None) == open_pos:
+                    bindings.setdefault((sname, field), set()).add(key.group(1))
+    found = []
+    for sname, field_start, field, expr_start, expr_end in parsed_fields:
+        if not (test or PATTERNS.within(test_spans, field_start)):
+            continue
+        if (parsed := _parse_rust_number(code[expr_start:expr_end].strip())) is None:
+            continue
+        value = float(parsed[0])
+        keys = {k for k in (field.upper(), *bindings.get((sname, field), ())) if k in installed}
+        if value in TRIVIAL_VALUES or not keys:
+            continue
+        scaled = round(value / 100_000.0, 5)
+        candidates = [value] + ([scaled] if parsed[1] and scaled not in TRIVIAL_VALUES else [])
+        line = PATTERNS.line_of(text, field_start)
+        found.extend((line, field, key) for key in sorted(keys) if any(c in installed[key] for c in candidates))
+    return found
+
+
+def install_findings(index, files, rules, active, *, tree=None):
     index.db.execute("CREATE TEMP TABLE IF NOT EXISTS active(id INTEGER PRIMARY KEY)")
     index.db.execute("DELETE FROM active")
     index.db.executemany("INSERT INTO active VALUES (?)", ((root,) for root in active))
@@ -580,6 +700,10 @@ def install_findings(index, files, rules, active):
     installed = {}
     for key, value in index.db.execute("SELECT key, value FROM defines JOIN active ON active.id = defines.root"):
         installed.setdefault(key, set()).add(value)
+    if tree is None:
+        tree = RustTree(files)
+    else:
+        tree.overlay(files)
     index.db.execute("CREATE TEMP TABLE IF NOT EXISTS probe(hash INTEGER, file INTEGER, line INTEGER)")
     index.db.execute("DELETE FROM probe")
     names, text_found = [], []
@@ -600,6 +724,11 @@ def install_findings(index, files, rules, active):
         index.db.executemany("INSERT INTO probe VALUES (?, ?, ?)", ((h, number, line) for h, line in text_hashes(decoded)))
         text_found += [(name, line, "game-value", f"game-value {key} has the installation's value")
                        for line, key in game_values(decoded, installed)]
+        if name.endswith(".rs") and name in tree.texts:
+            text_found += [
+                (name, line, "game-value", f"game-value {key} has the installation's value (field {field})")
+                for line, field, key in struct_game_values(name, tree, installed)
+            ]
     hits = index.db.execute("SELECT DISTINCT probe.file, probe.line, segments.root FROM probe JOIN segments ON segments.hash = probe.hash JOIN active ON active.id = segments.root ORDER BY 1, 2")
     by_line = {}
     for number, line, root in hits:
@@ -631,7 +760,7 @@ def default_cache():
     return Path(base) / "battleplan-tools" / "game-content"
 
 
-def compare_installation(args, files, rules, say):
+def compare_installation(args, files, rules, say, *, tree=None):
     roots, reason = locate(args)
     if not roots:
         say(f"not run here: installation comparison ({reason})")
@@ -660,7 +789,7 @@ def compare_installation(args, files, rules, say):
                 checked = [(key, index.current(key, folder, stamp)[0]) for key, folder, stamp in roots]
                 stale = [key for key, root in checked if root is None]
                 active = {root for _, root in checked if root is not None}
-                findings = install_findings(index, files, rules, active) if active else []
+                findings = install_findings(index, files, rules, active, tree=tree) if active else []
         except (sqlite3.Error, OSError) as error:
             detail = f"unreadable index at {cache}: {error}; run python tools/check-game-content.py"
             say(f"not run here: installation comparison ({detail})")
@@ -676,7 +805,7 @@ def compare_installation(args, files, rules, say):
                 with closing(index.db):
                     active = {index.refresh(key, folder, stamp, say) for key, folder, stamp in roots}
                     index.drop_others(active)
-                    findings = install_findings(index, files, rules, active) if active else []
+                    findings = install_findings(index, files, rules, active, tree=tree) if active else []
                 break
             except sqlite3.DatabaseError as error:
                 if attempt or type(error) is not sqlite3.DatabaseError:
@@ -702,12 +831,13 @@ def main(argv=None):
     names = candidates()
     selected = names & changed_since(args.against) if args.against else names
     files = [(name, (ROOT / name).read_bytes()) for name in sorted(names)]
-    found += tree_findings(files, rules)
+    tree = RustTree(files)
+    found += tree_findings(files, rules, tree=tree)
     say(f"tree: {len(files)} files checked for assets and embedded data")
     if args.tree_only:
         say("not run here: installation comparison (--tree-only)")
     else:
-        found += compare_installation(args, [(name, data) for name, data in files if name in selected], rules, say)
+        found += compare_installation(args, [(name, data) for name, data in files if name in selected], rules, say, tree=tree)
     for line in found:
         print(line)
     say(f"{len(found)} finding(s) in {time.monotonic() - started:.1f} s")

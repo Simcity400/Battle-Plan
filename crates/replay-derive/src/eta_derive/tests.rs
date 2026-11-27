@@ -670,12 +670,12 @@ fn a_scaled_edge_multiplies_its_speed_by_its_own_scale() {
 #[test]
 fn the_supply_term_scales_the_unsupplied_share_by_the_days_out_of_supply() {
     let operands = SupplyOperands {
-        grace_maximum: 7_200_000,
-        grace_remaining: 1_800_000,
+        grace_maximum: 6_400_000,
+        grace_remaining: 1_600_000,
         ratio: 20_000,
         days: 15,
         supply_days: 30,
-        supply_grace: 72,
+        supply_grace: 64,
         penalty: -80_000,
     };
     let unknown = || Err("the template's special-forces share is not recorded".to_owned());

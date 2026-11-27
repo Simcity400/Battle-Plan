@@ -154,13 +154,13 @@ mod tests {
         let d = Defines {
             range_neutral: 200_000,
             speed_neutral: 100_000,
-            carrier_size: 10_000,
-            heavy_gun_attack: 1_000,
+            carrier_size: 13_000,
+            heavy_gun_attack: 1_700,
             ..Defines::default()
         };
         assert_eq!(
             ship_power([300_000, 200_000, 100_000, 200_000, 1_000_000], d),
-            390_000
+            429_000
         );
         assert_eq!(
             ship_power([300_000, 200_000, 100_000, 0, 0], Defines::default()),

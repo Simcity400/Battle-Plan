@@ -268,7 +268,7 @@ fn air_base_icons_need_access_intel_or_a_clear_byte() {
         vec![CountryIntelRow {
             owner_country: 101,
             target_index: 3,
-            air: 3_000_000,
+            air: content.defines.air_icon_threshold * content.defines.intel_maximums[3] / 100_000,
             ..Default::default()
         }],
     );

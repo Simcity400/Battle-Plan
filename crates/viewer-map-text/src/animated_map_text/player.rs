@@ -681,12 +681,13 @@ mod tests {
         let map = Placement::map([1300.0, 1000.0], 200.0).on(MapSize::TEST, MapDefines::test());
         assert_eq!(free_look(&map, origin, 500.0, None), (1.0, 1.0));
         let at = |distance: f32| camera([1300.0 - distance, 10.0, 1000.0], origin);
+        let range = map.defines.map_objects_cutoff;
         let (reach, opacity) = free_look(&at(250.0), origin, 500.0, None);
-        let (shrink, _) = free_icons::distance_look(250.0, 500.0, 1100.0);
+        let (shrink, _) = free_icons::distance_look(250.0, 500.0, range);
         assert!((reach - shrink).abs() < 1e-4, "{reach} {shrink}");
         assert_eq!(opacity, 1.0);
         let (near_reach, _) = free_look(&at(100.0), origin, 500.0, None);
-        let near_shrink = free_icons::distance_look(100.0, 500.0, 1100.0).0;
+        let near_shrink = free_icons::distance_look(100.0, 500.0, range).0;
         assert!(
             (near_reach - 0.4 * near_shrink).abs() < 1e-4,
             "{near_reach}"

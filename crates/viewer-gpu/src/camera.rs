@@ -207,17 +207,17 @@ impl MapDefines {
                 [r, g, b, 2.5]
             },
             raid_icons: [10.0, 500.0],
-            raid_icons_raid_mode: 1600.0,
+            raid_icons_raid_mode: 1450.0,
             sun_specular: 1.0,
             cubemap: 1.0,
-            country_names_cutoff: 260.0,
+            country_names_cutoff: 275.0,
             gradient_field: super::gradient_math::FieldDefines::TEST,
-            border_width: 1.5,
+            border_width: 1.75,
             border_fades: [[200.0, 300.0], [400.0, 500.0]],
-            sprawl_cutoff: 220.0,
-            map_objects_cutoff: 1100.0,
-            railway_cutoff: 300.0,
-            railway_cutoff_speed: 3.0,
+            sprawl_cutoff: 235.0,
+            map_objects_cutoff: 1050.0,
+            railway_cutoff: 315.0,
+            railway_cutoff_speed: 3.5,
         }
     }
 }

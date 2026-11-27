@@ -240,7 +240,7 @@ mod tests {
     fn defines() -> Defines {
         Defines {
             army_maximum: 100_000,
-            basic: 30_000,
+            basic: 33_000,
             standard: 70_000,
             count: [40_000, 80_000, 50_000],
         }
@@ -411,10 +411,10 @@ mod tests {
         let (mut frame, links, _) = super::super::tests::fixture();
         let mut d = defines();
         for (value, basic, standard) in [
-            (29_999, false, false),
-            (30_000, true, false),
-            (69_999, true, false),
-            (70_000, true, true),
+            (d.basic - 1, false, false),
+            (d.basic, true, false),
+            (d.standard - 1, true, false),
+            (d.standard, true, true),
         ] {
             intel(&mut frame, value);
             let disclosure = Disclosure::read(&frame, &links, 101, 102, true, &d).unwrap();

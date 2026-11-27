@@ -122,7 +122,7 @@ fn defines() -> Defines {
     Defines {
         map_scale: 200_000,
         ace_wing_size: 100_000,
-        ace_wing_size_max_bonus: 200_000,
+        ace_wing_size_max_bonus: 230_000,
     }
 }
 

@@ -120,15 +120,15 @@ impl Default for PostDefines {
     fn default() -> Self {
         Self {
             hdr_adjustment: [0.5, 1.0],
-            adaptation_speed: 15.0,
-            middle_grey: 0.5,
+            adaptation_speed: 13.0,
+            middle_grey: 0.45,
             luminance_white_squared: 1.0,
             bloom: [1.5, 0.9, 0.4],
             emissive_strength: 1.0,
             snow_per_province: [0.1, 0.2],
             snow_total: [0.0, 0.05],
             poles: [0.17, 0.93],
-            gmt_offset: 2793.0,
+            gmt_offset: 2650.0,
             feather_distance: [300.0, 2000.0],
             feather_amount: [0.03, 0.80],
         }

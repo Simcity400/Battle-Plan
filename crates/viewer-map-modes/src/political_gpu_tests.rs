@@ -370,7 +370,7 @@ fn political_gpu_fallback_naval_attributes_change_shared_fill(fallback: &Fallbac
 #[test]
 fn rounded_country_endpoint_bounds_the_search() {
     let field = FieldDefines {
-        country_thickness: [-1_000_000.0, 253.9999],
+        country_thickness: [-1_000_000.0, 256.0 - FieldDefines::TEST.center - 0.0001],
         ..FieldDefines::TEST
     };
     let actual = gradient::country_thickness(u64::MAX, &field);

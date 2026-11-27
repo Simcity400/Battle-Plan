@@ -427,12 +427,12 @@ mod tests {
     use super::*;
     fn defines() -> Defines {
         Defines {
-            occupation: 10_000,
-            radar: 50_000,
-            aircraft: 80_000,
-            effective_aircraft: 100,
-            night: -20_000,
-            no_search_mission: -50_000,
+            occupation: 13_000,
+            radar: 45_000,
+            aircraft: 75_000,
+            effective_aircraft: 80,
+            night: -17_000,
+            no_search_mission: -45_000,
         }
     }
     #[test]
@@ -482,25 +482,25 @@ mod tests {
             [Mission {
                 execution: Execution {
                     mask: 5,
-                    aircraft: 50,
+                    aircraft: 40,
                 },
                 home: true,
                 night: 150_000,
                 weather: 50_000,
             }],
         );
-        assert_eq!(result.aircraft, 48_000);
-        assert_eq!(result.night, -15_000);
+        assert_eq!(result.aircraft, 45_000);
+        assert_eq!(result.night, -12_750);
         assert_eq!(result.weather, -5_000);
-        assert_eq!(result.total, 50_400);
+        assert_eq!(result.total, 49_761);
     }
     #[test]
     fn zero_aircraft_divisor_saturates_before_scaling_and_missing_weather_is_zero() {
         let mut defines = defines();
         defines.effective_aircraft = 0;
         let result = derive(defines, MissionModifiers::default(), 0, 0, 0, None, []);
-        assert_eq!(result.aircraft, 80_000);
-        assert_eq!(result.total, 80_000);
+        assert_eq!(result.aircraft, defines.aircraft);
+        assert_eq!(result.total, defines.aircraft);
         assert_eq!(result.weather, 0);
     }
     #[test]

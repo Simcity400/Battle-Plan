@@ -15,7 +15,7 @@ fn defines() -> Defines {
         plane_stacking_penalty_effect: 0,
         sortie_stance_ratios: vec![ONE],
         base_carrier_sortie_efficiency: ONE,
-        selected_sortie_initial_time: 24,
+        selected_sortie_initial_time: 19,
         piercing: Ok(Default::default()),
         positioning_impacts: [0; 3],
     }

@@ -95,11 +95,11 @@ pub fn unnamed_assets() -> MovementFixture {
         regions: BTreeMap::new(),
         day_night: Ok(replay_data::day_night::Defines {
             gmt_offset: 0,
-            south_pole_offset: 17_000,
-            north_pole_offset: 93_000,
-            day_night_feather: 2_400,
+            south_pole_offset: 19_000,
+            north_pole_offset: 91_000,
+            day_night_feather: 2_700,
         }),
-        combat_minimum_time: 4,
+        combat_minimum_time: 3,
         naval_combat_min_duration: Ok(7),
         avoid_enemy: true,
     }

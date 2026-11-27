@@ -362,7 +362,7 @@ mod tests {
             neutral: [0.1, 0.2, 0.3, 0.5],
             active: [0.4, 0.5, 0.6, 0.9],
             hold: [0.2, 0.6, 0.7, 0.5],
-            fade: 0.15,
+            fade: 0.22,
         };
         let selected = BTreeSet::from([Unit::TaskForce(1), Unit::TaskForce(3)]);
         let product = read(
