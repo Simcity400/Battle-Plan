@@ -73,6 +73,10 @@ pub(crate) trait Part: Sized + PartialEq {
     const NAME: &'static str;
     fn keep(&self, out: &mut Vec<u8>) -> io::Result<()>;
     fn read(bytes: &Arc<Vec<u8>>, at: usize) -> io::Result<(Self, usize)>;
+
+    fn validates_kept(&self, bytes: &Arc<Vec<u8>>, at: usize) -> bool {
+        Self::read(bytes, at).is_ok_and(|(read, end)| end == bytes.len() && read == *self)
+    }
 }
 
 impl Part for Localisation {
@@ -97,6 +101,10 @@ impl Part for SpriteSet {
 
     fn read(bytes: &Arc<Vec<u8>>, at: usize) -> io::Result<(Self, usize)> {
         SpriteSet::from_kept(bytes, at, decode_sprite)
+    }
+
+    fn validates_kept(&self, bytes: &Arc<Vec<u8>>, at: usize) -> bool {
+        SpriteSet::validates_kept(self, bytes, at, decode_sprite)
     }
 }
 
@@ -240,7 +248,7 @@ fn write<P: Part>(place: &Place, part: &P, diagnostics: &Diagnostics) -> io::Res
     let at = out.len();
     part.keep(&mut out)?;
     let out = Arc::new(out);
-    if !P::read(&out, at).is_ok_and(|(read, end)| end == out.len() && read == *part) {
+    if !part.validates_kept(&out, at) {
         return Err(io::Error::other("it does not read back as it was built"));
     }
     publish(place, Arc::try_unwrap(out).unwrap_or_else(|shared| (*shared).clone()), None)

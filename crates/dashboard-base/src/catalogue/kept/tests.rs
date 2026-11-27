@@ -113,6 +113,26 @@ fn kept_sprites_read_back_as_every_kind_was_declared() {
     let mut out = Vec::new();
     Part::keep(&read, &mut out).unwrap();
     let bytes = Arc::new(out);
+    assert!(Part::validates_kept(&read, &bytes, 0));
+    let changed = |from, to| {
+        SpriteSet::new(&[(
+            "interface/test.gfx".to_owned(),
+            content_reader_gui::gui::native::sprites::read_sprites(GFX.replace(from, to).as_bytes()),
+        )])
+    };
+    for other in [
+        changed("NOOFFRAMES = 14", "NOOFFRAMES = 15"),
+        changed("noOfFrames = -1", "noOfFrames = -2"),
+        changed("GFX_b", "GFX_c"),
+        changed("}\n}", "}\n    spriteType = { name = GFX_z texturefile = z.dds }\n}"),
+    ] {
+        assert!(!Part::validates_kept(&other, &bytes, 0));
+    }
+    let short = Arc::new(bytes[..bytes.len() - 1].to_vec());
+    assert!(!Part::validates_kept(&read, &short, 0));
+    let mut long = (*bytes).clone();
+    long.push(0);
+    assert!(!Part::validates_kept(&read, &Arc::new(long), 0));
     let (kept, end) = <SpriteSet as Part>::read(&bytes, 0).unwrap();
     assert_eq!(end, bytes.len());
     for name in ["GFX_a", "GFX_b", "GFX_tile", "GFX_bar", "GFX_anim", "GFX_negative", "GFX_none"] {
