@@ -18,7 +18,7 @@ import {
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, validateRowTailReply, type DatedLogRow, type TailReply } from '../../families/table/rowSource.ts';
-import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
 import type { EventFeedFoldRow, EventFeedItem, EventFeedLine, EventFeedMoreRow, EventFeedPageRow, EventFeedRow, ScriptEdge, ScriptStatus } from '../../generated/dashboard';
@@ -31,6 +31,8 @@ import { gapsForField, plainScripted, reasonsOf, scriptedValue } from './scripte
 import { validateScriptEdge } from './scriptOccurrences.ts';
 
 export interface EventFeedProjectionOptions {
+  readonly byDate?: boolean;
+  readonly search?: string;
   readonly categories: readonly string[];
   readonly artwork: boolean;
   readonly hover?: TooltipTexts;
@@ -518,7 +520,7 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
   validateTail: validateEventFeedTail,
   project(readView, options): TableModel {
     const hour = readView.hour;
-    const empty = { columns: EVENT_FEED_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true } as const;
+    const empty = { columns: EVENT_FEED_COLUMNS, rows: [], hour, searchable: true, search: options.search ?? '', dateGrouped: options.byDate !== false } as const;
     if (!options.categories.length) return { ...empty, empty: 'No recorded events match these settings.' };
     const refused = readView.refused('main');
     if (refused !== undefined) return { ...empty, refused };
@@ -577,6 +579,8 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
   columns: EVENT_FEED_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {
+    const { sort } = tableSettingsOf(ctx.options[TABLE_SETTINGS_KEY], EVENT_FEED_COLUMNS, LOG_TABLE_BASE);
+    const search = typeof ctx.options.search === 'string' ? ctx.options.search : '';
     const categories = CATEGORIES.filter(c => ctx.options[c.value] === true).map(c => c.value);
     const excludedKinds = excludedKindsOf(ctx.options.excludedKinds);
     if (!categories.length) {
@@ -590,7 +594,7 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
     const expanded = opened.map(key => key.slice(GROUP.length));
     const full = contentSet(ctx.options.full).filter(key => opened.includes(key)).map(key => key.slice(GROUP.length));
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:event-feed:${categories.join(',')}:${excludedKinds.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}:${full.join(',')}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:event-feed:${categories.join(',')}:${excludedKinds.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}:${full.join(',')}:${JSON.stringify([search, sort])}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -602,7 +606,7 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
             branchId: ctx.branch.id,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ask: {
+            ask: { search, sort,
               categories,
               ...(excludedKinds.length ? { exclude: excludedKinds } : {}),
               ...selection,
@@ -620,6 +624,6 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
   projection: eventFeedProjection,
   projectionOptions(ctx): EventFeedProjectionOptions {
     const categories = CATEGORIES.filter(c => ctx.options[c.value] === true).map(c => c.value);
-    return { categories, artwork: ctx.options.artwork !== false, hover: hoverTextOf(ctx.options), expanded: contentSet(ctx.options.expanded) };
+    return { byDate: ctx.settings.sort.column === 'date', search: typeof ctx.options.search === 'string' ? ctx.options.search : '', categories, artwork: ctx.options.artwork !== false, hover: hoverTextOf(ctx.options), expanded: contentSet(ctx.options.expanded) };
   },
 };

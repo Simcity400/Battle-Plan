@@ -20,10 +20,10 @@ export const CATEGORIES = [
 ] as const;
 
 export const EVENT_FEED_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn(),
+  logDateColumn({ sortable: true }),
   logKindColumn({ minWidth: 44, maxWidth: 50 }),
-  logCountryColumn({ minWidth: 54 }),
-  logItemColumn({ label: 'Event', minWidth: 220 }),
+  logCountryColumn({ sortable: true, minWidth: 54 }),
+  logItemColumn({ sortable: true, label: 'Event', minWidth: 220 }),
   {
     key: 'detail',
     label: 'Detail',

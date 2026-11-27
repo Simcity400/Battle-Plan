@@ -12,6 +12,9 @@ fn brief(sequence: u64, kind: EventFeedKind, hour: i32, opener: Option<u64>, day
         option: None,
         days,
         token: Some("mission_a".into()),
+        costs: [None, None],
+        name: None,
+        choice: None,
     }
 }
 
@@ -123,6 +126,9 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
         option: None,
         days: Some(40),
         token: Some("mission_b".into()),
+        costs: [None, None],
+        name: None,
+        choice: None,
     };
     let scanned = Scanned {
         briefs: vec![opener, later],
@@ -164,4 +170,19 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
     let swapped_scanned = Scanned { briefs: vec![swapped], ..scanned };
     let swapped_index = decisions(&swapped_scanned, &Names::new(&holders)).unwrap();
     assert_eq!(swapped_index.ask(&holders, &Ask { search: Some("GER POL"), ..ask_at(100) }).unwrap().total, 1, "tags observed together keep sorted order in search text");
+}
+
+#[test]
+fn decision_cost_sort_keeps_unrecorded_after_recorded_in_both_directions() {
+    use dashboard_query::{identity::Holders, log::occurrence::{Ask, Direction, Order}};
+    let mut briefs: Vec<_> = (0..3).map(|i| brief(i + 1, EventFeedKind::DecisionSelected, 100 + i as i32, None, None)).collect();
+    briefs[0].costs = [Some(Some(-20)), Some(None)];
+    briefs[1].costs = [Some(Some(-10)), Some(None)];
+    let scanned = Scanned { briefs, gaps: Vec::new(), ..Scanned::refused(0, 0, "fixture") };
+    let index = decisions(&scanned, &Names { slots: HashMap::new() }).unwrap();
+    for (direction, expected) in [(Direction::Ascending, [101, 100, 102]), (Direction::Descending, [100, 101, 102])] {
+        let answer = index.ask(&Holders::new(BTreeMap::new(), Vec::new()), &Ask { hour: 110, from: None, to: None, gap_end: None, selection: None, subject: None, kinds: None, states: None, search: None, order: Order::Key(2, direction), live_first: false, offset: 0, limit: 3, chips: &[] }).unwrap();
+        assert_eq!(answer.rows.iter().map(|shown| index.get(shown.at).date).collect::<Vec<_>>(), expected);
+        assert_eq!(index.get(answer.rows[2].at).sort_keys[2].at(110), None);
+    }
 }

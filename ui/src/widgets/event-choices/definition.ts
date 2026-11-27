@@ -21,17 +21,17 @@ export const EVENT_KINDS: readonly { value: string; label: string; event: Script
 export const AWAITING = { value: 'awaiting', label: 'Awaiting choice only', hint: 'Only events still awaiting a choice at the moment shown.' } as const;
 
 export const EVENT_CHOICES_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn(),
+  logDateColumn({ sortable: true }),
   logKindColumn({ minWidth: 44, maxWidth: 50 }),
-  logCountryColumn({ minWidth: 52 }),
-  logItemColumn({ label: 'Event', minWidth: 200 }),
+  logCountryColumn({ sortable: true, minWidth: 52 }),
+  logItemColumn({ sortable: true, label: 'Event', minWidth: 200 }),
   {
     key: 'choice',
     label: 'Choice',
     as: 'plain',
     offered: OFFERED.text,
     priority: 1,
-    sortable: false,
+    sortable: true,
     text: true,
     grow: 1,
     minWidth: 180,

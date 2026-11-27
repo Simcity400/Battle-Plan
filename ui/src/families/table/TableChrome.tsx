@@ -19,6 +19,8 @@ interface ChromeMeta {
   readonly subjectSummary?: TableModel['subjectSummary'];
   readonly kindFilter?: TableModel['kindFilter'];
   readonly hideHeader?: boolean;
+  readonly searchable?: boolean;
+  readonly search?: string;
   readonly rhythm?: TableRhythm;
   readonly unsorted?: boolean;
   readonly rankShown?: boolean;
@@ -43,6 +45,25 @@ interface ChromeWidths {
   readonly pinnedCount?: number;
 }
 
+function LogSearch({ value, onChange }: { readonly value: string; readonly onChange: (key: string, value: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  const pending = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useLayoutEffect(() => { if (pending.current === undefined) setDraft(value); }, [value]);
+  useLayoutEffect(() => () => clearTimeout(pending.current), []);
+  const change = (text: string) => {
+    setDraft(text);
+    clearTimeout(pending.current);
+    pending.current = undefined;
+    if (!text) onChange('search', '');
+    else pending.current = setTimeout(() => { pending.current = undefined; onChange('search', text); }, 150);
+  };
+  return <label className="tf-log-search">
+    <input type="search" aria-label="Search log" placeholder="Search log" value={draft} onChange={event => change(event.target.value)}
+      onKeyDown={event => { if (event.key === 'Escape') change(''); }} />
+    {draft ? <button type="button" aria-label="Clear search" onClick={() => change('')}>×</button> : null}
+  </label>;
+}
+
 export default function TableChrome({ state, settings, onSettings, editable, viewportWidth, bodyBlocked, announce, targets, shownHour, filterSlot, setFilterOption }: FamilyChromeProps<TableSettings>) {
   const chrome = state as TableChromeState | undefined;
   const meta = (chrome?.meta ?? {}) as ChromeMeta;
@@ -53,15 +74,23 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
   const [resizing, setResizing] = useState<{ key: string; width: number; guideX?: number | null } | null>(null);
   const edgesRef = useRef<HTMLDivElement>(null);
 
+  const resetRows = useCallback(() => {
+    if (!targets.body) return;
+    targets.body.scrollTop = 0;
+    targets.body.dispatchEvent(new Event('scroll'));
+  }, [targets.body]);
+  const changeSearch = useCallback((key: string, value: string) => { resetRows(); setFilterOption?.(key, value); }, [resetRows, setFilterOption]);
+
   const changeSettings = useCallback((update: (next: TableSettings) => void) => {
     if (!onSettings || !settings) return;
     const next = updateTableSettings(settings, update);
     if (next.sort.column !== settings.sort.column || next.sort.direction !== settings.sort.direction) {
+      resetRows();
       const col = columns.find(c => c.key === next.sort.column);
       announce(`Sorted by ${col?.label ?? next.sort.column}, ${next.sort.direction === 'descending' ? 'highest first' : 'lowest first'}.`);
     }
     onSettings(next);
-  }, [settings, onSettings, columns, announce]);
+  }, [settings, onSettings, columns, announce, resetRows]);
 
   const layout = useMemo(() => {
     if (!settings) return null;
@@ -205,6 +234,9 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
           setFilterOption(filter.key, visible.every(value => selected.has(value)) ? '' : [...selected].join(' ') || '-');
         }}
       /> : null}
+      {meta.searchable && setFilterOption ? (filterSlot
+        ? createPortal(<LogSearch value={meta.search ?? ''} onChange={changeSearch} />, filterSlot)
+        : <LogSearch value={meta.search ?? ''} onChange={changeSearch} />) : null}
       {!meta.hideHeader && panes ? (
         <div className="tf-head-clip tf-pane-heads" style={{ ...headerStyle, columnGap: panes.gutter }}>
           {panes.titles.map(title => <div key={title.key} className="tf-pane-head" style={{ width: panes.width }}>{header(title)}</div>)}

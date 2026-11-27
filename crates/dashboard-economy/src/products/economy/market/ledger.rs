@@ -2,7 +2,7 @@ use dashboard_base::{
     Source,
     products::{
         LoadContext, Product,
-        occurrences::{self, OccurrenceCount, OccurrenceReply},
+        occurrences::{self, OccurrenceCount, OccurrenceReply, OccurrenceSort},
     },
     queries::country_ids::{Names, RunLinks},
 };
@@ -12,7 +12,7 @@ use dashboard_query::{
     identity::{Country, Holders},
     log::{
         Cell, Reader,
-        occurrence::{Ask, Chip, Direction, Index, Occurrence, Order, PlacedGap, Role, SearchText, Selection, Shown, SortKey},
+        occurrence::{Ask, Chip, Index, Occurrence, Order, PlacedGap, Role, SearchText, Selection, Shown, SortKey},
     },
     series::{MissingSpan, ranked::GroupSelection},
     timeline::Timeline,
@@ -258,6 +258,9 @@ pub struct MarketLedgerTailParams {
     pub search: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub sort: Option<OccurrenceSort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub offset: Option<String>,
     pub limit: u32,
     #[doc = " The statuses listed, each at the hour asked; every one when none."]
@@ -492,6 +495,7 @@ struct Placed {
     roles: Box<[Role]>,
     states: Box<[(i32, u8)]>,
     text: SearchText,
+    sort_keys: Box<[SortKey]>,
     contract: Contract,
     measures: Measures,
     seller: Party,
@@ -626,6 +630,8 @@ fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io:
             }
         }
         let sort_key = if steps.len() == 1 { SortKey::number(steps[0].1) } else { SortKey::dated_numbers(steps) };
+        let mut keys = placed.sort_keys.to_vec();
+        if opening.ranged() { keys.push(sort_key); }
         let mut push = |payload: Line, kind: u16, observed: i32, states: Box<[(i32, u8)]>| {
             entries.push(Occurrence {
                 id: u128::MAX - entries.len() as u128,
@@ -635,7 +641,7 @@ fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io:
                 roles: placed.roles.clone(),
                 subjects: Box::new([]),
                 states,
-                sort_keys: if opening.ranged() { vec![sort_key.clone()].into_boxed_slice() } else { Box::new([]) },
+                sort_keys: keys.clone().into_boxed_slice(),
                 text: placed.text.clone(),
                 payload,
             });
@@ -671,7 +677,10 @@ fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io:
 }
 
 #[derive(Default)]
-struct Kept(HashMap<u64, Arc<Ledger>>);
+struct Kept {
+    binding: Option<Arc<dashboard_base::catalogue::Catalogue>>,
+    branches: HashMap<u64, Arc<Ledger>>,
+}
 
 pub fn forget(source: &Source) {
     *source.state::<Kept>().lock().unwrap_or_else(PoisonError::into_inner) = Kept::default();
@@ -739,7 +748,7 @@ fn states(contract: &Contract, unread: &Unread) -> Box<[(i32, u8)]> {
     states.into_boxed_slice()
 }
 
-fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Ledger> {
+fn scan(source: &Source, query: &Query<'_>, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Ledger> {
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid(format!("No declared log {LOG}")))?;
     let reader = Reader::new(query, declared)?;
     let columns = Columns::read()?;
@@ -884,6 +893,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             roles,
             states: states(&contract, &unread),
             text,
+            sort_keys: Box::new([]),
             measures: Measures::of(&contract.children),
             seller: party(contract.seller, date),
             buyer: party(contract.buyer, date),
@@ -898,8 +908,10 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             return Err(invalid("Two market contracts share one key"));
         }
     }
-    let closed = Arc::new(lines(&contracts, &Opening::default(), unread.gaps.clone())?);
-    Ok(Ledger { contracts, by_key, unread, untold, closed, opened: Mutex::default(), terms: Mutex::default() })
+    let mut ledger = Ledger { contracts, by_key, unread, untold, closed: Arc::new(Index::new(Vec::new(), Vec::new(), &LIVE)?), opened: Mutex::default(), terms: Mutex::default() };
+    sort_keys(source, query, load, &mut ledger, cancelled)?;
+    ledger.closed = Arc::new(lines(&ledger.contracts, &Opening::default(), ledger.unread.gaps.clone())?);
+    Ok(ledger)
 }
 
 type Opened = HashMap<(Option<i64>, u64, bool), usize>;
@@ -917,13 +929,14 @@ fn still_open(open: &Opened, made: &[(Contract, u32, u128)], at: (Option<i64>, u
     open.get(&at).copied().filter(|&found| made[found].0.ended.is_none())
 }
 
-fn ledger(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<Ledger>> {
+fn ledger(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Ledger>> {
     let kept = source.state::<Kept>();
-    if let Some(found) = kept.lock().unwrap_or_else(PoisonError::into_inner).0.get(&branch) {
-        return Ok(Arc::clone(found));
-    }
-    let made = Arc::new(scan(source, query, cancelled)?);
-    kept.lock().unwrap_or_else(PoisonError::into_inner).0.insert(branch, Arc::clone(&made));
+    let binding = names::context(source, load)?.ok().map(|content| content.catalogue);
+    let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
+    if held.binding.as_ref().map(Arc::as_ptr) != binding.as_ref().map(Arc::as_ptr) { *held = Kept { binding, branches: HashMap::new() }; }
+    if let Some(found) = held.branches.get(&branch) { return Ok(Arc::clone(found)); }
+    let made = Arc::new(scan(source, query, load, cancelled)?);
+    held.branches.insert(branch, Arc::clone(&made));
     Ok(made)
 }
 
@@ -1054,7 +1067,7 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, 
     let selection = dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
     let context = names::context(source, load)?;
     let namings = if context.is_ok() { namings(source, query)? } else { BTreeMap::new() };
-    let ledger = ledger(source, query, branch, cancelled)?;
+    let ledger = ledger(source, query, branch, load, cancelled)?;
     let opening = ledger.opening(params);
     let full = opening.full.clone();
     let index = ledger.index(opening, cancelled)?;
@@ -1062,6 +1075,52 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, 
 }
 
 type NameOf<'a> = &'a dyn Fn(i32, u64) -> (Option<String>, Option<String>, Option<String>);
+
+fn sort_keys(source: &Source, query: &Query<'_>, load: &LoadContext, ledger: &mut Ledger, cancelled: &AtomicBool) -> io::Result<()> {
+    let mut wanted: BTreeMap<(u32, i32), Vec<(u32, u64, u8)>> = BTreeMap::new();
+    let mut variants: BTreeMap<(u32, i32), BTreeSet<u64>> = BTreeMap::new();
+    for placed in &ledger.contracts {
+        let Some(run) = query.timeline.at(placed.observed).map(|stretch| stretch.run) else { continue };
+        let contract = &placed.contract;
+        if let (Some(seller), Some(agreement)) = (contract.seller.and_then(|raw| u32::try_from(raw).ok()), contract.agreement) {
+            wanted.entry((run, placed.observed)).or_default().push((seller, agreement, u8::from(!contract.request)));
+        }
+        variants.entry((run, placed.observed)).or_default().extend(placed.measures.designs.iter().map(|design| design.variant));
+    }
+    let terms = read_terms(query, ledger, &wanted, cancelled)?;
+    for (&(at, ..), terms) in &terms {
+        if let Some(stretch) = query.timeline.at(at) { variants.entry((stretch.run, at)).or_default().extend(terms.equipment.iter().map(|&(variant, _)| variant)); }
+    }
+    let context = names::context(source, load)?;
+    let naming = if context.is_ok() { namings(source, query)? } else { BTreeMap::new() };
+    let named = variant_names(query, &naming, &context, variants, cancelled)?;
+    let name_of = |at, variant| (named.get(&(at, variant)).and_then(|(name, _)| name.clone()), None, None);
+    let mut made = Vec::with_capacity(ledger.contracts.len());
+    for placed in &ledger.contracts {
+        let mut hours: Vec<i32> = placed.contract.children.iter().map(|child| child.observed).chain(placed.states.iter().map(|&(at, _)| at)).chain(ledger.unread.gaps.iter().flat_map(|gap| [gap.first_hour, gap.last_hour.saturating_add(1)])).collect();
+        hours.sort_unstable();
+        hours.dedup();
+        let (mut items, mut status, mut delivered, mut paid, mut text) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut seen = BTreeSet::new();
+        for hour in hours.into_iter().filter(|&hour| hour >= placed.observed) {
+            let at = placed.states.partition_point(|&(at, _)| at <= hour);
+            let state = at.checked_sub(1).map(|at| placed.states[at].1);
+            let row = contract_row(ledger, &Shown { at: 0, ordinal: 0, live: false, state }, placed, hour, &terms, &name_of);
+            let names: Option<Vec<_>> = row.items.iter().map(|item| item.name.as_deref()).collect();
+            items.push((hour, names.filter(|names| !names.is_empty()).map(|names| names.join(", ").into_boxed_str())));
+            for name in row.items.iter().filter_map(|item| item.name.as_ref()).filter(|name| seen.insert((*name).clone())) { text.push((hour, name.as_str().into())); }
+            status.push((hour, match row.status { MarketContractStatus::Active => Some("Contract started".into()), MarketContractStatus::Requested => Some("Request posted".into()), MarketContractStatus::Ended => Some("Contract ended".into()), MarketContractStatus::RequestEnded => Some("Request ended".into()), MarketContractStatus::NotRecorded => None }));
+            delivered.push((hour, (row.delivery_missing.is_none() && !row.items.is_empty()).then(|| row.items.iter().map(|item| item.delivered_raw.as_deref().filter(|_| item.delivery_unavailable.is_none()).and_then(|raw| raw.parse::<i64>().ok())).collect::<Option<Vec<_>>>().map(|values| values.into_iter().fold(0i64, i64::saturating_add))).flatten()));
+            paid.push((hour, row.paid_raw.as_deref().filter(|_| row.paid_missing.is_none()).and_then(|raw| raw.parse().ok())));
+        }
+        let mut keys = vec![SortKey::text(placed.seller.0.clone()), SortKey::dated_text(items), SortKey::dated_text(status), SortKey::dated_numbers(delivered), SortKey::dated_numbers(paid)];
+        for key in &mut keys { if let SortKey::Dated(steps) = key { let mut compact = steps.to_vec(); compact.dedup_by(|a, b| a.1 == b.1); *steps = compact.into_boxed_slice(); } }
+        let prior = match &placed.text { SearchText::Static(text) => vec![(placed.observed, text.clone())], SearchText::Dated(steps) => steps.to_vec() };
+        made.push((keys.into_iter().map(SortKey::shared).collect::<Box<_>>(), SearchText::dated(prior.into_iter().chain(text))));
+    }
+    for (placed, (keys, text)) in ledger.contracts.iter_mut().zip(made) { placed.sort_keys = keys; placed.text = text; }
+    Ok(())
+}
 
 fn contract_row(ledger: &Ledger, shown: &Shown, placed: &Placed, hour: i32, terms: &HashMap<TermsKey, Arc<Terms>>, name_of: NameOf<'_>) -> MarketContractRow {
     let (contract, measures) = (&placed.contract, &placed.measures);
@@ -1154,6 +1213,9 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
         Chip { kinds: Some(CONTRACTS.to_vec()), states: Some(vec![MarketContractStatus::Active.code()]) },
         Chip { kinds: Some(CONTRACTS.to_vec()), states: Some(LIVE.to_vec()) },
     ];
+    let (order, newest) = occurrences::order(params.sort.as_ref(), &["country", "item", "status", "delivered", "paid"])?;
+    let ranged = prepared.index.reads.is_some();
+    let order = match order { Order::Date(direction) if ranged => Order::Key(5, direction), order => order };
     let answer = index.ask(
         &query.holders,
         &Ask {
@@ -1166,8 +1228,8 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
             kinds: None,
             states: Some(&states),
             search: params.search.as_deref(),
-            order: if prepared.index.reads.is_some() { Order::Key(0, Direction::Descending) } else { Order::Date(Direction::Descending) },
-            live_first: prepared.index.reads.is_none(),
+            order,
+            live_first: newest && !ranged,
             offset,
             limit,
             chips: &chips,
@@ -1291,7 +1353,7 @@ impl Product for MarketLedgerTail {
     const INTERACTIVE: bool = true;
     type Params = MarketLedgerTailParams;
     const FIELDS: dashboard_base::products::Fields =
-        dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, offset, limit, statuses, expanded, "expanded[]", full, "full[]"];
+        dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, statuses, expanded, "expanded[]", full, "full[]"];
     type Reply = MarketLedgerTailReply;
 
     #[cfg(any(test, feature = "export-types"))]

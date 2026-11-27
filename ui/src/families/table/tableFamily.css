@@ -530,3 +530,10 @@
 .tf-th-group > .tf-th-hatch { margin-right: 6px; }
 .tf-th-group > .tf-sort-mark { margin-left: 4px; }
 .tf-th-sides { display: grid; grid-template-columns: 1fr 1fr; column-gap: 12px; text-align: right; }
+
+.tf-log-search { display: inline-flex; align-items: center; height: 24px; max-width: 180px; min-width: 72px; border-radius: 999px; background: var(--hover); color: var(--text); }
+.tf-log-search > input { width: 100%; min-width: 0; height: 24px; padding: 0 9px; border: 0; background: none; color: inherit; font: inherit; font-size: 0.75rem; }
+.tf-log-search > input::placeholder { color: var(--muted); }
+.tf-log-search > input::-webkit-search-cancel-button { display: none; }
+.tf-log-search > button { flex: none; width: 24px; height: 24px; border: 0; border-radius: 999px; background: none; color: var(--muted); }
+.tf-log-search > button:hover { background: var(--press); color: var(--text); }

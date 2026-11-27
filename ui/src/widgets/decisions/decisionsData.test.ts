@@ -11,6 +11,9 @@ import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { decisionsDeclaration, decisionsProjection } from './decisionsProjection.ts';
 import { hoverTextOf, withHoverText, type HoverText } from '../event-feed/hoverText.ts';
 import { eventChoicesDeclaration } from '../event-choices/eventChoicesProjection.ts';
+import { marketLedgerDeclaration } from '../market-ledger/marketLedgerProjection.ts';
+import { tableSettingsOf, encodeTableSettings } from '../../families/table/settings.ts';
+import { LOG_TABLE_BASE } from '../../families/table/logHelpers.ts';
 import { eventFeedDeclaration } from '../event-feed/eventFeedProjection.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { CountrySelection } from '../../dashboard/model.ts';
@@ -514,4 +517,35 @@ test('a state-targeted decision shows one country flag and resolves the target i
   );
   assert.deepEqual(model.rows[0]?.cells.country?.flags?.map(flag => flag.tag), ['GER']);
   assert.deepEqual(model.rows[0]?.cells.place?.value, { kind: 'pending', reason: 'Name is loading' });
+});
+
+test('all four log declarations send whole-log search and sort, replace the page owner, and group dates only for date order', () => {
+  for (const declaration of [decisionsDeclaration, eventChoicesDeclaration, eventFeedDeclaration, marketLedgerDeclaration]) {
+    const make = (search: string, column: string) => {
+      const settings = tableSettingsOf(undefined, typeof declaration.columns === 'function' ? [] : declaration.columns, LOG_TABLE_BASE);
+      settings.sort = { column, direction: 'ascending' };
+      const ctx = {
+        track: { source: { id: 'whole-log', revision: '1' }, axisOffset: 0 },
+        branch: { id: '1', firstHour: 0, lastHour: 200, gaps: [] },
+        widget: { id: 'log', kind: declaration.kind, countries: { kind: 'all' }, time: { mode: 'follow' } },
+        options: { warsPeace: true, tableSettings: encodeTableSettings(settings), search }, settings, following: true,
+        countries: { all: true, tags: [], filter: { passing: null, unrecorded: [], bounds: [] } },
+        gateSpan: (firstHour: number, lastHour: number) => ({ firstHour, lastHour }),
+      } as unknown as FamilyPlanContext<unknown> & { settings: typeof settings };
+      const plan = declaration.sources(ctx, { following: true, staticSpan: null });
+      const read = plan.entries[0]!.read;
+      if (read.shape !== 'paged-rows') throw new Error('expected paged log');
+      return { owner: plan.owner, ask: read.tailQuery.ask, grouped: declaration.projectionOptions(ctx).byDate };
+    };
+    const initial = make('', 'date');
+    const sorted = make('', 'country');
+    assert.deepEqual(sorted.ask?.sort, { column: 'country', direction: 'ascending' });
+    assert.equal(initial.grouped, true);
+    assert.equal(sorted.grouped, false);
+    assert.notEqual(initial.owner, sorted.owner);
+    const searched = make('deep match', 'country');
+    assert.equal(searched.ask?.search, 'deep match');
+    assert.notEqual(sorted.owner, searched.owner, 'a new owner releases the scrolled snapshot and starts at the head');
+    assert.notEqual(searched.owner, make('', 'country').owner);
+  }
 });

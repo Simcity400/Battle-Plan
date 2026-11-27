@@ -15,10 +15,10 @@ import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { STATUS_CHOICES } from './decisionsData.ts';
 
 export const DECISIONS_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn(),
+  logDateColumn({ sortable: true }),
   logKindColumn({ minWidth: 34, maxWidth: 42 }),
-  logCountryColumn({ minWidth: 54 }),
-  logItemColumn({ label: 'Decision', minWidth: 180 }),
+  logCountryColumn({ sortable: true, minWidth: 54 }),
+  logItemColumn({ sortable: true, label: 'Decision', minWidth: 180 }),
   logPlaceColumn({ minWidth: 92 }),
   {
     key: 'timer',
@@ -38,12 +38,12 @@ export const DECISIONS_COLUMNS: readonly TableColumnSpec[] = [
     as: 'plain',
     offered: OFFERED.text,
     priority: 2,
-    sortable: false,
+    sortable: true,
     numeric: true,
     minWidth: 96,
     widest: ['999 PP'],
   },
-  logStatusColumn({ minWidth: 120, widest: ['Completed'] }),
+  logStatusColumn({ sortable: true, minWidth: 120, widest: ['Completed'] }),
 ];
 
 export const OPTIONS: readonly OptionField[] = [

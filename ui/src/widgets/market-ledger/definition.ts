@@ -14,17 +14,17 @@ import type { TableColumnSpec } from '../../families/table/model.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const MARKET_LEDGER_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn(),
+  logDateColumn({ sortable: true }),
   logKindColumn({ minWidth: 34, maxWidth: 42 }),
-  logCountryColumn(),
-  logItemColumn({ label: 'Equipment', minWidth: 180 }),
+  logCountryColumn({ sortable: true }),
+  logItemColumn({ sortable: true, label: 'Equipment', minWidth: 180 }),
   {
     key: 'delivered',
     label: 'Delivered',
     as: 'plain',
     offered: OFFERED.text,
     priority: 1,
-    sortable: false,
+    sortable: true,
     numeric: true,
     minWidth: 112,
     widest: ['999 / 999 units'],
@@ -36,12 +36,12 @@ export const MARKET_LEDGER_COLUMNS: readonly TableColumnSpec[] = [
     as: 'plain',
     offered: OFFERED.text,
     priority: 2,
-    sortable: false,
+    sortable: true,
     numeric: true,
     minWidth: 108,
     widest: ['−9,999.9 CIC'],
   },
-  logStatusColumn({ minWidth: 136, widest: ['Contract started'] }),
+  logStatusColumn({ sortable: true, minWidth: 136, widest: ['Contract started'] }),
   logActionColumn({ minWidth: 26, maxWidth: 32 }),
 ];
 
