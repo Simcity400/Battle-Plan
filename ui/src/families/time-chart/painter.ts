@@ -1,6 +1,8 @@
 import { measureCanvasText, textWidthRevision, type Canvas2D } from '../../charts/textWidth.ts';
 import { timeChartCacheState } from './cacheControl.ts';
 import {
+  contextSlotBacking,
+  contextWidgetKey,
   drawArtSlot,
   drawCrosshairLine,
   drawDateTab,
@@ -792,11 +794,9 @@ interface TimeChartBackdropEntry {
 }
 
 const backdropCache = new WeakMap<object, TimeChartBackdropEntry>();
-const tcCacheKey = (ctx: Canvas2D): object =>
-  (ctx as unknown as { __bpWidgetKey?: object }).__bpWidgetKey ?? ctx;
 
 export function clearTimeChartBackdrop(ctx: Canvas2D): void {
-  backdropCache.delete(tcCacheKey(ctx));
+  backdropCache.delete(contextWidgetKey(ctx));
 }
 
 function backdropThemeKey(theme: FamilyTheme): string {
@@ -1781,7 +1781,7 @@ export function drawTimeChart(
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, layout.width, layout.height);
   if (layout.rows) {
-    backdropCache.delete(tcCacheKey(ctx));
+    backdropCache.delete(contextWidgetKey(ctx));
     drawChartRows(ctx, model, layout.rows, theme, parseRowsInspect(inspectKey), artCache);
     return;
   }
@@ -1796,10 +1796,10 @@ export function drawTimeChart(
     && typeof (ctx as { readonly drawImage?: unknown }).drawImage === 'function'
   ) {
     const colorSpace = backdropColorSpaceOf(ctx);
-    const slotMeta = ctx as unknown as { readonly __bpSlotBw?: number; readonly __bpSlotBh?: number };
+    const slotBacking = contextSlotBacking(ctx);
     const canvas = (ctx as { readonly canvas?: { readonly width?: number; readonly height?: number } }).canvas;
-    const bw = typeof slotMeta.__bpSlotBw === 'number' ? slotMeta.__bpSlotBw : (canvas && typeof canvas.width === 'number' ? canvas.width : 0);
-    const bh = typeof slotMeta.__bpSlotBh === 'number' ? slotMeta.__bpSlotBh : (canvas && typeof canvas.height === 'number' ? canvas.height : 0);
+    const bw = slotBacking ? slotBacking.bw : (canvas && typeof canvas.width === 'number' ? canvas.width : 0);
+    const bh = slotBacking ? slotBacking.bh : (canvas && typeof canvas.height === 'number' ? canvas.height : 0);
     if (
       colorSpace !== null
       && bw > 0
@@ -1811,7 +1811,7 @@ export function drawTimeChart(
       const themeKey = backdropThemeKey(theme);
       const textRev = textWidthRevision();
       const normLegendFit = legendFit ?? null;
-      const cacheKey = tcCacheKey(ctx);
+      const cacheKey = contextWidgetKey(ctx);
       let entry = backdropCache.get(cacheKey);
       const sameKey = entry !== undefined
         && entry.bw === bw
@@ -1886,7 +1886,7 @@ export function drawTimeChart(
     }
   }
   if (!usedBackdrop) {
-    if (!trackedBackdrop) backdropCache.delete(tcCacheKey(ctx));
+    if (!trackedBackdrop) backdropCache.delete(contextWidgetKey(ctx));
     drawTimeChartBackdrop(ctx, model, layout, theme, tokens, parsedInspect, hoveredSeriesId, legendFit, artCache);
   }
 

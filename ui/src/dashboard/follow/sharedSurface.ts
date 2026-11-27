@@ -161,7 +161,7 @@ export function computeSharedLaneGeometry(
   for (const [lane, list] of perLane) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const item of list) {
-      if (!item.inView) continue;
+      if (!item.inView || !item.active) continue;
       const cx0 = Math.max(minXLimit, item.rect.x);
       const cy0 = Math.max(minYLimit, item.rect.y);
       const cx1 = Math.min(maxXLimit, item.rect.x + item.rect.w);
@@ -275,7 +275,9 @@ export class SharedSurfaceHost {
   private rafId: number | null = null;
   private disposed = false;
   private imageBackdrop = isImageBackdropActive();
+  private interactive = false;
   private lastUsedClipPath = false;
+  private readonly failedLanes = new Set<number>();
   private readonly listeners = new Set<() => void>();
 
   constructor(pipeline: Pipeline, scrollEl: HTMLElement) {
@@ -313,7 +315,7 @@ export class SharedSurfaceHost {
   private ensureLane(lane: number): LaneCanvasState | null {
     const existing = this.lanes.get(lane);
     if (existing) return existing;
-    if (!this.supported || lane < 0 || lane >= this.pipeline.laneCount) return null;
+    if (!this.supported || this.failedLanes.has(lane) || lane < 0 || lane >= this.pipeline.laneCount) return null;
     const canvas = document.createElement('canvas');
     canvas.className = 'dash-shared-canvas';
     canvas.dataset.sharedLane = String(lane);
@@ -328,13 +330,35 @@ export class SharedSurfaceHost {
     } catch {
       transferred = false;
     }
+    if (!transferred) {
+      canvas.remove();
+      this.failedLanes.add(lane);
+      for (const listener of this.listeners) listener();
+      return null;
+    }
     const state: LaneCanvasState = { lane, canvas, transferred, lastSig: '' };
     this.lanes.set(lane, state);
     return state;
   }
 
   get enabled(): boolean {
-    return !this.disposed && !this.imageBackdrop && this.supported;
+    return !this.disposed && !this.imageBackdrop && !this.interactive && this.supported;
+  }
+
+  get laneCount(): number {
+    return this.pipeline.laneCount;
+  }
+
+  laneAvailable(lane: number | null): boolean {
+    if (!this.enabled) return false;
+    return lane === null || !this.failedLanes.has(lane);
+  }
+
+  setInteractive(active: boolean): void {
+    if (this.disposed || this.interactive === active) return;
+    this.interactive = active;
+    for (const listener of this.listeners) listener();
+    this.scheduleSync();
   }
 
   subscribe(listener: () => void): () => void {
@@ -463,7 +487,9 @@ export class SharedSurfaceHost {
       laneState.canvas.style.clipPath = layout.clipPath;
       laneState.canvas.dataset.clipFallback = layout.clipPathFallback ? '1' : '0';
 
-      const sig = `${layout.width}:${layout.height}:${dpr}:${scrollTop}:${scrollLeft}:${surfaceColor}:${layout.clipPathFallback ? 1 : 0}|${layout.slots.map(s => `${s.widget},${s.x},${s.y},${s.w},${s.h},${s.visible ? 1 : 0}`).join(';')}`;
+      const originX = snapRound(scrollLeft + layout.left, dpr);
+      const originY = snapRound(scrollTop + layout.top, dpr);
+      const sig = `${layout.width}:${layout.height}:${dpr}:${originX}:${originY}:${surfaceColor}:${layout.clipPathFallback ? 1 : 0}|${layout.slots.map(s => `${s.widget},${s.x},${s.y},${s.w},${s.h},${s.visible ? 1 : 0}`).join(';')}`;
       if (laneState.lastSig !== sig) {
         laneState.lastSig = sig;
         this.pipeline.sendLaneSlots(laneState.lane, {
@@ -472,6 +498,8 @@ export class SharedSurfaceHost {
           dpr,
           scrollTop,
           scrollLeft,
+          originX,
+          originY,
           surfaceColor,
           clipPathFallback: layout.clipPathFallback,
           slots: layout.slots,
@@ -486,6 +514,9 @@ export class SharedSurfaceHost {
     this.scrollEl.removeEventListener('scroll', this.onScroll);
     this.ro?.disconnect();
     this.mo?.disconnect();
+    for (const laneState of this.lanes.values()) {
+      if (laneState.transferred) this.pipeline.disposeLaneSurface?.(laneState.lane);
+    }
     for (const entry of this.widgets.values()) {
       delete entry.frameEl.dataset.sharedSurface;
     }

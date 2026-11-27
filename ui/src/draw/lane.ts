@@ -32,6 +32,8 @@ export interface SharedLaneCanvas {
   dpr: number;
   scrollTop: number;
   scrollLeft: number;
+  originX: number;
+  originY: number;
   surfaceColor: string;
   readonly activeSlot: {
     ox: number;
@@ -796,6 +798,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.dirtyWorkerCanvases.add(widget);
     this.sharedSurface?.slots.delete(widget);
     this.sharedSurface?.dirtySlots.delete(widget);
+    this.windowSafeDirty = true;
     const held = this.widgets.get(widget);
     if (held) {
       held.forceFull = true;
@@ -857,11 +860,32 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       dpr: 1,
       scrollTop: 0,
       scrollLeft: 0,
+      originX: 0,
+      originY: 0,
       surfaceColor: '',
       activeSlot,
       slots: new Map(),
       dirtySlots: new Set(),
     };
+  }
+
+  disposeLaneSurface() {
+    const shared = this.sharedSurface;
+    if (!shared) return;
+    shared.canvas.width = 1;
+    shared.canvas.height = 1;
+    for (const wid of shared.slots.keys()) {
+      const held = this.widgets.get(wid);
+      if (held) {
+        held.forceFull = true;
+        this.dirtyWidgets.add(wid);
+      }
+    }
+    shared.slots.clear();
+    shared.dirtySlots.clear();
+    this.sharedSurface = null;
+    this.windowSafeDirty = true;
+    this.wake();
   }
 
   setLaneSlots(payload: LaneSlotsPayload) {
@@ -870,15 +894,20 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const dpr = payload.dpr > 0 ? payload.dpr : 1;
     const bw = Math.max(1, Math.round(payload.width * dpr));
     const bh = Math.max(1, Math.round(payload.height * dpr));
-    const resized = shared.canvas.width !== bw || shared.canvas.height !== bh || shared.surfaceColor !== payload.surfaceColor;
-    const scrolled = !resized && (shared.scrollTop !== payload.scrollTop || shared.scrollLeft !== payload.scrollLeft);
-    const dx = Math.round((payload.scrollLeft - shared.scrollLeft) * dpr);
-    const dy = Math.round((payload.scrollTop - shared.scrollTop) * dpr);
+    const ox = payload.originX ?? payload.scrollLeft;
+    const oy = payload.originY ?? payload.scrollTop;
+    const resized = shared.canvas.width !== bw || shared.canvas.height !== bh || shared.surfaceColor !== payload.surfaceColor || shared.dpr !== dpr;
+    const dx = Math.round((ox - shared.originX) * dpr);
+    const dy = Math.round((oy - shared.originY) * dpr);
+    const originMoved = !resized && (dx !== 0 || dy !== 0);
+    const prevSlots = new Map(shared.slots);
     shared.width = payload.width;
     shared.height = payload.height;
     shared.dpr = dpr;
     shared.scrollTop = payload.scrollTop;
     shared.scrollLeft = payload.scrollLeft;
+    shared.originX = ox;
+    shared.originY = oy;
     shared.surfaceColor = payload.surfaceColor;
 
     if (resized) {
@@ -891,7 +920,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         shared.ctx.fillRect(0, 0, bw, bh);
         shared.ctx.restore();
       }
-    } else if (scrolled && payload.width > 0 && payload.height > 0) {
+    } else if (originMoved && payload.width > 0 && payload.height > 0) {
       if (Math.abs(dx) < bw && Math.abs(dy) < bh) {
         shared.ctx.save();
         shared.rawSetTransform(1, 0, 0, 1, 0, 0);
@@ -914,17 +943,64 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
 
     const nextSlots = new Map<number, SharedSurfaceSlot>();
+    for (const slot of payload.slots) nextSlots.set(slot.widget, slot);
+
+    const clearedRects: { x: number; y: number; w: number; h: number }[] = [];
+    if (!resized && payload.width > 0 && payload.height > 0) {
+      for (const [wid, prev] of prevSlots) {
+        if (!prev.visible) continue;
+        const next = nextSlots.get(wid);
+        const stillSame = next && next.visible
+          && next.x === prev.x && next.y === prev.y && next.w === prev.w && next.h === prev.h;
+        if (stillSame) continue;
+        const rx = originMoved ? prev.x - dx / dpr : prev.x;
+        const ry = originMoved ? prev.y - dy / dpr : prev.y;
+        clearedRects.push({ x: rx, y: ry, w: prev.w, h: prev.h });
+      }
+      if (clearedRects.length && payload.surfaceColor) {
+        shared.ctx.save();
+        shared.rawSetTransform(1, 0, 0, 1, 0, 0);
+        shared.ctx.fillStyle = payload.surfaceColor;
+        for (const r of clearedRects) {
+          shared.ctx.fillRect(
+            Math.floor(r.x * dpr),
+            Math.floor(r.y * dpr),
+            Math.ceil(r.w * dpr),
+            Math.ceil(r.h * dpr),
+          );
+        }
+        shared.ctx.restore();
+      }
+    }
+
+    let directChanged = false;
+    for (const [wid, prev] of prevSlots) {
+      const next = nextSlots.get(wid);
+      if (prev.visible && (!next || !next.visible)) {
+        directChanged = true;
+        shared.dirtySlots.delete(wid);
+        const held = this.widgets.get(wid);
+        if (held) {
+          held.forceFull = true;
+          this.dirtyWidgets.add(wid);
+        }
+      }
+    }
     for (const slot of payload.slots) {
-      nextSlots.set(slot.widget, slot);
-      const prev = shared.slots.get(slot.widget);
+      const prev = prevSlots.get(slot.widget);
+      if (slot.visible !== Boolean(prev?.visible)) directChanged = true;
       const moved = !prev || prev.x !== slot.x || prev.y !== slot.y || prev.w !== slot.w || prev.h !== slot.h || prev.visible !== slot.visible;
-      if (slot.visible && (resized || scrolled || moved)) {
+      const overlappedClear = clearedRects.some(r =>
+        slot.x < r.x + r.w && slot.x + slot.w > r.x && slot.y < r.y + r.h && slot.y + slot.h > r.y
+      );
+      if (slot.visible && (resized || originMoved || moved || overlappedClear)) {
         shared.dirtySlots.add(slot.widget);
         const held = this.widgets.get(slot.widget);
         if (held) held.forceFull = true;
         this.dirtyWidgets.add(slot.widget);
       }
     }
+    if (directChanged) this.windowSafeDirty = true;
     shared.slots.clear();
     for (const [wid, slot] of nextSlots) shared.slots.set(wid, slot);
     this.wake();
@@ -1884,6 +1960,16 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private targetOf(widget: Widget, hour: number) { return widget.binding.pin ?? hour + widget.binding.offset; }
 
+  private isDirectTarget(widgetId: number): boolean {
+    if (this.workerCanvases.has(widgetId)) return true;
+    const shared = this.sharedSurface;
+    return Boolean(shared && shared.width > 0 && shared.height > 0 && shared.slots.get(widgetId)?.visible);
+  }
+
+  private requestHourFor(widget: Widget, request: FrameRequest): number {
+    return this.targetOf(widget, this.isDirectTarget(widget.id) ? request.now : request.target);
+  }
+
   private select(widget: Widget, target: number): Selected | null {
     const pictures: Picture<Value>[] = [];
     let joined: { h: number; c: number; window: Window } | null;
@@ -2034,20 +2120,21 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const widget = this.widgets.get(wid);
       if (widget && widget.inspect !== key) candidates.add(wid);
     }
-    if (this.windowedWidgets.size && (this.windowSafeDirty || request.target < this.windowSafeLo || request.target > this.windowSafeHi)) {
+    if (this.windowedWidgets.size && (this.windowSafeDirty || request.target < this.windowSafeLo || request.target > this.windowSafeHi || request.now < this.windowSafeLo || request.now > this.windowSafeHi)) {
       let lo = -Infinity, hi = Infinity;
       for (const wid of this.windowedWidgets) {
         this.stats.visited++;
         const widget = this.widgets.get(wid);
         if (!widget) continue;
-        const target = this.targetOf(widget, request.target);
+        const base = this.isDirectTarget(wid) ? request.now : request.target;
+        const target = this.targetOf(widget, base);
         const w = widget.validWindow;
         const active = widget.inflight ?? widget.installed;
         if ((!active && !w) || (w && (target < w[0] || target > w[1])) || (active && (target < active.lo || target > active.hi))) {
           candidates.add(wid);
         }
-        if (w) [lo, hi] = this.clampSafeRange(lo, hi, w[0], w[1], widget.binding.offset, request.target);
-        if (active) [lo, hi] = this.clampSafeRange(lo, hi, active.lo, active.hi, widget.binding.offset, request.target);
+        if (w) [lo, hi] = this.clampSafeRange(lo, hi, w[0], w[1], widget.binding.offset, base);
+        if (active) [lo, hi] = this.clampSafeRange(lo, hi, active.lo, active.hi, widget.binding.offset, base);
       }
       this.windowSafeLo = lo;
       this.windowSafeHi = hi;
@@ -2059,7 +2146,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (!widget || widget.halted === widget.binding.generation || this.failedWidgets.has(wid)) continue;
       this.stats.visited++;
       if (!request.exact && widget.parked) { widget.parked = null; this.parkedWidgets.delete(wid); }
-      const key = inspect.get(widget.id) ?? null, target = this.targetOf(widget, request.target);
+      const key = inspect.get(widget.id) ?? null, target = this.requestHourFor(widget, request);
       const route = this.routeOf(widget);
       const selected = this.select(widget, target);
       if (!selected) {
@@ -2085,7 +2172,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (this.matches(widget.parked, selected, target, widget.binding.generation, widget.supply, key, route, request.seek)) continue;
       const pending = widget.inflight && this.pageRequests - widget.inflight.request <= STALE && this.matches(widget.inflight, selected, target, widget.binding.generation, widget.supply, key, route, request.seek);
       const slotDirty = this.sharedSurface?.dirtySlots.has(wid) === true || this.dirtyWorkerCanvases.has(wid);
-      if (pending || shown && !widget.motion && !widget.forceFull && !slotDirty) {
+      if ((pending || (shown && !widget.motion)) && !widget.forceFull && !slotDirty) {
         widget.inspect = key;
         if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
         continue;

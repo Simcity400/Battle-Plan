@@ -240,6 +240,11 @@ export class Pipeline {
     this.postLane(lane, { type: 'lane-slots', ...payload });
   }
 
+  disposeLaneSurface(lane: number) {
+    if (this.closed || lane < 0 || lane >= this.host.lanes.length) return;
+    this.postLane(lane, { type: 'lane-surface-dispose' });
+  }
+
   prepare(families: readonly string[], projections: readonly ProjectionKey[]) {
     if (this.closed) return;
     const ask = ++this.prepareAsk;

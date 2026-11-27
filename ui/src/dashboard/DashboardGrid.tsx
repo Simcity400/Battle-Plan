@@ -26,7 +26,7 @@ import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
 import { FollowedCard, FollowedWidgetKey, FollowedWidgetKind } from './follow/store.ts';
-import { laneCount as defaultLaneCount, usePipeline, usePipelineGeneration } from './follow/useFollowed.ts';
+import { laneCount as defaultLaneCount, usePipelineGeneration } from './follow/useFollowed.ts';
 import { computeSpatialLaneMap, SharedSurfaceContext, SpatialLaneContext } from './follow/sharedSurface.ts';
 import { pageClock, WidgetFrames } from './widgetClock';
 import { configuredStripPage, StripPage, StripPageContext } from './strip/driver.ts';
@@ -70,8 +70,7 @@ function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts
   const placement = useGridPlacement(containerRef);
   useEffect(() => { preloadPageRenderers(template.widgets); }, [template.widgets]);
   const sharedHost = useContext(SharedSurfaceContext);
-  const pipeline = usePipeline(prepared ? null : runtime.clock, prepared ? null : runtime.client);
-  const effectiveLaneCount = pipeline?.laneCount ?? defaultLaneCount();
+  const effectiveLaneCount = sharedHost?.laneCount ?? defaultLaneCount();
   const activeBreakpoint: Breakpoint = width >= 1280 ? 'lg' : width >= 850 ? 'md' : width >= 520 ? 'sm' : 'xs';
   const spatialLanes = useMemo(() => {
     const items = template.layouts[activeBreakpoint]
@@ -85,6 +84,14 @@ function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts
   useLayoutEffect(() => {
     sharedHost?.scheduleSync();
   }, [sharedHost, template.layouts, width, editing]);
+  const beginInteraction = useCallback(() => {
+    sharedHost?.setInteractive(true);
+  }, [sharedHost]);
+  const endInteraction = useCallback(() => {
+    runtime.maps.schedule();
+    sharedHost?.setInteractive(false);
+    sharedHost?.scheduleSync();
+  }, [runtime.maps, sharedHost]);
   const syncSurfaces = useCallback(() => {
     runtime.maps.schedule();
     sharedHost?.scheduleSync();
@@ -104,7 +111,8 @@ function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts
       breakpoints={{ lg: 1280, md: 850, sm: 520, xs: 0 }} cols={GRID_COLUMNS} rowHeight={26} margin={[6, 6]} containerPadding={[0, 0]} positionStrategy={placement}
       dragConfig={{ enabled: editing, handle: '.dash-drag-grip', cancel: 'input,select,textarea,a' }}
       resizeConfig={{ enabled: editing, handles: ['se'] }} onLayoutChange={changed}
-      onDrag={syncSurfaces} onDragStop={syncSurfaces} onResize={syncSurfaces} onResizeStop={syncSurfaces}>
+      onDragStart={beginInteraction} onDrag={syncSurfaces} onDragStop={endInteraction}
+      onResizeStart={beginInteraction} onResize={syncSurfaces} onResizeStop={endInteraction}>
       {template.widgets.map((widget) => <div key={widget.id} className="dash-grid-cell">
         <WidgetFrame prepared={prepared} widget={widget} template={template} runtime={runtime} editing={editing} onApply={onApply} onRemove={onRemove} />
       </div>)}

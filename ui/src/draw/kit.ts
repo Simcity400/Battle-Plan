@@ -2587,3 +2587,24 @@ export function drawAddRow(
   }
   ctx.restore();
 }
+
+export interface SharedContextSlot {
+  readonly widgetKey: object;
+  readonly slotBw: number;
+  readonly slotBh: number;
+}
+
+const sharedContextSlots = new WeakMap<object, SharedContextSlot>();
+
+export function setContextSlot(ctx: object, slot: SharedContextSlot): void {
+  sharedContextSlots.set(ctx, slot);
+}
+
+export function contextWidgetKey(ctx: object): object {
+  return sharedContextSlots.get(ctx)?.widgetKey ?? ctx;
+}
+
+export function contextSlotBacking(ctx: object): { readonly bw: number; readonly bh: number } | null {
+  const slot = sharedContextSlots.get(ctx);
+  return slot ? { bw: slot.slotBw, bh: slot.slotBh } : null;
+}

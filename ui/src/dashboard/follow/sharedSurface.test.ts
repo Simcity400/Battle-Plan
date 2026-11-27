@@ -412,3 +412,172 @@ test('stationary widget costs zero repaints with shared surface on while active 
     Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
   }
 });
+
+test('direct shared and worker targets paint request.now instead of lookahead request.target, repaint across in-flight slot moves, and repaint on shared-to-worker fallback', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number;
+      height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) {
+        this.width = w;
+        this.height = h;
+        this.ctx = fakeContext2D().ctx;
+      }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+
+  try {
+    const kind = 'test-direct-lookahead-shared';
+    registerFamilyProjection({
+      family: 'bars',
+      kind,
+      project(view) { return { hour: view.hour }; },
+    }, 'main');
+
+    const painted: { hour: number; target: 'shared' | 'worker' }[] = [];
+    const sharedCanvas = fakeOffscreenCanvas(800, 600);
+    const workerCanvas = fakeOffscreenCanvas(380, 240);
+
+    const family: LaneFamily<LaneBinding, { readonly hour: number }, { readonly hour: number }> = {
+      family: 'bars',
+      boundary: (_model, hour) => hour + 1,
+      redraw: () => Infinity,
+      status: () => 'picture',
+      view: [],
+      layout: (model) => ({ hour: model.hour }),
+      paint(ctx, frame) {
+        painted.push({
+          hour: frame.hour,
+          target: ctx === sharedCanvas.ctx ? 'shared' : 'worker',
+        });
+        return false;
+      },
+      hit: () => null,
+      tooltip: () => null,
+      structure: () => ({}),
+      mirror: null,
+      audit: () => [],
+      visibleArt: () => [],
+    };
+
+    const view: LaneView = createLaneView(family, () => {});
+    const presented: { id: number; widget: number; binding: number }[] = [];
+    const lane = new Lane<Bitmapped & { close(): void }>({
+      lane: 0,
+      lanes: 1,
+      views: () => view,
+      crop: async () => [],
+      present(p) {
+        for (const e of p.entries) presented.push({ id: e.id, widget: e.widget, binding: e.binding });
+      },
+      release() {},
+      fail(reason) { throw new Error(reason); },
+      later() {},
+      clock: () => 0,
+      budget: Infinity,
+    });
+
+    lane.setLaneSurface(sharedCanvas.canvas, true);
+    lane.setCanvas(1, workerCanvas.canvas, false);
+    lane.mount(1, [], 'bars', {
+      family: 'bars',
+      kind,
+      view: 'main',
+      options: {},
+      sources: {},
+      scrollTop: 0,
+      theme: TEST_THEME,
+    } satisfies LaneBinding);
+    lane.bind(1, { generation: 1, surfaces: [{ width: 380, height: 240, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 100 } });
+    lane.setLaneSlots({
+      width: 800,
+      height: 260,
+      dpr: 1,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [{ widget: 1, x: 0, y: 0, w: 380, h: 240, visible: true }],
+    });
+
+    const sendFrame = async (serial: number, now: number, target: number, ack = true) => {
+      const acks = ack ? presented.splice(0).map(p => ({ id: p.id, widget: p.widget, binding: p.binding })) : [];
+      lane.frame({
+        type: 'frame',
+        serial,
+        seek: 1,
+        target,
+        now,
+        exact: false,
+        speed: 24,
+        inspect: [],
+        installed: acks,
+        refused: [],
+      });
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    };
+
+    await sendFrame(1, 1, 3, false);
+    assert.deepEqual(painted, [{ hour: 1, target: 'shared' }]);
+
+    lane.setLaneSlots({
+      width: 800,
+      height: 260,
+      dpr: 1,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [{ widget: 1, x: 24, y: 0, w: 380, h: 240, visible: true }],
+    });
+    await sendFrame(2, 1, 3, false);
+    assert.equal(painted.length, 2);
+    assert.deepEqual(painted.at(-1), { hour: 1, target: 'shared' });
+
+    lane.setLaneSlots({
+      width: 0,
+      height: 0,
+      dpr: 1,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [],
+    });
+    await sendFrame(3, 1, 3, true);
+    assert.equal(painted.length, 3);
+    assert.deepEqual(painted.at(-1), { hour: 1, target: 'worker' });
+
+    lane.disposeLaneSurface();
+    assert.equal(sharedCanvas.canvas.width, 1);
+    assert.equal(sharedCanvas.canvas.height, 1);
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+test('inactive lane in pinwheel layout does not emit an unclipped viewport canvas', () => {
+  const geom = computeSharedLaneGeometry(
+    [
+      { widget: 1, lane: 0, rect: { x: 0, y: 0, w: 800, h: 400 }, inView: true, active: true },
+      { widget: 2, lane: 0, rect: { x: 400, y: 800, w: 800, h: 400 }, inView: true, active: true },
+      { widget: 3, lane: 1, rect: { x: 800, y: 0, w: 400, h: 800 }, inView: true, active: false },
+      { widget: 4, lane: 1, rect: { x: 0, y: 400, w: 400, h: 800 }, inView: true, active: false },
+    ],
+    { x: 0, y: 0, w: 1200, h: 1200 },
+    1,
+  );
+  assert.equal(geom.lanes.has(1), false);
+  assert.equal(geom.lanes.has(0), true);
+  assert.equal(geom.clipPathFallback, false);
+});

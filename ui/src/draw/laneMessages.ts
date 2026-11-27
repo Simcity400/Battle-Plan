@@ -22,6 +22,8 @@ export interface LaneSlotsPayload {
   readonly dpr: number;
   readonly scrollTop: number;
   readonly scrollLeft: number;
+  readonly originX?: number;
+  readonly originY?: number;
   readonly surfaceColor: string;
   readonly clipPathFallback: boolean;
   readonly slots: readonly SharedSurfaceSlot[];
@@ -48,6 +50,7 @@ export type ToLane =
   | { type: 'canvas'; widget: number; canvas: OffscreenCanvas; opaque: boolean }
   | { type: 'lane-surface'; canvas: OffscreenCanvas; opaque: boolean }
   | ({ type: 'lane-slots' } & LaneSlotsPayload)
+  | { type: 'lane-surface-dispose' }
   | FrameRequest;
 
 export type FromLane =

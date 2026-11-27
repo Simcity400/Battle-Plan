@@ -1,5 +1,5 @@
 import { canvasMeasureText, measureCanvasText } from '../../charts/textWidth.ts';
-import { BEHIND_BAR_HEIGHT, BEHIND_BAR_MAX_WIDTH, BEHIND_BAR_MIN_WIDTH, BEHIND_BAR_OFFSET } from '../../draw/kit.ts';
+import { BEHIND_BAR_HEIGHT, BEHIND_BAR_MAX_WIDTH, BEHIND_BAR_MIN_WIDTH, BEHIND_BAR_OFFSET, contextWidgetKey } from '../../draw/kit.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import type { FamilyAuditRow } from '../auditRow.ts';
@@ -124,13 +124,11 @@ interface PaintedTable {
 }
 
 const pictures = new WeakMap<object, PaintedTable>();
-const tableCacheKey = (ctx: OffscreenCanvasRenderingContext2D): object =>
-  (ctx as unknown as { __bpWidgetKey?: object }).__bpWidgetKey ?? ctx;
 
 function picturesFor(ctx: OffscreenCanvasRenderingContext2D, surface: Surface, art: number): PaintedTable {
   const width = surface.width * surface.dpr;
   const height = surface.height * surface.dpr;
-  const key = tableCacheKey(ctx);
+  const key = contextWidgetKey(ctx);
   let held = pictures.get(key);
   if (!held || held.width !== width || held.height !== height) pictures.set(key, held = { width, height, art, list: [] });
   else held.art = art;
@@ -888,7 +886,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     mm.glideEnd = -Infinity;
   },
   keepsCanvas(ctx, frame) {
-    const last = pictures.get(tableCacheKey(ctx));
+    const last = pictures.get(contextWidgetKey(ctx));
     if (!last?.still || last.dpr !== frame.surface.dpr ||
         last.inspect !== frame.inspect || last.selected !== frame.binding.selectedKey || last.focused !== frame.binding.focusedKey ||
         (last.art !== frame.art.version && !sameVisibleArtStates(last.artStates, frame.art)) ||

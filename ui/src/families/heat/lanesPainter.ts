@@ -3,6 +3,7 @@ import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   computeTimeAxisTicks,
+  contextWidgetKey,
   contrastInkForFill,
   drawAddRow,
   drawCrosshairLine,
@@ -203,8 +204,6 @@ function drawInRunLabel(
 }
 
 const paintedLanes = new WeakMap<object, LanePixels[]>();
-const heatCacheKey = (ctx: Canvas2D): object =>
-  (ctx as unknown as { __bpWidgetKey?: object }).__bpWidgetKey ?? ctx;
 
 export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
   const { model, layout, theme, scrollTop, hoveredRow, hoveredAdd = false, hoveredHour, selectedRowId, focusedRowId, artCache } = input;
@@ -273,7 +272,7 @@ export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
     if (focusedRowId === REGION_ADD_KEY) drawRowFocusRing(ctx, 0, ay, layout.width, layout.rowHeight, theme, 2);
     drawAddRow(ctx, LANE_PAD, ay + layout.rowHeight / 2, layout.plotLeft, layout.plotLeft + layout.plotWidth, model.regions.addLabel, theme);
   }
-  const key = heatCacheKey(ctx);
+  const key = contextWidgetKey(ctx);
   let pixels = paintedLanes.get(key);
   if (!pixels) paintedLanes.set(key, pixels = []);
   pixels.length = layout.endRow - layout.firstRow;

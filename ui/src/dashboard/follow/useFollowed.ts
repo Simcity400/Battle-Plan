@@ -82,7 +82,8 @@ export function pipelineOf(clock: PlaybackController, client: DashboardClient): 
 }
 
 export function usePipeline(clock: PlaybackController | null, client: DashboardClient | null): Pipeline | null {
-  return useMemo(() => (clock && client ? pipelineOf(clock, client) : null), [clock, client]);
+  const generation = usePipelineGeneration(clock);
+  return useMemo(() => (clock && client ? pipelineOf(clock, client) : null), [clock, client, generation]);
 }
 
 export function usePipelineGeneration(clock: PlaybackController | null): number {

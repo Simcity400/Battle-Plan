@@ -346,12 +346,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const prepared = useContext(PreparingPage);
   const sharedHost = useContext(SharedSurfaceContext);
   const spatialLanes = useContext(SpatialLaneContext);
+  const preferredLane = spatialLanes?.get(widget.id);
   const sharedSubscribe = useCallback((cb: () => void) => (sharedHost ? sharedHost.subscribe(cb) : () => {}), [sharedHost]);
-  const sharedRead = useCallback(() => Boolean(sharedHost?.enabled), [sharedHost]);
+  const sharedRead = useCallback(() => Boolean(sharedHost?.laneAvailable(preferredLane ?? null)), [sharedHost, preferredLane]);
   const sharedEnabled = useSyncExternalStore(sharedSubscribe, sharedRead, sharedRead);
   const exportSurface = useExportSurface();
   const useShared = !prepared && !exportSurface.active && sharedEnabled;
-  const preferredLane = spatialLanes?.get(widget.id);
   const exportReportRef = useRef(exportSurface.reportWidget);
   exportReportRef.current = exportSurface.reportWidget;
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
