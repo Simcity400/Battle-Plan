@@ -86,7 +86,15 @@ fn exile_playback_recomputes_for_host_edits_and_matches_the_exact_reply() {
     use serde_json::json;
 
     let frames = (FIRST..=LAST).map(|hour| {
-        let mut frame = frame(hour);
+        let mut frame = source(1, hour, None);
+        set(&mut frame, TableId::Countries, TableRows::Countries(vec![
+            CountryRow { id: GER, canonical_slot: 7, tag: b"GER".to_vec(), ..Default::default() },
+            CountryRow { id: ENG, canonical_slot: 8, tag: b"ENG".to_vec(), ..Default::default() },
+        ]));
+        set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![
+            CountryLinkRow { id: GER, canonical_slot: 7 },
+            CountryLinkRow { id: ENG, canonical_slot: 8 },
+        ]));
         set(&mut frame, TableId::CountryStabilityInputs, TableRows::CountryStabilityInputs(vec![
             CountryStabilityInputRow {
                 country: GER,
