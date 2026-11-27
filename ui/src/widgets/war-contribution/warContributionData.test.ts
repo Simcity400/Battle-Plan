@@ -64,8 +64,15 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   const war = { id: '1', firstHour: 10, lastHour: 500, startedBy: false, endedBy: false, participants: [], capitulations: [],
     observations: [{ ...observation(10, 500, ['BBB'], ['AAA', 'CCC']), attackersAreViewpoint: false }] } as unknown as WarTimeline;
   const wars = { available: true, wars: [war] } as unknown as WarsReply;
-  const reply = { branchId: '1', hour: 100, available: true, contributions: [group], warnings: [] };
+  const reply = { branchId: '1', hour: 100, available: true, contributions: [group], missing: null, warnings: [] };
   const model = warContributionSidesProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['live', reply]]) }), { wars, saved: null });
+  const ask = (available: boolean, missing: string | null) => warContributionSidesProjection.project(
+    createBoundedReadView({ hour: 100, panels: new Map([['live', { ...reply, contributions: [], available, missing }]]) }), { wars, saved: null },
+  );
+  assert.equal(ask(true, null).emptyKind, 'empty');
+  const unread = ask(false, 'Country links were unread');
+  assert.equal(unread.emptyKind, 'unavailable');
+  assert.equal(unread.empty, 'Country links were unread');
   assert.deepEqual(model.panes?.map(pane => pane.key), ['opposing', 'viewpoint'], 'the attackers are the left pane');
   const [left, right] = model.panes!;
   assert.deepEqual(left!.rows.map(row => row.key), ['opposing:CCC', 'opposing:AAA'], 'members in the product’s order');
@@ -295,6 +302,7 @@ test('warContributionSources plans no contribution reads when no eligible war ex
     branchId: 'b1',
     hour: 200,
     available: true,
+    missing: null,
     contributions: [{
       viewpointSide: ['AAA'],
       opposingSide: ['BBB'],
@@ -743,7 +751,7 @@ test('live war-contributions confirmed at a later hour uses the displayed hour f
     ],
   } as unknown as WarTimeline;
   const wars = { available: true, wars: [flippingWar] } as unknown as WarsReply;
-  const heldReply = { branchId: '1', hour: 100, available: true, contributions: [group], warnings: [] };
+  const heldReply = { branchId: '1', hour: 100, available: true, contributions: [group], missing: null, warnings: [] };
 
   const liveRead = createBoundedReadView({ hour: 250, panels: new Map([['live', heldReply]]) });
   const liveSides = warContributionSidesProjection.project(liveRead, { wars, saved: '1' });

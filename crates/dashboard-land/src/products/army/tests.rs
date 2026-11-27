@@ -1,7 +1,7 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
 use replay::campaign::Replay;
-use replay_data::rows::{CountryLinkRow, CountryRow, DivisionRow, DivisionTemplateIconRow, LexicalTokenRow, TableRows, TemplateSubunit};
+use replay_data::rows::{CountryLinkRow, CountryRow, DivisionLandInputsRow, DivisionRow, DivisionTemplateIconRow, LexicalTokenRow, TableRows, TemplateSubunit};
 use replay_frame::frame::{DecodedFrame, TableView};
 
 const FIRST: i32 = 1_000;
@@ -114,6 +114,55 @@ fn walked(recording: &Recording, attribution: u128, parts: &BTreeMap<Country, Ve
     }
     let known = slot_runs.into_iter().map(|(at, runs)| (at, runs.into_iter().filter_map(|(first, last, held)| Some((first, last, held?))).collect())).collect();
     (known, names)
+}
+
+#[test]
+fn army_windows_name_missing_totals_but_keep_recorded_zero_and_other_runs() {
+    let ask = |reads: &[bool], window, ranked: bool, manpower_from: Option<usize>| {
+        let frames = reads.iter().enumerate().map(|(offset, &read)| {
+            let mut frame = source(1, 100 + offset as i32, Some(1));
+            *frame.tables[TableId::Divisions.index()] = if read {
+                TableView::Complete(TableRows::Divisions(ranked.then(|| division(203, 9001, 0, 1)).into_iter().collect()))
+            } else {
+                TableView::Unavailable { reason: "fixture divisions failed".into() }
+            };
+            if manpower_from.is_some_and(|first| offset >= first) {
+                *frame.tables[TableId::DivisionLandInputs.index()] = TableView::Complete(TableRows::DivisionLandInputs(vec![
+                    DivisionLandInputsRow { division: 203, ..Default::default() },
+                ]));
+            }
+            frame
+        }).collect();
+        let replay = dashboard_base::test_fixtures::replay(frames).into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "army-window-coverage".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+        let measure = if ranked { ArmyMeasure::Manpower } else { ArmyMeasure::Divisions };
+        let params = ArmySizeParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: ranked.then_some(3), measure, count_for: ArmyAttribution::Owner, by_type: false, window };
+        ArmySize::load(&source, &params, &LoadContext { content: None }, &false.into()).unwrap()
+    };
+    let empty = ask(&[true], Some(0), false, None);
+    assert!(empty.available);
+    assert_eq!(empty.series[0].runs[0].total, Some(0.0));
+    assert_eq!(serde_json::to_value(&empty).unwrap()["missing"], serde_json::json!([]));
+    let unread = ask(&[false], None, false, None);
+    assert!(!unread.available);
+    let missing = serde_json::to_value(&unread).unwrap();
+    assert!(missing["missing"][0]["reason"].as_str().is_some_and(|reason| reason.contains("fixture divisions failed")));
+    let partial = ask(&[true, false, true], Some(0), false, None);
+    assert!(partial.available);
+    assert_eq!(partial.series[0].runs.iter().map(|run| (run.first_hour, run.last_hour, run.total)).collect::<Vec<_>>(), [(100, 100, Some(0.0)), (102, 102, Some(0.0))]);
+    let missing = serde_json::to_value(&partial).unwrap();
+    assert_eq!(missing["missing"][0]["firstHour"], 101);
+    assert_eq!(missing["missing"][0]["lastHour"], 101);
+    let ranked = ask(&[true], Some(0), true, None);
+    assert!(!ranked.available && ranked.series.is_empty() && !ranked.missing.is_empty());
+    let empty = ask(&[true; 12], Some(0), true, Some(0));
+    assert!(empty.available && empty.series.is_empty() && empty.missing.is_empty());
+    let partial = ask(&[true; 12], Some(0), true, Some(2));
+    assert!(partial.available && partial.series.is_empty());
+    assert_eq!(partial.missing.len(), 1);
+    let gap = &partial.missing[0];
+    assert_eq!((gap.first_hour, gap.last_hour), (100, 101));
+    assert!(gap.reason.contains("ownerManpower"), "{}", gap.reason);
 }
 
 #[test]

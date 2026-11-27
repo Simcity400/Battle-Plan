@@ -8,14 +8,16 @@ const list = (v: unknown, check: (v: unknown) => boolean): v is unknown[] => Arr
 export function validateWargoalsReply(v: unknown): WargoalsReply {
   if (!object(v) || !unsigned64(v.branchId) || !opaqueTag(v.tag) || !list(v.warnings, text) || !list(v.stateNames, r => object(r) && unsigned32(r.id) && text(r.name) && typeof r.known === 'boolean')
     || !list(v.standings, r => object(r) && opaqueTag(r.actor) && opaqueTag(r.recipient) && (r.standing === null || STANDINGS.has(r.standing as string)))
-    || !list(v.goals, r => object(r) && unsigned64(r.handle) && text(r.name) && opaqueTag(r.actor) && opaqueTag(r.recipient) && typeof r.available === 'boolean'
+    || !list(v.goals, r => object(r) && unsigned64(r.handle) && (r.name === null ? text(r.nameMissing) : text(r.name) && r.nameMissing === null)
+      && opaqueTag(r.actor) && opaqueTag(r.recipient) && typeof r.available === 'boolean'
       && (r.expires === null || signed32(r.expires)) && list(r.states, unsigned32) && list(r.liberate, opaqueTag) && list(r.puppets, opaqueTag) && STATES.has(r.state as string)
       && (r.granted === null || signed32(r.granted)) && (r.grantedMissing === null || text(r.grantedMissing)))
     || !list(v.removed, r => object(r) && unsigned64(r.handle) && (r.name === null || text(r.name)) && (r.recipient === null || opaqueTag(r.recipient)) && signed32(r.seen) && signed32(r.removed) && (r.seen as number) < (r.removed as number)
       && (r.granted === null || signed32(r.granted)) && (r.grantedMissing === null || text(r.grantedMissing)) && signed32(r.removed)
       && typeof r.removedExact === 'boolean' && text(r.reasonMissing))
     || !(v.removedUnread === null || text(v.removedUnread))
-    || !list(v.justifications, r => object(r) && unsigned64(r.id) && unsigned32(r.ordinal) && text(r.name) && opaqueTag(r.actor) && opaqueTag(r.recipient) && list(r.states, unsigned32)
+    || !list(v.justifications, r => object(r) && unsigned64(r.id) && unsigned32(r.ordinal) && (r.name === null ? text(r.nameMissing) : text(r.name) && r.nameMissing === null)
+      && opaqueTag(r.actor) && opaqueTag(r.recipient) && list(r.states, unsigned32)
       && signed64(r.total) && signed64(r.daily) && typeof r.payUpfront === 'boolean' && (r.start === null || signed32(r.start)) && signed32(r.completion)
       && (r.paused === null || typeof r.paused === 'boolean'))) throw new Error('Invalid war-goal inventory reply');
   return v as unknown as WargoalsReply;

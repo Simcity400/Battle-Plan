@@ -85,11 +85,11 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   const reply: WargoalsReply = {
     branchId: '1', tag: 'AAA', asked: 'AAA',
     standings: [],
-    justifications: [{ id: '11', ordinal: 0, name: 'Take state', actor: 'AAA', recipient: 'BBB', states: [1], total: '1000000', daily: '10000', payUpfront: false, start: null, completion: hour + 21 * DAY, paused: false }],
+    justifications: [{ id: '11', ordinal: 0, name: 'Take state', nameMissing: null, actor: 'AAA', recipient: 'BBB', states: [1], total: '1000000', daily: '10000', payUpfront: false, start: null, completion: hour + 21 * DAY, paused: false }],
     goals: [
-      { handle: '1', name: 'Puppet', actor: 'AAA', recipient: 'CCC', available: false, expires: null, states: [2, 3], liberate: [], puppets: [], state: 'atWar', granted: null, grantedMissing: 'Held when the branch began' },
-      { handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'DDD', available: true, expires: null, states: [4], liberate: [], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null },
-      { handle: '3', name: 'Conquer', actor: 'AAA', recipient: 'EEE', available: true, expires: hour - 10 * DAY, states: [5, 6], liberate: [], puppets: [], state: 'expired', granted: hour - 300 * DAY, grantedMissing: null },
+      { handle: '1', name: 'Puppet', nameMissing: null, actor: 'AAA', recipient: 'CCC', available: false, expires: null, states: [2, 3], liberate: [], puppets: [], state: 'atWar', granted: null, grantedMissing: 'Held when the branch began' },
+      { handle: '2', name: 'Conquer', nameMissing: null, actor: 'AAA', recipient: 'DDD', available: true, expires: null, states: [4], liberate: [], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null },
+      { handle: '3', name: 'Conquer', nameMissing: null, actor: 'AAA', recipient: 'EEE', available: true, expires: hour - 10 * DAY, states: [5, 6], liberate: [], puppets: [], state: 'expired', granted: hour - 300 * DAY, grantedMissing: null },
     ],
     removed: [{ handle: '9', name: 'Take state', recipient: 'FFF', seen: hour - 6 * DAY, granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }], removedUnread: null,
     warnings: [],
@@ -123,6 +123,11 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assert.equal(withPause(null).figure?.value.kind, 'notRecorded');
   const named = warGoalsProjection.project(view(hour, reply, live), { targetNames: true });
   assert.equal(items(named)[0]!.subtitle, 'Take state');
+  const missingKind = warGoalsProjection.project(view(hour, { ...reply, justifications: [{ ...justification, name: null, nameMissing: 'Goal spelling unread' }] }, live), { targetNames: true });
+  const tip = deriveCardTooltip(missingKind, 'justify:11');
+  assert.ok(tip?.items?.some(item => item.label === 'Kind' && item.missingReason === 'Goal spelling unread'));
+  assert.ok(tip?.items?.some(item => item.label === 'Place' && item.value === 'Invented state 1'));
+  assert.ok(tip?.items?.some(item => item.label === 'Days left' && item.value === '21 days left'));
   assert.ok(deriveCardAudit(model).some(row => row.key === `${row.row}:state` && String(row.value).endsWith(':Expired')));
 });
 
@@ -132,7 +137,7 @@ test('a war goal target whose name is still loading reads as loading on the card
     branchId: '1', tag: 'AAA', asked: 'AAA',
     standings: [], justifications: [], warnings: [],
     removed: [{ handle: '9', name: 'Take state', recipient: 'BBB', seen: hour - 6 * DAY, granted: null, grantedMissing: 'Held when the branch began', removed: hour - 5 * DAY, removedExact: true, reasonMissing: 'War goal removal reason was not recorded' }], removedUnread: null,
-    goals: [{ handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'BBB', available: true, expires: null, states: [4], liberate: ['CCC'], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null }],
+    goals: [{ handle: '2', name: 'Conquer', nameMissing: null, actor: 'AAA', recipient: 'BBB', available: true, expires: null, states: [4], liberate: ['CCC'], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null }],
     stateNames: [{ id: 4, name: 'Invented state 4', known: true }],
   };
   const at = (names: Parameters<typeof datedIdentity>[0], targetNames = true) => warGoalsProjection.project(

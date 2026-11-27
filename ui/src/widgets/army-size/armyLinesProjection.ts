@@ -17,6 +17,7 @@ export const { projection: armyLinesProjection, declaration: armyLinesDeclaratio
   },
   measure: (options, aux) => {
     if (!aux) return null;
+    if (!aux.available) return { unavailable: aux.missing[0]?.reason ?? 'Army totals are not recorded.' };
     const asked = typeof options.measure === 'string' && options.measure !== '' ? options.measure : null;
     if (asked !== null && !aux.measures.some(item => item === asked)) {
       const label = MEASURES.find(item => item.value === asked)?.label ?? asked;

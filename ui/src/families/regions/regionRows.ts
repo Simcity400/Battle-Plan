@@ -153,7 +153,7 @@ export function regionChooserGroups(list: RegionList, inChart: readonly RegionIn
     if (!charted.has(id)) activeRows.push({ id, label: names.get(id) ?? `Region ${id}`, inChart: false });
   }
   const regions = list.kind === 'ready' ? list.regions.filter(region => matches(region.label)) : [];
-  const listed = (sea: boolean) => regions.filter(region => region.sea === sea).map(region => ({ id: region.id, label: region.label, inChart: charted.has(region.id) }));
+  const listed = (sea: boolean | null) => regions.filter(region => region.sea === sea).map(region => ({ id: region.id, label: region.label, inChart: charted.has(region.id) }));
   const groups: ChooserGroup[] = [{
     title: active ? 'Active now' : 'Active in this chart',
     rows: activeRows.filter(row => matches(row.label)),
@@ -161,6 +161,8 @@ export function regionChooserGroups(list: RegionList, inChart: readonly RegionIn
   }];
   if (!seaOnly) groups.push({ title: 'Land regions', rows: listed(false) });
   groups.push({ title: 'Sea regions', rows: listed(true) });
+  const unknown = listed(null);
+  if (unknown.length) groups.push({ title: 'Region membership not known', rows: unknown, note: regions.find(region => region.sea === null)?.membershipMissing ?? undefined });
   return groups.filter(group => group.rows.length > 0 || group.note);
 }
 

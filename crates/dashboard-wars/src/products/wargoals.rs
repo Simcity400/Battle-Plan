@@ -38,7 +38,8 @@ struct WargoalsAsk {
 #[serde(rename_all = "camelCase")]
 pub struct WargoalEntry {
     pub handle: String,
-    pub name: String,
+    pub name: Option<String>,
+    pub name_missing: Option<String>,
     pub actor: String,
     pub recipient: String,
     pub available: bool,
@@ -94,7 +95,8 @@ pub struct WargoalJustification {
     #[doc = " Its row key: the row of its live cell `points`, the stored fixed5 progress."]
     pub id: String,
     pub ordinal: u32,
-    pub name: String,
+    pub name: Option<String>,
+    pub name_missing: Option<String>,
     pub actor: String,
     pub recipient: String,
     pub states: Vec<u32>,
@@ -571,7 +573,6 @@ fn reply(
             .map(|scripted| dashboard_text::scripted_text::ScriptedText::new(frame, &cat.localisation, scripted, slot))
     });
     let links: BTreeMap<_, _> = frame.complete::<tables::CountryLinks>()?.iter().map(|r| (r.id, r.canonical_slot)).collect();
-    let mut name_warnings = Vec::new();
     let mut name_of = |literal: &[u8], actor: u32, recipient: u32| -> io::Result<String> {
         let slots = || -> Result<(u32, u32), String> {
             Ok((*links.get(&actor).ok_or("War-goal actor is unresolved")?, *links.get(&recipient).ok_or("War-goal target is unresolved")?))
@@ -582,18 +583,11 @@ fn reply(
             .find(literal)
             .map_err(io::Error::other)?
             .ok_or_else(|| io::Error::other("War-goal definition is absent from the recorded content"))?;
-        let label = (|| {
+        (|| {
             let (actor, recipient) = slots()?;
             let cat = catalogue.as_ref().map_err(Clone::clone)?;
             localised_goal_name(frame, &cat.localisation, definition_name, actor, recipient)
-        })();
-        Ok(match label {
-            Ok(name) => name,
-            Err(why) => {
-                name_warnings.push(format!("War-goal name refused (1): {why}"));
-                "Not recorded".into()
-            }
-        })
+        })().map_err(io::Error::other)
     };
     let mut reply = inventory(frame, p, &mut name_of)?;
     match dates {
@@ -609,7 +603,6 @@ fn reply(
             reply.warnings.push(why.clone());
         }
     }
-    reply.warnings.extend(name_warnings);
     let ids: BTreeSet<_> = reply
         .goals
         .iter()
@@ -804,11 +797,6 @@ fn inventory(
         )
         .map_err(|_| invalid("War-goal country tag is not UTF-8"))
     };
-    let literals: BTreeMap<_, _> = frame
-        .complete::<tables::LexicalTokens>()?
-        .iter()
-        .map(|r| (r.token, r.literal.as_slice()))
-        .collect();
     let goals = frame.complete::<tables::CountryWargoals>()?;
     let justifications = frame.complete::<tables::WargoalJustifications>()?;
     let mut targets = BTreeMap::<_, Vec<_>>::new();
@@ -863,25 +851,29 @@ fn inventory(
     if missing_unused != 0 {
         warnings.push(format!("Unused war-goal references refused ({missing_unused}): referenced goal objects are not recorded."));
     }
-    let mut goal_name = |token, actor, recipient| -> String {
-        match literals
-            .get(&token)
-            .ok_or_else(|| dashboard_core::refused("War-goal type spelling not recorded"))
-            .and_then(|literal| name(literal, actor, recipient))
-        {
-            Ok(name) => name,
+    let mut goal_name = |token, actor, recipient| {
+        use dashboard_query::coverage::{Witness, witnessed};
+        let label = match witnessed::<tables::LexicalTokens>(frame, u128::from(token)) {
+            Witness::Row(row) => name(&row.literal, actor, recipient),
+            Witness::Absent => Err(dashboard_core::refused("War-goal type spelling not recorded")),
+            Witness::NotRecorded(why) => Err(dashboard_core::refused(why)),
+        };
+        match label {
+            Ok(name) if !name.trim().is_empty() => (Some(name), None),
+            Ok(_) => (None, Some("The war-goal name was empty".to_owned())),
             Err(why) => {
                 warnings.push(format!("War-goal name refused (1): {why}"));
-                "Not recorded".into()
+                (None, Some(why.to_string()))
             }
         }
     };
     let mut out = Vec::new();
     for row in goals.iter().filter(|r| same(r.country)) {
-        let name = goal_name(row.goal_type, row.actor, row.recipient);
+        let (name, name_missing) = goal_name(row.goal_type, row.actor, row.recipient);
         out.push(WargoalEntry {
             handle: row.handle.to_string(),
             name,
+            name_missing,
             actor: tag(row.actor)?,
             recipient: tag(row.recipient)?,
             available: unused.contains(&row.handle),
@@ -905,11 +897,12 @@ fn inventory(
     }
     let mut just = Vec::new();
     for row in justifications.iter().filter(|r| same(r.country)) {
-        let name = goal_name(row.goal_type, row.actor, row.recipient);
+        let (name, name_missing) = goal_name(row.goal_type, row.actor, row.recipient);
         just.push(WargoalJustification {
             id: (u128::from(row.country) << 32 | u128::from(row.ordinal)).to_string(),
             ordinal: row.ordinal,
             name,
+            name_missing,
             actor: tag(row.actor)?,
             recipient: tag(row.recipient)?,
             states: values(4, row.ordinal)
@@ -1068,7 +1061,21 @@ mod tests {
         })
         .unwrap();
         assert_eq!(without_names.goals[0].states, [50, 51, 50]);
-        assert_eq!(without_names.goals[0].name, "Not recorded");
+        for entry in [serde_json::to_value(&without_names.goals[0]).unwrap(), serde_json::to_value(&without_names.justifications[0]).unwrap()] {
+            assert_eq!(entry["name"], serde_json::Value::Null);
+            assert_eq!(entry["nameMissing"], "War-goal type spelling not recorded");
+        }
+        for entry in [serde_json::to_value(&reply.goals[0]).unwrap(), serde_json::to_value(&reply.justifications[0]).unwrap()] {
+            assert!(entry["name"].is_string());
+            assert_eq!(entry.get("nameMissing"), Some(&serde_json::Value::Null));
+        }
+        frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable { reason: "fixture token read failed".into() }.into();
+        let unread = inventory(&frame, &p, |_, _, _| panic!("unread spelling cannot produce a name")).unwrap();
+        for entry in [serde_json::to_value(&unread.goals[0]).unwrap(), serde_json::to_value(&unread.justifications[0]).unwrap()] {
+            assert_eq!(entry["name"], serde_json::Value::Null);
+            assert!(entry["nameMissing"].as_str().is_some_and(|reason| reason.contains("fixture token read failed")));
+        }
+        frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(Vec::new())).into();
         assert!(
             without_names
                 .warnings
@@ -1162,7 +1169,7 @@ mod tests {
         assert_eq!((nine.granted, nine.removed), (Some(112), None), "still held at the branch's last read");
         let mut reply = WargoalsReply {
             branch_id: "1".into(), tag: "ONE".into(), asked: "ONE".into(), standings: Vec::new(),
-            goals: vec![WargoalEntry { handle: "9".into(), name: "Conquer".into(), actor: "ONE".into(), recipient: "TWO".into(), available: true, expires: None, states: Vec::new(), liberate: Vec::new(), puppets: Vec::new(), state: WargoalState::Ready, granted: None, granted_missing: None }],
+            goals: vec![WargoalEntry { handle: "9".into(), name: Some("Conquer".into()), name_missing: None, actor: "ONE".into(), recipient: "TWO".into(), available: true, expires: None, states: Vec::new(), liberate: Vec::new(), puppets: Vec::new(), state: WargoalState::Ready, granted: None, granted_missing: None }],
             justifications: Vec::new(), removed: Vec::new(), removed_unread: None, warnings: Vec::new(), state_names: Vec::new(),
         };
         let mut removals: Vec<(Incarnation, RemovedName)> = found.removed().filter(|incarnation| incarnation.country == 1).map(|incarnation| (incarnation.clone(), RemovedName::default())).collect();
@@ -1422,8 +1429,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            reply.justifications[0].name,
-            "Actor republic claims Target kingdom"
+            reply.justifications[0].name.as_deref(),
+            Some("Actor republic claims Target kingdom")
         );
         assert!(
             reply

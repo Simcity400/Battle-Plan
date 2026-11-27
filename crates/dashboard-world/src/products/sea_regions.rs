@@ -40,8 +40,9 @@ pub struct StrategicRegionEntry {
     pub id: u32,
     pub name: Option<String>,
     pub name_missing: Option<String>,
-    pub land: bool,
-    pub sea: bool,
+    pub land: Option<bool>,
+    pub sea: Option<bool>,
+    pub membership_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -154,8 +155,9 @@ pub fn catalogue_entries(places: &super::place_names::Content, sea: &SeaContent)
                 id,
                 name,
                 name_missing,
-                land: land_set.is_some_and(|set| set.contains(&id)),
-                sea: sea_set.is_some_and(|set| set.contains(&id)),
+                land: land_set.map(|set| set.contains(&id)),
+                sea: sea_set.map(|set| set.contains(&id)),
+                membership_missing: sea.sea.as_ref().err().or_else(|| sea.land.as_ref().err()).cloned(),
             }
         })
         .collect()

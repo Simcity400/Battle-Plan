@@ -346,10 +346,10 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   assert.deepEqual(keyboardMove(shown.rows[2]!, -1, choice), { picks: [4, 12, 7], hidden: [30] }, 'Alt+Up on an automatic row picks it');
 
   const list = { kind: 'ready' as const, regions: [
-    { id: 7, label: 'Baltic Sea', nameMissing: false, sea: true },
-    { id: 30, label: 'North Sea', nameMissing: false, sea: true },
-    { id: 31, label: 'Skagerrak', nameMissing: false, sea: true },
-    { id: 4, label: 'Western Germany', nameMissing: false, sea: false },
+    { id: 7, label: 'Baltic Sea', nameMissing: false, sea: true, membershipMissing: null },
+    { id: 30, label: 'North Sea', nameMissing: false, sea: true, membershipMissing: null },
+    { id: 31, label: 'Skagerrak', nameMissing: false, sea: true, membershipMissing: null },
+    { id: 4, label: 'Western Germany', nameMissing: false, sea: false, membershipMissing: null },
   ] };
   const inChart = [{ id: 4, label: 'Western Germany', active: false }, { id: 7, label: 'Baltic Sea', active: true }];
   const groups = regionChooserGroups(list, inChart, { ids: [30, 31], missing: null }, false, '');
@@ -361,6 +361,10 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   const unknown = regionChooserGroups(list, inChart, { ids: [], missing: 'Air scores were read only in part at this hour' }, true, '');
   assert.deepEqual([unknown[0]!.title, unknown[0]!.note], ['Active now', 'Air scores were read only in part at this hour'], 'activity not known at the hour is said, not shown as none');
   assert.equal(regionChooserGroups(list, inChart, null, true, '')[0]!.title, 'Active in this chart', 'without the product answer the group names only what the chart holds');
+  const unclassified = { kind: 'ready' as const, regions: [{ id: 12, label: 'Sample region', nameMissing: false, sea: null, membershipMissing: 'Map definitions could not be read' }] };
+  assert.deepEqual(regionChooserGroups(unclassified, [], null, false, ''), [
+    { title: 'Region membership not known', rows: [{ id: 12, label: 'Sample region', inChart: false }], note: 'Map definitions could not be read' },
+  ]);
   assert.deepEqual([savedRegionName({ kind: 'loading' }, 99), savedRegionName({ kind: 'failed', failure: {} as never, retry: () => {} }, 99), savedRegionName(list, 99), savedRegionName(list, 7)],
     ['Region 99 · loading its name…', 'Region 99 · its name could not be loaded', 'Region 99 · not in this recording', 'Baltic Sea'], 'a saved pick is "not in this recording" only once the list says so');
   const opening = { owner: 'air:GER', hour: 400, rows: inChart, active: null };

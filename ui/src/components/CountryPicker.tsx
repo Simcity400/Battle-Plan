@@ -1,5 +1,5 @@
 import { ABSENT_NAME, nameReadFailure, nameReadMetadata, type NameRead } from '../dashboard/nameReads.ts';
-import { type Failure, asFailure, failureText, failureDetails } from '../dashboard/queryError.ts';
+import { type Failure, RefusedError, asFailure, failureText, failureDetails } from '../dashboard/queryError.ts';
 import { Popover, usePopover } from './Popover';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CountryMetadata } from '../shell/api';
@@ -248,7 +248,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     const controller = new AbortController();
     void loadProduct<LandOwners>(client, productRequest({ sourceId: source.id, revision: source.revision, product: 'land-owners', params: {} }), controller.signal, undefined, source).then(result => {
       if (!controller.signal.aborted) {
-        setRoster({ key: sourceKey, countries: result.countries, error: null });
+        setRoster({ key: sourceKey, countries: result.countries, error: result.countriesMissing ? new RefusedError(result.countriesMissing) : null });
         onCountries?.(source.id, source.revision, result.countries);
       }
     }).catch(error => {

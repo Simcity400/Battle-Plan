@@ -923,7 +923,7 @@ test('leader, state, province, region and battle asks each start their product r
     },
     loadRegions: async () => {
       calls.push('regions');
-      return { regions: [{ id: 3, name: 'Coral Reach', nameMissing: null, land: false, sea: true }], warnings: [] };
+      return { regions: [{ id: 3, name: 'Coral Reach', nameMissing: null, land: false, sea: true, membershipMissing: null }], warnings: [] };
     },
     loadPlaceNameRuns: async (_scope, from, to, states, provinces) => {
       calls.push(`places ${from}-${to} ${states.join(',')} ${provinces.join(',')}`);

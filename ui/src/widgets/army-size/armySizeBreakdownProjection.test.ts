@@ -53,8 +53,8 @@ test('army-size breakdown manifest entry, slot-based plan, causal hour params, a
     countrySubject: slotKey,
     options: { measure: '', countFor: 'owner' },
     countries: { all: false, top: null, tags: ['ZZZ'], holders: null },
-    aux: { branchId: '1', available: true, measures: ['manpower', 'divisions', 'strength', 'battalions'], warnings: [] },
-  } as unknown as FamilyPlanContext<{ branchId: string; available: boolean; measures: ('manpower' | 'divisions' | 'strength' | 'battalions')[]; warnings: string[] }>;
+    aux: { branchId: '1', available: true, measures: ['manpower', 'divisions', 'strength', 'battalions'], missing: [], warnings: [] },
+  } as unknown as FamilyPlanContext<{ branchId: string; available: boolean; measures: ('manpower' | 'divisions' | 'strength' | 'battalions')[]; missing: []; warnings: string[] }>;
 
   const plan = armySizeBreakdownDeclaration.sources(ctx, { width: 600, height: 260, following: false, staticSpan: [100, 140] });
   const breakdownRead = plan.entries.find(e => e.name === 'breakdown')?.read as BranchToHourSourceRead;

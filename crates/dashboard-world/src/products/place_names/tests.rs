@@ -95,6 +95,29 @@ fn fixture_source(frames: Vec<DecodedFrame>) -> (Source, LoadContext, std::path:
 }
 
 #[test]
+fn the_region_catalogue_keeps_named_regions_when_their_membership_is_unread() {
+    use super::super::sea_regions::{SeaContent, catalogue_entries};
+    let (source, load, saved, _folder) = fixture_source(vec![frame(100)]);
+    let content = Content::read(&source, &load).unwrap();
+    let sea = SeaContent::read(&source, &load).unwrap();
+    let known = serde_json::to_value(&catalogue_entries(&content, &sea)[0]).unwrap();
+    assert_eq!(known["name"], "Sample Sea");
+    assert_eq!(known["sea"], true);
+    assert_eq!(known["land"], true);
+    assert_eq!(known.get("membershipMissing"), Some(&serde_json::Value::Null));
+    let reason = "fixture region membership read failed";
+    let sea = SeaContent {
+        sea: Err(reason.into()), land: Err(reason.into()), all: sea.all.clone(), minima: BTreeMap::new(), ratio: Ok(0), notes: vec![],
+    };
+    let unknown = serde_json::to_value(&catalogue_entries(&content, &sea)[0]).unwrap();
+    assert_eq!(unknown["name"], known["name"]);
+    assert_eq!(unknown["sea"], serde_json::Value::Null);
+    assert_eq!(unknown["land"], serde_json::Value::Null);
+    assert_eq!(unknown["membershipMissing"], reason);
+    std::fs::remove_dir_all(saved).unwrap();
+}
+
+#[test]
 fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a_reason() {
     let (source, load, saved, _folder) = fixture_source((100..=110).map(frame).collect());
     let query = dashboard_base::queries::query(&source, 1).unwrap();

@@ -7,6 +7,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import { useProduct } from '../../dashboard/products';
 import { choicesSelection, leaderChoices, validateLeaderChoicesReply } from './choicesData';
 import { productRequest } from '../../dashboard/request.ts';
+import { RefusedError } from '../../dashboard/queryError';
 
 const LOADING = { loading: true } as const;
 
@@ -22,5 +23,6 @@ export function useLeaderChoices(widget: WidgetSpec, runtime: WidgetRuntime): Op
   if (!track || !selection) return { leader: [] };
   if (error) return { leader: { error, retry } };
   if (!choices) return { leader: LOADING };
-  return { leader: leaderChoices(choices, track.source.metadata.campaignKey, (hour, tag) => nameReadMetadata(names.get(nameKey(hour, tag)))) };
+  const listed = leaderChoices(choices, track.source.metadata.campaignKey, (hour, tag) => nameReadMetadata(names.get(nameKey(hour, tag))));
+  return { leader: data?.missing ? { choices: listed, error: new RefusedError(data.missing), retry } : listed };
 }

@@ -51,7 +51,7 @@ import { occupationLinesDeclaration } from '../../widgets/occupation-trend/occup
 import { supplyHealthDeclaration, supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
 import { readPlanExact } from '../broker.ts';
 import { rulingPartyProjection } from '../../widgets/ruling-party/rulingPartyProjection.ts';
-import type { PartyHistoryReply } from '../../generated/dashboard';
+import type { ArmySizeReply, PartyHistoryReply } from '../../generated/dashboard';
 import { createLaneView } from '../laneRuntime.ts';
 import { drawTimeChart } from './painter.ts';
 
@@ -3696,6 +3696,10 @@ describe('time-chart selectedHour pinned day marker', () => {
 
 
 it('All requests the server population without numeric limits across every former ceiling, while Top N stays chosen', async () => {
+  const army: ArmySizeReply = {
+    branchId: '1', windows: [], window: null, interval: null, available: true,
+    measures: ['manpower'], types: [], series: [], missing: [], warnings: [],
+  };
   const lineKinds = ['air-force-size', 'army-size', 'factories', 'game-score', 'occupation-trend', 'nuclear-arsenal', 'navy-size', 'air-kills-losses', 'equipment-produced', 'naval-losses', 'raid-tally'];
   const raceKinds = ['air-force-size', 'army-size', 'navy-size', 'game-score', 'occupation-trend', 'world-tension', 'territory', 'casualties'];
   const entries = [...TIME_CHART_VIEWS.filter(entry => entry.view === 'lines' && lineKinds.includes(entry.kind)), ...BARS_VIEWS.filter(entry => raceKinds.includes(entry.kind) && (entry.view === 'race' || entry.kind === 'casualties'))];
@@ -3707,7 +3711,7 @@ it('All requests the server population without numeric limits across every forme
         track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: '1' },
         countries: { all: top === null, top, tags: [], every: [], membership: null },
         widget: { countries: top === null ? { kind: 'all' } : { kind: 'group', group: { type: 'top', count: top }, membership: 'hour' }, time: { mode: 'follow' } },
-        options: { count: 'ic' }, aux: entry.kind === 'army-size' ? { measures: ['manpower'] } : undefined,
+        options: { count: 'ic' }, aux: entry.kind === 'army-size' ? army : undefined,
       };
       const plan = declaration.sources(ctx, { following: true, staticSpan: null });
       const read = plan.entries[0]?.read;

@@ -9,7 +9,7 @@ interface Counts { requests: number; asks: number; lookups: number; hours: numbe
 const replacements: Record<string, string> = {
   '/dashboard/products.ts': `export const useProduct = (_client, request) => {
     if (request) globalThis.__regionCounts.requests += 1;
-    return { data: { regions: [{ id: 16, sea: true }, { id: 19, sea: false }] }, error: undefined, retry() {} };
+    return { data: { regions: [{ id: 16, sea: true, membershipMissing: null }, { id: 19, sea: false, membershipMissing: null }] }, error: undefined, retry() {} };
   };`,
   '/families/identity/react.ts': `export const regionKey = id => 'region:' + id;
     export const useIdentityScope = (_client, recording, branchId, active = true) => (recording && branchId && active ? { branchId } : null);
