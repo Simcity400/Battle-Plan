@@ -4,7 +4,7 @@ use crate::products::equipment_icon::IconContent;
 use content_reader_key_names::equipment::Database;
 use std::sync::Arc;
 
-fn equipment_catalogue(equipment: &[(&str, &str)]) -> (Arc<Catalogue>, Folder) {
+pub(super) fn equipment_catalogue(equipment: &[(&str, &str)]) -> (Arc<Catalogue>, Folder) {
     let mut files = vec![
         (
             "map/default.map",

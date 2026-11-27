@@ -439,16 +439,8 @@ impl IconContent {
             pools,
             geography,
             dlc: layers.dlc_names()?,
-            sprites: catalogue
-                .sprites
-                .iter()
-                .map(|(key, _)| key.clone())
-                .collect(),
-            refused_sprites: catalogue
-                .sprites
-                .refused_names()
-                .map(|(key, why)| (key.clone(), why.clone()))
-                .collect(),
+            sprites: BTreeSet::new(),
+            refused_sprites: BTreeMap::new(),
             files: Box::new(move |path| {
                 files
                     .content
@@ -616,6 +608,13 @@ impl IconContent {
     }
 
     fn sprite(&self, name: &str) -> Result<Option<Icon>, String> {
+        if let Some(catalogue) = &self.catalogue {
+            if let Some(reason) = catalogue.sprites.refusal(name) {
+                return Err(reason);
+            }
+            return Ok(matches!(catalogue.sprites.find(name), Ok(Some(_)))
+                .then(|| Icon::Sprite(name.to_owned())));
+        }
         if let Some(reason) = self.refused_sprites.get(name) {
             return Err(format!("sprite {name} is refused: {reason}"));
         }

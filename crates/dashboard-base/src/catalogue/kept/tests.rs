@@ -128,6 +128,44 @@ fn kept_sprites_read_back_as_every_kind_was_declared() {
     );
 }
 
+#[test]
+fn equipment_icons_decode_only_the_packed_names_they_probe() {
+    use crate::products::equipment_icon::{Icon, IconContent, Probe};
+
+    thread_local! { static DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+    fn decode(name: &str, body: &[u8]) -> Result<SpriteType, String> {
+        DECODES.with(|count| count.set(count.get() + 1));
+        if name == "GFX_b" {
+            return Err("damaged declaration".into());
+        }
+        decode_sprite(name, body)
+    }
+
+    let (mut catalogue, _folder) = crate::catalogue::parity_tests::equipment_catalogue(&[]);
+    let read = SpriteSet::new(&[(
+        "interface/test.gfx".to_owned(),
+        content_reader_gui::gui::native::sprites::read_sprites(GFX.as_bytes()),
+    )]);
+    let mut bytes = Vec::new();
+    read.keep(&mut bytes, encode_sprite).unwrap();
+    let (packed, _) = SpriteSet::from_kept(&Arc::new(bytes), 0, decode).unwrap();
+    Arc::get_mut(&mut catalogue).unwrap().sprites = packed;
+
+    let icons = IconContent::load(Arc::clone(&catalogue)).unwrap();
+    let probe = |name: &str| icons.answer(&Probe::Sprite(name.to_owned()));
+    assert_eq!(probe("GFX_missing"), Ok(None));
+    assert_eq!(probe("GFX_negative").unwrap_err(), catalogue.sprites.refusal("GFX_negative").unwrap());
+    assert_eq!(DECODES.with(std::cell::Cell::get), 0);
+    let wanted = Ok(Some(Icon::Sprite("GFX_a".into())));
+    assert_eq!(probe("GFX_a"), wanted);
+    assert_eq!(DECODES.with(std::cell::Cell::get), 1);
+    assert_eq!(probe("GFX_b"), Ok(None));
+    assert_eq!(DECODES.with(std::cell::Cell::get), 2);
+    assert_eq!(probe("GFX_a"), wanted);
+    assert_eq!(probe("GFX_b"), Ok(None));
+    assert_eq!(DECODES.with(std::cell::Cell::get), 2);
+}
+
 fn recording_with_facts(name: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf, ContentOptions) {
     let (root, options, identity) = game(name, files);
     let path = root.join("campaign.battleplan");
