@@ -132,19 +132,17 @@ fn naval_supremacy_legend_includes_only_states_present_in_displayed_regions() {
     assert_eq!(legend[0].label, "German Reich and friends");
 }
 
-#[test]
-fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
+fn gapped_navy(case: &str, unavailable_ships: Option<i32>) -> (std::sync::Arc<Source>, LoadContext, std::path::PathBuf) {
     use dashboard_base::{
         Source,
-        products::Product,
         test_fixtures::{content_identity, records, source, with_facts},
     };
     use replay_capture_spool::spool::Record;
-    use replay_data::rows::{CountryLinkRow, CountryRow, NavalMissionLedgerRow, ShipRow, TableSchema};
+    use replay_data::rows::{CountryLinkRow, CountryRow, NavalMissionLedgerRow, NavalSupremacyRow, ShipRow, TableSchema};
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
-    let root = std::env::temp_dir().join(format!("naval-supremacy-gap-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("naval-supremacy-{case}-{}", std::process::id()));
     std::fs::create_dir_all(root.join("user")).unwrap();
     for (path, text) in [("hoi4.exe", "test"), ("user/settings.txt", "language=l_english force_pow2_textures=no"), ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#)] {
         std::fs::write(root.join(path), text).unwrap();
@@ -181,9 +179,12 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
             tables::Ships::wrap(vec![
                 ShipRow { id: 1, task_force: 100, ..Default::default() },
                 ShipRow { id: 2, task_force: 100, ..Default::default() },
-                ShipRow { id: 3, task_force: 300, ..Default::default() },
+                ShipRow { id: 3, task_force: if hour < 30 { 300 } else { 100 }, ..Default::default() },
             ]),
         );
+        if unavailable_ships == Some(hour) {
+            *frame.tables[TableId::Ships.index()] = TableView::Unavailable { reason: "The ship input is unavailable in this fixture".into() };
+        }
         set_complete(
             &mut frame,
             TableId::NavalMissionLedgers.index(),
@@ -192,6 +193,13 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
                 NavalMissionLedgerRow { owner: 50, region: 7, task_forces: vec![300], ..Default::default() },
             ]),
         );
+        set_complete(&mut frame, TableId::NavalSupremacy.index(), tables::NavalSupremacy::wrap(vec![NavalSupremacyRow {
+            country: 40, region: 7, current: i64::from(hour + 1), ..Default::default()
+        }]));
+        set_complete(&mut frame, TableId::FactionMembers.index(), tables::FactionMembers::wrap(vec![]));
+        set_complete(&mut frame, TableId::Subjects.index(), tables::Subjects::wrap(vec![]));
+        set_complete(&mut frame, TableId::WarRelations.index(), tables::WarRelations::wrap(vec![]));
+        set_complete(&mut frame, TableId::RelationTuples.index(), tables::RelationTuples::wrap(vec![]));
         frame
     };
 
@@ -206,7 +214,18 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
     let Record::SessionStart(session) = &mut input[0] else { unreachable!() };
     session.identity = identity.clone();
     let replay = with_facts(&options, &identity, input).into_timelines(&Default::default()).unwrap();
-    let src = Source::from_replay(dashboard_base::SourceKey { source_id: "naval-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let src = Arc::new(Source::from_replay(dashboard_base::SourceKey { source_id: case.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap());
+    let load = LoadContext { content: Some(options) };
+    (src, load, root)
+}
+
+fn gapped_panel(source: &std::sync::Arc<Source>, load: &LoadContext) -> Box<dyn dashboard_follow::panel::Panel> {
+    playback::panel(source, load, &serde_json::json!({ "branchId": "1", "country": "GER", "regions": [7] })).unwrap()
+}
+
+#[test]
+fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
+    let (src, load, root) = gapped_navy("gap", None);
     let reply = NavalSupremacy::load(
         &src,
         &NavalSupremacyParams {
@@ -220,15 +239,116 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
             hidden_regions: None,
             top: None,
         },
-        &LoadContext { content: Some(options) },
+        &load,
         &AtomicBool::new(false),
     )
     .unwrap();
-    let _ = std::fs::remove_dir_all(&root);
     let region = reply.regions.iter().find(|r| r.id == "7").unwrap();
     assert_eq!(region.own_ships, MissionShips::Counted { ships: 2 });
     assert_eq!(region.enemy_ships, MissionShips::Counted { ships: 1 });
     assert_ne!(reply.viewer_name_missing.as_deref(), Some("The recording holds no hour here"), "the viewer is named at the readout's hour, not inside the gap");
+
+    let panel = gapped_panel(&src, &load);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let steps = dashboard_base::test_fixtures::played(src.replay_ref(), exact, 0, 12);
+    let gap = steps.iter().find(|step| step.hour == 12).unwrap();
+    assert_eq!(*gap.value, (exact.cold)(12, &cancelled));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_new_run_projects_its_own_naval_rows() {
+    let (src, load, root) = gapped_navy("run", None);
+    let panel = gapped_panel(&src, &load);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let seed = (exact.advance)(0, true, &cancelled, None);
+    assert!(seed.lanes.iter().any(|lane| lane.table == TableId::Ships.index()), "playback declares the ships it reads");
+    let peer = gapped_panel(&src, &load);
+    let same = (peer.exact().unwrap().advance)(0, false, &cancelled, None);
+    assert!(std::sync::Arc::ptr_eq(&seed.value, &same.value), "identical subscriptions share the projected reply");
+    let first_run = dashboard_base::queries::query(&src, 1).unwrap().timeline.at(0).unwrap().run;
+    let later_run = dashboard_base::queries::query(&src, 1).unwrap().timeline.at(30).unwrap().run;
+    assert_ne!(first_run, later_run);
+    let steps = dashboard_base::test_fixtures::played(src.replay_ref(), exact, 0, 32);
+    for step in steps.iter().filter(|step| step.hour >= 30) {
+        assert!(!step.pending);
+        assert_eq!(*step.value, (exact.cold)(step.hour, &cancelled));
+        assert_eq!(step.value.as_ref().as_ref().unwrap()["regions"][0]["ownShips"]["ships"], 3);
+        assert_eq!(step.value.as_ref().as_ref().unwrap()["regions"][0]["runs"][0]["own"], (step.hour + 1).to_string());
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn seeking_back_rebuilds_the_naval_projection() {
+    let (src, load, root) = gapped_navy("seek", None);
+    let panel = gapped_panel(&src, &load);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    assert!((exact.advance)(30, true, &cancelled, None).value.is_ok());
+    let sought = (exact.advance)(0, true, &cancelled, None);
+    assert_eq!(*sought.value, (exact.cold)(0, &cancelled));
+    assert_eq!(sought.value.as_ref().as_ref().unwrap()["regions"][0]["ownShips"]["ships"], 2);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_failed_naval_read_can_be_rebuilt() {
+    let (src, load, root) = gapped_navy("error", None);
+    let panel = gapped_panel(&src, &load);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    assert!((exact.advance)(0, true, &cancelled, None).value.is_ok());
+    let failed = (exact.advance)(5, true, &AtomicBool::new(true), None);
+    assert!(failed.value.is_err() && failed.lanes.is_empty());
+    assert_eq!(*(exact.advance)(5, false, &cancelled, None).value, (exact.cold)(5, &cancelled));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn another_panels_ship_lane_does_not_make_an_empty_selection_read_ships() {
+    use std::sync::Arc;
+
+    let (src, load, root) = gapped_navy("unneeded-ships", None);
+    let pinned = gapped_panel(&src, &load);
+    let ships = (pinned.exact().unwrap().advance)(0, true, &AtomicBool::new(false), None)
+        .lanes.into_iter().find(|lane| lane.table == TableId::Ships.index()).unwrap();
+    let panel = playback::panel(&src, &load, &serde_json::json!({ "branchId": "1", "country": "GER", "regions": [], "pinnedRegions": [7] })).unwrap();
+    let exact = panel.exact().unwrap();
+    let advance = exact.advance.clone();
+    let checked = dashboard_follow::panel::AtHour {
+        advance: Arc::new(move |hour, seed, cancelled, step| {
+            let mut read = advance(hour, seed, cancelled, step);
+            if let Some(step) = step {
+                assert!(step.lanes.get(ships.table).is_some());
+                assert!(!read.lanes.iter().any(|lane| lane.table == ships.table));
+            } else {
+                read.lanes.push(ships.clone());
+            }
+            read
+        }),
+        cold: exact.cold.clone(),
+        read: exact.read.clone(),
+    };
+    dashboard_base::test_fixtures::proven_by_steps(src.replay_ref(), &checked, 0, 1, 1);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_unavailable_ship_input_retains_the_exact_refusal_and_control() {
+    let (src, load, root) = gapped_navy("unavailable-ships", Some(1));
+    let panel = gapped_panel(&src, &load);
+    let exact = panel.exact().unwrap();
+    let steps = dashboard_base::test_fixtures::played(src.replay_ref(), exact, 0, 1);
+    let read = steps.iter().find(|step| step.hour == 1).unwrap();
+    let cold = (exact.cold)(1, &AtomicBool::new(false));
+    assert_eq!(*read.value, cold);
+    let region = &read.value.as_ref().as_ref().unwrap()["regions"][0];
+    assert!(region["ownShips"]["reason"].as_str().is_some());
+    assert_eq!(region["runs"][0]["own"], "2");
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

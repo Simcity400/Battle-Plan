@@ -16,12 +16,13 @@ struct Scope {
 }
 
 impl Scope {
-    fn changes(&self, recording: &Recording) -> io::Result<BTreeSet<i32>> {
+    fn changes(&self, recording: &Recording, hour: i32) -> io::Result<BTreeSet<i32>> {
         let mut dates = BTreeSet::new();
+        if hour >= self.last { return Ok(dates); }
         let Some(viewer) = self.viewer else { return Ok(dates) };
         let mut table = |table, columns: &[usize], keys, observe: &mut dyn FnMut(u128, Option<&[Cell]>) -> bool| {
             let mut statuses = Vec::new();
-            replay_lanes::points::cells(recording, self.run, table, columns, keys, self.first, self.last, Some(&mut statuses), &mut |hour, key, cells| {
+            replay_lanes::points::cells(recording, self.run, table, columns, keys, self.first.max(hour), self.last, Some(&mut statuses), &mut |hour, key, cells| {
                 if observe(key, cells) { dates.insert(hour); }
                 true
             })?;
@@ -91,11 +92,11 @@ pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<
     let query = dashboard_base::queries::query(source, branch).map_err(|e| e.to_string())?;
     let last = query.timeline.last;
     let start = |hour: i32| hour.div_euclid(DAY).saturating_mul(DAY);
-    let held = Mutex::new(None::<(Scope, Option<BTreeSet<i32>>)>);
+    let held = Mutex::new(None::<(i32, Scope, Option<BTreeSet<i32>>)>);
     let styles = OnceLock::new();
     let owned = Arc::clone(source);
     let options = LoadContext { content: load.content.clone() };
-    at_hour::dated_day_panel::<NavalSupremacy>(source, load, asked, "firstHour", "lastHour", move |params, reply| {
+    let panel = at_hour::stepped_day_panel::<NavalSupremacy>(source, load, asked, ("firstHour", "lastHour"), move |params, reply| {
         let hour = params.last_hour.expect("dated request");
         let day = start(hour);
         let end = day.saturating_add(DAY - 1);
@@ -109,16 +110,20 @@ pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<
         let viewer = holder.and_then(|holder| match holder.holder { Holder::Found { slot, .. } => Some(slot), _ => None });
         let mut changes = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let scope = Scope { run, viewer, first: first.max(day), last: last.min(end), ships: reply.ship_inputs.clone() };
-        if changes.as_ref().is_none_or(|(held, _)| *held != scope) {
-            let dates = scope.changes(query.replay.recording()).ok();
-            *changes = Some((scope, dates));
+        if changes.as_ref().is_none_or(|(from, held, _)| hour < *from || *held != scope) {
+            let dates = scope.changes(query.replay.recording(), hour).ok();
+            *changes = Some((hour, scope, dates));
         }
-        let Some((scope, Some(dates))) = changes.as_ref() else { return hour };
+        let Some((_, scope, Some(dates))) = changes.as_ref() else { return hour };
         let through = dates.range((std::ops::Bound::Excluded(hour), std::ops::Bound::Unbounded)).next()
             .map_or(scope.last, |next| next.saturating_sub(1).min(scope.last));
         let tag = query.holders.name(&params.country, hour);
         let Ok(styles) = styles.get_or_init(|| BranchLooks::load(&owned, &query.timeline, &options, &mut Vec::new())) else { return hour };
         let identity = holder.map_or_else(|| at_hour::before(query.holders.next_change(hour)), |holder| holder.last);
         through.min(identity).min(at_hour::before(styles.next_for(&tag, hour)))
-    }, move |data, hour| date(data, if start(hour) <= last { last.min(hour) } else { hour }))
+    }, move |data, hour| date(data, if start(hour) <= last { last.min(hour) } else { hour }),
+        |source, params, load, cancelled, step| NavalSupremacy::answer(source, params, load, cancelled, Some(step)))?;
+    let exact = panel.exact().expect("a dated panel has an exact reader");
+    let advance = at_hour::shared_reader(source, load, NavalSupremacy::KEY, asked, || exact.advance.clone());
+    Ok(at_hour::product_panel(advance, exact.cold.clone()))
 }

@@ -7,9 +7,10 @@ use dashboard_world::products::sea_regions::Choice;
 use dashboard_base::{Source, catalogue::Refusals, span::HourSpan};
 use dashboard_query::{Query, coverage, identity::{Holder, Holders}, timeline::Timeline};
 use replay_lanes::{lanes, points::Cell};
-use replay_data::rows::{AirCountryRelationRow, NavalRegionControlRow, TableId, tables};
+use replay_columnar::manifest::Status;
+use replay_data::rows::{AirCountryRelationRow, NavalRegionControlRow, Recorded, TableId, tables};
 use replay_derive::naval_region_control;
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -600,7 +601,7 @@ struct HeldHistories {
 const HELD_HISTORIES: usize = 16;
 
 #[expect(clippy::too_many_arguments, reason = "the history's key: the viewer, its first day and the content, then the span asked")]
-fn control(source: &Source, load: &LoadContext, query: &Query<'_>, sea: &SeaContent, country: &Country, (first, last): (i32, i32), count: u32, cancelled: &AtomicBool) -> io::Result<Control> {
+fn control(source: &Source, load: &LoadContext, query: &Query<'_>, sea: &SeaContent, country: &Country, (first, last): (i32, i32), count: u32, cancelled: &AtomicBool, frame: Option<&DecodedFrame>) -> io::Result<Control> {
     let first_day = first.div_euclid(DAY);
     if count == 0 {
         return Ok(NavalHistory::default().control(query, first_day, 0));
@@ -608,7 +609,34 @@ fn control(source: &Source, load: &LoadContext, query: &Query<'_>, sea: &SeaCont
     let content = load.content.as_ref().map(|options| (dashboard_base::content::content_key(Some(options)), options.presentation.identity().clone()));
     let key = format!("{}|{country:?}|{first}|{content:?}", query.timeline.id);
     let recording = query.replay.recording();
-    let mut reader = |run: u32, viewer: u32, only: Option<&BTreeSet<u32>>, from: i32, to: i32| dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::NavalRegionControl, &COLUMNS, lanes::Keys::Ranges(&control_ranges(viewer, only)), from, to));
+    let mut reader = |run: u32, viewer: u32, only: Option<&BTreeSet<u32>>, from: i32, to: i32| {
+        if let Some(frame) = frame.filter(|frame| frame.hour == from && from == to && only.is_none()) {
+            let view = frame.tables[TableId::NavalRegionControl.index()].held();
+            let status = match view {
+                TableView::Complete(_) => Some(Status::Complete),
+                TableView::Truncated { missing, .. } => Some(Status::Truncated { missing: *missing }),
+                TableView::NotRecorded { .. } => Some(Status::NotRecorded),
+                TableView::Unavailable { .. } => None,
+            };
+            if let Some(status) = status {
+                let mut history = lanes::History { to, columns: COLUMNS.to_vec(), statuses: vec![lanes::StatusRun { first: from, last: to, status }], ..Default::default() };
+                let rows = coverage::witnessed_selection::<tables::NavalRegionControl>(frame).rows;
+                let number = |value| match value { Recorded::Value(value) => Cell::Number(value), Recorded::NotRecorded => Cell::Unrecorded };
+                let mut text = |value: &[u8]| {
+                    let index = history.texts.len() as u32;
+                    history.texts.push(value.into());
+                    Cell::Text(index)
+                };
+                for row in rows {
+                    let key = u128::from(row.viewer) << 32 | u128::from(row.region);
+                    let cells = [number(row.friendly), number(row.enemy), number(row.ratio_friendly), number(row.ratio_enemy), number(row.own), text(&row.control_refusal), text(&row.share_refusal)];
+                    history.keys.push((key, vec![lanes::Step { hour: to, cells: Some(Box::new(cells)) }]));
+                }
+                return Ok(history);
+            }
+        }
+        dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::NavalRegionControl, &COLUMNS, lanes::Keys::Ranges(&control_ranges(viewer, only)), from, to))
+    };
     let state = source.state::<HeldHistories>();
     let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).histories.get(&key).filter(|held| held.last == last || (held.last < last && (held.last + 1).rem_euclid(DAY) == 0)).cloned();
     let history = match held {
@@ -702,6 +730,12 @@ impl Product for NavalSupremacy {
     }
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        Self::answer(source, params, load, cancelled, None)
+    }
+}
+
+impl NavalSupremacy {
+    fn answer(source: &Source, params: &NavalSupremacyParams, load: &LoadContext, cancelled: &AtomicBool, step: Option<at_hour::DatedStep<'_>>) -> io::Result<NavalSupremacyReply> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let query = dashboard_base::queries::query(source, branch)?;
         let places = place_names::Content::read(source, load)?;
@@ -722,7 +756,27 @@ impl Product for NavalSupremacy {
         };
         let first_day = first.div_euclid(DAY);
         let count = if outside { 0 } else { (last.div_euclid(DAY) - first_day + 1) as u32 };
-        let Control { mut runs, unknown, hours, notes } = control(source, load, &query, &sea, &params.country, (first, last), count, cancelled)?;
+        let viewer = query.holders.slot_at(&params.country, last);
+        let mut step = step.filter(|step| count == 1 && query.timeline.at(last).is_some() && viewer.is_some()
+            && step.step.is_none_or(|input| !input.step.gap() && input.step.last() == last));
+        let ships = [TableId::Ships, TableId::NavalMissionLedgers, TableId::Countries, TableId::CountryLinks, TableId::AirCountryRelations].map(at_hour::Read::all);
+        let with_ships = params.regions.as_ref().or(params.pinned_regions.as_ref()).is_some_and(|regions| !regions.is_empty());
+        let ships_available = |frame: &DecodedFrame| ships.iter().all(|read| {
+            !matches!(frame.tables[read.table.index()].held(), TableView::Unavailable { .. })
+        });
+        let columns = |table| (table == TableId::NavalRegionControl).then(|| COLUMNS.to_vec());
+        let mut reads = Vec::new();
+        let frame = if let Some(step) = &mut step {
+            let keys = at_hour::Keys::Ranges(control_ranges(viewer.expect("stepped viewer"), None));
+            reads.push(at_hour::Read { table: TableId::NavalRegionControl, keys });
+            if with_ships { reads.extend(ships.iter().cloned()); }
+            match step.frame(source, &query, last, &reads, columns) {
+                Ok(frame) if !with_ships || ships_available(frame) => Some(frame),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
+                _ => return Self::answer(source, params, load, cancelled, None),
+            }
+        } else { None };
+        let Control { mut runs, unknown, hours, notes } = control(source, load, &query, &sea, &params.country, (first, last), count, cancelled, frame)?;
         let mut warnings = sea.notes.clone();
         warnings.extend(places.warnings());
         let mut looks = LookResolver::new(source, &query.timeline, load, &mut warnings)?;
@@ -769,16 +823,20 @@ impl Product for NavalSupremacy {
             (false, None) => MissionRegisteredShips::refused(last_day_unknown.clone().unwrap_or_else(|| "The day was not recorded".into())),
             (false, Some(ship_hour)) => match query.holders.at(&params.country, ship_hour).map(|r| r.holder) {
                 Some(Holder::Found { slot, .. }) => {
-                    let reads = [
-                        at_hour::Read::all(TableId::Ships),
-                        at_hour::Read::all(TableId::NavalMissionLedgers),
-                        at_hour::Read::all(TableId::Countries),
-                        at_hour::Read::all(TableId::CountryLinks),
-                        at_hour::Read::all(TableId::AirCountryRelations),
-                    ];
-                    match at_hour::frame(&query, ship_hour, &reads, "Naval mission ships") {
-                        Ok(frame) => ship_counts(&frame, slot, &mut inputs),
-                        Err(error) => MissionRegisteredShips::refused(error.to_string()),
+                    if let Some(frame) = frame.filter(|_| with_ships) {
+                        ship_counts(frame, slot, &mut inputs)
+                    } else if let Some(step) = &mut step {
+                        reads.extend(ships.iter().cloned());
+                        match step.frame(source, &query, ship_hour, &reads, columns) {
+                            Ok(frame) if ships_available(frame) => ship_counts(frame, slot, &mut inputs),
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
+                            _ => return Self::answer(source, params, load, cancelled, None),
+                        }
+                    } else {
+                        match at_hour::frame(&query, ship_hour, &ships, "Naval mission ships") {
+                            Ok(frame) => ship_counts(&frame, slot, &mut inputs),
+                            Err(error) => MissionRegisteredShips::refused(error.to_string()),
+                        }
                     }
                 }
                 _ => MissionRegisteredShips::refused(query.holders.not_known(&params.country, ship_hour).unwrap_or_else(|| "The viewer's tag is held by no country at this hour".into())),
