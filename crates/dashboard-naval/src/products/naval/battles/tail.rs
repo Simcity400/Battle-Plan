@@ -932,7 +932,7 @@ mod tests {
             subjects: Box::default(),
             states: reads.iter().map(|(at, read)| (*at, read.result as u8)).collect::<Vec<_>>().into(),
             sort_keys: [SortKey::dated_numbers(Vec::new()), SortKey::dated_numbers(Vec::new()), SortKey::dated_numbers(Vec::new())].into(),
-            text: Box::default(),
+            text: Default::default(),
             payload: Line { key: key.into(), reads, joined: None },
         };
         let gap = |first_hour, last_hour| MissingSpan { first_hour, last_hour, reason: "Naval battle census incomplete".into() };
