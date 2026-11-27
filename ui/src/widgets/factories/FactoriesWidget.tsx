@@ -8,13 +8,12 @@ import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
+import { countryRowFromAction } from '../../families/host/installed.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
-import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { FactoryGroupsReply, FactoryPartsReply } from '../../generated/dashboard';
 import { countMode, partRows, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
-import type { FactoriesRowMeta } from './factoriesProjection.ts';
 
 function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
   tag: string; hour: GatedHour; types: readonly string[]; mode: ReturnType<typeof countMode>;
@@ -60,12 +59,12 @@ export default function FactoriesWidget(props: FamilyViewProps) {
   const gate = useGate(runtime, widget, SPEC, active);
 
   const onActivate = useCallback((action: InstalledAction) => {
-    if (isLines && parseChartInspect(action.subject) !== null) return;
+    const row = countryRowFromAction(action);
+    if (!row) return;
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
-    const rowMeta = action.meta as FactoriesRowMeta | null | undefined;
-    setDetail({ tag: rowMeta?.tag ?? action.subject, key: rowMeta?.key ?? action.subject, hour: gated });
-  }, [gate, isLines]);
+    setDetail({ ...row, hour: gated });
+  }, [gate]);
 
   if (!manifestDeclaration) return null;
 
@@ -76,8 +75,7 @@ export default function FactoriesWidget(props: FamilyViewProps) {
         family={manifestDeclaration.family}
         view={view}
         declaration={manifestDeclaration}
-        {...(isLines ? {} : { selectedKey: detail?.key ?? null })}
-        onActivate={onActivate}
+        {...(isLines ? {} : { selectedKey: detail?.key ?? null, onActivate })}
       />
       <DetailWindowHost
         open={detail !== null}

@@ -16,6 +16,7 @@ export const cardHostAdapter: FamilyHostAdapter<CardModel, unknown, FamilyCardBi
     return {
       installedId: installed.id,
       owner: installed.owner,
+      target: { kind: 'row', key: hit.key },
       subject: hit.subject ?? target?.subject ?? hit.key,
       hour: own === undefined ? installed.hour : displayedHour(own),
       ...(target?.label !== undefined ? { label: target.label } : {}),

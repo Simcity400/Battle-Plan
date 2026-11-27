@@ -1,6 +1,7 @@
 import { displayedHour } from '../boundedView.ts';
 import type { FamilyGestureContext, FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { SourcePlan } from '../contract.ts';
+import type { ActionTarget } from '../plan.ts';
 import type { TimeChartBinding } from './declaration.ts';
 import { parseChartInspect } from './hitTest.ts';
 import type { TimeChartModel } from './model.ts';
@@ -160,13 +161,16 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
   parseHit: parseTimeChartHit,
   resolveHitAction(hit, installed, fields) {
     const target = installed.actionKeys.get(hit.key);
+    const parsed = parseChartInspect(hit.key);
     const metaObj = fields.meta as { readonly subject?: string } | undefined;
-    if (hit.kind === 'month') {
+    if (hit.kind === 'month' || parsed?.kind === 'month') {
+      const hour = displayedHour(installed.hour);
       return {
         installedId: installed.id,
         owner: installed.owner,
+        target: { kind: 'chart-month', index: parsed?.kind === 'month' ? parsed.index : -1, hour },
         subject: hit.subject ?? target?.subject ?? hit.key,
-        hour: displayedHour(installed.hour),
+        hour,
         meta: {
           frameHour: installed.hour,
           ...(hit.hour !== undefined ? { monthFirstHour: hit.hour } : {}),
@@ -176,11 +180,18 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
     }
     const label = hit.label ?? target?.label;
     const meta = hit.meta ?? target?.meta;
+    const hour = displayedHour(hit.hour ?? target?.hour ?? installed.hour);
+    const actionTarget: ActionTarget = parsed
+      ? parsed.kind === 'line' || parsed.kind === 'label'
+        ? { kind: 'chart-series', part: parsed.kind, seriesId: parsed.seriesId, hour }
+        : { kind: 'chart-coordinate', coordinate: parsed.kind, hour }
+      : { kind: 'chart-coordinate', coordinate: 'plot', hour };
     return {
       installedId: installed.id,
       owner: installed.owner,
+      target: actionTarget,
       subject: hit.subject ?? target?.subject ?? hit.key,
-      hour: displayedHour(hit.hour ?? target?.hour ?? installed.hour),
+      hour,
       ...(hit.toggle || target?.toggle ? { toggle: true } : {}),
       ...(label !== undefined ? { label } : {}),
       ...(meta !== undefined ? { meta } : {}),
