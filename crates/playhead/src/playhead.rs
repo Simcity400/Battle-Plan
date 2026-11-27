@@ -708,7 +708,7 @@ impl Shared {
         lock(&self.lead).seconds > 0.0
     }
 
-    fn queue(&self, jobs: impl IntoIterator<Item = ((u8, i64), Job)>) {
+    fn queue(&self, jobs: impl IntoIterator<Item = ((u8, i64), Job)>) -> (usize, usize, usize) {
         let mut held = lock(&self.jobs);
         let before = held.heap.len();
         let mut urgent = false;
@@ -717,6 +717,11 @@ impl Shared {
             held.push(rank, job);
         }
         let added = held.heap.len() - before;
+        let load = if urgent {
+            (held.running, held.lent_busy, held.heap.iter().filter(|queued| queued.rank.0 <= 1 && matches!(queued.job, Job::Prepare(_))).count())
+        } else {
+            (held.running, held.lent_busy, 0)
+        };
         drop(held);
         match added {
             0 => {}
@@ -726,6 +731,7 @@ impl Shared {
         if urgent {
             self.lent_work.notify_all();
         }
+        load
     }
 
     fn queue_joins(&self, jobs: Vec<Job>) {
@@ -2248,12 +2254,11 @@ impl Stepper {
             };
             jobs.push(((1, -cost), Job::Prepare(prepare)));
         }
-        let tables = jobs.len();
-        self.shared.queue(jobs);
+        let (running, lent_busy, urgent) = self.shared.queue(jobs);
         for helper in &self.helpers {
             let _ = helper.send(Help::Prepares);
         }
-        self.lend_seek_threads(tables);
+        self.lend_seek_threads(running, lent_busy, urgent);
         self.seek = Some(Seek { hour, gap, piece, asked, started: Instant::now(), pending, prepared: Vec::new() });
     }
 
@@ -2264,13 +2269,10 @@ impl Stepper {
         if at_least_one { extra.max(1) } else { extra }
     }
 
-    fn lend_seek_threads(&mut self, tables: usize) {
+    fn lend_seek_threads(&mut self, running: usize, lent_busy: usize, urgent: usize) {
         let own = 1 + self.helpers.len() + self.shared.settings.fetch_threads;
-        let (busy, urgent) = {
-            let jobs = lock(&self.shared.jobs);
-            (jobs.lent_busy, jobs.heap.iter().filter(|queued| queued.rank.0 <= 1).count())
-        };
-        let want = tables.saturating_sub(own).max(busy + urgent.saturating_sub(own)).min(self.lent_cap(false));
+        let own_idle = own.saturating_sub(running.saturating_sub(lent_busy));
+        let want = (lent_busy + urgent.saturating_sub(own_idle)).min(self.lent_cap(false));
         self.lent.ensure(want);
     }
 

@@ -3437,6 +3437,91 @@ fn many_join_and_seek_bursts_reuse_a_bounded_lent_worker_set_and_stop_joins_all(
         let _ = playhead_s3.finish();
         assert_eq!(shared_s3.lent_live.load(Ordering::Acquire), 0);
     }
+
+    let seek_cap = width.saturating_sub(3);
+    if seek_cap >= 3 {
+        use std::sync::atomic::AtomicBool;
+        let (pages_sk, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 5, &[(0, BLOCK)]);
+        let seek_settings = Settings { step_threads: 2, fetch_threads: 1, ..settings() };
+        let playhead_sk = Playhead::new(Arc::clone(&pages_sk) as Arc<dyn Pages>, Timeline::whole(&*pages_sk).unwrap(), seek_settings, None).unwrap();
+        let shared_sk = Arc::clone(&playhead_sk.shared);
+        let base_sk = playhead_sk.declare(every(&[0, 3, 4]), None).unwrap();
+        let mut consumer_sk = playhead_sk.consumer(base_sk);
+        consumer_sk.set_blocking(true);
+        playhead_sk.pause();
+        playhead_sk.seek(0);
+        playhead_sk.wait_until(|| playhead_sk.newest().is_some());
+        steps.clear();
+        let _ = consumer_sk.take(0, &mut steps);
+        assert_eq!(shared_sk.lent_live.load(Ordering::Acquire), 0);
+
+        let held = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        struct Release<'a>(&'a (Mutex<(bool, bool)>, Condvar));
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                let mut s = self.0.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                s.1 = true;
+                self.0.1.notify_all();
+            }
+        }
+        let _release_held = Release(&held);
+        let tripped = Arc::new(AtomicBool::new(false));
+        let held_cb = Arc::clone(&held);
+        let tripped_cb = Arc::clone(&tripped);
+        let blocker: Rebuild = Arc::new(move |lane: &Lane, columns: &[usize]| {
+            if std::thread::current().name() == Some("playhead lent") && !tripped_cb.swap(true, Ordering::AcqRel) {
+                let mut s = held_cb.0.lock().unwrap();
+                s.0 = true;
+                held_cb.1.notify_all();
+                while !s.1 {
+                    s = held_cb.1.wait(s).unwrap();
+                }
+                drop(s);
+            }
+            Ok(State::new(Kept::rebuilt(lane, columns), 0))
+        });
+
+        let gated_sk = &pages_sk.extents[0];
+        gated_sk.close(0, u64::MAX);
+        let _j0 = playhead_sk.declare(every(&[1]), Some(Arc::clone(&blocker))).unwrap();
+        {
+            let mut closed = gated_sk.closed.lock().unwrap();
+            while closed.1 < 1 {
+                closed = gated_sk.opened.wait(closed).unwrap();
+            }
+        }
+        let _j1 = playhead_sk.declare(every(&[2]), Some(blocker)).unwrap();
+        {
+            let mut closed = gated_sk.closed.lock().unwrap();
+            while closed.1 < 2 {
+                closed = gated_sk.opened.wait(closed).unwrap();
+            }
+        }
+        gated_sk.open();
+        {
+            let mut s = held.0.lock().unwrap();
+            while !s.0 {
+                s = held.1.wait(s).unwrap();
+            }
+        }
+        let before_seek = shared_sk.lent_live.load(Ordering::Acquire);
+        assert!((1..=2).contains(&before_seek));
+        gated_sk.close(0, u64::MAX);
+        playhead_sk.seek(100);
+        {
+            let mut closed = gated_sk.closed.lock().unwrap();
+            while closed.1 < 5 {
+                closed = gated_sk.opened.wait(closed).unwrap();
+            }
+        }
+        let live_during_seek = shared_sk.lent_live.load(Ordering::Acquire);
+        gated_sk.open();
+        drop(_release_held);
+        playhead_sk.wait_until(|| playhead_sk.ring_len() >= 1);
+        let _ = playhead_sk.finish();
+        assert!(live_during_seek > before_seek && live_during_seek <= seek_cap, "seek grew lent pool from {before_seek} to {live_during_seek} (cap {seek_cap})");
+        assert_eq!(shared_sk.lent_live.load(Ordering::Acquire), 0);
+    }
 }
 
 #[test]
@@ -3618,7 +3703,7 @@ fn a_panicking_lent_worker_is_replaced_without_wedging_the_queue() {
     }
     drop(control3);
     assert_eq!(shared3.lent_live.load(Ordering::Acquire), 0, "stepper unwind joins lent workers");
-    let rows_reply = playhead3.rows(Wanted { run: 0, table: 0, ordinals: vec![0], columns: vec![0] }).wait();
-    assert!(rows_reply.is_err(), "permanent fetchers still finish row requests after stepper unwind");
+    let rows_err = playhead3.rows(Wanted { run: 0, table: 0, ordinals: vec![0], columns: vec![0] }).wait().unwrap_err().to_string();
+    assert!(rows_err.contains("Table 0 holds state"), "permanent fetchers still finish row requests after stepper unwind: {rows_err}");
     let _ = playhead3.finish();
 }
