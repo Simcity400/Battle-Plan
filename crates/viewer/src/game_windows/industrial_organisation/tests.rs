@@ -1729,6 +1729,7 @@ fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
                 name = "tree_header"
                 position = { x = 0 y = 0 }
                 size = { width = 260 height = 24 }
+                margin = { top = 0 left = 0 bottom = 0 right = 20 }
                 clipping = yes
                 background = { name = "Background" spriteType = "GFX_btn" }
             }
@@ -1743,7 +1744,8 @@ fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
         containerWindowType = {
             name = "industrial_organisation_flavortext_window"
             size = { width = 300 height = 24 }
-            instantTextboxType = { name = "flavortext" position = { x = 270 y = 0 } font = "Main_14" text = "" maxWidth = 80 maxHeight = 20 }
+            instantTextboxType = { name = "sibling_label" position = { x = 0 y = 0 } font = "Main_14" text = "Visible sibling" maxWidth = 80 maxHeight = 20 }
+            instantTextboxType = { name = "flavortext" position = { x = 245 y = 0 } font = "Main_14" text = "" maxWidth = 80 maxHeight = 20 }
         }
         containerWindowType = {
             name = "industrial_organisation_trait_entry"
@@ -2023,6 +2025,27 @@ fn history_icon_reads_exclude_unread_tables_after_earlier_error() {
     bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
     bmp[34..38].copy_from_slice(&4_u32.to_le_bytes());
     bmp[54..58].copy_from_slice(&[0, 0, 1, 0]);
+    let hist_gui_bytes = br#"guiTypes = {
+        containerWindowType = {
+            name = "industrial_organisation_detail_window"
+            size = { width = 500 height = 300 }
+            containerWindowType = {
+                name = "history_window"
+                position = { x = 0 y = 0 }
+                size = { width = 500 height = 300 }
+                containerWindowType = {
+                    name = "prod_lines_window"
+                    position = { x = 0 y = 0 }
+                    size = { width = 300 height = 240 }
+                    smoothListboxType = { name = "prod_line_history_list" position = { x = 0 y = 0 } size = { x = 260 y = 150 } }
+                }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_history_item"
+            size = { width = 260 height = 50 }
+        }
+    }"#;
     let layers = synthetic_layers(&[
         (
             "map/default.map",
@@ -2042,12 +2065,13 @@ fn history_icon_reads_exclude_unread_tables_after_earlier_error() {
             "common/country_tags/00_countries.txt",
             b"SYN = \"countries/Synthetic.txt\"\n",
         ),
+        ("interface/hist.gui", hist_gui_bytes),
     ]);
     let db = designer_database(&layers, "history equipment").unwrap();
     let registry = content_reader_gui::gui::native::resources::Registry::default();
     let ic = Arc::new(
         dashboard_base::products::equipment_icon::IconContent::native(
-            Arc::new(layers),
+            Arc::new(layers.clone()),
             db,
             &Err("unread".to_owned()),
             &registry,
@@ -2079,6 +2103,52 @@ fn history_icon_reads_exclude_unread_tables_after_earlier_error() {
     assert!(
         icon_tables.contains(&TableId::CountryAppearance),
         "tables actually read by IconHour::read must remain accounted for: {icon_tables:?}"
+    );
+
+    let shared = SharedInterface::load(&layers, DEFAULT_VIEWPORT, Some("english")).unwrap();
+    let hist_root = shared.guis.template(DETAIL_WINDOW_NAME.as_bytes()).unwrap();
+    let hist_item = shared.guis.template(b"industrial_organisation_history_item").unwrap();
+    let hist_rows = vec![IndustrialOrganisationHistoryRow {
+        organisation: 1,
+        variant: 42,
+        units: 5,
+        design_hour: Recorded::Value(None),
+    }];
+    let hist_index = HistoryIndex::build(&hist_rows, 1);
+    set(
+        &mut frame,
+        TableId::IndustrialOrganisationHistory,
+        replay_data::rows::TableRows::IndustrialOrganisationHistory(hist_rows),
+        100,
+    );
+    frame.tables[TableId::VariantDefinitions.index()] = TableView::Unavailable {
+        reason: "unavailable".to_owned(),
+    }
+    .into();
+    let scroll = BTreeMap::new();
+    let mut assets = Assets::default();
+    let (resolved, deferred_tables) = prepare_visible_history_icons(
+        &HistoryIconPrep {
+            frame: &frame,
+            layers: &layers,
+            content: None,
+            shared: &shared,
+            language: "english",
+            decode: Decode::default(),
+        },
+        &hist_index,
+        hist_root,
+        hist_item,
+        &scroll,
+        &mut assets,
+    );
+    assert!(
+        deferred_tables.is_empty(),
+        "unavailable VariantDefinitions must not read IconHour or include its tables: {deferred_tables:?}"
+    );
+    assert!(
+        matches!(resolved.get(&42), Some(ResolvedHistoryIcon::Missing { .. })),
+        "visible row with unavailable VariantDefinitions must still become a missing placeholder: {resolved:?}"
     );
 }
 

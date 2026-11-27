@@ -1148,22 +1148,25 @@ fn visible_list_indices(
     }
 }
 
-fn placed_text_visible(parts: &[native_gui::Part]) -> bool {
-    parts.iter().any(|part| match &part.kind {
-        native_gui::PartKind::Text { glyphs, scale, .. } => glyphs.iter().any(|g| {
-            clip_rect(
-                [
-                    g.at[0],
-                    g.at[1],
-                    g.size[0] as f32 * *scale,
-                    g.size[1] as f32 * *scale,
-                ],
-                part.clip,
-            )
-            .is_some()
-        }),
-        native_gui::PartKind::Inline { rect, .. } => clip_rect(*rect, part.clip).is_some(),
-        _ => false,
+fn placed_text_visible(parts: &[native_gui::Part], target_path: &str) -> bool {
+    parts.iter().any(|part| {
+        part.path == target_path
+            && match &part.kind {
+                native_gui::PartKind::Text { glyphs, scale, .. } => glyphs.iter().any(|g| {
+                    clip_rect(
+                        [
+                            g.at[0],
+                            g.at[1],
+                            g.size[0] as f32 * *scale,
+                            g.size[1] as f32 * *scale,
+                        ],
+                        part.clip,
+                    )
+                    .is_some()
+                }),
+                native_gui::PartKind::Inline { rect, .. } => clip_rect(*rect, part.clip).is_some(),
+                _ => false,
+            }
     })
 }
 
@@ -2915,6 +2918,8 @@ fn compose_trait_tree(
     let header_clips = header_el
         .and_then(Element::container)
         .is_some_and(|c| c.clipping.unwrap_or(!c.backgrounds.is_empty()));
+    let header_frame = header_el
+        .and_then(|el| native_gui::container_frame(el, Some(tree_layout.size)).ok());
     let header_holder = header_el.and_then(|el| container_holder(&tree_layout, &el.path));
 
     let tree_parts = tree_holder.place([0, 0], &tree_layout);
@@ -2977,11 +2982,18 @@ fn compose_trait_tree(
             ))
         })?;
         let flavor_tpl = require_template(guis, "industrial_organisation_flavortext_window")?;
-        hdr.origin = [tree_origin[0] + hdr.origin[0], tree_origin[1] + hdr.origin[1]];
-        hdr.logical = [
-            tree_holder.logical[0] + hdr.logical[0],
-            tree_holder.logical[1] + hdr.logical[1],
+        let flavor_text_path = find_direct(flavor_tpl, "flavortext").map(|e| e.path.as_str());
+        let [content_x, content_y] = header_frame.map(|f| f.content_at).unwrap_or([0, 0]);
+        let [content_w, content_h] = header_frame.map(|f| f.content_size).unwrap_or(hdr.content);
+        hdr.origin = [
+            tree_origin[0] + hdr.origin[0] + content_x as f32,
+            tree_origin[1] + hdr.origin[1] + content_y as f32,
         ];
+        hdr.logical = [
+            tree_holder.logical[0] + hdr.logical[0] + content_x,
+            tree_holder.logical[1] + hdr.logical[1] + content_y,
+        ];
+        hdr.content = [content_w.max(0), content_h.max(0)];
         let own_clip = header_clips.then_some([
             hdr.logical[0],
             hdr.logical[1],
@@ -3004,7 +3016,9 @@ fn compose_trait_tree(
                 set_text_by_name(instance, flavor_tpl, "flavortext", label.clone());
             })?;
             let parts = hdr.place([px, 0], &layout);
-            if !label.is_empty() && placed_text_visible(&parts) {
+            if !label.is_empty()
+                && flavor_text_path.is_some_and(|path| placed_text_visible(&parts, path))
+            {
                 plan.text(&format!("mio_header:{idx}"), "Tree header", Ok(label));
             }
             plan.sub_windows.push(ComposedSubWindow {
@@ -4134,46 +4148,59 @@ fn prepare_visible_history_icons(
         .complete::<tables::VariantDefinitions>()
         .map_err(|error| format!("VariantDefinitions is unavailable: {error}"));
     let lexical = witnessed_rows::<tables::LexicalTokens>(frame).map(|(rows, _)| rows);
-    let equipment_db = designer_database(layers, "history equipment").map_err(|err| err.to_string());
-    let icon_content = equipment_db.and_then(|db| {
-        shared.icon_content(layers, &db, || {
-            let content = content
-                .ok_or_else(|| "recorded content handle is unavailable for equipment icons".to_owned())?;
-            dashboard_base::catalogue::read_scripted_content(
-                Arc::clone(content),
-                language.to_owned(),
-            )
-        })
-    });
-    let (icon_hour, icon_tables) = read_icon_hour_with_tables(frame, &icon_content);
+    let mut icon_ctx: Option<(
+        Result<Arc<dashboard_base::products::equipment_icon::IconContent>, String>,
+        Result<IconHour, String>,
+    )> = None;
+    let mut icon_tables = Vec::new();
     for variant_id in visible_ids {
-        let state = match (&variants, &icon_content, &icon_hour) {
-            (Err(why), _, _) => ResolvedHistoryIcon::Missing {
+        let state = match &variants {
+            Err(why) => ResolvedHistoryIcon::Missing {
                 asset: "equipment icon".to_owned(),
                 reason: why.clone(),
             },
-            (Ok(_), Err(why), _) | (Ok(_), _, Err(why)) => ResolvedHistoryIcon::Missing {
-                asset: "equipment icon".to_owned(),
-                reason: why.clone(),
-            },
-            (Ok(defs), Ok(ic), Ok(ih)) => {
-                match defs.binary_search_by_key(&variant_id, |v| v.id) {
-                    Err(_) => ResolvedHistoryIcon::Missing {
-                        asset: "equipment icon".to_owned(),
-                        reason: "VariantDefinitions has no row for this design at this hour"
-                            .to_owned(),
-                    },
-                    Ok(idx) => {
-                        let def = &defs[idx];
-                        match spell_token(&lexical, def.equipment_token) {
-                            Spelled::Unspelled { .. } => ResolvedHistoryIcon::Missing {
-                                asset: "equipment icon".to_owned(),
-                                reason: spell_token(&lexical, def.equipment_token)
-                                    .missing("design's equipment")
-                                    .unwrap_or_default(),
-                            },
-                            Spelled::Text(equipment_key) => {
-                                match variant_icon(ic, ih, def, &equipment_key) {
+            Ok(defs) => match defs.binary_search_by_key(&variant_id, |v| v.id) {
+                Err(_) => ResolvedHistoryIcon::Missing {
+                    asset: "equipment icon".to_owned(),
+                    reason: "VariantDefinitions has no row for this design at this hour"
+                        .to_owned(),
+                },
+                Ok(idx) => {
+                    let def = &defs[idx];
+                    match spell_token(&lexical, def.equipment_token) {
+                        Spelled::Unspelled { .. } => ResolvedHistoryIcon::Missing {
+                            asset: "equipment icon".to_owned(),
+                            reason: spell_token(&lexical, def.equipment_token)
+                                .missing("design's equipment")
+                                .unwrap_or_default(),
+                        },
+                        Spelled::Text(equipment_key) => {
+                            let (ic_res, ih_res) = icon_ctx.get_or_insert_with(|| {
+                                let equipment_db = designer_database(layers, "history equipment")
+                                    .map_err(|err| err.to_string());
+                                let icon_content = equipment_db.and_then(|db| {
+                                    shared.icon_content(layers, &db, || {
+                                        let content = content.ok_or_else(|| {
+                                            "recorded content handle is unavailable for equipment icons"
+                                                .to_owned()
+                                        })?;
+                                        dashboard_base::catalogue::read_scripted_content(
+                                            Arc::clone(content),
+                                            language.to_owned(),
+                                        )
+                                    })
+                                });
+                                let (icon_hour, tables) =
+                                    read_icon_hour_with_tables(frame, &icon_content);
+                                icon_tables = tables;
+                                (icon_content, icon_hour)
+                            });
+                            match (ic_res, ih_res) {
+                                (Err(why), _) | (_, Err(why)) => ResolvedHistoryIcon::Missing {
+                                    asset: "equipment icon".to_owned(),
+                                    reason: why.clone(),
+                                },
+                                (Ok(ic), Ok(ih)) => match variant_icon(ic, ih, def, &equipment_key) {
                                     Ok(Some(selected)) => {
                                         let asset_name = match &selected {
                                             Icon::Sprite(name) | Icon::Path(name) => name.clone(),
@@ -4225,12 +4252,12 @@ fn prepare_visible_history_icons(
                                         asset: "equipment icon".to_owned(),
                                         reason: why,
                                     },
-                                }
+                                },
                             }
                         }
                     }
                 }
-            }
+            },
         };
         resolved.insert(variant_id, state);
     }
