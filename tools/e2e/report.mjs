@@ -457,7 +457,7 @@ if (sweep) {
       `${sample.label}: p50 ${ms1(sample.main.p50)} / p95 ${ms1(sample.main.p95)} / max ${ms1(sample.main.max)} ms (${sample.main.n} frames)`).join('; ');
     const spreadLine = costReport.baseline.samples?.length >= 2
       ? ` Spread across samples: Δp50 ${ms1(costReport.baseline.spread?.p50Ms)} ms, Δp95 ${ms1(costReport.baseline.spread?.p95Ms)} ms.` : '';
-    const costNote = `Each widget mounted alone at default size, playing at 1,440 h/s. Ranked by \`costScoreMs = ${COST_FORMULA}\` (ms/frame; \`Δp50\` shown beside \`Δp95\`; negative \`Δp95\` is never clamped to zero and is marked \`below baseline noise\`). Pooled empty-page baseline: p50 ${ms1(baseMain.p50)} / p95 ${ms1(baseMain.p95)} / max ${ms1(baseMain.max)} ms (${baseMain.n} frames${costReport.baseline.lostRecords ? `, ${costReport.baseline.lostRecords} lost records` : ''})${sampleLine ? ` [${sampleLine}]` : ''}.${spreadLine} Outcomes across ${costReport.widgets.length} kinds: ${outcomeLine}. Full data in \`widget-costs.json\`.`;
+    const costNote = `Each widget mounted alone at default size, playing at 1,440 h/s. Ranked by \`costScoreMs = ${COST_FORMULA}\` (ms/frame; \`Δp50\` shown beside \`Δp95\`; negative \`Δp95\` is never clamped to zero and is marked \`below baseline noise\`). Pooled empty-page baseline: p50 ${ms1(baseMain.p50)} / p95 ${ms1(baseMain.p95)} / max ${ms1(baseMain.max)} ms (${baseMain.n} frames${costReport.baseline.lostRecords ? `, ${costReport.baseline.lostRecords} lost records` : ''})${sampleLine ? ` [${sampleLine}]` : ''}.${spreadLine} Outcomes across ${costReport.widgets.length} placements: ${outcomeLine}. Full data in \`widget-costs.json\`.`;
     const costRows = [];
     if (!costReport.baseline.usable) {
       costRows.push({
@@ -488,7 +488,7 @@ if (sweep) {
       costRows.push({
         pass: w.pass,
         cells: [
-          index + 1, w.kind, w.outcome, verdict(w.pass), ms1(w.costScoreMs),
+          index + 1, w.view && w.view !== 'default' ? `${w.kind}/${w.view}` : w.kind, w.outcome, verdict(w.pass), ms1(w.costScoreMs),
           ms1(w.main.p50), signed(w.mainDelta.p50), ms1(w.main.p95), signed(w.mainDelta.p95),
           framesCell, workerCell, w.commitsPerSec == null ? '–' : w.commitsPerSec.toFixed(1), reqCell,
           w.lagP95Hours == null ? '–' : Math.round(w.lagP95Hours), w.exact, why([...new Set(notes)]),
@@ -520,7 +520,7 @@ if (sweep) {
   under();
   const timedWindows = [
     ...area('playback').filter(r => r.from != null && r.to != null).map(r => ({ label: `${r.page} ${r.speed} h/s${r.scroll ? ` (scroll ${r.scroll})` : ''}`, from: r.from, to: r.to })),
-    ...area('widget-costs').filter(r => r.from != null && r.to != null).map(r => ({ label: `cost:${r.kind}`, from: r.from, to: r.to })),
+    ...area('widget-costs').filter(r => r.from != null && r.to != null).map(r => ({ label: `cost:${r.item ?? r.kind}`, from: r.from, to: r.to })),
   ];
   const lost = records ? losses(records, timedWindows) : [];
   section('Measurement losses (records the perf logs dropped: any can hide a failed reply or a slow frame)', ['Source', 'Records', 'Windows', 'From', 'To'],

@@ -627,7 +627,7 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     const lowFrameCount = main.n > 0 && main.n < WIDGET_LOW_FRAMES;
     const costScoreMs = complete && Number.isFinite(mainDelta.p95) ? mainDelta.p95 + (worker.p95 ?? 0) : null;
     return {
-      kind: w.kind, title: w.title ?? w.kind, outcome, detail,
+      kind: w.kind, ...(w.view ? { view: w.view } : {}), title: w.title ?? w.kind, outcome, detail,
       seconds, clockHps: clock.hps, main, mainDelta, interval, worker,
       commits, commitsPerSec,
       requests: liveQueries.length, requestsPerSec, requestsByProduct, requestCountsByProduct, cacheHitsPerSec,
