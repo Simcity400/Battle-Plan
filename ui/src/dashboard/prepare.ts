@@ -26,8 +26,8 @@ export class PrepareGate {
     this.frames = frames;
   }
 
-  ask<T>(request: ProductRequest, send: (signal: AbortSignal, background: boolean) => Promise<T>, signal: AbortSignal, ready = () => true): Promise<T> {
-    return this.enqueue(requestKey(request), send, signal, ready);
+  ask<T>(request: ProductRequest | null, send: (signal: AbortSignal, background: boolean) => Promise<T>, signal: AbortSignal, ready = () => true): Promise<T> {
+    return this.enqueue(request === null ? null : requestKey(request), send, signal, ready);
   }
 
   wait(signal: AbortSignal, ready: () => boolean): Promise<void> {

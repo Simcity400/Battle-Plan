@@ -203,7 +203,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly onHoverHour: (hour: number | null, keys?: DrawnKeys) => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null>) | undefined;
-  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'keyframe' | 'track' | 'tiles'> & { tilesSettled(): boolean };
+  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'keyframe' | 'track' | 'tiles' | 'identity'> & { tilesSettled(): boolean };
   readonly bodyStatus: FamilyBodyStatus;
   readonly bannerFailure: BannerFailureInfo | null;
   readonly nameFailureDetail: string | undefined;
@@ -1055,12 +1055,15 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       aux && typeof aux === 'object' ? revisionOf(aux) : aux, revisionOf(displayedCtx.countries), aliases && revisionOf(aliases), displayedCtx.track.axisOffset,
       displayedCtx.branch.firstHour, displayedCtx.branch.lastHour, displayedCtx.branch.gaps);
   }, [strips, displayedCtx, displayedPlan, sig, stripProjection, fixedStrip, pagedSnapshot, content, viewport, options, singleCountry?.aliases, stripTileConfig]);
+  const stripScope = strips && identityScope && displayedCtx?.track.source.id === identityScope.sourceId
+    && displayedCtx.track.source.revision === identityScope.revision && displayedCtx.branch.id === identityScope.branchId ? identityScope : null;
   const stripPlan: UseFamilyPlanResult<TAux, TExtra>['stripPlan'] = strips && exactOptions && displayedCtx && displayedPlan ? {
     key: stripKey,
     fixed: fixedStrip,
+    ...(stripScope ? { identity: { scope: stripScope, recording: displayedCtx.track.source, bounds: branchBounds } } : {}),
     track: { branch: { firstHour: displayedCtx.branch.firstHour, lastHour: displayedCtx.branch.lastHour, gaps: displayedCtx.branch.gaps },
       axisOffset: displayedCtx.track.axisOffset },
-    supported: true,
+    supported: fixedStrip || stripScope !== null,
     tilesSettled: () => !hasStripChart || (tileViewsKeyRef.current === pixelBinnedKey && !!seriesViewportRef.current
       && [...tileViewsRef.current.values()].every(view => view.settled || view.error !== null)),
     ...((hasStripChart || dayTiles?.size) ? { tiles: async (claim, read) => {

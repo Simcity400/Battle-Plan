@@ -18,6 +18,7 @@ import type {
   LeaderNameRunsReply,
   NameRun,
   PlaceNameRunsReply,
+  RecordingGap,
   StrategicRegionsReply,
 } from '../../generated/dashboard';
 import { busyWait } from '../../shell/busy.ts';
@@ -51,7 +52,10 @@ export interface IdentityTransport {
   loadBattleNames(scope: IdentityScope, battles: readonly string[], signal: AbortSignal, recording?: DashboardSource): Promise<BattleNamesReply>;
 }
 
-export function clientIdentityTransport(client: DashboardClient): IdentityTransport {
+export function clientIdentityTransport(client: DashboardClient, transient = false): IdentityTransport {
+  const branchProduct: typeof loadProduct = transient
+    ? (client, request, signal, _validate, recording) => loadTransientProduct(client, request, signal, recording)
+    : loadProduct;
   return {
     loadFacts: async (scope, signal, recording) => validateCountryFacts(
       await loadTransientProduct<unknown>(
@@ -61,14 +65,14 @@ export function clientIdentityTransport(client: DashboardClient): IdentityTransp
         recording,
       ),
     ),
-    loadIdentities: (scope, signal, recording) => loadProduct<CountryIdentitiesReply>(
+    loadIdentities: (scope, signal, recording) => branchProduct<CountryIdentitiesReply>(
       client,
       productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'country-identities', params: { branchId: scope.branchId } }),
       signal,
       undefined,
       recording,
     ),
-    loadGroups: (scope, signal, recording) => loadProduct<CountryGroupReply>(
+    loadGroups: (scope, signal, recording) => branchProduct<CountryGroupReply>(
       client,
       productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'country-groups', params: { branchId: scope.branchId } }),
       signal,
@@ -87,7 +91,7 @@ export function clientIdentityTransport(client: DashboardClient): IdentityTransp
       signal,
       recording,
     ),
-    loadRegions: (scope, signal, recording) => loadProduct<StrategicRegionsReply>(
+    loadRegions: (scope, signal, recording) => branchProduct<StrategicRegionsReply>(
       client,
       productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'strategic-regions', params: { branchId: scope.branchId } }),
       signal,
@@ -229,7 +233,17 @@ interface LoadedWindow {
   readonly request: Extract<EntityRequest, { readonly from: number }>;
   readonly keys: Map<string, EntityIdentityKey>;
   used: number;
+  stripKeys?: Set<string>;
 }
+
+export interface StripIdentitySource {
+  readonly scope: IdentityScope;
+  readonly recording?: DashboardSource;
+  readonly bounds?: HourInterval;
+}
+
+export type IdentityFlight = <T>(load: (signal: AbortSignal) => Promise<T>) => Promise<T>;
+export type StripIdentityCosts = readonly (readonly [string, number])[];
 
 export const MAX_ENTITY_WINDOWS = 16;
 
@@ -295,6 +309,7 @@ interface ScopeState {
   readonly entityRetryAt: Map<string, { readonly count: number; readonly at: number }>;
   readonly entityLoaded: Set<string>;
   readonly entityWindows: Map<string, LoadedWindow>;
+  stripPins?: Set<Map<string, Set<string>>>;
   windowUse: number;
   entityRetryTimer: (() => void) | null;
 
@@ -381,6 +396,158 @@ export class IdentityBroker {
 
   snapshotOf(scope: IdentityScope, recording?: DashboardSource, branchBounds?: HourInterval): IdentitySnapshot {
     return this.getState(scope, recording, branchBounds).index.exportSnapshot();
+  }
+
+  holdStripIdentities({ scope, recording, bounds }: StripIdentitySource, transport = this.transport) {
+    const state = this.getState(scope, recording, bounds);
+    const pins = new Map<string, Set<string>>();
+    (state.stripPins ??= new Set()).add(pins);
+    const costs = new Map<string, number>();
+    const reads = new Set<BranchRead>();
+    const admitted = new Map<string, WantedEntities>();
+    const window = ({ request, keys }: WantedEntities) => request.kind === 'regions'
+      ? state.index.entityWindow(keys.keys(), ...state.index.bounds(), ['region'])
+      : state.index.entityWindow(keys.keys(), request.from, request.to,
+        request.kind === 'places' ? ['state', 'province'] : request.kind === 'battles' ? ['battle'] : ['leader']);
+    return {
+      get bytes() { return [...costs.values()].reduce((sum, bytes) => sum + bytes, 0); },
+      windows: costs as ReadonlyMap<string, number>,
+      snapshot: (): IdentitySnapshot => {
+        const { scope, branchBounds, facts, factsFinal, identities, groups } = state.index.exportSnapshot();
+        const runs = new Map<string, Set<EntityRunEntry>>();
+        const unknown = new Map<EntityIdentityKey['kind'], Set<RecordingGap>>();
+        for (const wanted of admitted.values()) {
+          const part = window(wanted);
+          for (const [id, entries] of Object.entries(part.entities)) {
+            let held = runs.get(id);
+            if (!held) runs.set(id, held = new Set());
+            entries.forEach(entry => held.add(entry));
+          }
+          for (const [kind, entries] of part.entityUnknown) {
+            let held = unknown.get(kind);
+            if (!held) unknown.set(kind, held = new Set());
+            entries.forEach(entry => held.add(entry));
+          }
+        }
+        return { scope, branchBounds, ...(reads.has('facts') ? { facts, factsFinal } : {}),
+          ...(reads.has('identities') ? { identities } : {}), ...(reads.has('groups') ? { groups } : {}),
+          entities: Object.fromEntries([...runs].map(([id, entries]) => [id, [...entries]])),
+          entityUnknown: Object.fromEntries([...unknown].map(([kind, entries]) => [kind, [...entries].sort((a, b) => a.firstHour - b.firstHour)])),
+        };
+      },
+      release: () => {
+        if (!state.stripPins!.delete(pins)) return;
+        let changed = false;
+        for (const [id, keys] of pins) {
+          const window = state.entityWindows.get(id);
+          const retained = [...state.stripPins!].map(lease => lease.get(id)).filter(set => set !== undefined);
+          if (!window?.stripKeys || !retained.length) continue;
+          const { from, to } = window.request;
+          const foreground = new Set<string>();
+          for (const demand of state.demands.values()) for (const { key, hour } of demand.asks) {
+            if (key.kind !== 'country' && key.kind !== 'faction' && hour >= from && hour <= to) foreground.add(identityKeyString(key));
+          }
+          const dropped: EntityIdentityKey[] = [];
+          for (const key of keys) if (window.stripKeys.has(key) && !foreground.has(key) && !retained.some(set => set.has(key))) {
+            dropped.push(window.keys.get(key)!);
+            window.keys.delete(key);
+            window.stripKeys.delete(key);
+          }
+          if (dropped.length) {
+            state.index.dropEntityRuns(dropped, from, to, [], []);
+            changed = true;
+          }
+        }
+        this.trimWindows(state);
+        if (changed) this.notify(state);
+      },
+      prepare: async (asks: readonly IdentityAsk[], run: IdentityFlight, fits: (window: string, costs: StripIdentityCosts) => boolean | Promise<boolean>) => {
+        const entities = new Map<string, WantedEntities>();
+        const branch = state.index.bounds();
+        for (const { key, hour } of asks) {
+          if (!Number.isFinite(hour)) continue;
+          if (key.kind === 'country' || key.kind === 'faction') {
+            reads.add('facts');
+            reads.add(key.kind === 'country' ? 'identities' : 'groups');
+            continue;
+          }
+          const request = entityRequestOf(key, Math.floor(hour), branch);
+          if (!request || ('from' in request && request.from > request.to)) continue;
+          let wanted = entities.get(request.id);
+          if (!wanted) entities.set(request.id, wanted = { request, keys: new Map() });
+          wanted.keys.set(identityKeyString(key), key);
+        }
+        const revision = state.index.resolveRevision();
+        const commit = (apply: () => void) => {
+          if (!state.stripPins!.has(pins) || this.scopes.get(state.key) !== state) throw new DOMException('Strip identity lease released', 'AbortError');
+          apply();
+        };
+        const measured = (id: string, parts: StripIdentityCosts) => {
+          commit(() => costs.set(id, parts.reduce((sum, [, bytes]) => sum + bytes, 0)));
+          return fits(id, parts);
+        };
+        const encoder = new TextEncoder();
+        const size = (value: unknown) => encoder.encode(JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? item.toString() : item)).byteLength;
+        const charge = (wanted: WantedEntities) => {
+          const part = window(wanted);
+          return measured(wanted.request.id, [
+            ['', size({ entities: {}, entityUnknown: [] })],
+            ...Object.entries(part.entities).map(([id, runs]) => [id, size(id) + size(runs) + 2] as const),
+            ...part.entityUnknown.map(entry => [entry[0], size(entry) + 1] as const),
+          ]);
+        };
+        for (const read of reads) {
+          if (!state.index.hasRead(read)) {
+            const apply = await run(signal => this.loadRead(state, read, signal, transport));
+            commit(apply);
+          }
+          if (!await measured(read, [['', size(state.index.exportSnapshot()[read])]])) return false;
+        }
+        for (const { request, keys } of entities.values()) {
+          let addedWindow = false;
+          if (request.kind === 'regions') {
+            if (!state.entityLoaded.has(request.id)) {
+              const apply = await run(signal => this.loadEntityRequest(state, request, keys, signal, transport));
+              commit(apply);
+              state.entityLoaded.add(request.id);
+            }
+          } else {
+            const held = state.entityWindows.get(request.id);
+            const missing = new Map([...keys].filter(([id]) =>
+              !held?.keys.has(id) || state.entityRetryAt.has(entityRetryKey(request.id, id))));
+            if (missing.size && missing.size < keys.size) {
+              const known = new Map([...keys].filter(([id]) => !missing.has(id)));
+              commit(() => pins.set(request.id, new Set(known.keys())));
+              if (!await charge({ request, keys: known })) return false;
+            }
+            const apply = missing.size ? await run(signal => this.loadEntityRequest(state, request, missing, signal, transport)) : undefined;
+            commit(() => {
+              pins.set(request.id, new Set(keys.keys()));
+              if (apply) {
+                const current = state.entityWindows.get(request.id);
+                addedWindow = current === undefined;
+                const added = [...missing.keys()].filter(id => !current?.keys.has(id));
+                for (const [id, key] of missing) if (state.entityRetryAt.delete(entityRetryKey(request.id, id))) {
+                  state.index.replaceEntityRuns(key, request.from, request.to, []);
+                }
+                apply();
+                this.keepWindow(state, request, missing, false);
+                const window = state.entityWindows.get(request.id)!;
+                if (added.length) for (const id of added) (window.stripKeys ??= new Set()).add(id);
+              }
+            });
+          }
+          this.settleUnanswered(state, request, keys.values());
+          const wanted = { request, keys };
+          const fitsWindow = charge(wanted);
+          if (addedWindow) this.trimWindows(state);
+          if (!await fitsWindow) return false;
+          admitted.set(request.id, wanted);
+        }
+        if (state.index.resolveRevision() !== revision) this.notify(state);
+        return true;
+      },
+    };
   }
 
   resolve<K extends IdentityKey>(scope: IdentityScope, key: K, hour: number, recording?: DashboardSource, branchBounds?: HourInterval): IdentityResult<K> {
@@ -653,12 +820,12 @@ export class IdentityBroker {
     }
   }
 
-  private loadEntityRequest(state: ScopeState, request: EntityRequest, keys: ReadonlyMap<string, EntityIdentityKey>, signal: AbortSignal): Promise<() => void> {
+  private loadEntityRequest(state: ScopeState, request: EntityRequest, keys: ReadonlyMap<string, EntityIdentityKey>, signal: AbortSignal, transport = this.transport): Promise<() => void> {
     const index = state.index;
     switch (request.kind) {
       case 'battles': {
         const battles = [...keys.values()].flatMap(key => key.kind === 'battle' ? [key.id] : []);
-        return this.transport.loadBattleNames(state.scope, battles, signal, state.recording).then(reply => () => {
+        return transport.loadBattleNames(state.scope, battles, signal, state.recording).then(reply => () => {
           for (const id of battles) {
             const title = reply.titles[id];
             index.setEntityRuns({ kind: 'battle', id }, [{ firstHour: request.from, lastHour: request.to,
@@ -667,7 +834,7 @@ export class IdentityBroker {
         });
       }
       case 'regions':
-        return this.transport.loadRegions(state.scope, signal, state.recording).then(reply => () => {
+        return transport.loadRegions(state.scope, signal, state.recording).then(reply => () => {
           const bounds = index.bounds();
           for (const region of reply.regions) {
             index.setEntityRuns({ kind: 'region', id: region.id }, [{
@@ -687,7 +854,7 @@ export class IdentityBroker {
           const id = numericId(key.id);
           if (id !== null) (key.kind === 'state' ? states : provinces).push(id);
         }
-        return this.transport.loadPlaceNameRuns(state.scope, request.from, request.to, states, provinces, signal, state.recording).then(reply => () => {
+        return transport.loadPlaceNameRuns(state.scope, request.from, request.to, states, provinces, signal, state.recording).then(reply => () => {
           const entry = (run: NameRun) => runEntry(run, PLACE_ABSENT, reply.warnings);
           index.replaceEntityUnknown(['state', 'province'], reply.from, reply.to, reply.unknown);
           for (const place of reply.states) index.replaceEntityRuns({ kind: 'state', id: place.id }, reply.from, reply.to, place.runs.map(entry));
@@ -698,7 +865,7 @@ export class IdentityBroker {
       {
         const references: string[] = [];
         for (const key of keys.values()) if (key.kind === 'leader') references.push(String(key.id));
-        return this.transport.loadLeaderNameRuns(state.scope, request.owner, request.from, request.to, references, signal, state.recording).then(reply => () => {
+        return transport.loadLeaderNameRuns(state.scope, request.owner, request.from, request.to, references, signal, state.recording).then(reply => () => {
           const entry = (run: NameRun) => runEntry(run, LEADER_ABSENT, reply.warnings);
           index.replaceEntityUnknown(['leader'], reply.from, reply.to, reply.unknown);
           for (const leader of reply.leaders) {
@@ -743,18 +910,19 @@ export class IdentityBroker {
     );
   }
 
-  private keepWindow(state: ScopeState, request: Extract<EntityRequest, { readonly from: number }>, keys: ReadonlyMap<string, EntityIdentityKey>): void {
+  private keepWindow(state: ScopeState, request: Extract<EntityRequest, { readonly from: number }>, keys: ReadonlyMap<string, EntityIdentityKey>, trim = true): void {
     let held = state.entityWindows.get(request.id);
     if (!held) state.entityWindows.set(request.id, held = { request, keys: new Map(), used: 0 });
     for (const [id, key] of keys) held.keys.set(id, key);
     held.used = ++state.windowUse;
-    this.trimWindows(state);
+    if (trim) this.trimWindows(state);
   }
 
   private trimWindows(state: ScopeState): void {
     if (state.entityWindows.size <= MAX_ENTITY_WINDOWS) return;
     const pinned = new Set<string>();
     for (const demand of state.demands.values()) for (const id of this.wantsOf(state, demand).windows) pinned.add(id);
+    for (const lease of state.stripPins ?? []) for (const id of lease.keys()) pinned.add(id);
     const oldest = [...state.entityWindows.values()].filter(window => !pinned.has(window.request.id)).sort((a, b) => a.used - b.used);
     let dropped = false;
     for (const window of oldest) {
@@ -850,10 +1018,10 @@ export class IdentityBroker {
     );
   }
 
-  private loadRead(state: ScopeState, read: BranchRead, signal: AbortSignal): Promise<() => void> {
+  private loadRead(state: ScopeState, read: BranchRead, signal: AbortSignal, transport = this.transport): Promise<() => void> {
     switch (read) {
       case 'facts':
-        return this.transport.loadFacts(state.scope, signal, state.recording).then(reply => () => {
+        return transport.loadFacts(state.scope, signal, state.recording).then(reply => () => {
           state.index.setFacts(reply, true);
           for (const [id, task] of [...state.styleRunning]) {
             task.controller.abort();
@@ -862,9 +1030,9 @@ export class IdentityBroker {
           }
         });
       case 'identities':
-        return this.transport.loadIdentities(state.scope, signal, state.recording).then(reply => () => state.index.setIdentities(reply));
+        return transport.loadIdentities(state.scope, signal, state.recording).then(reply => () => state.index.setIdentities(reply));
       case 'groups':
-        return this.transport.loadGroups(state.scope, signal, state.recording).then(reply => () => state.index.setGroups(reply));
+        return transport.loadGroups(state.scope, signal, state.recording).then(reply => () => state.index.setGroups(reply));
     }
   }
 

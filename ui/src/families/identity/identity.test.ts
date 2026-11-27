@@ -985,6 +985,13 @@ test('leader, state, province, region and battle asks each start their product r
   assert.deepEqual(view.who('state', '64', 110).holder, { status: 'absent', reason: 'Not in this recording: the game was paused' }, 'a place inside a recording gap is not ready');
   assert.deepEqual(worker.resolve('leader', 'ALP:L2', 150 as DisplayedHour).holder, otherLeader!.holder, 'unknown ownership crosses to the worker');
   assert.equal(calls.length, 4, 'answers inside their validity ask nothing again');
+  const held = broker.holdStripIdentities({ scope: SCOPE });
+  assert.ok(await held.prepare([{ key: { kind: 'battle', id: 'result:7' }, hour: 20 }],
+    async () => assert.fail('strip preparation should reuse the loaded battle window'), () => true));
+  const dated = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(held.snapshot()));
+  assert.deepEqual(dated.resolve('battle', 'result:7', 20 as DisplayedHour), battle);
+  assert.equal(held.snapshot().entities?.['battle:result:8'], undefined);
+  held.release();
   broker.dispose();
 });
 
@@ -1283,6 +1290,48 @@ test('releasing a demand trims the held windows without another load, and an evi
   assert.equal(after.failures?.entities?.[identityKeyString(stateKey(7))], undefined, 'the oldest windows, the failed one among them, leave with their failures');
   assert.ok(!(after.entityUnknown?.state ?? []).some(gap => gap.firstHour === 720), 'an evicted window leaves no gap behind');
   assert.ok((after.entityUnknown?.state ?? []).some(gap => gap.firstHour === 2 * 720), 'a retained window keeps its gap');
+  broker.dispose();
+});
+
+test('strip identity leases reuse seek windows and keep them beyond the normal cache until released', async () => {
+  const calls: number[] = [];
+  const transport = {
+    loadPlaceNameRuns: async (_scope: unknown, from: number, to: number, states: readonly number[]) => {
+      calls.push(from);
+      return { from, to, unknown: [], states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: `State ${id} at ${from}`, missing: null, presence: 'present' }] })), provinces: [], warnings: [] };
+    },
+  } as unknown as IdentityTransport;
+  const broker = new IdentityBroker({ transport });
+  const windows = MAX_ENTITY_WINDOWS + 2;
+  const scope = { scope: SCOPE, bounds: [0, windows * 720] as const };
+  const ask = (window: number) => ({ key: stateKey(7), hour: window * 720 + 10 });
+  const ordinary = {};
+  const unrelated = { key: stateKey(9), hour: 10 };
+  broker.setDemand(ordinary, SCOPE, { asks: [ask(0), unrelated] }, undefined, scope.bounds);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  broker.setDemand(ordinary, SCOPE, null);
+  const run = <T,>(load: (signal: AbortSignal) => Promise<T>) => load(new AbortController().signal);
+  const coarse = broker.holdStripIdentities(scope);
+  assert.equal(await coarse.prepare([ask(0)], run, () => true), true);
+  assert.deepEqual(calls, [0]);
+  assert.ok(coarse.bytes > 0, 'a reused identity window still consumes the page budget');
+  assert.equal(broker.resolve(SCOPE, unrelated.key, unrelated.hour).kind, 'known');
+  assert.equal(coarse.snapshot().entities?.[identityKeyString(unrelated.key)], undefined, 'unadmitted identities stay off the lane');
+  const fine = broker.holdStripIdentities(scope);
+  const extra = { key: stateKey(8), hour: 10 };
+  const asks = [extra, ...Array.from({ length: windows }, (_, at) => ask(at))];
+  assert.equal(await fine.prepare(asks, run, () => true), true);
+  assert.equal(calls.length, windows + 1, 'one request per missing window or new key in an existing window');
+  assert.equal(await fine.prepare(asks, run, () => true), true);
+  assert.equal(calls.length, windows + 1, 'a fixpoint pass reuses held windows');
+  assert.ok(fine.bytes > coarse.bytes);
+  const worker = IdentityIndex.fromSnapshot(structuredClone(fine.snapshot()));
+  for (const { key, hour } of asks) assert.deepEqual(worker.resolve(key, hour), broker.resolve(SCOPE, key, hour));
+  fine.release();
+  assert.equal(broker.resolve(SCOPE, ask(0).key, ask(0).hour).kind, 'known', 'the coarse lease still owns its window');
+  assert.equal(broker.resolve(SCOPE, extra.key, extra.hour).kind, 'pending', 'the fine-only key no longer enlarges the coarse window');
+  assert.equal(broker.resolve(SCOPE, ask(1).key, ask(1).hour).kind, 'pending');
+  coarse.release();
   broker.dispose();
 });
 

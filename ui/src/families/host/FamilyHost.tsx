@@ -245,7 +245,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly extent?: readonly [number, number] | null;
   readonly plan?: SourcePlan | null;
   readonly exactReadView?: (hour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null>;
-  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'keyframe' | 'track' | 'tiles'> & { tilesSettled(): boolean };
+  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'keyframe' | 'track' | 'tiles' | 'identity'> & { tilesSettled(): boolean };
   readonly offset: number;
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
@@ -481,6 +481,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const strips = useContext(StripPageContext);
   const stripPlanRef = useRef(stripPlan);
   stripPlanRef.current = stripPlan;
+  const stripWindowRef = useRef<FamilyRowWindow | null>(null);
+  const resetStripWindow = useCallback((window: FamilyRowWindow | null) => {
+    if (!strips || !stripPlanRef.current?.identity || stripPlanRef.current.fixed) return;
+    strips.rowWindowChanged(stripWindowRef.current, window);
+    stripWindowRef.current = window;
+  }, [strips]);
   useLayoutEffect(() => {
     if (!strips || !active) return;
     const plan = stripPlanRef.current;
@@ -888,10 +894,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const showView = useCallback(() => {
     if (!surfaceRef.current || !pipeline || pipe === null) return;
     const { cur, rowWindow, view, artResolutions } = frame();
+    resetStripWindow(rowWindow);
     requestedWindowRef.current = rowWindow;
     reportWindow();
     supply?.update({ view, data: supplyDataFields(cur), art: { artResolutions } });
-  }, [frame, pipeline, pipe, reportWindow, supply]);
+  }, [frame, pipeline, pipe, reportWindow, resetStripWindow, supply]);
 
   const bind = useCallback(() => {
     const mounted = surfaceRef.current;
@@ -920,6 +927,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       ...(cur.exportMotion ? { motion: cur.exportMotion } : {}),
     });
     if (binding === null) return;
+    resetStripWindow(rowWindow);
     requestedWindowRef.current = rowWindow;
     reportWindow();
 
@@ -949,7 +957,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     }
     supply?.update({ view, data: supplyDataFields(cur), art: { artResolutions } });
     supplyDated();
-  }, [frame, pipeline, pipe, supply, supplyDated, reportWindow, widget.id, instanceId]);
+  }, [frame, pipeline, pipe, supply, supplyDated, reportWindow, resetStripWindow, widget.id, instanceId]);
   const showViewRef = useRef(showView);
   showViewRef.current = showView;
 

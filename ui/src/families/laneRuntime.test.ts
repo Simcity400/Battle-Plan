@@ -11,11 +11,11 @@ import { familyBinding, type FamilyBindingContext, type FamilyHostAdapter } from
 import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDated, driveLane, installRecordingCanvas, LANE_THEME as THEME, LaneTransport } from './laneRuntime.fixture.ts';
 import { bindFamilyManifest, registerFamilyProjection } from './registry.ts';
 import { IdentityIndex } from './identity/index.ts';
-import type { IdentitySnapshot } from './identity/types.ts';
+import { stateKey, type IdentitySnapshot } from './identity/types.ts';
 import type { StripFrame } from '../dashboard/strip/scrub.ts';
 
 type Row = { readonly key: string; readonly v: number };
-type Options = { readonly order: 'up' | 'down'; readonly name?: string };
+type Options = { readonly order: 'up' | 'down'; readonly name?: string; readonly state?: string };
 type Model = { readonly hour: number; readonly bucket: number; readonly rows: readonly Row[]; readonly name: string };
 type Layout = { readonly rows: readonly { readonly key: string; readonly y: number; readonly v: number }[] };
 type Binding = LaneBinding<Options> & { readonly family: 'test-lane' };
@@ -29,7 +29,8 @@ registerFamilyProjection<FamilyProjection<Model, Options>>({
   project(view: BoundedReadView, options: Options): Model {
     counts.project++;
     const rows = [...(view.panel<{ rows: Row[] }>('main')?.rows ?? [])];
-    const name = options.name ? view.who('country', options.name, view.hour).name : null;
+    const name = options.state ? view.who('state', options.state, view.hour).name :
+      options.name ? view.who('country', options.name, view.hour).name : null;
     return { hour: view.hour, bucket: Math.floor(view.hour / 10), rows: options.order === 'up' ? rows.reverse() : rows, name: name?.status === 'ready' ? name.value : options.name ?? '' };
   },
   nextChange(view: BoundedReadView): number {
@@ -85,7 +86,7 @@ test('a scrub projects a stable statics-only picture and leaves the exact scene,
       lane: 0, lanes: 1, views: () => view, crop: async () => assert.fail('scrub must not crop'), present: () => assert.fail('scrub must not present'),
       release() {}, fail: assert.fail, later() {},
     });
-    const bound = binding(rowsAt([{ key: 'old', v: -1 }]));
+    const bound = binding(rowsAt([{ key: 'old', v: -1 }]), { ...DOWN, state: '7' });
     lane.mount(10, [], 'test-lane', bound);
     const whole = encode({ answer: { rows: [{ key: 'A', v: 1 }] } });
     const forward = encode([{ replace: [['answer', 'rows', 0, 'v'], 2] }]);
@@ -112,10 +113,29 @@ test('a scrub projects a stable statics-only picture and leaves the exact scene,
       lane.scrub(2, { page: 2, frame: hour + 1, hour, density: 1, gap });
       return lane.scrubScenes?.widgets.get(10);
     };
+    const names = new IdentityIndex({ sourceId: 's', revision: 'r', branchId: '1', content: 0 }, [0, 20]);
+    lane.payloads({ type: 'payloads', put: [[1, names.exportSnapshot()]] });
+    lane.strip(10, 1, { kind: 'identities', fine: false, snapshot: 1 });
+    lane.payloads({ type: 'payloads', drop: [1] });
+    const discovery = () => lane.strip(10, 1, { kind: 'discover', fine: false, hour: 12, measure: false });
+    assert.deepEqual(discovery().identities, [{ key: stateKey(7), hour: 12 }]);
+    assert.equal(discovery().unresolved, true);
+    names.setEntityRuns(stateKey(7), [
+      { firstHour: 0, lastHour: 9, name: 'Before the rename' },
+      { firstHour: 10, lastHour: 20, name: 'After the rename' },
+    ]);
+    lane.strip(10, 1, { kind: 'identities', fine: false, snapshot: names.exportSnapshot() });
+    assert.equal(discovery().unresolved, false);
+    const staging = show(12);
+    assert.equal(staging?.mode === 'picture' && (staging.picture.model as Model).name, '');
+    lane.strip(10, 1, { kind: 'identities', fine: false });
+    lane.strip(10, 1, { kind: 'identities', fine: false });
     const exact = driveLane(view, recording.canvases);
     const a = show(6), b = show(12);
     assert.equal(a?.mode, 'picture');
     assert.equal(b?.mode, 'picture');
+    assert.equal((a.picture.model as Model).name, 'Before the rename');
+    assert.equal((b.picture.model as Model).name, 'After the rename');
     const expected = exact.paint({ label: 'exact', binding: binding(rowsAt([{ key: 'A', v: 2 }]), DOWN, { audit: true }), hour: 12 });
     assert.deepEqual((b.picture.model as Model).rows.map(row => [row.key, row.v]), (expected.fields.audit?.value as { rows: unknown }).rows);
     assert.equal((a.picture.model as Model).rows[0]?.v, 1, 'a later in-place patch cannot change the earlier scrub picture');

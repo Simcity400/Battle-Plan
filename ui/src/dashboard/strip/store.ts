@@ -1,13 +1,16 @@
 import { applyStripPatch, decodeState, readStrip, type StripState } from './decode.ts';
 import type { StripScenePlan, StripTrack, StripWork } from './scrub.ts';
+import type { IdentityAsk, IdentitySnapshot } from '../../families/identity/types.ts';
 
 export type StripUpdate =
   | { kind: 'append'; slot: string; fine: boolean; hours: readonly number[]; bytes: Uint8Array }
   | { kind: 'mark'; slot: string; fine: boolean; hours: readonly number[] }
   | { kind: 'scenes'; page: number; fine: boolean; frames: readonly [hour: number, scene: StripScenePlan][]; track?: StripTrack }
+  | { kind: 'identities'; fine: boolean; snapshot?: IdentitySnapshot | number }
+  | { kind: 'discover'; fine: boolean; hour: number; measure: boolean }
   | { kind: 'drop'; fine: boolean };
 
-export interface StripReceipt { bytes: number; coarseKeys: number; keys: number }
+export interface StripReceipt { bytes: number; coarseKeys: number; keys: number; identities?: readonly IdentityAsk[]; unresolved?: boolean }
 export const EMPTY_STRIP_RECEIPT: Readonly<StripReceipt> = { bytes: 0, coarseKeys: 0, keys: 0 };
 
 type Edge = readonly [hour: number, patch: Uint8Array];
@@ -135,7 +138,7 @@ export class WidgetStrips {
       const bytes = new TextEncoder().encode(JSON.stringify(update.fine || !update.track ? update.frames : [update.frames, update.track])).byteLength;
       if (update.fine) { this.fine = new Map(update.frames); this.fineBytes = bytes; }
       else { this.coarse = new Map(update.frames); this.coarseBytes = bytes; }
-    } else {
+    } else if (update.kind === 'append' || update.kind === 'mark') {
       slot = this.slots.get(update.slot);
       if (!slot) this.slots.set(update.slot, slot = new StripStore());
       if (update.kind === 'append') slot.append(update.hours, update.bytes, update.fine);
