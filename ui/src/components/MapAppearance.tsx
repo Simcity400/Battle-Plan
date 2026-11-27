@@ -427,7 +427,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     </div>
     {graphicsCustom && (reverting ? <div className="graphics-reset-confirm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelRevert(); } }}>
       <ConfirmStep confirmation={{ title: `Use ${parentLabel} again?`, action: 'Reset',
-        detail: `${changedText} you changed here follow ${parentLabel} again.${global ? ' Music returns to off.' : ''} Visual mods stay.` }}
+        detail: `${changedText} you changed here follow ${parentLabel} again. Visual mods stay.` }}
         onCancel={cancelRevert} onConfirm={() => { setReverting(false); change(inheritingAll(draft!)); }} /></div>
       : <button ref={revertTrigger} type="button" className="map-menu-action graphics-reset" disabled={busy} onClick={() => setReverting(true)}>{`Use ${parentLabel}`}</button>)}
     <details className="map-visual-mods"><summary>Visual mods{reply && <span>{modCount}</span>}</summary>{modsBody}</details>
