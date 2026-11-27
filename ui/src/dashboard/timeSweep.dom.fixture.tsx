@@ -17,7 +17,7 @@ import { laneModules } from '../widgets/manifest';
 import { MeasuredWidget } from './widgetPerf';
 import { measureWith } from '../shell/perf';
 import type { PerfRecorder } from '../shell/perf';
-import type { CountryGroupReply } from '../generated/dashboard';
+import type { CountryGroupReply, CountryIdentitiesReply } from '../generated/dashboard';
 
 class OnScreen {
   private readonly heard: IntersectionObserverCallback;
@@ -63,7 +63,7 @@ const makeClient = (replies: Replies) => ({
     if (request.product === 'follow') return reply(request, { available: false, reason: 'not followed in the sweep' });
     if (request.product === 'follow-clock' || request.product === 'unfollow') return reply(request, null);
     if (request.product === 'country-groups') return reply(request, groups);
-    if (request.product === 'country-identities') return reply(request, { branchId: 'branch', countries: groups.countryIdentities, unknown: [], warnings: [] });
+    if (request.product === 'country-identities') return reply(request, { branchId: 'branch', known: [], countries: groups.countryIdentities.map(entry => ({ ...entry, unresolved: [] })), unknown: [], warnings: [] } satisfies CountryIdentitiesReply);
     if (replies === 'pending') return pending;
     throw new Error(`${request.product} is not recorded in the sweep`);
   },
