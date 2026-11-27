@@ -1639,7 +1639,10 @@ fn damaged_final_block_clock_does_not_abort_complete_items_read() {
     damaged[at] ^= 0x40;
     let replay = Replay::open(damaged).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-damaged-clock".into(), revision: "1".into() }, "damaged.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-    let reply = asked(&source, FIRST, end);
+    let (reply, counts) = replay_recording::cells::count_reads(|| asked(&source, FIRST, end));
+    let items = &counts[&TableId::PowerItems];
+    assert_eq!((items.opened, items.restores), (1, 1), "the multi-block complete span still uses one end-of-span PowerItems restore");
+    assert_eq!(items.stretches, 0, "the damaged final-block clock does not force a fallback membership walk");
     assert_eq!(reply.payments.len(), 2);
     assert!(reply.payments.iter().all(|payment| reply.items[payment.item as usize].category == "decisions"));
 }
