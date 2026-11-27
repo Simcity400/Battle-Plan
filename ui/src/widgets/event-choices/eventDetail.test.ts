@@ -6,17 +6,19 @@ const item = { token: 'news.323', name: 'King Carol II Abdicates', icon: null, d
 const row = { id: 'native:1:7', hour: 100, readHour: 100, nameHour: 100, exact: true, category: 'politics', kind: 'newsEventFired', tags: ['ROM'], participants: ['ROM', null], item, amount: null };
 
 test('an opened event row brings its full text, and a row not in the log at its hour says so', () => {
-  const card = { rows: [{ key: 'native:1:7', hour: 100, observed: 100, ordinal: '0', live: true, status: 'awaiting', occurrence: { id: 'native:1:7', opened: true, edges: [{ row, option: null, lifecycle: null, days: null, costs: null }] } }] };
+  const card = { rows: [{ key: 'native:1:7', hour: 100, observed: 100, live: true, status: 'awaiting', occurrence: { id: 'native:1:7', opened: true, edges: [{ row, option: null, lifecycle: null, days: null, costs: null }] } }] };
   assert.deepEqual(openedItem('event-choices-tail', card), { pending: false, missing: null, item });
   assert.deepEqual(openedItem('decisions-tail', { ...card, unavailable: [{ kind: 'scriptEffectDescription', label: 'Authored effects', reason: 'GER_war_bonds complete_effect: inputs not recorded', count: 1 }] }).effectsMissing, ['GER_war_bonds complete_effect: inputs not recorded'], 'an opened row names the effects it could not describe');
-  assert.deepEqual(openedItem('event-feed-tail', { rows: [{ line: 'event', key: 'native:1:7', hour: 100, observed: 100, ordinal: '0', live: false, row, choice: null }] }).item, item);
+  assert.deepEqual(openedItem('event-feed-tail', { rows: [{ line: 'event', key: 'native:1:7', hour: 100, observed: 100, live: false, row, choice: null }] }).item, item);
   const chosen = { ...item, token: 'news.323.b', description: 'The new king is crowned.' };
-  assert.equal(openedItem('event-feed-tail', { rows: [{ line: 'event', key: 'native:1:8', hour: 100, observed: 100, ordinal: '0', live: false, row: { ...row, item: null }, choice: { row: { ...row, item: chosen }, option: 0, lifecycle: null, days: null, costs: null } }] }).item, chosen, 'a feed row without its own item opens with the item of its chosen option, as the list shows it');
-  const own = openedItem('event-feed-tail', { rows: [{ line: 'event', key: 'native:1:8', hour: 100, observed: 100, ordinal: '0', live: false, row: { ...row, item: { ...item, options: undefined } }, choice: { row: { ...row, item: chosen }, option: 0, lifecycle: null, days: null, costs: null } }] });
+  assert.equal(openedItem('event-feed-tail', { rows: [{ line: 'event', key: 'native:1:8', hour: 100, observed: 100, live: false, row: { ...row, item: null }, choice: { row: { ...row, item: chosen }, option: 0, lifecycle: null, days: null, costs: null } }] }).item, chosen, 'a feed row without its own item opens with the item of its chosen option, as the list shows it');
+  const own = openedItem('event-feed-tail', { rows: [{ line: 'event', key: 'native:1:8', hour: 100, observed: 100, live: false, row: { ...row, item: { ...item, options: undefined } }, choice: { row: { ...row, item: chosen }, option: 0, lifecycle: null, days: null, costs: null } }] });
   assert.deepEqual([own.item?.options?.length, own.own?.options], [1, undefined], 'an opened feed row keeps its own options apart from those its choice supplies, so a later choice never fills a tooltip read for an earlier page');
   const gone = openedItem('event-choices-tail', { rows: [] });
   assert.equal(gone.item, null);
   assert.match(gone.missing ?? '', /not in the log/);
+  const unidentified = openedItem('event-choices-tail', { rows: [{ ...card.rows[0], key: '' }] });
+  assert.deepEqual(unidentified, { pending: false, missing: 'The log row identity was not recorded.', item: null });
 });
 
 test('a row reached by the pointer makes one distinct keyed request, fixed at the hour it was reached, which played hours do not change', () => {

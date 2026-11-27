@@ -136,7 +136,6 @@ pub struct EspionageLogRow {
     pub hour: i32,
     pub exact: bool,
     pub observed: i32,
-    pub ordinal: String,
     pub live: bool,
     pub status: EspionageStatus,
     pub owner: EspionageCountry,
@@ -1036,7 +1035,7 @@ fn prepare(
     Ok(Prepared { tail: tail(source, query, branch, load, cancelled)?, selection })
 }
 
-fn build_row(tail: &Tail, holders: &Holders, ep: &OperationEpisode, ordinal: u64, live: bool, status: EspionageStatus, hour: i32) -> EspionageLogRow {
+fn build_row(tail: &Tail, holders: &Holders, ep: &OperationEpisode, live: bool, status: EspionageStatus, hour: i32) -> EspionageLogRow {
     let step = ep.step_at(hour);
     let comp = ep.completion_at(hour);
     let (date, exact) = ep.display_date_at(hour, status);
@@ -1110,7 +1109,6 @@ fn build_row(tail: &Tail, holders: &Holders, ep: &OperationEpisode, ordinal: u64
         hour: date,
         exact,
         observed: ep.appear_hour,
-        ordinal: ordinal.to_string(),
         live,
         status,
         owner,
@@ -1214,7 +1212,7 @@ fn reply_at(
         let ep_idx = index.get(shown.at).payload;
         let ep = &prepared.tail.episodes[ep_idx];
         let status = shown.state.map_or(EspionageStatus::NotRead, EspionageStatus::from_code);
-        rows.push(build_row(&prepared.tail, holders, ep, shown.ordinal, shown.live, status, hour));
+        rows.push(build_row(&prepared.tail, holders, ep, shown.live, status, hour));
         let next_ep = ep.changes.partition_point(|&h| h <= hour);
         if let Some(&h) = ep.changes.get(next_ep) {
             next_change = Some(next_change.map_or(h, |held| held.min(h)));

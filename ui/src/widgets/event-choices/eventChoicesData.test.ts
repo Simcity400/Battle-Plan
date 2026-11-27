@@ -61,7 +61,7 @@ test('an orphan choice keeps firing missing in its row, tooltip, detail, mirror 
   selectedEdge.row.readHour = observed;
   const card = occurrence([selectedEdge], false);
   const head = { branchId: '1', total: '1', offset: '0', live: '0', counts: [],
-    rows: [{ hour: observed, observed, key: card.id, ordinal: '0', live: false, status: 'chosen', occurrence: card }],
+    rows: [{ hour: observed, observed, key: card.id, live: false, status: 'chosen', occurrence: card }],
     missing: [], unavailable: [], warnings: [] };
   const source = buildRowSourceFromHead('test:orphan-choice', head, undefined, observed)!;
   const model = eventChoicesProjection.project(createBoundedReadView({ hour: observed, rows: new Map([['main', source]]) }),
@@ -150,13 +150,11 @@ test('event choices projection turns blank authored title or option text into no
     branchId: '1',
     log: 'event-choices',
     columns: [],
-    baseOrdinal: '0',
-    firstOrdinal: '0',
     offset: '0',
     total: '2',
     rows: [
-      { hour: fired, key: blankOcc.id, ordinal: '0', cells: [], occurrence: blankOcc },
-      { hour: fired, key: openOcc.id, ordinal: '1', cells: [], occurrence: openOcc },
+      { hour: fired, key: blankOcc.id, cells: [], occurrence: blankOcc },
+      { hour: fired, key: openOcc.id, cells: [], occurrence: openOcc },
     ],
     facetTotals: [],
     missing: [],
@@ -187,8 +185,8 @@ test('event choices projection turns blank authored title or option text into no
     total: '2',
     counts: [{ key: 'awaiting', total: '1' }],
     rows: [
-      { hour: fired, key: openOcc.id, ordinal: '0', live: true, status: 'awaiting', occurrence: openOcc },
-      { hour: fired, key: blankOcc.id, ordinal: '1', live: false, status: 'notRecorded', occurrence: occurrence([fire(fired, 'ITA', 'GER')]) },
+      { hour: fired, key: openOcc.id, live: true, status: 'awaiting', occurrence: openOcc },
+      { hour: fired, key: blankOcc.id, live: false, status: 'notRecorded', occurrence: occurrence([fire(fired, 'ITA', 'GER')]) },
     ],
   }, undefined, atHour)!;
   const awaitingModel = eventChoicesProjection.project(
@@ -244,8 +242,8 @@ test('event choices projection turns blank authored title or option text into no
     total: '2',
     counts: [{ key: 'awaiting', total: '1' }],
     rows: [
-      { hour: fired, key: openOcc.id, ordinal: '0', live: true, status: 'awaiting', occurrence: openOcc },
-      { hour: fired, key: blankOcc.id, ordinal: '1', live: false, status: 'notRecorded', notRecordedReason: 'event feed read in part', notRecordedHour: fired + 48, occurrence: occurrence([fire(fired, 'ITA', 'GER')]) },
+      { hour: fired, key: openOcc.id, live: true, status: 'awaiting', occurrence: openOcc },
+      { hour: fired, key: blankOcc.id, live: false, status: 'notRecorded', notRecordedReason: 'event feed read in part', notRecordedHour: fired + 48, occurrence: occurrence([fire(fired, 'ITA', 'GER')]) },
     ],
   }, undefined, afterBreaks)!;
   const serverReasonModel = eventChoicesProjection.project(
@@ -269,10 +267,10 @@ test('event choices projection turns blank authored title or option text into no
     ...head,
     total: '1',
     rows: [
-      { hour: fired, key: blankOcc.id, ordinal: '0', live: false, status: 'notRecorded', notRecordedReason: 'event feed read in part', notRecordedHour: fired + 48, occurrence: occurrence([fire(fired, 'ITA', 'GER')]) },
+      { hour: fired, key: blankOcc.id, live: false, status: 'notRecorded', notRecordedReason: 'event feed read in part', notRecordedHour: fired + 48, occurrence: occurrence([fire(fired, 'ITA', 'GER')]) },
     ],
   }, fired + 24);
-  assert.match(futureBreak.rowRefusals?.get(0) ?? '', /after displayed hour/, 'a break hour past the displayed hour is rejected');
+  assert.match(futureBreak.rowRefusals?.get(0)?.reason ?? '', /after displayed hour/, 'a break hour past the displayed hour is rejected');
 
   const lossAtReadModel = eventChoicesProjection.project(
     createBoundedReadView({ hour: atHour, rows: new Map([['main', productSource]]) }),
@@ -297,7 +295,7 @@ test('an awaiting choice on a page frozen at an earlier hour counts its days ope
   const fired = day(3, 3);
   const card = occurrence([fire(fired)]);
   const reply = (at: number) => ({ branchId: '1', total: '1', offset: '0', live: '1', counts: [{ key: 'awaiting', total: '1' }], nextChange: null,
-    rows: [{ hour: fired, key: card.id, observed: fired, ordinal: '0', live: true, status: 'awaiting' as const, occurrence: card }], missing: [], unavailable: [], warnings: [], at });
+    rows: [{ hour: fired, key: card.id, observed: fired, live: true, status: 'awaiting' as const, occurrence: card }], missing: [], unavailable: [], warnings: [], at });
   const frozenAt = fired + 30, shownAt = fired + 100;
   const gappedReply = (at: number) => ({
     ...reply(at),
@@ -343,8 +341,8 @@ test('S3: a malformed event choice row becomes a refused slot with its reason in
     live: '1',
     counts: [{ key: 'awaiting', total: '2' }],
     rows: [
-      { hour: fired, key: goodOcc.id, observed: fired, ordinal: '0', live: true, status: 'awaiting', occurrence: goodOcc },
-      { hour: fired, key: 'bad:1', observed: fired, ordinal: '1', live: false, status: 'awaiting', occurrence: badOcc },
+      { hour: fired, key: goodOcc.id, observed: fired, live: true, status: 'awaiting', occurrence: goodOcc },
+      { hour: fired, key: 'bad:1', observed: fired, live: false, status: 'awaiting', occurrence: badOcc },
     ],
     missing: [],
     nextChange: null,
@@ -369,7 +367,7 @@ test('S3: a malformed event choice row becomes a refused slot with its reason in
     ...mixedHead,
     total: '1',
     counts: [{ key: 'awaiting', total: '1' }],
-    rows: [{ hour: fired, key: 'bad:1', observed: fired, ordinal: '0', live: false, status: 'awaiting', occurrence: badOcc }],
+    rows: [{ hour: fired, key: 'bad:1', observed: fired, live: false, status: 'awaiting', occurrence: badOcc }],
   };
   const onlyBadSource = buildRowSourceFromHead('test:choices-only-bad', onlyBadHead, undefined, atHour, undefined, eventChoicesProjection.validateTail)!;
   const onlyBadModel = eventChoicesProjection.project(
@@ -391,8 +389,8 @@ test('S3: a malformed event choice row becomes a refused slot with its reason in
     total: '2',
     counts: [],
     rows: [
-      { hour: fired, key: 'null:choice', observed: fired, ordinal: '0', live: false, status: null, occurrence: null },
-      { hour: fired, key: nullAndFutureEdgeOcc.id, observed: fired, ordinal: '1', live: false, status: 'awaiting', occurrence: nullAndFutureEdgeOcc },
+      { hour: fired, key: 'null:choice', observed: fired, live: false, status: null, occurrence: null },
+      { hour: fired, key: nullAndFutureEdgeOcc.id, observed: fired, live: false, status: 'awaiting', occurrence: nullAndFutureEdgeOcc },
     ],
   }, undefined, atHour, undefined, eventChoicesProjection.validateTail)!;
   const nullAndFutureModel = eventChoicesProjection.project(

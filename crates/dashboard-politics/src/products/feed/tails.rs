@@ -251,7 +251,6 @@ pub struct EventFeedPageRow {
     pub hour: i32,
     #[doc = " The hour the recording first witnessed it."]
     pub observed: i32,
-    pub ordinal: String,
     pub live: bool,
     pub row: Option<EventFeedRow>,
     #[doc = " A fired event's chosen option, where one was observed by the hour asked."]
@@ -275,7 +274,6 @@ pub struct EventFeedFoldRow {
     pub key: String,
     pub hour: i32,
     pub observed: i32,
-    pub ordinal: String,
     pub count: String,
     pub kind: EventFeedKind,
     pub country: String,
@@ -289,7 +287,6 @@ pub struct EventFeedMoreRow {
     pub key: String,
     pub parent: String,
     pub hour: i32,
-    pub ordinal: String,
     pub total: String,
     pub remaining: String,
 }
@@ -338,7 +335,6 @@ pub struct ScriptPageRow {
     pub key: String,
     pub hour: i32,
     pub observed: i32,
-    pub ordinal: String,
     pub live: bool,
     #[doc = " The card's status at the hour asked."]
     pub status: Option<ScriptStatus>,
@@ -528,7 +524,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                 } else {
                     let live = u64::from(occ.state_at(hour).is_some_and(|state| index::LIVE.contains(&state)));
                     let next = [occ.states.get(occ.states.partition_point(|&(h, _)| h <= hour)).map(|step| step.0), feed.index.retired_at(at)].into_iter().flatten().min();
-                    (1, 0, live, 0, Vec::new(), next, vec![PlannedLine::Event { at, ordinal: 0, parent: None }])
+                    (1, 0, live, 0, Vec::new(), next, vec![PlannedLine::Event { at, parent: None }])
                 }
             }
             None => (0, 0, 0, 0, Vec::new(), None, Vec::new()),
@@ -556,7 +552,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             (folded, live, unattributed, until)
         })? } else {
             let answer = feed.index.ask(&query.holders, &ask)?;
-            let lines = answer.rows.iter().map(|shown| PlannedLine::Event { at: shown.at, ordinal: shown.ordinal, parent: None }).collect();
+            let lines = answer.rows.iter().map(|shown| PlannedLine::Event { at: shown.at, parent: None }).collect();
             (fold::FoldedPage { total: answer.total, offset: answer.offset, lines, gaps: answer.gaps }, answer.live, answer.unattributed, answer.next_change)
         };
         for line in &folded.lines {
@@ -617,7 +613,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         .into_iter()
         .zip(shapes)
         .map(|(line, shape)| match line {
-            PlannedLine::Event { at, ordinal, parent } => {
+            PlannedLine::Event { at, parent } => {
                 let occurrence = feed.index.get(at);
                 let (key, mut row, mut choice) = match (&occurrence.payload, shape) {
                     (Item::Family(family), _) => (family.row.id.clone(), Some(family.shown(&mut art_warnings)), None),
@@ -652,7 +648,6 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                     key,
                     hour: occurrence.date,
                     observed: occurrence.observed,
-                    ordinal: ordinal.to_string(),
                     live,
                     row,
                     choice,
@@ -661,7 +656,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                     parent,
                 }))
             }
-            PlannedLine::Fold { key, first_at, observed, ordinal, count, kind, country } => {
+            PlannedLine::Fold { key, first_at, observed, count, kind, country } => {
                 let occurrence = feed.index.get(first_at);
                 let mut first_row = match (&occurrence.payload, shape) {
                     (Item::Family(family), _) => Some(family.shown(&mut art_warnings)),
@@ -677,18 +672,16 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                     key,
                     hour: occurrence.date,
                     observed,
-                    ordinal: ordinal.to_string(),
                     count: count.to_string(),
                     kind,
                     country,
                     first_row,
                 }))
             }
-            PlannedLine::More { key, parent, hour, ordinal, total, remaining } => EventFeedLine::More(EventFeedMoreRow {
+            PlannedLine::More { key, parent, hour, total, remaining } => EventFeedLine::More(EventFeedMoreRow {
                 key,
                 parent,
                 hour,
-                ordinal: ordinal.to_string(),
                 total: total.to_string(),
                 remaining: remaining.to_string(),
             }),
@@ -881,7 +874,6 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
             key: id.clone(),
             hour: occurrence.date,
             observed: occurrence.observed,
-            ordinal: shown.ordinal.to_string(),
             live: shown.live,
             status,
             occurrence: (!edges.is_empty()).then(|| ScriptOccurrence { id, opened, edges }),

@@ -145,7 +145,6 @@ pub struct ConstructionLogRow {
     pub hour: i32,
     pub exact: bool,
     pub observed: i32,
-    pub ordinal: String,
     pub live: bool,
     pub kind: ProjectKind,
     pub source: ProjectSource,
@@ -748,7 +747,6 @@ fn build_row(
     tail: &Tail,
     holders: &Holders,
     indexed: &IndexedProject,
-    shown_ordinal: u64,
     live: bool,
     hour: i32,
     order_start: bool,
@@ -828,7 +826,6 @@ fn build_row(
         hour: row_hour,
         exact: row_exact,
         observed: project.first_read,
-        ordinal: shown_ordinal.to_string(),
         live,
         kind: project.kind,
         source: state.source,
@@ -917,7 +914,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &ConstructionLog
     for shown in &answer.rows {
         let indexed = &index.get(shown.at).payload;
         rows.push(
-            build_row(tail, &query.holders, indexed, shown.ordinal, shown.live, hour, order_start)
+            build_row(tail, &query.holders, indexed, shown.live, hour, order_start)
                 .ok_or_else(|| invalid(format!("Construction line {} is listed before its first read", indexed.project.id)))?,
         );
         if let Some(&later) = indexed.changes.get(indexed.changes.partition_point(|&at| at <= hour)) {

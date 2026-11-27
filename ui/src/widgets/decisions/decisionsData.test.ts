@@ -150,15 +150,13 @@ test('decisions projection formats unsigned costs with PP icon, keeps unknown ch
     branchId: '1',
     log: 'feed-events',
     columns: [],
-    baseOrdinal: '0',
-    firstOrdinal: '0',
     offset: '0',
     total: '3',
     counts: [{ key: 'running', total: '2' }],
     rows: [
-      { hour: start, key: 'k3', ordinal: '2', cells: [], occurrence: chargedOcc },
-      { hour: start, key: 'k2', ordinal: '1', cells: [], occurrence: mixedUnknownOcc },
-      { hour: start, key: 'k1', ordinal: '0', cells: [], occurrence: missionOcc },
+      { hour: start, key: 'k3', cells: [], occurrence: chargedOcc },
+      { hour: start, key: 'k2', cells: [], occurrence: mixedUnknownOcc },
+      { hour: start, key: 'k1', cells: [], occurrence: missionOcc },
     ],
     facetTotals: [],
     missing: [],
@@ -193,7 +191,7 @@ test('decisions projection formats unsigned costs with PP icon, keeps unknown ch
   const untimedSource = buildRowSourceFromHead('test:decisions-untimed', {
     ...head,
     total: '1',
-    rows: [{ hour: start, key: 'k-untimed', ordinal: '0', cells: [], occurrence: untimedActiveOcc }],
+    rows: [{ hour: start, key: 'k-untimed', cells: [], occurrence: untimedActiveOcc }],
   }, undefined, hour)!;
   const untimedModel = decisionsProjection.project(
     createBoundedReadView({ hour, rows: new Map([['main', untimedSource]]) }),
@@ -207,8 +205,8 @@ test('decisions projection formats unsigned costs with PP icon, keeps unknown ch
     total: '2',
     counts: [{ key: 'running', total: '1' }],
     rows: [
-      { hour: start, key: 'k-live', ordinal: '0', live: true, status: 'active', occurrence: chargedOcc },
-      { hour: start, key: 'k-nr', ordinal: '1', live: false, status: 'notRecorded', occurrence: missionOcc },
+      { hour: start, key: 'k-live', live: true, status: 'active', occurrence: chargedOcc },
+      { hour: start, key: 'k-nr', live: false, status: 'notRecorded', occurrence: missionOcc },
     ],
   }, undefined, hour)!;
   const productStatusModel = decisionsProjection.project(
@@ -294,12 +292,10 @@ test('S20: frozen Decisions page derives row state, timer, and detail asOfHour f
     branchId: '1',
     log: 'feed-events',
     columns: [],
-    baseOrdinal: '0',
-    firstOrdinal: '0',
     offset: '0',
     total: '1',
     counts: [{ key: 'running', total: '1' }],
-    rows: [{ hour: start, key: 'k-frozen', ordinal: '0', live: true, status: 'active', occurrence: occ }],
+    rows: [{ hour: start, key: 'k-frozen', live: true, status: 'active', occurrence: occ }],
     facetTotals: [],
     missing: [],
     unavailable: [],
@@ -314,8 +310,6 @@ test('S20: frozen Decisions page derives row state, timer, and detail asOfHour f
       reply: {
         total: 1,
         offset: 0,
-        baseOrdinal: 0,
-        firstOrdinal: 0,
         rows: rawPage.rows as never,
         facetTotals: new Map([['running', 1]]),
         missing: [],
@@ -340,8 +334,8 @@ test('a decision tooltip shows its listed description until the hovered row is r
   const occ = card([{ ...selected, row: { ...selected.row, item: { ...selected.row.item!, description: 'Raise war bonds.' } } }]);
   const other = card([edge('decisionSelected', start, { days: 10 })]);
   const source = buildRowSourceFromHead('test:decisions-hover', {
-    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '2', counts: [],
-    rows: [{ hour: start, key: 'a', ordinal: '0', cells: [], occurrence: occ }, { hour: start, key: 'b', ordinal: '1', cells: [], occurrence: other }],
+    branchId: '1', log: 'feed-events', columns: [], offset: '0', total: '2', counts: [],
+    rows: [{ hour: start, key: 'a', cells: [], occurrence: occ }, { hour: start, key: 'b', cells: [], occurrence: other }],
     facetTotals: [], missing: [], unavailable: [], warnings: [],
   }, undefined, start + 1)!;
   const tip = (hover: HoverText | readonly HoverText[] | null) => {
@@ -376,15 +370,15 @@ test('a decision cost read in one currency keeps it, partial, when the other cur
   const start = day(3, 1);
   const occ = card([edge('decisionSelected', start, { days: 10, costs: pp('-5000000'), costsUnread: ['commandPower'] })]);
   const source = buildRowSourceFromHead('test:decisions-partial-cost', {
-    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', counts: [],
-    rows: [{ hour: start, key: 'k1', ordinal: '0', cells: [], occurrence: occ }], facetTotals: [], missing: [], unavailable: [], warnings: [],
+    branchId: '1', log: 'feed-events', columns: [], offset: '0', total: '1', counts: [],
+    rows: [{ hour: start, key: 'k1', cells: [], occurrence: occ }], facetTotals: [], missing: [], unavailable: [], warnings: [],
   }, undefined, start + 1)!;
   const model = decisionsProjection.project(createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]) }), { artwork: false, breaks: [] });
   assert.deepEqual(model.rows[0]?.cells.cost?.value, { kind: 'partial', value: '50', reason: 'Command power cost was not recorded' });
   const twice = card([edge('decisionSelected', start, { costs: pp('-5000000') }), edge('decisionSelected', start + 1)]);
   const both = buildRowSourceFromHead('test:decisions-partial-edges', {
-    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', counts: [],
-    rows: [{ hour: start, key: 'k1', ordinal: '0', cells: [], occurrence: twice }], facetTotals: [], missing: [], unavailable: [], warnings: [],
+    branchId: '1', log: 'feed-events', columns: [], offset: '0', total: '1', counts: [],
+    rows: [{ hour: start, key: 'k1', cells: [], occurrence: twice }], facetTotals: [], missing: [], unavailable: [], warnings: [],
   }, undefined, start + 2)!;
   const read = decisionsProjection.project(createBoundedReadView({ hour: start + 2, rows: new Map([['main', both]]) }), { artwork: false, breaks: [] });
   assert.deepEqual(read.rows[0]?.cells.cost?.value, { kind: 'partial', value: '50', reason: 'Part of the decision cost was not recorded' },
@@ -403,8 +397,8 @@ test('S3: a malformed decision row becomes a refused slot with its reason instea
     live: '1',
     counts: [{ key: 'running', total: '2' }],
     rows: [
-      { hour: start, key: goodOcc.id, observed: start, ordinal: '0', live: true, status: 'active', occurrence: goodOcc },
-      { hour: start, key: 'bad:dec', observed: start, ordinal: '1', live: false, status: 'active', occurrence: badOcc },
+      { hour: start, key: goodOcc.id, observed: start, live: true, status: 'active', occurrence: goodOcc },
+      { hour: start, key: 'bad:dec', observed: start, live: false, status: 'active', occurrence: badOcc },
     ],
     missing: [],
     nextChange: null,
@@ -429,7 +423,7 @@ test('S3: a malformed decision row becomes a refused slot with its reason instea
     ...mixedHead,
     total: '1',
     counts: [{ key: 'running', total: '1' }],
-    rows: [{ hour: start, key: 'bad:dec', observed: start, ordinal: '0', live: false, status: 'active', occurrence: badOcc }],
+    rows: [{ hour: start, key: 'bad:dec', observed: start, live: false, status: 'active', occurrence: badOcc }],
   };
   const onlyBadSource = buildRowSourceFromHead('test:decisions-only-bad', onlyBadHead, undefined, hour, undefined, decisionsProjection.validateTail)!;
   const onlyBadModel = decisionsProjection.project(
@@ -451,8 +445,8 @@ test('S3: a malformed decision row becomes a refused slot with its reason instea
     total: '2',
     counts: [],
     rows: [
-      { hour: start, key: 'null:dec', observed: start, ordinal: '0', live: false, status: null, occurrence: null },
-      { hour: start, key: futureLaterEdgeOcc.id, observed: start, ordinal: '1', live: false, status: 'active', occurrence: futureLaterEdgeOcc },
+      { hour: start, key: 'null:dec', observed: start, live: false, status: null, occurrence: null },
+      { hour: start, key: futureLaterEdgeOcc.id, observed: start, live: false, status: 'active', occurrence: futureLaterEdgeOcc },
     ],
   }, undefined, hour, undefined, decisionsProjection.validateTail)!;
   const nullAndFutureModel = decisionsProjection.project(
@@ -469,8 +463,8 @@ test('S3: a malformed decision row becomes a refused slot with its reason instea
     total: '2',
     counts: [],
     rows: [
-      { hour: start, key: goodOcc.id, observed: start, ordinal: '0', live: true, status: 'active', occurrence: goodOcc },
-      { hour: start, key: 'bad:timedout', observed: start, ordinal: '1', live: false, status: 'timedOut', occurrence: card([edge('decisionSelected', start)]) },
+      { hour: start, key: goodOcc.id, observed: start, live: true, status: 'active', occurrence: goodOcc },
+      { hour: start, key: 'bad:timedout', observed: start, live: false, status: 'timedOut', occurrence: card([edge('decisionSelected', start)]) },
     ],
   }, undefined, hour, undefined, decisionsProjection.validateTail)!;
   const inconsistentModel = decisionsProjection.project(
@@ -500,8 +494,8 @@ test('a state-targeted decision shows one country flag and resolves the target i
   const stateEdge = edge('decisionSelected', start);
   const occ = card([{ ...stateEdge, row: { ...stateEdge.row, cause: { notes: [], target: { kind: 'state', id: 77 } } } }]);
   const source = buildRowSourceFromHead('test:decisions-pending-state', {
-    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', counts: [],
-    rows: [{ hour: start, key: 'k-state', ordinal: '0', cells: [], occurrence: occ }],
+    branchId: '1', log: 'feed-events', columns: [], offset: '0', total: '1', counts: [],
+    rows: [{ hour: start, key: 'k-state', cells: [], occurrence: occ }],
     facetTotals: [], missing: [], unavailable: [], warnings: [],
   }, undefined, start + 1)!;
   const pendingIdentity = {

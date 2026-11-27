@@ -40,16 +40,10 @@ pub struct LogPageRow {
     pub hour: i32,
     #[doc = " The row's key, as a decimal string."]
     pub key: String,
-    #[doc = " Its ordinal among the asked rows from the timeline's first hour."]
-    pub ordinal: String,
     #[doc = " The country whose filter it matched, when a facet is filtered by countries."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub country: Option<dashboard_query::identity::Country>,
-    #[doc = " Its ordinal among its country's rows from the timeline's first hour, with a country."]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub own_ordinal: Option<String>,
     #[doc = " By the reply's `columns`."]
     pub cells: Vec<LogCell>,
 }
@@ -93,8 +87,6 @@ pub struct LogTailReply {
     pub branch_id: String,
     pub log: String,
     pub columns: Vec<String>,
-    pub base_ordinal: String,
-    pub first_ordinal: String,
     pub offset: String,
     pub total: String,
     pub rows: Vec<LogPageRow>,

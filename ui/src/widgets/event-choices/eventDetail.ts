@@ -5,6 +5,7 @@ import type { PlaybackController } from '../../dashboard/playback.ts';
 import { useProduct } from '../../dashboard/products.ts';
 import { classifyFailure } from '../../dashboard/queryError.ts';
 import { rowRequest, rowSource } from '../../families/table/rowSelection.ts';
+import { hasLogRowIdentity, MISSING_LOG_ROW_IDENTITY } from '../../families/table/rowSource.ts';
 import type { EventFeedCategory, EventFeedGap, EventFeedItem, ScriptEdge } from '../../generated/dashboard';
 import { effectiveEventItem, validateFeedRow } from '../event-feed/eventFeedData.ts';
 import type { HoverText, TooltipTexts } from '../event-feed/hoverText.ts';
@@ -38,6 +39,7 @@ export function openedItem(product: DetailProduct, data: unknown): EventDetail {
     : [];
   const first = Array.isArray(rows) ? rows[0] as Record<string, unknown> | undefined : undefined;
   if (!first) return { pending: false, missing: NOT_IN_LOG, item: null };
+  if (!hasLogRowIdentity(first.key)) return { pending: false, missing: MISSING_LOG_ROW_IDENTITY, item: null };
   try {
     if (product === 'event-feed-tail') {
       if (first.line !== 'event') throw new Error('The event feed row is malformed.');

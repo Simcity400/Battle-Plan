@@ -6,6 +6,7 @@ import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
 import { validateResearchSlots } from '../../widgets/research/researchData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
+import { hasLogRowIdentity, MISSING_LOG_ROW_IDENTITY } from '../../families/table/rowSource.ts';
 import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
 import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
 
@@ -37,9 +38,9 @@ function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (r
 }
 
 const logTailStructure = (raw: unknown): string => {
-  const r = raw as { total?: string | number; firstOrdinal?: string; rows?: readonly { key?: string }[]; missing?: readonly { firstHour?: number; lastHour?: number; reason?: string }[] };
+  const r = raw as { total?: string | number; offset?: string; rows?: readonly { key?: string }[]; missing?: readonly { firstHour?: number; lastHour?: number; reason?: string }[] };
   const missing = (r.missing ?? []).map(span => `${span.firstHour ?? ''}-${span.lastHour ?? ''}:${span.reason ?? ''}`).join(',');
-  return `${r.total ?? ''}|${r.firstOrdinal ?? ''}|${r.rows?.[0]?.key ?? ''}|${r.rows?.length ?? 0}|${missing}`;
+  return `${r.total ?? ''}|${r.offset ?? ''}|${r.rows?.[0]?.key ?? ''}|${r.rows?.length ?? 0}|${missing}`;
 };
 
 const tableStructures: Readonly<Record<string, (raw: unknown, hour: number) => string>> = {
@@ -75,7 +76,7 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
     const r = raw as { total?: string | number; rows?: readonly { hour?: number; key?: string }[]; missing?: readonly { firstHour?: number; lastHour?: number; reason?: string }[] };
     return [
       JSON.stringify(['total', String(r.total ?? '')]),
-      ...(r.rows ?? []).map(row => JSON.stringify([row.hour, row.key])),
+      ...(r.rows ?? []).map(row => JSON.stringify(hasLogRowIdentity(row.key) ? [row.hour, row.key] : ['refused', MISSING_LOG_ROW_IDENTITY])),
       ...(r.missing ?? []).map(span => JSON.stringify(['missing', span.firstHour, span.lastHour, span.reason])),
     ];
   }

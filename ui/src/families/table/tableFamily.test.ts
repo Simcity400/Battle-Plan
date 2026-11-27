@@ -2929,7 +2929,6 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
         hour: 100,
         observed: 100,
         exact: true,
-        ordinal: '0',
         live: true,
         request: false,
         requestedHour: null,
@@ -2964,7 +2963,6 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
         hour: 100,
         observed: 100,
         exact: true,
-        ordinal: '1',
         live: false,
         request: false,
         requestedHour: null,
@@ -3018,7 +3016,6 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       key: 'd-run',
       hour: 104,
       observed: 104,
-      ordinal: '0',
       live: true,
       status: 'active',
       occurrence: {
@@ -3037,7 +3034,6 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       key: 'd-done',
       hour: 108,
       observed: 108,
-      ordinal: '1',
       live: false,
       status: 'taken',
       occurrence: {
@@ -3053,7 +3049,7 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       },
     },
   ];
-  const decSource = buildRowSourceFromHead('dec', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '2', rows: decRows, missing: [] }, undefined, 110)!;
+  const decSource = buildRowSourceFromHead('dec', { offset: '0', total: '2', rows: decRows, missing: [] }, undefined, 110)!;
   const decModel = decisionsProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', decSource]]) }), {
     artwork: true,
     breaks: [],
@@ -3070,7 +3066,6 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       key: 'ev-open',
       hour: 105,
       observed: 105,
-      ordinal: '0',
       live: true,
       status: 'awaiting',
       occurrence: {
@@ -3089,7 +3084,6 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       key: 'ev-chosen',
       hour: 109,
       observed: 107,
-      ordinal: '1',
       live: false,
       status: 'chosen',
       occurrence: {
@@ -3114,7 +3108,7 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       },
     },
   ];
-  const choiceSource = buildRowSourceFromHead('evc', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '2', rows: choiceRows, missing: [] }, undefined, 110)!;
+  const choiceSource = buildRowSourceFromHead('evc', { offset: '0', total: '2', rows: choiceRows, missing: [] }, undefined, 110)!;
   const choiceModel = eventChoicesProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', choiceSource]]) }), {
     events: ['country', 'news'],
     awaiting: false,
@@ -3134,7 +3128,6 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       key: 'f-1',
       hour: 106,
       observed: 106,
-      ordinal: '0',
       live: false,
       choice: null,
       row: {
@@ -3151,7 +3144,7 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       },
     },
   ];
-  const feedSource = buildRowSourceFromHead('feed', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', rows: feedRows, missing: [] }, undefined, 110)!;
+  const feedSource = buildRowSourceFromHead('feed', { offset: '0', total: '1', rows: feedRows, missing: [] }, undefined, 110)!;
   const feedModel = eventFeedProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', feedSource]]) }), {
     categories: ['diplomacy'],
     artwork: true,

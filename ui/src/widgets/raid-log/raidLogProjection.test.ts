@@ -19,7 +19,6 @@ function sampleRow(overrides: Partial<RaidLogRow> = {}): RaidLogRow {
     hour,
     exact: true,
     observed: hour,
-    ordinal: '0',
     live: true,
     status: 'preparing',
     phaseName: 'Preparing',
@@ -183,7 +182,7 @@ test('pending state or province lookup stays pending in raid place cell and Targ
     },
   };
   const stateRaid = sampleRow({ key: 'r-pending-state', place: { province: null, provinceHour: null, state: 77, stateHour: 100 } });
-  const provinceRaid = sampleRow({ key: 'r-pending-prov', ordinal: '1', place: { province: 404, provinceHour: 100, state: null, stateHour: null } });
+  const provinceRaid = sampleRow({ key: 'r-pending-prov', place: { province: 404, provinceHour: 100, state: null, stateHour: null } });
   const source = buildRowSourceFromHead('test:raids:pending-place', sampleReply([stateRaid, provinceRaid]), undefined, 100)!;
   const model = raidLogProjection.project(
     createBoundedReadView({ hour: 100, rows: new Map([['main', source]]), identity: pendingIdentity }),
@@ -210,7 +209,6 @@ test('an end-dated row shows endedHour and names the end observation raider, nev
   const endedUnnamed = sampleRow({
     key: 'r-ended-null',
     hour: 12,
-    ordinal: '1',
     live: false,
     status: 'cancelled',
     raider: { tag: 'DDR', slot: 1, missing: null },
@@ -261,7 +259,6 @@ test('raid projection formats preparation days, nextChangeAt, active count summa
   const shortPrep = sampleRow({
     key: 'r-short',
     hour: 100,
-    ordinal: '1',
     live: true,
     status: 'preparing',
     preparation: { since: 100, hours: 5, perHour: 1, through: null },
@@ -269,7 +266,6 @@ test('raid projection formats preparation days, nextChangeAt, active count summa
   const ready = sampleRow({
     key: 'r-ready',
     hour: 90,
-    ordinal: '2',
     live: true,
     status: 'prepared',
     preparation: null,
@@ -323,7 +319,7 @@ test('played preparation reaches the canvas only when its row and column are on 
     const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, surface);
     const rows = [
       sampleRow({ key: 'visible', preparation: { since: 100, hours: 68, perHour: 1, through: null } }),
-      sampleRow({ key: 'below', ordinal: '1', preparation: { since: 100, hours: 1, perHour: 1, through: null } }),
+      sampleRow({ key: 'below', preparation: { since: 100, hours: 1, perHour: 1, through: null } }),
     ];
     const base = {
       family: 'table', kind: 'raid-log', options: { selected: [], artwork: false }, sources: {},
