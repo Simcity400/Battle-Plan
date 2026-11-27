@@ -467,6 +467,11 @@ test('every catalogue preset opens another manifest view or sets only what the v
     }
   }
   assert.deepEqual(same, [], 'a preset that names a view the main view does not read is the main view under another name');
+  for (const kind of ['air-force-size', 'factories', 'naval-losses', 'navy-size', 'nuclear-arsenal']) {
+    const opened = (widgetMetas as readonly WidgetMeta[]).find(meta => meta.kind === kind)!.variants!
+      .map(variant => resolveWidgetActiveView(kind, presetWidget(kind, variant.initial).options));
+    assert.deepEqual(opened, ['lines', 'mix'], `${kind}: each preset opens its own view, the type breakdown being the mix view`);
+  }
 });
 
 test('every setting a time-chart view shows reaches what that view reads or projects (rv11 S19)', async () => {
