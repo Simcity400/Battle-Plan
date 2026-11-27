@@ -19,7 +19,7 @@ import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { readRegionChoice, regionParams, type RegionChoice } from '../../families/regions/regionChoice.ts';
 import { countrySubject, noRegionsBody, regionLanes } from '../../families/regions/regionRows.ts';
-import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatExactRational, formatShare } from '../../families/valueFormat.ts';
 import type { AirDayCell, AirReadout, AirSide, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
 import { mix } from '../../shell/appearance/color.ts';
@@ -167,13 +167,13 @@ function readoutOf(readout: AirReadout | undefined, reply: AirTimelineReply, loo
     case 'leading': {
       const side = reply.sides[readout.side];
       const pct = formatShare(readout.share_bp / 10_000);
-      return { kind: 'value', form: 'value', primary: pct, secondary: sideName(side), swatch: sideColour(reply, readout.side, surface, look.unknownSide) };
+      return { kind: 'value', form: 'value', primary: pct, exact: formatExactRational(BigInt(readout.share_bp), 100n, { percent: true }), secondary: sideName(side), swatch: sideColour(reply, readout.side, surface, look.unknownSide) };
     }
     case 'viewpoint': {
       const pct = formatShare(readout.share_bp / 10_000);
       const viewer = viewerColour(readout.side, reply, look, surface, readout.as_of_hour).colour;
       const swatch = readout.share_bp > 5000 ? viewer : readout.share_bp < 5000 ? look.enemy : look.contested;
-      return { kind: 'value', form: 'value', primary: pct, secondary: 'Air superiority', swatch };
+      return { kind: 'value', form: 'value', primary: pct, exact: formatExactRational(BigInt(readout.share_bp), 100n, { percent: true }), secondary: 'Air superiority', swatch };
     }
   }
 }

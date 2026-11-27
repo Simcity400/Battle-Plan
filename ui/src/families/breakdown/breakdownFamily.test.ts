@@ -141,7 +141,7 @@ test('a partly known whole is the figure with its partial mark and no shares, wi
   const ring = layoutBreakdown({ view: 'ring', level: breakdownLevel(read), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure }) as RingViewLayout;
   assert.equal(ring.center.verb, 'Spent', 'no lower-bound wording');
   assert.ok(ring.innerSlices.every(slice => slice.label === null), 'no names on a hatched ring');
-  assert.deepEqual(deriveBreakdownAudit(read, parts).map(row => row.value), ['atLeast:211', '211', 'notRecorded:New ships was not recorded', 'notRecorded:Refits was not recorded']);
+  assert.deepEqual(deriveBreakdownAudit(read, parts).map(row => row.value), ['atLeast:211:New ships were not recorded', '211', 'notRecorded:New ships was not recorded', 'notRecorded:Refits was not recorded']);
 });
 
 test('the three views lay out the same parts', () => {
@@ -916,6 +916,33 @@ test('hover and audit read the recorded amount, not the label\'s rounding', () =
   assert.equal(parts[0]!.exact, '0.0001', 'a ten-thousandth of a building level is shown as itself on inspection');
   assert.equal(breakdownTotal(tiny, words).exact, '0.0001');
   assert.ok(read.parts.length === 1);
+});
+
+test('R3-S4: breakdown inspection preserves long decimals and non-terminating recorded ratios', () => {
+  for (const [raw, expected] of [['1/100000000000', '0.00000000001'], ['1/3', '1/3']] as const) {
+    const data: Breakdown = { total: { amount: exact(raw), state: 'known', reason: null }, unrecordedHours: 0, parts: [wire('A01', 0, raw)] };
+    const read = model(data);
+    assert.equal(read.total.text, '0');
+    assert.equal(read.parts[0]!.text, '0');
+    assert.equal(read.total.exact, expected);
+    assert.equal(read.parts[0]!.exact, expected);
+    assert.equal(buildBreakdownTooltip(read, breakdownLevel(read), 'A01', THEME)!.items![0]!.value, `${expected} PP`);
+    const layout = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(read), view: 'parts', userExpanded: {} });
+    assert.equal(deriveBreakdownAudit(read, layout)[0]!.value, expected);
+  }
+});
+
+test('R3-S4: breakdown audits retain partial reasons for both totals and parts', () => {
+  for (const state of ['partial', 'atLeast'] as const) {
+    const read = model({ total: { amount: exact('7'), state, reason: 'Total coverage missing' }, unrecordedHours: 0,
+      parts: [wire('A01', 0, '7', { state, reason: 'Part coverage missing' })] });
+    const layout = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(read), view: 'parts', userExpanded: {} });
+    const audit = deriveBreakdownAudit(read, layout);
+    assert.equal(audit[0]!.value, `${state}:7:Total coverage missing`);
+    assert.equal(audit.find(row => row.row === 'A01')!.value, `${state}:7:Part coverage missing`);
+    assert.equal(read.total.text, '7');
+    assert.equal(read.parts[0]!.text, '7');
+  }
 });
 
 test('breakdown arc labels keep joined graphemes intact and parts view disambiguates shared-prefix siblings', async () => {

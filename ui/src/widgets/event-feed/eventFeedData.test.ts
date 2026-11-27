@@ -19,6 +19,34 @@ const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Par
   id: `native:1:${serial++}`, hour, readHour: hour, nameHour: hour, exact: true, category: 'warsPeace', kind, tags,
   participants: [tags[0] ?? null, tags[1] ?? null], item: null, amount: null, ...more });
 
+test('R3-S5: event feed tooltip quantities retain their recorded numbers behind rounded detail', () => {
+  const event = row('nuclearStrike', 7, ['A01', 'A02'], {
+    strike: { province: 1, state: null, buildingLevels: 2.4681, warSupport: -3.5791357, units: 5, manpowerLost: 17.2468,
+      equipmentLost: 31.8642, notRecorded: [] },
+  });
+  const head = { branchId: '1', offset: '0', total: '1', live: '0', counts: [],
+    rows: [{ line: 'event', hour: 7, observed: 7, key: 'E01', ordinal: '0', live: false, row: event, choice: null }],
+    missing: [], nextChange: null, unavailable: [], warnings: [] };
+  const source = buildRowSourceFromHead('test:precision', head, undefined, 7, undefined, eventFeedProjection.validateTail)!;
+  const model = eventFeedProjection.project(createBoundedReadView({ hour: 7, rows: new Map([['main', source]]) }), {
+    categories: ['warsPeace'], artwork: false, expanded: [],
+  });
+  const projected = model.rows[0]!;
+  assert.deepEqual(projected.cells.detail!.value, { kind: 'known', value: '17 casualties · 2.4 building levels · −3.57913% war support · 5 units · 31 equipment' });
+  const flat = resolveTableRows(model, tableSettingsOf(undefined, model.columns, LOG_TABLE_BASE));
+  const found = flat.find(row => row.kind === 'data')!;
+  assert.ok(found.kind === 'data');
+  const inspected = deriveRowTooltip(found, model.columns).rows;
+  for (const [label, raw, text] of [
+    ['Casualties', 17.2468, '17.2468'], ['Building levels', 2.4681, '2.4681'], ['War support', -3.5791357, '−3.5791357%'],
+    ['Units', 5, '5'], ['Equipment lost', 31.8642, '31.8642'],
+  ] as const) {
+    const line = inspected.find(row => row.label === label)!;
+    assert.deepEqual(line.rawValue, { kind: 'known', value: raw });
+    assert.equal(line.valueState!.text, text);
+  }
+});
+
 test('a feed row is validated, an icon the dashboard cannot draw dropped, and malformed rows refused', () => {
   const event = row('warDeclared', 100, ['GER', 'POL'], { readHour: 101, cause: { how: 'a diplomatic action', notes: [], targetRecorded: false } });
   assert.deepEqual(validateFeedRow(event), event);
@@ -113,8 +141,8 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /^1,234 casualties · −15% war support · 2 units$/);
   const strikeTip = (strikeOut as { tooltipExtra?: () => readonly { label: string; value: { value?: unknown } }[] }).tooltipExtra?.() ?? [];
   assert.deepEqual(strikeTip.filter(r => r.label === 'War support' || r.label === 'Casualties').map(r => [r.label, r.value.value]), [
-    ['Casualties', '1,234'],
-    ['War support', '−15%'],
+    ['Casualties', 1234.6],
+    ['War support', -15],
   ]);
   assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /2 units/);
   const envoyTip = (hover: { key: string; description: string | null; gaps: readonly { field: 'title' | 'description' | 'option'; ordinal?: number; key: string; reason: string }[] | null; options: (string | null)[] | null; missing: string | null } | null) => {

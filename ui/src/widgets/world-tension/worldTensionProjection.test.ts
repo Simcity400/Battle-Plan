@@ -22,6 +22,9 @@ import { worldTensionLinesDeclaration, worldTensionLinesProjection } from './wor
 import { worldTensionDeclaration, worldTensionProjection } from './worldTensionProjection.ts';
 import { DEFAULT_FAMILY_THEME } from '../../families/theme.fixture.ts';
 import { tensionStackAt } from './stackHistory.ts';
+import { deriveRowTooltip, resolveTableRows } from '../../families/table/model.ts';
+import { tableSettingsOf } from '../../families/table/settings.ts';
+import { EVENTS_TABLE_BASE } from './definition.ts';
 
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const H1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
@@ -87,6 +90,19 @@ function sampleStack(): WorldTensionStackReply {
 }
 
 describe('world-tension projections', () => {
+  it('R3-S4: tension event inspection retains the recorded ratio behind the display cut', () => {
+    const reply = sampleStack();
+    reply.contributionScale = 3;
+    reply.events = [{ ...reply.events[0]!, reason: 'E01', addedRaw: '1' }];
+    const model = worldTensionEventsProjection.project(createBoundedReadView({ hour: H1941, panels: new Map([['main', reply]]) }), { branchFirst: H1936 });
+    assert.deepEqual(model.rows[0]!.cells.added!.value, { kind: 'known', value: '+0.3%' });
+    const flat = resolveTableRows(model, tableSettingsOf(undefined, model.columns, EVENTS_TABLE_BASE));
+    const found = flat.find(row => row.kind === 'data')!;
+    assert.ok(found.kind === 'data');
+    const inspected = deriveRowTooltip(found, model.columns).rows.find(row => row.label === 'Adds')!;
+    assert.deepEqual(inspected.rawValue, { kind: 'known', value: '+1/3%' });
+    assert.equal(inspected.valueState!.text, '+1/3%');
+  });
   it('combines the closed samples with the dated edge in rank and event order after a seek', () => {
     const full = sampleStack();
     const pieces = ([true, false] as const).map(closed => {

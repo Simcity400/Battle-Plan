@@ -463,13 +463,13 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
     const leftFmt = formatBarsValueField(row.left.value);
     items.push(leftFmt.missingReason
       ? { label: model.leftHeader ?? 'Left', missingReason: leftFmt.missingReason }
-      : { label: model.leftHeader ?? 'Left', value: leftFmt.exact, swatch: row.left.color ?? row.color });
+      : { label: model.leftHeader ?? 'Left', value: leftFmt.exact, swatch: row.left.color ?? row.color, ...(leftFmt.partialReason ? { partialReason: leftFmt.partialReason } : {}) });
   }
   if (row.right) {
     const rightFmt = formatBarsValueField(row.right.value);
     items.push(rightFmt.missingReason
       ? { label: model.rightHeader ?? 'Right', missingReason: rightFmt.missingReason }
-      : { label: model.rightHeader ?? 'Right', value: rightFmt.exact, swatch: row.right.color ?? row.color });
+      : { label: model.rightHeader ?? 'Right', value: rightFmt.exact, swatch: row.right.color ?? row.color, ...(rightFmt.partialReason ? { partialReason: rightFmt.partialReason } : {}) });
   }
   if (row.pair) {
     const topFmt = formatValueState(row.pair.topValue, row.pair.format);

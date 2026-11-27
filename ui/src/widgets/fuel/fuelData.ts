@@ -1,5 +1,5 @@
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { formatRational } from '../../families/valueFormat.ts';
+import { formatExactRational, formatRational } from '../../families/valueFormat.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { object } from '../../dashboard/validation.ts';
 import type { CountryFuelReply, DayLeftOut, FuelAwardHistoryReply, FuelAwardsReply, FuelLabel, FuelReadAt } from '../../generated/dashboard';
@@ -100,16 +100,6 @@ type Fraction = readonly [bigint, bigint];
 const formatFuelFraction = ([raw, scale]: Fraction, digits: number, signed = false) =>
   formatRational(raw, scale, { maxDecimals: digits, fixedDecimals: true, signed });
 
-export function formatFuelPart(raw: bigint, scale: bigint, digits?: number): string {
-  if (digits !== undefined) return formatRational(raw, scale, { maxDecimals: digits });
-  let denominator = scale, twos = 0, fives = 0;
-  while (denominator % 2n === 0n) { denominator /= 2n; twos++; }
-  while (denominator % 5n === 0n) { denominator /= 5n; fives++; }
-  if (denominator !== 1n) return `${raw}/${scale}`;
-  const places = Math.max(twos, fives);
-  return formatRational(raw, scale, { maxDecimals: places });
-}
-
 export const fuelPartShare = (raw: bigint, total: bigint) => total === 0n ? '—'
   : `${formatRational(raw * (total < 0n ? -100n : 100n), total < 0n ? -total : total, { maxDecimals: 1 })}%`;
 
@@ -130,7 +120,7 @@ export function percentFull(read: Pick<FuelReadAt, 'fuelRaw' | 'capacityRaw'>): 
 export interface FuelPart { id: string; label: string; raw: bigint; consumer?: number; muted?: boolean; reason?: string | null }
 
 export function fuelLabel(label: FuelLabel | undefined, raw: bigint, scale: bigint, digits?: number): string | null {
-  return label?.template?.replaceAll('{NUM}', formatFuelPart(raw, scale, digits)).replaceAll('{OIL}', '?') ?? null;
+  return label?.template?.replaceAll('{NUM}', digits === undefined ? formatExactRational(raw, scale) : formatRational(raw, scale, { maxDecimals: digits })).replaceAll('{OIL}', '?') ?? null;
 }
 
 export function fuelParts(reply: CountryFuelReply, read: FuelReadAt, measure: 'gain' | 'burn', digits?: number):

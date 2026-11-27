@@ -16,7 +16,7 @@ import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { countrySubject, noRegionsBody, regionLanes } from '../../families/regions/regionRows.ts';
-import { formatProgress } from '../../families/valueFormat.ts';
+import { formatExactRational, formatProgress } from '../../families/valueFormat.ts';
 import type { ConvoyCellRun, ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
 
 export const CONVOY_TOP_DEFAULT = 7;
@@ -47,14 +47,16 @@ function stateReadout(state: ConvoyCellState | undefined, scale: number, surface
   if (!state) return undefined;
   if (state.kind === 'notRecorded') return { kind: 'missing', reason: state.reason };
   if (state.kind === 'noTraffic') return { kind: 'clear', label: 'No convoy traffic' };
-  return efficiencyReadout(Number(state.value), scale, surface);
+  return efficiencyReadout(state.value, scale, surface);
 }
 
-function efficiencyReadout(value: number, scale: number, surface: string): HeatLaneReadout {
+function efficiencyReadout(raw: number | bigint, scale: number, surface: string): HeatLaneReadout {
+  const value = Number(raw);
   return {
     kind: 'value',
     form: 'value',
     primary: percentText(value, scale),
+    exact: formatExactRational(BigInt(raw) * 100n, BigInt(scale), { percent: true }),
     meaning: 'Efficiency',
     ...(value >= scale ? { tone: 'muted' as const } : {}),
     swatch: convoyEfficiencyColour(value / scale, surface),

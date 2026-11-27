@@ -339,11 +339,11 @@ function buildFeedTableRow(
     if (secondary) out.push({ label: 'Detail', value: knownValue(plainScripted(secondary)) });
     if (event.cause?.how) out.push({ label: 'Cause', value: knownValue(event.cause.how) });
     if (event.strike) {
-      if (event.strike.manpowerLost != null) out.push({ label: 'Casualties', value: knownValue(formatScalar(event.strike.manpowerLost, 'integer')) });
-      if (event.strike.buildingLevels != null) out.push({ label: 'Building levels', value: knownValue(formatScalar(event.strike.buildingLevels, 'decimal1')) });
-      if (event.strike.warSupport != null) out.push({ label: 'War support', value: knownValue(formatRecordedPercent(event.strike.warSupport, { signed: true })) });
-      if (event.strike.units != null) out.push({ label: 'Units', value: knownValue(formatScalar(event.strike.units, 'integer')) });
-      if (event.strike.equipmentLost != null) out.push({ label: 'Equipment lost', value: knownValue(formatScalar(event.strike.equipmentLost, 'integer')) });
+      if (event.strike.manpowerLost != null) out.push({ label: 'Casualties', value: knownValue(event.strike.manpowerLost), format: 'integer' });
+      if (event.strike.buildingLevels != null) out.push({ label: 'Building levels', value: knownValue(event.strike.buildingLevels), format: 'decimal1' });
+      if (event.strike.warSupport != null) out.push({ label: 'War support', value: knownValue(event.strike.warSupport), format: { decimals: 0, percent: true, signed: true } });
+      if (event.strike.units != null) out.push({ label: 'Units', value: knownValue(event.strike.units), format: 'integer' });
+      if (event.strike.equipmentLost != null) out.push({ label: 'Equipment lost', value: knownValue(event.strike.equipmentLost), format: 'integer' });
       for (const reason of event.strike.notRecorded) {
         out.push({ label: 'Effect not recorded', value: notRecorded(reason) });
       }

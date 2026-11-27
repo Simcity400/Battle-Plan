@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { deriveLanesTooltip, readoutAuditText } from '../../families/heat/lanesModel.ts';
 import type { ConvoyHealthReply } from '../../generated/dashboard';
 import { convoyEfficiencyColour } from '../../charts/palette.ts';
 import { projectConvoyHealth } from './convoyHealthProjection.ts';
@@ -28,6 +29,25 @@ function reply(lastHour: number): ConvoyHealthReply {
 
 const view = (hour: number, data: ConvoyHealthReply) => createBoundedReadView({ hour, panels: new Map([['now', data]]) });
 const OPTIONS = { view: 'regions' as const, surface: SURFACE, country: null, historyStart: 0, tiles: 0 };
+
+test('R3-S4: regional and trade convoy readouts inspect the recorded efficiency', () => {
+  for (const mode of ['regions', 'trade'] as const) {
+    const data = reply(50);
+    data.view = mode;
+    data.regions[0]!.readout = { kind: 'efficiency', value: 38246n };
+    if (mode === 'trade') {
+      data.regions = [];
+      data.known = [[], [{ firstHour: 0, lastHour: 50 }], []];
+      data.deals = [{ id: 'D01', exporter: [{ firstHour: 0, lastHour: 50, tag: 'A01', name: 'A01' }], resource: [],
+        efficiency: [[0, 50, 38246]], factors: [], convoys: [] }];
+    }
+    const model = projectConvoyHealth(view(50, data), { ...OPTIONS, view: mode });
+    const readout = model.rows[0]!.readout!;
+    assert.equal(readout.kind === 'value' && readout.primary, '38%');
+    assert.equal(deriveLanesTooltip(model, 0, null)!.exactValue, '38.246%');
+    assert.equal(readoutAuditText(readout), '38.246% (Efficiency)');
+  }
+});
 
 test('the efficiency scale runs from full at the first stop to empty at the last', () => {
   assert.equal(convoyEfficiencyColour(1, '#111111'), '#22364f');
