@@ -141,3 +141,45 @@ export function buildWidgetClassifierExpr(classifySnapshot) {
     });
   })`;
 }
+
+export const QUICK_CATALOGUE_DEFAULT_COUNT = 5;
+
+export const catalogueItemKey = card => `${card.view ? 'view' : 'widget'}/${card.title}`;
+
+export function selectQuickCatalogueCards(cards, history, count = QUICK_CATALOGUE_DEFAULT_COUNT) {
+  const recorded = new Set(history?.slowest ?? []);
+  const matched = cards.flatMap((card, index) => (recorded.has(catalogueItemKey(card)) ? [index] : []));
+  if (matched.length) return { indices: new Set(matched), source: 'history' };
+  const available = cards.flatMap((card, index) => (card.unavailable ? [] : [index]));
+  const pool = available.length ? available : cards.map((_, index) => index);
+  const target = Math.min(Math.max(0, count), pool.length);
+  if (!target) return { indices: new Set(), source: 'default' };
+  const picked = target === pool.length ? pool
+    : target === 1 ? [pool[0]]
+    : Array.from({ length: target }, (_, i) => pool[Math.round(i * (pool.length - 1) / (target - 1))]);
+  return { indices: new Set(picked), source: 'default' };
+}
+
+export function describeUncleanCataloguePage({ widgets = 0, dirty = false, popovers = [] } = {}) {
+  const issues = [];
+  if (widgets > 0) issues.push(`${widgets} ${widgets === 1 ? 'widget' : 'widgets'} left on page`);
+  if (dirty) issues.push('layout still has unsaved changes');
+  if (popovers.length > 0) issues.push(`popover stayed open (${popovers.join(', ')})`);
+  return issues.length ? `page not clean after card: ${issues.join('; ')}` : null;
+}
+
+export async function finishCatalogueCard(item, { cleanup, readState, recover, fail }) {
+  let failed = false;
+  try {
+    await cleanup();
+  } catch (error) {
+    failed = true;
+    await fail(item, 'cleanup', error?.message ?? String(error));
+  }
+  const unclean = describeUncleanCataloguePage(await readState());
+  if (!unclean) return;
+  if (!failed) await fail(item, 'cleanup', unclean);
+  await recover();
+  const remaining = describeUncleanCataloguePage(await readState());
+  if (remaining) throw new Error(`cannot continue catalogue after ${item}: ${remaining}`);
+}
