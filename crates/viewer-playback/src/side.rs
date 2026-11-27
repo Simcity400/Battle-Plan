@@ -12,6 +12,8 @@ pub const THREAD: &str = "map side";
 
 const IDLE: Duration = Duration::from_millis(2);
 
+const REST: Duration = Duration::from_millis(16);
+
 const UNTIL_DUE: Duration = Duration::from_micros(200);
 
 const LATE: Duration = Duration::from_secs(5);
@@ -474,7 +476,7 @@ fn advance(shared: &Shared) {
         if let Some(rest) = turn.rest
             && rests(shared, &mut turn, rest)
         {
-            turn = wait(shared, turn);
+            turn = waiting(shared, turn, REST);
             continue;
         }
         turn.rest = None;
@@ -516,7 +518,7 @@ fn advance(shared: &Shared) {
                     && !turn.side.unsettled(&ask.view, hour)
                 {
                     turn.rest = Some((ask.serial, at, hour));
-                    turn = wait(shared, turn);
+                    turn = waiting(shared, turn, REST);
                     continue;
                 }
                 let viewpoint = ask.view.perspective != turn.side.view().perspective;
