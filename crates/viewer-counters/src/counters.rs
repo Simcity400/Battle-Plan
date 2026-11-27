@@ -196,7 +196,7 @@ impl CounterAssets {
         shared: &Arc<ResolvedLayers>,
         (layouts, windows, window_cache): (Layouts, SharedNativeWindows, Arc<WindowCache>),
         defines: &Defines,
-        (sprites, registry): (&SpriteSet, &native::resources::Registry),
+        (sprites, registry): (&SpriteSet, &Arc<native::resources::Registry>),
         (language, map_size, decode): (&str, [u32; 2], content_reader_image::native::Decode),
         images: &mut Vec<viewer_gpu::textures::GuiSource>,
         lazy: &Arc<LazyTextures>,
@@ -380,7 +380,7 @@ impl CounterAssets {
                 )),
             }
         }
-        let gui = GuiResources::new(registry.clone(), language.as_bytes(), map_size, decode);
+        let gui = GuiResources::new(Arc::clone(registry), language.as_bytes(), map_size, decode);
         let land_action = layouts.land.as_ref().ok().map(|layout| {
             ActionContent::load(
                 &layout.action,

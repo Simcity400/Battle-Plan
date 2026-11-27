@@ -303,7 +303,7 @@ pub fn load(
         logged,
         color: [red, green, blue, alpha].map(|channel| f32::from(channel) / 255.0),
         text_colors: font.facts.text_colors.clone(),
-        global_colors: interface.registry.text_colors.clone(),
+        global_colors: interface.registry.text_colors.as_ref().clone(),
     })
 }
 
@@ -855,7 +855,7 @@ mod tests {
         let registry = content_reader_gui::gui::native::resources::Registry::load(&layers).unwrap();
         let interface = super::super::sprites::Interface {
             sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
-            registry,
+            registry: Arc::new(registry),
             decode: content_reader_image::native::Decode::default(),
         };
         (root, layers, interface)
@@ -1027,7 +1027,7 @@ path=\"{art}\"
         assert!(registry.fonts.get_or_fallback(b"").is_none());
         let interface = super::super::sprites::Interface {
             sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
-            registry,
+            registry: Arc::new(registry),
             decode: content_reader_image::native::Decode::default(),
         };
         let load = |layers: &ResolvedLayers| {

@@ -76,7 +76,7 @@ impl MapIcons {
             );
             let interface = Interface {
                 sprites: gfx::SpriteSet::new(&registry.files),
-                registry,
+                registry: Arc::new(registry),
                 decode,
             };
             let fonts = text::Fonts::load(

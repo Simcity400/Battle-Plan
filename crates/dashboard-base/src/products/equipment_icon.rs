@@ -340,7 +340,7 @@ impl IconContent {
             &defines,
         )?;
         let dlc = layers.dlc_names()?;
-        let sprites = content_reader_gui::gui::native::sprites::registry(&registry.files)
+        let sprites = registry.visible_sprites()
             .keys()
             .filter_map(|name| std::str::from_utf8(name).ok().map(str::to_owned))
             .collect();

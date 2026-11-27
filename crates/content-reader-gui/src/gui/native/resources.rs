@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, sync::Arc};
 
 use super::{
     fonts::{FontEvent, Fonts, TextColors},
@@ -23,10 +23,11 @@ pub enum Lookup<'a> {
 
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
+    base: Option<Arc<Self>>,
     pub files: Vec<(String, Sprites)>,
     sprites: BTreeMap<Vec<u8>, (usize, usize)>,
-    pub fonts: Fonts,
-    pub text_colors: TextColors,
+    pub fonts: Arc<Fonts>,
+    pub text_colors: Arc<TextColors>,
     pub cursor_offset: [i32; 2],
     pub selection_offset: [i32; 2],
 }
@@ -66,25 +67,46 @@ impl Registry {
                 .collect::<Vec<&FontEvent>>(),
         );
         Self {
+            base: None,
             files,
             sprites,
-            fonts,
-            text_colors,
+            fonts: Arc::new(fonts),
+            text_colors: Arc::new(text_colors),
             cursor_offset,
             selection_offset,
         }
+    }
+
+    pub fn with_sprites(base: Arc<Self>, file: String, sprites: Vec<SpriteFacts>) -> Self {
+        let mut overlay = Self::from_files(vec![(file, Sprites { sprites, ..Sprites::default() })]);
+        overlay.fonts = Arc::clone(&base.fonts);
+        overlay.text_colors = Arc::clone(&base.text_colors);
+        overlay.cursor_offset = base.cursor_offset;
+        overlay.selection_offset = base.selection_offset;
+        overlay.base = Some(base);
+        overlay
+    }
+
+    pub fn visible_sprites(&self) -> BTreeMap<&[u8], &SpriteFacts> {
+        let mut visible = self.base.as_deref().map_or_else(BTreeMap::new, Self::visible_sprites);
+        visible.extend(self.sprites.iter().map(|(name, &(file, index))| {
+            (name.as_slice(), &self.files[file].1.sprites[index])
+        }));
+        visible
     }
 
     pub fn sprite_file(&self, name: &[u8]) -> Option<&str> {
         self.sprites
             .get(content_reader_parser::parser::c_string(name))
             .map(|(file, _)| self.files[*file].0.as_str())
+            .or_else(|| self.base.as_ref()?.sprite_file(name))
     }
 
     pub fn sprite(&self, name: &[u8]) -> Option<&SpriteFacts> {
         self.sprites
             .get(content_reader_parser::parser::c_string(name))
             .map(|(file, index)| &self.files[*file].1.sprites[*index])
+            .or_else(|| self.base.as_ref()?.sprite(name))
     }
 
     pub fn create(&self, name: &[u8]) -> Lookup<'_> {
@@ -96,13 +118,19 @@ impl Registry {
     }
 
     pub fn refusals(&self) -> Vec<&super::Refusal> {
-        let mut refusals = sprites::refusals(&self.files);
+        let mut refusals = self.sprite_refusals();
         refusals.extend(
             self.fonts
                 .fonts()
                 .iter()
                 .flat_map(|font| &font.facts.refusals),
         );
+        refusals
+    }
+
+    fn sprite_refusals(&self) -> Vec<&super::Refusal> {
+        let mut refusals = self.base.as_deref().map_or_else(Vec::new, Self::sprite_refusals);
+        refusals.extend(sprites::refusals(&self.files));
         refusals
     }
 }
@@ -296,6 +324,46 @@ mod tests {
             texture("gfx/\u{FFFD}.png".as_bytes(), &read).unwrap(),
             Err(NoTexture::Missing(_))
         ));
+    }
+
+    #[test]
+    fn runtime_sprites_match_an_appended_file_and_borrow_its_base() {
+        content_reader_script::test_game::enter();
+        let mut base = registry(&[(
+            "fixture.gfx",
+            br#"spriteTypes = {
+                spriteType = { name = fixture_overridden textureFile = "gfx/base.tga" }
+                spriteType = { name = fixture_kept textureFile = "gfx/kept.tga" }
+                spriteType = { name = GFX_default_fallback_texture textureFile = "gfx/fallback.tga" }
+            }"#,
+        )]);
+        let refusal = super::super::Refusal {
+            path: "fixture_overridden".to_owned(),
+            key: "fixture_field".to_owned(),
+            reason: "unsupported sprite field".to_owned(),
+            cause: super::super::Cause::Unread,
+            node: 0,
+        };
+        base.files[0].1.sprites[0].refusals.push(refusal.clone());
+        let base = Arc::new(base);
+        let runtime = read_sprites(br#"spriteTypes = {
+            spriteType = { name = fixture_overridden textureFile = "gfx/runtime.tga" }
+            spriteType = { name = fixture_new textureFile = "gfx/new.tga" }
+        }"#);
+        let mut files = base.files.clone();
+        files.push(("runtime sprites".into(), runtime.clone()));
+        let appended = Registry::from_files(files);
+        let overlay = Registry::with_sprites(Arc::clone(&base), "runtime sprites".into(), runtime.sprites);
+        assert_eq!(overlay.visible_sprites(), appended.visible_sprites());
+        assert_eq!(overlay.refusals(), appended.refusals());
+        assert_eq!(overlay.refusals(), [&refusal]);
+        for name in [b"fixture_overridden".as_slice(), b"fixture_kept", b"fixture_new", b"fixture_missing"] {
+            assert_eq!(overlay.create(name), appended.create(name));
+            assert_eq!(overlay.sprite_file(name), appended.sprite_file(name));
+        }
+        assert_eq!(overlay.sprite_file(b"fixture_overridden"), Some("runtime sprites"));
+        assert!(std::ptr::eq(overlay.sprite(b"fixture_kept").unwrap(), base.sprite(b"fixture_kept").unwrap()));
+        assert!(Arc::ptr_eq(&overlay.fonts, &base.fonts));
     }
 
     #[test]

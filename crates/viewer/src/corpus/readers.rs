@@ -229,7 +229,7 @@ pub fn run(
         defines.as_ref(),
         &map,
         decode,
-        interface.as_ref().map(|interface| &interface.registry),
+        interface.as_ref().map(|interface| interface.registry.as_ref()),
     );
     if maps_only {
         map_assets::read(
@@ -360,7 +360,7 @@ fn interface(
         })
         .map(|registry| Interface {
             sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
-            registry,
+            registry: Arc::new(registry),
             decode,
         });
     match &interface {
