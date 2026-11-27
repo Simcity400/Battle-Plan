@@ -290,7 +290,7 @@
     const check = () => {
       const now = performance.now(), kinds = p.inFlight(), preparing = window.__busy?.preparing?.();
       const known = kinds !== null && Number.isFinite(preparing);
-      idle = known && preparing === 0 && Object.values(kinds).every(n => n === 0) ? idle + 1 : 0;
+      idle = known && preparing === 0 && !document.querySelector('.dash-prepare') && Object.values(kinds).every(n => n === 0) ? idle + 1 : 0;
       if (!known || idle >= 2 || now - start >= timeout) resolve({ at: performance.timeOrigin + now, complete: known && idle >= 2 });
       else requestAnimationFrame(check);
     };

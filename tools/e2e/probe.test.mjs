@@ -205,13 +205,16 @@ test('settlement waits for a transient global spinner and leaves a persistent on
 });
 
 test('count scopes drain background preparation separately from foreground paint settlement', async () => {
-  let preparing = 1;
-  const host = loadProbe({ busy: { kinds: () => ({ requests: 0 }), preparing: () => preparing } });
+  let preparing = 1, page = {};
+  const host = loadProbe({ busy: { kinds: () => ({ requests: 0 }), preparing: () => preparing }, querySelector: selector => selector === '.dash-prepare' ? page : null });
   let finished = false;
   const pending = host.probe.prepared(1000).then(value => { finished = true; return value; });
   for (let i = 0; i < 4; i++) { host.stepFrame(16); await Promise.resolve(); }
   assert.equal(finished, false);
   preparing = 0;
+  for (let i = 0; i < 3; i++) { host.stepFrame(16); await Promise.resolve(); }
+  assert.equal(finished, false, 'between requests, the preparing page still owns outstanding work');
+  page = null;
   for (let i = 0; i < 3; i++) { host.stepFrame(16); await Promise.resolve(); }
   assert.equal((await pending).complete, true);
   preparing = 1;
