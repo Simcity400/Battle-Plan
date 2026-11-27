@@ -491,7 +491,12 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
     }
 }
 
-fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Index<Line>> {
+struct Scanned {
+    index: Index<Line>,
+    live_gaps: Vec<MissingSpan>,
+}
+
+fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Scanned> {
     let recording = query.replay.recording();
     let mut lines = BTreeMap::new();
     let mut gaps: Vec<_> = query
@@ -504,6 +509,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             reason: g.reason.clone(),
         })
         .collect();
+    let mut live_gaps = gaps.clone();
     for &span in &query.timeline.stretches {
         check_cancel(cancelled)?;
         let absent = |table: TableId| recording.withheld_reason(table.index()).or_else(|| recording.predates(table.index()));
@@ -520,15 +526,16 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             } else {
                 lanes::complete_reads(recording, span.run, table, span.first, span.last)?
             };
-            gaps.extend(
-                dashboard_land::products::division_log::unread(&read, span.first, span.last)
-                    .into_iter()
-                    .map(|(first_hour, last_hour)| MissingSpan {
-                        first_hour,
-                        last_hour,
-                        reason: absent(table).unwrap_or(reason).to_owned(),
-                    }),
-            );
+            let unread = dashboard_land::products::division_log::unread(&read, span.first, span.last).into_iter().map(|(first_hour, last_hour)| MissingSpan {
+                first_hour,
+                last_hour,
+                reason: absent(table).unwrap_or(reason).to_owned(),
+            });
+            let start = gaps.len();
+            gaps.extend(unread);
+            if table == TableId::NavalBattles {
+                live_gaps.extend_from_slice(&gaps[start..]);
+            }
         }
         let links = queries::links(source, span.run)?;
         let participants = history(TableId::NavalCombatParticipants, &[0, 1, dashboard_declare::field(TableId::NavalCombatParticipants, "state")?])?;
@@ -604,18 +611,18 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             payload: line,
         });
     }
-    Index::new(entries, gaps, &[NavalBattleStatus::Ongoing as u8])
+    Ok(Scanned { index: Index::new(entries, gaps, &[NavalBattleStatus::Ongoing as u8])?, live_gaps })
 }
 
 #[derive(Default)]
-struct Branches(HashMap<u64, Arc<Index<Line>>>);
+struct Branches(HashMap<u64, Arc<Scanned>>);
 
 struct Prepared {
-    index: Arc<Index<Line>>,
+    scanned: Arc<Scanned>,
     selection: Option<Selection>,
 }
 
-fn index(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Arc<Index<Line>>> {
+fn scanned(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Arc<Scanned>> {
     let state = source.state::<Branches>();
     let mut branches = state.lock().unwrap_or_else(PoisonError::into_inner);
     Ok(match branches.0.entry(query.timeline.id) {
@@ -625,9 +632,9 @@ fn index(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resu
 }
 
 fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &NavalBattlesTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
-    let index = index(source, query, cancelled)?;
+    let scanned = scanned(source, query, cancelled)?;
     let selection = dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
-    Ok(Prepared { index, selection })
+    Ok(Prepared { scanned, selection })
 }
 
 fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams, hour: i32) -> io::Result<NavalBattlesTailReply> {
@@ -649,13 +656,13 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams
         limit,
         chips: &[],
     };
-    let answer = prepared.index.ask(holders, &ask)?;
+    let answer = prepared.scanned.index.ask(holders, &ask)?;
     let mut visible_change: Option<i32> = None;
     let rows = answer
         .rows
         .iter()
         .map(|shown| {
-            let entry = prepared.index.get(shown.at);
+            let entry = prepared.scanned.index.get(shown.at);
             let line = &entry.payload;
             let mut next = |candidate: Option<i32>| {
                 visible_change = visible_change.into_iter().chain(candidate).min();
@@ -688,7 +695,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams
     let mut boundary = answer.next_change;
     while let Some(candidate) = boundary.filter(|at| visible_change.is_none_or(|visible| *at < visible)) {
         ask.hour = candidate;
-        let future = prepared.index.ask(holders, &ask)?;
+        let future = prepared.scanned.index.ask(holders, &ask)?;
         if future.total != answer.total || future.rows != answer.rows || future.gaps != answer.gaps || future.unattributed != answer.unattributed {
             break;
         }
@@ -765,6 +772,7 @@ pub struct NavalCourseRead {
     pub ships_sunk: [Option<u32>; 2],
     pub convoys_sunk: [Option<u32>; 2],
     pub ic_lost: [Option<f64>; 2],
+    pub resulted: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -779,7 +787,8 @@ pub struct NavalBattleCourseReply {
 
 dashboard_base::reply_warnings!(NavalBattleCourseReply);
 
-fn course(index: &Index<Line>, key: &str) -> Option<(Vec<NavalCourseRead>, Vec<MissingSpan>)> {
+fn course(scanned: &Scanned, key: &str, branch_last: i32) -> Option<(Vec<NavalCourseRead>, Vec<MissingSpan>)> {
+    let index = &scanned.index;
     let entry = (0..index.len()).map(|at| index.get(at as u32)).find(|entry| entry.payload.key == key)?;
     let reads: Vec<_> = entry
         .payload
@@ -793,12 +802,17 @@ fn course(index: &Index<Line>, key: &str) -> Option<(Vec<NavalCourseRead>, Vec<M
             ships_sunk: read.sunk,
             convoys_sunk: read.convoys_sunk,
             ic_lost: read.ic.map(|raw| raw.map(|raw| raw as f64 / 100_000.0)),
+            resulted: read.result_id.is_some(),
         })
         .collect();
     let first = entry.date.min(reads.first().map_or(entry.date, |read| read.hour));
-    let last = reads.last().map_or(first, |read| read.hour);
-    let missing = index
-        .gaps()
+    let last = match reads.last() {
+        Some(read) if read.result == NavalBattleStatus::Ongoing => branch_last.max(read.hour),
+        Some(read) => read.hour,
+        None => first,
+    };
+    let missing = scanned
+        .live_gaps
         .iter()
         .filter(|gap| gap.first_hour <= last && gap.last_hour >= first)
         .map(|gap| MissingSpan { first_hour: gap.first_hour.max(first), last_hour: gap.last_hour.min(last), reason: gap.reason.clone() })
@@ -821,7 +835,7 @@ impl Product for NavalBattleCourse {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        let keyed = params.key.len() <= 64 && (params.key.starts_with("combat:") || params.key.starts_with("result:"));
+        let keyed = super::parse_id(&params.key).is_some() || super::parse_result_id(&params.key).is_some();
         keyed.then_some(()).ok_or("A naval battle course names a naval battle row's key")
     }
 
@@ -829,8 +843,8 @@ impl Product for NavalBattleCourse {
         check_cancel(cancelled)?;
         let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let query = dashboard_base::queries::query(source, branch)?;
-        let index = index(source, &query, cancelled)?;
-        let (reads, missing) = course(&index, &params.key).ok_or_else(|| dashboard_core::invalid("No naval battle with this key in the branch"))?;
+        let scanned = scanned(source, &query, cancelled)?;
+        let (reads, missing) = course(&scanned, &params.key, query.timeline.last).ok_or_else(|| dashboard_core::invalid("No naval battle with this key in the branch"))?;
         let reply = NavalBattleCourseReply { branch_id: params.branch_id.clone(), reads, missing, warnings: Vec::new() };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
@@ -887,6 +901,56 @@ mod tests {
         live_lines(&mut lines, stretch, 40, &RunLinks::default(), &battles, &History::default(), &History::default(), &Prices::default());
         let (hour, read) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
         assert_eq!((*hour, read.result, read.live_last, read.end_seen), (18, NavalBattleStatus::Unknown, Some(17), false), "a battle still live at a stretch's last hour has no recorded removal");
+    }
+
+    #[test]
+    fn a_battle_course_shows_census_gaps_up_to_the_branch_end_while_the_battle_is_live() {
+        let read = |result| Snapshot {
+            province: None,
+            countries: [Vec::new(), Vec::new()],
+            countries_hour: [None; 2],
+            ships: [Some(2), Some(1)],
+            convoys: [Some(0); 2],
+            sunk: [Some(0); 2],
+            convoys_sunk: [Some(0); 2],
+            ic: [Some(0); 2],
+            result,
+            result_id: None,
+            detail_hour: None,
+            result_hour: None,
+            live_last: None,
+            end_seen: false,
+        };
+        let entry = |id: u128, key: &str, reads: Steps<Snapshot>| Occurrence {
+            id,
+            date: 100,
+            observed: 100,
+            kind: 0,
+            roles: Box::default(),
+            subjects: Box::default(),
+            states: reads.iter().map(|(at, read)| (*at, read.result as u8)).collect::<Vec<_>>().into(),
+            sort_keys: [SortKey::dated_numbers(Vec::new()), SortKey::dated_numbers(Vec::new()), SortKey::dated_numbers(Vec::new())].into(),
+            text: Box::default(),
+            payload: Line { key: key.into(), reads, joined: None },
+        };
+        let gap = |first_hour, last_hour| MissingSpan { first_hour, last_hour, reason: "Naval battle census incomplete".into() };
+        let scanned = Scanned {
+            index: Index::new(
+                vec![
+                    entry(0, "combat:7:100", vec![(100, read(NavalBattleStatus::Ongoing))]),
+                    entry(1, "combat:8:100", vec![(100, read(NavalBattleStatus::Ongoing)), (105, read(NavalBattleStatus::Unknown))]),
+                ],
+                Vec::new(),
+                &[NavalBattleStatus::Ongoing as u8],
+            )
+            .unwrap(),
+            live_gaps: vec![gap(90, 95), gap(110, 112), gap(118, 140)],
+        };
+        let (_, live) = course(&scanned, "combat:7:100", 120).unwrap();
+        assert_eq!(live, [gap(110, 112), gap(118, 120)], "a live battle's gaps run to the branch end, past its last change");
+        let (_, ended) = course(&scanned, "combat:8:100", 120).unwrap();
+        assert!(ended.is_empty(), "an ended battle's gaps stop at its last reading");
+        assert!(course(&scanned, "combat:9:100", 120).is_none());
     }
 
     fn step(hour: i32, cells: Option<&[i64]>) -> Step {

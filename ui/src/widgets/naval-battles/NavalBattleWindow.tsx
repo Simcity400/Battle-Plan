@@ -11,7 +11,7 @@ import { classifyFailure, failureText } from '../../dashboard/queryError.ts';
 import { productRequest } from '../../dashboard/request.ts';
 import { useKeyLabelsAt, useKeyTagsAt } from '../../dashboard/useKeyTagsAt.ts';
 import { mirrorRowSelector } from '../../families/host/mirror.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { formatExactScalar, formatScalar } from '../../families/valueFormat.ts';
 import { navalCourseFigures, navalCourseGaps, validateNavalBattleCourse, type NavalFigure, type NavalSideFigures } from './navalBattleCourse.ts';
 import { navalBattleClock, type NavalBattleSubject } from './navalBattlesProjection.ts';
 
@@ -29,8 +29,9 @@ const SO_FAR = 'Sinkings seen during the battle so far: a lower bound until its 
 
 type Figure = NavalFigure | 'pending';
 
-function FigureItem({ label, figure }: { readonly label: string; readonly figure: Figure }) {
-  const hint = figure !== 'pending' && 'value' in figure && figure.soFar ? SO_FAR : undefined;
+function FigureItem({ label, figure, exact }: { readonly label: string; readonly figure: Figure; readonly exact?: boolean }) {
+  const known = figure !== 'pending' && 'value' in figure ? figure : null;
+  const hint = [known && exact ? `${label}: ${formatExactScalar(known.value)}` : null, known?.soFar ? SO_FAR : null].filter(Boolean).join('\n') || undefined;
   return <div className="bv-figure" data-tooltip={hint} tabIndex={hint ? 0 : undefined}>
     <dt>{label}</dt>
     <dd aria-busy={figure === 'pending' || undefined}>
@@ -72,7 +73,7 @@ function Side({ runtime, track, index, slots, hour, figures }: {
       <FigureItem label="Ships" figure={shown(side => side.ships)} />
       <FigureItem label="Convoys" figure={shown(side => side.convoys)} />
       <FigureItem label="Sunk" figure={shown(side => side.sunk)} />
-      <FigureItem label="IC lost" figure={shown(side => side.icLost)} />
+      <FigureItem label="IC lost" figure={shown(side => side.icLost)} exact />
     </dl>
   </section>;
 }

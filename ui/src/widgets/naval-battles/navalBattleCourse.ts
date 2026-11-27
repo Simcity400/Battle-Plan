@@ -18,7 +18,7 @@ export function validateNavalBattleCourse(v: unknown): NavalBattleCourseReply {
   if (!object(v) || typeof v.branchId !== 'string' || !Array.isArray(v.reads) || !Array.isArray(v.missing) || !Array.isArray(v.warnings)) throw malformed();
   v.reads.forEach((read: unknown, index: number, all: unknown[]) => {
     if (!object(read) || !hour(read.hour) || !STATUSES.includes(read.result as NavalBattleStatus)
-      || !pair(read.ships, count) || !pair(read.convoys, count) || !pair(read.shipsSunk, count) || !pair(read.convoysSunk, count) || !pair(read.icLost, amount)
+      || !pair(read.ships, count) || !pair(read.convoys, count) || !pair(read.shipsSunk, count) || !pair(read.convoysSunk, count) || !pair(read.icLost, amount) || typeof read.resulted !== 'boolean'
       || index > 0 && (all[index - 1] as { hour: number }).hour >= read.hour) throw malformed();
   });
   if (!v.missing.every((gap: unknown) => object(gap) && hour(gap.firstHour) && hour(gap.lastHour) && gap.firstHour <= gap.lastHour && typeof gap.reason === 'string')) throw malformed();
@@ -36,15 +36,19 @@ function readAt(course: NavalBattleCourseReply, at: number): NavalCourseRead | u
 
 export function navalCourseFigures(course: NavalBattleCourseReply, at: number): [NavalSideFigures, NavalSideFigures] {
   const read = readAt(course, at);
+  const gap = course.missing.find(span => span.firstHour <= at && at <= span.lastHour);
   const side = (index: 0 | 1): NavalSideFigures => {
-    if (!read) return { ships: { missing: NOT_AT_THIS_HOUR }, convoys: { missing: NOT_AT_THIS_HOUR }, sunk: { missing: NOT_AT_THIS_HOUR }, icLost: { missing: NOT_AT_THIS_HOUR } };
-    const soFar = read.result === 'ongoing';
+    if (!read || gap) {
+      const missing = { missing: gap?.reason ?? NOT_AT_THIS_HOUR };
+      return { ships: missing, convoys: missing, sunk: missing, icLost: missing };
+    }
+    const soFar = !read.resulted;
     const figure = (value: number | null, missing: string, partial: boolean): NavalFigure => value === null ? { missing } : { value, soFar: partial };
     return {
       ships: figure(read.ships[index], 'Ships in the battle not recorded at this hour', false),
       convoys: figure(read.convoys[index], 'Convoys in the battle not recorded at this hour', false),
       sunk: figure(read.shipsSunk[index] === null || read.convoysSunk[index] === null ? null : read.shipsSunk[index]! + read.convoysSunk[index]!, 'Ships sunk not recorded at this hour', soFar),
-      icLost: figure(read.icLost[index], 'IC lost not recorded: a sunk ship’s design or its cost is not recorded', soFar),
+      icLost: figure(read.icLost[index], 'IC lost not recorded at this hour', soFar),
     };
   };
   return [side(0), side(1)];

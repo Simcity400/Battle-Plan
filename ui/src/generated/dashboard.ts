@@ -3761,7 +3761,7 @@ staticText?: Array<Artwork>,
 continuousStaticText: Array<Artwork>, warnings: Array<string>, };
 export type FocusMissing = { firstHour: number, lastHour: number, reason: string, };
 export type NavalBattleCourseParams = { branchId: string, key: string, };
-export type NavalCourseRead = { hour: number, result: NavalBattleStatus, ships: [number | null, number | null], convoys: [number | null, number | null], shipsSunk: [number | null, number | null], convoysSunk: [number | null, number | null], icLost: [number | null, number | null], };
+export type NavalCourseRead = { hour: number, result: NavalBattleStatus, ships: [number | null, number | null], convoys: [number | null, number | null], shipsSunk: [number | null, number | null], convoysSunk: [number | null, number | null], icLost: [number | null, number | null], resulted: boolean, };
 export type NavalBattleCourseReply = { branchId: string, reads: Array<NavalCourseRead>, missing: Array<MissingSpan>, warnings: Array<string>, };
 export type NavalBattleDetailsParams = { branchId: string, battles: Array<NavalBattleDetailRequest>, };
 export type NavalBattleDetailsReply = { rows: Array<NavalBattleDetail>, warnings: Array<string>, };
