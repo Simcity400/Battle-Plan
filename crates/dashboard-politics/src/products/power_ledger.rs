@@ -9,10 +9,10 @@ use dashboard_base::products::Country;
 use super::politics::{Holding, holdings};
 use dashboard_base::products::at_hour;
 use dashboard_query::{Query, coverage};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, Unsayable, cells_rows};
 use replay_lanes::{lanes::{self, Keys}, points::{self, Cell}};
 use replay_columnar::manifest::Status;
-use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
+use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, TableRows, tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -1328,7 +1328,7 @@ fn complete_span(statuses: &[lanes::StatusRun], first: i32, last: i32) -> bool {
     false
 }
 
-fn complete_items_frame(query: &Query<'_>, frames: &mut at_hour::Frames<'_>, batch: &ItemAsks<'_>) -> io::Result<Option<DecodedFrame>> {
+fn complete_items(query: &Query<'_>, batch: &ItemAsks<'_>) -> io::Result<Option<HashMap<u32, PowerItemRow>>> {
     let Some((&(first, _), _)) = batch.asks.first_key_value() else { return Ok(None) };
     let (&(last, _), _) = batch.asks.last_key_value().expect("a nonempty batch has a last ask");
     let piece = batch.piece;
@@ -1348,18 +1348,32 @@ fn complete_items_frame(query: &Query<'_>, frames: &mut at_hour::Frames<'_>, bat
     for (&(hour, ordinal), _) in &batch.asks {
         first_ask.entry(ordinal).or_insert(hour);
     }
-    let frame = frames.frame(
-        last,
-        &[at_hour::Read::these(TableId::PowerItems, first_ask.keys().map(|&ordinal| item_key(piece.slot, ordinal)))],
-        "Politics spending",
-    )?;
-    for (&ordinal, &hour) in &first_ask {
-        match coverage::witnessed::<tables::PowerItems>(&frame, item_key(piece.slot, ordinal)) {
-            coverage::Witness::Row(row) if row.first_read <= hour => {}
-            _ => return Ok(None),
+    let mut keys: Vec<u128> = first_ask.keys().map(|&ordinal| item_key(piece.slot, ordinal)).collect();
+    keys.sort_unstable();
+    let snapshot = match dashboard_query::cost::storage(|| lanes::at_keys(recording, piece.run, TableId::PowerItems, last, None, Keys::These(&keys))) {
+        Ok(snapshot) => snapshot,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if snapshot.status != Status::Complete {
+        return Ok(None);
+    }
+    let decoded = match cells_rows(TableId::PowerItems, &snapshot.view(), &snapshot.rows, recording.format()) {
+        Ok(rows) => rows,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData || Unsayable::of(&error).is_some() => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let TableRows::PowerItems(rows) = decoded else { return Ok(None) };
+    let mut by_ordinal = HashMap::with_capacity(rows.len());
+    for row in rows {
+        if row.holder == piece.slot {
+            by_ordinal.insert(row.ordinal, row);
         }
     }
-    Ok(Some(frame))
+    if first_ask.iter().any(|(&ordinal, &hour)| !by_ordinal.get(&ordinal).is_some_and(|row| row.first_read <= hour)) {
+        return Ok(None);
+    }
+    Ok(Some(by_ordinal))
 }
 
 fn item_membership(query: &Query<'_>, batches: &[&ItemAsks<'_>]) -> io::Result<HashMap<u32, lanes::History>> {
@@ -1410,15 +1424,13 @@ struct Items {
 }
 
 impl Items {
-    fn read_complete(&mut self, batch: &ItemAsks<'_>, frame: &DecodedFrame) -> HashMap<(u32, i32), (u32, bool)> {
+    fn read_complete(&mut self, batch: &ItemAsks<'_>, mut rows: HashMap<u32, PowerItemRow>) -> HashMap<(u32, i32), (u32, bool)> {
         let mut out = HashMap::with_capacity(batch.asks.len());
         let piece = batch.piece;
         for (&(hour, ordinal), _) in &batch.asks {
             let at = *self.index.entry((piece.run, piece.slot, ordinal)).or_insert_with(|| {
-                let coverage::Witness::Row(row) = coverage::witnessed::<tables::PowerItems>(frame, item_key(piece.slot, ordinal)) else {
-                    unreachable!("complete_items_frame validated every asked item");
-                };
-                self.asked.push((piece.run, row.clone()));
+                let row = rows.remove(&ordinal).expect("complete_items validated every asked item");
+                self.asked.push((piece.run, row));
                 (self.asked.len() - 1) as u32
             });
             out.insert((ordinal, hour), (at, true));
@@ -1598,23 +1610,24 @@ fn spending_with(query: &Query<'_>, params: &PowerSpendingParams, naming: &namin
         }
         batches.push(ItemAsks { piece, payments: payments_from..reply.payments.len(), days: days_from..reply.days.len(), asks });
     }
-    let mut frames = at_hour::Frames::new(query)?;
-    let mut complete_frames: Vec<Option<DecodedFrame>> = Vec::with_capacity(batches.len());
+    let mut fast_items: Vec<Option<HashMap<u32, PowerItemRow>>> = Vec::with_capacity(batches.len());
     let mut fallback: Vec<&ItemAsks<'_>> = Vec::new();
     for batch in &batches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let fast = complete_items_frame(query, &mut frames, batch)?;
+        let fast = complete_items(query, batch)?;
         if fast.is_none() && !batch.asks.is_empty() {
             fallback.push(batch);
         }
-        complete_frames.push(fast);
+        fast_items.push(fast);
     }
     let membership = if fallback.is_empty() { HashMap::new() } else { item_membership(query, &fallback)? };
-    for (batch, fast) in batches.into_iter().zip(complete_frames) {
+    let mut frames = if fallback.is_empty() { None } else { Some(at_hour::Frames::new(query)?) };
+    for (batch, fast) in batches.into_iter().zip(fast_items) {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let resolved = match fast {
-            Some(frame) => items.read_complete(&batch, &frame),
-            None => items.read(&mut frames, &batch, membership.get(&batch.piece.run))?,
+            Some(rows) => items.read_complete(&batch, rows),
+            None if batch.asks.is_empty() => HashMap::new(),
+            None => items.read(frames.as_mut().expect("fallback batches open Frames"), &batch, membership.get(&batch.piece.run))?,
         };
         let missing = resolved.values().filter(|(_, known)| !known).count();
         for payment in &mut reply.payments[batch.payments] {

@@ -1613,3 +1613,33 @@ fn power_items_end_of_span_read_falls_back_on_internal_gap_and_later_first_read(
     assert_eq!(late_reply.items[late_reply.payments[0].item as usize].category, "notIdentified");
     assert_eq!(late_reply.items[late_reply.payments[1].item as usize].category, "decisions");
 }
+
+#[test]
+fn damaged_final_block_clock_does_not_abort_complete_items_read() {
+    let end = FIRST + 725;
+    let second_charge = FIRST + 722;
+    let frames: Vec<DecodedFrame> = (FIRST..=end)
+        .map(|hour| {
+            let mut frame = source_frame(hour);
+            let changes = match hour {
+                104 => vec![decision(7, 103, 50 * PP)],
+                h if h == second_charge => vec![decision(9, second_charge, 75 * PP)],
+                _ => Vec::new(),
+            };
+            set(&mut frame, TableId::CountryPowerChanges, TableRows::CountryPowerChanges(changes));
+            set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(Vec::new()));
+            set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(Vec::new()));
+            frame
+        })
+        .collect();
+    let clean = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let head = clean.recording().head(0, 1).unwrap();
+    let mut damaged = clean.recording().memory().unwrap().to_vec();
+    let at = (head.clock.offset + u64::from(head.clock.stored) / 2) as usize;
+    damaged[at] ^= 0x40;
+    let replay = Replay::open(damaged).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-damaged-clock".into(), revision: "1".into() }, "damaged.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let reply = asked(&source, FIRST, end);
+    assert_eq!(reply.payments.len(), 2);
+    assert!(reply.payments.iter().all(|payment| reply.items[payment.item as usize].category == "decisions"));
+}
