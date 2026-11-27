@@ -2,7 +2,6 @@ use crate::Source;
 use std::{collections::HashMap, io, sync::{Arc, PoisonError}};
 
 pub mod country_ids;
-pub mod lexicon;
 
 #[derive(Default)]
 struct Held(Arc<dashboard_query::Index>);
@@ -42,35 +41,6 @@ pub fn spellings(source: &Source, run: u32, hour: i32, tokens: &std::collections
 }
 
 #[derive(Default)]
-struct Lexicons(std::collections::HashMap<u32, Arc<std::sync::Mutex<Option<Arc<lexicon::RunLexicon>>>>>);
-
-pub fn lexicon(source: &Source, run: u32) -> io::Result<Arc<lexicon::RunLexicon>> {
-    let slot = Arc::clone(source.state::<Lexicons>().lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.entry(run).or_default());
-    let mut held = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(found) = held.as_ref() {
-        return Ok(Arc::clone(found));
-    }
-    let made = Arc::new(lexicon::RunLexicon::read(source.replay_ref().recording(), run)?);
-    *held = Some(Arc::clone(&made));
-    Ok(made)
-}
-
-pub fn warm_lexicons(source: &Source) -> io::Result<()> {
-    let Some(timelines) = source.replay_ref().timelines() else { return Ok(()) };
-    let mut branches: Vec<u64> = timelines.list.iter().map(|timeline| timeline.id).collect();
-    branches.sort_by_key(|branch| *branch != timelines.main);
-    let mut runs: Vec<u32> = Vec::new();
-    for branch in branches {
-        for stretch in &query(source, branch)?.timeline.stretches {
-            if !runs.contains(&stretch.run) {
-                runs.push(stretch.run);
-            }
-        }
-    }
-    runs.into_iter().try_for_each(|run| lexicon(source, run).map(drop))
-}
-
-#[derive(Default)]
 struct Histories {
     links: HashMap<u32, Arc<country_ids::RunLinks>>,
 }
@@ -79,7 +49,6 @@ pub fn forget(source: &Source) {
     source.replay_ref().forget_row_lifetimes();
     *source.state::<Held>().lock().unwrap_or_else(PoisonError::into_inner) = Held::default();
     *source.state::<Histories>().lock().unwrap_or_else(PoisonError::into_inner) = Histories::default();
-    *source.state::<Lexicons>().lock().unwrap_or_else(PoisonError::into_inner) = Lexicons::default();
     *source.state::<Spellings>().lock().unwrap_or_else(PoisonError::into_inner) = Spellings::default();
     source.state::<dashboard_query::log::BucketCache>().lock().unwrap_or_else(PoisonError::into_inner).clear();
     source.state::<crate::products::log_page::CoverageCache>().lock().unwrap_or_else(PoisonError::into_inner).clear();
@@ -135,5 +104,51 @@ impl<K: 'static, V: Send + Sync + 'static> RunCache<K, V> {
         let made = Arc::new(read()?);
         state.lock().unwrap_or_else(PoisonError::into_inner).0.insert(run, Arc::clone(&made));
         Ok(made)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Source, test_fixtures::{CAMPAIGN, records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{LexicalTokenRow, TableId, TableRows};
+    use replay_frame::frame::{DecodedFrame, TableView};
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    fn frame(hour: i32) -> DecodedFrame {
+        let mut frame = source(1, hour, Some(1_000));
+        let row = |token: u32, text: &str| LexicalTokenRow { token, literal: text.as_bytes().to_vec() };
+        let mut rows = vec![row(7, "spy_steal"), row(8, if hour < 110 { "spy_steal" } else { "spy_other" }), row(10, "")];
+        if hour >= 120 {
+            rows.push(row(9, "spy_steal"));
+        }
+        rows.sort_by_key(|row| row.token);
+        frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(rows)).into();
+        frame.metrics.table_ns[TableId::LexicalTokens.index()] = 1;
+        frame
+    }
+
+    fn recording() -> Source {
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (100..=130).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+        Source::from_replay(crate::SourceKey { source_id: "spellings".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+    }
+
+    #[test]
+    fn a_tokens_spelling_at_an_hour_is_read_once_for_every_reply_on_a_source() {
+        let source = recording();
+        let run = super::query(&source, 1).unwrap().timeline.stretches[0].run;
+        let spelled = |hour: i32, tokens: &[u32]| {
+            let mut found: Vec<(u32, String)> = super::spellings(&source, run, hour, &tokens.iter().copied().collect()).unwrap().into_iter().collect();
+            found.sort();
+            (found, dashboard_query::cost::take())
+        };
+        let spy = |token: u32, text: &str| (token, text.to_owned());
+        assert_eq!(spelled(105, &[7, 8]).0, [spy(7, "spy_steal"), spy(8, "spy_steal")]);
+        assert_eq!(spelled(105, &[8, 7]), (vec![spy(7, "spy_steal"), spy(8, "spy_steal")], 0), "read once, nothing read again");
+        assert_eq!(spelled(105, &[7, 9, 10]).0, [spy(7, "spy_steal")], "9 held nothing at 105, 10 holds no text");
+        assert_eq!(spelled(105, &[9, 10, 7, 8]), (vec![spy(7, "spy_steal"), spy(8, "spy_steal")], 0), "a token without text is not read again");
+        assert_eq!(spelled(125, &[8, 9]).0, [spy(8, "spy_other"), spy(9, "spy_steal")], "another hour, its own texts");
+        super::forget(&source);
+        assert_eq!(spelled(125, &[8]).0, [spy(8, "spy_other")]);
     }
 }

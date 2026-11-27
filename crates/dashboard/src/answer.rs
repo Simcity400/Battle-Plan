@@ -278,7 +278,6 @@ mod tests {
         let caches = [
             warm("query index", || queries::index(&source)),
             warm("links", || links(&source, run).unwrap()),
-            warm("lexicon", || queries::lexicon(&source, run).unwrap()),
             warm("country looks", || styles::cached_looks(&source, run).unwrap()),
             warm("country groups", || groups::cached_groups(&source, run).unwrap()),
             warm("territory", || land_owners::cached_territory(&source, run).unwrap()),

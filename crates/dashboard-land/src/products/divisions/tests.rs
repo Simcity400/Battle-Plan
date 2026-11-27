@@ -475,3 +475,58 @@ fn enemy_killed_is_the_recorded_count_rounded_to_men_zero_when_absent_and_missin
     assert_eq!(unknown.killed, None);
     assert!(unknown.missing.unwrap().ends_with("Division damage has not been recorded yet in this branch"));
 }
+
+#[test]
+fn a_service_record_reads_lexical_changes_only_for_its_award_tokens() {
+    use super::careers::service_record::DivisionServiceRecordTail;
+    use dashboard_base::products::{LoadContext, Product};
+    use replay_columnar::unit::reader::count_decodes;
+    use replay_data::rows::{DivisionHistoryRow, LexicalTokenRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+    let make = |awarded: bool| {
+        decorated_source((100..=107).map(|hour| {
+            let mut frame = decorated_world(hour, |_| 40);
+            let mut history = vec![
+                DivisionHistoryRow { division: 1, list: DivisionHistoryRow::SUMMARY, available: 1, amount: i32::from(awarded), ..Default::default() }.into(),
+            ];
+            if awarded {
+                history.push(DivisionHistoryRow {
+                    division: 1,
+                    list: DivisionHistoryRow::AWARDS,
+                    ordinal: 0,
+                    hour: 100,
+                    medal_token: Some(7),
+                    medal_enabled: 1,
+                    medal_count: 1,
+                    ..Default::default()
+                }.into());
+            }
+            *frame.tables[TableId::DivisionHistory.index()] = TableView::Complete(TableRows::DivisionHistory(history));
+            *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+                LexicalTokenRow { token: 7, literal: if hour < 105 { b"medal_a".to_vec() } else { b"medal_b".to_vec() } },
+                LexicalTokenRow { token: 99, literal: format!("noise_{hour}").into_bytes() },
+            ]));
+            frame.metrics.table_ns[TableId::LexicalTokens.index()] = 1;
+            frame
+        }).collect())
+    };
+    let ask = |source: &dashboard_base::Source, hour: i32| {
+        DivisionServiceRecordTail::load(
+            source,
+            &serde_json::from_value(json!({"branchId": "1", "hour": hour, "division": "1", "limit": 12})).unwrap(),
+            &LoadContext { content: None },
+            &std::sync::atomic::AtomicBool::new(false),
+        ).unwrap()
+    };
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let awarded = make(true);
+    let (early, with_awards) = pool.install(|| count_decodes(|| ask(&awarded, 101)));
+    assert_eq!(early.next_change, Some(105), "award spelling change breaks next_change; unrelated token changes do not");
+    assert_eq!(early.medals.iter().map(|medal| medal.key.as_str()).collect::<Vec<_>>(), ["medal_a"]);
+    let renamed = ask(&awarded, 105);
+    assert_eq!(renamed.medals.iter().map(|medal| medal.key.as_str()).collect::<Vec<_>>(), ["medal_b"]);
+    let plain = make(false);
+    let (_, without_awards) = pool.install(|| count_decodes(|| ask(&plain, 101)));
+    assert!(without_awards.status_blocks < with_awards.status_blocks, "a stretch with no awards skips reading LexicalTokens");
+}
