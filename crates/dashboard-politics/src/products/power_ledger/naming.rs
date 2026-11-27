@@ -1,14 +1,9 @@
 
 use super::SpendItem;
-use crate::products::ideas::{IdeaInfo, idea_info};
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour};
 use dashboard_base::products::artwork::sprites::SpriteFrame;
 use dashboard_world::products::equipment_names as names;
-use dashboard_world::products::equipment_names::EquipmentIcon;
-use dashboard_base::products::{
-    character_portraits::{RecordedPortrait, portrait_png, recorded_portrait_in},
-    politics_content::PoliticsContent,
-};
+use dashboard_base::products::politics_content::PoliticsContent;
 use dashboard_core::config::LoadContext;
 use dashboard_query::Query;
 use dashboard_text::{
@@ -39,9 +34,8 @@ const WHOLE: &[TableId] = &[
 ];
 
 const LITERAL: u64 = mask::<LexicalTokenRow>(&["literal"]);
-const LEADER: u64 = mask::<UnitLeaderRow>(&["character_id", "category"]);
+const LEADER: u64 = mask::<UnitLeaderRow>(&["character_id"]);
 const ROLE: u64 = mask::<AdvisorRoleRow>(&["idea", "slot"]);
-const PORTRAIT: u64 = mask::<CharacterPortraitRow>(&["portraits"]);
 const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
 const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
 const CHARACTER: u64 = dashboard_text::identity::CHARACTER_IDENTITY;
@@ -54,38 +48,29 @@ pub(super) struct NamedItem {
     pub category: (String, String),
     pub name: Option<String>,
     pub action: String,
-    pub icon: Option<String>,
     pub character: Option<u32>,
     pub target_tag: Option<String>,
     pub target_name: Option<String>,
     pub unknown: Option<String>,
     pub group: String,
-    pub idea: Option<(IdeaInfo, Option<String>)>,
     pub kind: Option<Result<Kind, String>>,
 }
 
 pub(super) struct Context {
     content: Result<Arc<PoliticsContent>, String>,
-    organisations: names::Context,
+    catalogue: Option<Arc<Catalogue>>,
     names: Arc<Mutex<Names>>,
 }
 
 #[derive(Default)]
 struct Names {
     catalogue: Option<Arc<Catalogue>>,
-    items: HashMap<(u32, u32, u32), (NamedItem, Option<(String, String)>, catalogue::OwnRefusals)>,
-}
-
-impl Context {
-    pub(super) fn content(&self) -> Result<&PoliticsContent, &str> {
-        self.content.as_deref().map_err(String::as_str)
-    }
+    items: HashMap<(u32, u32, u32), (NamedItem, catalogue::OwnRefusals)>,
 }
 
 pub(super) fn context(source: &Source, load: &LoadContext) -> io::Result<Context> {
-    let organisations = names::context(source, load)?;
     let Some(options) = load.content.as_ref() else {
-        return Ok(Context { content: Err(NO_CONTENT.into()), organisations, names: Arc::new(Mutex::new(Names::default())) });
+        return Ok(Context { content: Err(NO_CONTENT.into()), catalogue: None, names: Arc::new(Mutex::new(Names::default())) });
     };
     let catalogue = catalogue::catalogue(source, options)?;
     let content = match dashboard_base::products::politics_content::politics_content(source, options) {
@@ -97,10 +82,10 @@ pub(super) fn context(source: &Source, load: &LoadContext) -> io::Result<Context
     {
         let mut held = names.lock().unwrap_or_else(PoisonError::into_inner);
         if !held.catalogue.as_ref().is_some_and(|kept| Arc::ptr_eq(kept, &catalogue)) {
-            *held = Names { catalogue: Some(catalogue), items: HashMap::new() };
+            *held = Names { catalogue: Some(Arc::clone(&catalogue)), items: HashMap::new() };
         }
     }
-    Ok(Context { content, organisations, names })
+    Ok(Context { content, catalogue: Some(catalogue), names })
 }
 
 pub(super) struct Asked<'a> {
@@ -108,18 +93,15 @@ pub(super) struct Asked<'a> {
     pub row: &'a PowerItemRow,
 }
 
-pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, icons: &mut BTreeMap<String, String>, cancelled: &AtomicBool) -> io::Result<Vec<NamedItem>> {
+pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, cancelled: &AtomicBool) -> io::Result<Vec<NamedItem>> {
     let mut out: Vec<Option<NamedItem>> = vec![None; asked.len()];
     let mut wanted: BTreeMap<(u32, i32), Vec<usize>> = BTreeMap::new();
     {
         let held = context.names.lock().unwrap_or_else(PoisonError::into_inner);
         for (at, item) in asked.iter().enumerate() {
             match held.items.get(&(item.run, item.row.holder, item.row.ordinal)) {
-                Some((named, image, noted)) => {
+                Some((named, noted)) => {
                     catalogue::credit(noted);
-                    if let (Some(key), Some((_, image))) = (&named.icon, image) {
-                        icons.entry(key.clone()).or_insert_with(|| image.clone());
-                    }
                     out[at] = Some(named.clone());
                 }
                 None => wanted.entry((item.run, item.row.first_read)).or_default().push(at),
@@ -135,19 +117,19 @@ pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, ic
         let mut named_here = Vec::with_capacity(items.len());
         let mut scripted_rows = Vec::new();
         for &at in &items {
-            let ((named, image), noted) = catalogue::capture(|| named_item(light.as_ref(), asked[at].row, context, None));
+            let (named, noted) = catalogue::capture(|| named_item(light.as_ref(), asked[at].row, context, None));
             if light.is_some() && named.unknown.as_deref().is_some_and(|why| why.contains(FRAME_UNREAD)) {
                 scripted_rows.push(at);
             } else {
-                named_here.push((at, named, image, noted));
+                named_here.push((at, named, noted));
             }
         }
         if !scripted_rows.is_empty() {
             let rows: Vec<&PowerItemRow> = scripted_rows.iter().map(|&at| asked[at].row).collect();
             let event = readable(read_frame(&mut frames, hour, &rows, light.as_ref()))?;
             let evaluate = |event: Option<&DecodedFrame>, world: Option<&DecodedFrame>| scripted_rows.iter().map(|&at| {
-                let ((named, image), noted) = catalogue::capture(|| named_item(event, asked[at].row, context, world));
-                (at, named, image, noted)
+                let (named, noted) = catalogue::capture(|| named_item(event, asked[at].row, context, world));
+                (at, named, noted)
             }).collect::<Vec<_>>();
             let named = match event.as_ref() {
                 Some(event) => in_scripted_world(query, event, whole_countries, cancelled, |world| evaluate(Some(event), Some(world)))?,
@@ -155,16 +137,13 @@ pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, ic
             };
             named_here.extend(named.unwrap_or_else(|| evaluate(None, None)));
         }
-        for (_, named, image, noted) in &named_here {
+        for (_, _, noted) in &named_here {
             catalogue::credit(noted);
-            if let (Some(key), Some(image)) = (&named.icon, image) {
-                icons.entry(key.clone()).or_insert_with(|| image.clone());
-            }
         }
         let mut held = context.names.lock().unwrap_or_else(PoisonError::into_inner);
-        for (at, named, image, noted) in named_here {
+        for (at, named, noted) in named_here {
             let item = &asked[at];
-            held.items.insert((item.run, item.row.holder, item.row.ordinal), (named.clone(), image.map(|image| (named.icon.clone().unwrap_or_default(), image)), noted));
+            held.items.insert((item.run, item.row.holder, item.row.ordinal), (named.clone(), noted));
             out[at] = Some(named);
         }
     }
@@ -203,7 +182,6 @@ fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow
     for row in rows {
         if let Some(character) = row.character {
             keyed.entry(TableId::Characters).or_default().push(u128::from(character));
-            keyed.entry(TableId::CharacterPortraits).or_default().push(u128::from(character));
             keyed.entry(TableId::AdvisorRoles).or_default().extend([u128::from(character) << 32]);
         }
         if let (PowerObjectKind::Leader, Some(reference)) = (row.object_kind, row.object_reference) {
@@ -251,9 +229,6 @@ fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow
     if let Ok(characters) = frame.complete::<tables::Characters>() {
         for character in characters {
             tokens.extend(u32::try_from(character.name_token_id).ok());
-            if character.template_present != 0 {
-                tokens.insert(character.template_tag);
-            }
         }
     }
     if let Ok(organisations) = frame.complete::<tables::IndustrialOrganisations>() {
@@ -338,8 +313,6 @@ struct CharacterFact {
     id: u32,
     script_token: Option<String>,
     saved_name: String,
-    template: Result<content_reader_key_names::characters::BuiltTemplate, String>,
-    portrait: RecordedPortrait,
 }
 
 #[derive(Default)]
@@ -352,21 +325,7 @@ struct Facts {
 #[derive(Default)]
 struct ItemText {
     name: Option<String>,
-    sprites: Option<SpriteChoice>,
     unknown: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-struct SpriteChoice {
-    candidates: Vec<String>,
-    otherwise: Result<Option<String>, String>,
-}
-
-enum Art {
-    Idea { token: String, character: Option<String>, tag: String, naming: NamingCountry, holder: Option<(u32, RecordedPortrait)> },
-    Portrait { character: u32, portrait: RecordedPortrait },
-    Sprites(SpriteChoice),
-    Sprite(String),
 }
 
 pub(super) fn token_of(frame: Option<&DecodedFrame>, row: &PowerItemRow) -> Option<String> {
@@ -383,32 +342,10 @@ fn character_fact(frame: &DecodedFrame, row: &PowerItemRow) -> Option<CharacterF
     let id = row.character.or_else(|| leader.as_ref().map(|leader| leader.character_id))?;
     let character = keyed(complete::<tables::Characters>(frame, CHARACTER), u128::from(id))?;
     let lexical = complete::<tables::LexicalTokens>(frame, LITERAL);
-    let category = leader.as_ref().map(|leader| leader.category);
-    let (role, size) = match row.cause {
-        PowerCause::Advisor | PowerCause::AdvisorRemoval | PowerCause::Idea => (PORTRAIT_CIVILIAN, PORTRAIT_LARGE),
-        PowerCause::OfficerUpgrade => (1, 0),
-        PowerCause::CaptainUpgrade => (2, 0),
-        PowerCause::ScientistRecruitment | PowerCause::ScientistFaction => (4, PORTRAIT_LARGE),
-        _ => (
-            match category {
-                Some(0 | 1) => 1,
-                Some(2) => 2,
-                Some(3) => 4,
-                _ => u32::MAX,
-            },
-            PORTRAIT_LARGE,
-        ),
-    };
     Some(CharacterFact {
         id,
         script_token: lexical.and_then(|lexical| dashboard_text::identity::character_script_token_in(&character, lexical)).map(str::to_owned),
         saved_name: std::str::from_utf8(&character.token).ok()?.to_owned(),
-        template: dashboard_text::identity::built_template_in(&character, complete::<tables::LexicalTokens>(frame, LITERAL)),
-        portrait: if role == u32::MAX {
-            RecordedPortrait::Unrecorded
-        } else {
-            recorded_portrait_in(complete::<tables::CharacterPortraits>(frame, PORTRAIT), id, role, size)
-        },
     })
 }
 
@@ -740,13 +677,6 @@ fn localise_at(scripted: Option<&Scripted<'_>>, content: &PoliticsContent, key: 
 fn item_text(own: Option<&NamedCountry>, row: &PowerItemRow, token: Option<&str>, content: &PoliticsContent, scripted: Option<&Scripted<'_>>) -> Option<ItemText> {
     let mut found = ItemText::default();
     let token = token?;
-    let owner_scopes = |slot: u32| {
-        let owner = dashboard_text::triggers::Scope::Country(slot);
-        let mut scopes = dashboard_text::triggers::Scopes::of(owner);
-        scopes.from = Some(owner);
-        scopes.prev = Some(owner);
-        scopes
-    };
     if matches!(row.cause, PowerCause::Decision | PowerCause::TargetedDecision | PowerCause::DecisionTimeout) {
         let result = (|| -> Result<(), String> {
             let power = content.power_content()?;
@@ -766,34 +696,6 @@ fn item_text(own: Option<&NamedCountry>, row: &PowerItemRow, token: Option<&str>
                 Ok(name) => found.name = name,
                 Err(reason) => found.unknown = Some(reason),
             }
-            let own_sprite = decision.sprite_candidates(None)?.remove(0);
-            let selected = decision.select_icon(|body| {
-                if body.is_empty() {
-                    return Ok(true);
-                }
-                let scripted = scripted.ok_or_else(|| format!("decision {token} icon: event-hour frame is unavailable"))?;
-                let own = own.ok_or_else(|| format!("decision {token} icon: country identity is unavailable at action hour"))?;
-                let world = scripted.world()?;
-                let mut scopes = owner_scopes(own.naming.slot);
-                if row.cause == PowerCause::TargetedDecision || row.target_country.is_some() || row.target_state.is_some() {
-                    scopes.from = match (row.target_country, row.target_state) {
-                        (Some(raw), _) => world.slot(raw).map(dashboard_text::triggers::Scope::Country),
-                        (None, Some(state)) => Some(dashboard_text::triggers::Scope::State(state)),
-                        _ => None,
-                    };
-                    scopes.unknown.from = scopes.from.is_none();
-                }
-                world.evaluate(body, scopes).decided()
-            });
-            let mut candidates = vec![own_sprite];
-            let otherwise = match selected {
-                Ok(selected) => {
-                    candidates.extend(decision.sprite_candidates(selected)?.into_iter().skip(1));
-                    Ok(None)
-                }
-                Err(reason) => Err(format!("decision {token}: {reason}")),
-            };
-            found.sprites = Some(SpriteChoice { candidates, otherwise });
             Ok(())
         })();
         if let Err(reason) = result {
@@ -808,27 +710,6 @@ fn item_text(own: Option<&NamedCountry>, row: &PowerItemRow, token: Option<&str>
             match localise_at(scripted, content, &focus.localisation, own.map(|own| own.naming.slot), None, true) {
                 Ok(name) => found.name = name,
                 Err(reason) => found.unknown = Some(reason),
-            }
-            let art = (|| -> Result<SpriteChoice, String> {
-                let own = own.ok_or_else(|| format!("focus {token} art: country identity unavailable at action hour"))?;
-                let candidates = focus.sprite_overrides(token, Some(&own.tag)).into_iter().collect();
-                if focus.alternate_icon_present {
-                    return Ok(SpriteChoice { candidates, otherwise: Err(format!("focus {token} art: alternate icon mode is not recorded")) });
-                }
-                let otherwise = focus
-                    .select_normal_icon(|body| {
-                        if body.is_empty() {
-                            return Ok(true);
-                        }
-                        let scripted = scripted.ok_or_else(|| format!("focus {token} art: event-hour frame is unavailable"))?;
-                        scripted.world()?.evaluate(body, owner_scopes(own.naming.slot)).decided()
-                    })
-                    .map(|sprite| Some(sprite.to_owned()));
-                Ok(SpriteChoice { candidates, otherwise })
-            })();
-            match art {
-                Ok(choice) => found.sprites = Some(choice),
-                Err(reason) => combine(&mut found.unknown, Some(reason)),
             }
             Ok(())
         })();
@@ -852,7 +733,7 @@ fn item_text(own: Option<&NamedCountry>, row: &PowerItemRow, token: Option<&str>
     None
 }
 
-fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Context, world: Option<&DecodedFrame>) -> (NamedItem, Option<String>) {
+fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Context, world: Option<&DecodedFrame>) -> NamedItem {
     let content = context.content.as_ref().ok().map(Arc::as_ref);
     let facts = facts(frame, row);
     let token = facts.token.clone().or_else(|| (!row.item_key.is_empty()).then(|| std::str::from_utf8(&row.item_key).ok().map(str::to_owned)).flatten());
@@ -865,16 +746,13 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
         category: category.clone(),
         name: None,
         action: String::new(),
-        icon: None,
         character,
         target_tag: target.as_ref().map(|target| target.tag.clone()),
         target_name: target.as_ref().and_then(|target| target.name.clone()),
         unknown: None,
         group: String::new(),
-        idea: None,
         kind: kind_of(row, &category.0, token.as_deref(), content),
     };
-    let mut art = None;
     match content {
         None => item.unknown = Some(context.content.as_ref().err().cloned().unwrap_or_else(|| NO_CONTENT.into())),
         Some(content) => {
@@ -886,20 +764,9 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
                         let (name, problem) = content.idea_named(token, script, own.naming.for_tag(&own.tag));
                         item.name = name;
                         item.unknown = problem;
-                        art = Some(Art::Idea {
-                            token: token.to_owned(),
-                            character: script.map(str::to_owned),
-                            tag: own.tag.clone(),
-                            naming: own.naming.clone(),
-                            holder: recorded.map(|recorded| (recorded.id, recorded.portrait.clone())),
-                        });
                         if let Some(recorded) = recorded {
                             item.name = content.character_name(recorded.script_token.as_deref(), &recorded.saved_name);
                         }
-                        let built = recorded.map_or(Err("the recorded holder/template is unavailable at the action hour"), |recorded| recorded.template.as_ref().map_err(String::as_str));
-                        let seat = std::str::from_utf8(&row.slot_key).ok().filter(|slot| !slot.is_empty());
-                        let description = content.idea_description_key(token).and_then(|key| content.localised(&key, View::Plain));
-                        item.idea = Some((idea_info(content, token, seat, built), description));
                     } else {
                         item.unknown = Some(format!("{token}: country identity unavailable at action hour"));
                     }
@@ -913,9 +780,6 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
                         if let Some(key) = power.abilities.name_key(token.as_bytes()) {
                             item.name = content.localised(key, View::Plain);
                         }
-                        if let Some(sprite) = power.abilities.static_sprite(token.as_bytes()) {
-                            art = Some(Art::Sprite(sprite.to_owned()));
-                        }
                     }
                 }
             }
@@ -928,7 +792,6 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
                     Some(recorded) => {
                         item.name = content.character_name(recorded.script_token.as_deref(), &recorded.saved_name);
                         item.unknown = None;
-                        art = Some(Art::Portrait { character: recorded.id, portrait: recorded.portrait.clone() });
                     }
                     None => item.unknown = Some(format!("character {id}: unit-leader portrait role unavailable at action hour")),
                 }
@@ -938,9 +801,6 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
                     item.name = text.name;
                 }
                 combine(&mut item.unknown, text.unknown);
-                if let Some(choice) = text.sprites {
-                    art = Some(Art::Sprites(choice));
-                }
             }
             if row.cause == PowerCause::Diplomacy {
                 let relation = row.component == Some(PowerDailyCostKind::Relation as u32);
@@ -971,8 +831,8 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
                             },
                             None => item.unknown = Some(format!("trait {token}: country identity unavailable at action hour")),
                         }
-                        match power.unit_traits.assignment_sprite(token) {
-                            Ok(Some(sprite)) => art = Some(Art::Sprite(sprite)),
+                        match power.unit_traits.spelling(token) {
+                            Ok(Some(_)) => {},
                             Ok(None) => item.unknown = Some(format!("trait {token} is not registered in recorded content")),
                             Err(reason) => item.unknown = Some(reason.into()),
                         }
@@ -1002,35 +862,12 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
             }
         }
     }
-    let mut image = None;
     if row.object_kind == PowerObjectKind::Organisation
         && let (Some(reference), Some(frame)) = (row.object_reference, frame)
     {
-        let mut named = names::Named::default();
-        names::name(frame, &[], &[reference], &context.organisations, &mut named);
-        match named.organisations.get(&reference) {
-            Some(organisation) => {
-                item.name = organisation.name.clone().or(item.name.take());
-                combine(&mut item.unknown, organisation.name_unknown.clone());
-                if let Some(key) = &organisation.icon
-                    && let Some(found) = named.icons.get(key)
-                {
-                    item.icon = Some(key.clone());
-                    image = Some(found.clone());
-                }
-            }
-            None => combine(&mut item.unknown, Some(format!("organisation {reference:#x}: industrial organisations identity is unavailable at action hour"))),
-        }
-    }
-    if let (Some(art), Some(content)) = (art, content) {
-        match draw(content, &art) {
-            Ok(Some((key, drawn))) => {
-                item.icon = Some(key);
-                image = Some(drawn);
-            }
-            Ok(None) => {}
-            Err(reason) => combine(&mut item.unknown, Some(reason)),
-        }
+        let (name, problem) = names::organisation_name(frame, reference, context.catalogue.as_deref());
+        item.name = name.or(item.name.take());
+        combine(&mut item.unknown, problem);
     }
     if row.currency == PowerCurrency::Command && row.cause == PowerCause::DailyGain {
         item.name = Some("Daily deficit".into());
@@ -1072,7 +909,7 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
     };
     item.group = group_key(&category.0, row, &token, &item);
     item.unknown = item.unknown.map(|reason| undated(&reason));
-    (item, image)
+    item
 }
 
 fn group_key(category: &str, row: &PowerItemRow, token: &Option<String>, item: &NamedItem) -> String {
@@ -1087,47 +924,6 @@ fn group_key(category: &str, row: &PowerItemRow, token: &Option<String>, item: &
     hash.as_bytes()[..12].iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn draw(content: &PoliticsContent, art: &Art) -> Result<Option<(String, String)>, String> {
-    let sprite = |name: &str| -> Result<Option<(String, String)>, String> {
-        let image = content.sprite_png(name).map_err(|error| format!("sprite {name}: {error}"))?.ok_or_else(|| format!("sprite {name} is not declared"))?;
-        Ok(Some((format!("sprite:{name}"), image)))
-    };
-    let declared = |name: &str| content.catalogue.sprites.find(name).map(|found| found.is_some()).map_err(|error| format!("sprite {name}: {error}"));
-    match art {
-        Art::Idea { token, character, tag, naming, holder } => {
-            let mut note = None;
-            if let Some((id, portrait)) = holder {
-                match portrait_png(content, portrait) {
-                    Ok(icon) => return Ok(Some((format!("portrait:{id}:{portrait:?}"), icon))),
-                    Err(reason) => note = Some(format!("character {id} portrait: {reason}")),
-                }
-            }
-            let (artwork, problem) = content.idea_artwork(token, character.as_deref(), naming.for_tag(tag));
-            match (artwork.icon, problem) {
-                (Some(icon), _) => Ok(Some((format!("idea:{token}:{tag}:{}", character.as_deref().unwrap_or_default()), icon))),
-                (None, Some(problem)) => Err(note.map_or(problem.clone(), |note| format!("{note}; {problem}"))),
-                (None, None) => note.map_or(Ok(None), Err),
-            }
-        }
-        Art::Portrait { character, portrait } => portrait_png(content, portrait)
-            .map(|icon| Some((format!("portrait:{character}:{portrait:?}"), icon)))
-            .map_err(|reason| format!("character {character} portrait: {reason}")),
-        Art::Sprites(choice) => {
-            for candidate in &choice.candidates {
-                if declared(candidate)? {
-                    return sprite(candidate);
-                }
-            }
-            match &choice.otherwise {
-                Ok(Some(name)) => sprite(name),
-                Ok(None) => Ok(None),
-                Err(reason) => Err(reason.clone()),
-            }
-        }
-        Art::Sprite(name) => sprite(name),
-    }
-}
-
 pub(super) fn ledger_item(id: String, ledger: (u32, u32, u32), row: &PowerItemRow, named: NamedItem) -> SpendItem {
     SpendItem {
         id,
@@ -1139,20 +935,14 @@ pub(super) fn ledger_item(id: String, ledger: (u32, u32, u32), row: &PowerItemRo
         first_read: row.first_read,
         name: named.name,
         action: named.action,
-        icon: named.icon,
         character: named.character,
         target_tag: named.target_tag,
         target_name: named.target_name,
         unknown: named.unknown,
-        tooltip_token: named.idea.map(|(info, _)| info.token),
         kind: named.kind.map(|kind| match kind {
             Ok(Kind { id, name, name_missing }) => super::SpendKind { id: Some(id), name: Some(name), unknown: name_missing },
             Err(reason) => super::SpendKind { id: None, name: None, unknown: Some(reason) },
         }),
         ledger,
     }
-}
-
-pub(super) fn icons(icons: BTreeMap<String, String>) -> Vec<EquipmentIcon> {
-    icons.into_iter().map(|(key, image)| EquipmentIcon { key, image }).collect()
 }

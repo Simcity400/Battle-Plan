@@ -55,16 +55,14 @@ pub struct PoliticsContent {
     portrait_thumbnails: Mutex<BTreeMap<PortraitKey, super::artwork::sprites::DrawnArt>>,
     power: OnceLock<Arc<PowerContent>>,
     power_result: catalogue::CachedResult<PowerContent>,
-    power_requested: std::sync::atomic::AtomicBool,
     fixed_text: catalogue::KeyedResults<String, Option<String>>,
     idea_classes: catalogue::KeyedResults<String, Option<bool>>,
 }
 
 pub struct PowerContent {
-    pub decisions: content_reader_politics::decisions::Database,
+    pub decisions: Arc<content_reader_politics::decisions::Database>,
     pub abilities: content_reader_abilities::abilities::AbilitySprites,
     focuses: content_reader_focus::focus::Focuses,
-    pub warnings: Vec<String>,
     pub unit_traits: content_reader_key_names::unit_leader::Traits,
     pub triggers: content_reader_script::trigger_keys::TriggerNames,
     pub aliases: Arc<content_reader_key_names::tag_aliases::TagAliases>,
@@ -248,7 +246,6 @@ impl PoliticsContent {
             portraits: Mutex::new(BTreeMap::new()),
             power: OnceLock::new(),
             power_result: Default::default(),
-            power_requested: Default::default(),
             fixed_text: Default::default(),
 
             idea_classes: Default::default(),
@@ -257,12 +254,6 @@ impl PoliticsContent {
     }
 
     pub fn power_content(&self) -> Result<&PowerContent, String> {
-        self.power_requested
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        self.prepare_power_content()
-    }
-
-    pub fn prepare_power_content(&self) -> Result<&PowerContent, String> {
         let power = self
             .power_result
             .get_or_init(|| {
@@ -289,7 +280,7 @@ impl PoliticsContent {
                     let resources = spawn(threads, || content_reader_key_names::resources::read(layers));
                     let aliases = spawn(threads, || content_reader_key_names::tag_aliases::read(layers));
                     (
-                        content_reader_politics::decisions::read(layers),
+                        content_reader_politics::decisions::read_shared(layers),
                         abilities.join(),
                         focuses.join(),
                         unit_traits.join(),
@@ -301,7 +292,7 @@ impl PoliticsContent {
                 });
                 let decisions = decisions?;
                 let abilities = settled(abilities)?;
-                let (focuses, focus_warnings) = settled(focuses)?;
+                let (focuses, _) = settled(focuses)?;
                 let unit_traits = settled(unit_traits)?;
                 let triggers = content_reader_script::trigger_keys::TriggerNames::new(
                     settled(scripted_triggers)?,
@@ -313,23 +304,10 @@ impl PoliticsContent {
                 );
                 let aliases = Arc::new(settled(aliases)?);
                 let dlcs = layers.dlc_names()?;
-                let warnings = decisions
-                    .notes
-                    .iter()
-                    .cloned()
-                    .chain(focus_warnings.into_iter().map(|(_, message)| message))
-                    .chain(
-                        abilities
-                            .warnings
-                            .iter()
-                            .map(|(_, message)| message.clone()),
-                    )
-                    .collect();
                 Ok(PowerContent {
                     decisions,
                     abilities,
                     focuses,
-                    warnings,
                     unit_traits,
                     triggers,
                     aliases,
@@ -338,23 +316,6 @@ impl PoliticsContent {
             })
             .map_err(|error| error.to_string())?;
         Ok(self.power.get_or_init(|| power).as_ref())
-    }
-
-    pub fn power_requested(&self) -> bool {
-        self.power_requested
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub fn power_warnings(&self) -> &[String] {
-        if !self
-            .power_requested
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            return &[];
-        }
-        self.power
-            .get()
-            .map_or(&[], |power| power.warnings.as_slice())
     }
 
     pub fn defines(&self, key: &str) -> bool {

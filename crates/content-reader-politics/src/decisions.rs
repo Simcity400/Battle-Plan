@@ -6,6 +6,7 @@ use content_reader_parser::parser::{self, Item};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    sync::Arc,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -530,6 +531,10 @@ fn triggered_icon(value: &parser::Value) -> Result<TriggeredIcon, String> {
             .to_owned();
     }
     Ok(icon)
+}
+
+pub fn read_shared(layers: &ResolvedLayers) -> io::Result<Arc<Database>> {
+    layers.retained_product("decision database", 1, &[], read)
 }
 
 pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
