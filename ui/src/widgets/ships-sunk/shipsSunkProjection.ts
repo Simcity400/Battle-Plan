@@ -59,7 +59,7 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
   let loss: TableCell;
   let battle: SinkingSubject['battle'] = null;
   if (row.battle.kind === 'linked') {
-    const battleValue = resolveName(view, 'battle', row.battle.id, { atHour: row.hour, boundary }).value;
+    const battleValue = resolveName(view, 'battle', row.battle.id, { boundary }).value;
     const killer = killerBeside(cause);
     const tooltipRows = [{ label: 'Battle', value: battleValue }, ...sunkBy(cause)];
     loss = { value: battleValue, strong: true, tooltipRows, ...(killer ? { inlineSubtext: killer } : {}) };

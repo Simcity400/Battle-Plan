@@ -1113,6 +1113,7 @@ impl Asking {
                 Selection::NavalResult(_) => "name",
                 _ => return Ok(fresh),
             };
+            if bindings.values.get(key).is_some_and(|widget| widget.hidden) { return Ok(fresh); }
             let name = self.battle_title_source.as_ref().ok_or_else(|| "Battle name source unavailable".into())
                 .and_then(|source| source(branch, hour, self.family.selection)).unwrap_or_else(|reason| {
                     bindings.refuse(reason);

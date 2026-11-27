@@ -159,9 +159,15 @@ struct Line {
     battle: Option<Battle>,
     reads: Steps<Snapshot>,
     joined: Option<i32>,
+    earlier_report: Option<(i32, Option<u32>)>,
 }
 
 impl Line {
+    fn naming_place(&self) -> Option<(i32, Option<u32>)> {
+        let (hour, read) = self.reads.first()?;
+        Some(self.earlier_report.filter(|(at, _)| at < hour).unwrap_or((*hour, read.province)))
+    }
+
     fn end_live(&mut self, hour: i32, seen: bool) {
         if let Some((_, previous)) = self.reads.last()
             && previous.result == NavalBattleStatus::Ongoing
@@ -402,6 +408,7 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                     .filter(|v| number(v, 0) == Some(i64::from(NavalResultObservationRow::OBSERVED)))
                     .unwrap_or(&[]);
                 let result = Battle::Result(*key as u64, date);
+                let mut earlier_report = None;
                 if let (Some(combat), Some(start)) = (number(obs, 1), number(obs, 2).and_then(|h| i32::try_from(h).ok()))
                     && combat != 0
                     && start <= date
@@ -409,6 +416,7 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                     linked = Some(Battle::Live(combat as u64, start));
                     if let Some(earlier) = lines.get_mut(&result) {
                         earlier.joined.get_or_insert(hour);
+                        earlier_report = earlier.naming_place();
                     }
                 }
                 let battle = linked.unwrap_or(result);
@@ -434,6 +442,9 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                     .min()
                     .unwrap_or(hour);
                 let line = lines.entry(battle).or_default();
+                if let Some(place) = earlier_report && line.earlier_report.is_none_or(|earliest| place.0 < earliest.0) {
+                    line.earlier_report = Some(place);
+                }
                 line.reads.truncate(line.reads.partition_point(|(at, _)| *at <= hour));
                 let mut late = None;
                 let countries_hour = std::array::from_fn(|i| {
@@ -649,10 +660,10 @@ pub fn battles(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io
     let scanned = scanned(source, query, cancelled)?;
     Ok((0..scanned.index.len() as u32).filter_map(|i| {
         let line = &scanned.index.get(i).payload;
-        let (observed, read) = line.reads.first()?;
+        let (observed, province) = line.naming_place()?;
         let (_, last) = line.reads.last()?;
         (line.joined.is_none()).then(|| BattlePlace {
-            battle: line.battle.expect("published battle line has an identity"), observed: *observed, province: read.province,
+            battle: line.battle.expect("published battle line has an identity"), observed, province,
             port_strike: line.reads.iter().any(|(_, read)| read.port_strike),
             reports: line.reads.iter().filter_map(|(_, read)| read.result_id).collect::<std::collections::BTreeSet<_>>().into_iter().collect(),
             live_last: last.live_last.or_else(|| (last.result == NavalBattleStatus::Ongoing).then_some(query.timeline.last)),
@@ -1091,7 +1102,7 @@ mod tests {
         assert_eq!((*hour, last.live_last, last.end_seen), (23, Some(21), false), "a battle live again after a stretch ended takes its live bound from its newest read");
         assert_eq!(last.result_hour, Some(21), "a refreshed result keeps the hour it was first read");
         let mut lines = BTreeMap::new();
-        let results = History { keys: vec![(77, vec![step(20, Some(&[1, 20, 0, 1]))])], ..History::default() };
+        let results = History { keys: vec![(77, vec![step(20, Some(&[1, 20, 0, 1])), step(23, Some(&[2, 20, 0, 1]))])], ..History::default() };
         let observations = History {
             keys: vec![(77, vec![step(20, Some(&[0])), step(23, Some(&[observed, 7, 10, 20, 5, 0, 1, 0, 5, 0, 0, 0]))])],
             ..History::default()
@@ -1100,6 +1111,7 @@ mod tests {
         assert_eq!(lines[&Battle::Result(77, 20)].reads[0].1.result_hour, Some(20));
         let (hour, linked) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
         assert_eq!((*hour, linked.result_hour), (23, Some(20)), "a result linked to its battle later keeps the hour it was first read on its own");
+        assert_eq!(lines[&Battle::Live(7, 10)].naming_place(), Some((20, Some(1))));
     }
 
     #[test]
@@ -1146,7 +1158,7 @@ mod tests {
 
     #[test]
     fn a_result_from_before_the_recording_names_its_sides_at_the_first_recorded_hour() {
-        let results = History { keys: vec![(99, vec![step(10, Some(&[1, 5, 2]))])], ..History::default() };
+        let results = History { keys: vec![(99, vec![step(10, Some(&[1, 5, 0, 2]))])], ..History::default() };
         let countries = History {
             keys: vec![((99 << 40) | 7, vec![step(10, Some(&[0]))]), ((99 << 40) | (1 << 32) | 8, vec![step(10, Some(&[0]))])],
             ..History::default()
@@ -1157,7 +1169,7 @@ mod tests {
         result_lines(&mut lines, span, &links, &results, &History::default(), &countries);
         let (hour, read) = lines[&Battle::Result(99, 5)].reads.first().unwrap();
         assert_eq!((*hour, read.result, read.countries.clone(), read.countries_hour), (10, NavalBattleStatus::DefenderWon, [vec![3], vec![4]], [Some(10); 2]));
-        let after = History { keys: vec![(99, vec![step(30, Some(&[1, 5, 2]))])], ..History::default() };
+        let after = History { keys: vec![(99, vec![step(30, Some(&[1, 5, 0, 2]))])], ..History::default() };
         let lists = History {
             keys: vec![((99 << 40) | 7, vec![step(30, Some(&[0]))]), ((99 << 40) | (1 << 32) | 8, vec![step(30, Some(&[0]))])],
             ..History::default()

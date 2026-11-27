@@ -62,7 +62,7 @@ function battleSidesValue(sideValues: readonly Value<string>[]): Value<string> {
 }
 
 function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: IdentityBoundary): TableRow {
-  const name = resolveName(view, 'battle', landBattleTitleKey(row.key), { atHour: row.hour, boundary }).value;
+  const name = resolveName(view, 'battle', landBattleTitleKey(row.key), { boundary }).value;
   const sides = row.countries.map((slots, i) => slots.map(slot => resolveIdentity(view, 'country', countryKey(slot), { atHour: row.countriesHour[i], boundary })));
   const flagEntries = row.countries.flatMap<{ readonly tag: string | null; readonly atHour: number }>((slots, i) => (
     slots.length

@@ -545,6 +545,7 @@ impl Bindings {
             .iter()
             .find(|r| r.id == id)
         else {
+            hide(&mut self.values, "header_container/naval_battle_title");
             self.warnings.push(format!("Naval combat {id} is absent at hour {}. Absence is not a result event; no victory, defeat or losses are inferred.",frame.hour));
             return Ok(());
         };

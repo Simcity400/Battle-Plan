@@ -41,7 +41,7 @@ function serviceRow(view: BoundedReadView, row: ServiceEntry, sprite: string | n
   const status = removed ? removals[row.status ?? ''] : row.status;
   const place = row.province !== null && row.placeHour !== null
     ? resolveName(view, 'province', String(row.province), { atHour: row.placeHour, boundary }).value : undefined;
-  const battle = row.kind === 'battle' ? resolveName(view, 'battle', row.key, { atHour: row.hour, boundary }).value : undefined;
+  const battle = row.kind === 'battle' ? resolveName(view, 'battle', row.key, { boundary }).value : undefined;
   const title = created ? 'First seen' : removed ? 'Division removed' : row.title;
   const name = battle ? battleTitleText(battle) : title ?? (award ? 'Medal name not recorded' : 'Entry description not recorded');
   return {

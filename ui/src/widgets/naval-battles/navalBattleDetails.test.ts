@@ -50,7 +50,7 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   const live: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
     readHour: 15, detailId: 'combat:9:10', detailHour: null, resultHour: null, lastLiveHour: null, endSeen: false, shipsSunk: [2, null], convoysSunk: [0, 0], icLost: [1992.5, null], ships: [3, 0], convoys: [0, 0], result: 'ongoing' };
   const head: NavalBattlesTailReply = { branchId: '1', total: '3', offset: '0', missing: [], warnings: [], nextChange: null,
-    rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }, { ...live, key: 'result:4', hour: 8, detailId: 'result:4', detailHour: 8, resultHour: 8, result: 'attackerWon' }] };
+    rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }, { ...live, key: 'result:4', hour: 8, detailId: 'result:4', detailHour: 10, resultHour: 10, result: 'attackerWon' }] };
   const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
   const view = createBoundedReadView({ hour: 18, rows: new Map([['main', source]]) });
   const model = (following: boolean) => navalBattlesProjection.project(view, { scope: 'test', following, byDate: true });
@@ -61,7 +61,7 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   assert.equal((row.meta as NavalBattleSubject).row.key, 'combat:9:10');
   const named = buildRowSourceFromHead('branch', { ...head, rows: head.rows.map(each => ({ ...each, countries: [[1], [2]] as [number[], number[]] })) }, undefined, 18)!;
   const unreadFlags = createBoundedReadView({ hour: 18, rows: new Map([['main', named]]),
-    identity: { resolve: (kind, key, at) => ({ kind, key, holder: { status: 'ready', value: key }, name: { status: 'ready', value: kind === 'battle' ? 'Second Battle of Shale Strait' : 'Recorded country' },
+    identity: { resolve: (kind, key, at) => ({ kind, key, holder: { status: 'ready', value: key }, name: kind === 'battle' && at < 10 ? { status: 'pending' } : { status: 'ready', value: kind === 'battle' ? 'Second Battle of Shale Strait' : 'Recorded country' },
       flagChoice: { status: 'ready', value: 'recorded_flag' }, validInterval: [at, at] as const, nextChangeAt: Infinity }) },
     art: { resolve: () => ({ status: 'failed', reason: 'flag file unreadable', retryable: true, retry: () => undefined }) as never } });
   for (const each of navalBattlesProjection.project(unreadFlags, { scope: 'test', following: true, byDate: true }).rows) {

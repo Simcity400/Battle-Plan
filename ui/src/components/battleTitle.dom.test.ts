@@ -9,5 +9,8 @@ test('land and naval battle windows opened with a pending name take the arriving
       assert.match(await act<string>(`mount('${kind}')`), /Loading/);
       assert.deepEqual(await act('resolveName()'), { title: 'Second Battle of Copper Hollow', sameWindow: true });
     }
+    await act("mount('naval', true)");
+    await act('resolveName()');
+    assert.match(await act<string>('missingReason()'), /The province name was withheld/);
   }));
 });

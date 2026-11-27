@@ -131,7 +131,7 @@ function sideNames(side: readonly ReturnType<typeof resolveIdentity>[]): Value<s
 }
 
 function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: IdentityBoundary, options: Options): TableRow {
-  const name = resolveName(view, 'battle', row.key, { atHour: row.hour, boundary }).value;
+  const name = resolveName(view, 'battle', row.key, { boundary }).value;
   const sides = row.countries.map((slots, i) => slots.map(slot => resolveIdentity(view, 'country', countryKey(slot), { atHour: row.countriesHour[i], boundary })));
   const flags = row.countries.map((slots, i) => ({ tag: slots.length ? countryKey(slots[0]!) : null, atHour: row.countriesHour[i] }));
   const title = battleTitleText(name);

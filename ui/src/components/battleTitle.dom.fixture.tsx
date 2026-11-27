@@ -15,14 +15,16 @@ let release: (() => void) | undefined;
 let opened: Element | null = null;
 const title = () => document.querySelector('.detail-window-header strong')?.textContent ?? '';
 Object.assign(window, { battleTitle: {
-  async mount(kind: 'land' | 'naval') {
+  async mount(kind: 'land' | 'naval', missing = false) {
     root?.unmount();
     document.body.replaceChildren();
     release = undefined;
     const client = { available: true, nativeMaps: false, product: (request: { sourceId: string; revision: string; product: string; params: { battles: string[] } }) => {
       if (request.product !== 'battle-names') return pending;
       return new Promise(resolve => { release = () => resolve({ ...request, data: {
-        titles: Object.fromEntries(request.params.battles.map(key => [key, { name: 'Second Battle of Copper Hollow', missing: null }])), warnings: [],
+        titles: Object.fromEntries(request.params.battles.map(key => [key, missing
+          ? { name: null, missing: 'The province name was withheld' }
+          : { name: 'Second Battle of Copper Hollow', missing: null }])), warnings: [],
       } }); });
     } };
     const branch = { id: '1', firstHour: 100, lastHour: 109, gaps: [] };
@@ -35,7 +37,7 @@ Object.assign(window, { battleTitle: {
     const element = document.body.appendChild(document.createElement('div'));
     const anchor = createRef<HTMLDivElement>();
     anchor.current = element;
-    const row = { key: kind === 'land' ? '1:7:101' : 'result:7', hour: 101, province: 51, state: null, countries: [[], []], countriesHour: [101, 101],
+    const row = { key: kind === 'land' ? '1:7:101' : 'result:7', hour: kind === 'land' ? 101 : 98, province: 51, state: null, countries: [[], []], countriesHour: [101, 101],
       countriesUnknown: [false, false], result: 'ongoing', readHour: 103, detailId: 'result:7', detailHour: null,
       resultHour: null, lastLiveHour: null, endSeen: false, shipsSunk: [0, 0], convoysSunk: [0, 0], icLost: [0, 0],
       ships: [0, 0], convoys: [0, 0], casualties: [0, 0], divisions: [0, 0] };
@@ -52,4 +54,5 @@ Object.assign(window, { battleTitle: {
     await settle();
     return { title: title(), sameWindow: opened !== null && document.querySelector('.detail-window') === opened };
   },
+  missingReason: () => document.querySelector('.detail-window-header [data-value-state=missing]')?.getAttribute('aria-label'),
 } });
