@@ -8,7 +8,7 @@ use crate::{
     table_name,
 };
 use playhead::{
-    Asked, Declared, Hook, Lanes, LogReads, Ordinal, Step, Wanted,
+    Asked, Declared, Hook, Lanes, LogReads, Ordinal, Rows as Read, Step, Wanted,
     changes::{Changes, Written},
     lane::Lane,
 };
@@ -369,11 +369,39 @@ struct Followed {
     ranking: evaluate::Ranking,
     log: Table,
     standing: BTreeMap<Ordinal, Option<Listed>>,
-    asked: Option<Asked>,
+    reading: Option<Reading>,
+    late: Option<Hour>,
     unread: Option<String>,
 }
 
 type Listed = (u128, Box<[(i64, State)]>);
+
+struct Reading {
+    asked: Asked,
+    hour: Hour,
+    unrecorded: Option<String>,
+}
+
+impl Reading {
+    fn answer(&self, read: &io::Result<Read>, columns: usize, listed: &mut Table, body: &mut Vec<u8>) {
+        let rows = match read {
+            Err(error) => return answer::not_recorded(&error.to_string(), body),
+            Ok(rows) => rows,
+        };
+        if let Some(reason) = &self.unrecorded {
+            return answer::not_recorded(reason, body);
+        }
+        listed.clear(columns, false);
+        for (place, &key) in rows.keys().iter().enumerate() {
+            listed.row(key);
+            for written in rows.columns() {
+                let (value, state) = evaluate::number(written.value(place));
+                listed.cell(value, state);
+            }
+        }
+        listed.encode(body);
+    }
+}
 
 impl Followed {
     fn bytes(&self) -> (usize, usize, usize) {
@@ -558,9 +586,9 @@ fn rehooker_for(shared: &Arc<Shared>) -> crate::panel::Wake {
     })
 }
 
-fn relist(shared: &Arc<Shared>, followed: &mut Followed, lane: &Lane) {
+fn relist(shared: &Arc<Shared>, reasons: &Reasons, followed: &mut Followed, lane: &Lane) {
     followed.standing.clear();
-    followed.asked = None;
+    followed.reading = None;
     followed.unread = None;
     let Some(log) = lane.log() else { return };
     let ordinals: Vec<Ordinal> = log.live().ones().collect();
@@ -570,10 +598,11 @@ fn relist(shared: &Arc<Shared>, followed: &mut Followed, lane: &Lane) {
     followed.standing.extend(ordinals.iter().map(|&ordinal| (ordinal, None)));
     let logs = lock(&shared.control).logs.clone();
     match logs {
-        Some(logs) => followed.asked = Some(logs.rows_notifying(
-            Wanted { run: lane.run(), table: followed.table, ordinals, columns: followed.declared.clone() },
-            rehooker_for(shared),
-        )),
+        Some(logs) => {
+            let (hour, unrecorded) = (evaluate::head(lane), reasons.unrecorded(lane));
+            let asked = logs.rows_notifying(Wanted { run: lane.run(), table: followed.table, ordinals, columns: followed.declared.clone() }, rehooker_for(shared));
+            followed.reading = Some(Reading { asked, hour, unrecorded });
+        }
         None => followed.unread = Some("Follow is bound to no playhead, which reads a log's listed rows".to_owned()),
     }
 }
@@ -669,14 +698,14 @@ impl Engine {
         if step.gap() {
             self.answer_gap(step, &mut stats);
         } else {
+            lanes.iter().for_each(|lane| self.reasons.learn(lane));
             for changes in step.tables() {
                 self.touch(changes, lanes, step.reset());
             }
             self.check_withheld(lanes);
-            lanes.iter().for_each(|lane| self.reasons.learn(lane));
             self.follow_holders(lanes);
             self.activate(lanes, &mut stats);
-            self.fill();
+            self.fill(lanes, step.last());
             stats.touched += self.marked.len() as u32;
             self.evaluate(step, lanes, &mut stats);
         }
@@ -715,7 +744,7 @@ impl Engine {
             return;
         }
         self.activate(lanes, &mut stats);
-        self.fill();
+        self.fill(lanes, step.last());
         stats.touched += self.marked.len() as u32;
         self.evaluate(step, lanes, &mut stats);
         if self.queue.is_empty() {
@@ -771,6 +800,7 @@ impl Engine {
             followed.queued = false;
             followed.has_pending = false;
             followed.has_sent = false;
+            followed.late = None;
             followed.log.clear(followed.declared.len(), true);
             followed.live.resend();
             if let Some(mut body) = refusal {
@@ -801,7 +831,8 @@ impl Engine {
             ranking: evaluate::Ranking::default(),
             log: Table::default(),
             standing: BTreeMap::new(),
-            asked: None,
+            reading: None,
+            late: None,
             unread: None,
         };
         let at = match self.free.pop() {
@@ -892,8 +923,8 @@ impl Engine {
                 }
                 Query::Cells { rows: Rows::Listed, .. } => {
                     index.standing.push(query);
-                    relist(&self.shared, followed, lane);
-                    let ready = followed.asked.is_none();
+                    relist(&self.shared, &self.reasons, followed, lane);
+                    let ready = followed.reading.is_none();
                     if ready {
                         mark(&mut self.slab, &mut self.marked, query);
                     }
@@ -940,7 +971,7 @@ impl Engine {
             index.withheld = lane.withheld().is_some();
             index.forget_slots();
             for &query in &index.standing {
-                relist(&self.shared, slab[query].as_mut().expect("a followed list"), lane);
+                relist(&self.shared, &self.reasons, slab[query].as_mut().expect("a followed list"), lane);
             }
             for &query in &index.series {
                 slab[query].as_mut().expect("a followed series").until = Hour::MIN;
@@ -1110,12 +1141,24 @@ impl Engine {
         }
     }
 
-    fn fill(&mut self) {
-        for index in self.tables.values() {
+    fn fill(&mut self, lanes: &Lanes<'_>, sent: Hour) {
+        for (&table, index) in &self.tables {
+            let head = lanes.get(table).and_then(Lane::head);
             for &query in &index.standing {
                 let followed = self.slab[query].as_mut().expect("a followed list");
-                let Some(answer) = followed.asked.as_ref().and_then(Asked::take) else { continue };
-                followed.asked = None;
+                if followed.reading.is_none() && followed.late.is_some_and(|late| late < sent) {
+                    mark(&mut self.slab, &mut self.marked, query);
+                    continue;
+                }
+                let Some(answer) = followed.reading.as_ref().and_then(|reading| reading.asked.take()) else { continue };
+                let reading = followed.reading.take().expect("an answered reading");
+                let overtaken = head.is_some_and(|head| reading.hour < head);
+                if overtaken {
+                    self.body.clear();
+                    reading.answer(&answer, followed.declared.len(), &mut self.listed, &mut self.body);
+                    queue_body(followed, query, &mut self.body, reading.hour, &mut self.queue);
+                    followed.late = Some(sent);
+                }
                 match answer {
                     Ok(rows) => {
                         for (place, &ordinal) in rows.ordinals().iter().enumerate() {
@@ -1126,7 +1169,9 @@ impl Engine {
                     }
                     Err(error) => followed.unread = Some(error.to_string()),
                 }
-                mark(&mut self.slab, &mut self.marked, query);
+                if !overtaken {
+                    mark(&mut self.slab, &mut self.marked, query);
+                }
             }
         }
     }
@@ -1171,8 +1216,11 @@ impl Engine {
             followed.dirty = false;
             let Some(lane) = lanes.get(followed.table).filter(|lane| evaluate::holds(&followed.query, lane)) else { continue };
             if followed.query.listed() {
-                if followed.asked.is_some() {
+                if followed.reading.is_some() || followed.late.is_some_and(|late| late >= step.last()) {
                     continue;
+                }
+                if followed.late.take().is_some() {
+                    followed.has_sent = false;
                 }
                 self.body.clear();
                 let unread = followed.standing.values().any(Option::is_none).then(|| "The listed rows' cells were not read".to_owned());
@@ -1293,7 +1341,11 @@ impl Engine {
                 let queries = if head < step.last() { &index.queries } else { &index.standing };
                 for &at in queries {
                     let q = self.slab[at].as_ref().expect("indexed reading");
-                    let through = if q.asked.is_some() { Hour::MIN } else { head };
+                    let through = match &q.reading {
+                        Some(_) => Hour::MIN,
+                        None if q.queued || q.late.is_some() => q.pending_hour.min(head),
+                        None => head,
+                    };
                     if through < step.last() { answer::push(&mut self.message, q.id, through, &[]); }
                 }
             }

@@ -6,7 +6,7 @@ use dashboard_query::{
     timeline::{Join, Stretch, Timeline as Stretches},
 };
 use playhead::{
-    Playhead, Settings, Timeline, Wanted,
+    LogReads, Playhead, Settings, Timeline, Wanted,
     lane::Lane,
     pages::{Pages, Run},
 };
@@ -20,7 +20,7 @@ use replay_data::{Hour, rows::TableId};
 use std::{
     collections::BTreeMap,
     io,
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Condvar, Mutex, mpsc},
 };
 
 const TABLE: usize = 2;
@@ -190,6 +190,10 @@ fn harness(pages: &Arc<Recording>) -> Harness {
 }
 
 fn stepping(pages: &Arc<Recording>, every: Hour) -> Harness {
+    stepping_with(pages, every, Timeline::whole(&**pages).unwrap(), Playhead::log_reads)
+}
+
+fn stepping_with(pages: &Arc<Recording>, every: Hour, timeline: Timeline, logs: impl FnOnce(&Playhead) -> LogReads) -> Harness {
     let follow = Follow::new(0);
     let (send, played) = mpsc::channel();
     let heads = Arc::new(Mutex::new((0, 0)));
@@ -208,11 +212,11 @@ fn stepping(pages: &Arc<Recording>, every: Hour) -> Harness {
         inner(step, lanes);
     });
     let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: RING, speed: f64::from(every), rate: 1.0, ..Settings::default() };
-    let playhead = Arc::new(Playhead::new(Arc::clone(pages) as Arc<dyn Pages>, Timeline::whole(&**pages).unwrap(), settings, Some(hook)).unwrap());
+    let playhead = Arc::new(Playhead::new(Arc::clone(pages) as Arc<dyn Pages>, timeline, settings, Some(hook)).unwrap());
     let reader = playhead.declare(Vec::new(), None).unwrap();
     let consumer = playhead.consumer(reader);
     let weak = Arc::downgrade(&playhead);
-    follow.bind(move |tables, _joining| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), playhead.log_reads()).unwrap();
+    follow.bind(move |tables, _joining| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), logs(playhead.as_ref())).unwrap();
     Harness { pages: Arc::clone(pages), playhead: Some(playhead), follow, consumer, played, head: 0, seen: Hour::MIN, every, reached: Hour::MIN, awaiting: false }
 }
 
@@ -1317,6 +1321,234 @@ fn a_listed_log_added_at_the_final_paused_hour_delivers_when_its_read_completes(
         .map(|row| (answer.keys[row], (0..answer.columns).map(|column| (answer.values[row * answer.columns + column], answer.states[row * answer.columns + column])).collect()))
         .collect();
     assert_eq!(held, want);
+}
+
+#[derive(Default)]
+struct Gate {
+    held: Mutex<(bool, usize, usize)>,
+    moved: Condvar,
+}
+
+impl Gate {
+    fn close(&self) {
+        *self.held.lock().unwrap() = (true, 0, 0);
+    }
+
+    fn open(&self) {
+        self.held.lock().unwrap().0 = false;
+        self.moved.notify_all();
+    }
+
+    fn open_one(&self) {
+        self.held.lock().unwrap().2 += 1;
+        self.moved.notify_all();
+    }
+
+    fn wait_entered(&self, reads: usize) {
+        let mut held = self.held.lock().unwrap();
+        while held.1 < reads {
+            held = self.moved.wait(held).unwrap();
+        }
+    }
+
+    fn pass(&self) {
+        let mut held = self.held.lock().unwrap();
+        held.1 += 1;
+        self.moved.notify_all();
+        while held.0 && held.2 == 0 {
+            held = self.moved.wait(held).unwrap();
+        }
+        if held.0 {
+            held.2 -= 1;
+        }
+    }
+}
+
+struct Gated {
+    pages: Arc<Recording>,
+    gate: Arc<Gate>,
+}
+
+impl Pages for Gated {
+    fn extents(&self, run: usize) -> &dyn Extents {
+        self.pages.extents(run)
+    }
+
+    fn runs(&self) -> &[Run] {
+        self.pages.runs()
+    }
+
+    fn kinds(&self, table: usize) -> Option<&[Kind]> {
+        self.gate.pass();
+        self.pages.kinds(table)
+    }
+}
+
+struct HeldReads {
+    gate: Arc<Gate>,
+    rows: Playhead,
+}
+
+impl Drop for HeldReads {
+    fn drop(&mut self) {
+        self.gate.open();
+    }
+}
+
+fn held_reads(pages: &Arc<Recording>) -> HeldReads {
+    let gate = Arc::new(Gate::default());
+    let gated: Arc<dyn Pages> = Arc::new(Gated { pages: Arc::clone(pages), gate: Arc::clone(&gate) });
+    let rows = Playhead::new(Arc::clone(&gated), Timeline::whole(&*gated).unwrap(), Settings::default(), None).unwrap();
+    HeldReads { gate, rows }
+}
+
+type ListedRows = Vec<(u128, Vec<(i64, State)>, Option<String>)>;
+
+fn listed_at(pages: &Recording, columns: &[usize]) -> impl Fn(Hour) -> ListedRows + use<> {
+    let (appended, forgotten) = log_read_directly(pages, columns);
+    move |hour| {
+        let mut listed: BTreeMap<u64, (u128, Vec<(i64, State)>, Option<String>)> =
+            appended.iter().filter(|(_, row)| row.1 <= hour).map(|(ordinal, row)| (*ordinal, (row.0, row.2.clone(), None))).collect();
+        for (_, ordinal) in forgotten.iter().filter(|(at, _)| *at <= hour) {
+            listed.remove(ordinal);
+        }
+        listed.into_values().collect()
+    }
+}
+
+fn limits(played: &Played) -> Vec<(u32, Hour)> {
+    played.message.as_ref().map(|message| decode(&message.bytes).unwrap().limited).unwrap_or_default()
+}
+
+#[test]
+fn a_listed_read_that_lands_after_read_ahead_answers_the_hour_it_was_asked_for() {
+    const ASKED: Hour = 300;
+    let pages = record_log();
+    let (columns, fewer) = (vec![0, 1, 2], vec![0, 2]);
+    let (listed, listed_fewer) = (listed_at(&pages, &columns), listed_at(&pages, &fewer));
+    let reads = held_reads(&pages);
+    let mut harness = stepping_with(&pages, 1, Timeline::whole(&*pages).unwrap(), |_| reads.rows.log_reads());
+    reads.gate.close();
+    harness.follow.follow(2, Query::Cells { table: TABLE, columns, rows: Rows::Listed }).unwrap();
+    harness.seek(ASKED);
+    let mut held = since_the_reset(harness.play(ASKED));
+    reads.gate.wait_entered(1);
+    while held.last().is_none_or(|played| played.stats.last <= ASKED) {
+        held.push(harness.played.recv().unwrap());
+    }
+    harness.follow.follow(3, Query::Cells { table: TABLE, columns: fewer, rows: Rows::Listed }).unwrap();
+    let second = loop {
+        let played = harness.played.recv().unwrap();
+        let activated = limits(&played).contains(&(3, Hour::MIN));
+        let head = played.head;
+        held.push(played);
+        if activated {
+            break head;
+        }
+    };
+    assert!(held.iter().flat_map(Played::answers).all(|(id, ..)| id != 2 && id != 3), "no list answers while its rows are being read");
+    assert!(held.iter().filter(|played| played.message.is_some()).all(|played| limits(played).contains(&(2, Hour::MIN))), "a list being read holds no hour");
+    let (mut first, mut played): (BTreeMap<u32, (Hour, Answer, Vec<(u32, Hour)>, Hour)>, Vec<Played>) = (BTreeMap::new(), Vec::new());
+    for (id, open) in [(2, Gate::open_one as fn(&Gate)), (3, Gate::open)] {
+        open(&reads.gate);
+        while !first.contains_key(&id) {
+            let next = harness.played.recv().unwrap();
+            for (id, hour, answer) in next.answers() {
+                first.entry(id).or_insert_with(|| (hour, answer, limits(&next), next.stats.last));
+            }
+            played.push(next);
+        }
+    }
+    let (hour, answer, pinned, sent) = &first[&2];
+    assert!(*sent > ASKED, "read-ahead passed the asked hour before the rows were read");
+    assert_eq!((*hour, held_rows(answer)), (ASKED, listed(ASKED)), "the rows read answer the hour they were asked for");
+    assert!(pinned.contains(&(2, ASKED)), "the answer holds only its own hour: {pinned:?}");
+    let (hour, answer, ..) = &first[&3];
+    assert_eq!((*hour, held_rows(answer)), (second, listed_fewer(second)), "a second list answers the hour it was asked at");
+    let sent = *sent;
+    played.extend(harness.play(sent + 6));
+    let answered = |played: &Played| played.answers().into_iter().find(|(id, ..)| *id == 2);
+    let late = played.iter().position(|played| answered(played).is_some()).expect("the late answer");
+    let next = played[late + 1..].iter().find(|played| answered(played).is_some() || played.stats.last > sent).expect("a step past the late answer");
+    for between in played[late + 1..].iter().take_while(|played| !std::ptr::eq(*played, next)) {
+        assert!(limits(between).contains(&(2, ASKED)), "every message before the list's own hour holds it at the hour read: {:?}", limits(between));
+    }
+    let Some((_, hour, answer)) = answered(next) else { panic!("the next step answers the list at its own hour: {:?}", next.answers()) };
+    assert!(next.stats.last > sent, "the list's own hour is answered in a message past the late one");
+    assert_eq!((hour, held_rows(&answer)), (next.head, listed(next.head)));
+    for (id, hour, answer) in played.iter().flat_map(Played::answers) {
+        let want = if id == 2 { listed(hour) } else { listed_fewer(hour) };
+        assert_eq!(held_rows(&answer), want, "list {id} at {hour}");
+    }
+}
+
+#[test]
+fn a_list_read_again_at_a_new_piece_after_a_late_answer_answers_that_piece() {
+    const ASKED: Hour = 300;
+    const ENTERED: Hour = 305;
+    let pages = record_log();
+    let columns = vec![0, 1, 2];
+    let listed = listed_at(&pages, &columns);
+    let reads = held_reads(&pages);
+    let pieces = vec![playhead::Piece { run: 0, first: 0, last: ENTERED - 2 }, playhead::Piece { run: 0, first: ENTERED, last: HOURS as Hour - 1 }];
+    let mut harness = stepping_with(&pages, 1, Timeline::new(&*pages, pieces).unwrap(), |_| reads.rows.log_reads());
+    reads.gate.close();
+    harness.follow.follow(2, Query::Cells { table: TABLE, columns, rows: Rows::Listed }).unwrap();
+    harness.seek(ASKED);
+    let mut played = since_the_reset(harness.play(ASKED));
+    reads.gate.wait_entered(1);
+    while played.last().is_none_or(|played| played.stats.last < ENTERED - 2) {
+        played.push(harness.played.recv().unwrap());
+    }
+    reads.gate.open_one();
+    let late = loop {
+        let next = harness.played.recv().unwrap();
+        if let Some((_, hour, _)) = next.answers().into_iter().find(|(id, ..)| *id == 2) {
+            break (hour, next.stats.last);
+        }
+    };
+    assert_eq!(late, (ASKED, ENTERED - 2), "the first piece's last hour carries the late answer");
+    played = harness.play(ENTERED + 2);
+    assert!(played.iter().any(|played| played.stats.gap), "the gap between the pieces");
+    reads.gate.wait_entered(2);
+    assert!(played.iter().flat_map(Played::answers).all(|(id, hour, _)| id != 2 || hour < ENTERED), "the new piece's list waits for its rows");
+    reads.gate.open();
+    let next = harness.played.recv().unwrap();
+    let answers = next.answers();
+    let Some((_, hour, answer)) = answers.iter().find(|(id, ..)| *id == 2) else { panic!("the rows read at the new piece answer it: {answers:?}") };
+    assert_eq!((*hour, held_rows(answer)), (ENTERED, listed(ENTERED)));
+}
+
+#[test]
+fn a_listed_read_held_across_a_seek_or_an_unfollow_answers_only_what_is_asked_now() {
+    const FIRST: Hour = 300;
+    const SOUGHT: Hour = 900;
+    let pages = record_log();
+    let columns = vec![0, 1, 2];
+    let listed = listed_at(&pages, &columns);
+    let reads = held_reads(&pages);
+    let mut harness = stepping_with(&pages, 1, Timeline::whole(&*pages).unwrap(), |_| reads.rows.log_reads());
+    reads.gate.close();
+    for id in [2, 3] {
+        harness.follow.follow(id, Query::Cells { table: TABLE, columns: columns.clone(), rows: Rows::Listed }).unwrap();
+    }
+    harness.seek(FIRST);
+    let mut played = harness.play(FIRST);
+    reads.gate.wait_entered(1);
+    harness.follow.unfollow(3).unwrap();
+    harness.seek(SOUGHT);
+    played.extend(harness.play(SOUGHT + 3));
+    assert!(played.iter().flat_map(Played::answers).all(|(id, ..)| id != 2 && id != 3), "no list answers while its rows are being read");
+    reads.gate.open();
+    let (hour, answer) = loop {
+        let played = harness.played.recv().unwrap();
+        let answers = played.answers();
+        assert!(answers.iter().all(|(id, ..)| *id != 3), "an unfollowed list is never answered");
+        if let Some((_, hour, answer)) = answers.into_iter().find(|(id, ..)| *id == 2) {
+            break (hour, answer);
+        }
+    };
+    assert_eq!((hour, held_rows(&answer)), (SOUGHT, listed(SOUGHT)), "the rows asked before the seek answer nothing");
 }
 
 #[test]
