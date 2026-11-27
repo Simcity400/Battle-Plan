@@ -1,6 +1,6 @@
 
 use dashboard_base::products::{Country, regions::{ActiveRegions, NoRegions, automatic, no_regions}, validate_country};
-use dashboard_base::{products::{LoadContext, Product}, queries::country_ids::{Names, RunLinks}};
+use dashboard_base::{products::{LoadContext, Product, at_hour}, queries::country_ids::{Names, RunLinks}};
 use dashboard_base::{Source, catalogue, span::HourSpan};
 use dashboard_base::products::resources::ResourceNaming;
 use dashboard_query::{Query, coverage::{self, Witness}, identity::Holder, read};
@@ -11,10 +11,11 @@ use replay_columnar::summary::{Cells, Source as Column};
 use replay_data::rows::{TableId, TradeRouteRow, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -566,7 +567,7 @@ pub(crate) fn build_region_cells(
     out
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Gathered {
     regions: BTreeMap<u32, Vec<(i32, i32, i64)>>,
     traffic: Vec<(i32, i32, TrafficProof)>,
@@ -666,7 +667,7 @@ fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize], k
     dashboard_query::cost::storage(|| lanes::history(recording, run, table, columns, keys, first, last))
 }
 
-fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from, to): (i32, i32), cancelled: &AtomicBool) -> io::Result<(Gathered, Vec<(i32, i32)>)> {
+fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from, to): (i32, i32), cancelled: &AtomicBool, mut step: Option<&mut at_hour::DatedStep<'_>>) -> io::Result<(Gathered, Vec<(i32, i32)>)> {
     let recording = query.replay.recording();
     let names = Names::new(&query.holders);
     let mut gathered = Gathered::default();
@@ -729,6 +730,7 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                         }
                         let clients_h = history(recording, run, TableId::ConvoyClients, &[CLIENT_CATEGORY, CLIENT_OWNER, CLIENT_OTHER, 3, 4, 5, CLIENT_ASSIGNED], Keys::All, first, last)?;
                         let mut route_keys: Vec<u128> = Vec::new();
+                        let mut client_keys = Vec::new();
                         let cat_i = at(&clients_h, CLIENT_CATEGORY);
                         let own_i = at(&clients_h, CLIENT_OWNER);
                         let oth_i = at(&clients_h, CLIENT_OTHER);
@@ -736,7 +738,7 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                         let rcty_i = at(&clients_h, 4);
                         let roth_i = at(&clients_h, 5);
                         let held_raw = |value: Option<i64>| value.and_then(|v| u32::try_from(v).ok()).is_some_and(|raw| raw_ids.contains(&raw));
-                        for (_, steps) in &clients_h.keys {
+                        for (key, steps) in &clients_h.keys {
                             let relevant = steps.iter().any(|step| {
                                 step.cells.as_deref().is_some_and(|cells| {
                                     let cat = number(cells, cat_i);
@@ -744,6 +746,7 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                                 })
                             });
                             if relevant {
+                                client_keys.push(*key);
                                 for step in steps {
                                     eval_hours.insert(step.hour);
                                     if let Some(cells) = step.cells.as_deref()
@@ -759,9 +762,11 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                             }
                         }
                         let origins_h = history(recording, run, TableId::ResourceOrigins, &[0, 5], Keys::All, first, last)?;
+                        let mut origin_keys = Vec::new();
                         for (key, steps) in &origins_h.keys {
                             let raw = *key as u32;
                             if raw_ids.contains(&raw) {
+                                origin_keys.push(*key);
                                 let state = (*key >> 32) as u32;
                                 route_keys.push((u128::from(raw) << 40) | u128::from(state));
                                 for step in steps {
@@ -780,14 +785,46 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                             }
                         }
                         let mut seeker = Seeker::new(recording)?;
-                        let traffic_tables = TRAFFIC_TABLES.map(|(table, _)| replay_lanes::at::Read::all(table));
+                        let mut link_keys: Vec<_> = raw_ids.into_iter().map(u128::from).collect();
+                        link_keys.sort_unstable();
+                        let keys = [&link_keys, &client_keys, &origin_keys, &route_keys];
+                        let traffic_tables: [_; 4] = std::array::from_fn(|i| replay_lanes::at::Read {
+                            table: TRAFFIC_TABLES[i].0, columns: None, keys: replay_lanes::at::Keys::These(keys[i]),
+                        });
+                        let reads: Option<[_; 4]> = step.is_some().then(|| {
+                            std::array::from_fn(|i| at_hour::Read::these(TRAFFIC_TABLES[i].0, keys[i].iter().copied()))
+                        });
+                        if let (Some(step), Some(reads), Some(hour)) = (step.as_mut(), &reads, params.to)
+                            && step.step.is_none_or(|input| input.step.reset())
+                            && !eval_hours.contains(&hour) && spans.iter().any(|&(a, b)| a <= hour && hour <= b)
+                            && let Err(error) = step.frame(source, query, hour, reads, |_| None)
+                            && error.kind() == io::ErrorKind::WouldBlock {
+                            return Err(error);
+                        }
                         for &(span_a, span_b) in &spans {
                             let hours: Vec<i32> = eval_hours.range(span_a..=span_b).copied().collect();
                             for (idx, &hour) in hours.iter().enumerate() {
                                 dashboard_text::metadata::check_cancel(cancelled)?;
                                 let seg_end = hours.get(idx + 1).map_or(span_b, |&next| next - 1);
-                                let frame = dashboard_query::cost::storage(|| seeker.frame(run, hour, &traffic_tables))?;
-                                let proof = traffic_in_frame(&frame, slot);
+                                let projected = if let (Some(step), Some(reads)) = (step.as_mut().filter(|_| params.to == Some(hour)), &reads) {
+                                    match step.frame(source, query, hour, reads, |_| None) {
+                                        Ok(frame) => Some(frame),
+                                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
+                                        Err(_) => None,
+                                    }
+                                } else {
+                                    None
+                                };
+                                let cold;
+                                let frame = if let Some(frame) = projected.filter(|frame| TRAFFIC_TABLES.iter().all(|&(table, _)| {
+                                    !matches!(frame.tables[table.index()].held(), replay_frame::frame::TableView::Unavailable { .. })
+                                })) {
+                                    frame
+                                } else {
+                                    cold = dashboard_query::cost::storage(|| seeker.frame(run, hour, &traffic_tables))?;
+                                    &cold
+                                };
+                                let proof = traffic_in_frame(frame, slot);
                                 for &region in &proof.crossed {
                                     gathered.regions.entry(region).or_default();
                                 }
@@ -832,7 +869,9 @@ fn bounds(rows: &BTreeMap<u128, Vec<(i32, i32)>>) -> (i32, i32) {
     rows.values().flatten().fold((i32::MAX, i32::MIN), |(a, b), &(first, last)| (a.min(first), b.max(last)))
 }
 
-fn region_names(source: &Source, context: &LoadContext, regions: &BTreeSet<u32>, warnings: &mut Vec<String>) -> BTreeMap<u32, Result<String, String>> {
+type RegionNames = BTreeMap<u32, Result<String, String>>;
+
+fn region_names(source: &Source, context: &LoadContext, regions: &BTreeSet<u32>, warnings: &mut Vec<String>) -> RegionNames {
     let named = context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|error| format!("Sea region names unavailable: {error}")).and_then(|cat| {
         let content = dashboard_base::content::strategic_regions(&cat.content.layers).map_err(|error| format!("Sea region names unavailable: {error}"))?;
         warnings.extend(content.notes.iter().cloned());
@@ -847,12 +886,11 @@ fn region_names(source: &Source, context: &LoadContext, regions: &BTreeSet<u32>,
     }
 }
 
-pub(crate) fn resource_tokens(query: &Query<'_>, ids: Option<&BTreeSet<u32>>, warnings: &mut Vec<String>) -> io::Result<Vec<(u32, String)>> {
-    let Some(stretch) = query.timeline.stretches.last() else { return Ok(Vec::new()) };
-    let recording = query.replay.recording();
-    let wanted: Vec<u128> = ids.into_iter().flatten().map(|&id| u128::from(id)).collect();
-    let keys = if ids.is_some() { read::Keys::These(&wanted) } else { read::Keys::All };
-    let definitions = read::at(recording, stretch.run, &[read::Read { table: TableId::ResourceDefinitions, columns: None, keys }], stretch.last)?;
+#[derive(Default)]
+struct RecordedResourceTokens(HashMap<(u32, i32), BTreeMap<u32, Option<String>>>);
+
+fn read_resource_tokens(recording: &Recording, (run, hour): (u32, i32)) -> io::Result<BTreeMap<u32, Option<String>>> {
+    let definitions = read::at(recording, run, &[read::Read::all(TableId::ResourceDefinitions)], hour)?;
     let token = dashboard_declare::field(TableId::ResourceDefinitions, "token")?;
     let view = definitions[0].view();
     let tokens: Vec<(u32, u32)> = definitions[0].rows.iter().filter_map(|&(key, slot)| Some((key as u32, u32::try_from(view.number(token, slot)?).ok()?))).collect();
@@ -860,21 +898,33 @@ pub(crate) fn resource_tokens(query: &Query<'_>, ids: Option<&BTreeSet<u32>>, wa
     keys.sort_unstable();
     keys.dedup();
     let literal = dashboard_declare::field(TableId::LexicalTokens, "literal")?;
-    let lexical = read::at(recording, stretch.run, &[read::Read { table: TableId::LexicalTokens, columns: None, keys: read::Keys::These(&keys) }], stretch.last)?;
+    let lexical = read::at(recording, run, &[read::Read { table: TableId::LexicalTokens, columns: None, keys: read::Keys::These(&keys) }], hour)?;
     let view = lexical[0].view();
     let spelled: HashMap<u32, String> = lexical[0]
         .rows
         .iter()
         .filter_map(|&(key, slot)| Some((key as u32, std::str::from_utf8(read::text(&view, literal, slot)?).ok().filter(|text| !text.is_empty())?.to_owned())))
         .collect();
+    Ok(tokens.into_iter().map(|(id, token)| (id, spelled.get(&token).cloned())).collect())
+}
+
+pub(crate) fn resource_tokens(source: &Source, query: &Query<'_>, ids: Option<&BTreeSet<u32>>, warnings: &mut Vec<String>) -> io::Result<Vec<(u32, String)>> {
+    let Some(stretch) = query.timeline.stretches.last() else { return Ok(Vec::new()) };
+    let point = (stretch.run, stretch.last);
+    let state = source.state::<RecordedResourceTokens>();
+    let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tokens = match state.0.entry(point) {
+        std::collections::hash_map::Entry::Occupied(held) => held.into_mut(),
+        std::collections::hash_map::Entry::Vacant(open) => open.insert(read_resource_tokens(query.replay.recording(), point)?),
+    };
     let listed: Vec<u32> = match ids {
         Some(ids) => ids.iter().copied().collect(),
-        None => tokens.iter().map(|&(id, _)| id).collect(),
+        None => tokens.keys().copied().collect(),
     };
     let mut out = Vec::new();
     let mut unnamed = 0usize;
     for id in listed {
-        match tokens.iter().find(|(held, _)| *held == id).and_then(|(_, token)| spelled.get(token)) {
+        match tokens.get(&id).and_then(Option::as_ref) {
             Some(token) => out.push((id, token.clone())),
             None => unnamed += 1,
         }
@@ -945,21 +995,26 @@ fn cut<R: Run>(runs: &mut Vec<R>, at: i32) {
     }
 }
 
-struct Window<'q> {
+#[derive(Clone)]
+struct DayInputs {
     gathered: Gathered,
     known: Vec<Vec<HourSpan>>,
     unheld: Vec<HourSpan>,
+}
+
+struct Window<'q> {
+    inputs: DayInputs,
     gaps: Vec<(HourSpan, &'q str)>,
 }
 
 impl Window<'_> {
     fn cells(&self, region: u32, efficiency: &[(i32, i32, i64)], from: i32, to: i32) -> Vec<ConvoyCellRun> {
-        build_region_cells(region, efficiency, &self.gathered.traffic, &self.known[0], &self.gathered.unread, &self.unheld, &self.gaps, from, to)
+        build_region_cells(region, efficiency, &self.inputs.gathered.traffic, &self.inputs.known[0], &self.inputs.gathered.unread, &self.inputs.unheld, &self.gaps, from, to)
     }
 }
 
-fn window<'q>(source: &Source, query: &'q Query<'_>, params: &ConvoyHealthParams, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Window<'q>> {
-    let (mut gathered, mut held) = if from <= to { gather(source, query, params, (from, to), cancelled)? } else { (Gathered::default(), Vec::new()) };
+fn window<'q>(source: &Source, query: &'q Query<'_>, params: &ConvoyHealthParams, from: i32, to: i32, cancelled: &AtomicBool, step: Option<&mut at_hour::DatedStep<'_>>) -> io::Result<Window<'q>> {
+    let (mut gathered, mut held) = if from <= to { gather(source, query, params, (from, to), cancelled, step)? } else { (Gathered::default(), Vec::new()) };
     held.sort_unstable();
     let gaps: Vec<(HourSpan, &str)> = query
         .timeline
@@ -972,7 +1027,7 @@ fn window<'q>(source: &Source, query: &'q Query<'_>, params: &ConvoyHealthParams
         .collect();
     let unheld = without(&outside(&held, from, to), &gaps);
     let known = std::mem::take(&mut gathered.known).map(dashboard_world::products::subjects::settle).to_vec();
-    Ok(Window { gathered, known, unheld, gaps })
+    Ok(Window { inputs: DayInputs { gathered, known, unheld }, gaps })
 }
 
 #[derive(Clone, Default)]
@@ -998,12 +1053,12 @@ fn join_cells(held: &mut Vec<ConvoyCellRun>, next: Vec<ConvoyCellRun>) {
 }
 
 impl RegionHistory {
-    fn read(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Self> {
-        let window = window(source, query, params, from, to, cancelled)?;
+    fn read(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, from: i32, to: i32, cancelled: &AtomicBool, step: Option<&mut at_hour::DatedStep<'_>>) -> io::Result<Self> {
+        let window = window(source, query, params, from, to, cancelled, step)?;
         let absent = window.cells(ABSENT, &[], from, to);
-        let regions = window.gathered.regions.iter().map(|(&region, efficiency)| (region, (window.cells(region, efficiency, from, to), efficiency.clone()))).collect();
-        let known = window.known.into_iter().next().unwrap_or_default();
-        Ok(Self { reach: to, regions, absent, known, unheld: window.unheld, used: 0 })
+        let regions = window.inputs.gathered.regions.iter().map(|(&region, efficiency)| (region, (window.cells(region, efficiency, from, to), efficiency.clone()))).collect();
+        let known = window.inputs.known.into_iter().next().unwrap_or_default();
+        Ok(Self { reach: to, regions, absent, known, unheld: window.inputs.unheld, used: 0 })
     }
 
     fn join(&mut self, next: Self) {
@@ -1034,17 +1089,17 @@ struct HeldRegions {
 
 const HELD_REGIONS: usize = 16;
 
-fn region_history(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, from: i32, reach: i32, cancelled: &AtomicBool) -> io::Result<RegionHistory> {
+fn region_history(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, from: i32, reach: i32, cancelled: &AtomicBool, step: Option<&mut at_hour::DatedStep<'_>>) -> io::Result<RegionHistory> {
     let key = format!("{}|{:?}|{from}", params.branch_id, params.country);
     let state = source.state::<HeldRegions>();
     let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).histories.get(&key).filter(|held| held.reach <= reach).cloned();
     let history = match held {
         Some(held) if held.reach == reach => held,
         Some(mut held) => {
-            held.join(RegionHistory::read(source, query, params, held.reach + 1, reach, cancelled)?);
+            held.join(RegionHistory::read(source, query, params, held.reach + 1, reach, cancelled, step)?);
             held
         }
-        None => RegionHistory::read(source, query, params, from, reach, cancelled)?,
+        None => RegionHistory::read(source, query, params, from, reach, cancelled, step)?,
     };
     let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     state.uses += 1;
@@ -1100,7 +1155,46 @@ fn listed_since(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams,
     Ok(listed)
 }
 
-fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<ConvoyHealthReply> {
+type HeldTrade = ((i32, i32, Option<u32>), DayInputs);
+
+struct NamedRegions {
+    ids: BTreeSet<u32>,
+    names: RegionNames,
+    warnings: Vec<String>,
+    refusals: catalogue::OwnRefusals,
+}
+
+struct PlaybackContent {
+    generation: [Option<Arc<dashboard_base::presentation::Presented>>; 2],
+    regions: Option<NamedRegions>,
+    resources: Option<(ResourceNaming, catalogue::OwnRefusals)>,
+}
+
+#[derive(Default)]
+struct Playback {
+    day: Option<HeldTrade>,
+    content: Option<PlaybackContent>,
+}
+
+impl Playback {
+    fn content(&mut self, source: &Source, load: &LoadContext) -> Option<&mut PlaybackContent> {
+        let generation = if let Some(content) = &load.content {
+            let recorded = source.recorded_presented(&content.options).ok()?;
+            let shown = if catalogue::reads_recorded(content) { None } else { Some(source.presented_for(content).ok()?) };
+            [Some(recorded), shown]
+        } else {
+            [None, None]
+        };
+        if self.content.as_ref().is_none_or(|held| {
+            held.generation.each_ref().map(|mount| mount.as_ref().map(Arc::as_ptr)) != generation.each_ref().map(|mount| mount.as_ref().map(Arc::as_ptr))
+        }) {
+            self.content = Some(PlaybackContent { generation, regions: None, resources: None });
+        }
+        self.content.as_mut()
+    }
+}
+
+fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, cancelled: &AtomicBool, stepped: Option<(&mut at_hour::DatedStep<'_>, &mut Playback)>) -> io::Result<ConvoyHealthReply> {
     let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
     let query = dashboard_base::queries::query(source, branch)?;
     let from = params.from.unwrap_or(query.timeline.first).max(query.timeline.first);
@@ -1112,15 +1206,25 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         let (a, b) = (gap.first.max(from), gap.last.min(reach));
         (a <= b).then_some(HourSpan { first_hour: a, last_hour: b })
     }).collect();
+    let (step, mut held) = stepped.map_or((None, None), |(step, held)| (Some(step), Some(held)));
     let (mut history, mut gathered, mut known, mut unheld) = match params.view {
         ConvoyView::Regions => {
-            let history = if from <= to { region_history(source, &query, params, from, reach, cancelled)? } else { RegionHistory::read(source, &query, params, from, reach, cancelled)? };
+            let history = if from <= to { region_history(source, &query, params, from, reach, cancelled, step)? } else { RegionHistory::read(source, &query, params, from, reach, cancelled, None)? };
             let (known, unheld) = (vec![history.known.clone(), Vec::new(), Vec::new()], history.unheld.clone());
             (history, Gathered::default(), known, unheld)
         }
         ConvoyView::Trade => {
-            let held = window(source, &query, params, from, reach, cancelled)?;
-            (RegionHistory::default(), held.gathered, held.known, held.unheld)
+            let inputs = if let Some(held) = held.as_deref_mut() {
+                let day = (from, reach, query.timeline.at(to).map(|stretch| stretch.run));
+                if held.day.as_ref().is_none_or(|(span, _)| *span != day) {
+                    if held.day.as_ref().is_some_and(|(span, _)| span.2 != day.2) { held.content = None; }
+                    held.day = Some((day, window(source, &query, params, from, reach, cancelled, None)?.inputs));
+                }
+                held.day.as_ref().expect("trade day").1.clone()
+            } else {
+                window(source, &query, params, from, reach, cancelled, None)?.inputs
+            };
+            (RegionHistory::default(), inputs.gathered, inputs.known, inputs.unheld)
         }
     };
     let mut valid = reach;
@@ -1135,7 +1239,26 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         region_ids.extend(params.regions.iter().flatten().copied());
         region_ids.extend(params.pinned_regions.iter().flatten().copied());
     }
-    let named = region_names(source, context, &region_ids, &mut warnings);
+    let mut content = held.and_then(|held| held.content(source, context));
+    let loaded;
+    let named = if let Some(content) = content.as_mut() {
+        let held = match &mut content.regions {
+            Some(held) if held.ids == region_ids => {
+                catalogue::credit(&held.refusals);
+                held
+            }
+            slot => {
+                let mut warnings = Vec::new();
+                let (names, refusals) = catalogue::capture(|| region_names(source, context, &region_ids, &mut warnings));
+                slot.insert(NamedRegions { ids: region_ids.clone(), names, warnings, refusals })
+            }
+        };
+        warnings.extend(held.warnings.iter().cloned());
+        &held.names
+    } else {
+        loaded = region_names(source, context, &region_ids, &mut warnings);
+        &loaded
+    };
     let absent = (params.view == ConvoyView::Regions).then(|| {
         let mut cells = history.absent.clone();
         valid = valid.min(unchanged_through(&cells, to));
@@ -1242,8 +1365,19 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
     let mut leases: Vec<ConvoyLease> = leases.into_iter().filter(|(key, lease)| listed(key, |done| &done.leases) || !lease.bad.is_empty()).map(|(_, lease)| lease).collect();
     let resources = if params.view == ConvoyView::Trade {
         let shown: BTreeSet<u32> = deals.iter().flat_map(|deal| deal.resource.iter().filter_map(|run| u32::try_from(run.2).ok())).collect();
-        let tokens = resource_tokens(&query, Some(&shown), &mut warnings)?;
-        let (infos, notes) = ResourceNaming::stored(source, context).infos(&tokens, cancelled)?;
+        let tokens = resource_tokens(source, &query, Some(&shown), &mut warnings)?;
+        let (infos, notes) = if let Some(content) = content {
+            let (naming, _) = match &mut content.resources {
+                Some(held) => {
+                    catalogue::credit(&held.1);
+                    held
+                }
+                slot => slot.insert(catalogue::capture(|| ResourceNaming::stored(source, context))),
+            };
+            naming.infos(&tokens, cancelled)?
+        } else {
+            ResourceNaming::stored(source, context).infos(&tokens, cancelled)?
+        };
         warnings.extend(notes);
         infos.into_iter().map(|info| ConvoyResource { id: info.id, token: info.token, name: info.name }).collect()
     } else {
@@ -1323,8 +1457,21 @@ impl Product for ConvoyHealth {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        health(source, params, context, cancelled)
+        health(source, params, context, cancelled, None)
     }
+}
+
+pub(crate) fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
+    let playback = Mutex::new(Playback::default());
+    at_hour::stepped_day_panel::<ConvoyHealth>(source, load, asked, ("from", "to"),
+        |_, reply| reply.last_hour, |_, _| {}, move |source, params, load, cancelled, mut step| {
+            let mut held = playback.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if step.step.is_none_or(|input| input.step.reset() || input.step.gap()) { *held = Playback::default(); }
+            let result = dashboard_text::metadata::check_cancel(cancelled)
+                .and_then(|()| health(source, params, load, cancelled, Some((&mut step, &mut held))));
+            if result.is_err() { *held = Playback::default(); }
+            result
+        })
 }
 
 #[cfg(test)]
@@ -1336,6 +1483,7 @@ type CachedRuns = dashboard_base::queries::RunCache<RunKey, RunConvoys>;
 
 pub(crate) fn forget(source: &dashboard_base::Source) {
     CachedRuns::forget(source);
+    source.state::<RecordedResourceTokens>().lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.clear();
 }
 
 #[derive(Clone)]

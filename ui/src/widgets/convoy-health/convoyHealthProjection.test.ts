@@ -79,6 +79,19 @@ test('a reply that reaches past the displayed hour, or for the other view, draws
   assert.deepEqual(projectConvoyHealth(view(50, reply(50)), { view: 'trade', surface: SURFACE, country: null, historyStart: 0, tiles: 0 }).rows, []);
 });
 
+test('a held recording gap fills the played hour in the band and tooltip', () => {
+  const data = reply(10);
+  data.validThrough = 15;
+  data.gaps = [{ firstHour: 10, lastHour: 10 }];
+  data.regions[0]!.cells = [
+    { firstHour: 0, lastHour: 9, state: { kind: 'efficiency', value: 100000n } },
+    { firstHour: 10, lastHour: 10, state: { kind: 'notRecorded', reason: 'Collector was interrupted' } },
+  ];
+  const model = projectConvoyHealth(view(12, data), OPTIONS);
+  assert.deepEqual(model.gaps, [{ firstHour: 10, lastHour: 12, reason: 'The recording holds no hour here' }]);
+  assert.equal(deriveLanesTooltip(model, 0, 12)?.missingReason, 'The recording holds no hour here');
+});
+
 test('a lend-lease route stays a status in the lane, the readout and the tooltip, never an efficiency', async () => {
   const { deriveLanesTooltip } = await import('../../families/heat/lanesModel.ts');
   const data: ConvoyHealthReply = {

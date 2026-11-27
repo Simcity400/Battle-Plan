@@ -238,6 +238,103 @@ fn gapped() -> dashboard_base::Source {
     synthetic("convoy-gap", &hours)
 }
 
+fn followed_panel(source: &std::sync::Arc<Source>) -> Box<dyn dashboard_follow::panel::Panel> {
+    let product = crate::registrations::CONVOYS_CONVOYHEALTH;
+    (product.panel.unwrap().open)(source, &LoadContext { content: None },
+        &serde_json::json!({ "branchId": "1", "country": "GER", "view": "regions", "regions": [17] })).unwrap()
+}
+
+#[test]
+fn a_convoy_stride_keeps_changes_that_return_to_the_same_value() {
+    use std::sync::Arc;
+    let hours: Vec<_> = (0..48).map(|hour| (hour, true, vec![(17, if (25..=27).contains(&hour) { 30 } else { 10 })])).collect();
+    let source = Arc::new(synthetic("convoy-stride", &hours));
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let advance = exact.advance.clone();
+    let cold = exact.cold.clone();
+    let checked_stride = Arc::new(AtomicBool::new(false));
+    let saw_stride = Arc::clone(&checked_stride);
+    let checked = dashboard_follow::panel::AtHour {
+        advance: Arc::new(move |hour, seed, cancelled, step| {
+            let read = advance(hour, seed, cancelled, step);
+            if hour == 36 && step.is_some_and(|input| input.step.first() < input.step.last()) {
+                assert_eq!(*read.value, cold(hour, cancelled));
+                assert_eq!(read.value.as_ref().as_ref().unwrap()["regions"][0]["efficiency"],
+                    serde_json::json!([[24, 24, 10], [25, 27, 30], [28, 36, 10]]));
+                saw_stride.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            read
+        }),
+        cold: exact.cold.clone(),
+        read: exact.read.clone(),
+    };
+    dashboard_base::test_fixtures::proven_by_steps(source.replay_ref(), &checked, 12, 36, 24);
+    assert!(checked_stride.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[test]
+fn a_held_convoy_day_answers_the_played_hour_including_a_recording_gap() {
+    let source = std::sync::Arc::new(gapped());
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let stepped = dashboard_base::test_fixtures::played(source.replay_ref(), exact, 24, 41);
+    assert!(stepped.iter().any(|read| read.hour == 30));
+    for step in stepped {
+        assert_eq!(*step.value, (exact.cold)(step.hour, &cancelled), "hour {}", step.hour);
+    }
+}
+
+#[test]
+fn a_convoy_seek_rebuilds_the_reply() {
+    let source = std::sync::Arc::new(gapped());
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    assert!((exact.advance)(41, true, &cancelled, None).value.is_ok());
+    assert_eq!(*(exact.advance)(25, true, &cancelled, None).value, (exact.cold)(25, &cancelled));
+}
+
+#[test]
+fn a_convoy_run_change_uses_the_new_runs_values() {
+    let hours: Vec<_> = (24..=26).chain(40..=42).map(|hour| (hour, true, vec![(17, i64::from(hour))])).collect();
+    let source = std::sync::Arc::new(synthetic("convoy-run", &hours));
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let timeline = dashboard_base::queries::query(&source, 1).unwrap().timeline;
+    assert_ne!(timeline.at(26).unwrap().run, timeline.at(40).unwrap().run);
+    let steps = dashboard_base::test_fixtures::played(source.replay_ref(), exact, 24, 40);
+    let at = steps.iter().find(|step| step.hour == 40).unwrap();
+    assert_eq!(*at.value, (exact.cold)(40, &cancelled));
+    assert_eq!(at.value.as_ref().as_ref().unwrap()["regions"][0]["efficiency"][3], serde_json::json!([40, 40, 40]));
+}
+
+#[test]
+fn a_failed_convoy_read_can_be_rebuilt() {
+    let source = std::sync::Arc::new(gapped());
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    assert!((exact.advance)(24, true, &cancelled, None).value.is_ok());
+    assert!((exact.advance)(25, false, &AtomicBool::new(true), None).value.is_err());
+    assert_eq!(*(exact.advance)(25, false, &cancelled, None).value, (exact.cold)(25, &cancelled));
+}
+
+#[test]
+fn terminal_resource_tokens_keep_the_requested_identities_and_warning_count() {
+    let source = synthetic("convoy-resource-tokens", &[(0, true, vec![])]);
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let mut warnings = Vec::new();
+    let all = resource_tokens(&source, &query, None, &mut warnings).unwrap();
+    assert!(all.is_empty());
+    assert!(warnings.is_empty());
+    let selected = resource_tokens(&source, &query, Some(&BTreeSet::from([1, 2])), &mut warnings).unwrap();
+    assert!(selected.is_empty());
+    assert_eq!(warnings, ["2 recorded resources have no recorded definition or token; they are not named"]);
+}
+
 #[test]
 fn recording_gaps_are_not_mislabelled_as_unheld_tag_hours() {
     let reply = health_of(&gapped(), &ConvoyHealthParams { regions: Some(vec![17]), ..regions(24, 45) });

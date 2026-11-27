@@ -326,7 +326,10 @@ export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyPr
   const rows = built.map(item => item.row);
   const subject = countrySubject(readView, options.country);
   const gaps = new Map<string, { firstHour: number; lastHour: number; reason: string }>();
-  for (const reply of [...tiles, now]) for (const gap of reply.gaps) gaps.set(`${gap.firstHour}:${gap.lastHour}`, { firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' });
+  for (const reply of [...tiles, now]) for (const gap of reply.gaps) {
+    const lastHour = reply === now && gap.lastHour === now.lastHour ? Math.max(gap.lastHour, through) : gap.lastHour;
+    gaps.set(`${gap.firstHour}:${lastHour}`, { firstHour: gap.firstHour, lastHour, reason: 'The recording holds no hour here' });
+  }
   return {
     hour: through,
     firstHour: tiles[0]?.firstHour ?? now.firstHour,
