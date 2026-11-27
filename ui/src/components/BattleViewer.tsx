@@ -7,7 +7,7 @@ import type { BoundTrack } from '../dashboard/model';
 import { DetailWindowHost, useDetailWindowClose } from '../families/host/DetailWindowHost.tsx';
 import { subscribeTokens } from '../charts/tokens.ts';
 import { parseColor } from '../shell/appearance/color.ts';
-import { mapFrameOnScreen } from '../widgets/map/presentation';
+import { mapFrameOnScreen, mapRequests } from '../widgets/map/presentation';
 import { FailureLine } from './FailureLine';
 import { Icon } from './Icons';
 import { Segmented } from './Segmented';
@@ -71,19 +71,19 @@ function BattleMap({ runtime, track, clock, province, fallbackHour }: {
   const id = useMemo(() => `battle-map-${++opened}`, []);
   const native = runtime.client.available && runtime.client.nativeMaps !== false;
   const placed = native && province !== null && !runtime.nativeHidden;
-  const fallback = useMemo(() => issueSequence(), [fallbackHour]);
+  const request = useMemo(() => mapRequests(runtime.clock), [runtime.clock]);
   const target = useCallback((): MapTarget | null => {
     if (province === null) return null;
     const position = clock ? clock.positionAt() : fallbackHour;
     const hour = Math.floor(position);
     if (hour < track.branch.firstHour || hour > track.branch.lastHour) return null;
-    return {
+    return request({
       options: { fog: false, country: track.selectedTag ?? null, countrySlot: track.selectedSlot ?? null, countryPinned: false, observed: null, pickerHidden: true },
       sourceId: track.source.id, path: track.source.path, revision: track.source.revision, branchId: track.branch.id,
       seekSequence: clock?.seekSequence ?? 0, playing: clock?.playing ?? false, hoursPerSecond: clock?.rate ?? 1,
-      hour, fraction: position - hour, sequence: clock?.sequence ?? fallback, focusProvince: province,
-    };
-  }, [track, clock, province, fallbackHour, fallback]);
+      hour, fraction: position - hour, focusProvince: province,
+    });
+  }, [track, clock, province, fallbackHour, request]);
   useLayoutEffect(() => placed && body.current ? runtime.maps.register(id, body.current, target) : undefined, [placed, runtime.maps, id, target]);
   useLayoutEffect(() => () => runtime.maps.forget(id), [runtime.maps, id]);
   useEffect(() => {
@@ -149,18 +149,19 @@ export function BattleGameWindow({ runtime, track, clock, kind = 'land', combat,
   const native = runtime.client.available && runtime.client.nativeMaps !== false;
   const caught = past && (!native || reached || atEnd || failed);
   const placed = native && !runtime.nativeHidden && !caught;
+  const request = useMemo(() => mapRequests({ issue: issueSequence }), []);
   const target = useCallback((): MapTarget | null => {
     const hour = ending.current ? Math.min(clock.getHour(), until ?? Number.MAX_SAFE_INTEGER) : clock.getHour();
     const style = body.current && getComputedStyle(body.current);
     const canvas = style && rgbOf(style.backgroundColor), text = style && rgbOf(style.color);
     if (!canvas || !text || hour < track.branch.firstHour || hour > track.branch.lastHour) return null;
-    return {
+    return request({
       options: { fog: true, country: track.selectedTag ?? null, countrySlot: track.selectedSlot ?? null, countryPinned: false, observed: null, pickerHidden: true },
       sourceId: track.source.id, path: track.source.path, revision: track.source.revision, branchId: track.branch.id,
-      seekSequence: clock.jumpSequence, playing: clock.playing, hoursPerSecond: clock.rate, hour, fraction: 0, sequence: clock.sequence,
+      seekSequence: clock.jumpSequence, playing: clock.playing, hoursPerSecond: clock.rate, hour, fraction: 0,
       battle: { kind, ...(combat === null ? {} : { combat }), ...(result ? { result: { handle: result.handle, from: result.from } } : {}), country: leading.current.tag, countrySlot: leading.current.slot, playedFrom: clock.resumeFrom, live: live.map(([first, last]) => [first, last]), canvas, text },
-    };
-  }, [track, clock, kind, combat, result, until, live]);
+    });
+  }, [track, clock, kind, combat, result, until, live, request]);
   useLayoutEffect(() => placed && body.current ? runtime.maps.register(id, body.current, target, false) : undefined, [placed, runtime.maps, id, target]);
   useEffect(() => clock.subscribe(() => runtime.maps.retarget()), [clock, runtime.maps]);
   useEffect(() => { runtime.maps.retarget(); }, [past, runtime.maps]);

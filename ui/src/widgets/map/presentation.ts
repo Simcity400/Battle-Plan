@@ -15,7 +15,12 @@ export function mapFrameOnScreen(state: DashboardMapState | null): boolean {
 export function mapRequests(clock: Pick<PlaybackController, 'issue'>): (target: Omit<MapTarget, 'sequence'>) => MapTarget {
   let last = { key: '', sequence: 0 };
   return (target) => {
-    const key = JSON.stringify([target.sourceId, target.path, target.revision, target.branchId, !!target.playing, target.seekSequence ?? null, target.hour]);
+    const battle = target.battle;
+    const key = JSON.stringify([
+      target.sourceId, target.path, target.revision, target.branchId, !!target.playing, target.seekSequence ?? null, target.hour,
+      target.focusProvince ?? null,
+      battle ? [battle.kind ?? null, battle.combat ?? null, battle.result ? [battle.result.handle, battle.result.from] : null, battle.country, battle.countrySlot ?? null, battle.live ?? null] : null,
+    ]);
     if (key !== last.key) last = { key, sequence: clock.issue() };
     return { ...target, sequence: last.sequence };
   };

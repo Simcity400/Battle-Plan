@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { createPageClockId, followMapPlayback, mapCommands, viewsKey } from './mapPlayback.ts';
 import type { BoundTrack } from './model.ts';
@@ -431,6 +433,319 @@ test('MapViewsStore stamps clockId on populated and teardown snapshots and filte
     stopPin();
     await tick();
   } finally {
+    await vite.close();
+    Object.assign(globalThis, saved);
+  }
+});
+
+test('BattleViewer map and battle-window views give every distinct request a strictly increasing sequence and never step backwards across clock removal', async () => {
+  const saved = {
+    window: globalThis.window,
+    document: globalThis.document,
+    ResizeObserver: globalThis.ResizeObserver,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
+    getComputedStyle: globalThis.getComputedStyle,
+  };
+  const rafs = new Map<number, FrameRequestCallback>();
+  let nextRaf = 1;
+  const flushFrames = () => {
+    const queued = [...rafs.entries()];
+    rafs.clear();
+    for (const [, callback] of queued) callback(0);
+  };
+  const rect = () => ({ left: 0, top: 0, right: 200, bottom: 200 });
+  const element = { getBoundingClientRect: rect, setAttribute() {}, removeAttribute() {}, closest: () => null, style: { setProperty() {} } } as unknown as HTMLElement;
+  class FakeResizeObserver { observe() {} unobserve() {} disconnect() {} }
+  Object.assign(globalThis, {
+    window: { devicePixelRatio: 1, matchMedia: () => ({ addEventListener() {}, removeEventListener() {} }), addEventListener() {}, removeEventListener() {} },
+    document: { hidden: false, documentElement: { clientWidth: 1000, clientHeight: 1000 }, addEventListener() {}, removeEventListener() {} },
+    ResizeObserver: FakeResizeObserver,
+    requestAnimationFrame: (callback: FrameRequestCallback) => { const id = nextRaf++; rafs.set(id, callback); return id; },
+    cancelAnimationFrame: (id: number) => { rafs.delete(id); },
+    getComputedStyle: () => ({ backgroundColor: 'rgb(16, 20, 24)', color: 'rgb(240, 244, 248)' }),
+  });
+
+  type EffectEntry = { deps: readonly unknown[] | undefined; cleanup: (() => void) | void };
+  const makeHooks = () => {
+    const slots: unknown[] = [];
+    let cursor = 0;
+    const same = (a: readonly unknown[] | undefined, b: readonly unknown[] | undefined) =>
+      a !== undefined && b !== undefined && a.length === b.length && a.every((item, i) => Object.is(item, b[i]));
+    return {
+      begin() { cursor = 0; },
+      unmount() {
+        for (const slot of slots) {
+          if (slot && typeof slot === 'object' && 'cleanup' in slot && typeof (slot as EffectEntry).cleanup === 'function') {
+            (slot as EffectEntry).cleanup!();
+          }
+        }
+        slots.length = 0;
+      },
+      useState<T>(init: T | (() => T)): [T, (next: T | ((prev: T) => T)) => void] {
+        const at = cursor++;
+        if (!(at in slots)) slots[at] = typeof init === 'function' ? (init as () => T)() : init;
+        return [slots[at] as T, next => { slots[at] = typeof next === 'function' ? (next as (prev: T) => T)(slots[at] as T) : next; }];
+      },
+      useRef<T>(init: T): { current: T } {
+        const at = cursor++;
+        if (!(at in slots)) slots[at] = { current: init === null ? element : init };
+        return slots[at] as { current: T };
+      },
+      useMemo<T>(factory: () => T, deps: readonly unknown[]): T {
+        const at = cursor++;
+        const prev = slots[at] as { value: T; deps: readonly unknown[] } | undefined;
+        if (prev && same(prev.deps, deps)) return prev.value;
+        const value = factory();
+        slots[at] = { value, deps };
+        return value;
+      },
+      useCallback<T>(fn: T, deps: readonly unknown[]): T {
+        const at = cursor++;
+        const prev = slots[at] as { value: T; deps: readonly unknown[] } | undefined;
+        if (prev && same(prev.deps, deps)) return prev.value;
+        slots[at] = { value: fn, deps };
+        return fn;
+      },
+      useEffect(fn: () => (() => void) | void, deps?: readonly unknown[]) {
+        const at = cursor++;
+        const prev = slots[at] as EffectEntry | undefined;
+        if (prev && same(prev.deps, deps)) return;
+        prev?.cleanup?.();
+        slots[at] = { deps, cleanup: fn() };
+      },
+      useLayoutEffect(fn: () => (() => void) | void, deps?: readonly unknown[]) {
+        const at = cursor++;
+        const prev = slots[at] as EffectEntry | undefined;
+        if (prev && same(prev.deps, deps)) return;
+        prev?.cleanup?.();
+        slots[at] = { deps, cleanup: fn() };
+      },
+      useSyncExternalStore<T>(_sub: () => () => void, get: () => T): T { return get(); },
+    };
+  };
+
+  let now = 0;
+  const clockFrames: (() => void)[] = [];
+  const fakeHost = {
+    now: () => now,
+    next: (run: () => void) => { clockFrames.push(run); return () => { const i = clockFrames.indexOf(run); if (i >= 0) clockFrames.splice(i, 1); }; },
+  };
+  const advanceClock = (ms: number) => { now += ms; const due = clockFrames.splice(0); due.forEach(run => run()); };
+
+  const captured: {
+    setView: ((next: 'battle' | 'map' | 'details') => void) | undefined;
+    clock: import('../components/battleClock.ts').BattleClock | null;
+  } = { setView: undefined, clock: null };
+  const testHost = globalThis as typeof globalThis & {
+    __bvHooks?: ReturnType<typeof makeHooks>;
+    __bvSetView?: (fn: (next: 'battle' | 'map' | 'details') => void) => void;
+    __bvClockHost?: typeof fakeHost;
+    __bvCapturedClock?: (clock: import('../components/battleClock.ts').BattleClock) => void;
+  };
+  testHost.__bvSetView = fn => { captured.setView = fn; };
+  testHost.__bvClockHost = fakeHost;
+  testHost.__bvCapturedClock = created => { captured.clock = created; };
+
+  const vite = await createServer({
+    configFile: false,
+    optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{
+      name: 'battle-viewer-sequence-test',
+      enforce: 'pre',
+      transform(code, id) {
+        const norm = id.replaceAll('\\', '/');
+        if (norm.endsWith('/components/BattleViewer.tsx')) {
+          return code
+            .replace("from 'react'", "from 'bv-test-react'")
+            .replace("from '../families/host/DetailWindowHost.tsx'", "from 'bv-test-detailHost'")
+            .replace("from '../charts/tokens.ts'", "from 'bv-test-tokens'")
+            .replace("from './FailureLine'", "from 'bv-test-failure'")
+            .replace("from './Icons'", "from 'bv-test-icons'")
+            .replace("from './Segmented'", "from 'bv-test-segmented'")
+            .replace("from './battleClock.ts'", "from 'bv-test-clock'")
+            .replace("import './battleViewer.css';", '');
+        }
+      },
+      resolveId(id) {
+        if (id.startsWith('bv-test-')) return `\0${id}`;
+      },
+      load(id) {
+        if (id === '\0bv-test-react') {
+          return `export const useCallback = (fn, deps) => globalThis.__bvHooks.useCallback(fn, deps);
+            export const useEffect = (fn, deps) => globalThis.__bvHooks.useEffect(fn, deps);
+            export const useLayoutEffect = (fn, deps) => globalThis.__bvHooks.useLayoutEffect(fn, deps);
+            export const useMemo = (fn, deps) => globalThis.__bvHooks.useMemo(fn, deps);
+            export const useRef = init => globalThis.__bvHooks.useRef(init);
+            export const useState = init => globalThis.__bvHooks.useState(init);
+            export const useSyncExternalStore = (sub, get) => globalThis.__bvHooks.useSyncExternalStore(sub, get);`;
+        }
+        if (id === '\0bv-test-detailHost') {
+          return `import { createElement, Fragment } from 'react';
+            export const DetailWindowHost = props => createElement(Fragment, null, props.headerActions, props.children);
+            export const useDetailWindowClose = () => undefined;`;
+        }
+        if (id === '\0bv-test-tokens') return `export const subscribeTokens = () => () => {};`;
+        if (id === '\0bv-test-failure') return `export const FailureLine = () => null;`;
+        if (id === '\0bv-test-icons') return `export const Icon = () => null;`;
+        if (id === '\0bv-test-segmented') {
+          return `export const Segmented = props => { globalThis.__bvSetView(props.onChange); return null; };`;
+        }
+        if (id === '\0bv-test-clock') {
+          return `import { BattleClock as RealBattleClock, issueSequence, sharedPause } from '/ui/src/components/battleClock.ts';
+            export { issueSequence, sharedPause };
+            export class BattleClock extends RealBattleClock {
+              constructor(span, start, host) {
+                super(span, start, host ?? globalThis.__bvClockHost);
+                globalThis.__bvCapturedClock(this);
+              }
+            }`;
+        }
+      },
+    }],
+  });
+
+  try {
+    const { MapViewsStore } = await vite.ssrLoadModule('/ui/src/dashboard/geometry.ts');
+    const { BattleViewer, BattleGameWindow } = await vite.ssrLoadModule('/ui/src/components/BattleViewer.tsx') as typeof import('../components/BattleViewer.tsx');
+    const { BattleClock } = await vite.ssrLoadModule('/ui/src/components/battleClock.ts') as typeof import('../components/battleClock.ts');
+
+    const sent: DashboardMapView[][] = [];
+    let emitStates!: (states: DashboardMapState[]) => void;
+    const client = {
+      available: true,
+      nativeMaps: true,
+      async setMapViews(_clockId: string, views: DashboardMapView[]) { sent.push(views); },
+      async onMapStates(callback: (states: DashboardMapState[]) => void) { emitStates = callback; return () => {}; },
+    } as unknown as DashboardClient;
+    let pageIssued = 0;
+    const pageClock = Object.assign(clock('page-battle'), { issue: () => ++pageIssued });
+    const store = new MapViewsStore(client, pageClock);
+    const stop = store.start(element);
+    const runtime = { maps: store, clock: pageClock, client, nativeHidden: false } as unknown as import('./definitions.ts').WidgetRuntime;
+    const battleTrack = {
+      id: 'main',
+      source: { id: 'source', path: 'campaign.battleplan', revision: 'rev-1' },
+      branch: { id: '1', firstHour: 50, lastHour: 300 },
+      selectedTag: 'AAA',
+      selectedSlot: 1,
+    } as unknown as BoundTrack;
+    const sentView = async (prefix: string) => {
+      flushFrames();
+      await tick();
+      return sent.at(-1)!.find(view => view.id.startsWith(prefix))!;
+    };
+    const reply = (id: string, requestedSequence: number, error: string | null, hour: number | null = null): DashboardMapState => ({
+      id, clockId: 'page-battle', sourceId: 'source', revision: 'rev-1', branchId: error ? null : '1',
+      hour, fraction: hour == null ? null : 0, sequence: requestedSequence, requestedSequence, loading: false, error,
+    });
+
+    const mapHooks = makeHooks();
+    testHost.__bvHooks = mapHooks;
+    const renderViewer = (span: { first: number; last: number } | null, province: number) => {
+      mapHooks.begin();
+      renderToStaticMarkup(createElement(BattleViewer, {
+        subject: 'land:42', title: 'Battle', day: null, closeLabel: 'Close',
+        anchor: { current: null }, runtime, track: battleTrack, province, span,
+        unplayable: null, gaps: [], fallbackHour: 100,
+        sides: () => null, battle: () => null, onClose: () => {},
+      }));
+    };
+    renderViewer(null, 10);
+    assert.ok(captured.setView, 'BattleViewer mounts view switcher');
+    captured.setView('map');
+    renderViewer(null, 10);
+    const m1 = await sentView('battle-map-');
+    assert.equal(m1.hour, 100);
+    assert.equal(m1.focusProvince, 10);
+
+    renderViewer({ first: 100, last: 200 }, 10);
+    assert.ok(captured.clock, 'BattleViewer creates BattleClock when span becomes available');
+    captured.clock.play();
+    const mPlay1 = await sentView('battle-map-');
+    assert.ok(mPlay1.sequence > m1.sequence, 'starting BattleMap playback issues a greater sequence');
+    advanceClock(1000);
+    store.schedule();
+    const mPlay2 = await sentView('battle-map-');
+    assert.ok(mPlay2.hour > mPlay1.hour, 'BattleClock advances while playing');
+    assert.ok(mPlay2.sequence > mPlay1.sequence, 'BattleMap recomposed at a later playing hour gets a greater sequence');
+    emitStates([reply(mPlay2.id, mPlay2.sequence, null, mPlay2.hour)]);
+
+    renderViewer(null, 10);
+    const mNull = await sentView('battle-map-');
+    assert.equal(mNull.id, mPlay2.id, 'same BattleMap view stays mounted across clock -> null');
+    assert.ok(mNull.sequence > mPlay2.sequence, 'clock -> null transition must never step sequence backwards');
+    emitStates([reply(mNull.id, mNull.sequence, null, mNull.hour)]);
+    assert.equal(store.getState(mNull.id)?.hour, 100, 'reply after clock -> null is accepted rather than dropped as older');
+
+    emitStates([reply(mNull.id, mNull.sequence, 'province failed')]);
+    assert.equal((await sentView('battle-map-')).visible, false);
+    renderViewer(null, 20);
+    const mProv2 = await sentView('battle-map-');
+    assert.equal(mProv2.focusProvince, 20);
+    assert.ok(mProv2.sequence > mNull.sequence, 'changing BattleMap province at the same hour issues a greater sequence');
+    assert.equal(mProv2.visible, true, 'old province error does not hide the new province request');
+    assert.equal(store.getState(mProv2.id)?.error ?? null, null);
+    mapHooks.unmount();
+
+    const winHooks = makeHooks();
+    testHost.__bvHooks = winHooks;
+    const gameClock = new BattleClock({ first: 100, last: 200 }, 100, fakeHost);
+    const live: readonly (readonly [number, number])[] = [[100, 200]];
+    const renderGameWindow = (lead: { slot: number; tag: string }) => {
+      winHooks.begin();
+      renderToStaticMarkup(createElement(BattleGameWindow, {
+        runtime, track: battleTrack, clock: gameClock, combat: '42',
+        lead, live, until: null, ended: null,
+      }));
+    };
+    renderGameWindow({ slot: 1, tag: 'AAA' });
+    const w1 = await sentView('battle-window-');
+
+    gameClock.play();
+    const w2 = await sentView('battle-window-');
+    assert.ok(w2.sequence > w1.sequence);
+    advanceClock(1000);
+    const w3 = await sentView('battle-window-');
+    assert.ok(w3.hour > w2.hour);
+    assert.ok(w3.sequence > w2.sequence, 'BattleGameWindow advancing hour while playing issues a greater sequence');
+    emitStates([reply(w3.id, w2.sequence, 'stale play error')]);
+    flushFrames();
+    await tick();
+    assert.equal(store.getState(w3.id)?.error ?? null, null, 'late error from earlier playing hour does not show at later hour');
+
+    gameClock.pause();
+    const w4 = await sentView('battle-window-');
+    assert.ok(w4.sequence > w3.sequence);
+    emitStates([reply(w4.id, w4.sequence, 'lead failed')]);
+    assert.equal((await sentView('battle-window-')).visible, false);
+    renderGameWindow({ slot: 2, tag: 'BBB' });
+    const w5 = await sentView('battle-window-');
+    assert.equal(w5.id, w4.id, 'lead change updates the same registered battle window');
+    assert.equal(w5.battle?.country, 'BBB', 'outgoing request names the new lead');
+    assert.ok(w5.sequence > w4.sequence, 'changing BattleGameWindow lead at the same paused hour issues a greater sequence');
+    assert.equal(w5.visible, true, 'error for previous lead does not hide the new lead request');
+    assert.equal(store.getState(w5.id)?.error ?? null, null);
+
+    gameClock.seek(120);
+    const w6 = await sentView('battle-window-');
+    assert.ok(w6.sequence > w5.sequence);
+    assert.ok(w6.sequence > gameClock.movedSequence, 'post-seek BattleGameWindow sequence stays above BattleClock.movedSequence');
+    gameClock.acknowledge(108, w1.sequence);
+    assert.equal(gameClock.seenThrough, null, 'pre-seek reply is still rejected by BattleClock.acknowledge');
+    gameClock.acknowledge(120, w6.sequence);
+    assert.equal(gameClock.seenThrough, 120, 'post-seek reply is accepted by BattleClock.acknowledge');
+    winHooks.unmount();
+    gameClock.dispose();
+
+    stop();
+    await tick();
+  } finally {
+    delete testHost.__bvHooks;
+    delete testHost.__bvSetView;
+    delete testHost.__bvClockHost;
+    delete testHost.__bvCapturedClock;
     await vite.close();
     Object.assign(globalThis, saved);
   }
