@@ -2,7 +2,7 @@ use super::{Election, GovernmentCauseKind, GovernmentChange, IdeologyInfo, Leade
 use dashboard_base::{Source, products::Product, test_fixtures::{CAMPAIGN, records, source, source_with_mods, visual_mods::Machine}};
 use replay::campaign::Replay;
 use replay_data::rows::{
-    CharacterRow, CountryAppearanceRow, CountryLinkRow, CountryRow, GovernmentCause, GovernmentChangeRow, LexicalTokenRow, PoliticalPartyRow, PoliticsCaptureCoverageRow, PoliticsRow, Recorded,
+    CharacterPortrait, CharacterPortraitRow, CharacterRow, CountryAppearanceRow, PORTRAIT_CIVILIAN, PORTRAIT_LARGE, CountryLinkRow, CountryRow, GovernmentCause, GovernmentChangeRow, LexicalTokenRow, PoliticalPartyRow, PoliticsCaptureCoverageRow, PoliticsRow, Recorded,
     ReservedCountryNamingRow, TableId, TableRows,
 };
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -250,6 +250,9 @@ fn sparse_lexicon_frame(hour: i32) -> DecodedFrame {
     }
     let look = CountryAppearanceRow { country: GER, leader_ideology: b"liberalism".to_vec(), leader_character: Some(701), ..Default::default() };
     set(&mut frame, TableId::CountryAppearance, TableRows::CountryAppearance(vec![look]));
+    let portrait = CharacterPortrait { category: PORTRAIT_CIVILIAN, size: PORTRAIT_LARGE, is_set: 1, kind: 0, identity: b"test_portrait".to_vec() };
+    let portraits = if hour >= 410 { vec![CharacterPortraitRow { character: 701, portraits: vec![portrait] }] } else { Vec::new() };
+    set(&mut frame, TableId::CharacterPortraits, TableRows::CharacterPortraits(portraits));
     frame
 }
 
@@ -261,8 +264,8 @@ fn a_leaders_portrait_is_read_by_one_reader_however_often_the_lexicon_is_read() 
     let recording = query.replay.recording();
     assert_eq!(super::complete_reads(recording, run, TableId::LexicalTokens, 400, 420).unwrap().len(), 11, "the lexicon is read every other hour");
     let (parties, counts) = replay_recording::cells::count_reads(|| read(&query, &"GER".into(), super::PartyRead::Full, &AtomicBool::new(false)).unwrap());
-    assert_eq!(parties.people.len(), 1);
-    assert_eq!(parties.leaders.len(), 1);
+    let leader = |person, first, last, starts_segment| LeaderRun { ideology: "liberalism".into(), person: Some(person), first_hour: first, last_hour: last, starts_segment };
+    assert_eq!(parties.leaders, [leader(0, 400, 409, true), leader(1, 410, 420, false)], "the portrait recorded at 410 is seen by the reader that has moved there");
     assert_eq!(
         counts[&TableId::CharacterPortraits].opened,
         1,
