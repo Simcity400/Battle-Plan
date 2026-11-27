@@ -1,6 +1,6 @@
 use super::*;
 use replay_capture_spool::spool::Record;
-use replay_data::rows::{CampaignRow, ClockRow, CombatEngagementRefreshRow, CountryLinkRow, CountryRow, FactionMemberRow, LandCombatRow, LandCombatSideRow, NavalCombatDetailsRow, NavalCombatRow, TableRows, TaskForceRow};
+use replay_data::rows::{CampaignRow, ClockRow, CombatEngagementRefreshRow, CountryLinkRow, CountryRow, FactionMemberRow, LandCombatRow, LandCombatSideRow, NavalCombatDetailsRow, NavalCombatRow, RowCodec, TableRows, TaskForceRow};
 use replay_frame::{branches::{BranchReason, BranchStart, Parentage}, frame::{Frame, Metrics, TableUpdate, TableView, current_absence}};
 use viewer_engagements::{engaged::Engaged, engagement_history::{LAND, NAVAL, Provenance, combats}};
 use viewer_foundation::visibility::Relations;
@@ -22,11 +22,12 @@ fn replay_from(first: Hour, reason: BranchReason) -> Arc<Replay> {
     records.extend((first..=FIRST + 5).map(|hour| {
         let withdrawn = hour > FIRST;
         let allied = hour >= FIRST + 2;
-        let mut naval = NavalCombatDetailsRow { combat: NAVAL_COMBAT, ..Default::default() };
+        let mut naval = NavalCombatDetailsRow { combat: NAVAL_COMBAT, custom_sea: Some(Vec::new()), ..Default::default() };
         naval.sides[0].units = if withdrawn { vec![12] } else { vec![11, 12] };
         naval.sides[0].summary.countries = if withdrawn { vec![2] } else { vec![1, 2] };
         naval.sides[1].units = vec![13];
         naval.sides[1].summary.countries = vec![3];
+        naval.check_key_fields().expect("the naval fixture must satisfy its recorded row contract");
         let rows = [
             TableRows::Campaign(vec![CampaignRow { id: CAMPAIGN.to_vec() }]),
             TableRows::Clock(vec![ClockRow { hour, ..Default::default() }]),
@@ -65,7 +66,7 @@ fn flag(cursor: &mut Cursor, hour: Hour, epoch: u64, country: u32, kind: usize) 
     let combat = if kind == LAND { COMBAT } else { NAVAL_COMBAT };
     if hour >= FIRST + 2 && country == 1 {
         let (unindexed, _) = combats(&frame, kind, country, &links, relations.as_ref().map_err(|reason| *reason), None).unwrap();
-        assert_eq!(unindexed[&combat], Engaged::Yes);
+        assert_eq!(unindexed[&combat], Engaged::Yes, "kind {kind} at hour {hour}");
     }
     (flags[&combat], provenance)
 }
