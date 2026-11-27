@@ -94,9 +94,11 @@ fn viewport_layouts_share_until_a_window_inherits_a_different_size() {
     let modded = [vanilla[0], (overlay.as_path(), &[][..])];
     for (folders, threshold) in [(&vanilla[..], 513), (&modded[..], 731)] {
         let layers = Arc::new(ResolvedLayers::from_folders(folders).unwrap());
-        let cache = WindowCache::new(layers);
+        let cache = WindowCache::new(Arc::clone(&layers));
         let wide = cache.at([threshold + 1, 483]).unwrap();
         let same = cache.at([threshold - 1, 537]).unwrap();
+        let game = native::read_layers_at(&layers, [threshold as i32 - 1, 537]).unwrap();
+        assert!(Arc::ptr_eq(&same.guis, &game));
         let exact = cache.at([threshold, 483]).unwrap();
         let size = |layout: &NativeWindows| layout.guis.template("resized").unwrap().window().unwrap().size;
         assert_eq!(size(&wide)[0], native::WindowExtent::MaxResolution { less: threshold as i32 });
@@ -105,8 +107,11 @@ fn viewport_layouts_share_until_a_window_inherits_a_different_size() {
         assert!(exact.same(&cache.at([threshold, 537]).unwrap()));
         assert!(wide.same(&cache.at([threshold + 3, 537]).unwrap()));
         let retired = Arc::downgrade(&exact.0);
+        let retired_guis = Arc::downgrade(&exact.guis);
+        assert!(!Arc::ptr_eq(&wide.guis, &exact.guis));
         drop(exact);
         assert!(retired.upgrade().is_none());
+        assert!(retired_guis.upgrade().is_none());
     }
     std::fs::remove_dir_all(root).unwrap();
 }

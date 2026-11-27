@@ -414,13 +414,12 @@ impl SharedInterface {
         requested_language: Option<&str>,
     ) -> Result<Self, GameWindowError> {
         let art_layers = layers.presentation();
-        let guis = Arc::new(
+        let guis =
             native::read_layers_at(art_layers, viewport.map(|value| value as i32)).map_err(
                 |error| {
                     GameWindowError::failed(format!("Could not load interface definitions: {error}"))
                 },
-            )?,
-        );
+            )?;
         let selected = match requested_language {
             Some(lang) if !lang.is_empty() => lang.strip_prefix("l_").unwrap_or(lang).to_owned(),
             _ => localisation::selected_language(layers, None).map_err(|error| {

@@ -2495,6 +2495,17 @@ impl ResolvedLayers {
         )
     }
 
+    pub fn compatible_product<T: Send + Sync + 'static>(
+        &self, parser: &'static str, schema: u32, parameters: &[u8],
+        matches: impl Fn(&T) -> bool, build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<Arc<T>> {
+        let _select = self.generation.product_selection.lock().unwrap_or_else(|error| error.into_inner());
+        let key = graph::Key { context: self.product_context(), parser, schema, parameters: parameters.to_vec() };
+        let held = self.generation.matching_product(&key, matches);
+        let selected = held.as_ref().map_or(key, |(key, _)| key.clone());
+        self.product_at(selected, None, build)
+    }
+
     pub fn file_product<T: Send + Sync + 'static>(
         &self,
         path: &[u8],

@@ -1233,3 +1233,76 @@ fn files_read_at_once_are_named_as_in_turn() {
         assert!(turn.unnamed > start + 20);
     }
 }
+
+#[test]
+fn viewport_layouts_join_one_build_and_follow_the_content_generation() {
+    use content_reader_layers::content::Generation;
+    use std::sync::{Arc, Barrier, Mutex};
+
+    content_reader_script::test_game::enter();
+    let root = std::env::temp_dir().join(format!(
+        "gui_viewport_product_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let interface = root.join("interface");
+    std::fs::create_dir_all(&interface).unwrap();
+    std::fs::write(
+        interface.join("synthetic_layout.gui"),
+        br#"guiTypes = {
+            windowType = { name = "shared_base" size = { x = 42 y = 27 }
+                position = { x = 2 y = 3 } background = "test_bg" horizontalBorder = "test_h" verticalBorder = "test_v" }
+            windowType = { name = "shared_child" parent = "shared_base"
+                position = { x = 1 y = 1 } size = { x = max_resolution y = 5 } }
+            windowType = { name = "shared_refusal" parent = "undefined_fixture_parent" }
+        }"#,
+    )
+    .unwrap();
+    let layers = {
+        let _generation = Generation::enter();
+        ResolvedLayers::from_folders(&[(&root, &[])]).unwrap()
+    };
+    let viewport = [901, 603];
+    let barrier = Barrier::new(2);
+    let read = |viewport| {
+        barrier.wait();
+        read_layers_at(&layers, viewport).unwrap()
+    };
+    let (one, two) = std::thread::scope(|scope| {
+        let first = content_reader_layers::parallel::spawn(scope, || read(viewport));
+        let second = content_reader_layers::parallel::spawn(scope, || read([902, 603]));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert!(Arc::ptr_eq(&one, &two));
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&reads);
+    let traced = layers.with_read_trace(Arc::new(move |read| seen.lock().unwrap().push(read)));
+    let hit = read_layers_at(&traced, viewport).unwrap();
+    assert!(Arc::ptr_eq(&one, &hit));
+    assert!(reads.lock().unwrap().iter().any(|read| read.path == b"interface/synthetic_layout.gui"));
+    assert!(one.template("shared_refusal").unwrap().refusals().iter()
+        .any(|refusal| refusal.key == "parent" && refusal.cause == Cause::Unread));
+    let other = read_layers_at(&layers, [1, viewport[1]]).unwrap();
+    let size = |guis: &Guis| guis.template("shared_child").unwrap().window().unwrap().size;
+    assert_ne!(size(&one), size(&other));
+    assert_eq!(size(&other)[0], WindowExtent::Pixels(42));
+    let builds: Vec<_> = layers
+        .product_counts()
+        .into_iter()
+        .filter(|entry| entry.parser == "GUI layouts at viewport")
+        .map(|entry| entry.builds)
+        .collect();
+    assert_eq!(builds, [1, 1]);
+    let refreshed = {
+        let _generation = Generation::enter();
+        ResolvedLayers::from_folders(&[(&root, &[])]).unwrap()
+    };
+    let fresh = read_layers_at(&refreshed, viewport).unwrap();
+    assert!(!Arc::ptr_eq(&one, &fresh));
+    assert_eq!(*one, *fresh);
+    let weak = Arc::downgrade(&one);
+    drop((one, two, hit));
+    assert!(weak.upgrade().is_none());
+    drop((layers, traced, refreshed));
+    std::fs::remove_dir_all(root).unwrap();
+}
