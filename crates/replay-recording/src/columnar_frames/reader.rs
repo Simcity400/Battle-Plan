@@ -594,6 +594,16 @@ impl Recording {
         &self.columns
     }
 
+    pub fn field(&self, table: TableId, name: &str) -> io::Result<usize> {
+        let index = table.index();
+        if let Some(reason) = self.withheld_reason(index) {
+            return Err(invalid(format!("{table:?}.{name}: {reason}")));
+        }
+        let count = self.columns[index].min(table.schema_at(self.format).len());
+        (0..count).find(|&column| table.field_name(column) == Some(name) && !table.column_withheld_at(column, self.format))
+            .ok_or_else(|| invalid(format!("{table:?}.{name} not recorded in format {}", self.format)))
+    }
+
     pub fn identity(&self) -> io::Result<replay_data::identity::Identity> {
         crate::recording_identity::decode_identity(&self.root.identity.content)
     }
@@ -973,5 +983,27 @@ pub fn strings_of(file: &dyn Extents, frame: &FrameEntry, first: u32) -> io::Res
 impl fmt::Debug for Recording {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("Recording").field("revision", &self.revision).field("runs", &self.runs.len()).finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_field_appended_after_the_recorded_format_is_refused_by_name() {
+        let runs = [(1, 0, 1)];
+        let (bytes, _) = replay_journal::fixtures::recording(recorder_derive::writers(), &runs, |_, _| 0, |_| {});
+        let mut recording = Recording::open(bytes).unwrap();
+        let table = TableId::CountryAppearance;
+        let name = "original_tag_reference";
+        assert_eq!(table.field_name(recording.field(table, name).unwrap()), Some(name));
+
+        recording.format = replay_data::rows::compatibility::EFFECT_INPUTS_FORMAT - 1;
+        let mut counts = columns_at(recording.format).unwrap();
+        counts.resize(TABLE_COUNT, 0);
+        recording.columns = counts.into();
+        let error = recording.field(table, name).unwrap_err();
+        assert_eq!(error.to_string(), format!("CountryAppearance.{name} not recorded in format {}", recording.format));
     }
 }
