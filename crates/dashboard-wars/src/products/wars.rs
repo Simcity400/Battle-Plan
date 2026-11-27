@@ -1,6 +1,7 @@
 
 mod at;
 pub mod contributions;
+pub mod history;
 mod inputs;
 mod measures;
 mod native;
@@ -116,6 +117,9 @@ pub struct WarObservation {
     pub attackers_are_viewpoint: Option<bool>,
     pub representative: Option<[String; 2]>,
     pub name: WarName,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub contribution_group: Option<[Vec<String>; 2]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -182,6 +186,9 @@ pub struct WarsReply {
     pub country_names: Vec<String>,
     pub wars: Vec<WarTimeline>,
     pub unobserved: Vec<HourSpan>,
+    #[serde(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
+    pub(crate) partial_relations: Vec<(i32, i32)>,
     pub capitulations_unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
@@ -444,6 +451,10 @@ fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat
             }
         };
         walk.reply.available |= inputs.read.iter().any(|&(a, b)| a <= stretch.last && stretch.first <= b);
+        walk.reply.partial_relations.extend(inputs.partial_relations.iter().filter_map(|&(first, last)| {
+            let (first, last) = (first.max(stretch.first), last.min(stretch.last));
+            (first <= last).then_some((first, last))
+        }));
         let hours = observed_hours(&inputs, &links, &names, &query.holders, stretch.first, stretch.last);
         let mut state = State::default();
         let mut applied = 0;

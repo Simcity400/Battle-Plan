@@ -53,7 +53,7 @@ impl Next {
     }
 }
 
-fn cut_war(war: &WarTimeline, hour: i32) -> WarTimeline {
+pub(super) fn cut_war(war: &WarTimeline, hour: i32) -> WarTimeline {
     let mut cut = war.clone();
     cut.last_hour = war.last_hour.min(hour);
     if war.last_hour >= hour {

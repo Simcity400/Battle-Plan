@@ -156,6 +156,15 @@ mod tests {
     use super::*;
     use crate::products::wars::WarSide;
 
+    #[test]
+    fn shares_match_the_projection_vectors() {
+        let vectors: Vec<(String, String, Option<u32>)> =
+            serde_json::from_str(include_str!("../../../../../ui/src/widgets/war-contribution/permyriad.test.json")).unwrap();
+        for (amount, total, expected) in vectors {
+            assert_eq!(permyriad(amount.parse().unwrap(), total.parse().unwrap()), expected, "{amount} of {total}");
+        }
+    }
+
     fn row(tag: &str, equipment: i64, casualties: i64, unknown: i64, participation: i64) -> WarContributionCountry {
         WarContributionCountry {
             tag: tag.into(),

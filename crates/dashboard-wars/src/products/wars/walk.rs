@@ -91,6 +91,7 @@ pub(crate) fn observed(
             attackers_are_viewpoint: orientation,
             representative: represented,
             name,
+            contribution_group: None,
         },
     }
 }
@@ -105,7 +106,7 @@ fn opening(observed: &[Observed], hour: i32) -> Vec<Observed> {
 fn same_groups(before: &[Observed], held: &[Observed]) -> bool {
     before.len() == held.len()
         && before.iter().zip(held).all(|(a, b)| {
-            let WarObservation { first_hour: _, last_hour: _, viewpoint_tag, viewpoint_side, opposing_side, attackers_are_viewpoint, representative, name } = &a.data;
+            let WarObservation { viewpoint_tag, viewpoint_side, opposing_side, attackers_are_viewpoint, representative, name, .. } = &a.data;
             a.relations == b.relations
                 && a.representative == b.representative
                 && *viewpoint_tag == b.data.viewpoint_tag
@@ -129,7 +130,7 @@ fn append_viewpoint(reply: &mut WarsReply, tag: Option<&String>, hour: i32) {
     }
 }
 
-fn span(spans: &mut Vec<HourSpan>, first: i32, last: i32) {
+pub(super) fn span(spans: &mut Vec<HourSpan>, first: i32, last: i32) {
     if first > last {
         return;
     }
@@ -202,19 +203,33 @@ fn append_relations(war: &mut WarTimeline, hour: i32, relations: &[RelationRun])
     }
 }
 
-fn merge_groups(mut groups: Vec<Observed>) -> Observed {
-    let mut merged = groups.remove(0);
-    if groups.is_empty() {
+fn merge_groups(groups: Vec<&Observed>, native: &[Observed]) -> Observed {
+    let mut merged = groups[0].clone();
+    if groups.len() == 1 {
         return merged;
     }
     let mut viewpoint: HashSet<String> = merged.data.viewpoint_side.iter().cloned().collect();
     let mut opposing: HashSet<String> = merged.data.opposing_side.iter().cloned().collect();
     let mut relations: HashSet<WarRelationKey> = merged.relations.iter().map(|r| r.identity.clone()).collect();
-    for group in groups {
-        merged.data.viewpoint_side.extend(group.data.viewpoint_side.into_iter().filter(|tag| viewpoint.insert(tag.clone())));
-        merged.data.opposing_side.extend(group.data.opposing_side.into_iter().filter(|tag| opposing.insert(tag.clone())));
-        merged.relations.extend(group.relations.into_iter().filter(|r| relations.insert(r.identity.clone())));
+    for group in &groups[1..] {
+        merged.data.viewpoint_side.extend(group.data.viewpoint_side.iter().filter(|&tag| viewpoint.insert(tag.clone())).cloned());
+        merged.data.opposing_side.extend(group.data.opposing_side.iter().filter(|&tag| opposing.insert(tag.clone())).cloned());
+        merged.relations.extend(group.relations.iter().filter(|r| relations.insert(r.identity.clone())).cloned());
     }
+    let size = |o: &WarObservation| o.viewpoint_side.len() + o.opposing_side.len();
+    let mut selected: Option<&WarObservation> = None;
+    for group in native.iter().map(|o| &o.data) {
+        if group.viewpoint_side == merged.data.viewpoint_side && group.opposing_side == merged.data.opposing_side {
+            return merged;
+        }
+        if selected.is_none_or(|best| size(group) > size(best))
+            && group.viewpoint_side.iter().all(|tag| viewpoint.contains(tag))
+            && group.opposing_side.iter().all(|tag| opposing.contains(tag))
+        {
+            selected = Some(group);
+        }
+    }
+    merged.data.contribution_group = selected.map(|group| [group.viewpoint_side.clone(), group.opposing_side.clone()]);
     merged
 }
 
@@ -274,8 +289,8 @@ fn continue_wars(wars: &mut Vec<WarTimeline>, open: &[OpenWar], current: Vec<Obs
     let continued = assignment(wars.len(), open, &current);
     let used: HashSet<usize> = continued.iter().copied().collect();
     let mut order: Vec<usize> = Vec::new();
-    let mut groups: HashMap<usize, Vec<Observed>> = HashMap::new();
-    for (observation, id) in current.into_iter().zip(continued) {
+    let mut groups: HashMap<usize, Vec<&Observed>> = HashMap::new();
+    for (observation, id) in current.iter().zip(continued) {
         if id == wars.len() {
             wars.push(WarTimeline {
                 id: id.to_string(),
@@ -300,7 +315,7 @@ fn continue_wars(wars: &mut Vec<WarTimeline>, open: &[OpenWar], current: Vec<Obs
     for id in order {
         let held = groups.remove(&id).expect("ordered war");
         let count = held.len();
-        let observation = merge_groups(held);
+        let observation = merge_groups(held, &current);
         let hour = observation.data.first_hour;
         append_relations(&mut wars[id], hour, &observation.relations);
         add_observation(&mut wars[id], observation.data, previous);
@@ -345,6 +360,7 @@ impl Walk {
             country_names: Vec::new(),
             wars: Vec::new(),
             unobserved: Vec::new(),
+                partial_relations: Vec::new(),
             capitulations_unobserved: Vec::new(),
             warnings: vec![
                 "War continuity and participant runs are app observations; the game stores no grouped war identity, start/end or join/leave hours.".into(),
@@ -546,5 +562,41 @@ impl Walk {
             war.capitulations.sort_by_key(|c| c.hour);
         }
         self.reply
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn native(first: &[&str], second: &[&str]) -> Observed {
+        Observed {
+            data: WarObservation {
+                first_hour: 12, last_hour: 12, viewpoint_tag: "ONE".into(),
+                viewpoint_side: first.iter().map(|tag| (*tag).into()).collect(),
+                opposing_side: second.iter().map(|tag| (*tag).into()).collect(),
+                attackers_are_viewpoint: None, representative: None,
+                name: naming::unknown("Fixture name unavailable"), contribution_group: None,
+            },
+            relations: Vec::new(), representative: None,
+        }
+    }
+
+    #[test]
+    fn a_merged_roster_selects_the_first_largest_native_subset_and_prefers_an_exact_group() {
+        let mut groups = vec![
+            native(&["ONE"], &["TWO"]),
+            native(&["ONE"], &["THREE", "FOUR"]),
+            native(&["ONE"], &["TWO", "FOUR"]),
+            native(&["ONE", "SIX"], &["TWO", "THREE", "FOUR"]),
+        ];
+        let merge = |groups: &[Observed]| merge_groups(groups[..2].iter().collect(), groups).data;
+        let merged = merge(&groups);
+        assert_eq!(merged.opposing_side, ["TWO", "THREE", "FOUR"]);
+        assert_eq!(merged.contribution_group.unwrap(), [
+            vec!["ONE".to_owned()], vec!["THREE".to_owned(), "FOUR".to_owned()],
+        ]);
+        groups.push(native(&["ONE"], &["TWO", "THREE", "FOUR"]));
+        assert!(merge(&groups).contribution_group.is_none());
     }
 }
