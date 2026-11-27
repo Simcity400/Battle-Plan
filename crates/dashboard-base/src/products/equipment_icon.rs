@@ -373,7 +373,7 @@ impl IconContent {
         let defines = catalogue.read_defines()?;
         let mut warnings = Vec::new();
         let files = Arc::clone(&catalogue);
-        let (names, pools, enablers, units, geography) = std::thread::scope(|threads| {
+        let (names, pools, enablers, units, geography) = content_reader_layers::parallel::scope(|threads| {
             use content_reader_layers::parallel::spawn;
             let enablers = spawn(threads, || {
                 dashboard_text::catalogue::capture(|| {

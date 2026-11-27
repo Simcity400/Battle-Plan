@@ -45,7 +45,7 @@ impl MapIcons {
         gui_viewport: [u32; 2],
         decode: Decode,
     ) -> io::Result<LoadedIcons> {
-        std::thread::scope(|scope| {
+        content_reader_layers::parallel::scope(|scope| {
             let strict = content_reader_layers::content::is_strict();
             let raids = content_reader_layers::parallel::spawn(scope, move || {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

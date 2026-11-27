@@ -386,7 +386,7 @@ impl LazyFlags {
                 .into_iter()
                 .collect()
         };
-        let images = viewer_runtime::parallel::map(&keys, |key| (self.read)(key));
+        let images = content_reader_layers::parallel::map(&keys, |key| (self.read)(key));
         let mut state = lock(&self.state);
         for (key, image) in keys.into_iter().zip(images) {
             if !state.cells.contains_key(&key) {
@@ -456,7 +456,7 @@ impl PendingLoad for LazyFlags {
         if images.is_empty() && keys.is_empty() {
             return false;
         }
-        let decoded = viewer_runtime::parallel::map(&keys, |key| (self.read)(key));
+        let decoded = content_reader_layers::parallel::map(&keys, |key| (self.read)(key));
         images.extend(keys.into_iter().zip(decoded));
         let mut state = lock(&self.state);
         for (key, image) in images {
@@ -647,7 +647,7 @@ impl PendingLoad for LazyImages {
         if paths.is_empty() {
             return false;
         }
-        let decoded = viewer_runtime::parallel::map(&paths, |path| (self.read)(path));
+        let decoded = content_reader_layers::parallel::map(&paths, |path| (self.read)(path));
         let frame = self.textures.frame();
         let mut state = lock(&self.state);
         for (path, texture) in paths.into_iter().zip(decoded) {

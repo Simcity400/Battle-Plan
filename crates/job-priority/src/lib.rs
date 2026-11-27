@@ -456,11 +456,46 @@ impl JobPriority {
     }
 }
 
+pub fn usable_processors() -> usize {
+    #[cfg(windows)]
+    {
+        if let Some(process) = Processors::process()
+            && process.mask != 0
+        {
+            return process.mask.count_ones() as usize;
+        }
+    }
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+}
+
 #[derive(Clone, Debug)]
 pub struct Caller {
     job: JobPriority,
     priority: i32,
     level: Option<(Level, bool)>,
+}
+
+#[must_use]
+pub struct CallerGuard {
+    previous: Option<Caller>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl Drop for CallerGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            previous.enter();
+        }
+    }
+}
+
+pub fn enter_scoped(enter: impl FnOnce()) -> CallerGuard {
+    let guard = CallerGuard {
+        previous: Some(Caller::current()),
+        _thread: std::marker::PhantomData,
+    };
+    enter();
+    guard
 }
 
 impl Caller {
@@ -479,15 +514,26 @@ impl Caller {
         }
     }
 
+    pub fn scoped(self) -> CallerGuard {
+        enter_scoped(|| self.enter())
+    }
+
     pub fn enter(self) {
+        if BACKGROUND.get() != self.job.1 {
+            let _ = worker(self.job.1);
+        }
         Processors::confine(self.job.2);
         CONTEXT.set(self.job.3.0);
         JOB.with(|job| *job.borrow_mut() = self.job.0);
         LEVEL.set(self.level);
-        #[cfg(windows)]
-        unsafe {
-            use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
-            SetThreadPriority(GetCurrentThread(), self.priority);
+        if !self.job.1 {
+            #[cfg(windows)]
+            unsafe {
+                use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
+                SetThreadPriority(GetCurrentThread(), self.priority);
+            }
+            #[cfg(not(windows))]
+            let _ = self.priority;
         }
     }
 }
@@ -769,5 +815,41 @@ mod tests {
         let caller = confined(Caller::current);
         caller.enter();
         then();
+    }
+
+    #[test]
+    fn enter_scoped_restores_caller_state_on_return_and_unwind() {
+        static MARKER: u8 = 9;
+        assert!(usable_processors() >= 1);
+        std::thread::spawn(|| {
+            let baseline = Caller::current();
+            let target = JobPriority::run(Arc::new(AtomicBool::new(true)), || {
+                with_context(Some(&MARKER), Caller::current)
+            });
+            {
+                let _guard = target.clone().scoped();
+                assert!(JobPriority::current().background());
+                assert!(context().is_some());
+            }
+            assert!(!JobPriority::current().background());
+            assert!(context().is_none());
+            assert_eq!(Caller::current().priority, baseline.priority);
+
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = enter_scoped(|| {
+                    target.enter();
+                    background_thread();
+                });
+                assert!(is_background_thread());
+                panic!("unwind through caller guard");
+            }));
+            assert!(panicked.is_err());
+            assert!(!is_background_thread());
+            assert!(!JobPriority::current().background());
+            assert!(context().is_none());
+            assert_eq!(Caller::current().priority, baseline.priority);
+        })
+        .join()
+        .unwrap();
     }
 }

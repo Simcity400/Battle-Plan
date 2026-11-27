@@ -40,7 +40,7 @@ impl KeyNameProducts {
     }
 
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
-        use content_reader_layers::parallel::{join, spawn};
+        use content_reader_layers::parallel::{join, scope, spawn};
         let (
             ideologies,
             resources,
@@ -51,7 +51,7 @@ impl KeyNameProducts {
             characters,
             sub_units,
             template_columns,
-        ) = std::thread::scope(|scope| {
+        ) = scope(|scope| {
             let ideologies = spawn(scope, || crate::ideologies::read(layers));
             let resources = spawn(scope, || resources::read(layers));
             let scripted = spawn(scope, || {

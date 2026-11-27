@@ -132,7 +132,7 @@ pub fn enable() {
     job_priority::accounting::install(|| {
         enabled().then(|| {
             let context = Context::capture();
-            Box::new(move |category| Box::new(context.enter(category)) as Box<dyn std::any::Any>)
+            Box::new(move |category| Box::new(context.clone().enter(category)) as Box<dyn std::any::Any>)
                 as job_priority::accounting::Enter
         })
     });

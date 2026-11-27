@@ -1882,7 +1882,7 @@ impl Document {
         let serial = viewer_runtime::load_record::stage("content.serial");
         let game_version = replay.identity.game_version.clone();
         let content = Arc::new(content);
-        std::thread::scope(|prefix| {
+        content_reader_layers::parallel::scope(|prefix| {
             let scripted_content = Arc::clone(&content);
             let scripted_language = recorded_language.clone();
             let h_scripted = content_reader_layers::parallel::spawn(prefix, move || {

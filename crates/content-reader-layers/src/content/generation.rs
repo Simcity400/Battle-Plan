@@ -15,6 +15,32 @@ pub(super) fn current() -> Option<Arc<super::graph::Graph>> {
     CURRENT.with(|current| current.borrow().clone())
 }
 
+pub(crate) struct Captured(Option<Arc<super::graph::Graph>>);
+
+impl Captured {
+    pub(crate) fn capture() -> Self {
+        Self(current())
+    }
+
+    pub(crate) fn resume(&self) -> Generation {
+        Generation::resume(self.0.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_some(&self) -> bool {
+        self.0.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_same(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
 pub(super) type Snapshot = Arc<SettingsSnapshot>;
 
 pub(super) struct SettingsSnapshot {

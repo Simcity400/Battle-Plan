@@ -7,70 +7,18 @@ pub fn name_shared_pool() {
         .build_global();
 }
 
-use job_priority::SpawnCarried as _;
+pub use content_reader_layers::parallel::usable_processors;
+
 use std::sync::MutexGuard;
 use std::{
     any::Any,
-    num::NonZeroUsize,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    thread,
 };
 use turn_profile::{Batch, Counts};
-
-pub fn map<T, R, F>(items: &[T], work: F) -> Vec<R>
-where
-    T: Sync,
-    R: Send,
-    F: Fn(&T) -> R + Sync,
-{
-    let workers = thread::available_parallelism()
-        .map_or(4, NonZeroUsize::get)
-        .min(items.len());
-    if workers <= 1 {
-        return items.iter().map(&work).collect();
-    }
-    let run = items.len().div_ceil(workers);
-    let work = &work;
-    thread::scope(|scope| {
-        let handles: Vec<_> = items
-            .chunks(run)
-            .map(|chunk| {
-                let spawned = thread::Builder::new()
-                    .spawn_scoped_carried(scope, move || chunk.iter().map(work).collect::<Vec<R>>());
-                (chunk, spawned.ok())
-            })
-            .collect();
-        let mut out = Vec::with_capacity(items.len());
-        for (chunk, handle) in handles {
-            match handle {
-                Some(handle) => match handle.join() {
-                    Ok(results) => out.extend(results),
-                    Err(panic) => std::panic::resume_unwind(panic),
-                },
-                None => out.extend(chunk.iter().map(work)),
-            }
-        }
-        out
-    })
-}
-
-pub fn usable_processors() -> usize {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
-        let (mut process, mut system) = (0usize, 0usize);
-        let read =
-            unsafe { GetProcessAffinityMask(GetCurrentProcess(), &raw mut process, &raw mut system) };
-        if read != 0 && process != 0 {
-            return process.count_ones() as usize;
-        }
-    }
-    thread::available_parallelism().map_or(1, NonZeroUsize::get)
-}
 
 pub type Beside<'a> = dyn Fn(&dyn Fn() -> bool) + Sync + 'a;
 
@@ -473,15 +421,6 @@ pub(crate) mod tests {
         sync::{Arc, Mutex},
         time::Duration,
     };
-    #[test]
-    fn results_keep_the_input_order_for_many_items() {
-        let items: Vec<u32> = (0..75_000).collect();
-        let out = super::map(&items, |value| u64::from(*value) * 3);
-        assert_eq!(out.len(), items.len());
-        assert!(out.iter().enumerate().all(|(i, v)| *v == i as u64 * 3));
-        assert!(super::map(&[] as &[u32], |value| *value).is_empty());
-        assert_eq!(super::map(&[7u8], |value| *value + 1), [8]);
-    }
 
     pub(crate) struct Threads(
         Mutex<std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>>,

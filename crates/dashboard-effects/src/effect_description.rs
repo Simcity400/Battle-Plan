@@ -222,13 +222,15 @@ pub struct CachedContent {
 }
 
 fn alongside<'s, T: Send + 's>(
-    threads: &'s std::thread::Scope<'s, '_>,
+    threads: &'s content_reader_layers::parallel::Scope<'s, '_>,
     read: impl FnOnce() -> T + Send + 's,
-) -> std::thread::ScopedJoinHandle<'s, (T, crate::catalogue::OwnRefusals)> {
+) -> content_reader_layers::parallel::ScopedHandle<'s, (T, crate::catalogue::OwnRefusals)> {
     content_reader_layers::parallel::spawn(threads, move || crate::catalogue::capture(read))
 }
 
-fn joined<T>(read: std::thread::ScopedJoinHandle<'_, (T, crate::catalogue::OwnRefusals)>) -> T {
+fn joined<T>(
+    read: content_reader_layers::parallel::ScopedHandle<'_, (T, crate::catalogue::OwnRefusals)>,
+) -> T {
     let (value, noted) = content_reader_layers::parallel::join(read);
     crate::catalogue::credit(&noted);
     value
@@ -240,11 +242,13 @@ impl CachedContent {
         environment: &crate::scripted_text::Environment,
         static_modifiers: Arc<content_reader_politics::static_modifiers::Descriptions>,
     ) -> std::io::Result<Self> {
-        std::thread::scope(|threads| Self::read_with(threads, layers, environment, static_modifiers))
+        content_reader_layers::parallel::scope(|threads| {
+            Self::read_with(threads, layers, environment, static_modifiers)
+        })
     }
 
     fn read_with<'s>(
-        threads: &'s std::thread::Scope<'s, '_>,
+        threads: &'s content_reader_layers::parallel::Scope<'s, '_>,
         layers: &'s content_reader_layers::ResolvedLayers,
         environment: &crate::scripted_text::Environment,
         static_modifiers: Arc<content_reader_politics::static_modifiers::Descriptions>,

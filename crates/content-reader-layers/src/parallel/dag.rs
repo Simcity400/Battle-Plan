@@ -1,7 +1,13 @@
 use std::{
-    collections::VecDeque,
+    any::Any,
+    collections::{BTreeSet, VecDeque},
     io,
-    sync::{Arc, Condvar, Mutex, OnceLock},
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    ptr,
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 pub struct Task<T> {
@@ -44,6 +50,8 @@ type Work<'a> = Box<dyn FnOnce() + Send + 'a>;
 
 struct Node<'a> {
     work: Option<Work<'a>>,
+    cancel: Option<Work<'a>>,
+    context: Option<super::CarriedContext>,
     remaining: usize,
     consumers: Vec<usize>,
 }
@@ -51,6 +59,133 @@ struct Node<'a> {
 #[derive(Default)]
 pub struct Dag<'a> {
     nodes: Vec<Node<'a>>,
+}
+
+struct DagState<'a> {
+    nodes: Vec<Node<'a>>,
+    ready: VecDeque<usize>,
+    remaining: usize,
+    failed: bool,
+    cancelled: bool,
+    panic: Option<Box<dyn Any + Send>>,
+    overlay_refusals: Vec<BTreeSet<String>>,
+}
+
+struct DagBatch {
+    pool: *const super::Pool,
+    state: *const Mutex<DagState<'static>>,
+    ready_count: AtomicUsize,
+    finished: AtomicBool,
+    alive: Option<Arc<AtomicBool>>,
+}
+
+// SAFETY: `DagState` is protected by a `Mutex`, lives on `Dag::run_in`'s stack frame alongside
+// `&Pool`, and `BatchRegistration::drop` closes the batch and waits until `in_flight == 0` before
+// returning.
+unsafe impl Send for DagBatch {}
+// SAFETY: same as `Send`.
+unsafe impl Sync for DagBatch {}
+
+impl DagBatch {
+    fn pool(&self) -> &super::Pool {
+        // SAFETY: `BatchRegistration` guarantees `&Pool` outlives every access.
+        unsafe { &*self.pool }
+    }
+
+    fn state(&self) -> &Mutex<DagState<'static>> {
+        // SAFETY: `BatchRegistration` guarantees `DagState` outlives every access.
+        unsafe { &*self.state }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        super::is_root_cancelled(self.alive.as_ref())
+    }
+
+    fn run_one(&self) -> bool {
+        let (id, work, context) = {
+            let mut state = super::lock(self.state());
+            if state.failed || state.cancelled || state.remaining == 0 {
+                self.ready_count.store(0, Ordering::Release);
+                self.finished.store(true, Ordering::Release);
+                return false;
+            }
+            if self.is_cancelled() {
+                state.cancelled = true;
+                state.ready.clear();
+                self.ready_count.store(0, Ordering::Release);
+                self.finished.store(true, Ordering::Release);
+                return false;
+            }
+            let Some(id) = state.ready.pop_front() else {
+                self.ready_count.store(0, Ordering::Release);
+                return false;
+            };
+            self.ready_count.store(state.ready.len(), Ordering::Release);
+            let work = state.nodes[id].work.take().expect("ready task has work");
+            let context = state.nodes[id]
+                .context
+                .take()
+                .expect("ready task has context");
+            (id, work, context)
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| context.enter("content parallel", work)));
+        let mut state = super::lock(self.state());
+        match result {
+            Ok(((), refusals)) => {
+                if !refusals.is_empty() {
+                    state.overlay_refusals[id].extend(refusals);
+                }
+                state.remaining -= 1;
+                if self.is_cancelled() {
+                    state.cancelled = true;
+                    state.ready.clear();
+                    self.ready_count.store(0, Ordering::Release);
+                    self.finished.store(true, Ordering::Release);
+                } else if !state.failed && !state.cancelled {
+                    let consumers = std::mem::take(&mut state.nodes[id].consumers);
+                    for consumer in consumers {
+                        let node = &mut state.nodes[consumer];
+                        node.remaining -= 1;
+                        if node.remaining == 0 {
+                            state.ready.push_back(consumer);
+                        }
+                    }
+                    let ready_len = state.ready.len();
+                    self.ready_count.store(ready_len, Ordering::Release);
+                    if state.remaining == 0 {
+                        self.finished.store(true, Ordering::Release);
+                    }
+                } else {
+                    self.ready_count.store(0, Ordering::Release);
+                }
+            }
+            Err(panic) => {
+                state.failed = true;
+                state.ready.clear();
+                state.panic.get_or_insert(panic);
+                self.ready_count.store(0, Ordering::Release);
+                self.finished.store(true, Ordering::Release);
+            }
+        }
+        let wake = state.ready.len();
+        drop(state);
+        if wake > 0 {
+            self.pool().wake_helpers(wake);
+        } else {
+            self.pool().notify_all();
+        }
+        true
+    }
+}
+
+impl super::WorkBatch for DagBatch {
+    fn has_claimable(&self) -> bool {
+        !self.finished.load(Ordering::Acquire) && self.ready_count.load(Ordering::Acquire) > 0
+    }
+
+    fn run_turn(&self) {
+        self.run_one();
+    }
 }
 
 impl<'a> Dag<'a> {
@@ -72,10 +207,18 @@ impl<'a> Dag<'a> {
         }
         let value = Arc::new(OnceLock::new());
         let output = Arc::clone(&value);
+        let cancel_output = Arc::clone(&value);
         self.nodes.push(Node {
-            work: Some(Box::new(super::carried(move || {
+            work: Some(Box::new(move || {
                 assert!(output.set(work()).is_ok(), "a task executes once");
-            }))),
+            })),
+            cancel: Some(Box::new(move || {
+                let _ = cancel_output.set(Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "cancelled",
+                )));
+            })),
+            context: Some(super::CarriedContext::capture()),
             remaining: dependencies.len(),
             consumers: Vec::new(),
         });
@@ -83,67 +226,91 @@ impl<'a> Dag<'a> {
     }
 
     pub fn run(self) {
-        struct State<'a> {
-            nodes: Vec<Node<'a>>,
-            ready: VecDeque<usize>,
-            remaining: usize,
-            failed: bool,
-        }
+        self.run_in(super::shared_pool());
+    }
+
+    pub(crate) fn run_in(mut self, pool: &super::Pool) {
         let count = self.nodes.len();
-        let ready = self
+        if count == 0 {
+            return;
+        }
+        let alive = super::current_alive();
+        if let Some(alive) = &alive {
+            for node in &mut self.nodes {
+                if let Some(context) = &mut node.context
+                    && context.alive.is_none()
+                {
+                    context.alive = Some(Arc::clone(alive));
+                }
+            }
+        }
+        let ready: VecDeque<usize> = self
             .nodes
             .iter()
             .enumerate()
             .filter_map(|(id, node)| (node.remaining == 0).then_some(id))
             .collect();
-        let state = Mutex::new(State {
+        let initial_ready = ready.len();
+        let root = pool.enter_root();
+        let state = Mutex::new(DagState {
             nodes: self.nodes,
             ready,
             remaining: count,
             failed: false,
+            cancelled: false,
+            panic: None,
+            overlay_refusals: (0..count).map(|_| BTreeSet::new()).collect(),
         });
-        let changed = Condvar::new();
-        let workers = std::thread::available_parallelism()
-            .map_or(1, |count| count.get())
-            .min(count);
-        super::map(&vec![(); workers], |_| {
-            loop {
-                let (id, work) = {
-                    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-                    loop {
-                        if state.failed || state.remaining == 0 {
-                            return;
-                        }
-                        if let Some(id) = state.ready.pop_front() {
-                            break (
-                                id,
-                                state.nodes[id].work.take().expect("ready task has work"),
-                            );
-                        }
-                        state = changed
-                            .wait(state)
-                            .unwrap_or_else(|error| error.into_inner());
-                    }
-                };
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
-                let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-                if let Err(panic) = result {
-                    state.failed = true;
-                    changed.notify_all();
-                    drop(state);
-                    std::panic::resume_unwind(panic);
-                }
-                state.remaining -= 1;
-                let consumers = std::mem::take(&mut state.nodes[id].consumers);
-                for consumer in consumers {
-                    let node = &mut state.nodes[consumer];
-                    node.remaining -= 1;
-                    if node.remaining == 0 {
-                        state.ready.push_back(consumer);
-                    }
-                }
-                changed.notify_all();
+        // SAFETY: `BatchRegistration` closes `DagBatch` and waits until `in_flight == 0` before
+        // `state` is dropped on this stack frame.
+        let erased_state: *const Mutex<DagState<'static>> = unsafe {
+            std::mem::transmute::<*const Mutex<DagState<'a>>, *const Mutex<DagState<'static>>>(
+                ptr::from_ref(&state),
+            )
+        };
+        let batch = Arc::new(DagBatch {
+            pool: ptr::from_ref(pool),
+            state: erased_state,
+            ready_count: AtomicUsize::new(initial_ready),
+            finished: AtomicBool::new(false),
+            alive: alive.clone(),
+        });
+        let registration = pool.register_batch(
+            root.root_id,
+            alive,
+            Arc::clone(&batch) as Arc<dyn super::WorkBatch>,
+            initial_ready.saturating_sub(1),
+        );
+        let meta = registration.meta();
+        loop {
+            while batch.run_one() {}
+            if batch.finished.load(Ordering::Acquire) && registration.in_flight() == 0 {
+                break;
             }
-        });
+            pool.wait_until(meta, || {
+                batch.ready_count.load(Ordering::Acquire) > 0
+                    || (batch.finished.load(Ordering::Acquire) && registration.in_flight() == 0)
+            });
+        }
+        drop(registration);
+        drop(batch);
+        let mut state = state
+            .into_inner()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(panic) = state.panic.take() {
+            resume_unwind(panic);
+        }
+        if state.cancelled {
+            for node in &mut state.nodes {
+                if node.work.take().is_some()
+                    && let Some(cancel) = node.cancel.take()
+                {
+                    cancel();
+                }
+            }
+        }
+        for refusals in &state.overlay_refusals {
+            crate::content::credit_overlay_observers(refusals);
+        }
     }
 }

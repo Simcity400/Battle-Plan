@@ -245,6 +245,10 @@ thread_local! {
     static STRICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+pub(crate) fn set_strict(value: bool) -> bool {
+    STRICT.with(|strict| strict.replace(value))
+}
+
 pub fn strict<T>(run: impl FnOnce() -> T) -> T {
     struct Exit(bool);
     impl Drop for Exit {
@@ -252,7 +256,7 @@ pub fn strict<T>(run: impl FnOnce() -> T) -> T {
             STRICT.with(|strict| strict.set(self.0));
         }
     }
-    let _exit = Exit(STRICT.with(|strict| strict.replace(true)));
+    let _exit = Exit(set_strict(true));
     run()
 }
 
@@ -331,7 +335,10 @@ pub fn credit_overlay_refusals(refusals: &BTreeSet<String>) {
     diagnostics::Diagnostics::credit_fallbacks(refusals);
 }
 
-fn credit_overlay_observers(refusals: &BTreeSet<String>) {
+pub(crate) fn credit_overlay_observers(refusals: &BTreeSet<String>) {
+    if refusals.is_empty() {
+        return;
+    }
     let from = OVERLAY_ISOLATED.with(std::cell::Cell::get);
     OVERLAY_OBSERVERS.with(|observers| {
         for seen in observers.borrow_mut().iter_mut().skip(from) {

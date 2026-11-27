@@ -962,9 +962,11 @@ impl DashboardMaps {
                     return;
                 }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    load_scene(&device, &queue, &document, graphics, &workers)
-                        .map(|scene| (document, scene))
-                        .map_err(|error| error.to_string())
+                    content_reader_layers::parallel::with_alive(Arc::clone(&job_alive), || {
+                        load_scene(&device, &queue, &document, graphics, &workers)
+                            .map(|scene| (document, scene))
+                            .map_err(|error| error.to_string())
+                    })
                 }))
                 .unwrap_or_else(|_| Err("Native map scene creation panicked".into()));
                 if job_alive.load(Ordering::Acquire) {
@@ -1026,27 +1028,29 @@ impl DashboardMaps {
                     hour_fraction: 0.0,
                 };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut document = Document::load_shared(
-                        source_handle.path(),
-                        &resolve,
-                        allow,
-                        &initial,
-                        source_handle.replay(),
-                        &source_handle,
-                        load_visual_mods.as_deref(),
-                        texture_quality,
-                        Some((recording.as_str(), &decisions)),
-                    )
-                    .map_err(|error| error.to_string())?;
-                    document.bind_source(&source_handle);
-                    if !job_alive.load(Ordering::Acquire) {
-                        return Err("Map asset loading was cancelled".into());
-                    }
-                    let Document {
-                        content, playback, ..
-                    } = document;
-                    drop(playback);
-                    Ok(content)
+                    content_reader_layers::parallel::with_alive(Arc::clone(&job_alive), || {
+                        let mut document = Document::load_shared(
+                            source_handle.path(),
+                            &resolve,
+                            allow,
+                            &initial,
+                            source_handle.replay(),
+                            &source_handle,
+                            load_visual_mods.as_deref(),
+                            texture_quality,
+                            Some((recording.as_str(), &decisions)),
+                        )
+                        .map_err(|error| error.to_string())?;
+                        document.bind_source(&source_handle);
+                        if !job_alive.load(Ordering::Acquire) {
+                            return Err("Map asset loading was cancelled".into());
+                        }
+                        let Document {
+                            content, playback, ..
+                        } = document;
+                        drop(playback);
+                        Ok(content)
+                    })
                 }))
                 .unwrap_or_else(|_| Err("Native map asset loading panicked".into()));
                 if job_alive.load(Ordering::Acquire) {

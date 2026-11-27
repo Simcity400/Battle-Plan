@@ -205,7 +205,7 @@ impl PoliticsContent {
         let (ideologies, ideology_warnings) = ideologies(layers)?;
         let officers = catalogue.read_defines()?
             .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-        let (read, traits, definitions, names) = std::thread::scope(|threads| {
+        let (read, traits, definitions, names) = content_reader_layers::parallel::scope(|threads| {
             let traits = content_reader_layers::parallel::spawn(threads, || {
                 content_reader_military::leader_traits::read(layers)
             });
@@ -276,7 +276,7 @@ impl PoliticsContent {
                     buildings,
                     resources,
                     aliases,
-                ) = std::thread::scope(|threads| {
+                ) = content_reader_layers::parallel::scope(|threads| {
                     use content_reader_layers::parallel::spawn;
                     let abilities = spawn(threads, || content_reader_abilities::abilities::read(layers));
                     let focuses = spawn(threads, || content_reader_focus::focus::read_national(layers));

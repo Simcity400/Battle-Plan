@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_runtime::errors::examples;
 #[cfg(test)]
 use viewer_runtime::test_support::test_tga_rgba8;
-use viewer_runtime::parallel::map;
+use content_reader_layers::parallel::map;
 
 use content_reader_layers::ResolvedLayers;
 use content_reader_key_names::characters::{self, Authored};

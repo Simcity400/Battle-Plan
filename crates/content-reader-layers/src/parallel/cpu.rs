@@ -27,18 +27,11 @@ pub struct Sample {
     pub threads: u64,
 }
 
-pub fn spawn<'scope, T: Send + 'scope>(
-    scope: &'scope std::thread::Scope<'scope, '_>,
-    work: impl FnOnce() -> T + Send + 'scope,
-) -> std::thread::ScopedJoinHandle<'scope, T> {
-    job_priority::spawn_in(scope, crate::content::generation::carry(carry(work)))
-}
-
 impl Measurement {
     pub fn start() -> Self {
         let totals = Arc::new(Totals::default());
         Self {
-            scope: Scope::enter(Arc::clone(&totals)),
+            scope: Scope::enter(Some(Arc::clone(&totals))),
             totals,
         }
     }
@@ -54,16 +47,21 @@ impl Measurement {
     }
 }
 
-pub(super) fn carry<T>(work: impl FnOnce() -> T) -> impl FnOnce() -> T {
-    let totals = CURRENT.with(|current| current.borrow().clone());
-    move || {
-        let _scope = totals.map(Scope::enter);
-        work()
+#[derive(Clone)]
+pub(super) struct Captured(Option<Arc<Totals>>);
+
+impl Captured {
+    pub(super) fn capture() -> Self {
+        Self(CURRENT.with(|current| current.borrow().clone()))
+    }
+
+    pub(super) fn enter(&self) -> Scope {
+        Scope::enter(self.0.clone())
     }
 }
 
-struct Scope {
-    totals: Arc<Totals>,
+pub(super) struct Scope {
+    totals: Option<Arc<Totals>>,
     previous: Option<Arc<Totals>>,
     counted: bool,
     started: Option<u64>,
@@ -71,11 +69,13 @@ struct Scope {
 }
 
 impl Scope {
-    fn enter(totals: Arc<Totals>) -> Self {
-        let previous = CURRENT.with(|current| current.replace(Some(Arc::clone(&totals))));
-        let counted = previous
-            .as_ref()
-            .is_none_or(|held| !Arc::ptr_eq(held, &totals));
+    fn enter(totals: Option<Arc<Totals>>) -> Self {
+        let previous = CURRENT.with(|current| current.replace(totals.clone()));
+        let counted = match (&totals, &previous) {
+            (Some(totals), Some(held)) => !Arc::ptr_eq(held, totals),
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
         let started = counted.then(current).flatten();
         Self {
             totals,
@@ -89,18 +89,20 @@ impl Scope {
 
 impl Drop for Scope {
     fn drop(&mut self) {
-        if self.counted {
-            self.totals.threads.fetch_add(1, Ordering::Relaxed);
+        if self.counted
+            && let Some(totals) = &self.totals
+        {
+            totals.threads.fetch_add(1, Ordering::Relaxed);
             match self
                 .started
                 .zip(current())
                 .and_then(|(from, to)| to.checked_sub(from))
             {
                 Some(ns) => {
-                    self.totals.ns.fetch_add(ns, Ordering::Relaxed);
+                    totals.ns.fetch_add(ns, Ordering::Relaxed);
                 }
                 None => {
-                    self.totals.missing.fetch_add(1, Ordering::Relaxed);
+                    totals.missing.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }

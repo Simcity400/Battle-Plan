@@ -16,7 +16,7 @@ pub(in crate::effect_description) struct CharacterContent {
 
 impl CharacterContent {
     pub(in crate::effect_description) fn read<'s>(
-        threads: &'s std::thread::Scope<'s, '_>,
+        threads: &'s content_reader_layers::parallel::Scope<'s, '_>,
         layers: &'s content_reader_layers::ResolvedLayers,
         environment: &crate::scripted_text::Environment,
         officers: Result<&[String], String>,

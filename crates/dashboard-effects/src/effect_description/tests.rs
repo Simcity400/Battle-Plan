@@ -1929,7 +1929,7 @@ mod recorded_source;
 fn reads_alongside_reach_this_threads_consumers_once_joined() {
     let refused = BTreeSet::from(["artwork.dds: refused".to_owned()]);
     let (seen, noted) = crate::catalogue::capture(|| {
-        std::thread::scope(|threads| {
+        content_reader_layers::parallel::scope(|threads| {
             let read = alongside(threads, || {
                 content_reader_layers::content::credit_overlay_refusals(&refused);
                 7

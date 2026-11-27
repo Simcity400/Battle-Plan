@@ -507,7 +507,7 @@ mod tests {
             observe(|| {
                 entry
                     .get_or_init(|| {
-                        std::thread::scope(|scope| {
+                        crate::parallel::scope(|scope| {
                             crate::parallel::join(crate::parallel::spawn(scope, || {
                                 layers.note_shader_warning(warning.to_owned());
                                 layers.read_uncovered(path).unwrap().into_vec()
