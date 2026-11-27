@@ -346,6 +346,50 @@ fn a_design_is_named_at_each_hour_its_recorded_name_changed_and_not_known_once_i
 }
 
 #[test]
+fn naming_twice_as_many_hours_in_one_block_opens_and_restores_no_more_readers() {
+    use dashboard_base::{Source, SourceKey, test_fixtures::{CAMPAIGN, records, source as base_frame}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{LexicalTokenRow, TableId, TableRows, VariantDefinitionRow};
+    use replay_frame::frame::TableView;
+    use replay_recording::cells::count_reads;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let measure = |hours: i32| {
+        let frames = (0..hours).map(|hour| {
+            let mut frame = base_frame(1, hour, Some(1));
+            *frame.tables[TableId::VariantDefinitions.index()] = TableView::Complete(TableRows::VariantDefinitions(vec![
+                VariantDefinitionRow { id: 77, equipment_token: hour as u32 + 1, display_name: format!("Synthetic {hour}").into_bytes(), ..Default::default() },
+            ]));
+            *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+                LexicalTokenRow { token: hour as u32 + 1, literal: format!("synthetic_equipment_{hour}").into_bytes() },
+            ]));
+            frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+            frame.metrics.table_ns[TableId::LexicalTokens.index()] = 1;
+            frame
+        }).collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(SourceKey { source_id: "naming-reads".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let span = Span { run: query.timeline.stretches[0].run, first: 0, last: hours - 1, id: 9001, breaks: false };
+        let (named, counts) = count_reads(|| super::designs(&query, &span, &BTreeMap::from([(77, 0)]), &super::Content { catalogue: None, units: None }, &mut BTreeSet::new()).unwrap());
+        assert_eq!(named[&77].names.len(), hours as usize);
+        for (hour, name) in named[&77].names.iter().enumerate() {
+            assert_eq!(name.first_hour, hour as i32);
+            assert!(name.name.is_none());
+            assert!(name.known);
+        }
+        counts.values().fold((0, 0), |(opened, restores), count| (opened + count.opened, restores + count.restores))
+    };
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    pool.install(|| {
+        let short = measure(32);
+        let long = measure(64);
+        assert!(short.0 > 0 && short.1 > 0);
+        assert_eq!(long, short, "more naming hours within the same block reuse each table reader");
+    });
+}
+
+#[test]
 fn repairs_are_summed_from_indexed_rate_segments_clipped_to_the_asked_hours() {
     let repairs = RepairRead::new(
         vec![(0, 9, Some((Some(100), true))), (10, 19, Some((Some(50), false))), (20, 24, Some((None, false))), (25, 29, Some((Some(10), true)))],
