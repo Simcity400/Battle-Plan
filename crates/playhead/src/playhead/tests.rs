@@ -3097,33 +3097,21 @@ fn taking_a_playing_seeks_reset_notifies_control_watchers_with_clock_unlocked() 
 
 #[test]
 fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
-    let last = (2 * BLOCK - 1) as i32;
-    let (bytes, run, _) = record_log(Writing { cap: 256, ..Writing::at(3) }, 0, 2 * BLOCK);
-    let gated = gated(bytes);
-    let pages = Arc::new(Runs { extents: vec![gated], runs: vec![run], kinds: vec![LOG.to_vec()] });
-    let second_page_from = pages.runs[0].held_pages().unwrap()[1].tables[0].parts.iter()
-        .flat_map(|part| part.frames.iter().map(|frame| frame.offset))
-        .min()
-        .unwrap();
-    pages.extents[0].close(second_page_from, u64::MAX);
-    let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap());
-    let reader = playhead.declare(vec![Declared { table: 0, columns: vec![0, 1], keyed: true, passing: false, hourly: false }], None).unwrap();
-    let mut consumer = playhead.consumer(reader);
-    consumer.set_blocking(true);
-    playhead.seek(0);
-    playhead.wait_until(|| playhead.newest().is_some());
-    let mut steps = Vec::new();
-    let _ = consumer.take(0, &mut steps);
-    steps.clear();
+    static START_WORKERS: Mutex<()> = Mutex::new(());
+    let (bytes, run, _) = record_log(Writing { cap: 256, ..Writing::at(3) }, 0, 24);
+    let pages = Arc::new(Runs { extents: vec![gated(bytes)], runs: vec![run], kinds: vec![LOG.to_vec()] });
+    let timeline = Timeline::whole(&*pages).unwrap();
+    let (playhead, start_workers) = {
+        let start_workers = super::lock(&START_WORKERS);
+        let settings = Settings { entering: Some(|_| drop(super::lock(&START_WORKERS))), ..settings() };
+        (Playhead::new(pages, timeline, settings, None).unwrap(), start_workers)
+    };
+
     let all_wakes = Arc::new(AtomicUsize::new(0));
     let control_wakes = Arc::new(AtomicUsize::new(0));
-    let (woke, wakes) = std::sync::mpsc::channel();
     let _all = playhead.watch({
         let all_wakes = Arc::clone(&all_wakes);
-        Arc::new(move || {
-            all_wakes.fetch_add(1, Ordering::AcqRel);
-            let _ = woke.send(());
-        })
+        Arc::new(move || { all_wakes.fetch_add(1, Ordering::AcqRel); })
     });
     let _ctrl = playhead.watch_control({
         let control_wakes = Arc::clone(&control_wakes);
@@ -3131,29 +3119,33 @@ fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
     });
     let seq_before = playhead.control_seq();
     let act_before = playhead.activity();
-    pages.extents[0].open();
-    consumer.advance(last);
-    playhead.wait_until(|| playhead.newest() == Some(last));
-    while all_wakes.load(Ordering::Acquire) == 0 || playhead.activity() <= act_before {
-        wakes.recv().unwrap();
-    }
-    let _ = consumer.take(last, &mut steps);
+    let mut stepper = super::Stepper::new(Arc::clone(&playhead.shared), None, Vec::new());
+    stepper.publish(Arc::new(Step { first: 1, last: 1, piece: Some(0), ..Step::default() })).unwrap();
     assert!(playhead.activity() > act_before && all_wakes.load(Ordering::Acquire) > 0, "publications bump activity and wake watch");
     assert_eq!(playhead.control_seq(), seq_before, "publications must not bump control_seq");
     assert_eq!(control_wakes.load(Ordering::Acquire), 0, "watch_control must not wake on plain publications");
 
-    pages.extents[0].close(0, u64::MAX);
+    let request = Arc::new(std::sync::OnceLock::<super::Asked>::new());
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let asked = playhead.log_reads().rows_notifying(
         Wanted { run: 0, table: 0, ordinals: vec![0], columns: vec![0, 1] },
-        Arc::new(move || { let _ = done_tx.send(()); }),
+        Arc::new({
+            let request = Arc::clone(&request);
+            move || { let _ = done_tx.send(request.get().and_then(super::Asked::take)); }
+        }),
     );
-    pages.extents[0].wait_blocked();
-    assert!(asked.take().is_none(), "read is still blocked behind extent gate");
-    pages.extents[0].open();
-    done_rx.recv().unwrap();
-    let rows = asked.take().expect("answer ready when on_done fires").unwrap();
+    assert!(asked.take().is_none(), "read is pending before the job runs");
+    assert!(request.set(asked).is_ok());
+    let job = {
+        let mut jobs = super::lock(&playhead.shared.jobs);
+        let job = jobs.heap.pop().expect("rows job queued").job;
+        jobs.running += 1;
+        job
+    };
+    let _ = playhead.shared.run(job);
+    let rows = done_rx.try_recv().expect("rows job calls on_done").expect("answer ready when on_done fires").unwrap();
     assert_eq!(rows.ordinals(), &[0]);
+    drop(start_workers);
 }
 
 #[test]
