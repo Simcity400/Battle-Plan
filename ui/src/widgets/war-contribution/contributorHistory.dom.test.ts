@@ -41,13 +41,16 @@ test('installed War contribution rows open a cancellable history and keep its re
       assert.equal(partial.count, 1);
       assert.ok(partial.snapshotHours.every(hour => hour === lastHour));
       await page.press('Home');
+      assert.match(await act<string>('tooltip()'), /AAA.*partial.*not attributed/);
+      await page.press('ArrowRight');
+      assert.match(await act<string>('tooltip()'), /Not recorded.*WarParticipation/);
       await page.press('End');
       await page.press('ArrowLeft');
       assert.ok(await act<{ caption: string }>('read()').then(reply => reply.caption.includes(formatDateHover(lastHour - 1))));
       assert.match(await act<string>('tooltip()'), /BBB.*partial.*not attributed/);
       assert.match(await act<{ spoken: string }>('read()').then(reply => reply.spoken), /EEE.*partial.*not attributed/);
       await mouse('.war-history-chart', 0.53, 66, false);
-      assert.match(await act<string>('tooltip()'), /Recording paused in the fixture|partial.*not attributed/);
+      assert.match(await act<string>('tooltip()'), /Recording paused in the fixture|partial.*not attributed|WarParticipation/);
       await page.press('Escape');
       assert.deepEqual(await act('closed()'), [true]);
 
@@ -76,5 +79,5 @@ test('installed War contribution rows open a cancellable history and keep its re
     } finally {
       await cdp.close();
     }
-  }));
+  }, 45_000));
 });

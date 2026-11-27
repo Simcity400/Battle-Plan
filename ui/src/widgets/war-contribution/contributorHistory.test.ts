@@ -53,14 +53,17 @@ test('held history distinguishes absence, partial casualties, a missing side and
   assert.equal(read(107)[0]!.kind, 'notApplicable');
   const zeroShares = readContribution(history, person, 2, 103);
   assert.deepEqual(zeroShares.map(value => value.kind), ['zero', 'notApplicable', 'notApplicable']);
-  assert.match(readingText(zeroShares[1]!, 1), /recorded total is zero/i);
+  assert.match(readingText(zeroShares[1]!, 1), /recorded total for this side is zero/i);
   const chart = historyChart(history, [person], 'casualties', 2, 'white');
   assert.equal(chart.hour, 109);
   assert.equal(chart.series[0]?.points?.find(point => point.hour === 100)?.value, null);
   assert.equal(chart.series[0]?.points?.find(point => point.hour === 104)?.value, null);
   assert.deepEqual(chart.markers?.map(marker => marker.hour), [103, 106, 105]);
-  const layout = layoutTimeChart(chart, 700, 230, 'sans-serif', text => text.length * 7);
-  const tip = deriveTimeChartTooltip(chart, layout, 'plot:103')?.payload?.items?.[0];
-  assert.equal(tip?.value, '35.13%');
-  assert.match(tip?.partialReason ?? '', /not attributed/);
+  const tipAt = (chart: ReturnType<typeof historyChart>, hour: number) => deriveTimeChartTooltip({ ...chart, hoverDetail: chart.detailAt(hour) },
+    layoutTimeChart(chart, 700, 230, 'sans-serif', text => text.length * 7), `plot:${hour}`)?.payload?.items?.[0]?.value ?? '';
+  assert.match(tipAt(chart, 103), /^35\.13% partial.*not attributed/);
+  assert.match(tipAt(chart, 104), /Fixture opposing ledger unread/);
+  const participation = historyChart(history, [person], 'participation', 2, 'white');
+  assert.match(tipAt(participation, 100), /This country was not in the war/);
+  assert.match(tipAt(participation, 103), /Participation is already a share of the side/);
 });

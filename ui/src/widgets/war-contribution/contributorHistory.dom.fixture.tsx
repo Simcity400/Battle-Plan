@@ -64,12 +64,8 @@ function Fixture({ view }: { view: 'measure' | 'sides' }) {
 }
 
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-async function wait(label: string, check: () => boolean) {
-  for (let i = 0; i < 120; i++) {
-    if (check()) return;
-    await frame();
-  }
-  throw new Error(`${label} not shown. Snapshot hours: ${snapshotHours}. History requests: ${calls.length}. ${detail()?.textContent ?? container.textContent}`);
+async function wait(check: () => boolean) {
+  while (!check()) await frame();
 }
 
 function detail() { return document.querySelector<HTMLElement>('.war-history:popover-open'); }
@@ -78,7 +74,7 @@ const totals = (amount: string) => measureKeys.map(() => [[firstHour, amount]]) 
 Object.assign(window, { warHistoryFixture: {
   async mount(view: 'measure' | 'sides') {
     flushSync(() => root.render(<StrictMode><Fixture key={view} view={view} /></StrictMode>));
-    await wait(view, () => !!container.querySelector('[data-row-key="viewpoint:AAA"]'));
+    await wait(() => !!container.querySelector('[data-row-key="viewpoint:AAA"]'));
   },
   async activateTable(key: string) {
     const row = container.querySelector<HTMLTableRowElement>(`tr[data-row-key="${key}"]`);
@@ -86,16 +82,19 @@ Object.assign(window, { warHistoryFixture: {
     row.focus();
   },
   async chart() {
-    await wait('Chart', () => !!detail()?.querySelector('canvas'));
+    await wait(() => !!detail()?.querySelector('canvas'));
     return { focus: document.activeElement?.className, text: detail()?.querySelector('caption')?.textContent,
       rows: detail()?.querySelectorAll('tbody tr').length };
   },
   async loading(count: number, title?: string) {
-    await wait(title ?? 'Loading window', () => calls.length === count && !!detail() && (!title || detail()?.querySelector('strong')?.textContent?.includes(title) === true));
+    await wait(() => calls.length === count && !!detail() && (!title || detail()?.querySelector('strong')?.textContent?.includes(title) === true));
     return { calls: calls.map(({ call, signal }) => [call.params, signal.aborted]), title: detail()?.querySelector('strong')?.textContent, text: detail()?.querySelector('[role="status"]')?.textContent };
   },
   answer(index: number, unavailable = false) {
-    const missing = unavailable ? [{ firstHour, lastHour, reason: 'WarParticipation: the fixture’s ledger was unavailable' }] : [];
+    const reason = 'WarParticipation: the fixture’s ledger was unavailable';
+    const missing = unavailable ? [{ firstHour, lastHour, reason }] : [
+      { firstHour: firstHour + 1, lastHour: pause - 1, reason }, { firstHour: pause + 1, lastHour: pause + 1, reason },
+    ];
     calls[index]!.answer({ war, measureKeys, contributors, gaps: branch.gaps, warnings: [], sides: [
       { totals: totals('1200000'), missing }, { totals: totals('200000'), missing },
     ] });
@@ -103,7 +102,7 @@ Object.assign(window, { warHistoryFixture: {
   read: () => ({ text: detail()?.innerText, caption: detail()?.querySelector('caption')?.textContent,
     spoken: detail()?.querySelector('caption .sr-only')?.textContent, count: calls.length, snapshotHours, pick }),
   async closed() {
-    await wait('Closed window and focus restored', () => !detail() && !!container.querySelector(':focus'));
+    await wait(() => !detail() && !!container.querySelector(':focus'));
     return calls.map(({ signal }) => signal.aborted);
   },
   async change(index: number, value: string) {

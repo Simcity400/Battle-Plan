@@ -40,7 +40,7 @@ function WarContributionView(props: FamilyViewProps) {
   const onActivate = (action: InstalledAction) => {
     const pick = (action.meta as { readonly pick?: string } | undefined)?.pick;
     if (pick) { setOption?.('measure', pick); return; }
-    if (!wars || !viewpoint || action.target.kind !== 'row') return;
+    if (!track || !wars || !viewpoint || action.target.kind !== 'row') return;
     const hit = /^(?:(viewpoint|opposing):([^:]+)|total:(viewpoint|opposing))$/.exec(action.target.key);
     const war = hit && chosenWar(wars, saved, action.hour);
     if (!hit || !war) return;
@@ -54,12 +54,14 @@ function WarContributionView(props: FamilyViewProps) {
     if (through === null) return;
     const measure = MEASURE_LIST.find(item => item.key === options.measure)?.key ?? DEFAULT_MEASURE;
     const { name } = observation;
-    setOpened({ scope, viewpoint, warId: war.id, warName: name.known ? name.text : name.reason ?? 'War name not recorded', through, at, side, tag, measure });
+    const request = productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'war-contribution-history',
+      params: { branchId: track.branch.id, viewpoint, warId: war.id, throughHour: through } });
+    setOpened({ scope, request, warName: name.known ? name.text : name.reason ?? 'War name not recorded', at, side, tag, measure });
   };
   if (!manifestDeclaration) return null;
   return <div ref={anchor} className="fh-detail-anchor">
     <FamilyWidget {...props} family={manifestDeclaration.family} declaration={manifestDeclaration} onActivate={onActivate} />
-    {shown && track && <ContributorWindow key={`${scope}:${shown.viewpoint}:${shown.warId}:${shown.through}`} opened={shown}
+    {shown && track && <ContributorWindow key={`${scope}:${JSON.stringify(shown.request.params)}`} opened={shown}
       track={track} runtime={runtime} anchor={anchor} onClose={() => setOpened(null)} />}
   </div>;
 }

@@ -85,7 +85,8 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   assert.deepEqual(model.panes?.map(pane => pane.key), ['opposing', 'viewpoint'], 'the attackers are the left pane');
   const [left, right] = model.panes!;
   assert.deepEqual(left!.rows.map(row => row.key), ['opposing:CCC', 'opposing:AAA'], 'members in the product’s order');
-  const widerObservation = { ...war.observations[0]!, viewpointSide: ['BBB', 'DDD'], opposingSide: ['AAA', 'CCC', 'EEE'] };
+  const widerObservation = { ...war.observations[0]!, viewpointSide: ['BBB', 'DDD'], opposingSide: ['AAA', 'CCC', 'EEE'],
+    contributionGroup: [group.viewpointSide, group.opposingSide] } satisfies WarTimeline['observations'][number];
   const widerWars = { ...wars, wars: [{ ...war, observations: [widerObservation] }] };
   const groupRead = createBoundedReadView({ hour: 100, panels: new Map([['live', reply]]) });
   const partial = 'Partial. Figures cover only the countries listed in the recorded group. 2 countries on the war roster are outside this group.';
