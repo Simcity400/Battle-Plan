@@ -14,6 +14,7 @@ import {
   cameraPoseMatches,
   deriveCloseCameraPose,
   hover,
+  interactions,
   mapModes,
   mapPictures,
   zoomedMapPicture,
@@ -711,4 +712,156 @@ test('hover separates presence from timing and does not require a neutral point 
   assert.equal(delayedButtonTiming?.pass, true);
   assert.equal(delayedButtonTiming?.label, 'button:supply');
   assert.equal(delayedButtonTiming?.ms, 6);
+});
+
+test('interactions confirms fly and walk movement from the campaign map camera snapshot and fails when unmoved or stuck in map pose', async () => {
+  const runCampaignCase = async ({ id, snapshots }) => {
+    const recorded = [];
+    const mapActions = [];
+    let snapshotIndex = 0;
+    const s = {
+      app: {
+        async evaluate(expression) {
+          if (expression.includes('.map-panel:not([hidden])')) {
+            return { left: 100, top: 100, right: 1100, bottom: 700 };
+          }
+          if (expression.includes("invoke('map_action'") || expression.includes("invoke('map_export_snapshot'")) {
+            const fakeWindow = {
+              __TAURI_INTERNALS__: {
+                async invoke(command, payload) {
+                  if (command === 'map_action') { mapActions.push(payload.action); return null; }
+                  if (command === 'map_export_snapshot') {
+                    const next = snapshots[Math.min(snapshotIndex++, snapshots.length - 1)];
+                    if (next instanceof Error) throw next;
+                    return next;
+                  }
+                  throw new Error(`unexpected invoke: ${command}`);
+                },
+              },
+            };
+            return await new Function('window', `return ${expression}`)(fakeWindow);
+          }
+          throw new Error(`unexpected evaluate: ${expression}`);
+        },
+        async click() {},
+      },
+      async click() {},
+      async until() { return true; },
+      async openPage() {},
+      async timeline() { return { left: 0, width: 500, y: 10, min: 0, max: 100, value: 10 }; },
+      async watch() {},
+      async unwatch() { return []; },
+      async record(entry) { recorded.push(entry); },
+      async fail(area, item, label, reason) { recorded.push({ area, item, label, pass: false, reasons: [reason] }); },
+    };
+    const input = { async ask() { return { posted: [Date.now()] }; } };
+    await interactions(s, input, 1, 0, { only: [id], playingModes: [false], settleMs: 0, moveDelayMs: 0 });
+    return { recorded, mapActions };
+  };
+
+  const freeAt = (x, z, height) => ({ placement: { center: [x, z], height, pose: { kind: 'free', yaw: 0, pitch: -0.2, roll: 0, fovY: 1, near: 0.1, far: 1000 } } });
+  const mapAt = (x, z, height) => ({ placement: { center: [x, z], height, pose: { kind: 'map' } } });
+
+  const movedFly = await runCampaignCase({ id: 'fly', snapshots: [freeAt(100, 200, 40), freeAt(140, 230, 45)] });
+  assert.equal(movedFly.recorded.length, 1);
+  assert.equal(movedFly.recorded[0].pass, true);
+  assert.deepEqual(movedFly.recorded[0].reasons, []);
+  assert.deepEqual(movedFly.mapActions, [
+    { kind: 'cameraMode', mode: 'fly', overlays: true },
+    { kind: 'cameraMode', mode: 'fly', overlays: false },
+    { kind: 'cameraMode', mode: 'fly', overlays: true },
+    { kind: 'cameraMode', mode: 'fly', overlays: false },
+  ]);
+
+  const unmovedWalk = await runCampaignCase({ id: 'walk', snapshots: [freeAt(100, 200, 12), freeAt(100, 200, 12)] });
+  assert.equal(unmovedWalk.recorded.length, 1);
+  assert.equal(unmovedWalk.recorded[0].pass, false);
+  assert.match(unmovedWalk.recorded[0].reasons.join('; '), /did not move/i);
+
+  const stuckMapPose = await runCampaignCase({ id: 'fly', snapshots: [mapAt(100, 200, 500), mapAt(100, 200, 500)] });
+  assert.equal(stuckMapPose.recorded.length, 1);
+  assert.equal(stuckMapPose.recorded[0].pass, false);
+  assert.match(stuckMapPose.recorded[0].reasons.join('; '), /map pose/i);
+
+  const snapshotError = await runCampaignCase({ id: 'walk', snapshots: [new Error('The map stopped')] });
+  assert.equal(snapshotError.recorded.length, 1);
+  assert.equal(snapshotError.recorded[0].pass, false);
+  assert.match(snapshotError.recorded[0].reasons.join('; '), /The map stopped/);
+});
+
+test('hover bounds its scan to a deterministic point set and reports a time-cap stop separately from absence', async () => {
+  const runBoundedHover = async ({ stateForMove, width = 800, height = 400, options = {} }) => {
+    const mapStates = [];
+    const recorded = [];
+    let moves = 0;
+    let now = 1000;
+    const s = {
+      app: {
+        async evaluate(expression) {
+          if (expression.includes('article.dash-widget.kind-map')) {
+            return { view: 'overview-map', left: 0, top: 0, right: width, bottom: height };
+          }
+          const match = expression.match(/^__e2e\.mapState\(("[^"]+"),\s*(\d+),\s*([\s\S]+)\)$/);
+          if (match) {
+            const view = JSON.parse(match[1]);
+            const after = Number(match[2]);
+            const predicate = new Function(`return (${match[3]});`)();
+            return mapStates.find(state => state.id === view && (state.drawnAt ?? 0) > after && predicate(state)) ?? null;
+          }
+          if (expression.includes('__e2e.mapStates.filter')) {
+            return mapStates.filter(state => state.id === 'overview-map').at(-1) ?? null;
+          }
+          throw new Error(`unexpected evaluate: ${expression}`);
+        },
+      },
+      async watch() {},
+      async unwatch() { return []; },
+      async record(entry) { recorded.push(entry); },
+      async fail(area, item, label, reason) { recorded.push({ area, item, label, ms: null, pass: false, reasons: [reason] }); },
+    };
+    const input = {
+      async ask(command) {
+        if (command.op !== 'move') throw new Error(`unexpected op: ${command.op}`);
+        moves++;
+        const posted = (now += 10);
+        const [px, py] = command.points[0];
+        const next = stateForMove(px, py, moves);
+        if (next) mapStates.push({ id: 'overview-map', tooltipDelayMs: 0, drawnAt: posted + 2, ...next });
+        return { posted: [posted] };
+      },
+    };
+    await hover(s, input, 1, { scanTimeoutMs: 0, timeoutMs: 0, neutralPauseMs: 0, ...options });
+    return { recorded, moves };
+  };
+
+  const missingDivision = await runBoundedHover({
+    stateForMove: (px, py, move) => {
+      if (move === 1) return { hover: null, tooltip: null };
+      if (px >= 780 && py >= 380) return { hover: 'button:find-view', tooltip: null };
+      return { hover: null, tooltip: 'province:101' };
+    },
+  });
+  assert.ok(missingDivision.moves <= 125, `expected bounded scan <= 125 moves on 800x400 map, got ${missingDivision.moves}`);
+  const divPresence = missingDivision.recorded.find(e => e.item === 'hover presence: division counter');
+  const divTiming = missingDivision.recorded.find(e => e.item === 'hover: division counter');
+  assert.equal(divPresence?.pass, false);
+  assert.match(divPresence?.reasons.join('; ') ?? '', /no division counter under any of 113 points/);
+  assert.equal(divTiming?.pass, false);
+  assert.match(divTiming?.reasons.join('; ') ?? '', /never observed/i);
+  assert.equal(missingDivision.recorded.find(e => e.item === 'hover presence: map GUI button')?.pass, true);
+  assert.equal(missingDivision.recorded.find(e => e.item === 'hover presence: province tooltip')?.pass, true);
+
+  let fakeClock = 0;
+  const budgetBounded = await runBoundedHover({
+    stateForMove: () => ({ hover: null, tooltip: null }),
+    options: { scanBudgetMs: 25, now: () => (fakeClock += 10) },
+  });
+  assert.ok(budgetBounded.moves <= 10, `expected safety-net cap to stop quickly, got ${budgetBounded.moves}`);
+  const timedOutPresence = budgetBounded.recorded.find(e => e.item === 'hover presence: division counter');
+  const timedOutTiming = budgetBounded.recorded.find(e => e.item === 'hover: division counter');
+  assert.equal(timedOutPresence?.pass, false);
+  assert.match(timedOutPresence?.reasons.join('; ') ?? '', /search cut short after \d+ of \d+ points/);
+  assert.doesNotMatch(timedOutPresence?.reasons.join('; ') ?? '', /no division counter/);
+  assert.equal(timedOutTiming?.pass, false);
+  assert.match(timedOutTiming?.reasons.join('; ') ?? '', /cut short/i);
 });
