@@ -2022,6 +2022,7 @@ impl Strings {
         self.bytes
             + (self.held.capacity() + self.pinned.capacity()) * (size_of::<u32>() + size_of::<Box<[u8]>>() + 1)
             + self.by_text.as_ref().map_or(0, TextIndex::bytes)
+            + self.restored.capacity() * size_of::<crate::unit::restore::StringTable>()
             + self.restored.iter().map(crate::unit::restore::StringTable::held_bytes).sum::<usize>()
     }
 }

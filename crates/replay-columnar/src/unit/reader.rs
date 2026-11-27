@@ -1550,17 +1550,16 @@ fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kind
         let against = chunk_and_prefix(source, meta_chunk, reading, &mut raw, &mut prefix)?;
         let mut tables = Vec::new();
         let (meta, whole_slots) = if lazy {
-            let (meta, strings) = held::read_meta_lazily(std::mem::take(&mut raw), meta_chunk.frame.raw as usize, kinds, &mut table)?;
-            tables.push(strings);
-            let whole_slots = if against {
+            let (meta, own) = held::read_meta_lazily(std::mem::take(&mut raw), meta_chunk.frame.raw as usize, kinds, &mut table)?;
+            let (whole_slots, whole) = if against {
                 let length = prefix.len();
                 let (whole, strings) = held::read_meta_lazily(std::mem::take(&mut prefix), length, kinds, &mut TableState::new(kinds))?;
-                let strings = strings.without_held_in(&tables[0])?;
-                tables.push(strings);
-                Some(whole.slots)
+                (Some(whole.slots), strings.without_held_in(&own)?)
             } else {
-                None
+                (None, held::StringTable::default())
             };
+            tables.extend([own, whole].into_iter().filter(|strings| !strings.is_empty()));
+            tables.shrink_to_fit();
             (meta, whole_slots)
         } else {
             let mut meta = held::read_meta(&raw[..meta_chunk.frame.raw as usize], kinds, &mut table)?;

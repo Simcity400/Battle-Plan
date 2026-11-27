@@ -56,7 +56,7 @@ pub(super) fn log_restore(source: &dyn Extents, entry: &held::RestoreEntry, kind
         let mut table = TableState::log(kinds, 0, Default::default());
         let (meta, tables) = if lazy {
             let (meta, strings) = held::read_meta_lazily(std::mem::take(&mut raw), meta_chunk.frame.raw as usize, kinds, &mut table)?;
-            (meta, vec![strings])
+            (meta, if strings.is_empty() { Vec::new() } else { vec![strings] })
         } else {
             (held::read_meta(&raw[..meta_chunk.frame.raw as usize], kinds, &mut table)?, Vec::new())
         };
