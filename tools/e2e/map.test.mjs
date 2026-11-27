@@ -925,23 +925,23 @@ test('hover bounds its scan to a deterministic point set, handles paused-viewer 
   const suppressedTooltip = await runBoundedHover({
     stateForMove: (px, py, move, posted) => {
       suppressedCurrentMove = move;
-      if (move === 1) return { hover: null, tooltip: null, tooltipDelayMs: 250 };
+      if (move === 1) return { hover: null, tooltip: null, tooltipDelayMs: 600 };
       if (move === 2) {
-        suppressedClock += 300;
+        suppressedClock += 1000;
         suppressedMove2PostedAt = suppressedClock;
         suppressedMove2Posted = posted;
         return null;
       }
-      if (move === 3) return { hover: 'division:9', tooltip: null, tooltipDelayMs: 250 };
-      return { hover: 'button:find-view', tooltip: null, tooltipDelayMs: 250 };
+      if (move === 3) return { hover: 'division:9', tooltip: null, tooltipDelayMs: 600 };
+      return { hover: 'button:find-view', tooltip: null, tooltipDelayMs: 600 };
     },
     onEvaluate: mapStates => {
-      if (!suppressedEmitted && suppressedCurrentMove === 2 && suppressedMove2PostedAt !== null && suppressedClock - suppressedMove2PostedAt >= 250) {
+      if (!suppressedEmitted && suppressedCurrentMove === 2 && suppressedMove2PostedAt !== null && suppressedClock - suppressedMove2PostedAt >= 600) {
         suppressedEmitted = true;
-        mapStates.push({ id: 'overview-map', hover: null, tooltip: 'province:500', tooltipDelayMs: 250, drawnAt: suppressedMove2Posted + 250 });
+        mapStates.push({ id: 'overview-map', hover: null, tooltip: 'province:500', tooltipDelayMs: 600, drawnAt: suppressedMove2Posted + 600 });
       }
     },
-    options: { scanTimeoutMs: 150, neutralPauseMs: 200, scanBudgetMs: 10_000, now: () => (suppressedClock += 25) },
+    options: { scanTimeoutMs: 150, neutralPauseMs: 200, scanBudgetMs: 5_000, now: () => (suppressedClock += 25) },
   });
   const suppressedPresence = suppressedTooltip.recorded.find(e => e.item === 'hover presence: province tooltip');
   assert.equal(suppressedPresence?.pass, true);
