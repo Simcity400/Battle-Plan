@@ -404,8 +404,12 @@ impl NativeHost {
                 revision,
                 error,
             } => {
-                if inner.requested_path.as_ref() == path.as_ref()
-                    && inner.requested_revision.as_ref() == revision.as_ref()
+                if inner.pending.open.is_none()
+                    && path.is_some()
+                    && inner.requested_path.as_ref() == path.as_ref()
+                    && revision.as_ref().is_some_and(|actual| {
+                        inner.requested_revision.as_ref().is_none_or(|expected| actual == expected)
+                    })
                 {
                     inner.requested_path = None;
                     inner.requested_revision = None;

@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
     io::Cursor,
     path::PathBuf,
     sync::{
@@ -225,8 +224,9 @@ struct StepEventPayload {
 
 #[derive(Default)]
 struct AckBus {
-    booted: bool,
-    acks: HashMap<u64, PageAckPayload>,
+    boot_seq: u64,
+    boot: Option<Result<(), String>>,
+    pending: Option<(u64, Option<PageAckPayload>)>,
 }
 
 #[derive(Clone, Default)]
@@ -266,9 +266,14 @@ impl ExportWebviewState {
         let (lock, cv) = &*self.bus;
         let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
         if payload.kind == "boot" {
-            bus.booted = true;
-        } else {
-            bus.acks.insert(payload.seq, payload);
+            if bus.boot_seq != 0 && payload.seq == bus.boot_seq && bus.boot.is_none() {
+                bus.boot = Some(payload.error.map_or(Ok(()), Err));
+            }
+        } else if let Some((seq, reply)) = &mut bus.pending
+            && *seq == payload.seq
+            && reply.is_none()
+        {
+            *reply = Some(payload);
         }
         cv.notify_all();
     }
@@ -280,20 +285,25 @@ impl ExportWebviewState {
         self.release_owned_sources(app);
         let (lock, cv) = &*self.bus;
         let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
-        bus.booted = false;
-        bus.acks.clear();
+        *bus = AckBus::default();
         cv.notify_all();
     }
 
     fn next_seq(&self) -> u64 {
-        self.next_seq.fetch_add(1, Ordering::AcqRel) + 1
+        let seq = self.next_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        let (lock, _) = &*self.bus;
+        lock.lock().unwrap_or_else(|e| e.into_inner()).pending = Some((seq, None));
+        seq
     }
 
     fn wait_for_boot(&self, cancel: &AtomicBool) -> Result<(), String> {
         let (lock, cv) = &*self.bus;
         let deadline = Instant::now() + BOOT_TIMEOUT;
         let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
-        while !bus.booted {
+        loop {
+            if let Some(boot) = &bus.boot {
+                return boot.clone();
+            }
             if cancel.load(Ordering::Acquire) {
                 return Err("cancelled".to_owned());
             }
@@ -307,7 +317,6 @@ impl ExportWebviewState {
                 .unwrap_or_else(|e| e.into_inner());
             bus = guard;
         }
-        Ok(())
     }
 
     fn unmount_window(&self, app: &AppHandle, window: &WebviewWindow) {
@@ -333,14 +342,23 @@ impl ExportWebviewState {
         let deadline = Instant::now() + timeout;
         let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if let Some(ack) = bus.acks.remove(&seq) {
+            let Some((expected, reply)) = &mut bus.pending else {
+                return Err("The export page retired its pending request.".to_owned());
+            };
+            if *expected != seq {
+                return Err("The export page replaced its pending request.".to_owned());
+            }
+            if let Some(ack) = reply.take() {
+                bus.pending = None;
                 return Ok(ack);
             }
             if cancel.load(Ordering::Acquire) {
+                bus.pending = None;
                 return Err("cancelled".to_owned());
             }
             let now = Instant::now();
             if now >= deadline {
+                bus.pending = None;
                 return Err("The export page timed out waiting for widgets to finish drawing.".to_owned());
             }
             let wait = (deadline - now).min(Duration::from_millis(50));
@@ -353,14 +371,13 @@ impl ExportWebviewState {
 
     fn ensure_window(&self, app: &AppHandle, cancel: &AtomicBool) -> Result<WebviewWindow, String> {
         if let Some(existing) = app.get_webview_window(EXPORT_WINDOW_LABEL) {
-            self.wait_for_boot(cancel)?;
-            return Ok(existing);
+            return self.boot_window(app, existing, cancel);
         }
+        let boot_seq = self.next_seq.fetch_add(1, Ordering::AcqRel) + 1;
         {
             let (lock, _) = &*self.bus;
             let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
-            bus.booted = false;
-            bus.acks.clear();
+            *bus = AckBus { boot_seq, ..AckBus::default() };
         }
         let app_clone = app.clone();
         let (tx, rx) = mpsc::channel();
@@ -368,7 +385,7 @@ impl ExportWebviewState {
             let built = WebviewWindowBuilder::new(
                 &app_clone,
                 EXPORT_WINDOW_LABEL,
-                WebviewUrl::App("index.html?export=1".into()),
+                WebviewUrl::App(format!("index.html?export=1&boot={boot_seq}").into()),
             )
             .title("BattlePlan Export")
             .visible(false)
@@ -384,7 +401,14 @@ impl ExportWebviewState {
         let window = rx
             .recv_timeout(Duration::from_secs(15))
             .map_err(|_| "Timed out creating hidden export window".to_owned())??;
-        self.wait_for_boot(cancel)?;
+        self.boot_window(app, window, cancel)
+    }
+
+    fn boot_window(&self, app: &AppHandle, window: WebviewWindow, cancel: &AtomicBool) -> Result<WebviewWindow, String> {
+        if let Err(error) = self.wait_for_boot(cancel) {
+            self.close_window(app);
+            return Err(error);
+        }
         Ok(window)
     }
 }
@@ -2160,6 +2184,46 @@ pub fn run_surface_video_export(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn page_ack(seq: u64, kind: &str, error: Option<&str>) -> PageAckPayload {
+        PageAckPayload {
+            seq,
+            kind: kind.to_owned(),
+            dirty: false,
+            content_width: None,
+            content_height: None,
+            min_text_px: None,
+            map_rects: Vec::new(),
+            overlay_rects: Vec::new(),
+            viewport_clip: None,
+            bg_rgb: None,
+            error: error.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn cancelled_steps_ignore_late_replies_without_losing_the_next_ack() {
+        let state = ExportWebviewState::default();
+        let old = state.next_seq();
+        assert_eq!(state.wait_for_ack(old, &AtomicBool::new(true)).unwrap_err(), "cancelled");
+        state.record_ack(page_ack(old, "step", None));
+        assert!(state.bus.0.lock().unwrap().pending.is_none());
+        let next = state.next_seq();
+        state.record_ack(page_ack(old, "step", None));
+        state.record_ack(page_ack(next, "step", None));
+        assert_eq!(state.wait_for_ack(next, &AtomicBool::new(false)).unwrap().seq, next);
+        assert!(state.bus.0.lock().unwrap().pending.is_none());
+    }
+
+    #[test]
+    fn an_export_page_can_report_why_boot_failed() {
+        let state = ExportWebviewState::default();
+        state.bus.0.lock().unwrap().boot_seq = 2;
+        state.record_ack(page_ack(1, "boot", None));
+        assert!(state.bus.0.lock().unwrap().boot.is_none());
+        state.record_ack(page_ack(2, "boot", Some("listener unavailable")));
+        assert_eq!(state.wait_for_boot(&AtomicBool::new(false)), Err("listener unavailable".into()));
+    }
 
     #[test]
     fn base64_round_trips_binary_payloads() {

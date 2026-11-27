@@ -61,9 +61,8 @@ import {
 } from '../export/ExportVideoContext';
 import {
   cancelVideoExport,
-  getVideoExportState,
+  followVideoExportProgress,
   IDLE_EXPORT_JOB,
-  onVideoExportProgress,
   startMapVideoExport,
   startSurfaceVideoExport,
   type ExportJobSnapshot,
@@ -285,13 +284,7 @@ export default function App() {
   const exportRunning = exportJob.state === 'running';
   const exportRunningRef = useRef(false);
   exportRunningRef.current = exportRunning;
-  useEffect(() => {
-    if (!desktopAvailable) return;
-    let unlisten: (() => void) | null = null;
-    void getVideoExportState().then(setExportJob, () => undefined);
-    void onVideoExportProgress(setExportJob).then(stop => { unlisten = stop; }, () => undefined);
-    return () => { unlisten?.(); };
-  }, []);
+  useEffect(() => desktopAvailable ? followVideoExportProgress(setExportJob) : undefined, []);
   const openMapVideoExport = useCallback((target: { viewId?: string; label: string }) => {
     setVideoExportTarget({ kind: 'map', viewId: target.viewId, label: target.label });
   }, []);

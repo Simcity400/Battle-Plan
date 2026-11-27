@@ -78,6 +78,8 @@ test('beginAudit clears any unfinished pictureAudit and cached exactReads before
   let reads = 0;
   await recorder.exactOnce('stale-key', async () => ++reads);
   assert.equal(reads, 1);
+  let rejectRead!: (error: Error) => void;
+  void recorder.exactOnce('pending-key', () => new Promise<number>((_, reject) => { rejectRead = reject; }));
 
   await recorder.beginAudit();
   const sample = (widget: string, at: number) => ({ t: 'picture', at, widget, surface: 'table', placement: 1, owner: 0, renderer: 'page', head: at, hour: at, offset: 0, since: at, through: at, eligibleHour: at, entry: at, parts: [], face: '', drawMs: 0, mode: 'picture', dim: false, reset: 0, binding: 0, inspect: null, tooltip: false, rows: [{ row: 'A', key: 'A:v', value: '1' }] }) as never;
@@ -90,6 +92,10 @@ test('beginAudit clears any unfinished pictureAudit and cached exactReads before
   await recorder.beginAudit();
   await recorder.exactOnce('stale-key', async () => ++reads);
   assert.equal(reads, 2, 'beginAudit cleared exactReads cache');
+  const replacement = recorder.exactOnce('pending-key', async () => 42);
+  rejectRead(new Error('retired audit'));
+  await Promise.resolve();
+  assert.equal(recorder.exactOnce('pending-key', async () => 0), replacement);
   recordPicture(sample('new-widget', 10));
   const next = await recorder.auditPicturesBatch(10);
   assert.equal(next.done, true);

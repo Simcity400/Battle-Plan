@@ -961,16 +961,18 @@ export class IdentityBroker {
         const outstanding = state.flagOutstanding.get(size);
         batch.forEach(([key, choice], index) => {
           state.flagInflightKeys.delete(key);
+          const image = images.get(index);
+          const resolution = unavailable.get(index);
+          if (!image && !resolution) {
+            this.failFlag(state, size, key, choice, asFailure(new Error('The flag reply left this choice out')), true);
+            return;
+          }
           state.flagFailures.delete(key);
           outstanding?.delete(key);
           state.flagRequests.get(size)?.delete(key);
-          const image = images.get(index);
-          const resolution = unavailable.get(index);
           const entry: DrawnFlagEntry = image
             ? { url: image.png, image }
-            : resolution
-              ? { resolution: productArt(resolution) }
-              : { resolution: { status: 'failed', reason: 'The flag reply left this choice out', retryable: true } };
+            : { resolution: productArt(resolution!) };
           state.index.setDrawnFlag(size, choice, entry);
         });
         this.notify(state);
@@ -981,17 +983,20 @@ export class IdentityBroker {
         state.flagRunning.delete(id);
         const failure = asFailure(error);
         const retryable = transientError(error);
-        const now = this.clock.now();
         for (const [key, choice] of batch) {
           state.flagInflightKeys.delete(key);
-          const count = (state.flagFailures.get(key)?.count ?? 0) + 1;
-          state.flagFailures.set(key, { count, at: retryable ? now + retryDelay(count) : Infinity, error: failure, size, choice });
-          state.index.setDrawnFlag(size, choice, { failed: failure });
+          this.failFlag(state, size, key, choice, failure, retryable);
         }
         this.notify(state);
         this.reconcile(state);
       },
     );
+  }
+
+  private failFlag(state: ScopeState, size: CountryFlagSize, key: string, choice: CountryFlagChoice, error: Failure, retryable: boolean): void {
+    const count = (state.flagFailures.get(key)?.count ?? 0) + 1;
+    state.flagFailures.set(key, { count, at: retryable ? this.clock.now() + retryDelay(count) : Infinity, error, size, choice });
+    state.index.setDrawnFlag(size, choice, { failed: error });
   }
 }
 

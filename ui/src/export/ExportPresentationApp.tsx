@@ -18,6 +18,7 @@ import { resolveWidgetActiveView } from '../widgets/manifest';
 import { loadWidgetRenderer } from '../widgets/rendererLoaders';
 import { LiveMotion } from '../charts/liveMotion';
 import { useAppearance } from '../shell/appearance/useAppearance';
+import { errorMessage } from '../shell/errors';
 import { useWidgetIconMenu, WidgetIconsContext } from '../shell/appearance/WidgetIconMenu';
 import { ExportSurfaceContext, type ExportWidgetStatus } from './exportMotion';
 import { sendVideoExportPageAck, type ExportClipRect, type ExportMapRect } from './videoExportApi';
@@ -546,7 +547,7 @@ export default function ExportPresentationApp() {
     let serial = Promise.resolve();
 
     const enqueue = (task: () => Promise<void>) => {
-      serial = serial.then(task).catch(() => undefined);
+      serial = serial.then(() => alive ? task() : undefined).catch(() => undefined);
     };
 
     const expectedTargetsFor = (curSession: MountedSession, clockHour: number | null): Map<string, number | null> => {
@@ -927,14 +928,22 @@ export default function ExportPresentationApp() {
         wakeWaiters();
         enqueue(() => handleUnmount(event.payload));
       }),
-    ]).then(stops => {
-      if (!alive) {
-        for (const stop of stops) stop();
-        return;
-      }
-      unlisteners.push(...stops);
+    ].map(async registration => {
+      const stop = await registration;
+      if (alive) unlisteners.push(stop);
+      else stop();
+    })).then(() => {
+      if (alive) boot(null);
+    }, cause => {
+      if (!alive) return;
+      alive = false;
+      for (const stop of unlisteners.splice(0)) stop();
+      boot(`Couldn’t start the export page: ${errorMessage(cause)}`);
+    });
+
+    const boot = (error: string | null) => {
       void sendVideoExportPageAck({
-        seq: 0,
+        seq: Number(new URLSearchParams(window.location.search).get('boot')),
         kind: 'boot',
         dirty: false,
         contentWidth: null,
@@ -944,9 +953,9 @@ export default function ExportPresentationApp() {
         overlayRects: [],
         viewportClip: null,
         bgRgb: measureBgRgb(rootRef.current),
-        error: null,
-      });
-    });
+        error,
+      }).catch(() => {});
+    };
 
     return () => {
       alive = false;

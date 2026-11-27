@@ -58,6 +58,26 @@ fn unload_forgets_only_its_recording_and_cannot_restore_it_after_restart() {
 }
 
 #[test]
+fn restart_restores_a_path_only_open_without_the_previous_replays_clock() {
+    let mut inner = Inner {
+        requested_path: Some("new.battleplan".into()),
+        status: HostStatus {
+            viewer: ViewerState {
+                path: Some("old.battleplan".into()),
+                branch: Some("2".into()),
+                hour: Some(123),
+                revision: Some("old-version".into()),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    inner.restore_commands();
+    assert_eq!(inner.pending.open, Some(("new.battleplan".into(), None)));
+    assert!(inner.pending.seek.is_none());
+}
+
+#[test]
 fn restart_restores_unacknowledged_open_and_seek() {
     let requested = SeekTarget {
         path: "new.battleplan".into(),

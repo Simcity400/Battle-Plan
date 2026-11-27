@@ -206,6 +206,7 @@ struct State {
     ended: HashMap<PathBuf, Job>,
     bound: Option<Bound>,
     closed: bool,
+    unavailable: Option<String>,
 }
 
 const QUITTING: &str = "BattlePlan Recorder is quitting, so recordings aren’t compressed now.";
@@ -234,6 +235,9 @@ impl Jobs {
         let mut state = self.lock();
         if state.closed {
             return Err(QUITTING.into());
+        }
+        if let Some(error) = &state.unavailable {
+            return Err(error.clone());
         }
         state.ended.remove(&path);
         if state.running.as_ref().is_some_and(|(running, ..)| *running == path) || state.queue.contains(&path) {
@@ -338,6 +342,16 @@ impl Jobs {
         }
     }
 
+    fn unavailable(&self, error: std::io::Error) {
+        let reason = format!("Recordings cannot be compressed: {error}");
+        eprintln!("{reason}");
+        let mut state = self.lock();
+        for path in std::mem::take(&mut state.queue) {
+            state.ended.insert(path, kept(reason.clone()));
+        }
+        state.unavailable = Some(reason);
+    }
+
     pub fn take_up(&self, root: &Path, settings: &RecorderSettings) {
         let saved = crate::recordings::saved_files(root, true).0;
         for folder in crate::recordings::recording_folders(root) {
@@ -372,7 +386,8 @@ impl Jobs {
                 match Bound::new() {
                     Ok(bound) => jobs.lock().bound = Some(bound),
                     Err(error) => {
-                        eprintln!("Recordings cannot be compressed: {error}");
+                        jobs.unavailable(error);
+                        changed();
                         return;
                     }
                 }
@@ -452,6 +467,22 @@ mod tests {
         drop(desktop);
         jobs.request(&path).unwrap();
         assert_eq!(jobs.job(&path), Some(Job::Queued));
+        fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn an_unavailable_worker_settles_queued_work_and_refuses_future_work() {
+        let folder = std::env::temp_dir().join(format!("recorder-app-compress-unavailable-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("Queued.battleplan");
+        fs::write(&path, replay_journal::fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)])).unwrap();
+        let jobs = Jobs::default();
+        jobs.request(&path).unwrap();
+        jobs.unavailable(std::io::Error::other("job object unavailable"));
+        let reason = "Recordings cannot be compressed: job object unavailable".to_owned();
+        assert_eq!(jobs.job(&path), Some(Job::Kept { reason: reason.clone() }));
+        assert_eq!(jobs.request(&path), Err(reason));
+        assert!(jobs.lock().queue.is_empty());
         fs::remove_dir_all(&folder).unwrap();
     }
 

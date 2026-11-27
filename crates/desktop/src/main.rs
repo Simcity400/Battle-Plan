@@ -71,7 +71,7 @@ fn set_map_view(
 #[tauri::command]
 async fn set_map_holes(host: State<'_, NativeHost>, holes: Vec<ViewBounds>) -> Result<(), String> {
     if let Some(applied) = host.set_holes(holes)? {
-        let _ = applied.await;
+        applied.await.map_err(|_| "The map stopped or replaced its window holes before applying them".to_owned())?;
     }
     Ok(())
 }
@@ -743,6 +743,7 @@ fn main() {
             dashboard_service::dashboard_release_source,
             game_windows::render_game_window,
             game_windows::cancel_game_window,
+            game_windows::forget_game_window_cancel,
             perf::perf_enabled,
             perf::perf_write,
             perf::perf_finished,

@@ -1547,7 +1547,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             }
             if composing {
                 frame.resets += 1;
-                self.send_away(compose);
+                self.send_away(compose)?;
             }
         }
         drop(settles_lap);
@@ -2083,7 +2083,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         frame.swapped = Some(spent);
     }
 
-    fn send_away(&mut self, compose: Vec<bool>) {
+    fn send_away(&mut self, compose: Vec<bool>) -> io::Result<()> {
         self.composed.fetch_add(1, Ordering::AcqRel);
         self.views.settled();
         let mirrors = self.mirrors.take().expect("the mirrors are home");
@@ -2092,14 +2092,18 @@ impl<P: PlaybackProducts> MapSide<P> {
         self.compose_ns.resize(layers.len(), 0);
         self.cancel = Arc::default();
         let away = Away { mirrors, layers, compose, upstream: self.upstream.clone(), cost: self.compose_ns.clone(), cancel: Arc::clone(&self.cancel), results: Vec::new() };
-        if self.worker.jobs.send(Job::Compose(Box::new(away))).is_ok() {
-            self.composing = true;
-            self.superseded = false;
-            if let Some(overlay) = self.overlay.as_deref_mut() {
-                overlay.reset();
-            }
-            self.combat.reset();
+        if let Err(error) = self.worker.jobs.send(Job::Compose(Box::new(away))) {
+            let Job::Compose(away) = error.0 else { unreachable!() };
+            self.take_home(*away);
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "Map compose worker stopped"));
         }
+        self.composing = true;
+        self.superseded = false;
+        if let Some(overlay) = self.overlay.as_deref_mut() {
+            overlay.reset();
+        }
+        self.combat.reset();
+        Ok(())
     }
 
     fn swap_in(&mut self, away: Away) -> io::Result<()> {

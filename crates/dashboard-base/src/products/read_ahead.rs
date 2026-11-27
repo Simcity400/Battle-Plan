@@ -10,18 +10,23 @@ use std::sync::{Arc, PoisonError, Weak, atomic::Ordering};
 #[derive(Default)]
 struct ReadAhead(bool);
 
-pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
-    {
-        let state = source.state::<ReadAhead>();
-        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-        if std::mem::replace(&mut state.0, true) {
-            return;
+impl ReadAhead {
+    fn start(&mut self, spawn: impl FnOnce() -> std::io::Result<()>) {
+        if !self.0 {
+            self.0 = spawn().is_ok();
         }
     }
-    let source = Arc::downgrade(source);
-    let _ = std::thread::Builder::new()
-        .name("page content read-ahead".into())
-        .spawn_carried(move || job_priority::confined(|| read(&source, options)));
+}
+
+pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
+    let state = source.state::<ReadAhead>();
+    state.lock().unwrap_or_else(PoisonError::into_inner).start(|| {
+        let source = Arc::downgrade(source);
+        std::thread::Builder::new()
+            .name("page content read-ahead".into())
+            .spawn_carried(move || job_priority::confined(|| read(&source, options)))
+            .map(drop)
+    });
 }
 
 fn read(source: &Weak<Source>, mut options: ContentOptions) {
@@ -100,6 +105,17 @@ mod tests {
         let options = source.admit(Work::Ahead).unwrap();
         source.content(&options.options).unwrap();
         (source, options, folder)
+    }
+
+    #[test]
+    fn a_failed_launch_leaves_read_ahead_available_for_retry() {
+        let mut state = ReadAhead::default();
+        state.start(|| Err(std::io::Error::other("cannot spawn")));
+        let mut launches = 0;
+        for _ in 0..2 {
+            state.start(|| { launches += 1; Ok(()) });
+        }
+        assert_eq!(launches, 1);
     }
 
     #[test]

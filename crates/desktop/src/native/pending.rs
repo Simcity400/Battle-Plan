@@ -160,11 +160,11 @@ impl Inner {
         let target = self
             .requested_path
             .clone()
-            .zip(self.requested_revision.clone())
+            .map(|path| (path, self.requested_revision.clone()))
             .or_else(|| {
                 self.requested_seek
                     .as_ref()
-                    .map(|target| (target.path.clone(), target.revision.clone()))
+                    .map(|target| (target.path.clone(), Some(target.revision.clone())))
             })
             .or_else(|| {
                 self.status
@@ -172,11 +172,15 @@ impl Inner {
                     .path
                     .clone()
                     .zip(self.status.viewer.revision.clone())
+                    .map(|(path, revision)| (path, Some(revision)))
             });
         if let Some((path, revision)) = target {
-            let last_position = (self.status.viewer.path.as_ref() == Some(&path)
-                && self.status.viewer.revision.as_ref() == Some(&revision))
-            .then(|| {
+            let last_position = revision.as_ref().and_then(|revision| {
+                if self.status.viewer.path.as_ref() != Some(&path)
+                    || self.status.viewer.revision.as_ref() != Some(revision)
+                {
+                    return None;
+                }
                 self.status
                     .viewer
                     .branch
@@ -189,10 +193,12 @@ impl Inner {
                         hour,
                         playback: None,
                     })
-            })
-            .flatten();
-            self.pending.open = Some((path, Some(revision)));
-            self.pending.seek = self.requested_seek.clone().or(last_position);
+            });
+            self.pending.seek = self.requested_seek.as_ref()
+                .filter(|seek| seek.path == path && Some(&seek.revision) == revision.as_ref())
+                .cloned()
+                .or(last_position);
+            self.pending.open = Some((path, revision));
         }
     }
 }

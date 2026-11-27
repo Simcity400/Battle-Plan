@@ -299,10 +299,13 @@ struct FlagAsk {
 }
 
 fn request_flag(app: &AppHandle, (game_dir, user_dir): (PathBuf, PathBuf), ask: FlagAsk) {
-    let app = app.clone();
+    let worker_app = app.clone();
+    let worker_ask = ask.clone();
     let spawned = std::thread::Builder::new()
         .name("recorder-flag".into())
         .spawn(move || {
+            let app = worker_app;
+            let ask = worker_ask;
             let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
             let _priority = BackgroundPriority::enter();
             let flag = recorder
@@ -318,6 +321,12 @@ fn request_flag(app: &AppHandle, (game_dir, user_dir): (PathBuf, PathBuf), ask: 
             recorder.update(&app, |inner| flag_found(inner, &ask, flag));
         });
     if let Err(error) = spawned {
+        let recorder = app.state::<Arc<Recorder>>();
+        recorder.update(app, |inner| {
+            if inner.flag_keys.as_ref() == Some(&ask) {
+                inner.flag_keys = None;
+            }
+        });
         eprintln!("The flag could not be resolved: {error}");
     }
 }
