@@ -26,6 +26,11 @@ function shownKey(state: DashboardMapState, playing: boolean): string {
     state.behindReason ?? null, state.hour == null, state.notes ?? null, state.closeRequests ?? null, state.keys?.at(-1)?.[0] ?? null, ...(playing ? [] : [state.hour, state.sequence, state.requestedSequence])]);
 }
 
+function failedFor(state: DashboardMapState | undefined, target: MapTarget | null | undefined): boolean {
+  return !!state?.error && !!target && state.sourceId === target.sourceId && state.revision === target.revision && state.branchId === target.branchId
+    && state.requestedSequence === target.sequence;
+}
+
 export class MapViewsStore {
   private surfaces = new Map<string, Surface>();
   private states = new Map<string, DashboardMapState>();
@@ -259,7 +264,13 @@ export class MapViewsStore {
   private present(id: string): void {
     const state = this.states.get(id);
     if (!state) return;
-    const key = shownKey(state, this.clock.getSnapshot().playing);
+    const clock = this.clock.getSnapshot();
+    if (state.error && !failedFor(state, this.surfaces.get(id)?.target(clock))) {
+      this.states.delete(id);
+      if (this.shown.delete(id)) this.notify(id);
+      return;
+    }
+    const key = shownKey(state, clock.playing);
     if (this.shown.get(id)?.key === key) return;
     this.shown.set(id, { key, state });
     this.notify(id);
@@ -277,11 +288,13 @@ export class MapViewsStore {
   }
   private fail(error: string): void {
     let changed = false;
-    for (const id of this.surfaces.keys()) {
+    const clock = this.clock.getSnapshot();
+    for (const [id, surface] of this.surfaces) {
       const old = this.states.get(id);
+      const target = surface.target(clock);
       changed ||= old?.error !== error;
-      this.states.set(id, old ? { ...old, error } : { id, clockId: this.clock.clockId, sourceId: null, revision: null, branchId: null, hour: null,
-        fraction: null, sequence: 0, requestedSequence: 0, loading: false, error });
+      this.states.set(id, { ...old ?? { id, clockId: this.clock.clockId, sourceId: null, revision: null, branchId: null, hour: null, fraction: null, sequence: 0, loading: false },
+        ...target ? { sourceId: target.sourceId, revision: target.revision, branchId: target.branchId } : {}, requestedSequence: target?.sequence ?? 0, error });
       this.present(id);
     }
     if (changed) this.retarget();
@@ -313,7 +326,7 @@ export class MapViewsStore {
       surface.present = target != null;
       if (!target || !surface.layout || mapHoles.outside(surface.element)) continue;
       const { bounds, clip, onScreen } = surface.layout;
-      const visible = onScreen && !this.hidden && !covered && !document.hidden && !this.states.get(id)?.error && !mapHoles.dimmed(surface.element) && !coveredBy(clip, holes);
+      const visible = onScreen && !this.hidden && !covered && !document.hidden && !failedFor(this.states.get(id), target) && !mapHoles.dimmed(surface.element) && !coveredBy(clip, holes);
       const view = { id, ...target, composedAt, clockId, options: this.viewOptions(id, target.options), bounds, clip, visible };
       views.push(view);
       this.lastViews.set(id, view);

@@ -322,6 +322,41 @@ test('MapViewsStore stamps clockId on populated and teardown snapshots and filte
     };
     await runScenario('stale-before');
     await runScenario('stale-after');
+
+    const sent: DashboardMapView[][] = [];
+    let emitStates!: (states: DashboardMapState[]) => void;
+    const client = {
+      available: true,
+      async setMapViews(_clockId: string, views: DashboardMapView[]) { sent.push(views); },
+      async onMapStates(callback: (states: DashboardMapState[]) => void) { emitStates = callback; return () => {}; },
+    } as unknown as DashboardClient;
+    const playback = clock('page-C');
+    const store = new MapViewsStore(client, playback);
+    const at = { hour: 260, sequence: 3 };
+    store.register('map-1', element, () => ({ sourceId: 'source', path: 'campaign.battleplan', revision: 'rev-1', branchId: '1', playing: false,
+      hoursPerSecond: 24, hour: at.hour, fraction: 0, sequence: at.sequence, seekSequence: at.sequence }));
+    const stop = store.start(element);
+    flushFrames();
+    await tick();
+    emitStates([{ id: 'map-1', clockId: 'page-C', sourceId: 'source', revision: 'rev-1', branchId: '1', hour: null, fraction: null,
+      sequence: 2, requestedSequence: 3, loading: false, error: 'gap' }]);
+    flushFrames();
+    await tick();
+    assert.equal(sent.at(-1)![0].visible, false, 'R22: the target an error was raised for stays hidden');
+    assert.equal(store.getState('map-1')?.error, 'gap', 'and keeps its error');
+    store.schedule();
+    flushFrames();
+    await tick();
+    assert.equal(store.getState('map-1')?.error, 'gap', 'R22: the same target keeps its error');
+    at.hour = 250;
+    at.sequence = 4;
+    playback.seek(250);
+    flushFrames();
+    await tick();
+    assert.equal(sent.at(-1)![0].visible, true, 'R22: a new target is asked for, whatever the previous target’s error');
+    assert.equal(store.getState('map-1')?.error ?? null, null, 'R22: and carries no error raised for another target');
+    stop();
+    await tick();
   } finally {
     await vite.close();
     Object.assign(globalThis, saved);
