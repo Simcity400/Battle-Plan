@@ -2809,6 +2809,46 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     let expected_wide = (9_007_199_254_740_990 + i64::from(target7)).to_string();
     assert_eq!(wide7["live"]["groups"][0]["rawValues"], serde_json::json!([expected_wide]), "multi-hour (quantum=6) catch-up preserves lossless wide rawValues");
     assert!(wide7["live"]["groups"][0].get("follow").is_none());
+
+    host.unpanel(7);
+    let (s8_entered_tx, s8_entered_rx) = mpsc::channel();
+    let (s8_release_tx, s8_release_rx) = mpsc::channel();
+    let s8_release_rx = Mutex::new(s8_release_rx);
+    let s8_first = AtomicBool::new(true);
+    let s8_reads = Arc::new(Mutex::new(Vec::new()));
+    let s8_reads_cb = Arc::clone(&s8_reads);
+    let proven: Arc<crate::panel::PanelData> = Arc::new(Ok(serde_json::json!({ "tile": "closed before the clock" })));
+    let s8_start = Arc::new(AtomicI32::new(i32::MAX));
+    let s8_start_cb = Arc::clone(&s8_start);
+    host.prepare_panel(product(Arc::new(move |hour, seed, _, step| {
+        if s8_first.swap(false, Ordering::Relaxed) {
+            s8_start_cb.store(hour, Ordering::Release);
+            let _ = s8_entered_tx.send(hour);
+            let _ = s8_release_rx.lock().unwrap().recv();
+        } else if step.is_none() {
+            s8_reads_cb.lock().unwrap().push((hour, seed));
+        }
+        let read_again = hour == s8_start_cb.load(Ordering::Acquire).saturating_add(2 * quantum);
+        ProductRead { value: Arc::clone(&proven), rows: 1, fresh: read_again, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN }
+    }))).unwrap()(8, 1).unwrap();
+    let start8 = s8_entered_rx.recv().unwrap();
+    host.playhead().anchor(f64::from(start8 + 3 * quantum), true, 0.0, anchored_at, false);
+    host.playhead().wait_newest(start8 + 2 * quantum).unwrap();
+    s8_release_tx.send(()).unwrap();
+    let mut caught = Vec::new();
+    while !caught.iter().any(|&(hour, _)| hour == start8 + 2 * quantum) {
+        let (kind, bytes, session) = push.take_sent().expect("a catch-up packet for panel 8");
+        push.credit(session, u64::MAX);
+        if kind != PANEL { continue; }
+        caught.extend(dated::records(&bytes).unwrap().into_iter().filter(|r| r.id == 8 && !r.stepped() && r.kind != dated::WAITING && [start8 + quantum, start8 + 2 * quantum].contains(&r.hour)).map(|r| (r.hour, r.kind)));
+    }
+    let reads = s8_reads.lock().unwrap().clone();
+    assert!(!reads.is_empty() && reads.iter().all(|&(_, seed)| !seed), "multi-hour catch-up reads through the held interval, never as a seed: {reads:?}");
+    assert_eq!(
+        caught,
+        [(start8 + quantum, dated::STANDS), (start8 + 2 * quantum, dated::AGAIN)],
+        "a value the reader carried across the skipped hours stands on the previous record; one it read again at the hour proves nothing about the hours between and starts again, both without the body"
+    );
 }
 
 type StepGate = mpsc::Receiver<(Hour, mpsc::Sender<()>)>;
@@ -3233,7 +3273,7 @@ mod paused_reset {
         let seed_release_rx = Mutex::new(seed_release_rx);
         let catch_up_hour_5 = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let catch_up_hour_5_read = Arc::clone(&catch_up_hour_5);
-        host.prepare_panel(product(Arc::new(move |hour, _, _, step| {
+        host.prepare_panel(product(Arc::new(move |hour, values, _, step| {
             if hour == 0 && step.is_none() {
                 let _ = seed_entered_tx.send(());
                 let _ = seed_release_rx.lock().unwrap().recv();
@@ -3244,6 +3284,10 @@ mod paused_reset {
             }
             if hour == 5 && step.is_none() {
                 catch_up_hour_5_read.store(true, std::sync::atomic::Ordering::Release);
+                if !values {
+                    let (live, value) = live_cell(0, 100, 40);
+                    return ProductRead { value, rows: 1, fresh: false, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN };
+                }
             }
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
             ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
@@ -3257,6 +3301,8 @@ mod paused_reset {
         let _ = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_after_settle)), 11, 0);
         let returned = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_after_settle)), 11, 5);
         assert!(returned["live"]["groups"][0]["follow"].is_u64(), "returning cell group in catch-up receives a follow id");
+        assert_eq!(returned["live"]["groups"][0]["seedHour"], 5, "cells a shared reader returns from its cache are read again with their values at the catch-up hour");
+        assert_eq!(returned["live"]["groups"][0]["values"], serde_json::json!([50]));
         loop {
             if seen.iter().any(|(id, hour, kind, _)| *id == 11 && *hour == 8 && (*kind == dated::DATA || *kind == dated::STANDS)) {
                 break;
