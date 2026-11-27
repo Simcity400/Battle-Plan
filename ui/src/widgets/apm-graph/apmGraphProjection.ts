@@ -13,12 +13,11 @@ import {
 import { seriesLookAt, type ChartGap, type TimeChartModel, type TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf, countrySeriesLooks, missingSpansOf } from '../../families/time-chart/seriesHelpers.ts';
 import type { ApmPlayer, ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
-import { apmRateRational, formatApmOperands, formatApmRate, GAPS_NOTE, playerNames, validateApm } from '../player-apm/apmData.ts';
+import { APM_EMPTY, APM_NOT_RECORDED, apmRateRational, formatApmOperands, formatApmRate, GAPS_NOTE, playerNames, validateApm } from '../player-apm/apmData.ts';
 import { apmHeadQuery, apmHeadRows } from '../player-apm/apmHead.ts';
 import { identityName } from '../../families/table/identityCell.ts';
 
 const TOP_NAMED = 8;
-const NOT_RECORDED_CAMPAIGN = 'Player orders were not recorded in this campaign.';
 
 export interface ApmGraphOptions {
   readonly group: 'country' | 'player';
@@ -316,7 +315,7 @@ function extractHeadRows(readView: BoundedReadView): { readonly rows: readonly A
   }
   const panel = readView.panel<ApmReply>('head');
   if (panel) {
-    if (!panel.available) return { rows: [], ready: true, refusal: NOT_RECORDED_CAMPAIGN, warnings: panel.warnings };
+    if (!panel.available) return { rows: [], ready: true, refusal: APM_NOT_RECORDED, warnings: panel.warnings };
     return { rows: panel.series, ready: true, refusal: null, warnings: panel.warnings };
   }
   return { rows: [], ready: false, refusal: null, warnings: [] };
@@ -344,7 +343,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         extent: options.extent,
         yAxis,
         series: [],
-        empty: { message: NOT_RECORDED_CAMPAIGN, kind: 'unavailable' },
+        empty: { message: APM_NOT_RECORDED, kind: 'unavailable' },
       };
     }
     const { rows, ready, refusal, warnings } = extractHeadRows(readView);
@@ -413,7 +412,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         yAxis,
         series: [],
         warnings,
-        ...(ready ? { empty: { message: 'No eAPM is available for these countries, players and dates.', kind: 'empty' as const } } : {}),
+        ...(ready ? { empty: { message: APM_EMPTY, kind: 'empty' as const } } : {}),
       };
     }
     const roster = recorded && withObservations(recorded, entries);
@@ -555,11 +554,11 @@ export const apmGraphDeclaration: TimeChartWidgetDeclaration<ApmGraphOptions, Ap
     validate: validateApm,
   },
   sources(ctx: FamilyPlanContext<ApmReply>): SourcePlan {
-    if (ctx.aux && (!ctx.aux.available || ctx.aux.players.length === 0)) {
+    if (ctx.aux && !ctx.aux.available) {
       return {
         owner: `apm-graph:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
         entries: [],
-        unavailable: NOT_RECORDED_CAMPAIGN,
+        unavailable: APM_NOT_RECORDED,
       };
     }
     const headParams = headParamsOf(ctx);
@@ -622,7 +621,7 @@ export const apmGraphDeclaration: TimeChartWidgetDeclaration<ApmGraphOptions, Ap
     };
   },
   projection: apmGraphProjection,
-  unavailable: ctx => (ctx.aux && (!ctx.aux.available || ctx.aux.players.length === 0) ? NOT_RECORDED_CAMPAIGN : null),
+  unavailable: ctx => (ctx.aux && !ctx.aux.available ? APM_NOT_RECORDED : null),
   projectionOptions(ctx, { extent, surface }) {
     const group: 'country' | 'player' = ctx.options.group === 'country' ? 'country' : 'player';
     const yMin = typeof ctx.options.yMin === 'number' && Number.isFinite(ctx.options.yMin) ? ctx.options.yMin : null;
