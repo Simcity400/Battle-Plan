@@ -11,7 +11,7 @@ import { fieldsView } from './views/fields.ts';
 import { Page, type Bitmap, type FrameRequest, type PageMessage } from '../dashboard/follow/page.ts';
 import { message } from '../dashboard/follow/messages.fixture.ts';
 import { parseAnswer, cellValue, DATED_PANEL_VERSION } from '../dashboard/follow/message.ts';
-import { splitForLanes } from '../dashboard/follow/split.ts';
+import { resetStamps, splitForLanes } from '../dashboard/follow/split.ts';
 import { PayloadSender, PayloadStore } from '../dashboard/follow/payloads.ts';
 import { boundDated } from '../families/host/dated.ts';
 
@@ -485,7 +485,11 @@ test('astra 4: a lane bound after an earlier reset dates its entries with the re
   }) });
   for (let index = 0; index < 2; index++) lanes.push(new Lane<Fake>({ lane: index, lanes: 2, views: () => fieldsView(() => undefined), crop: async () => [],
     present: presentation => page.offer(presentation), release: () => {}, fail: () => {}, later: () => {} }));
-  const send = (bytes: Uint8Array) => { const split = splitForLanes(bytes, 2); split.lanes.forEach((part, index) => { if (part) lanes[index]!.receive('follow', part); }); };
+  const stamp = resetStamps();
+  const send = (bytes: Uint8Array) => {
+    const resets = stamp(bytes);
+    splitForLanes(bytes, 2).lanes.forEach((part, index) => { if (part) lanes[index]!.receive('follow', part, resets); });
+  };
   const step = async (T: number) => { page.publish(T, { playing: false }); await flush(); await flush(); page.frame(); await flush(); };
   for (const [widget, sub, index] of [[1, 4, 0], [2, 5, 1]] as const) {
     lanes[index]!.follow(sub, 'followed');
