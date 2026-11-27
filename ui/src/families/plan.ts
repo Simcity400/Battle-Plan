@@ -190,6 +190,7 @@ export interface BoundedSeries {
   readonly buckets: BoundedSlice<ChartBucket | null>;
   readonly runs?: BoundedSlice<Run>;
   readonly straddling: 'none' | 'cut' | 'loading';
+  readonly straddlingFrom?: number;
   readonly straddlingRuns?: readonly Run[];
   readonly headValue?: Value;
   readonly missing: BoundedSlice<MissingSpan>;

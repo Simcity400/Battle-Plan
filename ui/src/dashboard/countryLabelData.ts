@@ -1,10 +1,10 @@
 import { isFailedFact } from './countryFacts.ts';
 import type { FlagValue } from './countryFlags';
-import { nameReadFrom, nameReadMetadata, type NameRead } from './nameReads.ts';
+import { nameReadFrom, nameReadMetadata, type NameFact, type NameRead } from './nameReads.ts';
 import { failureText, type Failure } from './queryError.ts';
 import { compareTags } from './tagOrder.ts';
 
-type NameValue = string | null | undefined | Failure;
+type NameValue = NameFact | null | undefined | Failure;
 export type CountryLabelValue = Readonly<{ name: string; flag?: string; known?: boolean; nameFailed?: boolean; nameDetail?: string;
   nameFailure?: Failure; flagPending?: boolean; flagDetail?: string; flagReason?: string }>;
 export type CountryLabel = (tag: string) => CountryLabelValue;
@@ -24,12 +24,19 @@ interface LabelNode { readonly next: Map<string, WeakMap<CountryLabelValue, Labe
 
 export class CountryLabelIndex {
   private readonly values = new Map<NameValue, Map<FlagValue | undefined, CountryLabelValue>>();
+  private readonly absentReasons = new Map<string, { readonly reason: string }>();
   private readonly root: LabelNode = { next: new Map() };
   private readonly tables = new WeakMap<ReadonlyMap<string, NameRead>, WeakMap<ReadonlyMap<string, FlagValue>, (hour: number) => CountryLabel>>();
   private readonly bounds: readonly [number, number] | null;
 
   constructor(bounds: readonly [number, number] | null = [-Infinity, Infinity]) {
     this.bounds = bounds;
+  }
+
+  private internReason(reason: string): { readonly reason: string } {
+    let held = this.absentReasons.get(reason);
+    if (!held) this.absentReasons.set(reason, held = { reason });
+    return held;
   }
 
   at(names: ReadonlyMap<string, NameRead>, flags: ReadonlyMap<string, FlagValue>): (hour: number) => CountryLabel {
@@ -49,7 +56,11 @@ export class CountryLabelIndex {
       let node = this.root;
       for (const tag of [...tags].sort(compareTags)) {
         const key = JSON.stringify([hour, tag]), read = names.get(key), flagRead = flags.get(key);
-        const name = read?.kind === 'value' ? read.value : read?.kind === 'failed' ? read.failure : read?.kind === 'loading' ? undefined : null;
+        const name: NameValue = read?.kind === 'value' ? read.value
+          : read?.kind === 'failed' ? read.failure
+          : read?.kind === 'loading' ? undefined
+          : read?.kind === 'absent' && read.reason !== undefined ? this.internReason(read.reason)
+          : null;
         const reading = this.bounds !== null && names.has(key) && hour >= this.bounds[0] && hour <= this.bounds[1];
         const flag = flagRead === undefined && !reading ? null : flagRead;
         let byFlag = this.values.get(name);

@@ -3105,7 +3105,11 @@ export type IdeaLook = { info: IdeaInfo,
 /**
  * The idea's name and icon; for an advisor, its holder's.
  */
-artwork: Artwork, };
+artwork: Artwork,
+/**
+ * Why this look's artwork is missing; omitted when artwork is present.
+ */
+artworkMissing?: string, };
 export type IdeaCharacter = {
 /**
  * The recorded character id.
@@ -3766,7 +3770,7 @@ export type NavalBattleDetail = { id: string, hour: number,
 rosterHour: number | null, fleets: [NavalBattleFleetNames, NavalBattleFleetNames], namedShips: Array<NavalBattleNamedShip>, shipRead: number | null, unavailable: string | null, };
 export type NavalBattlesTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, offset?: string, sort?: OccurrenceSort, limit: number, };
 export type NavalBattlesTailReply = { branchId: string, total: string, offset: string, rows: Array<NavalBattleLogRow>, missing: Array<OccurrenceGap>, nextChange: number | null, warnings: Array<string>, };
-export type NavalBattleLogRow = { key: string, hour: number, detailId: string, detailHour: number | null, province: number | null, countries: [Array<number>, Array<number>], countriesHour: [number, number], readHour: number, shipsSunk: [number | null, number | null], convoysSunk: [number | null, number | null], icLost: [number | null, number | null], ships: [number | null, number | null], convoys: [number | null, number | null], result: NavalBattleStatus, };
+export type NavalBattleLogRow = { key: string, hour: number, detailId: string, detailHour: number | null, lastLiveHour: number | null, endSeen: boolean, province: number | null, countries: [Array<number>, Array<number>], countriesHour: [number, number], readHour: number, shipsSunk: [number | null, number | null], convoysSunk: [number | null, number | null], icLost: [number | null, number | null], ships: [number | null, number | null], convoys: [number | null, number | null], result: NavalBattleStatus, };
 export type NavalBattleStatus = "ongoing" | "attackerWon" | "defenderWon" | "unknown";
 export type NavalLossesAtParams = { branchId: string, hour: number, countries: Array<CountryRef>, top?: number,
 /**

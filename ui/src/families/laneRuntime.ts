@@ -5,7 +5,7 @@ import type { LaneView, Painted, PaintInput, Scene, Surface, Value as LaneValue 
 import { markCanvasPainted } from '../draw/laneDispatch.ts';
 import { LaneArtCache, LaneArtPool, type LaneArtFetcher } from './art/laneCache.ts';
 import { createLaneArtProvider, type ArtResolutions } from './art/provider.ts';
-import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from './cadence.ts';
+import { TrailingFlushScheduler, type CadenceTimers } from './cadence.ts';
 import type { ArtProvider, BoundedReadView, FamilyProjection, FamilyTheme, IdentityProvider } from './contract.ts';
 import type { FamilyTooltipEntry, FamilyTooltipField } from './host/tooltips.ts';
 import { IdentityIndex } from './identity/index.ts';
@@ -41,6 +41,8 @@ export interface LaneBinding<TOptions = unknown> extends TiledSources {
   readonly artResolutions?: ArtResolutions;
   readonly selectedKey?: string | null;
   readonly focusedKey?: string | null;
+  readonly focusInside?: boolean;
+  readonly mirrorRequest?: number;
   readonly audit?: boolean;
   readonly auditId?: number;
   readonly revisions?: Revisions;
@@ -193,10 +195,12 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   kept: Map<string, Field>;
   frameKey: readonly unknown[];
   frameRevision: number;
-  mirrorGate: CadenceGate;
   mirrorField: Field | null;
   mirrorFrame: number;
   mirrorView: string;
+  mirrorSeek: number;
+  mirrorRequest: number;
+  mirrorHasRows: boolean;
   tip: Tip;
   focusTip: Tip;
   flusher: TrailingFlushScheduler;
@@ -255,9 +259,32 @@ function releaseIndex(revision: number | null): void {
   if (held && --held.users <= 0) indexes.delete(revision);
 }
 
-const MIRROR_CADENCE_MS = 1000;
 const EMPTY: Painted = { surfaces: [], fields: {}, motion: false };
 const WAITING: Painted = { ...EMPTY, waiting: true };
+
+function hasMirrorRows(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.length > 0;
+  const rows = (value as { readonly rows?: readonly unknown[] }).rows;
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+function hasStructureRows(fields: Record<string, Field>): boolean {
+  if (Array.isArray(fields.nav?.value) && fields.nav.value.length > 0) return true;
+  const range = fields.range?.value as { readonly count?: number } | undefined;
+  if (typeof range?.count === 'number' && range.count > 0) return true;
+  const extent = fields.extent?.value as { readonly rows?: readonly unknown[] } | undefined;
+  return Array.isArray(extent?.rows) && extent.rows.length > 0;
+}
+
+function resetMirror<TBinding extends LaneBinding, TModel, TLayout>(held: Held<TBinding, TModel, TLayout> | undefined): void {
+  if (!held) return;
+  held.mirrorField = null;
+  held.mirrorFrame = -1;
+  held.mirrorView = '';
+  held.mirrorSeek = -1;
+  held.mirrorHasRows = false;
+}
 
 function sameKey(a: readonly unknown[], b: readonly unknown[]): boolean {
   if (a.length !== b.length) return false;
@@ -449,7 +476,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       ...(options?.artMaxEntries !== undefined ? { maxEntries: options.artMaxEntries } : {}),
       pool: artPool,
     });
-    const mirrorGate = new CadenceGate(MIRROR_CADENCE_MS);
     const held: Held<TBinding, TModel, TLayout> = {
       canvas, ctx, art,
       wake: wakerOf(widget),
@@ -466,9 +492,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       structureKey: [], structureFields: {},
       kept: new Map(),
       frameKey: [], frameRevision: 0,
-      mirrorGate, mirrorField: null, mirrorFrame: -1, mirrorView: '',
+      mirrorField: null, mirrorFrame: -1, mirrorView: '', mirrorSeek: -1, mirrorRequest: 0, mirrorHasRows: false,
       tip: noTip(), focusTip: noTip(),
-      flusher: new TrailingFlushScheduler(family.mirror ? [mirrorGate] : [], options?.timers),
+      flusher: new TrailingFlushScheduler([], options?.timers),
       auditKey: [], auditField: null,
       tiles: new SceneTiles(),
     };
@@ -511,13 +537,21 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted {
       const binding = input.model;
       const surface = input.binding.surfaces[0];
-      if (!surface || surface.width <= 0 || surface.height <= 0) return WAITING;
+      const existing = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
+      if (!surface || surface.width <= 0 || surface.height <= 0) {
+        resetMirror(existing);
+        return WAITING;
+      }
       const waiting: Painted = { ...EMPTY, nextChangeAt: input.hour + 1 };
       if (!isBinding(binding) || !binding.theme) return waiting;
       const theme = binding.theme;
       const projection = projectionOf(binding, input.widget);
-      if (projection === 'loading') return WAITING;
+      if (projection === 'loading') {
+        resetMirror(existing);
+        return WAITING;
+      }
       if (projection === 'unknown') {
+        resetMirror(existing);
         const failure = familyProjectionFailure(family.family, binding.kind, binding.view);
         if (!failure) return { ...EMPTY, mode: 'refused', reason: unknownProjectionReason(binding) };
         return retryOrThrow(failedGenerations, input, unknownProjectionReason(binding), () => {
@@ -526,7 +560,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         });
       }
 
-      let held = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
+      let held = existing;
       if (!held) {
         held = create(surface, input.widget);
         state.set(stateKey, held);
@@ -602,6 +636,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           projected.boundary,
           seriesUntil,
         );
+        if (keep.kind !== binding.kind || keep.viewName !== binding.view || keep.owner !== input.owner) {
+          resetMirror(keep);
+        }
         keep.projected = projected;
         keep.projectedArtRevision = keep.artRevision;
         keep.kind = binding.kind;
@@ -632,12 +669,16 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const nextChangeAt = Number.isFinite(keep.drawUntil) ? { nextChangeAt: keep.drawUntil } : {};
 
       const status = family.status(model);
-      if (status === 'waiting') return WAITING;
+      if (status === 'waiting') {
+        resetMirror(keep);
+        return WAITING;
+      }
       if (typeof status === 'object') {
         keep.flusher.cancel();
         keep.drawn = null;
         keep.drawKey = [];
         keep.hit = () => null;
+        resetMirror(keep);
         return { ...EMPTY, mode: 'refused', reason: status.refused, ...nextChangeAt };
       }
 
@@ -724,7 +765,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (!sameKey(keep.frameKey, frameKey)) {
         keep.frameKey = frameKey;
         keep.frameRevision++;
-        if (mirror) keep.mirrorGate.invalidate();
       }
       const frameRevision = keep.frameRevision;
 
@@ -732,11 +772,26 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (mirror) {
         const mirrorView = `${binding.focusedKey ?? ''}\u0000${binding.scrollLeft ?? 0}\u0000${binding.scrollTop}`;
         const mirrorStale = keep.mirrorFrame !== frameRevision || keep.mirrorView !== mirrorView;
-        if (mirrorStale && (!keep.mirrorField || keep.mirrorGate.due(now, input.speed, mirrorView))) {
-          keep.mirrorField = field(keep, 'mirror', mirror(frame), content);
+        const mirrorRequest = binding.mirrorRequest ?? 0;
+        const hasRows = hasStructureRows(fields);
+        const mirrorNeeded =
+          input.speed === 0
+          || Boolean(binding.focusedKey || binding.focusInside)
+          || !keep.mirrorField
+          || mirrorRequest !== keep.mirrorRequest
+          || (!keep.mirrorHasRows && hasRows)
+          || keep.mirrorSeek !== input.seek;
+        if (mirrorStale && mirrorNeeded) {
+          const mirrorValue = mirror(frame);
+          keep.mirrorField = field(keep, 'mirror', mirrorValue, content);
           keep.mirrorFrame = frameRevision;
           keep.mirrorView = mirrorView;
-          keep.mirrorGate.record(now, mirrorView);
+          keep.mirrorSeek = input.seek;
+          keep.mirrorRequest = mirrorRequest;
+          keep.mirrorHasRows = hasMirrorRows(mirrorValue);
+        } else if (!mirrorStale) {
+          if (keep.mirrorSeek !== input.seek) keep.mirrorSeek = input.seek;
+          if (keep.mirrorRequest !== mirrorRequest) keep.mirrorRequest = mirrorRequest;
         }
         if (keep.mirrorField && keep.mirrorFrame === frameRevision && keep.mirrorView === mirrorView && keep.mirrorField.value !== null) fields.mirror = keep.mirrorField;
       }

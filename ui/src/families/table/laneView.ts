@@ -1024,7 +1024,11 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   mirror({ model, layout, binding }) {
     const shape = layout.shape;
     const visibleSpecs = shape.columns.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-    return deriveTableMirror(shape.flatRows, visibleSpecs, shape.rankShown, layout.shownWindows, binding.focusedKey ?? null, layout.focusedIndex, { offset: shape.windowOffset, total: shape.totalCount });
+    const base = deriveTableMirror(shape.flatRows, visibleSpecs, shape.rankShown, layout.shownWindows, binding.focusedKey ?? null, layout.focusedIndex, { offset: shape.windowOffset, total: shape.totalCount });
+    return {
+      ...base,
+      columns: [...(shape.rankShown ? ['Rank'] : []), ...visibleSpecs.map(col => col.label)],
+    };
   },
   audit({ model, layout }) {
     const shape = layout.shape;

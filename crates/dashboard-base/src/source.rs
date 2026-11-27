@@ -21,9 +21,11 @@ use crate::{
     presentation::{Admitted, Binding, Cancel, Presentation, Presented},
     products::ContentOptions,
 };
-use content_reader_country_names::country_names::CountryNames;
+use content_reader_country_names::country_names::{CountryName, CountryNames};
 use content_reader_localisation::localisation::Localisation;
+use dashboard_text::scripted_text::{ScriptedText, TABLES as SCRIPTED_TABLES, probe_unselected_tables};
 use replay::campaign::SeekResult;
+use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SourceKey {
@@ -293,31 +295,83 @@ impl Source {
             return Ok(());
         }
         let (metadata, diagnostics) =
-            diagnostics::capture(|| self.named_metadata(name_localisation(self, content)));
+            diagnostics::capture(|| self.named_metadata_with(name_localisation(self, content), content, None));
         diagnostics.credit();
         *named = Some((key, metadata?, diagnostics));
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn named_metadata(
         &self,
         localisation: Result<Arc<Localisation>, String>,
     ) -> io::Result<ResidentMetadata> {
-        self.named_metadata_from(localisation, None)
+        self.named_metadata_with(localisation, None, None)
     }
 
+    #[cfg(test)]
     fn named_metadata_from(
         &self,
         localisation: Result<Arc<Localisation>, String>,
         previous: Option<&ResidentMetadata>,
     ) -> io::Result<ResidentMetadata> {
-        self.try_named_metadata_from(localisation, previous)
+        self.named_metadata_with(localisation, None, previous)
+    }
+
+    fn named_metadata_with(
+        &self,
+        localisation: Result<Arc<Localisation>, String>,
+        content: Option<&ContentOptions>,
+        previous: Option<&ResidentMetadata>,
+    ) -> io::Result<ResidentMetadata> {
+        self.try_named_metadata_from(localisation, content, previous)
             .map_err(|error| io::Error::other(format!("Country metadata naming failed: {error}")))
+    }
+
+    fn expand_scripted_country(
+        &self,
+        catalogue: &crate::catalogue::Catalogue,
+        branch: u64,
+        hour: i32,
+        slot: u32,
+        text: &str,
+    ) -> io::Result<Option<String>> {
+        let Ok(scripted_content) = catalogue.scripted_content() else {
+            return Ok(None);
+        };
+        let mut frame = DecodedFrame {
+            branch,
+            hour,
+            tables: std::array::from_fn(|_| not_selected()),
+            metrics: Metrics::default(),
+        };
+        let mut last = None;
+        for _ in 0..=SCRIPTED_TABLES.len() {
+            let scripted = ScriptedText::new(&frame, &catalogue.localisation, scripted_content, slot);
+            let mut result = None;
+            let needed = probe_unselected_tables(&frame, || {
+                result = Some(scripted.expand(text));
+            });
+            last = result;
+            if needed.is_empty() {
+                break;
+            }
+            let partial = match self.replay.seek_selected(branch, hour, Some(&needed)) {
+                Ok(SeekResult::Frame(partial)) => partial,
+                Err(error) if engine_allocation::is_allocation_error(&error) => return Err(error),
+                _ => return Ok(None),
+            };
+            for table in needed {
+                frame.tables[table.index()] = partial.tables[table.index()].clone();
+            }
+        }
+        Ok(last.and_then(Result::ok).and_then(|expanded| crate::catalogue::plain_text(&expanded).ok()))
     }
 
     fn try_named_metadata_from(
         &self,
         localisation: Result<Arc<Localisation>, String>,
+        content: Option<&ContentOptions>,
         previous: Option<&ResidentMetadata>,
     ) -> io::Result<ResidentMetadata> {
         let mut metadata = self.metadata.copy_presentation()?;
@@ -339,6 +393,7 @@ impl Source {
             Ok(localisation) => {
                 let mut unnamed = 0;
                 let mut frames = std::collections::BTreeMap::new();
+                let mut scripted_catalogue: Option<Option<Arc<crate::catalogue::Catalogue>>> = None;
                 for country in &mut metadata.countries {
                     if let Some(saved) = saved_countries.get(&country_observation(country)) {
                         country.name.clone_from(&saved.name);
@@ -372,10 +427,39 @@ impl Source {
                             entry.insert(frame)
                         }
                     };
-                    let name = frame
-                        .as_ref()
-                        .zip(country.id.parse::<u32>().ok())
-                        .and_then(|(names, slot)| names.name(slot).ok());
+                    let name = match frame.as_ref().zip(country.id.parse::<u32>().ok()) {
+                        Some((names, slot)) => match names.resolve_name(slot) {
+                            Ok(CountryName::Plain(name)) => Some(name),
+                            Ok(CountryName::Scripted { text, .. }) => {
+                                if let Ok(branch) = country.observed_branch_id.parse() {
+                                    let cat = match &scripted_catalogue {
+                                        Some(cat) => cat.as_deref(),
+                                        None => {
+                                            let loaded = match content {
+                                                Some(opts) => match crate::catalogue::recorded_catalogue(self, opts) {
+                                                    Ok(cat) => Some(cat),
+                                                    Err(error) if engine_allocation::is_allocation_error(&error) => {
+                                                        return Err(error);
+                                                    }
+                                                    Err(_) => None,
+                                                },
+                                                None => None,
+                                            };
+                                            scripted_catalogue.insert(loaded).as_deref()
+                                        }
+                                    };
+                                    match cat {
+                                        Some(cat) => self.expand_scripted_country(cat, branch, country.observed_hour, slot, &text)?,
+                                        None => None,
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                            Err(_) => None,
+                        },
+                        None => None,
+                    };
                     match name {
                         Some(name) => country.name = metadata::short_text(&name, 512),
                         None => unnamed += 1,

@@ -96,8 +96,10 @@ impl Product for LandOwnersProduct {
         let mut warnings = Vec::new();
         let localisation = styles::localisation(source, context.content.as_ref(), &mut warnings)?;
         let mut names: HashMap<(String, u64, i32), String> = HashMap::new();
+        let mut failures: Vec<String> = Vec::new();
         if let Some(localisation) = &localisation {
             let mut looks: HashMap<u32, std::sync::Arc<styles::RunLooks>> = HashMap::new();
+            let mut evaluator: Option<styles::ScriptedEvaluator> = None;
             for ((tag, _), &(timeline, hour)) in &found {
                 dashboard_text::metadata::check_cancel(cancelled)?;
                 let query = dashboard_base::queries::query(source, timeline)?;
@@ -109,11 +111,16 @@ impl Product for LandOwnersProduct {
                 let look = run.spans.iter().find(|&&(number, _, first, last)| {
                     first <= hour && hour <= last && run.tags.get(&number).is_some_and(|held| **held == **tag)
                 });
-                if let Some(look) = look.and_then(|&(_, look, ..)| run.looks.get(&look))
-                    && let (style, _) = styles::style(tag, look, Some(localisation))
-                    && let Some(name) = style.name
-                {
-                    names.insert((tag.clone(), timeline, hour), name);
+                if let Some(look) = look.and_then(|&(_, look, ..)| run.looks.get(&look)) {
+                    let (style, problem) = styles::style_with(tag, look, Some(localisation), |key, text, slot| {
+                        let eval = evaluator.get_or_insert_with(|| styles::ScriptedEvaluator::for_source(source, context.content.as_ref()));
+                        eval.expand(stretch.run, hour, slot, key, text)
+                    });
+                    if let Some(name) = style.name {
+                        names.insert((tag.clone(), timeline, hour), name);
+                    } else if let Some(reason) = problem {
+                        failures.push(format!("{tag}: {reason}"));
+                    }
                 }
             }
         }
@@ -132,6 +139,9 @@ impl Product for LandOwnersProduct {
         countries.sort_unstable_by(|a, b| (&a.0, a.1, a.2).cmp(&(&b.0, b.1, b.2)));
         if localisation.is_some() && unnamed > 0 {
             warnings.push(format!("{unnamed} country names could not be resolved from the recorded content and show their tag."));
+            failures.sort();
+            failures.dedup();
+            warnings.extend(failures);
         }
         Ok(LandOwners { countries: countries.into_iter().map(|(.., entry)| entry).collect(), warnings })
     }

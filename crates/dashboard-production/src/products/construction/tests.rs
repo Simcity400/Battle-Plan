@@ -441,3 +441,39 @@ fn a_project_split_at_an_unread_tail_joins_to_the_levels_of_one_window() {
     assert_eq!(shown(&joined), [(None, 100, 1, true), (Some(118), 120, 2, false)], "a rise list still held when the next window opens is not counted twice");
     assert_eq!(shown(&joined), shown(&held(&whole, 199)));
 }
+
+#[test]
+fn construction_naming_distinguishes_absent_and_scripted_building_and_state_names() {
+    let (_, dir) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        ("common/defines/fixture.lua", "NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 13 } }"),
+        ("common/buildings/00_test.txt", "buildings = { mod_mill = { icon_frame = 1 } mod_script = { icon_frame = 1 } }"),
+        ("map/default.map", "definitions = definition.csv provinces = provinces.bmp terrain = terrain.bmp rivers = rivers.bmp heightmap = heightmap.bmp tree_definition = trees.bmp"),
+        ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n1;1;0;0;land;false;unknown;1\n2;2;0;0;land;false;unknown;1\n"),
+        ("history/states/10-test.txt", "state = { id = 10 name = \"STATE_10\" provinces = { 1 } }"),
+        ("history/states/11-test.txt", "state = { id = 11 name = \"STATE_11\" provinces = { 2 } }"),
+        ("localisation/english/test_l_english.yml", "\u{feff}l_english:\n mod_script:0 \"[Root.GetName] Mill\"\n STATE_11:0 \"[Root.GetName] Province\"\n"),
+    ]);
+    let mut bmp = vec![0_u8; 62];
+    bmp[..2].copy_from_slice(b"BM");
+    for (at, value) in [(2, 62_u32), (10, 54), (14, 40), (18, 2), (22, 1)] {
+        bmp[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bmp[54..60].copy_from_slice(&[0, 0, 1, 0, 0, 2]);
+    std::fs::write(dir.0.join("map/provinces.bmp"), bmp).unwrap();
+    let cat = dashboard_base::catalogue::tests::layers_catalogue(
+        content_reader_layers::ResolvedLayers::from_folders(&[(&dir.0, &[][..])]).unwrap(),
+    );
+    let mut naming = Naming::read(&cat);
+    let types = BTreeMap::from([(1, Some("mod_mill".to_owned())), (2, Some("mod_script".to_owned()))]);
+    let states = BTreeSet::from([10, 11]);
+    let mut warnings = Vec::new();
+    let named = naming.named(&cat, &types, &states, &mut warnings);
+    assert_eq!(named.types.iter().map(|t| t.name.as_deref()).collect::<Vec<_>>(), [None, None]);
+    assert_eq!(named.states.iter().map(|s| s.name.as_deref()).collect::<Vec<_>>(), [None, None]);
+    assert!(warnings.iter().any(|w| w.contains("mod_mill") && w.contains("no name in the recorded localisation")), "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("building mod_script") && w.contains("[Root.GetName]")), "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("10 (STATE_10)") && w.contains("no name in the recorded content")), "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("State 11") && w.contains("STATE_11") && w.contains("[Root.GetName]")), "{warnings:?}");
+}

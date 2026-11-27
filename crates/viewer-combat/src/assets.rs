@@ -252,12 +252,7 @@ impl Assets {
         &self,
         name: &[u8],
     ) -> Option<Cow<'_, native_gui::SpriteInfo>> {
-        let key = if name.starts_with(b"air_texture:") {
-            b"air_texture:".as_slice()
-        } else {
-            name
-        };
-        let mut info = Cow::Borrowed(self.gui.sprite_info(key)?);
+        let mut info = Cow::Borrowed(self.gui.sprite_info(Self::lazy_key(name))?);
         let Some((path, _)) = std::str::from_utf8(name)
             .ok()
             .and_then(|name| self.lazy_sprite(name))
@@ -282,7 +277,7 @@ impl Assets {
         match self.portraits.get(path) {
             Lookup::Loaded { size, .. } => info.texture = size.map(|value| value as i32),
             Lookup::Pending => {
-                info.missing = Some("portrait texture is queued for native decoding".into());
+                info.missing = Some("sprite texture is queued for native decoding".into());
                 info.hit = native_gui::Hit::Through;
             }
             Lookup::Failed => {
@@ -299,7 +294,7 @@ impl Assets {
                 } else {
                     info.refusals.push((
                         native_gui::RefusalKind::MissingResource,
-                        format!("portrait texture {path} failed without a recorded decode reason"),
+                        format!("sprite texture {path} failed without a recorded decode reason"),
                     ));
                 }
             }
@@ -307,17 +302,29 @@ impl Assets {
         Some(Cow::Owned(info))
     }
 
+    fn lazy_key<'a>(name: &'a [u8]) -> &'a [u8] {
+        if name.starts_with(b"air_texture:") {
+            b"air_texture:".as_slice()
+        } else {
+            name
+        }
+    }
+
     pub fn sprite_size(&self, name: &str) -> Option<[f32; 2]> {
-        let info = self.native_sprite(name.as_bytes())?;
-        if self.lazy_sprite(name).is_some() {
-            if info.missing.is_some() || !info.refusals.is_empty() {
+        if let Some((path, _)) = self.lazy_sprite(name) {
+            let info = self.gui.sprite_info(Self::lazy_key(name.as_bytes()))?;
+            if !info.refusals.is_empty() {
                 return None;
             }
+            let Lookup::Loaded { size, .. } = self.portraits.acquire(path) else {
+                return None;
+            };
             return Some([
-                info.texture[0] as f32 / info.frames.max(1) as f32,
-                info.texture[1] as f32,
+                (size[0] / info.frames.max(1) as u32) as f32,
+                size[1] as f32,
             ]);
         }
+        let info = self.native_sprite(name.as_bytes())?;
         prepared_size(&self.gui, name.as_bytes(), &info)
     }
 
@@ -345,9 +352,15 @@ impl Assets {
             .collect()
     }
 
+    pub(crate) fn acquire_sprite(&self, name: &str) {
+        if let Some((path, _)) = self.lazy_sprite(name) {
+            let _ = self.portraits.acquire(path);
+        }
+    }
+
     pub fn has_sprite(&self, name: &str) -> bool {
         if let Some((path, _)) = self.lazy_sprite(name) {
-            return self.portraits.peek(path) != Lookup::Failed;
+            return matches!(self.portraits.acquire(path), Lookup::Loaded { .. });
         }
         self.gui
             .sprite(name.as_bytes())
@@ -355,13 +368,22 @@ impl Assets {
     }
 
     pub(super) fn drawable_sprite(&self, name: &[u8]) -> Option<native_gui::SpriteInfo> {
-        let info = self.native_sprite(name)?;
-        let name = std::str::from_utf8(name).ok()?;
-        if let Some((path, _)) = self.lazy_sprite(name) {
-            (self.portraits.peek(path) != Lookup::Failed).then_some(info)
-        } else {
-            prepared_size(&self.gui, name.as_bytes(), &info).map(|_| info)
+        if let Some((path, _)) = std::str::from_utf8(name)
+            .ok()
+            .and_then(|text| self.lazy_sprite(text))
+        {
+            let mut info = self.gui.sprite_info(Self::lazy_key(name))?.clone();
+            if !info.refusals.is_empty() {
+                return None;
+            }
+            let Lookup::Loaded { size, .. } = self.portraits.acquire(path) else {
+                return None;
+            };
+            info.texture = size.map(|value| value as i32);
+            return Some(info);
         }
+        let info = self.native_sprite(name)?;
+        prepared_size(&self.gui, name, &info).map(|_| info)
     }
 
     pub fn has_flag(&self, key: &str) -> bool {
@@ -853,11 +875,19 @@ impl Assets {
             textures: native_assets.textures,
         };
         for name in &wanted {
-            if let Some(facts) = registry.sprite(name.as_bytes())
+            let always_eager = name.starts_with("GFX_mapmode_buttons_")
+                || name.starts_with("combat_tactic:")
+                || name == super::tactics::NULL_PICTURE;
+            let window = window_sprites.contains(name.as_bytes());
+            if !always_eager
+                && let Some(facts) = registry.sprite(name.as_bytes())
                 && let SpriteKind::Plain(plain) = &facts.kind
-                && (plain.texture.starts_with(b"gfx/leaders/")
+                && (!window
+                    || plain.texture.starts_with(b"gfx/leaders/")
                     || name.ends_with("_medium")
                     || name.starts_with("air_texture:"))
+                && (!plain.texture.is_empty() || name.starts_with("air_texture:"))
+                && !plain.transparence_check
                 && plain.masking_texture.is_empty()
                 && (plain.legacy_lazy_load || plain.animations.is_empty())
                 && plain.frames >= 0
@@ -884,24 +914,37 @@ impl Assets {
         warnings.extend(sprite_warnings(&gui, &resident.sprites, true));
         warnings.extend(gui.uncovered_note("Combat UI"));
         let reader = Arc::clone(shared);
-        let recorded = reader.without_overlays();
+        let strict = content_reader_layers::content::is_strict();
+        let recorded = (!strict).then(|| reader.without_overlays()).flatten();
         let decode = interface.decode;
         let portrait_failures = Arc::new(Mutex::new(BTreeMap::new()));
         let failures = Arc::clone(&portrait_failures);
         let portraits = LazyImages::new(
-            "combat portrait",
+            "combat sprite",
             Arc::new(move |path: &str| {
-                match resources::stack_texture_or_recorded(
-                    &reader,
-                    recorded.as_ref(),
-                    path.as_bytes(),
-                    decode,
-                ) {
+                let load = || {
+                    resources::stack_texture_or_recorded(
+                        &reader,
+                        recorded.as_ref(),
+                        path.as_bytes(),
+                        decode,
+                    )
+                };
+                let loaded = if strict {
+                    content_reader_layers::content::strict(load)
+                } else {
+                    load()
+                };
+                match loaded {
                     Ok(Ok(texture)) => Ok(texture.image),
                     Ok(Err(why)) => {
                         let kind = if why.native_failure() {
                             None
-                        } else if matches!(why, resources::NoTexture::Device { .. }) {
+                        } else if matches!(
+                            why,
+                            resources::NoTexture::Device { .. }
+                                | resources::NoTexture::OverBudget { .. }
+                        ) {
                             Some(native_gui::RefusalKind::MissingInput)
                         } else {
                             Some(native_gui::RefusalKind::UndefinedRead)
@@ -932,7 +975,7 @@ impl Assets {
         );
         if !lazy_sprites.is_empty() {
             warnings.push(format!(
-                "Combat UI: {} leader portrait sprites decode when a window first draws them; one whose texture cannot be read stays empty.",
+                "Combat UI: {} combat sprites decode when a window first draws them; one whose texture cannot be read stays empty.",
                 lazy_sprites.len()
             ));
         }

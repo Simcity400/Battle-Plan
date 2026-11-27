@@ -40,6 +40,8 @@ pub(super) struct Archive {
 
 impl Archive {
     pub(super) fn open(path: &Path) -> io::Result<Self> {
+        #[cfg(test)]
+        super::tests::ARCHIVE_OPENS.with(|count| count.set(count.get() + 1));
         let file = File::open(path)?;
         let len = file.metadata()?.len();
         Ok(Self {
@@ -53,7 +55,13 @@ impl Archive {
         })
     }
 
+    pub(super) fn file(&self) -> &File {
+        self.io.file.get_ref()
+    }
+
     pub(super) fn mount(&mut self) -> io::Result<Mounted> {
+        #[cfg(test)]
+        super::tests::ARCHIVE_MOUNTS.with(|count| count.set(count.get() + 1));
         let directory = self.end_of_central_directory()?;
         let mut tree = Tree::default();
         let mut entries = Vec::new();

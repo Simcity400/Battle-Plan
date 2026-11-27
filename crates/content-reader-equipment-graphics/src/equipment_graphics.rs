@@ -1066,7 +1066,7 @@ impl Content {
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
+    content_reader_parser::fields::invalid(message)
 }
 
 fn key(item: &Item) -> io::Result<&str> {

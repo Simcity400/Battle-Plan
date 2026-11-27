@@ -1,10 +1,10 @@
 use dashboard_base::products::{Country, validate_country};
 use dashboard_base::products::LoadContext;
-use dashboard_base::{Source, products::at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt}};
+use dashboard_base::{Source, products::at_hour::{At, AtHour, Edits, Held, Keys, Owner, Read, ReadsAt, field_columns, field_mask, warnings_through}};
 use dashboard_base::products::{
     resources::{RESOURCE_DECIMALS, ResourceInfo, ResourceNaming},
 };
-use dashboard_follow::live::{Cells, Source as Cell};
+use dashboard_follow::live::{Cells, Live, Source as Cell};
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
@@ -299,6 +299,25 @@ fn reply(frame: &DecodedFrame, params: &ResourceBalanceParams, tag: &str, id: u3
     Ok(ResourceBalanceReply { tag: tag.to_owned(), decimals: RESOURCE_DECIMALS, resources, pools, rows, short, unrecorded, pools_missing, deals, deals_missing, warnings })
 }
 
+fn deals_ordered(frame: &DecodedFrame, data: &serde_json::Value) -> io::Result<bool> {
+    let Some(deals) = data["deals"].as_array() else { return Ok(false) };
+    let rows = frame.complete::<tables::ResourceExchanges>()?;
+    let mut previous: Option<(i64, &str, &str)> = None;
+    for entry in deals {
+        let (Some(deal), Some(partner)) = (entry["deal"].as_str(), entry["partner"].as_str()) else { return Ok(false) };
+        let Ok(id) = deal.parse::<u64>() else { return Ok(false) };
+        let Ok(at) = rows.binary_search_by_key(&id, |row| row.id) else { return Ok(false) };
+        let current = (rows[at].delivered, partner, deal);
+        if let Some((prev_delivered, prev_partner, prev_deal)) = previous
+            && current.0.cmp(&prev_delivered).then_with(|| prev_partner.cmp(current.1)).then_with(|| prev_deal.cmp(current.2)) == std::cmp::Ordering::Greater
+        {
+            return Ok(false);
+        }
+        previous = Some(current);
+    }
+    Ok(true)
+}
+
 impl AtHour for ResourceBalance {
     const KEY: &'static str = "resource-balance";
     const TITLE: &'static str = "Resource balance";
@@ -368,6 +387,55 @@ impl AtHour for ResourceBalance {
             Err(_) => (Read::all(TableId::ResourceExchanges), i32::MAX),
         };
         (vec![Read::all(TableId::ResourceDefinitions), deals, Read { table: TableId::CountryResources, keys: range(owner.id) }], through)
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::ResourceDefinitions => Some(field_columns(table, &["token"])),
+            TableId::CountryResources => Some(field_columns(table, &[
+                "produced", "adjustment", "imported", "used", "special_total", "production_demand", "to_export", "exported",
+            ])),
+            TableId::ResourceExchanges => Some(field_columns(table, &[
+                "exporter", "importer", "resource", "convoys_assigned", "convoys_required", "delivered", "assigned_factories",
+            ])),
+            TableId::Countries => Some(field_columns(table, &["tag"])),
+            _ => None,
+        }
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        match table {
+            TableId::CountryResources => Some(field_columns(table, &[
+                "produced", "adjustment", "imported", "used", "special_total", "production_demand", "to_export",
+            ])),
+            _ => Self::columns(table),
+        }
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        stage == 1
+            && (edits.fields(TableId::ResourceDefinitions, u64::MAX)
+                || edits.fields(TableId::ResourceExchanges, field_mask(TableId::ResourceExchanges, &["exporter", "importer"])))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        if partial {
+            return frame.hour;
+        }
+        warnings_through(
+            frame.hour,
+            reply.pools_missing.iter()
+                .chain(&reply.deals_missing)
+                .chain(&reply.warnings)
+                .map(String::as_str),
+        )
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &Edits, _live: &Live, data: &mut Held<'_>) -> io::Result<bool> {
+        if edits.only_columns(TableId::ResourceExchanges, field_mask(TableId::ResourceExchanges, &["delivered"])) {
+            return deals_ordered(frame, data);
+        }
+        Ok(false)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

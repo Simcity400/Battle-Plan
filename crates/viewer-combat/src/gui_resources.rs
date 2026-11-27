@@ -28,6 +28,7 @@ pub struct GuiResources<'a> {
     small: &'a LazyFlags,
     large: &'a LazyFlags,
     inventory: &'a GuiAssets,
+    physical_viewport: Option<[i32; 2]>,
 }
 
 impl GuiAssets {
@@ -99,7 +100,12 @@ impl<'a> GuiResources<'a> {
             small,
             large,
             inventory,
+            physical_viewport: None,
         }
+    }
+
+    pub fn with_physical_viewport(self, physical_viewport: Option<[i32; 2]>) -> Self {
+        Self { physical_viewport, ..self }
     }
 }
 
@@ -189,8 +195,16 @@ fn active(values: &Values, sprites: &mut BTreeSet<Vec<u8>>, flags: &mut BTreeSet
 }
 
 impl Resources for GuiResources<'_> {
+    fn physical_viewport(&self) -> Option<[i32; 2]> {
+        self.physical_viewport
+    }
+
     fn sprite(&self, name: &[u8]) -> Option<SpriteInfo> {
         self.assets.native_sprite(name)
+    }
+
+    fn sprite_alpha(&self, name: &[u8]) -> Option<viewer_native_gui::native_gui::AlphaMask> {
+        self.assets.gui.sprite_alpha(name)
     }
 
     fn sprite_info(&self, name: &[u8]) -> Option<std::borrow::Cow<'_, SpriteInfo>> {

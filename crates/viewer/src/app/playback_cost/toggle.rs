@@ -107,8 +107,14 @@ pub(super) fn frame(
     viewer.follow_campaign_preferences(service, ctx);
     viewer.follow_visual_checks(ctx, None);
     viewer.poll(ctx);
+    viewer.follow_shown_maps(ctx, None);
     if let Some(capture) = viewer.capture.as_mut() {
         capture.time = Some(seconds as f32);
+    }
+    if viewer.scene.is_none() {
+        viewer.release_audio();
+        viewer.drew_frame = false;
+        return Ok(None);
     }
     let Some(mut document) = viewer.document.take() else {
         viewer.release_audio();
@@ -153,12 +159,14 @@ fn waiting(viewer: &Viewer) -> String {
         .as_ref()
         .map(|side| format!("{:?}", side.with_side(crate::playhead_host::MapSide::layer_states)));
     format!(
-        "loading {}, document {}, drew {}, head {:?}, layers (name, drawn, carried, upload left) {layers:?}, error {:?}",
+        "loading {}, building_scene {}, document {}, scene {}, drew {}, head {:?}, layers (name, drawn, carried, upload left) {layers:?}, error {:?}",
         viewer.loading.is_some(),
+        viewer.building_scene(),
         viewer.document.is_some(),
+        viewer.scene.is_some(),
         viewer.drew_frame,
         viewer.playhead.map(|head| head.hour),
-        viewer.error.as_ref().or(viewer.map_error.as_ref()),
+        viewer.reported_error(),
     )
 }
 
@@ -201,14 +209,17 @@ fn until_correct(
         wait_until(due);
         let started = Instant::now();
         let at_ms = started.duration_since(requested).as_secs_f64() * 1e3;
-        let loading_before = viewer.loading.is_some();
+        let loading_before = viewer.loading.is_some() || viewer.building_scene();
         let drawn = frame(viewer, ctx, state, service, pixels, at_ms / 1e3)?;
         let work_ms = started.elapsed().as_secs_f64() * 1e3;
-        if opened.is_none() && (viewer.loading.is_some() || loading_before) {
+        if opened.is_none() && (viewer.loading.is_some() || viewer.building_scene() || loading_before) {
             opened = Some(at_ms);
         }
+        let installed_current = viewer.document.as_ref().is_some_and(|document| {
+            ids(document.visual_mods.as_deref().unwrap_or_default()) == ids(target)
+        });
         let current = drawn.as_deref().is_some_and(|mods| ids(mods) == ids(target));
-        if installed.is_none() && opened.is_some() && current {
+        if installed.is_none() && opened.is_some() && installed_current {
             installed = Some(at_ms);
         }
         if first_drawn.is_none() && current && viewer.drew_frame {
@@ -217,7 +228,7 @@ fn until_correct(
         if layers_ready.is_none() && layers_alone(viewer, drawn.as_deref(), target) {
             layers_ready = Some(at_ms);
         }
-        let state_name = match (&drawn, viewer.loading.is_some()) {
+        let state_name = match (&drawn, viewer.loading.is_some() || viewer.building_scene()) {
             (None, true) => "loading",
             (None, false) => "no document",
             (Some(_), _) if !current => "old look",

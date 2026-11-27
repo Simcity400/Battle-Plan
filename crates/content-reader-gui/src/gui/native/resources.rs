@@ -5,7 +5,7 @@ use super::{
     sprites::{self, Plain, SpriteFacts, Sprites},
 };
 use content_reader_image::native;
-use content_reader_layers::{ResolvedLayers, content::ArtFileSource};
+use content_reader_layers::{ResolvedLayers, content::ArtFileRead};
 use content_reader_layers::textures::texture_within;
 pub use content_reader_layers::textures::{NoTexture, Texture, texture};
 use content_reader_parser::crt::truncate_f32;
@@ -144,14 +144,15 @@ pub fn stack_texture_within(
     decode: native::Decode,
     max_texels: Option<u64>,
 ) -> io::Result<Result<Texture, NoTexture>> {
+    let read_error = std::cell::RefCell::new(None);
     let unmounted = std::cell::RefCell::new(None);
     let read = |path: &[u8]| {
-        if unmounted.borrow().is_some() {
+        if read_error.borrow().is_some() || unmounted.borrow().is_some() {
             return Err(io::Error::from(io::ErrorKind::NotFound));
         }
-        match layers.art_file_source(path)? {
-            ArtFileSource::Mounted { path, .. } => layers.read_uncovered_path(&path),
-            ArtFileSource::Unmounted { layer, reason } => {
+        match layers.read_art_file(path) {
+            Ok(ArtFileRead::Mounted { bytes, .. }) => Ok(bytes),
+            Ok(ArtFileRead::Unmounted { layer, reason }) => {
                 let layer = layers.layers[layer]
                     .display_name()
                     .map_or_else(|| layers.layers[layer].id.clone(), str::to_owned);
@@ -161,10 +162,17 @@ pub fn stack_texture_within(
                 });
                 Err(io::Error::from(io::ErrorKind::NotFound))
             }
-            ArtFileSource::Missing => Err(io::Error::from(io::ErrorKind::NotFound)),
+            Ok(ArtFileRead::Missing) => Err(io::Error::from(io::ErrorKind::NotFound)),
+            Err(error) => {
+                *read_error.borrow_mut() = Some(error);
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            }
         }
     };
     let found = texture_within(name, &read, decode, max_texels)?;
+    if let Some(error) = read_error.into_inner() {
+        return Err(error);
+    }
     if let Some(refusal) = unmounted.into_inner() {
         return Ok(Err(refusal));
     }
@@ -434,5 +442,120 @@ mod tests {
                     && reason.contains("power-of-two padding")
                     && reason.contains("texture creation")));
         }
+    }
+
+    #[test]
+    fn removed_archive_error_is_not_swallowed_by_texture_fallback() {
+        use content_reader_layers::{ResolveOptions, content::visual};
+        use std::sync::atomic::AtomicBool;
+
+        let root = std::env::temp_dir().join(format!(
+            "stack-texture-removed-archive-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let base = root.join("base");
+        let user = root.join("user");
+        let cache = root.join("cache");
+        let top = user.join("top");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(user.join("mod")).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::create_dir_all(top.join("gfx/models")).unwrap();
+        let mut tga = vec![0_u8; 18 + 4];
+        tga[2] = 2;
+        tga[12] = 1;
+        tga[14] = 1;
+        tga[16] = 32;
+        std::fs::write(top.join("gfx/models/icon.tga"), &tga).unwrap();
+        let zip_path = user.join("mod/overlay.zip");
+        let entry_name = b"gfx/models/other.dds";
+        let mut zip = Vec::new();
+        zip.extend_from_slice(&0x0403_4B50_u32.to_le_bytes());
+        zip.extend_from_slice(&20_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u32.to_le_bytes());
+        zip.extend_from_slice(&0_u32.to_le_bytes());
+        zip.extend_from_slice(&0_u32.to_le_bytes());
+        zip.extend_from_slice(&0_u32.to_le_bytes());
+        zip.extend_from_slice(&(entry_name.len() as u16).to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(entry_name);
+        let cd_offset = zip.len() as u32;
+        zip.extend_from_slice(&0x0201_4B50_u32.to_le_bytes());
+        zip.extend_from_slice(&20_u16.to_le_bytes());
+        zip.extend_from_slice(&20_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u32.to_le_bytes());
+        zip.extend_from_slice(&0_u32.to_le_bytes());
+        zip.extend_from_slice(&0_u32.to_le_bytes());
+        zip.extend_from_slice(&0_u32.to_le_bytes());
+        zip.extend_from_slice(&(entry_name.len() as u16).to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u32.to_le_bytes());
+        zip.extend_from_slice(&0_u32.to_le_bytes());
+        zip.extend_from_slice(entry_name);
+        let cd_size = zip.len() as u32 - cd_offset;
+        zip.extend_from_slice(&0x0605_4B50_u32.to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        zip.extend_from_slice(&1_u16.to_le_bytes());
+        zip.extend_from_slice(&1_u16.to_le_bytes());
+        zip.extend_from_slice(&cd_size.to_le_bytes());
+        zip.extend_from_slice(&cd_offset.to_le_bytes());
+        zip.extend_from_slice(&0_u16.to_le_bytes());
+        std::fs::write(&zip_path, &zip).unwrap();
+        std::fs::write(
+            user.join("mod/overlay.mod"),
+            format!(
+                "name=\"Overlay\"\narchive=\"{}\"\n",
+                zip_path.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            user.join("mod/top.mod"),
+            format!(
+                "name=\"Top\"\npath=\"{}\"\n",
+                top.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .unwrap();
+
+        let mut layers = ResolvedLayers::from_folders(&[(&base, &[][..])]).unwrap();
+        let options = ResolveOptions {
+            game_dir: base,
+            user_dir: user,
+            cache_dir: cache,
+        };
+        let choices = [
+            visual::Choice {
+                id: "mod/overlay.mod".into(),
+                name: "Overlay".into(),
+            },
+            visual::Choice {
+                id: "mod/top.mod".into(),
+                name: "Top".into(),
+            },
+        ];
+        let plan =
+            visual::apply(&mut layers, &options, &choices, &[], &AtomicBool::new(false)).unwrap();
+        assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+        std::fs::remove_file(&zip_path).unwrap();
+
+        let error = stack_texture(
+            layers.presentation(),
+            b"gfx/models/icon.tga",
+            native::Decode::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

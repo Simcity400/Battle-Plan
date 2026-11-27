@@ -32,11 +32,11 @@ export interface CountryPickerRead { tag: string; branchId: string; hour: number
 
 function nameReadFromIdentity(result: CountryIdentityResult | null | undefined): NameRead {
   if (!result || result.kind === 'pending') return { kind: 'loading' };
-  if (result.kind === 'absent') return ABSENT_NAME;
+  if (result.kind === 'absent') return result.reason ? { kind: 'absent', reason: result.reason } : ABSENT_NAME;
   if (result.kind === 'failed') return { kind: 'failed', failure: result.failure };
   if (result.name.kind === 'known') return { kind: 'value', value: result.name.value };
   if (result.name.kind === 'pending') return { kind: 'loading' };
-  if (result.name.kind === 'missing') return ABSENT_NAME;
+  if (result.name.kind === 'missing') return result.name.reason ? { kind: 'absent', reason: result.name.reason } : ABSENT_NAME;
   return { kind: 'failed', failure: result.name.failure };
 }
 
@@ -324,10 +324,11 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
               const index = range.start + offset;
               const ticked = chosen ? chosen.includes(country.tag) : selected?.tag === country.tag;
               const read = countryNameRead(country);
-              const name = nameReadMetadata(read).name.trim();
+              const meta = nameReadMetadata(read);
+              const name = meta.name.trim();
               const flagState = visibleFlagStates[offset]!;
               return <div key={country.tag} id={optionId(index)} role="option" aria-selected={ticked} aria-setsize={filtered.length} aria-posinset={index + 1}
-                data-detail={nameReadFailure(read)?.message} data-tooltip-overflow={name || undefined} className="country-picker-option" data-active={index === shownActive || undefined} data-sole={index === sole && active < 0 || undefined} style={{ top: index * COUNTRY_ROW_HEIGHT }}
+                data-detail={meta.nameDetail} data-tooltip-overflow={name || undefined} className="country-picker-option" data-active={index === shownActive || undefined} data-sole={index === sole && active < 0 || undefined} style={{ top: index * COUNTRY_ROW_HEIGHT }}
                 onClick={() => choose(country)}>
                 <CountryFlag image={flagState.image} tag={country.tag} pending={flagState.pending} decorative />
                 {name ? <span data-overflow-label>{name}</span> : <span className="country-picker-unnamed">{country.tag}<small>name not recorded</small></span>}

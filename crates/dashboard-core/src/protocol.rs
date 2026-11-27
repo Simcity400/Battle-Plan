@@ -544,9 +544,19 @@ pub struct DashboardMapView {
     pub battle: Option<BattleWindow>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BattleKind {
+    #[default]
+    Land,
+    Naval,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BattleWindow {
+    #[serde(default)]
+    pub kind: BattleKind,
     pub combat: String,
     pub country: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -875,11 +885,19 @@ mod tests {
         view.seek_sequence = Some(9_007_199_254_740_992);
         assert!(view.validate().is_err());
         view.seek_sequence = None;
-        let battle = |combat: &str, country: &str| super::BattleWindow { combat: combat.into(), country: country.into(), country_slot: Some(7), played_from: None, live: Vec::new(), canvas: [0; 3], text: [255; 3] };
+        let battle = |combat: &str, country: &str| super::BattleWindow { kind: super::BattleKind::Land, combat: combat.into(), country: country.into(), country_slot: Some(7), played_from: None, live: Vec::new(), canvas: [0; 3], text: [255; 3] };
         for (combat, country, valid) in [("12747462934590", "GER", true), ("12747462934590", "MOD_LONG_TAG_ÄÖ", true), ("12747462934590", "", false), ("1274746293459x", "GER", false), ("", "GER", false)] {
             view.battle = Some(battle(combat, country));
             assert_eq!(view.validate().is_ok(), valid, "battle window {combat:?} as {country:?}");
         }
+        let kind = |extra: serde_json::Value| {
+            let mut window = serde_json::json!({ "combat": "1", "country": "GER", "canvas": [0, 0, 0], "text": [0, 0, 0] });
+            window.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<super::BattleWindow>(window).map(|window| window.kind)
+        };
+        assert_eq!(kind(serde_json::json!({})).unwrap(), super::BattleKind::Land, "a window that names no kind is a land battle");
+        assert_eq!(kind(serde_json::json!({ "kind": "naval" })).unwrap(), super::BattleKind::Naval);
+        assert!(kind(serde_json::json!({ "kind": "air" })).is_err());
     }
 
     #[test]

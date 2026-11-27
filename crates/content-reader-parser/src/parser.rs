@@ -731,10 +731,7 @@ fn tree_kind(value: &Value, quoted: bool) -> Kind {
 }
 
 fn invalid(offset: usize, message: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("Clausewitz text at byte {offset}: {message}"),
-    )
+    crate::fields::invalid(format!("Clausewitz text at byte {offset}: {message}"))
 }
 
 #[cfg(test)]

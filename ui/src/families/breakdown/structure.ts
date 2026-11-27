@@ -11,18 +11,21 @@ function spoken(item: DrawnItem, total: BreakdownTotal): string {
   return `${value}${item.shareText ? `, ${item.shareText}` : ''}${part.partial ? ', partial' : ''}`;
 }
 
-export function deriveBreakdownNavAndMirror(
-  layout: BreakdownLayout,
-  total: BreakdownTotal,
-): { readonly nav: readonly FamilyNavTuple[]; readonly mirror: MirrorModel } {
-  const names = new Map<string, string>();
+export function deriveBreakdownNav(layout: BreakdownLayout): readonly FamilyNavTuple[] {
   const nav: FamilyNavTuple[] = [];
+  layout.items.forEach((item, index) => {
+    nav.push(item.top === undefined ? [item.key, item.part.name, index, item.open, item.parentKey ?? '', null] : [item.key, item.part.name, index, item.open, item.parentKey ?? '', null, item.top, item.height]);
+  });
+  return nav;
+}
+
+export function deriveBreakdownMirror(layout: BreakdownLayout, total: BreakdownTotal): MirrorModel {
+  const names = new Map<string, string>();
   const rows: MirrorRow[] = [];
   layout.items.forEach((item, index) => {
     const parentName = item.parentKey === null ? null : names.get(item.parentKey) ?? null;
     const name = parentName ? `${parentName}, ${item.part.name}` : item.part.name;
     names.set(item.key, name);
-    nav.push(item.top === undefined ? [item.key, item.part.name, index, item.open, item.parentKey ?? '', null] : [item.key, item.part.name, index, item.open, item.parentKey ?? '', null, item.top, item.height]);
     rows.push({
       key: item.key,
       name,
@@ -32,7 +35,7 @@ export function deriveBreakdownNavAndMirror(
       cells: [{ column: 'value', spoken: spoken(item, total) }],
     });
   });
-  return { nav, mirror: { first: 0, total: rows.length, rows } };
+  return { first: 0, total: rows.length, rows };
 }
 
 function stated(total: BreakdownTotal): string {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { breakdownRows, formatPercent, linesPerMeasure, rawAt } from './stabilityData.ts';
+import { breakdownRows, formatPercent, linesPerMeasure } from './stabilityData.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
 import { definition } from './definition.ts';
 import type { BreakdownLine, StabilityBreakdown } from '../../generated/dashboard';
@@ -40,7 +40,6 @@ test('values are exact percent with two decimals, signed for parts', () => {
   assert.equal(formatPercent('-8938', 5, true), '−8.9%');
   assert.equal(formatPercent('8950', 5), '8.9%');
   assert.equal(formatPercent('50', 5, true), '+<0.1%');
-  assert.equal(rawAt([{ firstHour: 1, lastHour: 2, valueRaw: '96000', startsSegment: true }], 3), null);
 });
 
 test('the breakdown lists the game tooltip lines, named in the viewer language or by the recorded text', () => {

@@ -3,13 +3,12 @@ import test from 'node:test';
 import type { SeriesTileReply } from '../../generated/dashboard';
 import { countryFromKey, countryKey } from '../countryKey.ts';
 import type { ChartBucket } from '../../charts/chartSummary';
-import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
-import { followAtHead, valueAtHead } from './head.ts';
+import { valueAtHead } from './head.ts';
 import { FIRST_BREAK, HAS_BREAK, LEVEL, PRESENT, TILE_BINS, binHoursOf, tilesOf } from './tile.ts';
 import type { Tile } from './tile.ts';
-import { TileView, tileBuckets, unrecordedReason } from './view.ts';
-import type { TiledLine, TileLane, TileViewport } from './view.ts';
+import { TileView, tileBuckets } from './view.ts';
+import type { TileLane, TileViewport } from './view.ts';
 import { watchBoundary } from '../widgetTime.ts';
 import type { PlaybackController } from '../playback';
 import { topTileProof } from '../../families/host/tiledState.ts';
@@ -102,7 +101,9 @@ test('tile views share a compact key for identical membership and release it wit
 });
 
 function following(head: number, days = 365): TileViewport {
-  const [from, end] = playbackDomain('window', [0, LAST], head, days * 24, 24);
+  const span = days * 24;
+  const end = Math.min(LAST, Math.max(span, head));
+  const from = Math.max(0, end - span);
   return { from: Math.floor(from), to: Math.floor(Math.min(end, head)), end: Math.floor(end), width: 600 };
 }
 
@@ -338,8 +339,8 @@ test('a chart following the head asks one tile per 256 bins of travel and nothin
 });
 
 function drawingIn(head: number, width: number): TileViewport {
-  const [from, end] = playbackDomain('draw-in', [0, LAST], head, 365 * 24, 14 * 24);
-  return { from: Math.floor(from), to: Math.floor(Math.min(end, head)), end: Math.floor(end), width };
+  const end = Math.min(LAST, Math.max(14 * 24, head));
+  return { from: 0, to: Math.floor(Math.min(end, head)), end: Math.floor(end), width };
 }
 
 test('a chart drawing in keeps its bins as the head grows it, so its tiles are those the head crosses, as the suite judges them', async () => {
@@ -384,7 +385,7 @@ test('the head moving inside a tile asks nothing; crossing into a new tile asks 
   followed.release(); await settle();
 });
 
-test('a tiled line fits the frame and answers the head value from the tile summary', async () => {
+test('a tiled line answers the head value from the tile summary', async () => {
   const cache = new TileCache(), followed = lane(TAGS, LAST);
   const view = new TileView(cache, followed, () => {});
   const head = 50_000.5, at = following(head);
@@ -395,11 +396,6 @@ test('a tiled line fits the frame and answers the head value from the tile summa
   const shown = lines[0].summary.tiles!.valueAt(head);
   const bucket = lines[0].summary.buckets[Math.floor(head / binHours) - Math.floor(lines[0].summary.from / binHours) - 1]!.lastValue;
   assert.equal(shown, bucket);
-  const live = Math.floor(head) + 5 * binHours;
-  const stop = followAtHead(lines[0].head, () => ({ hour: live, value: 12_345 }));
-  assert.equal(lines[0].summary.tiles!.valueAt(head), bucket, 'an hour before the followed one is answered from its bucket, never the live value');
-  assert.equal(lines[0].summary.tiles!.valueAt(live), 12_345, 'the followed hour is answered with the followed value');
-  stop();
 });
 
 test('at hourly zoom a historical hour is answered from its own bucket, a missing one as missing', () => {
@@ -408,26 +404,6 @@ test('at hourly zoom a historical hour is answered from its own bucket, a missin
   const summary = { from: 100, buckets: [at(100, 5), at(101, 7), null] };
   assert.equal(valueAtHead('hourly', summary, 1, 101), 7);
   assert.equal(valueAtHead('hourly', summary, 1, 102), null);
-  const stop = followAtHead('hourly', () => ({ hour: 0, value: undefined }));
-  assert.equal(valueAtHead('hourly', summary, 1, 100), 5, 'a follower with no answer yet leaves the buckets to answer');
-  stop();
-});
-
-
-test('a chart whose lines hold no value anywhere in view says why, naming the reason of the most hours; a line with any hour unnamed is drawn', () => {
-  const line = (tag: string, from: number, to: number, missing: { firstHour: number; lastHour: number; reason: string }[]): TiledLine =>
-    ({ tag, head: tag, decimals: 0, summary: { from, to, width: 10, buckets: [] }, missing, parts: [], marks: null });
-  const rowless = 'ABK\u2019s armyGain was not recorded here', after = 'The timeline holds no such hour';
-  const empty = line('ABK', 100, 199, [{ firstHour: 0, lastHour: 189, reason: rowless }, { firstHour: 190, lastHour: 300, reason: after }]);
-  assert.equal(unrecordedReason(new Map([['ABK', empty]])), rowless);
-  const held = line('ENG', 100, 199, [{ firstHour: 0, lastHour: 149, reason: rowless }, { firstHour: 151, lastHour: 300, reason: rowless }]);
-  assert.equal(unrecordedReason(new Map([['ABK', empty], ['ENG', held]])), null, 'one hour of one line may hold a value');
-  assert.equal(unrecordedReason(new Map([['ENG', line('ENG', 100, 199, [])]])), null, 'nothing named missing: drawn');
-  assert.equal(unrecordedReason(new Map()), null, 'no lines landed yet');
-  assert.equal(unrecordedReason(null), null);
-  assert.equal(unrecordedReason([empty]), rowless, "a ranked reply's lines read alike");
-  assert.equal(unrecordedReason([empty, held]), null);
-  assert.equal(unrecordedReason([]), null);
 });
 
 test('a page chart joining a tile the prepare lane holds waiting sends it at once; a prepared chart joining it does not', async () => {

@@ -881,10 +881,7 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
     }
     let party_names = parties.ruling.party_names(politics, &mut warnings);
     if people.iter().any(|leader| leader.portrait.is_some()) {
-        warnings.push(format!(
-            "{}; visual assets are outside content hash coverage.",
-            dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
-        ));
+        warnings.push(dashboard_base::products::artwork::CURRENT_INSTALL_ART_NOTICE.to_owned());
     }
     finish_warnings(parties, politics, tag, &mut warnings);
     Ok(PartyHistoryReply {

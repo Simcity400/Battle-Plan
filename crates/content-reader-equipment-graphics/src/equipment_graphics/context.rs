@@ -117,7 +117,7 @@ pub fn continent_names(input: &[u8]) -> io::Result<Vec<String>> {
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
+    content_reader_parser::fields::invalid(message)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

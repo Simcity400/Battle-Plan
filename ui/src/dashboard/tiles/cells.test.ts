@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesTileReply } from '../../generated/dashboard';
 import type { MarkCluster } from '../../charts/markSummary';
-import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
 import { PRESENT, TILE_BINS, binHoursOf } from './tile.ts';
 import { TileView, cellBins, cellClusters } from './view.ts';
@@ -35,7 +34,9 @@ function lane(tags: readonly string[]) {
 }
 
 function following(head: number, days: number, width = 600): TileViewport {
-  const [from, end] = playbackDomain('window', [0, LAST], head, days * 24, 24);
+  const span = days * 24;
+  const end = Math.min(LAST, Math.max(span, head));
+  const from = Math.max(0, end - span);
   return { from: Math.floor(from), to: Math.floor(Math.min(end, head)), end: Math.floor(end), width };
 }
 

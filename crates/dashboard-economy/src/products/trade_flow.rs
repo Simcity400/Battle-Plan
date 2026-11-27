@@ -1,19 +1,21 @@
 use dashboard_base::products::{
     Country, LoadContext,
-    at_hour::{At, AtHour, Owner, Read},
+    at_hour::{At, AtHour, Edits, Held, Owner, Read, ReadsAt, before, field_columns, warnings_through},
     flows::{CountryFlowReply, FlowEdge, FlowEnd, FlowEndpoint, FlowGap, FlowPart, FlowShape, build_flows},
     resources::{RESOURCE_DECIMALS, ResourceInfo, ResourceNaming},
     validate_country,
 };
 use dashboard_base::Source;
+use dashboard_follow::live::Live;
 use dashboard_query::coverage::{Witness, witnessed, witnessed_rows};
+use dashboard_query::identity::Holders;
 use dashboard_query::series::ranked::GroupSelection;
 use dashboard_world::products::group_members::GroupsAt;
-use replay_data::rows::{Recorded, ResourceDefinitionRow, TableId, TagHolderRow, TradeFlowRow, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_data::rows::{Recorded, ResourceDefinitionRow, RowCodec, TableId, TableRows, TagHolderRow, TradeFlowRow, tables};
+use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     sync::Arc,
 };
@@ -160,6 +162,33 @@ pub fn edges(rows: &[TradeFlowRow], index: &HashMap<u32, u32>, resource: Option<
     out
 }
 
+fn trade_unavailable(params: &TradeFlowParams, holders: &Holders, groups: &GroupsAt, hour: i32) -> io::Result<bool> {
+    if params.subject.as_ref().is_some_and(|country| holders.slot_at(country, hour).is_none()) {
+        return Ok(true);
+    }
+    Ok(groups.chosen_slots(params.group.as_ref(), &params.countries, holders, hour)?.is_err())
+}
+
+fn trade_reaches(from: FlowEnd, to: FlowEnd, subject: Option<u32>, chosen: Option<&HashSet<u32>>, between: bool) -> bool {
+    if from.slot().is_some() && from == to {
+        return false;
+    }
+    if let Some(subject) = subject {
+        return from == FlowEnd::Slot(subject)
+            || to == FlowEnd::Slot(subject)
+            || from.slot().is_none()
+            || to.slot().is_none();
+    }
+    let Some(chosen) = chosen else {
+        return true;
+    };
+    let ends = [from.slot(), to.slot()];
+    let unknown = ends.iter().any(Option::is_none);
+    let mut known = ends.iter().flatten();
+    let decided = if between { known.any(|slot| !chosen.contains(slot)) } else { known.any(|slot| chosen.contains(slot)) };
+    !matches!((decided, between, unknown), (true, true, _) | (false, false, false))
+}
+
 impl AtHour for TradeFlow {
     const KEY: &'static str = "trade-flow";
     const TITLE: &'static str = "Trade flows";
@@ -198,6 +227,38 @@ impl AtHour for TradeFlow {
         }
     }
 
+    fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        if trade_unavailable(params, at.holders, &at.context.groups, at.hour).unwrap_or(false) {
+            return Vec::new();
+        }
+        Self::reads(params, owner, step, held)
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let through = if stage == 0 {
+            before(at.holders.next_change(at.hour)).min(at.context.groups.valid_through(params.group.as_ref(), at.hour))
+        } else {
+            i32::MAX
+        };
+        (Self::reads_in(params, owner, stage, held, at), through)
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::TradeFlows => Some(field_columns(table, &["delivered"])),
+            TableId::ResourceDefinitions => Some(field_columns(table, &["token"])),
+            _ => None,
+        }
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        stage == 1 && edits.fields(TableId::ResourceDefinitions, u64::MAX)
+    }
+
+    fn compares_previous(table: TableId) -> bool {
+        table == TableId::TradeFlows
+    }
+
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
         Ok(TradeContext { naming: None, groups: GroupsAt::default() })
     }
@@ -208,7 +269,69 @@ impl AtHour for TradeFlow {
     }
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        if params.subject.is_some() { i32::MAX } else { at.context.groups.valid_through(params.group.as_ref(), at.hour) }
+        before(at.holders.next_change(at.hour)).min(at.context.groups.valid_through(params.group.as_ref(), at.hour))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        if partial {
+            return frame.hour;
+        }
+        Self::valid_through(frame, params, at).min(warnings_through(
+            frame.hour,
+            reply.missing.iter()
+                .chain(&reply.warnings)
+                .map(String::as_str)
+                .chain(reply.parts.iter().filter_map(|part| part.name_missing.as_deref())),
+        ))
+    }
+
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &Live, _data: &mut Held<'_>) -> io::Result<bool> {
+        if !edits.replaced.is_empty() || edits.tables.keys().any(|&table| table != TableId::TradeFlows) {
+            return Ok(false);
+        }
+        let Some(keys) = edits.tables.get(&TableId::TradeFlows) else {
+            return Ok(true);
+        };
+        let subject = params.subject.as_ref().map(|country| at.holders.slot_at(country, at.hour));
+        if let Some(None) = subject {
+            return Ok(true);
+        }
+        let Ok(chosen) = at.context.groups.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? else {
+            return Ok(true);
+        };
+        let Some(prior) = edits.previous.get(&TableId::TradeFlows).and_then(|view| match view.held() {
+            TableView::Complete(TableRows::TradeFlows(rows)) => Some(rows.as_slice()),
+            _ => None,
+        }) else {
+            return Ok(false);
+        };
+        let now = frame.complete::<tables::TradeFlows>()?;
+        let definitions = witnessed_rows::<tables::ResourceDefinitions>(frame).rows;
+        for &key in keys.keys() {
+            let old = prior.binary_search_by_key(&key, RowCodec::key).ok().map(|i| &prior[i]);
+            let new = now.binary_search_by_key(&key, RowCodec::key).ok().map(|i| &now[i]);
+            if old.map(|row| row.delivered) == new.map(|row| row.delivered) && old.is_some() == new.is_some() {
+                continue;
+            }
+            let Some(row) = new.or(old) else {
+                continue;
+            };
+            if old.is_some() != new.is_some() {
+                let spelled = definitions
+                    .binary_search_by_key(&row.resource, |def| def.id)
+                    .ok()
+                    .is_some_and(|i| matches!(spelling(frame, definitions[i].token), Ok(Some(_))));
+                if !spelled {
+                    return Ok(false);
+                }
+            }
+            if params.resource.is_none_or(|only| only == row.resource)
+                && trade_reaches(side(row.seller_slot, row.seller), side(row.buyer_slot, row.buyer), subject.flatten(), chosen.as_ref(), params.between)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

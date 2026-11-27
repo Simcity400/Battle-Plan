@@ -613,6 +613,7 @@ impl Viewer {
 
     fn loading_any_map(&self) -> bool {
         self.loading.is_some()
+            || self.building_scene()
             || self
                 .dashboard
                 .as_ref()
@@ -629,6 +630,7 @@ impl Viewer {
             .map(|document| self.collect_warnings(document))
             .unwrap_or_default();
         messages.extend(self.error.iter().cloned());
+        messages.extend(self.scene_error.iter().cloned());
         messages.extend(self.map_error.iter().cloned());
         messages.extend(self.capture_note.iter().cloned());
         if let Some(document) = &self.document {
@@ -672,7 +674,7 @@ impl Viewer {
         messages.retain(|message| seen.insert(message.clone()));
         embedded.report_details(dashboard_core::protocol::MapDetails {
             content_ready: self.config.resolve_options().is_ok(),
-            error: self.error.clone(),
+            error: self.error.clone().or_else(|| self.scene_error.clone()),
             game: self.config.game_dir.to_string_lossy().into_owned(),
             user: self.config.user_dir.to_string_lossy().into_owned(),
             path: self
@@ -700,7 +702,10 @@ impl Viewer {
                 hour: shown.map(|(_, hour)| hour),
                 revision: self.document.as_ref().and(self.revision.clone()),
             },
-            self.error.as_deref().or(self.map_error.as_deref()),
+            self.error
+                .as_deref()
+                .or(self.scene_error.as_deref())
+                .or(self.map_error.as_deref()),
             ctx,
         );
     }

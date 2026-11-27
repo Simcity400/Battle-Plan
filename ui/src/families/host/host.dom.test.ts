@@ -157,6 +157,7 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       keyCancelArrived: boolean;
       keyCancelKey: string | null;
       endUpLoaded: boolean;
+      endUpParkedTag: string | null;
       endUpArrived: boolean;
       endUpActive: { key: string | null; rowIndex: string | null };
       expectedPageDown: number;
@@ -191,6 +192,7 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.deepEqual([deep.keyCancelLoaded, deep.keyCancelArrived], [true, true], 'key-cancel test observed loading before cancel and target after release');
     assert.notEqual(deep.keyCancelKey, 'R1999', 'pressing another key cancels a pending ordinal before it arrives');
     assert.deepEqual([deep.endUpLoaded, deep.endUpArrived], [true, true], 'End followed by ArrowUp while loading waits for and focuses 1998');
+    assert.equal(deep.endUpParkedTag, 'TABLE', 'parked focus stays on the table while loading placeholders wait for a pending ordinal');
     assert.deepEqual(deep.endUpActive, { key: 'R1998', rowIndex: '2000' }, 'End then ArrowUp focuses R1998, not R0');
     assert.equal(deep.pageDownArrived, true, 'PageDown from the bottom visible row crosses the overscan slice');
     assert.deepEqual(deep.pageDownActive, { key: `R${deep.expectedPageDown}`, rowIndex: String(deep.expectedPageDown + 2) }, 'PageDown lands a full viewport down');
@@ -200,5 +202,87 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.equal(deep.foldedUpActive.key, 'R1998', 'ArrowUp inside the anchored folded window retains focus on R1998');
     assert.ok(deep.playPaints > 0, 'playback repaints the deep log in the lane');
     assert.deepEqual([deep.playCommits, deep.playBinds], [0, 0], 'played hours cause no React render and no rebind');
+
+    const deferred = await act<{
+      pre: { hourA: string | null; hourB: string | null; heldA: string | null; heldB: string | null; topA: string | null; topB: string | null; captionA: string | null; headCountA: number; cellCountA: number };
+      played: {
+        installsA: number; installsB: number; viewHourA: number | null; viewHourB: number | null;
+        contentA: number; contentB: number; holdAttrsA: number; holdAttrsB: number;
+        heldA: string | null; heldB: string | null; busyA: string | null; busyB: string | null;
+        hourA: string | null; hourB: string | null; topA: string | null; topB: string | null;
+        captionA: string | null; captionB: string | null; headCountA: number; cellCountA: number;
+      };
+      focusedNow: {
+        heldA: string | null; busyA: string | null; hourA: string | null; viewHourA: string; topA: string | null;
+        heldB: string | null; busyB: string | null; hourB: string | null; topB: string | null; contentB: number;
+      };
+      whileFocused: {
+        topA: string | null; heldA: string | null; hourA: string | null;
+        contentB: number; topB: string | null; heldB: string | null; hourB: string | null;
+      };
+      afterSeek: { hourA: string | null; hourB: string | null; heldA: string | null; heldB: string | null; topA: string | null; topB: string | null };
+      afterSeekPlayed: { contentA: number; contentB: number; heldA: string | null; heldB: string | null; hourA: string | null; hourB: string | null };
+      afterOwnerClear: { tabIndexA: number; hourA: string | null; rowsA: number };
+      afterOwnerRecover: { tabIndexA: number; hourA: string | null; topA: string | null; rowsA: number };
+      paused: {
+        heldA: string | null; heldB: string | null; busyA: string | null; busyB: string | null;
+        hourA: string | null; hourB: string | null; viewHourA: string; viewHourB: string; topA: string | null; topB: string | null;
+        captionA: string | null; captionB: string | null; headCountA: number; cellCountA: number;
+      };
+      listboxSameHour: { held: string | null; busy: string | null; hour: string | null };
+      coalescedEmpty: { rows: number; tabIndex: number };
+      coalescedAfter: { recovered: boolean; dropped: boolean; rows: number; tabIndex: number; text: string };
+      pausedOmitted: { dropped: boolean; minRows: number; minHeads: number; held: string | null; hour: string | null };
+      coalescedSeek: { recovered: boolean; dropped: boolean; held: string | null; top: string | null; hour: number };
+    }>('testDeferredScreenReaderMirrors()');
+    assert.deepEqual(deferred.pre, { hourA: '50', hourB: '50', heldA: null, heldB: null, topA: 'GER', topB: 'GER', captionA: 'Base summary', headCountA: 3, cellCountA: 3 }, 'pre-playback mirrors start fresh at hour 50 with matching headers and cells');
+    assert.ok(deferred.played.installsA > 0 && deferred.played.installsB > 0 && (deferred.played.viewHourA ?? 0) > 50, 'playback installed newer hours on both widgets');
+    assert.deepEqual([deferred.played.contentA, deferred.played.contentB], [0, 0], 'unfocused mirrors perform 0 DOM writes to thead/tbody/caption/rowcount during playback, even when summaryPartial transitions or a column is hidden');
+    assert.deepEqual([deferred.played.headCountA, deferred.played.cellCountA], [3, 3], 'hiding a column during unfocused playback keeps thead aligned with held tbody cells until sync');
+    assert.ok(deferred.played.holdAttrsA <= 2 && deferred.played.holdAttrsB <= 2, 'stale hold attributes are set once, not rewritten per frame');
+    assert.deepEqual(
+      [deferred.played.heldA, deferred.played.busyA, deferred.played.hourA, deferred.played.topA, deferred.played.captionA],
+      ['stale', 'true', '50', 'GER', 'Base summary'],
+      'unfocused primary mirror stays at pre-playback hour 50 with unchanged caption and marks itself stale',
+    );
+    assert.deepEqual(
+      [deferred.played.heldB, deferred.played.busyB, deferred.played.hourB, deferred.played.topB, deferred.played.captionB],
+      ['stale', 'true', '50', 'GER', 'Base summary'],
+      'unfocused secondary mirror stays at pre-playback hour 50 with unchanged caption and marks itself stale',
+    );
+    assert.deepEqual(
+      [deferred.focusedNow.heldA, deferred.focusedNow.busyA, deferred.focusedNow.hourA, deferred.focusedNow.topA],
+      [null, null, deferred.focusedNow.viewHourA, 'ENG'],
+      'focusing primary mid-playback flushes its mirror immediately and clears stale hold',
+    );
+    assert.deepEqual(
+      [deferred.focusedNow.heldB, deferred.focusedNow.busyB, deferred.focusedNow.hourB, deferred.focusedNow.topB, deferred.focusedNow.contentB],
+      ['stale', 'true', '50', 'GER', 0],
+      'unfocused sibling remains stale with 0 DOM writes when primary receives focus',
+    );
+    assert.equal(deferred.whileFocused.topA, 'ITA', 'focused widget continues syncing live during playback');
+    assert.equal(deferred.whileFocused.heldA, null, 'focused widget is not marked stale');
+    assert.deepEqual([deferred.whileFocused.contentB, deferred.whileFocused.hourB, deferred.whileFocused.heldB, deferred.whileFocused.topB], [0, '50', 'stale', 'GER'], 'unfocused sibling still receives 0 DOM writes');
+    assert.deepEqual(deferred.afterSeek, { hourA: '180', hourB: '180', heldA: null, heldB: null, topA: 'FRA', topB: 'FRA' }, 'seeking mid-playback settles and syncs both mirrors once');
+    assert.deepEqual([deferred.afterSeekPlayed.contentA, deferred.afterSeekPlayed.contentB, deferred.afterSeekPlayed.heldA, deferred.afterSeekPlayed.heldB, deferred.afterSeekPlayed.hourA, deferred.afterSeekPlayed.hourB], [0, 0, 'stale', 'stale', '180', '180'], 'played frames after a seek resume deferring mirrors');
+    assert.deepEqual(deferred.afterOwnerClear, { tabIndexA: 0, hourA: null, rowsA: 0 }, 'clearing the mirror on owner switch mid-playback exposes the fallback Tab stop on the table');
+    assert.deepEqual([deferred.afterOwnerRecover.tabIndexA, deferred.afterOwnerRecover.topA, deferred.afterOwnerRecover.rowsA], [-1, 'GER', 4], 'owner switch mid-playback at the same seek repopulates the mirror and restores row Tab stops');
+    assert.ok(deferred.afterOwnerRecover.hourA !== null, 'recovered mirror records its hour');
+    assert.deepEqual(
+      [deferred.paused.heldA, deferred.paused.heldB, deferred.paused.busyA, deferred.paused.busyB, deferred.paused.hourA, deferred.paused.hourB, deferred.paused.topA, deferred.paused.topB, deferred.paused.captionA, deferred.paused.captionB, deferred.paused.headCountA, deferred.paused.cellCountA],
+      [null, null, null, null, deferred.paused.viewHourA, deferred.paused.viewHourB, 'GER', 'GER', 'Live summary. Partial during playback', 'Live summary. Partial during playback', 2, 2],
+      'pausing flushes every shown mirror, header and caption to the installed picture and clears stale hold',
+    );
+    assert.deepEqual(deferred.listboxSameHour, { held: null, busy: null, hour: '50' }, 'an unfocused listbox with a summary is not marked stale or aria-busy on a same-hour hover install');
+    assert.deepEqual(deferred.coalescedEmpty, { rows: 0, tabIndex: 0 }, 'an initially empty table exposes a fallback Tab stop');
+    assert.deepEqual(
+      [deferred.coalescedAfter.recovered, deferred.coalescedAfter.dropped, deferred.coalescedAfter.rows, deferred.coalescedAfter.tabIndex],
+      [true, true, 1, -1],
+      'if a paged table with a positive total starts with an empty window and its first visible gap mirror is dropped, the host requests and populates the mirror during playback',
+    );
+    assert.match(deferred.coalescedAfter.text, /Collector detached/, 'recovered gap mirror carries the gap reason');
+    assert.deepEqual(deferred.pausedOmitted, { dropped: true, minRows: 4, minHeads: 3, held: 'stale', hour: '50' }, 'an omitted mirror arriving while paused keeps existing rows and headers held instead of wiping them');
+    assert.deepEqual([deferred.coalescedSeek.recovered, deferred.coalescedSeek.dropped, deferred.coalescedSeek.held, deferred.coalescedSeek.top], [true, true, null, 'FRA'], 'if a settled seek’s mirror is lost before the host sees it, the host requests and commits it during playback');
+    assert.ok(deferred.coalescedSeek.hour >= 180, 'recovered seek mirror advances past the seek hour');
   }));
 });

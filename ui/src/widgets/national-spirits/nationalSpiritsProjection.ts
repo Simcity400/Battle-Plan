@@ -1,6 +1,7 @@
-import { holdingLabel, holdingSince, ideaHistoryRead, ideaNameMissing, lookOf } from '../../dashboard/ideaHistoryReply.ts';
+import { holdingLabel, holdingSince, ideaArtMissing, ideaArtwork, ideaHistoryRead, ideaNameMissing, lookOf } from '../../dashboard/ideaHistoryReply.ts';
 import type { CardWidgetDeclaration } from '../../families/card/declaration.ts';
-import { cardMediaFromIcon, type CardItemRow, type CardModel, type CardProjection } from '../../families/card/model.ts';
+import { type CardItemRow, type CardModel, type CardProjection } from '../../families/card/model.ts';
+import { unavailableArt } from '../../families/art/types.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import { formatDateHover } from '../../families/valueFormat.ts';
@@ -39,12 +40,16 @@ export const nationalSpiritsProjection: CardProjection<NationalSpiritsOptions> =
       const nameMissing = ideaNameMissing(look.artwork, look.info);
       const name = holdingLabel(look, holding);
       const since = holdingSince(holding);
-      const icon = look.artwork.icon ?? undefined;
+      const resolvedIcon = ideaArtwork(readView, look);
+      const artMissing = ideaArtMissing(look, resolvedIcon);
+      const cardArt = resolvedIcon.status === 'noArtExpected'
+        ? unavailableArt(artMissing ?? NO_ICON)
+        : resolvedIcon;
       const shown = nameMissing ? 'Name not recorded' : name;
       rows.push({
         kind: 'item',
         key: holding.token,
-        art: cardMediaFromIcon(readView, icon, NO_ICON, nameMissing ? undefined : name),
+        art: { kind: 'art', art: cardArt, ...(nameMissing ? {} : { name }) },
         title: nameMissing ? notRecorded(nameMissing) : knownValue(name),
         figure: { value: knownValue(`${since.label} ${since.value}`), figure: 'Since', muted: true },
         tooltip: {
@@ -56,7 +61,11 @@ export const nationalSpiritsProjection: CardProjection<NationalSpiritsOptions> =
             { label: since.label, value: formatDateHover(holding.firstHour) },
             ...(unclassified ? [{ label: 'Category', missingReason: unclassified }] : []),
             ...(nameMissing ? [{ label: 'Name', missingReason: nameMissing }] : []),
-            ...(icon ? [] : [{ label: 'Art', missingReason: `${NO_ICON}; art missing from the current installation` }]),
+            ...(artMissing
+              ? [{ label: 'Art', missingReason: artMissing }]
+              : resolvedIcon.status === 'noArtExpected'
+                ? [{ label: 'Art', missingReason: `${NO_ICON}; art missing from the current installation` }]
+                : []),
           ],
         },
       });

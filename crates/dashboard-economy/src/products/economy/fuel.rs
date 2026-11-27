@@ -1,7 +1,7 @@
 
 use dashboard_base::products::{Country, validate_country};
 use dashboard_base::products::LoadContext;
-use dashboard_base::{Source, products::at_hour::{At, AtHour, Keys, Owner, Read}};
+use dashboard_base::{Source, products::at_hour::{At, AtHour, Edits, Keys, Owner, Read, ReadsAt, field_columns, warnings_through}};
 use dashboard_text::catalogue::{Catalogue, View};
 use engine_fuel::ccountry_fuel_status::{HISTORY_RING_ENTRIES, MODIFIER_SCALE, QUANTITY_SCALE};
 use replay_data::rows::{CountryFuelRow, FuelDayRow, FuelDemandTotalRow, Recorded, TableId, tables};
@@ -409,6 +409,38 @@ impl AtHour for CountryFuel {
             }
             _ => Vec::new(),
         }
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::CountryFuel => Some(field_columns(table, &[
+                "current_raw", "maximum_raw", "lend_lease_gain_raw", "country_instance", "demand", "award_day",
+            ])),
+            TableId::FuelDays => Some(field_columns(table, &[
+                "read_hour", "gained", "burned", "received_army", "received_air", "received_navy", "other",
+                "gain_base", "gain_states", "gain_oil", "gain_negative_cost", "own_gain_quantity",
+                "incoming", "outgoing", "flat", "left_out", "awards_reason", "continuity_start_hour",
+            ])),
+            _ => None,
+        }
+    }
+
+    fn plan_changes(_stage: usize, _edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        false
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        if partial {
+            return frame.hour;
+        }
+        warnings_through(
+            frame.hour,
+            reply.missing.iter()
+                .chain(&reply.consumption_missing)
+                .chain(reply.read.as_ref().and_then(|read| read.awards_reason.as_ref()))
+                .chain(&reply.warnings)
+                .map(String::as_str),
+        )
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

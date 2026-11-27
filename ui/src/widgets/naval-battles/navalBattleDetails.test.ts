@@ -4,7 +4,7 @@ import { navalDetailTooltip, validateNavalBattleDetails } from './navalBattleDet
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import { ART_STATUS_ROW, deriveRowTooltip } from '../../families/table/model.ts';
-import { navalBattlesProjection } from './navalBattlesProjection.ts';
+import { navalBattleClock, navalBattlesProjection, type NavalBattleSubject } from './navalBattlesProjection.ts';
 import type { NavalBattleDetail, NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/dashboard';
 
 const detail: NavalBattleDetail = { id: 'result:15', hour: 43, rosterHour: 8,
@@ -48,14 +48,17 @@ test('all recorded fleet and ship names remain in tooltip content without a chos
 
 test('the followed naval table shows the supplying read, partial sinkings and IC lost, unrecorded sides and an ended battle without its winner', () => {
   const live: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
-    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], convoysSunk: [0, 0], icLost: [1992.5, null], ships: [3, 0], convoys: [0, 0], result: 'ongoing' };
-  const head: NavalBattlesTailReply = { branchId: '1', total: '2', offset: '0', missing: [], warnings: [], nextChange: null,
-    rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }] };
+    readHour: 15, detailId: 'combat:9:10', detailHour: null, lastLiveHour: null, endSeen: false, shipsSunk: [2, null], convoysSunk: [0, 0], icLost: [1992.5, null], ships: [3, 0], convoys: [0, 0], result: 'ongoing' };
+  const head: NavalBattlesTailReply = { branchId: '1', total: '3', offset: '0', missing: [], warnings: [], nextChange: null,
+    rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }, { ...live, key: 'result:4', hour: 8, detailId: 'result:4', result: 'attackerWon' }] };
   const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
   const view = createBoundedReadView({ hour: 18, rows: new Map([['main', source]]) });
   const model = (following: boolean) => navalBattlesProjection.project(view, { scope: 'test', following, byDate: true });
   const project = (following: boolean) => model(following).rows[0]!;
   const row = project(true);
+  assert.equal(row.cells.action?.actionLabel, 'Watch', 'a battle with live hours offers Watch');
+  assert.equal((row.meta as NavalBattleSubject).row.key, 'combat:9:10');
+  assert.equal(model(true).rows[2]!.cells.action?.blank, true, 'a battle held only as a result has no live hours to watch, so its action cell stays blank');
   assert.match(model(true).columns.find(column => column.key === 'shipsSunk')!.partialReason!, /lower bound/);
   assert.match(model(true).columns.find(column => column.key === 'icLost')!.partialReason!, /lower bound/);
   const ended = model(true).rows[1]!.cells.status!;
@@ -82,20 +85,30 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   assert.deepEqual(JSON.parse(project(false).tooltipScrollId!), ['test', 'combat:9:10', 18]);
 });
 
+test('a naval battle plays its live hours and reaches its end note, also when its result is read at the last recorded hour', () => {
+  const row: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
+    readHour: 10, detailId: 'result:5', detailHour: 10, lastLiveHour: 10, endSeen: false, shipsSunk: [1, 0], convoysSunk: [0, 0], icLost: [5, 0], ships: [3, 2], convoys: [0, 0], result: 'attackerWon' };
+  assert.deepEqual(navalBattleClock(row, 10, 0, 10), { liveEnd: 10, live: [[10, 10]], span: { first: 10, last: 10 }, noteFrom: 10 });
+  assert.deepEqual(navalBattleClock({ ...row, detailHour: 25, lastLiveHour: 19 }, 40, 0, 40), { liveEnd: 19, live: [[10, 19]], span: { first: 10, last: 20 }, noteFrom: 20 });
+  assert.deepEqual(navalBattleClock({ ...row, detailId: 'combat:9:10', detailHour: 19, lastLiveHour: 19, endSeen: true, result: 'unknown' }, 40, 0, 40).noteFrom, 20);
+  assert.deepEqual(navalBattleClock({ ...row, result: 'ongoing', lastLiveHour: null }, 14, 0, 40), { liveEnd: 14, live: [[10, 14]], span: { first: 10, last: 14 }, noteFrom: null });
+  assert.equal(navalBattleClock({ ...row, lastLiveHour: null }, 40, 0, 40).span, null);
+});
+
 test('convoy-only sides show convoy counts and live zero sinkings stay qualified as partial lower bounds', () => {
   const raid: NavalBattleLogRow = {
     key: 'combat:12:20', hour: 20, province: null, countries: [[], []], countriesHour: [20, 20],
-    readHour: 22, detailId: 'combat:12:20', detailHour: null,
+    readHour: 22, detailId: 'combat:12:20', detailHour: null, lastLiveHour: null, endSeen: false,
     ships: [6, 0], convoys: [0, 4], shipsSunk: [0, 0], convoysSunk: [0, 2], icLost: [0, 0], result: 'ongoing',
   };
   const escorted: NavalBattleLogRow = {
     key: 'result:42', hour: 15, province: null, countries: [[], []], countriesHour: [15, 15],
-    readHour: 18, detailId: 'result:42', detailHour: 18,
+    readHour: 18, detailId: 'result:42', detailHour: 18, lastLiveHour: null, endSeen: false,
     ships: [4, 2], convoys: [0, 5], shipsSunk: [0, 0], convoysSunk: [0, 0], icLost: [0, 0], result: 'attackerWon',
   };
   const depletedConvoys: NavalBattleLogRow = {
     key: 'combat:13:19', hour: 19, province: null, countries: [[], []], countriesHour: [19, 19],
-    readHour: 22, detailId: 'combat:13:19', detailHour: null,
+    readHour: 22, detailId: 'combat:13:19', detailHour: null, lastLiveHour: null, endSeen: false,
     ships: [4, 0], convoys: [0, 0], shipsSunk: [0, null], convoysSunk: [0, 2], icLost: [0, null], result: 'ongoing',
   };
   const depletedWithShipLoss: NavalBattleLogRow = {
