@@ -1,34 +1,54 @@
+import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsDataRow, BarsModel, BarsProjection } from '../../families/bars/model.ts';
 import { countryRowPresentation } from '../../families/bars/model.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { activeGroupMembers, nextDatedMembershipChange, type DatedMembershipOptions } from '../../families/groupFilter.ts';
-import { inHourRanges, nextMembershipChange, type HourRanges } from '../../families/holders.ts';
+import type { HourRanges } from '../../families/holders.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell, type MatrixMarginCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
-import { formatCompactScalar, formatScalar } from '../../families/valueFormat.ts';
-import type { CasualtyMatrixReply } from '../../generated/dashboard';
+import { formatCompactScalar, formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
+import type { CasualtyMatrixCountry, CasualtyMatrixReply } from '../../generated/dashboard';
 
 export interface CasualtyMatrixOptions extends DatedMembershipOptions {
   readonly between?: boolean;
-  readonly ambiguousHolders?: Readonly<Record<string, HourRanges>> | null;
+  readonly identityMembership?: Readonly<Record<string, HourRanges>> | null;
 }
 
 const EMPTY_OPTIONS: Readonly<Record<string, never>> = {};
 const NOT_RECORDED = 'Casualties were not recorded at this date.';
 const NONE_YET = 'No casualties between these countries yet.';
-const AMBIGUOUS_HOLDER = 'This tag had an earlier holder; casualties cannot be separated by holder yet.';
 
 const compact = (amount: string) => formatCompactScalar(BigInt(amount)).text;
 const exact = (amount: string) => formatScalar(BigInt(amount), 'integer');
 
+function disambiguateLabels(items: readonly { readonly country: CasualtyMatrixCountry; readonly label: string; readonly loading?: boolean }[]): string[] {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (!item.loading) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
+  }
+  const dated = items.map(item => (
+    !item.loading && (counts.get(item.label) ?? 0) > 1 && item.country.shownHour !== null
+      ? `${item.label} (to ${formatDateOnly(item.country.shownHour)})`
+      : item.label
+  ));
+  const datedCounts = new Map<string, number>();
+  for (let at = 0; at < dated.length; at++) {
+    if (!items[at]!.loading) datedCounts.set(dated[at]!, (datedCounts.get(dated[at]!) ?? 0) + 1);
+  }
+  return dated.map((label, at) => (
+    !items[at]!.loading && (datedCounts.get(label) ?? 0) > 1 ? `${label} (#${items[at]!.country.slot}:${items[at]!.country.countryId})` : label
+  ));
+}
+
 function plan(ctx: FamilyPlanContext, subject: string | null): SourcePlan {
   const top = ctx.countries.top;
-  const tags = subject !== null || ctx.countries.all || top !== null ? [] : ctx.countries.tags;
+  const datedGroup = ctx.widget.countries.kind === 'group';
+  const tags = subject !== null || ctx.countries.all || top !== null || datedGroup ? [] : ctx.countries.tags;
   const between = ctx.options.between === 'between';
   const params: Record<string, unknown> = {
     branchId: ctx.branch.id,
@@ -38,7 +58,7 @@ function plan(ctx: FamilyPlanContext, subject: string | null): SourcePlan {
     ...(subject !== null ? { subject: countryFromKey(subject) } : {}),
   };
   return {
-    owner: `casualties-between:${ctx.branch.id}:${subject ?? ''}:${between}:${top ?? (ctx.countries.all ? 'all' : tags.join(','))}`,
+    owner: `casualties-between:${ctx.branch.id}:${subject ?? ''}:${between}:${top ?? (ctx.countries.all || datedGroup ? 'all' : tags.join(','))}`,
     entries: [{
       name: 'main',
       source: ctx.track.source,
@@ -70,14 +90,14 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
   if (refused) return blank(hour, { refused });
   const reply = readView.panel<CasualtyMatrixReply>('main');
   if (!reply) return blank(hour, { empty: NOT_RECORDED, emptyKind: 'unavailable' });
-  const group = activeGroupMembers(options, hour);
+  const byIdentity = options?.identityMembership != null;
+  const group = activeGroupMembers(byIdentity ? { ...options, membership: options.identityMembership } : options, hour);
   if (group.kind === 'unavailable') return blank(hour, { empty: group.reason, emptyKind: 'unavailable', warnings: reply.warnings });
   if (group.kind === 'empty') return blank(hour, { empty: group.reason, warnings: reply.warnings });
   if (reply.missing) return blank(hour, { empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
   if (!reply.order.length) return blank(hour, { empty: NONE_YET, warnings: reply.warnings });
 
-  const ambiguousHolders = options?.ambiguousHolders ?? null;
-  const ambiguous = (tag: string): boolean => ambiguousHolders !== null && inHourRanges(ambiguousHolders[tag], hour);
+  const memberKey = (country: CasualtyMatrixReply['countries'][number]) => (byIdentity ? countryIdentityKey(country) : country.tag);
   let activeOrder = reply.order;
   let activeCells = reply.cells;
   let mostText = reply.most;
@@ -88,8 +108,8 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
     const keptPositions = new Set<number>();
     const filteredCells: CasualtyMatrixReply['cells'][number][] = [];
     for (const cell of reply.cells) {
-      const from = reply.countries[reply.order[cell.row]!]!.tag;
-      const to = reply.countries[reply.order[cell.column]!]!.tag;
+      const from = memberKey(reply.countries[reply.order[cell.row]!]!);
+      const to = memberKey(reply.countries[reply.order[cell.column]!]!);
       const keep = between ? (active.has(from) && active.has(to)) : (active.has(from) || active.has(to));
       if (!keep) continue;
       keptPositions.add(cell.row);
@@ -101,30 +121,24 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
     for (let pos = 0; pos < reply.order.length; pos++) {
       const countryIndex = reply.order[pos]!;
       const country = reply.countries[countryIndex]!;
-      if (!keptPositions.has(pos) && !active.has(country.tag)) continue;
+      if (!keptPositions.has(pos) && !active.has(memberKey(country))) continue;
       posMap.set(pos, keptOrder.length);
       keptOrder.push(countryIndex);
     }
     if (!keptOrder.length) return blank(hour, { empty: NONE_YET, warnings: reply.warnings });
     activeCells = filteredCells.map(cell => ({ ...cell, row: posMap.get(cell.row)!, column: posMap.get(cell.column)! }));
     activeOrder = keptOrder;
-  }
 
-  const hasAmbiguous = ambiguousHolders !== null && activeOrder.some(index => ambiguous(reply.countries[index]!.tag));
-  if (group.kind === 'filtered' || hasAmbiguous) {
     let largestBig = 0n;
     for (const index of activeOrder) {
       const country = reply.countries[index]!;
-      if (ambiguous(country.tag) || country.dealt === null) continue;
+      if (country.dealt === null) continue;
       const dealt = BigInt(country.dealt);
       if (dealt > largestBig) largestBig = dealt;
     }
     let mostBig = 0n;
     for (const cell of activeCells) {
       if (cell.row === cell.column || cell.dealt === null) continue;
-      const from = reply.countries[activeOrder[cell.row]!]!.tag;
-      const to = reply.countries[activeOrder[cell.column]!]!.tag;
-      if (ambiguous(from) || ambiguous(to)) continue;
       const dealt = BigInt(cell.dealt);
       if (dealt > mostBig) mostBig = dealt;
     }
@@ -132,12 +146,22 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
     largestText = largestBig.toString();
   }
 
-  const entities: MatrixAxisEntity[] = activeOrder.map(index => {
+  const tagCounts = new Map<string, number>();
+  for (const index of activeOrder) {
+    const tag = reply.countries[index]!.tag;
+    tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+  }
+  const resolved = activeOrder.map(index => {
     const country = reply.countries[index]!;
-    const shown = resolveEntityFromReadView(readView, 'country', country.tag, hour, country.tag);
+    const shown = resolveEntityFromReadView(readView, 'country', country.tag, country.shownHour ?? hour, country.tag);
+    return { country, shown, label: shown.label, loading: shown.pending === true };
+  });
+  const labels = disambiguateLabels(resolved);
+  const entities: MatrixAxisEntity[] = resolved.map(({ country, shown }, at) => {
+    const id = (tagCounts.get(country.tag) ?? 0) > 1 ? `${country.tag}#${country.slot}:${country.countryId}` : country.tag;
     return {
-      id: country.tag,
-      label: shown.label,
+      id,
+      label: labels[at]!,
       shortLabel: country.tag,
       tag: country.tag,
       ...(shown.nameMissing ? { nameMissing: shown.nameMissing } : {}),
@@ -150,8 +174,7 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
   for (const cell of activeCells) byPair.set(cell.row * width + cell.column, cell);
   const most = Number(BigInt(mostText)) || 1;
   const largest = Number(BigInt(largestText)) || 1;
-  const hasMissing = hasAmbiguous
-    || activeCells.some(cell => cell.dealt === null)
+  const hasMissing = activeCells.some(cell => cell.dealt === null)
     || activeOrder.some(index => reply.countries[index]!.missing !== null);
 
   const present = new Map<number, MatrixCell>();
@@ -159,14 +182,11 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
     const r = Math.floor(at / width);
     const c = at % width;
     if (r === c) continue;
-    const cellAmbiguous = ambiguous(entities[r]!.id) || ambiguous(entities[c]!.id);
-    present.set(at, cellAmbiguous
-      ? { kind: 'missing', reason: AMBIGUOUS_HOLDER }
-      : found.dealt === null
-        ? { kind: 'missing', reason: found.missing ?? NOT_RECORDED }
-        : found.dealt === '0'
-          ? { kind: 'empty', label: '0 casualties', audit: '0' }
-          : { kind: 'value', intensity: Number(BigInt(found.dealt)) / most, text: compact(found.dealt), value: BigInt(found.dealt), audit: found.dealt, selectable: true });
+    present.set(at, found.dealt === null
+      ? { kind: 'missing', reason: found.missing ?? NOT_RECORDED }
+      : found.dealt === '0'
+        ? { kind: 'empty', label: '0 casualties', audit: '0' }
+        : { kind: 'value', intensity: Number(BigInt(found.dealt)) / most, text: compact(found.dealt), value: BigInt(found.dealt), audit: found.dealt, selectable: true });
   }
   const notAtWar: MatrixCell = { kind: 'empty', label: 'Not at war: no casualties', audit: '0' };
   const outsideSelection: MatrixCell = { kind: 'empty', label: 'Outside selected group', audit: 'Outside selection' };
@@ -174,8 +194,8 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
   const absent: MatrixCell | ((r: number, c?: number) => MatrixCell) = activeSet
     ? (r, c) => {
         if (c === undefined) return notAtWar;
-        const from = entities[r]!.id;
-        const to = entities[c]!.id;
+        const from = memberKey(reply.countries[activeOrder[r]!]!);
+        const to = memberKey(reply.countries[activeOrder[c]!]!);
         const inSelection = between ? (activeSet.has(from) && activeSet.has(to)) : (activeSet.has(from) || activeSet.has(to));
         return inSelection ? notAtWar : outsideSelection;
       }
@@ -184,7 +204,6 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
 
   const margin = (r: number): MatrixMarginCell => {
     const country = reply.countries[activeOrder[r]!]!;
-    if (ambiguous(country.tag)) return { kind: 'missing', reason: AMBIGUOUS_HOLDER };
     if (country.dealt === null) return { kind: 'missing', reason: country.missing ?? NOT_RECORDED };
     return { kind: 'value', fraction: Number(BigInt(country.dealt)) / largest, text: compact(country.dealt), exact: exact(country.dealt) };
   };
@@ -223,7 +242,10 @@ export const casualtyMatrixProjection: HeatMatrixProjection<CasualtyMatrixOption
   kind: 'casualties-between',
   family: 'heat-matrix',
   project: (readView, options) => projectCasualtyMatrix(readView, options),
-  nextChange: (readView, options) => Math.min(nextDatedMembershipChange(options, readView.hour), nextMembershipChange(options?.ambiguousHolders, readView.hour)),
+  nextChange: (readView, options) => nextDatedMembershipChange(
+    options?.identityMembership != null ? { ...options, membership: options.identityMembership } : options,
+    readView.hour,
+  ),
 };
 
 export const casualtyMatrixDeclaration: HeatMatrixWidgetDeclaration<CasualtyMatrixOptions> = {
@@ -233,17 +255,17 @@ export const casualtyMatrixDeclaration: HeatMatrixWidgetDeclaration<CasualtyMatr
   subject: 'casualties',
   emptyCampaign: 'Load a campaign to see its casualties.',
   icon: 'target',
-  countries: { mode: 'multi', datedAtHour: true, requireGroupsWhen: () => true },
+  countries: { mode: 'multi', datedAtHour: true },
   sources: ctx => plan(ctx, null),
   projection: casualtyMatrixProjection,
   projectionOptions: ctx => ({
     membership: ctx.widget.countries.kind === 'group' && ctx.widget.countries.membership === 'ever'
       ? (ctx.countries.cumulativeMembership ?? ctx.countries.membership)
       : ctx.countries.membership,
+    identityMembership: ctx.countries.identityMembership,
     unobserved: ctx.countries.unobserved,
     membershipMode: ctx.widget.countries.kind === 'group' ? ctx.widget.countries.membership : null,
     between: ctx.options.between === 'between',
-    ambiguousHolders: ctx.countries.ambiguousHolders,
   }),
   jumpToDate: true,
 };
@@ -263,16 +285,27 @@ export function projectCasualtyOpponents(readView: BoundedReadView): BarsModel {
   if (reply.missing) return { form: 'two-sided', hour, rows: [], empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
   if (!reply.opponents.length || reply.subject === null) return { form: 'two-sided', hour, rows: [], empty: 'No casualties with any opponent yet.', warnings: reply.warnings };
   const subject = reply.countries[reply.subject]!;
-  const rows: BarsDataRow[] = reply.opponents.map(opponent => {
+  const tagCounts = new Map<string, number>();
+  for (const opponent of reply.opponents) {
     const tag = reply.countries[opponent.country]!.tag;
-    const shown = countryRowPresentation(readView, tag);
+    tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+  }
+  const resolved = reply.opponents.map(opponent => {
+    const country = reply.countries[opponent.country]!;
+    const shown = countryRowPresentation(readView, country.tag, undefined, false, country.shownHour ?? hour);
+    return { opponent, country, shown, label: shown.label, loading: shown.labelLoading };
+  });
+  const labels = disambiguateLabels(resolved);
+  const rows: BarsDataRow[] = resolved.map(({ opponent, country, shown }, at) => {
+    const tag = country.tag;
+    const key = (tagCounts.get(tag) ?? 0) > 1 ? `${tag}#${country.slot}:${country.countryId}` : tag;
     const left = side(opponent.taken, opponent.missing, opponent.incomplete);
     const right = side(opponent.dealt, opponent.missing, opponent.incomplete);
     return {
       kind: 'data',
-      key: tag,
+      key,
       subject: tag,
-      label: shown.label,
+      label: labels[at]!,
       labelMissing: shown.labelMissing,
       media: shown.media,
       ...(shown.color ? { color: shown.color } : {}),

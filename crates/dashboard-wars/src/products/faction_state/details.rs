@@ -6,15 +6,22 @@ use super::{
     goals::{self, FactionGoalDefinition, Texts},
     owned,
 };
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt, ScriptedInputs}}};
+use dashboard_base::{
+    Source,
+    catalogue::{self, Catalogue},
+    products::{
+        LoadContext,
+        at_hour::{At, AtHour, Clock, Edits, Held, Keys, Owner, Read, ReadsAt, ScriptedInputs, before, field_columns, warnings_through},
+    },
+};
 use dashboard_world::products::territory::slot_tags;
 use dashboard_base::products::resources::{Learned, ResourceNaming};
 use dashboard_follow::live::{Cells, Source as Cell};
-use replay_data::rows::{FactionGoalEntryRow, TableId, tables};
+use replay_data::rows::{FactionGoalEntryRow, FactionResourceRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -87,10 +94,22 @@ pub struct FactionRefusalDetail {
     pub reason: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Through(i32);
+
+impl PartialEq for Through {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionDetailReply {
+    #[serde(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
+    through: Through,
     pub branch_id: String,
     pub faction: String,
     #[doc = " The faction's logo as the game draws it; none when it could not be drawn (a refusal says why)."]
@@ -133,19 +152,77 @@ pub struct DetailContent {
 #[derive(Default)]
 struct HeldArt(Option<(usize, Arc<Art>)>);
 
-const WHOLE: [TableId; 6] =
-    [TableId::Factions, TableId::ResourceDefinitions, TableId::CountryLinks, TableId::LexicalTokens, TableId::LocalPlayer, TableId::ReservedCountryNaming];
+const DETAIL_TABLES: [TableId; 11] = [
+    TableId::ResourceDefinitions,
+    TableId::CountryLinks,
+    TableId::ReservedCountryNaming,
+    TableId::FactionGoalStatus,
+    TableId::FactionUnlocks,
+    TableId::FactionProjection,
+    TableId::FactionManpower,
+    TableId::FactionResearch,
+    TableId::FactionDoctrine,
+    TableId::FactionResources,
+    TableId::FactionGoalEntries,
+];
 
-pub(super) fn faction_reads(faction: u64) -> Vec<Read> {
+fn detail_tables(faction: u64) -> Vec<Read> {
     let (low, high) = super::ordinals(faction);
     let goals = u128::from(faction) << 40;
-    let mut reads: Vec<Read> = WHOLE.into_iter().map(Read::all).collect();
+    let mut reads: Vec<Read> = [TableId::ResourceDefinitions, TableId::CountryLinks, TableId::ReservedCountryNaming].into_iter().map(Read::all).collect();
     reads.extend([TableId::FactionGoalStatus, TableId::FactionUnlocks, TableId::FactionProjection].map(|table| Read::these(table, [u128::from(faction)])));
     reads.extend(
         [TableId::FactionManpower, TableId::FactionResearch, TableId::FactionDoctrine, TableId::FactionResources]
             .map(|table| Read { table, keys: Keys::Range(low, high) }),
     );
     reads.push(Read { table: TableId::FactionGoalEntries, keys: Keys::Range(goals, goals | ((1u128 << 40) - 1)) });
+    reads
+}
+
+fn empty_detail_tables() -> Vec<Read> {
+    DETAIL_TABLES.into_iter().map(|table| Read::these(table, [])).collect()
+}
+
+fn faction_absent(frame: &DecodedFrame) -> bool {
+    frame.complete::<tables::Factions>().is_ok_and(|rows| rows.is_empty())
+}
+
+fn detail_tokens(frame: &DecodedFrame, faction: u64) -> Vec<u128> {
+    let mut tokens = BTreeSet::new();
+    for row in frame.complete::<tables::Factions>().ok().into_iter().flatten() {
+        if row.id == faction && let Some(token) = row.template_token {
+            tokens.insert(u128::from(token));
+        }
+    }
+    for row in frame.complete::<tables::FactionGoalStatus>().ok().into_iter().flat_map(|rows| owned(rows, faction, |row| row.faction)) {
+        if let Some(token) = row.manifest {
+            tokens.insert(u128::from(token));
+        }
+    }
+    for row in frame.complete::<tables::FactionGoalEntries>().ok().into_iter().flat_map(|rows| owned(rows, faction, |row| row.faction)) {
+        if row.kind <= 2 && let Some(token) = row.token {
+            tokens.insert(u128::from(token));
+        }
+    }
+    for row in frame.complete::<tables::FactionDoctrine>().ok().into_iter().flat_map(|rows| owned(rows, faction, |row| row.faction)) {
+        tokens.insert(u128::from(row.token));
+    }
+    for row in frame.complete::<tables::ResourceDefinitions>().ok().into_iter().flatten() {
+        tokens.insert(u128::from(row.token));
+    }
+    tokens.into_iter().collect()
+}
+
+fn scripted_tables() -> Vec<TableId> {
+    let mut tables: Vec<TableId> = goals::text_tables().chain([TableId::LocalPlayer, TableId::Countries, TableId::CountryLinks]).collect();
+    tables.sort_unstable();
+    tables.dedup();
+    tables
+}
+
+fn faction_reads(faction: u64) -> Vec<Read> {
+    let mut reads = vec![Read::all(TableId::Factions), Read::all(TableId::LexicalTokens), Read::all(TableId::LocalPlayer)];
+    reads.extend(detail_tables(faction));
     reads
 }
 
@@ -161,7 +238,7 @@ impl AtHour for FactionDetails {
     const KEY: &'static str = "faction-details";
     const TITLE: &'static str = "Faction details";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: Clock = Clock::Boundaries;
     type Params = FactionDetailParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, faction, viewpoint];
     type Reply = FactionDetailReply;
@@ -195,19 +272,129 @@ impl AtHour for FactionDetails {
         tables
     }
 
-    fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
-        match (step, super::faction_id(&params.faction)) {
-            (0, Ok(faction)) => faction_reads(faction),
+    fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
+        let Ok(faction) = super::faction_id(&params.faction) else { return Vec::new() };
+        match step {
+            0 => vec![Read::these(TableId::Factions, [u128::from(faction)])],
+            1 => if faction_absent(held) { empty_detail_tables() } else { detail_tables(faction) },
+            2 => vec![Read { table: TableId::LexicalTokens, keys: Keys::These(if faction_absent(held) { Vec::new() } else { detail_tokens(held, faction) }) }],
             _ => Vec::new(),
         }
     }
 
     fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
-        if step != 1 {
-            return Self::reads(params, owner, step, held);
+        if step == 3 {
+            let (Ok(faction), Ok(cat)) = (super::faction_id(&params.faction), at.context.catalogue()) else { return Vec::new() };
+            if !faction_absent(held) && goals::needs_lexicon_lookup_all(held, faction, cat) {
+                return vec![Read::all(TableId::LexicalTokens)];
+            }
+            return Vec::new();
         }
-        let (Ok(faction), Ok(cat)) = (super::faction_id(&params.faction), at.context.catalogue()) else { return Vec::new() };
-        text_reads(held, faction, cat, &faction_reads(faction))
+        Self::reads(params, owner, step, held)
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::Factions => Some(field_columns(table, &["template_token"])),
+            TableId::FactionGoalStatus => Some(field_columns(table, &["manifest"])),
+            TableId::FactionGoalEntries => Some(field_columns(table, &["token", "status", "active_sections", "progress_raw"])),
+            TableId::FactionUnlocks => Some(field_columns(table, &["research", "manpower"])),
+            TableId::FactionProjection => Some(field_columns(table, &["projection_raw"])),
+            TableId::FactionManpower => Some(field_columns(table, &["country", "value"])),
+            TableId::FactionResearch => Some(field_columns(table, &["countries", "scientist_base_raw"])),
+            TableId::FactionDoctrine => Some(field_columns(table, &["token"])),
+            TableId::FactionResources => Some(field_columns(table, &["token", "raw"])),
+            TableId::ResourceDefinitions => Some(field_columns(table, &["token"])),
+            TableId::CountryLinks => Some(field_columns(table, &["canonical_slot"])),
+            TableId::ReservedCountryNaming => Some(field_columns(table, &["tag"])),
+            TableId::LexicalTokens => Some(field_columns(table, &["literal"])),
+            _ => None,
+        }
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        match table {
+            TableId::FactionGoalEntries => Some(field_columns(table, &["token", "status", "active_sections"])),
+            TableId::FactionProjection => Some(Vec::new()),
+            TableId::FactionManpower => Some(field_columns(table, &["country"])),
+            TableId::FactionResearch => Some(field_columns(table, &["countries"])),
+            _ => Self::columns(table),
+        }
+    }
+
+    fn compares_previous(table: TableId) -> bool {
+        table == TableId::FactionResources
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        let touched = |tables: &[TableId]| edits.replaced.iter().chain(edits.tables.keys()).any(|table| tables.contains(table));
+        const TOKEN_SOURCES: &[TableId] = &[
+            TableId::Factions,
+            TableId::FactionGoalStatus,
+            TableId::FactionGoalEntries,
+            TableId::FactionDoctrine,
+            TableId::ResourceDefinitions,
+        ];
+        match stage {
+            0 => false,
+            1 => touched(&[TableId::Factions]),
+            2 => touched(TOKEN_SOURCES),
+            _ => touched(TOKEN_SOURCES) || touched(&[TableId::LexicalTokens]),
+        }
+    }
+
+    fn holds_refusal(frame: &DecodedFrame) -> bool {
+        faction_absent(frame)
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, _data: &mut Held<'_>) -> io::Result<bool> {
+        if !edits.replaced.is_empty() || edits.tables.len() != 1 {
+            return Ok(false);
+        }
+        let Some(changed) = edits.tables.get(&TableId::FactionResources) else {
+            return Ok(false);
+        };
+        let raw_mask = 1u64 << dashboard_declare::field(TableId::FactionResources, "raw")?;
+        if changed.values().any(|&mask| mask & !raw_mask != 0) {
+            return Ok(false);
+        }
+        let Some(replay_frame::frame::TableView::Complete(old)) = edits.previous.get(&TableId::FactionResources).map(|view| view.held()) else {
+            return Ok(false);
+        };
+        let (Some(old), Ok(new)) = (old.rows::<tables::FactionResources>(), frame.complete::<tables::FactionResources>()) else {
+            return Ok(false);
+        };
+        fn find(rows: &[FactionResourceRow], key: u128) -> Option<&FactionResourceRow> {
+            rows.binary_search_by_key(&key, |row| u128::from(row.faction) << 32 | u128::from(row.ordinal)).ok().map(|at| &rows[at])
+        }
+        for &key in changed.keys() {
+            let (Some(a), Some(b)) = (find(old, key), find(new, key)) else {
+                return Ok(false);
+            };
+            if b.ordinal == 0 && (a.raw == 0) != (b.raw == 0) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        if partial {
+            return frame.hour;
+        }
+        reply
+            .through
+            .0
+            .min(before(at.holders.next_change(frame.hour)))
+            .min(warnings_through(
+                frame.hour,
+                reply
+                    .warnings
+                    .iter()
+                    .map(String::as_str)
+                    .chain(reply.goal_reason.as_deref())
+                    .chain(reply.refusals.iter().map(|refusal| refusal.reason.as_str())),
+            ))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -230,14 +417,6 @@ impl AtHour for FactionDetails {
         let faction = super::faction_id(&params.faction).map_err(dashboard_core::invalid)?;
         reply(frame, params, faction, at)
     }
-}
-
-pub(super) fn text_reads(held: &DecodedFrame, faction: u64, cat: &Catalogue, made: &[Read]) -> Vec<Read> {
-    if !goals::scripted(held, faction, cat) {
-        return Vec::new();
-    }
-    let read: Vec<TableId> = made.iter().map(|read| read.table).collect();
-    goals::text_tables().filter(|table| !read.contains(table)).map(Read::all).collect()
 }
 
 impl DetailContent {
@@ -278,17 +457,37 @@ pub(super) fn reply(frame: &DecodedFrame, params: &FactionDetailParams, faction:
     }
     let mut reply = blank(params);
     let cat = at.context.catalogue.as_ref().map(Arc::as_ref);
-    let texts = cat.ok().map(|cat| Texts::new(frame, faction, cat, &at.context.art, params.viewpoint.as_ref()));
-    goal_lists(frame, faction, texts.as_ref(), cat.err().map(String::as_str), &mut reply, at.live, None)?;
-    if let Some(texts) = &texts {
-        reply.warnings.extend(texts.warnings());
+    if let Ok(cat) = cat && goals::scripted(frame, faction, cat) {
+        let watched = if params.viewpoint.is_some() {
+            vec![dashboard_text::triggers::inputs::TableRead::fields(TableId::Countries, &["canonical_slot", "tag"])]
+        } else {
+            vec![
+                dashboard_text::triggers::inputs::TableRead::fields(TableId::LocalPlayer, &["country", "observer_country"]),
+                dashboard_text::triggers::inputs::TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
+            ]
+        };
+        let (done, through) = at.context.inputs.evaluate_with_reads(frame, &scripted_tables(), at.cancelled, |world| {
+            let texts = Texts::new_in(frame, world, faction, cat, &at.context.art, params.viewpoint.as_ref());
+            let done = goal_lists(frame, faction, Some(&texts), None, &mut reply, at.live, None);
+            reply.warnings.extend(texts.warnings());
+            doctrines(frame, faction, Some(&texts), &mut reply);
+            (done, watched)
+        })?;
+        done?;
+        reply.through = Through(through);
+    } else {
+        let texts = cat.ok().map(|cat| Texts::new(frame, faction, cat, &at.context.art, params.viewpoint.as_ref()));
+        goal_lists(frame, faction, texts.as_ref(), cat.err().map(String::as_str), &mut reply, at.live, None)?;
+        if let Some(texts) = &texts {
+            reply.warnings.extend(texts.warnings());
+        }
+        doctrines(frame, faction, texts.as_ref(), &mut reply);
     }
     let tags = Tags::new(frame, slot_tags(at.holders, at.hour));
     projection(frame, faction, &mut reply, at.live)?;
     resources(frame, faction, &mut reply, &at.context.naming, at.cancelled, at.live)?;
     manpower(frame, faction, &tags, &mut reply, at.live)?;
     research(frame, faction, &tags, &mut reply, at.live)?;
-    doctrines(frame, faction, texts.as_ref(), &mut reply);
     match frame.complete::<tables::FactionUnlocks>() {
         Ok(rows) => match owned(rows, faction, |row| row.faction).first() {
             Some(row) => {
@@ -321,6 +520,7 @@ pub(super) fn reply(frame: &DecodedFrame, params: &FactionDetailParams, faction:
 
 pub(super) fn blank(params: &FactionDetailParams) -> FactionDetailReply {
     FactionDetailReply {
+        through: Through(i32::MAX),
         branch_id: params.branch_id.clone(),
         faction: params.faction.clone(),
         logo: None,

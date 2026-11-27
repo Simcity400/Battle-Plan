@@ -105,11 +105,11 @@ export const warContributionMeasureProjection: BarsProjection<MeasureOptions> = 
     const chosen = chosenGroup(readView, options);
     if (chosen.kind === 'loading') return { form: 'two-sided', twoSidedLayout: 'split-sides', hour, rows: [] };
     if (chosen.kind === 'blank') return { form: 'two-sided', twoSidedLayout: 'split-sides', hour, rows: [], empty: chosen.empty, emptyKind: chosen.emptyKind };
-    const { group, reply, sides } = chosen;
+    const { group, reply, asOf, sides } = chosen;
     const measure = group.measures.find(item => item.key === options.measure) ?? group.measures.find(item => item.key === DEFAULT_MEASURE) ?? group.measures[0];
     if (!measure) return { form: 'two-sided', twoSidedLayout: 'split-sides', hour, rows: [], empty: 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
     const listed = MEASURE_LIST.find(item => item.key === measure.key)!;
-    const heldFromEarlier = reply.hour !== hour;
+    const heldFromEarlier = asOf !== hour;
     const caption = measure.key === 'participation'
       ? `${listed.label} · Each country’s share of its side’s participation`
       : `${listed.label} · Each country’s share of all ${listed.whole} in this war`;
@@ -117,14 +117,13 @@ export const warContributionMeasureProjection: BarsProjection<MeasureOptions> = 
       form: 'two-sided',
       twoSidedLayout: 'split-sides',
       hour,
-      dataHours: [reply.hour],
-      ...(heldFromEarlier ? { summaryText: `As of ${formatDateOnly(reply.hour)}` } : {}),
-      rows: rowsOf(readView, group, measure, sides, reply.hour),
+      ...(heldFromEarlier ? { dataHours: [asOf], summaryText: `As of ${formatDateOnly(asOf)}` } : {}),
+      rows: rowsOf(readView, group, measure, sides, asOf),
       rowHeight: 26,
       barHeight: 12,
       caption,
-      captionSides: captionSides(readView, group, measure, sides, reply.hour),
-      pickList: { rows: pickRows(readView, group, sides, reply.hour), selectedKey: measure.key },
+      captionSides: captionSides(readView, group, measure, sides, asOf),
+      pickList: { rows: pickRows(readView, group, sides, asOf), selectedKey: measure.key },
       ...(reply.warnings.length ? { warnings: reply.warnings } : {}),
     };
   },

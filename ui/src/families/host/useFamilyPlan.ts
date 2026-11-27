@@ -11,7 +11,7 @@ import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, EVER_UNRECORDED, everBounds, everStateAt, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
-import { ambiguousHolderRanges, cumulativeEverMembership, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
+import { cumulativeEverMembership, datedIdentityMembership, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -458,9 +458,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return resolveSelectedCountryRefs(widget.countries, selectedFallback, identities);
   }, [isFilter, isMulti, widget.countries, selectedFallback, groups.data]);
 
-  const ambiguousHolders = useMemo(
-    () => (datedAtHour && fetchGroups ? ambiguousHolderRanges(groups.data?.countryIdentities) : null),
-    [datedAtHour, fetchGroups, groups.data],
+  const identityMembership = useMemo(
+    () => (datedAtHour && fetchGroups ? datedIdentityMembership(widget.countries, groups.data, lastHour) : null),
+    [datedAtHour, fetchGroups, widget.countries, groups.data, lastHour],
   );
 
   const countriesState = useMemo<DeclaredCountryState>(() => ({
@@ -473,7 +473,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     membership,
     cumulativeMembership,
     membershipRuns,
-    ambiguousHolders,
+    identityMembership,
     unobserved,
     filter,
     factions: factionData.runs,
@@ -483,7 +483,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     reason: filterMatch?.reason ?? effectiveMulti?.reason ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
     unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
-  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, cumulativeMembership, membershipRuns, ambiguousHolders, unobserved, filter, factionData, filterMatch?.reason]);
+  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, cumulativeMembership, membershipRuns, identityMembership, unobserved, filter, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
     () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),

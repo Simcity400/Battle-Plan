@@ -65,61 +65,48 @@ export function nextDatedMembershipChange(options: DatedMembershipOptions | unde
   return Math.min(nextMembershipChange(options.membership, hour), nextRangesChange(options.unobserved, hour));
 }
 
-export function ambiguousHolderRanges(
-  histories: readonly CountryIdentityHistory[] | undefined,
+export function datedIdentityMembership(
+  selection: CountrySelection,
+  groups: CountryGroupReply | undefined,
+  lastHour: number,
 ): Readonly<Record<string, HourRanges>> | null {
-  if (!histories?.length) return null;
-  const byHolder = new Map<string, { readonly tag: string; readonly firstHour: number }[]>();
-  for (let i = 0; i < histories.length; i++) {
-    const history = histories[i]!;
-    for (let j = 0; j < history.identities.length; j++) {
-      const run = history.identities[j]!;
-      const key = countryIdentityKey(run);
-      let list = byHolder.get(key);
-      if (!list) byHolder.set(key, list = []);
-      list.push({ tag: history.tag, firstHour: run.firstHour });
+  if (selection.kind !== 'group' || !groups || !validCountryIdentityHistories(groups.countryIdentities)) return null;
+  const runs = groupRuns(groups, selection.group);
+  if (!runs) return null;
+  const index = countryIdentityIndex(groups.countryIdentities);
+  if (selection.membership === 'ever') {
+    const until = Math.min(lastHour, everKnownBefore(groupUnobserved(groups, selection.group)) - 1);
+    if (until < -0x8000_0000) return {};
+    const out: Record<string, HourRanges> = {};
+    for (const [key, joinHour] of index.firstHoursDuring(runs)) {
+      if (joinHour <= until) out[key] = [[joinHour, until]];
+    }
+    return out;
+  }
+  const byTag = new Map<string, readonly CountryIdentityHistory['identities'][number][]>();
+  for (let i = 0; i < groups.countryIdentities.length; i++) {
+    const history = groups.countryIdentities[i]!;
+    byTag.set(history.tag, history.identities);
+  }
+  const raw = new Map<string, [number, number][]>();
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i]!;
+    const ids = byTag.get(run.tag);
+    if (!ids) continue;
+    for (let j = 0; j < ids.length; j++) {
+      const id = ids[j]!;
+      const lo = Math.max(run.firstHour, id.firstHour);
+      const hi = Math.min(run.lastHour, id.lastHour);
+      if (lo > hi) continue;
+      const key = countryIdentityKey(id);
+      let list = raw.get(key);
+      if (!list) raw.set(key, list = []);
+      list.push([lo, hi]);
     }
   }
-  const eventsByTag = new Map<string, { readonly hour: number; readonly delta: 1 | -1 }[]>();
-  for (const runs of byHolder.values()) {
-    runs.sort((a, b) => a.firstHour - b.firstHour);
-    for (let i = 0; i < runs.length; i++) {
-      const cur = runs[i]!;
-      if (i > 0 && runs[i - 1]!.tag === cur.tag) continue;
-      if (i > 0) {
-        const prevTag = runs[i - 1]!.tag;
-        let prevEvents = eventsByTag.get(prevTag);
-        if (!prevEvents) eventsByTag.set(prevTag, prevEvents = []);
-        prevEvents.push({ hour: cur.firstHour, delta: -1 });
-      }
-      let curEvents = eventsByTag.get(cur.tag);
-      if (!curEvents) eventsByTag.set(cur.tag, curEvents = []);
-      curEvents.push({ hour: cur.firstHour, delta: 1 });
-    }
-  }
-  let out: Record<string, HourRanges> | null = null;
-  for (const [tag, events] of eventsByTag) {
-    if (events.length < 2) continue;
-    events.sort((a, b) => a.hour - b.hour);
-    const ranges: [number, number][] = [];
-    let active = 0;
-    let start: number | null = null;
-    let i = 0;
-    while (i < events.length) {
-      const hour = events[i]!.hour;
-      while (i < events.length && events[i]!.hour === hour) {
-        active += events[i]!.delta;
-        i++;
-      }
-      if (active >= 2 && start === null) {
-        start = hour;
-      } else if (active < 2 && start !== null) {
-        ranges.push([start, hour - 1]);
-        start = null;
-      }
-    }
-    if (start !== null) ranges.push([start, Number.MAX_SAFE_INTEGER]);
-    if (ranges.length) (out ??= {})[tag] = ranges;
+  const out: Record<string, HourRanges> = {};
+  for (const [key, spans] of raw) {
+    out[key] = mergedRanges(spans);
   }
   return out;
 }
