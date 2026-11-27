@@ -75,7 +75,7 @@ All Rust is in `crates/`; names group by prefix.
 - Desktop app: `npm.cmd run dev` (`-- -- -- "<replay>"` opens one); release: `npm.cmd run build:desktop`.
 - Command-line recorder: `python tools/boat.py build --out <dir> --release -p recorder -p collector`.
 - Only Rust compiles go to Boat, never this machine; release builds run in GitHub Actions (ADR 0001). Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
-  - Build: `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>`, only to run that binary, never to confirm what CI or a release shows.
+  - `check -p <crate> --tests` for compile errors before review; `build --out <dir> --release -p <crate> --bin <name>` only to run that binary, never to confirm what CI or a release shows.
 - Everything else runs here: UI checks, Python scripts.
 
 ## Verifying
@@ -85,8 +85,8 @@ All Rust is in `crates/`; names group by prefix.
 - Extend before you add: put the case in an existing test where one fits. Test at the lowest layer that fails on `main`, not again in a wrapper.
 - A logic, data or format bug gets a failing test first, then the fix. A recording bug gets a `recorder-oracle-*` case that fails before the fix. A purely visual bug gets before/after captures and no test.
 - Tests never wait on sleeps or wall-clock time. Flaky tests are fixed, not retried. A skipped test needs a tracking issue on the line above: `// quarantine: #1234 why`.
-- Never run a suite. Run only the test you added or changed, where it needs no Rust compile; leave Rust tests to CI, not Boat.
-- A user-visible UI change gets one pass in the running app, done once by the primary agent after integrating: run the Boat-built shell (`tools/e2e/suite.py build --shell`, reused until the Rust changes) with `BATTLEPLAN_UI_DIST` naming a `vite build` output. Subagents don't launch their own.
+- Never run a suite. Run only the test you added or changed, where it needs no Rust compile; Rust tests and clippy are CI's, not Boat's.
+- A user-visible UI change gets one pass in the running app, done once by the primary agent after integrating: run the hosted shell (`tools/e2e/suite.py shell`) with `BATTLEPLAN_UI_DIST` naming a `vite build` output. Subagents don't launch their own.
 
 ## Code
 
