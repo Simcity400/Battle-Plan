@@ -529,7 +529,7 @@ fn historical_idea_names_use_the_slots_tag_at_the_evaluation_hour() {
         reply.looks[holding.look as usize].artwork.name.clone()
     };
 
-    let params_105 = super::IdeaHistoryParams { branch_id: "1".into(), country: country.clone(), hour: 105 };
+    let params_105 = super::IdeaHistoryParams { branch_id: "1".into(), country, hour: 105 };
     let asked_105 = super::Asked { params: &params_105, tag: "AAA", hour: 105, unrecorded: None };
     let present_105 = source
         .in_scope(|| super::present(&query, &content, &asked_105, &read, None, &AtomicBool::new(false)))
