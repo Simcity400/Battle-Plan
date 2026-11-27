@@ -38,7 +38,7 @@ export function measureCounts(run, results, records) {
       complete &&= Number.isInteger(counts['requests:head']);
     }
     return { recording: run.fixture?.sha256, scenario: p.scenario, interaction: `${result.session}|${failureKey(result)}`, family: p.family, phase: result.area,
-      session: result.session, page: p.page, recipe: p.recipe, context: p.context, start: p.start, settled: p.settled, counts, breakdown, complete: Boolean(complete), reasons: functionalReasons(result.reasons) };
+      session: result.session, page: p.page, recipe: p.recipe, context: p.context, start: p.start, settled: p.settled, counts, breakdown, complete: Boolean(complete), reasons: [...functionalReasons(result.reasons), ...(p.reason ? [p.reason] : [])] };
   });
 }
 function index(entries) {

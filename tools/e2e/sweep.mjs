@@ -105,7 +105,7 @@ await s.init();
 s.history = history;
 s.tier = tier;
 s.pin = pin;
-s.recipe = { version: 1, branchIndex: 0, tier, phases, cases: only, pages: onlyPages, rate, coresCount, allViews, heaviestCount, kinds: onlyKinds, pagesAt, playSeconds: PLAY_SECONDS };
+s.recipe = { version: 2, branchIndex: 0, tier, phases, cases: only, pages: onlyPages, rate, coresCount, allViews, heaviestCount, kinds: onlyKinds, pagesAt, playSeconds: PLAY_SECONDS };
 const visual = new Visual(app, out, session);
 await visual.init();
 const started = new Date();

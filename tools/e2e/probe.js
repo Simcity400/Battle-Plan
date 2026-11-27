@@ -285,6 +285,17 @@
     return p.t0;
   };
   p.inFlight = () => { try { return window.__busy ? window.__busy.kinds() : null; } catch { return null; } };
+  p.prepared = timeout => new Promise(resolve => {
+    const start = performance.now(); let idle = 0;
+    const check = () => {
+      const now = performance.now(), kinds = p.inFlight(), preparing = window.__busy?.preparing?.();
+      const known = kinds !== null && Number.isFinite(preparing);
+      idle = known && preparing === 0 && Object.values(kinds).every(n => n === 0) ? idle + 1 : 0;
+      if (!known || idle >= 2 || now - start >= timeout) resolve({ at: performance.timeOrigin + now, complete: known && idle >= 2 });
+      else requestAnimationFrame(check);
+    };
+    check();
+  });
   p.perfContext = () => ({ enabled: !!window.__perf, page: document.querySelector('.sidebar-page-list [aria-current=page]')?.textContent.trim() ?? null,
     hour: document.querySelector('input.header-timeline')?.value ?? null, viewport: [innerWidth, innerHeight, devicePixelRatio] });
   p.settle = (timeout, quiet, only = null, over) => new Promise(resolve => {

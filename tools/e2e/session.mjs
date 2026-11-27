@@ -53,6 +53,7 @@ export class Session {
   async step(area, item, label, action, { done = null, changes = null, drew = null, from = 'first', timeout = 6000, quiet = 200, widget = null, awaits = true, budget = BUDGET_MS, check = true, control = label, unobservable = null, shot = false, extra = {} } = {}) {
     this.app.setCase(`${area}/${item}/${label}`);
     const family = familyOf(area, item, label);
+    const preparedBefore = family ? await this.app.evaluate(`__e2e.prepared(${timeout})`, timeout + 30_000) : null;
     const context = family ? await this.app.evaluate('__e2e.perfContext()') : null;
     let changed = null, sentBefore = null, settingsBefore = null, drawnSame = null;
     const article = key => `document.querySelector(${JSON.stringify(`article.dash-widget[data-widget="${key}"]`)})`;
@@ -114,6 +115,7 @@ export class Session {
     if (probe.inFlight) reasons.push(stillInFlight(probe.inFlight, timeout));
     if (probe.timedOut && !reasons.length) reasons.push(`not settled within ${timeout} ms`);
     const timing = check && ms !== null && ms > budget ? [`${Math.round(ms)} ms, over ${budget} ms`] : [];
+    const preparedAfter = family ? await this.app.evaluate(`__e2e.prepared(${timeout})`, timeout + 30_000) : null;
     const screenshot = shot ? true : reasons.every(reason => /ms, over/.test(reason)) ? false : undefined;
     const result = await this.record({ area, item, label, control, check, ms, budget, pass: true, reasons, screenshot, input: start === null ? null : this.epoch + start,
       gestureMs: from === 'last' && probe.input !== null && probe.last !== null ? probe.last - probe.input : null, drawnAt: drawnEpoch,
@@ -125,7 +127,8 @@ export class Session {
       const page = area === 'seeks' ? item : ['pages', 'pages-at'].includes(area) ? item.slice(item.indexOf('/') + 1) : context.page;
       const scenario = scopeScenario(this.recipe, { ...context, page }, /warm/.test(`${item}/${label}`) || !check ? 'warm' : 'cold');
       result.perf = { family, context, recipe: this.recipe, page, scenario: scenarioId(scenario), start: this.epoch + probe.t0,
-        settled: this.epoch + probe.now, complete: context.enabled && probe.busySignal && !probe.timedOut && start !== null };
+        settled: preparedAfter.at, complete: context.enabled && probe.busySignal && !probe.timedOut && start !== null && preparedBefore.complete && preparedAfter.complete,
+        ...(!preparedBefore.complete || !preparedAfter.complete ? { reason: 'background preparation has no complete settled boundary or preparation instrumentation is missing' } : {}) };
     }
     result.timing = timing;
     result.probe = probe;

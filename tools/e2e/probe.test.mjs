@@ -28,6 +28,7 @@ function loadProbe(dom = {}) {
     MessageChannel: FakeChannel,
     PerformanceObserver: FakeObserver,
     addEventListener: () => {},
+    __busy: dom.busy,
     document: {
       createElement: () => ({ width: 0, height: 0, getContext: () => ({ clearRect() {}, drawImage() {}, getImageData: () => ({ data: [] }) }) }),
       querySelector: dom.querySelector ?? (() => null),
@@ -201,6 +202,23 @@ test('settlement waits for a transient global spinner and leaves a persistent on
   const persistent = await timed;
   assert.equal(persistent.timedOut, true);
   assert.deepEqual([...persistent.placeholderStill], ['spinner']);
+});
+
+test('count scopes drain background preparation separately from foreground paint settlement', async () => {
+  let preparing = 1;
+  const host = loadProbe({ busy: { kinds: () => ({ requests: 0 }), preparing: () => preparing } });
+  let finished = false;
+  const pending = host.probe.prepared(1000).then(value => { finished = true; return value; });
+  for (let i = 0; i < 4; i++) { host.stepFrame(16); await Promise.resolve(); }
+  assert.equal(finished, false);
+  preparing = 0;
+  for (let i = 0; i < 3; i++) { host.stepFrame(16); await Promise.resolve(); }
+  assert.equal((await pending).complete, true);
+  preparing = 1;
+  const timed = host.probe.prepared(1);
+  host.stepFrame(16);
+  assert.equal((await timed).complete, false);
+  assert.equal((await loadProbe().probe.prepared(1000)).complete, false);
 });
 
 test('probe countryRows and revealCountry handle both named and unnamed country options', async () => {
