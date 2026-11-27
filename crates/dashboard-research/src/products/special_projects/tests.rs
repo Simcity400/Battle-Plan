@@ -14,6 +14,51 @@ const UNKNOWN: (u32, u8, u8, u64) = (0x99, 1, 1, 0);
 const POOL: (u32, u8, u8, u64) = (0x18, 1, 0, 0);
 
 #[test]
+fn cached_project_icons_keep_overlay_notes_in_exact_and_followed_replies() {
+    use dashboard_base::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
+
+    for refused in [false, true] {
+        let machine = Machine::new(if refused { "project_icon_refused_notes" } else { "project_icon_notes" });
+        machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+        machine.write("common/special_projects/projects/fixture.txt", b"fixture_project={icon=GFX_fixture_project}");
+        machine.write("localisation/fixture_l_english.yml", b"\xef\xbb\xbfl_english:\n fixture_project:0 \"Fixture project\"\n");
+        machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_project textureFile=gfx/fixture_project.png}}");
+        machine.write("gfx/fixture_project.png", &png(RED));
+        machine.write_mod("fixture_art", "gfx/fixture_project.png", &if refused { b"invalid fixture image".to_vec() } else { png(BLUE) });
+        let frames = [100, 101].map(|at| {
+            let mut frame = frame(at, &hour(at, RUNNING));
+            *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 40, literal: b"fixture_project".to_vec() }]));
+            frame
+        });
+        let (source, mut options) = machine.open_frames(frames.into());
+        select(&source, &mut options, &["fixture_art"]);
+        let load = LoadContext { content: Some(options) };
+        let cancelled = AtomicBool::new(false);
+        let read = || crate::registrations::SPECIAL_PROJECTS_SPECIALPROJECTS.answer(
+            &source, serde_json::json!({"branchId":"1", "country":"GER", "hour":100, "current":true}), &load, &cancelled,
+        ).unwrap();
+        let notes = |reply: &serde_json::Value| reply["warnings"].as_array().unwrap().iter().filter_map(|line| line.as_str()).filter(|line| line.starts_with("Artwork from visual mods")).map(str::to_owned).collect::<Vec<_>>();
+        let first = read();
+        let expected = notes(&first);
+        assert!(!expected.is_empty(), "the drawing must name its overlay read or refusal: {first}");
+        if !refused { assert!(expected.iter().any(|line| line.contains("fixture_art"))); }
+        let pixel = if refused { RED } else { BLUE };
+        assert_eq!(first_pixel(first["presentations"][0]["icon"].as_str().unwrap()), pixel);
+        let second = read();
+        assert_eq!(first_pixel(second["presentations"][0]["icon"].as_str().unwrap()), pixel);
+        assert_eq!(notes(&second), expected);
+        let panel = dated_panel(&source, &load, &serde_json::json!({"panel":"special-projects", "branchId":"1", "country":"GER", "current":true})).unwrap();
+        let exact = panel.exact().unwrap();
+        for at in [100, 101] {
+            let followed = (exact.advance)(at, at == 100, &cancelled, None);
+            let reply = followed.value.as_ref().as_ref().unwrap();
+            assert_eq!(notes(reply), expected, "followed at {at}");
+            assert_eq!(notes(&(exact.cold)(at, &cancelled).unwrap()), expected, "exact at {at}");
+        }
+    }
+}
+
+#[test]
 fn custody_holds_only_when_the_owner_stayed_linked_from_the_read_through_the_hour() {
     let links = RunLinks { slots: HashMap::from([(10, vec![(0, 49, Some(5)), (50, 99, Some(5)), (100, 199, Some(6))]), (11, vec![(50, 199, Some(5))]), (12, vec![(0, 199, Some(6))])]) };
     assert_eq!(owner_ids(&links, 5, 20, 150), BTreeMap::from([(10, vec![(20, 99)]), (11, vec![(50, 150)])]));

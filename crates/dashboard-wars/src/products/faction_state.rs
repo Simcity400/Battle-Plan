@@ -36,13 +36,14 @@ pub(crate) fn ordinals(faction: u64) -> (u128, u128) {
 #[derive(Default)]
 pub(crate) struct Art {
     default_icon: OnceLock<Result<String, String>>,
-    drawn: Mutex<HashMap<([u8; 32], String, u32), Result<String, String>>>,
+    drawn: Mutex<HashMap<([u8; 32], String, u32), (Result<String, String>, catalogue::OwnRefusals)>>,
 }
 
 impl Art {
     fn sprite(&self, cat: &Catalogue, name: &str, size: u32, what: &str) -> Result<String, String> {
         let key = (cat.content.layers.art_stack_key(), name.to_owned(), size);
-        if let Some(found) = self.drawn.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
+        if let Some((found, noted)) = self.drawn.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
+            catalogue::credit(noted);
             return found.clone();
         }
         let read = |cat: &Catalogue| -> io::Result<String> {
@@ -51,10 +52,11 @@ impl Art {
                 .into_io_result()?
                 .ok_or_else(|| dashboard_core::invalid("faction artwork unavailable"))
         };
-        let drawn = catalogue::draw(|| format!("{what} {name}"), cat, |cat| read(cat).map_err(|why| format!("{what} {name}: {why}")))
+        let (drawn, noted) = catalogue::capture(|| catalogue::draw(|| format!("{what} {name}"), cat, |cat| read(cat).map_err(|why| format!("{what} {name}: {why}")))
             .get()
-            .clone();
-        self.drawn.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, drawn.clone());
+            .clone());
+        catalogue::credit(&noted);
+        self.drawn.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, (drawn.clone(), noted));
         drawn
     }
 

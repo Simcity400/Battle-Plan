@@ -74,7 +74,7 @@ pub(super) struct Context {
 #[derive(Default)]
 struct Names {
     catalogue: Option<Arc<Catalogue>>,
-    items: HashMap<(u32, u32, u32), (NamedItem, Option<(String, String)>)>,
+    items: HashMap<(u32, u32, u32), (NamedItem, Option<(String, String)>, catalogue::OwnRefusals)>,
 }
 
 impl Context {
@@ -116,7 +116,8 @@ pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, ic
         let held = context.names.lock().unwrap_or_else(PoisonError::into_inner);
         for (at, item) in asked.iter().enumerate() {
             match held.items.get(&(item.run, item.row.holder, item.row.ordinal)) {
-                Some((named, image)) => {
+                Some((named, image, noted)) => {
+                    catalogue::credit(noted);
                     if let (Some(key), Some((_, image))) = (&named.icon, image) {
                         icons.entry(key.clone()).or_insert_with(|| image.clone());
                     }
@@ -134,30 +135,31 @@ pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, ic
         let mut named_here = Vec::with_capacity(items.len());
         let mut scripted_rows = Vec::new();
         for &at in &items {
-            let (named, image) = named_item(light.as_ref(), asked[at].row, context, false);
+            let ((named, image), noted) = catalogue::capture(|| named_item(light.as_ref(), asked[at].row, context, false));
             if light.is_some() && named.unknown.as_deref().is_some_and(|why| why.contains(FRAME_UNREAD)) {
                 scripted_rows.push(at);
             } else {
-                named_here.push((at, named, image));
+                named_here.push((at, named, image, noted));
             }
         }
         if !scripted_rows.is_empty() {
             let rows: Vec<&PowerItemRow> = scripted_rows.iter().map(|&at| asked[at].row).collect();
             let full = readable(read_frame(&mut frames, hour, &rows, true))?;
             for &at in &scripted_rows {
-                let (named, image) = named_item(full.as_ref(), asked[at].row, context, true);
-                named_here.push((at, named, image));
+                let ((named, image), noted) = catalogue::capture(|| named_item(full.as_ref(), asked[at].row, context, true));
+                named_here.push((at, named, image, noted));
             }
         }
-        for (_, named, image) in &named_here {
+        for (_, named, image, noted) in &named_here {
+            catalogue::credit(noted);
             if let (Some(key), Some(image)) = (&named.icon, image) {
                 icons.entry(key.clone()).or_insert_with(|| image.clone());
             }
         }
         let mut held = context.names.lock().unwrap_or_else(PoisonError::into_inner);
-        for (at, named, image) in named_here {
+        for (at, named, image, noted) in named_here {
             let item = &asked[at];
-            held.items.insert((item.run, item.row.holder, item.row.ordinal), (named.clone(), image.map(|image| (named.icon.clone().unwrap_or_default(), image))));
+            held.items.insert((item.run, item.row.holder, item.row.ordinal), (named.clone(), image.map(|image| (named.icon.clone().unwrap_or_default(), image)), noted));
             out[at] = Some(named);
         }
     }

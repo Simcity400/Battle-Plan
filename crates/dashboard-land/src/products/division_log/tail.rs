@@ -3,7 +3,7 @@ use dashboard_query::log::Cell;
 use crate::products::divisions::Content;
 use dashboard_base::{
     Source,
-    catalogue::Catalogue,
+    catalogue::{self, Catalogue},
     products::{
         LoadContext, Product,
         occurrences::{self, OccurrenceCount, OccurrenceReply},
@@ -166,7 +166,7 @@ struct Event {
     template: Option<u32>,
     template_tag: Option<String>,
     recorded: Fields,
-    detail: OnceLock<Box<DivisionEventDetail>>,
+    detail: OnceLock<(Box<DivisionEventDetail>, catalogue::OwnRefusals)>,
 }
 
 const NUMBERS: [usize; 11] = [
@@ -255,7 +255,7 @@ impl Event {
     }
 
     fn detail(&self, art: &Content, holders: &Holders) -> &DivisionEventDetail {
-        self.detail.get_or_init(|| {
+        let (detail, noted) = self.detail.get_or_init(|| catalogue::capture(|| {
             let recorded = &self.recorded;
             let num = |at| recorded.number(at);
             let kind = self.kind;
@@ -288,7 +288,9 @@ impl Event {
                 killer_division: num(column::KILLER_DIVISION).filter(|&id| id != 0).map(|id| (id as u64).to_string()),
                 matched_deaths: num(column::MATCHED_DEATHS).map(|n| n as u32),
             })
-        })
+        }));
+        catalogue::credit(noted);
+        detail
     }
 }
 #[derive(PartialEq, Eq)]

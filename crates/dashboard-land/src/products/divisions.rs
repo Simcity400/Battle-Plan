@@ -138,7 +138,7 @@ type NameGroups = (Result<Arc<Database>, String>, Vec<String>);
 struct Cache {
     binding: Weak<Catalogue>,
     groups: Arc<OnceLock<NameGroups>>,
-    icons: BTreeMap<(u32, i32, Vec<u8>), Result<String, String>>,
+    icons: BTreeMap<(u32, i32, Vec<u8>), (Result<String, String>, catalogue::OwnRefusals)>,
 }
 
 impl Cache {
@@ -200,12 +200,13 @@ impl Content {
     pub fn icon(&self, priority_unit: u32, custom: i32, unit: &[u8]) -> Result<String, String> {
         let cat = self.cat("Template artwork")?;
         let operands = (priority_unit, custom, unit.to_vec());
-        if let Some(icon) = self.cache_of(cat).icons.get(&operands) {
+        if let Some((icon, noted)) = self.cache_of(cat).icons.get(&operands) {
+            catalogue::credit(noted);
             return icon.clone();
         }
-        let drawn = catalogue::draw(|| format!("division template icon ({})", String::from_utf8_lossy(unit)), cat, |cat| template_sprite(cat, priority_unit, custom, unit));
-        let icon = drawn.get().clone();
-        self.cache_of(cat).icons.entry(operands).or_insert(icon).clone()
+        let (icon, noted) = catalogue::capture(|| catalogue::draw(|| format!("division template icon ({})", String::from_utf8_lossy(unit)), cat, |cat| template_sprite(cat, priority_unit, custom, unit)).get().clone());
+        catalogue::credit(&noted);
+        self.cache_of(cat).icons.entry(operands).or_insert((icon, noted)).0.clone()
     }
 
     fn cache_of(&self, cat: &Arc<Catalogue>) -> MutexGuard<'_, Cache> {

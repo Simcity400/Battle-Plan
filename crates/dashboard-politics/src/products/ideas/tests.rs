@@ -9,6 +9,36 @@ const FIRST: i32 = 100;
 const LAST: i32 = 130;
 const GER: u32 = 9001;
 
+#[test]
+fn cached_idea_looks_keep_overlay_notes() {
+    use dashboard_base::{catalogue, products::politics_content::politics_content, test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select}};
+
+    let machine = Machine::new("idea_look_art_notes");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_idea_fixture_idea textureFile=gfx/fixture_idea.png}}");
+    machine.write("gfx/fixture_idea.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_idea.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["fixture_art"]);
+    let content = politics_content(&source, &options).unwrap();
+    let read = super::Read {
+        ideas: super::Ideas { spans: vec![span("fixture_idea", 100, 100, None)], ..Default::default() },
+        naming: Vec::new(),
+        looks: std::sync::Mutex::new((std::sync::Weak::new(), Vec::new())),
+    };
+    let reply = || {
+        let mut own = catalogue::OwnRefusals::default();
+        let shown = catalogue::own_refusals(&mut own, || read.looked(&content, "GER", 0));
+        let mut warnings = Vec::new();
+        own.diagnostics().append_to(&mut warnings);
+        (first_pixel(shown.0.artwork.icon.as_deref().unwrap()), warnings)
+    };
+    let first = reply();
+    assert_eq!(first.0, BLUE);
+    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert_eq!(reply(), first);
+}
+
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     frame.tables[table.index()] = TableView::Complete(rows).into();
     frame.metrics.table_ns[table.index()] = 1;

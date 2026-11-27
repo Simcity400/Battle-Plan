@@ -483,7 +483,7 @@ struct Content {
     raids: Result<Arc<Catalog>, String>,
 }
 
-type Drawn = Mutex<HashMap<(String, Option<String>), Result<(String, String), String>>>;
+type Drawn = Mutex<HashMap<(String, Option<String>), (Result<(String, String), String>, catalogue::OwnRefusals)>>;
 
 impl Content {
     fn load(source: &Source, context: &LoadContext) -> Self {
@@ -529,7 +529,8 @@ impl Content {
         let kind = raids.get(token).ok_or_else(|| format!("raid type {token} is unavailable or refused"))?;
         let drawn = cat.content.layers.derived::<Drawn>();
         let held = (token.to_owned(), template.map(str::to_owned));
-        if let Some(found) = drawn.lock().unwrap_or_else(|error| error.into_inner()).get(&held) {
+        if let Some((found, noted)) = drawn.lock().unwrap_or_else(|error| error.into_inner()).get(&held) {
+            catalogue::credit(noted);
             return found.clone();
         }
         let refused = std::cell::RefCell::new(None);
@@ -542,7 +543,7 @@ impl Content {
                 }
             })
             .unwrap_or_else(|| UNKNOWN_ICON.into());
-        let made = match refused.into_inner() {
+        let (made, noted) = catalogue::capture(|| match refused.into_inner() {
             Some(reason) => Err(reason),
             None => cat
                 .sprites
@@ -555,8 +556,9 @@ impl Content {
                         .map_err(|error| format!("raid sprite {key}: {error}"))
                 })
                 .map(|image| (key, image)),
-        };
-        drawn.lock().unwrap_or_else(|error| error.into_inner()).insert(held, made.clone());
+        });
+        catalogue::credit(&noted);
+        drawn.lock().unwrap_or_else(|error| error.into_inner()).insert(held, (made.clone(), noted));
         made
     }
 }

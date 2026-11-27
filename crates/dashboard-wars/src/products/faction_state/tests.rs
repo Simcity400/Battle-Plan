@@ -634,3 +634,27 @@ fn faction_details_holds_absent_refusal_and_live_edits_and_keeps_cold_live_value
     let cold_groups = cold.unwrap()["live"]["groups"].as_array().unwrap().clone();
     assert!(cold_groups.iter().all(|g| g["values"].as_array().unwrap().iter().all(|v| v.as_i64().unwrap() > 0)));
 }
+
+#[test]
+fn cached_faction_art_keeps_its_overlay_notes() {
+    use dashboard_base::{catalogue, test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select}};
+
+    let machine = Machine::new("faction_art_notes");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_faction textureFile=gfx/fixture_faction.png}}");
+    machine.write("gfx/fixture_faction.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_faction.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["fixture_art"]);
+    let catalogue = catalogue::catalogue(&source, &options).unwrap();
+    let art = super::Art::default();
+    let read = || {
+        let (image, noted) = catalogue::capture(|| art.sprite(&catalogue, "GFX_fixture_faction", 64, "Fixture faction").unwrap());
+        let mut warnings = Vec::new();
+        noted.diagnostics().append_to(&mut warnings);
+        (first_pixel(&image), warnings)
+    };
+    let first = read();
+    assert_eq!(first.0, BLUE);
+    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert_eq!(read(), first);
+}

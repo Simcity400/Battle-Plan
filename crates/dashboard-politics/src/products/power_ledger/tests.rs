@@ -1389,3 +1389,35 @@ fn spending_markers_are_payments_at_their_own_hour_shown_once_read_with_the_next
     assert_eq!(inside.unrecorded[0].last_hour, 150, "an open gap is given to its own end; the chart shows it through the displayed hour");
     assert_eq!(inside.unrecorded, later.unrecorded, "playing through the gap and seeking into it give one answer");
 }
+
+#[test]
+fn cached_power_items_keep_their_overlay_notes() {
+    use dashboard_base::{catalogue, test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select}};
+
+    let machine = Machine::new("power_item_art_notes");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    machine.write("common/buildings/fixture.txt", b"buildings={fixture_building={}}");
+    machine.write("common/terrain/fixture.txt", b"categories={fixture_terrain={}}");
+    machine.write("common/abilities/fixture.txt", b"ability={fixture_ability={icon=GFX_fixture_ability}}");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_ability textureFile=gfx/fixture_ability.png}}");
+    machine.write("gfx/fixture_ability.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_ability.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["fixture_art"]);
+    let load = LoadContext { content: Some(options) };
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let context = naming::context(&source, &load).unwrap();
+    let row = PowerItemRow { holder: 7, first_read: 100, item_key: b"fixture_ability".to_vec(), cause: PowerCause::AbilityActivation, ..Default::default() };
+    let read = || {
+        let mut icons = std::collections::BTreeMap::new();
+        let (items, noted) = catalogue::capture(|| naming::name(&query, &[naming::Asked { run: 1, row: &row }], &context, &mut icons, &AtomicBool::new(false)).unwrap());
+        let image = &icons[items[0].icon.as_ref().expect("ability has an icon")];
+        let mut warnings = Vec::new();
+        noted.diagnostics().append_to(&mut warnings);
+        (first_pixel(image), warnings)
+    };
+    let first = read();
+    assert_eq!(first.0, BLUE);
+    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert_eq!(read(), first);
+}

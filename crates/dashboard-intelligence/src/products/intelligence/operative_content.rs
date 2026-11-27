@@ -74,7 +74,7 @@ pub struct OperativeContent {
     operations: Intelligence,
     capture_days: Result<i32, String>,
     pub warnings: Vec<String>,
-    drawn: Mutex<BTreeMap<Art, Shown>>,
+    drawn: Mutex<BTreeMap<Art, (Shown, catalogue::OwnRefusals)>>,
 }
 
 type Kept = Option<(usize, Arc<OperativeContent>)>;
@@ -145,15 +145,17 @@ impl OperativeContent {
     }
 
     pub fn draw(&self, art: &Art) -> Shown {
-        if let Some(drawn) = self.drawn.lock().unwrap_or_else(|error| error.into_inner()).get(art) {
+        if let Some((drawn, noted)) = self.drawn.lock().unwrap_or_else(|error| error.into_inner()).get(art) {
+            catalogue::credit(noted);
             return drawn.clone();
         }
-        let drawn = match art {
+        let (drawn, noted) = catalogue::capture(|| match art {
             Art::Portrait(portrait) => character_portraits::portrait_png(&self.politics, portrait),
             Art::Icon { mission, name, frame } => icon_png(&self.catalogue, *mission, name, *frame),
             Art::Sprite(name) => sprite_png(&self.catalogue, name),
-        };
-        self.drawn.lock().unwrap_or_else(|error| error.into_inner()).insert(art.clone(), drawn.clone());
+        });
+        catalogue::credit(&noted);
+        self.drawn.lock().unwrap_or_else(|error| error.into_inner()).insert(art.clone(), (drawn.clone(), noted));
         drawn
     }
 

@@ -1310,3 +1310,29 @@ fn raid_tally_ever_group_uses_historical_slots() {
     assert!(refused_race.missing.is_some());
     assert!(refused_race.last_hour <= 11, "refused ever group stops before a later unread Raids hour: {}..={}", refused_race.first_hour, refused_race.last_hour);
 }
+
+#[test]
+fn cached_raid_icons_keep_their_overlay_notes() {
+    use dashboard_base::{catalogue, test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select}};
+
+    let machine = Machine::new("raid_icon_notes");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}");
+    machine.write("common/buildings/fixture.txt", b"buildings={fixture_building={}}");
+    machine.write("common/raids/fixture.txt", b"types={fixture_raid={custom_map_icon=GFX_fixture_raid}}");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_raid textureFile=gfx/fixture_raid.png}}");
+    machine.write("gfx/fixture_raid.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_raid.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["fixture_art"]);
+    let content = super::Content::load(&source, &LoadContext { content: Some(options) });
+    let read = || {
+        let ((_, image), noted) = catalogue::capture(|| content.icon("fixture_raid", None).unwrap());
+        let mut warnings = Vec::new();
+        noted.diagnostics().append_to(&mut warnings);
+        (first_pixel(&image), warnings)
+    };
+    let first = read();
+    assert_eq!(first.0, BLUE);
+    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert_eq!(read(), first);
+}

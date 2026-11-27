@@ -166,7 +166,7 @@ pub type Context = Result<Content, String>;
 struct Held {
     catalogue: Option<Arc<Catalogue>>,
     icons: Arc<catalogue::CachedResult<IconContent>>,
-    drawn: BTreeMap<Drawing, Result<Option<(String, String)>, String>>,
+    drawn: BTreeMap<Drawing, (Result<Option<(String, String)>, String>, catalogue::OwnRefusals)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -231,11 +231,13 @@ fn draw(content: &Content, drawing: Drawing, named: &mut Named) -> Result<Option
     let drawn = match kept {
         Some(drawn) => drawn,
         None => {
-            let made = catalogue::draw(|| "production picture".to_owned(), &content.catalogue, |catalogue| render(&drawing, catalogue)).get().clone();
+            let made = catalogue::capture(|| catalogue::draw(|| "production picture".to_owned(), &content.catalogue, |catalogue| render(&drawing, catalogue)).get().clone());
             state.lock().unwrap_or_else(PoisonError::into_inner).drawn.insert(drawing, made.clone());
             made
         }
     };
+    let (drawn, noted) = drawn;
+    catalogue::credit(&noted);
     Ok(drawn?.map(|(key, image)| {
         named.icons.entry(key.clone()).or_insert(image);
         key
@@ -640,4 +642,29 @@ pub fn plain_names(frame: &DecodedFrame, variants: &[u64], context: &Context) ->
             (id, name)
         })
         .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn cached_equipment_pictures_keep_their_overlay_notes() {
+    use dashboard_base::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
+
+    let machine = Machine::new("equipment_picture_notes");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_equipment textureFile=gfx/fixture_equipment.png}}");
+    machine.write("gfx/fixture_equipment.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_equipment.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["fixture_art"]);
+    let content = Content::from_catalogue(catalogue::catalogue(&source, &options).unwrap());
+    let read = || {
+        let mut named = Named::default();
+        let (key, noted) = catalogue::capture(|| draw(&content, Drawing::Sprites(vec!["GFX_fixture_equipment".into()]), &mut named).unwrap().unwrap());
+        let mut warnings = Vec::new();
+        noted.diagnostics().append_to(&mut warnings);
+        (first_pixel(&named.icons[&key]), warnings)
+    };
+    let first = read();
+    assert_eq!(first.0, BLUE);
+    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert_eq!(read(), first);
 }
