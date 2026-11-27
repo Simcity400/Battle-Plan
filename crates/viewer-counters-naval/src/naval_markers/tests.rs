@@ -18,7 +18,7 @@ use viewer_engagements::engagement_history::Provenance;
 
 #[test]
 fn the_convoy_addition_takes_the_counter_colour_mode() {
-    let tints = allegiance::Tints::VANILLA;
+    let tints = allegiance::Tints::FIXTURE;
     let countries = Countries {
         index: None,
         tags: BTreeMap::new(),
@@ -70,7 +70,7 @@ fn a_result_icon_takes_an_ordinal_past_the_combat_icons() {
 
 #[test]
 fn the_combat_pass_runs_strictly_below_the_contents_cutoff() {
-    let mut defines = CounterDefines::VANILLA;
+    let mut defines = CounterDefines::FIXTURE;
     let cutoff = defines.naval_combat_cutoff;
     assert!(combat_pass(cutoff - 0.5, &defines));
     assert!(!combat_pass(cutoff, &defines));

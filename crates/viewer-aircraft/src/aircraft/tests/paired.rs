@@ -7,32 +7,9 @@ const BAND: Band = Band {
 use viewer_models::entity_animation::{Clip, Node, Rig as ActorRig};
 
 pub(super) fn defines() -> FlightDefines {
-    let sizing = FamilyDefines {
-        factor: 1,
-        triple: 3,
-        limit: 2,
-    };
-    let stepped = SteppedFamily { sizing, single: 1 };
     FlightDefines {
-        fighter: stepped,
-        scout: stepped,
-        bomber: sizing,
-        bomber_single: 1,
-        dogfight: stepped,
-        transport: stepped,
-        training: stepped,
-        missile: Ok(stepped.sizing),
-        fire_threshold: 300_000,
-        carpet_threshold: 200_000,
         clock_speed: 2.0,
-        curve_density: 2.0,
-        curve_extrapolation: 20.0,
-        curve_elevation: 4.0,
-        scale_takeoff: 0.1,
-        scale_landing: 0.9,
-        scale_min: 0.1,
-        smooth_move: 0.13,
-        smooth_turn: 0.12,
+        ..FlightDefines::fixture()
     }
 }
 

@@ -372,8 +372,8 @@ fn off_grid_supply_threshold_uses_exact_ratio_and_withholds_ambiguous_historical
             "coarse={coarse}: {gaps:?}"
         );
     }
-    let (uvs, gaps) = draw_row(historical_ambiguous, CounterDefines::VANILLA.supply, false);
-    assert_eq!(uvs, [supply_sheet.frame_uv(0)], "vanilla thresholds stay decided for historical rows");
+    let (uvs, gaps) = draw_row(historical_ambiguous, CounterDefines::FIXTURE.supply, false);
+    assert_eq!(uvs, [supply_sheet.frame_uv(0)], "on-grid fixture thresholds stay decided for historical rows");
     assert!(gaps.is_empty(), "{gaps:?}");
 }
 
@@ -3435,7 +3435,7 @@ fn land_markers(attackers: Vec<u64>, flag: Engaged, sides: TableView) -> LandMar
         &(BTreeMap::from([(62, flag)]), Provenance::Indexed),
         &BTreeMap::new(),
         &movement,
-        &LandCombatDefines::VANILLA,
+        &LandCombatDefines::FIXTURE,
     )
     .unwrap()
 }
@@ -3716,7 +3716,7 @@ fn a_load_rebuilt_engaged_flag_is_a_named_limitation() {
         &engaged,
         &BTreeMap::new(),
         &Movements::default(),
-        &LandCombatDefines::VANILLA,
+        &LandCombatDefines::FIXTURE,
     )
     .unwrap();
     assert_eq!(
@@ -3734,7 +3734,7 @@ fn a_load_rebuilt_engaged_flag_is_a_named_limitation() {
         &indexed,
         &BTreeMap::new(),
         &Movements::default(),
-        &LandCombatDefines::VANILLA,
+        &LandCombatDefines::FIXTURE,
     )
     .unwrap();
     assert!(markers.limits.is_empty());
@@ -3917,7 +3917,7 @@ fn a_defending_side_needs_whole_relations_to_prove_a_negative() {
             &engaged,
             &BTreeMap::new(),
             &Movements::default(),
-            &LandCombatDefines::VANILLA,
+            &LandCombatDefines::FIXTURE,
         )
         .unwrap()
     };
@@ -3975,7 +3975,7 @@ fn a_defending_side_needs_whole_relations_to_prove_a_negative() {
 
 #[test]
 fn a_seen_combat_takes_the_winning_losing_or_balanced_colour_from_its_side() {
-    let colors = LandCombatDefines::VANILLA.colors;
+    let colors = LandCombatDefines::FIXTURE.colors;
     assert_eq!(combat_tint([111_000, 100_000], false, &colors), colors[0]);
     assert_eq!(combat_tint([111_000, 100_000], true, &colors), colors[1]);
     assert_eq!(combat_tint([110_000, 100_000], false, &colors), colors[2]);
@@ -4095,15 +4095,19 @@ fn a_combat_icon_sits_between_both_anchors_across_the_seam() {
 #[test]
 fn counter_cutoffs_preserve_visibility_and_limit_zoom_lift() {
     let layouts = layouts();
-    let reference = 310.178;
-    let defines = CounterDefines::VANILLA;
+    let defines = CounterDefines::FIXTURE;
+    let reference = defines.units_cutoff + 175.0;
+    let between = (defines.icons_cutoff + defines.naval_combat_cutoff) * 0.5;
     assert!(visible(reference, defines.icons_cutoff));
     assert!(visible(reference, defines.air_base_cutoff));
     assert!(visible(reference, defines.naval_base_cutoff));
     assert!(visible(reference, defines.land_combat_cutoff));
-    assert!(!visible(1000.0, defines.icons_cutoff));
-    assert!(visible(1000.0, defines.naval_combat_cutoff));
-    assert!(!visible(1600.0, defines.land_combat_cutoff));
+    assert!(!visible(between, defines.icons_cutoff));
+    assert!(visible(between, defines.naval_combat_cutoff));
+    assert!(!visible(
+        defines.land_combat_cutoff + 100.0,
+        defines.land_combat_cutoff
+    ));
     assert!(!visible(defines.icons_cutoff, defines.icons_cutoff));
     let units = defines.units_cutoff;
     assert_eq!(
@@ -4115,7 +4119,7 @@ fn counter_cutoffs_preserve_visibility_and_limit_zoom_lift() {
         0.0
     );
     assert_eq!(
-        zoom_lift(layouts.columns.as_ref().unwrap(), units, 60.0),
+        zoom_lift(layouts.columns.as_ref().unwrap(), units, units * 0.5),
         24.0
     );
 }
@@ -4216,7 +4220,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
     .replace("OTHER_TABLES", &others);
     defines.load("mod.lua", text.as_bytes()).unwrap();
     let read = CounterDefines::read(&defines).unwrap();
-    assert_eq!(read.type_colors, type_tint::Colors::TEST);
+    assert_eq!(read.type_colors, type_tint::Colors::FIXTURE);
     assert_eq!(read.icons_cutoff, 12.34567);
     assert_eq!(read.movement_speeds, [14.0, 6.5]);
     assert_eq!(read.coarse_distance, [500.0, 350.0]);
@@ -4372,7 +4376,7 @@ fn counter_button_sprite_aliases_and_frames_match_native_button_drawing() {
 
 #[test]
 fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() {
-    let tints = allegiance::Tints::VANILLA;
+    let tints = allegiance::Tints::FIXTURE;
     let countries = Countries {
         ui_colors: UiColors {
             colors: BTreeMap::from([(3, Some([0.5, 0.25, 0.125, 1.0])), (6, None)]),
@@ -4649,7 +4653,7 @@ fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
             item.byte,
             false,
             12,
-            &viewer_unit_reads::naval_count_approx::Defines::VANILLA,
+            &viewer_unit_reads::naval_count_approx::Defines::FIXTURE,
         );
         assert_eq!(count == "?", byte < 100, "{byte}: {count}");
     }
@@ -5371,17 +5375,27 @@ mod retained;
 #[test]
 fn a_view_shows_an_icon_family_below_its_own_cutoff_or_at_the_height_a_zoom_is_sending_it_to() {
     use super::Shown;
-    let defines = &CounterDefines::VANILLA;
+    let defines = &CounterDefines::FIXTURE;
     let political = &Visibility::POLITICAL;
-    assert_eq!(Shown::at(Some(110.0), None, political, defines), Shown::EVERY);
+    let near = defines.icons_cutoff * 0.125;
+    let base_max = defines
+        .icons_cutoff
+        .max(defines.air_base_cutoff)
+        .max(defines.naval_base_cutoff)
+        .max(defines.facility_cutoff)
+        .max(defines.radar_cutoff);
+    let combat_min = defines.land_combat_cutoff.min(defines.naval_mission_cutoff);
+    let mid = (base_max + combat_min) * 0.5;
+    let far = defines.land_combat_cutoff.max(defines.naval_mission_cutoff) + 500.0;
+    assert_eq!(Shown::at(Some(near), None, political, defines), Shown::EVERY);
     assert_eq!(
-        Shown::at(Some(2844.0), None, political, defines),
+        Shown::at(Some(far), None, political, defines),
         Shown { units: false, bases: false, land_combats: false, naval_missions: false },
         "above every icon cutoff nothing of the hour's icon families can be drawn"
     );
-    assert_eq!(Shown::at(Some(2844.0), Some(110.0), political, defines), Shown::EVERY);
+    assert_eq!(Shown::at(Some(far), Some(near), political, defines), Shown::EVERY);
     assert_eq!(
-        Shown::at(Some(1200.0), None, political, defines),
+        Shown::at(Some(mid), None, political, defines),
         Shown { units: false, bases: false, land_combats: true, naval_missions: true }
     );
     assert_eq!(Shown::at(None, None, political, defines), Shown::EVERY);

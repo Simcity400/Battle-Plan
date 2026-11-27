@@ -1,9 +1,9 @@
 use super::*;
 
-pub(super) const DEFINES: TrainDefines = TrainDefines {
-    speed: 3.0,
-    timetable: [9200, 12000],
-    wagon_count: [3, 6],
+pub(super) const FIXTURE_DEFINES: TrainDefines = TrainDefines {
+    speed: 4.5,
+    timetable: [7300, 10500],
+    wagon_count: [2, 5],
 };
 
 pub(super) fn consist() -> Consist {
@@ -31,7 +31,7 @@ pub fn assets() -> TrainAssets {
             ..Default::default()
         },
         equipment: content_reader_key_names::equipment::Database::default(),
-        defines: DEFINES,
+        defines: FIXTURE_DEFINES,
         routes: RouteCache::default(),
     }
 }

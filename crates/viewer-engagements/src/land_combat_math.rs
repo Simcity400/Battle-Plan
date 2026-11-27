@@ -112,10 +112,10 @@ impl ScoreDefines {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub const VANILLA: Self = Self {
-        avoid_with_defence: 9_000_000,
-        avoid_without_defence: 6_000_000,
-        organisation_die: 4,
+    pub const FIXTURE: Self = Self {
+        avoid_with_defence: 7_300_000,
+        avoid_without_defence: 4_700_000,
+        organisation_die: 6,
     };
 }
 

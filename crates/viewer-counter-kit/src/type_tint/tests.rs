@@ -627,7 +627,7 @@ fn mod_defines_override_all_three_type_colors_and_keep_texture_alpha() {
         content_reader_layers::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
     let defines = content_reader_defines::defines::read(&layers).unwrap();
     let colors = Colors::read(&defines).unwrap();
-    assert_eq!(colors, Colors::TEST);
+    assert_eq!(colors, Colors::FIXTURE);
     for side in [Side::Friend, Side::Enemy, Side::Neutral] {
         assert_eq!(colors.of(side)[3], 1.0);
     }

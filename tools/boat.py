@@ -948,13 +948,12 @@ def source_manifest(worktree, cache=None):
     names = subprocess.run(command, capture_output=True, check=True, creationflags=NO_CONSOLE).stdout
     guard = content_guard()
     rules = guard.allow_rules(worktree)
-    findings = []
     try:
         known = json.loads(cache.read_text()) if cache else {}
     except (FileNotFoundError, ValueError):
         known = {}
     settled = time.time_ns() - 2_000_000_000
-    files, kept = {}, {}
+    entries = []
     safe_dirs = {worktree}
     for entry in set(names.split(b"\0")) - {b""}:
         tag, _, raw = entry.partition(b" ")
@@ -972,11 +971,15 @@ def source_manifest(worktree, cache=None):
                 raise Failure(f"Unsupported linked source directory: {parent}")
             safe_dirs.add(parent)
             parent = parent.parent
+        entries.append((tag, name, path, status))
+    tree = guard.RustTree(root=worktree, names=(name for _, name, _, _ in entries))
+    files, kept, findings = {}, {}, []
+    for tag, name, path, status in entries:
         stamp = [status.st_size, status.st_mtime_ns]
         previous = known.get(name)
         if tag == b"?":
             data = path.read_bytes()
-            findings.extend(guard.offenders([(name, data)], rules))
+            findings.extend(guard.offenders([(name, data)], rules, tree=tree))
             files[name] = hashlib.sha256(data).hexdigest()
         else:
             files[name] = previous[2] if previous and previous[:2] == stamp else hashlib.sha256(path.read_bytes()).hexdigest()
@@ -1045,12 +1048,13 @@ def send_source(vmid, worktree, manifest, old, stage, token):
     say(f"Source: {len(manifest)} files; uploading {len(changed)} changed, removing {len(deleted)}")
     guard = content_guard()
     rules = guard.allow_rules(worktree)
+    tree = guard.RustTree(root=worktree, names=manifest)
     findings = []
     bundle = io.BytesIO()
     with tarfile.open(fileobj=bundle, mode="w:xz", preset=2) as archive:
         for name in changed:
             data = (worktree / name).read_bytes()
-            issues = guard.offenders([(name, data)], rules)
+            issues = guard.offenders([(name, data)], rules, tree=tree)
             if issues:
                 findings.extend(issues)
                 continue

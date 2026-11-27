@@ -343,7 +343,7 @@ fn the_combat_window_sorts_above_every_map_icon() {
     assert!(window_layer(1) > window_layer(0));
     assert!(window_layer(usize::MAX) >= window_layer(70_000));
     let icon = layer(
-        CounterDefines::VANILLA.priorities.get(
+        CounterDefines::FIXTURE.priorities.get(
             PriorityTable::Default,
             PriorityIcon::LandCombat,
         ),

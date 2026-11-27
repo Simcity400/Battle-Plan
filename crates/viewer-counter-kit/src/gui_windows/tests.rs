@@ -256,11 +256,11 @@ fn an_at_sea_counter_takes_the_type_icon_relation_for_its_plate_and_hull() {
     let layout = at_sea_layout(window, &calls.calls, &fixture);
     assert_eq!(
         part(&layout, "count_bg").unwrap().color,
-        allegiance::Tints::VANILLA.allied
+        allegiance::Tints::FIXTURE.allied
     );
     assert_eq!(
         part(&layout, "type").unwrap().color,
-        type_tint::Colors::VANILLA.of(type_tint::Side::Friend)
+        type_tint::Colors::FIXTURE.of(type_tint::Side::Friend)
     );
     let unknown = crate::flotilla::Flotilla {
         type_tint: None,
@@ -271,7 +271,7 @@ fn an_at_sea_counter_takes_the_type_icon_relation_for_its_plate_and_hull() {
     let layout = at_sea_layout(window, &calls.calls, &fixture);
     assert_eq!(
         part(&layout, "count_bg").unwrap().color,
-        allegiance::Tints::VANILLA.other
+        allegiance::Tints::FIXTURE.other
     );
     assert!(part(&layout, "type").is_none());
 }
@@ -294,7 +294,7 @@ fn a_mission_item_takes_its_own_allegiance_for_its_plate() {
     let layout = item_layout(window, &calls.calls, &fixture);
     assert_eq!(
         part(&layout, "count_bg").unwrap().color,
-        allegiance::Tints::VANILLA.enemy
+        allegiance::Tints::FIXTURE.enemy
     );
     let unknown = crate::flotilla::Flotilla {
         side: Err("relations: WarRelations".into()),
@@ -374,7 +374,7 @@ fn a_detailed_counter_at_sea_draws_the_native_write_set() {
     assert_eq!(sprite_frame(&layout, "air_base_icon"), 1);
     assert_eq!(
         part(&layout, "count_bg").unwrap().color,
-        allegiance::Tints::VANILLA.ours
+        allegiance::Tints::FIXTURE.ours
     );
     assert_eq!(cell_page(&layout, "flag"), 1_005);
     assert_eq!(

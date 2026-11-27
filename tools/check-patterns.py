@@ -191,11 +191,14 @@ def mask_stringify(code):
     return "".join(chunks)
 
 
-def cfg_value(predicate):
+def cfg_value(predicate, test_features=("test-support",)):
     """Whether a `cfg` predicate holds in a build that is not a test and has no `test-support`
     feature: True, False, or None when other configuration decides it."""
     predicate = predicate.strip()
-    if predicate == "test" or re.fullmatch(r'feature\s*=\s*"test-support"', predicate):
+    if predicate == "test":
+        return False
+    feature = re.fullmatch(r'feature\s*=\s*"([^"]+)"', predicate)
+    if feature and feature.group(1) in test_features:
         return False
     call = re.fullmatch(r"(all|any|not)\s*\((.*)\)", predicate, re.DOTALL)
     if not call:
@@ -209,7 +212,7 @@ def cfg_value(predicate):
             parts.append(body[begun:index])
             begun = index + 1
     parts = [part for part in [*parts, body[begun:]] if part.strip()]
-    values = [cfg_value(part) for part in parts]
+    values = [cfg_value(part, test_features) for part in parts]
     if call.group(1) == "not":
         return None if values[0] is None else not values[0]
     if call.group(1) == "all":
@@ -243,22 +246,22 @@ def item_end(code, at, *, skip_generics=False):
     return len(code)
 
 
-def test_support_features(text, code, start, end):
+def test_support_features(text, code, start, end, test_features=("test-support",)):
     return (feature for feature in CFG_FEATURE.finditer(code, start, end)
-            if text[feature.start(1):feature.end(1)] == "test-support")
+            if text[feature.start(1):feature.end(1)] in test_features)
 
 
-def cfg_attribute_text(text, code, start, end):
+def cfg_attribute_text(text, code, start, end, test_features=("test-support",)):
     """Read the attribute with comments and unrelated literal contents still masked."""
     parts, at = [], start
-    for feature in test_support_features(text, code, start, end):
-        parts += [code[at:feature.start()], 'feature = "test-support"']
+    for feature in test_support_features(text, code, start, end, test_features):
+        parts += [code[at:feature.start()], f'feature = "{text[feature.start(1):feature.end(1)]}"']
         at = feature.end()
     parts.append(code[at:end])
     return "".join(parts)
 
 
-def test_spans(text, code, *, branch_rule=False):
+def test_spans(text, code, *, branch_rule=False, test_features=("test-support",)):
     """Test-only spans and whether the whole file is test code. The branch rule groups outer
     attributes and extends spans past them only when it recognizes the item boundary."""
     spans, whole = [], False
@@ -272,12 +275,12 @@ def test_spans(text, code, *, branch_rule=False):
                 group_start = found.start()
             previous_inner = found.group(1)
             previous_end = end
-            inside = cfg_attribute_text(text, code, found.end(), end - 1).strip()
+            inside = cfg_attribute_text(text, code, found.end(), end - 1, test_features).strip()
         else:
             group_start = found.start()
             inside = text[found.end():end - 1].strip()
         cfg = re.fullmatch(r"cfg\s*\((.*)\)", inside, re.DOTALL)
-        test_only = (cfg and cfg_value(cfg.group(1)) is False) or re.fullmatch(r"(?:\w+\s*::\s*)*test", inside)
+        test_only = (cfg and cfg_value(cfg.group(1), test_features) is False) or re.fullmatch(r"(?:\w+\s*::\s*)*test", inside)
         if not test_only:
             continue
         if found.group(1):
@@ -338,6 +341,8 @@ def within(spans, offset):
 class Revision:
     """Files at a Git revision, or in the working tree when `rev` is None."""
 
+    TEST_FEATURES = ("test-support",)
+
     def __init__(self, rev):
         self.rev = rev
         self.batch = None
@@ -369,7 +374,7 @@ class Revision:
     @cache
     def spans(self, name, branch_rule=False):
         code = self.code(name, branch_rule)
-        return ([], False) if code is None else test_spans(self.text(name), code, branch_rule=branch_rule)
+        return ([], False) if code is None else test_spans(self.text(name), code, branch_rule=branch_rule, test_features=self.TEST_FEATURES)
 
     @cache
     def files(self, crate):

@@ -1586,7 +1586,7 @@ pub mod test_support;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::test_support::{DEFINES, assets, consist, plan, route};
+    use super::test_support::{FIXTURE_DEFINES, assets, consist, plan, route};
     use replay_data::{
         rows::Recorded, rows::ReservedCountryNamingRow, rows::TableId, rows::TableRows,
     };
@@ -2253,27 +2253,34 @@ mod tests {
 
     #[test]
     fn last_wagon_is_appended_after_random_fill() {
+        let [lo, hi] = FIXTURE_DEFINES.wagon_count;
         let counts: BTreeSet<_> = (0..100)
-            .map(|seed| consist_cars(&consist(), &DEFINES, &mut Random::new(seed)).len())
+            .map(|seed| consist_cars(&consist(), &FIXTURE_DEFINES, &mut Random::new(seed)).len())
             .collect();
-        assert_eq!(counts, BTreeSet::from([6, 7, 8, 9]));
+        assert_eq!(
+            counts,
+            ((lo as usize + 3)..=(hi as usize + 3)).collect::<BTreeSet<_>>()
+        );
         let reversed = TrainDefines {
-            wagon_count: [6, 3],
-            ..DEFINES
+            wagon_count: [hi, lo],
+            ..FIXTURE_DEFINES
         };
-        let [lo, hi] = reversed.wagon_count;
+        let [rev_lo, rev_hi] = reversed.wagon_count;
         let ordered = TrainDefines {
-            wagon_count: [lo.min(hi), lo.max(hi)],
-            ..DEFINES
+            wagon_count: [rev_lo.min(rev_hi), rev_lo.max(rev_hi)],
+            ..FIXTURE_DEFINES
         };
         let draws: BTreeSet<_> = (0..200).map(|r| ordered.cars(r * 7919)).collect();
-        assert_eq!(draws, BTreeSet::from([4, 5, 6, 7]));
+        assert_eq!(
+            draws,
+            ((i64::from(lo) + 1)..=(i64::from(hi) + 1)).collect::<BTreeSet<_>>()
+        );
         let bare = Consist {
             wagons: Vec::new(),
             ..consist()
         };
         assert_eq!(
-            consist_cars(&bare, &DEFINES, &mut Random::default()),
+            consist_cars(&bare, &FIXTURE_DEFINES, &mut Random::default()),
             [0, 0, 0]
         );
     }
@@ -2300,7 +2307,7 @@ mod tests {
         );
         let missing = TrainDefines {
             wagon_count: wagons("").unwrap(),
-            ..DEFINES
+            ..FIXTURE_DEFINES
         };
         assert_eq!(missing.wagon_count, [1, 1]);
         assert_eq!(missing.cars(12345), 2);
@@ -2395,8 +2402,9 @@ mod tests {
         stepped.field(&assets, 0.0);
         stepped.field(&assets, 45.0);
         assert_eq!(departures(&stepped), expected);
+        let [min_ms, max_ms] = FIXTURE_DEFINES.timetable.map(|ms| f64::from(ms) / 1000.0);
         for pair in expected.windows(2) {
-            assert!((9.2 - 1e-8..=12.0 + 1e-8).contains(&(pair[1].1 - pair[0].1)));
+            assert!((min_ms - 1e-8..=max_ms + 1e-8).contains(&(pair[1].1 - pair[0].1)));
         }
     }
 
