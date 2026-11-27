@@ -6,6 +6,7 @@ import type { WarContributionGroup, WarContributionsReply, WarObservation, WarsR
 import { observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData.ts';
 import { WAR_NOT_STARTED, chosenWar, readHourFor, unobservedAt, warById, warChipStateAt, warEligibilityAt, warNextChangeAt } from './warContributionData.ts';
 
+export type ContributionGroup = WarContributionGroup & { readonly partial?: string };
 export type WarSide = 'viewpoint' | 'opposing';
 
 export interface WarChoiceOptions {
@@ -14,7 +15,7 @@ export interface WarChoiceOptions {
 }
 
 export type ChosenGroup =
-  | { readonly kind: 'shown'; readonly war: WarTimeline; readonly reply: WarContributionsReply; readonly asOf: number; readonly observation: WarObservation; readonly group: WarContributionGroup; readonly sides: readonly [WarSide, WarSide] }
+  | { readonly kind: 'shown'; readonly war: WarTimeline; readonly reply: WarContributionsReply; readonly asOf: number; readonly observation: WarObservation; readonly group: ContributionGroup; readonly sides: readonly [WarSide, WarSide] }
   | { readonly kind: 'loading' }
   | { readonly kind: 'blank'; readonly empty: string; readonly emptyKind: 'empty' | 'unavailable' };
 
@@ -44,6 +45,15 @@ export function leadOf(group: WarContributionGroup, side: WarSide): string {
 export function sideCountries(group: WarContributionGroup, side: WarSide): string[] {
   return [...new Set(side === 'viewpoint' ? group.viewpointSide : group.opposingSide)];
 }
+
+function groupCoverageReason(observation: WarObservation, viewpoint: readonly string[], opposing: readonly string[]): string | undefined {
+  const listed = new Set([...viewpoint, ...opposing]);
+  const outside = new Set([...observation.viewpointSide, ...observation.opposingSide].filter(tag => !listed.has(tag))).size;
+  return outside ? `Partial. Figures cover only the countries listed in the recorded group. ${outside} ${outside === 1 ? 'country on the war roster is' : 'countries on the war roster are'} outside this group.` : undefined;
+}
+
+export const contributionPartial = (partial: string | undefined, unattributed: boolean): string =>
+  unattributed ? [partial, 'Part of this side’s casualties contribution is not attributed to a country'].filter(Boolean).join(' ') : partial ?? '';
 
 function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): { readonly reply: WarContributionsReply; readonly asOf: number } | undefined {
   const going = observationAt(war, hour) !== null;
@@ -82,7 +92,8 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
     return { kind: 'blank', empty: group?.reason ?? reply.missing ?? 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
   }
   if (!group) return { kind: 'blank', empty: 'No contributions for this war at this time.', emptyKind: 'empty' };
-  return { kind: 'shown', war, reply, asOf, observation, group, sides: attackersFirst<WarSide>(observation, 'viewpoint', 'opposing') };
+  const partial = groupCoverageReason(observation, group.viewpointSide, group.opposingSide);
+  return { kind: 'shown', war, reply, asOf, observation, group: partial ? { ...group, partial } : group, sides: attackersFirst<WarSide>(observation, 'viewpoint', 'opposing') };
 }
 
 function endedRead(wars: WarsReply | undefined, saved: string | null, hour: number): { readonly at: number | null; readonly valid: readonly [number, number] } {

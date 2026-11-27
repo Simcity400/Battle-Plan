@@ -6,8 +6,8 @@ import type { TableCell, TableColumnSpec, TableModel, TablePane, TablePaneTitle,
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
-import type { WarContributionGroup, WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide, WarsReply } from '../../generated/dashboard';
-import { chosenGroup, leadOf, savedWar, sideCountries, warContributionNextChange, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
+import type { WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide, WarsReply } from '../../generated/dashboard';
+import { chosenGroup, contributionPartial, leadOf, savedWar, sideCountries, warContributionNextChange, warContributionSources, warCountries, warsAux, type ContributionGroup, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
 import { resolveName } from '../../families/table/identityCell.ts';
 
 export const SIDES_VIEW = 'sides';
@@ -25,7 +25,6 @@ const MEASURES: readonly { readonly key: WarMeasureKey; readonly label: string; 
   { key: 'lendLeaseReceived', label: 'Lend-lease in', hint: 'Lend-lease received' },
 ];
 
-const UNATTRIBUTED = 'Part of this side’s casualties contribution is not attributed to a country';
 const NOT_A_MEMBER = 'This country has no recorded part in this measure';
 const PARTICIPATION_IS_A_SHARE = 'Participation is already each country’s share of its side';
 const NO_SHARE = 'No part of this measure was recorded for either side';
@@ -54,15 +53,15 @@ function columnsOf(measures: readonly WarMeasure[] | null): TableColumnSpec[] {
 
 const ZERO = { decimals: 0 } as const;
 
-function shareValue(permyriad: number | null, raw: string | null, partial: boolean, missing: string): Value<number> {
+function shareValue(permyriad: number | null, raw: string | null, partial: string, missing: string): Value<number> {
   if (permyriad === null) return notRecorded(missing);
   const share = permyriad / 10000;
-  if (partial) return partialValue(share, UNATTRIBUTED);
+  if (partial) return partialValue(share, partial);
   return raw === '0' ? zeroValue() : knownValue(share);
 }
 
-function memberCell(member: WarMeasureMember | undefined, colour: string | undefined, missing: string): TableCell {
-  const value = member ? shareValue(member.shareOfSide, member.value, member.partial, NO_SHARE) : notRecorded(missing);
+function memberCell(member: WarMeasureMember | undefined, colour: string | undefined, missing: string, partial: string | undefined): TableCell {
+  const value = member ? shareValue(member.shareOfSide, member.value, contributionPartial(partial, member.partial), NO_SHARE) : notRecorded(missing);
   return {
     value,
     format: value.kind === 'zero' ? ZERO : 'share',
@@ -72,9 +71,9 @@ function memberCell(member: WarMeasureMember | undefined, colour: string | undef
   };
 }
 
-function totalCell(side: WarMeasureSide, measure: WarMeasureKey, missing: string): TableCell {
+function totalCell(side: WarMeasureSide, measure: WarMeasureKey, missing: string, partial: string | undefined): TableCell {
   if (measure === 'participation') return { value: notApplicable(PARTICIPATION_IS_A_SHARE), bar: null };
-  const value = shareValue(side.shareOfWar, side.total, side.partial, missing);
+  const value = shareValue(side.shareOfWar, side.total, contributionPartial(partial, side.partial), missing);
   return { value, format: value.kind === 'zero' ? ZERO : 'share', bar: null };
 }
 
@@ -99,8 +98,8 @@ function who(readView: BoundedReadView, tag: string, hour: number): Who {
   };
 }
 
-function paneOf(readView: BoundedReadView, group: WarContributionGroup, side: WarSide, lead: string, hour: number): TablePane {
-  const measures = group.measures;
+function paneOf(readView: BoundedReadView, group: ContributionGroup, side: WarSide, lead: string, hour: number): TablePane {
+  const { measures, partial } = group;
   const participation = measures.find(measure => measure.key === 'participation') ?? measures[0];
   const order = participation && participation[side].total !== null ? participation[side].members.map(member => member.tag) : sideCountries(group, side);
   const missing = group.reason ?? NOT_A_MEMBER;
@@ -114,28 +113,30 @@ function paneOf(readView: BoundedReadView, group: WarContributionGroup, side: Wa
       group: { key: 'side', label: 'Share of the side' },
       cells: {
         country: country.cell,
-        ...Object.fromEntries(measures.map(measure => [measure.key, memberCell(byMeasure.get(measure.key)!.get(tag), colour, missing)])),
+        ...Object.fromEntries(measures.map(measure => [measure.key, memberCell(byMeasure.get(measure.key)!.get(tag), colour, missing, partial)])),
       },
       tooltipTitle: country.name,
       tooltipExtra: (): TooltipExtraRow[] => MEASURES.flatMap(measure => {
         const members = byMeasure.get(measure.key);
         if (!members) return [];
         const member = members.get(tag);
-        const value = !member ? notRecorded(missing) : member.partial ? partialValue(BigInt(member.value), UNATTRIBUTED) : knownValue(BigInt(member.value));
+        const reason = member && contributionPartial(partial, member.partial);
+        const value = !member ? notRecorded(missing) : reason ? partialValue(BigInt(member.value), reason) : knownValue(BigInt(member.value));
         return [{ label: measure.hint, value, format: RAW_AMOUNT }];
       }),
     };
   });
+  const totalLabel = partial ? 'Share within the recorded group' : 'Share of the war';
   return {
     key: side,
     title: who(readView, lead, hour).title,
     rows,
     totalRow: {
       key: `total:${side}`,
-      name: 'Share of the war',
+      name: totalLabel,
       cells: {
-        country: { value: knownValue('Share of the war') },
-        ...Object.fromEntries(measures.map(measure => [measure.key, totalCell(measure[side], measure.key, group.reason ?? NO_SHARE)])),
+        country: { value: knownValue(totalLabel) },
+        ...Object.fromEntries(measures.map(measure => [measure.key, totalCell(measure[side], measure.key, group.reason ?? NO_SHARE, partial)])),
       },
     },
   };
