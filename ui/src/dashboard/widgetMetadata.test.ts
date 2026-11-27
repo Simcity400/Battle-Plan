@@ -11,7 +11,14 @@ test('widget metadata preserves world controls and content-choice title policies
   const fixtures: Record<string, string> = {
     '/components/Popover.tsx': `export const usePopover = () => ({ trigger: null, open: true, close() {} });
       export const Popover = ({ children }) => children; export const PopoverBody = ({ children }) => children();`,
-    '/dashboard/products.ts': 'export const useProduct = () => ({}); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
+    '/dashboard/products.ts': `export const replies = new Map();
+      export const useProduct = (_client, request, _active, validate) => {
+        if (!request || !replies.has(request.product)) return {};
+        const raw = replies.get(request.product);
+        if (!validate) return { data: raw };
+        try { return { data: validate(raw) }; } catch (error) { return { error }; }
+      };
+      export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/CountryChip.tsx': 'export default () => "COUNTRY_CHIP";',
     '/dashboard/WidgetSettingsMenu.tsx': 'export default () => null;',
     '/dashboard/widgets.tsx': 'export const WidgetBody = () => "WIDGET_BODY";',
@@ -78,6 +85,36 @@ test('widget metadata preserves world controls and content-choice title policies
     assert.match(picker, /<strong>Country history<\/strong><\/span>/);
     assert.match(picker, /<strong>Unavailable world<\/strong><small>Checking this recording…<\/small>/);
     assert.match(picker, /<button(?=[^>]*aria-label="Add Unavailable world")(?=[^>]*disabled="")[^>]*>/, 'an entry the recording may lack cannot be added yet');
+
+    const { replies } = await vite.ssrLoadModule('/ui/src/dashboard/products.ts') as { replies: Map<string, unknown> };
+    const { definition: landBattles } = await vite.ssrLoadModule('/ui/src/widgets/land-battles/definition.ts');
+    const { definition: navalBattles } = await vite.ssrLoadModule('/ui/src/widgets/naval-battles/definition.ts');
+    const { definition: shipsSunk } = await vite.ssrLoadModule('/ui/src/widgets/ships-sunk/definition.ts');
+    registerWidgets([
+      landBattles,
+      navalBattles,
+      shipsSunk,
+      { ...meta, kind: 'test-avail-ok', title: 'Recorded log', category: 'Logs', availability: { product: 'construction-log-tail', params: { limit: 1 } } },
+      { ...meta, kind: 'test-avail-missing', title: 'Unrecorded log', category: 'Logs', availability: { product: 'espionage-log-tail', params: { limit: 1 } } },
+      { ...meta, kind: 'test-avail-unknown', title: 'Unknown log', category: 'Logs', availability: { product: 'raid-log', params: { catalogue: true } } },
+      { ...meta, kind: 'test-avail-broken', title: 'Broken log', category: 'Logs', availability: { product: 'raid-log-tail', params: { limit: 1 } } },
+    ]);
+    replies.set('construction-log-tail', { branchId: '1', unavailable: null, rows: [] });
+    replies.set('espionage-log-tail', { branchId: '1', unavailable: 'Espionage was not recorded.', rows: [] });
+    replies.set('raid-log', { available: null, unavailable: null });
+    replies.set('raid-log-tail', { branchId: '1', rows: [] });
+    const checked = renderToStaticMarkup(createElement(Picker, { runtime, disabled: false, onAdd() {}, onOpen() {} }));
+    for (const title of ['Land battles', 'Naval battles', 'Ships sunk', 'Recorded log']) {
+      assert.match(checked, new RegExp(`<strong>${title}</strong></span>`));
+      assert.doesNotMatch(checked, new RegExp(`<button(?=[^>]*aria-label="Add ${title}")(?=[^>]*disabled="")[^>]*>`));
+    }
+    assert.match(checked, /<strong>Unrecorded log<\/strong><small>Espionage was not recorded\.<\/small>/);
+    assert.match(checked, /<button(?=[^>]*aria-label="Add Unrecorded log")(?=[^>]*disabled="")[^>]*>/);
+    assert.match(checked, /<strong>Unknown log<\/strong><small>Availability not known<\/small>/);
+    assert.match(checked, /<button(?=[^>]*aria-label="Add Unknown log")(?=[^>]*disabled="")[^>]*>/);
+    assert.match(checked, /<strong>Broken log<\/strong><small class="widget-card-error" data-detail="Widget availability reply is malformed\.">Availability check failed\.<\/small>/);
+    assert.match(checked, /<button(?=[^>]*aria-label="Add Broken log")(?=[^>]*disabled="")[^>]*>/);
+    replies.clear();
 
     const { definition: army } = await vite.ssrLoadModule('/ui/src/widgets/army-size/definition.ts');
     const { measureChoices } = await vite.ssrLoadModule('/ui/src/widgets/army-size/armySizeMeta.ts');

@@ -21,6 +21,5 @@ export const definition = {
   description: 'Naval battles, their participants, ships sunk and results.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 10, h: 14 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true }, defaultCountries: { kind: 'all' },
-  availability: { product: 'naval-battles-tail', params: { limit: 1 } },
   options: [columnsControl(NAVAL_BATTLES_COLUMNS, LOG_TABLE_BASE, { key: TABLE_SETTINGS_KEY })],
 } as const satisfies WidgetMeta;

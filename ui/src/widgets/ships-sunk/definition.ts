@@ -20,7 +20,6 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true }, defaultCountries: { kind: 'all' },
   minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 14 },
-  availability: { product: 'ships-sunk-tail', params: { limit: 1 } },
   options: [
     { key: 'classes', section: 'options', label: 'Ship classes', kind: 'content-set', default: '', automatic: 'All classes', visibleWhen: () => false },
     columnsControl(SHIPS_SUNK_COLUMNS, LOG_TABLE_BASE, { key: TABLE_SETTINGS_KEY }),
