@@ -104,4 +104,5 @@ export interface MirrorModel {
   readonly first: number;
   readonly total: number;
   readonly rows: readonly MirrorRow[];
+  readonly columns?: readonly string[];
 }
