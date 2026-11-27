@@ -595,6 +595,14 @@ impl DashboardMaps {
                         }
                     }
                     view.target = target;
+                } else if crate::perf_log::enabled() {
+                    crate::perf_log::mark("dashboard_map_request_dropped", serde_json::json!({
+                        "view": target.id,
+                        "reason": "stale sequence",
+                        "incoming_sequence": target.sequence,
+                        "retained_sequence": view.target.sequence,
+                        "count": 1,
+                    }));
                 }
                 continue;
             }
