@@ -3,7 +3,7 @@ use dashboard_base::products::Country;
 use super::{Content, Line, SpendingGap, col, gap_of, missing};
 use dashboard_base::{Source, products::LoadContext, queries::country_ids::Names};
 use dashboard_query::{Query, identity::Holder};
-use replay_lanes::lanes::{Cell, Keys};
+use replay_lanes::lanes::{Cell, Keys, Reading};
 use replay_data::rows::{TableId, TagHolderRow, key_field};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -159,7 +159,7 @@ pub(crate) struct LineFacts {
     pub building: Option<u32>,
     pub new_from: Option<i32>,
     pub repair_from: Option<i32>,
-    pub gaps: Vec<(i32, SpendingGap)>,
+    pub gaps: Vec<(i32, i32, SpendingGap)>,
     pub before_first_read: Option<i32>,
 }
 
@@ -171,28 +171,40 @@ pub(crate) struct Facts {
     pub lines: Vec<LineFacts>,
     pub unattributed: Vec<i32>,
     pub unrecorded: Vec<(i32, i32, String)>,
-    pub names: HashMap<u32, String>,
-    pub warnings: Vec<String>,
+    pub names: HashMap<u32, Vec<(i32, String)>>,
+    pub warnings: Vec<(i32, Vec<String>)>,
+}
+
+pub(crate) fn gap_assignment(new_from: Option<i32>, repair_from: Option<i32>, hour: i32, until: i32) -> Option<(bool, i32)> {
+    let pick = match (new_from, repair_from) {
+        (Some(new), Some(repair)) if hour >= new && hour >= repair && repair != new => (repair > new, hour),
+        (Some(new), Some(repair)) if hour >= new && hour >= repair => return None,
+        (_, Some(repair)) if hour >= repair => (true, hour),
+        (Some(new), _) if hour >= new => (false, hour),
+        (Some(new), Some(repair)) if repair != new => if repair < new { (true, repair) } else { (false, new) },
+        (Some(new), None) => (false, new),
+        (None, Some(repair)) => (true, repair),
+        _ => return None,
+    };
+    (pick.1 <= until).then_some(pick)
 }
 
 const BUILDINGS_UNREAD: &str = "The building construction queue was not read in full, so building output in those hours is not counted";
 const RAILWAYS_UNREAD: &str = "The railway construction queue was not read in full, so railway output in those hours is not counted";
 const HOURS_UNRECORDED: &str = "Output in hours that were not recorded is not counted";
 
-pub(crate) fn dated_gaps(steps: &[(i32, Option<u8>, bool)], last: i32, final_reason: u8, had_output: bool) -> Vec<(i32, SpendingGap)> {
-    let mut out: Vec<(i32, SpendingGap)> = Vec::new();
-    let mut push = |hour: i32, reason: Option<SpendingGap>, output: bool| {
-        if let Some(reason) = reason
-            && !(reason == SpendingGap::NotRecorded && !output)
-            && out.last().is_none_or(|held| held.1 != reason)
-        {
-            out.push((hour, reason));
-        }
-    };
+pub(crate) fn dated_gaps(steps: &[(i32, Option<u8>, bool)]) -> Vec<(i32, i32, SpendingGap)> {
+    let mut out: Vec<(i32, i32, SpendingGap)> = Vec::new();
+    let mut open: Option<(i32, SpendingGap)> = None;
     for &(hour, reason, output) in steps {
-        push(hour, reason.and_then(gap_of), output);
+        let active = reason.and_then(gap_of).filter(|&gap| !(gap == SpendingGap::NotRecorded && !output));
+        if let Some((start, prev)) = open && active != Some(prev) {
+            out.push((start, hour - 1, prev));
+            open = None;
+        }
+        if open.is_none() && let Some(gap) = active { open = Some((hour, gap)); }
     }
-    push(last, gap_of(final_reason), had_output);
+    if let Some((start, gap)) = open { out.push((start, i32::MAX, gap)); }
     out
 }
 
@@ -222,96 +234,267 @@ fn queue_gaps(query: &Query<'_>, out: &mut Vec<(i32, i32, String)>) -> io::Resul
     Ok(())
 }
 
-type ReasonSteps = HashMap<u64, (Vec<(i32, Option<u8>, bool)>, Option<i32>)>;
+#[derive(Default)]
+struct LineHistory {
+    read: Vec<(i32, Option<u8>, bool)>,
+    repair_tick: Option<i32>,
+    first_new: Option<i32>,
+    first_repair: Option<i32>,
+    first_known_owner: Option<i32>,
+    last_known_owner: Option<bool>,
+    before_observation: Option<i32>,
+}
+
+type ReasonSteps = HashMap<u64, LineHistory>;
+
+const NEW_COLS: [usize; 6] = [col::REMAINING, col::ADDED_NEW, col::UNACCOUNTED_NEW, col::POSSIBLE, col::BUILT, col::CONSTRUCTION_RAW];
+const REPAIR_COLS: [usize; 5] = [col::REPAIR_LEVELS, col::ADDED_REPAIR, col::UNACCOUNTED_REPAIR, col::REPAIRED, col::REPAIR_RAW];
 
 fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32) -> io::Result<ReasonSteps> {
-    let columns = [col::OUTPUT_REASON, col::OUTPUT_SINCE, col::FIRST_REPAIR_TICK];
+    let columns = [
+        col::OUTPUT_ALONE, col::COUNTRY, col::REMAINING, col::REPAIR_LEVELS, col::BUILT, col::REPAIRED, col::ADDED_NEW, col::ADDED_REPAIR, col::POSSIBLE,
+        col::UNACCOUNTED_NEW, col::UNACCOUNTED_REPAIR, col::CONSTRUCTION_RAW, col::REPAIR_RAW, col::OUTPUT_SINCE, col::OBSERVED_SINCE_CREATION, col::OUTPUT_REASON, col::FIRST_REPAIR_TICK,
+    ];
     let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(query.replay.recording(), run, TableId::ConstructionProjects, &columns, Keys::These(ids), first, last))?;
     let at = |column: usize| history.columns.binary_search(&column).map_err(|_| dashboard_core::invalid("A construction project column was not read"));
-    let (reason, since, repair) = (at(columns[0])?, at(columns[1])?, at(columns[2])?);
-    let number = |cells: &[Cell], at: usize| match cells.get(at) {
-        Some(Cell::Number(value)) => Some(*value),
-        _ => None,
-    };
+    let (alone, owner, reason, since, obs, repair) = (
+        at(col::OUTPUT_ALONE)?, at(col::COUNTRY)?, at(col::OUTPUT_REASON)?, at(col::OUTPUT_SINCE)?, at(col::OBSERVED_SINCE_CREATION)?, at(col::FIRST_REPAIR_TICK)?,
+    );
+    let new_at = NEW_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
+    let repair_at = REPAIR_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
+    let number = |cells: &[Cell], at: usize| match cells.get(at) { Some(Cell::Number(value)) => Some(*value), _ => None };
+    let unknown_owner = replay_data::rows::ConstructionProjectRow::OUTPUT_OWNER_UNKNOWN;
+    let unread_output = replay_data::rows::ConstructionProjectRow::OUTPUT_NOT_RECORDED;
     let mut out = ReasonSteps::new();
     for (key, steps) in &history.keys {
         let held = out.entry(*key as u64).or_default();
         for step in steps {
             let Some(cells) = step.cells.as_deref() else { continue };
-            held.0.push((step.hour, number(cells, reason).and_then(|value| u8::try_from(value).ok()), number(cells, since).is_some()));
-            if held.1.is_none() {
-                held.1 = number(cells, repair).and_then(|value| i32::try_from(value).ok());
+            let had_output = number(cells, since).is_some();
+            let reason_val = number(cells, reason).and_then(|value| u8::try_from(value).ok());
+            let known_owner = number(cells, alone) == Some(0)
+                || match reason_val {
+                    Some(r) if r == unknown_owner => false,
+                    Some(r) if r == unread_output => held.last_known_owner.unwrap_or_else(|| number(cells, owner).is_some_and(|v| v != 0)),
+                    Some(_) => true,
+                    None => false,
+                };
+            held.last_known_owner = Some(known_owner);
+            if known_owner && held.first_known_owner.is_none() { held.first_known_owner = Some(step.hour); }
+            let effective_reason = if had_output && !known_owner { Some(unknown_owner) } else { reason_val };
+            held.read.push((step.hour, effective_reason, had_output));
+            if held.before_observation.is_none() && had_output && known_owner && number(cells, obs) == Some(0) {
+                held.before_observation = Some(step.hour);
+            }
+            if held.repair_tick.is_none() {
+                held.repair_tick = number(cells, repair).and_then(|value| i32::try_from(value).ok());
+            }
+            if held.first_new.is_none() && new_at.iter().enumerate().any(|(slot, &column)| number(cells, column).is_some_and(|v| if slot == 5 { v != 0 } else { v > 0 })) {
+                held.first_new = Some(step.hour);
+            }
+            if held.first_repair.is_none() && repair_at.iter().enumerate().any(|(slot, &column)| number(cells, column).is_some_and(|v| if slot == 4 { v != 0 } else { v > 0 })) {
+                held.first_repair = Some(step.hour);
             }
         }
     }
     Ok(out)
 }
 
+fn dated_spellings(query: &Query<'_>, run: u32, first: i32, last: i32, ids: &BTreeSet<u32>, into: &mut BTreeMap<u32, Vec<(i32, Option<String>)>>) -> io::Result<()> {
+    let recording = query.replay.recording();
+    if ids.is_empty() || recording.predates(TableId::LexicalTokens.index()).is_some() || recording.withheld_reason(TableId::LexicalTokens.index()).is_some() {
+        return Ok(());
+    }
+    let wanted: Vec<u128> = ids.iter().map(|&id| u128::from(id)).collect();
+    let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, run, TableId::LexicalTokens, &[0], Keys::These(&wanted), first, last))?;
+    let mut asks = Vec::new();
+    for &id in ids {
+        for (hour, _, reading) in history.readings(u128::from(id)) {
+            match reading {
+                Reading::Cells([Cell::Written(_)]) => asks.push((hour, u128::from(id))),
+                Reading::Cells([cell]) => {
+                    let text = history.text(*cell).and_then(|bytes| std::str::from_utf8(bytes).ok()).map(str::to_owned);
+                    into.entry(id).or_default().push((hour, text));
+                }
+                Reading::Cells(_) | Reading::Absent => into.entry(id).or_default().push((hour, None)),
+                Reading::Unread { .. } => {}
+            }
+        }
+    }
+    if !asks.is_empty() {
+        dashboard_query::cost::storage(|| {
+            replay_lanes::lanes::at_each(recording, run, TableId::LexicalTokens, Some(&[0]), &asks, &mut |hour, key, row| {
+                let text = row
+                    .and_then(|(view, slot)| view.list(0, slot).or_else(|| dashboard_query::read::text(&view, 0, slot)))
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .map(str::to_owned);
+                into.entry(key as u32).or_default().push((hour, text));
+                Ok(())
+            })
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn place_buildings(spent: &BTreeMap<LeafKey, Vec<SpentStep>>, lines: &[LineFacts]) -> HashMap<LeafKey, Option<u32>> {
+    let mut buildings: HashMap<LeafKey, Option<u32>> = spent.keys().map(|&place| (place, named(place.2))).collect();
+    for line in lines {
+        let (railway, building, state, to_state) = line.leaf;
+        for (repair, start) in [(false, line.new_from), (true, line.repair_from)] {
+            if start.is_some() {
+                let held = buildings.entry((repair, railway, building, state, to_state)).or_insert(None);
+                *held = held.or(line.building);
+            }
+        }
+    }
+    buildings
+}
+
+fn first_building_hours(from: i32, spent: &BTreeMap<LeafKey, Vec<SpentStep>>, lines: &[LineFacts], buildings: &HashMap<LeafKey, Option<u32>>) -> BTreeMap<u32, i32> {
+    let mut first_at: BTreeMap<u32, i32> = BTreeMap::new();
+    let mut note = |id: u32, hour: i32| {
+        let hour = hour.max(from);
+        first_at.entry(id).and_modify(|held| *held = (*held).min(hour)).or_insert(hour);
+    };
+    for (place, steps) in spent {
+        if let (Some(id), Some(step)) = (buildings.get(place).copied().flatten(), steps.first()) { note(id, step.known_at); }
+    }
+    for line in lines {
+        if let Some(id) = line.building {
+            for &(hour, until, _) in &line.gaps {
+                if let Some((_, at)) = gap_assignment(line.new_from, line.repair_from, hour, until) { note(id, at); }
+            }
+        }
+    }
+    first_at
+}
+
+fn owner_unknown_lines(query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<BTreeSet<u64>> {
+    let history = dashboard_query::cost::storage(|| {
+        replay_lanes::lanes::history(query.replay.recording(), run, TableId::ConstructionProjects, &[col::OUTPUT_REASON], Keys::All, first, last)
+    })?;
+    let unknown = i64::from(replay_data::rows::ConstructionProjectRow::OUTPUT_OWNER_UNKNOWN);
+    Ok(history
+        .keys
+        .iter()
+        .filter(|(_, steps)| steps.iter().any(|step| matches!(step.cells.as_deref(), Some([Cell::Number(value)]) if *value == unknown)))
+        .map(|(key, _)| *key as u64)
+        .collect())
+}
+
+struct SeenLine { line: Line, matched: bool, history: LineHistory }
+
+fn min_opt(a: Option<i32>, b: Option<i32>) -> Option<i32> { [a, b].into_iter().flatten().min() }
+
 pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Facts> {
     let names = Names::new(&query.holders);
     let mut out = Facts { from: query.timeline.first, to: query.timeline.last, spent: spent_by_leaf(query, country)?, ..Facts::default() };
-    let mut seen = BTreeSet::new();
-    let mut tokens = BTreeMap::new();
+    let mut seen: BTreeMap<u64, SeenLine> = BTreeMap::new();
     for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let lines = crate::products::construction::cached_construction(source, stretch.run)?;
         let links = dashboard_base::queries::links(source, stretch.run)?;
+        let unowned = owner_unknown_lines(query, stretch.run, stretch.first, stretch.last)?;
+        let is_owner = |owner: u32, at: i32| match country {
+            Country::Slot(slot) => links.slot_at(owner, at) == Some(*slot),
+            Country::Tag(_) => names.tag_at(&links, owner, at).is_some_and(|tag| query.holders.goes_by(country, tag, at)),
+        };
         let mut kept: Vec<(&Line, bool)> = Vec::new();
         for line in lines.within(stretch.first, stretch.last) {
-            if !seen.insert(line.id) {
-                continue;
-            }
-            let Some(owner) = line.country.filter(|_| !(line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown))) else {
-                kept.push((line, false));
-                continue;
-            };
-            if match country {
-                Country::Slot(slot) => links.slot_at(owner, line.first_read) == Some(*slot),
-                Country::Tag(_) => names.tag_at(&links, owner, line.first_read).is_some_and(|tag| query.holders.goes_by(country, tag, line.first_read)),
-            } {
-                kept.push((line, true));
-            }
+            let matched = line.country.is_some_and(|owner| is_owner(owner, line.first_read));
+            if matched || line.country.is_none() || line.output_alone || unowned.contains(&line.id) { kept.push((line, matched)); }
         }
         let ids: Vec<u128> = kept.iter().map(|(line, _)| u128::from(line.id)).collect();
-        let steps = if ids.is_empty() { ReasonSteps::new() } else { reason_steps(query, stretch.run, &ids, stretch.first, stretch.last)? };
-        let mut ids = BTreeSet::new();
-        for (line, attributed) in kept {
-            let (read, repair_tick) = steps.get(&line.id).map(|(read, tick)| (read.as_slice(), *tick)).unwrap_or_default();
-            let gaps = dated_gaps(read, line.last, line.output_reason, line.had_output);
-            if !attributed {
-                let owner_gaps = gaps.iter().filter(|gap| gap.1 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
-                if line.country.is_some() {
-                    out.unattributed.push(owner_gaps.min().unwrap_or(line.first));
-                    continue;
-                }
-                let first_output = read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);
-                match owner_gaps.chain(first_output).filter(|&hour| stretch.first <= hour && hour <= stretch.last).min() {
-                    Some(hour) => out.unattributed.push(hour),
-                    None => {
-                        seen.remove(&line.id);
-                    }
-                }
-                continue;
+        let mut steps = if ids.is_empty() { ReasonSteps::new() } else { reason_steps(query, stretch.run, &ids, stretch.first, stretch.last)? };
+        for (line, matched) in kept {
+            let entry = seen.entry(line.id).or_insert_with(|| SeenLine { line: line.clone(), matched, history: LineHistory::default() });
+            entry.matched |= matched;
+            entry.line.country = entry.line.country.or(line.country);
+            let mut part_last_known = None;
+            if let Some(part) = steps.remove(&line.id) {
+                part_last_known = part.last_known_owner;
+                if let (Some(owner), Some(at)) = (line.country, part.first_known_owner) { entry.matched |= is_owner(owner, at); }
+                entry.history.read.extend(part.read);
+                entry.history.repair_tick = min_opt(entry.history.repair_tick, part.repair_tick);
+                entry.history.first_new = min_opt(entry.history.first_new, part.first_new);
+                entry.history.first_repair = min_opt(entry.history.first_repair, part.first_repair);
+                entry.history.before_observation = min_opt(entry.history.before_observation, part.before_observation);
             }
-            ids.extend(line.building);
-            let leaf = leaf_keys(line)[0];
-            out.lines.push(LineFacts {
-                leaf: (leaf.1, leaf.2, leaf.3, leaf.4),
-                building: line.building,
-                new_from: (line.new_work || !line.repair_work).then_some(line.first_read),
-                repair_from: line.repair_work.then(|| repair_tick.unwrap_or(line.last).max(line.first_read)),
-                gaps,
-                before_first_read: line.before_observation.then_some(line.first_read),
-            });
+            if stretch.first <= line.last && line.last <= stretch.last {
+                let unknown = replay_data::rows::ConstructionProjectRow::OUTPUT_OWNER_UNKNOWN;
+                let unread = replay_data::rows::ConstructionProjectRow::OUTPUT_NOT_RECORDED;
+                let end_known = !line.output_alone
+                    || (line.output_reason != unknown && line.output_reason != unread)
+                    || (line.output_reason == unread && part_last_known.unwrap_or(line.country.is_some()));
+                let end_reason = if line.had_output && !end_known { unknown } else { line.output_reason };
+                entry.history.read.push((line.last, Some(end_reason), line.had_output));
+            }
         }
-        for key in out.spent.keys() {
-            ids.extend(named(key.2));
+    }
+    for mut acc in seen.into_values() {
+        acc.history.read.sort_by_key(|step| step.0);
+        let mut merged_read: Vec<(i32, Option<u8>, bool)> = Vec::with_capacity(acc.history.read.len());
+        for step in acc.history.read {
+            if merged_read.last().is_some_and(|last| last.0 == step.0) { *merged_read.last_mut().unwrap() = step; } else { merged_read.push(step); }
         }
-        super::spellings(query, stretch.run, stretch.last, &ids, &mut tokens)?;
+        let gaps = dated_gaps(&merged_read);
+        let owner_gap = gaps.iter().find(|gap| gap.2 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
+        if acc.line.country.is_none() {
+            let first_output = merged_read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);
+            if let Some(hour) = owner_gap.into_iter().chain(first_output).min() { out.unattributed.push(hour); }
+            continue;
+        }
+        if let Some(hour) = owner_gap { out.unattributed.push(hour); }
+        if !acc.matched { continue; }
+        let gaps: Vec<(i32, i32, SpendingGap)> = gaps.into_iter().filter(|&(_, _, gap)| gap != SpendingGap::OwnerUnknown).collect();
+        let leaf = leaf_keys(&acc.line)[0];
+        let repair_from = min_opt(acc.history.repair_tick, acc.history.first_repair).map(|hour| hour.max(acc.line.first_read));
+        let new_from = acc.history.first_new.map(|hour| hour.max(acc.line.first_read));
+        let before_first_read = acc.history.before_observation.map(|hour| hour.max(acc.line.first_read));
+        out.lines.push(LineFacts {
+            leaf: (leaf.1, leaf.2, leaf.3, leaf.4), building: acc.line.building, new_from, repair_from, gaps, before_first_read,
+        });
+    }
+    let buildings = place_buildings(&out.spent, &out.lines);
+    let first_at = first_building_hours(out.from, &out.spent, &out.lines, &buildings);
+    let ids: BTreeSet<u32> = first_at.keys().copied().collect();
+    let mut raw_spellings: BTreeMap<u32, Vec<(i32, Option<String>)>> = BTreeMap::new();
+    for stretch in &query.timeline.stretches {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        dated_spellings(query, stretch.run, stretch.first, stretch.last, &ids, &mut raw_spellings)?;
+    }
+    for steps in raw_spellings.values_mut() {
+        steps.sort_by_key(|(hour, _)| *hour);
+        let mut compacted: Vec<(i32, Option<String>)> = Vec::with_capacity(steps.len());
+        for (hour, text) in std::mem::take(steps) {
+            if let Some(last) = compacted.last_mut() && last.0 == hour { last.1 = text; }
+            else if compacted.last().is_none_or(|last| last.1 != text) { compacted.push((hour, text)); }
+        }
+        *steps = compacted;
+    }
+    let mut change_hours = BTreeSet::new();
+    for (&id, &start) in &first_at {
+        change_hours.insert(start);
+        change_hours.extend(raw_spellings.get(&id).into_iter().flatten().filter(|(at, _)| *at > start).map(|(at, _)| *at));
+    }
+    let content = Content::load(source, context);
+    let mut active: BTreeMap<u32, Option<String>> = BTreeMap::new();
+    for hour in change_hours {
+        for (&id, &start) in &first_at {
+            if start <= hour {
+                active.insert(id, raw_spellings.get(&id).and_then(|s| s[..s.partition_point(|(at, _)| *at <= hour)].last()).and_then(|(_, t)| t.clone()));
+            }
+        }
+        let mut warnings = Vec::new();
+        let named = content.name(source, &active, &BTreeSet::new(), &mut warnings);
+        if out.warnings.last().is_none_or(|(_, held)| *held != warnings) { out.warnings.push((hour, warnings)); }
+        for kind in named.types {
+            let label = kind.name.or(kind.token).unwrap_or_else(|| "Building name unavailable".into());
+            let entry = out.names.entry(kind.id).or_default();
+            if entry.last().is_none_or(|(_, held)| *held != label) { entry.push((hour, label)); }
+        }
     }
     queue_gaps(query, &mut out.unrecorded)?;
     out.unrecorded.extend(missing(query, out.from, out.to).into_iter().map(|span| (span.first_hour, span.last_hour, HOURS_UNRECORDED.to_owned())));
-    let named = Content::load(source, context).name(source, &tokens, &BTreeSet::new(), &mut out.warnings);
-    out.names = named.types.into_iter().filter_map(|kind| kind.name.or(kind.token).map(|name| (kind.id, name))).collect();
     Ok(out)
 }

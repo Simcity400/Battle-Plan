@@ -365,6 +365,12 @@ fn project_state_at(project: &ConstructionProject, hour: i32) -> Option<ProjectS
         ConstructionWorkKind::RepairThenNew | ConstructionWorkKind::Unknown => built_unread || repaired_unread,
     };
 
+    let has_count_evidence = source == ProjectSource::Census
+        || (source == ProjectSource::Unknown
+            && (project.census_read.is_some_and(|c| c <= hour) || last.is_some() || built > 0 || unknown > 0 || possible > 0));
+    let witnessed_new = project.built.iter().any(|levels| levels.known_at <= hour && !levels.repair && levels.count > 0);
+    let witnessed_repair = project.built.iter().any(|levels| levels.known_at <= hour && levels.repair && levels.count > 0);
+
     let status = match &end {
         None => match run {
             Some(active) => {
@@ -380,21 +386,18 @@ fn project_state_at(project: &ConstructionProject, hour: i32) -> Option<ProjectS
             None => ConstructionStatus::Unread,
         },
         Some(done) => match done.kind {
+            EndKind::Finished if !has_count_evidence => ConstructionStatus::Completed,
             EndKind::Finished => match work_kind {
-                ConstructionWorkKind::Repair => ConstructionStatus::Repaired,
-                ConstructionWorkKind::New => ConstructionStatus::Built,
-                ConstructionWorkKind::RepairThenNew => ConstructionStatus::RepairedAndBuilt,
-                ConstructionWorkKind::Unknown => ConstructionStatus::Completed,
+                ConstructionWorkKind::Repair if witnessed_repair => ConstructionStatus::Repaired,
+                ConstructionWorkKind::New if witnessed_new => ConstructionStatus::Built,
+                ConstructionWorkKind::RepairThenNew if witnessed_repair && witnessed_new => ConstructionStatus::RepairedAndBuilt,
+                _ => ConstructionStatus::Completed,
             },
             EndKind::Removed => ConstructionStatus::Removed,
             EndKind::Unknown => ConstructionStatus::LeftQueue,
         },
     };
     let live = end.is_none();
-
-    let has_count_evidence = source == ProjectSource::Census
-        || (source == ProjectSource::Unknown
-            && (project.census_read.is_some_and(|c| c <= hour) || last.is_some() || built > 0 || unknown > 0 || possible > 0));
 
     let dated = |levels: &LevelsBuilt| levels.hour.unwrap_or(levels.known_at);
     let latest_event = known_iter()
@@ -1102,21 +1105,48 @@ mod tests {
                     ..Default::default()
                 });
             }
+            if hour < 121 {
+                rows.push(BuildingConstructionRow {
+                    id: 12,
+                    country: 9001,
+                    queue_ordinal: 1,
+                    active_factories: 10,
+                    cost: 1_080_000_000,
+                    amount: if hour < 120 { 2 } else { 1 },
+                    created_hour: 96,
+                    building_type: 300,
+                    target_location: 66,
+                    target_state: 66,
+                    repair_levels: 0,
+                    ..Default::default()
+                });
+            }
             frame.table(TableId::BuildingConstruction, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit })?;
             frame.table(TableId::RailwayConstruction, Input::Snapshot { rows: &[] as &[RailwayConstructionRow], partial: None, read: true, sample: Sample::FromReadBit })?;
-            let state_buildings = [BuildingRow {
-                location: 64,
-                building_type: 300,
-                country: 9001,
-                level: if hour >= 120 { 3 } else { 2 },
-                healthy_level: if hour >= 120 { 3 } else { 2 },
-                active: true,
-                ..Default::default()
-            }];
+            let state_buildings = [
+                BuildingRow {
+                    location: 64,
+                    building_type: 300,
+                    country: 9001,
+                    level: if hour >= 120 { 3 } else { 2 },
+                    healthy_level: if hour >= 120 { 3 } else { 2 },
+                    active: true,
+                    ..Default::default()
+                },
+                BuildingRow {
+                    location: 66,
+                    building_type: 300,
+                    country: 9001,
+                    level: if hour >= 120 { 3 } else { 2 },
+                    healthy_level: if hour >= 120 { 3 } else { 2 },
+                    active: true,
+                    ..Default::default()
+                },
+            ];
             frame.table(TableId::StateBuildings, Input::Snapshot { rows: &state_buildings, partial: None, read: true, sample: Sample::FromReadBit })?;
             frame.table(TableId::ProvinceBuildings, Input::Snapshot { rows: &[] as &[BuildingRow], partial: None, read: true, sample: Sample::FromReadBit })?;
-            let outputs: Vec<ConstructionLineOutputRow> = if hour == 120 {
-                vec![ConstructionLineOutputRow {
+            let outputs: Vec<ConstructionLineOutputRow> = match hour {
+                120 => vec![ConstructionLineOutputRow {
                     line: 10,
                     construction_raw: 1_080_000_000,
                     exact: true,
@@ -1127,9 +1157,20 @@ mod tests {
                     target_state: Recorded::Value(Some(64)),
                     observed_since_creation: true,
                     ..Default::default()
-                }]
-            } else {
-                Vec::new()
+                }],
+                121 => vec![ConstructionLineOutputRow {
+                    line: 12,
+                    construction_raw: 2_160_000_000,
+                    exact: true,
+                    ended: true,
+                    completion: Recorded::Value(Some(ConstructionCompletion { hour: 121, cancelled: false })),
+                    country: Recorded::Value(Some(9001)),
+                    building_type: Recorded::Value(Some(300)),
+                    target_state: Recorded::Value(Some(66)),
+                    observed_since_creation: true,
+                    ..Default::default()
+                }],
+                _ => Vec::new(),
             };
             frame.table(TableId::ConstructionLineOutput, Input::Snapshot { rows: &outputs, partial: None, read: true, sample: Sample::FromReadBit })?;
             let mut tokens = vec![LexicalTokenRow { token: 300, literal: b"industrial_complex".to_vec() }];
@@ -1176,24 +1217,31 @@ mod tests {
             assert_eq!(*stepped.value, cold, "stepped equals cold at hour {hour}");
         }
         let at100 = ConstructionLogTail::load(&source, &ask(100), &load, &AtomicBool::new(false)).unwrap();
-        assert_eq!(at100.rows.len(), 1);
-        assert_eq!(at100.rows[0].status, ConstructionStatus::Waiting);
-        assert_eq!(at100.rows[0].factories, Some(0));
+        assert_eq!(at100.rows.len(), 2);
+        fn row_of<'a>(reply: &'a ConstructionLogTailReply, key: &str) -> &'a ConstructionLogRow {
+            reply.rows.iter().find(|row| row.key == key).expect("row")
+        }
+        assert_eq!(row_of(&at100, "10").status, ConstructionStatus::Waiting);
+        assert_eq!(row_of(&at100, "10").factories, Some(0));
         assert_eq!(at100.building_types.iter().map(|c| c.token.as_str()).collect::<Vec<_>>(), ["industrial_complex"]);
         assert_eq!(at100.next_change, Some(105));
 
         let at105 = ConstructionLogTail::load(&source, &ask(105), &load, &AtomicBool::new(false)).unwrap();
-        assert_eq!(at105.rows[0].status, ConstructionStatus::Building);
-        assert_eq!(at105.rows[0].factories, Some(10));
+        assert_eq!(row_of(&at105, "10").status, ConstructionStatus::Building);
+        assert_eq!(row_of(&at105, "10").factories, Some(10));
         assert_eq!(at105.next_change, Some(120));
 
         let at122 = ConstructionLogTail::load(&source, &ask(122), &load, &AtomicBool::new(false)).unwrap();
-        assert_eq!(at122.rows.len(), 2);
-        assert_eq!(at122.rows[0].key, "11", "live repairing project leads above completed project");
+        assert_eq!(at122.rows.len(), 3);
+        assert_eq!(at122.rows[0].key, "11", "live repairing project leads above completed projects");
         assert_eq!(at122.rows[0].status, ConstructionStatus::Repairing);
-        assert_eq!(at122.rows[1].key, "10");
-        assert_eq!(at122.rows[1].status, ConstructionStatus::Built);
-        assert_eq!(at122.rows[1].hour, 120, "completed project displays its end hour");
+        let unwitnessed = row_of(&at122, "10");
+        assert_eq!(unwitnessed.status, ConstructionStatus::Completed, "0 witnessed and 1 unaccounted level must not claim Built");
+        assert_eq!(unwitnessed.levels.as_ref().map(|levels| (levels.built, levels.unknown)), Some((0, 1)));
+        assert_eq!(unwitnessed.hour, 120, "completed project displays its end hour");
+        let witnessed = row_of(&at122, "12");
+        assert_eq!(witnessed.status, ConstructionStatus::Built, "a finished project with a witnessed built level is Built");
+        assert_eq!(witnessed.levels.as_ref().map(|levels| levels.built), Some(1));
         assert_eq!(at122.building_types.iter().map(|c| c.token.as_str()).collect::<Vec<_>>(), ["arms_factory", "industrial_complex"]);
     }
 }
