@@ -4,7 +4,7 @@ use dashboard_base::products::equipment_icon::{self, Icon, IconChoice, IconConte
 use dashboard_core::config::LoadContext;
 use dashboard_text::variant_names::{self, Tags, Texts};
 use replay_recording::columnar_frames::Recording;
-use replay_data::rows::{CountryAppearanceRow, CountryRow, LexicalTokenRow, PoliticalPartyRow, PoliticsRow, ReservedCountryNamingRow, TableId, VariantDefinitionRow, mask, tables};
+use replay_data::rows::{CountryAppearanceRow, CountryRow, IndustrialOrganisationRow, LexicalTokenRow, PoliticalPartyRow, PoliticsRow, ReservedCountryNamingRow, TableId, VariantDefinitionRow, mask, tables};
 use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView, not_selected};
 use replay_lanes::{dated::{Dated, Lent}, lanes::Keys as HistoryKeys};
 use std::{
@@ -314,15 +314,55 @@ fn name_wanted(frame: &DecodedFrame, ids: (&[u64], &[u64]), context: &Context, h
     name_in(frame, ids, context, icons.as_ref().map_err(Clone::clone), hour, named);
 }
 
-fn name_in(frame: &DecodedFrame, (wanted_variants, wanted_organisations): (&[u64], &[u64]), context: &Context, icon_hour: Result<&IconHour, String>, hour: Option<i32>, named: &mut Named) {
-    let table_error = |error: &io::Error| if hour.is_some() { error.to_string() } else { undated_table_error(frame, error) };
+fn naming_rows(frame: &DecodedFrame, hour: Option<i32>) -> Result<(Tags<'_>, &[LexicalTokenRow]), String> {
     let countries = frame.complete::<tables::Countries>();
     let links = frame.complete::<tables::CountryLinks>();
     let lexical = frame.complete::<tables::LexicalTokens>();
-    let (countries, links, lexical) = match (countries, links, lexical) {
-        (Ok(countries), Ok(links), Ok(lexical)) => (countries, links, lexical),
-        (countries, links, lexical) => {
-            let why = [countries.err(), links.err(), lexical.err()].iter().flatten().map(table_error).collect::<Vec<_>>().join("; ");
+    match (countries, links, lexical) {
+        (Ok(countries), Ok(links), Ok(lexical)) => Ok((Tags::new(countries, links, frame.complete::<tables::CountryAppearance>().ok()), lexical)),
+        (countries, links, lexical) => Err([countries.err(), links.err(), lexical.err()].iter().flatten()
+            .map(|error| if hour.is_some() { error.to_string() } else { undated_table_error(frame, error) })
+            .collect::<Vec<_>>().join("; ")),
+    }
+}
+
+fn organisation_title(row: &IndustrialOrganisationRow, token: Option<&str>, owner: Option<&str>, texts: Result<&dyn Texts, &str>) -> (Option<String>, Option<String>) {
+    let texts = match texts {
+        Ok(texts) => texts,
+        Err(reason) => return (None, Some(reason.to_owned())),
+    };
+    if (row.owner as i32) > 0 && owner.is_none() {
+        return (None, Some("The organisation's owner is not recorded at this hour.".to_owned()));
+    }
+    let name = String::from_utf8_lossy(&row.name);
+    let key = if name.is_empty() { token } else { Some(name.as_ref()) };
+    match key {
+        None => (None, Some("lexical tokens does not spell the organisation's key.".to_owned())),
+        Some(key) => match variant_names::localise_for(texts, owner, key) {
+            Some(name) => (Some(name), None),
+            None => (None, Some("The content does not name this organisation.".to_owned())),
+        },
+    }
+}
+
+pub fn organisation_name(frame: &DecodedFrame, id: u64, catalogue: Option<&Catalogue>) -> (Option<String>, Option<String>) {
+    let read = || -> Result<_, String> {
+        let (tags, lexical) = naming_rows(frame, Some(frame.hour))?;
+        let rows = frame.complete::<tables::IndustrialOrganisations>().map_err(|error| error.to_string())?;
+        let at = rows.binary_search_by_key(&id, |row| row.organisation).map_err(|_| "The organisation is not recorded at this hour.".to_owned())?;
+        let row = &rows[at];
+        let token = spelled(lexical, row.token);
+        let owner = tags.tag_of(row.owner);
+        Ok(organisation_title(row, token.as_deref(), owner.as_deref(), catalogue.map(|catalogue| catalogue as &dyn Texts).ok_or(NO_CONTENT)))
+    };
+    read().unwrap_or_else(|reason| (None, Some(reason)))
+}
+
+fn name_in(frame: &DecodedFrame, (wanted_variants, wanted_organisations): (&[u64], &[u64]), context: &Context, icon_hour: Result<&IconHour, String>, hour: Option<i32>, named: &mut Named) {
+    let table_error = |error: &io::Error| if hour.is_some() { error.to_string() } else { undated_table_error(frame, error) };
+    let (tags, lexical) = match naming_rows(frame, hour) {
+        Ok(inputs) => inputs,
+        Err(why) => {
             for &id in wanted_variants {
                 named.variants.insert(id, unknown_variant(id, hour, why.clone()));
             }
@@ -333,7 +373,6 @@ fn name_in(frame: &DecodedFrame, (wanted_variants, wanted_organisations): (&[u64
             return;
         }
     };
-    let tags = Tags::new(countries, links, frame.complete::<tables::CountryAppearance>().ok());
     let texts: Option<&dyn Texts> = context.as_ref().ok().map(|content| content.catalogue.as_ref() as &dyn Texts);
     let no_texts = context.as_ref().err().cloned();
     match frame.complete::<tables::VariantDefinitions>() {
@@ -389,29 +428,17 @@ fn name_in(frame: &DecodedFrame, (wanted_variants, wanted_organisations): (&[u64
                 };
                 let row = &rows[at];
                 let token = spelled(lexical, row.token);
-                let owner_tag = tags.tag_of(row.owner);
-                let owner_unknown = (row.owner as i32) > 0 && owner_tag.is_none();
-                let name_key = String::from_utf8_lossy(&row.name).into_owned();
+                let owner = tags.tag_of(row.owner);
+                let owner_unknown = (row.owner as i32) > 0 && owner.is_none();
+                let (name, name_unknown) = organisation_title(row, token.as_deref(), owner.as_deref(), texts.ok_or(no_texts.as_deref().unwrap_or(NO_CONTENT)));
                 let icon_name = String::from_utf8_lossy(&row.icon).into_owned();
-                let (name, name_unknown) = match (&token, owner_unknown, texts) {
-                    (_, _, None) => (None, no_texts.clone()),
-                    (_, true, _) => (None, Some("The organisation's owner is not recorded at this hour.".to_owned())),
-                    (None, _, _) if name_key.is_empty() => (None, Some("lexical tokens does not spell the organisation's key.".to_owned())),
-                    (token, false, Some(texts)) => {
-                        let key = if name_key.is_empty() { token.as_deref().unwrap_or_default() } else { name_key.as_str() };
-                        match variant_names::localise_for(texts, owner_tag.as_deref(), key) {
-                            Some(name) => (Some(name), None),
-                            None => (None, Some("The content does not name this organisation.".to_owned())),
-                        }
-                    }
-                };
                 let mut candidates = Vec::new();
                 if !icon_name.is_empty() {
                     candidates.push(icon_name);
                 }
                 let fallback_known = !owner_unknown && token.is_some();
                 if let (true, Some(token)) = (fallback_known, &token) {
-                    candidates.extend(owner_tag.as_ref().map(|tag| format!("GFX_{tag}_{token}")));
+                    candidates.extend(owner.as_ref().map(|tag| format!("GFX_{tag}_{token}")));
                     candidates.push(format!("GFX_{token}"));
                 }
                 let (icon, icon_unknown) = match context {

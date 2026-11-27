@@ -17,12 +17,10 @@ fn item(group: &str, category: &str, name: Option<&str>) -> SpendItem {
         first_read: 0,
         name: name.map(Into::into),
         action: String::new(),
-        icon: None,
         character: None,
         target_tag: None,
         target_name: None,
         unknown: None,
-        tooltip_token: None,
         kind: None,
         ledger: (0, 0, 0),
     }
@@ -60,8 +58,6 @@ fn reply() -> PowerSpendingReply {
         gain_coverage: vec![covered(0, 100)],
         balances: Vec::new(),
         reconciliation: SpendReconciliation::default(),
-        icons: Vec::new(),
-        idea_tooltips: None,
         warnings: vec!["A warning about the whole branch".into()],
     }
 }

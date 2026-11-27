@@ -100,7 +100,7 @@ fn asked(source: &Source, from: i32, to: i32) -> super::PowerSpendingReply {
     let query = dashboard_base::queries::query(source, 1).unwrap();
     let naming = naming::context(source, &LoadContext { content: None }).unwrap();
     let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
-    spending(source, &query, &params, &naming, &AtomicBool::new(false)).unwrap()
+    spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap()
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn a_tag_no_holder_held_lists_nothing_and_no_hour_as_covered() {
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
     let params = PowerSpendingParams { branch_id: "1".into(), country: "ENG".into(), currency: SpendCurrency::Political, from: FIRST, to: LAST };
-    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
     assert!(reply.payments.is_empty() && reply.days.is_empty() && reply.items.is_empty());
     assert!(reply.coverage.is_empty(), "hours no holding names are not recorded, never covered");
 }
@@ -459,7 +459,7 @@ fn unavailable_roll_hour_is_withheld_and_named_while_later_available_roll_displa
     );
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
-    let command = spending(&source, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: FIRST, to: 168 }, &naming, &AtomicBool::new(false)).unwrap();
+    let command = spending(&query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: FIRST, to: 168 }, &naming, &AtomicBool::new(false)).unwrap();
     assert!(
         command.warnings.iter().any(|warning| warning.contains("costs unavailable")),
         "command currency also propagates the unavailable day-log gap warning: {:?}",
@@ -517,7 +517,7 @@ fn overlapping_coverage_gap_preserves_specific_day_log_refusal_on_affected_hour(
     let query = Query { replay: &held_replay, timeline: Arc::new(timeline), holders: Arc::new(holders) };
     let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
     let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: FIRST, to: 168 };
-    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
     let at_144 = reply.coverage.iter().find(|run| run.first_hour <= 144 && 144 <= run.last_hour).expect("coverage run for hour 144");
     assert_eq!((at_144.first_hour, at_144.last_hour, at_144.covered), (144, 144, false), "overlapping day-log gap splits at the affected hour: {:?}", reply.coverage);
     let reason = at_144.reason.as_deref().unwrap_or("");
@@ -610,7 +610,7 @@ fn same_run_stretch_boundary_reads_first_hour_log_event_and_gap() {
         let query = Query { replay: &replay, timeline: Arc::new(timeline), holders: Arc::new(holders) };
         let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
         let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: 144, to: 144 };
-        spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap()
+        spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap()
     };
 
     let available = build(false);
@@ -782,7 +782,7 @@ fn instant_gains_and_balances_reconcile_across_aliases_epochs_caps_and_unknown_o
 
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
-    let cp_reply = spending(&source, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: FIRST, to: 114 }, &naming, &AtomicBool::new(false)).unwrap();
+    let cp_reply = spending(&query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: FIRST, to: 114 }, &naming, &AtomicBool::new(false)).unwrap();
     let cp_gains: Vec<_> = cp_reply.gains.iter().map(|gain| (gain.read, gain.hour, gain.gained_raw.as_deref(), gain.capped_raw.as_deref())).collect();
     assert_eq!(
         cp_gains,
@@ -1016,7 +1016,7 @@ fn reconciliation_verifies_identity_for_political_and_command_power_and_withhold
 
     let query = dashboard_base::queries::query(&src, 1).unwrap();
     let naming = naming::context(&src, &LoadContext { content: None }).unwrap();
-    let cp_hold = spending(&src, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 112 }, &naming, &AtomicBool::new(false)).unwrap();
+    let cp_hold = spending(&query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 112 }, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         cp_hold.reconciliation,
         SpendReconciliation {
@@ -1032,7 +1032,7 @@ fn reconciliation_verifies_identity_for_political_and_command_power_and_withhold
         },
         "CP hold of 25 CP after over-cap grant attributes 25 CP to allocated and reconciles to exact 0 other_changes"
     );
-    let cp_released = spending(&src, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 116 }, &naming, &AtomicBool::new(false)).unwrap();
+    let cp_released = spending(&query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 116 }, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         cp_released.reconciliation,
         SpendReconciliation {
@@ -1189,7 +1189,7 @@ fn command_power_ground_crews_capped_refunds_and_allocation_clamps_reconcile() {
     let src = Source::from_replay(dashboard_base::SourceKey { source_id: "power-reconcile-cp-shapes".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let query = dashboard_base::queries::query(&src, 1).unwrap();
     let naming = naming::context(&src, &LoadContext { content: None }).unwrap();
-    let reply = spending(&src, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 112 }, &naming, &AtomicBool::new(false)).unwrap();
+    let reply = spending(&query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 112 }, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         reply.reconciliation,
         SpendReconciliation {
@@ -1232,7 +1232,7 @@ fn a_payments_item_is_read_at_its_charge_not_at_a_spans_end_whose_items_are_not_
     let query = Query { replay: &replay, timeline: Arc::new(timeline), holders: Arc::new(holders) };
     let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
     let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: FIRST, to: LAST };
-    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
     let reads: Vec<_> = reply.payments.iter().map(|payment| (payment.read, payment.known_raw.clone())).collect();
     assert_eq!(reads, [(104, Some("5000000".into())), (120, Some("7500000".into()))], "witnessed spending keeps its amount");
     let item = &reply.items[reply.payments[1].item as usize];
@@ -1264,25 +1264,25 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
     let query = Query { replay: &replay, timeline: Arc::new(timeline), holders: Arc::new(holders) };
     let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
     let params = PowerSpendingParams { branch_id: "1".into(), country: dashboard_base::products::Country::Slot(SLOT), currency: SpendCurrency::Political, from: FIRST, to: 130 };
-    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.tag, "GER", "a slot is named by who held it at the statement's end, not at the branch's last hour");
 
     let later = Holders::new([("GER".to_owned(), vec![run(110, LAST, GER)])].into(), Vec::new());
     let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(later) };
     let params = PowerSpendingParams { to: FIRST, ..params };
-    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.tag, params.country.key(), "a slot held by no one at the statement's end is the slot, never its later holder");
 
     let earlier = Holders::new([("GER".to_owned(), vec![run(FIRST, 140, GER)])].into(), Vec::new());
     let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(earlier) };
     let params = PowerSpendingParams { to: 150, ..params };
-    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.tag, params.country.key(), "a slot held by no one at the statement's end is the slot, never its earlier holder");
 
     let through = Holders::new([("GER".to_owned(), vec![run(FIRST, LAST, GER)])].into(), Vec::new());
     let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(through) };
     let params = PowerSpendingParams { to: LAST + 1, ..params };
-    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.tag, params.country.key(), "rv5-12b: a statement ending after the branch's last hour is named at its own end, where the slot holds no tag");
 
     let gap = |first: i32, last: i32| dashboard_query::timeline::Unheld { first, last, reason: "not recorded".into() };
@@ -1296,14 +1296,14 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
         (141, 143, "This span was not recorded"),
     ] {
         let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
-        let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+        let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.reconciliation.reason.as_deref(), Some(why), "the statement {from}..{to} gives the recording gap as its reason");
     }
     let apart = Holders::new([("GER".to_owned(), vec![run(FIRST, 139, GER), run(144, LAST, GER)])].into(), Vec::new());
     let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(apart) };
     for (from, to, why) in [(140, 143, "Country was not held for the entire span"), (140, 140, "Country was not held during this span")] {
         let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
-        let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+        let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.reconciliation.reason.as_deref(), Some(why), "no holder in {from}..{to}: absence for the whole span needs every hour recorded");
     }
     let unread = HolderRun { first: 140, last: 140, holder: Holder::Unresolved, starts_segment: true };
@@ -1311,14 +1311,14 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
     let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(unresolved) };
     for (from, to) in [(140, 140), (140, 143)] {
         let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
-        let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+        let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.reconciliation.reason.as_deref(), Some(super::HOLDER_UNRESOLVED), "R4-S6: an unresolved holder in {from}..{to} is not \"not held\"");
     }
     let refused = Holders::new([("GER".to_owned(), vec![run(FIRST, 139, GER), run(144, LAST, GER)])].into(), vec![(140, 140, "Countries were not read".to_owned())]);
     let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(refused) };
     for (from, to) in [(140, 140), (140, 143)] {
         let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
-        let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+        let reply = spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.reconciliation.reason.as_deref(), Some(super::HOLDER_UNRESOLVED), "R5-S2: an hour whose country tables were unread in {from}..{to} is not \"not held\"");
     }
 }
@@ -1391,14 +1391,15 @@ fn spending_markers_are_payments_at_their_own_hour_shown_once_read_with_the_next
 }
 
 #[test]
-fn cached_power_items_keep_their_overlay_notes() {
-    use dashboard_base::{catalogue, test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select}};
+fn naming_power_items_does_not_read_visual_overlays() {
+    use dashboard_base::{catalogue, test_fixtures::visual_mods::{BLUE, Machine, RED, png, select}};
 
     let machine = Machine::new("power_item_art_notes");
     machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
     machine.write("common/buildings/fixture.txt", b"buildings={fixture_building={}}");
     machine.write("common/terrain/fixture.txt", b"categories={fixture_terrain={}}");
     machine.write("common/abilities/fixture.txt", b"ability={fixture_ability={icon=GFX_fixture_ability}}");
+    machine.write("localisation/english/fixture_l_english.yml", b"\xEF\xBB\xBFl_english:\n fixture_ability:0 \"Fixture Ability\"\n");
     machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_ability textureFile=gfx/fixture_ability.png}}");
     machine.write("gfx/fixture_ability.png", &png(RED));
     machine.write_mod("fixture_art", "gfx/fixture_ability.png", &png(BLUE));
@@ -1409,16 +1410,14 @@ fn cached_power_items_keep_their_overlay_notes() {
     let context = naming::context(&source, &load).unwrap();
     let row = PowerItemRow { holder: 7, first_read: 100, item_key: b"fixture_ability".to_vec(), cause: PowerCause::AbilityActivation, ..Default::default() };
     let read = || {
-        let mut icons = std::collections::BTreeMap::new();
-        let (items, noted) = catalogue::capture(|| naming::name(&query, &[naming::Asked { run: 1, row: &row }], &context, &mut icons, &AtomicBool::new(false)).unwrap());
-        let image = &icons[items[0].icon.as_ref().expect("ability has an icon")];
+        let (items, noted) = catalogue::capture(|| naming::name(&query, &[naming::Asked { run: 1, row: &row }], &context, &AtomicBool::new(false)).unwrap());
+        assert_eq!(items[0].name.as_deref(), Some("Fixture Ability"));
         let mut warnings = Vec::new();
         noted.diagnostics().append_to(&mut warnings);
-        (first_pixel(image), warnings)
+        warnings
     };
     let first = read();
-    assert_eq!(first.0, BLUE);
-    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert!(!first.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
     assert_eq!(read(), first);
 }
 
@@ -1429,7 +1428,7 @@ fn naming_reads_the_country_tables_with_only_the_columns_it_names_by() {
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let context = naming::context(&source, &LoadContext { content: None }).unwrap();
     let columns = |row: PowerItemRow| {
-        let (_, counts) = replay_recording::cells::count_reads(|| naming::name(&query, &[naming::Asked { run: 1, row: &row }], &context, &mut Default::default(), &AtomicBool::new(false)).unwrap());
+        let (_, counts) = replay_recording::cells::count_reads(|| naming::name(&query, &[naming::Asked { run: 1, row: &row }], &context, &AtomicBool::new(false)).unwrap());
         [TableId::Countries, TableId::CountryLinks].map(|table| counts[&table].columns)
     };
     let decision = PowerItemRow { holder: SLOT, first_read: 120, cause: PowerCause::Decision, ..Default::default() };
@@ -1448,7 +1447,7 @@ fn naming_does_not_read_the_lexicon_for_an_item_with_its_own_key() {
     let context = naming::context(&source, &LoadContext { content: None }).unwrap();
     let row = PowerItemRow { holder: SLOT, first_read: 120, item_key: b"fixture_decision".to_vec(), item_token: Some(9), cause: PowerCause::Decision, ..Default::default() };
     let (_, counts) = replay_recording::cells::count_reads(|| {
-        naming::name(&query, &[naming::Asked { run: 1, row: &row }], &context, &mut Default::default(), &AtomicBool::new(false)).unwrap()
+        naming::name(&query, &[naming::Asked { run: 1, row: &row }], &context, &AtomicBool::new(false)).unwrap()
     });
     assert!(!counts.contains_key(&TableId::LexicalTokens));
 }

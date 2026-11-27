@@ -6,11 +6,8 @@ mod naming;
 mod tests;
 
 use dashboard_base::products::Country;
-use super::{politics::{Holding, holdings}, ideas::{IdeaInfo, effect_keys, recorded_definitions}};
-use dashboard_world::products::equipment_names::EquipmentIcon;
-use dashboard_base::products::idea_format::{self, LocalisedText, ModifierFormat};
-use dashboard_core::dto::Artwork;
-use dashboard_base::{Source, products::at_hour};
+use super::politics::{Holding, holdings};
+use dashboard_base::products::at_hour;
 use dashboard_query::{Query, coverage};
 use replay_frame::frame::DecodedFrame;
 use replay_lanes::{lanes::{self, Keys}, points::Cell};
@@ -71,15 +68,11 @@ pub struct SpendItem {
     pub name: Option<String>,
     #[doc = " Plain text naming the payment by its cause, item and target."]
     pub action: String,
-    #[doc = " The key of its picture in `icons`."]
-    pub icon: Option<String>,
     pub character: Option<u32>,
     pub target_tag: Option<String>,
     pub target_name: Option<String>,
-    #[doc = " Why a name, target or picture is not known."]
+    #[doc = " Why a name or target is not known."]
     pub unknown: Option<String>,
-    #[doc = " The idea in `ideaTooltips` its tooltip shows."]
-    pub tooltip_token: Option<String>,
     #[doc = " A decision's category or an advisor's role, from the installed content; none for other spending."]
     pub kind: Option<SpendKind>,
     #[serde(skip)]
@@ -96,16 +89,6 @@ pub struct SpendKind {
     #[doc = " Why the category or role is not known; with `id` and `name`, why that name is its key (the"]
     #[doc = " recorded localisation holds none)."]
     pub unknown: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct SpendIdeaTooltips {
-    pub ideas: Vec<IdeaInfo>,
-    pub artwork: Vec<Artwork>,
-    pub modifiers: Vec<ModifierFormat>,
-    pub texts: Vec<LocalisedText>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -253,9 +236,6 @@ pub struct PowerSpendingReply {
     pub balances: Vec<SpendBalanceRun>,
     #[doc = " Span balance identity and its availability over `from..=to`."]
     pub reconciliation: SpendReconciliation,
-    pub icons: Vec<EquipmentIcon>,
-    #[doc = " None where no item is an idea or an advisor."]
-    pub idea_tooltips: Option<SpendIdeaTooltips>,
     pub warnings: Vec<String>,
 }
 
@@ -1384,18 +1364,16 @@ fn unrecorded_item(item: &UnrecordedItem) -> SpendItem {
         first_read: item.read,
         name: None,
         action: "Spending item not recorded".into(),
-        icon: None,
         character: None,
         target_tag: None,
         target_name: None,
         unknown: Some(item.reason.clone()),
-        tooltip_token: None,
         kind: None,
         ledger: (item.run, item.slot, item.ordinal),
     }
 }
 
-fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Context, cancelled: &AtomicBool) -> io::Result<PowerSpendingReply> {
+fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Context, cancelled: &AtomicBool) -> io::Result<PowerSpendingReply> {
     let currency = params.currency;
     let mut reply = PowerSpendingReply {
         branch_id: params.branch_id.clone(),
@@ -1413,8 +1391,6 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         gain_coverage: Vec::new(),
         balances: Vec::new(),
         reconciliation: SpendReconciliation::default(),
-        icons: Vec::new(),
-        idea_tooltips: None,
         warnings: Vec::new(),
     };
     let mut items = Items::default();
@@ -1531,29 +1507,8 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     reply.reconciliation = reconcile(params, &held, &reply, &allocations, nobody, unresolved);
     let asked = &items.asked;
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
-    let mut icons = BTreeMap::new();
-    let named = naming::name(query, &rows, naming, &mut icons, cancelled)?;
+    let named = naming::name(query, &rows, naming, cancelled)?;
     let mut categories: BTreeMap<String, SpendCategory> = BTreeMap::new();
-    let mut ideas: BTreeMap<String, (IdeaInfo, Artwork)> = BTreeMap::new();
-    for named in &named {
-        if let Some((info, description)) = &named.idea {
-            ideas.entry(info.token.clone()).or_insert_with(|| {
-                let art = Artwork { token: info.token.clone(), name: named.name.clone(), description: description.clone(), base_duration_days: None, icon: None, sprite: None };
-                (info.clone(), art)
-            });
-        }
-    }
-    if !ideas.is_empty()
-        && let Ok(content) = naming.content()
-    {
-        let infos: Vec<IdeaInfo> = ideas.values().map(|(info, _)| info.clone()).collect();
-        let (modifier_keys, text_keys) = effect_keys(&infos);
-        let recorded = recorded_definitions(source, query)?;
-        let (modifiers, formats) = idea_format::modifier_formats_from_recorded((*recorded).as_ref(), &modifier_keys, content);
-        reply.warnings.extend(formats);
-        let texts = idea_format::texts(content, &text_keys);
-        reply.idea_tooltips = Some(SpendIdeaTooltips { ideas: infos, artwork: ideas.into_values().map(|(_, art)| art).collect(), modifiers, texts });
-    }
     for ((run, row), named) in asked.iter().zip(named) {
         categories.entry(named.category.0.clone()).or_insert_with(|| SpendCategory {
             id: named.category.0.clone(),
@@ -1584,6 +1539,5 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         reply.warnings.push(format!("Daily political power cost: matched PP application is unavailable (count: {unmatched})"));
     }
     reply.categories = categories.into_values().collect();
-    reply.icons = naming::icons(icons);
     Ok(reply)
 }

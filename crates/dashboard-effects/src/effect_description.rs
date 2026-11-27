@@ -194,7 +194,7 @@ pub struct CachedContent {
     politics: politics::PoliticsContent,
     characters: characters::CharacterContent,
     doctrines: Option<content_reader_military::doctrines::Database>,
-    decisions: Option<content_reader_politics::decisions::Database>,
+    decisions: Option<Arc<content_reader_politics::decisions::Database>>,
     ideas: Option<Arc<content_reader_politics::ideas::IdeaContent>>,
     static_modifiers: Arc<content_reader_politics::static_modifiers::Descriptions>,
     dynamic_modifiers: Option<content_reader_politics::dynamic_modifiers::Database>,
@@ -261,7 +261,7 @@ impl CachedContent {
         }
         let mut gaps = BTreeMap::new();
         let doctrines = alongside(threads, || content_reader_military::doctrines::read(layers));
-        let decisions = alongside(threads, || content_reader_politics::decisions::read(layers));
+        let decisions = alongside(threads, || content_reader_politics::decisions::read_shared(layers));
         let division_names = alongside(threads, || {
             content_reader_division_names::division_names::read_directories::<String>(
                 layers,
@@ -479,7 +479,7 @@ impl CachedContent {
     pub fn view<'a>(&'a self, events: Option<&'a EventLookup<'a>>) -> Content<'a> {
         Content {
             doctrines: self.doctrines.as_ref(),
-            decisions: self.decisions.as_ref(),
+            decisions: self.decisions.as_deref(),
             ideas: self.ideas.as_deref(),
             static_modifiers: Some(&self.static_modifiers),
             dynamic_modifiers: self.dynamic_modifiers.as_ref(),
