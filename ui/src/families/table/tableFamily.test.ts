@@ -51,6 +51,9 @@ import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layou
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { PayloadSender } from '../../dashboard/follow/payloads.ts';
+import { valueStateText } from '../../components/valueStateText.ts';
+import { engineHour } from '../../dashboard/calendar.ts';
+import { formatDateHover } from '../valueFormat.ts';
 
 const NO_OPTIONS = {};
 const NO_SOURCES = {};
@@ -6089,4 +6092,87 @@ test('empty table gaining a recording gap as its first visible row during playba
   } finally {
     recording.restore();
   }
+});
+
+test('deriveTableMirror and deriveTableTooltip share one date presenter for date cells', () => {
+  const datedHour = engineHour({ year: 1940, month: 12, day: 27, hour: 1 })!;
+  const midnightHour = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
+  const rangeEndHour = engineHour({ year: 1936, month: 1, day: 5, hour: 12 })!;
+  const cols: TableColumnSpec[] = [
+    { key: 'date', label: 'Date', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'date' },
+    { key: 'event', label: 'Event', as: 'plain', offered: ['plain'], priority: 1, text: true, cellKind: 'item' },
+    { key: 'last', label: 'Last', as: 'plain', offered: ['plain'], priority: 2, numeric: true, cellKind: 'date' },
+    { key: 'span', label: 'Span', as: 'plain', offered: ['plain'], priority: 3, cellKind: 'date', headerGroup: { kind: 'pair', labels: ['Start', 'End'] } },
+  ];
+  const rows: TableRow[] = [
+    {
+      key: 'dated',
+      name: 'Market purchase',
+      cells: {
+        date: { value: knownValue(datedHour) },
+        event: { value: knownValue('Market purchase') },
+        last: { value: knownValue(BigInt(midnightHour)) },
+        span: { value: knownValue(midnightHour), pair: [knownValue(midnightHour), knownValue(rangeEndHour)] },
+      },
+    },
+    {
+      key: 'partial-and-range',
+      name: 'Estimated sighting',
+      cells: {
+        date: { value: partialValue(datedHour, 'Estimated from nearby hour') },
+        event: { value: knownValue('Estimated sighting') },
+        last: { value: knownValue('1 Jan 1936 \u2013 5 Jan 1936') },
+        span: { value: notApplicable('Single point') },
+      },
+    },
+    {
+      key: 'zero-and-missing',
+      name: 'Zero and missing',
+      cells: {
+        date: { value: zeroValue(0) },
+        event: { value: knownValue('Zero and missing') },
+        last: { value: notRecorded('Last delivery date not recorded') },
+        span: { value: notRecorded('Span not recorded') },
+      },
+    },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'normal', sort: { column: 'date', direction: 'descending' } });
+  const flat = resolveTableRows({ hour: datedHour, columns: cols, rows, unsorted: true }, settings);
+  const mirror = deriveTableMirror(flat, cols, false);
+
+  for (const row of rows) {
+    const mirrorRow = mirror.rows.find(entry => entry.key === row.key)!;
+    const tip = deriveTableTooltip(flat, row.key, cols)!;
+    for (const colKey of ['date', 'last'] as const) {
+      const col = cols.find(c => c.key === colKey)!;
+      const mirrorSpoken = mirrorRow.cells.find(cell => cell.column === colKey)!.spoken;
+      const tipRow = tip.rows.find(entry => entry.label === col.label)!;
+      assert.equal(mirrorSpoken, valueStateText(tipRow.valueState!), `${row.key}.${colKey}: mirror text matches tooltip date text`);
+      assert.doesNotMatch(mirrorSpoken, /\b\d{2},\d{3},\d{3}\b/, `${row.key}.${colKey}: never spoken as an eight-digit hour count`);
+    }
+  }
+
+  const datedMirror = mirror.rows.find(entry => entry.key === 'dated')!;
+  assert.equal(datedMirror.cells.find(cell => cell.column === 'date')!.spoken, formatDateHover(datedHour));
+  assert.equal(datedMirror.cells.find(cell => cell.column === 'last')!.spoken, formatDateHover(midnightHour));
+  const spanMirror = datedMirror.cells.find(cell => cell.column === 'span')!.spoken;
+  const datedTip = deriveTableTooltip(flat, 'dated', cols)!;
+  const startTip = valueStateText(datedTip.rows.find(entry => entry.label === 'Span (Start)')!.valueState!);
+  const endTip = valueStateText(datedTip.rows.find(entry => entry.label === 'Span (End)')!.valueState!);
+  assert.equal(spanMirror, `Start ${startTip}, End ${endTip}`);
+  assert.equal(startTip, formatDateHover(midnightHour));
+  assert.equal(endTip, formatDateHover(rangeEndHour));
+
+  const partialMirror = mirror.rows.find(entry => entry.key === 'partial-and-range')!;
+  const partialTip = deriveTableTooltip(flat, 'partial-and-range', cols)!;
+  assert.equal(partialMirror.cells.find(cell => cell.column === 'date')!.spoken, `${formatDateHover(datedHour)}, partial: Estimated from nearby hour`);
+  assert.equal(partialMirror.cells.find(cell => cell.column === 'last')!.spoken, '1 Jan 1936 \u2013 5 Jan 1936');
+  const partialSpanMirror = partialMirror.cells.find(cell => cell.column === 'span')!.spoken;
+  const partialSpanTip = valueStateText(partialTip.rows.find(entry => entry.label === 'Span')!.valueState!);
+  assert.equal(partialSpanMirror, partialSpanTip);
+  assert.equal(partialSpanMirror, 'Not applicable: Single point');
+
+  const zeroMirror = mirror.rows.find(entry => entry.key === 'zero-and-missing')!;
+  assert.equal(zeroMirror.cells.find(cell => cell.column === 'date')!.spoken, formatDateHover(0));
+  assert.equal(zeroMirror.cells.find(cell => cell.column === 'last')!.spoken, 'Not recorded: Last delivery date not recorded');
 });

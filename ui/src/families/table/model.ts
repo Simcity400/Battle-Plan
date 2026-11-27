@@ -15,6 +15,7 @@ import {
   knownValue,
   notApplicable,
   notRecorded,
+  partialValue,
   valueFromLive,
   valueFromNullable,
   valueFromRawBigInt,
@@ -1158,6 +1159,16 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
   return out;
 }
 
+function presentTableCellValue(value: Value, cellKind: TableCellKind | undefined): Value {
+  if (cellKind !== 'date' || !hasMeasuredValue(value)) return value;
+  const raw = value.value;
+  if (typeof raw !== 'number' && typeof raw !== 'bigint') return value;
+  const formatted = formatDateHover(Number(raw));
+  return value.kind === 'partial'
+    ? partialValue(formatted, value.reason, value.atLeast ? { atLeast: true } : undefined)
+    : knownValue(formatted);
+}
+
 export function deriveTableMirror(
   flatRows: readonly FlatTableRow[],
   columns: readonly TableColumnSpec[],
@@ -1230,12 +1241,14 @@ export function deriveTableMirror(
       cells: columns.map(col => {
         const cell = item.row.cells[col.key];
         const resolved = cell ? resolveCellAtHour(cell) : { value: notRecorded('Not recorded') };
+        const format = cell?.format ?? col.format;
         const group = col.headerGroup;
         if (group?.kind === 'pair' && cell?.pair) {
-          const spoken = cell.pair.map((value, i) => group.labels[i] + ' ' + spokenValue(value, cell.format ?? col.format)).join(', ');
+          const spoken = cell.pair.map((value, i) => group.labels[i] + ' ' + spokenValue(presentTableCellValue(value, col.cellKind), format)).join(', ');
           return { column: col.key, spoken };
         }
-        return { column: col.key, spoken: cell?.loading ? formatValueState(resolved.value, cell.format ?? col.format, { loading: true }).spoken : spokenValue(resolved.value, cell?.format ?? col.format) };
+        const value = presentTableCellValue(resolved.value, col.cellKind);
+        return { column: col.key, spoken: cell?.loading ? formatValueState(value, format, { loading: true }).spoken : spokenValue(value, format) };
       }),
     };
   });
@@ -1315,17 +1328,14 @@ export function deriveRowTooltip(
     }
     const resolved = resolveCellAtHour(cell);
     if (col.cellKind === 'item' && hasMeasuredValue(resolved.value) && String(resolved.value.value) === title) continue;
-    if (col.cellKind === 'date' && hasMeasuredValue(resolved.value) && typeof resolved.value.value === 'number') {
-      const hoverDate = formatDateHover(resolved.value.value);
-      rows.push(tooltipRowFromValue(col.label || 'Date', knownValue(hoverDate)));
-      continue;
-    }
+    const format = cell.format ?? col.format;
     if (col.headerGroup?.kind === 'pair' && cell.pair) {
       for (const [i, value] of cell.pair.entries()) {
-        rows.push(tooltipRowFromValue(col.label + ' (' + col.headerGroup.labels[i] + ')', value, cell.format ?? col.format));
+        rows.push(tooltipRowFromValue(col.label + ' (' + col.headerGroup.labels[i] + ')', presentTableCellValue(value, col.cellKind), format));
       }
     } else {
-      rows.push(tooltipRowFromValue(cell.tooltipLabel ?? col.label, resolved.value, cell.format ?? col.format));
+      const label = cell.tooltipLabel ?? (col.label || (col.cellKind === 'date' ? 'Date' : ''));
+      rows.push(tooltipRowFromValue(label, presentTableCellValue(resolved.value, col.cellKind), format));
     }
   }
   for (let i = 0; i < allColumns.length; i++) {
