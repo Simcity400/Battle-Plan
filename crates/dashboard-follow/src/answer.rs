@@ -11,6 +11,7 @@ pub(crate) const NOT_RECORDED: u8 = 0;
 pub(crate) const ROWS: u8 = 1;
 pub(crate) const LOG: u8 = 2;
 pub(crate) const CHANGED: u8 = 3;
+pub(crate) const STOPPED: u8 = 4;
 
 const RESET: u32 = 1;
 pub(crate) const CANONICAL: u8 = 1;
@@ -224,6 +225,15 @@ pub fn not_recorded(reason: &str, out: &mut Vec<u8>) {
     texts(out, std::iter::once(reason));
 }
 
+pub fn stopped(reason: &str, out: &mut Vec<u8>) {
+    head(out, STOPPED, 0, 0, 0, 1);
+    texts(out, std::iter::once(reason));
+}
+
+pub fn resets(message: &[u8]) -> bool {
+    message.len() >= 8 && message.starts_with(&MAGIC.to_le_bytes()) && u32::from_le_bytes(message[4..8].try_into().expect("four bytes")) & RESET != 0
+}
+
 pub fn begin(out: &mut Vec<u8>, route: u32, clock: i32, hour: Hour, seek: u32, reset: bool) {
     debug_assert!(route <= ROUTES, "a route fits above the reset bit");
     out.clear();
@@ -335,6 +345,7 @@ pub struct Answer {
     pub canonical: bool,
     pub texts: Vec<String>,
     pub not_recorded: Option<String>,
+    pub stopped: Option<String>,
 }
 
 impl Answer {
@@ -348,11 +359,11 @@ impl Answer {
         let numbers = |reader: &mut Reader<'_>, count: usize| -> io::Result<Vec<u64>> {
             Ok(reader.take(count * 8)?.chunks_exact(8).map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes"))).collect())
         };
-        let mut answer = Self { columns, keys: Vec::new(), values: Vec::new(), states: Vec::new(), reasons: Vec::new(), names: Vec::new(), hours: None, changed: kind == CHANGED, canonical: flags & CANONICAL != 0, texts: Vec::new(), not_recorded: None };
-        if kind > CHANGED {
+        let mut answer = Self { columns, keys: Vec::new(), values: Vec::new(), states: Vec::new(), reasons: Vec::new(), names: Vec::new(), hours: None, changed: kind == CHANGED, canonical: flags & CANONICAL != 0, texts: Vec::new(), not_recorded: None, stopped: None };
+        if kind > STOPPED {
             return Err(invalid(format!("No followed answer kind {kind}")));
         }
-        if kind != NOT_RECORDED {
+        if kind != NOT_RECORDED && kind != STOPPED {
             let low = numbers(&mut reader, rows)?;
             let high = numbers(&mut reader, rows)?;
             answer.keys = low.iter().zip(&high).map(|(&low, &high)| u128::from(high) << 64 | u128::from(low)).collect();
@@ -384,6 +395,8 @@ impl Answer {
         }
         if kind == NOT_RECORDED {
             answer.not_recorded = Some(answer.texts.first().cloned().ok_or_else(|| invalid("A not recorded answer gives no reason"))?);
+        } else if kind == STOPPED {
+            answer.stopped = Some(answer.texts.first().cloned().ok_or_else(|| invalid("A stopped answer gives no reason"))?);
         }
         Ok(answer)
     }
@@ -399,103 +412,4 @@ impl Answer {
     pub fn name(&self, row: usize) -> Option<&str> {
         self.names.get(row).and_then(|&at| self.texts.get(at as usize)).map(String::as_str)
     }
-}
-
-pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
-    let (old, new) = (decode(older)?, decode(newer)?);
-    if old.route != new.route || old.stamp != new.stamp {
-        return Err(invalid("Messages of two follows do not merge"));
-    }
-    let mut out = Vec::with_capacity(older.len() + newer.len());
-    begin(&mut out, new.route, new.stamp.1, new.hour, new.stamp.0, old.reset || new.reset);
-    for &(id, mut through) in &new.limited {
-        if !new.reset && !new.answers.iter().any(|&(answered, ..)| answered == id) {
-            let earlier = old.limited.iter().rev().find(|&&(limited, _)| limited == id).map_or(old.hour, |&(_, hour)| hour);
-            through = through.max(earlier);
-        }
-        push(&mut out, id, through, &[]);
-    }
-    let mut superseded = 0;
-    let is_log = |body: &[u8]| body.first() == Some(&LOG);
-    let laid = |earlier: &[u8], later: &[u8]| later.first() == Some(&CHANGED) && matches!(earlier.first(), Some(&ROWS | &CHANGED));
-    for (at, &(id, hour, body)) in old.answers.iter().enumerate() {
-        if new.reset {
-            superseded += 1;
-        } else if let Some(&(.., later)) = new.answers.iter().find(|&&(held, ..)| held == id) {
-            if !is_log(body) && !laid(body, later) {
-                superseded += 1;
-            }
-        } else {
-            push_held(&mut out, id, hour, body, old.held[at]);
-        }
-    }
-    for (at, &(id, hour, body)) in new.answers.iter().enumerate() {
-        match old.answers.iter().find(|&&(held, ..)| held == id).map(|&(.., earlier)| earlier) {
-            Some(earlier) if is_log(earlier) && is_log(body) && !new.reset => push(&mut out, id, hour, &logs(earlier, body)?),
-            Some(earlier) if !new.reset && laid(earlier, body) => {
-                let merged = changed(earlier, body)?;
-                let whole = if merged.first() == Some(&CHANGED) { new.held[at] } else { 0 };
-                push_held(&mut out, id, hour, &merged, whole);
-            }
-            _ => push_held(&mut out, id, hour, body, new.held[at]),
-        }
-    }
-    Ok((out, superseded))
-}
-
-fn copy_row(table: &mut Table, answer: &Answer, row: usize) {
-    table.row(answer.keys[row]);
-    for column in 0..answer.columns {
-        table.cell(answer.values[row * answer.columns + column], answer.states[row * answer.columns + column]);
-    }
-    if let Some(reason) = answer.reason(row) {
-        table.explain(reason);
-    }
-    if let Some(name) = answer.name(row) {
-        table.name(name);
-    }
-}
-
-fn changed(earlier: &[u8], later: &[u8]) -> io::Result<Vec<u8>> {
-    let (a, b) = (Answer::parse(earlier)?, Answer::parse(later)?);
-    if a.columns != b.columns {
-        return Err(invalid("Rows changed are of another shape than the rows they change"));
-    }
-    let by_key: std::collections::HashMap<u128, usize> = b.keys.iter().enumerate().map(|(row, &key)| (key, row)).collect();
-    let held: std::collections::HashSet<u128> = a.keys.iter().copied().collect();
-    let new: Vec<usize> = (0..b.rows()).filter(|&row| !held.contains(&b.keys[row])).collect();
-    if !a.changed && !new.is_empty() {
-        return Err(invalid("Rows changed name a key the rows they change do not hold"));
-    }
-    let mut rows: Vec<(u128, &Answer, usize)> = (0..a.rows()).map(|row| match by_key.get(&a.keys[row]) {
-        Some(&later) => (a.keys[row], &b, later),
-        None => (a.keys[row], &a, row),
-    }).collect();
-    rows.extend(new.into_iter().map(|row| (b.keys[row], &b, row)));
-    if a.canonical && b.canonical {
-        rows.sort_unstable_by_key(|&(key, ..)| key);
-    }
-    let mut table = Table::default();
-    table.clear(a.columns, false);
-    for (_, answer, row) in rows {
-        copy_row(&mut table, answer, row);
-    }
-    let mut out = Vec::new();
-    if a.changed { table.encode_changed(&mut out) } else { table.encode(&mut out) }
-    Ok(out)
-}
-
-fn logs(earlier: &[u8], later: &[u8]) -> io::Result<Vec<u8>> {
-    let mut table = Table::default();
-    let (a, b) = (Answer::parse(earlier)?, Answer::parse(later)?);
-    table.clear(a.columns, true);
-    for answer in [&a, &b] {
-        for row in 0..answer.rows() {
-            table.hours.push(answer.hours.as_ref().map_or(0, |hours| hours[row]));
-            copy_row(&mut table, answer, row);
-        }
-    }
-    let mut out = Vec::new();
-    table.encode(&mut out);
-    Ok(out)
 }

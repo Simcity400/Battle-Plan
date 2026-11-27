@@ -29,6 +29,7 @@ pub struct Anchor {
 
 pub trait Hosted: Send + Sync {
     fn follow(&self) -> &Follow;
+    fn follow_query(&self, id: u32, query: Query) -> io::Result<()> { self.follow().follow(id, query) }
     fn lacks(&self, table: usize) -> Option<String>;
     fn anchor(&self, anchor: Anchor);
     fn prepare_panel(&self, _panel: Box<dyn Panel>) -> Result<PreparedPanel<'_>, String> {
@@ -246,7 +247,7 @@ impl Registry {
                 let is_panel = matches!(made, Made::Panel(_));
                 let registered = match made {
                     Made::Panel(install) => install(id, lanes),
-                    Made::Query(query) => host.follow().follow(id, query).map_err(|error| error.to_string()),
+                    Made::Query(query) => host.follow_query(id, query).map_err(|error| error.to_string()),
                 };
                 if let Err(reason) = registered { return Ok(unavailable(reason)); }
                 let old = lock(&self.followed).held.get_mut(&id).expect("the installing subscription").installed.replace(Followed { serial: reservation.serial, path: path.to_path_buf(), branch, clock, host: Arc::clone(&host), panel: is_panel });

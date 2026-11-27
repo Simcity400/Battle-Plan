@@ -1011,43 +1011,21 @@ fn a_failed_write_stops_the_pushed_answers_by_name() {
 }
 
 #[test]
-fn push_queues_charge_one_budget_and_count_only_pressure_merges() {
+fn push_queues_charge_one_budget() {
     use crate::push::Push;
     let packet = one(7, 24, 1);
-    let budget = playhead::ByteBudget::new(crate::answer::charge(&packet) * 2);
+    let one_charge = crate::answer::charge(&packet);
+    let budget = playhead::ByteBudget::new(one_charge * 4);
     let first = Push::with_budget(budget.clone());
     let second = Push::with_budget(budget.clone());
     first.offer(packet.clone());
-    second.head(0, 0, 100);
-    second.offer(packet.clone());
     second.offer(packet);
-    assert_eq!(second.counters().pressure_merges, 0);
     second.offer(one(7, 48, 2));
-    assert_eq!((second.counters().pressure_merges, second.counters().merges), (0, 2), "hours the clock passed merge before any pressure");
+    assert_eq!(budget.used(), one_charge * 3);
     assert!(second.failed().is_none());
     first.take_waiting();
     drop(second);
     assert_eq!(budget.used(), 0);
-}
-
-#[test]
-fn a_merge_that_fails_sends_both_messages_as_they_are_in_order() {
-    use crate::push::{Push, read_frame};
-    let push = Push::default();
-    push.offer(rows_message(10, false, &[(1, 10)]));
-    push.offer(rows_message(10, true, &[(9, 1)]));
-    for step in 0..3 {
-        push.offer(one(7, 12 + step, i64::from(step)));
-    }
-    assert_eq!(push.counters().unmerged, 1);
-    push.stop();
-    let mut pipe = Vec::new();
-    push.drain(&mut pipe).unwrap();
-    let (mut input, mut payload, mut fours) = (pipe.as_slice(), Vec::new(), Vec::new());
-    while read_frame(&mut input, &mut payload).unwrap().is_some() {
-        fours.extend(decode(&payload).unwrap().answers.into_iter().filter(|&(id, ..)| id == 4).map(|(.., body)| Answer::parse(body).unwrap()));
-    }
-    assert_eq!(fours.iter().map(|answer| (answer.changed, answer.keys.clone())).collect::<Vec<_>>(), vec![(false, vec![1]), (true, vec![9])], "both reached the reader, in order");
 }
 
 #[test]
@@ -1683,222 +1661,6 @@ fn rows_message(hour: Hour, changed: bool, rows: &[(u128, i64)]) -> Vec<u8> {
     message
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct ConfirmedHead {
-    hour: Hour,
-    through: Hour,
-    body: Vec<u8>,
-    open: bool,
-}
-
-fn confirmation_seeds() -> BTreeMap<u32, Vec<ConfirmedHead>> {
-    [7, 8].into_iter().map(|id| (id, vec![ConfirmedHead { hour: 0, through: 0, body: body(id, 0), open: true }])).collect()
-}
-
-fn add_confirmed(heads: &mut BTreeMap<u32, Vec<ConfirmedHead>>, id: u32, hour: Hour, body: &[u8]) {
-    let facts = heads.entry(id).or_default();
-    if facts.last().is_some_and(|last| last.hour == hour) {
-        facts.pop();
-    } else if let Some(last) = facts.last_mut().filter(|last| last.through >= hour) {
-        last.through = hour - 1;
-    }
-    facts.push(ConfirmedHead { hour, through: hour, body: body.to_vec(), open: true });
-}
-
-fn assert_latest_confirmation_and_coverage_subset(merged: &BTreeMap<u32, Vec<ConfirmedHead>>, sequential: &BTreeMap<u32, Vec<ConfirmedHead>>) {
-    assert_eq!(merged.keys().collect::<Vec<_>>(), sequential.keys().collect::<Vec<_>>());
-    for (&id, facts) in merged {
-        let expected = &sequential[&id];
-        assert_eq!(facts.last(), expected.last(), "latest fact of {id}");
-        for fact in facts {
-            let sequential = expected.iter().find(|held| held.hour == fact.hour && held.body == fact.body).expect("a merged fact was received sequentially");
-            assert!(fact.through <= sequential.through, "id {id}, fact at {}: merged confirmation {} exceeds sequential {}", fact.hour, fact.through, sequential.through);
-        }
-    }
-}
-
-fn follow_packet(hour: Hour, reset: bool, limit: Option<Hour>, reading: Option<Hour>) -> Vec<u8> {
-    let mut out = Vec::new();
-    crate::answer::begin(&mut out, 0, 0, hour, 0, reset);
-    if let Some(through) = limit { crate::answer::push(&mut out, 7, through, &[]); }
-    if let Some(at) = reading { crate::answer::push(&mut out, 7, at, &body(7, i64::from(at))); }
-    out
-}
-
-fn follow_page(messages: &[&[u8]]) -> (BTreeMap<u32, Vec<ConfirmedHead>>, Vec<u32>) {
-    let mut heads = confirmation_seeds();
-    let mut limited = Vec::new();
-    for bytes in messages {
-        let message = decode(bytes).unwrap();
-        if message.reset { heads.clear(); }
-        for (id, hour, body) in message.answers {
-            add_confirmed(&mut heads, id, hour, body);
-        }
-        for (&id, facts) in &mut heads {
-            let head = facts.last_mut().unwrap();
-            let through = message.limited.iter().rev().find(|&&(held, _)| held == id).map_or(message.hour, |&(_, through)| through);
-            head.through = head.through.max(through);
-        }
-        limited = message.limited.iter().map(|&(id, _)| id).collect();
-        limited.sort_unstable();
-        limited.dedup();
-    }
-    (heads, limited)
-}
-
-fn assert_follow_confirmation_merge(older: &[u8], newer: &[u8], through: Hour) {
-    let sequential = follow_page(&[older, newer]);
-    assert_eq!(sequential.0.get(&7).and_then(|facts| facts.last()).map(|head| head.through), Some(through));
-    let (merged, _) = crate::answer::merge(older, newer).unwrap();
-    let applied = follow_page(&[&merged]);
-    assert_eq!(applied.1, sequential.1);
-    assert_latest_confirmation_and_coverage_subset(&applied.0, &sequential.0);
-}
-
-#[test]
-fn follow_merge_keeps_a_confirmation_when_a_limit_retreats() {
-    assert_follow_confirmation_merge(&follow_packet(10, false, Some(8), None), &follow_packet(20, false, Some(4), None), 8);
-}
-
-#[test]
-fn follow_merge_keeps_an_implicit_confirmation_before_a_limit() {
-    assert_follow_confirmation_merge(&follow_packet(10, false, None, None), &follow_packet(20, false, Some(4), None), 10);
-}
-
-#[test]
-fn follow_merge_keeps_a_retained_answers_confirmation_before_a_limit() {
-    for (limit, through) in [(Some(8), 8), (None, 10)] {
-        assert_follow_confirmation_merge(&follow_packet(10, false, limit, Some(6)), &follow_packet(20, false, Some(4), None), through);
-    }
-}
-
-#[test]
-fn follow_merge_limit_equivalence_cases() {
-    for (name, older, newer) in [
-        ("older limit omitted", follow_packet(10, false, Some(8), None), follow_packet(20, false, None, None)),
-        ("unread limit omitted", follow_packet(10, false, Some(Hour::MIN), None), follow_packet(20, false, None, None)),
-        ("limit advances", follow_packet(10, false, Some(8), None), follow_packet(20, false, Some(14), None)),
-        ("limit unchanged", follow_packet(10, false, Some(8), None), follow_packet(20, false, Some(8), None)),
-        ("new answer", follow_packet(10, false, Some(8), None), follow_packet(20, false, None, Some(16))),
-        ("new limited answer", follow_packet(10, false, Some(8), None), follow_packet(20, false, Some(4), Some(16))),
-        ("new delayed answer", follow_packet(10, false, Some(8), None), follow_packet(20, false, Some(4), Some(3))),
-        ("older reset", follow_packet(10, true, None, Some(6)), follow_packet(20, false, Some(4), None)),
-        ("newer reset", follow_packet(10, false, Some(8), Some(6)), follow_packet(20, true, Some(4), None)),
-        ("newer reset answer", follow_packet(10, false, Some(8), Some(6)), follow_packet(20, true, Some(4), Some(3))),
-        ("retained limited answer", follow_packet(10, false, Some(8), Some(6)), follow_packet(20, false, None, None)),
-        ("retained answer limit advances", follow_packet(10, false, None, Some(6)), follow_packet(20, false, Some(14), None)),
-    ] {
-        let (merged, _) = crate::answer::merge(&older, &newer).unwrap();
-        let (applied, limited) = follow_page(&[&merged]);
-        let (sequential, sequential_limited) = follow_page(&[&older, &newer]);
-        assert_eq!(limited, sequential_limited, "{name}");
-        assert_latest_confirmation_and_coverage_subset(&applied, &sequential);
-    }
-}
-
-fn panel_packet(through: Option<Hour>, records: &[(u32, Hour, u8, &[u8])]) -> Vec<u8> {
-    let mut batch = crate::panel::dated::ProductBatch::new((0, 0, 0));
-    for &(id, hour, kind, body) in records { batch.changed(id, hour, kind, body); }
-    batch.finish(through)
-}
-
-fn panel_page(messages: &[&[u8]]) -> BTreeMap<u32, Vec<ConfirmedHead>> {
-    use crate::panel::dated;
-    let mut heads = confirmation_seeds();
-    for bytes in messages {
-        for record in dated::records(bytes).unwrap() {
-            if record.kind == dated::COMPLETED {
-                for facts in heads.values_mut() {
-                    let head = facts.last_mut().unwrap();
-                    if head.open { head.through = head.through.max(record.hour); }
-                }
-                continue;
-            }
-            if matches!(record.kind, dated::DATA | dated::REFUSED | dated::STOPPED) {
-                add_confirmed(&mut heads, record.id, record.hour, record.body);
-                continue;
-            }
-            let head = heads.get_mut(&record.id).unwrap().last_mut().unwrap();
-            match record.kind {
-                dated::STANDS => { head.through = head.through.max(record.hour); head.open = true; }
-                dated::AGAIN => {
-                    let body = head.body.clone();
-                    add_confirmed(&mut heads, record.id, record.hour, &body);
-                }
-                dated::WAITING => head.open = false,
-                _ => panic!("unknown dated panel kind"),
-            }
-        }
-    }
-    heads
-}
-
-fn assert_panel_confirmation_merge(older: &[u8], newer: &[u8], through: Hour) {
-    let sequential = panel_page(&[older, newer]);
-    assert_eq!(sequential[&7].last().unwrap().through, through);
-    let result = crate::panel::dated::merge(older, newer);
-    assert!(result.is_err(), "a confirmation before WAITING must not merge away");
-    let delivered = result.map_or_else(|_| vec![older.to_vec(), newer.to_vec()], |(merged, _)| vec![merged]);
-    let applied = panel_page(&delivered.iter().map(Vec::as_slice).collect::<Vec<_>>());
-    assert_latest_confirmation_and_coverage_subset(&applied, &sequential);
-}
-
-#[test]
-fn dated_panel_merge_keeps_a_readings_completion_before_waiting() {
-    use crate::panel::dated;
-    assert_panel_confirmation_merge(&panel_packet(Some(10), &[(7, 6, dated::DATA, b"value")]), &panel_packet(Some(20), &[(7, 14, dated::WAITING, b"")]), 10);
-}
-
-#[test]
-fn dated_panel_merge_keeps_an_implicit_completion_before_waiting() {
-    use crate::panel::dated;
-    assert_panel_confirmation_merge(&panel_packet(Some(10), &[]), &panel_packet(Some(20), &[(7, 14, dated::WAITING, b"")]), 10);
-}
-
-#[test]
-fn dated_panel_merge_keeps_an_explicit_confirmation_before_waiting() {
-    use crate::panel::dated;
-    assert_panel_confirmation_merge(&panel_packet(None, &[(7, 6, dated::DATA, b"value"), (7, 10, dated::STANDS, b"")]), &panel_packet(None, &[(7, 14, dated::WAITING, b"")]), 10);
-}
-
-#[test]
-fn dated_panel_merge_limit_equivalence_cases() {
-    use crate::panel::dated;
-    for (name, older, newer) in [
-        ("older waiting omitted", panel_packet(Some(10), &[(7, 8, dated::WAITING, b"")]), panel_packet(Some(20), &[])),
-        ("waiting repeated", panel_packet(Some(10), &[(7, 8, dated::WAITING, b"")]), panel_packet(Some(20), &[(7, 14, dated::WAITING, b"")])),
-        ("waiting then answered", panel_packet(Some(10), &[(7, 8, dated::WAITING, b"")]), panel_packet(Some(20), &[(7, 16, dated::DATA, b"value")])),
-        ("reading confirms completion", panel_packet(Some(10), &[(7, 10, dated::DATA, b"value")]), panel_packet(Some(20), &[(7, 14, dated::WAITING, b"")])),
-        ("waiting then stands", panel_packet(Some(10), &[(7, 8, dated::WAITING, b"")]), panel_packet(Some(20), &[(7, 14, dated::STANDS, b"")])),
-    ] {
-        let (merged, _) = dated::merge(&older, &newer).unwrap();
-        let applied = panel_page(&[&merged]);
-        let sequential = panel_page(&[&older, &newer]);
-        assert_eq!(applied[&7].last(), sequential[&7].last(), "{name}");
-        assert_latest_confirmation_and_coverage_subset(&applied, &sequential);
-    }
-}
-
-#[test]
-fn rows_changed_queued_behind_the_rows_they_change_are_laid_over_them_never_dropped() {
-    let whole = rows_message(10, false, &[(1, 10), (2, 20), (3, 30)]);
-    let first = rows_message(11, true, &[(2, 21)]);
-    let second = rows_message(12, true, &[(3, 32), (2, 22)]);
-    let (merged, superseded) = crate::answer::merge(&first, &second).unwrap();
-    assert_eq!(superseded, 0, "rows changed are laid over, not superseded");
-    let (_, _, body) = decode(&merged).unwrap().answers[0];
-    let changed = Answer::parse(body).unwrap();
-    assert!(changed.changed);
-    assert_eq!((changed.keys.clone(), changed.values), (vec![2, 3], vec![22, 32]), "two changes are the newer of each row");
-    let (merged, _) = crate::answer::merge(&whole, &merged).unwrap();
-    let decoded = decode(&merged).unwrap();
-    assert_eq!(decoded.hour, 12);
-    let rows = Answer::parse(decoded.answers[0].2).unwrap();
-    assert!(!rows.changed, "changes laid over whole rows are whole rows");
-    assert_eq!((rows.keys, rows.values), (vec![1, 2, 3], vec![10, 22, 32]));
-    assert!(crate::answer::merge(&rows_message(10, false, &[(1, 10)]), &rows_message(11, true, &[(9, 1)])).is_err(), "a change of a row not held is refused by name");
-}
-
 #[test]
 fn a_live_step_reads_the_cells_of_the_rows_it_touched_only() {
     let pages = record(quiet);
@@ -1930,97 +1692,9 @@ fn a_live_step_reads_the_cells_of_the_rows_it_touched_only() {
 }
 
 #[test]
-fn dated_panel_merge_keeps_the_reading_and_its_confirmation_separate() {
-    use crate::panel::dated::{self, Update};
-    let data = Ok(serde_json::json!({"rows": [7]}));
-    let packet = |update| dated::message(4, 8, 2, &[update]);
-    let (merged, _) = dated::merge(&packet(Update::Data(7, 10, &data)), &packet(Update::Stands(7, 24))).unwrap();
-    let records = dated::records(&merged).unwrap();
-    assert_eq!(records[0].body, b"\x81\xa4rows\x91\x07", "the worker reads MessagePack data records");
-    assert_eq!(records.iter().map(|r| (r.kind, r.hour)).collect::<Vec<_>>(), [(dated::DATA, 10), (dated::STANDS, 24)]);
-    assert!(dated::merge(&merged, &dated::message(4, 8, 3, &[Update::Stands(7, 30)])).is_err());
-}
-
-#[test]
-fn dated_panel_merge_survives_a_waiting_product_and_coalesces_siblings() {
-    use crate::panel::dated;
-    let step = |hour, records: &[(u32, u8, &[u8])]| {
-        let mut batch = dated::ProductBatch::new((0, 3, 9));
-        for &(id, kind, body) in records {
-            batch.changed(id, hour, kind, body);
-        }
-        batch.finish(Some(hour))
-    };
-    let (merged, superseded) = dated::merge(&step(10, &[(7, dated::DATA, b"v1")]), &step(34, &[(7, dated::WAITING, b"")])).unwrap();
-    assert_eq!(superseded, 1);
-    assert_eq!(
-        dated::records(&merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour, r.body)).collect::<Vec<_>>(),
-        [(7, dated::DATA, 10, &b"v1"[..]), (7, dated::WAITING, 34, &b""[..]), (0, dated::COMPLETED, 34, &b""[..])]
-    );
-    let (merged, superseded) = dated::merge(
-        &step(34, &[(7, dated::WAITING, b""), (8, dated::DATA, b"older-payload")]),
-        &step(58, &[(7, dated::WAITING, b""), (8, dated::DATA, b"newer")]),
-    ).unwrap();
-    assert_eq!(superseded, 3);
-    assert_eq!(
-        dated::records(&merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour, r.body)).collect::<Vec<_>>(),
-        [(7, dated::WAITING, 34, &b""[..]), (8, dated::DATA, 58, &b"newer"[..]), (0, dated::COMPLETED, 58, &b""[..])]
-    );
-    let (merged, superseded) = dated::merge(&step(34, &[(7, dated::WAITING, b"")]), &step(58, &[(7, dated::DATA, b"ready")])).unwrap();
-    assert_eq!(superseded, 1);
-    assert_eq!(
-        dated::records(&merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour, r.body)).collect::<Vec<_>>(),
-        [(7, dated::WAITING, 34, &b""[..]), (7, dated::DATA, 58, &b"ready"[..]), (0, dated::COMPLETED, 58, &b""[..])]
-    );
-    assert!(dated::merge(&step(10, &[(7, dated::DATA, b"x")]), &step(34, &[(8, dated::STANDS, b"")])).is_ok());
-    let records = |merged: &[u8]| dated::records(merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>();
-    let (merged, _) = dated::merge(&step(10, &[(7, dated::DATA, b"v1")]), &step(34, &[(7, dated::AGAIN, b"")])).unwrap();
-    assert_eq!(records(&merged), [(7, dated::DATA, 10), (7, dated::AGAIN, 34), (0, dated::COMPLETED, 34)], "AGAIN restates the reading before it, so it never travels without it");
-    let (merged, _) = dated::merge(&step(34, &[(7, dated::AGAIN, b"")]), &step(58, &[(7, dated::DATA, b"v2")])).unwrap();
-    assert_eq!(records(&merged), [(7, dated::DATA, 58), (0, dated::COMPLETED, 58)]);
-}
-
-#[test]
-fn passed_panel_messages_coalesce_with_waiting_and_interleaved_steps() {
-    use crate::panel::dated;
-    use crate::push::{FOLLOW, PANEL, Push};
-    let panel_step = |hour, body: &[u8]| {
-        let mut batch = dated::ProductBatch::new((0, 0, 0));
-        batch.changed(7, hour, dated::WAITING, b"");
-        batch.changed(8, hour, dated::DATA, body);
-        batch.finish(Some(hour))
-    };
-    let payload = vec![b'a'; 512];
-    let one_panel = panel_step(10, &payload);
-    let one_step = rows_message(10, false, &[(1, 1)]);
-    let budget = playhead::ByteBudget::new(1 << 20);
-    let push = Push::with_budget(budget.clone());
-    push.head(0, 0, 5);
-    for (hour, value) in [(10, 1), (20, 2), (30, 3)] {
-        push.offer_kind(FOLLOW, rows_message(hour, false, &[(1, value)]));
-        push.offer_kind(PANEL, panel_step(hour, &payload));
-    }
-    assert_eq!(push.counters().merges, 0);
-    assert_eq!(budget.used(), 3 * (crate::answer::charge(&one_step) + crate::answer::charge(&one_panel)));
-    push.head(0, 0, 35);
-    assert_eq!(push.counters().merges, 4);
-    assert_eq!(push.counters().unmerged, 0);
-    assert_eq!(budget.used(), crate::answer::charge(&one_step) + crate::answer::charge(&one_panel));
-    let (first_kind, first_bytes, ..) = push.try_take().unwrap();
-    let (second_kind, second_bytes, ..) = push.try_take().unwrap();
-    assert!(push.try_take().is_none());
-    let panel_bytes = if first_kind == PANEL { first_bytes } else { assert_eq!(second_kind, PANEL); second_bytes };
-    let records = dated::records(&panel_bytes).unwrap();
-    assert_eq!(
-        records.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(),
-        [(7, dated::WAITING, 10), (8, dated::DATA, 30), (0, dated::COMPLETED, 30)]
-    );
-}
-
-#[test]
 fn a_panel_past_the_budget_is_sent_whole_and_never_refused() {
     use crate::panel::dated;
-    use crate::push::{PANEL, Push};
+    use crate::push::{PANEL, Panels, Push};
     let mut batch = dated::ProductBatch::new((0, 0, 0));
     batch.changed(1, 40, dated::DATA, b"small-one");
     batch.changed(2, 40, dated::DATA, &vec![b'x'; 2048]);
@@ -2029,7 +1703,7 @@ fn a_panel_past_the_budget_is_sent_whole_and_never_refused() {
     let budget = playhead::ByteBudget::new(2048);
     let push = Push::with_budget(budget.clone());
     let session = push.session();
-    push.offer_kind(PANEL, packet);
+    push.offer_panel(session, packet, Panels::All, false);
     assert!(push.failed().is_none());
     assert!(budget.full(), "the queue is charged past the budget, which holds read-ahead back");
     let (kind, sent, ..) = push.try_take().unwrap();
@@ -2042,7 +1716,7 @@ fn a_panel_past_the_budget_is_sent_whole_and_never_refused() {
     assert_eq!((records[3].id, records[3].kind, records[3].hour), (0, dated::COMPLETED, 40));
     let mut next = dated::ProductBatch::new((0, 0, 0));
     next.changed(1, 50, dated::DATA, b"still-alive");
-    push.offer_kind(PANEL, next.finish(Some(50)));
+    push.offer_panel(session, next.finish(Some(50)), Panels::All, false);
     assert!(push.failed().is_none());
     assert!(push.try_take().is_none(), "the next panel the clock has not reached waits for the page's credit");
     push.credit(session, crate::answer::charge(&sent) as u64);
@@ -2052,14 +1726,9 @@ fn a_panel_past_the_budget_is_sent_whole_and_never_refused() {
 #[test]
 fn completed_product_step_has_constant_size_when_every_product_stands() {
     use crate::panel::dated;
-    let mut batch = dated::ProductBatch::new((0, 3, 9));
-    batch.changed(7, 10, dated::DATA, b"first");
-    let first = batch.finish(Some(10));
     let next = dated::ProductBatch::new((0, 3, 9)).finish(Some(34));
-    assert_eq!(dated::records(&next).unwrap().len(), 1);
-    let (merged, _) = dated::merge(&first, &next).unwrap();
-    let rows = dated::records(&merged).unwrap();
-    assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::DATA, 10), (0, dated::COMPLETED, 34)]);
+    let rows = dated::records(&next).unwrap();
+    assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(0, dated::COMPLETED, 34)]);
 }
 
 #[test]
@@ -2085,14 +1754,6 @@ fn an_answer_says_when_its_rows_ascend_by_key_and_reads_any_text_by_its_offset()
     body.clear();
     table.encode(&mut body);
     assert!(!Answer::parse(&body).unwrap().canonical, "rows in another order say so");
-}
-
-#[test]
-fn rows_changed_twice_merge_in_key_order() {
-    let merged = crate::answer::merge(&rows_message(10, true, &[(5, 1), (9, 1)]), &rows_message(11, true, &[(1, 2), (9, 2)])).unwrap().0;
-    let decoded = decode(&merged).unwrap();
-    let answer = Answer::parse(decoded.answers[0].2).unwrap();
-    assert_eq!((answer.keys.clone(), answer.values.clone(), answer.canonical, answer.changed), (vec![1, 5, 9], vec![2, 1, 2], true, true));
 }
 
 #[test]
@@ -2181,12 +1842,13 @@ fn a_changed_answer_reserves_the_table_it_lands_on_when_queued() {
 
 #[test]
 fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_own() {
-    use crate::push::Push;
+    use crate::{panel::dated, push::{FOLLOW, PANEL, Panels, Push}};
     let small = routed(1, 5, 1, 0);
-    let push = Push::with_budget(playhead::ByteBudget::new(small.len() * 30));
-    push.offer(small.clone());
+    let small_len = small.len();
+    let push = Push::with_budget(playhead::ByteBudget::new(small_len * 30));
+    push.offer(small);
     assert!(push.try_take().is_some());
-    push.offer(routed(1, 50, 2, (small.len() * 8) as u32));
+    push.offer(routed(1, 50, 2, (small_len * 8) as u32));
     assert!(push.try_take().is_none(), "the future update of route 1 waits for credit");
     push.offer(routed(2, 10, 3, 0));
     push.head(2, 0, 10);
@@ -2195,10 +1857,1197 @@ fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_o
     push.offer(routed(1, 11, 4, 0));
     push.head(1, 0, 11);
     assert!(push.try_take().is_none(), "route 1's later update never overtakes route 1's waiting one");
+
+    let record = |id, hour, kind, body: &[u8]| dated::encoded(0, 3, 0, id, hour, kind, body);
+    let sent = |bytes: &[u8]| dated::records(bytes).unwrap().into_iter().map(|r| (r.id, r.hour, r.kind)).collect::<Vec<_>>();
+    let reset_follow = |hour, value| {
+        let mut message = Vec::new();
+        crate::answer::begin(&mut message, 3, 0, hour, 0, true);
+        crate::answer::push_held(&mut message, 7, hour, &body(7, value), 0);
+        message
+    };
+
+    let shown = record(39, 5, dated::DATA, &[1; 1000]);
+    let one = crate::answer::charge(&shown);
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
+    let session = push.session();
+    let mut drained = 0u64;
+    push.head(3, 0, 10);
+    push.offer_panel(session, shown, Panels::One(39), false);
+    let (_, first, ..) = push.try_take().expect("a picture the page keeps");
+    drained += crate::answer::charge(&first) as u64;
+    push.offer_panel(session, record(40, 60, dated::DATA, &[2; 1000]), Panels::One(40), true);
+    assert!(push.try_take().is_none(), "panel 40's lead record waits for credit");
+    push.offer_panel(session, record(41, 10, dated::DATA, &[3; 8]), Panels::One(41), true);
+    let (_, bytes, ..) = push.try_take().expect("panel 41's reached record goes past panel 40's lead record on the same route, even when both register live cells");
+    drained += crate::answer::charge(&bytes) as u64;
+    assert_eq!(sent(&bytes), [(41, 10, dated::DATA)]);
+    push.offer_panel(session, dated::ProductBatch::new((0, 3, 0)).finish(Some(10)), Panels::All, false);
+    assert!(push.try_take().is_none(), "a standalone route completion never overtakes a waiting record of any panel on its route");
+    push.offer_panel(session, record(40, 10, dated::DATA, &[4; 8]), Panels::One(40), false);
+    assert!(push.try_take().is_none(), "panel 40's later record never overtakes panel 40's waiting one");
+    push.credit(session, drained);
+    let mut order = Vec::new();
+    while let Some((_, bytes, ..)) = push.try_take() {
+        drained += crate::answer::charge(&bytes) as u64;
+        order.extend(sent(&bytes));
+        push.credit(session, drained);
+    }
+    assert_eq!(order, [(40, 60, dated::DATA), (0, 10, dated::COMPLETED), (40, 10, dated::DATA)], "released, the blocked line leaves in its own order");
+    assert_eq!(push.in_flight(), 0, "crediting the exact sum of drained charges leaves nothing in flight");
+
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 2));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_panel(session, record(39, 5, dated::DATA, &[1; 1000]), Panels::One(39), false);
+    assert!(push.try_take().is_some(), "a picture the page keeps, never released");
+    push.offer_panel(session, record(42, 10, dated::DATA, &[5; 1000]), Panels::One(42), false);
+    push.offer_panel(session, record(42, 60, dated::STANDS, &[]), Panels::One(42), false);
+    push.offer_panel(session, record(43, 10, dated::DATA, &[6; 8]), Panels::One(43), false);
+    let (_, bytes, ..) = push.try_take().expect("case 1: panel 42's reached data leaves past credit");
+    assert_eq!(sent(&bytes), [(42, 10, dated::DATA)]);
+
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 2));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_panel(session, record(39, 5, dated::DATA, &[1; 1000]), Panels::One(39), false);
+    assert!(push.try_take().is_some());
+    let mut completing = dated::ProductBatch::new((0, 3, 0));
+    completing.changed(42, 10, dated::DATA, &[5; 1000]);
+    push.offer_panel(session, completing.finish(Some(10)), Panels::All, false);
+    push.offer_panel(session, record(42, 60, dated::STANDS, &[]), Panels::One(42), false);
+    push.offer_panel(session, record(43, 10, dated::DATA, &[6; 8]), Panels::One(43), false);
+    let (_, bytes, ..) = push.try_take().expect("case 2: the reached completion leaves first");
+    assert_eq!(sent(&bytes), [(42, 10, dated::DATA), (0, 10, dated::COMPLETED)]);
+
+    let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_follow(session, reset_follow(10, 1));
+    push.offer_panel(session, record(45, 10, dated::DATA, &[8; 8]), Panels::One(45), false);
+    push.offer_follow(session, routed(3, 10, 2, 0));
+    let kinds: Vec<u8> = std::iter::from_fn(|| push.try_take()).map(|(kind, ..)| kind).collect();
+    assert_eq!(kinds, [FOLLOW, PANEL, FOLLOW]);
+
+    let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_follow(session, routed(3, 10, 1, 0));
+    push.offer_panel(session, record(45, 10, dated::DATA, &[8; 8]), Panels::One(45), false);
+    push.offer_follow(session, reset_follow(10, 2));
+    let kinds: Vec<u8> = std::iter::from_fn(|| push.try_take()).map(|(kind, ..)| kind).collect();
+    assert_eq!(kinds, [FOLLOW, PANEL, FOLLOW]);
+
+    let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
+    let session = push.session();
+    push.head(3, 0, 20);
+    push.offer_panel(session, record(46, 10, dated::DATA, &[9; 8]), Panels::One(46), true);
+    let mut cell = Vec::new();
+    crate::answer::begin(&mut cell, 3, 0, 20, 0, false);
+    crate::answer::push_held(&mut cell, crate::live::CELLS | 5, 20, &body(7, 3), 0);
+    push.offer_follow(session, cell);
+    push.offer_panel(session, dated::ProductBatch::new((0, 3, 0)).finish(Some(20)), Panels::All, false);
+    let kinds: Vec<u8> = std::iter::from_fn(|| push.try_take()).map(|(kind, ..)| kind).collect();
+    assert_eq!(kinds, [PANEL, FOLLOW, PANEL]);
+
+    let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
+    let session = push.session();
+    push.head(3, 0, 20);
+    push.offer_panel(session, record(47, 10, dated::DATA, &[10; 8]), Panels::One(47), true);
+    push.offer_follow(session, routed(3, 20, 4, 0));
+    push.offer_panel(session, dated::ProductBatch::new((0, 3, 0)).finish(Some(20)), Panels::All, false);
+    let kinds: Vec<u8> = std::iter::from_fn(|| push.try_take()).map(|(kind, ..)| kind).collect();
+    assert_eq!(kinds, [PANEL, FOLLOW, PANEL]);
+
+    let hold = record(50, 5, dated::DATA, &[1; 1500]);
+    let small_b = record(52, 12, dated::DATA, &[2; 8]);
+    let hold_charge = crate::answer::charge(&hold) as u64;
+    let b_charge = crate::answer::charge(&small_b) as u64;
+    let push = Push::with_budget(playhead::ByteBudget::new(6350));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_panel(session, hold.clone(), Panels::One(50), false);
+    assert!(push.try_take().is_some());
+    push.offer_panel(session, record(51, 11, dated::DATA, &[3; 1000]), Panels::One(51), false);
+    push.offer_panel(session, small_b.clone(), Panels::One(52), false);
+    push.offer_follow(session, routed(3, 60, 1, 500));
+    push.offer_panel(session, record(53, 11, dated::DATA, &[4; 8]), Panels::One(53), false);
+    let (_, bytes, ..) = push.try_take().expect("case S1: small B leaves at hour 10 while large A waits for credit");
+    assert_eq!(sent(&bytes), [(52, 12, dated::DATA)]);
+    assert!(push.try_take().is_none());
+    push.head(3, 0, 11);
+    let (_, bytes, ..) = push.try_take().expect("case S1a: at hour 11 cell-free A leaves first");
+    assert_eq!(sent(&bytes), [(51, 11, dated::DATA)]);
+    let (_, bytes, ..) = push.try_take().expect("case S1a: cell-free C then passes future FOLLOW(60)");
+    assert_eq!(sent(&bytes), [(53, 11, dated::DATA)]);
+    assert!(push.try_take().is_none(), "case S1a: future FOLLOW(60) still waits for credit");
+    push.credit(session, hold_charge + b_charge);
+    let (kind, ..) = push.try_take().expect("case S1a: crediting hold and B releases future FOLLOW(60)");
+    assert_eq!(kind, FOLLOW);
+    assert!(push.try_take().is_none());
+
+    let push = Push::with_budget(playhead::ByteBudget::new(6350));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_panel(session, hold, Panels::One(50), false);
+    assert!(push.try_take().is_some());
+    push.offer_panel(session, record(51, 11, dated::DATA, &[3; 1000]), Panels::One(51), false);
+    push.offer_panel(session, small_b, Panels::One(52), false);
+    push.offer_follow(session, routed(3, 60, 1, 500));
+    push.offer_panel(session, record(53, 11, dated::DATA, &[4; 8]), Panels::One(53), true);
+    let (_, bytes, ..) = push.try_take().expect("case S1b: B leaves at hour 10");
+    assert_eq!(sent(&bytes), [(52, 12, dated::DATA)]);
+    assert!(push.try_take().is_none());
+    push.head(3, 0, 11);
+    let (_, bytes, ..) = push.try_take().expect("case S1b: A leaves immediately at hour 11");
+    assert_eq!(sent(&bytes), [(51, 11, dated::DATA)]);
+    assert!(push.try_take().is_none(), "case S1b: cell-registering C waits behind future FOLLOW(60)");
+    push.credit(session, hold_charge);
+    let (kind, ..) = push.try_take().expect("case S1b: crediting hold releases future FOLLOW(60) ahead of C");
+    assert_eq!(kind, FOLLOW);
+    let (kind, bytes, ..) = push.try_take().expect("case S1b: cell-registering C leaves behind FOLLOW(60)");
+    assert_eq!(kind, PANEL);
+    assert_eq!(sent(&bytes), [(53, 11, dated::DATA)]);
+    assert!(push.try_take().is_none());
+
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_panel(session, record(54, 5, dated::DATA, &[1; 1000]), Panels::One(54), false);
+    assert!(push.try_take().is_some());
+    push.offer_panel(session, record(55, 60, dated::DATA, &[2; 1000]), Panels::One(55), true);
+    let mut confirm = Vec::new();
+    crate::answer::begin(&mut confirm, 3, 0, 10, 0, false);
+    push.offer_follow(session, confirm);
+    assert!(push.try_take().is_none(), "case S1b: reached FOL3 confirmation never overtakes a queued declaring panel");
+
+    for use_completed in [true, false] {
+        let filler = record(60, 5, dated::DATA, &[1; 2000]);
+        let fill_charge = crate::answer::charge(&filler);
+        let push = Push::with_budget(playhead::ByteBudget::new(fill_charge));
+        let session = push.session();
+        push.head(3, 0, 10);
+        push.offer_panel(session, filler, Panels::One(60), false);
+        assert!(push.try_take().is_some(), "budget-filling packet in flight");
+        push.offer_panel(session, record(61, 11, dated::DATA, &[2; 1000]), Panels::One(61), false);
+        push.offer_panel(session, record(62, 10, dated::DATA, &[3; 8]), Panels::One(62), false);
+        let (_, bytes, ..) = push.try_take().expect("case S2: B(10) leaves under the reached exception while A(11) stays queued");
+        assert_eq!(sent(&bytes), [(62, 10, dated::DATA)]);
+        if use_completed {
+            push.offer_panel(session, dated::ProductBatch::new((0, 3, 0)).finish(Some(12)), Panels::All, false);
+        } else {
+            push.offer_panel(session, record(61, 12, dated::DATA, &[4; 8]), Panels::One(61), false);
+        }
+        push.offer_panel(session, record(63, 11, dated::DATA, &[5; 8]), Panels::One(63), false);
+        push.head(3, 0, 11);
+        push.credit(session, fill_charge as u64);
+        let (_, bytes, ..) = push.try_take().expect("case S2: A(11) leaves before COMPLETED(12) or A(12)");
+        assert_eq!(sent(&bytes), [(61, 11, dated::DATA)]);
+    }
+
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_panel(session, record(70, 5, dated::DATA, &[1; 1000]), Panels::One(70), false);
+    assert!(push.try_take().is_some());
+    push.offer_panel(session, record(71, 60, dated::DATA, &[2; 1000]), Panels::One(71), false);
+    push.offer_panel(session, record(72, 10, dated::DATA, &[3; 8]), Panels::One(72), false);
+    push.offer_panel(session, dated::ProductBatch::new((0, 3, 0)).finish(Some(10)), Panels::All, false);
+    let (_, bytes, ..) = push.try_take().expect("panel 72 still overtakes panel 71");
+    assert_eq!(sent(&bytes), [(72, 10, dated::DATA)]);
+    assert!(push.try_take().is_none(), "panel 71 and the completion wait for credit");
+
+    let filler = record(80, 5, dated::DATA, &[1; 5000]);
+    let filler_charge = crate::answer::charge(&filler);
+    let completion = dated::ProductBatch::new((0, 3, 0)).finish(Some(11));
+    let completion_charge = crate::answer::charge(&completion);
+    let push = Push::with_budget(playhead::ByteBudget::new(filler_charge * 2));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_panel(session, filler, Panels::One(80), false);
+    assert!(push.try_take().is_some());
+    push.offer_follow(session, routed(3, 11, 1, 2000));
+    push.offer_panel(session, completion, Panels::All, false);
+    push.offer_panel(session, record(81, 10, dated::DATA, &[2; 8]), Panels::One(81), false);
+    push.offer_panel(session, record(82, 10, dated::DATA, &[3; 8]), Panels::One(82), true);
+    assert!(push.try_take().is_none());
+    push.credit(session, completion_charge as u64);
+    let (_, bytes, ..) = push.try_take().expect("partial credit lets the cell-free completion pass the FOLLOW");
+    assert_eq!(sent(&bytes), [(0, 11, dated::COMPLETED)]);
+    let (_, bytes, ..) = push.try_take().expect("cell-free panel 81 then passes the FOLLOW");
+    assert_eq!(sent(&bytes), [(81, 10, dated::DATA)]);
+    assert!(push.try_take().is_none(), "live-cell panel 82 still waits behind the FOLLOW");
 }
 
 #[test]
-fn an_answer_is_charged_at_the_size_its_lane_holds_and_merges_keep_that_size() {
+fn a_seed_panel_leaves_at_its_data_hour_while_a_waiting_only_packet_waits() {
+    use crate::{panel::dated, push::{Panels, Push}};
+    let record = |id, hour, kind, body: &[u8]| dated::encoded(0, 3, 0, id, hour, kind, body);
+    let sent = |bytes: &[u8]| dated::records(bytes).unwrap().into_iter().map(|r| (r.id, r.hour, r.kind)).collect::<Vec<_>>();
+    let held = record(39, 5, dated::DATA, &[1; 1000]);
+    let one = crate::answer::charge(&held);
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_panel(session, held, Panels::One(39), false);
+    assert!(push.try_take().is_some());
+    push.offer_panel(session, record(38, 10, dated::DATA, &[2; 1000]), Panels::One(38), false);
+    assert!(push.try_take().is_some(), "reached record fills past credit while budget has room");
+    let seed = dated::at_one_hour((0, 3, 0), 44, 10, dated::DATA, &[7; 8]);
+    assert!(push.in_flight() + crate::answer::charge(&seed) > one * 3 / 2, "credit is spent");
+    push.offer_panel(session, seed, Panels::One(44), false);
+    let (_, bytes, ..) = push.try_take().expect("a seed for the hour on screen leaves although its WAITING carries the next hour");
+    assert_eq!(sent(&bytes), [(44, 10, dated::DATA), (44, 11, dated::WAITING)]);
+    push.offer_panel(session, record(45, 11, dated::WAITING, &[]), Panels::One(45), false);
+    assert!(push.try_take().is_none(), "a WAITING-only packet for hour 11 stays unreached at hour 10");
+    push.head(3, 0, 11);
+    let (_, bytes, ..) = push.try_take().expect("and leaves once the clock reaches hour 11");
+    assert_eq!(sent(&bytes), [(45, 11, dated::WAITING)]);
+}
+
+#[test]
+fn fol3_stopped_round_trips_and_matches_ts_golden() {
+    use crate::push::OVERFLOW_REASON;
+    let golden = "464f4c3300000000180000000100000002000000000000000700000018000000580000000000000004000000000000000000000001000000000000003a0000005468697320706167652066656c6c20746f6f2066617220626568696e64207768696c6520697420776173206e6f7420726573706f6e64696e672e000000000000";
+    let mut body = Vec::new();
+    crate::answer::stopped(OVERFLOW_REASON, &mut body);
+    let mut packet = Vec::new();
+    crate::answer::begin(&mut packet, 0, 0, 24, 2, false);
+    crate::answer::push(&mut packet, 7, 24, &body);
+    let hex: String = packet.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(hex, golden, "Rust FOL3 STOPPED wire bytes match the TypeScript golden fixture");
+    let decoded = decode(&packet).unwrap();
+    assert_eq!((decoded.route, decoded.hour, decoded.stamp.0, decoded.reset), (0, 24, 2, false));
+    assert_eq!(decoded.answers.len(), 1);
+    assert_eq!((decoded.answers[0].0, decoded.answers[0].1), (7, 24));
+    let parsed = Answer::parse(decoded.answers[0].2).unwrap();
+    assert_eq!(parsed.stopped.as_deref(), Some(OVERFLOW_REASON));
+    assert_eq!(parsed.not_recorded, None);
+}
+
+#[test]
+fn overflowing_route_drops_and_fails_with_stopped_while_sibling_route_keeps_playing_and_retry_matches_fresh() {
+    use crate::{
+        host::PlayheadHost,
+        panel::{self, AtHour, PanelReader, PanelRows, ProductRead, dated},
+        push::{FOLLOW, OVERFLOW_REASON, PANEL, Push},
+        registry::{Anchor, Hosted},
+    };
+    struct IdleRows;
+    impl PanelRows for IdleRows {
+        fn reader(&self, _: &[replay_data::rows::TableId]) -> io::Result<Box<dyn PanelReader>> { unreachable!() }
+        fn on_publish(&self, _: panel::Wake) {}
+    }
+    const PANEL_PAYLOAD_BYTES: usize = 1536;
+    let counter_panel = || {
+        let advance: panel::ProductReader = Arc::new(|hour, _, _, _| ProductRead {
+            value: Arc::new(Ok(serde_json::json!({ "hour": hour, "payload": "p".repeat(PANEL_PAYLOAD_BYTES) }))),
+            rows: 1,
+            fresh: true,
+            pending: false,
+            live: None,
+            lanes: Vec::new(),
+            from: Hour::MIN,
+        });
+        let read: panel::ExactReader = Arc::new(|hour, _| Ok(serde_json::json!({ "hour": hour, "payload": "p".repeat(PANEL_PAYLOAD_BYTES) })));
+        Box::new(AtHour { advance, cold: Arc::clone(&read), read })
+    };
+
+    let pages = record(quiet);
+    let live_query = Query::Cells { table: TABLE, columns: vec![0, 2, 3], rows: Rows::Live(vec![100, 105, 106, 107]) };
+    let all_query = Query::Cells { table: TABLE, columns: vec![0, 3], rows: Rows::All };
+    let sibling_query = Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Keys(vec![100]) };
+
+    let mut fresh_harness = harness(&pages);
+    fresh_harness.follow.follow(1, live_query.clone()).unwrap();
+    fresh_harness.follow.follow(2, all_query.clone()).unwrap();
+
+    let budget = playhead::ByteBudget::new(32_768);
+    let push = Arc::new(Push::with_budget(budget.clone()));
+    let session = push.session();
+    let follow_a = Follow::new(0);
+    let follow_b = Follow::new(0);
+    let route_a = follow_a.route();
+    let route_b = follow_b.route();
+    assert_ne!(route_a, route_b);
+
+    let pace_gate = Arc::new((Mutex::new((0usize, 0usize)), std::sync::Condvar::new()));
+    let offer_gate = Arc::clone(&pace_gate);
+    let a_joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let b_joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (a_ready, b_ready) = (Arc::clone(&a_joined), Arc::clone(&b_joined));
+    let (push_a, push_b) = (Arc::clone(&push), Arc::clone(&push));
+    let mut hook_a = follow_a.hook(Box::new(move |stats, message| {
+        if let Some(message) = message {
+            if message.answers == 2 { a_ready.store(true, std::sync::atomic::Ordering::Release); }
+            push_a.offer_follow(stats.session, message.bytes);
+        }
+    }));
+    let mut hook_b = follow_b.hook(Box::new(move |stats, message| {
+        if let Some(message) = message {
+            if message.answers == 1 { b_ready.store(true, std::sync::atomic::Ordering::Release); }
+            let mut counts = offer_gate.0.lock().unwrap();
+            while counts.0 >= counts.1.saturating_add(50) {
+                counts = offer_gate.1.wait(counts).unwrap();
+            }
+            counts.0 += 1;
+            drop(counts);
+            push_b.offer_follow(stats.session, message.bytes);
+        }
+    }));
+    struct GateGuard(Arc<(Mutex<(usize, usize)>, std::sync::Condvar)>);
+    impl Drop for GateGuard {
+        fn drop(&mut self) {
+            self.0.0.lock().unwrap_or_else(|e| e.into_inner()).1 = usize::MAX / 2;
+            self.0.1.notify_all();
+        }
+    }
+    let combined: playhead::Hook = Box::new(move |step, lanes| {
+        hook_a(step, lanes);
+        hook_b(step, lanes);
+    });
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: RING, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings, Some(combined)).unwrap());
+    let _gate_guard = GateGuard(Arc::clone(&pace_gate));
+    let held = crate::host::held_tables(&*pages, pages.kinds.len());
+    let anchored = |p: &Playhead, a: Anchor| {
+        if !a.playing { p.pace(a.speed); p.pause(); }
+        if a.sought { p.seek(a.hour); }
+        if a.playing { p.play(a.speed); }
+    };
+    let host_a = PlayheadHost::new_with_budget(Arc::clone(&playhead), |p| p, anchored, follow_a, held.clone(), budget.clone()).unwrap();
+    let host_b = PlayheadHost::new_with_budget(Arc::clone(&playhead), |p| p, anchored, follow_b, held, budget.clone()).unwrap();
+    host_a.show_panels(Arc::new(IdleRows), Arc::clone(&push));
+    host_b.show_panels(Arc::new(IdleRows), Arc::clone(&push));
+    host_a.serve(session);
+    host_b.serve(session);
+
+    host_a.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+    host_b.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: false });
+    host_a.follow().follow(1, live_query.clone()).unwrap();
+    host_a.follow().follow(2, all_query.clone()).unwrap();
+    host_b.follow().follow(3, sibling_query).unwrap();
+    while !(a_joined.load(std::sync::atomic::Ordering::Acquire) && b_joined.load(std::sync::atomic::Ordering::Acquire)) {
+        std::thread::yield_now();
+    }
+    host_a.prepare_panel(counter_panel()).unwrap()(10, 1).unwrap();
+    host_a.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: true, speed: 60.0, sought: false });
+    host_b.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: true, speed: 60.0, sought: false });
+
+    let epoch_before = playhead.epoch();
+    while push.counters().dropped == 0 {
+        std::thread::yield_now();
+    }
+    let mut credited = 0u64;
+    let mut b_hours = Vec::new();
+    let mut saw_panel_stopped = false;
+    let mut saw_follow_stopped = std::collections::HashSet::new();
+    let mut extra_a_after_stopped = 0usize;
+
+    let mut settled_b_after_stop = 0usize;
+    loop {
+        let (kind, bytes, sent_session) = push.take_sent().expect("stream packet");
+        assert_eq!(sent_session, session);
+        let charge = crate::answer::charge(&bytes) as u64;
+        credited += charge;
+        push.credit(session, credited);
+        if kind == PANEL {
+            let (route, seek) = dated::stamp(&bytes).unwrap();
+            assert_eq!((route, seek), (route_a, 1));
+            let records = dated::records(&bytes).unwrap();
+            let has_stop = records.iter().any(|r| r.id == 10 && r.kind == dated::STOPPED && r.hour == Hour::MIN && r.body == OVERFLOW_REASON.as_bytes())
+                && records.iter().any(|r| r.id == 10 && r.kind == dated::STANDS && r.hour == Hour::MAX);
+            if has_stop {
+                saw_panel_stopped = true;
+            } else if saw_panel_stopped {
+                extra_a_after_stopped += 1;
+            }
+        } else {
+            assert_eq!(kind, FOLLOW);
+            let decoded = decode(&bytes).unwrap();
+            if decoded.route == route_a {
+                let mut packet_stopped = false;
+                for (id, _, body) in decoded.answers {
+                    if let Ok(parsed) = Answer::parse(body) && parsed.stopped.as_deref() == Some(OVERFLOW_REASON) {
+                        saw_follow_stopped.insert(id);
+                        packet_stopped = true;
+                    }
+                }
+                if !packet_stopped && saw_follow_stopped.len() == 2 {
+                    extra_a_after_stopped += 1;
+                }
+            } else {
+                assert_eq!(decoded.route, route_b);
+                for (_, _, body) in &decoded.answers {
+                    let parsed = Answer::parse(body).unwrap();
+                    assert_eq!(parsed.stopped, None, "healthy sibling route B must never receive STOPPED");
+                }
+                b_hours.push(decoded.hour);
+                {
+                    let mut counts = pace_gate.0.lock().unwrap();
+                    counts.1 += 1;
+                    pace_gate.1.notify_all();
+                }
+                if saw_panel_stopped && saw_follow_stopped.len() == 2 {
+                    settled_b_after_stop += 1;
+                    if settled_b_after_stop >= 5 { break; }
+                }
+            }
+        }
+    }
+
+    assert!(saw_panel_stopped, "overflowed route delivered PNL2 STOPPED + STANDS(MAX) for panel 10");
+    assert_eq!(saw_follow_stopped, std::collections::HashSet::from([1u32, 2u32]), "overflowed route delivered FOL3 STOPPED for every ordinary follow");
+    assert_eq!(extra_a_after_stopped, 0, "overflowed route produces nothing more after STOPPED");
+    assert!(b_hours.len() >= 5, "sibling route B kept receiving continuously while route A failed: {b_hours:?}");
+    assert_eq!(playhead.epoch(), epoch_before, "route overflow and teardown never touch playhead.epoch()");
+    assert!(push.counters().dropped > 0);
+
+    host_a.serve(session);
+    host_a.prepare_panel(counter_panel()).unwrap()(11, 1).unwrap();
+    host_a.follow_query(4, live_query.clone()).unwrap();
+    let (mut late_panel_stop, mut late_follow_stop) = (false, false);
+    while let Some((kind, bytes, ..)) = push.try_take() {
+        if kind == PANEL {
+            let (route, seek) = dated::stamp(&bytes).unwrap();
+            if route == route_a && seek == 1 && dated::records(&bytes).unwrap().iter().any(|r| r.id == 11 && r.kind == dated::STOPPED && r.body == OVERFLOW_REASON.as_bytes()) {
+                late_panel_stop = true;
+            }
+        } else {
+            let decoded = decode(&bytes).unwrap();
+            if decoded.route == route_a && decoded.stamp.0 == 1
+                && decoded.answers.iter().any(|&(id, _, body)| id == 4 && Answer::parse(body).ok().and_then(|a| a.stopped).as_deref() == Some(OVERFLOW_REASON))
+            {
+                late_follow_stop = true;
+            }
+        }
+    }
+    assert!(late_panel_stop && late_follow_stop, "late panel and follow registrations on an overflowed session immediately receive stream STOPPED for Retry");
+
+    host_a.anchor(Anchor { seek: 2, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+    let (mut seek2_panel_stops, mut seek2_follow_stops) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    while let Some((kind, bytes, ..)) = push.try_take() {
+        if kind == PANEL {
+            let (route, seek) = dated::stamp(&bytes).unwrap();
+            if route == route_a && seek == 2 {
+                for r in dated::records(&bytes).unwrap() {
+                    if r.kind == dated::STOPPED && r.body == OVERFLOW_REASON.as_bytes() {
+                        seek2_panel_stops.insert(r.id);
+                    }
+                }
+            }
+        } else {
+            let decoded = decode(&bytes).unwrap();
+            if decoded.route == route_a && decoded.stamp.0 == 2 {
+                for (id, _, body) in decoded.answers {
+                    if let Ok(parsed) = Answer::parse(body) && parsed.stopped.as_deref() == Some(OVERFLOW_REASON) {
+                        seek2_follow_stops.insert(id);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(seek2_panel_stops, std::collections::HashSet::from([10u32, 11u32]), "a seek on an overflowed route synchronously re-emits PNL2 STOPPED at the new seek");
+    assert_eq!(seek2_follow_stops, std::collections::HashSet::from([1u32, 2u32, 4u32]), "a seek on an overflowed route synchronously re-emits FOL3 STOPPED at the new seek");
+
+    {
+        pace_gate.0.lock().unwrap().1 = usize::MAX / 2;
+        pace_gate.1.notify_all();
+    }
+    let retry_hour = *b_hours.last().unwrap();
+    let new_session = push.restart();
+    host_a.serve(new_session);
+    host_b.serve(new_session);
+    host_a.anchor(Anchor { seek: 3, frame_rate: 60.0, hour: retry_hour, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+    host_a.follow().follow(1, live_query.clone()).unwrap();
+    host_a.follow().follow(2, all_query.clone()).unwrap();
+    host_a.prepare_panel(counter_panel()).unwrap()(10, 1).unwrap();
+
+    let mut retry_follow: std::collections::HashMap<u32, (Hour, Vec<u8>)> = std::collections::HashMap::new();
+    let mut retry_panel: Option<(Hour, Vec<u8>)> = None;
+    let mut released = 0u64;
+    while retry_follow.len() < 2 || retry_panel.is_none() {
+        let (kind, bytes, sent_session) = push.take_sent().expect("retry packet");
+        assert_eq!(sent_session, new_session);
+        released += crate::answer::charge(&bytes) as u64;
+        push.credit(new_session, released);
+        if kind == PANEL {
+            let (route, seek) = dated::stamp(&bytes).unwrap();
+            if route == route_a && seek == 3 {
+                for r in dated::records(&bytes).unwrap() {
+                    assert_ne!(r.kind, dated::STOPPED, "retry panel must not receive STOPPED");
+                    if r.id == 10 && r.kind == dated::DATA && r.hour == retry_hour {
+                        retry_panel = Some((r.hour, r.body.to_vec()));
+                    }
+                }
+            }
+        } else {
+            let decoded = decode(&bytes).unwrap();
+            if decoded.route == route_a && decoded.stamp.0 == 3 && decoded.hour == retry_hour {
+                for (id, h, body) in decoded.answers {
+                    assert_eq!(Answer::parse(body).unwrap().stopped, None, "retry follow must not receive STOPPED");
+                    if id == 1 || id == 2 {
+                        retry_follow.insert(id, (h, body.to_vec()));
+                    }
+                }
+            }
+        }
+    }
+
+    fresh_harness.seek(retry_hour);
+    let fresh_played = fresh_harness.play(retry_hour);
+    let fresh_bytes = fresh_played.last().unwrap().message.as_ref().unwrap().bytes.clone();
+    let fresh_decoded = decode(&fresh_bytes).unwrap();
+    for id in [1u32, 2u32] {
+        let fresh = fresh_decoded.answers.iter().find(|&&(qid, ..)| qid == id).expect("fresh follow answer");
+        assert_eq!(retry_follow[&id], (fresh.1, fresh.2.to_vec()), "retry follow {id} matches fresh open byte for byte");
+    }
+    let expected_panel_body = rmp_serde::to_vec(&serde_json::json!({ "hour": retry_hour, "payload": "p".repeat(PANEL_PAYLOAD_BYTES) })).unwrap();
+    assert_eq!(retry_panel, Some((retry_hour, expected_panel_body)), "retry panel 10 matches fresh open byte for byte");
+}
+
+#[test]
+fn route_queued_bytes_stay_within_budget_under_stalled_writer_or_zero_credit() {
+    use crate::push::Push;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let sample = rows_message(10, false, &[(1, 1)]);
+    let one = crate::answer::charge(&sample);
+    let limit = one * 3;
+    let budget = playhead::ByteBudget::new(limit);
+    let push = Push::with_budget(budget.clone());
+    let overflows = Arc::new(AtomicUsize::new(0));
+    let hit = Arc::clone(&overflows);
+    push.watch_overflow(0, Arc::new(move |_| { hit.fetch_add(1, Ordering::AcqRel); }));
+
+    push.head(0, 0, 10);
+    push.offer(sample);
+    assert!(push.try_take().is_some(), "first packet goes out before the pipe writer stalls");
+    for hour in 11..200 {
+        push.head(0, 0, hour);
+        push.offer(rows_message(hour, false, &[(1, i64::from(hour))]));
+        let queued = budget.used().saturating_sub(push.in_flight());
+        assert!(queued <= limit, "stalled writer hour {hour}: queued {queued} exceeded limit {limit}");
+    }
+    assert_eq!(overflows.load(Ordering::Acquire), 1, "overflow hook fires once on the stalled route");
+    assert!(push.counters().dropped > 0);
+    assert_eq!(budget.used().saturating_sub(push.in_flight()), 0, "dropped backlog leaves zero queued bytes");
+
+    let limit = one * 2;
+    let budget = playhead::ByteBudget::new(limit);
+    let push = Push::with_budget(budget.clone());
+    let zero_overflows = Arc::new(AtomicUsize::new(0));
+    let hit = Arc::clone(&zero_overflows);
+    push.watch_overflow(0, Arc::new(move |_| { hit.fetch_add(1, Ordering::AcqRel); }));
+    for hour in 10..200 {
+        push.head(0, 0, hour);
+        push.offer(rows_message(hour, false, &[(1, i64::from(hour))]));
+        while push.try_take().is_some() {}
+        let queued = budget.used().saturating_sub(push.in_flight());
+        assert!(queued <= limit, "zero-credit hour {hour}: queued {queued} exceeded limit {limit}");
+    }
+    assert_eq!(zero_overflows.load(Ordering::Acquire), 1, "zero-credit consumer hits queue bound and trips overflow once");
+    assert!(push.counters().dropped > 0);
+}
+
+#[test]
+fn push_queue_commute_ordering_matches_serial_delivery_across_generated_sequences() {
+    use crate::{panel::dated, push::{FOLLOW, PANEL, Panels, Push}};
+    use std::collections::{BTreeMap, HashMap, HashSet};
+
+    const CELL_1: u32 = crate::live::CELLS | 100;
+    const CELL_2: u32 = crate::live::CELLS | 200;
+    const CELL_3: u32 = crate::live::CELLS | 300;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum PanelVal {
+        Data(i32, Vec<u32>),
+        Refused(i32),
+        Stopped(i32),
+    }
+
+    #[derive(Clone, Debug)]
+    struct PanelFact {
+        h: Hour,
+        c: Hour,
+        val: PanelVal,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct PanelSub {
+        facts: Vec<PanelFact>,
+        open: bool,
+        stepped: bool,
+        failed: bool,
+    }
+
+    #[derive(Clone, Debug)]
+    struct FollowFact {
+        h: Hour,
+        c: Hour,
+        rows: BTreeMap<u128, i64>,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct FollowOwner {
+        facts: Vec<FollowFact>,
+        open: bool,
+        failed: bool,
+    }
+
+    #[derive(Clone, Debug)]
+    struct HeldItem {
+        id: u32,
+        hour: Hour,
+        answers: Vec<(Hour, Vec<u8>)>,
+        limited: Option<Hour>,
+        size: usize,
+    }
+
+    struct PageModel {
+        early_limit: usize,
+        per_cell: bool,
+        panels: HashMap<u32, PanelSub>,
+        followed: HashMap<u32, FollowOwner>,
+        groups: HashMap<u32, FollowOwner>,
+        held: Vec<HeldItem>,
+        held_bytes: usize,
+        held_by_cell: HashMap<u32, usize>,
+        lost: HashSet<u32>,
+        ever_overflowed: bool,
+    }
+
+    impl PageModel {
+        fn new(early_limit: usize, per_cell: bool) -> Self {
+            let mut panels = HashMap::new();
+            for id in [1, 2, 3] { panels.insert(id, PanelSub::default()); }
+            let mut followed = HashMap::new();
+            for id in [10, 11] { followed.insert(id, FollowOwner::default()); }
+            Self {
+                early_limit,
+                per_cell,
+                panels,
+                followed,
+                groups: HashMap::new(),
+                held: Vec::new(),
+                held_bytes: 0,
+                held_by_cell: HashMap::new(),
+                lost: HashSet::new(),
+                ever_overflowed: false,
+            }
+        }
+
+        fn encode_data(val: i32, cells: &[u32]) -> Vec<u8> {
+            let mut out = Vec::with_capacity(8 + cells.len() * 4);
+            out.extend_from_slice(&val.to_le_bytes());
+            out.extend_from_slice(&(cells.len() as u32).to_le_bytes());
+            for &cell in cells {
+                out.extend_from_slice(&cell.to_le_bytes());
+            }
+            out
+        }
+
+        fn decode_data(body: &[u8]) -> (i32, Vec<u32>) {
+            let val = i32::from_le_bytes(body[..4].try_into().expect("val"));
+            let count = u32::from_le_bytes(body[4..8].try_into().expect("count")) as usize;
+            let mut cells = Vec::with_capacity(count);
+            for i in 0..count {
+                let at = 8 + i * 4;
+                cells.push(u32::from_le_bytes(body[at..at + 4].try_into().expect("cell")));
+            }
+            (val, cells)
+        }
+
+        fn add_panel_fact(sub: &mut PanelSub, fact: PanelFact) {
+            if let Some(last) = sub.facts.last_mut() {
+                if last.h == fact.h {
+                    *last = fact;
+                } else {
+                    if last.c >= fact.h { last.c = fact.h - 1; }
+                    sub.facts.push(fact);
+                }
+            } else {
+                sub.facts.push(fact);
+            }
+            sub.open = true;
+        }
+
+        fn add_follow_fact(owner: &mut FollowOwner, h: Hour, body: &[u8]) {
+            if owner.failed { return; }
+            let parsed = Answer::parse(body).expect("valid answer");
+            let rows = if parsed.changed {
+                let Some(prev) = owner.facts.last() else {
+                    owner.failed = true;
+                    owner.facts.clear();
+                    return;
+                };
+                let mut merged = prev.rows.clone();
+                for (i, &k) in parsed.keys.iter().enumerate() {
+                    if !merged.contains_key(&k) {
+                        owner.failed = true;
+                        owner.facts.clear();
+                        return;
+                    }
+                    merged.insert(k, parsed.values[i]);
+                }
+                merged
+            } else {
+                parsed.keys.iter().copied().zip(parsed.values.iter().copied()).collect()
+            };
+            let fact = FollowFact { h, c: h, rows };
+            if let Some(last) = owner.facts.last_mut() {
+                if last.h == fact.h {
+                    *last = fact;
+                } else {
+                    if last.c >= fact.h { last.c = fact.h - 1; }
+                    owner.facts.push(fact);
+                }
+            } else {
+                owner.facts.push(fact);
+            }
+            owner.open = true;
+        }
+
+        fn hold_cell(&mut self, item: HeldItem) {
+            let (id, size) = (item.id, item.size);
+            if self.lost.contains(&id) { return; }
+            let current = if self.per_cell { self.held_by_cell.get(&id).copied().unwrap_or(0) } else { self.held_bytes };
+            if current + size + 32 > self.early_limit {
+                self.held.retain(|existing| {
+                    if existing.id == id {
+                        self.held_bytes -= existing.size + 32;
+                        if let Some(entry) = self.held_by_cell.get_mut(&id) {
+                            *entry -= existing.size + 32;
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
+                self.lost.insert(id);
+                self.ever_overflowed = true;
+                return;
+            }
+            self.held_bytes += size + 32;
+            *self.held_by_cell.entry(id).or_insert(0) += size + 32;
+            self.held.push(item);
+        }
+
+        fn drain_cell(&mut self, cell: u32) {
+            let mut ready = Vec::new();
+            let mut kept = Vec::new();
+            for item in self.held.drain(..) {
+                if item.id == cell {
+                    self.held_bytes -= item.size + 32;
+                    if let Some(entry) = self.held_by_cell.get_mut(&cell) {
+                        *entry -= item.size + 32;
+                    }
+                    ready.push(item);
+                } else {
+                    kept.push(item);
+                }
+            }
+            self.held = kept;
+            for item in ready {
+                if let Some(owner) = self.groups.get_mut(&item.id) {
+                    for (at, body) in item.answers {
+                        Self::add_follow_fact(owner, at, &body);
+                    }
+                    if owner.open && let Some(last) = owner.facts.last_mut() {
+                        let confirmed = item.limited.unwrap_or(item.hour);
+                        if confirmed > last.c { last.c = confirmed; }
+                    }
+                }
+            }
+        }
+
+        fn apply(&mut self, kind: u8, bytes: &[u8]) {
+            if kind == PANEL {
+                let Ok(records) = dated::records(bytes) else { return };
+                for r in records {
+                    if r.kind == dated::COMPLETED {
+                        for sub in self.panels.values_mut() {
+                            if !sub.failed && sub.stepped && sub.open && let Some(last) = sub.facts.last_mut() && last.c < r.hour {
+                                last.c = r.hour;
+                            }
+                        }
+                        continue;
+                    }
+                    let Some(sub) = self.panels.get_mut(&r.id) else { continue };
+                    if sub.failed { continue; }
+                    if matches!(r.kind, dated::DATA | dated::REFUSED | dated::STOPPED | dated::STANDS | dated::AGAIN) && r.stepped() {
+                        sub.stepped = true;
+                    }
+                    match r.kind {
+                        dated::DATA => {
+                            let (val, cells) = Self::decode_data(r.body);
+                            if cells.iter().any(|cell| self.lost.contains(cell)) {
+                                sub.failed = true;
+                                sub.facts.clear();
+                                sub.open = false;
+                                continue;
+                            }
+                            for &cell in &cells {
+                                self.groups.entry(cell).or_default();
+                            }
+                            Self::add_panel_fact(sub, PanelFact { h: r.hour, c: r.hour, val: PanelVal::Data(val, cells.clone()) });
+                            for cell in cells {
+                                self.drain_cell(cell);
+                            }
+                        }
+                        dated::REFUSED => {
+                            let code = i32::from_le_bytes(r.body[..4].try_into().expect("code"));
+                            Self::add_panel_fact(sub, PanelFact { h: r.hour, c: r.hour, val: PanelVal::Refused(code) });
+                        }
+                        dated::STOPPED => {
+                            let code = i32::from_le_bytes(r.body[..4].try_into().expect("code"));
+                            Self::add_panel_fact(sub, PanelFact { h: r.hour, c: r.hour, val: PanelVal::Stopped(code) });
+                        }
+                        dated::AGAIN => {
+                            if let Some(last) = sub.facts.last().cloned() {
+                                Self::add_panel_fact(sub, PanelFact { h: r.hour, c: r.hour, val: last.val });
+                            }
+                        }
+                        dated::STANDS => {
+                            if let Some(last) = sub.facts.last_mut() {
+                                last.c = last.c.max(r.hour);
+                                sub.open = true;
+                            }
+                        }
+                        dated::WAITING => {
+                            sub.open = false;
+                        }
+                        _ => {}
+                    }
+                }
+            } else if kind == FOLLOW {
+                let Ok(decoded) = decode(bytes) else { return };
+                if decoded.reset {
+                    self.lost.clear();
+                    self.held.clear();
+                    self.held_bytes = 0;
+                    self.held_by_cell.clear();
+                    for owner in self.followed.values_mut().chain(self.groups.values_mut()) {
+                        owner.facts.clear();
+                        owner.open = false;
+                    }
+                }
+                let mut limited_map: HashMap<u32, Hour> = HashMap::new();
+                for &(id, at) in &decoded.limited {
+                    if id >= crate::live::CELLS && !self.groups.contains_key(&id) {
+                        continue;
+                    }
+                    limited_map.insert(id, at);
+                }
+                let mut unbound: HashMap<u32, (Vec<(Hour, Vec<u8>)>, Option<Hour>, usize)> = HashMap::new();
+                let mut unbound_order: Vec<u32> = Vec::new();
+                let count = u32::from_le_bytes(bytes[12..16].try_into().expect("count")) as usize;
+                let mut at = 24usize;
+                for _ in 0..count {
+                    let id = u32::from_le_bytes(bytes[at..at + 4].try_into().expect("id"));
+                    let hour = i32::from_le_bytes(bytes[at + 4..at + 8].try_into().expect("hour"));
+                    let len = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().expect("len")) as usize;
+                    let whole = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().expect("whole")) as usize;
+                    let body = &bytes[at + 16..at + 16 + len];
+                    at += 16 + len;
+                    let charge = 16 + 2 * len.max(whole);
+                    if len == 0 {
+                        if id >= crate::live::CELLS && !self.groups.contains_key(&id) {
+                            if !unbound.contains_key(&id) { unbound_order.push(id); }
+                            let entry = unbound.entry(id).or_default();
+                            entry.1 = Some(hour);
+                            entry.2 += charge;
+                        }
+                    } else if id < crate::live::CELLS {
+                        if let Some(owner) = self.followed.get_mut(&id) {
+                            Self::add_follow_fact(owner, hour, body);
+                        }
+                    } else if let Some(owner) = self.groups.get_mut(&id) {
+                        Self::add_follow_fact(owner, hour, body);
+                    } else {
+                        if !unbound.contains_key(&id) { unbound_order.push(id); }
+                        let entry = unbound.entry(id).or_default();
+                        entry.0.push((hour, body.to_vec()));
+                        entry.2 += charge;
+                    }
+                }
+                let mut held_ids = unbound_order;
+                for item in &self.held {
+                    if !held_ids.contains(&item.id) { held_ids.push(item.id); }
+                }
+                for id in held_ids {
+                    let (answers, limited, size) = unbound.remove(&id).unwrap_or_default();
+                    self.hold_cell(HeldItem { id, hour: decoded.hour, answers, limited, size });
+                }
+                for (&id, owner) in self.followed.iter_mut().chain(self.groups.iter_mut()) {
+                    if !owner.open || owner.failed { continue; }
+                    if let Some(last) = owner.facts.last_mut() {
+                        let confirmed = limited_map.get(&id).copied().unwrap_or(decoded.hour);
+                        if confirmed > last.c { last.c = confirmed; }
+                    }
+                }
+            }
+        }
+
+        fn covering_panel(&self, id: u32, hour: Hour) -> Option<(PanelVal, Vec<BTreeMap<u128, i64>>)> {
+            let sub = self.panels.get(&id)?;
+            let fact = sub.facts.iter().rev().find(|f| f.h <= hour && hour <= f.c)?;
+            let mut cell_rows = Vec::new();
+            if let PanelVal::Data(_, cells) = &fact.val {
+                for cell in cells {
+                    let group = self.groups.get(cell)?;
+                    let gf = group.facts.iter().rev().find(|f| f.h <= hour && hour <= f.c)?;
+                    cell_rows.push(gf.rows.clone());
+                }
+            }
+            Some((fact.val.clone(), cell_rows))
+        }
+
+        fn covering_follow(&self, id: u32, hour: Hour) -> Option<&BTreeMap<u128, i64>> {
+            let owner = self.followed.get(&id)?;
+            owner.facts.iter().rev().find(|f| f.h <= hour && hour <= f.c).map(|f| &f.rows)
+        }
+    }
+
+    let make_answer = |changed: bool, rows: &[(u128, i64)]| -> Vec<u8> {
+        let mut table = crate::answer::Table::default();
+        table.clear(1, false);
+        for &(k, v) in rows {
+            table.row(k);
+            table.cell(v, State::Value);
+        }
+        let mut out = Vec::new();
+        if changed { table.encode_changed(&mut out); } else { table.encode(&mut out); }
+        out
+    };
+
+    let seeds = [0x5EED_6565u64, 0xCAFE_6565, 0xBEEF_6565, 0xDEAD_6565];
+    let early_limits = [200usize, 270, 300, 500, 1 << 20];
+    let budgets = [2048usize, 4096, 16384, 1 << 20];
+    let mut total_overtakes = 0u64;
+    let mut checked_trials = 0u64;
+
+    for seed in seeds {
+        let mut rng_state = seed;
+        let mut next_u32 = || -> u32 {
+            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (rng_state >> 32) as u32
+        };
+
+        for trial in 0..300u32 {
+            let early_limit = early_limits[(next_u32() as usize) % early_limits.len()];
+            let budget_bytes = budgets[(next_u32() as usize) % budgets.len()];
+            let per_cell = trial % 2 == 1;
+            let ctx = format!("seed={seed:#x} trial={trial} early_limit={early_limit} budget={budget_bytes} per_cell={per_cell}");
+            let budget = playhead::ByteBudget::new(budget_bytes);
+            let push = Push::with_budget(budget.clone());
+            let session = push.session();
+            let mut ref_model = PageModel::new(early_limit, per_cell);
+            let mut q_model = PageModel::new(early_limit, per_cell);
+
+            let mut panel_has_data = [false; 4];
+            let mut panel_stepped = [false; 4];
+            let mut panel_hour = [9i32; 4];
+            let mut follow_has_base: HashMap<u32, bool> = HashMap::new();
+            let mut step_hour = 10i32;
+            let mut last_follow_hour = 9i32;
+            let mut max_head = -1i32;
+            let mut total_sent = 0u64;
+            let mut last_seq_taken = 0u32;
+            let mut trial_overtakes = 0u64;
+
+            let steps = 15 + (next_u32() % 25);
+            for _ in 0..steps {
+                step_hour += 1 + (next_u32() % 3) as i32;
+                let roll = next_u32() % 100;
+                if roll < 20 {
+                    let h = max_head.max((step_hour + 2).min(step_hour - (next_u32() % 8) as i32));
+                    max_head = max_head.max(h);
+                    push.head(0, 0, h);
+                } else if roll < 36 {
+                    if let Some((kind, bytes, seq, _)) = push.try_take() {
+                        if kind == FOLLOW && !bytes.starts_with(&crate::answer::MAGIC.to_le_bytes()) {
+                            continue;
+                        }
+                        if seq < last_seq_taken { trial_overtakes += 1; }
+                        last_seq_taken = last_seq_taken.max(seq);
+                        total_sent += crate::answer::charge(&bytes) as u64;
+                        q_model.apply(kind, &bytes);
+                        if next_u32() % 2 == 0 { push.credit(session, total_sent); }
+                    }
+                } else if roll < 43 {
+                    if total_sent > 0 {
+                        push.credit(session, (u64::from(next_u32()) % total_sent).min(total_sent));
+                    }
+                } else if roll < 46 {
+                    push.offer(vec![0u8; 8]);
+                } else if roll < 74 {
+                    if next_u32() % 100 < 24 {
+                        let h = step_hour.max(panel_hour[1] + 1).max(panel_hour[2] + 1).max(panel_hour[3] + 1);
+                        step_hour = h;
+                        let mut batch = dated::ProductBatch::new((0, 0, 0));
+                        let mut has_cells = false;
+                        for pid in [1u32, 2, 3] {
+                            if next_u32() % 100 < 35 {
+                                panel_hour[pid as usize] = h;
+                                let k = next_u32() % 100;
+                                if k < 50 {
+                                    let cells: &[u32] = match pid {
+                                        1 => match next_u32() % 100 {
+                                            0..35 => &[CELL_1],
+                                            35..50 => &[CELL_1, CELL_3],
+                                            _ => &[],
+                                        },
+                                        2 if next_u32() % 100 < 40 => &[CELL_2],
+                                        _ => &[],
+                                    };
+                                    let body = PageModel::encode_data(pid as i32 * 1000 + h, cells);
+                                    batch.changed(pid, h, dated::DATA, &body);
+                                    panel_has_data[pid as usize] = true;
+                                    panel_stepped[pid as usize] = true;
+                                    has_cells |= !cells.is_empty();
+                                } else if k < 70 && panel_has_data[pid as usize] {
+                                    batch.changed(pid, h, dated::STANDS, &[]);
+                                    panel_stepped[pid as usize] = true;
+                                } else if k < 85 && panel_has_data[pid as usize] {
+                                    batch.changed(pid, h, dated::AGAIN, &[]);
+                                    panel_stepped[pid as usize] = true;
+                                } else {
+                                    batch.changed(pid, h, dated::WAITING, &[]);
+                                }
+                            }
+                        }
+                        let pkt = batch.finish(Some(h));
+                        ref_model.apply(PANEL, &pkt);
+                        push.offer_panel(session, pkt, Panels::All, has_cells);
+                    } else {
+                        let unstepped: Vec<u32> = [1, 2, 3].into_iter().filter(|&id| !panel_stepped[id as usize]).collect();
+                        if unstepped.is_empty() { continue; }
+                        let pid = unstepped[(next_u32() as usize) % unstepped.len()];
+                        let future = if next_u32() % 100 < 30 { 12 } else { 0 };
+                        let h = (panel_hour[pid as usize] + 1).max(step_hour + future);
+                        panel_hour[pid as usize] = h;
+                        let kr = next_u32() % 100;
+                        let mut has_cells = false;
+                        let pkt = if kr < 45 {
+                            let cells: &[u32] = match pid {
+                                1 => match next_u32() % 100 {
+                                    0..35 => &[CELL_1],
+                                    35..50 => &[CELL_1, CELL_3],
+                                    _ => &[],
+                                },
+                                2 if next_u32() % 100 < 45 => &[CELL_2],
+                                _ => &[],
+                            };
+                            has_cells = !cells.is_empty();
+                            panel_has_data[pid as usize] = true;
+                            let body = PageModel::encode_data(pid as i32 * 1000 + h, cells);
+                            if next_u32() % 100 < 45 {
+                                dated::at_one_hour((0, 0, 0), pid, h, dated::DATA, &body)
+                            } else {
+                                dated::encoded(0, 0, 0, pid, h, dated::DATA, &body)
+                            }
+                        } else if kr < 65 && panel_has_data[pid as usize] {
+                            dated::encoded(0, 0, 0, pid, h, dated::STANDS, &[])
+                        } else if kr < 78 && panel_has_data[pid as usize] {
+                            dated::encoded(0, 0, 0, pid, h, dated::AGAIN, &[])
+                        } else if kr < 88 {
+                            dated::encoded(0, 0, 0, pid, h, dated::WAITING, &[])
+                        } else if kr < 94 {
+                            panel_has_data[pid as usize] = true;
+                            dated::encoded(0, 0, 0, pid, h, dated::REFUSED, &h.to_le_bytes())
+                        } else {
+                            panel_has_data[pid as usize] = true;
+                            dated::encoded(0, 0, 0, pid, h, dated::STOPPED, &h.to_le_bytes())
+                        };
+                        ref_model.apply(PANEL, &pkt);
+                        push.offer_panel(session, pkt, Panels::One(pid), has_cells);
+                    }
+                } else {
+                    let reset = next_u32() % 100 < 8;
+                    if reset { follow_has_base.clear(); }
+                    let same_hour = !reset && last_follow_hour >= 10 && next_u32() % 100 < 15;
+                    let fh = if same_hour { last_follow_hour } else { step_hour.max(last_follow_hour + 1) };
+                    last_follow_hour = fh;
+                    let mut pkt = Vec::new();
+                    crate::answer::begin(&mut pkt, 0, 0, fh, 0, reset);
+                    for fid in [10u32, 11, CELL_1, CELL_2, CELL_3] {
+                        if same_hour && follow_has_base.get(&fid).copied().unwrap_or(false) { continue; }
+                        if next_u32() % 100 < 45 {
+                            if !reset && !same_hour && next_u32() % 100 < 12 {
+                                crate::answer::push(&mut pkt, fid, (fh - 2).max(10), &[]);
+                            } else {
+                                let use_changed = !reset && follow_has_base.get(&fid).copied().unwrap_or(false) && next_u32() % 100 < 40;
+                                let answer_body = if use_changed {
+                                    make_answer(true, &[(1, i64::from(fh) * 10 + i64::from(fid & 0xff))])
+                                } else {
+                                    make_answer(false, &[(1, i64::from(fh) * 10), (2, i64::from(fh) * 10 + 1)])
+                                };
+                                crate::answer::push_held(&mut pkt, fid, fh, &answer_body, if use_changed { 128 } else { 0 });
+                                follow_has_base.insert(fid, true);
+                            }
+                        }
+                    }
+                    ref_model.apply(FOLLOW, &pkt);
+                    push.offer_follow(session, pkt);
+                }
+            }
+
+            push.credit(session, total_sent);
+            let mut drain_guard = 0;
+            loop {
+                match push.try_take() {
+                    Some((kind, bytes, seq, _)) => {
+                        if kind == FOLLOW && !bytes.starts_with(&crate::answer::MAGIC.to_le_bytes()) {
+                            continue;
+                        }
+                        if seq < last_seq_taken { trial_overtakes += 1; }
+                        last_seq_taken = last_seq_taken.max(seq);
+                        total_sent += crate::answer::charge(&bytes) as u64;
+                        q_model.apply(kind, &bytes);
+                        push.credit(session, total_sent);
+                    }
+                    None => {
+                        if push.in_flight() == 0 { break; }
+                        push.credit(session, total_sent);
+                    }
+                }
+                drain_guard += 1;
+                assert!(drain_guard < 500, "{ctx}: queue failed to drain");
+            }
+            assert_eq!((push.in_flight(), budget.used()), (0, 0), "{ctx}: charges balance");
+            if push.counters().dropped > 0 {
+                continue;
+            }
+            total_overtakes += trial_overtakes;
+            checked_trials += 1;
+
+            if !per_cell && !ref_model.ever_overflowed {
+                assert!(!q_model.ever_overflowed, "{ctx}: queued delivery overflowed early_limit when serial delivery never did");
+            }
+            let max_h = step_hour.max(panel_hour[1]).max(panel_hour[2]).max(panel_hour[3]) + 5;
+            for pid in [1u32, 2, 3] {
+                if per_cell || !ref_model.ever_overflowed {
+                    assert_eq!(q_model.panels[&pid].failed, ref_model.panels[&pid].failed, "{ctx}: panel {pid} failure parity");
+                }
+                if ref_model.panels[&pid].failed || q_model.panels[&pid].failed { continue; }
+                for h in 10..=max_h {
+                    assert_eq!(q_model.covering_panel(pid, h), ref_model.covering_panel(pid, h), "{ctx}: panel {pid} exact coverage mismatch at hour {h} (head {max_head})");
+                }
+            }
+            for fid in [10u32, 11] {
+                assert_eq!(q_model.followed[&fid].failed, ref_model.followed[&fid].failed, "{ctx}: follow {fid} failure parity");
+                if ref_model.followed[&fid].failed { continue; }
+                for h in 10..=max_h {
+                    assert_eq!(q_model.covering_follow(fid, h), ref_model.covering_follow(fid, h), "{ctx}: follow {fid} exact coverage mismatch at hour {h} (head {max_head})");
+                }
+            }
+        }
+    }
+    assert!(checked_trials > 500 && total_overtakes > 0, "property test exercised commute overtakes ({total_overtakes}) across {checked_trials} exact-delivery trials");
+}
+
+#[test]
+fn an_answer_is_charged_at_the_size_its_lane_holds() {
     use crate::push::Push;
     let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
     let changed = routed(0, 10, 1, 4096);
@@ -2212,12 +3061,10 @@ fn an_answer_is_charged_at_the_size_its_lane_holds_and_merges_keep_that_size() {
     let mut body = Vec::new();
     table.encode(&mut body);
     assert_eq!(table.encoded_len(), body.len(), "the held size is the whole table's encoded size");
-    let merged = crate::answer::merge(&rows_message(10, true, &[(1, 1)]), &rows_message(11, true, &[(1, 2)])).unwrap().0;
-    assert_eq!(crate::answer::decode(&merged).unwrap().held.len(), 1);
 }
 
 #[test]
-fn reached_answers_wait_for_credit_once_the_budget_is_full_and_merge_while_they_wait() {
+fn reached_answers_drop_past_a_full_budget_without_credit_and_stay_bounded() {
     use crate::push::Push;
     let first = rows_message(10, false, &[(1, 1)]);
     let one = crate::answer::charge(&first);
@@ -2229,9 +3076,10 @@ fn reached_answers_wait_for_credit_once_the_budget_is_full_and_merge_while_they_
         push.head(0, 0, hour);
         push.offer(rows_message(hour, false, &[(1, i64::from(hour))]));
         while push.try_take().is_some() {}
+        assert!(budget.used() <= one * 4, "hour {hour}: {} charged under a budget of {}", budget.used(), one * 2);
     }
     assert!(push.in_flight() <= one * 2, "{} in flight under a budget of {}: reached answers kept leaving without credit", push.in_flight(), one * 2);
-    assert!(budget.used() <= one * 4, "{} held under a budget of {}: the passed hours did not merge while they waited", budget.used(), one * 2);
+    assert!(push.counters().dropped > 0, "stalled route dropped queued records past the budget");
     assert!(push.failed().is_none());
 }
 
@@ -2275,32 +3123,20 @@ fn under_pressure_a_pinned_picture_never_blocks_the_replacement_of_another() {
 }
 
 #[test]
-fn only_hours_the_clock_has_passed_merge_into_one_answer() {
-    use crate::push::Push;
-    let push = Push::default();
-    push.offer(rows_message(20, false, &[(1, 1)]));
-    push.offer(rows_message(30, false, &[(1, 2)]));
-    push.head(0, 0, 10);
-    assert_eq!(push.counters().merges, 0, "never merged ahead of the clock");
-    push.head(0, 0, 35);
-    assert_eq!(push.counters().merges, 1, "both passed: one complete answer at the later hour");
-    let (_, bytes, ..) = push.try_take().unwrap();
-    let decoded = decode(&bytes).unwrap();
-    assert_eq!((decoded.hour, Answer::parse(decoded.answers[0].2).unwrap().values), (30, vec![2]));
-}
-
-#[test]
-fn pressure_never_merges_ahead_of_the_clock() {
+fn queue_size_bound_keeps_packets_within_budget_and_drops_overflow_ahead_of_clock() {
     use crate::push::Push;
     let packet = rows_message(20, false, &[(1, 1)]);
-    let budget = playhead::ByteBudget::new(crate::answer::charge(&packet) * 2);
-    let push = Push::with_budget(budget);
+    let one = crate::answer::charge(&packet);
+    let budget = playhead::ByteBudget::new(one * 2);
+    let push = Push::with_budget(budget.clone());
     push.head(0, 0, 0);
     push.offer(rows_message(20, false, &[(1, 1)]));
     push.offer(rows_message(30, false, &[(1, 2)]));
+    assert_eq!(push.counters().dropped, 0, "packets within the route queue budget stay queued");
     push.offer(rows_message(40, false, &[(1, 3)]));
-    assert_eq!(push.counters().pressure_merges, 0, "never merged ahead of the clock");
-    assert!(push.failed().is_none(), "past the budget ahead of the clock every hour stays queued");
+    assert_eq!(push.counters().dropped, 3, "the packet that would exceed the route queue budget drops the route backlog");
+    assert_eq!(budget.used(), 0);
+    assert!(push.failed().is_none());
     assert_eq!(push.counters().unwritten, 0);
 }
 
@@ -2323,7 +3159,7 @@ fn at_seek(route: u32, seek: u32, hour: Hour, value: i64) -> Vec<u8> {
 
 #[test]
 fn review_7_e_native_work_is_bound_to_its_session_and_seek() {
-    use crate::push::{FOLLOW, PANEL, Push};
+    use crate::push::{FOLLOW, Panels, Push};
     let registry = crate::registry::Registry::new(None);
     registry.restart("new page");
     let ask = |session: &str| registry.answer(std::path::Path::new("x"), "follow", &serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "session": session }),
@@ -2339,7 +3175,8 @@ fn review_7_e_native_work_is_bound_to_its_session_and_seek() {
     assert_eq!(crate::answer::decode(&first).unwrap().hour, 100, "a head of the old seek never merges away the new seek's destination answer");
 
     let push = Push::default();
-    push.offer_kind(PANEL, crate::panel::dated::encoded(0, 0, 1, 3, 50, crate::panel::dated::STANDS, &[]));
+    let session = push.session();
+    push.offer_panel(session, crate::panel::dated::encoded(0, 0, 1, 3, 50, crate::panel::dated::STANDS, &[]), Panels::One(3), false);
     push.offer(at_seek(0, 2, 10, 3));
     let (kind, ..) = push.try_take().expect("the new seek's answer");
     assert!(kind == FOLLOW && push.try_take().is_none(), "an older seek's panel packet is retired with the follow answers of that seek");
@@ -2358,7 +3195,7 @@ fn review_7_e_native_work_is_bound_to_its_session_and_seek() {
 
 #[test]
 fn review_8_one_session_token_binds_every_page_command_and_every_packet() {
-    use crate::push::{FOLLOW, Push};
+    use crate::push::Push;
     let held = paper();
     let registry = crate::registry::Registry::new(Some(Arc::new(Papers(BTreeMap::from([("a".to_owned(), Arc::clone(&held))])))));
     let path = std::path::Path::new("a");
@@ -2379,7 +3216,7 @@ fn review_8_one_session_token_binds_every_page_command_and_every_packet() {
     let push = Push::default();
     let old = push.session();
     push.restart();
-    push.offer_from(old, FOLLOW, at_seek(0, 0, 5, 1));
+    push.offer_follow(old, at_seek(0, 0, 5, 1));
     assert!(push.try_take().is_none(), "work a retired session started is never sent to the new page");
     push.offer(at_seek(0, 2, 10, 2));
     assert!(push.try_take().is_some());

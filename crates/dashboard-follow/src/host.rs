@@ -3,7 +3,7 @@ use crate::{
     Follow,
     live::{Group, GroupState, Live, cells_id},
     panel::{self, Panel, PanelData, PanelReader, PanelRows},
-    push::{PANEL, Push},
+    push::{self, Push},
     registry::{Anchor, Hosted, lacking},
 };
 use serde_json::Value;
@@ -225,6 +225,7 @@ struct Panels {
     thread: Option<JoinHandle<()>>,
     cells: Option<HostCells>,
     session: u64,
+    overflowed: Option<(u64, Vec<u32>)>,
 }
 
 fn unread_from(proven: Option<&(u32, Hour)>, seek: u32, through: Hour) -> Option<Hour> {
@@ -309,7 +310,7 @@ impl PanelJob {
                 };
                 if let Some(from) = from {
                     reads.proven.remove(&product.id);
-                    self.push.offer_from(self.session, PANEL, panel::dated::encoded(clock, route, seek, product.id, from, panel::dated::WAITING, &[]));
+                    self.push.offer_panel(self.session, panel::dated::encoded(clock, route, seek, product.id, from, panel::dated::WAITING, &[]), push::Panels::One(product.id), false);
                 }
             }
         }
@@ -361,9 +362,10 @@ impl PanelJob {
         };
         if live_epoch().is_none() { return false; }
         let unread_from = product.last.filter(|&(e, g, _)| (e, g) == (self.epoch, seek)).map(|(_, _, last)| last.saturating_add(1));
-        let Some((change, from, fresh)) = product.read_at(seek, self.epoch, hour, reset, seed_paused, catch_up, &self.token, None, &self.reads) else { return false };
+        let Some((change, from, fresh, has_cells)) = product.read_at(seek, self.epoch, hour, reset, seed_paused, catch_up, &self.token, None, &self.reads) else { return false };
         let unproven = unread_from.is_some_and(|next| from > next || (hour > next && fresh));
         let (kind, body) = change.unwrap_or(if unproven { (panel::dated::AGAIN, &[]) } else { (panel::dated::STANDS, &[]) });
+        let registers_cells = kind == panel::dated::DATA && has_cells;
         let packet = panel::dated::at_one_hour(self.stamp, id, hour, kind, body);
         let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(epoch) = live_epoch().filter(|_| reads.current(self.epoch, seek)) else { return false };
@@ -372,7 +374,7 @@ impl PanelJob {
         }
         product.last = Some((epoch, seek, hour));
         reads.proven.remove(&id);
-        self.push.offer_from(self.session, PANEL, packet);
+        self.push.offer_panel(self.session, packet, push::Panels::One(id), registers_cells);
         product.wire.commit();
         true
     }
@@ -380,7 +382,7 @@ impl PanelJob {
 
 impl StepProduct {
     fn step(&mut self, input: panel::ProductStep<'_>, (clock, route, seek): (i32, u32, u32), session: u64, token: &AtomicBool,
-        active: &Mutex<ProductReads>, push: &Push, playhead: &Playhead) -> (Hour, Option<(Hour, u8, Vec<u8>)>, Option<Hour>) {
+        active: &Mutex<ProductReads>, push: &Push, playhead: &Playhead) -> (Hour, Option<(Hour, u8, Vec<u8>, bool)>, Option<Hour>) {
         let step = input.step;
         let (epoch, hour, id) = (step.epoch(), step.last(), self.id);
         let current = || !token.load(Ordering::Acquire) && playhead.epoch() == epoch;
@@ -389,20 +391,20 @@ impl StepProduct {
             return (last, None, None);
         }
         if !self.joined && self.last == Some((epoch, seek, hour)) {
-            return (hour.saturating_add(1), Some((hour, panel::dated::STANDS, Vec::new())), Some(hour));
+            return (hour.saturating_add(1), Some((hour, panel::dated::STANDS, Vec::new(), false)), Some(hour));
         }
         if let Some((e, g, at)) = self.pending_seed {
             if (e, g) == (epoch, seek) && at < hour && self.last.is_none_or(|(le, lg, _)| (le, lg) != (e, g)) {
                 let head = playhead.head(Instant::now()).clamp(at, hour);
                 if head < hour {
-                    let Some((change, ..)) = self.read_at(seek, epoch, head, true, true, false, token, Some(input), active) else {
+                    let Some((change, _, _, has_cells)) = self.read_at(seek, epoch, head, true, true, false, token, Some(input), active) else {
                         self.resend = true;
-                        return (hour, Some((hour, panel::dated::WAITING, Vec::new())), None);
+                        return (hour, Some((hour, panel::dated::WAITING, Vec::new(), false)), None);
                     };
                     let guard = active.lock().unwrap_or_else(PoisonError::into_inner);
                     if guard.current(epoch, seek) && current() {
                         if let Some((kind, body)) = change {
-                            push.offer_from(session, PANEL, panel::dated::encoded(clock, route, seek, id, head, kind, body));
+                            push.offer_panel(session, panel::dated::encoded(clock, route, seek, id, head, kind, body), push::Panels::One(id), kind == panel::dated::DATA && has_cells);
                         }
                         self.last = Some((epoch, seek, head));
                         self.wire.commit();
@@ -413,25 +415,25 @@ impl StepProduct {
         }
         let joining = !self.joined;
         let unread_from = self.last.filter(|&(e, g, _)| (e, g) == (epoch, seek)).map(|(_, _, last)| last.saturating_add(1));
-        let Some((change, from, _)) = self.read_at(seek, epoch, hour, step.reset(), step.reset(), false, token, Some(input), active) else {
+        let Some((change, from, _, has_cells)) = self.read_at(seek, epoch, hour, step.reset(), step.reset(), false, token, Some(input), active) else {
             if self.last.is_none_or(|(e, g, _)| (e, g) != (epoch, seek)) && self.pending_seed.is_none() {
                 self.pending_seed = Some((epoch, seek, hour));
                 self.joined = false;
             }
             self.resend = true;
-            return (hour, Some((hour, panel::dated::WAITING, Vec::new())), None);
+            return (hour, Some((hour, panel::dated::WAITING, Vec::new(), false)), None);
         };
         let change = change.map(|(kind, body)| (kind, body.to_vec()));
         let start = if self.followed.is_some() { hour } else { unread_from.map_or(from, |next| from.max(next)).min(hour) };
         let change = match change {
-            Some((kind, body)) => Some((start, kind, body)),
-            None if unread_from.is_some_and(|next| from > next) => Some((start, panel::dated::AGAIN, Vec::new())),
-            None => joining.then(|| (hour, panel::dated::STANDS, Vec::new())),
+            Some((kind, body)) => Some((start, kind, body, kind == panel::dated::DATA && has_cells)),
+            None if unread_from.is_some_and(|next| from > next) => Some((start, panel::dated::AGAIN, Vec::new(), false)),
+            None => joining.then(|| (hour, panel::dated::STANDS, Vec::new(), false)),
         };
         (hour.saturating_add(1), change, Some(hour))
     }
 
-    fn read_at(&mut self, page_seek: u32, epoch: u64, hour: Hour, reset: bool, seed_paused: bool, catch_up: bool, cancelled: &AtomicBool, step: Option<panel::ProductStep<'_>>, bindings: &Mutex<ProductReads>) -> Option<(Option<(u8, &[u8])>, Hour, bool)> {
+    fn read_at(&mut self, page_seek: u32, epoch: u64, hour: Hour, reset: bool, seed_paused: bool, catch_up: bool, cancelled: &AtomicBool, step: Option<panel::ProductStep<'_>>, bindings: &Mutex<ProductReads>) -> Option<(Option<(u8, &[u8])>, Hour, bool, bool)> {
         let seed = reset || self.last.is_none_or(|(e, g, h)| e != epoch || g != page_seek || h > hour);
         let send = seed || std::mem::take(&mut self.resend);
         let want_values = send || (catch_up && self.followed.is_some());
@@ -459,9 +461,10 @@ impl StepProduct {
             return None;
         }
         if !cell_lanes.is_empty() { retain_lanes(self.id, &cell_lanes, self.host.as_ref()); }
-        if !self.cells.is_empty() { current.cells.insert(self.id, std::mem::take(&mut self.cells)); }
+        let has_cells = !self.cells.is_empty();
+        if has_cells { current.cells.insert(self.id, std::mem::take(&mut self.cells)); }
         drop(current);
-        Some((self.wire.update(send, &value), read.from.min(hour), read.fresh))
+        Some((self.wire.update(send, &value), read.from.min(hour), read.fresh, has_cells))
     }
 
     fn follow_cells(&mut self, value: &Arc<PanelData>, live: Option<&Live>, hour: Hour, seed: bool, catch_up: bool, fresh: bool, seed_paused: bool) -> (Arc<PanelData>, Vec<Declared>) {
@@ -551,7 +554,7 @@ fn evaluate(id: u32, shown: &mut Shown, stamp: (i32, u32, u32), epoch: u64, vers
             let mut reads = active.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(now_epoch) = live_epoch(hour).filter(|_| reads.seek == seek) else { return };
             if let Some(mut cells) = reads.cells.remove(&id) { release(&mut cells, reads.host.as_ref()); }
-            push.offer_from(session, PANEL, packet);
+            push.offer_panel(session, packet, push::Panels::One(id), false);
             (shown.stopped, shown.frame, shown.pushed) = (Some((reason, epoch)), None, None);
             shown.version = (version, now_epoch);
         }
@@ -561,6 +564,7 @@ fn evaluate(id: u32, shown: &mut Shown, stamp: (i32, u32, u32), epoch: u64, vers
     let Some(frame) = shown.reader.frame() else { return };
     let Some((through, _)) = shown.reader.through_seek(&frame).filter(|&(_, at)| at == epoch) else { return };
     let mut data = None;
+    let mut registers_cells = false;
     let same_frame = shown.frame.as_ref().is_some_and(|last| {
         Arc::ptr_eq(last, &frame)
             || (last.branch == frame.branch
@@ -594,7 +598,8 @@ fn evaluate(id: u32, shown: &mut Shown, stamp: (i32, u32, u32), epoch: u64, vers
             return;
         }
         if !cell_lanes.is_empty() { retain_lanes(id, &cell_lanes, host.as_ref()); }
-        if !bound.is_empty() { reads.cells.insert(id, bound); }
+        registers_cells = !bound.is_empty();
+        if registers_cells { reads.cells.insert(id, bound); }
         drop(reads);
         data = Some(made_cells);
     }
@@ -614,7 +619,7 @@ fn evaluate(id: u32, shown: &mut Shown, stamp: (i32, u32, u32), epoch: u64, vers
                 (data_packet, pushed)
             };
             if let Some(packet) = packet {
-                push.offer_from(session, PANEL, packet);
+                push.offer_panel(session, packet, push::Panels::One(id), registers_cells);
                 if data.is_some() {
                     shown.frame = Some(frame.clone());
                 }
@@ -638,6 +643,7 @@ pub struct PlayheadHost<E: Send + Sync + 'static> {
     driver_gate: Arc<WaitGate>,
     panel_gate: Arc<WaitGate>,
     panel_work: Arc<AtomicU64>,
+    overflow: Arc<Mutex<Option<u64>>>,
     _driver_watch: Watcher,
     _panel_watch: Watcher,
     driver: Mutex<Option<JoinHandle<()>>>,
@@ -663,6 +669,9 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         let panels = Arc::new(Mutex::new(Panels { stamp: (follow.clock(), follow.route(), playhead.epoch() as u32, 0), cells: Some(HostCells { follow: follow.clone(), held: held.clone() }), ..Panels::default() }));
         let weak = Arc::downgrade(&panels);
         let reads = Arc::new(Mutex::new(ProductReads { host: Some(HostCells { follow: follow.clone(), held: held.clone() }), ..Default::default() }));
+        let driver_gate = Arc::new(WaitGate::new());
+        let panel_gate = Arc::new(WaitGate::new());
+        let panel_work = Arc::new(AtomicU64::new(0));
         let active = reads.clone();
         let product_owner = Arc::downgrade(&owner);
         let wake = follow.rehooker();
@@ -671,7 +680,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             let epoch = step.epoch();
             let (stamp, session, push, due, resend) = {
                 let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
-                if panels.products.is_empty() || get(&owner).epoch() != epoch { return; }
+                if get(&owner).epoch() != epoch || panels.products.is_empty() { return; }
                 let Some(push) = panels.push.clone() else { return };
                 let active = active.lock().unwrap_or_else(PoisonError::into_inner);
                 let (clock, route, _, _) = panels.stamp;
@@ -732,6 +741,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 let ok = active.current(epoch, stamp.2) && get(&owner).epoch() == epoch;
                 if ok {
                     let mut batch = panel::dated::ProductBatch::new(stamp);
+                    let mut batch_cells = false;
                     for (id, held, token, next, change, stepped) in replies {
                         let live = !token.load(Ordering::Acquire);
                         let read = held.is_some();
@@ -746,12 +756,15 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                         }
                         if !live { continue; }
                         panels.due.insert((next, id));
-                        if let Some((at, kind, body)) = change { batch.changed(id, at, kind, &body); }
+                        if let Some((at, kind, body, cells)) = change {
+                            batch.changed(id, at, kind, &body);
+                            batch_cells |= cells;
+                        }
                         if !read && let Some(from) = unread_from(active.proven.get(&id), stamp.2, step.last()) {
                             batch.changed(id, from, panel::dated::WAITING, &[]);
                         }
                     }
-                    push.offer_from(session, PANEL, batch.finish(Some(step.last())));
+                    push.offer_panel(session, batch.finish(Some(step.last())), push::Panels::All, batch_cells);
                 } else {
                     for (_, held, ..) in replies {
                         if let Some((work, mut product)) = held {
@@ -767,9 +780,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         }));
         playhead.share_budget(budget)?;
         playhead.lead(crate::lead::LEAD);
-        let driver_gate = Arc::new(WaitGate::new());
-        let panel_gate = Arc::new(WaitGate::new());
-        let panel_work = Arc::new(AtomicU64::new(0));
+        let overflow: Arc<Mutex<Option<u64>>> = Arc::default();
         follow.set_wake({
             let driver_gate = Arc::clone(&driver_gate);
             Arc::new(move || driver_gate.wake())
@@ -786,12 +797,47 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 panel_gate.wake();
             })
         });
-        let (waiting, gate, follow_ref) = (panels.clone(), Arc::clone(&driver_gate), follow.clone());
+        let (waiting, driver_reads, driver_overflow, gate, follow_ref) = (panels.clone(), reads.clone(), Arc::clone(&overflow), Arc::clone(&driver_gate), follow.clone());
         let driver = std::thread::Builder::new().name("follow driver".into()).spawn(move || {
             let mut taken = Vec::new();
             let mut next = Instant::now();
             while !stopping.load(Ordering::Acquire) {
                 let seen = gate.stamp();
+                let pending_overflow = driver_overflow.lock().unwrap_or_else(PoisonError::into_inner).take();
+                if let Some(session) = pending_overflow {
+                    let teardown = {
+                        let mut panels = waiting.lock().unwrap_or_else(PoisonError::into_inner);
+                        let mut active = driver_reads.lock().unwrap_or_else(PoisonError::into_inner);
+                        if panels.session == session {
+                            let mut ids: Vec<u32> = panels.products.keys().chain(panels.shown.keys()).copied().collect();
+                            ids.sort_unstable();
+                            ids.dedup();
+                            for &id in &ids { active.remove(id); }
+                            panels.products.clear();
+                            panels.due.clear();
+                            panels.shown.clear();
+                            panels.overflowed = Some((session, ids.clone()));
+                            let follow_ids = follow_ref.stop_all(session);
+                            Some((panels.stamp.0, panels.stamp.1, active.seek, panels.push.clone(), ids, follow_ids))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((clock, route, seek, Some(push), panel_ids, follow_ids)) = teardown {
+                        if !panel_ids.is_empty() {
+                            let mut updates = Vec::with_capacity(panel_ids.len() * 2);
+                            for &id in &panel_ids {
+                                updates.push(panel::dated::Update::Stopped(id, Hour::MIN, push::OVERFLOW_REASON));
+                                updates.push(panel::dated::Update::Stands(id, Hour::MAX));
+                            }
+                            push.offer_terminal(session, push::PANEL, panel::dated::message(clock, route, seek, &updates));
+                        }
+                        let head = get(&driven).head(Instant::now());
+                        if let Some(bytes) = follow_ref.encode_stopped(&follow_ids, push::OVERFLOW_REASON, seek, head) {
+                            push.offer_terminal(session, push::FOLLOW, bytes);
+                        }
+                    }
+                }
                 let playhead = get(&driven);
                 let playing = playhead.playing();
                 let (has_work, told) = {
@@ -823,7 +869,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             }
         })?;
 
-        Ok(Arc::new(Self { owner, panels, reads, get, anchored, follow, reader, held, stop, driver_gate, panel_gate, panel_work, _driver_watch: driver_watch, _panel_watch: panel_watch, driver: Mutex::new(Some(driver)) }))
+        Ok(Arc::new(Self { owner, panels, reads, get, anchored, follow, reader, held, stop, driver_gate, panel_gate, panel_work, overflow, _driver_watch: driver_watch, _panel_watch: panel_watch, driver: Mutex::new(Some(driver)) }))
     }
 
     fn install_panel(&self, id: u32, panel: Box<dyn Panel>, lanes: u32, reader: Option<Box<dyn PanelReader>>) -> Result<(), String> {
@@ -832,6 +878,18 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
             let push = panels.push.clone().ok_or("This playhead has no panel transport")?;
             let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+            let session = panels.session;
+            if let Some((s, ids)) = &mut panels.overflowed && *s == session {
+                if !ids.contains(&id) { ids.push(id); }
+                let (clock, route, seek) = (panels.stamp.0, panels.stamp.1, reads.seek);
+                drop(reads);
+                drop(panels);
+                push.offer_terminal(session, push::PANEL, panel::dated::message(clock, route, seek, &[
+                    panel::dated::Update::Stopped(id, Hour::MIN, push::OVERFLOW_REASON),
+                    panel::dated::Update::Stands(id, Hour::MAX),
+                ]));
+                return Ok(());
+            }
             reads.register(id);
             panels.remove(id);
             let epoch = self.playhead().epoch();
@@ -851,6 +909,19 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         let reader = reader.expect("a prepared row reader");
         {
             let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
+            let session = panels.session;
+            if let Some((s, ids)) = &mut panels.overflowed && *s == session {
+                if !ids.contains(&id) { ids.push(id); }
+                let (clock, route, seek, push) = (panels.stamp.0, panels.stamp.1, self.reads.lock().unwrap_or_else(PoisonError::into_inner).seek, panels.push.clone());
+                drop(panels);
+                if let Some(push) = push {
+                    push.offer_terminal(session, push::PANEL, panel::dated::message(clock, route, seek, &[
+                        panel::dated::Update::Stopped(id, Hour::MIN, push::OVERFLOW_REASON),
+                        panel::dated::Update::Stands(id, Hour::MAX),
+                    ]));
+                }
+                return Ok(());
+            }
             self.reads.lock().unwrap_or_else(PoisonError::into_inner).register(id);
             panels.remove(id);
             panels.shown.insert(id, Arc::new(Work::new(Some(Shown::new(panel, reader, class)))));
@@ -958,6 +1029,15 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 panel_gate.wake();
             })
         });
+        let route = self.follow.route();
+        let overflow = Arc::clone(&self.overflow);
+        let driver_gate = Arc::clone(&self.driver_gate);
+        push.watch_overflow(route, Arc::new(move |session| {
+            let mut slot = overflow.lock().unwrap_or_else(PoisonError::into_inner);
+            if slot.is_none_or(|old| session > old) { *slot = Some(session); }
+            drop(slot);
+            driver_gate.wake();
+        }));
         {
             let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
             panels.rows = Some(rows);
@@ -971,6 +1051,23 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
 impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
     fn follow(&self) -> &Follow {
         &self.follow
+    }
+
+    fn follow_query(&self, id: u32, query: crate::Query) -> std::io::Result<()> {
+        if let Some(session) = self.follow.follow_or_stopped(id, query)? {
+            let (seek, push) = {
+                let panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
+                let reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+                (reads.seek, (panels.session == session).then(|| panels.push.clone()).flatten())
+            };
+            if let Some(push) = push {
+                let head = self.playhead().head(Instant::now());
+                if let Some(bytes) = self.follow.encode_stopped(&[id], push::OVERFLOW_REASON, seek, head) {
+                    push.offer_terminal(session, push::FOLLOW, bytes);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn lacks(&self, table: usize) -> Option<String> {
@@ -988,15 +1085,33 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
     }
 
     fn serve(&self, session: u64) {
-        self.follow.serve(session);
-        self.panels.lock().unwrap_or_else(PoisonError::into_inner).session = session;
+        let changed = {
+            let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
+            self.follow.serve(session);
+            if panels.session != session {
+                panels.session = session;
+                panels.overflowed = None;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            let mut slot = self.overflow.lock().unwrap_or_else(PoisonError::into_inner);
+            if slot.is_some_and(|s| s < session) { *slot = None; }
+        }
         self.driver_gate.wake();
         self.wake_panels();
     }
 
     fn unpanel(&self, id: u32) {
         self.reads.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
-        self.panels.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
+        let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
+        panels.remove(id);
+        if let Some((_, ids)) = &mut panels.overflowed {
+            ids.retain(|&held| held != id);
+        }
+        drop(panels);
         self.driver_gate.wake();
         self.wake_panels();
     }
@@ -1011,7 +1126,7 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
         let epoch = self.playhead().epoch();
         reads.anchor(epoch, anchor.seek);
         drop(reads);
-        {
+        let resend_stopped = {
             let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
             let epoch = epoch as u32;
             let previous = panels.pace.replace((anchor.playing, anchor.speed));
@@ -1025,6 +1140,28 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
                     if let Some(token) = reads.tokens.get_mut(id) { std::mem::take(token).store(true, Ordering::Release); }
                 }
             }
+            if different_seek
+                && let Some((session, ref ids)) = panels.overflowed
+                && session == panels.session
+            {
+                Some((session, panels.stamp.0, panels.stamp.1, panels.push.clone(), ids.clone()))
+            } else {
+                None
+            }
+        };
+        if let Some((session, clock, route, Some(push), panel_ids)) = resend_stopped {
+            if !panel_ids.is_empty() {
+                let mut updates = Vec::with_capacity(panel_ids.len() * 2);
+                for &id in &panel_ids {
+                    updates.push(panel::dated::Update::Stopped(id, Hour::MIN, push::OVERFLOW_REASON));
+                    updates.push(panel::dated::Update::Stands(id, Hour::MAX));
+                }
+                push.offer_terminal(session, push::PANEL, panel::dated::message(clock, route, anchor.seek, &updates));
+            }
+            let head = self.playhead().head(Instant::now());
+            if let Some(bytes) = self.follow.stopped_message(push::OVERFLOW_REASON, session, anchor.seek, head) {
+                push.offer_terminal(session, push::FOLLOW, bytes);
+            }
         }
         self.driver_gate.wake();
         self.wake_panels();
@@ -1036,6 +1173,9 @@ impl<E: Send + Sync + 'static> Drop for PlayheadHost<E> {
         self.stop.store(true, Ordering::Release);
         self.driver_gate.stop();
         self.panel_gate.stop();
+        if let Some(push) = self.panels.lock().unwrap_or_else(PoisonError::into_inner).push.clone() {
+            push.unwatch_overflow(self.follow.route());
+        }
         for token in self.reads.lock().unwrap_or_else(PoisonError::into_inner).tokens.values() { token.store(true, Ordering::Release); }
         if let Some(driver) = self.driver.lock().unwrap_or_else(PoisonError::into_inner).take() {
             let _ = driver.join();

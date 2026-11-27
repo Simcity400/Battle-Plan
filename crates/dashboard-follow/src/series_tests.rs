@@ -23,7 +23,7 @@ use replay_frame::{
     branches::{BranchReason, BranchStart, Parentage},
     frame::{DecodedFrame, FrameEncoder, FrameInput, Metrics, TableView},
 };
-use std::sync::{Arc, OnceLock};
+use std::{collections::BTreeMap, sync::{Arc, OnceLock}};
 
 const FIRST: i32 = 500;
 const LAST: i32 = FIRST + 2 * UNIT_ORDINALS as i32 + 99;
@@ -1109,7 +1109,7 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
     follow.follow(1, q_scalar).unwrap();
     follow.follow(2, Query::Cells { table: TableId::CountryExperience.index(), columns: vec![0], rows: Rows::Live(vec![9001, 9002]) }).unwrap();
 
-    let mut held: Option<Vec<u8>> = None;
+    let mut held: BTreeMap<u32, Answer> = BTreeMap::new();
     let mut drive = |target: i32, seek: bool| -> (Answer, Answer) {
         if seek {
             playhead.seek(target);
@@ -1122,18 +1122,32 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
             consumer.take(target, &mut steps);
             let (stats, message) = recv.recv().unwrap();
             if let Some(message) = message {
-                held = Some(match held.take() {
-                    Some(older) if decode(&older).unwrap().stamp == decode(&message.bytes).unwrap().stamp => {
-                        crate::answer::merge(&older, &message.bytes).unwrap().0
+                let decoded = decode(&message.bytes).unwrap();
+                if decoded.reset { held.clear(); }
+                for (id, _, body) in decoded.answers {
+                    let parsed = Answer::parse(body).unwrap();
+                    if parsed.changed && let Some(base) = held.get_mut(&id) {
+                        for (row, &key) in parsed.keys.iter().enumerate() {
+                            if let Some(at) = base.keys.iter().position(|&k| k == key) {
+                                let w = base.columns;
+                                base.values[at * w..(at + 1) * w].copy_from_slice(&parsed.values[row * w..(row + 1) * w]);
+                                base.states[at * w..(at + 1) * w].copy_from_slice(&parsed.states[row * w..(row + 1) * w]);
+                                base.reasons[at] = match parsed.reason(row) {
+                                    Some(reason) => {
+                                        let idx = base.texts.iter().position(|t| t == reason).unwrap_or_else(|| { base.texts.push(reason.to_owned()); base.texts.len() - 1 });
+                                        idx as u32
+                                    }
+                                    None => crate::NO_REASON,
+                                };
+                            }
+                        }
+                    } else {
+                        held.insert(id, parsed);
                     }
-                    _ => message.bytes,
-                });
+                }
             }
             if stats.last == target {
-                let decoded = decode(held.as_deref().unwrap()).unwrap();
-                let one = Answer::parse(decoded.answers.iter().find(|&&(id, ..)| id == 1).unwrap().2).unwrap();
-                let two = Answer::parse(decoded.answers.iter().find(|&&(id, ..)| id == 2).unwrap().2).unwrap();
-                return (one, two);
+                return (held[&1].clone(), held[&2].clone());
             }
         }
     };

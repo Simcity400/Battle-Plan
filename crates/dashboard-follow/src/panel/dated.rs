@@ -1,6 +1,6 @@
 use super::PanelData;
 use replay_data::Hour;
-use std::{collections::BTreeMap, io};
+use std::io;
 
 pub const MAGIC: &[u8; 4] = b"PNL2";
 const VERSION: u16 = 8;
@@ -167,96 +167,4 @@ pub fn records(bytes: &[u8]) -> io::Result<Vec<Record<'_>>> {
         return Err(crate::invalid("A panel message holds bytes past its panels"));
     }
     Ok(out)
-}
-
-#[derive(Default)]
-struct PanelState<'a> {
-    stands_before: Option<Record<'a>>,
-    wait_before: Option<Record<'a>>,
-    reading: Option<Record<'a>>,
-    again: Option<Record<'a>>,
-    tail: Option<Record<'a>>,
-}
-
-impl<'a> PanelState<'a> {
-    fn push(&mut self, r: Record<'a>) {
-        match r.kind {
-            DATA | REFUSED | STOPPED => {
-                if self.wait_before.is_none() {
-                    self.stands_before = None;
-                }
-                self.reading = Some(r);
-                self.again = None;
-                self.tail = None;
-            }
-            AGAIN if self.reading.is_some() => {
-                self.again = Some(r);
-                self.tail = None;
-            }
-            AGAIN => {
-                if self.wait_before.is_none() {
-                    self.stands_before = None;
-                }
-                self.reading = Some(r);
-                self.tail = None;
-            }
-            STANDS => {
-                if self.reading.is_some() || self.wait_before.is_some() {
-                    self.tail = Some(r);
-                } else {
-                    self.stands_before = Some(r);
-                }
-            }
-            WAITING => {
-                if self.reading.is_some() {
-                    if !matches!(self.tail, Some(t) if t.kind == WAITING) {
-                        self.tail = Some(r);
-                    }
-                } else if self.wait_before.is_none() {
-                    self.wait_before = Some(r);
-                } else if matches!(self.tail, Some(t) if t.kind == STANDS) {
-                    self.tail = Some(r);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn iter(&self) -> impl Iterator<Item = Record<'a>> {
-        [self.stands_before, self.wait_before, self.reading, self.again, self.tail].into_iter().flatten()
-    }
-}
-
-pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
-    let stamp = stamp(older).filter(|s| Some(*s) == self::stamp(newer) && clock(older) == clock(newer))
-        .ok_or_else(|| crate::invalid("Panel messages belong to different routes or seeks"))?;
-    let mut panels: BTreeMap<u32, PanelState<'_>> = BTreeMap::new();
-    let mut completed: Option<Record<'_>> = None;
-    let mut count = 0;
-    for r in records(older)?.into_iter().chain(records(newer)?) {
-        count += 1;
-        match r.kind {
-            DATA | REFUSED | STOPPED | STANDS | WAITING | AGAIN => {
-                let panel = panels.entry(r.id).or_default();
-                if r.kind == WAITING && (panel.tail.is_some_and(|tail| tail.kind == STANDS)
-                    || completed.is_some_and(|c| panel.iter().last().is_none_or(|last| last.kind != WAITING && last.hour < c.hour)))
-                {
-                    return Err(crate::invalid("A waiting panel must keep its earlier confirmation"));
-                }
-                panel.push(r);
-            }
-            COMPLETED => {
-                if completed.is_none_or(|c| r.hour >= c.hour) {
-                    completed = Some(r);
-                }
-            }
-            _ => return Err(crate::invalid("Unknown dated panel kind")),
-        }
-    }
-    let kept = panels.values().map(|p| p.iter().count()).sum::<usize>() + usize::from(completed.is_some());
-    let mut out = head(kept, clock(newer), stamp);
-    for r in panels.values().flat_map(PanelState::iter).chain(completed) {
-        out.extend_from_slice(r.bytes);
-    }
-    Ok((out, (count - kept) as u32))
 }

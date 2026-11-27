@@ -145,7 +145,9 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     if (pageFps === null) reasons.push('missing page frame measurements');
     const outOfBounds = lanes.filter(lane => lane === null || Math.round(lane) < 60 || Math.round(lane) > Math.max(60, Math.round(displayedFrames ?? 0)));
     if (!lanes.length || outOfBounds.length) reasons.push('worker presents/s ' + lanes.map(lane => lane === null ? 'none' : lane.toFixed(1)).join(', '));
-    if (w.pressureMerges !== 0) reasons.push('pressure merges ' + w.pressureMerges);
+    const legacyPressure = legacy && w.dropped === undefined;
+    const dropped = legacyPressure ? w.pressureMerges : w.dropped;
+    if (dropped !== 0) reasons.push((legacyPressure ? 'pressure merges ' : 'dropped packets ') + dropped);
     const pageCount = page.reduce((sum, r) => sum + r.commits, 0);
     const firstCommit = page[0]?.commitSequence - page[0]?.commits + 1;
     const counted = winRecords.filter(r => r.t === 'commit' && (Number.isFinite(firstCommit) ? r.serial >= firstCommit && r.serial <= page.at(-1)?.commitSequence : timed(r)));
@@ -197,7 +199,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     metrics.push({ pictureFrames, picturesPerSecond: seconds > 0 ? opened.reduce((sum, r) => sum + (r.pictures ?? 0), 0) / seconds : null, expiredShare, expiredByWidget, displayedFrames, pageFps, presents, hps: pace.hps, commitsPerSecond: commitCount / seconds, structureCommitsPerSecond: structural.length / seconds,
       inputCommitsPerSecond: input.length / seconds, unexplainedCommitsPerSecond: unexplained / seconds, structureBySource, frames: frames.length,
       compositorGapP95: p95(gaps(frames)), workerGapP95: p95(gaps(worker.map(r => r.at))), emptyMs, emptyFrames: idle.length,
-      changedWidgetMs, changingFrames: changing.length, pressureMerges: w.pressureMerges, playLost: playLost.count, inputLost: inputLost.count, idleLost: idleLost.count });
+      changedWidgetMs, changingFrames: changing.length, ...(legacyPressure ? { pressureMerges: w.pressureMerges } : { dropped: w.dropped }), playLost: playLost.count, inputLost: inputLost.count, idleLost: idleLost.count });
     const hasRecordedInputs = Array.isArray(w.inputs?.actions) && w.inputs.actions.length > 0;
     if (w.inputs && (!legacy || hasRecordedInputs)) {
       const checks = [];

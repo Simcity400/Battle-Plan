@@ -4141,3 +4141,240 @@ test('a refused entry never crops or transfers bitmaps even when the view return
   assert.equal(page.view(1).mode, 'refused');
   assert.equal(page.view(1).reason, 'table withheld');
 });
+
+test('a single panel batch replays newly bound live cells before holding an unbound sibling panel', async () => {
+  const CELL = 0x8000_004d;
+  const subFailures: [number, string][] = [];
+  const page = new Page<Fake>({
+    lanes: 1,
+    post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m);
+    },
+  });
+  const lane = new Lane<Fake>({
+    lane: 0,
+    lanes: 1,
+    views: () => fieldsView(() => undefined),
+    crop: async () => [],
+    present: presentation => page.offer(presentation),
+    release: () => {},
+    fail: reason => { throw new Error(reason); },
+    failSub: (sub, reason) => { subFailures.push([sub, reason]); },
+    later: () => {},
+    clock: () => 0,
+  });
+  lane.follow(1, 'panel', 'demo');
+  lane.follow(2, 'panel', 'demo');
+  lane.bindRoute(1, ROUTE, NATIVE, 0);
+  lane.mount(10, [1], 'fields');
+  lane.mount(20, [2], 'fields');
+  lane.bind(10, { generation: 1, surfaces: [], offset: 0, pin: null });
+  lane.bind(20, { generation: 1, surfaces: [], offset: 0, pin: null });
+  page.mount(10, { route: ROUTE, lane: 0, surfaces: [] });
+  page.mount(20, { route: ROUTE, lane: 0, surfaces: [] });
+
+  lane.receive('follow', message(10, [{ id: CELL, answer: { keys: [1n], columns: 1, values: [42n], names: ['a'.repeat(2_200_000)] } }], false, NATIVE));
+  lane.receive('panels', panels([
+    {
+      id: 1,
+      hour: 10,
+      kind: 'data',
+      stepped: true,
+      data: {
+        shape: 'live',
+        live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: CELL }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+      },
+    },
+    { id: 2, hour: 10, kind: 'data', stepped: true, data: { shape: 'x'.repeat(2_200_000) } },
+    { id: 0, hour: 10, kind: 'completed' },
+  ], 0));
+  assert.deepEqual(subFailures, [], 'bound panel 1 drains its held cell before unbound panel 2 is held');
+  lane.bindRoute(2, ROUTE, NATIVE, 0);
+  page.publish(10, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.equal(page.view(10).mode, 'picture');
+  assert.equal(page.view(20).mode, 'picture');
+});
+
+test('split panel packets isolate early live-cell buffering from an overtaking unbound sibling panel', async () => {
+  const CELL = 0x8000_004e;
+  const subFailures: [number, string][] = [];
+  const page = new Page<Fake>({
+    lanes: 1,
+    post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m);
+    },
+  });
+  const lane = new Lane<Fake>({
+    lane: 0,
+    lanes: 1,
+    views: () => fieldsView(() => undefined),
+    crop: async () => [],
+    present: presentation => page.offer(presentation),
+    release: () => {},
+    fail: reason => { throw new Error(reason); },
+    failSub: (sub, reason) => { subFailures.push([sub, reason]); },
+    later: () => {},
+    clock: () => 0,
+  });
+  lane.follow(1, 'panel', 'demo');
+  lane.follow(2, 'panel', 'demo');
+  lane.bindRoute(1, ROUTE, NATIVE, 0);
+  lane.mount(10, [1], 'fields');
+  lane.mount(20, [2], 'fields');
+  lane.bind(10, { generation: 1, surfaces: [], offset: 0, pin: null });
+  lane.bind(20, { generation: 1, surfaces: [], offset: 0, pin: null });
+  page.mount(10, { route: ROUTE, lane: 0, surfaces: [] });
+  page.mount(20, { route: ROUTE, lane: 0, surfaces: [] });
+
+  lane.receive('follow', message(11, [{ id: CELL, answer: { keys: [1n], columns: 1, values: [42n], names: ['a'.repeat(2_200_000)] } }], false, NATIVE));
+  lane.receive('panels', panels([
+    { id: 2, hour: 10, kind: 'data', stepped: true, data: { shape: 'x'.repeat(2_200_000) } },
+  ], 0));
+  lane.receive('panels', panels([
+    {
+      id: 1,
+      hour: 11,
+      kind: 'data',
+      stepped: true,
+      data: {
+        shape: 'live',
+        live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: CELL }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+      },
+    },
+    { id: 0, hour: 11, kind: 'completed' },
+  ], 0));
+  assert.deepEqual(subFailures, [], 'an overtaking unbound panel never overflows against an unrelated early live cell');
+  lane.bindRoute(2, ROUTE, NATIVE, 0);
+  page.publish(11, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.equal(page.view(10).mode, 'picture');
+  assert.equal(page.view(20).mode, 'picture');
+});
+
+test('unbound ordinary followed and panel subscriptions keep separate early-hold budgets in either arrival order', async () => {
+  for (const followFirst of [true, false]) {
+    const subFailures: [number, string][] = [];
+    const page = new Page<Fake>({
+      lanes: 1,
+      post: (_lane, m: PageMessage) => {
+        if (m.type === 'frame') lane.frame(m);
+      },
+    });
+    const lane = new Lane<Fake>({
+      lane: 0,
+      lanes: 1,
+      views: () => fieldsView(() => undefined),
+      crop: async () => [],
+      present: presentation => page.offer(presentation),
+      release: () => {},
+      fail: reason => { throw new Error(reason); },
+      failSub: (sub, reason) => { subFailures.push([sub, reason]); },
+      later: () => {},
+      clock: () => 0,
+    });
+    lane.follow(1, 'followed');
+    lane.follow(2, 'panel', 'demo');
+    lane.mount(10, [1], 'fields');
+    lane.mount(20, [2], 'fields');
+    lane.bind(10, { generation: 1, surfaces: [], offset: 0, pin: null });
+    lane.bind(20, { generation: 1, surfaces: [], offset: 0, pin: null });
+    page.mount(10, { route: ROUTE, lane: 0, surfaces: [] });
+    page.mount(20, { route: ROUTE, lane: 0, surfaces: [] });
+
+    const followPacket = message(10, [{ id: 1, answer: { keys: [1n], columns: 1, values: [42n], names: ['a'.repeat(2_200_000)] } }], false, NATIVE);
+    const panelPacket = panels([{ id: 2, hour: 10, kind: 'data', stepped: true, data: { shape: 'x'.repeat(2_200_000) } }, { id: 0, hour: 10, kind: 'completed' }], 0);
+    if (followFirst) {
+      lane.receive('follow', followPacket);
+      lane.receive('panels', panelPacket);
+    } else {
+      lane.receive('panels', panelPacket);
+      lane.receive('follow', followPacket);
+    }
+    assert.deepEqual(subFailures, [], `followFirst=${followFirst}: unbound followed and panel packets share no early-hold cap`);
+    lane.bindRoute(1, ROUTE, NATIVE, 0);
+    lane.bindRoute(2, ROUTE, NATIVE, 0);
+    page.publish(10, { playing: false, seek: 0 });
+    await flush();
+    page.frame();
+    assert.equal(page.view(10).mode, 'picture');
+    assert.equal(page.view(20).mode, 'picture');
+  }
+
+  for (const order of [[1, 2], [2, 1]] as const) {
+    const subFailures: [number, string][] = [];
+    const page = new Page<Fake>({
+      lanes: 1,
+      post: (_lane, m: PageMessage) => {
+        if (m.type === 'frame') lane.frame(m);
+      },
+    });
+    const lane = new Lane<Fake>({
+      lane: 0,
+      lanes: 1,
+      views: () => fieldsView(() => undefined),
+      crop: async () => [],
+      present: presentation => page.offer(presentation),
+      release: () => {},
+      fail: reason => { throw new Error(reason); },
+      failSub: (sub, reason) => { subFailures.push([sub, reason]); },
+      later: () => {},
+      clock: () => 0,
+    });
+    lane.follow(1, 'panel', 'demo');
+    lane.follow(2, 'panel', 'demo');
+    lane.mount(10, [1], 'fields');
+    lane.mount(20, [2], 'fields');
+    lane.bind(10, { generation: 1, surfaces: [], offset: 0, pin: null });
+    lane.bind(20, { generation: 1, surfaces: [], offset: 0, pin: null });
+    page.mount(10, { route: ROUTE, lane: 0, surfaces: [] });
+    page.mount(20, { route: ROUTE, lane: 0, surfaces: [] });
+
+    for (const id of order) {
+      lane.receive('panels', panels([{ id, hour: 10, kind: 'data', stepped: true, data: { shape: 'x'.repeat(2_200_000) } }], 0));
+    }
+    assert.deepEqual(subFailures, [], `order=${order.join(',')}: disjoint unbound panels commute without failing each other`);
+    lane.bindRoute(1, ROUTE, NATIVE, 0);
+    lane.bindRoute(2, ROUTE, NATIVE, 0);
+    page.publish(10, { playing: false, seek: 0 });
+    await flush();
+    page.frame();
+    assert.equal(page.view(10).mode, 'picture');
+    assert.equal(page.view(20).mode, 'picture');
+  }
+});
+
+test('a stopped followed answer fails its subscription with the stream reason', async () => {
+  const reason = 'This page fell too far behind while it was not responding.';
+  const subFailures: [number, string][] = [];
+  const page = new Page<Fake>({
+    lanes: 1,
+    post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m);
+    },
+  });
+  const lane = new Lane<Fake>({
+    lane: 0,
+    lanes: 1,
+    views: () => fieldsView(() => undefined),
+    crop: async () => [],
+    present: presentation => page.offer(presentation),
+    release: () => {},
+    fail: err => { throw new Error(err); },
+    failSub: (sub, err) => { subFailures.push([sub, err]); },
+    later: () => {},
+    clock: () => 0,
+  });
+  lane.follow(3, 'followed');
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  lane.mount(1, [3], 'fields');
+  lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+  page.mount(1, { route: ROUTE, lane: 0, surfaces: [] });
+  lane.receive('follow', message(10, [{ id: 3, answer: { stopped: reason } }], false, NATIVE));
+  page.publish(10, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.deepEqual(subFailures, [[3, reason]]);
+});

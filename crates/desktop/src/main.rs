@@ -563,7 +563,7 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-fn playback_pressure_merges() -> u64 { dashboard_follow::lead::pressure_merges() }
+fn playback_dropped() -> u64 { dashboard_follow::lead::dropped() }
 
 fn main() {
     engine_heap::return_freed_memory_promptly();
@@ -706,7 +706,7 @@ fn main() {
             video::set_map_muted,
             desktop_state,
             shell_ready,
-            playback_pressure_merges,
+            playback_dropped,
             close_watch_document,
             watch_close_requests,
             refresh_close_requests,
