@@ -28,7 +28,7 @@ export default function EntityStatsWindow({ runtime, widget, hour, link, active,
   return <FloatingPanel title={kind} label={`${kind} ${name} stats`} anchor={{ x: link.x, y: link.y }} onClose={onClose} className="entity-stats-window">
     <GameArtFor runtime={runtime} widget={widget} active={active}><GameIcons runs={runs}><div className="entity-stats" ref={stats.root}>
       <h3 data-tooltip={contentTitleHint(link.token)}>{name}</h3>
-      {error ? <WidgetState kind="error" failure={error} onRetry={retry} />
+      {error ? <WidgetState kind="error" what={`${kind.toLowerCase()} stats`} failure={error} onRetry={retry} />
         : !data ? <p className="entity-stats-missing">Loading stats…</p>
           : <>
             {data.unavailable && <p className="entity-stats-missing">{data.unavailable}</p>}
