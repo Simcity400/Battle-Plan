@@ -175,6 +175,25 @@ fn main() -> io::Result<()> {
     let pages = Arc::new(WorldPages::over(replay.recording().selecting(&TableId::ALL)?, span)?);
     let mut opened = pages.opened();
     opened.ns = started.elapsed().as_nanos() as u64;
+    let counted = if command == "open" {
+        let mut parts = 0usize;
+        let mut frames = 0usize;
+        let mut packed = 0usize;
+        let recording_tables = pages.recording().tables();
+        for (run_idx, run) in pages.runs().iter().enumerate() {
+            for block in 0..run.blocks() {
+                for table in 0..recording_tables {
+                    let entry = pages.table_entry(run_idx, block, table)?;
+                    packed += usize::from(entry.packed);
+                    parts += entry.parts.len();
+                    frames += entry.parts.iter().map(|part| part.frames.len()).sum::<usize>();
+                }
+            }
+        }
+        Some((parts, frames, packed))
+    } else {
+        None
+    };
     options.pieces = check::played(&replay, &pages, span, options.branch)?.pieces().to_vec();
     let piece = pages.pieces()[0];
     let first_hour = pages.runs()[0].first_hour;
@@ -194,14 +213,21 @@ fn main() -> io::Result<()> {
         if options.tables.as_ref().is_some_and(|wanted| !wanted.contains(&name)) || selection.as_ref().is_some_and(|held| !held.iter().any(|declared| declared.table == table)) {
             continue;
         }
-        if pages.runs().iter().any(|run| !run.pages.iter().any(|page| page.tables.get(table).is_some_and(|entry| entry.first.is_some() || entry.restore.is_some()))) {
+        if pages.runs().iter().enumerate().any(|(run_idx, run)| {
+            !(0..run.blocks()).any(|block| pages.table_entry(run_idx, block, table).is_ok_and(|entry| entry.first.is_some() || entry.restore.is_some()))
+        }) {
             absent.push(name);
             continue;
         }
         tables.push(table);
     }
-    let opened_json = json!({ "recording": recording, "span": format!("{span:?}"), "runs": pages.runs().len(), "pieces": options.pieces.iter().map(|piece| json!([piece.run, piece.first, piece.last])).collect::<Vec<_>>(),
-        "blocks": opened.blocks, "parts": opened.parts, "frames": opened.frames, "packed": opened.packed, "open_ms": opened.ns as f64 / 1e6, "first_run_hours": run.hours(), "window": options.window, "tables": tables.len(), "without_a_restore": absent });
+    let mut opened_json = json!({ "recording": recording, "span": format!("{span:?}"), "runs": pages.runs().len(), "pieces": options.pieces.iter().map(|piece| json!([piece.run, piece.first, piece.last])).collect::<Vec<_>>(),
+        "blocks": opened.blocks, "open_ms": opened.ns as f64 / 1e6, "first_run_hours": run.hours(), "window": options.window, "tables": tables.len(), "without_a_restore": absent });
+    if let (Some((parts, frames, packed)), Some(map)) = (counted, opened_json.as_object_mut()) {
+        map.insert("parts".into(), json!(parts));
+        map.insert("frames".into(), json!(frames));
+        map.insert("packed".into(), json!(packed));
+    }
     eprintln!("{opened_json}");
     let pages: Arc<dyn Pages> = pages;
     match command.as_str() {
@@ -589,7 +615,7 @@ fn check_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) -> io::R
     }
     let mut changes = Changes::default();
     let mut mirror = Mirror::rebuild(&full, kinds, &all);
-    let sampled = samples(run, table, options.samples, options.window);
+    let sampled = samples(&**pages, 0, table, options.samples, options.window);
     let targets = check::targets(run, options.step, &sampled, options.window);
     let (mut steps, mut block_ends, mut a, mut b, mut seeks, mut c, mut d, mut renumbers) = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
     let mut first: Option<String> = None;
@@ -611,7 +637,8 @@ fn check_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) -> io::R
         }
         if let Some(block) = check::block_end(run, target) {
             block_ends += 1;
-            let (rebuilt, _) = reader::rebuild(pages.extents(0), &run.pages, held_kinds(&**pages, table), table, block, run.first_hour)?;
+            let table_pages = pages.table_pages(0, table, 0, block + 1)?;
+            let (rebuilt, _) = reader::rebuild(pages.extents(0), &table_pages, held_kinds(&**pages, table), table, block, run.first_hour)?;
             a += differ(full.cells(), &rebuilt, &all, &mut first);
             if full.status() != (rebuilt.status(), rebuilt.sampled_at()) {
                 a += 1;
@@ -856,9 +883,9 @@ fn time(pages: &Arc<dyn Pages>, tables: &[usize], options: &Options, selection: 
                         "slots_written": changes.cells(), "deleted": changes.deleted().len(), "inserted": changes.inserted().len(), "texts": changes.texts().len(), "fetched_tracks": opened })
                 );
             }
-            let crossed = run.pages.iter().enumerate().any(|(block, page)| {
+            let crossed = (0..run.blocks()).any(|block| {
                 let start = block as u32 * BLOCK;
-                page.tables[table].parts.iter().any(|part| (from..=target).contains(&(start + u32::from(part.first)))) || (from..=target).contains(&start)
+                pages.table_entry(0, block, table).is_ok_and(|entry| entry.parts.iter().any(|part| (from..=target).contains(&(start + u32::from(part.first))))) || (from..=target).contains(&start)
             });
             if crossed {
                 timed.boundary.push(ns);
@@ -959,7 +986,7 @@ fn seek(pages: &Arc<dyn Pages>, tables: &[usize], options: &Options) -> io::Resu
         let all: Vec<usize> = (0..kinds.len()).collect();
         let (mut restore_ns, mut replay_ns, mut events, mut blocks) = (Vec::new(), Vec::new(), 0_u64, 0_u32);
         let mut fetch_ns = 0_u64;
-        for hour in samples(run, table, options.samples, options.window) {
+        for hour in samples(&**pages, 0, table, options.samples, options.window) {
             let mut lane = lane(pages, table, &all)?;
             lane.time(true);
             let sought = lane.seek(game(run, hour))?;
@@ -1071,7 +1098,8 @@ fn block_end(pages: &dyn Pages, timeline: &Timeline, hour: Hour) -> Option<(usiz
     let run = &pages.runs()[piece.run];
     let at = (hour - run.first_hour) as u32;
     let block = (at / BLOCK) as usize;
-    (at + 1 == block as u32 * BLOCK + u32::from(run.pages[block].hours)).then_some((piece.run, block))
+    let hours = run.block_hours(block)?;
+    (at + 1 == block as u32 * BLOCK + u32::from(hours)).then_some((piece.run, block))
 }
 
 fn compare_rebuilt(pages: &dyn Pages, mirrors: &HashMap<usize, Box<Mirror>>, run: usize, block: usize, hour: Hour, threads: usize) -> io::Result<(u64, u64, u64, Option<String>)> {
@@ -1084,7 +1112,7 @@ fn compare_rebuilt(pages: &dyn Pages, mirrors: &HashMap<usize, Box<Mirror>>, run
         for _ in 0..threads {
             scope.spawn(|| {
                 while let Some(&table) = tables.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    match reader::rebuild(pages.extents(run), &held.pages, held_kinds(pages, table), table, block, held.first_hour) {
+                    match pages.table_pages(run, table, 0, block + 1).and_then(|table_pages| reader::rebuild(pages.extents(run), &table_pages, held_kinds(pages, table), table, block, held.first_hour)) {
                         Ok((rebuilt, texts)) => {
                             let mut first = None;
                             let mirror = &mirrors[&table];

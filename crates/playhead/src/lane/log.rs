@@ -29,7 +29,10 @@ pub type Ordinal = u64;
 pub fn is_log(pages: &dyn Pages, table: usize) -> io::Result<bool> {
     let mut class = None;
     for (index, run) in pages.runs().iter().enumerate() {
-        let log = reader::class_of(&run.pages, table)?;
+        if run.blocks() == 0 {
+            continue;
+        }
+        let log = pages.table_entry(index, 0, table)?.log;
         if class.is_some_and(|held| held != log) {
             return Err(invalid(format!("Table {table} is a log in one run and holds state in run {index}")));
         }
@@ -208,15 +211,24 @@ impl Lane {
         let run = &pages.runs()[self.run];
         let target = (i64::from(hour) - i64::from(run.first_hour)).clamp(0, i64::from(run.hours()) - 1) as u32;
         let block = (target / BLOCK) as usize;
-        let ends_block = target + 1 == block as u32 * BLOCK + u32::from(run.pages[block].hours);
+        let block_hours = run.block_hours(block).ok_or_else(|| invalid(format!("Run {} holds no block {block}", self.run)))?;
+        let target_entry = self.entry_at(block)?;
+        let ends_block = target + 1 == block as u32 * BLOCK + u32::from(block_hours);
         let at = if ends_block { Some(block) } else { block.checked_sub(1) };
+        let restore_entry = match at {
+            Some(at) if at == block => target_entry.clone(),
+            Some(at) => pages.table_entry(self.run, at, self.table)?,
+            None if block == 0 => target_entry.clone(),
+            None => pages.table_entry(self.run, 0, self.table)?,
+        };
         let entry = match at {
-            Some(at) => run.pages[at].tables[self.table].restore.as_ref(),
-            None => run.pages[0].tables[self.table].first.as_ref(),
+            Some(_) => restore_entry.restore.as_ref(),
+            None => restore_entry.first.as_ref(),
         };
         let entry = entry.ok_or_else(|| invalid(format!("Log table {} has no restore before hour {hour}", self.table)))?;
         let started = Instant::now();
         let (restored, meta) = reader::restore(pages.extents(self.run), entry, &self.kinds, &[])?;
+        drop(restore_entry);
         let restore_ns = started.elapsed().as_nanos() as u64;
         let (Some(count), Some(listed)) = (restored.count(), restored.listed()) else {
             return Err(invalid(format!("Table {}'s restore is not a log's", self.table)));
@@ -232,20 +244,31 @@ impl Lane {
             self.texts.push(*id, text);
             self.known.note(*id, text);
         }
-        let mut next = at.map_or(1, |at| at as u32 * BLOCK + u32::from(run.pages[at].hours));
-        let mut chain = Chain { next: next_part(run, self.table, (next / BLOCK) as usize, 0), prefix: None };
+        let mut next = match at {
+            Some(at) => {
+                let hours = run.block_hours(at).ok_or_else(|| invalid(format!("Run {} holds no block {at}", self.run)))?;
+                at as u32 * BLOCK + u32::from(hours)
+            }
+            None => 1,
+        };
+        let next_block = (next / BLOCK) as usize;
+        let cached = (next_block == block).then_some((block, &target_entry));
+        let mut chain = Chain { next: next_part(&*pages, self.run, self.table, next_block, 0, cached)?, prefix: None };
         self.status_until = 0;
         let mut sought = Sought { restore_ns, restored: at, blocks: u32::from(target >= next), ..Sought::default() };
         let replaying = Instant::now();
         let start = block as u32 * BLOCK;
-        let parts = &run.pages[block].tables[self.table].parts;
+        let parts = &target_entry.parts;
         let under = parts.partition_point(|part| u32::from(part.first) <= target - start);
         if target >= next && under > 1 {
-            let (prefix, fetch_ns) = self.walk_lean(block, under - 1, (next - start) as u16)?;
-            next = start + u32::from(parts[under - 1].first);
-            chain = Chain { next: Some((block, under - 1)), prefix: Some((block, prefix)) };
+            let next_first = parts[under - 1].first;
+            let (prefix, fetch_ns) = self.walk_lean(block, &target_entry, under - 1, (next - start) as u16)?;
+            next = start + u32::from(next_first);
+            let hour = run.first_hour + next as Hour;
+            chain = Chain { next: Some((block, under - 1, hour)), prefix: Some((block, prefix)) };
             (sought.fetch_ns, sought.parts) = (fetch_ns, under as u64 - 1);
         }
+        drop(target_entry);
         self.next = Some(next);
         self.chain = Some(chain);
         let (fetch_ns, parts) = self.fetch_through(self.game(target))?;
@@ -259,10 +282,10 @@ impl Lane {
         Ok(sought)
     }
 
-    fn walk_lean(&mut self, block: usize, count: usize, from: u16) -> io::Result<(Prefix, u64)> {
+    fn walk_lean(&mut self, block: usize, entry: &crate::pages::EntryRef, count: usize, from: u16) -> io::Result<(Prefix, u64)> {
         let pages = Arc::clone(&self.pages);
         let run = &pages.runs()[self.run];
-        let parts = &run.pages[block].tables[self.table].parts;
+        let parts = &entry.parts;
         let extents = pages.extents(self.run);
         let mut cursor = LogCursor::new(&self.kinds, &[], parts[0].first);
         let (mut lean, mut full, mut fetch_ns) = (None::<Prefix>, None::<Prefix>, 0);
@@ -335,17 +358,18 @@ impl Lane {
     }
 
     fn advance_log(&mut self, target: u32, mut logged: Option<&mut Logged>) -> io::Result<Stop> {
-        let Self { pages, run, table, kinds, columns, ahead, retired, texts, known, log, next: lane_next, .. } = self;
-        let run = &pages.runs()[*run];
-        let logs = log.as_deref_mut().expect("a log lane");
-        let mut next = lane_next.expect("sought");
+        let pages = Arc::clone(&self.pages);
+        let run = &pages.runs()[self.run];
+        let mut next = self.next.expect("sought");
         while next <= target {
             let block = (next / BLOCK) as usize;
-            let page = &run.pages[block];
+            let block_hours = run.block_hours(block).ok_or_else(|| invalid(format!("Run {} holds no block {block}", self.run)))?;
             let start = block as u32 * BLOCK;
-            let end = target.min(start + u32::from(page.hours) - 1);
-            let entry = &page.tables[*table];
+            let end = target.min(start + u32::from(block_hours) - 1);
+            let entry = self.entry_at(block)?;
             let hour = (next - start) as u16;
+            let Self { table, kinds, columns, ahead, retired, texts, known, log, next: lane_next, .. } = self;
+            let logs = log.as_deref_mut().expect("a log lane");
             if logs.under.as_ref().is_some_and(|under| under.block != block || under.last < hour) {
                 pass(logs, retired)?;
             }
@@ -398,7 +422,7 @@ impl Lane {
                 pass(logs, retired)?;
             }
         }
-        *lane_next = Some(next);
+        self.next = Some(next);
         Ok(Stop::Reached)
     }
 }
@@ -481,7 +505,8 @@ pub fn rows(pages: &dyn Pages, wanted: &Wanted) -> io::Result<Rows> {
     let table = wanted.table;
     let run = pages.runs().get(wanted.run).ok_or_else(|| invalid(format!("No run {}", wanted.run)))?;
     let kinds: Vec<Kind> = pages.kinds(table).ok_or_else(|| invalid(format!("No table {table} in the schema")))?.to_vec();
-    if !reader::class_of(&run.pages, table)? {
+    let table_pages = pages.table_pages(wanted.run, table, 0, run.blocks())?;
+    if !reader::class_of(&table_pages, table)? {
         return Err(invalid(format!("Table {table} holds state: it has no rows by ordinal")));
     }
     for (at, &column) in wanted.columns.iter().enumerate() {
@@ -501,9 +526,9 @@ pub fn rows(pages: &dyn Pages, wanted: &Wanted) -> io::Result<Rows> {
     let mut named = HashSet::new();
     let mut ids = Vec::new();
     let mut from = 0;
-    for (index, page) in run.pages.iter().enumerate() {
-        let entry = &page.tables[table];
-        let end = run.pages.get(index + 1).map_or(Ordinal::MAX, |next| next.tables[table].count);
+    for (index, page) in table_pages.iter().enumerate() {
+        let entry = &*page.entry;
+        let end = table_pages.get(index + 1).map_or(Ordinal::MAX, |next| next.entry.count);
         let upto = from + ordinals[from..].partition_point(|&ordinal| ordinal < end);
         if upto == from {
             continue;

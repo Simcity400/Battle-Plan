@@ -91,14 +91,22 @@ fn read(pages: &dyn Pages, run: usize, block: usize, table: usize, id: u32) -> i
     let kinds = pages.kinds(table).ok_or_else(|| io::Error::other(format!("table {table} is withheld")))?;
     let kinds = &kinds[..pages.held(table).min(kinds.len())];
     let source = pages.extents(run);
-    let block = block.min(held.pages.len().saturating_sub(1));
-    let entry = |at: usize| held.pages.get(at).and_then(|page| page.tables.get(table));
+    let block = block.min(held.blocks().saturating_sub(1));
     let restored = (0..block)
         .rev()
-        .find_map(|at| entry(at)?.restore.as_ref().map(|restore| (at + 1, restore)))
-        .or_else(|| (0..=block).rev().find_map(|at| entry(at)?.first.as_ref().map(|first| (at, first))));
+        .find_map(|at| {
+            let entry = pages.table_entry(run, at, table).ok()?;
+            entry.restore.is_some().then_some((at + 1, entry, false))
+        })
+        .or_else(|| {
+            (0..=block).rev().find_map(|at| {
+                let entry = pages.table_entry(run, at, table).ok()?;
+                entry.first.is_some().then_some((at, entry, true))
+            })
+        });
     let from = match restored {
-        Some((from, restore)) => {
+        Some((from, entry, is_first)) => {
+            let restore = if is_first { entry.first.as_ref().expect("first") } else { entry.restore.as_ref().expect("restore") };
             let (_, meta) = reader::restore(source, restore, kinds, &[])?;
             if let Some((_, text)) = meta.strings.into_iter().find(|(named, _)| *named == id) {
                 return Ok(Some(text));
@@ -107,11 +115,12 @@ fn read(pages: &dyn Pages, run: usize, block: usize, table: usize, id: u32) -> i
         }
         None => 0,
     };
-    for page in held.pages.get(from..=block).unwrap_or_default() {
-        let Some(entry) = page.tables.get(table) else { continue };
+    for at in from..=block {
+        let Some(hours) = held.block_hours(at) else { continue };
+        let Ok(entry) = pages.table_entry(run, at, table) else { continue };
         let mut prefix = None;
         for (at, part) in entry.parts.iter().enumerate() {
-            let last = entry.parts.get(at + 1).map_or(page.hours - 1, |next| next.first - 1);
+            let last = entry.parts.get(at + 1).map_or(hours - 1, |next| next.first - 1);
             let part = reader::fetch(source, part, last, &[], prefix.as_ref())?;
             if let Some((_, text)) = part.strings().iter().find(|(named, _)| *named == id) {
                 return Ok(Some(text.clone()));

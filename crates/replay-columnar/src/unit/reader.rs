@@ -1599,9 +1599,29 @@ fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kind
     })
 }
 
-pub fn restored_before(pages: &[super::BlockPage], table: usize, at: usize) -> Option<(usize, &super::restore::RestoreEntry)> {
+pub trait PageEntry {
+    fn block(&self) -> u32;
+    fn hours(&self) -> u16;
+    fn table_entry(&self, table: usize) -> Option<&TableEntry>;
+}
+
+impl PageEntry for super::BlockPage {
+    fn block(&self) -> u32 {
+        self.block
+    }
+
+    fn hours(&self) -> u16 {
+        self.hours
+    }
+
+    fn table_entry(&self, table: usize) -> Option<&TableEntry> {
+        self.tables.get(table)
+    }
+}
+
+pub fn restored_before<P: PageEntry>(pages: &[P], table: usize, at: usize) -> Option<(usize, &super::restore::RestoreEntry)> {
     for index in (0..=at.min(pages.len().checked_sub(1)?)).rev() {
-        let entry = pages[index].tables.get(table)?;
+        let entry = pages[index].table_entry(table)?;
         if let Some(restore) = &entry.restore {
             return Some((index, restore));
         }
@@ -1612,7 +1632,7 @@ pub fn restored_before(pages: &[super::BlockPage], table: usize, at: usize) -> O
     None
 }
 
-pub fn rebuild(source: &dyn Extents, pages: &[super::BlockPage], kinds: &[Kind], table: usize, at: usize, run_first: i32) -> io::Result<(TableState, HashMap<u32, Vec<u8>>)> {
+pub fn rebuild<P: PageEntry>(source: &dyn Extents, pages: &[P], kinds: &[Kind], table: usize, at: usize, run_first: i32) -> io::Result<(TableState, HashMap<u32, Vec<u8>>)> {
     if class_of(pages.get(..=at).unwrap_or(pages), table)? {
         return Err(invalid(format!("Table {table} is a log: it has rows by hour, not a state")));
     }
@@ -1620,21 +1640,22 @@ pub fn rebuild(source: &dyn Extents, pages: &[super::BlockPage], kinds: &[Kind],
     let columns: Vec<usize> = (0..kinds.len()).collect();
     let (mut cells, meta) = restore(source, entry, kinds, &columns)?;
     let mut texts: HashMap<u32, Vec<u8>> = meta.strings.into_iter().collect();
-    let first = pages[restored].tables[table].restore.is_none();
+    let first = pages[restored].table_entry(table).expect("table entry").restore.is_none();
     let replay_from = if first { restored } else { restored + 1 };
     for (index, page) in pages.iter().enumerate().take(at + 1).skip(replay_from) {
-        let entry = &page.tables[table];
+        let entry = page.table_entry(table).expect("table entry");
+        let hours = page.hours();
         let start = if first && index == restored { 1 } else { 0 };
         let mut cursor = Cursor::new(kinds, &columns, start);
         let mut written = vec![Vec::new(); columns.len()];
         let mut lives = Lives::default();
         let mut next = 0;
         loop {
-            match cursor.advance(page.hours - 1, BLOCK as u16, &mut cells, &mut written, &mut lives)? {
+            match cursor.advance(hours - 1, BLOCK as u16, &mut cells, &mut written, &mut lives)? {
                 Advanced::Reached => break,
                 Advanced::Missing { .. } => {
                     let Some(part) = entry.parts.get(next) else { break };
-                    let last = entry.parts.get(next + 1).map_or(page.hours - 1, |following| following.first - 1);
+                    let last = entry.parts.get(next + 1).map_or(hours - 1, |following| following.first - 1);
                     let part = fetch(source, part, last, &columns, cursor.prefix().as_ref())?;
                     for (id, text) in part.strings() {
                         texts.insert(*id, text.clone());
@@ -1652,7 +1673,8 @@ pub fn rebuild(source: &dyn Extents, pages: &[super::BlockPage], kinds: &[Kind],
         }
     }
     let page = &pages[at];
-    let (status, _, sampled, _) = status(&page.tables[table], page.hours - 1, run_first + (page.block * BLOCK) as i32)?;
+    let hours = page.hours();
+    let (status, _, sampled, _) = status(page.table_entry(table).expect("table entry"), hours - 1, run_first + (page.block() * BLOCK) as i32)?;
     cells.set_status(status, sampled);
     Ok((cells, texts))
 }

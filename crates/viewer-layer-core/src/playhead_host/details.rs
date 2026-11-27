@@ -81,7 +81,7 @@ pub fn differ(side: &MapSide<impl crate::playhead_host::PlaybackProducts>, today
 }
 
 pub fn held_at_all(entry: &Entry, table: TableId) -> bool {
-    entry.pages().runs().iter().flat_map(|run| &run.pages).filter_map(|page| page.tables.get(table.index())).any(|held| !held.parts.is_empty() || held.first.is_some() || held.restore.is_some())
+    entry.pages().table_has_activity(table.index())
 }
 
 pub fn seen(entry: &Entry, table: TableId, hour: Hour, wait: Duration) -> Seen {
@@ -101,9 +101,8 @@ fn status(entry: &Entry, table: TableId, hour: Hour) -> io::Result<Option<(Statu
     let run = entry.pages().runs().get(piece.run).ok_or_else(|| io::Error::other(format!("no run {}", piece.run)))?;
     let at = hour.checked_sub(run.first_hour).and_then(|at| u32::try_from(at).ok()).ok_or_else(|| io::Error::other(format!("hour {hour} is outside run {}", piece.run)))?;
     let block = at / BLOCK;
-    let page = run.pages.get(block as usize).ok_or_else(|| std::io::Error::other(format!("no block {block} in run {}", piece.run)))?;
-    let held = page.tables.get(table.index()).ok_or_else(|| std::io::Error::other(format!("block {block} names no table {}", table.index())))?;
+    let held = entry.pages().table_entry(piece.run, block as usize, table.index())?;
     let start = block * BLOCK;
-    let (status, _, _, _) = reader::status(held, (at - start) as u16, run.first_hour + start as Hour)?;
+    let (status, _, _, _) = reader::status(&held, (at - start) as u16, run.first_hour + start as Hour)?;
     Ok(Some((status, (piece.run, block as usize))))
 }

@@ -2320,9 +2320,23 @@ struct Declaring {
     each: Vec<LayerDeclared>,
 }
 
+pub(crate) fn timeline_runs(entry: &Entry) -> Vec<usize> {
+    let mut runs = Vec::new();
+    for piece in entry.playhead().timeline().pieces() {
+        if !runs.contains(&piece.run) {
+            runs.push(piece.run);
+        }
+    }
+    runs
+}
+
 fn for_the_makers(entry: &Entry) -> BTreeMap<usize, Read> {
     let kinds = entry.kinds();
-    (0..kinds.len()).filter(|&table| written(entry, table)).map(|table| (table, Read { columns: (0..kinds[table].len()).collect(), keyed: true, hourly: false })).collect()
+    let written = entry.pages.written_tables(&timeline_runs(entry), kinds.len());
+    (0..kinds.len())
+        .filter(|&table| matches!(written[table], playhead::pages::TableWritten::Written))
+        .map(|table| (table, Read { columns: (0..kinds[table].len()).collect(), keyed: true, hourly: false }))
+        .collect()
 }
 
 fn hand_naval(names: &[&'static str], layers: &mut [Box<dyn Layer>], reads: &[Result<BTreeSet<usize>, String>], ready: &[bool]) {
@@ -2343,10 +2357,6 @@ fn hand_naval(names: &[&'static str], layers: &mut [Box<dyn Layer>], reads: &[Re
             layer.set_naval(&naval);
         }
     }
-}
-
-fn written(entry: &Entry, table: usize) -> bool {
-    entry.pages.runs().iter().any(|run| run.pages.first().and_then(|page| page.tables.get(table)).is_some_and(|held| held.first.is_some()))
 }
 
 fn awake_mask(declared: &BTreeMap<usize, Read>) -> Vec<bool> {

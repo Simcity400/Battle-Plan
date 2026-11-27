@@ -342,7 +342,7 @@ fn a_renumber_at_a_packed_block_end_remaps_the_mirror() {
             }
         }
     });
-    assert!(recording.runs[0].pages[0].tables[0].packed, "the fixture packs its first block's end");
+    assert!(recording.runs[0].held_pages().unwrap()[0].tables[0].packed, "the fixture packs its first block's end");
     let pages: Arc<dyn Pages> = recording;
     let columns = [0, 1, 2, 3];
     let mut lane = Lane::new(Arc::clone(&pages), 0, 0, &columns, true).unwrap();
@@ -383,7 +383,7 @@ fn a_renumber_moves_only_the_rows_past_the_first_freed_slot() {
             changes.delete(at - 95).unwrap();
         }
     });
-    assert!(recording.runs[0].pages[0].tables[0].packed, "the fixture packs its first block's end");
+    assert!(recording.runs[0].held_pages().unwrap()[0].tables[0].packed, "the fixture packs its first block's end");
     let pages: Arc<dyn Pages> = recording;
     let columns = [0, 1, 3];
     let mut lane = Lane::new(Arc::clone(&pages), 0, 0, &columns, true).unwrap();
@@ -997,7 +997,7 @@ fn mirror_key_hasher_randomizes_instances_and_bounds_adversarial_keys() {
             }
         }
     });
-    assert!(recording.runs[0].pages[0].tables[0].packed, "the adversarial fixture packs its first block's end");
+    assert!(recording.runs[0].held_pages().unwrap()[0].tables[0].packed, "the adversarial fixture packs its first block's end");
     let pages: Arc<dyn Pages> = recording;
     let columns = [0];
     let mut lane = Lane::new(Arc::clone(&pages), 0, 0, &columns, true).unwrap();

@@ -68,9 +68,13 @@ pub fn step_to(lane: &mut Lane, run: &Run, to: u32, changes: &mut Changes, mut e
     }
 }
 
-pub fn samples(run: &Run, table: usize, count: usize, (start, end): (u32, u32)) -> Vec<u32> {
+pub fn samples(pages: &dyn Pages, run: usize, table: usize, count: usize, (start, end): (u32, u32)) -> Vec<u32> {
     let hours = end + 1;
-    let restored: Vec<u32> = run.pages.iter().enumerate().filter(|(_, page)| page.tables[table].restore.is_some()).map(|(index, _)| (index as u32 + 1) * BLOCK - 1).collect();
+    let blocks = pages.runs()[run].blocks();
+    let restored: Vec<u32> = (0..blocks)
+        .filter(|&block| pages.table_entry(run, block, table).is_ok_and(|entry| entry.restore.is_some()))
+        .map(|index| (index as u32 + 1) * BLOCK - 1)
+        .collect();
     let mut chosen = Vec::new();
     for (at, &end) in restored.iter().enumerate() {
         if end + 1 < hours {
@@ -98,7 +102,7 @@ pub fn samples(run: &Run, table: usize, count: usize, (start, end): (u32, u32)) 
 
 pub fn targets(run: &Run, step: u32, sampled: &[u32], (start, end): (u32, u32)) -> Vec<u32> {
     let mut targets: Vec<u32> = (1..).map(|at| start + at * step).take_while(|&hour| hour <= end).collect();
-    targets.extend(run.pages.iter().enumerate().map(|(index, page)| index as u32 * BLOCK + u32::from(page.hours) - 1));
+    targets.extend((0..run.blocks()).filter_map(|index| run.block_hours(index).map(|hours| index as u32 * BLOCK + u32::from(hours) - 1)));
     targets.extend(sampled.iter().copied());
     targets.push(end);
     targets.retain(|&hour| hour > start && hour <= end);
@@ -109,8 +113,8 @@ pub fn targets(run: &Run, step: u32, sampled: &[u32], (start, end): (u32, u32)) 
 
 pub fn block_end(run: &Run, hour: u32) -> Option<usize> {
     let block = (hour / BLOCK) as usize;
-    let page = run.pages.get(block)?;
-    (hour + 1 == block as u32 * BLOCK + u32::from(page.hours)).then_some(block)
+    let hours = run.block_hours(block)?;
+    (hour + 1 == block as u32 * BLOCK + u32::from(hours)).then_some(block)
 }
 
 pub fn differ(a: &TableState, b: &TableState, columns: &[usize], first: &mut Option<String>) -> u64 {
@@ -253,8 +257,9 @@ pub fn read_rows(pages: &dyn Pages, table: usize, columns: &[usize], hours: std:
     let run = &pages.runs()[0];
     let held = held_kinds(pages, table);
     let read: Vec<usize> = (0..held.len()).collect();
+    let table_pages = pages.table_pages(0, table, 0, run.blocks())?;
     let mut rows = Vec::new();
-    reader::log_span(pages.extents(0), &run.pages, held, table, &read, run.first_hour, hours, &mut |hour, event| match event {
+    reader::log_span(pages.extents(0), &table_pages, held, table, &read, run.first_hour, hours, &mut |hour, event| match event {
         LogEvent::Appended { ordinal, key, rows: cells, at, .. } => {
             let cells = columns.iter().map(|&column| format!("{:?}", if column < held.len() { cells.value(column, at) } else { Value::Unrecorded })).collect();
             rows.push(LogRow::Appended(ordinal, hour, Some(key), cells));
@@ -297,9 +302,9 @@ fn log_of(lane: &Lane) -> io::Result<LogState> {
 }
 
 fn against_restore(pages: &dyn Pages, table: usize, block: usize, held: &LogState, checked: &mut Checked) -> io::Result<()> {
-    let run = &pages.runs()[0];
     checked.block_ends += 1;
-    let rebuilt = reader::log_state(pages.extents(0), &run.pages, held_kinds(pages, table), table, block)?;
+    let table_pages = pages.table_pages(0, table, 0, block + 1)?;
+    let rebuilt = reader::log_state(pages.extents(0), &table_pages, held_kinds(pages, table), table, block)?;
     let (count, listed) = (rebuilt.count().unwrap_or(0), rebuilt.listed().ok_or_else(|| invalid("A log's restore lists no rows"))?);
     let wrong = u64::from(count != held.count()) + (0..count.max(held.count())).filter(|&ordinal| listed.get(ordinal) != held.live().get(ordinal)).count() as u64;
     if wrong > 0 {
@@ -325,7 +330,7 @@ pub fn log_table(pages: &Arc<dyn Pages>, table: usize, window: (u32, u32), step:
     if let Some(block) = block_end(run, start) {
         against_restore(&**pages, table, block, &log_of(&full)?, &mut checked)?;
     }
-    let sampled = samples(run, table, samples_wanted, window);
+    let sampled = samples(&**pages, 0, table, samples_wanted, window);
     let (mut changes, mut scratch) = (Changes::default(), Changes::default());
     let (mut pending, mut delivered) = (Vec::new(), [Vec::new(), Vec::new()]);
     let mut read_to = game(run, start);

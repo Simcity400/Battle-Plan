@@ -2,12 +2,12 @@
 use crate::playhead_host::{Frame, MapSide, units};
 use playhead::{
     Timeline,
-    pages::{Pages, Run},
+    pages::{EntryRef, Pages, Run},
 };
 use replay_columnar::{
     state::Kind,
     store::Store,
-    unit::{BLOCK, BlockPage, TableEntry, Encoder, PartSink, Settings as Writing, reader::Extents},
+    unit::{BLOCK, BlockPage, Encoder, PartSink, Settings as Writing, reader::Extents},
 };
 use replay_data::rows::TableId;
 use std::{io, sync::Arc};
@@ -169,34 +169,26 @@ pub fn through<P: crate::playhead_host::PlaybackProducts>(side: &mut MapSide<P>,
 pub fn without(units: units::Units, table: TableId) -> units::Units {
     struct Without {
         inner: Arc<dyn Pages>,
-        runs: Vec<Run>,
+        omitted: usize,
     }
     impl Pages for Without {
         fn extents(&self, run: usize) -> &dyn Extents {
             self.inner.extents(run)
         }
         fn runs(&self) -> &[Run] {
-            &self.runs
+            self.inner.runs()
+        }
+        fn table_entry(&self, run: usize, block: usize, table: usize) -> io::Result<EntryRef> {
+            if table == self.omitted {
+                return Ok(EntryRef::empty());
+            }
+            self.inner.table_entry(run, block, table)
         }
         fn kinds(&self, table: usize) -> Option<&[Kind]> {
             self.inner.kinds(table)
         }
     }
-    let runs = units
-        .pages
-        .runs()
-        .iter()
-        .map(|run| {
-            let mut pages = run.pages.clone();
-            for page in &mut pages {
-                if let Some(entry) = page.tables.get_mut(table.index()) {
-                    *entry = TableEntry::default();
-                }
-            }
-            Run::new(run.first_hour, pages).unwrap()
-        })
-        .collect();
-    let pages: Arc<dyn Pages> = Arc::new(Without { inner: units.pages, runs });
+    let pages: Arc<dyn Pages> = Arc::new(Without { inner: units.pages, omitted: table.index() });
     let timeline = Timeline::whole(&*pages).unwrap();
     units::Units { name: units.name, pages, timeline, kinds: units.kinds }
 }
