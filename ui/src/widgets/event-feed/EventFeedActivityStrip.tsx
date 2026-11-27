@@ -1,19 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { formatDay } from '../../dashboard/calendar.ts';
 import { validateProductReply } from '../../dashboard/client.ts';
-import { countryIdentityIndex, validCountryIdentityHistories } from '../../dashboard/countryIdentity.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import { groupUnobserved } from '../../dashboard/groups.ts';
 import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import { failureText } from '../../dashboard/queryError.ts';
 import { useGate } from '../../dashboard/regionGate.ts';
 import type { BoundHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import { useCountryGroups } from '../../dashboard/useCountryGroups.ts';
-import { effectiveCountryUnobserved } from '../../families/sources.ts';
+import type { FamilyPlanContext } from '../../families/contract.ts';
+import { occurrenceSelection } from '../../families/table/logHelpers.ts';
 import type { EventFeedActivityReply } from '../../generated/dashboard';
 import {
-  activityCountryFilter,
   activityDisplayedHour,
   activityRequestPlan,
   activityScopeKey,
@@ -42,6 +39,8 @@ export interface EventFeedActivityStripProps {
   readonly pinnedHour?: number | null;
   readonly frozenHour?: number | null;
   readonly installedHour?: number | null;
+  readonly context: FamilyPlanContext | null;
+  readonly refusal?: string | null;
 }
 
 function stripDateLabel(hour: number): string {
@@ -61,6 +60,8 @@ export default function EventFeedActivityStrip({
   pinnedHour,
   frozenHour,
   installedHour,
+  context,
+  refusal,
 }: EventFeedActivityStripProps) {
   const { span: gateSpan, recorded: gateRecorded } = useGate(runtime, widget);
   const [strip, setStrip] = useState<StripState | null>(null);
@@ -73,24 +74,11 @@ export default function EventFeedActivityStrip({
     [categories],
   );
 
-  const needsGroups = widget.countries.kind === 'tags'
-    || widget.countries.kind === 'selected'
-    || widget.countries.kind === 'group';
-  const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const groupsReady = !needsGroups || Boolean(groups.data);
-  const identities = useMemo(
-    () => (groups.data && validCountryIdentityHistories(groups.data.countryIdentities)
-      ? countryIdentityIndex(groups.data.countryIdentities)
-      : null),
-    [groups.data],
+  const selection = useMemo(
+    () => context ? occurrenceSelection(context) : null,
+    [context?.countries, context?.widget, context?.track],
   );
-
-  const groupGaps = useMemo(
-    () => (widget.countries.kind === 'group' && groups.data
-      ? effectiveCountryUnobserved(widget.countries, groupUnobserved(groups.data, widget.countries.group))
-      : undefined),
-    [widget.countries, groups.data],
-  );
+  const groupGaps = context?.countries.unobserved;
 
   const followClock = active && Boolean(track) && pinnedHour == null;
   const tracker = useMemo(
@@ -112,13 +100,8 @@ export default function EventFeedActivityStrip({
     [track, pinnedHour, shown, frozenHour, installedHour, runtime.clock],
   );
 
-  const countryFilter = useMemo(
-    () => activityCountryFilter(widget.countries, track, identities),
-    [widget.countries, track, identities],
-  );
-
   const target = useMemo(() => {
-    if (!track || !groupsReady || displayedHour === null || !asked.length || countryFilter.kind === 'empty') return null;
+    if (!track || selection === null || refusal || displayedHour === null || !asked.length || selection?.countries?.length === 0) return null;
     const stripFrom = activityStripStart(track.branch.firstHour, from, displayedHour);
     if (stripFrom > displayedHour) return null;
     const bound = gateSpan(stripFrom, displayedHour);
@@ -133,11 +116,11 @@ export default function EventFeedActivityStrip({
       binHours,
       categories: asked,
       excludedKinds,
-      countryFilter,
+      selection,
     });
     const queryKey = JSON.stringify([scopeKey, bound.firstHour, bound.lastHour]);
     return { bound, cutoff, binHours, scopeKey, queryKey };
-  }, [track, groupsReady, displayedHour, asked, countryFilter, from, gateSpan, gateRecorded, excludedKinds]);
+  }, [track, selection, refusal, displayedHour, asked, from, gateSpan, gateRecorded, excludedKinds]);
 
   useEffect(() => {
     if (!track || !target) {
@@ -172,11 +155,6 @@ export default function EventFeedActivityStrip({
       ? plan
       : { ...plan, requestFrom: target.bound.firstHour, incremental: false };
     const fromHour = (requestSpan ? requestSpan.firstHour : target.bound.firstHour) as BoundHour;
-    const filterParams = countryFilter.kind === 'group'
-      ? { group: countryFilter.group }
-      : countryFilter.kind === 'countries'
-        ? { countries: countryFilter.countries }
-        : {};
     const makeRequest = (startHour: BoundHour) => productRequest({
       sourceId: track.source.id,
       revision: track.source.revision,
@@ -188,7 +166,7 @@ export default function EventFeedActivityStrip({
         binHours: target.binHours,
         categories: asked,
         ...(excludedKinds?.length ? { exclude: excludedKinds } : {}),
-        ...filterParams,
+        ...selection,
       },
     });
     const request = makeRequest(fromHour);
@@ -220,7 +198,9 @@ export default function EventFeedActivityStrip({
       setFailed({ key: target.queryKey, reason: failureText(error, 'Activity could not be loaded.') });
     });
     return () => controller.abort();
-  }, [track, runtime.client, active, target, asked, excludedKinds, countryFilter, gateSpan]);
+  }, [track, runtime.client, active, target, asked, excludedKinds, selection, gateSpan]);
+
+  if (refusal) return <div className="efs-strip is-unavailable" role="status" aria-label="Event activity strip">{refusal}</div>;
 
   const activeFailure = target && failed?.key === target.queryKey ? failed : null;
   if (activeFailure) {

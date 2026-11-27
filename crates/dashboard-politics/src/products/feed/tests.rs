@@ -1340,6 +1340,75 @@ fn choice_not_recorded_reason_keeps_first_break_before_later_pause() {
 }
 
 #[test]
+fn activity_bins_and_table_rows_count_the_same_resolved_countries_after_renames_and_membership_changes() {
+    use super::{EventFeedActivity, EventFeedCategory, EventFeedTail, EventFeedTailParams, tails::EventFeedActivityParams};
+    use dashboard_base::{products::{LoadContext, Product}, test_fixtures::{CAMPAIGN, records, source}};
+    use dashboard_query::{identity::Country, series::ranked::{GroupKind, GroupMembership, GroupSelection}};
+    use replay_data::{
+        event_feed_rows::{EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript},
+        rows::{CountryLinkRow, CountryRow, FactionMemberRow, FactionRow, HumanControllerRow, Recorded, TableRows, WarRelationRow},
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let frames = (100..=143).map(|hour| {
+        let mut frame = source(1, hour, None);
+        let member = (110..133).contains(&hour);
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+            CountryRow { id: 9001, canonical_slot: 7, tag: if hour < 120 { b"AAA".to_vec() } else { b"BBB".to_vec() }, ..Default::default() },
+            CountryRow { id: 9002, canonical_slot: 8, tag: b"CCC".to_vec(), ..Default::default() },
+        ]));
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow { id: 9001, canonical_slot: 7 }, CountryLinkRow { id: 9002, canonical_slot: 8 },
+        ]));
+        *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![FactionRow { id: 31, name: b"Probe group".to_vec(), ..Default::default() }]));
+        *frame.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(if member { vec![FactionMemberRow { country: 9001, faction: 31, ordinal: 0 }] } else { Vec::new() }));
+        *frame.tables[TableId::HumanControllers.index()] = TableView::Complete(TableRows::HumanControllers(if member { vec![HumanControllerRow { country: 9001, count: 1 }] } else { Vec::new() }));
+        *frame.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(if member { vec![WarRelationRow { first_country: 9001, second_country: 9002, start_hour: 110, end_hour: 133, ..Default::default() }] } else { Vec::new() }));
+        let events = if [101, 113, 125, 137].contains(&hour) {
+            vec![EventFeedEvent { sequence: hour as u64, generation: 1, hour, source: EventFeedSource::DecisionSelected,
+                actor: EventFeedCountry { reference: 9001, id: 9001, instance: 1 }, target: EventFeedCountry::default(), cause: Recorded::NotRecorded,
+                script: Some(EventFeedScript { token_len: 14, ..Default::default() }) }]
+        } else { Vec::new() };
+        let count = events.len() as u64;
+        frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+        *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+            generation: 1, read_hour: hour, coverage: EventFeedCoverage::Complete,
+            counts: Some(EventFeedCounts { acquired: count, settled: count, failed: 0, rejected: 0 }), events,
+            script_tokens: b"probe_decision".to_vec(), ..Default::default()
+        }]));
+        frame
+    }).collect();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let held = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "activity-selection".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let context = LoadContext { content: None };
+    let cancel = AtomicBool::new(false);
+    let mut cases = vec![
+        ("saved tag", Some(vec![Country::Slot(7), Country::Tag("AAA".into())]), None, 4),
+        ("selected slot", Some(vec![Country::Slot(7)]), None, 4),
+        ("all", None, None, 4),
+    ];
+    for kind in [GroupKind::Humans, GroupKind::Faction, GroupKind::War] {
+        for membership in [GroupMembership::Hour, GroupMembership::Ever] {
+            let group = GroupSelection { kind, membership, id: (kind == GroupKind::Faction).then(|| "31".into()), tag: (kind == GroupKind::War).then(|| "CCC".into()) };
+            cases.push(("dated group", None, Some(group), if membership == GroupMembership::Hour { 2 } else { 3 }));
+        }
+    }
+    for (label, countries, group, expected) in cases {
+        let table = EventFeedTail::load(&held, &EventFeedTailParams { branch_id: "1".into(), hour: Some(143), from: Some(100), to: Some(143),
+            countries: countries.clone(), group: group.clone(), search: None, row: None, sort: None, offset: None, limit: 64,
+            categories: vec![EventFeedCategory::Politics], exclude: None, expanded: None, full: None }, &context, &cancel).unwrap();
+        let strip = EventFeedActivity::load(&held, &EventFeedActivityParams { branch_id: "1".into(), hour: 143, from: 100, bin_hours: 12,
+            categories: vec![EventFeedCategory::Politics], exclude: None, countries, group }, &context, &cancel).unwrap();
+        let total: u64 = strip.lines.iter().flat_map(|line| &line.bins).map(|&(_, count)| count).sum();
+        assert_eq!(total, table.total.parse::<u64>().unwrap(), "{label}: the same population");
+        assert_eq!(total, expected, "{label}: nonempty before and after the identity or membership change");
+        assert!(strip.missing.is_empty(), "{label}: recorded selection");
+    }
+}
+
+#[test]
 fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     use super::{EventFeedCategory, EventFeedTail, EventFeedTailParams};
     use dashboard_base::{
