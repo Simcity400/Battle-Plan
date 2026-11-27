@@ -169,6 +169,47 @@ fn division_templates_follows_the_selected_countrys_template_fields() {
 }
 
 #[test]
+fn division_templates_recompute_for_their_own_grid_tokens_and_ignore_other_templates() {
+    let frames = (100..=120).map(|hour| {
+        let mut frame = frame(1, hour);
+        if let TableView::Complete(TableRows::DivisionTemplateIcons(icons)) = &mut *frame.tables[TableId::DivisionTemplateIcons.index()] {
+            let grid = |token| Recorded::Value(TemplateGrids {
+                regimental_support: vec![TemplateSubunit { token, count: 1, local: 0 }],
+                ..Default::default()
+            });
+            icons[0].grids = grid(if hour < 110 { 120 } else { 121 });
+            icons[1].grids = grid(121);
+        }
+        if let TableView::Complete(TableRows::DivisionTemplates(templates)) = &mut *frame.tables[TableId::DivisionTemplates.index()] {
+            templates[0].unit_type = i32::from(hour >= 103);
+            templates[1].name = if hour < 105 { b"Other".to_vec() } else { b"Renamed".to_vec() };
+        }
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow { token: 120, literal: b"unit_one".to_vec() },
+            LexicalTokenRow { token: 121, literal: match hour {
+                ..104 => b"foreign_one".to_vec(),
+                ..111 => b"foreign_two".to_vec(),
+                _ => b"selected_unit".to_vec(),
+            } },
+        ]));
+        frame
+    }).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Arc::new(Source::from_replay(SourceKey { source_id: "template-names".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
+    let request = json!({"branchId":"1", "country":"GER", "countFor":"owner"});
+    let panel = (DIVISIONS_TEMPLATES_DIVISIONTEMPLATES.panel.unwrap().open)(&source, &LoadContext { content: None }, &request).unwrap();
+    let reads = played(source.replay_ref(), panel.exact().unwrap(), 100, 112);
+    let at = |hour| reads.iter().find(|read| read.hour == hour).unwrap();
+    assert_eq!(at(103).product_calls, 0, "the template's unit type is outside the reply");
+    assert_eq!(at(104).product_calls, 0, "a token used by another owner's grid is outside the reply");
+    assert_eq!(at(105).product_calls, 0, "a foreign template name is outside the reply");
+    assert_eq!(at(110).product_calls, 1, "a displayed subunit token changes the reply");
+    assert_eq!(at(110).value.as_ref().as_ref().unwrap()["templates"][0]["units"][0]["key"], "foreign_two");
+    assert_eq!(at(111).product_calls, 1, "the selected grid now needs this token");
+    assert_eq!(at(111).value.as_ref().as_ref().unwrap()["templates"][0]["units"][0]["key"], "selected_unit");
+}
+
+#[test]
 fn training_queue_tracks_owned_orders_lines_and_manpower() {
     follows::<crate::products::training_queue::TrainingQueue>(TRAINING_QUEUE_TRAININGQUEUE, json!({"country":"GER"}), false);
 }
