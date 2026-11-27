@@ -4,6 +4,9 @@ import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import PreparedPages from './PreparedPages';
+import DashboardPages from './DashboardPages';
+import { busy } from '../shell/busy.ts';
+import { defaultTemplate } from './model';
 import type { PreparedPage } from './PreparedPages';
 import type { DashboardClient, ProductReply, ProductRequest } from './client';
 import type { PlaybackController } from './playback';
@@ -82,6 +85,29 @@ function pages(): PreparedPage[] {
 }
 
 const fixture = {
+  async firstPageSettles() {
+    const viewport = document.body.appendChild(document.createElement('div'));
+    viewport.style.cssText = 'width: 640px; height: 400px;';
+    const view = createRoot(viewport);
+    const runtime = { client, clock: new Clock(), maps: { schedule() {} } } as unknown as WidgetRuntime;
+    const template = defaultTemplate('test-empty');
+    const finish = busy('waits');
+    let started = false;
+    try {
+      flushSync(() => view.render(<DashboardPages active viewport={viewport} template={template} runtime={runtime}
+        editing={false} preparing empty={<div>First page</div>} onLayouts={() => {}} onApply={() => {}} onRemove={() => {}}
+        preparePages={() => { started = true; return [{ id: 'next', template, runtime }]; }} />));
+      for (let at = 0; at < 8; at++) await frame();
+      const preparingWhileHeld = started;
+      finish();
+      for (let at = 0; at < 60 && !fixture.hostShown(); at++) await frame();
+      return { preparingWhileHeld, preparedAfterRelease: fixture.hostShown() };
+    } finally {
+      finish();
+      view.unmount();
+      viewport.remove();
+    }
+  },
   async eventFeedKinds() {
     root?.unmount(); host?.remove();
     clock = new Clock();

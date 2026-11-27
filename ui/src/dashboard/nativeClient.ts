@@ -153,7 +153,8 @@ export const nativeDashboardClient: DashboardClient = {
         reader.onerror = event => fail(event.message);
         reader.postMessage({ ports, session }, [...ports]);
       });
-      return { ready, close, retireLane };
+      const done = busy('follow');
+      return { ready: ready.finally(done), close: () => { done(); close(); }, retireLane };
     },
     replayLibrary: () => invoke<ReplayLibrary>('replay_library'),
     replayLibraryStamp: () => invoke<string>('replay_library_stamp'),

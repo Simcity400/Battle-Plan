@@ -1,6 +1,5 @@
 import type { OptionField } from '../../dashboard/options.ts';
 import { breakdownDeclaration, type BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
-import { breakdownHostAdapter } from '../../families/breakdown/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts';
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
@@ -105,5 +104,4 @@ export const breakdownFamilyManifest: FamilyManifestModule = {
   family: 'breakdown',
   lane: () => import('../../families/breakdown/laneView.ts').then(m => m.breakdownLane),
   views: BREAKDOWN_FAMILY_VIEWS,
-  hostAdapter: breakdownHostAdapter,
 };

@@ -1,6 +1,5 @@
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
-import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import { END_LABELS_OPTION, LINE_AXIS_OPTIONS, LINES_VIEW_OPTIONS } from '../../dashboard/lineChartOptions.ts';
 import type { OptionField } from '../../dashboard/options';
 import { OPTIONS as AIR_KILLS_LOSSES_OPTIONS } from '../air-kills-losses/definition.ts';
@@ -560,5 +559,4 @@ export const timeChartFamilyManifest: FamilyManifestModule = {
   family: 'time-chart',
   lane: () => import('../../families/time-chart/laneView.ts').then(m => m.timeChartLane),
   views: TIME_CHART_VIEWS,
-  hostAdapter: timeChartHostAdapter,
 };

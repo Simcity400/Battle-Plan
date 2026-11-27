@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseOptionKey, scopedOptionKey } from '../ui/src/dashboard/options.ts';
 import { DEFAULT_VIEW, normalizeView, viewKey } from '../ui/src/families/manifest.ts';
+import { familyHostAdapters } from '../ui/src/families/host/adapters.ts';
 import { widgetMetas } from '../ui/src/widgets/definitions.ts';
 import { FAMILY_MANIFESTS, FAMILY_VIEWS } from '../ui/src/widgets/familyManifest.ts';
 import { NATIVE_WIDGETS } from '../ui/src/widgets/manifest.ts';
@@ -25,7 +26,7 @@ for (const mod of FAMILY_MANIFESTS) {
   if (registeredFamilies.has(mod.family)) errors.push(`duplicate FAMILY_MANIFESTS family: ${mod.family}`);
   registeredFamilies.add(mod.family);
   if (typeof mod.lane !== 'function') errors.push(`FAMILY_MANIFESTS(${mod.family}) missing its lane loader`);
-  if (typeof mod.hostAdapter?.deriveAuditRows !== 'function') errors.push(`FAMILY_MANIFESTS(${mod.family}) host adapter has no deriveAuditRows, so its audit checks nothing`);
+  if (typeof familyHostAdapters.get(mod.family)?.deriveAuditRows !== 'function') errors.push(`FAMILY_MANIFESTS(${mod.family}) host adapter has no deriveAuditRows, so its audit checks nothing`);
   for (const entry of mod.views) {
     if (entry.family !== mod.family) {
       errors.push(`view (${entry.kind}, ${normalizeView(entry.view)}) declares family "${entry.family}" inside "${mod.family}" manifest`);

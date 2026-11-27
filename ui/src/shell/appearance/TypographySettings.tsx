@@ -12,6 +12,7 @@ import { DEFAULT_TYPOGRAPHY, FONT_SIZE_LIMITS } from './typography';
 import type { SizedRole } from './typography';
 import type { FontRole } from './typography';
 import type { Appearance } from './useAppearance';
+import { useBundledFonts } from './bundledFonts';
 
 function FontOptions({ label, families, value, placeholder, focusSearch, onPick }: {
   label: string; families: string[]; value: string; placeholder: string; focusSearch: boolean; onPick: (family: string) => void;
@@ -21,6 +22,7 @@ function FontOptions({ label, families, value, placeholder, focusSearch, onPick 
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(Math.max(0, families.indexOf(value)));
   const [scrollTop, setScrollTop] = useState(0);
+  const fontsReady = useBundledFonts(FONT_PRESETS.filter(preset => families.includes(preset.family)).map(preset => preset.family));
   const fontLabel = (family: string) => family ? FONT_PRESETS.find(preset => preset.family === family)?.label ?? family : placeholder;
   const filtered = useMemo(() => families.filter(family => `${family} ${fontLabel(family)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())), [families, query, placeholder]);
   const at = Math.min(active, filtered.length - 1);
@@ -48,7 +50,7 @@ function FontOptions({ label, families, value, placeholder, focusSearch, onPick 
       onChange={event => { setQuery(event.currentTarget.value); setActive(0); setScrollTop(0); if (list.current) list.current.scrollTop = 0; }} />
     <div ref={list} id={id} className="font-menu-list" role="listbox" aria-label={label} onScroll={event => setScrollTop(event.currentTarget.scrollTop)}>
       <div style={{ paddingTop: start * rowHeight, paddingBottom: Math.max(0, filtered.length - end) * rowHeight }}>
-        {filtered.slice(start, end).map((family, index) => <button key={family} id={`${id}-${start + index}`} type="button" role="option" tabIndex={-1}
+        {fontsReady && filtered.slice(start, end).map((family, index) => <button key={family} id={`${id}-${start + index}`} type="button" role="option" tabIndex={-1}
           className={`menu-item${start + index === at ? ' is-active' : ''}`} aria-selected={family === value} onClick={() => onPick(family)}>
           <span className="menu-item-label" style={{ fontFamily: fontStack(family) }}>{fontLabel(family)}</span>{family === value && <Icon name="check" />}
         </button>)}
@@ -69,6 +71,7 @@ function FontPicker({ id, label, hint, value, placeholder, onChange, installed, 
   const anchor = useRef<HTMLDivElement>(null);
   const focusOptions = useRef(true);
   const [message, setMessage] = useState<string | null>(null);
+  const previewReady = useBundledFonts([value], !!preview);
   const families = useMemo(() => [...new Set([
     ...FONT_PRESETS.filter(preset => !monospace || !preset.family || preset.monospace).map(preset => preset.family),
     ...(installed ?? []), ...(canUseFontFamily(value, installed) ? [value] : []),
@@ -130,7 +133,7 @@ function FontPicker({ id, label, hint, value, placeholder, onChange, installed, 
       {message ? <FailureLine message={message} /> : rejected ? <FailureLine message={`“${text.trim()}” ${canUseFontFamily(text, installed) ? 'isn’t monospace' : 'wasn’t found'}. Your current font is unchanged.`} />
         : value && !available && <small className="font-missing"><Icon name="alert" />“{value}” {desktopAvailable ? 'isn’t installed on this computer' : 'is unavailable in this browser'}. Using the system font.</small>}
     </div>
-    </div>{preview && <div className="font-preview">{preview}</div>}
+    </div>{preview && previewReady && <div className="font-preview">{preview}</div>}
   </div>;
 }
 

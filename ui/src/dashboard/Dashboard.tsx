@@ -23,33 +23,24 @@ import { doneEditing, droppedTagWarning, layoutSaveAllowed, layoutSaveCheck, loa
 import type { LayoutLibrary, LayoutSaveAction } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
-import '../widgets';
+import '../widgets/definitions';
 import { widgetOptionFields } from '../widgets/manifest';
-import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
-import { laneModules } from '../widgets/manifest';
-import { prepareLanes } from './follow/pipeline.ts';
-import { pageClock } from './widgetClock.ts';
 import { CAMPAIGN_MAP_VIEW, campaignToggled, MapViewsStore, toggleMapSetting } from './geometry';
 import { DEFAULT_MAP_OPTIONS, observedRole, observedSwitches } from './mapPicker';
 import type { CountryChoice } from './mapPicker';
 import { useSourceRoles } from './sources';
 import { LayoutMenu, PlaybackCountryPicker, PlaybackStrip } from './controls';
 import EmptyState from '../components/EmptyState';
+import { loadable } from '../components/loadable';
 import { DismissButton, FailureLine } from '../components/FailureLine';
 import { useSlotTags } from './countrySlots.ts';
 import ReplayLibraryMenu from './ReplayLibraryMenu';
 import type { ReplayLibraryState } from './replayLibrary';
-import DashboardGrid, { bodiesWaiting } from './DashboardGrid';
-import PreparedPages from './PreparedPages';
-import type { PreparedPage } from './PreparedPages';
-import { preparingClient } from './prepare.ts';
 import './dashboard.css';
-import WidgetPicker from './WidgetPicker';
 import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, recordingKey, resolveWidgetCampaign, sameCampaignPath } from './campaigns';
 import type { Campaign, Relocation } from './campaigns';
 import { recordingDisplayName, recordingFilename } from './recordingNames';
 import { followMapPlayback, mapCommands } from './mapPlayback';
-import { LiveMotion } from '../charts/liveMotion.ts';
 import { commitZone } from '../shell/commitCount';
 import { keepLatest } from '../shell/latest.ts';
 import type { Latest } from '../shell/latest.ts';
@@ -57,6 +48,10 @@ import { unsavedDrafts } from './layoutDrafts.ts';
 import { useExportVideo, type SurfaceExportContextSnapshot, type SurfaceExportMapWidget } from '../export/ExportVideoContext';
 import type { RecordedStretch, UnheldGap } from '../export/videoExportApi';
 import { widgetShowsRankMarkers } from '../export/videoExportModel';
+
+const DashboardPages = loadable(() => import('./DashboardPages').then(module => module.default),
+  () => <div className="panel-loading" role="status"><span className="spinner" />Loading overview…</div>);
+const WidgetPicker = loadable(() => import('./WidgetPicker').then(module => module.default));
 
 interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
   cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
@@ -75,11 +70,6 @@ export interface BranchChoice { id: string; choose: (branchId: string) => void }
 
 export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, onMapWarning, mapRetry = 0, onUnsaved, unsavedReader, saveRequest = 0, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
-  useEffect(() => {
-    const shown = restored.library.layouts.find(entry => entry.id === restored.library.activeId);
-    preloadWidgetRenderers(shown?.template.widgets.map(widget => widget.kind) ?? []);
-    preloadAllWidgetRenderers();
-  }, [restored]);
   const [library, showLibrary] = useState(restored.library);
   const libraryRef = useRef(library);
   const setLibrary = useMemo(() => keepLatest(libraryRef, showLibrary), []);
@@ -130,6 +120,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     return () => clearTimeout(timer);
   }, [saved, savedTemplate]);
   const [editing, setEditing] = useState(false);
+  const [openingWidgetPicker, setOpeningWidgetPicker] = useState(false);
+  useEffect(() => { if (!active || !editing) setOpeningWidgetPicker(false); }, [active, editing]);
   const saveMenu = usePopover();
   const discardMenu = usePopover();
   const resetMenu = usePopover();
@@ -781,7 +773,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     return () => exportVideo.registerSurfaceSnapshot(null);
   }, [exportVideo.registerSurfaceSnapshot, buildSurfaceContext, selectedCountries, observed]);
 
-  const laneClient = useMemo(() => preparingClient(client), [client]);
+  const [analyticsOpened, setAnalyticsOpened] = useState(active);
+  useEffect(() => { if (active) setAnalyticsOpened(true); }, [active]);
   const [viewportBox, setViewportBox] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => setViewportBox(viewport.current), []);
   const pageOrder = useMemo(() => {
@@ -789,7 +782,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     const at = Math.max(0, ids.indexOf(shownPage));
     return [...ids.slice(at), ...ids.slice(0, at)].filter((id, index) => index === 0 || id !== shownPage) as PageId[];
   }, [pageList, shownPage]);
-  const preparedPages = useMemo<PreparedPage[]>(() => pageOrder.map(id => {
+  const preparePages = useCallback(() => pageOrder.map(id => {
     const kept = id === shownPage ? draftTemplate : pageStates.current.get(id)?.template ?? (() => {
       const { library: loaded } = loadLayouts(undefined, id);
       return loaded.layouts.find(entry => entry.id === loaded.activeId)!.template;
@@ -797,12 +790,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     const merged = includeCampaigns(kept, campaigns);
     const paged = { ...merged, roles: merged.roles.map(role => ({ ...role, selectedTag: selectedCountries[role.id]?.tag ?? null, selectedSlot: selectedCountries[role.id]?.slot ?? null, observed })) };
     const bound = bindTracks(paged, sourceMap, selectedBranches);
-    return { id, template: paged, runtime: { ...runtime, client: laneClient, tracks: bound, campaignTracks: paged.tracks, alignment: paged.alignment } };
-  }), [pageOrder, shownPage, draftTemplate, campaigns, selectedCountries, observed, sourceMap, selectedBranches, runtime, laneClient]);
-
-  const laneKinds = [...new Set(preparedPages.flatMap(entry => entry.template.widgets.map(widget => widget.kind)))].sort().join(' ');
-  const laneNeeds = useMemo(() => laneModules(laneKinds.split(' ')), [laneKinds]);
-  useEffect(() => { prepareLanes(pageClock(clock), laneNeeds); }, [clock, laneNeeds]);
+    return { id, template: paged, runtime: { ...runtime, tracks: bound, campaignTracks: paged.tracks, alignment: paged.alignment } };
+  }), [pageOrder, shownPage, draftTemplate, campaigns, selectedCountries, observed, sourceMap, selectedBranches, runtime]);
 
   const [discarding, setDiscarding] = useState(false);
   const openSave = () => {
@@ -874,10 +863,14 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
           editButton.current?.focus();
         }} />
       <div className="dash-toolbar" role="toolbar" aria-label="Layout changes">
-        <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker runtime={runtime} placed={template.widgets} disabled={!editing} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind, initial) => {
+        <span className="toolbar-slot" data-shown={editing || undefined}>{editing && <WidgetPicker runtime={runtime} placed={template.widgets}
+          disabled={false} openWhenReady={openingWidgetPicker} onOpen={() => {
+            saveMenu.popup.current?.hidePopover();
+            setOpeningWidgetPicker(false);
+          }} onAdd={(kind, initial) => {
           const widget = { ...createWidget(kind, template.tracks[0].id), ...initial };
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
-        }} /></span>
+        }} />}</span>
         {!layoutAtDefault && <button ref={resetMenu.trigger} type="button" className="icon-button header-reset toolbar-slot" data-shown={editing || undefined} aria-label="Reset layout" data-tooltip="Reset arrangement to default"
           aria-haspopup={dirty ? 'dialog' : undefined} aria-expanded={dirty ? resetMenu.open : undefined} popoverTarget={dirty ? 'layout-reset-menu' : undefined}
           onClick={() => { if (!dirty) resetLayout(); else saveMenu.popup.current?.hidePopover(); }}><Icon name="refresh" /></button>}
@@ -938,22 +931,18 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       <DismissButton onDismiss={() => { setActionError(null); setWarning(null); }} /></div>}
     {saved && savedVisible && <div className="layout-saved" role="status"><Icon name="check" />{saved}</div>}
     <div className={`dash-grid-scroll${editing ? ' is-editing' : ''}`} ref={viewport}>
-      {template.widgets.length === 0 ? <div className="dash-empty-dashboard"><EmptyState icon="grid" title="This page has no widgets yet">
+      {(active || analyticsOpened) && <DashboardPages active={active} viewport={viewportBox} template={template} runtime={runtime}
+        editing={editing} preparing={!editing && !saving && client.available && campaigns.some(campaign => !campaign.loading)}
+        preparePages={preparePages} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget}
+        empty={<div className="dash-empty-dashboard"><EmptyState icon="grid" title="This page has no widgets yet">
         <p>{defaultTemplate(shownPage).widgets.length ? 'Add widgets, or reset the page to its default arrangement from Edit.' : 'Add widgets to build your own view of the campaign.'}</p>
-        <button type="button" className="button primary" onClick={() => {
+        <button type="button" className="button primary" disabled={openingWidgetPicker} aria-busy={openingWidgetPicker || undefined} onClick={() => {
           saveMenu.popup.current?.hidePopover();
-          flushSync(() => setEditing(true));
-          playbackHost?.querySelector<HTMLButtonElement>('.header-add-widget')?.click();
-        }}><Icon name="plus" />Add widgets</button></EmptyState></div>
-        : active && <LiveMotion.Provider value={clock.getMotion}><DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} /></LiveMotion.Provider>}
-      <PreparedPages pages={preparedPages} clock={clock} client={client} viewport={viewportBox}
-        enabled={active && !editing && !saving && client.available && campaigns.some(campaign => !campaign.loading)} draw={drawPrepared} mounting={bodiesWaiting} />
+          setEditing(true);
+          setOpeningWidgetPicker(true);
+        }}><Icon name="plus" />Add widgets</button></EmptyState></div>} />}
     </div>
   </div>;
 }
 
 commitZone(Dashboard, 'dashboard');
-
-const noop = () => {};
-const drawPrepared = (page: PreparedPage) =>
-  <DashboardGrid prepared template={page.template} runtime={page.runtime} editing={false} onLayouts={noop} onApply={noop} onRemove={noop} />;

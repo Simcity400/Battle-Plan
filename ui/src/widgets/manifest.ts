@@ -28,6 +28,9 @@ export const OPTION_CHOICES: Readonly<Record<string, () => Promise<OptionChoices
   'faction-pooled-strength': () => import('../dashboard/factionChoice').then(module => module.useFactionChoices),
   'general-career': () => import('./general-career/useLeaderChoices').then(module => module.useLeaderChoices),
 };
+export const OPTION_PRESETS: Readonly<Record<string, () => Promise<NonNullable<WidgetRenderer['usePresets']>>>> = {
+  'idea-timeline': () => import('./idea-timeline/ideaTimelinePresets').then(module => module.useIdeaTimelinePresets),
+};
 
 export interface FamilyViewUiLoader {
   readonly load: () => Promise<{ default: FamilyViewRenderer }>;

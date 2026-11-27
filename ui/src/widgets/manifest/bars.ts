@@ -1,5 +1,4 @@
 import type { OptionField } from '../../dashboard/options.ts';
-import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 import { OPTIONS as AIR_FORCE_OPTIONS } from '../air-force-size/definition.ts';
 import { OPTIONS as ARMY_SIZE_OPTIONS } from '../army-size/definition.ts';
@@ -513,5 +512,4 @@ export const barsFamilyManifest: FamilyManifestModule = {
   family: 'bars',
   lane: () => import('../../families/bars/laneView.ts').then(m => m.barsLane),
   views: BARS_VIEWS,
-  hostAdapter: barsHostAdapter,
 };

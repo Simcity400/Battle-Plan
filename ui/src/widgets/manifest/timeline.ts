@@ -1,6 +1,5 @@
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { AnyTimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { timelineHostAdapter } from '../../families/timeline/hostAdapter.ts';
 import type { TimelineProjection } from '../../families/timeline/model.ts';
 import { OPTIONS as WARS_OPTIONS } from '../wars/definition.ts';
 import { LEADER_OPTION } from '../general-career/definition.ts';
@@ -81,5 +80,4 @@ export const timelineFamilyManifest: FamilyManifestModule = {
   family: 'timeline',
   lane: () => import('../../families/timeline/laneView.ts').then(m => m.timelineLane),
   views: TIMELINE_VIEWS,
-  hostAdapter: timelineHostAdapter,
 };
