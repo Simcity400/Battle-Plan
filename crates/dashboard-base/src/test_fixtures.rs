@@ -45,6 +45,16 @@ pub fn content_identity(
     crate::products::ContentOptions,
     replay_data::identity::Identity,
 ) {
+    content_identity_with_tables(root, recorded_tables())
+}
+
+pub fn content_identity_with_tables(
+    root: &std::path::Path,
+    tables: engine_executable::executable_tables::Tables,
+) -> (
+    crate::products::ContentOptions,
+    replay_data::identity::Identity,
+) {
     let options = crate::products::ContentOptions {
         options: content_reader_layers::ResolveOptions {
             game_dir: root.to_owned(),
@@ -63,7 +73,7 @@ pub fn content_identity(
         dlc_order: Some(Vec::new()),
     })
     .unwrap();
-    let executable = recorded_tables().identity();
+    let executable = tables.identity();
     let identity = gathered
         .identity(
             "test".into(),
@@ -82,6 +92,16 @@ pub fn write_with_facts(
     identity: &replay_data::identity::Identity,
     input: Vec<Record>,
 ) {
+    write_with_facts_tables(path, options, identity, input, recorded_tables());
+}
+
+fn write_with_facts_tables(
+    path: &std::path::Path,
+    options: &crate::products::ContentOptions,
+    identity: &replay_data::identity::Identity,
+    input: Vec<Record>,
+    tables: engine_executable::executable_tables::Tables,
+) {
     let gathered = content_reader_layers::gather(&content_reader_layers::GatherOptions {
         game_dir: options.options.game_dir.clone(),
         user_dir: options.options.user_dir.clone(),
@@ -95,7 +115,7 @@ pub fn write_with_facts(
             withheld: Default::default(),
         },
         identity,
-        Ok(engine_executable::executable_tables::recorded::encode(recorded_tables())),
+        Ok(engine_executable::executable_tables::recorded::encode(tables)),
         &options.options.cache_dir,
         &|| false,
         content_reader_key_names::equipment_facts::gather,
@@ -121,11 +141,20 @@ pub fn with_facts(
     identity: &replay_data::identity::Identity,
     input: Vec<Record>,
 ) -> replay::campaign::Replay {
+    with_facts_tables(options, identity, input, recorded_tables())
+}
+
+pub fn with_facts_tables(
+    options: &crate::products::ContentOptions,
+    identity: &replay_data::identity::Identity,
+    input: Vec<Record>,
+    tables: engine_executable::executable_tables::Tables,
+) -> replay::campaign::Replay {
     let path = std::env::temp_dir().join(format!(
         "hoi4-fixture-{}.battleplan",
         uuid::Uuid::new_v4()
     ));
-    write_with_facts(&path, options, identity, input);
+    write_with_facts_tables(&path, options, identity, input, tables);
     let bytes = std::fs::read(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
     replay::campaign::Replay::open(bytes).unwrap()

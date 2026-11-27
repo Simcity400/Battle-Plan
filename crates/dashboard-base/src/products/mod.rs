@@ -15,6 +15,7 @@ pub mod politics_content;
 pub mod read_ahead;
 pub mod regions;
 pub mod resources;
+pub mod scoped_text;
 
 
 mod finish;

@@ -23,9 +23,7 @@ use crate::{
 };
 use content_reader_country_names::country_names::{CountryName, CountryNames};
 use content_reader_localisation::localisation::Localisation;
-use dashboard_text::scripted_text::{ScriptedText, TABLES as SCRIPTED_TABLES, probe_unselected_tables};
 use replay::campaign::SeekResult;
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SourceKey {
@@ -314,46 +312,6 @@ impl Source {
             .map_err(|error| io::Error::other(format!("Country metadata naming failed: {error}")))
     }
 
-    fn expand_scripted_country(
-        &self,
-        catalogue: &crate::catalogue::Catalogue,
-        branch: u64,
-        hour: i32,
-        slot: u32,
-        text: &str,
-    ) -> io::Result<Option<String>> {
-        let Ok(scripted_content) = catalogue.scripted_content() else {
-            return Ok(None);
-        };
-        let mut frame = DecodedFrame {
-            branch,
-            hour,
-            tables: std::array::from_fn(|_| not_selected()),
-            metrics: Metrics::default(),
-        };
-        let mut last = None;
-        for _ in 0..=SCRIPTED_TABLES.len() {
-            let scripted = ScriptedText::new(&frame, &catalogue.localisation, scripted_content, slot);
-            let mut result = None;
-            let needed = probe_unselected_tables(&frame, || {
-                result = Some(scripted.expand(text));
-            });
-            last = result;
-            if needed.is_empty() {
-                break;
-            }
-            let partial = match self.replay.seek_selected(branch, hour, Some(&needed)) {
-                Ok(SeekResult::Frame(partial)) => partial,
-                Err(error) if engine_allocation::is_allocation_error(&error) => return Err(error),
-                _ => return Ok(None),
-            };
-            for table in needed {
-                frame.tables[table.index()] = partial.tables[table.index()].clone();
-            }
-        }
-        Ok(last.and_then(Result::ok).and_then(|expanded| crate::catalogue::plain_text(&expanded).ok()))
-    }
-
     fn try_named_metadata_from(
         &self,
         localisation: Result<Arc<Localisation>, String>,
@@ -379,7 +337,7 @@ impl Source {
             Ok(localisation) => {
                 let mut unnamed = 0;
                 let mut frames = std::collections::BTreeMap::new();
-                let mut scripted_catalogue: Option<Option<Arc<crate::catalogue::Catalogue>>> = None;
+                let mut scoped: Option<Option<crate::products::scoped_text::ScopedText<'static>>> = None;
                 for country in &mut metadata.countries {
                     if let Some(saved) = saved_countries.get(&country_observation(country)) {
                         country.name.clone_from(&saved.name);
@@ -416,14 +374,17 @@ impl Source {
                     let name = match frame.as_ref().zip(country.id.parse::<u32>().ok()) {
                         Some((names, slot)) => match names.resolve_name(slot) {
                             Ok(CountryName::Plain(name)) => Some(name),
-                            Ok(CountryName::Scripted { text, .. }) => {
+                            Ok(CountryName::Scripted { key, text }) => {
                                 if let Ok(branch) = country.observed_branch_id.parse() {
-                                    let cat = match &scripted_catalogue {
-                                        Some(cat) => cat.as_deref(),
+                                    let evaluator = match &scoped {
+                                        Some(evaluator) => evaluator.as_ref(),
                                         None => {
                                             let loaded = match content {
                                                 Some(opts) => match crate::catalogue::recorded_catalogue(self, opts) {
-                                                    Ok(cat) => Some(cat),
+                                                    Ok(cat) => Some(crate::products::scoped_text::ScopedText::owned(
+                                                        Arc::clone(&self.replay),
+                                                        Ok(cat),
+                                                    )),
                                                     Err(error) if engine_allocation::is_allocation_error(&error) => {
                                                         return Err(error);
                                                     }
@@ -431,11 +392,19 @@ impl Source {
                                                 },
                                                 None => None,
                                             };
-                                            scripted_catalogue.insert(loaded).as_deref()
+                                            scoped.insert(loaded).as_ref()
                                         }
                                     };
-                                    match cat {
-                                        Some(cat) => self.expand_scripted_country(cat, branch, country.observed_hour, slot, &text)?,
+                                    match evaluator {
+                                        Some(evaluator) => evaluator
+                                            .expand_raw_at_branch(
+                                                branch,
+                                                country.observed_hour,
+                                                crate::products::scoped_text::Scope::Country(slot),
+                                                &key,
+                                                &text,
+                                            )?
+                                            .ok(),
                                         None => None,
                                     }
                                 } else {

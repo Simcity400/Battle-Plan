@@ -1,6 +1,14 @@
 
 use dashboard_base::products::Country;
-use dashboard_base::products::{LoadContext, Product, check_reply_budget, validate_country, idea_format::{self, LocalisedText, ModifierFormat}, politics_content::{PoliticsContent, politics_content}};
+use dashboard_base::products::{
+    LoadContext, Product,
+    at_hour::ReadDates,
+    check_reply_budget,
+    idea_format::{self, LocalisedText, ModifierFormat},
+    politics_content::{PoliticsContent, politics_content},
+    scoped_text::{self, Scope, ScopedText, Validity},
+    validate_country,
+};
 use dashboard_core::dto::Artwork;
 use dashboard_base::{Source, catalogue};
 use dashboard_text::metadata::check_cancel;
@@ -863,32 +871,83 @@ impl Ideas {
     }
 }
 
-fn look(content: &PoliticsContent, span: &IdeaSpan, template: Option<&Result<BuiltTemplate, String>>, country: IdeaCountry<'_>) -> (IdeaLook, Option<String>) {
-    let token = span.token.as_str();
-    let built = match template {
+fn span_template<'a>(
+    span: &IdeaSpan,
+    template: Option<&'a Result<BuiltTemplate, String>>,
+) -> Result<&'a BuiltTemplate, &'a str> {
+    match template {
         Some(Ok(template)) if span.character.is_some() => Ok(template),
         Some(Err(reason)) if span.character.is_some() => Err(reason.as_str()),
         _ => Err("no recorded holder names its template"),
+    }
+}
+
+fn resolved_slot(
+    content: &PoliticsContent,
+    token: &str,
+    recorded_seat: Option<&str>,
+    built: Result<&BuiltTemplate, &str>,
+) -> Option<String> {
+    let idea = content.ideas.idea(token).ok().flatten();
+    let authored_role = content.characters.held_advisor(token, built).ok().flatten();
+    let (group_category, gap) = match idea {
+        Some(idea) => known(content.ideas.tags.resolve(&idea.group)),
+        None => (None, None),
     };
+    let named = group_category.zip(idea).is_some_and(|(category, idea)| category.name == idea.group);
+    recorded_seat
+        .map(str::to_owned)
+        .or_else(|| authored_role.map(|role| role.slot.clone()))
+        .or_else(|| idea.filter(|_| !named && gap.is_none()).map(|idea| idea.group.clone()))
+}
+
+fn look(content: &PoliticsContent, span: &IdeaSpan, template: Option<&Result<BuiltTemplate, String>>, country: IdeaCountry<'_>) -> (IdeaLook, Option<String>) {
+    look_with(content, span, template, country, None, true)
+}
+
+fn look_with(
+    content: &PoliticsContent,
+    span: &IdeaSpan,
+    template: Option<&Result<BuiltTemplate, String>>,
+    country: IdeaCountry<'_>,
+    resolve: Option<&mut dyn FnMut(&str) -> Result<String, String>>,
+    include_description: bool,
+) -> (IdeaLook, Option<String>) {
+    let token = span.token.as_str();
+    let built = span_template(span, template);
     let mut info = idea_info(content, token, span.slot.as_deref(), built);
     let held = span.character.as_ref().map(|holder| ((!holder.token.is_empty()).then_some(holder.token.as_str()), holder.name.as_str()));
-    let (artwork, problem) = match held {
-        Some((script, saved)) => {
-            let (mut art, mut problem) = content.held_idea_artwork(token, script, saved, country);
-            if script.is_none() {
-                art.icon = None;
-                art.sprite = None;
-                problem = Some(format!("{token}: artwork is unknown because the holder has no recorded script token; a placeholder is shown"));
+    let (mut artwork, mut problem, name_missing) = match resolve {
+        Some(resolve) => {
+            let (script, saved) = match held {
+                Some((script, saved)) => (script, Some(saved)),
+                None => (None, None),
+            };
+            if include_description {
+                content.idea_artwork_scoped(token, script, country, saved, resolve)
+            } else {
+                content.idea_marker_artwork_scoped(token, script, country, saved, resolve)
             }
-            (art, problem)
         }
-        None => content.idea_artwork(token, None, country),
+        None => {
+            let (art, problem) = match held {
+                Some((script, saved)) => content.held_idea_artwork(token, script, saved, country),
+                None => content.idea_artwork(token, None, country),
+            };
+            let missing = art.name.is_none().then(|| match held {
+                Some((script, saved)) => content.idea_name_missing(token, script, country, Some(saved)),
+                None => content.idea_name_missing(token, None, country, None),
+            }).flatten();
+            (art, problem, missing)
+        }
     };
+    if held.is_some_and(|(script, _)| script.is_none()) {
+        artwork.icon = None;
+        artwork.sprite = None;
+        problem = Some(format!("{token}: artwork is unknown because the holder has no recorded script token; a placeholder is shown"));
+    }
     if artwork.name.is_none() {
-        info.name_missing = match held {
-            Some((script, saved)) => content.idea_name_missing(token, script, country, Some(saved)),
-            None => content.idea_name_missing(token, None, country, None),
-        };
+        info.name_missing = name_missing;
     }
     let artwork_missing = problem.clone();
     (IdeaLook { info, artwork, artwork_missing }, problem)
@@ -906,6 +965,7 @@ pub(crate) struct Asked<'a> {
 }
 
 pub(crate) fn present(
+    query: &Query<'_>,
     content: &Arc<PoliticsContent>,
     asked: &Asked<'_>,
     read: &Read,
@@ -922,19 +982,47 @@ pub(crate) fn present(
         warnings.push(format!("Idea categories and laws may be incomplete: {gap}."));
     }
     warnings.extend(ideas.warnings.iter().filter(|(_, at)| **at <= hour).map(|(warning, _)| (*warning).to_owned()));
+    let scoped = ScopedText::new(query.replay, &content.catalogue);
+    let mut validity = Validity::default();
+    let unnamed = NamingCountry::default();
     let mut looks: Vec<IdeaLook> = Vec::new();
-    let mut keyed: BTreeMap<(HoldingKey<'_>, Option<usize>), u32> = BTreeMap::new();
+    let mut keyed: BTreeMap<(HoldingKey<'_>, Option<usize>, Option<i32>, &str), u32> = BTreeMap::new();
     let mut unplaced: BTreeSet<&str> = BTreeSet::new();
     let mut holdings = Vec::new();
+    let slot_at = |at_hour: i32| {
+        query.timeline.at(at_hour).and_then(|stretch| {
+            query.holders.at(&asked.params.country, at_hour).and_then(|run| match run.holder {
+                Holder::Found { slot, .. } => Some((stretch.run, slot)),
+                Holder::Unresolved => None,
+            })
+        })
+    };
     for holding in ideas.at(hour) {
         check_cancel(cancelled)?;
         let span = &ideas.spans[holding.span];
         let identity = ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1);
-        let key = (holding_key(span), identity);
+        let named = identity.and_then(|identity| read.naming.get(identity)).unwrap_or(&unnamed);
+        let held = span.character.as_ref().map(|holder| ((!holder.token.is_empty()).then_some(holder.token.as_str()), holder.name.as_str()));
+        let at_hour = if holding.end == HoldingEnd::Held { hour } else { holding.last_hour };
+        let holding_tag = query.holders.tag_at(&asked.params.country, at_hour).unwrap_or(tag);
+        let is_scripted = content.idea_is_scripted(&span.token, held.and_then(|(s, _)| s), named.for_tag(holding_tag), held.map(|(_, saved)| saved));
+        let eval_hour = is_scripted.then_some(at_hour);
+        let key = (holding_key(span), identity, eval_hour, holding_tag);
         let at = match keyed.get(&key) {
             Some(&at) => at,
             None => {
-                let (found, problem) = read.looked(content, tag, holding.span);
+                let (found, problem) = match eval_hour {
+                    Some(at_hour) => {
+                        let scope_target = slot_at(at_hour);
+                        let track = holding.end == HoldingEnd::Held;
+                        let mut resolve = |key: &str| match scope_target {
+                            Some((run, slot)) => scoped.localise(run, at_hour, Scope::Country(slot), key, &[], track.then_some(&mut validity)),
+                            None => Err(format!("localisation {key}: country scope is unavailable at hour {at_hour}")),
+                        };
+                        look_with(content, span, ideas.templates.get(&holding.span), named.for_tag(holding_tag), Some(&mut resolve), true)
+                    }
+                    None => read.looked(content, holding_tag, holding.span),
+                };
                 if found.info.category.is_none() {
                     unplaced.insert(span.token.as_str());
                 }
@@ -969,9 +1057,18 @@ pub(crate) fn present(
     held.sort_unstable();
     let held = held.into_iter().map(|(_, _, _, at)| index(at)).collect::<io::Result<Vec<_>>>()?;
     let (modifier_keys, text_keys) = effect_keys(looks.iter().map(|look| &look.info));
-    let (modifiers, format_warnings) = idea_format::modifier_formats_from_recorded(recorded, &modifier_keys, content);
+    let current_scope = slot_at(hour);
+    let mut localise_text = |key: &str, args: &[(&str, content_reader_localisation::localisation::Argument<'_>)]| {
+        if let Some((run, slot)) = current_scope
+            && scoped_text::key_needs_scope(&content.catalogue.localisation, key, args)
+        {
+            return scoped.localise(run, hour, Scope::Country(slot), key, args, Some(&mut validity)).ok();
+        }
+        content.catalogue.localised_with(key, args, View::Scripted)
+    };
+    let (modifiers, format_warnings) = idea_format::modifier_formats_with(recorded, &modifier_keys, content, &mut localise_text);
     warnings.extend(format_warnings);
-    let texts = idea_format::texts(content, &text_keys);
+    let texts = idea_format::texts_with(&text_keys, &mut |key| localise_text(key, &[]));
     warnings.extend(content.catalogue.refusal_lines());
     let unobserved = ideas
         .unobserved
@@ -979,12 +1076,39 @@ pub(crate) fn present(
         .filter(|gap| gap.first_hour <= hour)
         .map(|gap| HourSpan { first_hour: gap.first_hour, last_hour: gap.last_hour.min(hour) })
         .collect();
+    let mut next_change = ideas.next_change(hour);
+    if matches!(asked.params.country, Country::Slot(_)) {
+        let next_naming = query
+            .holders
+            .naming_spans(&asked.params.country)
+            .into_iter()
+            .flat_map(|(first, last)| [Some(first), last.checked_add(1)])
+            .flatten()
+            .filter(|&edge| edge > hour)
+            .min();
+        next_change = [next_change, next_naming].into_iter().flatten().min();
+    }
+    if !validity.is_empty()
+        && next_change != Some(hour.saturating_add(1))
+        && let Some(stretch) = query.timeline.at(hour)
+    {
+        let mut dates = read.dates.lock().unwrap_or_else(PoisonError::into_inner);
+        let through = validity.through(&mut dates, query.replay, stretch.run, stretch.first, hour, stretch.last, cancelled)?;
+        let scripted_next = if through < stretch.last {
+            Some(through.saturating_add(1))
+        } else if stretch.last < query.timeline.last {
+            Some(stretch.last.saturating_add(1))
+        } else {
+            None
+        };
+        next_change = [next_change, scripted_next].into_iter().flatten().min();
+    }
     Ok(IdeaHistoryReply {
         branch_id: asked.params.branch_id.clone(),
         tag: tag.to_owned(),
         asked: asked.params.country.clone(),
         hour,
-        next_change: ideas.next_change(hour),
+        next_change,
         unrecorded: asked.unrecorded.clone(),
         holdings,
         held,
@@ -998,27 +1122,35 @@ pub(crate) fn present(
 }
 
 type Looked = (IdeaLook, Option<String>);
+type CachedLook = (String, Looked, catalogue::OwnRefusals);
 
 pub(crate) struct Read {
     pub ideas: Ideas,
     pub naming: Vec<NamingCountry>,
-    looks: Mutex<(Weak<PoliticsContent>, Vec<Option<(Looked, catalogue::OwnRefusals)>>)>,
+    looks: Mutex<(Weak<PoliticsContent>, Vec<Vec<CachedLook>>)>,
+    dates: Arc<Mutex<ReadDates>>,
 }
 
 impl Read {
     fn looked(&self, content: &Arc<PoliticsContent>, tag: &str, run: usize) -> Looked {
         let mut kept = self.looks.lock().unwrap_or_else(PoisonError::into_inner);
         if !kept.0.upgrade().is_some_and(|held| Arc::ptr_eq(&held, content)) {
-            *kept = (Arc::downgrade(content), vec![None; self.ideas.spans.len()]);
+            *kept = (Arc::downgrade(content), vec![Vec::new(); self.ideas.spans.len()]);
         }
-        let (looked, noted) = kept.1[run]
-            .get_or_insert_with(|| {
+        let bucket = &mut kept.1[run];
+        let pos = match bucket.iter().position(|(cached_tag, _, _)| cached_tag == tag) {
+            Some(pos) => pos,
+            None => {
                 let span = &self.ideas.spans[run];
                 let unnamed = NamingCountry::default();
                 let identity = self.ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1);
                 let named = identity.and_then(|identity| self.naming.get(identity)).unwrap_or(&unnamed);
-                catalogue::capture(|| look(content, span, self.ideas.templates.get(&run), named.for_tag(tag)))
-            });
+                let (looked, noted) = catalogue::capture(|| look(content, span, self.ideas.templates.get(&run), named.for_tag(tag)));
+                bucket.push((tag.to_owned(), looked, noted));
+                bucket.len() - 1
+            }
+        };
+        let (_, looked, noted) = &bucket[pos];
         catalogue::credit(noted);
         looked.clone()
     }
@@ -1060,9 +1192,125 @@ pub(crate) fn history(source: &Source, branch: u64, tag: &Country) -> io::Result
         .zip(&ideas.starts)
         .map(|(&hour, &(_, _, id))| naming_at(&mut frames, hour, id))
         .collect::<io::Result<Vec<_>>>()?;
-    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())) });
+    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: source.state::<ReadDates>() });
     *held = Some(Arc::clone(&read));
     Ok(read)
+}
+
+pub(crate) fn load_for_markers(
+    source: &Source,
+    params: &IdeaHistoryParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<IdeaHistoryReply> {
+    let content = politics_content(source, context.content()?)?;
+    let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+    let query = dashboard_base::queries::query(source, branch)?;
+    let read = history(source, branch, &params.country)?;
+    let hour = params.hour.min(query.timeline.last);
+    let tag = query.holders.name(&params.country, hour);
+    let ideas = &read.ideas;
+    let categories = categories(&content);
+    let laws: BTreeSet<&str> = categories
+        .iter()
+        .flat_map(|category| category.slots.iter().flat_map(|slot| slot.laws.iter().map(String::as_str)))
+        .collect();
+    let seats: BTreeSet<&str> = categories
+        .iter()
+        .flat_map(|category| category.slots.iter().filter(|slot| slot.character).map(|slot| slot.token.as_str()))
+        .collect();
+    let mut warnings = vec![dashboard_base::products::artwork::CURRENT_INSTALL_ART_NOTICE.to_owned()];
+    warnings.extend(content.warnings.iter().cloned());
+    let (_, category_gap) = content.ideas.tags.categories();
+    let (_, law_gap) = content.ideas.laws("");
+    for gap in category_gap.into_iter().chain(law_gap) {
+        warnings.push(format!("Idea categories and laws may be incomplete: {gap}."));
+    }
+    warnings.extend(ideas.warnings.iter().filter(|(_, at)| **at <= hour).map(|(warning, _)| (*warning).to_owned()));
+    let scoped = ScopedText::new(query.replay, &content.catalogue);
+    let unnamed = NamingCountry::default();
+    let mut looks: Vec<IdeaLook> = Vec::new();
+    let mut keyed: BTreeMap<(HoldingKey<'_>, Option<usize>, Option<i32>, &str), u32> = BTreeMap::new();
+    let mut holdings = Vec::new();
+    for holding in ideas.at(hour) {
+        check_cancel(cancelled)?;
+        if holding.start != HoldingStart::Seen {
+            continue;
+        }
+        let span = &ideas.spans[holding.span];
+        let is_law = laws.contains(span.token.as_str())
+            || content.idea_is_law(&span.token).ok().and_then(|v| *v).unwrap_or(false);
+        let slot = resolved_slot(
+            &content,
+            &span.token,
+            span.slot.as_deref(),
+            span_template(span, ideas.templates.get(&holding.span)),
+        );
+        let is_seat = slot.as_deref().is_some_and(|slot| seats.contains(slot));
+        if !is_law && !is_seat {
+            continue;
+        }
+        let identity = ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1);
+        let named = identity.and_then(|identity| read.naming.get(identity)).unwrap_or(&unnamed);
+        let held = span.character.as_ref().map(|holder| ((!holder.token.is_empty()).then_some(holder.token.as_str()), holder.name.as_str()));
+        let holding_tag = query.holders.tag_at(&params.country, holding.first_hour).unwrap_or(tag.as_str());
+        let is_scripted = content.idea_name_is_scripted(&span.token, held.and_then(|(s, _)| s), named.for_tag(holding_tag), held.map(|(_, saved)| saved));
+        let eval_hour = is_scripted.then_some(holding.first_hour);
+        let key = (holding_key(span), identity, eval_hour, holding_tag);
+        let at = match keyed.get(&key) {
+            Some(&at) => at,
+            None => {
+                let (found, problem) = match eval_hour {
+                    Some(at_hour) => {
+                        let scope_target = query.timeline.at(at_hour).and_then(|stretch| {
+                            query.holders.at(&params.country, at_hour).and_then(|run| match run.holder {
+                                Holder::Found { slot, .. } => Some((stretch.run, slot)),
+                                Holder::Unresolved => None,
+                            })
+                        });
+                        let mut resolve = |key: &str| match scope_target {
+                            Some((run, slot)) => scoped.localise(run, at_hour, Scope::Country(slot), key, &[], None),
+                            None => Err(format!("localisation {key}: country scope is unavailable at hour {at_hour}")),
+                        };
+                        look_with(&content, span, ideas.templates.get(&holding.span), named.for_tag(holding_tag), Some(&mut resolve), false)
+                    }
+                    None => read.looked(&content, holding_tag, holding.span),
+                };
+                warnings.extend(problem);
+                let at = index(looks.len())?;
+                looks.push(found);
+                keyed.insert(key, at);
+                at
+            }
+        };
+        holdings.push(IdeaHolding {
+            token: span.token.clone(),
+            first_hour: holding.first_hour,
+            last_hour: holding.last_hour,
+            start: holding.start,
+            end: holding.end,
+            slot: span.slot.clone(),
+            character: span.character.clone(),
+            look: at,
+        });
+    }
+    warnings.extend(content.catalogue.refusal_lines());
+    Ok(IdeaHistoryReply {
+        branch_id: params.branch_id.clone(),
+        tag,
+        asked: params.country.clone(),
+        hour,
+        next_change: ideas.next_change(hour),
+        unrecorded: None,
+        holdings,
+        held: Vec::new(),
+        looks,
+        categories,
+        unobserved: Vec::new(),
+        modifiers: Vec::new(),
+        texts: Vec::new(),
+        warnings,
+    })
 }
 
 pub struct IdeaHistory;
@@ -1114,7 +1362,7 @@ impl Product for IdeaHistory {
         };
         let tag = query.holders.name(&params.country, hour);
         let asked = Asked { params, tag: &tag, hour, unrecorded };
-        let reply = present(&content, &asked, &read, (*recorded).as_ref(), cancelled)?;
+        let reply = present(&query, &content, &asked, &read, (*recorded).as_ref(), cancelled)?;
         check_reply_budget(&reply)?;
         Ok(reply)
     }

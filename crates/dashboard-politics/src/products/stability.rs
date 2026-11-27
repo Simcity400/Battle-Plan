@@ -1,19 +1,22 @@
 
+use dashboard_base::catalogue::View;
 use dashboard_base::products::{Country, validate_country};
-use dashboard_base::products::at_hour::{At, AtHour, Keys, Owner, Read, at_hour, before, field_columns, warnings_through};
+use dashboard_base::products::at_hour::{At, AtHour, Keys, Owner, Read, ReadDates, at_hour, before, field_columns, warnings_through};
 use dashboard_base::products::LoadContext;
+use dashboard_base::products::scoped_text::{self, Scope, ScopedText, Validity};
 use dashboard_base::Source;
 use dashboard_base::products::politics_content::{PoliticsContent, politics_content};
 use dashboard_text::idea_names::IdeaCountry;
 use dashboard_text::identity::{Look, built_template_in, character_script_token_in};
 use dashboard_text::stability as formula;
 use content_reader_key_names::characters::BuiltTemplate;
+use replay::campaign::Replay;
 use replay_data::rows::{
     CharacterRow, CountryStabilityInputRow, CountryStabilityLineRow, Recorded, StabilityPartKeyRow, StabilityPartRow, TableId, tables,
 };
 use replay_frame::frame::{DecodedFrame, Rowset};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, io, sync::Arc};
+use std::{collections::BTreeSet, io, sync::{Arc, Mutex, atomic::AtomicBool}};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -21,7 +24,7 @@ pub mod naming;
 #[cfg(test)]
 mod tests;
 
-use naming::{RecordedCharacter, line_group, line_name};
+use naming::{RecordedCharacter, line_group, line_name_with};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -114,6 +117,9 @@ pub struct StabilityBreakdownParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StabilityBreakdownReply {
+    #[serde(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
+    scripted_through: i32,
     pub tag: String,
     pub hour: i32,
     #[doc = " None where the hour holds no breakdown; `missing` says why."]
@@ -159,6 +165,9 @@ pub struct StabilityPartName {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StabilityPartNamesReply {
+    #[serde(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
+    scripted_through: i32,
     pub tag: String,
     pub hour: i32,
     pub parts: Vec<StabilityPartName>,
@@ -168,17 +177,21 @@ pub struct StabilityPartNamesReply {
 dashboard_base::reply_warnings!(StabilityBreakdownReply, StabilityPartNamesReply);
 
 pub struct Naming {
+    replay: Arc<Replay>,
     content: Option<Arc<PoliticsContent>>,
+    dates: Arc<Mutex<ReadDates>>,
     warnings: Vec<String>,
 }
 
 fn naming(source: &Source, load: &LoadContext) -> io::Result<Naming> {
+    let replay = source.replay();
+    let dates = source.state::<ReadDates>();
     let Some(options) = load.content.as_ref() else {
-        return Ok(Naming { content: None, warnings: Vec::new() });
+        return Ok(Naming { replay, content: None, dates, warnings: Vec::new() });
     };
     Ok(match politics_content(source, options) {
-        Ok(content) => Naming { warnings: content.warnings.clone(), content: Some(content) },
-        Err(error) => Naming { content: None, warnings: vec![format!("Stability lines are not named: {error}")] },
+        Ok(content) => Naming { replay, warnings: content.warnings.clone(), content: Some(content), dates },
+        Err(error) => Naming { replay, content: None, dates, warnings: vec![format!("Stability lines are not named: {error}")] },
     })
 }
 
@@ -188,6 +201,17 @@ impl Naming {
         if let Some(content) = &self.content {
             warnings.extend(content.catalogue.refusal_lines());
         }
+    }
+
+    fn through(&self, validity: &Validity, branch: u64, hour: i32, cancelled: &AtomicBool) -> io::Result<i32> {
+        if validity.is_empty() {
+            return Ok(i32::MAX);
+        }
+        let Some(block) = self.replay.block_at(branch, hour) else {
+            return Ok(hour);
+        };
+        let mut dates = self.dates.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        validity.through(&mut dates, &self.replay, block.run, block.first_hour, hour, block.last_hour, cancelled)
     }
 }
 
@@ -473,24 +497,40 @@ impl AtHour for CountryStabilityBreakdown {
     fn columns(table: TableId) -> Option<Vec<usize>> { stability_columns(table) }
 
     fn valid_reply_through(frame: &DecodedFrame, _: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _: bool) -> i32 {
-        naming_through(frame, at.owner).min(warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
+        naming_through(frame, at.owner)
+            .min(reply.scripted_through)
+            .min(warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Stability breakdown country is unavailable at this hour"))?;
         let mut warnings = Vec::new();
-        let (breakdown, missing) = match breakdown_at(frame, owner, &at.holders.name(&params.country, at.hour), &at.context.content, &mut warnings) {
+        let mut validity = Validity::default();
+        let (breakdown, missing) = match breakdown_at_with(frame, owner, &at.holders.name(&params.country, at.hour), &at.context.content, Some((&at.context.replay, &mut validity)), &mut warnings) {
             Ok(breakdown) => (Some(breakdown), None),
             Err(why) => (None, Some(why)),
         };
+        let scripted_through = at.context.through(&validity, frame.branch, frame.hour, at.cancelled)?;
         at.context.finish(&mut warnings);
-        let reply = StabilityBreakdownReply { tag: at.holders.name(&params.country, at.hour), hour: frame.hour, breakdown, missing, warnings };
+        let reply = StabilityBreakdownReply { scripted_through, tag: at.holders.name(&params.country, at.hour), hour: frame.hour, breakdown, missing, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
 }
 
+#[cfg(test)]
 fn breakdown_at(frame: &DecodedFrame, owner: Owner, tag: &str, content: &Option<Arc<PoliticsContent>>, warnings: &mut Vec<String>) -> Result<StabilityBreakdown, String> {
+    breakdown_at_with(frame, owner, tag, content, None, warnings)
+}
+
+fn breakdown_at_with(
+    frame: &DecodedFrame,
+    owner: Owner,
+    tag: &str,
+    content: &Option<Arc<PoliticsContent>>,
+    scoped_context: Option<(&Replay, &mut Validity)>,
+    warnings: &mut Vec<String>,
+) -> Result<StabilityBreakdown, String> {
     let inputs = frame.complete::<tables::CountryStabilityInputs>().map_err(|_| "The stability inputs are not recorded at this hour.".to_owned())?;
     let row = inputs.iter().find(|row| row.country == owner.id).ok_or_else(|| "No stability inputs were recorded for this country at this hour.".to_owned())?;
     let reads = frame.complete::<tables::SliceReads>().map_err(|_| "The read behind this hour's values is not recorded.".to_owned())?;
@@ -507,10 +547,21 @@ fn breakdown_at(frame: &DecodedFrame, owner: Owner, tag: &str, content: &Option<
         let lexical = frame.complete::<tables::LexicalTokens>().ok();
         let look = look(frame, owner);
         let country = IdeaCountry { tag, slot: owner.slot, look: look.as_ref().map(Look::country_look) };
+        let mut scoped_state = scoped_context.and_then(|(replay, validity)| {
+            let run = replay.block_at(frame.branch, frame.hour)?.run;
+            Some((ScopedText::new(replay, &content.catalogue), run, validity))
+        });
         for line in breakdown.modifiers.iter_mut().flat_map(|modifier| modifier.lines.iter_mut()) {
             let character = frame_character(line, characters, lexical);
             (line.group, line.group_kind) = line_group(line, content, character.as_ref());
-            line.label = line_name(line, content, character, country);
+            line.label = line_name_with(line, content, character, country, |key| {
+                if let Some((scoped, run, validity)) = scoped_state.as_mut()
+                    && scoped_text::key_needs_scope(&content.catalogue.localisation, key, &[])
+                {
+                    return scoped.localise(*run, frame.hour, Scope::Country(owner.slot), key, &[], Some(&mut **validity)).ok();
+                }
+                content.localised(key, View::Scripted)
+            });
         }
     }
     Ok(breakdown)
@@ -562,7 +613,9 @@ impl AtHour for StabilityPartNames {
     fn columns(table: TableId) -> Option<Vec<usize>> { stability_columns(table) }
 
     fn valid_reply_through(frame: &DecodedFrame, _: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _: bool) -> i32 {
-        naming_through(frame, at.owner).min(warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
+        naming_through(frame, at.owner)
+            .min(reply.scripted_through)
+            .min(warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
     }
 
     fn reads(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
@@ -589,6 +642,11 @@ impl AtHour for StabilityPartNames {
         let look = look(frame, owner);
         let tag = at.holders.name(&params.country, at.hour);
         let country = IdeaCountry { tag: &tag, slot: owner.slot, look: look.as_ref().map(Look::country_look) };
+        let mut validity = Validity::default();
+        let mut scoped_state = at.context.content.as_deref().and_then(|content| {
+            let run = at.context.replay.block_at(frame.branch, frame.hour)?.run;
+            Some((ScopedText::new(&at.context.replay, &content.catalogue), run))
+        });
         let parts = params
             .parts
             .iter()
@@ -599,7 +657,14 @@ impl AtHour for StabilityPartNames {
                     Err(_) => Err("The parts dictionary is not recorded at this hour."),
                 };
                 match row {
-                    Ok(row) => named_part(part, measure, row, at.context.content.as_deref(), country),
+                    Ok(row) => named_part_with(part, measure, row, at.context.content.as_deref(), country, |content, key| {
+                        if let Some((scoped, run)) = scoped_state.as_mut()
+                            && scoped_text::key_needs_scope(&content.catalogue.localisation, key, &[])
+                        {
+                            return scoped.localise(*run, frame.hour, Scope::Country(owner.slot), key, &[], Some(&mut validity)).ok();
+                        }
+                        content.localised(key, View::Scripted)
+                    }),
                     Err(why) => StabilityPartName {
                         part: part.clone(),
                         measure: measure_name(measure).into(),
@@ -612,8 +677,9 @@ impl AtHour for StabilityPartNames {
                 }
             })
             .collect();
+        let scripted_through = at.context.through(&validity, frame.branch, frame.hour, at.cancelled)?;
         at.context.finish(&mut warnings);
-        let reply = StabilityPartNamesReply { tag: at.holders.name(&params.country, at.hour), hour: frame.hour, parts, warnings };
+        let reply = StabilityPartNamesReply { scripted_through, tag: at.holders.name(&params.country, at.hour), hour: frame.hour, parts, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
@@ -645,6 +711,17 @@ fn part_character(row: &StabilityPartKeyRow) -> Option<RecordedCharacter<'_>> {
 }
 
 pub fn named_part(part: &str, measure: u8, row: &StabilityPartKeyRow, content: Option<&PoliticsContent>, country: IdeaCountry<'_>) -> StabilityPartName {
+    named_part_with(part, measure, row, content, country, |content, key| content.localised(key, View::Scripted))
+}
+
+fn named_part_with(
+    part: &str,
+    measure: u8,
+    row: &StabilityPartKeyRow,
+    content: Option<&PoliticsContent>,
+    country: IdeaCountry<'_>,
+    mut localise: impl FnMut(&PoliticsContent, &str) -> Option<String>,
+) -> StabilityPartName {
     let identity = String::from_utf8_lossy(&row.identity).into_owned();
     let plain = |kind: &str, id: String, term: Option<String>| StabilityPartName {
         part: part.to_owned(),
@@ -689,7 +766,7 @@ pub fn named_part(part: &str, measure: u8, row: &StabilityPartKeyRow, content: O
     };
     if let Some(content) = content {
         (line.group, line.group_kind) = line_group(&line, content, character.as_ref());
-        line.label = line_name(&line, content, character, country);
+        line.label = line_name_with(&line, content, character, country, |key| localise(content, key));
     }
     StabilityPartName { part: part.to_owned(), measure: measure_name(measure).into(), kind: "line".into(), id: Some(id), term: None, line: Some(line), missing: None }
 }

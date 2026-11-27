@@ -25,6 +25,7 @@ fn cached_idea_looks_keep_overlay_notes() {
         ideas: super::Ideas { spans: vec![span("fixture_idea", 100, 100, None)], ..Default::default() },
         naming: Vec::new(),
         looks: std::sync::Mutex::new((std::sync::Weak::new(), Vec::new())),
+        dates: std::sync::Arc::default(),
     };
     let reply = || {
         let mut own = catalogue::OwnRefusals::default();
@@ -247,4 +248,309 @@ fn tokenless_holder_clears_sprite_and_sets_per_look_artwork_missing() {
     assert_eq!(look.artwork.sprite, None, "withheld advisor clears stale sprite");
     assert!(look.artwork_missing.as_deref().is_some_and(|m| m.contains("no recorded script token")), "{:?}", look.artwork_missing);
     assert_eq!(look.artwork_missing, problem);
+}
+
+#[test]
+fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_change_hour() {
+    use replay_data::rows::{
+        CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticsRow, Recorded,
+        ScriptVariableEntry, ScriptVariablesRow, StateRow,
+    };
+
+    let tables = dashboard_text::catalogue::tests::script_game::executable().build();
+    engine_executable::executable_tables::scope(Some(tables), || {
+    let frames: Vec<_> = (100..=120)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1_000));
+            set(
+                &mut frame,
+                TableId::Countries,
+                TableRows::Countries(vec![
+                    CountryRow { id: GER, canonical_slot: 7, tag: b"AAA".to_vec(), ..Default::default() },
+                    CountryRow { id: 9002, canonical_slot: 8, tag: b"BBB".to_vec(), ..Default::default() },
+                ]),
+            );
+            set(
+                &mut frame,
+                TableId::CountryLinks,
+                TableRows::CountryLinks(vec![
+                    CountryLinkRow { id: GER, canonical_slot: 7 },
+                    CountryLinkRow { id: 9002, canonical_slot: 8 },
+                ]),
+            );
+            set(
+                &mut frame,
+                TableId::CountryAppearance,
+                TableRows::CountryAppearance(vec![
+                    CountryAppearanceRow { country: GER, ..Default::default() },
+                    CountryAppearanceRow { country: 9002, ..Default::default() },
+                ]),
+            );
+            set(
+                &mut frame,
+                TableId::Politics,
+                TableRows::Politics(vec![
+                    PoliticsRow { country: GER, ruling_party: None, ..Default::default() },
+                    PoliticsRow { country: 9002, ruling_party: None, ..Default::default() },
+                ]),
+            );
+            set(
+                &mut frame,
+                TableId::States,
+                TableRows::States(vec![StateRow {
+                    id: 1,
+                    owner: if hour < 110 { GER } else { 9002 },
+                    controller: if hour < 110 { GER } else { 9002 },
+                    ..Default::default()
+                }]),
+            );
+            set(
+                &mut frame,
+                TableId::ScriptVariables,
+                TableRows::ScriptVariables(vec![ScriptVariablesRow {
+                    scope_kind: 1,
+                    scope_id: GER,
+                    seed: Recorded::Value(None),
+                    entries: vec![ScriptVariableEntry {
+                        name: b"synth_level".to_vec(),
+                        value_raw: if hour < 110 { 100_000 } else { 200_000 },
+                    }],
+                }]),
+            );
+            set(
+                &mut frame,
+                TableId::ActiveIdeas,
+                TableRows::ActiveIdeas(vec![
+                    ActiveIdeaRow { country: GER, ordinal: 0, token: b"synth_dynamic".to_vec() },
+                    ActiveIdeaRow { country: GER, ordinal: 1, token: b"synth_refused".to_vec() },
+                ]),
+            );
+            set(&mut frame, TableId::HiredAdvisors, TableRows::HiredAdvisors(Vec::new()));
+            set(&mut frame, TableId::Characters, TableRows::Characters(Vec::new()));
+            set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(Vec::new()));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "scripted-ideas".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let (cat, _dir) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/synth.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=7},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
+        (
+            "common/scripted_localisation/synth.txt",
+            concat!(
+                "defined_text = {\n",
+                "  name = synth_level_loc\n",
+                "  text = { trigger = { check_variable = { synth_level > 1 } } localization_key = SYNTH_HIGH }\n",
+                "  text = { localization_key = SYNTH_LOW }\n",
+                "}\n",
+            ),
+        ),
+        (
+            "common/ideas/synth.txt",
+            concat!(
+                "ideas = {\n",
+                "  country = {\n",
+                "    synth_dynamic = { modifier = { custom_modifier_tooltip = synth_tip } }\n",
+                "    synth_refused = {}\n",
+                "  }\n",
+                "}\n",
+            ),
+        ),
+        (
+            "localisation/english/synth_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " AAA:0 \"Alpha\"\n",
+                " AAA_ADJ:0 \"Alphan\"\n",
+                " BBB:0 \"Beta\"\n",
+                " BBB_ADJ:0 \"Betan\"\n",
+                " SYNTH_LOW:0 \"Level Low\"\n",
+                " SYNTH_HIGH:0 \"Level High\"\n",
+                " synth_dynamic:0 \"[synth_level_loc]\"\n",
+                " synth_dynamic_desc:0 \"[ROOT.GetName] brief\"\n",
+                " synth_tip:0 \"[1.owner.GetAdjective] bonus\"\n",
+                " synth_refused:0 \"[(ROOT.GetName?a:b)]\"\n",
+            ),
+        ),
+    ]);
+    let content = Arc::new(dashboard_base::products::politics_content::PoliticsContent::load(Arc::new(cat)).unwrap());
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let read = super::history(&source, 1, &"AAA".into()).unwrap();
+    let reply_at = |hour: i32| {
+        let params = super::IdeaHistoryParams { branch_id: "1".into(), country: "AAA".into(), hour };
+        let asked = super::Asked { params: &params, tag: "AAA", hour, unrecorded: None };
+        super::present(&query, &content, &asked, &read, None, &AtomicBool::new(false)).unwrap()
+    };
+
+    let r100 = reply_at(100);
+    let dyn_100 = r100.looks.iter().find(|l| l.info.token == "synth_dynamic").unwrap();
+    assert_eq!(dyn_100.artwork.name.as_deref(), Some("Level Low"));
+    assert_eq!(dyn_100.artwork.description.as_deref(), Some("Alpha brief"));
+    assert_eq!(dyn_100.info.name_missing, None);
+    let tip_100 = r100.texts.iter().find(|t| t.key == "synth_tip").unwrap();
+    assert_eq!(tip_100.text.as_deref(), Some("Alphan bonus"));
+    assert_eq!(r100.next_change, Some(110), "validity holds until the exact change hour 110, not 101");
+
+    let refused_100 = r100.looks.iter().find(|l| l.info.token == "synth_refused").unwrap();
+    assert_eq!(refused_100.artwork.name, None);
+    assert!(
+        refused_100
+            .info
+            .name_missing
+            .as_deref()
+            .is_some_and(|why| why.contains("synth_refused") && why.contains("conditional")),
+        "{:?}",
+        refused_100.info.name_missing
+    );
+
+    let r110 = reply_at(110);
+    let dyn_110 = r110.looks.iter().find(|l| l.info.token == "synth_dynamic").unwrap();
+    assert_eq!(dyn_110.artwork.name.as_deref(), Some("Level High"));
+    let tip_110 = r110.texts.iter().find(|t| t.key == "synth_tip").unwrap();
+    assert_eq!(tip_110.text.as_deref(), Some("Betan bonus"));
+    assert_eq!(r110.next_change, Some(121), "settled through end of branch after the change");
+    });
+}
+
+#[test]
+fn historical_idea_names_use_the_slots_tag_at_the_evaluation_hour() {
+    use dashboard_base::products::LoadContext;
+    use dashboard_query::identity::Country;
+    use replay_data::rows::{CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticsRow};
+
+    let frames: Vec<_> = (100..=110)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1_000));
+            let tag: &[u8] = if hour < 106 { b"AAA" } else { b"BBB" };
+            set(
+                &mut frame,
+                TableId::Countries,
+                TableRows::Countries(vec![CountryRow {
+                    id: GER,
+                    canonical_slot: 1,
+                    tag: tag.to_vec(),
+                    ..Default::default()
+                }]),
+            );
+            set(
+                &mut frame,
+                TableId::CountryLinks,
+                TableRows::CountryLinks(vec![CountryLinkRow { id: GER, canonical_slot: 1 }]),
+            );
+            set(
+                &mut frame,
+                TableId::CountryAppearance,
+                TableRows::CountryAppearance(vec![CountryAppearanceRow { country: GER, ..Default::default() }]),
+            );
+            set(
+                &mut frame,
+                TableId::Politics,
+                TableRows::Politics(vec![PoliticsRow { country: GER, ruling_party: None, ..Default::default() }]),
+            );
+            let mut active = Vec::new();
+            if (101..=104).contains(&hour) {
+                active.push(ActiveIdeaRow { country: GER, ordinal: 0, token: b"synth_law".to_vec() });
+            }
+            if hour >= 101 {
+                active.push(ActiveIdeaRow { country: GER, ordinal: 1, token: b"synth_span".to_vec() });
+            }
+            set(&mut frame, TableId::ActiveIdeas, TableRows::ActiveIdeas(active));
+            set(&mut frame, TableId::HiredAdvisors, TableRows::HiredAdvisors(Vec::new()));
+            set(&mut frame, TableId::Characters, TableRows::Characters(Vec::new()));
+            set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(Vec::new()));
+            frame
+        })
+        .collect();
+    let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        ("hoi4.exe", "test"),
+        ("user/settings.txt", "language=l_english"),
+        ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
+        ("localisation/languages.yml", "\u{feff}l_english:\n l_english: \"English\"\n"),
+        (
+            "common/defines/synth.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=7},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
+        (
+            "common/ideas/synth.txt",
+            "ideas = { economy = { law = yes synth_law = {} synth_span = {} } }",
+        ),
+        (
+            "localisation/english/synth_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " AAA:0 \"Alpha\"\n",
+                " BBB:0 \"Beta\"\n",
+                " AAA_synth_law:0 \"[ROOT.GetName] Law\"\n",
+                " BBB_synth_law:0 \"Wrong Beta Law\"\n",
+                " AAA_synth_span:0 \"Alpha Span\"\n",
+                " BBB_synth_span:0 \"Beta Span\"\n",
+            ),
+        ),
+    ]);
+    let tables = dashboard_text::catalogue::tests::script_game::executable()
+        .executable(b"test")
+        .build();
+    let (options, identity) =
+        dashboard_base::test_fixtures::content_identity_with_tables(&folder.0, tables);
+    let mut input = records(1, frames);
+    if let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] {
+        session.identity = identity.clone();
+    }
+    let replay = dashboard_base::test_fixtures::with_facts_tables(&options, &identity, input, tables)
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "slot-tag-change".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let content = dashboard_base::products::politics_content::politics_content(&source, &options).unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let country = Country::Slot(1);
+    let read = super::history(&source, 1, &country).unwrap();
+    let params = super::IdeaHistoryParams { branch_id: "1".into(), country: country.clone(), hour: 110 };
+    let asked = super::Asked { params: &params, tag: "BBB", hour: 110, unrecorded: None };
+    let name_of = |reply: &super::IdeaHistoryReply, token: &str| {
+        let holding = reply.holdings.iter().find(|h| h.token == token).unwrap();
+        reply.looks[holding.look as usize].artwork.name.clone()
+    };
+
+    let params_105 = super::IdeaHistoryParams { branch_id: "1".into(), country, hour: 105 };
+    let asked_105 = super::Asked { params: &params_105, tag: "AAA", hour: 105, unrecorded: None };
+    let present_105 = source
+        .in_scope(|| super::present(&query, &content, &asked_105, &read, None, &AtomicBool::new(false)))
+        .unwrap();
+    assert_eq!(name_of(&present_105, "synth_span").as_deref(), Some("Alpha Span"));
+    assert_eq!(present_105.next_change, Some(106));
+
+    let present_before = source
+        .in_scope(|| super::present(&query, &content, &asked, &read, None, &AtomicBool::new(false)))
+        .unwrap();
+    assert_eq!(name_of(&present_before, "synth_law").as_deref(), Some("Alpha Law"));
+    assert_eq!(name_of(&present_before, "synth_span").as_deref(), Some("Beta Span"));
+
+    let markers = source
+        .in_scope(|| super::load_for_markers(&source, &params, &LoadContext { content: Some(options) }, &AtomicBool::new(false)))
+        .unwrap();
+    assert_eq!(name_of(&markers, "synth_law").as_deref(), Some("Alpha Law"));
+    assert_eq!(name_of(&markers, "synth_span").as_deref(), Some("Alpha Span"));
+
+    let present_after = source
+        .in_scope(|| super::present(&query, &content, &asked, &read, None, &AtomicBool::new(false)))
+        .unwrap();
+    assert_eq!(name_of(&present_after, "synth_span").as_deref(), Some("Beta Span"));
 }

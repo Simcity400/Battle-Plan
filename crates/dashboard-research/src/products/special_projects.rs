@@ -531,22 +531,26 @@ pub(crate) fn spellings(frame: &DecodedFrame, ids: impl IntoIterator<Item = u32>
         .collect()
 }
 
-fn scoped_at(query: &Query<'_>, content: &ProjectContent, key: &str, hour: i32, slot: u32) -> Result<Option<String>, String> {
-    let mut frames = None;
-    scoped_at_in(query, &mut frames, content, key, hour, slot)
-}
-
-fn scoped_at_in<'q>(query: &'q Query<'q>, frames: &mut Option<at_hour::Frames<'q>>, content: &ProjectContent, key: &str, hour: i32, slot: u32) -> Result<Option<String>, String> {
-    let catalogue = &content.politics.catalogue;
-    let scripted = catalogue.scripted_content()?;
-    let reads: Vec<Read> = dashboard_text::scripted_text::TABLES.iter().map(|&table| Read::all(table)).collect();
-    let held = match frames {
-        Some(held) => held,
-        None => frames.insert(at_hour::Frames::new(query).map_err(|error| format!("The project's name needs its country's scope: {error}"))?),
+fn resolve_scoped_name(
+    query: &Query<'_>,
+    scoped: &dashboard_base::products::scoped_text::ScopedText<'_>,
+    key: &str,
+    hour: i32,
+    slot: u32,
+) -> Result<Option<String>, String> {
+    let Some(stretch) = query.timeline.at(hour) else {
+        return Err(format!("The project's name needs its country's scope: hour {hour} is not recorded"));
     };
-    let frame = held.frame(hour, &reads, "Special project name").map_err(|error| format!("The project's name needs its country's scope: {error}"))?;
-    let text = dashboard_text::scripted_text::ScriptedText::new(&frame, &catalogue.localisation, scripted, slot);
-    Ok(catalogue.localise_in(key, &text))
+    scoped
+        .localise(
+            stretch.run,
+            hour,
+            dashboard_base::products::scoped_text::Scope::Country(slot),
+            key,
+            &[],
+            None,
+        )
+        .map(Some)
 }
 
 struct Cursor<'a> {
@@ -1303,6 +1307,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
     let mut people = Interned::new();
     let mut presentations = Interned::new();
     let mut names = HashMap::new();
+    let scoped = dashboard_base::products::scoped_text::ScopedText::new(query.replay, &content.politics.catalogue);
     let mut shown = |look: &facts::Look, hour: i32, naming: &mut Naming<'_>| {
         let (name, specialization, specialization_name, icon) = names.entry((look.definition, hour)).or_insert_with(|| {
             let slot = query.holders.at(&params.country, hour).and_then(|run| match run.holder {
@@ -1310,7 +1315,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
                 Holder::Unresolved => None,
             });
             let Named { name, specialization, specialization_name, icon_key } = naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, Some(tag), &mut |key| match slot {
-                Some(slot) => scoped_at(query, content, key, hour, slot),
+                Some(slot) => resolve_scoped_name(query, &scoped, key, hour, slot),
                 None => Err(holder_not_known(&query.holders, &params.country, hour).unwrap_or_else(|| "The project's name needs its country's scope, which is unresolved".to_owned())),
             });
             let icon = icon_key.and_then(|key| naming.icon(&key));
@@ -2015,7 +2020,7 @@ pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from:
     found.sort_by_key(|counted| (counted.read, counted.owner, counted.local, counted.entry.ordinal, counted.entry.date));
     let spelled = spell_completions(query, &found, cancelled)?;
     let naming = Naming::new(&content);
-    let mut scoped_frames = None;
+    let scoped = dashboard_base::products::scoped_text::ScopedText::new(query.replay, &content.politics.catalogue);
     let mut events = Vec::with_capacity(found.len());
     for counted in found {
         dashboard_text::metadata::check_cancel(cancelled)?;
@@ -2026,7 +2031,7 @@ pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from:
             Some(definition) => {
                 let token = spelled.get(&(read, definition)).map(String::as_str);
                 let named = naming.definition(token, definition, completion.attribution.tag(), &mut |key| match slot {
-                    Some(slot) => scoped_at_in(query, &mut scoped_frames, &content, key, entry.date, slot),
+                    Some(slot) => resolve_scoped_name(query, &scoped, key, entry.date, slot),
                     None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
                 });
                 completion.name = Some(named.name);

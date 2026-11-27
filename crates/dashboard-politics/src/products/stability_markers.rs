@@ -1,5 +1,5 @@
-use super::ideas::{IdeaHistory, IdeaHistoryParams, IdeaHistoryReply, HoldingStart};
-use super::national_focus::{FocusReply, NationalFocus};
+use super::ideas::{self, IdeaHistoryParams, IdeaHistoryReply, HoldingStart};
+use super::national_focus::{self, FocusReply, NationalFocus};
 use super::party_history::{self, RulingParties};
 use dashboard_base::Source;
 use dashboard_base::products::{Country, CountryParams, LoadContext, Product, check_reply_budget};
@@ -114,7 +114,12 @@ fn marker(id: String, hour: i32, kind: StabilityMarkerKind, title: String) -> St
     StabilityMarker { id, hour, kind, title, verb: None, other: None, faction: None, sprite: None, alert: false }
 }
 
-fn focus_markers(out: &mut Markers, reply: &FocusReply) {
+fn focus_markers(
+    out: &mut Markers,
+    reply: &FocusReply,
+    resolve_missing: &mut dyn FnMut(&str, i32) -> Result<Option<String>, String>,
+    warnings: &mut Vec<String>,
+) {
     let names: HashMap<&str, &str> = reply.static_text.iter().flatten().filter_map(|art| Some((art.token.as_str(), art.name.as_deref()?))).collect();
     let art: HashMap<&str, &dashboard_core::dto::Artwork> = reply.artwork.iter().map(|art| (art.token.as_str(), art)).collect();
     let mut seen = BTreeSet::new();
@@ -124,8 +129,26 @@ fn focus_markers(out: &mut Markers, reply: &FocusReply) {
             if !seen.insert((entry.token.as_str(), entry.ordinal, hour)) {
                 continue;
             }
+            if hour > out.hour {
+                out.later(Some(hour));
+                continue;
+            }
             let look = art.get(entry.token.as_str());
-            let name = names.get(entry.token.as_str()).copied().or_else(|| look.and_then(|art| art.name.as_deref())).unwrap_or(FOCUS_UNNAMED);
+            let name = match names
+                .get(entry.token.as_str())
+                .copied()
+                .or_else(|| look.and_then(|art| art.name.as_deref()))
+            {
+                Some(name) => std::borrow::Cow::Borrowed(name),
+                None => match resolve_missing(entry.token.as_str(), hour) {
+                    Ok(Some(resolved)) => std::borrow::Cow::Owned(resolved),
+                    Ok(None) => std::borrow::Cow::Borrowed(FOCUS_UNNAMED),
+                    Err(reason) => {
+                        warnings.push(reason);
+                        std::borrow::Cow::Borrowed(FOCUS_UNNAMED)
+                    }
+                },
+            };
             let mut made = marker(format!("focus:{}:{hour}", entry.token), hour, StabilityMarkerKind::Focus, format!("Focus: {name}"));
             made.sprite = look.and_then(|art| art.sprite.clone());
             out.push(made);
@@ -378,11 +401,39 @@ impl Product for StabilityMarkers {
         let mut warnings = Vec::new();
         if params.focus {
             let reply = NationalFocus::load(source, &country, context, cancelled)?;
-            focus_markers(&mut out, &reply);
+            let mut missing_asks: Vec<(&str, i32)> = Vec::new();
+            let static_names: HashMap<&str, &str> = reply.static_text.iter().flatten().filter_map(|art| Some((art.token.as_str(), art.name.as_deref()?))).collect();
+            let art_names: HashMap<&str, &str> = reply.artwork.iter().filter_map(|art| Some((art.token.as_str(), art.name.as_deref()?))).collect();
+            for segment in &reply.history.segments {
+                for entry in &segment.order.completed {
+                    if let Some(completed_hour) = entry.completed_by_hour.filter(|&at| at <= hour)
+                        && !static_names.contains_key(entry.token.as_str())
+                        && !art_names.contains_key(entry.token.as_str())
+                    {
+                        missing_asks.push((entry.token.as_str(), completed_hour));
+                    }
+                }
+            }
+            let resolved_focuses = if missing_asks.is_empty() {
+                HashMap::new()
+            } else {
+                national_focus::resolve_focus_titles(source, context.content()?, &query, &params.country, &missing_asks)?
+            };
+            focus_markers(
+                &mut out,
+                &reply,
+                &mut |token, completed_hour| {
+                    match resolved_focuses.get(&(token.to_owned(), completed_hour)) {
+                        Some(result) => result.clone(),
+                        None => Ok(None),
+                    }
+                },
+                &mut warnings,
+            );
             warnings.extend(reply.warnings);
         }
         if params.government {
-            let ideas = IdeaHistory::load(source, &IdeaHistoryParams { branch_id: params.branch_id.clone(), country: params.country.clone(), hour }, context, cancelled)?;
+            let ideas = ideas::load_for_markers(source, &IdeaHistoryParams { branch_id: params.branch_id.clone(), country: params.country.clone(), hour }, context, cancelled)?;
             idea_markers(&mut out, &ideas);
             warnings.extend(ideas.warnings);
             let parties = party_history::ruling(source, &query, &country, context, cancelled)?;
