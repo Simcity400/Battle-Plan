@@ -343,22 +343,42 @@ mod tests {
     fn a_place_is_present_only_on_its_witnessed_row_and_absent_only_from_a_complete_read() {
         let make = |hour: i32, view: fn(TableRows) -> TableView| {
             let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
-            *frame.tables[TableId::States.index()] = view(TableRows::States(vec![StateRow { id: 7, ..StateRow::default() }]));
+            *frame.tables[TableId::States.index()] = view(TableRows::States(vec![StateRow { id: 7, custom_name: b"Sample State".to_vec(), ..StateRow::default() }]));
             frame
         };
-        let frames = vec![
-            make(1_000, TableView::Complete),
-            make(1_001, |rows| TableView::Truncated { rows, missing: 3 }),
-            dashboard_core::test_fixtures::source(1, 1_002, Some(1)),
-        ];
-        let history = history_for(frames, 1_000, 1_002, &[7, 8], &[3]);
-        assert_eq!(history.presence_at(TableId::States, 7, 1_000), Presence::Present);
-        assert_eq!(history.presence_at(TableId::States, 8, 1_000), Presence::Absent, "a complete read without the row proves the state does not exist");
-        assert_eq!(history.presence_at(TableId::States, 7, 1_001), Presence::Present, "a witnessed row is present even in a truncated read");
-        assert_eq!(history.presence_at(TableId::States, 8, 1_001), Presence::Unknown, "a truncated read without the row proves nothing");
-        assert_eq!(history.presence_at(TableId::Provinces, 3, 1_002), Presence::Unknown);
+        let root = std::env::temp_dir().join(format!("place-runs-presence-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (source, load) = dashboard_base::test_fixtures::source_with_content(
+            vec![
+                make(1_000, TableView::Complete),
+                make(1_001, |rows| TableView::Truncated { rows, missing: 3 }),
+                dashboard_core::test_fixtures::source(1, 1_002, Some(1)),
+            ],
+            &root,
+        );
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let content = Content::read(&source, &load).unwrap();
+        let history = PlaceHistory::load(
+            query.replay.recording(),
+            query.timeline.stretches[0].run,
+            1_000,
+            1_002,
+            Keys::These(&[3]),
+            Keys::These(&[7, 8]),
+            false,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(answer_of(history.state_reading(&content, 7, 1_000)).presence, Presence::Present);
+        assert_eq!(answer_of(history.state_reading(&content, 8, 1_000)).presence, Presence::Absent, "a complete read without the row proves the state does not exist");
+        assert_eq!(answer_of(history.state_reading(&content, 7, 1_001)).presence, Presence::Present, "a witnessed row is present even in a truncated read");
+        assert_eq!(answer_of(history.state_reading(&content, 8, 1_001)).presence, Presence::Unknown, "a truncated read without the row proves nothing");
+        assert_eq!(answer_of(history.province_reading(&content, 3, ProvinceMode::Place, 1_002)).presence, Presence::Unknown);
         assert_eq!(history.state_change_hours(7, 1_000, 1_002), vec![1_000, 1_002]);
         assert_eq!(history.state_change_hours(8, 1_000, 1_002), vec![1_000, 1_001, 1_002]);
+        drop(query);
+        drop(source);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

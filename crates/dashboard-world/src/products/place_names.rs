@@ -168,9 +168,12 @@ impl Content {
     }
 
     pub fn land_battle_title(&self, place: Name) -> Result<String, String> {
+        if let Some(missing) = place.missing {
+            return Err(missing);
+        }
         match place.name.filter(|name| !name.trim().is_empty()) {
             Some(name) => Ok(format!("Battle of {name}")),
-            None => Err(place.missing.unwrap_or_else(|| "Province name not recorded".into())),
+            None => Err("Province name not recorded".into()),
         }
     }
 
@@ -213,20 +216,50 @@ fn resolve_province(
     state_name: impl FnOnce(u32) -> Result<String, String>,
 ) -> Name {
     let loc = &content.cat.localisation;
-    let own = scripted_text::province_primary_name(loc, rename, || scripted_text::victory_point_name(loc, id, &vp_tag()?))
-        .and_then(|name| name.map(|name| catalogue::plain_text(&name)).transpose());
-    match own {
+    let rename = match rename {
+        Ok(rename) => rename,
+        Err(reason) => return Name::missing(reason),
+    };
+    if let Some(raw) = rename.filter(|raw| !raw.is_empty()) {
+        let translated = loc.localise(raw).map_err(|e| e.to_string()).and_then(|text| catalogue::plain_text(&text));
+        return match translated {
+            Ok(name) if !matches!(mode, ProvinceMode::Land) || !name.is_empty() => Name::found(name),
+            Err(reason) => Name::missing(reason),
+            Ok(_) => fallback_province(content, id, state, mode, state_name),
+        };
+    }
+    let vp = vp_tag()
+        .and_then(|tag| scripted_text::victory_point_name(loc, id, &tag))
+        .and_then(|text| (!text.is_empty()).then(|| catalogue::plain_text(&text)).transpose());
+    match vp {
         Ok(Some(name)) if !matches!(mode, ProvinceMode::Land | ProvinceMode::Naval) || !name.is_empty() => Name::found(name),
-        Err(reason) => Name::missing(reason),
-        Ok(_) if state != 0 => Name::of(state_name(state)),
-        Ok(_) => match mode {
-            ProvinceMode::Land => Name::missing(format!("province {id}: no state name available")),
-            ProvinceMode::Place => Name::of(content.province_region(id)),
-            ProvinceMode::Naval => match content.province_region_or_none(id) {
-                Ok(Some(name)) => Name::found(name),
-                Ok(None) => Name::found(id.to_string()),
-                Err(reason) => Name::missing(reason),
-            },
+        Err(reason) if matches!(mode, ProvinceMode::Naval) => Name::missing(reason),
+        Err(reason) => match fallback_province(content, id, state, mode, state_name) {
+            Name { name: Some(name), missing: None } => Name { name: Some(name), missing: Some(reason) },
+            Name { missing: Some(fb), .. } => Name::missing(format!("{reason}; {fb}")),
+            _ => Name::missing(reason),
+        },
+        Ok(_) => fallback_province(content, id, state, mode, state_name),
+    }
+}
+
+fn fallback_province(
+    content: &Content,
+    id: u32,
+    state: u32,
+    mode: ProvinceMode,
+    state_name: impl FnOnce(u32) -> Result<String, String>,
+) -> Name {
+    if state != 0 {
+        return Name::of(state_name(state));
+    }
+    match mode {
+        ProvinceMode::Land => Name::missing(format!("province {id}: no state name available")),
+        ProvinceMode::Place => Name::of(content.province_region(id)),
+        ProvinceMode::Naval => match content.province_region_or_none(id) {
+            Ok(Some(name)) => Name::found(name),
+            Ok(None) => Name::found(id.to_string()),
+            Err(reason) => Name::missing(reason),
         },
     }
 }
@@ -289,7 +322,10 @@ impl<'f> Places<'f> {
     }
 
     fn links(&self) -> &HashMap<u32, u32> {
-        self.links.get_or_init(|| self.frame.complete::<tables::CountryLinks>().map(|rows| rows.iter().map(|link| (link.id, link.canonical_slot)).collect()).unwrap_or_default())
+        self.links.get_or_init(|| match self.view(TableId::CountryLinks) {
+            TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.rows::<tables::CountryLinks>().unwrap_or_default().iter().map(|link| (link.id, link.canonical_slot)).collect(),
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => HashMap::new(),
+        })
     }
 
     fn tag(&self, slot: u32) -> Result<String, String> {
@@ -323,7 +359,8 @@ impl<'f> Places<'f> {
         }
         match self.links().get(&row.owner) {
             Some(&slot) => self.tag(slot),
-            None => Err(format!("province {id}: state owner's link {} resolves to no country", row.owner)),
+            None if (self.frame as &dyn DecodedSource).complete_status(TableId::CountryLinks).is_ok() => Err(format!("province {id}: state owner's link {} resolves to no country", row.owner)),
+            None => Err(format!("province {id}: state owner's link {} is unknown: {}", row.owner, scope::gap(self.view(TableId::CountryLinks)))),
         }
     }
 
@@ -666,10 +703,14 @@ impl PlaceHistory {
         };
         let owner = cell_number(c[0]).and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
         if owner == 0 { return self.tag_at(0, hour); }
-        if is_complete(&self.links, hour) && let Reading::Cells(link) = self.links.reading(u128::from(owner), hour) && let Some(slot) = cell_number(link[0]).and_then(|v| u32::try_from(v).ok()) {
-            return self.tag_at(slot, hour);
+        match self.links.reading(u128::from(owner), hour) {
+            Reading::Cells(link) => match cell_number(link[0]).and_then(|v| u32::try_from(v).ok()) {
+                Some(slot) => self.tag_at(slot, hour),
+                None => Err(format!("province {id}: state owner's link {owner} resolves to no country")),
+            },
+            Reading::Absent => Err(format!("province {id}: state owner's link {owner} resolves to no country")),
+            Reading::Unread { status, reason } => Err(format!("province {id}: state owner's link {owner} is unknown: {}", status_gap(status, reason, self.mode))),
         }
-        Err(format!("province {id}: state owner's link {owner} resolves to no country"))
     }
 
     fn state_display_cells(&self, content: &Content, id: u32, cells: &[Cell]) -> Result<String, String> {
@@ -685,16 +726,6 @@ impl PlaceHistory {
         }
         let Reading::Cells(c) = self.states.reading(u128::from(id), hour) else { return Err(absent()); };
         self.state_display_cells(content, id, c)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn presence_at(&self, table: TableId, id: u32, hour: i32) -> crate::products::place_name_runs::Presence {
-        let history = if table == TableId::States { &self.states } else { &self.provinces };
-        match reading_witness(table, history.reading(u128::from(id), hour)) {
-            Witness::Row(_) => crate::products::place_name_runs::Presence::Present,
-            Witness::Absent => crate::products::place_name_runs::Presence::Absent,
-            Witness::NotRecorded(_) => crate::products::place_name_runs::Presence::Unknown,
-        }
     }
 
     pub fn state_reading(&self, content: &Content, id: u32, hour: i32) -> Result<Option<Name>, String> {
@@ -793,7 +824,6 @@ impl PlaceHistory {
                     push_slot(&mut hours, 0, s_first, s_last);
                     continue;
                 }
-                push_status_edges(&mut hours, &self.links.statuses, s_first, s_last);
                 for (l_start, l_end, l_read) in self.links.readings(u128::from(owner)) {
                     let (l_first, l_last) = (l_start.max(s_first), l_end.min(s_last));
                     if l_first > l_last { continue; }
