@@ -187,29 +187,35 @@ function memberNamesItem(readView: BoundedReadView, row: FactionTotalRow): Toolt
   const shown: string[] = [];
   const reasons: string[] = [];
   let hasPending = false;
+  let totalNamed = 0;
   const addReason = (reason: string) => {
     if (!reasons.includes(reason)) reasons.push(reason);
   };
-  for (let index = 0; index < Math.min(limit, keys.length); index++) {
+  for (let index = 0; index < keys.length; index++) {
     const key = keys[index]!;
     const who = resolveName(readView, 'country', key);
     if (who.value.kind === 'known') {
-      shown.push(who.value.value);
+      totalNamed++;
+      if (shown.length < limit) shown.push(who.value.value);
     } else if (who.value.kind === 'pending') {
       hasPending = true;
       addReason(who.value.reason);
     } else {
       const reason = 'reason' in who.value ? who.value.reason : 'Country name not recorded';
       addReason(reason);
-      if (who.who.tag?.status === 'ready') shown.push(who.who.tag.value);
-      else if (!isSlotKey(key)) shown.push(key);
+      const fallback = who.who.tag?.status === 'ready' ? who.who.tag.value : !isSlotKey(key) ? key : null;
+      if (fallback !== null) {
+        totalNamed++;
+        if (shown.length < limit) shown.push(fallback);
+      }
     }
   }
   if (!shown.length) {
     const merged = reasons.join('; ') || 'Member names were not recorded';
     return hasPending ? { label, pendingReason: merged } : { label, missingReason: merged };
   }
-  const suffix = keys.length > limit ? ` +${keys.length - limit} more` : '';
+  const omitted = totalNamed - shown.length;
+  const suffix = omitted > 0 ? ` +${omitted} more` : '';
   return {
     label,
     value: `${shown.join(', ')}${suffix}`,

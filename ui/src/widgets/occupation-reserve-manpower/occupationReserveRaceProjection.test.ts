@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
-import { assertBarsModelValid, deriveBarsTooltip, type BarsDataRow } from '../../families/bars/model.ts';
+import { assertBarsModelValid, barsLabelText, deriveBarsTooltip, type BarsDataRow } from '../../families/bars/model.ts';
 import { buildTooltipContent } from '../../families/host/tooltips.ts';
 import { tooltipText } from '../../charts/tooltip.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
@@ -899,7 +899,7 @@ test('occupation-reserve-manpower drawer ignores chart-coordinate and untyped ac
       { surface: '#1e1e1e', top: 10, all: false, group: false },
     );
     const row = projected.rows.find((item): item is BarsDataRow => item.kind === 'data')!;
-    const rowNav: FamilyNavTuple[] = [[row.key, row.label, 0, -1, '', row.meta]];
+    const rowNav: FamilyNavTuple[] = [[row.key, barsLabelText(row.label), 0, -1, '', row.meta]];
     const barsPicture = basePicture('orm:race', rowNav);
     const barsRecord = recordInstalled(barsPicture, { nav: rowNav }, null);
     const rowHit = barsHostAdapter.parseHit!(`row:${row.key}`)!;

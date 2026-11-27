@@ -307,7 +307,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
         ? { kind: 'value', form: 'value', primary: '', secondary: 'Contested', swatch: color, audit: 'Contested' }
         : { kind: 'value', form: 'value', primary, secondary: readout.control > 0 ? look.friendlyLabel : look.enemyLabel, swatch: color };
     }
-    return { id: region.id, label: named.label, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, region: Number(region.id), runs, ...(shown ? { readout: shown } : {}) };
+    return { id: region.id, label: named.label, labelValue: named.value, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, region: Number(region.id), runs, ...(shown ? { readout: shown } : {}) };
   });
   const gaps = new Map<string, { firstHour: number; lastHour: number; reason: string }>();
   for (const reply of pieces) for (const gap of reply.gaps) gaps.set(`${gap.firstHour}:${gap.lastHour}`, { firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' });
