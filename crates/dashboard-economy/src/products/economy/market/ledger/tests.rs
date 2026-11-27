@@ -41,6 +41,19 @@ fn events(reply: &MarketLedgerTailReply) -> Vec<&MarketContractEvent> {
     reply.rows.iter().filter_map(|line| if let MarketLedgerLine::Event(event) = line { Some(event) } else { None }).collect()
 }
 
+fn bins_match_rows(src: &Source, params: &MarketLedgerTailParams) {
+    let query = dashboard_base::queries::query(src, 1).unwrap();
+    let prepared = prepare(src, &query, 1, &LoadContext { content: None }, params, &AtomicBool::new(false)).unwrap();
+    let states: Vec<_> = STATUSES.iter().map(|status| status.code()).collect();
+    let ask = Ask {
+        hour: params.hour.unwrap(), from: params.from, to: params.to, gap_end: None, selection: prepared.selection.as_ref(), subject: None,
+        kinds: None, states: Some(&states), search: params.search.as_deref(), order: Order::Key(0, Direction::Descending), live_first: false, offset: 0, limit: 1, chips: &[],
+    };
+    let (before, bins) = prepared.index.index.bins(&query.holders, &ask, params.from.unwrap_or(query.timeline.first), params.to.unwrap_or(query.timeline.last), 3).unwrap();
+    assert_eq!(before, 0);
+    assert_eq!(bins.iter().map(|&(_, count)| count).sum::<u64>().to_string(), load(src, params).total, "bins and the whole-log row total count the same filtered lines");
+}
+
 fn frames(hours: std::ops::RangeInclusive<i32>, events: impl Fn(i32) -> Vec<MarketEventRow>) -> Vec<DecodedFrame> {
     hours
         .map(|hour| {
@@ -147,6 +160,16 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
     let finished = contracts(&done)[0];
     assert_eq!((finished.status, finished.ended_hour, finished.paid_raw.as_deref()), (MarketContractStatus::Ended, Some(108), Some("96000")));
     assert_eq!(finished.events_total, "6");
+    let ranged = MarketLedgerTailParams { from: Some(103), to: Some(106), expanded: Some(vec![contract.key.clone()]), ..ask(110) };
+    let range = load(&src, &ranged);
+    assert_eq!(range.total, "3", "the contract and only its events inside the inclusive range");
+    let ranged_contract = contracts(&range)[0];
+    assert_eq!((ranged_contract.hour, ranged_contract.started_hour, ranged_contract.events_total.as_str()), (100, Some(100), "2"));
+    assert_eq!((&ranged_contract.items[0].delivered_raw, &ranged_contract.paid_raw), (&finished.items[0].delivered_raw, &finished.paid_raw), "range membership never changes contract totals at the played hour");
+    assert_eq!(events(&range).iter().map(|event| event.hour).collect::<Vec<_>>(), [106, 103]);
+    bins_match_rows(&src, &ranged);
+    bins_match_rows(&src, &MarketLedgerTailParams { expanded: None, ..ranged });
+    stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64, "from": 103, "to": 106, "expanded": [contract.key] }), &[102, 103, 104, 106, 110, 105]);
     let ended_only = load(&src, &MarketLedgerTailParams { statuses: Some(vec![MarketContractStatus::Active]), ..ask(110) });
     assert_eq!(ended_only.total, "0", "the status filter applies at the hour asked, before counting");
     stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64, "countries": ["GER"] }), &[100, 102, 103, 105, 108, 104, 112]);
@@ -424,14 +447,53 @@ fn an_opened_contract_pages_its_events_after_it_and_lists_the_newest_until_asked
     let bounded = load(&src, &MarketLedgerTailParams { to: Some(105), ..opened.clone() });
     assert_eq!(
         (bounded.total.as_str(), events(&bounded).first().map(|ev| ev.hour)),
-        ("34", Some(140)),
-        "the asked range picks contracts by their date, and an opened one lists its events whatever their own hour"
+        ("8", Some(105)),
+        "the range includes only its six original events and the late-read event dated inside it"
     );
     let later = load(&src, &MarketLedgerTailParams { from: Some(105), ..opened.clone() });
-    assert_eq!((later.total.as_str(), later.rows.len()), ("0", 0), "a contract outside the range is not listed, and no event of it is listed alone");
+    assert_eq!((later.total.as_str(), later.rows.len(), contracts(&later)[0].events_total.as_str()), ("34", 34, "36"));
+    bins_match_rows(&src, &MarketLedgerTailParams { from: Some(105), ..opened.clone() });
+    let in_range = MarketLedgerTailParams { from: Some(105), to: Some(139), expanded: Some(vec![key.clone()]), full: Some(vec![key.clone()]), ..ask(141) };
+    let whole = load(&src, &in_range);
+    assert_eq!((whole.total.as_str(), contracts(&whole)[0].events_total.as_str()), ("37", "35"));
+    bins_match_rows(&src, &in_range);
+    let deep = load(&src, &MarketLedgerTailParams { offset: Some("33".into()), limit: 3, ..in_range });
+    assert_eq!(events(&deep).iter().map(|event| event.hour).collect::<Vec<_>>(), [107, 106, 105], "paging is over the full filtered log");
     let early = load(&src, &MarketLedgerTailParams { hour: Some(120), ..opened });
     assert_eq!((early.total.as_str(), early.rows.iter().any(|line| matches!(line, MarketLedgerLine::More(_)))), ("22", false), "the cap counts only the events read by the hour asked");
     stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64, "expanded": [key] }), &[120, 131, 132, 133, 140, 141, 136]);
+}
+
+#[test]
+fn a_range_orders_contracts_by_the_first_event_in_it_known_at_the_played_hour() {
+    let src = opened(
+        "mkt-range-order",
+        frames(100..=112, |hour| match hour {
+            100 => vec![event(1, hour, 11, MarketEventRow::default())],
+            101 => vec![event(2, hour, 11, MarketEventRow { agreement: 0x35, ..Default::default() })],
+            105 => vec![event(3, hour, 21, MarketEventRow { amount_raw: 7_300, ..Default::default() })],
+            106 => vec![event(4, hour, 21, MarketEventRow { agreement: 0x35, amount_raw: 8_300, ..Default::default() })],
+            108 => vec![event(5, 104, 21, MarketEventRow { agreement: 0x35, amount_raw: 9_300, ..Default::default() })],
+            110 => vec![event(6, 107, 12, MarketEventRow { flags: 1, ..Default::default() })],
+            _ => Vec::new(),
+        }),
+    );
+    let params = MarketLedgerTailParams { from: Some(104), to: Some(107), ..ask(107) };
+    assert_eq!(load(&src, &MarketLedgerTailParams { hour: Some(104), ..params.clone() }).total, "0", "a contract is absent until an in-range event has been read");
+    let before = load(&src, &params);
+    assert_eq!(contracts(&before).iter().map(|row| (row.hour, row.events_total.as_str())).collect::<Vec<_>>(), [(101, "1"), (100, "1")]);
+    let after = load(&src, &MarketLedgerTailParams { hour: Some(112), ..params.clone() });
+    assert_eq!(contracts(&after).iter().map(|row| (row.hour, row.events_total.as_str())).collect::<Vec<_>>(), [(100, "2"), (101, "2")], "a late-read earlier event changes the first event only once witnessed");
+    let keys: Vec<_> = contracts(&after).iter().map(|row| row.key.clone()).collect();
+    let expanded = load(&src, &MarketLedgerTailParams { hour: Some(112), expanded: Some(keys), ..params });
+    assert_eq!(expanded.total, "6");
+    assert!(matches!((&expanded.rows[0], &expanded.rows[3]), (MarketLedgerLine::Contract(a), MarketLedgerLine::Contract(b)) if a.hour == 100 && b.hour == 101), "children stay with their contract when ordering differs from its start date");
+    assert_eq!(events(&expanded).iter().map(|event| event.hour).collect::<Vec<_>>(), [107, 105, 106, 104]);
+    let cancellation = load(&src, &MarketLedgerTailParams { from: Some(107), to: Some(107), ..ask(112) });
+    assert_eq!(contracts(&cancellation).iter().map(|row| (row.hour, row.events_total.as_str(), row.status)).collect::<Vec<_>>(), [(100, "1", MarketContractStatus::Ended)], "a cancellation alone admits its older contract");
+    stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64, "from": 104, "to": 107 }), &[103, 105, 106, 107, 108, 110, 112, 107]);
+    let unbounded = load(&src, &ask(112));
+    assert_eq!(contracts(&unbounded).iter().map(|row| (row.hour, row.events_total.as_str())).collect::<Vec<_>>(), [(101, "3"), (100, "3")], "without a range, contract-date ordering and lifetime event counts are unchanged");
 }
 
 #[test]

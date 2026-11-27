@@ -48,9 +48,9 @@ const reply = (rows: MarketLedgerLine[]): MarketLedgerTailReply => ({
   warnings: [],
 });
 
-const project = (rows: MarketLedgerLine[], expanded: readonly string[]) => marketLedgerProjection.project(
+const project = (rows: MarketLedgerLine[], expanded: readonly string[], range = false) => marketLedgerProjection.project(
   createBoundedReadView({ hour: 110, rows: new Map([['main', buildRowSourceFromHead('mkt', reply(rows), undefined, 110)!]]) }),
-  { perspective: 'FRA', selectionEmpty: null, expanded },
+  { perspective: 'FRA', selectionEmpty: null, expanded, range },
 );
 
 test('a collapsed contract is a closed group that counts its events, and opening it pages them as lines after it', () => {
@@ -72,6 +72,22 @@ test('the line after a capped contract offers the rest, and toggles back once ev
   const more = (hidden: string) => project([{ line: 'more', key: 'more:18', hour: 100, contract: '18', total: '41', hidden }], ['group:18']).rows[0]!;
   assert.deepEqual([more('9').key, more('9').pageParent, more('9').name], ['all:group:18', 'group:18', 'Show all 41 events · 9 more']);
   assert.equal(more('0').name, 'Show fewer events');
+});
+
+test('a ranged contract keeps its start date and labels lifetime totals at the snapshot hour', () => {
+  const row = project([{ line: 'contract', ...contract, eventsTotal: '1' }, events[0]!], ['group:18'], true).rows[0]!;
+  const unbounded = project([{ line: 'contract', ...contract }], []).rows[0]!;
+  assert.equal(row.rowHour, contract.hour);
+  assert.deepEqual(row.cells.date, unbounded.cells.date);
+  assert.deepEqual(row.pageGroup, { members: 1, open: true });
+  for (const column of ['delivered', 'paid']) {
+    assert.deepEqual(row.cells[column]!.value, unbounded.cells[column]!.value);
+    assert.equal(row.cells[column]!.inlineSubtext, 'Contract total');
+    assert.equal(unbounded.cells[column]!.inlineSubtext, undefined);
+  }
+  const extra = typeof row.tooltipExtra === 'function' ? row.tooltipExtra() : row.tooltipExtra;
+  assert.deepEqual(extra?.find(item => item.label === 'Totals at')?.value, { kind: 'known', value: formatDateTime(110) });
+  assert.deepEqual(extra?.find(item => item.label === 'Events in range')?.value, { kind: 'known', value: '1' });
 });
 
 test('payments and deliveries seen only after an unrecorded start or across a gap are lower bounds with their reason', () => {
