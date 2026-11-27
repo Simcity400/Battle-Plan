@@ -182,9 +182,25 @@ test('event feed projection renders merged choice letter and text, awaiting choi
   assert.equal((awaitingRow.meta as EventDetailSubject).awaiting, true);
 
   const pausedRow = model.rows.find(r => r.key === 'm-paused')!;
-  assert.equal(pausedRow.cells.detail?.value.kind, 'notRecorded');
+  assert.deepEqual(pausedRow.cells.detail?.value, { kind: 'notRecorded', reason: 'Choice not recorded' });
   assert.equal(pausedRow.cells.detail?.missingFigure, 'Choice');
   assert.equal((pausedRow.meta as EventDetailSubject).awaiting, false);
+  assert.equal((pausedRow.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded');
+
+  const reasonedHead = {
+    ...head,
+    rows: [
+      { ...head.rows[2]!, notRecordedReason: 'event feed read in part' },
+    ],
+  };
+  const reasonedSource = buildRowSourceFromHead('test:feed-reason', reasonedHead, undefined, 120)!;
+  const reasonedModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', reasonedSource]]) }),
+    { categories: ['politics'], artwork: true },
+  );
+  const reasonedRow = reasonedModel.rows.find(r => r.key === 'm-paused')!;
+  assert.deepEqual(reasonedRow.cells.detail?.value, { kind: 'notRecorded', reason: 'Choice not recorded (event feed read in part)' });
+  assert.equal((reasonedRow.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded (event feed read in part)');
 
   const nullOptRow = model.rows.find(r => r.key === 'm-null-opt')!;
   assert.equal(nullOptRow.cells.detail?.value.kind, 'notRecorded');

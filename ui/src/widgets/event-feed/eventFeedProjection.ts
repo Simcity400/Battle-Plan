@@ -21,7 +21,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
 import type { EventFeedItem, EventFeedPageRow, EventFeedRow, ScriptEdge, ScriptStatus } from '../../generated/dashboard';
-import { optionLetter } from '../event-choices/eventChoicesData.ts';
+import { choiceNotRecordedText, optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
 import { effectiveEventItem, validateFeedRow } from './eventFeedData.ts';
@@ -66,6 +66,7 @@ const KIND_SPRITES: Readonly<Record<string, string>> = {
 interface FeedPageInfo {
   readonly choice: ScriptEdge | null;
   readonly status?: ScriptStatus;
+  readonly notRecordedReason?: string;
   readonly live: boolean;
 }
 
@@ -103,7 +104,8 @@ function scriptEventDetailCell(item: EventFeedItem | null, chosenOrdinal: number
     return logStatusCell('Awaiting choice', 'waiting');
   }
   if (page.status === 'notRecorded') {
-    return { value: notRecorded('Choice not recorded'), missingFigure: 'Choice' };
+    const reason = page.notRecordedReason !== undefined ? choiceNotRecordedText(page.notRecordedReason) : 'Choice not recorded';
+    return { value: notRecorded(reason), missingFigure: 'Choice' };
   }
   return { value: knownValue('Fired') };
 }
@@ -384,7 +386,7 @@ function buildFeedTableRow(
       : awaiting
         ? 'No option chosen yet'
         : page.status === 'notRecorded'
-          ? 'No choice recorded'
+          ? (page.notRecordedReason !== undefined ? choiceNotRecordedText(page.notRecordedReason) : 'Choice not recorded')
           : page.choice
             ? 'Chosen option not recorded'
             : 'Event fired';
@@ -482,6 +484,9 @@ type ValidatedEventFeedPageRow = Omit<EventFeedPageRow, 'row'> & { readonly row:
 function validateEventFeedTail(raw: unknown, readAt?: number): TailReply<ValidatedEventFeedPageRow> {
   return validateRowTailReply(raw, (row, _columns, at): ValidatedEventFeedPageRow => {
     if (row.row === null) throw new Error('Event was not recorded.');
+    if (row.notRecordedReason !== undefined && typeof row.notRecordedReason !== 'string') {
+      throw new Error('The event feed row is malformed.');
+    }
     const valid = validateFeedRow(row.row);
     if (at !== undefined && valid.readHour > at) {
       throw new Error(`Event ${valid.id} was read at hour ${valid.readHour} after displayed hour ${at}.`);
@@ -515,6 +520,7 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
         const page: FeedPageInfo = {
           choice: rawRow.choice ?? null,
           status: rawRow.status,
+          ...(rawRow.notRecordedReason !== undefined ? { notRecordedReason: rawRow.notRecordedReason } : {}),
           live: rawRow.live === true,
         };
         const built = buildFeedTableRow(readView, rawRow.row, page, rawRow.key, options.artwork, source.at ?? hour, boundary, options.hover ?? []);

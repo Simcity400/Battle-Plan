@@ -107,6 +107,7 @@ pub(crate) struct Scanned {
     resolved: Mutex<HashMap<u128, Option<DecisionLifecycleState>>>,
     presented: Mutex<Presented>,
     breaks: Vec<(i32, i32)>,
+    choice_breaks: Vec<(i32, i32, String)>,
     decision_breaks: Vec<(i32, i32)>,
     partial_reads: Vec<i32>,
     pub gaps: Vec<MissingSpan>,
@@ -140,8 +141,17 @@ impl Scanned {
         self.partial_reads.binary_search(&read_hour).is_ok()
     }
 
+    pub(crate) fn choice_break(&self, from: i32, hour: i32) -> Option<(i32, &str)> {
+        self.choice_breaks
+            .iter()
+            .filter(|&&(first, last, _)| last >= from && first <= hour)
+            .min_by_key(|&&(first, _, _)| first.max(from))
+            .map(|(first, _, reason)| ((*first).max(from), reason.as_str()))
+    }
+
     fn refused(first: i32, last: i32, reason: &str) -> Self {
         let whole = vec![(first, last)];
+        let message = format!("The event history could not be read: {reason}");
         Self {
             briefs: Vec::new(),
             native: Vec::new(),
@@ -151,9 +161,10 @@ impl Scanned {
             resolved: Mutex::default(),
             presented: Mutex::default(),
             breaks: whole.clone(),
+            choice_breaks: vec![(first, last, message.clone())],
             decision_breaks: whole,
             partial_reads: Vec::new(),
-            gaps: vec![MissingSpan { first_hour: first, last_hour: last, reason: format!("The event history could not be read: {reason}") }],
+            gaps: vec![MissingSpan { first_hour: first, last_hour: last, reason: message }],
         }
     }
 
@@ -385,17 +396,31 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let resolved = decision_state::resolve_all(query, &refs)?;
     let states = lifecycles.iter().zip(resolved).filter_map(|(event, state)| state.map(|state| ((u128::from(event.generation) << 64) | u128::from(event.sequence), state))).collect();
     let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
-    let mut held: Vec<(i32, i32)> = query.timeline.unheld.iter().map(|gap| (gap.first, gap.last)).collect();
-    held.extend(source.replay_ref().event_losses(branch).map(|(after, hour)| (after + 1, hour)));
-    held.extend(gaps.iter().map(|gap| (gap.first_hour, gap.last_hour)));
+    let mut choice_breaks: Vec<(i32, i32, String)> = query.timeline.unheld.iter().map(|gap| (gap.first, gap.last, gap.reason.clone())).collect();
+    choice_breaks.extend(source.replay_ref().event_losses(branch).map(|(after, hour)| (after + 1, hour, dashboard_text::metadata::EVENT_LOSS_REASON.to_owned())));
+    choice_breaks.extend(gaps.iter().map(|gap| (gap.first_hour, gap.last_hour, gap.reason.clone())));
     let complete = EventFeedCoverage::Complete as u32;
-    let lost = |decisions: bool| incomplete.iter().filter(move |(_, _, read)| read.coverage != Some(complete) || (decisions && read.refusals != Some(0))).map(|&(hour, ..)| (hour, hour));
+    choice_breaks.extend(incomplete.iter().filter(|(_, _, read)| read.coverage != Some(complete)).map(|&(hour, _, ref read)| (hour, hour, incomplete_break_reason(read))));
+    choice_breaks.retain(|(first, last, _)| first <= last);
     let mut partial_reads: Vec<i32> = incomplete.iter().filter(|(_, _, read)| read.coverage != Some(complete)).map(|(_, _, read)| read.read_hour).collect();
     partial_reads.sort_unstable();
     partial_reads.dedup();
-    let breaks = spans(held.iter().copied().chain(lost(false)).collect());
-    let decision_breaks = spans(held.into_iter().chain(lost(true)).collect());
-    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, decision_breaks, partial_reads, gaps })
+    let held: Vec<(i32, i32)> = choice_breaks.iter().map(|&(first, last, _)| (first, last)).collect();
+    let breaks = spans(held.clone());
+    let decision_lost = incomplete.iter().filter(|(_, _, read)| read.refusals != Some(0)).map(|&(hour, ..)| (hour, hour));
+    let decision_breaks = spans(held.into_iter().chain(decision_lost).collect());
+    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
+}
+
+fn incomplete_break_reason(read: &FeedEvent) -> String {
+    let recorded = String::from_utf8_lossy(&read.failure).trim().to_owned();
+    if !recorded.is_empty() {
+        recorded
+    } else if read.coverage == Some(EventFeedCoverage::Partial as u32) {
+        "event feed read in part".to_owned()
+    } else {
+        "event feed unavailable".to_owned()
+    }
 }
 
 fn spans(mut breaks: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
