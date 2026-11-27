@@ -119,6 +119,9 @@ fn destruction_hysteresis_survives_hide_and_resets_on_seek() {
         2,
         "still destroyed in the band"
     );
+    history.settle(true);
+    assert_eq!(at(&mut history, 50.0, 0.0)[0].0, 2, "a saved frame keeps the latch");
+    history.settle(false);
     history.set(prepared(13, 8_000_001, false), true);
     assert_eq!(at(&mut history, 50.0, 3.0)[0].0, 1);
     assert!(
@@ -159,6 +162,9 @@ fn a_landmark_keeps_its_model_above_the_cutoff_only_once_created_below() {
     assert!(at(&mut history, 500.0, 0.0).is_empty());
     assert_eq!(at(&mut history, 50.0, 1.0)[0].0, 1);
     assert_eq!(at(&mut history, 1500.0, 2.0)[0].0, 1);
+    history.settle(true);
+    assert_eq!(at(&mut history, 1500.0, 0.0)[0].0, 1, "a saved frame keeps the landmark");
+    history.settle(false);
     history.set(prepared(11, 0, true), true);
     let far = at(&mut history, 1500.0, 3.0);
     assert_eq!(far[0].0, 1, "far away the landmark is not rebuilt");
@@ -245,6 +251,20 @@ fn a_branch_or_a_backwards_clock_starts_cold() {
     assert!((popped(&mut popping, 40.1) - 0.5).abs() < 1e-4);
     assert_eq!(popped(&mut popping, 0.0), 0.0, "a backwards clock pops up from no scale");
     assert!((popped(&mut popping, 0.1) - 0.5).abs() < 1e-4);
+    popping.settle(true);
+    let saved = |history: &mut BuildingHistory, time: f32| {
+        history
+            .frame(camera([0.0, 0.0], 50.0), [1024, 768], time, true, false)
+            .finish(&mut viewer_scene_base::mesh_budget::Budget::new(0, false));
+        history.collect(None, 0.0).first().map(|(_, instance)| instance.scale)
+    };
+    assert_eq!(saved(&mut popping, 0.0), Some(1.0), "a saved frame draws buildings settled");
+    popping.settle(false);
+    assert_eq!(saved(&mut popping, 0.2), Some(1.0));
+    let mut fresh = BuildingHistory::default();
+    fresh.set(prepared(10, 10_000_000, false), true);
+    fresh.settle(true);
+    assert_eq!(saved(&mut fresh, 0.0), Some(1.0), "a saved frame places past the mesh budget");
 }
 
 #[test]

@@ -301,6 +301,7 @@ pub struct BuildingHistory {
     collected: Option<Option<[f32; 4]>>,
     dirty: bool,
     growing: bool,
+    settling: bool,
     changed: bool,
     candidates: Vec<u32>,
     admitted_against: viewer_gpu::camera::Hold,
@@ -390,6 +391,11 @@ impl BuildingHistory {
         self.growing
     }
 
+    pub fn settle(&mut self, settled: bool) {
+        self.dirty |= self.settling != settled;
+        self.settling = settled;
+    }
+
     pub fn frame(
         &mut self,
         camera: Camera,
@@ -398,9 +404,12 @@ impl BuildingHistory {
         enabled: bool,
         steady: bool,
     ) -> BuildingFrame<'_> {
+        let steady = steady || self.settling;
         if self.last_time.is_some_and(|previous| time < previous) {
-            self.clear();
-            self.dirty = true;
+            if !self.settling {
+                self.clear();
+                self.dirty = true;
+            }
             self.last_time = None;
         }
         let delta = self.last_time.map_or(0.0, |previous| time - previous);
@@ -603,7 +612,7 @@ impl BuildingHistory {
                 place(&mut self.tiles, &mut self.changed, id, state, None);
                 state.destroyed = destroyed;
                 state.variant = selection.variant;
-                if !budget.take() {
+                if !steady && !budget.take() {
                     viewer_runtime::view_record::add("map buildings", "history_deferred", 1);
                     self.dirty = true;
                     settled = false;

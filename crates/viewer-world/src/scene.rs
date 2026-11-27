@@ -2570,6 +2570,7 @@ impl Scene {
     pub fn settle_builds(&mut self, settled: bool) {
         self.settled_builds = settled;
         self.sprite_pass.defer_builds(!settled);
+        self.building_history.settle(settled);
     }
 
     pub fn settle_poses(&mut self, settled: bool) {
