@@ -317,3 +317,46 @@ fn alternating_filtered_views_reuse_cached_indices_with_lru_eviction() {
     let _ = ask(103, json!({"templates": [2]}));
     assert_eq!(tail::view_builds(&loaded, 1), tail::HELD_VIEWS + 2, "least recently used filter is evicted when cap is exceeded");
 }
+
+#[test]
+fn cached_division_event_details_keep_overlay_notes() {
+    use dashboard_base::{catalogue, test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select}};
+    use replay_data::rows::DivisionTemplateIconRow;
+
+    let machine = Machine::new("division_event_detail_notes");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_unit_fixture_unit_icon_medium textureFile=gfx/fixture_unit.png}}");
+    machine.write("gfx/fixture_unit.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_unit.png", &png(BLUE));
+    let frames = [100, 101].map(|hour| {
+        let mut frame = source(1, hour, Some(1));
+        let divisions = if hour == 100 { Vec::new() } else { vec![DivisionRow {
+            id: 1 << 32 | 9, roster_owner: 9001, logical_owner: 9001, template: 1 << 32 | 3, hit_points: 124_321, ..Default::default()
+        }] };
+        for (id, rows) in [
+            (TableId::Divisions, TableRows::Divisions(divisions)),
+            (TableId::DivisionEquipmentDeletions, TableRows::DivisionEquipmentDeletions(Vec::new())),
+            (TableId::DivisionTemplateIcons, TableRows::DivisionTemplateIcons(vec![DivisionTemplateIconRow {
+                template: 1 << 32 | 3, priority_unit: 7, custom_icon: -1, priority_unit_name: b"fixture_unit".to_vec(), ..Default::default()
+            }])),
+        ] {
+            frame.metrics.table_ns[id.index()] = 1;
+            *frame.tables[id.index()] = TableView::Complete(rows);
+        }
+        frame
+    });
+    let (source, mut options) = machine.open_frames(frames.into());
+    select(&source, &mut options, &["fixture_art"]);
+    let load = LoadContext { content: Some(options) };
+    let params = serde_json::from_value(json!({"branchId":"1", "hour":101, "limit":10})).unwrap();
+    let read = || {
+        let (reply, noted) = catalogue::capture(|| DivisionLogTail::load(&source, &params, &load, &AtomicBool::new(false)).unwrap());
+        let image = reply.rows[0].event.as_ref().unwrap().icon.as_deref().unwrap();
+        let mut warnings = Vec::new();
+        noted.diagnostics().append_to(&mut warnings);
+        (first_pixel(image), warnings)
+    };
+    let first = read();
+    assert_eq!(first.0, BLUE);
+    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert_eq!(read(), first);
+}

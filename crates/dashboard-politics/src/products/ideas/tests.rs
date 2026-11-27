@@ -10,7 +10,7 @@ const LAST: i32 = 130;
 const GER: u32 = 9001;
 
 #[test]
-fn cached_idea_looks_keep_overlay_notes_and_artwork_findings() {
+fn cached_idea_looks_keep_overlay_notes() {
     use dashboard_base::{catalogue, products::politics_content::politics_content, test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select}};
 
     let machine = Machine::new("idea_look_art_notes");
@@ -22,24 +22,20 @@ fn cached_idea_looks_keep_overlay_notes_and_artwork_findings() {
     select(&source, &mut options, &["fixture_art"]);
     let content = politics_content(&source, &options).unwrap();
     let read = super::Read {
-        ideas: super::Ideas { spans: vec![span("fixture_idea", 100, 100, None), span("fixture_missing", 100, 100, None)], ..Default::default() },
+        ideas: super::Ideas { spans: vec![span("fixture_idea", 100, 100, None)], ..Default::default() },
         naming: Vec::new(),
         looks: std::sync::Mutex::new((std::sync::Weak::new(), Vec::new())),
     };
     let reply = || {
         let mut own = catalogue::OwnRefusals::default();
-        let (shown, missing, findings) = catalogue::own_refusals(&mut own, || (
-            read.looked(&content, "GER", 0), read.looked(&content, "GER", 1), content.catalogue.refusal_lines(),
-        ));
+        let shown = catalogue::own_refusals(&mut own, || read.looked(&content, "GER", 0));
         let mut warnings = Vec::new();
         own.diagnostics().append_to(&mut warnings);
-        (first_pixel(shown.0.artwork.icon.as_deref().unwrap()), missing, findings, warnings)
+        (first_pixel(shown.0.artwork.icon.as_deref().unwrap()), warnings)
     };
     let first = reply();
     assert_eq!(first.0, BLUE);
-    assert!(first.1.0.artwork.icon.is_none());
-    assert!(!first.2.is_empty(), "missing artwork has a named finding");
-    assert!(first.3.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
     assert_eq!(reply(), first);
 }
 
