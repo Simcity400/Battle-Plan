@@ -322,6 +322,63 @@ test('MapViewsStore stamps clockId on populated and teardown snapshots and filte
     };
     await runScenario('stale-before');
     await runScenario('stale-after');
+
+    const sent: DashboardMapView[][] = [];
+    let emitStates!: (states: DashboardMapState[]) => void;
+    const client = {
+      available: true,
+      async setMapViews(_clockId: string, views: DashboardMapView[]) { sent.push(views); },
+      async onMapStates(callback: (states: DashboardMapState[]) => void) { emitStates = callback; return () => {}; },
+    } as unknown as DashboardClient;
+    const playback = clock('page-C');
+    const store = new MapViewsStore(client, playback);
+    const at = { hour: 260, sequence: 3, seek: 1, playing: false, outside: false };
+    store.register('map-1', element, () => at.outside ? null : ({ sourceId: 'source', path: 'campaign.battleplan', revision: 'rev-1', branchId: '1', playing: at.playing,
+      hoursPerSecond: 24, hour: at.hour, fraction: 0, sequence: at.sequence, seekSequence: at.seek }));
+    const gap = (requestedSequence: number): DashboardMapState => ({ id: 'map-1', clockId: 'page-C', sourceId: 'source', revision: 'rev-1', branchId: null,
+      hour: null, fraction: null, sequence: 2, requestedSequence, loading: false, error: 'gap' });
+    const stop = store.start(element);
+    flushFrames();
+    await tick();
+    emitStates([gap(3)]);
+    flushFrames();
+    await tick();
+    assert.equal(sent.at(-1)![0].visible, false, 'R22: the target an error was raised for stays hidden');
+    assert.equal(store.getState('map-1')?.error, 'gap', 'and keeps its error');
+    store.schedule();
+    flushFrames();
+    await tick();
+    assert.equal(store.getState('map-1')?.error, 'gap', 'R22: the same target keeps its error');
+    Object.assign(at, { hour: 250, sequence: 4, seek: 2 });
+    playback.seek(250);
+    flushFrames();
+    await tick();
+    assert.equal(sent.at(-1)![0].visible, true, 'R22: a new target is asked for, whatever the previous target’s error');
+    assert.equal(store.getState('map-1')?.error ?? null, null, 'R22: and carries no error raised for another target');
+    Object.assign(at, { sequence: 5, playing: true });
+    playback.play(250);
+    flushFrames();
+    await tick();
+    emitStates([gap(5)]);
+    flushFrames();
+    await tick();
+    Object.assign(at, { hour: 251, sequence: 6 });
+    store.schedule();
+    flushFrames();
+    await tick();
+    Object.assign(at, { hour: 252, sequence: 7 });
+    store.schedule();
+    flushFrames();
+    await tick();
+    assert.equal(sent.at(-1)![0].visible, true, 'R22: playing on across a gap keeps following, the error answering the run it was raised in');
+    assert.equal(store.getState('map-1')?.error, 'gap');
+    Object.assign(at, { outside: true, playing: false });
+    playback.seek(90);
+    flushFrames();
+    await tick();
+    assert.equal(store.getState('map-1'), null, 'R22: a target outside the recording carries no error raised inside it');
+    stop();
+    await tick();
   } finally {
     await vite.close();
     Object.assign(globalThis, saved);
