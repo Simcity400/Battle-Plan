@@ -41,7 +41,6 @@ export interface CardItemRow {
   readonly flag?: CardMedia;
   readonly art?: CardMedia;
   readonly title: Value<string>;
-  readonly titleLoading?: true;
   readonly subtitle?: string;
   readonly subtitleFlag?: CardMedia;
   readonly place?: string;
@@ -184,18 +183,18 @@ export function cardMediaFromIcon(readView: BoundedReadView, url: string | null 
   return { kind: 'art', art: productIconArt(readView, url, missing), ...(name ? { name } : {}) };
 }
 
-export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number): { readonly media: CardMedia; readonly name: Value<string>; readonly loading: boolean } {
-  const { value, loading, who } = resolveName(readView, 'country', tag, atHour === undefined ? {} : { atHour });
+export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number): { readonly media: CardMedia; readonly name: Value<string> } {
+  const { value, who } = resolveName(readView, 'country', tag, atHour === undefined ? {} : { atHour });
   const art: ArtResult = flagChoiceArt(readView, who.flagChoice);
-  return { media: { kind: 'flag', art, tag }, name: value, loading };
+  return { media: { kind: 'flag', art, tag }, name: value };
 }
 
 export function cardTitleText(title: Value<string>, figure = 'Name'): string {
-  return title.kind === 'known' || title.kind === 'partial' ? String(title.value) : notRecordedLabel(figure);
+  return title.kind === 'known' || title.kind === 'partial' ? String(title.value) : title.kind === 'pending' ? LOADING_NAME : notRecordedLabel(figure);
 }
 
 export function cardTitle(row: CardItemRow | CardHeroRow): string {
-  return row.kind === 'item' && row.titleLoading ? LOADING_NAME : cardTitleText(row.title);
+  return cardTitleText(row.title);
 }
 
 export function cardRowName(row: CardEntryRow): string {
@@ -209,7 +208,7 @@ export function cardListText(row: CardListRow): string {
 
 function figureText(figure: CardFigure): string {
   const formatted = formatValueState(figure.value);
-  if (formatted.kind === 'notApplicable') return formatted.label;
+  if (formatted.kind === 'notApplicable' || formatted.kind === 'pending') return formatted.label;
   return formatted.kind === 'notRecorded' ? notRecordedLabel(figure.figure) : formatted.text;
 }
 
@@ -263,7 +262,7 @@ export function deriveCardTooltip(model: CardModel, key: string): FamilyTooltipP
       const formatted = formatValueState(row.figure.value);
       items.push(formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable'
         ? { label: row.figure.figure ?? 'Value', missingReason: formatted.reason }
-        : { label: row.figure.figure ?? 'Value', value: formatted.text }, ...partialItem(row.figure.value));
+        : { label: row.figure.figure ?? 'Value', value: formatted.kind === 'pending' ? formatted.label : formatted.text }, ...partialItem(row.figure.value));
     }
     if (row.state) items.push({ label: 'State', value: row.state.label });
   }
@@ -333,7 +332,6 @@ export function deriveCardAudit(model: CardModel): FamilyAuditRow[] {
       continue;
     }
     rows.push(auditCell(row.key, 'title', canonicalAuditValue(row.title)));
-    if (row.kind === 'item' && row.titleLoading) rows.push(auditCell(row.key, 'loading', 'title'));
     const media = row.kind === 'item' ? [['flag', row.flag], ['subtitleFlag', row.subtitleFlag], ['art', row.art]] as const : [['art', row.art]] as const;
     for (const [cell, held] of media) if (held) rows.push(auditCell(row.key, cell, `${held.kind}:${held.tag ?? ''}:${held.name ?? ''}:${artAudit(held.art)}`));
     if (row.meter) {

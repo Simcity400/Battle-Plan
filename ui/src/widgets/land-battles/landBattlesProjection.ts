@@ -4,11 +4,11 @@ import { artHoverText } from '../../families/art/adapters.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { artKindCell, LOADING_NAME, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
+import { knownValue, notRecorded, partialValue, pendingValue, type Value } from '../../families/value.ts';
 import type { LandBattleLogRow, LandBattlesTailReply } from '../../generated/dashboard';
 import { IC_UNRECORDED, LAND_BATTLES_COLUMNS, LOSSES_SO_FAR } from './definition.ts';
 
@@ -16,11 +16,16 @@ function sideParticipants(side: readonly ReturnType<typeof resolveIdentity>[], u
   if (!side.length) return notRecorded('Country not recorded');
   const known: string[] = [];
   let missingReason: string | null = null;
+  let pendingReason: string | null = null;
   for (const who of side) {
     if (who.value.kind === 'known') known.push(who.value.value);
+    else if (who.value.kind === 'pending') pendingReason ??= who.value.reason;
     else if (missingReason === null && who.value.kind === 'notRecorded') missingReason = who.value.reason;
   }
-  if (!known.length) return notRecorded(missingReason ?? 'Country not recorded');
+  if (!known.length) {
+    if (pendingReason !== null && missingReason === null) return pendingValue(pendingReason);
+    return notRecorded(missingReason ?? 'Country not recorded');
+  }
   const reason = missingReason
     ? (unknown ? `${missingReason}; some participants on this side were not recorded` : missingReason)
     : unknown
@@ -32,7 +37,8 @@ function sideParticipants(side: readonly ReturnType<typeof resolveIdentity>[], u
 
 function battleSidesValue(sideValues: readonly Value<string>[]): Value<string> {
   if (sideValues.every(value => value.kind === 'notRecorded')) return notRecorded('Country not recorded');
-  const parts = sideValues.map(value => value.kind === 'known' || value.kind === 'partial' ? value.value : 'Country not recorded');
+  if (sideValues.every(value => value.kind === 'pending')) return sideValues[0]!;
+  const parts = sideValues.map(value => value.kind === 'known' || value.kind === 'partial' ? value.value : value.kind === 'pending' ? LOADING_NAME : 'Country not recorded');
   const reasons: string[] = [];
   for (const value of sideValues) {
     if (value.kind === 'partial' || value.kind === 'notRecorded') {
@@ -66,7 +72,7 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
     ...(coalition && idx === defenderStart ? { separator: true } : {}),
   }));
   const sideValues = sides.map((side, i) => sideParticipants(side, row.countriesUnknown[i]!));
-  const title = name.kind === 'known' ? name.value : 'Battle name not recorded';
+  const title = name.kind === 'known' ? name.value : name.kind === 'pending' ? LOADING_NAME : 'Battle name not recorded';
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
   const status = live ? logStatusCell('Ongoing', 'running') : row.result === 'unknown' ? { value: notRecorded('Battle result not recorded') }

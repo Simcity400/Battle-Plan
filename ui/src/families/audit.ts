@@ -37,6 +37,7 @@ function isFamilyValue(input: unknown): input is Value {
       return keys.length === 2 && isValidScalar(obj.value) && obj.value !== 0 && obj.value !== 0n;
     case 'notRecorded':
     case 'notApplicable':
+    case 'pending':
       return keys.length === 2 && isNonEmptyString(obj.reason);
     case 'partial':
       if (!isValidScalar(obj.value) || !isNonEmptyString(obj.reason)) return false;
@@ -67,6 +68,8 @@ function canonicalValueNode(value: Value): readonly unknown[] {
       return ['notRecorded', value.reason];
     case 'notApplicable':
       return ['notApplicable', value.reason];
+    case 'pending':
+      return ['pending', value.reason];
   }
 }
 

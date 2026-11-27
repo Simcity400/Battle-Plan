@@ -512,8 +512,8 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       if (layout.showPair && row.pair) {
         const topFmt = formatValueState(row.pair.topValue, row.pair.format);
         const botFmt = formatValueState(row.pair.bottomValue, row.pair.format);
-        const topVal = topFmt.kind === 'notRecorded' || topFmt.kind === 'notApplicable' ? topFmt.label : topFmt.text;
-        const botVal = botFmt.kind === 'notRecorded' || botFmt.kind === 'notApplicable' ? botFmt.label : botFmt.text;
+        const topVal = topFmt.kind === 'notRecorded' || topFmt.kind === 'notApplicable' || topFmt.kind === 'pending' ? topFmt.label : topFmt.text;
+        const botVal = botFmt.kind === 'notRecorded' || botFmt.kind === 'notApplicable' || botFmt.kind === 'pending' ? botFmt.label : botFmt.text;
         const rightEdge = layout.pairX + layout.pairWidth;
         ctx.save();
         ctx.textBaseline = 'middle';

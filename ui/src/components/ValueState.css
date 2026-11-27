@@ -1,6 +1,7 @@
 .val-state { display: inline-flex; align-items: center; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .val-unit { margin-left: 3px; color: var(--muted); font-weight: 400; }
 .val-missing { gap: 6px; color: var(--muted); }
+.val-pending { color: var(--muted); }
 .val-hatch {
   display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 2px;
   background: repeating-linear-gradient(135deg, var(--hatch) 0 1.2px, transparent 1.2px 4px);

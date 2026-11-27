@@ -12,7 +12,8 @@ export type Value<T extends Scalar = Scalar> =
   | { readonly kind: 'zero'; readonly value: 0 | 0n }
   | { readonly kind: 'notRecorded'; readonly reason: string }
   | { readonly kind: 'notApplicable'; readonly reason: string }
-  | { readonly kind: 'partial'; readonly value: T; readonly reason: string; readonly atLeast?: boolean };
+  | { readonly kind: 'partial'; readonly value: T; readonly reason: string; readonly atLeast?: boolean }
+  | { readonly kind: 'pending'; readonly reason: string };
 
 export class InvalidFamilyValueError extends Error {
   constructor(message: string) {
@@ -70,6 +71,11 @@ export function partialValue<T extends Scalar>(value: T, reason: string, options
   return options?.atLeast ? { kind: 'partial', value, reason, atLeast: true } : { kind: 'partial', value, reason };
 }
 
+export function pendingValue(reason: string): Value<never> {
+  validReason(reason, 'pendingValue');
+  return { kind: 'pending', reason };
+}
+
 export function assertValue(value: unknown, context = 'family value'): asserts value is Value {
   if (value === null || value === undefined || typeof value !== 'object') {
     throw new InvalidFamilyValueError(`${context}: expected a 5-state family Value, received ${value === null ? 'null' : typeof value}`);
@@ -107,6 +113,10 @@ export function assertValue(value: unknown, context = 'family value'): asserts v
     validReason(candidate.reason, `${context} (partial)`);
     return;
   }
+  if (kind === 'pending') {
+    validReason(candidate.reason, `${context} (pending)`);
+    return;
+  }
   throw new InvalidFamilyValueError(`${context}: unknown family value state ${String(kind)}`);
 }
 
@@ -120,8 +130,8 @@ export function valueNumber(value: Value): number | undefined {
   return typeof raw === 'number' ? raw : typeof raw === 'bigint' ? Number(raw) : undefined;
 }
 
-export function isAbsentValue(value: Value): value is Extract<Value, { kind: 'notRecorded' | 'notApplicable' }> {
-  return value.kind === 'notRecorded' || value.kind === 'notApplicable';
+export function isAbsentValue(value: Value): value is Extract<Value, { kind: 'notRecorded' | 'notApplicable' | 'pending' }> {
+  return value.kind === 'notRecorded' || value.kind === 'notApplicable' || value.kind === 'pending';
 }
 
 export interface NullableMeaning {

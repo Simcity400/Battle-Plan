@@ -85,7 +85,7 @@ function header(readView: Parameters<CardProjection['project']>[0], reply: Leade
   const decided = reply.won + reply.lost;
   const record = `${reply.won} won · ${reply.lost} lost · ${decided ? formatShare(reply.won / decided) : 'no results'}`;
   const names = role.attributeNames.map(item => item ?? 'Name not recorded');
-  const ownerName = owner ? (owner.name.kind === 'known' ? owner.name.value : owner.loading ? LOADING_NAME : 'Country name not recorded') : 'Owner not recorded';
+  const ownerName = owner ? (owner.name.kind === 'known' ? owner.name.value : owner.name.kind === 'pending' ? LOADING_NAME : 'Country name not recorded') : 'Owner not recorded';
   const serviceStart = serviceStartItem(reply.serviceStart);
   const items: TooltipListItem[] = [
     { label: 'Country', value: ownerName },

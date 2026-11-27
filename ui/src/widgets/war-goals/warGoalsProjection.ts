@@ -43,12 +43,12 @@ function placeOf(reply: WargoalsReply, readView: BoundedReadView, states: readon
   return parts.join(' · ');
 }
 
-function titled(readView: BoundedReadView, recipient: string, name: string, options: WarGoalsOptions, atHour?: number): Pick<CardItemRow, 'flag' | 'title' | 'titleLoading' | 'subtitle' | 'subject'> {
+function titled(readView: BoundedReadView, recipient: string, name: string, options: WarGoalsOptions, atHour?: number): Pick<CardItemRow, 'flag' | 'title' | 'subtitle' | 'subject'> {
   const target = cardFlag(readView, recipient, atHour);
   const kind = kindOf(name);
   if (!options.targetNames) return { flag: target.media, title: kind, subject: recipient };
   const kindText = kind.kind === 'known' ? kind.value : 'Kind not recorded';
-  return { flag: target.media, title: target.name, ...(target.loading ? { titleLoading: true as const } : {}), subtitle: kindText, subject: recipient };
+  return { flag: target.media, title: target.name, subtitle: kindText, subject: recipient };
 }
 
 function justificationRow(reply: WargoalsReply, readView: BoundedReadView, entry: WargoalJustification, options: WarGoalsOptions): CardItemRow {
@@ -82,8 +82,8 @@ function grantItems(granted: number | null, grantedMissing: string | null): Tool
   ];
 }
 
-function tipTitle(row: Pick<CardItemRow, 'title' | 'titleLoading'>): string {
-  return row.titleLoading ? LOADING_NAME : row.title.kind === 'known' ? String(row.title.value) : 'Kind not recorded';
+function tipTitle(row: Pick<CardItemRow, 'title'>): string {
+  return row.title.kind === 'pending' ? LOADING_NAME : row.title.kind === 'known' ? String(row.title.value) : 'Kind not recorded';
 }
 
 function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options: WarGoalsOptions): CardItemRow {

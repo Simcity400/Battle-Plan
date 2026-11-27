@@ -568,7 +568,7 @@ function sameRightClippedFigure(
   if (hideHeader || !col.numeric || col.headerGroup || col.display === 'track' || col.display === 'meterAfter' || col.display === 'meterBefore') return false;
   if (col.cellKind && col.cellKind !== 'numeric' && col.cellKind !== 'standard') return false;
   if (a.value.kind !== 'known' || b.value.kind !== 'known') return false;
-  if (a.unitSuffix || b.unitSuffix || a.unitArt || b.unitArt || a.splitBar?.length || b.splitBar?.length || a.blank || b.blank || a.loading || b.loading) return false;
+  if (a.unitSuffix || b.unitSuffix || a.unitArt || b.unitArt || a.splitBar?.length || b.splitBar?.length || a.blank || b.blank) return false;
   const right = colStart + col.width - CELL_INSET - (col.trailInset ?? 0);
   if (right <= vpW) return false;
   if (!sameOtherCellFields(a, b)) return false;

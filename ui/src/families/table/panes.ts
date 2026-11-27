@@ -46,7 +46,7 @@ export function paneModel(model: TableModel, pane: TablePane): TableModel {
 
 export function paneTitleText(title: TablePaneTitle): string {
   const formatted = formatValueState(title.name);
-  return formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
+  return formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending' ? formatted.label : formatted.text;
 }
 
 function paneHeaderKey(paneKey: string): string {

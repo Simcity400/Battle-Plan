@@ -26,7 +26,7 @@ import {
 } from '../value.ts';
 import { canonicalAuditData } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
-import { formatDateHover, formatValueState, spokenValue, valueStateProps, type ValueFormat } from '../valueFormat.ts';
+import { formatDateHover, spokenValue, valueStateProps, type ValueFormat } from '../valueFormat.ts';
 import { treeColumnOf, type FamilyColumnLayout, type TableRhythm } from './layout.ts';
 import { artHoverText } from '../art/adapters.ts';
 import { unavailableArt, type ArtResult } from '../art/types.ts';
@@ -157,7 +157,6 @@ export interface TableCell {
   readonly unitSuffix?: string;
   readonly unitArt?: ArtResult;
   readonly missingFigure?: string;
-  readonly loading?: boolean;
   readonly splitBar?: readonly TableCellSplitSegment[];
   readonly secondaryValue?: Value;
   readonly pair?: readonly [Value, Value];
@@ -908,7 +907,6 @@ export interface CellPaintModel {
   readonly countryColor: string | null;
   readonly art: ArtResult | null;
   readonly iconSlot: boolean;
-  readonly loading?: true;
 }
 
 const scaledColumn = (column: Pick<FamilyColumnLayout, 'display' | 'tone' | 'barEligible' | 'cellKind'>): boolean =>
@@ -1047,7 +1045,6 @@ export function resolveCellPaintModel(
     countryColor,
     art: resolved.art ?? null,
     iconSlot: cell?.iconSlot === true,
-    ...(cell?.loading ? { loading: true as const } : {}),
   };
 }
 
@@ -1248,7 +1245,7 @@ export function deriveTableMirror(
           return { column: col.key, spoken };
         }
         const value = presentTableCellValue(resolved.value, col.cellKind);
-        return { column: col.key, spoken: cell?.loading ? formatValueState(value, format, { loading: true }).spoken : spokenValue(value, format) };
+        return { column: col.key, spoken: spokenValue(value, format) };
       }),
     };
   });
@@ -1262,7 +1259,7 @@ function tooltipRowFromValue(label: string, value: Value, format?: ValueFormat, 
     rawValue: value,
     valueState: state,
     ...(state.reason ? { detail: state.reason } : {}),
-    ...(state.kind === 'missing' || state.kind === 'notApplicable' ? { tone: 'muted' as const } : {}),
+    ...(state.kind === 'missing' || state.kind === 'notApplicable' || state.kind === 'pending' ? { tone: 'muted' as const } : {}),
     ...extra,
   };
 }
@@ -1832,7 +1829,6 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
     let countryArt: ArtResult | undefined;
     let countryArtKey: string | undefined;
     let countryColor: string | undefined;
-    let countryLoading = false;
     let bar: TableCellBar | null | undefined;
     let sortValue: Value | undefined;
 
@@ -1854,7 +1850,6 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
         } else {
           const who = lookupRowWho(tag, cellLookHour ?? hour);
           cellValue = who.value;
-          countryLoading = who.loading;
           countryArt = who.art;
           countryArtKey = who.artKey;
           countryColor = who.color;
@@ -1898,7 +1893,6 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
     if (iconSlot) cell.iconSlot = true;
     if (countryTag) cell.country = countryTag;
     if (colNa === null && countryColor) cell.countryColor = countryColor;
-    if (colNa === null && countryLoading) cell.loading = true;
     if (col.status) cell.status = col.status(row, options);
     if (colNa === null && col.cellTone) cell.tone = col.cellTone(row, options);
     if (bar !== undefined) cell.bar = bar;

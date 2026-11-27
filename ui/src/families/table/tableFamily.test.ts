@@ -43,6 +43,7 @@ import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
+import { identityCell, resolveName } from './identityCell.ts';
 import { createTablePicture, drawFamilyTable, glideCrossing, hasGlideCrossing, hitFamilyTable, NO_GLIDE, tableGlide } from './painter.ts';
 import { combinedPaneRows, resolvePanes } from './panes.ts';
 import { createPlanAuditVerifier } from '../host/auditBinding.ts';
@@ -422,12 +423,11 @@ test('occupied-states, game-score (with faction groups), and division-template (
   const waiting = gsAt(60, datedIdentity({ GER: [{ from: 0, name: 'Germany' }] }));
   const loadingEng = waiting.rows.find(row => row.key === 'ENG')!;
   assert.notEqual(loadingEng.name, 'ENG', 'a name still loading is never the tag as if it were the name');
-  assert.deepEqual(loadingEng.cells.country!.value, notRecorded('Name is loading'), 'a name still loading is a missing state that says it is loading');
-  assert.equal(loadingEng.cells.country!.loading, true);
+  assert.deepEqual(loadingEng.cells.country!.value, { kind: 'pending', reason: 'Name is loading' }, 'a name still loading is a pending state, never notRecorded');
   const waitingFlat = resolveTableRows(waiting, tableSettingsOf(undefined, gameScoreColumns(undefined), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }));
   const waitingCol = buildColumnLayouts(gameScoreColumns(undefined), tableSettingsOf(undefined, gameScoreColumns(undefined), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } })).find(col => col.key === 'country')!;
   const waitingPaint = resolveCellPaintModel(loadingEng.cells.country, waitingCol, new Map());
-  assert.equal(waitingPaint.loading, true, 'the painted cell knows the name is loading');
+  assert.equal(waitingPaint.value.kind, 'pending', 'the painted cell knows the name is pending');
   assert.match(deriveTableMirror(waitingFlat, waiting.columns, false).rows.find(row => row.key === 'ENG')!.cells.find(cell => cell.column === 'country')!.spoken, /^Loading/, 'the mirror says loading, never not recorded');
   assert.deepEqual(waiting.rows.find(row => row.key === 'GER')!.cells.country!.value, knownValue('Germany'));
   const named = gsAt(61, datedIdentity({ GER: [{ from: 0, name: 'Germany' }], ENG: [{ from: 0, name: 'United Kingdom' }] }));
@@ -626,7 +626,7 @@ test('occupied-states projection names countries at the hour, filter ranges, unr
   );
   const beforeNames = waitingNames({ GER: [{ from: 0, name: 'Germany' }] });
   const beforeTip = deriveTableTooltip(resolveTableRows(beforeNames, settings), '1', beforeNames.columns)!;
-  assert.deepEqual(beforeTip.rows.find(r => r.label === 'Occupied country')?.valueState, { kind: 'missing', reason: 'Name is loading' }, 'the occupied country still loading says so, never the tag');
+  assert.deepEqual(beforeTip.rows.find(r => r.label === 'Occupied country')?.valueState, { kind: 'pending', reason: 'Name is loading' }, 'the occupied country still loading says pending, never missing or the tag');
   const afterNames = waitingNames({ GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] });
   const afterTip = deriveTableTooltip(resolveTableRows(afterNames, settings), '1', afterNames.columns)!;
   assert.equal(afterTip.rows.find(r => r.label === 'Occupied country')?.valueState?.text, 'Poland', 'once names arrive the tooltip names the occupied country');
@@ -6431,4 +6431,93 @@ test('resolvePanes namespaces pane-local headers for paint and exact audit while
       { key: 'same', title: { name: knownValue('Two') }, rows: [row('two:B', 'B', 5)] },
     ],
   }, settings, undefined, 'standard'), /duplicate pane key/, 'duplicate pane key across panes is rejected');
+});
+
+test('pending identity yields a pending cell whose painted, mirror, hover and audit states say loading, while resolved shows the name and absent stays missing', () => {
+  const makeView = (status: 'pending' | 'ready' | 'absent') => createBoundedReadView({
+    hour: 10,
+    identity: {
+      resolve(kind, key) {
+        return {
+          kind,
+          key,
+          holder: { status: 'ready', value: key },
+          name: status === 'pending'
+            ? { status: 'pending' }
+            : status === 'ready'
+              ? { status: 'ready', value: kind === 'country' ? 'Valdoria' : 'Northbridge' }
+              : { status: 'absent', reason: 'Place not in recording' },
+          colour: { status: 'absent', reason: 'none' },
+          flagChoice: { status: 'absent', reason: 'none' },
+          validInterval: [0, Infinity] as const,
+          nextChangeAt: Infinity,
+        };
+      },
+    },
+  });
+  const cols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, pinned: true, minWidth: 140 },
+    { key: 'item', label: 'Battle', as: 'plain', offered: ['plain'], cellKind: 'item', priority: 1, text: true, minWidth: 140 },
+    { key: 'place', label: 'Place', as: 'plain', offered: ['plain'], priority: 2, text: true, minWidth: 140 },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'normal', sort: { column: 'country', direction: 'ascending' } });
+  const inspect = (status: 'pending' | 'ready' | 'absent') => {
+    const view = makeView(status);
+    const country = identityCell(view, 'country', 'AAA');
+    const resolved = resolveName(view, 'province', '101');
+    const row: TableRow = {
+      key: 'r1',
+      name: resolved.name,
+      cells: { country, item: { value: resolved.value }, place: { value: resolved.value } },
+    };
+    const model: TableModel = { hour: 10, columns: cols, rows: [row], unsorted: true };
+    const flat = resolveTableRows(model, settings);
+    const layout = layoutFamilyTable(buildColumnLayouts(cols, settings, { country: 160, item: 160, place: 160 }), 520);
+    const drawn: string[] = [];
+    const ctx = {
+      font: '', fillStyle: '', strokeStyle: '', globalAlpha: 1, lineWidth: 1, textAlign: 'left', textBaseline: 'middle',
+      save() {}, restore() {}, beginPath() {}, rect() {}, roundRect() {}, clip() {}, moveTo() {}, lineTo() {}, stroke() {}, fill() {},
+      fillRect() {}, clearRect() {}, drawImage() {},
+      measureText(text: string) { return { width: text.length * 7 }; },
+      fillText(text: string) { drawn.push(text); },
+    } as unknown as CanvasRenderingContext2D;
+    drawFamilyTable(ctx, {
+      layout, rows: flat, settings, hour: 10, width: 520, height: 120, scrollLeft: 0, scrollTop: 0,
+      rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 0, glideDuration: 0, glide: NO_GLIDE,
+      inspectedKey: null, selectedKey: null, focusedKey: null,
+    });
+    const mirror = deriveTableMirror(flat, cols, false).rows[0]!;
+    const tooltip = deriveTableTooltip(flat, 'r1', cols)!;
+    const audit = deriveTableAudit({ model, flatRows: flat, visibleColumns: layout.columns });
+    return { country, resolved, drawn, mirror, tooltip, audit };
+  };
+
+  const pending = inspect('pending');
+  assert.equal(pending.country.value.kind, 'pending');
+  assert.equal(pending.resolved.value.kind, 'pending');
+  assert.equal('loading' in pending.country, false, 'pending state lives on Value, not a separate cell flag');
+  assert.equal('loading' in pending.resolved, false, 'resolveName exposes no separate loading flag');
+  assert.equal(pending.drawn.filter(t => t === 'Loading…').length, 3, 'country, item and place all paint Loading…');
+  assert.equal(pending.drawn.some(t => /not recorded/i.test(t)), false, 'a pending cell never paints Not recorded');
+  for (const col of ['country', 'item', 'place']) {
+    const spoken = pending.mirror.cells.find(c => c.column === col)!.spoken;
+    assert.match(spoken, /^Loading/, `${col} accessible text says loading`);
+    assert.doesNotMatch(spoken, /not recorded/i, `${col} accessible text never says not recorded`);
+  }
+  assert.equal(pending.tooltip.rows.find(r => r.label === 'Place')?.valueState?.kind, 'pending');
+  assert.match(String(pending.audit.find(a => a.key === 'r1:place')!.value), /"pending"/);
+  assert.doesNotMatch(String(pending.audit.find(a => a.key === 'r1:place')!.value), /"notRecorded"/);
+
+  const ready = inspect('ready');
+  assert.deepEqual(ready.country.value, knownValue('Valdoria'));
+  assert.deepEqual(ready.resolved.value, knownValue('Northbridge'));
+  assert.ok(ready.drawn.includes('Valdoria'));
+  assert.ok(ready.drawn.includes('Northbridge'));
+  assert.equal(ready.mirror.cells.find(c => c.column === 'place')!.spoken, 'Northbridge');
+
+  const absent = inspect('absent');
+  assert.equal(absent.country.value.kind, 'notRecorded');
+  assert.equal(absent.resolved.value.kind, 'notRecorded');
+  assert.match(absent.mirror.cells.find(c => c.column === 'place')!.spoken, /^Not recorded: Place not in recording/);
+  assert.equal(absent.tooltip.rows.find(r => r.label === 'Place')?.valueState?.kind, 'missing');
 });

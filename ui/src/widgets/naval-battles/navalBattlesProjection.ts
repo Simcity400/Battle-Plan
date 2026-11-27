@@ -4,7 +4,7 @@ import { artHoverText } from '../../families/art/adapters.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { artKindCell, LOADING_NAME, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
@@ -108,10 +108,11 @@ function vesselPairCell(
   };
 }
 
-function sideNames(side: readonly ReturnType<typeof resolveIdentity>[]) {
+function sideNames(side: readonly ReturnType<typeof resolveIdentity>[]): Value<string> {
   if (!side.length) return notRecorded('Country not recorded');
-  const names = side.map(who => who.name).join(', ');
   const missing = side.flatMap(who => (who.value.kind === 'notRecorded' ? [who.value.reason] : []));
+  if (!missing.length && side.every(who => who.value.kind === 'pending')) return side[0]!.value;
+  const names = side.map(who => who.name).join(', ');
   return missing.length ? partialValue(names, [...new Set(missing)].join('; ')) : knownValue(names);
 }
 
@@ -120,7 +121,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
   const name = place.kind === 'known' ? knownValue('Battle of ' + place.value) : place;
   const sides = row.countries.map((slots, i) => slots.map(slot => resolveIdentity(view, 'country', countryKey(slot), { atHour: row.countriesHour[i], boundary })));
   const flags = row.countries.map((slots, i) => ({ tag: slots.length ? countryKey(slots[0]!) : null, atHour: row.countriesHour[i] }));
-  const title = name.kind === 'known' ? name.value : 'Battle name not recorded';
+  const title = name.kind === 'known' ? name.value : name.kind === 'pending' ? LOADING_NAME : 'Battle name not recorded';
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
   const status = live ? logStatusCell('Ongoing', 'running') : row.result === 'unknown'

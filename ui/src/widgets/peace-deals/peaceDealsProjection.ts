@@ -3,7 +3,7 @@ import { contentSet } from '../../dashboard/options.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, newIdentityBoundary, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { artKindCell, LOADING_NAME, newIdentityBoundary, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logDateCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
@@ -64,17 +64,20 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
     return { ...common, key: `all:${row.parent}`, name, muted: true, pageParent: row.parent ?? undefined, detailColumn: 'terms', ...(row.last ? { detailEnd: true } : {}),
       cells: { date: blank, kind: blank, country: blank, terms: cell, action: blank } };
   }
+  const unnamedSet = new Set<string>();
   const flags = d.items.map(term => {
     const flag = logCountryCell(view, [{ tag: term.tag, missingLabel: term.kind === 'state' ? 'Former owner not recorded' : 'Country not recorded' }], term.at, boundary).flags![0]!;
     const name = term.kind === 'state'
       ? term.state === null ? null : resolveName(view, 'state', String(term.state), { atHour: row.hour, boundary }).value
       : term.tag === null ? null : resolveName(view, 'country', term.tag, { atHour: term.at, boundary }).value;
     const known = name?.kind === 'known';
-    const label = known ? String(name.value) : term.kind === 'state' ? 'State name not recorded' : 'Country name not recorded';
+    const pending = name?.kind === 'pending';
+    const label = known ? String(name.value) : pending ? LOADING_NAME : term.kind === 'state' ? 'State name not recorded' : 'Country name not recorded';
+    if (!known && !pending) unnamedSet.add(label);
     return { ...flag, label, ...(known ? {} : { muted: true }), ...(term.kind === 'state' ? {} : { note: labels[term.kind][0] }) };
   });
   const list = flags.map(f => f.note ? `${f.label} \u00b7 ${f.note}` : f.label);
-  const unnamed = [...new Set(flags.filter(f => f.muted).map(f => f.label))];
+  const unnamed = [...unnamedSet];
   let name: string;
   let cell: TableCell;
   if (d.kind === 'recipient') {
@@ -84,13 +87,15 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
       ? notRecorded('Recipient not recorded')
       : shown.kind === 'known'
         ? knownValue(String(shown.value))
-        : shown.kind === 'partial'
-          ? partialValue(String(shown.value), shown.reason)
-          : notRecorded(shown.kind === 'notRecorded' ? shown.reason : 'Recipient not recorded');
+        : shown.kind === 'pending'
+          ? shown
+          : shown.kind === 'partial'
+            ? partialValue(String(shown.value), shown.reason)
+            : notRecorded(shown.kind === 'notRecorded' ? shown.reason : 'Recipient not recorded');
     const note = summary(d.terms.map(quantity));
-    name = [text.kind === 'known' || text.kind === 'partial' ? String(text.value) : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
+    name = [text.kind === 'known' || text.kind === 'partial' ? String(text.value) : text.kind === 'pending' ? LOADING_NAME : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
     const joined = [name, ...list].join(', ');
-    const reasons = [...(text.kind === 'known' ? [] : [text.kind === 'partial' || text.kind === 'notRecorded' ? text.reason : 'Recipient not recorded']), ...unnamed];
+    const reasons = [...(text.kind === 'known' || text.kind === 'pending' ? [] : [text.kind === 'partial' || text.kind === 'notRecorded' ? text.reason : 'Recipient not recorded']), ...unnamed];
     const value = reasons.length ? partialValue(joined, reasons.join('; ')) : knownValue(joined);
     cell = { value, heading: { flag: recipient.flags![0]!, text, ...(note ? { note } : {}) }, ...(flags.length ? { flags } : {}) };
   } else {

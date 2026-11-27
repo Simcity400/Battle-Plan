@@ -38,7 +38,8 @@ export function countryRowPresentation(
   dimmed?: boolean,
   atHour?: number,
 ): CountryRowPresentation {
-  const { value, name: label, loading: labelLoading, who: identity } = resolveName(readView, 'country', tag, atHour === undefined ? {} : { atHour });
+  const { value, name: label, who: identity } = resolveName(readView, 'country', tag, atHour === undefined ? {} : { atHour });
+  const labelLoading = value.kind === 'pending';
   const labelMissing = value.kind !== 'known' && !labelLoading;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
   const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
@@ -305,13 +306,13 @@ export function assertBarsModelValid(model: BarsModel, displayedHour: number): v
 export function formatBarsValueField(field: BarsValueField): { readonly text: string; readonly exact: string; readonly spoken: string; readonly missingReason?: string; readonly partialReason?: string; readonly kind: ReturnType<typeof formatValueState>['kind'] } {
   const formatted = formatValueState(field.value, field.format, { compact: field.compact, figure: field.figure });
   const suffix = field.unit ? ` ${field.unit}` : '';
-  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending') {
     return {
       kind: formatted.kind,
       text: formatted.label,
       exact: formatted.label,
       spoken: formatted.spoken,
-      missingReason: formatted.reason,
+      ...(formatted.kind === 'pending' ? {} : { missingReason: formatted.reason }),
     };
   }
   const text = `${formatted.text}${suffix}`;
@@ -385,7 +386,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
     if (targetFmt.kind === 'notRecorded' || targetFmt.kind === 'notApplicable') {
       items.push({ label: 'Need', missingReason: targetFmt.reason });
     } else {
-      items.push({ label: 'Need', value: targetFmt.text });
+      items.push({ label: 'Need', value: targetFmt.kind === 'pending' ? targetFmt.label : targetFmt.text });
     }
     if (row.target.shortfall) {
       const shortFmt = formatValueState(row.target.shortfall, row.target.format);
@@ -411,10 +412,10 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
     const botFmt = formatValueState(row.pair.bottomValue, row.pair.format);
     items.push(topFmt.kind === 'notRecorded' || topFmt.kind === 'notApplicable'
       ? { label: row.pair.topLabel, missingReason: topFmt.reason }
-      : { label: row.pair.topLabel, value: topFmt.text });
+      : { label: row.pair.topLabel, value: topFmt.kind === 'pending' ? topFmt.label : topFmt.text });
     items.push(botFmt.kind === 'notRecorded' || botFmt.kind === 'notApplicable'
       ? { label: row.pair.bottomLabel, missingReason: botFmt.reason }
-      : { label: row.pair.bottomLabel, value: botFmt.text });
+      : { label: row.pair.bottomLabel, value: botFmt.kind === 'pending' ? botFmt.label : botFmt.text });
   }
   if (row.segments?.length) {
     for (let i = 0; i < row.segments.length; i++) {
@@ -422,7 +423,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
       const segFmt = formatValueState(seg.value, seg.format);
       items.push(segFmt.kind === 'notRecorded' || segFmt.kind === 'notApplicable'
         ? { label: seg.label, swatch: seg.color, missingReason: segFmt.reason }
-        : { label: seg.label, swatch: seg.color, value: `${segFmt.text} (${formatShare(seg.share)})` });
+        : { label: seg.label, swatch: seg.color, value: `${segFmt.kind === 'pending' ? segFmt.label : segFmt.text} (${formatShare(seg.share)})` });
     }
   }
   if (row.readout?.primary && !items.length && !missingReason) {

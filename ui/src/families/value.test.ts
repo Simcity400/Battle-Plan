@@ -13,6 +13,7 @@ import {
   notApplicable,
   notRecorded,
   partialValue,
+  pendingValue,
   valueFromLive,
   answerRowIndex,
   valueFromNamedAnswer,
@@ -182,6 +183,10 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
   assert.equal(part.kind, 'partial');
   assert.equal(part.text, '120');
   assert.equal(part.reason, 'Gaps excluded');
+  const pend = formatValueState(pendingValue('Name is loading'));
+  assert.deepEqual(pend, { kind: 'pending', label: 'Loading…', reason: 'Name is loading', spoken: 'Loading: Name is loading', audit: 'Loading: Name is loading' });
+  assert.deepEqual(valueStateProps(pendingValue('Name is loading')), { kind: 'pending', reason: 'Name is loading' });
+  assert.equal(canonicalAuditData(pendingValue('Name is loading')), '["pending","Name is loading"]');
 
   assert.equal(spokenValue(zeroValue(0), 'integer'), '0');
   assert.equal(spokenValue(notRecorded('No sensor'), 'integer'), 'Not recorded: No sensor');

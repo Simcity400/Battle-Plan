@@ -10,7 +10,7 @@ import type { CountrySelection } from '../../dashboard/model';
 import type { ArtHandle, BoundedReadView, SourceEntry } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { FamilyPlanContext } from '../plan.ts';
-import { resolveIdentity, type IdentityBoundary } from './identityCell.ts';
+import { NAME_LOADING, resolveIdentity, type IdentityBoundary } from './identityCell.ts';
 
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
   return url ? { kind: 'url', url } : null;
@@ -29,7 +29,7 @@ import {
 } from './rowSource.ts';
 import { OFFERED, type TableBase } from './settings.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, type Value } from '../value.ts';
 
 export const LOG_TABLE_BASE: TableBase = {
   density: 'normal',
@@ -207,7 +207,7 @@ export function logCountryCell(
   const names: string[] = [];
   const roles: TooltipExtraRow[] = [];
   const missing: string[] = [];
-  let loading = false;
+  let pending = 0;
   for (const entry of entries) {
     if (entry.tag === null) {
       const reason = entry.missingLabel ?? 'Country not recorded';
@@ -225,22 +225,23 @@ export function logCountryCell(
         ...(entry.dimmed ? { dimmed: true } : {}),
       });
       names.push(who.name);
-      if (who.value.kind !== 'known') {
+      if (who.value.kind === 'pending') {
+        pending++;
+      } else if (who.value.kind !== 'known') {
         missing.push(who.value.kind === 'notRecorded' ? `${entry.tag}: ${who.value.reason}` : `${entry.tag}: Name not recorded`);
-        loading ||= who.loading;
       }
-      if (entry.role) roles.push({ label: entry.role, value: who.value.kind === 'notRecorded' && !who.loading ? partialValue(entry.tag, who.value.reason) : who.value });
+      if (entry.role) roles.push({ label: entry.role, value: who.value.kind === 'notRecorded' ? partialValue(entry.tag, who.value.reason) : who.value });
     }
   }
   const joined = names.join(' · ');
   const value: Value = !names.length
     ? notApplicable('No country')
     : !missing.length
-      ? knownValue(joined)
+      ? pending === entries.length ? pendingValue(NAME_LOADING) : knownValue(joined)
       : entries.every(entry => entry.tag === null)
         ? notRecorded(missing.join('; '))
         : partialValue(joined, missing.join('; '));
-  return { value, flags, ...(roles.length ? { tooltipRows: roles } : {}), ...(loading ? { loading: true } : {}) };
+  return { value, flags, ...(roles.length ? { tooltipRows: roles } : {}) };
 }
 
 export function tailFollowParams(query: LogTailQuery): FollowRequest {

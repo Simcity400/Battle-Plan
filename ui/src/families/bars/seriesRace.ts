@@ -75,7 +75,7 @@ export function seriesRaceWarnings(followRefused: string | null): readonly strin
 }
 
 function scaleValue(raw: Value<bigint | number>, decimals: number): { readonly value: Value<bigint | number>; readonly numeric: number | null } {
-  if (raw.kind === 'notRecorded' || raw.kind === 'notApplicable') return { value: raw, numeric: null };
+  if (raw.kind === 'notRecorded' || raw.kind === 'notApplicable' || raw.kind === 'pending') return { value: raw, numeric: null };
   if (raw.kind === 'zero') return { value: zeroValue(), numeric: 0 };
   const num = Number(raw.value) / (decimals > 0 ? 10 ** decimals : 1);
   if (decimals === 0) return { value: raw.value === 0 || raw.value === 0n ? zeroValue() : knownValue(raw.value), numeric: num };
@@ -100,7 +100,9 @@ function makeRow(readView: BoundedReadView, reply: SeriesRankReply, rankRow: Ser
     ? { label: config.valueLabel, missingReason: formatted.reason }
     : formatted.kind === 'notApplicable'
       ? { label: config.valueLabel, value: '—' }
-      : { label: config.valueLabel, value: formatted.exact ?? formatted.text };
+      : formatted.kind === 'pending'
+        ? { label: config.valueLabel, value: formatted.label }
+        : { label: config.valueLabel, value: formatted.exact ?? formatted.text };
   const parts = numeric !== null && config.parts ? config.parts(reply, rankRow) : null;
   const identity = readView.who('country', key);
   const tag = rankRow.unnamed ? null : identity.tag?.status === 'ready' ? identity.tag.value : typeof rankRow.country === 'string' ? rankRow.country : null;

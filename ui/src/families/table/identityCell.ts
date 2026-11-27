@@ -30,7 +30,7 @@ export interface ResolvedIdentity extends CellArt, ResolvedName {
 export const NAME_LOADING = 'Name is loading';
 export const LOADING_NAME = 'Loading name…';
 
-const NOT_RECORDED_LOADING: Value<string> = Object.freeze({ kind: 'notRecorded', reason: NAME_LOADING });
+const PENDING_NAME: Value<string> = Object.freeze({ kind: 'pending', reason: NAME_LOADING });
 const NOT_RECORDED_EMPTY_NAME: Value<string> = Object.freeze({ kind: 'notRecorded', reason: 'Name not recorded' });
 const NOT_RECORDED_GENERIC: Value<string> = Object.freeze({ kind: 'notRecorded', reason: 'Not recorded' });
 const NULL_IDENTITY_CELL: TableCell = Object.freeze({ value: NOT_RECORDED_GENERIC, iconSlot: true });
@@ -58,7 +58,7 @@ function cachedFlagHandle(choice: string, size: ArtFlagSize): CachedFlagHandle {
 const nameValueCache = new WeakMap<object, Value<string>>();
 
 function valueOfNameField(field: FieldStatus<string>): Value<string> {
-  if (field.status === 'pending') return NOT_RECORDED_LOADING;
+  if (field.status === 'pending') return PENDING_NAME;
   const cached = nameValueCache.get(field);
   if (cached !== undefined) return cached;
   let value: Value<string>;
@@ -78,7 +78,6 @@ export function cellArt(readView: BoundedReadView, handle: ArtHandle | null, mis
 export interface ResolvedName {
   readonly value: Value<string>;
   readonly name: string;
-  readonly loading: boolean;
 }
 
 export function resolveName(readView: BoundedReadView, kind: EntityKind, key: string, options?: Pick<IdentityOptions, 'atHour' | 'boundary'>): ResolvedName & { readonly who: ReturnType<BoundedReadView['who']> } {
@@ -88,9 +87,8 @@ export function resolveName(readView: BoundedReadView, kind: EntityKind, key: st
   if (boundary && atHour >= readView.hour && who.nextChangeAt < boundary.next) {
     boundary.next = who.nextChangeAt;
   }
-  const loading = who.name.status === 'pending';
   const value = valueOfNameField(who.name);
-  return { value, name: value.kind === 'known' ? value.value : loading ? LOADING_NAME : key, loading, who };
+  return { value, name: value.kind === 'known' ? value.value : value.kind === 'pending' ? LOADING_NAME : key, who };
 }
 
 export function resolveCountryColorAt(
@@ -118,19 +116,16 @@ export function resolveIdentityAt(
   if (boundary && atHour >= readView.hour && who.nextChangeAt < boundary.next) {
     boundary.next = who.nextChangeAt;
   }
-  const loading = who.name.status === 'pending';
   const value = valueOfNameField(who.name);
   const result: {
     value: Value<string>;
     name: string;
-    loading: boolean;
     art?: ArtResult;
     artKey?: string;
     color?: string;
   } = {
     value,
-    name: value.kind === 'known' ? value.value : loading ? LOADING_NAME : key,
-    loading,
+    name: value.kind === 'known' ? value.value : value.kind === 'pending' ? LOADING_NAME : key,
   };
   if (kind === 'country') {
     const choice = who.flagChoice;
@@ -163,11 +158,9 @@ export function identityCellAt(
   if (boundary && atHour >= readView.hour && who.nextChangeAt < boundary.next) {
     boundary.next = who.nextChangeAt;
   }
-  const loading = who.name.status === 'pending';
   const cell: {
     value: Value<string>;
     iconSlot: true;
-    loading?: true;
     art?: ArtResult;
     artKey?: string;
     countryColor?: string;
@@ -176,7 +169,6 @@ export function identityCellAt(
     value: valueOfNameField(who.name),
     iconSlot: true,
   };
-  if (loading) cell.loading = true;
   if (kind === 'country') {
     const choice = who.flagChoice;
     if (choice?.status === 'ready') {
@@ -346,12 +338,12 @@ export function artKindCell(readView: BoundedReadView, handle: ArtHandle | null,
 export function identityName(readView: BoundedReadView, kind: EntityKind, key: string, atHour?: number): string {
   const who = readView.who(kind, key, atHour ?? readView.hour);
   const value = valueOfNameField(who.name);
-  return value.kind === 'known' ? value.value : who.name.status === 'pending' ? LOADING_NAME : key;
+  return value.kind === 'known' ? value.value : value.kind === 'pending' ? LOADING_NAME : key;
 }
 
 export function identityNameOr(readView: BoundedReadView, kind: EntityKind, key: string, unnamed: string, atHour?: number): string {
   const who = readView.who(kind, key, atHour ?? readView.hour);
   const value = valueOfNameField(who.name);
   if (value.kind === 'known') return value.value;
-  return who.name.status === 'pending' ? LOADING_NAME : unnamed;
+  return value.kind === 'pending' ? LOADING_NAME : unnamed;
 }

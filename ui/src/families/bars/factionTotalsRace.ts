@@ -177,7 +177,8 @@ function factionPresentation(readView: BoundedReadView, id: string, aggregated: 
   if (aggregated) {
     return { label: groupLabel, labelMissing: false, labelLoading: false, color: colour(surface, 0) };
   }
-  const { value, name, loading: labelLoading, who: identity } = resolveName(readView, 'faction', id);
+  const { value, name, who: identity } = resolveName(readView, 'faction', id);
+  const labelLoading = value.kind === 'pending';
   const labelMissing = value.kind !== 'known' && !labelLoading;
   const label = value.kind === 'known' || labelLoading ? name : `Faction ${id}`;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : colour(surface, ordinal);
@@ -189,7 +190,7 @@ function memberNames(readView: BoundedReadView, row: FactionTotalRow): string {
   const keys = row.memberCountries.length ? row.memberCountries.map(countryKey) : row.members;
   const shown = keys.slice(0, limit).map((key, index) => {
     const who = resolveName(readView, 'country', key);
-    return who.value.kind === 'known' || who.loading ? who.name : (row.members[index] ?? key);
+    return who.value.kind === 'known' || who.value.kind === 'pending' ? who.name : (row.members[index] ?? key);
   });
   return keys.length > limit ? `${shown.join(', ')} +${keys.length - limit} more` : shown.join(', ');
 }

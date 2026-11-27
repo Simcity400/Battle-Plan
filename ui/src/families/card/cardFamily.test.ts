@@ -139,16 +139,14 @@ test('a war goal target whose name is still loading reads as loading on the card
   );
   const waiting = at({});
   const row = items(waiting)[0]!;
-  assert.deepEqual(row.title, { kind: 'notRecorded', reason: NAME_LOADING });
-  assert.equal(row.titleLoading, true);
+  assert.deepEqual(row.title, { kind: 'pending', reason: NAME_LOADING });
   assert.equal(cardRowName(row), LOADING_NAME, 'the painted title and the mirror name read loading');
   assert.equal(row.place, `Invented state 4 · Liberate ${LOADING_NAME}`);
   assert.equal(deriveCardMirror(waiting).rows[0]!.name, LOADING_NAME);
   assert.equal(deriveCardTooltip(waiting, items(waiting)[1]!.key)?.title, LOADING_NAME, 'a removed goal’s tooltip is titled with the loading target, not a missing kind');
-  assert.ok(deriveCardAudit(waiting).some(cell => cell.row === row.key && cell.key === `${row.key}:loading` && cell.value === 'title'), 'the audit says the title is loading');
+  assert.ok(deriveCardAudit(waiting).some(cell => cell.row === row.key && cell.key === `${row.key}:title` && cell.value === JSON.stringify(['pending', NAME_LOADING])), 'the audit says the title is pending');
   const named = items(at({ BBB: [{ from: 0, name: 'Bravo' }], CCC: [{ from: 0, name: 'Charlie' }] }))[0]!;
   assert.deepEqual(named.title, { kind: 'known', value: 'Bravo' });
-  assert.equal(named.titleLoading, undefined);
   assert.equal(named.place, 'Invented state 4 · Liberate Charlie');
 });
 
