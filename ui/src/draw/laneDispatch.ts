@@ -166,6 +166,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
         ...(owner !== undefined ? { owner } : {}),
       }),
       served: frame => post({ type: 'served', ...frame }),
+      scrubbed: (frame, samples) => post({ type: 'scrubbed', frame, samples }),
       fail: reason => post({ type: 'failure', lane: index, reason }),
       failSub: (sub, reason) => post({ type: 'sub-failed', lane: index, sub, reason }),
       waitSub: (sub, waiting) => post({ type: 'sub-waiting', lane: index, sub, waiting }),
@@ -200,6 +201,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
         try { post({ type: 'strip', receipt: m.receipt, held: lane.strip(m.widget, m.build, m.update) }); }
         catch (error) { post({ type: 'strip', receipt: m.receipt, error: String(error) }); }
         break;
+      case 'scrub': lane.scrub(m.page, m.frame); break;
       case 'bind': lane.bind(m.widget, m.binding, m.model, m.retry, m.remounted); break;
       case 'supply': lane.supply(m.widget, m); break;
       case 'payloads': lane.payloads(m); break;

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { encode } from '@msgpack/msgpack';
 import type { Fact } from '../dashboard/follow/facts.ts';
 import { Page, type Bitmap, type PageMessage } from '../dashboard/follow/page.ts';
 import { Lane, type LaneView, type Painted, type Value } from '../draw/lane.ts';
@@ -11,6 +12,7 @@ import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDat
 import { bindFamilyManifest, registerFamilyProjection } from './registry.ts';
 import { IdentityIndex } from './identity/index.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
+import type { StripFrame } from '../dashboard/strip/scrub.ts';
 
 type Row = { readonly key: string; readonly v: number };
 type Options = { readonly order: 'up' | 'down'; readonly name?: string };
@@ -73,6 +75,64 @@ const DOWN: Options = { order: 'down' };
 const NO_SOURCES = {};
 const binding = (staticPanels: Readonly<Record<string, unknown>>, options: Options = DOWN, extra: Partial<Binding> = {}): Binding => ({
   family: 'test-lane', kind: 'fixture', options, sources: NO_SOURCES, staticPanels, scrollTop: 0, theme: THEME, ...extra,
+});
+
+test('a scrub projects a stable statics-only picture and leaves the exact scene, facts and painter alone', () => {
+  const recording = installRecordingCanvas();
+  try {
+    const view = createLaneView(family, () => {});
+    const lane = new Lane({
+      lane: 0, lanes: 1, views: () => view, crop: async () => assert.fail('scrub must not crop'), present: () => assert.fail('scrub must not present'),
+      release() {}, fail: assert.fail, later() {},
+    });
+    const bound = binding(rowsAt([{ key: 'old', v: -1 }]));
+    lane.mount(10, [], 'test-lane', bound);
+    const whole = encode({ answer: { rows: [{ key: 'A', v: 1 }] } });
+    const forward = encode([{ replace: [['answer', 'rows', 0, 'v'], 2] }]);
+    const back = encode([{ replace: [['answer', 'rows', 0, 'v'], 1] }]);
+    const refused = encode([{ replace: [[], { refused: 'Withheld by the recording' }] }]);
+    const resume = encode([{ replace: [[], { answer: { rows: [{ key: 'A', v: 2 }] } }] }]);
+    const parts = [whole, forward, back, refused, resume];
+    const bytes = Buffer.alloc(8 + parts.reduce((sum, part) => sum + 4 + part.length, 0));
+    bytes.set([66, 80, 83, 84, 1, 1, 3, 0]);
+    let cursor = 8;
+    for (const part of parts) {
+      bytes.writeUInt32LE(part.length, cursor);
+      bytes.set(part, cursor + 4);
+      cursor += 4 + part.length;
+    }
+    lane.strip(10, 1, { kind: 'append', slot: 'main', hours: [6, 12, 18], fine: false, bytes });
+    lane.strip(10, 1, { kind: 'mark', slot: 'main', hours: [0], fine: false });
+    lane.strip(10, 1, { kind: 'scenes', page: 2, fine: false,
+      track: { axisOffset: 500, branch: { firstHour: 500, lastHour: 520, gaps: [{ firstHour: 509, lastHour: 509, reason: 'Widget gap' }] } },
+      frames: [0, 6, 12, 18].map(hour => [hour, { recorded: hour, allowEmpty: false, parts: [{ hour, kind: 'panel', name: 'main', slots: ['main'] }] }]),
+    });
+    Object.defineProperty(lane, 'facts', { get: () => assert.fail('scrub must not access facts') });
+    const show = (hour: number, gap: StripFrame['gap'] = null) => {
+      lane.scrub(2, { page: 2, frame: hour + 1, hour, density: 1, gap });
+      return lane.scrubScenes?.widgets.get(10);
+    };
+    const exact = driveLane(view, recording.canvases);
+    const a = show(6), b = show(12);
+    assert.equal(a?.mode, 'picture');
+    assert.equal(b?.mode, 'picture');
+    const expected = exact.paint({ label: 'exact', binding: binding(rowsAt([{ key: 'A', v: 2 }]), DOWN, { audit: true }), hour: 12 });
+    assert.deepEqual((b.picture.model as Model).rows.map(row => [row.key, row.v]), (expected.fields.audit?.value as { rows: unknown }).rows);
+    assert.equal((a.picture.model as Model).rows[0]?.v, 1, 'a later in-place patch cannot change the earlier scrub picture');
+    assert.deepEqual(show(0), { mode: 'missing' });
+    assert.deepEqual(show(18), { mode: 'refused', reason: 'Withheld by the recording' });
+    const gap = { kind: 'not-recorded' as const, message: 'Not recorded at this time.', detail: undefined };
+    assert.deepEqual(show(9, gap), { mode: 'outside', outside: {
+      ...gap, detail: 'Widget gap', span: { firstHour: 509, lastHour: 509 },
+    } });
+    assert.equal(show(7, gap), undefined, 'a reference gap cannot fabricate a missing picture on a recorded track');
+    lane.scrub(2, null);
+    assert.equal(lane.scrubScenes, undefined);
+    assert.deepEqual(bound.staticPanels, rowsAt([{ key: 'old', v: -1 }]));
+    assert.equal(recording.canvases.length, 1, 'only the exact paint used a canvas');
+  } finally {
+    recording.restore();
+  }
 });
 
 test('a projection’s identity demands are published by the paint that ran it', () => {

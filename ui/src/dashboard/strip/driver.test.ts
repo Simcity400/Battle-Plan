@@ -3,6 +3,8 @@ import test from 'node:test';
 import { encode } from '@msgpack/msgpack';
 import { busy, busyKinds } from '../../shell/busy.ts';
 import type { StripParams } from '../../generated/dashboard.ts';
+import { FrameEngine } from '../../engine/frame.ts';
+import { measureWith, type PerfRecorder } from '../../shell/perf.ts';
 import { gatedHour } from '../../test-support/gated.ts';
 import type { DashboardClient, ProductRequest } from '../client.ts';
 import { OpenedSources } from '../openedSources.ts';
@@ -13,6 +15,7 @@ import { tileCache } from '../tiles/view.ts';
 import { configuredStripPage, StripPage, type StripWidget } from './driver.ts';
 import { stripLattice } from './lattice.ts';
 import { WidgetStrips, type StripUpdate } from './store.ts';
+import type { StripFrame } from './scrub.ts';
 
 function packet(whole: boolean, states: unknown[]) {
   const parts = whole ? [encode(states[0])] : [];
@@ -31,6 +34,7 @@ function packet(whole: boolean, states: unknown[]) {
 }
 
 function setup(last: number, budget?: number, gap?: readonly [number, number]) {
+  const frames = new FrameEngine({ request() {} });
   const clock = new PlaybackController();
   clock.setBounds({ firstHour: 0, lastHour: last });
   const branch = { id: '1', firstHour: 0, lastHour: last, gaps: gap ? [{ firstHour: gap[0], lastHour: gap[1], reason: 'Not recorded' }] : [] };
@@ -58,7 +62,7 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
     await delay?.(hours, signal);
     return { ...request, data: { data: packet(whole, hours.map(answer)) } };
   } } as unknown as DashboardClient;
-  const page = new StripPage(lattice, clock, client, { budget, gate });
+  const page = new StripPage(lattice, clock, client, { budget, gate, frames });
   const stop = page.start();
   const until = async (done: () => boolean) => {
     for (let tick = 0; tick < 5000; tick++) {
@@ -68,16 +72,17 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
     }
     assert.fail(`Strip page did not settle (${page.status})`);
   };
-  const mount = (id: string, after: number = 0, supported = true, receipt?: (change: StripUpdate) => Promise<void> | void, fixed = false) => {
+  const mount = (id: string, after: number = 0, supported = true, receipt?: (change: StripUpdate) => Promise<void> | void, fixed = false,
+    scrub?: StripWidget['scrub'], track?: StripWidget['track']) => {
     opened.add({ id, revision: 'r', metadata: { branches: [branch] } } as never);
     const held = new WidgetStrips();
-    const widget: StripWidget = { key: id, supported, fixed, settled: () => settled,
-      requests: hour => {
-        if (fixed) return [];
+    const widget: StripWidget = { key: id, supported, fixed, scrub, track, settled: () => settled,
+      keyframe: hour => {
+        if (fixed) return { asks: [] };
         reads++;
-        return [{ slot: 'source', request: hour < after ? null : productRequest({
+        return { asks: [{ slot: 'source', request: hour < after ? null : productRequest({
           product: 'country-fuel', sourceId: id, revision: 'r', params: { branchId: '1', hour: gatedHour(hour) },
-        }) }];
+        }) }] };
       },
       store: async (_build, change) => {
         const result = held.update(change);
@@ -87,7 +92,7 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
     };
     return { held, remove: page.register(id, widget) };
   };
-  return { page, clock, groups, tiles, lattice, gate, mount, until, cache: tileCache(client), reads: () => reads,
+  return { page, clock, groups, tiles, lattice, gate, frames, mount, until, cache: tileCache(client), reads: () => reads,
     stop() { clock.setPlaying(false); stop(); },
     settle: (value: boolean) => { settled = value; },
     delay: (value: typeof delay) => { delay = value; },
@@ -161,7 +166,7 @@ test('the shipped switch allocates no page and leaves zero requests and zero hel
   const page = configuredStripPage(() => {
     groups++;
     const h = setup(200);
-    h.page.register('chart', { key: 'chart', supported: true, requests: () => [], settled: () => true,
+    h.page.register('chart', { key: 'chart', supported: true, keyframe: () => ({ asks: [] }), settled: () => true,
       tiles: async () => { groups++; }, store: async (_build, change) => held.update(change) });
     return h.page;
   });
@@ -174,9 +179,15 @@ test('the shipped switch allocates no page and leaves zero requests and zero hel
 test('a mixed page waits for every claimed tile, including after a scrub cancels its request', async t => {
   const h = setup(200);
   t.after(h.stop);
-  const answer = h.mount('answer');
+  const frames: (StripFrame | null)[] = [];
+  const holds: string[] = [];
+  measureWith(new Proxy({ strip: (sample: { reason?: string }) => { if (sample.reason) holds.push(sample.reason); } },
+    { get: (target, key) => Reflect.get(target, key) ?? (() => {}) }) as unknown as PerfRecorder);
+  t.after(() => measureWith(null));
+  const answer = h.mount('answer', 0, true, undefined, false, (_page, frame) => frames.push(frame));
   const chart = h.page.register('chart', {
-    key: 'chart', supported: true, requests: () => [], settled: () => true,
+    key: 'chart', supported: true, keyframe: () => ({ asks: [] }), settled: () => true,
+    scrub: () => assert.fail('A widget with tiles cannot scrub yet'),
     store: async () => assert.fail('Tile-only chart does not store strip slots'),
     async tiles(claim, read) {
       const request = productRequest({ sourceId: 'chart', revision: 'r', product: 'series-tiles',
@@ -206,9 +217,101 @@ test('a mixed page waits for every claimed tile, including after a scrub cancels
   assert.ok(answer.held.slots.size > 0);
   assert.deepEqual(h.tiles.map(tile => tile.busy), [false, false]);
   assert.equal(h.page['counts'].tilesCancelled, 1);
+  h.clock.scrub(100);
+  h.frames.tick(16);
+  h.clock.scrub(110);
+  h.frames.tick(32);
+  assert.equal(frames.length, 0);
+  assert.deepEqual(holds, ['tile widgets follow from 3C-ii', 'tile widgets follow from 3C-ii']);
+  h.clock.endScrub();
   chart();
   await h.until(() => h.page.status === 'ready');
   assert.equal(h.cache.stripBytes, 0);
+  h.clock.scrub(110);
+  h.frames.tick(48);
+  assert.equal(frames[0]?.hour, h.lattice.scrub(110, h.page.density)?.hour);
+  h.clock.endScrub();
+});
+
+test('a ready page sends one selection per frame and a change in readiness holds the rest of the drag', async t => {
+  const h = setup(410, undefined, [110, 130]);
+  t.after(h.stop);
+  const frames: (StripFrame | null)[] = [];
+  const scrub: StripWidget['scrub'] = (_page, frame) => frames.push(frame);
+  h.mount('first', 0, true, undefined, false, scrub);
+  h.mount('second', 0, true, undefined, false, scrub);
+  h.clock.scrub(10);
+  h.frames.tick(16);
+  assert.equal(frames.length, 0);
+  h.clock.endScrub();
+  await h.until(() => h.page.status === 'coarse');
+  const groups = h.groups.length;
+  h.clock.scrub(98);
+  h.clock.scrub(104.5);
+  h.frames.tick(32);
+  assert.deepEqual(frames.map(frame => frame && [frame.frame, frame.hour, frame.density]), [[2, 95, 1]]);
+  h.clock.scrub(120);
+  h.frames.tick(48);
+  assert.equal(frames.at(-1)?.hour, 120);
+  assert.equal(frames.at(-1)?.gap?.kind, 'not-recorded');
+  h.clock.scrub(131);
+  h.frames.tick(64);
+  assert.equal(frames.at(-1)?.hour, 131, 'the first recorded hour after the gap is a keyframe');
+  h.clock.setBounds({ firstHour: 0, lastHour: 500 });
+  const seek = h.clock.getSnapshot().seekSequence;
+  h.clock.scrub(420);
+  h.frames.tick(80);
+  assert.equal(frames.length, 4);
+  assert.equal(frames.at(-1), null);
+  h.clock.scrub(131);
+  h.frames.tick(96);
+  assert.equal(frames.length, 4, 'returning to the built range during the same drag still holds');
+  h.clock.endScrub();
+  h.clock.scrub(131);
+  h.frames.tick(112);
+  assert.equal(frames.at(-1)?.hour, 131);
+  h.mount('third', 0, false);
+  h.frames.tick(128);
+  assert.equal(frames.length, 6);
+  assert.equal(frames.at(-1), null);
+  assert.equal(h.groups.length, groups);
+  assert.equal(h.clock.getSnapshot().seekSequence, seek);
+  h.clock.seek(131);
+  h.clock.endScrub();
+  assert.equal(h.clock.getSnapshot().seekSequence, seek + 1);
+});
+
+test('the whole page holds a reference gap recorded by another track and resumes when coverage agrees', async t => {
+  const h = setup(410, undefined, [110, 130]);
+  t.after(h.stop);
+  const frames: (StripFrame | null)[] = [];
+  const scrub: StripWidget['scrub'] = (_page, frame) => frames.push(frame);
+  h.mount('reference', 0, true, undefined, false, scrub);
+  h.mount('other', 0, true, undefined, false, scrub, {
+    axisOffset: 500,
+    branch: { firstHour: 500, lastHour: 910, gaps: [{ firstHour: 620, lastHour: 625, reason: 'Other gap' }] },
+  });
+  await h.until(() => h.page.status === 'ready');
+  const holds: unknown[] = [];
+  measureWith(new Proxy({ strip: (sample: { reason?: string }) => { if (sample.reason) holds.push(sample.reason); } },
+    { get: (target, key) => Reflect.get(target, key) ?? (() => {}) }) as unknown as PerfRecorder);
+  t.after(() => measureWith(null));
+  const move = (hour: number) => { h.clock.scrub(hour); h.frames.tick(hour); };
+  move(105);
+  assert.equal(frames.length, 1);
+  move(112);
+  move(116);
+  assert.deepEqual(frames.slice(1), [null]);
+  move(121);
+  assert.equal(frames.at(-1)?.gap?.kind, 'not-recorded');
+  move(128);
+  assert.equal(frames.at(-1), null);
+  assert.deepEqual(holds, ['A widget recorded the reference gap']);
+  move(131);
+  assert.equal(frames.at(-1)?.hour, 131);
+  h.clock.endScrub();
+  move(112);
+  assert.equal(holds.length, 2, 'the next drag logs its own hold');
 });
 
 test('late sources hold local markers and a fine-only first anchor, and give exact cursor states at every sampled hour', async t => {

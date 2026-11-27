@@ -382,6 +382,7 @@ function retryOrThrow(failed: Map<number, number>, input: PaintInput, reason: st
 const laneArt = new LaneArtPool();
 
 export type LaneFamilyLoad = () => Promise<LaneFamily<any, any, any>>;
+const ignoreProjectionReady = () => {};
 
 export function lazyLaneView(family: string, load: LaneFamilyLoad, wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
   let view: LaneView | null = null;
@@ -426,6 +427,9 @@ export function lazyLaneView(family: string, load: LaneFamilyLoad, wake: (widget
         failure = null;
         return ready(input.widget)?.paint(input, state, content) ?? WAITING;
       });
+    },
+    scrub(scene, statics, state) {
+      return view?.scrub?.(scene, statics, state) ?? { mode: 'waiting' };
     },
   };
 }
@@ -508,6 +512,24 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   }
 
   return {
+    scrub(scene, statics, state) {
+      const binding = scene.model;
+      if (!isBinding(binding)) return { mode: 'waiting' };
+      const projection = ensureBoundProjection<TModel, unknown>(binding, ignoreProjectionReady);
+      if (projection === 'loading' || projection === 'unknown') return { mode: 'waiting' };
+      const input = statics(projection.validateTail, binding.window);
+      if (input.mode !== 'picture') return input;
+      const held = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
+      const options = input.options === undefined ? binding.options : input.options;
+      const scrubScene = input.options === undefined ? scene : { ...scene, model: { ...binding, options } };
+      const picture = projectScene(scrubScene, { sources: {}, exact: input.statics }, input.statics.hour,
+        held ? readersOf(held) : {}, view => projection.project(view, options));
+      const status = family.status(picture.model);
+      if (status === 'waiting') return { mode: 'waiting' };
+      if (typeof status === 'object') return { mode: 'refused', reason: status.refused };
+      return { mode: 'picture', picture };
+    },
+
     next(scene: Scene, hour: number, state?: Map<string, unknown>): number | null {
       const binding = scene.model;
       if (!isBinding(binding)) return Infinity;

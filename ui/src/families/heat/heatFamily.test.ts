@@ -4,7 +4,7 @@ import type { Canvas2D } from '../../charts/textWidth.ts';
 import { followedProduct, refusedHours, type FollowQuery } from '../../dashboard/regionTime.ts';
 import { computeTimeAxisTicks, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import { displayedHour } from '../boundedView.ts';
-import { buildExactRequests, compileFollowPlan, exactEntries } from '../broker.ts';
+import { buildExactRequests, buildStripKeyframe, compileFollowPlan, exactEntries } from '../broker.ts';
 import type { FamilyTheme, InstalledPicture } from '../contract.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { askUnits, unitEntries, unitEvidence, UnitReads } from '../readUnits.ts';
@@ -111,7 +111,8 @@ test('a heat strip keeps closed asks once and gives the changing prefix one slot
   const gate = trackGate({ source: ctx.track.source, branch: ctx.branch });
   const options = { following: true, timeMode: 'follow' as const, branch: ctx.branch, staticSpan: null, window: null, gate };
   for (const declaration of [airTimelineDeclaration, convoyHealthDeclaration, supremacyTimelineDeclaration]) {
-    const entries = exactEntries(declaration.sources(ctx, { following: true, staticSpan: null }));
+    const plan = declaration.sources(ctx, { following: true, staticSpan: null });
+    const entries = exactEntries(plan);
     const request = (entry: typeof entries[number], hour: number) => buildExactRequests(entry, gate.recorded(hour)!, options)?.asks[0]?.request;
     const terminal = (entry: typeof entries[number]) => request(entry, branch.lastHour);
     const held = holdDayTiles(entries, terminal);
@@ -126,14 +127,19 @@ test('a heat strip keeps closed asks once and gives the changing prefix one slot
     assert.deepEqual(asked, closed);
     assert.ok(cache.stripBytes > 0);
     for (const hour of [96, DAY_TILE_HOURS + 96, branch.lastHour]) {
-      const slots = entries.flatMap(entry => {
+      const parts = entries.map(entry => {
         const ask = request(entry, hour);
-        if (!ask) return [];
+        if (!ask) return null;
         const slot = held.slot(entry, ask);
         if (slot === null) assert.equal(claim.value<number>(dayTileKey(ask)), dayTileKey(ask).length);
-        return slot === null ? [] : [slot];
+        return slot === null ? null : { slot: JSON.stringify([slot, 'answer', ask.sourceId, ask.revision, ask.product]), request: ask };
       });
-      assert.deepEqual(slots, hour === branch.lastHour ? ['now'] : ['now', 'day:open']);
+      const asks = parts.filter(part => part !== null);
+      assert.deepEqual(asks.map(ask => JSON.parse(ask.slot)[0]), hour === branch.lastHour ? ['now'] : ['now', 'day:open']);
+      const keyframe = buildStripKeyframe(plan, gate.recorded(hour)!, options, undefined, held.slot);
+      assert.deepEqual(keyframe.asks, asks);
+      assert.ok(keyframe.scene && 'parts' in keyframe.scene);
+      assert.deepEqual(keyframe.scene.parts.map(part => part?.slots ?? null), parts.map(part => part && [part.slot]));
     }
     claim.release();
     assert.equal(cache.stripBytes, 0);

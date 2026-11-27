@@ -1,15 +1,17 @@
 import { createContext } from 'react';
+import { engine, type FrameEngine } from '../../engine/frame.ts';
 import { busyKinds, inBackground, onForegroundRequest } from '../../shell/busy.ts';
 import { perfLog } from '../../shell/perf.ts';
 import type { StripReply } from '../../generated/dashboard.ts';
-import { validateProductReply, type DashboardClient, type ProductRequest } from '../client.ts';
+import { validateProductReply, type DashboardClient } from '../client.ts';
 import type { PlaybackController } from '../playback.ts';
 import { baseClient, prepareGate, type PrepareGate } from '../prepare.ts';
 import { RefusedError } from '../queryError.ts';
-import { productRequest } from '../request.ts';
+import { productRequest, type ProductRequest } from '../request.ts';
 import type { StripTileClaim, StripTileRead } from '../tiles/cache.ts';
 import { tileCache } from '../tiles/view.ts';
 import type { StripDensity, StripLattice } from './lattice.ts';
+import { stripCoverageAt, type StripFrame, type StripKeyframe, type StripScenePlan, type StripTrack } from './scrub.ts';
 import { EMPTY_STRIP_RECEIPT, type StripReceipt, type StripUpdate } from './store.ts';
 
 export interface StripWidget {
@@ -17,7 +19,9 @@ export interface StripWidget {
   readonly supported: boolean;
   readonly fixed?: boolean;
   readonly tiles?: (claim: StripTileClaim, read: StripTileRead) => Promise<void>;
-  requests(hour: number): readonly { slot: string; request: ProductRequest | null }[];
+  readonly track?: StripTrack;
+  keyframe(hour: number): StripKeyframe;
+  scrub?(page: number, frame: StripFrame | null): void;
   store(build: number, update: StripUpdate): Promise<StripReceipt>;
   settled(): boolean;
 }
@@ -29,6 +33,7 @@ export const STRIP_PAGE_BUDGET_BYTES = 64 * 1024 * 1024;
 const BUILD_TIMELINE_STRIPS = false;
 const DENSITIES = [16, 8, 4] as const;
 let nextBuild = 0;
+let nextPage = 0;
 
 const slotAt = (slot: Slot, selected: ReadonlySet<number>, density: StripDensity) => {
   const first = slot.hours.keys().next().value;
@@ -65,6 +70,9 @@ export class StripPage {
   private readonly budget: number;
   private readonly gate: PrepareGate;
   private readonly name?: string;
+  private readonly frames: FrameEngine;
+  private readonly id = ++nextPage;
+  private holdDrag: (() => void) | undefined;
   status: Status = 'not ready';
   density: StripDensity = 1;
   private readonly widgets = new Map<string, StripWidget>();
@@ -79,16 +87,23 @@ export class StripPage {
   private enabled = false;
 
   constructor(lattice: StripLattice, clock: PlaybackController, client: DashboardClient,
-    { budget = STRIP_PAGE_BUDGET_BYTES, gate = prepareGate(client), name }: { budget?: number; gate?: PrepareGate; name?: string } = {}) {
+    { budget = STRIP_PAGE_BUDGET_BYTES, gate = prepareGate(client), name, frames = engine }:
+    { budget?: number; gate?: PrepareGate; name?: string; frames?: FrameEngine } = {}) {
     this.lattice = lattice;
     this.clock = clock;
     this.client = client;
     this.budget = budget;
     this.gate = gate;
     this.name = name;
+    this.frames = frames;
   }
 
-  start() { this.enabled = true; this.changed(); return () => { this.enabled = false; this.changed(); }; }
+  start() {
+    this.enabled = true;
+    this.changed();
+    const stopScrub = this.publishScrub();
+    return () => { stopScrub(); this.enabled = false; this.changed(); };
+  }
 
   register(id: string, widget: StripWidget) {
     this.widgets.set(id, widget);
@@ -98,6 +113,7 @@ export class StripPage {
 
   private changed() {
     this.status = 'not ready';
+    this.holdDrag?.();
     this.build?.abort();
     if (this.scheduled) return;
     this.scheduled = true;
@@ -106,6 +122,68 @@ export class StripPage {
       const build = this.build = new AbortController();
       this.running = this.running.then(() => this.run(build.signal));
     });
+  }
+
+  private publishScrub() {
+    let active = false, held = false, loggedMixedGap = false, loggedTiles = false;
+    const posted = new Set<NonNullable<StripWidget['scrub']>>();
+    const clear = () => {
+      for (const send of posted) send(this.id, null);
+      posted.clear();
+    };
+    const hasTiles = () => [...this.widgets.values()].some(widget => widget.tiles);
+    this.holdDrag = () => {
+      if (!active) return;
+      held = true;
+      clear();
+      if (!loggedTiles && hasTiles()) {
+        perfLog?.strip({ page: this.name, status: 'drag held', position: this.clock.getScrubPosition(), reason: 'tile widgets follow from 3C-ii' });
+        loggedTiles = true;
+      }
+    };
+    const ready = () => this.status === 'coarse' || this.status === 'ready';
+    let task: ReturnType<FrameEngine['every']> | undefined;
+    const update = () => {
+      if (this.clock.getScrubPosition() === null) {
+        active = false;
+        task?.stop();
+        task = undefined;
+        clear();
+      } else if (!active) {
+        active = true;
+        held = false;
+        loggedMixedGap = false;
+        loggedTiles = false;
+        if (!ready() || hasTiles()) this.holdDrag?.();
+        if (held || ![...this.widgets.values()].some(widget => widget.scrub)) return;
+        task = this.frames.every('data', ({ index }) => {
+          const position = this.clock.getScrubPosition();
+          if (held || !ready() || position === null) { this.holdDrag?.(); return false; }
+          const density = this.density;
+          const target = this.lattice.scrub(position, density);
+          if (!target) {
+            perfLog?.strip({ page: this.name, status: 'drag held', position, builtEnd: this.lattice.last });
+            this.holdDrag?.();
+            return false;
+          }
+          if (target.gap && [...this.widgets.values()].some(widget => widget.track && stripCoverageAt(widget.track, target.hour).hour !== null)) {
+            if (!loggedMixedGap) {
+              perfLog?.strip({ page: this.name, status: 'drag held', position, reason: 'A widget recorded the reference gap' });
+              loggedMixedGap = true;
+            }
+            clear();
+            return true;
+          }
+          const frame: StripFrame = { ...target, page: this.id, frame: index, density, ...(perfLog ? { measure: true } : {}) };
+          for (const widget of this.widgets.values()) if (widget.scrub) posted.add(widget.scrub);
+          for (const send of posted) send(this.id, frame);
+          return true;
+        });
+      }
+    };
+    const stop = this.clock.subscribeScrub(update);
+    update();
+    return () => { stop(); task?.stop(); clear(); this.holdDrag = undefined; };
   }
 
   private async run(signal: AbortSignal) {
@@ -178,7 +256,7 @@ export class StripPage {
       widget.bytes = slot.held.bytes;
       return received();
     };
-    const requestAt = (widget: HeldWidget, slot: Slot, hour: number) => widget.input.requests(hour).find(ask => ask.slot === slot.name)!.request!;
+    const requestAt = (widget: HeldWidget, slot: Slot, hour: number) => widget.input.keyframe(hour).asks.find(ask => ask.slot === slot.name)!.request!;
     const read = async <T>(request: ProductRequest, group?: { product: string; keys: number; anchors: number }) => {
       let resuming = false;
       for (;;) {
@@ -259,7 +337,7 @@ export class StripPage {
         await this.gate.wait(signal, idle);
         signal.throwIfAborted();
         const slots = new Map<string, Slot>();
-        for (const hour of this.lattice.hours(16)) for (const { slot, request } of source.requests(hour)) {
+        for (const hour of this.lattice.hours(16)) for (const { slot, request } of source.keyframe(hour).asks) {
           let entry = slots.get(slot);
           if (!entry) slots.set(slot, entry = { name: slot, hours: new Set(), held: EMPTY_STRIP_RECEIPT, coarseNext: 0, fineNext: new Map() });
           if (request) entry.hours.add(hour);
@@ -300,6 +378,16 @@ export class StripPage {
             const marks = [...selected].filter(hour => !slot.hours.has(hour) && (!fine || !coarse.has(hour)));
             if (marks.length && !await fits(await update(widget, slot, { kind: 'mark', slot: slot.name, hours: marks, fine }))) return false;
             signal.throwIfAborted();
+          }
+          if (widget.input.scrub && !widget.input.fixed && !widget.input.tiles) {
+            const frames: [number, StripScenePlan][] = [];
+            for (const hour of selected) {
+              if (fine && coarse.has(hour)) continue;
+              const scene = widget.input.keyframe(hour).scene;
+              if (scene) frames.push([hour, scene]);
+            }
+            widget.bytes = (await widget.input.store(widget.build, { kind: 'scenes', page: this.id, fine, frames, track: widget.input.track })).bytes;
+            if (!await fits(received())) return false;
           }
           if (!fine) widget.coarse ??= widget.bytes;
         }

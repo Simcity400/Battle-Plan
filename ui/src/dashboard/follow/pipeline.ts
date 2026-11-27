@@ -15,6 +15,7 @@ import { productRequest } from '../request.ts';
 import type { FollowRequest, GatedParams } from '../regionTime';
 import { asFailure, RefusedError, type Failure } from '../queryError.ts';
 import type { StripReceipt, StripUpdate } from '../strip/store.ts';
+import type { StripFrame } from '../strip/scrub.ts';
 
 export interface LaneWorker {
   postMessage(message: ToLane, transfer?: Transferable[]): void;
@@ -93,6 +94,10 @@ export class Pipeline {
   private nextStripReceipt = 0;
   private readonly stripReceipts = new Map<number, { lane: number; resolve: (held: StripReceipt) => void; reject: (error: Error) => void }>();
 
+  scrub = (page: number, frame: StripFrame | null) => {
+    for (let lane = 0; lane < this.host.lanes.length; lane++) this.postLane(lane, { type: 'scrub', page, frame });
+  };
+
   storeStrip(id: number, build: number, update: StripUpdate): Promise<StripReceipt> {
     const lane = this.widgets.get(id)?.lane;
     if (this.closed || lane === undefined || this.laneErrors[lane]) return Promise.reject(new Error('Dashboard strip lane is unavailable'));
@@ -106,7 +111,7 @@ export class Pipeline {
 
   stripSettled(id: number): boolean {
     const widget = this.widgets.get(id);
-    if (!widget) return false;
+    if (!widget || !this.prepared()) return false;
     const route = widget.subs.size ? widget.route : null;
     if (route?.pending || route?.sending) return false;
     const view = this.page.view(id);
@@ -520,6 +525,10 @@ export class Pipeline {
         ...(message.installedId !== undefined ? { installedId: message.installedId } : {}),
         ...(message.owner !== undefined ? { owner: message.owner } : {}),
       });
+      return;
+    }
+    if (message.type === 'scrubbed') {
+      perfLog?.strip({ status: 'scrub frame', generation: this.generation, lane, ...message.frame, widgets: message.samples });
       return;
     }
     if (message.type === 'served') {

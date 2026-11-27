@@ -5,21 +5,24 @@ import type { IconName } from '../../components/Icons';
 import { validateProductReply } from '../../dashboard/client.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { countryIdentityIndex, validCountryIdentityHistories } from '../../dashboard/countryIdentity.ts';
+import { heldCountryNameAt } from '../../dashboard/countryNamesAt.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
+import { revisionOf } from '../../dashboard/follow/payloads.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, EVER_UNRECORDED, everBounds, everStateAt, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
 import { cumulativeEverMembership, datedIdentityMembership, groupSpanBodyStatus, groupSpanCover, groupSpanStateAt, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
+import { nameReadText } from '../../dashboard/nameReads.ts';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
 import { loadProduct, peekProduct, productKey, useProduct } from '../../dashboard/products';
 import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useGate, type Holder } from '../../dashboard/regionGate';
-import { axisAt, coverageSpan, lastRecordedHour, SPEC } from '../../dashboard/regionTime';
+import { axisAt, coverageAt, coverageSpan, lastRecordedHour, SPEC } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { TileView, tileCache, type TiledLine, type TileViewport } from '../../dashboard/tiles/view.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -31,6 +34,7 @@ import type { FamilyStaticProof } from './adapter.ts';
 import { createExactArtProvider, type ArtResolutions } from '../art/provider.ts';
 import {
   buildExactRequests,
+  buildStripKeyframe,
   buildTailPageRequest,
   compileFollowPlan,
   currentHovers,
@@ -45,7 +49,7 @@ import { identitySnapshots } from './identitySnapshots.ts';
 import { allReady, familyBodyStatus, inputOf, type PlanInput } from './planInputs.ts';
 import { displayedHoverKeys, type DrawnKeys } from './installed.ts';
 import { holdDayTiles } from '../heat/dayTiles.ts';
-import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources, watchPlanValid } from './planSources.ts';
+import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources, stripContextAt, stripPlanKey, watchPlanValid } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
 import { identityBrokerFor } from '../identity/broker.ts';
@@ -167,6 +171,7 @@ export interface UseFamilyPlanInput<TAux, TExtra> {
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
   readonly captureExtra?: (ctx: FamilyPlanContext<TAux>) => TExtra;
+  readonly stripProjection?: { readonly surface: string; readonly options: (ctx: FamilyPlanContext<TAux>) => unknown };
   readonly widget: WidgetBase;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
@@ -198,7 +203,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly onHoverHour: (hour: number | null, keys?: DrawnKeys) => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null>) | undefined;
-  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'requests' | 'tiles'> & { tilesSettled(): boolean };
+  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'keyframe' | 'track' | 'tiles'> & { tilesSettled(): boolean };
   readonly bodyStatus: FamilyBodyStatus;
   readonly bannerFailure: BannerFailureInfo | null;
   readonly nameFailureDetail: string | undefined;
@@ -226,6 +231,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     aux: auxSpec,
     sources: buildSources,
     captureExtra,
+    stripProjection,
     widget,
     runtime,
     active,
@@ -1040,9 +1046,20 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const terminal = terminalHour === null ? null : displayedGate.recorded(terminalHour);
   const dayTiles = strips && !fixedStrip && exactOptions && terminal !== null
     ? holdDayTiles(displayedEntries, entry => buildExactRequests(entry, terminal, exactOptions)?.asks[0]?.request, content) : undefined;
+  const stripKey = useMemo(() => {
+    if (!strips || !displayedCtx || !displayedPlan) return '';
+    const aliases = singleCountry?.aliases;
+    const aux = displayedCtx.aux;
+    return stripPlanKey(displayedPlan, sig, displayedCtx.options, stripProjection?.options(displayedCtx),
+      fixedStrip, pagedSnapshot, content, viewport, stripProjection?.surface, options, stripTileConfig,
+      aux && typeof aux === 'object' ? revisionOf(aux) : aux, revisionOf(displayedCtx.countries), aliases && revisionOf(aliases), displayedCtx.track.axisOffset,
+      displayedCtx.branch.firstHour, displayedCtx.branch.lastHour, displayedCtx.branch.gaps);
+  }, [strips, displayedCtx, displayedPlan, sig, stripProjection, fixedStrip, pagedSnapshot, content, viewport, options, singleCountry?.aliases, stripTileConfig]);
   const stripPlan: UseFamilyPlanResult<TAux, TExtra>['stripPlan'] = strips && exactOptions && displayedCtx && displayedPlan ? {
-    key: JSON.stringify([displayedPlan.valid ? [displayedPlan.owner, options] : sig, fixedStrip, pagedSnapshot, content, stripTileConfig]),
+    key: stripKey,
     fixed: fixedStrip,
+    track: { branch: { firstHour: displayedCtx.branch.firstHour, lastHour: displayedCtx.branch.lastHour, gaps: displayedCtx.branch.gaps },
+      axisOffset: displayedCtx.track.axisOffset },
     supported: true,
     tilesSettled: () => !hasStripChart || (tileViewsKeyRef.current === pixelBinnedKey && !!seriesViewportRef.current
       && [...tileViewsRef.current.values()].every(view => view.settled || view.error !== null)),
@@ -1057,20 +1074,22 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         await chart.holdStrip(displayedCtx.branch.firstHour, hours, claim, read, vp.rolling);
       }
     } } : {}),
-    requests: axis => {
-      if (fixedStrip) return [];
+    keyframe: axis => {
+      if (fixedStrip) return { asks: [] };
       const recorded = displayedGate.recorded(axis + trackOffset);
-      if (recorded === null) return [];
-      const [lo, hi] = displayedPlan.valid ?? [-Infinity, Infinity];
-      const plan = recorded < lo || recorded > hi
-        ? buildSources({ ...displayedCtx, planHour: recorded }, { following, ...viewport, staticSpan: displayedCtx.staticSpan })
-        : displayedPlan;
-      return exactEntries(plan).filter(entry => !frozenLog(entry)).flatMap(entry => (buildExactRequests(entry, recorded, {
-        ...exactOptions, pagedSnapshot: name => pagedSnapshot[name] ?? null,
-      })?.asks ?? []).flatMap(({ slot, request }) => {
-        const source = dayTiles ? dayTiles.slot(entry, request) : entry.name;
-        return source === null ? [] : [{ slot: JSON.stringify([source, slot, request.sourceId, request.revision, request.product]), request }];
-      }));
+      if (recorded === null) {
+        const coverage = coverageAt(displayedCtx.track, axis + trackOffset);
+        return { asks: [], scene: coverage.hour === null ? { outside: coverage.outside }
+          : { recorded: coverage.hour, parts: [], allowEmpty: false } };
+      }
+      const alias = singleCountry ? singleCountry.aliasAt(recorded) : displayedCtx.countryTag;
+      const nameRead = alias ? heldCountryNameAt(runtime.client, displayedCtx.track, content, recorded, alias) : undefined;
+      const name = nameRead?.kind === 'value' || nameRead?.kind === 'absent' || alias !== displayedCtx.countryTag ? nameReadText(nameRead) : displayedCtx.countryName;
+      const ctx = stripContextAt(displayedCtx, displayedPlan.valid, recorded, alias, name);
+      const plan = ctx === displayedCtx ? displayedPlan : buildSources(ctx, { following, ...viewport, staticSpan: ctx.staticSpan });
+      return buildStripKeyframe(plan, recorded, { ...exactOptions, pagedSnapshot: name => pagedSnapshot[name] ?? null },
+        ctx === displayedCtx ? undefined : stripProjection?.options(ctx),
+        (entry, request) => frozenLog(entry) ? null : dayTiles ? dayTiles.slot(entry, request) : entry.name);
     },
   } : undefined;
 

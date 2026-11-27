@@ -72,3 +72,15 @@ export function watchPlanValid(
   if (lo === -Infinity && hi === Infinity) return undefined;
   return watchBoundary(clock, () => [lo - trackOffset, hi + 1 - trackOffset], onCross);
 }
+
+export function stripContextAt<TAux>(ctx: FamilyPlanContext<TAux>, valid: SourcePlan['valid'], hour: number,
+  countryTag: string | null, countryName: string): FamilyPlanContext<TAux> {
+  const [lo, hi] = valid ?? [-Infinity, Infinity];
+  return hour >= lo && hour <= hi && countryTag === ctx.countryTag && countryName === ctx.countryName
+    ? ctx
+    : { ...ctx, planHour: hour, countryTag, countryName };
+}
+
+export function stripPlanKey(plan: SourcePlan, signature: string, options: FamilyPlanContext['options'], projectionOptions: unknown, ...readInputs: unknown[]): string {
+  return JSON.stringify([plan.valid ? [plan.owner, plan.valid] : signature, options, projectionOptions, ...readInputs]);
+}

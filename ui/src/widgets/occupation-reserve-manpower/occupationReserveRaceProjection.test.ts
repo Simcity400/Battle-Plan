@@ -19,6 +19,11 @@ import { hoverTimeChartLayout, layoutTimeChart } from '../../families/time-chart
 import { timeChartLane } from '../../families/time-chart/laneView.ts';
 import { LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 import { createLaneView } from '../../families/laneRuntime.ts';
+import { Lane } from '../../draw/lane.ts';
+import { buildStripKeyframe, readPlanExact } from '../../families/broker.ts';
+import { stripContextAt } from '../../families/host/planSources.ts';
+import type { DashboardClient } from '../../dashboard/client.ts';
+import { gatedHour, openGate } from '../../test-support/gated.ts';
 import type { CountryIdentitiesReply, OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
 import { FAMILY_VIEWS } from '../familyManifest.ts';
 import { occupationReserveBreakdownDeclaration, occupationReserveBreakdownProjection } from './occupationReserveBreakdownProjection.ts';
@@ -329,7 +334,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
   assert.equal(LANE_THEME.surface.length > 0, true);
 });
 
-test('occupation-reserve-manpower breakdown follows the holder at the displayed hour and never backfills a missing source tag', () => {
+test('occupation-reserve-manpower breakdown follows the holder at the displayed hour and never backfills a missing source tag', async () => {
   const aux: CountryIdentitiesReply = {
     branchId: '1',
     known: [],
@@ -393,6 +398,28 @@ test('occupation-reserve-manpower breakdown follows the holder at the displayed 
     occupationReserveBreakdownDeclaration.projectionOptions(makeCtx(['AAA'], 12), { extent: [0, 12], surface: '#161616' }).holder,
     null,
   );
+  const declaration = occupationReserveBreakdownDeclaration;
+  const before = makeCtx(['AAA'], 3), after = makeCtx(['AAA'], 12);
+  const at = stripContextAt(before, planAt3.valid, 12, before.countryTag, before.countryName);
+  const extra = { extent: [0, 12] as const, surface: '#161616' };
+  const readOptions = { following: true, timeMode: 'follow' as const, branch: after.branch, window: null, staticSpan: null, gate: openGate(0, 12) };
+  const plan = declaration.sources(at, { following: true, staticSpan: null });
+  const keyframe = buildStripKeyframe(plan, gatedHour(12), readOptions, declaration.projectionOptions(at, extra));
+  assert.equal(keyframe.asks.length, 0);
+  const view = createLaneView(timeChartLane, () => {});
+  const lane = new Lane({
+    lane: 0, lanes: 1, views: () => view, crop: async () => assert.fail('scrub must not crop'), present: () => assert.fail('scrub must not present'),
+    release() {}, fail: assert.fail, later() {},
+  });
+  lane.mount(1, [], 'time-chart', { family: 'time-chart', kind: declaration.kind, view: 'breakdown', options: declaration.projectionOptions(before, extra) });
+  lane.strip(1, 1, { kind: 'scenes', page: 2, fine: false, frames: [[12, keyframe.scene!]] });
+  lane.scrub(2, { page: 2, frame: 1, hour: 12, density: 1, gap: null });
+  const actual = lane.scrubScenes?.widgets.get(1);
+  assert.equal(actual?.mode, 'picture');
+  const client = { product: () => assert.fail('an absent holder builds no request') } as unknown as DashboardClient;
+  const seek = await readPlanExact(absentPlanAt12, 12, { ...readOptions, client });
+  assert.ok(seek);
+  assert.deepEqual(actual.picture.model, declaration.projection.project(seek, declaration.projectionOptions(after, extra)));
 
   const explicitGapCtx = { ...makeCtx(['AAA'], 8), options: { holder: 'AAA|10' } } as unknown as FamilyPlanContext<CountryIdentitiesReply>;
   const explicitGapPlan = occupationReserveBreakdownDeclaration.sources(explicitGapCtx, { width: 600, height: 260, following: true, staticSpan: null });

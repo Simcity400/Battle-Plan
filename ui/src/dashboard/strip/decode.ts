@@ -1,4 +1,5 @@
 import { decode } from '@msgpack/msgpack';
+import type { StripWork } from './scrub.ts';
 
 type Value = null | boolean | number | bigint | string | Value[] | { [key: string]: Value };
 export type StripState = { answer: Value } | { refused: string };
@@ -40,7 +41,8 @@ function unpack(bytes: Uint8Array): Value {
   return numbers(decode(bytes, { useBigInt64: true }) as Value);
 }
 
-export function decodeState(bytes: Uint8Array): StripState {
+export function decodeState(bytes: Uint8Array, work?: StripWork): StripState {
+  if (work) work.bytes += bytes.length;
   return unpack(bytes) as StripState;
 }
 
@@ -56,8 +58,10 @@ function target(state: Value, path: Path): Value {
   return state;
 }
 
-export function applyStripPatch(state: StripState, bytes: Uint8Array): StripState {
-  for (const edit of unpack(bytes) as Edit[]) {
+export function applyStripPatch(state: StripState, bytes: Uint8Array, work?: StripWork): StripState {
+  const edits = unpack(bytes) as Edit[];
+  if (work) { work.bytes += bytes.length; work.leaves += edits.length; }
+  for (const edit of edits) {
     if ('replace' in edit) {
       const [path, value] = edit.replace;
       if (!path.length) state = value as StripState;

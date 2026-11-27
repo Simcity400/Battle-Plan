@@ -1,9 +1,14 @@
-import { datedToken } from '../test-support/gated.ts';
+import { datedToken, gatedHour, openGate } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CountryIdentityHistory } from '../generated/dashboard';
-import { readDatedCountry } from './datedCountry.ts';
+import { datedCountrySpans, readDatedCountry } from './datedCountry.ts';
+import { countryDrillTagAt } from './countryIdentity.ts';
 import { choiceAt, resolveChoice, settleChoice } from './reachedCountry.ts';
+import { buildStripKeyframe } from '../families/broker.ts';
+import { stripContextAt } from '../families/host/planSources.ts';
+import type { FamilyPlanContext } from '../families/plan.ts';
+import { airMissionsDeclaration } from '../widgets/air-missions/airMissionsProjection.ts';
 
 const histories: CountryIdentityHistory[] = [
   { tag: 'GER', identities: [{ slot: 7, countryId: 1, firstHour: 0, lastHour: 99 }, { slot: 9, countryId: 2, firstHour: 200, lastHour: 300 }] },
@@ -19,6 +24,16 @@ test('a choice follows the identity holding its tag at the hour it was made, thr
     'after it ends, a later holder of the tag never takes the choice');
   assert.equal(at('GER', 250, 50).country.absent, true, 'the later holder chosen later is not the earlier country');
   assert.equal(at('GER', 250, 250).country.tag, 'GER');
+  const branch = { id: '1', firstHour: 0, lastHour: 300 };
+  const initial = { countryTag: 'GER', countryName: 'Germany', branch, track: { source: { id: 's', revision: 'r' }, axisOffset: 0 }, planHour: 50 } as FamilyPlanContext;
+  const spans = datedCountrySpans(histories, choiceAt('c', '1', 0, 'GER', 50), 0, 300)!;
+  const hour = gatedHour(119);
+  const viewport = { following: true, staticSpan: null };
+  const initialPlan = airMissionsDeclaration.sources(initial, viewport);
+  const ctx = stripContextAt(initial, initialPlan.valid, hour, countryDrillTagAt(spans, hour), 'Germany');
+  const options = { following: true, timeMode: 'follow' as const, gate: openGate(0, 300), window: null, staticSpan: null, branch };
+  const strip = buildStripKeyframe(airMissionsDeclaration.sources(ctx, viewport), hour, options);
+  assert.equal(strip.asks[0]?.request?.params.country, 'DEU');
   for (const hour of [-1, 301]) assert.deepEqual(at('GER', 250, hour).country,
     { chosen: 'GER', tag: null, absent: false, reason: 'This time is outside the recording.' },
     `at ${hour}, outside the branch, the country is not called absent: the time is outside the recording`);

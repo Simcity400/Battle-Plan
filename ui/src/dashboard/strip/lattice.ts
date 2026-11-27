@@ -1,4 +1,4 @@
-import type { CoveredBranch } from '../regionTime.ts';
+import { coverageAt, type CoveredBranch } from '../regionTime.ts';
 
 export type StripDensity = 1 | 4 | 8 | 16;
 
@@ -22,7 +22,7 @@ export function stripLattice(branch: CoveredBranch, offset: number) {
   const bucketAt = (hour: number, width: number) => Math.floor((hour + offset + 1) / width);
   let bucket = 6;
   while (stretches.reduce((sum, span) => sum + bucketAt(span.last, bucket) - bucketAt(span.first - 1, bucket), 0) > 512) bucket *= 2;
-  return { stretches, gaps, last: stretches.at(-1)?.last ?? first - 1, bucket, hours(density: StripDensity) {
+  const hours = (density: StripDensity) => {
     const width = bucket * 16 / density;
     const hours: number[] = [];
     for (const span of stretches) {
@@ -31,7 +31,21 @@ export function stripLattice(branch: CoveredBranch, offset: number) {
       if (span.last > span.first) hours.push(span.last);
     }
     return hours;
-  } };
+  };
+  return {
+    stretches, gaps, last: stretches.at(-1)?.last ?? first - 1, bucket, hours,
+    scrub(position: number, density: StripDensity) {
+      const hour = Math.floor(position);
+      if (hour < first || hour > last) return null;
+      const stretch = stretches.find(span => hour >= span.first && hour <= span.last);
+      if (!stretch) {
+        const coverage = coverageAt({ branch }, hour + offset);
+        return coverage.hour === null ? { hour, gap: coverage.outside } : null;
+      }
+      const width = bucket * 16 / density;
+      return { hour: hour === stretch.last ? hour : Math.max(stretch.first, bucketAt(hour, width) * width - 1 - offset), gap: null };
+    },
+  };
 }
 
 export type StripLattice = ReturnType<typeof stripLattice>;
