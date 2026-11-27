@@ -198,7 +198,7 @@ function drawInRunLabel(
   ctx.fillStyle = explicitTextColor ?? contrastInkForFill(bgColor, theme);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, x + 8, y + height / 2 + 0.5);
+  ctx.fillText(text, x + 8, y + height / 2);
   ctx.restore();
 }
 

@@ -292,7 +292,7 @@ const tableProjection = declareTableProjection<{ rows: { id: string; name: strin
   rowKey: row => row.id,
   rowName: row => row.name,
 });
-const tableRows = Array.from({ length: 30 }, (_, i) => ({ id: `C${i}`, name: `Country number ${i + 1}`, factories: 400 - i * 7, divisions: 120 - i * 2 }));
+const tableRows = Array.from({ length: 40 }, (_, i) => ({ id: `C${i}`, name: `Country number ${i + 1}`, factories: 400 - i * 7, divisions: 120 - i * 2 }));
 const tableSettings = tableSettingsOf(undefined, [
   { key: 'name', label: 'Country', as: 'plain', offered: ['plain'] },
   { key: 'factories', label: 'Factories', as: 'plain', offered: ['plain'] },
@@ -337,7 +337,7 @@ let playbackLayoutReads = 0;
 const boundingRect = Element.prototype.getBoundingClientRect;
 Element.prototype.getBoundingClientRect = function () { layoutReads++; return boundingRect.call(this); };
 
-interface Look { readonly layout: Layout; readonly width: number; readonly zoom: Readonly<Record<string, number>>; readonly motionAt?: number; readonly advanced?: boolean }
+interface Look { readonly layout: Layout; readonly width: number; readonly zoom: Readonly<Record<string, number>>; readonly motionAt?: number }
 const START_LAYOUT: Layout = PLACED.map((item, at) => ({ i: item.id, x: (at % 3) * 4, y: Math.floor(at / 3) * 8, w: 4, h: 8 }));
 let setLook: (look: Look) => void = () => {};
 let look: Look = { layout: START_LAYOUT, width: 0, zoom: {} };
@@ -425,7 +425,8 @@ function visibleClip(canvas: HTMLCanvasElement): { readonly clip: DOMRect; reado
 }
 
 async function decode(png: string): Promise<ImageData> {
-  const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${png}`)).blob());
+  const bytes = Uint8Array.from(atob(png), character => character.charCodeAt(0));
+  const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
   const board = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d')!;
   board.drawImage(bitmap, 0, 0);
   return board.getImageData(0, 0, bitmap.width, bitmap.height);
@@ -438,6 +439,7 @@ export interface Placement {
   readonly css: readonly [number, number];
   readonly dpr: number;
   readonly origin: readonly [number, number];
+  readonly offset: readonly [number, number];
   readonly textDraws: number;
   readonly fractionalText: number;
   readonly textError: number;
@@ -449,12 +451,14 @@ async function placements(): Promise<Placement[]> {
   const boxes = await deviceBoxes();
   return canvases().map(canvas => {
     const rect = canvas.getBoundingClientRect();
+    const body = canvas.closest('.fh-body')!.getBoundingClientRect();
     const draws = shown.get(canvas)?.text ?? [];
     const error = (p: TextDraw) => Math.max(Math.abs(p.x - Math.round(p.x)), Math.abs(p.y - Math.round(p.y)));
     return {
       id: familyOf(canvas), backing: [shown.get(canvas)?.width ?? 0, shown.get(canvas)?.height ?? 0], box: boxes.get(canvas) ?? [0, 0],
       css: [specified(canvas, 'width'), specified(canvas, 'height')], dpr: devicePixelRatio * canvas.currentCSSZoom,
       origin: [rect.left * devicePixelRatio, rect.top * devicePixelRatio],
+      offset: [(rect.left - body.left) * devicePixelRatio, (rect.top - body.top) * devicePixelRatio],
       textDraws: draws.length, fractionalText: draws.filter(p => error(p) > 0.01).length, textError: Math.max(0, ...draws.map(error)),
     };
   });
@@ -536,7 +540,6 @@ const api = {
   settle,
   placements,
   motionFrames: () => Object.fromEntries(motionFrames),
-  text: () => Object.fromEntries(canvases().map(canvas => [familyOf(canvas), shown.get(canvas)?.text])),
   async costFrames() {
     const before = layoutReads;
     await frames(8);
@@ -546,6 +549,10 @@ const api = {
   async tableCost() {
     api.release();
     api.scrollTable(0);
+    const source = statics.get('table')!;
+    const rows = (source.panels!.main as { rows: typeof tableRows }).rows.slice(0, 30);
+    statics.set('table', { ...source, stamp: {}, panels: { main: { rows } } });
+    setLook({ ...look });
     const body = document.querySelector<HTMLElement>('[data-widget="table"] .fh-body')!;
     body.style.height = '1320px'; body.style.flex = 'none';
     await frames(12);
@@ -596,6 +603,7 @@ const api = {
   hideCanvases,
   exactness,
   scrollDashboard(top: number) { scroller().scrollTop = top; return scroller().scrollTop; },
+  nudgeDashboard(left: number) { document.getElementById('dashboard-root')!.style.marginLeft = `${left}px`; },
   scrollTable(top: number) {
     const body = document.querySelector<HTMLElement>('[data-widget="table"] .fh-body')!;
     body.scrollTop = top;
@@ -611,12 +619,19 @@ const api = {
   async glide() {
     statics.set('bars', { stamp: {}, proof: [barsHour + 1, barsHour + 1], hour: barsHour + 1, follows: true, panels: { main: { ...barsModel, hour: barsHour + 1, rows: [...barsModel.rows].reverse() } } });
     statics.set('table', { stamp: {}, proof: [tableHour + 1, tableHour + 1], hour: tableHour + 1, follows: true, panels: { main: { rows: tableRows.map((row, i) => ({ ...row, factories: i === 0 ? 300 : i === 1 ? 450 : row.factories })) } } });
-    setLook({ ...look, advanced: true });
+    setLook({ ...look });
     clock.stepExport(1001, 1, false);
     await frames(8);
     setLook({ ...look, motionAt: 1067 });
     await frames(8);
     playbackLayoutReads = (await api.costFrames()).layoutReads;
+    const before = layoutReads;
+    const extent = canvases().find(canvas => familyOf(canvas) === 'table')!.parentElement!;
+    for (let i = 0; i < 8; i++) {
+      extent.style.height = `${2000 + i * 44}px`;
+      await frames();
+    }
+    playbackLayoutReads += layoutReads - before;
     api.hold();
     return settle();
   },

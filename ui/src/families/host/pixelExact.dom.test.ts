@@ -35,6 +35,12 @@ for (const ratio of RATIOS) test(`at ${ratio}, text anchors and canvas origins s
       await page.evaluate('window.pixelExact.oddHeader(); window.pixelExact.scrollTable(13.3)');
       await page.evaluate('window.pixelExact.settle()');
       const still = (await measure(page, cdp)).filter(row => ['bars', 'table', 'time-chart'].includes(row.id));
+      for (let step = 1; step <= 11; step++) {
+        await page.evaluate(`window.pixelExact.nudgeDashboard(${step * 0.3}); window.pixelExact.frames(3)`);
+        const placed = await page.evaluate<Placement[]>('window.pixelExact.placements()');
+        for (const row of placed) assert.ok(row.offset.every(v => Math.abs(v) <= 0.51), `${row.id}: small move ${step} stays within half a device pixel of its body (${row.offset})`);
+      }
+      await page.evaluate('window.pixelExact.nudgeDashboard(0); window.pixelExact.frames(3)');
       await page.evaluate('window.pixelExact.move(); window.pixelExact.resize("table", 4, 9, 3.4); window.pixelExact.tallTable(); window.pixelExact.scrollDashboard(37.3)');
       await page.evaluate('window.pixelExact.settle()');
       const moved = (await measure(page, cdp)).filter(row => ['bars', 'table', 'time-chart'].includes(row.id));

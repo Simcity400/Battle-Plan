@@ -18,34 +18,67 @@ const subscribeAuditing = (listener: () => void) => subscribeFamilyAuditing(() =
 const STATIC_HOLD = {};
 let nextInstanceSeq = 1;
 
-function alignCanvas(canvas: HTMLCanvasElement): () => void {
-  let x = 0, y = 0;
-  const align = () => {
-    const box = canvas.getBoundingClientRect();
-    const ratio = windowRatio();
-    const zoom = canvas.currentCSSZoom || 1;
+const alignedCanvases = new Map<HTMLCanvasElement, { x: number; y: number }>();
+const alignedParents = new Map<Element, number>();
+let alignmentFrame = 0;
+let alignmentWatch: { resize: ResizeObserver; moved: MutationObserver; stopRatio: () => void } | null = null;
+
+function alignCanvases() {
+  alignmentFrame = 0;
+  const ratio = windowRatio();
+  const offsets = [...alignedCanvases].map(([canvas, previous]) => {
+    const box = canvas.getBoundingClientRect(), zoom = canvas.currentCSSZoom || 1;
     const unit = 64 * ratio * zoom;
-    x = Math.round((x + (Math.round(box.left * ratio) / ratio - box.left) / zoom) * unit) / unit;
-    y = Math.round((y + (Math.round(box.top * ratio) / ratio - box.top) / zoom) * unit) / unit;
-    canvas.style.marginLeft = canvas.style.left = `${x + 1e-4 / unit}px`;
-    canvas.style.marginTop = canvas.style.top = `${y + 1e-4 / unit}px`;
-  };
-  const resize = new ResizeObserver(align);
-  const moved = new MutationObserver(align);
-  for (let parent = canvas.parentElement; parent; parent = parent.parentElement) {
-    resize.observe(parent);
-    moved.observe(parent, { attributes: true, attributeFilter: ['style'] });
+    const snap = (at: number, offset: number) => {
+      const base = at - offset * zoom;
+      return Math.round((Math.round(base * ratio) / ratio - base) / zoom * unit) / unit;
+    };
+    return { canvas, x: snap(box.left, previous.x), y: snap(box.top, previous.y), unit };
+  });
+  for (const { canvas, x, y, unit } of offsets) {
+    alignedCanvases.set(canvas, { x, y });
+    const left = `${x + 1e-4 / unit}px`, top = `${y + 1e-4 / unit}px`;
+    if (canvas.style.left !== left) canvas.style.marginLeft = canvas.style.left = left;
+    if (canvas.style.top !== top) canvas.style.marginTop = canvas.style.top = top;
   }
-  document.addEventListener('scroll', align, true);
-  document.addEventListener('transitionend', align, true);
-  const stopRatio = watchDevicePixelRatio(align);
-  align();
+}
+
+function scheduleAlignment() {
+  if (!alignmentFrame) alignmentFrame = requestAnimationFrame(alignCanvases);
+}
+
+function alignCanvas(canvas: HTMLCanvasElement): () => void {
+  if (!alignmentWatch) {
+    alignmentWatch = { resize: new ResizeObserver(scheduleAlignment), moved: new MutationObserver(scheduleAlignment), stopRatio: watchDevicePixelRatio(scheduleAlignment) };
+    document.addEventListener('scroll', scheduleAlignment, true);
+    document.addEventListener('transitionend', scheduleAlignment, true);
+  }
+  alignedCanvases.set(canvas, { x: parseFloat(canvas.style.marginLeft) || 0, y: parseFloat(canvas.style.marginTop) || 0 });
+  const parents: Element[] = [];
+  for (let parent = canvas.parentElement?.parentElement; parent; parent = parent.parentElement) {
+    parents.push(parent);
+    alignedParents.set(parent, (alignedParents.get(parent) ?? 0) + 1);
+    alignmentWatch.resize.observe(parent);
+    alignmentWatch.moved.observe(parent, { attributes: true, attributeFilter: ['style', 'class'] });
+  }
+  scheduleAlignment();
   return () => {
-    resize.disconnect();
-    moved.disconnect();
-    stopRatio();
-    document.removeEventListener('scroll', align, true);
-    document.removeEventListener('transitionend', align, true);
+    alignedCanvases.delete(canvas);
+    for (const parent of parents) {
+      const count = alignedParents.get(parent)! - 1;
+      if (count) alignedParents.set(parent, count);
+      else { alignedParents.delete(parent); alignmentWatch!.resize.unobserve(parent); }
+    }
+    alignmentWatch!.moved.disconnect();
+    for (const parent of alignedParents.keys()) alignmentWatch!.moved.observe(parent, { attributes: true, attributeFilter: ['style', 'class'] });
+    if (alignedCanvases.size) return;
+    alignmentWatch!.resize.disconnect();
+    alignmentWatch!.stopRatio();
+    alignmentWatch = null;
+    document.removeEventListener('scroll', scheduleAlignment, true);
+    document.removeEventListener('transitionend', scheduleAlignment, true);
+    cancelAnimationFrame(alignmentFrame);
+    alignmentFrame = 0;
   };
 }
 
