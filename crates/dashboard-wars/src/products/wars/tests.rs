@@ -276,6 +276,43 @@ fn contributions_credit_each_member_its_own_ledgers_and_same_side_deliveries_for
 }
 
 #[test]
+fn a_partial_participation_read_keeps_the_war_and_side_with_all_their_ledgers() {
+    let mut frame = recorded(100);
+    let wars = [(1, 2), (3, 4)];
+    frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=4).map(|id| rows::CountryLinkRow { id, canonical_slot: id }).collect(),
+    )).into();
+    frame.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(wars.map(|(first_country, second_country)| {
+        rows::WarRelationRow { first_country, second_country, start_hour: 90, first_was_instigator: 1, ..Default::default() }
+    }).into())).into();
+    frame.tables[TableId::WarOwnedRelations.index()] = TableView::Complete(TableRows::WarOwnedRelations(wars.into_iter().flat_map(|(first_country, second_country)| {
+        [first_country, second_country].map(|owner| WarOwnedRelationRow { owner, first_country, second_country, ..Default::default() })
+    }).collect())).into();
+    frame.tables[TableId::WarLendLeaseHistories.index()] = TableView::Complete(TableRows::WarLendLeaseHistories(vec![])).into();
+    let mut ledgers: Vec<_> = wars.into_iter().flat_map(|(war_first, war_second)| [0, 1].map(|direction| {
+        rows::WarParticipationRow { war_first, war_second, direction, equipment_damage: 127 * i64::from(war_first + direction), ..Default::default() }
+    })).collect();
+    frame.tables[TableId::WarParticipation.index()] = TableView::Complete(TableRows::WarParticipation(ledgers.clone())).into();
+    let held = holders(&[("ONE", 1), ("TWO", 2), ("THREE", 3), ("FOUR", 4)], 0, 1000);
+    let group = |frame: &replay_frame::frame::DecodedFrame, view| contributions::groups(frame, &held, Some(&Country::Slot(view)), Ok(FACTORS)).unwrap().remove(0);
+    let expected = group(&frame, 1);
+    assert_eq!(expected.participants.len(), 2);
+    assert!(expected.reason.is_none());
+
+    ledgers.pop();
+    frame.tables[TableId::WarParticipation.index()] = TableView::Truncated { rows: TableRows::WarParticipation(ledgers), missing: 1 }.into();
+    assert_eq!(group(&frame, 1), expected);
+    let affected = group(&frame, 3);
+    assert!(affected.reason.as_deref().is_some_and(|reason| reason.contains("1 rows not read")));
+    assert_eq!(affected.participants.len(), 1);
+    assert_eq!(affected.participants[0].tag, "THREE");
+    let equipment = affected.measures.iter().find(|measure| measure.key == WarMeasureKey::EquipmentDamage).unwrap();
+    assert_eq!(equipment.viewpoint.total.as_deref(), Some("381"));
+    assert_eq!(equipment.opposing.total, None);
+    assert_eq!(equipment.viewpoint.share_of_war, None);
+}
+
+#[test]
 fn contributions_without_their_histories_name_why_instead_of_counting_zero() {
     let mut frame = participation();
     frame.tables[TableId::WarLendLeaseHistories.index()] = TableView::Unavailable { reason: "synthetic missing history".into() }.into();
