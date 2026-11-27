@@ -334,19 +334,27 @@ test('a firing whose options come only from its choice lists them from the choic
   assert.deepEqual(options(120, choice), ['Option A: Receive', 'Option B: Refuse'], 'after it, the choice the page shows supplies them');
 });
 
-test('a witnessed cessation or guarantee with an unidentified country keeps its row and says the country is not identified', () => {
+test('witnessed participant roles keep unidentified countries without adding an absent decision target', () => {
   const ceased = validateFeedRow(row('ceasedToExist', 100, [], { exact: false, participants: [null, null] }));
   const guarantee = validateFeedRow(row('guaranteeGranted', 101, ['NOR'], { category: 'diplomacy', exact: false, participants: ['NOR', null] }));
   assert.throws(() => validateFeedRow(row('peace', 103, ['NOR', 'SWE'])), /malformed/, 'a family row that names its countries lists no roles');
   assert.throws(() => validateFeedRow(row('ceasedToExist', 102, ['NOR'], { exact: false, participants: [null, 'NOR'] })), /malformed/,
     'a one-country row has no second role');
-  const all = [ceased, guarantee];
+  const roleCases: { event: EventFeedRow; flags: string[] }[] = [
+    { event: row('decisionRemoved', 100, [], { category: 'politics' }), flags: ['?'] },
+    { event: row('decisionSelected', 100, [], { category: 'politics', cause: { notes: [], targetRecorded: false } }), flags: ['?'] },
+    { event: row('decisionRemoved', 100, [], { category: 'politics', cause: { notes: [], targetRecorded: true } }), flags: ['?', '?'] },
+    { event: row('decisionRemoved', 100, ['AAA'], { category: 'politics', cause: { state: 77, notes: [], targetRecorded: true } }), flags: ['AAA'] },
+    { event: row('warDeclared', 100, []), flags: ['?', '?'] },
+    { event: row('stateTransferred', 100, []), flags: ['?', '?'] },
+  ];
+  const all = [ceased, guarantee, ...roleCases.map(({ event }) => event)];
   const head = {
     branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: String(all.length),
     rows: all.map((r, i) => ({ line: 'event', hour: r.hour, observed: r.hour, key: `k${i}`, ordinal: String(i), live: false, row: r, choice: null })),
     facetTotals: [], missing: [], unavailable: [], warnings: [],
   };
-  const source = buildRowSourceFromHead('test:feed', head, undefined, 120)!;
+  const source = buildRowSourceFromHead('test:feed', head, undefined, 120, undefined, eventFeedProjection.validateTail)!;
   const readView = createBoundedReadView({
     hour: 120,
     identity: datedIdentity({ NOR: [{ from: 0, name: 'Norway' }] }),
@@ -358,42 +366,16 @@ test('a witnessed cessation or guarantee with an unidentified country keeps its 
   assert.deepEqual(country('k0').flags?.map(flag => flag.tag), ['?']);
   assert.deepEqual(country('k1').value, { kind: 'partial', value: 'Norway', reason: 'Country not identified' }, 'the guaranteed country is missing beside the guarantor');
   assert.deepEqual(country('k1').flags?.map(flag => flag.tag), ['NOR', '?']);
+  for (const [i, { flags }] of roleCases.entries()) {
+    const cell = country(`k${i + 2}`);
+    assert.deepEqual(cell.flags?.map(flag => flag.tag), flags, `case ${i}`);
+    if (flags.every(tag => tag === '?')) assert.deepEqual(cell.value, { kind: 'notRecorded', reason: 'Country not identified' });
+  }
   const tip = (key: string) => {
     const extra = model.rows.find(r => r.key === key)!.tooltipExtra;
     return ((typeof extra === 'function' ? extra() : extra) ?? []).map(r => r.label);
   };
   assert.ok(tip('k1').includes('Observed at') && !tip('k1').includes('Time'), 'an inexact row is dated by its observation, and says so');
-});
-
-test('an unidentified decision owner has one country slot unless a target was recorded, while two-country events keep both roles', () => {
-  const cases: { event: EventFeedRow; flags: string[] }[] = [
-    { event: row('decisionRemoved', 100, [], { category: 'politics' }), flags: ['?'] },
-    { event: row('decisionSelected', 100, [], { category: 'politics' }), flags: ['?'] },
-    { event: row('decisionRemoved', 100, ['AAA'], { category: 'politics' }), flags: ['AAA'] },
-    { event: row('decisionRemoved', 100, ['BBB'], { category: 'politics', participants: [null, 'BBB'] }), flags: ['?', 'BBB'] },
-    { event: row('decisionRemoved', 100, [], { category: 'politics', cause: { notes: [], targetRecorded: true } }), flags: ['?', '?'] },
-    { event: row('decisionRemoved', 100, ['AAA'], { category: 'politics', cause: { notes: [], targetRecorded: true } }), flags: ['AAA', '?'] },
-    { event: row('warDeclared', 100, []), flags: ['?', '?'] },
-    { event: row('stateTransferred', 100, []), flags: ['?', '?'] },
-  ];
-  const source = buildRowSourceFromHead('test:feed-roles', {
-    branchId: '1', offset: '0', total: String(cases.length),
-    rows: cases.map(({ event }, i) => ({ line: 'event', hour: event.hour, observed: event.hour, key: `k${i}`, ordinal: String(i), live: false, row: event, choice: null })),
-    missing: [], unavailable: [], warnings: [],
-  }, undefined, 120, undefined, eventFeedProjection.validateTail)!;
-  const model = eventFeedProjection.project(createBoundedReadView({
-    hour: 120,
-    identity: datedIdentity({ AAA: [{ from: 0, name: 'Amber Republic' }], BBB: [{ from: 0, name: 'Blue Republic' }] }),
-    rows: new Map([['main', source]]),
-  }), { categories: ['politics', 'warsPeace'], artwork: false });
-  assert.equal(model.rows.length, cases.length);
-  for (const [i, { flags }] of cases.entries()) {
-    const country = model.rows.find(r => r.key === `k${i}`)!.cells.country!;
-    assert.deepEqual(country.flags?.map(flag => flag.tag), flags, `case ${i}`);
-    if (flags.every(tag => tag === '?')) {
-      assert.deepEqual(country.value, { kind: 'notRecorded', reason: 'Country not identified' });
-    }
-  }
 });
 
 test('a finished project with an unidentified owner keeps its row and carries its own missing reason in the country cell', () => {
