@@ -126,6 +126,51 @@ fn a_stepped_frames_window_is_the_picture_of_exactly_its_hour() {
 }
 
 #[test]
+fn should_wake_fires_for_pending_work_and_stays_quiet_when_settled() {
+    use super::{Ask, Progress, Turn, should_wake};
+    use viewer_map_modes::map_mode::{MapMode, Stock};
+    let composes = Arc::new(Mutex::new(0));
+    let (recording, _) = record(1, 8, busy);
+    let entry = open(units(recording, "side wake decision"), quick()).unwrap();
+    let mut map_side = MapSide::with_products(entry, vec![Box::new(Sum::new(&composes))], View::default()).unwrap();
+    map_side.entry().anchor(2, false, 1.0, true);
+    viewer_layer_core::test_support::recorded::frames_at(&mut map_side, 2, "settled at hour 2", |side, _| {
+        side.applied() == Some(2) && side.mode_on_screen() == Some(&MapMode::default()) && side.on_screen().is_some_and(|on| on.drawn == Some(2) && on.settled)
+    });
+    let mut turn = Turn {
+        side: map_side,
+        framed: false,
+        ready: None,
+        published: None,
+        reached: None,
+        looks: 0,
+        stop: false,
+        refused: None,
+        overlay: None,
+        overlay_withdrawn: false,
+    };
+    let default_ask = Ask { view: View::default(), at: Head::Paced(2), overlay: None, combat: None, serial: 0 };
+    let before = Progress::of(&turn.side);
+    turn.side.frame_still(2).unwrap();
+    assert!(!should_wake(&before, &turn, &default_ask), "settled idle turn requests no repaint");
+    let factions = MapMode::Stock(Stock::Factions);
+    let factions_ask = Ask { view: View { map_mode: factions.clone(), ..View::default() }, at: Head::Paced(2), overlay: None, combat: None, serial: 1 };
+    assert!(should_wake(&before, &turn, &factions_ask), "outstanding mode mismatch wakes even without turn progress");
+    turn.overlay_withdrawn = true;
+    assert!(should_wake(&before, &turn, &default_ask), "overlay withdrawal wakes the window");
+    turn.overlay_withdrawn = false;
+    turn.side.set_view(factions_ask.view.clone()).unwrap();
+    turn.side.frame_still(2).unwrap();
+    assert!(should_wake(&before, &turn, &factions_ask), "mode change wakes the window");
+    viewer_layer_core::test_support::recorded::frames_at(&mut turn.side, 2, "settled in factions", |side, _| {
+        side.mode_on_screen() == Some(&factions) && side.on_screen().is_some_and(|on| on.drawn == Some(2) && on.settled)
+    });
+    let before_quiet = Progress::of(&turn.side);
+    turn.side.frame_still(2).unwrap();
+    assert!(!should_wake(&before_quiet, &turn, &factions_ask), "settled idle turn after mode switch stays quiet");
+}
+
+#[test]
 fn a_paused_mode_change_wakes_the_window_once_and_idle_turns_stay_quiet() {
     use viewer_map_modes::map_mode::{MapMode, Stock};
     let composes = Arc::new(Mutex::new(0));
@@ -144,6 +189,8 @@ fn a_paused_mode_change_wakes_the_window_once_and_idle_turns_stay_quiet() {
     side.ask(View::default(), Head::Paced(2), None, None);
     side.wait_window(|side| side.applied() == Some(2) && side.mode_on_screen() == Some(&MapMode::default()))
         .unwrap();
+    let settled = side.last_frame().made;
+    side.wait_window(|side| side.last_frame().made > settled).unwrap();
     let mut initial_wakes = 0usize;
     while rx.try_recv().is_ok() {
         initial_wakes += 1;
@@ -151,25 +198,16 @@ fn a_paused_mode_change_wakes_the_window_once_and_idle_turns_stay_quiet() {
     assert!(initial_wakes >= 1, "initial settle wakes the window at least once");
     let before_idle = side.last_frame().made;
     side.wait_window(|side| side.last_frame().made > before_idle).unwrap();
-    let mut idle_wakes = 0usize;
-    while rx.try_recv().is_ok() {
-        idle_wakes += 1;
-    }
-    assert_eq!(idle_wakes, 0, "settled idle turn requests no repaint");
+    assert!(rx.try_recv().is_err(), "settled idle turn requests no repaint");
     let factions = MapMode::Stock(Stock::Factions);
     side.ask(View { map_mode: factions.clone(), ..View::default() }, Head::Paced(2), None, None);
     drop(side.window());
-    assert!(
-        rx.recv_timeout(Duration::from_secs(5)).is_ok(),
-        "a paused map mode change wakes the window without any other input"
-    );
+    rx.recv().expect("a paused map mode change wakes the window without any other input");
     side.wait_window(|side| side.mode_on_screen() == Some(&factions)).unwrap();
+    let settled_factions = side.last_frame().made;
+    side.wait_window(|side| side.last_frame().made > settled_factions).unwrap();
     while rx.try_recv().is_ok() {}
     let after_mode = side.last_frame().made;
     side.wait_window(|side| side.last_frame().made > after_mode).unwrap();
-    let mut post_mode_idle_wakes = 0usize;
-    while rx.try_recv().is_ok() {
-        post_mode_idle_wakes += 1;
-    }
-    assert_eq!(post_mode_idle_wakes, 0, "idle turn after the new mode settles requests no repaint");
+    assert!(rx.try_recv().is_err(), "idle turn after the new mode settles requests no repaint");
 }

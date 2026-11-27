@@ -340,6 +340,24 @@ fn the_mode_on_screen_stays_the_previous_one_until_the_picture_for_the_new_one_i
     assert!(viewer.side_needs_repaint(at(2)), "paused map with a lagging overlay keeps repainting until overlay catches up");
     viewer.overlay_hour = Some(2);
     assert!(!viewer.side_needs_repaint(at(2)));
+    let resistance = MapMode::Stock(Stock::Resistance);
+    let compliance = MapMode::Stock(Stock::Compliance);
+    let mut resistance_overlay = viewer.counter_view.clone();
+    resistance_overlay.set_mode(&resistance);
+    viewer.overlay_view = Some(resistance_overlay);
+    viewer.map_mode = compliance.clone();
+    let compliance_view = View { map_mode: compliance.clone(), ..View::default() };
+    map(&mut viewer).with_side_mut(|side| side.set_view(compliance_view).unwrap());
+    frames_at(map(&mut viewer), 2, |side| side.mode_on_screen() == Some(&compliance));
+    assert!(!viewer.picture_whole(at(2), false), "picture stays incomplete while the installed overlay still has the previous mode");
+    assert!(viewer.map_state(&target(2, false)).loading, "map state stays loading until the new mode's overlay installs");
+    assert!(viewer.side_needs_repaint(at(2)), "paused map keeps repainting until the new mode's overlay installs");
+    let mut compliance_overlay = viewer.counter_view.clone();
+    compliance_overlay.set_mode(&compliance);
+    viewer.overlay_view = Some(compliance_overlay);
+    assert!(viewer.picture_whole(at(2), false));
+    assert!(!viewer.map_state(&target(2, false)).loading);
+    assert!(!viewer.side_needs_repaint(at(2)));
 }
 
 #[test]

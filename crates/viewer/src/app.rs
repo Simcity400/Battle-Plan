@@ -2612,7 +2612,8 @@ impl Viewer {
                     if !side.products().overlay_coming() {
                         return layers_show(&on, target.hour, playing);
                     }
-                    whole_picture(&on, self.overlay_hour(), target.hour, playing)
+                    self.overlay_view.as_ref().is_none_or(|view| view.matches_mode(&self.map_mode))
+                        && whole_picture(&on, self.overlay_hour(), target.hour, playing)
                 })
         })
     }

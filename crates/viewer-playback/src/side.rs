@@ -502,8 +502,9 @@ fn advance(shared: &Shared) {
             at => {
                 let (now, interval) = (Instant::now(), rate::interval());
                 let viewpoint = ask.view.perspective != turn.side.view().perspective;
-                let view_changed = ask.view != *turn.side.view();
-                let Some(late) = pace.late(now).or((view_changed || turn.side.hurrying()).then_some(std::time::Duration::ZERO)) else {
+                let mode_changed = ask.view.map_mode != turn.side.view().map_mode;
+                let pace_late = pace.late(now);
+                let Some(late) = pace_late.or((viewpoint || mode_changed || turn.side.hurrying()).then_some(std::time::Duration::ZERO)) else {
                     turn = waiting(shared, turn, pace.until(now).max(UNTIL_DUE).min(IDLE));
                     continue;
                 };
@@ -523,7 +524,9 @@ fn advance(shared: &Shared) {
                     waited.for_an_hour_ns += since.elapsed().as_nanos() as u64;
                     continue;
                 }
-                pace.take(now, interval);
+                if pace_late.is_some() {
+                    pace.take(now, interval);
+                }
                 waited.late_ns = late.as_nanos() as u64;
                 turn.side.waited(std::mem::take(&mut waited));
                 let before = Progress::of(&turn.side);
@@ -540,7 +543,7 @@ fn advance(shared: &Shared) {
                 if let Some(made) = turn.side.take_overlay() {
                     turn.overlay = Some(made);
                 }
-                let wake = shared.wake.as_ref().filter(|_| should_wake(&before, &turn, &ask, head) || shared.asked().is_some_and(|latest| latest.serial != ask.serial)).cloned();
+                let wake = shared.wake.as_ref().filter(|_| should_wake(&before, &turn, &ask) || shared.asked().is_some_and(|latest| latest.serial != ask.serial)).cloned();
                 if let Some(wake) = wake {
                     drop(turn);
                     wake();
@@ -562,10 +565,10 @@ impl Progress {
     }
 }
 
-fn should_wake(before: &Progress, turn: &Turn, ask: &Ask, head: Hour) -> bool {
+fn should_wake(before: &Progress, turn: &Turn, ask: &Ask) -> bool {
     let side = &turn.side;
     let needs_upload = side.parts().is_some_and(|(_, layers)| layers.iter().any(|layer| side.draws(layer.name()) && !layer.uploaded()));
-    let mode_pending = side.on_screen().is_some_and(|on| on.drawn == Some(head) && on.settled) && side.mode_on_screen() != Some(&ask.view.map_mode);
+    let mode_pending = side.on_screen().is_some_and(|on| on.drawn.is_some()) && side.mode_on_screen() != Some(&ask.view.map_mode);
     let changed = side.view_shown() != &before.0 || side.mode_on_screen() != before.1.as_ref() || side.on_screen() != before.2 || side.applied() != before.3 || side.overlay().and_then(|o| o.hour()) != before.4;
     side.failure().is_some() || side.composing() || needs_upload || turn.overlay.is_some() || turn.overlay_withdrawn || mode_pending || changed
 }
