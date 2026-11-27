@@ -1,6 +1,6 @@
 
 pub const BYTES: usize = 128 << 20;
-pub const LEAD: playhead::Lead = playhead::Lead { seconds: 0.5, bytes: BYTES };
+pub const LEAD: playhead::Lead = playhead::Lead { seconds: 0.5, bytes: BYTES / 2 };
 pub const RELEASE_FRAMES: replay_data::Hour = 10;
 
 pub fn budget() -> std::sync::Arc<playhead::ByteBudget> {

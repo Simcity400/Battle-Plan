@@ -1,7 +1,7 @@
 
 use super::{Store, Views};
-use crate::playhead_host::{Entry, for_the_makers, mirror, to_declared};
-use playhead::{Step, Watcher};
+use crate::playhead_host::{Entry, mirror};
+use playhead::{Declared, Step, Watcher};
 use replay_data::{BranchId, Hour};
 use std::{
     io,
@@ -27,14 +27,32 @@ pub struct Apart {
     applied: Option<(Hour, u64)>,
     mirror_gen: u64,
     posted: Option<(Hour, u64, u64, u64)>,
+    declared: Vec<Declared>,
+    declared_for: u64,
+    dropped: Vec<usize>,
 }
 
 impl Apart {
     pub fn new(entry: &Arc<Entry>, branch: BranchId) -> io::Result<Self> {
         let store = Store::new(entry);
-        let reader = entry.playhead().declare(to_declared(&for_the_makers(entry)), Some(mirror::rebuild(Arc::clone(&entry.pages))))?;
+        let declared = store.declared();
+        let declared_for = store.demand();
+        let reader = entry.playhead().declare(declared.clone(), Some(mirror::rebuild(Arc::clone(&entry.pages))))?;
         let consumer = entry.playhead().consumer(reader);
-        Ok(Self { entry: Arc::clone(entry), store, reader, consumer, mirrors: Arc::default(), branch, applied: None, mirror_gen: 0, posted: None })
+        Ok(Self { entry: Arc::clone(entry), store, reader, consumer, mirrors: Arc::default(), branch, applied: None, mirror_gen: 0, posted: None, declared, declared_for, dropped: Vec::new() })
+    }
+
+    fn declare_demand(&mut self) {
+        let wanted = self.store.declared();
+        if wanted == self.declared || self.entry.playhead().redeclare(self.reader, wanted.clone()).is_err() {
+            return;
+        }
+        self.dropped.extend(self.declared.iter().map(|held| held.table).filter(|&table| !wanted.iter().any(|kept| kept.table == table)));
+        self.declared = wanted;
+        self.store.settled();
+        if let Some(mirrors) = Arc::get_mut(&mut self.mirrors) {
+            release(&mut self.dropped, &self.declared, mirrors);
+        }
     }
 
     pub fn store(&self) -> &Store {
@@ -44,15 +62,22 @@ impl Apart {
     #[cfg(any(test, feature = "test-support"))]
     pub fn drive(&mut self, hour: Hour) -> bool {
         let entry = Arc::clone(&self.entry);
+        self.declare_demand();
+        let asking = self.store.asking();
         self.consumer.advance_blocking(hour);
+        let epoch = entry.playhead().epoch();
         let reached = entry.playhead().wait_for(|| {
             let _ = self.take_to(hour, true);
+            self.stand_undeclared(hour, Some(epoch));
             self.applied == Some((hour, entry.playhead().epoch())) && self.home()
         });
         if reached.is_ok() {
             if let Some((applied, epoch)) = self.applied {
                 self.store.post(&self.mirrors, applied, self.branch, epoch, false);
                 self.posted = Some((applied, epoch, self.store.demand(), self.mirror_gen));
+            }
+            if asking {
+                self.declare_demand();
             }
             self.store.settled();
         }
@@ -70,7 +95,7 @@ impl Apart {
 
     #[cfg(any(test, feature = "test-support"))]
     fn home(&self) -> bool {
-        for_the_makers(&self.entry).keys().all(|&table| self.mirrors.get(replay_data::rows::TableId::ALL[table]).is_some())
+        self.declared.iter().all(|held| self.mirrors.get(replay_data::rows::TableId::ALL[held.table]).is_some_and(|mirror| held.columns.iter().all(|&column| mirror.holds(column))))
     }
 
     fn take_to(&mut self, hour: Hour, blocking: bool) -> bool {
@@ -93,6 +118,7 @@ impl Apart {
         }
         self.store.settled();
         let Some(mirrors) = Arc::get_mut(&mut self.mirrors) else { return false };
+        release(&mut self.dropped, &self.declared, mirrors);
         let mut tables = Vec::new();
         for step in &steps {
             if step.last() > hour {
@@ -100,6 +126,7 @@ impl Apart {
             }
             for changes in step.tables() {
                 if changes.reset()
+                    && self.declared.iter().any(|held| held.table == changes.table())
                     && let Some(state) = self.consumer.state(step, changes.table())
                     && let Ok(mut rebuilt) = state.downcast::<mirror::Mirror>()
                 {
@@ -114,16 +141,42 @@ impl Apart {
         false
     }
 
-    fn step(&mut self, hour: Hour, demand: u64) -> bool {
+    fn stand_undeclared(&mut self, hour: Hour, epoch: Option<u64>) {
+        if self.declared.is_empty()
+            && let (Some(epoch), Some((published, at))) = (epoch, self.entry.playhead().published())
+            && at == epoch
+        {
+            self.applied = Some((published.min(hour), epoch));
+        }
+    }
+
+    fn step(&mut self, hour: Hour, epoch: Option<u64>, demand: u64) -> bool {
+        if self.declared_for != demand {
+            self.declared_for = demand;
+            self.declare_demand();
+        }
+        let asking = self.store.asking();
         let advance_ok = self.consumer.try_advance(hour);
         let take_contended = self.take_to(hour, false);
+        self.stand_undeclared(hour, epoch);
         if let Some((applied, epoch)) = self.applied
             && self.posted != Some((applied, epoch, demand, self.mirror_gen))
         {
             self.store.post(&self.mirrors, applied, self.branch, epoch, false);
             self.posted = Some((applied, epoch, demand, self.mirror_gen));
         }
+        if asking {
+            self.declare_demand();
+        }
         !advance_ok || take_contended
+    }
+}
+
+fn release(dropped: &mut Vec<usize>, declared: &[Declared], mirrors: &mut mirror::Mirrors) {
+    for table in dropped.drain(..) {
+        if !declared.iter().any(|held| held.table == table) {
+            mirrors.remove(table);
+        }
     }
 }
 
@@ -229,8 +282,9 @@ impl Following {
                     if has_readers {
                         let due = !playing || contended || control_changed || demand_changed || next_tick.is_none_or(|deadline| now >= deadline);
                         if due {
+                            let epoch = playhead.epoch();
                             let target = target_hour(playhead, now);
-                            contended = apart.step(target, demand);
+                            contended = apart.step(target, (playhead.epoch() == epoch).then_some(epoch), demand);
                             last_control = Some(control);
                             last_demand = Some(demand);
                             next_tick = if playing { Some(now + tick) } else { None };
@@ -293,12 +347,12 @@ impl Drop for Following {
 
 #[cfg(test)]
 mod tests {
-    use super::{Following, lead_duration, pace_period};
+    use super::{Apart, Following, lead_duration, pace_period};
     use crate::playhead_host::{
         Side, open_clocked,
         views::{
             Need, Pace,
-            tests::{COUNTRIES, RECORDING, hourly_steps, record},
+            tests::{COMBATS, COUNTRIES, RECORDING, hourly_steps, record},
         },
     };
     use std::{
@@ -328,6 +382,59 @@ mod tests {
 
         let deferred = following.views().reader_later("deferred", &[Need::every(COUNTRIES)], Pace::Step);
         entry.playhead().wait_for(|| deferred.frame().is_some_and(|frame| frame.hour == 1)).unwrap();
+    }
+
+    #[test]
+    fn apart_declares_only_what_its_readers_read_and_a_late_reader_gets_its_table() {
+        let entry = open_clocked(record("apart reads what is read", 16), hourly_steps(), 0, Side::Follow).unwrap();
+        entry.set_capture(replay_data::scope::CaptureMode::Full);
+        entry.playhead().seek(1);
+        let mut apart = Apart::new(&entry, RECORDING.branch).unwrap();
+        let views = apart.store().handle();
+        let tables = |apart: &Apart| apart.declared.iter().map(|held| held.table).collect::<Vec<_>>();
+        assert!(tables(&apart).is_empty(), "nothing is declared before a reader opens");
+        let countries = views.reader_at("countries", &[Need::every(COUNTRIES)], Pace::Step);
+        assert!(apart.drive(1));
+        assert_eq!(tables(&apart), [COUNTRIES.index()], "only the table its reader reads, not every table the recording holds");
+        assert_eq!(countries.frame().map(|frame| frame.hour), Some(1));
+
+        let combats = views.reader_at("combats", &[Need::every(COMBATS)], Pace::Step);
+        assert!(apart.drive(1));
+        let mut both = [COUNTRIES.index(), COMBATS.index()];
+        both.sort_unstable();
+        assert_eq!(tables(&apart), both, "a reader opened later while paused adds its table");
+        let frame = combats.frame().expect("the late reader's table arrives at the paused hour");
+        assert!(frame.hour == 1 && !frame.tables[COMBATS.index()].is_not_declared());
+
+        let later = views.reader_later("later", &[Need::every(COMBATS)], Pace::Step);
+        drop(combats);
+        assert!(apart.drive(1));
+        assert!(later.frame().is_some_and(|frame| frame.hour == 1), "a queued reader's table is declared before it is registered");
+        drop(later);
+        assert!(apart.drive(1));
+        assert_eq!(tables(&apart), [COUNTRIES.index()], "a table no reader reads any more is let go");
+        entry.playhead().seek(2);
+        assert!(apart.drive(2));
+        assert!(apart.mirrors.get(COMBATS).is_none(), "and its mirror with it, though a reset of it was in flight");
+    }
+
+    #[test]
+    fn a_late_reader_that_declares_nothing_gets_its_frame_though_the_playhead_published_past_its_target() {
+        let entry = open_clocked(record("unrecorded late apart reader", 16), hourly_steps(), 0, Side::Follow).unwrap();
+        entry.set_capture(replay_data::scope::CaptureMode::Full);
+        entry.playhead().seek(2);
+        let first = entry.playhead().declare(vec![playhead::Declared { table: COUNTRIES.index(), columns: vec![0], keyed: true, passing: false, hourly: false }], None).unwrap();
+        let consumer = entry.playhead().consumer(first);
+        consumer.advance_blocking(2);
+        entry.playhead().wait_newest(2).unwrap();
+        let mut apart = Apart::new(&entry, RECORDING.branch).unwrap();
+        let views = apart.store().handle();
+        let reader = views.reader_at("nothing", &[], Pace::Step);
+        apart.step(1, Some(entry.playhead().epoch()), views.demand());
+        apart.store.settled();
+        assert!(apart.declared.is_empty());
+        let frame = reader.frame().expect("the reader stands at its target, below the hour the playhead published");
+        assert_eq!(frame.hour, 1);
     }
 
     #[test]

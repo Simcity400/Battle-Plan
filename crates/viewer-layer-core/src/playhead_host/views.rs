@@ -860,6 +860,30 @@ impl Store {
         lock(&self.shared.readers).iter().any(|reading| reading.open) || !lock(&self.shared.asked).is_empty()
     }
 
+    pub fn asking(&self) -> bool {
+        !lock(&self.shared.asked).is_empty()
+    }
+
+    pub fn declared(&self) -> Vec<playhead::Declared> {
+        let mut wanted: BTreeMap<usize, u64> = reading(&self.shared).iter().enumerate().filter_map(|(table, kept)| Some((table, kept.as_ref()?.columns))).collect();
+        for asked in lock(&self.shared.asked).iter() {
+            if let Asked::Open { needs, .. } | Asked::Declare { needs, .. } = asked {
+                for need in needs {
+                    *wanted.entry(need.table.index()).or_default() |= need.columns;
+                }
+            }
+        }
+        wanted
+            .into_iter()
+            .filter(|&(table, _)| matches!(self.shared.written.get(table), Some(playhead::pages::TableWritten::Written)))
+            .filter_map(|(table, mask)| {
+                let width = self.shared.kinds.get(table)?.len();
+                let columns = (0..width).filter(|&column| column >= 64 || mask & (1 << column) != 0).collect();
+                Some(playhead::Declared { table, columns, keyed: true, passing: false, hourly: false })
+            })
+            .collect()
+    }
+
     pub fn reader(&self, name: &'static str, needs: &[Need]) -> Reader {
         open(&self.shared, name, needs, false, Pace::Step, false)
     }
