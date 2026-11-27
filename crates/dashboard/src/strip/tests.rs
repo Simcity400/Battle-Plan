@@ -3,14 +3,21 @@ use super::*;
 use dashboard_base::{
     SourceKey,
     products::at_hour::interactive_pool_snapshot,
-    test_fixtures::{replay, source},
+    test_fixtures::{
+        replay, source, source_with_content,
+        visual_mods::{Machine, RED, png, select},
+    },
 };
 use replay_data::rows::{NukeRow, TableId, TableRows};
 use replay_frame::frame::TableView;
 use serde_json::json;
 
 fn recording() -> Arc<Source> {
-    let frames = (100..=116)
+    recording_through(116, false)
+}
+
+fn recording_through(last: i32, growing: bool) -> Arc<Source> {
+    let frames = (100..=last)
         .filter(|hour| *hour != 108)
         .map(|hour| {
             let mut frame = source(1, hour, Some(i64::from(hour)));
@@ -26,6 +33,16 @@ fn recording() -> Arc<Source> {
             frame
         })
         .collect();
+    let mut replay = replay(frames).into_timelines(&Default::default()).unwrap();
+    if growing {
+        replay.cursors.push(replay_recording::records::Cursor {
+            source: "strip-test".into(),
+            capture: 0,
+            session: 1,
+            segments: 1,
+            finished: false,
+        });
+    }
     Arc::new(
         Source::from_replay(
             SourceKey {
@@ -33,11 +50,154 @@ fn recording() -> Arc<Source> {
                 revision: "1".into(),
             },
             "strip-test.battleplan".into(),
-            Arc::new(replay(frames).into_timelines(&Default::default()).unwrap()),
+            Arc::new(replay),
             &false.into(),
         )
         .unwrap(),
     )
+}
+
+#[test]
+fn settled_strip_groups_reopen_byte_for_byte_and_damaged_files_recompute() {
+    let folder = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+    let load = LoadContext { content: None };
+    let params = |product, hours: &[i32], whole| {
+        json!({"product":product,"asks":hours.iter().map(|hour| json!({
+            "branchId":"1", "hour":hour, "family":{"kind":"country-measure", "measure":"politicalPower"}
+        })).collect::<Vec<_>>(), "whole":whole})
+    };
+    let exercise = |source: &Arc<Source>, requests: &[Value], load: &LoadContext| {
+        let library = folder.join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        let cache = cache::Cache::new(Some(folder.clone()), move || Ok(library.clone()), || false);
+        let mut counts = [0; 2];
+        let mut replies = Vec::new();
+        for params in requests {
+            let (reply, pending) = source.in_scope(|| {
+                cache.answer(source, params, load, &false.into()).unwrap()
+            });
+            if let Some(pending) = pending {
+                counts[usize::from(!matches!(&pending.action, cache::Action::Save(_)))] += 1;
+                assert!(cache.store(pending));
+            }
+            replies.push(reply.data);
+        }
+        cache.shutdown();
+        (counts, replies)
+    };
+    let page = [
+        json!({"product":"nuclear-arsenal","asks":asks(),"whole":true}),
+        params("series-rank", &[100, 104], true),
+        params("series-rank", &[104, 116], false),
+    ];
+    let (computed, original) = exercise(&recording(), &page, &load);
+    let (recomputed, reopened) = exercise(&recording(), &page, &load);
+    assert_eq!((computed, recomputed), ([3, 0], [0, 3]));
+    assert_eq!(reopened, original);
+
+    let files: Vec<_> = std::fs::read_dir(folder.join("external")).unwrap().flatten()
+        .filter(|file| file.path().extension().is_some_and(|ext| ext == "bpst"))
+        .collect();
+    assert_eq!(files.len(), 3);
+    let bytes: u64 = files.iter().map(|file| file.metadata().unwrap().len()).sum();
+    assert!(bytes > 0);
+    std::fs::write(files[0].path(), [0]).unwrap();
+    let (recomputed, repaired) = exercise(&recording(), &page, &load);
+    assert_eq!(recomputed, [1, 2]);
+    assert_eq!(repaired, original);
+    assert_eq!(exercise(&recording(), &page, &load).0, [0, 3]);
+
+    let growing = recording_through(116, true);
+    let live_page = [
+        params("series-rank", &[100, 104], true),
+        params("series-rank", &[104, 116], false),
+    ];
+    let (stored, first) = exercise(&growing, &live_page, &load);
+    let (stored_again, second) = exercise(&growing, &live_page, &load);
+    assert_eq!((stored, stored_again), ([0, 0], [0, 0]));
+    assert_eq!(first, second);
+    assert_eq!(exercise(&recording(), &page, &load).0, [0, 3]);
+    let finished = recording_through(120, false);
+    assert_eq!(exercise(&finished, &live_page, &load).0, [2, 0]);
+    assert_eq!(exercise(&finished, &live_page, &load).0, [0, 2]);
+    assert!(files.into_iter().all(|file| !file.path().exists()));
+
+    let machine = Machine::new("strip_reopen");
+    machine.write_mod("art", "gfx/icon.png", &png(RED));
+    let frames = (100..=116).map(|hour| source(1, hour, Some(i64::from(hour)))).collect();
+    let (configured, options) = machine.open_frames(frames);
+    let configured = Arc::new(configured);
+    let mut load = LoadContext { content: Some(options) };
+    let art_stack = |load: &LoadContext| {
+        configured.in_scope(|| {
+            configured.presented_for(load.content.as_ref().unwrap()).unwrap().content.layers.art_stack_key()
+        })
+    };
+    let original_stack = art_stack(&load);
+    assert_eq!(exercise(&configured, &page, &load).0, [3, 0]);
+    assert_eq!(exercise(&configured, &page, &load).0, [0, 3]);
+    select(&configured, load.content.as_mut().unwrap(), &["art"]);
+    assert_ne!(art_stack(&load), original_stack);
+    assert_eq!(exercise(&configured, &page, &load).0, [3, 0]);
+    assert_eq!(exercise(&configured, &page, &load).0, [0, 3]);
+
+    let (textured, load) = source_with_content(
+        vec![source(1, 100, Some(100))], &folder.join("texture-setting"),
+    );
+    let textured = Arc::new(textured);
+    let settings = load.content.as_ref().unwrap().options.user_dir.join("settings.txt");
+    let page = [params("series-rank", &[100], true)];
+    assert_eq!(exercise(&textured, &page, &load).0, [1, 0]);
+    assert_eq!(exercise(&textured, &page, &load).0, [0, 1]);
+    std::fs::write(settings, "language=l_english force_pow2_textures=yes").unwrap();
+    assert_eq!(exercise(&textured, &page, &load).0, [1, 0]);
+    assert_eq!(exercise(&textured, &page, &load).0, [0, 1]);
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn strip_writes_yield_to_priority_work() {
+    let folder = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+    let library = folder.join("library");
+    let cache = cache::Cache::new(Some(folder.clone()), move || Ok(library.clone()), || true);
+    let source = recording();
+    let params = json!({"product":"nuclear-arsenal","asks":[{"branchId":"1","hour":100}],"whole":true});
+    let load = LoadContext { content: None };
+    let dropped = (0..2).filter(|_| {
+        let (_, pending) = cache.answer(&source, &params, &load, &false.into()).unwrap();
+        !cache.store(pending.unwrap())
+    }).count();
+    assert_eq!(dropped, 2);
+    assert!(!folder.exists());
+    cache.shutdown();
+}
+
+#[test]
+fn a_damaged_recording_copy_cannot_hit_the_healthy_files_groups() {
+    let folder = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir(&folder).unwrap();
+    let original = recording();
+    let replay = original.replay_ref();
+    let healthy = folder.join("healthy.battleplan");
+    let damaged = folder.join("damaged.battleplan");
+    std::fs::write(&healthy, replay.bytes()).unwrap();
+    std::fs::write(&damaged, replay.damaged_table(&replay.index[0], TableId::Nukes).unwrap()).unwrap();
+    let modified = healthy.metadata().unwrap().modified().unwrap();
+    std::fs::OpenOptions::new().write(true).open(&damaged).unwrap().set_modified(modified).unwrap();
+    let open = |path: &std::path::Path| {
+        let path = path.canonicalize().unwrap();
+        let key = SourceKey { source_id: "strip-test".into(), revision: dashboard_core::protocol::replay_revision(&path).unwrap() };
+        Source::open(key, path, &false.into()).unwrap()
+    };
+    let healthy = open(&healthy);
+    let damaged = open(&damaged);
+    assert_eq!(healthy.replay_ref().revision(), damaged.replay_ref().revision());
+    assert_eq!(healthy.key().revision, damaged.key().revision);
+    let params = json!({"product":"nuclear-arsenal","asks":[{"branchId":"1","hour":100}],"whole":true});
+    let load = LoadContext { content: None };
+    assert_ne!(cache::key(&healthy, &params, &load).unwrap(), cache::key(&damaged, &params, &load).unwrap());
+    drop((healthy, damaged, original));
+    std::fs::remove_dir_all(folder).unwrap();
 }
 
 fn asks() -> Vec<Value> {

@@ -101,6 +101,7 @@ struct Inner {
     visual_catalogue: Mutex<Option<VisualCatalogue>>,
     presentation_generation: std::sync::atomic::AtomicU64,
     sources: Mutex<Sources>,
+    strips: crate::strip::cache::Cache,
     pending: Mutex<Pending>,
     loader: Mutex<Option<Lanes>>,
     signal: Arc<Signal>,
@@ -125,19 +126,30 @@ impl Drop for ThreadExit {
 
 impl Service {
     pub fn new(emit: Arc<dyn Fn(DataEvent) -> bool + Send + Sync>) -> io::Result<Arc<Self>> {
+        Self::with_strip_cache(emit, None)
+    }
+
+    pub fn with_strip_cache(
+        emit: Arc<dyn Fn(DataEvent) -> bool + Send + Sync>,
+        folder: Option<PathBuf>,
+    ) -> io::Result<Arc<Self>> {
         let parallelism = parallelism();
         let lane = |lane: Lane| channel::<LoadJob>(MAX_PENDING, queue::share(lane.threads(parallelism)));
         let (history, history_jobs) = lane(Lane::History);
         let (interactive, interactive_jobs) = lane(Lane::Interactive);
         let (replies, replies_jobs) = lane(Lane::Replies);
         let (replays, replays_jobs) = lane(Lane::Replays);
-        let inner = Arc::new(Inner {
+        let inner = Arc::new_cyclic(|service: &std::sync::Weak<Inner>| Inner {
             lease_namespace: uuid::Uuid::new_v4(),
             map_settings: Mutex::new(map_settings::Store::open()),
             content: dashboard_base::presentation::Config::new(None),
             visual_catalogue: Mutex::new(None),
             presentation_generation: std::sync::atomic::AtomicU64::new(0),
             sources: Mutex::new(Sources::default()),
+            strips: crate::strip::cache::Cache::new(folder, Config::recording_library, {
+                let service = service.clone();
+                move || service.upgrade().is_some_and(|service| service.priority_work())
+            }),
             pending: Mutex::new(Pending::default()),
             loader: Mutex::new(Some(Lanes { history, interactive, replies, replays })),
             signal: Arc::new(Signal::default()),
@@ -504,6 +516,7 @@ impl Service {
         for owned in threads.drain(..) {
             let _ = owned.join();
         }
+        self.inner.strips.shutdown();
     }
 }
 

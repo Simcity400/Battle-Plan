@@ -40,6 +40,12 @@ pub(super) fn channel<T>(capacity: usize, share: usize) -> (Sender<T>, Receiver<
     (Sender(Arc::clone(&queue)), Receiver(queue))
 }
 impl<T: Classed> Sender<T> {
+    pub(super) fn busy_other_than(&self, excluded: &str) -> bool {
+        let state = self.0.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.running.keys().any(|class| class != excluded)
+            || state.queued.iter().any(|(class, _)| class != excluded)
+    }
+
     pub(super) fn try_send(&self, value: T, mut stale: impl FnMut(&T) -> bool) -> Result<(), TrySendError<T>> {
         let mut state = self.0.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.closed {

@@ -74,6 +74,13 @@ fn recording_open_error(error: std::io::Error) -> String {
 }
 
 impl Inner {
+    pub(super) fn priority_work(&self) -> bool {
+        let loader = self.loader.lock().unwrap_or_else(|error| error.into_inner());
+        loader.as_ref().is_some_and(|lanes| {
+            Lane::ALL.iter().any(|&lane| lanes.sender(lane).busy_other_than(crate::strip::PRODUCT))
+        })
+    }
+
     pub(super) fn recording_revision(&self, path: &Path) -> std::io::Result<String> {
         replay_revision(path)
     }
@@ -585,12 +592,17 @@ impl Inner {
                 if request.cancelled() {
                     return;
                 }
+                let mut keep = None;
                 let result = if products::find(&body.product).is_some() {
                     self.product(&request, &lease_id, &source, body)
                 } else {
-                    self.answer(&request, &lease_id, &source, &body)
+                    self.answer(&request, &lease_id, &source, &body, &mut keep)
                 };
+                let keep = keep.filter(|_| result.is_ok() && !request.cancelled());
                 self.complete(request, result);
+                if let Some(pending) = keep {
+                    let _ = self.strips.store(pending);
+                }
             }
             LoadJob::Open(job) => {
                 self.configure_game();
@@ -621,13 +633,20 @@ impl Inner {
         lease_id: &str,
         source: &Arc<Source>,
         body: &ProductRequest,
+        keep: &mut Option<crate::strip::cache::Pending>,
     ) -> Result<String, dashboard_core::QueryError> {
-        let content_dependent = body.product == crate::strip::PRODUCT && crate::strip::content_dependent(&body.params);
+        let strip = body.product == crate::strip::PRODUCT;
         let context = LoadContext {
-            content: self.content_for(source, work(content_dependent, request)),
+            content: self.content_for(source, work(strip, request)),
         };
-        let data = source
-            .in_scope(|| crate::answer::answer(source, &body.product, &body.params, &context, &request.cancelled))
+        let data = source.in_scope(|| {
+            if strip {
+                let (reply, pending) = self.strips.answer(source, &body.params, &context, &request.cancelled)?;
+                *keep = pending;
+                return Ok(serde_json::to_value(reply)?);
+            }
+            crate::answer::answer(source, &body.product, &body.params, &context, &request.cancelled)
+        })
             .map_err(dashboard_core::QueryError::from)?;
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -881,8 +900,6 @@ mod lane_tests {
     #[test]
     fn strips_use_non_interactive_reply_workers() {
         assert_eq!(product_lane(crate::strip::PRODUCT, &serde_json::Value::Null), Lane::Replies);
-        assert!(crate::strip::content_dependent(&serde_json::json!({"product":"nuclear-arsenal"})));
-        assert!(!crate::strip::content_dependent(&serde_json::json!({"product":"series-rank"})));
     }
 
     #[test]

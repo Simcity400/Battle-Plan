@@ -22,9 +22,51 @@ pub(crate) enum Keeping {
     Off,
 }
 
-pub(crate) struct Place {
+pub struct Place {
     path: PathBuf,
     key: [u8; KEY],
+}
+
+impl Place {
+    pub const PAYLOAD_OFFSET: u64 = (MAGIC.len() + KEY) as u64;
+
+    pub fn new(path: PathBuf, key: [u8; KEY]) -> Self {
+        Self { path, key }
+    }
+
+    pub fn load(&self, limit: usize) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        let limit = limit.saturating_add(Self::PAYLOAD_OFFSET as usize + CHECKSUM);
+        let mut bytes = Vec::new();
+        std::fs::File::open(&self.path)?.take(limit.saturating_add(1) as u64).read_to_end(&mut bytes)?;
+        let body = self.checked(&bytes, false).filter(|_| bytes.len() <= limit)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "A kept file is damaged"))?;
+        bytes.truncate(body);
+        bytes.drain(..Self::PAYLOAD_OFFSET as usize);
+        Ok(bytes)
+    }
+
+    pub fn save_serial(&self, bytes: &[u8], ready: impl Fn() -> io::Result<()>) -> io::Result<()> {
+        let mut out = self.header();
+        out.extend(bytes);
+        publish(self, out, Some(&ready))
+    }
+
+    fn header(&self) -> Vec<u8> {
+        let mut out = MAGIC.to_vec();
+        out.extend(self.key);
+        out
+    }
+
+    fn checked(&self, bytes: &[u8], parallel: bool) -> Option<usize> {
+        let body = bytes.len().checked_sub(CHECKSUM)?;
+        (body >= Self::PAYLOAD_OFFSET as usize
+            && bytes.get(..MAGIC.len())? == MAGIC.as_slice()
+            && bytes.get(MAGIC.len()..MAGIC.len() + KEY)? == self.key.as_slice()
+            && bytes[body..] == checksum(&bytes[..body], parallel))
+            .then_some(body)
+    }
+
 }
 
 pub(crate) trait Part: Sized + PartialEq {
@@ -75,7 +117,7 @@ fn decode_sprite(name: &str, body: &[u8]) -> Result<SpriteType, String> {
     })
 }
 
-fn build() -> Option<&'static (String, [u8; 24])> {
+pub fn build() -> Option<&'static (String, [u8; 24])> {
     static BUILD: OnceLock<Option<(String, [u8; 24])>> = OnceLock::new();
     BUILD
         .get_or_init(|| {
@@ -163,9 +205,14 @@ pub(crate) fn kept<P: Part>(
     (built, diagnostics)
 }
 
-fn checksum(bytes: &[u8]) -> [u8; CHECKSUM] {
+fn checksum(bytes: &[u8], parallel: bool) -> [u8; CHECKSUM] {
     let pieces: Vec<&[u8]> = bytes.chunks(PIECE).collect();
-    let digests = content_reader_layers::parallel::map(&pieces, |piece| *blake3::hash(piece).as_bytes());
+    let digest = |piece: &&[u8]| *blake3::hash(piece).as_bytes();
+    let digests = if parallel {
+        content_reader_layers::parallel::map(&pieces, digest)
+    } else {
+        pieces.iter().map(digest).collect()
+    };
     let mut whole = blake3::Hasher::new();
     whole.update(&(bytes.len() as u64).to_le_bytes());
     for digest in &digests {
@@ -176,13 +223,7 @@ fn checksum(bytes: &[u8]) -> [u8; CHECKSUM] {
 
 fn read<P: Part>(place: &Place) -> Option<(io::Result<P>, Diagnostics)> {
     let bytes = std::fs::read(&place.path).ok()?;
-    let body = bytes.len().checked_sub(CHECKSUM)?;
-    if bytes.get(..MAGIC.len())? != MAGIC.as_slice()
-        || bytes.get(MAGIC.len()..MAGIC.len() + KEY)? != place.key.as_slice()
-        || &bytes[body..] != checksum(&bytes[..body]).as_slice()
-    {
-        return None;
-    }
+    let body = place.checked(&bytes, true)?;
     let bytes = Arc::new(bytes);
     let mut input = Input::new(&bytes, MAGIC.len() + KEY);
     let diagnostics: Diagnostics = rmp_serde::from_slice(input.bytes().ok()?).ok()?;
@@ -191,9 +232,7 @@ fn read<P: Part>(place: &Place) -> Option<(io::Result<P>, Diagnostics)> {
 }
 
 fn write<P: Part>(place: &Place, part: &P, diagnostics: &Diagnostics) -> io::Result<()> {
-    let mut out = Vec::new();
-    out.extend(MAGIC);
-    out.extend(place.key);
+    let mut out = place.header();
     put_bytes(
         &mut out,
         &rmp_serde::to_vec(diagnostics).map_err(io::Error::other)?,
@@ -204,24 +243,31 @@ fn write<P: Part>(place: &Place, part: &P, diagnostics: &Diagnostics) -> io::Res
     if !P::read(&out, at).is_ok_and(|(read, end)| end == out.len() && read == *part) {
         return Err(io::Error::other("it does not read back as it was built"));
     }
-    let mut out = Arc::try_unwrap(out).unwrap_or_else(|shared| (*shared).clone());
-    let checksum = checksum(&out);
+    publish(place, Arc::try_unwrap(out).unwrap_or_else(|shared| (*shared).clone()), None)
+}
+
+fn publish(place: &Place, mut out: Vec<u8>, guard: Option<&dyn Fn() -> io::Result<()>>) -> io::Result<()> {
+    let ready = || guard.map_or(Ok(()), |guard| guard());
+    let checksum = checksum(&out, guard.is_none());
     out.extend(checksum);
     let folder = place
         .path
         .parent()
         .ok_or_else(|| io::Error::other("the cache folder has no parent"))?;
+    ready()?;
     std::fs::create_dir_all(folder)?;
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let temporary = place.path.with_extension(format!(
-        "{}-{}.tmp",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let temporary = if guard.is_some() { folder.join("write.tmp") } else {
+        place.path.with_extension(format!(
+            "{}-{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+    };
     std::fs::write(&temporary, &out)
-        .and_then(|()| std::fs::rename(&temporary, &place.path))
+        .and_then(|()| ready().and_then(|()| std::fs::rename(&temporary, &place.path)))
         .inspect_err(|_| {
-            let _ = std::fs::remove_file(&temporary);
+            if ready().is_ok() { let _ = std::fs::remove_file(&temporary); }
         })
 }
 

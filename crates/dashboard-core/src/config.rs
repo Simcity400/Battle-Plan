@@ -74,6 +74,11 @@ impl Config {
         .join("BattlePlan")
         .join("viewer"))
     }
+
+    pub fn recording_library() -> io::Result<PathBuf> {
+        let library = replay_settings::recorder_settings::RecorderSettings::load()?.effective_save_folder();
+        library.canonicalize()
+    }
 }
 
 #[derive(Clone)]
