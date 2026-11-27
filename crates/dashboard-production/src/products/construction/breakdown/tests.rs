@@ -71,8 +71,8 @@ fn an_empty_queue_read_in_full_certifies_only_itself() {
 #[test]
 fn an_output_gap_is_dated_at_the_read_that_shows_it_and_stays() {
     let mut held = facts();
-    held.lines.push(LineFacts { leaf: (false, 7, 1, NONE), building: Some(7), new_from: Some(5), repair_from: None, gaps: vec![(12, SpendingGap::InexactOutput), (40, SpendingGap::FinalOutputMissing)], before_first_read: Some(5) });
-    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), gaps: vec![(61, SpendingGap::LinkedOutput), (80, SpendingGap::InexactOutput)], before_first_read: None });
+    held.lines.push(LineFacts { leaf: (false, 7, 1, NONE), building: Some(7), new_from: Some(5), repair_from: None, purpose: Vec::new(), gaps: vec![(12, SpendingGap::InexactOutput), (40, SpendingGap::FinalOutputMissing)], before_first_read: Some(5) });
+    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), purpose: Vec::new(), gaps: vec![(61, SpendingGap::LinkedOutput), (80, SpendingGap::InexactOutput)], before_first_read: None });
     held.unattributed.push(35);
     let index = index(&held);
     let state_of = |hour: i32| index.at(hour).breakdown.parts[0].children.iter().find(|part| part.name == "Workshop").map(|part| part.state);
@@ -222,20 +222,34 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     let deferred = Facts {
         from: 100,
         to: 125,
-        lines: vec![LineFacts {
-            leaf: (false, 7, 12, NONE),
-            building: Some(7),
-            new_from: Some(120),
-            repair_from: Some(115),
-            gaps: vec![(105, SpendingGap::LinkedOutput)],
-            before_first_read: None,
-        }],
+        lines: vec![
+            LineFacts {
+                leaf: (false, 7, 12, NONE),
+                building: Some(7),
+                new_from: Some(120),
+                repair_from: Some(115),
+                purpose: Vec::new(),
+                gaps: vec![(105, SpendingGap::LinkedOutput)],
+                before_first_read: None,
+            },
+            LineFacts {
+                leaf: (false, 8, 13, NONE),
+                building: Some(8),
+                new_from: None,
+                repair_from: None,
+                purpose: Vec::new(),
+                gaps: vec![(118, SpendingGap::InexactOutput)],
+                before_first_read: None,
+            },
+        ],
         ..Facts::default()
     };
     let deferred_index = index(&deferred);
     let at_105 = deferred_index.at(105);
     assert_eq!(at_105.breakdown.total.state, BreakdownState::Partial, "an output gap at 105 qualifies the total immediately even when child purpose waits");
     assert_eq!(at_105.through, 114, "validity ends before the child attribution appears at 115");
+    let at_120 = deferred_index.at(120);
+    assert!(at_120.breakdown.parts.iter().all(|part| part.key != "new"), "an unknown-purpose gap qualifies the total without fabricating a new-work child");
 
     let frames = (100..=125)
         .map(|hour| {
@@ -360,12 +374,14 @@ fn construction_spellings_and_warnings_are_dated_to_their_charge_hours() {
             frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(outputs)).into();
             frame.tables[TableId::LexicalTokens.index()] = if hour < 120 {
                 TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 7, literal: b"alpha_mill".to_vec() }])).into()
-            } else if hour < 130 {
+            } else if hour < 128 {
                 TableView::Complete(TableRows::LexicalTokens(vec![
                     LexicalTokenRow { token: 7, literal: b"beta_mill".to_vec() },
                     LexicalTokenRow { token: 8, literal: b"alpha_mill".to_vec() },
                 ]))
                 .into()
+            } else if hour < 130 {
+                TableView::Unavailable { reason: "lexical unread mid-stretch".into() }.into()
             } else if hour <= 132 {
                 TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 7, literal: b"beta_mill".to_vec() }])).into()
             } else {
@@ -374,7 +390,7 @@ fn construction_spellings_and_warnings_are_dated_to_their_charge_hours() {
             for table in [TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
                 frame.metrics.table_ns[table.index()] = 1;
             }
-            if hour <= 132 {
+            if hour < 128 || (130..=132).contains(&hour) {
                 frame.metrics.table_ns[TableId::LexicalTokens.index()] = 1;
             }
             frame

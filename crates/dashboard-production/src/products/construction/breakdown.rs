@@ -1,4 +1,4 @@
-use super::spending::{ConstructionSpendingParams, Facts, facts, gap_assignment, place_buildings};
+use super::spending::{ConstructionSpendingParams, Facts, facts, gap_purpose, place_buildings};
 use super::{COST_SCALE, SpendingGap};
 use dashboard_base::products::breakdown::{self, Amount, Breakdown, BreakdownPart, Dated, Exact, History, HistoryBuilder, Node, counted};
 use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
@@ -141,11 +141,15 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
     for line in &facts.lines {
         let (railway, building, state, to_state) = line.leaf;
         for &(hour, gap) in &line.gaps {
-            let Some((repair, at)) = gap_assignment(line.new_from, line.repair_from, hour) else { continue };
-            if hour < at {
-                early_gaps.push((hour, gap));
+            match gap_purpose(line, hour) {
+                Some((repair, at)) => {
+                    if hour < at {
+                        early_gaps.push((hour, gap));
+                    }
+                    events.push((at, (repair, railway, building, state, to_state), Amount::Partial(Exact::ZERO, gap_reason(gap).into())));
+                }
+                None => early_gaps.push((hour, gap)),
             }
-            events.push((at, (repair, railway, building, state, to_state), Amount::Partial(Exact::ZERO, gap_reason(gap).into())));
         }
     }
     events.sort_by_key(|event| (event.0, event.1));
