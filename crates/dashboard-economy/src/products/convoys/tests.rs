@@ -238,6 +238,51 @@ fn gapped() -> dashboard_base::Source {
     synthetic("convoy-gap", &hours)
 }
 
+fn followed_panel(source: &std::sync::Arc<Source>) -> Box<dyn dashboard_follow::panel::Panel> {
+    let product = crate::registrations::CONVOYS_CONVOYHEALTH;
+    (product.panel.unwrap().open)(source, &LoadContext { content: None },
+        &serde_json::json!({ "branchId": "1", "country": "GER", "view": "regions", "regions": [17] })).unwrap()
+}
+
+#[test]
+fn a_convoy_stride_keeps_changes_that_return_to_the_same_value() {
+    use std::sync::Arc;
+    let hours: Vec<_> = (0..48).map(|hour| (hour, true, vec![(17, if (25..=27).contains(&hour) { 30 } else { 10 })])).collect();
+    let source = Arc::new(synthetic("convoy-stride", &hours));
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let advance = exact.advance.clone();
+    let cold = exact.cold.clone();
+    let checked = dashboard_follow::panel::AtHour {
+        advance: Arc::new(move |hour, seed, cancelled, step| {
+            let read = advance(hour, seed, cancelled, step);
+            if hour == 36 && step.is_some_and(|input| input.step.first() < input.step.last()) {
+                assert_eq!(*read.value, cold(hour, cancelled));
+                assert_eq!(read.value.as_ref().as_ref().unwrap()["regions"][0]["efficiency"],
+                    serde_json::json!([[24, 24, 10], [25, 27, 30], [28, 36, 10]]));
+            }
+            read
+        }),
+        cold: exact.cold.clone(),
+        read: exact.read.clone(),
+    };
+    let stepped = dashboard_base::test_fixtures::proven_by_steps(source.replay_ref(), &checked, 12, 36, 24);
+    assert!(stepped.iter().any(|&(hour, _)| hour == 36));
+}
+
+#[test]
+fn a_held_convoy_day_answers_the_played_hour_including_a_recording_gap() {
+    let source = std::sync::Arc::new(gapped());
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let stepped = dashboard_base::test_fixtures::played(source.replay_ref(), exact, 24, 41);
+    assert!(stepped.iter().any(|read| read.hour == 30));
+    for step in stepped {
+        assert_eq!(*step.value, (exact.cold)(step.hour, &cancelled), "hour {}", step.hour);
+    }
+}
+
 #[test]
 fn recording_gaps_are_not_mislabelled_as_unheld_tag_hours() {
     let reply = health_of(&gapped(), &ConvoyHealthParams { regions: Some(vec![17]), ..regions(24, 45) });
