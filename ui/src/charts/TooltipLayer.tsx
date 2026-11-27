@@ -64,12 +64,16 @@ export default function TooltipLayer() {
   }, [state]);
   return <div ref={ref} data-detail={state?.content.detail ?? state?.content.countryFlag?.nameFailure?.message} popover="manual" role="tooltip" className={`chart-tooltip${state?.content.scrollable ? ' is-scrollable' : ''}`} aria-live="off">
     {state && content && <>
-      {state.content.icon || state.content.countryFlag || state.content.subtitle
+      {state.content.icon || state.content.countryFlag || state.content.subtitle || state.content.pinned
         ? <div className="chart-tooltip-head">
           {state.content.countryFlag ? <CountryFlagUrl className="chart-tooltip-flag" url={state.content.countryFlag.flag}
             detail={state.content.countryFlag.flagDetail} reason={state.content.countryFlag.flagReason} pending={state.content.countryFlag.flagPending} />
             : state.content.icon && <img src={state.content.icon} alt="" />}
-          <div><strong>{state.content.title}</strong>{state.content.subtitle && <small>{state.content.subtitle}</small>}</div>
+          <div>
+            <strong>{state.content.title}</strong>
+            {state.content.subtitle && <small>{state.content.subtitle}</small>}
+            {state.content.pinned && <small className="chart-tooltip-pinned">{state.content.pinned}</small>}
+          </div>
         </div>
         : <strong>{state.content.title}</strong>}
       {state.content.scrollable ? <ScrollableTooltipRows content={content} owner={state.owner} top={state.scrollTop ?? 0} />

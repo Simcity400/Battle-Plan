@@ -2,7 +2,8 @@ import { pictureError } from '../../shell/perf.ts';
 import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { tooltipStore } from '../../charts/tooltip.ts';
+import { tooltipStore, tooltipText } from '../../charts/tooltip.ts';
+import { formatDateHover } from '../valueFormat.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.ts';
 import { AuditSnapshotStore } from '../audit.ts';
@@ -489,6 +490,91 @@ test('tooltip payloads carry full truncated text, exact hours, notes, missing re
   };
   assert.equal(action.subject, 'battle:42');
   assert.equal(action.hour, hour);
+});
+
+test('pinFocused preserves date-range, historical-date, unit and category subtitles without doubling the pin timestamp', () => {
+  const inspectHour = engineHour({ year: 1940, month: 12, day: 27, hour: 13 })!;
+  const historicHour = engineHour({ year: 1936, month: 1, day: 1, hour: 12 })!;
+  const earlierDataHour = engineHour({ year: 1940, month: 12, day: 26, hour: 17 })!;
+  const inspectDate = formatDateHover(inspectHour);
+  const historicDate = formatDateHover(historicHour);
+  const earlierDate = formatDateHover(earlierDataHour);
+  const tooltips = new FamilyTooltipController('pin-subtitle-test');
+  try {
+    const announcements: string[] = [];
+    const pinCase = (entry: FamilyTooltipEntry) => {
+      tooltips.clearPinAndHide();
+      announcements.length = 0;
+      assert.equal(tooltips.pinFocused(entry, inspectHour, { x: 40, y: 40 }, 800, msg => announcements.push(msg)), true);
+      return { content: tooltipStore.get()!.content, announced: announcements[0] ?? '' };
+    };
+
+    const dateRange = pinCase({
+      hour: inspectHour,
+      rowKey: 'civil-war:1',
+      payload: { title: 'Spanish Civil War', subtitle: '17 Jul 1936 \u2013 12 Mar 1938', hour: inspectHour, items: [{ label: 'Status', value: 'Ended' }] },
+    });
+    assert.equal(dateRange.content.subtitle, '17 Jul 1936 \u2013 12 Mar 1938');
+    assert.equal(dateRange.content.pinned, `Pinned at ${inspectDate}`);
+    assert.equal(dateRange.announced, `17 Jul 1936 \u2013 12 Mar 1938. Pinned at ${inspectDate}.`);
+    assert.match(tooltipText(dateRange.content), /17 Jul 1936 \u2013 12 Mar 1938; Pinned at 27 Dec 1940 \u00b7 13:00/);
+
+    const historicPoint = pinCase({
+      hour: historicHour,
+      rowKey: `plot:${historicHour}`,
+      payload: { title: 'Air kills & losses', items: [{ label: 'Germany', value: '12' }] },
+    });
+    assert.equal(historicPoint.content.subtitle, historicDate);
+    assert.equal(historicPoint.content.pinned, `Pinned at ${inspectDate}`);
+    assert.equal(historicPoint.announced, `${historicDate}. Pinned at ${inspectDate}.`);
+
+    const earlierBars = pinCase({
+      hour: earlierDataHour,
+      rowKey: 'pair:1',
+      payload: { title: 'Germany \u2192 France', hour: earlierDataHour, items: [{ label: 'Network', value: '45%' }] },
+    });
+    assert.equal(earlierBars.content.subtitle, earlierDate);
+    assert.equal(earlierBars.content.pinned, `Pinned at ${inspectDate}`);
+    assert.equal(earlierBars.announced, `${earlierDate}. Pinned at ${inspectDate}.`);
+
+    const unitTip = pinCase({
+      hour: historicHour,
+      rowKey: 'month:0',
+      payload: { title: 'Jan 1936', subtitle: 'Dockyards', items: [{ label: 'Destroyers', value: '8' }] },
+    });
+    assert.equal(unitTip.content.subtitle, 'Dockyards');
+    assert.equal(unitTip.content.pinned, `Pinned at ${inspectDate}`);
+    assert.equal(unitTip.announced, `Dockyards. Pinned at ${inspectDate}.`);
+
+    const categoryTip = pinCase({
+      hour: inspectHour,
+      rowKey: 'spirit:1',
+      payload: { title: 'Industrial Drive', subtitle: 'National spirit', hour: inspectHour, items: [{ label: 'State', value: 'Active' }] },
+    });
+    assert.equal(categoryTip.content.subtitle, 'National spirit');
+    assert.equal(categoryTip.content.pinned, `Pinned at ${inspectDate}`);
+    assert.equal(categoryTip.announced, `National spirit. Pinned at ${inspectDate}.`);
+
+    const sameHourTable = pinCase({
+      hour: inspectHour,
+      rowKey: 'GER',
+      content: { title: 'Germany', rows: [{ label: 'Factories', value: '120' }] },
+    });
+    assert.equal(sameHourTable.content.subtitle, inspectDate);
+    assert.equal(sameHourTable.content.pinned, 'Pinned');
+    assert.equal(sameHourTable.announced, `${inspectDate}. Pinned.`);
+
+    const sameHourBars = pinCase({
+      hour: inspectHour,
+      rowKey: 'GER',
+      payload: { title: 'Germany', hour: inspectHour, items: [{ label: 'Factories', value: '120' }] },
+    });
+    assert.equal(sameHourBars.content.subtitle, inspectDate);
+    assert.equal(sameHourBars.content.pinned, 'Pinned');
+    assert.equal(sameHourBars.announced, `${inspectDate}. Pinned.`);
+  } finally {
+    tooltips.dispose();
+  }
 });
 
 test('activating a row closes its tooltip, which stays closed under the opened window until the pointer or focus reaches another row', () => {
@@ -2389,7 +2475,8 @@ test('points keyboard navigation supports async next-change focus without activa
     () => null,
   );
   assert.equal(pinEffect?.kind, 'pin');
-  assert.equal(pinEffect?.kind === 'pin' ? pinEffect.hour : null, 3, 'pinning focused tooltip uses tooltip hour 3, not picture head 17');
+  assert.equal(pinEffect?.kind === 'pin' ? pinEffect.hour : null, 17, 'pinning carries the inspection hour 17 while the tooltip entry keeps its own hour 3');
+  assert.equal(pinEffect?.kind === 'pin' ? pinEffect.tip.hour : null, 3);
 
   const emptyInstalled: InstalledPicture = {
     ...installed,

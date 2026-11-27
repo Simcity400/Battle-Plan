@@ -96,6 +96,11 @@ export function resolveTooltipEntryContent(entry: FamilyTooltipEntry): TooltipCo
   return entry.content ?? buildTooltipContent(entry.payload);
 }
 
+function datedTooltipContent(entry: FamilyTooltipEntry, hour: number): TooltipContent {
+  const raw = resolveTooltipEntryContent(entry);
+  return raw.subtitle ? raw : { ...raw, subtitle: formatDateHover(Math.floor(hour)) };
+}
+
 export interface FamilyTooltipField {
   readonly key: string;
   readonly text: FamilyTooltipEntry | null;
@@ -160,8 +165,7 @@ export class FamilyTooltipController {
     if (cached && cached.entry === entry && cached.hour === flooredHour && cached.height === viewportHeight) {
       return cached.fitted;
     }
-    const raw = resolveTooltipEntryContent(entry);
-    const dated = raw.subtitle ? raw : { ...raw, subtitle: formatDateHover(flooredHour) };
+    const dated = datedTooltipContent(entry, flooredHour);
     const fitted = fitTooltip([dated], viewportHeight);
     const next: FittedCache = { entry, hour: flooredHour, height: viewportHeight, fitted };
     if (channel === 'hover') this.hoverCache = next;
@@ -284,12 +288,14 @@ export class FamilyTooltipController {
     announce?: (message: string) => void,
   ): boolean {
     if (!tip) return false;
-    const dateText = formatDateHover(Math.floor(hour));
-    const pinnedContent: TooltipContent = { ...resolveTooltipEntryContent(tip), subtitle: `Pinned at ${dateText}` };
+    const dated = datedTooltipContent(tip, tip.hour);
+    const pinDate = formatDateHover(Math.floor(hour));
+    const pinned = dated.subtitle === pinDate ? 'Pinned' : `Pinned at ${pinDate}`;
+    const pinnedContent: TooltipContent = { ...dated, pinned };
     this.pinned = { key: tip.rowKey, content: pinnedContent, x: pos.x, y: pos.y };
     this.tipVisible = true;
     showTooltip(this.owner, fitTooltip([pinnedContent], viewportHeight), pos.x, pos.y, `${tip.rowKey}:pinned`);
-    announce?.('Tooltip pinned.');
+    announce?.(`${dated.subtitle}. ${pinned}.`);
     return true;
   }
 

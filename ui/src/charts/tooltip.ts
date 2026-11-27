@@ -26,6 +26,7 @@ export interface TooltipContent {
   scrollable?: boolean;
   scrollId?: string;
   icon?: string; subtitle?: string;
+  pinned?: string;
   countryFlag?: TooltipRow['countryFlag'];
   description?: string;
   spoken?: string;
@@ -39,7 +40,7 @@ function tooltipRowValueText(row: TooltipRow): string | undefined {
 
 export function tooltipText(content: TooltipContent): string {
   if (content.spoken) return content.spoken;
-  return [content.title, content.subtitle,
+  return [content.title, content.subtitle, content.pinned,
     ...content.rows.map(row => [row.label, tooltipRowValueText(row)].filter(Boolean).join(' ')),
     content.description, content.note]
     .filter(Boolean).join('; ');
@@ -181,7 +182,9 @@ export function tooltipRowHeight(row: TooltipRow, metrics: TooltipMetrics | null
 
 export function tooltipHeight(content: TooltipContent, metrics: TooltipMetrics | null = activeMetrics()): number {
   const room = CONTENT_WIDTH - (content.countryFlag || content.icon ? HEAD_MARK : 0);
-  const title = lines(content.title, 'title', metrics, room) * lineOf('title', metrics) + (content.subtitle ? lines(content.subtitle, 'small', metrics, room) * lineOf('small', metrics) : 0);
+  const title = lines(content.title, 'title', metrics, room) * lineOf('title', metrics)
+    + (content.subtitle ? lines(content.subtitle, 'small', metrics, room) * lineOf('small', metrics) : 0)
+    + (content.pinned ? lines(content.pinned, 'small', metrics, room) * lineOf('small', metrics) : 0);
   const header = (content.countryFlag ? Math.max(FLAG, title) : content.icon ? Math.max(ICON, title) : title) + GAP;
   const rows = content.rows.reduce((sum, row) => sum + tooltipRowHeight(row, metrics), 0);
   const description = content.description ? GAP * 2 + 1 + content.description.split('\n').reduce((sum, part) => sum + lines(part, 'small', metrics), 0) * lineOf('small', metrics) : 0;

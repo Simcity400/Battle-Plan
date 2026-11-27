@@ -99,9 +99,10 @@ test('table family plays live with zero React commits, zero layout reads on inst
       assert.equal(focused.ready, true, 'focused row FRA receives its own focusTooltip');
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: px, y: pyRow1 });
       assert.equal(await act<boolean>('waitInspected("ITA")'), true, 'pointer hovers row 1 (ITA) while keyboard stays on FRA');
-      const pinned = await act<{ title: string | null; subtitle: string | null; installReads: number }>('pinFocusedRow()');
+      const pinned = await act<{ title: string | null; subtitle: string | null; pinned: string | null; installReads: number }>('pinFocusedRow()');
       assert.equal(pinned.title, 'France', 'P pins keyboard-focused FRA (France), not pointer-hovered ITA (Italy)');
-      assert.ok((pinned.subtitle ?? '').startsWith('Pinned at '), `pinned tooltip carries pinned subtitle: ${pinned.subtitle}`);
+      assert.ok(Boolean(pinned.subtitle) && !(pinned.subtitle ?? '').startsWith('Pinned'), `pinned tooltip keeps the row date subtitle: ${pinned.subtitle}`);
+      assert.equal(pinned.pinned, 'Pinned', 'same-hour table row pin does not double its date');
       assert.equal(pinned.installReads, 0, 'zero layout/style reads during install even with active focus and hover tooltips');
 
       const overflow = await act<{ tipOverflowed: boolean; commits: number; installs: number; unchangedInstalls: number; unchangedTooltipCommits: number; unchangedInstallReads: number }>('testOverflowTooltipDuringPlayback()');

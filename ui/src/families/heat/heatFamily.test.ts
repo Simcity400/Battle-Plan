@@ -730,7 +730,8 @@ test('heat matrix keeps census dataHour on hover and pinned tooltips as playback
       parseMatrixCellKey,
     );
     assert.equal(pinned?.kind, 'pin');
-    assert.equal(pinned?.kind === 'pin' && pinned.hour, 100, 'pinned matrix tooltip keeps census readHour');
+    assert.equal(pinned?.kind === 'pin' && pinned.hour, 112, 'pinning records the inspection hour');
+    assert.equal(pinned?.kind === 'pin' && pinned.tip.hour, 100, 'pinned matrix tooltip keeps census readHour');
 
     const marginBinding = { ...binding, focusedKey: '0:2' };
     const marginAdvanced = lane.paint({ label: 'margin-after-sample', binding: marginBinding, hour: 112, inspect: 'cell:0:2', speed: 24, seek: 1 });

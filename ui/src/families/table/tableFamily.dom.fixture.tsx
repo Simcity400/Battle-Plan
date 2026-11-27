@@ -632,15 +632,16 @@ window.tableFamilyDom = {
     totalInstallReads = 0;
     const active = document.activeElement as HTMLElement | null;
     active?.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
-    await until(() => (tooltipStore.get()?.content.subtitle ?? '').startsWith('Pinned at '), 'P to pin the focused row');
+    await until(() => Boolean(tooltipStore.get()?.content.pinned), 'P to pin the focused row');
     const pinned = tooltipStore.get();
     const result = {
       title: pinned?.content.title ?? null,
       subtitle: pinned?.content.subtitle ?? null,
+      pinned: pinned?.content.pinned ?? null,
       installReads: totalInstallReads,
     };
     active?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await until(() => tooltipStore.get() === null || !(tooltipStore.get()?.content.subtitle ?? '').startsWith('Pinned at '), 'Escape to release the pin');
+    await until(() => tooltipStore.get() === null || !tooltipStore.get()?.content.pinned, 'Escape to release the pin');
     return result;
   },
 
