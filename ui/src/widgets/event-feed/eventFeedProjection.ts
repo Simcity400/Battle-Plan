@@ -43,7 +43,7 @@ const HEAD_LIMIT = 256;
 const GROUP = 'group:';
 
 const LOSER_SECOND_KINDS = new Set(['annexed', 'warDeclared', 'warStarted']);
-const ONE_COUNTRY_KINDS = new Set(['ceasedToExist', 'projectFinished']);
+const ONE_COUNTRY_KINDS = new Set(['ceasedToExist', 'projectFinished', 'factionJoined', 'factionLeft']);
 const VIEWABLE_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected']);
 
 const KIND_SPRITES: Readonly<Record<string, string>> = {
@@ -268,7 +268,7 @@ function buildFeedTableRow(
     if (tag === null && idx === 1) {
       if (event.kind.startsWith('decision')) {
         if (event.cause?.target?.kind !== 'country') continue;
-      } else if (rawRoles[0] !== null && !['scriptEventFired', 'newsEventFired', 'warStarted', 'warDeclared', 'warJoined', 'annexed', 'released', 'guaranteeGranted'].includes(event.kind)) {
+      } else if (rawRoles[0] !== null && !['scriptEventFired', 'newsEventFired', 'warStarted', 'warDeclared', 'warJoined', 'peace', 'annexed', 'released', 'guaranteeGranted'].includes(event.kind)) {
         continue;
       }
     }

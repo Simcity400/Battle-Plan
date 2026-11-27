@@ -119,6 +119,9 @@ pub struct EventFeedActivityLine {
     #[doc = " Per bin with rows: its index from `firstHour` and its count."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number]>"))]
     pub bins: Vec<(u32, u64)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub latest_retirement: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -482,9 +485,10 @@ fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], (from, to): (
         .unrecorded
         .iter()
         .filter(|family| categories.contains(&family.category))
-        .flat_map(|family| &family.spans)
-        .filter(|&&(first, last)| first <= to && last >= from)
-        .map(|&(first, last)| (first.max(from), last.min(to)))
+        .flat_map(|family| family.spans.iter().copied())
+        .chain(feed.notices.iter().filter(|(cats, ..)| cats.iter().any(|c| categories.contains(c))).filter_map(|(.., span)| *span))
+        .filter(|&(first, last)| first <= to && last >= from)
+        .map(|(first, last)| (first.max(from), last.min(to)))
         .filter_map(|(first, last)| if first <= hour && hour < last { Some(hour + 1) } else { (first > hour).then_some(first) })
         .min();
     [warning, left_out, unrecorded].into_iter().flatten().min()
@@ -519,9 +523,11 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                 let occ = feed.index.get(at);
                 if occ.observed > hour {
                     (0, 0, 0, 0, Vec::new(), Some(occ.observed), Vec::new())
+                } else if feed.index.retired_at(at).is_some_and(|end| hour >= end) {
+                    (0, 0, 0, 0, Vec::new(), None, Vec::new())
                 } else {
                     let live = u64::from(occ.state_at(hour).is_some_and(|state| index::LIVE.contains(&state)));
-                    let next = occ.states.get(occ.states.partition_point(|&(h, _)| h <= hour)).map(|step| step.0);
+                    let next = [occ.states.get(occ.states.partition_point(|&(h, _)| h <= hour)).map(|step| step.0), feed.index.retired_at(at)].into_iter().flatten().min();
                     (1, 0, live, 0, Vec::new(), next, vec![PlannedLine::Event { at, ordinal: 0, parent: None }])
                 }
             }
@@ -690,10 +696,11 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         .collect();
     content_refusals(&presenter, &mut notices)?;
     let from = params.from.unwrap_or(query.timeline.first);
+    let to = params.to.map_or(hour, |to| to.min(hour));
     notices_for(prepared, unattributed, true, from, hour, &mut notices);
     families::unread(&params.categories, &mut notices);
-    for (categories, kind, label, reason, count) in &feed.notices {
-        if categories.iter().any(|category| params.categories.contains(category)) {
+    for (categories, kind, label, reason, count, span) in &feed.notices {
+        if categories.iter().any(|category| params.categories.contains(category)) && span.is_none_or(|(a, b)| a <= to && b >= from) {
             notices.unavailable(kind, label, reason.clone(), *count);
         }
     }
@@ -708,7 +715,6 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             );
         }
     }
-    let to = params.to.map_or(hour, |to| to.min(hour));
     for family in feed.unrecorded.iter().filter(|family| params.categories.contains(&family.category)) {
         let hours: i64 = family.spans.iter().map(|&(first, last)| (i64::from(last.min(to)) - i64::from(first.max(from)) + 1).max(0)).sum();
         if hours > 0 {
@@ -1067,13 +1073,45 @@ impl Product for EventFeedActivity {
             chips: &[],
         };
         let mut lines = Vec::with_capacity(params.categories.len());
+        let mut missing = feed.index.coverage(&query.holders, &whole, params.from, hour);
+        let base_missing = missing.len();
         for &category in &params.categories {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let kinds = feed_kinds(&[category], params.exclude.as_deref())?;
-            let (before, bins) = feed.index.bins(&query.holders, &Ask { kinds: Some(&kinds), ..whole }, params.from, hour, params.bin_hours)?;
-            lines.push(EventFeedActivityLine { category, before: before.to_string(), bins });
+            let line_ask = Ask { kinds: Some(&kinds), ..whole };
+            let (before, bins) = feed.index.bins(&query.holders, &line_ask, params.from, hour, params.bin_hours)?;
+            let latest_retirement = feed.index.latest_retirement(&query.holders, &line_ask, params.from);
+            lines.push(EventFeedActivityLine { category, before: before.to_string(), bins, latest_retirement });
+            let active_key = |key: &str| match key {
+                "peace" => kinds.contains(&index::kind_code(EventFeedKind::Peace)),
+                "factionMembership" => kinds.contains(&index::kind_code(EventFeedKind::FactionJoined)) || kinds.contains(&index::kind_code(EventFeedKind::FactionLeft)),
+                "countryGroups" => kinds.contains(&index::kind_code(EventFeedKind::WarStarted)) || kinds.contains(&index::kind_code(EventFeedKind::Capitulated)),
+                _ => false,
+            };
+            for family in feed.unrecorded.iter().filter(|f| f.category == category && active_key(f.kind)) {
+                let reason = format!("{} {}.", family.label, family.why);
+                for &(first, last) in &family.spans {
+                    let (a, b) = (first.max(params.from), last.min(hour));
+                    if a <= b { missing.push(dashboard_query::series::MissingSpan { first_hour: a, last_hour: b, reason: reason.clone() }); }
+                }
+            }
+            for (_, _, _, reason, _, span) in feed.notices.iter().filter(|(cats, key, ..)| cats.contains(&category) && active_key(key)) {
+                let (first, last) = span.unwrap_or((params.from, hour));
+                let (a, b) = (first.max(params.from), last.min(hour));
+                if a <= b { missing.push(dashboard_query::series::MissingSpan { first_hour: a, last_hour: b, reason: reason.clone() }); }
+            }
         }
-        let missing = feed.index.coverage(&query.holders, &whole, params.from, hour);
+        if missing.len() > base_missing {
+            missing.sort_by(|a, b| a.first_hour.cmp(&b.first_hour).then(a.last_hour.cmp(&b.last_hour)).then(a.reason.cmp(&b.reason)));
+            let mut merged: Vec<dashboard_query::series::MissingSpan> = Vec::with_capacity(missing.len());
+            for span in missing {
+                match merged.last_mut() {
+                    Some(held) if held.reason == span.reason && span.first_hour <= held.last_hour.saturating_add(1) => held.last_hour = held.last_hour.max(span.last_hour),
+                    _ => merged.push(span),
+                }
+            }
+            missing = merged;
+        }
         Ok(EventFeedActivityReply {
             branch_id: params.branch_id.clone(),
             first_hour: (i64::from(params.from).div_euclid(params.bin_hours) * params.bin_hours) as i32,
@@ -1128,7 +1166,9 @@ impl Product for EventFeedKinds {
                     RulingPartyChanged => "rulingPartyChanged",
                     FocusCompleted => "focusCompleted",
                     NukesIncreased => "nukesIncreased",
-                    WarStarted | Peace | Capitulated | FactionJoined | FactionLeft => "countryGroups",
+                    Peace => "peace",
+                    FactionJoined | FactionLeft => "factionMembership",
+                    WarStarted | Capitulated => "countryGroups",
                     BecameSubject => "subjects",
                     ProjectFinished => "projectFinished",
                     NuclearStrike => "nuclearStrike",
@@ -1137,7 +1177,7 @@ impl Product for EventFeedKinds {
                 if let Some(notice) = unread.iter().find(|notice| notice.kind == key) {
                     return notice.reason.clone();
                 }
-                if let Some((_, _, _, reason, _)) = feed.notices.iter().find(|(_, name, ..)| name == key) {
+                if let Some((_, _, _, reason, _, _)) = feed.notices.iter().find(|(_, name, ..)| name == key) {
                     return reason.clone();
                 }
                 if let Some(family) = feed.unrecorded.iter().find(|family| family.kind == key && !family.spans.is_empty()) {

@@ -5,6 +5,7 @@ use super::{
     families,
     fold::{FoldMeta, group_of},
     row::{Columns, FeedEvent, Slot},
+    transitions::{self, BranchTransitions, NativeWarEnd},
 };
 use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals, capture_isolated}, products::LoadContext, queries::country_ids::Names};
 use dashboard_query::{
@@ -105,6 +106,7 @@ struct Brief {
 pub(crate) struct Scanned {
     briefs: Vec<Brief>,
     native: Vec<Occurrence<Item>>,
+    pub war_ends: Vec<NativeWarEnd>,
     pub incomplete: Vec<(i32, u128, FeedEvent)>,
     pub windows_unrecorded: Vec<(i32, i32, String)>,
     states: HashMap<u128, DecisionLifecycleState>,
@@ -168,6 +170,7 @@ impl Scanned {
         Self {
             briefs: Vec::new(),
             native: Vec::new(),
+            war_ends: Vec::new(),
             incomplete: Vec::new(),
             windows_unrecorded: Vec::new(),
             states: HashMap::new(),
@@ -298,6 +301,9 @@ struct Branch {
     decisions: Option<Arc<Index<Item>>>,
     choices: Option<Arc<Index<Item>>>,
     feed: Option<Arc<Feed>>,
+    transitions: Option<Arc<BranchTransitions>>,
+    #[cfg(test)]
+    transition_reads: usize,
 }
 
 #[derive(Default)]
@@ -378,6 +384,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
     runs.dedup();
     let mut briefs = Vec::new();
     let mut native = Vec::new();
+    let mut war_ends = Vec::new();
     let mut incomplete = Vec::new();
     let mut windows_unrecorded = Vec::new();
     let mut lifecycles: Vec<FeedEvent> = Vec::new();
@@ -410,6 +417,9 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
             });
             if !internal(kind) {
                 native.push(feed_occurrence(&event, kind, at, &names, name.as_deref()));
+            }
+            if !event.derived() && kind == EventFeedKind::WarEnded && event.hour <= event.read_hour {
+                war_ends.push(NativeWarEnd { hour: event.hour.min(row.hour), observed: row.hour, actor: event.actor, target: event.target });
             }
             briefs.push(Brief {
                 at,
@@ -458,7 +468,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
     let breaks = spans(held.clone());
     let decision_lost = incomplete.iter().filter(|(_, _, read)| read.refusals != Some(0)).map(|&(hour, ..)| (hour, hour));
     let decision_breaks = spans(held.into_iter().chain(decision_lost).collect());
-    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
+    Ok(Scanned { briefs, native, war_ends, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
 }
 
 fn incomplete_break_reason(read: &FeedEvent) -> String {
@@ -737,12 +747,12 @@ fn family_id(text: &str) -> u128 {
     (u128::from(FeedEventRow::DERIVED - 1) << 64) | u128::from(hash)
 }
 
-fn family_occurrence(query: &Query<'_>, family: families::FamilyRow, slot: Option<u32>) -> Occurrence<Item> {
+fn family_occurrence(query: &Query<'_>, family: families::FamilyRow) -> (Occurrence<Item>, Option<i32>) {
     let row = &family.row;
     let observed = row.read_hour.max(row.hour);
     let at = row.name_hour.min(observed);
-    let roles: Vec<Role> = if let Some(slot) = slot {
-        vec![Role::dated(Some(slot), at, observed)]
+    let roles: Vec<Role> = if let Some(slots) = &family.slots {
+        slots.iter().map(|&slot| Role::dated(slot, at, observed)).collect()
     } else {
         row.tags
             .iter()
@@ -756,10 +766,11 @@ fn family_occurrence(query: &Query<'_>, family: families::FamilyRow, slot: Optio
             ))
             .collect()
     };
+    let until = family.until;
     let name = row.item.as_ref().and_then(|item| item.name.clone());
     let label = row.kind.row_label();
     let text = SearchText::from(text_of(name.as_deref(), row.tags.iter().cloned().chain(label.map(str::to_owned))));
-    Occurrence {
+    let occ = Occurrence {
         id: family_id(&row.id),
         date: row.hour,
         observed,
@@ -770,7 +781,8 @@ fn family_occurrence(query: &Query<'_>, family: families::FamilyRow, slot: Optio
         sort_keys: Box::new([SortKey::text(row.participants.as_ref().map(|roles| roles[0].clone()).unwrap_or_else(|| row.tags.first().cloned())), SortKey::text(label.map(str::to_owned).or(name))]),
         text,
         payload: Item::Family(Box::new(family)),
-    }
+    };
+    (occ, until)
 }
 
 fn script_feed(scanned: &Scanned) -> Vec<Occurrence<Item>> {
@@ -818,7 +830,7 @@ fn script_feed(scanned: &Scanned) -> Vec<Occurrence<Item>> {
     native
 }
 
-type Notice = (Vec<EventFeedCategory>, String, String, String, Option<u32>);
+type Notice = (Vec<EventFeedCategory>, String, String, String, Option<u32>, Option<(i32, i32)>);
 
 #[cfg(test)]
 thread_local! {
@@ -836,28 +848,37 @@ fn family<T>(made: io::Result<T>, categories: &[EventFeedCategory], kind: &str, 
         Err(error) if cancelled.load(std::sync::atomic::Ordering::Relaxed) => Err(error),
         Err(error) => {
             *unsettled |= error.kind() != io::ErrorKind::InvalidData && dashboard_core::refusal(&error).is_none();
-            refused.push((categories.to_vec(), kind.to_owned(), label.to_owned(), error.to_string(), None));
+            refused.push((categories.to_vec(), kind.to_owned(), label.to_owned(), error.to_string(), None, None));
             Ok(None)
         }
     }
 }
 
-fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Scanned, cancelled: &AtomicBool) -> io::Result<Feed> {
+fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Scanned, transitions: &BranchTransitions, cancelled: &AtomicBool) -> io::Result<Feed> {
     use EventFeedCategory::{Diplomacy, Milestones, WarsPeace};
     let (first, last) = (query.timeline.first, query.timeline.last);
     let mut refused: Vec<Notice> = Vec::new();
     let mut unsettled = false;
-    let mut rows = Vec::new();
+    let mut rows: Vec<families::FamilyRow> = Vec::new();
     let mut warnings: families::DatedNotes = Vec::new();
-    let mut unattributed = Vec::new();
     let mut unrecorded = Vec::new();
-    if let Some((made, notes, left_out)) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, (cancelled, &mut unsettled))? {
-        rows.extend(made.into_iter().map(|row| (row.into(), None)));
-        warnings.extend(notes);
-        unattributed = left_out;
+    let groups_reply = family(dashboard_world::products::groups::shared(source, query, context, cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, (cancelled, &mut unsettled))?;
+    let groups_err = groups_reply.is_none().then(|| refused.last().map(|n| n.3.as_str())).flatten();
+    let (made, notes, unattributed, gaps) = families::group_rows(groups_reply.as_deref(), groups_err, transitions, &scanned.war_ends, (first, last), &[WarsPeace, Diplomacy]);
+    rows.extend(made);
+    warnings.extend(notes);
+    unrecorded.extend(gaps);
+    for (a, b, reason, retry) in &transitions.war_errors {
+        unsettled |= *retry;
+        refused.push((vec![WarsPeace], "peace".to_owned(), "Peace transitions".to_owned(), reason.clone(), None, Some((*a, *b))));
     }
+    for (a, b, reason, retry) in &transitions.faction_errors {
+        unsettled |= *retry;
+        refused.push((vec![Diplomacy], "factionMembership".to_owned(), "Faction membership".to_owned(), reason.clone(), None, Some((*a, *b))));
+    }
+    unsettled |= transitions.unsettled;
     if let Some(made) = family(families::subject_rows(source, query, first, last, cancelled), &[Diplomacy], "subjects", "Subjects", &mut refused, (cancelled, &mut unsettled))? {
-        rows.extend(made.into_iter().map(|row| (row.into(), None)));
+        rows.extend(made.into_iter().map(Into::into));
     }
     if let Some((made, notes, projects)) = family(families::project_completions(source, query, context, first, last, cancelled), &[Milestones], "projectFinished", "Special projects", &mut refused, (cancelled, &mut unsettled))? {
         rows.extend(made);
@@ -869,26 +890,28 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
         None => Err("Nuclear type names are unavailable until the game folders are chosen".to_owned()),
     };
     if let Err(reason) = &localisation {
-        refused.push((vec![WarsPeace], "nuclearTypeNames".to_owned(), "Nuclear type names".to_owned(), reason.clone(), None));
+        refused.push((vec![WarsPeace], "nuclearTypeNames".to_owned(), "Nuclear type names".to_owned(), reason.clone(), None, None));
     }
     let localise = |spelling: &str| localisation.as_ref().ok().and_then(|held| dashboard_text::catalogue::localised(held, spelling, dashboard_text::catalogue::View::Plain).ok());
     let mut notices = Notices::default();
     if let Some(made) = family(super::nuclear::strike_rows(query, first, last, &localise, &mut notices, cancelled), &[WarsPeace], "nuclearStrike", "Nuclear strikes", &mut refused, (cancelled, &mut unsettled))? {
-        rows.extend(made.into_iter().map(|row| (row.into(), None)));
+        rows.extend(made.into_iter().map(Into::into));
     }
-    refused.extend(notices.into_list().into_iter().map(|notice| (vec![WarsPeace], notice.kind, notice.label, notice.reason, notice.count)));
+    refused.extend(notices.into_list().into_iter().map(|notice| (vec![WarsPeace], notice.kind, notice.label, notice.reason, notice.count, None)));
     let mut occurrences = script_feed(scanned);
     let mut seen: BTreeSet<u128> = occurrences.iter().map(|occurrence| occurrence.id).collect();
-    for (family, slot) in rows {
-        let occurrence = family_occurrence(query, family, slot);
+    let mut retired: HashMap<u128, i32> = HashMap::new();
+    for family in rows {
+        let (occurrence, until) = family_occurrence(query, family);
         if seen.insert(occurrence.id) {
+            if let Some(end) = until { retired.insert(occurrence.id, end); }
             occurrences.push(occurrence);
         }
     }
     warnings.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
     warnings.dedup_by(|later, earlier| later.1 == earlier.1);
     warnings.sort();
-    let index = Arc::new(Index::new(occurrences, scanned.gaps.clone(), &LIVE)?);
+    let index = Arc::new(Index::new(occurrences, scanned.gaps.clone(), &LIVE)?.with_retirements(retired));
     let names = Names::new(&query.holders);
     let mut countries: Vec<String> = Vec::new();
     let mut by_tag: HashMap<String, u32> = HashMap::new();
@@ -927,7 +950,18 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
 
 fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, catalogue: Option<&Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<Scanned>> {
     let binding = held.binding.as_ref().and_then(Weak::upgrade);
-    if held.binding.is_some() != catalogue.is_some() || !same_content(binding.as_ref(), catalogue) { *held = Branch { binding: catalogue.map(Arc::downgrade), ..Branch::default() }; }
+    if held.binding.is_some() != catalogue.is_some() || !same_content(binding.as_ref(), catalogue) {
+        let transitions = held.transitions.take();
+        #[cfg(test)]
+        let transition_reads = held.transition_reads;
+        *held = Branch {
+            binding: catalogue.map(Arc::downgrade),
+            transitions,
+            #[cfg(test)]
+            transition_reads,
+            ..Branch::default()
+        };
+    }
     if let Some(found) = &held.scanned {
         return Ok(Arc::clone(found));
     }
@@ -978,11 +1012,30 @@ pub(crate) fn feed_for(source: &Source, query: &Query<'_>, branch: u64, context:
     if let Some(found) = &held.feed {
         return Ok(Arc::clone(found));
     }
-    let made = Arc::new(feed(source, query, context, &scanned, cancelled)?);
+    let transitions = match &held.transitions {
+        Some(found) => Arc::clone(found),
+        None => {
+            #[cfg(test)]
+            {
+                held.transition_reads += 1;
+            }
+            let loaded = Arc::new(transitions::load_branch(query, cancelled)?);
+            if !loaded.is_unsettled() {
+                held.transitions = Some(Arc::clone(&loaded));
+            }
+            loaded
+        }
+    };
+    let made = Arc::new(feed(source, query, context, &scanned, &transitions, cancelled)?);
     if !made.unsettled {
         held.feed = Some(Arc::clone(&made));
     }
     Ok(made)
+}
+
+#[cfg(test)]
+pub(crate) fn transition_reads(source: &Source, branch: u64) -> usize {
+    branch_of(source, branch).lock().unwrap_or_else(PoisonError::into_inner).transition_reads
 }
 
 #[cfg(any(test, feature = "test-support"))]

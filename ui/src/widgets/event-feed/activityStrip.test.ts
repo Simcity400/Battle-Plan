@@ -358,3 +358,55 @@ test('subscribeActivityClock advances across ordinary forward playback without p
   assert.match(gapRule, /flex:\s*1\s+1\s+0/, '.efs-gap takes an equal share of the flex axis like .efs-bar');
   assert.doesNotMatch(gapRule, /flex:\s*0\s+0\s+3px/, '.efs-gap must not compress gaps to a fixed 3px width');
 });
+
+test('mergeActivityStrip invalidates cached prefix when a retired row is replaced in an earlier bin with unchanged before count', () => {
+  const scope = activityScopeKey({
+    sourceId: 's',
+    revision: '1',
+    branchId: '1',
+    binHours: 24,
+    categories: ['warsPeace'],
+    selection: undefined,
+  });
+  const initialPlan = activityRequestPlan(null, scope, 0, 80, 24);
+  const settled = buildFullActivityStrip({
+    branchId: '1',
+    firstHour: 0,
+    binHours: 24,
+    lines: [{ category: 'warsPeace', before: '0', bins: [[2, 1]] }],
+    missing: [],
+    warnings: [],
+  }, initialPlan);
+
+  const forwardPlan = activityRequestPlan(settled, scope, 0, 96, 24);
+  assert.equal(forwardPlan.incremental, true);
+  assert.equal(forwardPlan.requestFrom, 72);
+
+  const retiredSwapReply: EventFeedActivityReply = {
+    branchId: '1',
+    firstHour: 72,
+    binHours: 24,
+    lines: [{ category: 'warsPeace', before: '1', bins: [], latestRetirement: 96 }],
+    missing: [],
+    warnings: [],
+  };
+  assert.equal(
+    mergeActivityStrip(settled, retiredSwapReply, forwardPlan),
+    null,
+    'latestRetirement past prev.lastHour must reject incremental reuse even when before count is unchanged',
+  );
+
+  const alreadyRetiredReply: EventFeedActivityReply = {
+    branchId: '1',
+    firstHour: 72,
+    binHours: 24,
+    lines: [{ category: 'warsPeace', before: '1', bins: [], latestRetirement: 70 }],
+    missing: [],
+    warnings: [],
+  };
+  assert.notEqual(
+    mergeActivityStrip(settled, alreadyRetiredReply, forwardPlan),
+    null,
+    'a retirement already visible at prev.lastHour does not invalidate the cached prefix',
+  );
+});

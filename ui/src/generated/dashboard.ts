@@ -2529,7 +2529,7 @@ export type EventFeedActivityLine = { category: EventFeedCategory, before: strin
 /**
  * Per bin with rows: its index from `firstHour` and its count.
  */
-bins: Array<[number, number]>, };
+bins: Array<[number, number]>, latestRetirement?: number, };
 export type EventFeedActivityReply = { branchId: string,
 /**
  * The first hour of bin 0.

@@ -406,3 +406,20 @@ fn bins_before_count_avoids_scanning_historical_rows_and_matches_mixed_observati
     assert_eq!(index.bins(&holders(), &ask(1_994), 1_990, 1_999, 5).unwrap(), (1_889, vec![(0, 5)]), "row 500 observed at 1995 is excluded at 1994");
     assert_eq!(index.bins(&holders(), &ask(1_994), 1_995, 2_000, 5).unwrap(), (1_894, Vec::new()), "when ask.hour < first, all observed rows count in before");
 }
+
+#[test]
+fn retired_occurrence_is_visible_until_retirement_wakes_next_change_and_keeps_bins_bounded() {
+    let entries = vec![occurrence(1, 101, 101), occurrence(2, 101, 103)];
+    let index = Index::new(entries, Vec::new(), &[]).unwrap().with_retirements(HashMap::from([(1, 103)]));
+    let at_100 = index.ask(&holders(), &ask(100)).unwrap();
+    assert_eq!((ids(&index, &at_100), at_100.next_change), (Vec::new(), Some(101)));
+    let at_101 = index.ask(&holders(), &ask(101)).unwrap();
+    assert_eq!((ids(&index, &at_101), at_101.next_change), (vec![1], Some(103)));
+    let at_102 = index.ask(&holders(), &ask(102)).unwrap();
+    assert_eq!((ids(&index, &at_102), at_102.next_change), (vec![1], Some(103)));
+    let at_103 = index.ask(&holders(), &ask(103)).unwrap();
+    assert_eq!((ids(&index, &at_103), at_103.next_change), (vec![2], None));
+    assert_eq!(index.bins(&holders(), &ask(102), 100, 105, 10).unwrap(), (0, vec![(0, 1)]));
+    assert_eq!(index.bins(&holders(), &ask(103), 100, 105, 10).unwrap(), (0, vec![(0, 1)]));
+    assert_eq!(index.bins(&holders(), &ask(103), 102, 105, 10).unwrap(), (1, Vec::new()));
+}

@@ -391,6 +391,9 @@ export function mergeActivityStrip(
   const nextBeforeByCategory: Record<string, bigint> = {};
   const series: { readonly category: string; readonly counts: readonly number[] }[] = [];
   for (const line of data.lines) {
+    if (line.latestRetirement !== undefined && line.latestRetirement > prev.lastHour) {
+      return null;
+    }
     const prevCounts = prevByCategory.get(line.category);
     const prevBefore = prev.beforeByCategory[line.category];
     const replyBefore = parseBeforeCount(line.before);
