@@ -120,21 +120,24 @@ fn repairs_follow_the_selected_ports_and_reseed_on_seek_and_branch_change() {
 #[test]
 fn repairs_follow_the_state_name_of_a_port_witnessed_in_a_truncated_province_table() {
     let (_machine, source, load) = recording_with("repair-port-state-fallback", &[1], |branch, hour| {
-        let mut held = frame(branch, hour);
-        *held.tables[TableId::Provinces.index()] = TableView::Truncated {
-            rows: TableRows::Provinces(vec![ProvinceRow { id: 9, state: 65, ..Default::default() }]),
-            missing: 1,
+        let mut held = frame(branch, 100);
+        held.hour = hour;
+        let port = ProvinceRow { id: 9, state: 65, ..Default::default() };
+        *held.tables[TableId::Provinces.index()] = if hour == 100 {
+            TableView::Complete(TableRows::Provinces(vec![port, ProvinceRow { id: 10, ..Default::default() }]))
+        } else {
+            TableView::Truncated { rows: TableRows::Provinces(vec![port]), missing: 1 }
         };
         held.metrics.table_ns[TableId::Provinces.index()] = 1;
         *held.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
-            id: 65, owner: 9001, custom_name: if hour == 100 { b"Recorded harbour".to_vec() } else { b"Renamed harbour".to_vec() }, ..Default::default()
+            id: 65, owner: 9001, custom_name: if hour < 102 { b"Recorded harbour".to_vec() } else { b"Renamed harbour".to_vec() }, ..Default::default()
         }]));
         held
     });
     let registration = NAVAL_YARDS_NAVALREPAIRS;
     let panel = (registration.panel.unwrap().open)(&source, &load, &json!({"panel":"naval-repairs","branchId":"1","country":"GER"})).unwrap();
-    let followed = played(source.replay_ref(), panel.exact().unwrap(), 100, 101);
-    for (hour, expected) in [(100, "Recorded harbour"), (101, "Renamed harbour")] {
+    let followed = played(source.replay_ref(), panel.exact().unwrap(), 101, 102);
+    for (hour, expected) in [(101, "Recorded harbour"), (102, "Renamed harbour")] {
         let params = json!({"branchId":"1","country":"GER","hour":hour});
         let exact = registration.answer(&source, params, &load, &false.into()).unwrap();
         assert_eq!(exact["ports"][0]["name"], expected);
