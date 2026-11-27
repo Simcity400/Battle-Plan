@@ -90,6 +90,7 @@ export function renderFamilyBodyState(props: FamilyBodyStateProps): ReactNode {
     return <WidgetState kind="error" what={subject} failure={failure} onRetry={onRetry} />;
   }
   if (mode === 'reading') return <WidgetState kind="loading" label={loadingLabel ?? `Loading ${subject}…`} />;
+  if (mode === 'waiting') return <WidgetState kind="loading" label={`Reading ${subject}…`} />;
   if (empty) {
     return emptyKind === 'empty'
       ? <WidgetState kind="empty" message={empty} detail={emptyDetail ?? undefined} action={emptyAction} />

@@ -1214,7 +1214,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
       const fields = shown?.fields;
       const rawMeta = fields?.meta as RawMeta | undefined;
-      updateMeta(shown?.mode ?? 'reading', shown?.reason ?? null, shown?.failureOrigin ?? 'local', rawMeta);
+      updateMeta(shown?.waiting ? 'waiting' : shown?.mode ?? 'reading', shown?.reason ?? null, shown?.failureOrigin ?? 'local', rawMeta);
 
       const idDemands = fields?.identityDemands as readonly (readonly [EntityKind, string, number])[] | undefined;
       if (idDemands && idDemands !== lastIdentityDemandsRef.current && cur.onIdentityDemands) {

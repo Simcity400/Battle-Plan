@@ -96,6 +96,7 @@ export interface WidgetView {
   painted?: number;
   structure?: string;
   dim: boolean;
+  waiting?: true;
   expired?: boolean;
   fields?: Readonly<Record<string, unknown>>;
   tooltip: unknown;
@@ -118,7 +119,7 @@ interface Widget<B extends Bitmap> {
   surfaces: readonly PageSurface<B>[]; binding: number; installed: Installed | null; content: Record<string, string>;
   status: Shown; reason?: string; failureOrigin?: FailureOrigin; inspect: string | null; early: Entry<B> | null; earlyMore: Entry<B>[];
   changed?: () => void; dated?: () => void;
-  failed: boolean; face: string; drawn: number;
+  failed: boolean; face: string; drawn: number; waiting?: boolean;
 }
 
 interface RouteState { reset: number; command: number; failed: { seek: number; reason: string } | null }
@@ -705,7 +706,7 @@ export class Page<B extends Bitmap = Bitmap> {
   view(id: number): WidgetView {
     const widget = this.widgets.get(id)!, at = this.target(widget), shown = widget.installed;
     if (!this.deadLanes.has(widget.lane) && widget.bounds && (at < widget.bounds[0] || at > widget.bounds[1])) return { mode: 'outside', target: at, ...(widget.owner !== undefined ? { owner: widget.owner } : {}), binding: widget.binding, dim: false, tooltip: null };
-    if (!shown) return { mode: widget.status, reason: widget.reason, ...(widget.failureOrigin ? { failureOrigin: widget.failureOrigin } : {}), ...(widget.owner !== undefined ? { owner: widget.owner } : {}), target: at, binding: widget.binding, dim: false, tooltip: null };
+    if (!shown) return { mode: widget.status, reason: widget.reason, ...(widget.waiting && widget.status === 'reading' ? { waiting: true as const } : {}), ...(widget.failureOrigin ? { failureOrigin: widget.failureOrigin } : {}), ...(widget.owner !== undefined ? { owner: widget.owner } : {}), target: at, binding: widget.binding, dim: false, tooltip: null };
     const tip = shown.fields.tooltip as { key: string; text: unknown } | undefined;
     const until = Math.min(shown.c, shown.hi), expired = !this.playing && at > until;
     return { mode: shown.mode, reason: shown.reason, ...(shown.failureOrigin ? { failureOrigin: shown.failureOrigin } : {}), id: shown.id, ...(widget.owner !== undefined ? { owner: widget.owner } : {}), ...(shown.owner !== undefined ? { installedOwner: shown.owner } : {}), binding: widget.binding, installedBinding: shown.binding, gen: shown.gen, validInterval: [shown.lo, shown.hi] as const, ...(shown.viewport ? { viewport: shown.viewport } : {}), h: shown.h, through: Math.min(at, until), painted: Math.min(Math.max(shown.h, shown.lo), at, until), structure: shown.structure ?? structureOf(widget.content, shown.fields), target: at,
@@ -760,6 +761,13 @@ export class Page<B extends Bitmap = Bitmap> {
     this.touched.add(widget);
     this.tell();
     this.request(true, false);
+  }
+
+  waiting(id: number, waiting: boolean) {
+    const widget = this.widgets.get(id);
+    if (!widget || !widget.waiting === !waiting) return;
+    widget.waiting = waiting;
+    if (!widget.installed) this.tell();
   }
 
   name(id: number, status: 'failed' | 'refused' | 'reading', reason?: string, failureOrigin?: FailureOrigin) {

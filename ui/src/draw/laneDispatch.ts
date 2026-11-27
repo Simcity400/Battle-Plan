@@ -168,6 +168,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       served: frame => post({ type: 'served', ...frame }),
       fail: reason => post({ type: 'failure', lane: index, reason }),
       failSub: (sub, reason) => post({ type: 'sub-failed', lane: index, sub, reason }),
+      waitSub: (sub, waiting) => post({ type: 'sub-waiting', lane: index, sub, waiting }),
       failWidget: (widget, reason, stamp) => post({ type: 'widget-failed', lane: index, widget, reason, ...stamp !== undefined ? { stamp } : {} }),
       ...side.stretch ? { stretch: (ms: number) => side.stretch!(ms, rate) } : {},
     });

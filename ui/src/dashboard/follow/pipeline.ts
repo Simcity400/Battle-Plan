@@ -50,7 +50,7 @@ export type SubStatus = 'pending' | 'followed' | 'refused' | 'failed';
 
 interface SubState {
   id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string; error?: Failure;
-  widgets: Map<number, number>; released: boolean;
+  widgets: Map<number, number>; released: boolean; waiting?: boolean;
 }
 
 interface RouteState {
@@ -428,6 +428,14 @@ export class Pipeline {
           held.route.page = page;
         }
       }
+      return;
+    }
+    if (message.type === 'sub-waiting') {
+      const held = this.byId.get(message.sub);
+      if (!held) return;
+      held.waiting = message.waiting;
+      for (const id of held.widgets.keys()) this.page.waiting(id, [...(this.widgets.get(id)?.subs.values() ?? [])].some(sub => this.byId.get(sub)?.waiting));
+      this.flush();
       return;
     }
     if (message.type === 'widget-failed') {
