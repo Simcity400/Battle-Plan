@@ -420,35 +420,30 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
     decode_ended_rows(&ended, out);
     let asks: Vec<(i32, u128)> = written_ends(&ended).map(|(_, key, hour, _)| (hour, key)).collect();
     if !asks.is_empty() {
-        let lists = [15, 16, 24, 25];
-        dashboard_query::cost::storage(|| {
-            lanes::at_each(recording, run, TableId::LandBattleEnds, Some(&lists), &asks, &mut |hour, key, row| {
-                let Some((view, slot)) = row else { return Ok(()) };
-                let read = |column: usize| view.list(column, slot).and_then(u32s);
-                if let Some(end) = end_written(out, key, hour) {
-                    end.sides = [read(15), read(16)];
-                    end.result_sides = [read(24), read(25)];
-                }
-                Ok(())
+        let lists = [15, 16, 24, 25, 27, 28];
+        let read_lists = |out: &mut BTreeMap<Key, Battle>, with_pools: bool| {
+            let selected = if with_pools { &lists[..] } else { &lists[..4] };
+            dashboard_query::cost::storage(|| {
+                lanes::at_each(recording, run, TableId::LandBattleEnds, Some(selected), &asks, &mut |hour, key, row| {
+                    let Some((view, slot)) = row else { return Ok(()) };
+                    let read = |column: usize| view.list(column, slot).and_then(u32s);
+                    if let Some(end) = end_written(out, key, hour) {
+                        end.sides = [read(15), read(16)];
+                        end.result_sides = [read(24), read(25)];
+                        if with_pools {
+                            let pool = |column: usize| view.list(column, slot).and_then(|bytes| Vec::<LandEquipmentLoss>::decode(&mut Decoder::new(bytes)).ok());
+                            end.terminal_equipment = [pool(27), pool(28)];
+                        }
+                    }
+                    Ok(())
+                })
             })
-        })?;
-        let pools = [27, 28];
-        let read = dashboard_query::cost::storage(|| {
-            lanes::at_each(recording, run, TableId::LandBattleEnds, Some(&pools), &asks, &mut |hour, key, row| {
-                let Some((view, slot)) = row else { return Ok(()) };
-                let pool = |column: usize| view.list(column, slot).and_then(|bytes| Vec::<LandEquipmentLoss>::decode(&mut Decoder::new(bytes)).ok());
-                if let Some(end) = end_written(out, key, hour) {
-                    end.terminal_equipment = [pool(27), pool(28)];
-                }
-                Ok(())
-            })
-        });
-        if read.is_err() {
-            for battle in out.values_mut() {
-                if let Some(end) = &mut battle.end {
-                    end.terminal_equipment = [None, None];
-                }
+        };
+        if read_lists(out, true).is_err() {
+            for end in out.values_mut().filter_map(|battle| battle.end.as_mut()) {
+                end.terminal_equipment = [None, None];
             }
+            read_lists(out, false)?;
         }
     }
     Ok(())
