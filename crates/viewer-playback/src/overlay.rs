@@ -155,14 +155,8 @@ const OVERLAY: &[TableId] = &[
     TableId::TaskForceMapMotion,
 ];
 
-fn overlay_needs(tables: &[TableId]) -> Vec<RowNeed> {
-    use replay_data::rows::{ResearchTechnologyRow, ScriptVariableValueRow, mask};
-
-    tables.iter().copied().map(|table| match table {
-        TableId::ResearchTechnologies => RowNeed::columns(table, mask::<ResearchTechnologyRow>(&["classifier"])),
-        TableId::ScriptVariableValues => RowNeed::columns(table, mask::<ScriptVariableValueRow>(&["value_raw"])),
-        _ => RowNeed::every(table),
-    }).collect()
+fn overlay_needs() -> Vec<RowNeed> {
+    overlay_tables().into_iter().map(RowNeed::every).collect()
 }
 
 pub fn overlay_tables() -> Vec<TableId> {
@@ -820,12 +814,11 @@ impl Overlay {
             return;
         }
         let tables = self.content.tables;
-        let declared = overlay_tables();
         let maker = Maker {
             content: Arc::clone(&self.content),
             shared: Arc::clone(&self.shared),
-            rows: store.reader("overlay", &overlay_needs(&declared)),
-            declared,
+            rows: store.reader("overlay", &overlay_needs()),
+            declared: overlay_tables(),
             learned: Vec::new(),
             shown: Shown::EVERY,
             tables: None,
@@ -1206,7 +1199,7 @@ impl Maker {
         tables.dedup();
         self.shown = shown;
         if self.declared != tables {
-            self.rows.declare_only_needs(&overlay_needs(&tables));
+            self.rows.declare_only(&tables);
             self.declared = tables;
         }
     }

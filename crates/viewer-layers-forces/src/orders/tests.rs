@@ -102,7 +102,7 @@ fn a_whole_settle_that_learns_a_table_shows_the_plan_of_its_hour_made_once_the_t
         let limit = std::time::Instant::now() + LIMIT;
         loop {
             assert!(fed.drive(head), "the store never reached hour {head}");
-            layer.settle_at(head, viewer_layer_core::layers::Settling::step()).unwrap();
+            layer.settle_at(head, viewer_layer_core::layers::Settling::Whole).unwrap();
             if layer.made_for() == Some(head) {
                 break;
             }
