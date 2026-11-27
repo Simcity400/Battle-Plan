@@ -4,7 +4,7 @@ use dashboard_query::cost;
 use replay_recording::columnar_frames::Recording;
 use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{self, LocalPlayerRow, TableId, WarOverviewCountryRow, WarOwnedRelationRow, WarRelationRow, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, TRUNCATED_KEYFRAME_REASON};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -381,7 +381,7 @@ fn steps(
     ((table, names), input): ((TableId, &[&str]), Input),
     decode: impl Fn(&History, &[usize], u128, &[Cell]) -> Option<Row>,
     changes: &mut Vec<Change>,
-) -> io::Result<Vec<lanes::StatusRun>> {
+) -> io::Result<(Vec<lanes::StatusRun>, HashMap<u32, String>)> {
     let columns = columns(table, names)?;
     let history = cost::storage(|| lanes::history(recording, run, table, &columns, Keys::All, first, last))?;
     for (key, steps) in &history.keys {
@@ -393,7 +393,7 @@ fn steps(
             changes.push(Change { hour: step.hour, input, key: *key, shown });
         }
     }
-    Ok(history.statuses)
+    Ok((history.statuses, history.reasons))
 }
 
 pub fn run_wars(recording: &Recording, run: u32) -> io::Result<RunWars> {
@@ -401,10 +401,10 @@ pub fn run_wars(recording: &Recording, run: u32) -> io::Result<RunWars> {
     let span = (recording, run, held.first_hour, held.last_hour());
     let mut changes = Vec::new();
     let n = |h: &History, cells: &[Cell], column: usize| number(h, cells, column);
-    let relations = steps(span, (RELATIONS, Input::Relation), |h, c, _, cells| {
+    let (relations, relation_reasons) = steps(span, (RELATIONS, Input::Relation), |h, c, _, cells| {
         Some(Row::Relation(Relation { start: n(h, cells, c[0])? as i32, instigator: n(h, cells, c[1])? as u8 }))
     }, &mut changes)?;
-    let owned = steps(span, (OWNED, Input::Owned), |h, c, key, cells| {
+    let (owned, owned_reasons) = steps(span, (OWNED, Input::Owned), |h, c, key, cells| {
         Some(Row::Owned(rows::WarOwnedRelationRow {
             owner: (key >> 32) as u32,
             ordinal: key as u32,
@@ -415,7 +415,7 @@ pub fn run_wars(recording: &Recording, run: u32) -> io::Result<RunWars> {
             second_goal_count: n(h, cells, c[4])? as u32,
         }))
     }, &mut changes)?;
-    let factions = steps(span, (FACTIONS, Input::Faction), |h, c, _, cells| Some(Row::Faction(n(h, cells, c[0])? as u64)), &mut changes)?;
+    let (factions, _) = steps(span, (FACTIONS, Input::Faction), |h, c, _, cells| Some(Row::Faction(n(h, cells, c[0])? as u64)), &mut changes)?;
     steps(span, (SCORES, Input::Score), |h, c, key, cells| {
         Some(Row::Score(WarOverviewCountryRow {
             country: key as u32,
@@ -452,7 +452,12 @@ pub fn run_wars(recording: &Recording, run: u32) -> io::Result<RunWars> {
     raws.remove(&0);
     let reads = |table| cost::storage(|| lanes::reads(recording, run, table, span.2, span.3));
     use replay_columnar::manifest::Status;
-    let partial_relations = relations.iter().chain(&owned).filter(|span| matches!(span.status, Status::Truncated { .. }))
+    let partial_relations = [(&relations, &relation_reasons), (&owned, &owned_reasons)].into_iter()
+        .flat_map(|(spans, reasons)| spans.iter().filter(move |span| match span.status {
+            Status::Truncated { .. } => true,
+            Status::Unavailable { reason } => reasons.get(&reason).is_some_and(|text| text.starts_with(TRUNCATED_KEYFRAME_REASON)),
+            _ => false,
+        }))
         .map(|span| (span.first, span.last)).collect();
     let mut read = both(&reads(TableId::WarRelations)?, &reads(TableId::WarOwnedRelations)?);
     for statuses in [relations, owned, factions] {
