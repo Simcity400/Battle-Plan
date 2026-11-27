@@ -266,8 +266,8 @@ struct LineHistory {
 
 type ReasonSteps = HashMap<u64, LineHistory>;
 
-const NEW_COLS: [usize; 6] = [col::REMAINING, col::BUILT, col::ADDED_NEW, col::POSSIBLE, col::UNACCOUNTED_NEW, col::CONSTRUCTION_RAW];
-const REPAIR_COLS: [usize; 5] = [col::REPAIR_LEVELS, col::REPAIRED, col::ADDED_REPAIR, col::UNACCOUNTED_REPAIR, col::REPAIR_RAW];
+const NEW_COLS: [usize; 6] = [col::REMAINING, col::ADDED_NEW, col::BUILT, col::POSSIBLE, col::UNACCOUNTED_NEW, col::CONSTRUCTION_RAW];
+const REPAIR_COLS: [usize; 5] = [col::REPAIR_LEVELS, col::ADDED_REPAIR, col::REPAIRED, col::UNACCOUNTED_REPAIR, col::REPAIR_RAW];
 
 fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32) -> io::Result<ReasonSteps> {
     let columns = [
@@ -312,7 +312,7 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
             for (slot, &column) in new_at.iter().enumerate() {
                 if let Some(value) = number(cells, column) {
                     if value > 0 && held.first_new.is_none() { held.first_new = Some(step.hour); }
-                    if slot > 0 && value > prev_new[slot] { new_grew = true; }
+                    if slot >= 2 && value > prev_new[slot] { new_grew = true; }
                     prev_new[slot] = value;
                 }
             }
@@ -320,7 +320,7 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
             for (slot, &column) in repair_at.iter().enumerate() {
                 if let Some(value) = number(cells, column) {
                     if value > 0 && held.first_repair.is_none() { held.first_repair = Some(step.hour); }
-                    if slot > 0 && value > prev_repair[slot] { repair_grew = true; }
+                    if slot >= 2 && value > prev_repair[slot] { repair_grew = true; }
                     prev_repair[slot] = value;
                 }
             }

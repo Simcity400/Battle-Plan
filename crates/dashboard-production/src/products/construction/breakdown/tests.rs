@@ -342,10 +342,12 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
             frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
-                id: 2, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95, amount: 1, repair_levels: 0, ..Default::default()
+                id: 2, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95, amount: if hour >= 115 { 2 } else { 1 }, repair_levels: 0, ..Default::default()
             }]))
             .into();
             frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+            frame.tables[TableId::StateBuildings.index()] = TableView::Complete(TableRows::StateBuildings(Vec::new())).into();
+            frame.tables[TableId::ProvinceBuildings.index()] = TableView::Complete(TableRows::ProvinceBuildings(Vec::new())).into();
             frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
             let outputs = if hour >= 115 {
                 vec![ConstructionLineOutputRow {
@@ -356,7 +358,9 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
                 Vec::new()
             };
             frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(outputs)).into();
-            for table in [TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
+            for table in [
+                TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::StateBuildings, TableId::ProvinceBuildings, TableId::ConstructionLineOutput,
+            ] {
                 frame.metrics.table_ns[table.index()] = 1;
             }
             frame
