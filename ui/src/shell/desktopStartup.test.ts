@@ -9,7 +9,7 @@ test('desktop setup does only the ordered work the initial window and its reader
   assert.deepEqual([...setup.matchAll(startupCalls)].map(([call]) => call.slice(0, -1)), [
     'return_freed_memory_promptly', 'name_shared_pool', 'refused_during_setup', 'context',
     'init', 'map_prefix', 'log_map_frames', 'prepare_desktop', 'start_exit_worker',
-    'restore', 'init', 'sweep_pending_stages', 'start_gamepad',
+    'restore', 'init', 'start_gamepad',
     'install_follow', 'install_export_follow', 'watch_page', 'follow', 'ensure_started',
   ]);
 });

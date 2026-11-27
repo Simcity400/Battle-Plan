@@ -3,12 +3,13 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{Once, atomic::{AtomicU64, Ordering}},
 };
 use tauri::WebviewWindow;
 use video_export::BackendChoice;
 
 static LEASE_SEQ: AtomicU64 = AtomicU64::new(0);
+static SWEEP: Once = Once::new();
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -227,43 +228,71 @@ impl StageLease {
     }
 }
 
-fn sweep_pending_stages_in(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
+fn sweep_pending_stages_in(dir: &Path, mut report: impl FnMut(String)) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(error) => {
+            report(format!("Couldn’t read pending export stages in {}: {error}", dir.display()));
+            return;
+        }
     };
-    for entry in entries.flatten() {
-        let record_path = entry.path();
+    for entry in entries {
+        let record_path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                report(format!("Couldn’t read a pending export stage in {}: {error}", dir.display()));
+                continue;
+            }
+        };
         if record_path.extension().and_then(|e| e.to_str()) != Some("stage") {
             continue;
         }
-        let Ok(mut file) = OpenOptions::new().read(true).write(true).open(&record_path) else {
-            continue;
-        };
-        if file.try_lock().is_err() {
-            continue;
-        }
-        let mut bytes = Vec::new();
-        if file.read_to_end(&mut bytes).is_err() {
-            continue;
-        }
-        let Ok(record) = serde_json::from_slice::<StageRecord>(&bytes) else {
-            continue;
-        };
-        if record.version != 1 || !is_valid_stage_path(&record.stage_path) {
-            continue;
-        }
-        let cleaned = remove_stage_with_sidecars(&record.stage_path);
-        drop(file);
-        if cleaned {
-            let _ = fs::remove_file(&record_path);
+        if let Err(error) = sweep_record(&record_path) {
+            report(format!("Couldn’t sweep pending export stage {}: {error}", record_path.display()));
         }
     }
 }
 
-pub fn sweep_pending_stages() {
-    if let Ok(dir) = stages_dir() {
-        sweep_pending_stages_in(&dir);
+fn sweep_record(record_path: &Path) -> io::Result<()> {
+    let mut file = match OpenOptions::new().read(true).write(true).open(record_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => return Ok(()),
+        Err(fs::TryLockError::Error(error)) => return Err(error),
     }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let record: StageRecord = serde_json::from_slice(&bytes)?;
+    if record.version != 1 || !is_valid_stage_path(&record.stage_path) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid export cleanup record"));
+    }
+    if !remove_stage_with_sidecars(&record.stage_path) {
+        return Err(io::Error::other(format!("Couldn’t remove {} and its sidecars", record.stage_path.display())));
+    }
+    drop(file);
+    match fs::remove_file(record_path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
+pub fn sweep_pending_stages() {
+    SWEEP.call_once(|| match stages_dir() {
+        Ok(dir) => sweep_pending_stages_in(&dir, |failure| eprintln!("{failure}")),
+        Err(error) => eprintln!("Couldn’t find pending export stages: {error}"),
+    });
+}
+
+pub async fn wait_for_sweep() -> Result<(), String> {
+    if !SWEEP.is_completed() {
+        tauri::async_runtime::spawn_blocking(sweep_pending_stages).await.map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 pub fn load() -> ExportSettings {
@@ -425,12 +454,12 @@ mod tests {
         let lease = StageLease::acquire_in(&stage_dir, stage.clone()).unwrap();
         let record_path = lease.record_path.clone();
 
-        sweep_pending_stages_in(&stage_dir);
+        sweep_pending_stages_in(&stage_dir, |failure| panic!("{failure}"));
         assert!(stage.exists());
         assert!(record_path.exists());
 
         drop(lease);
-        sweep_pending_stages_in(&stage_dir);
+        sweep_pending_stages_in(&stage_dir, |failure| panic!("{failure}"));
         assert!(!stage.exists());
         assert!(!faststart.exists());
         assert!(!video.exists());
@@ -441,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_sweep_preserves_unremovable_corrupt_and_invalid_records() {
+    fn stage_sweep_preserves_and_reports_unremovable_corrupt_and_invalid_records() {
         let dir = std::env::temp_dir().join(format!(
             "battleplan-export-stage-sweep-guard-{}",
             std::process::id()
@@ -474,14 +503,18 @@ mod tests {
         let locked_rec = locked_lease.record_path.clone();
         drop(locked_lease);
 
-        sweep_pending_stages_in(&stage_dir);
+        let mut failures = Vec::new();
+        sweep_pending_stages_in(&stage_dir, |failure| failures.push(failure));
+        for record in [&corrupt, &invalid_rec, &locked_rec] {
+            assert!(failures.iter().any(|failure| failure.contains(&*record.to_string_lossy())), "{failures:?}");
+        }
         assert!(corrupt.exists());
         assert!(target_real.exists());
         assert!(invalid_rec.exists());
         assert!(locked_rec.exists());
 
         fs::remove_dir_all(&locked_stage).unwrap();
-        sweep_pending_stages_in(&stage_dir);
+        sweep_pending_stages_in(&stage_dir, |_| {});
         assert!(!locked_rec.exists());
         assert!(corrupt.exists());
         assert!(invalid_rec.exists());

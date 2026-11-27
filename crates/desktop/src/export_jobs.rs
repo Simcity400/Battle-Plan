@@ -245,6 +245,7 @@ pub async fn map_export_snapshot(
     popouts: State<'_, popout::PopOuts>,
     view_id: Option<String>,
 ) -> Result<MapExportSnapshot, String> {
+    export_settings::wait_for_sweep().await?;
     let answered = if view_id.as_deref() == Some(popout::VIEW_ID) {
         let generation = popouts.current_generation();
         popout::snapshot(&popouts, generation)?
@@ -317,11 +318,12 @@ pub struct StartMapVideoExportArgs {
 }
 
 #[tauri::command]
-pub fn start_map_video_export(
+pub async fn start_map_video_export(
     app: AppHandle,
     jobs: State<'_, ExportJobs>,
     args: StartMapVideoExportArgs,
 ) -> Result<ExportJobSnapshot, String> {
+    export_settings::wait_for_sweep().await?;
     let destination = export_settings::resolve_export_destination(std::path::Path::new(
         args.destination.trim(),
     ))?;
@@ -698,6 +700,7 @@ pub struct TrackTimelineAsk {
 pub async fn surface_export_timelines(
     tracks: Vec<TrackTimelineAsk>,
 ) -> Result<Vec<crate::export_webview::SurfaceTrackCoverage>, String> {
+    export_settings::wait_for_sweep().await?;
     tauri::async_runtime::spawn_blocking(move || {
         let mut out = Vec::with_capacity(tracks.len());
         for track in tracks {
@@ -769,12 +772,13 @@ pub async fn preview_surface_video(
 }
 
 #[tauri::command]
-pub fn start_surface_video_export(
+pub async fn start_surface_video_export(
     app: AppHandle,
     jobs: State<'_, ExportJobs>,
     webview_state: State<'_, ExportWebviewState>,
     args: StartSurfaceVideoExportArgs,
 ) -> Result<ExportJobSnapshot, String> {
+    export_settings::wait_for_sweep().await?;
     let destination = export_settings::resolve_export_destination(std::path::Path::new(
         args.destination.trim(),
     ))?;

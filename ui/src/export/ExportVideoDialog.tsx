@@ -733,7 +733,7 @@ export default function ExportVideoDialog({
           <div className="export-video-body">
             <div className="export-video-controls">
               {loading && (
-                <p className="export-video-hint">
+                <p className="export-video-hint" role="status">
                   {target.kind === 'map'
                     ? 'Reading map camera and branch timeline…'
                     : 'Preparing presentation layout and embedded maps…'}

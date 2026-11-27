@@ -239,7 +239,9 @@ async fn shell_ready(webview: tauri::Webview) -> Result<(), String> {
         return Err("Only the main window starts BattlePlan’s background services.".into());
     }
     if !webview.state::<ShellReady>().0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let sweep = tauri::async_runtime::spawn_blocking(export_settings::sweep_pending_stages);
         tauri::async_runtime::spawn_blocking(recorder::start_recorder).await.map_err(|error| error.to_string())?;
+        sweep.await.map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -649,7 +651,6 @@ fn main() {
                 app_update::Role::Dashboard,
                 Arc::new(updates::Host(app.handle().clone())),
             )?;
-            export_settings::sweep_pending_stages();
             native::start_gamepad(app.handle().clone());
             let push = app.handle().clone();
             viewer::host::install_follow(move |kind, payload, session| {
