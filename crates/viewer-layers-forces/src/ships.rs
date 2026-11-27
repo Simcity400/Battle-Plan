@@ -403,6 +403,7 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
                 asked.answered = Some(stands);
                 asked.answered_at = Some(Instant::now());
                 timeline::mark(maker, Mark::Published);
+                viewer_layer_core::landed::moved();
                 shared.answered.notify_all();
             }
             let seen = reader.as_ref().map_or(0, views::Reader::published);
@@ -474,6 +475,7 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
         last = Some(frame);
         drop(asked);
         timeline::mark(maker, Mark::Published);
+        viewer_layer_core::landed::moved();
         shared.answered.notify_all();
     }
 }

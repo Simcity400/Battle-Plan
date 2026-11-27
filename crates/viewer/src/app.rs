@@ -2617,7 +2617,7 @@ impl Viewer {
                 if !side.products().overlay_coming() {
                     return layers_show(&on, target.hour, playing);
                 }
-                self.overlay_view.as_ref().is_none_or(|view| view.matches_mode(&self.map_mode)) && whole_picture(&on, self.overlay_hour(), target.hour, playing)
+                self.overlay_view.as_ref().is_some_and(|view| view.matches_mode(&self.map_mode)) && whole_picture(&on, self.overlay_hour(), target.hour, playing)
             })
         })
     }
@@ -5587,7 +5587,7 @@ impl Viewer {
                 return Ok(());
             }
             if let Some(side) = live_of(&self.playhead_map) {
-                self.overlay_loading.extend(side.products().overlay_loading.iter().cloned());
+                self.tooltip_refused = side.products().overlay_loading.iter().map(|reason| (reason.clone(), 1)).collect();
             }
             if self.drop_overlay_drawn()
                 && let Some(scene) = self.scene.as_mut()

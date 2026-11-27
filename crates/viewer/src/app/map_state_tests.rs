@@ -190,6 +190,7 @@ fn after_a_seek_the_report_loads_until_every_drawn_layer_shows_the_head() {
     viewer.playhead_map.as_mut().unwrap().driven(|side| side.frame(8)).unwrap();
     assert!(viewer.map_state(&target(8, false)).loading, "the layers show hour 8, the overlay nothing");
     viewer.overlay_hour = Some(8);
+    viewer.overlay_view = Some({ let mut view = viewer.counter_view.clone(); view.set_mode(&viewer.map_mode); view });
     let state = viewer.map_state(&target(8, false));
     assert_eq!(state.clock_id, "page-1");
     assert!(!state.loading, "the frame every part shows hour 8 stops the loading: {state:?}");

@@ -1128,7 +1128,7 @@ impl Maker {
     }
 
     fn answered(&mut self, want: &Wanted, laid: Option<(Hour, Option<Made>)>, loading: Vec<String>, failed: bool) {
-        let (hour, made) = (laid.as_ref().map(|(stands, _)| *stands).or(self.said.hour), laid.as_ref().is_some_and(|(_, made)| made.is_some()));
+        let (hour, made, laid_out) = (laid.as_ref().map(|(stands, _)| *stands).or(self.said.hour), laid.as_ref().is_some_and(|(_, made)| made.is_some()), laid.is_some());
         if let Some((stands, made)) = laid {
             self.publish_layout(want, stands, made);
         }
@@ -1137,8 +1137,14 @@ impl Maker {
         if made || said != self.said {
             self.shared.published.fetch_add(1, Ordering::AcqRel);
         }
-        held.loading = loading;
-        (held.answered, held.failed, held.refused) = (want.stamp, failed, failed && said.missed.is_empty());
+        let refused = if failed { said.missed.is_empty() } else { held.refused && !laid_out };
+        if refused {
+            self.laid = None;
+        }
+        if failed || !refused {
+            held.loading = loading;
+        }
+        (held.answered, held.failed, held.refused) = (want.stamp, failed, refused);
         self.said = said;
         drop(held);
         self.shared.signal.notify_all();

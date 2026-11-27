@@ -113,6 +113,7 @@ fn at(hour: Hour) -> Playhead {
 
 fn whole_at(viewer: &mut Viewer, hour: Hour) {
     viewer.overlay_hour = Some(hour);
+    viewer.overlay_view = Some({ let mut view = viewer.counter_view.clone(); view.set_mode(&viewer.map_mode); view });
 }
 
 fn drawn(viewer: &mut Viewer) {
@@ -223,6 +224,7 @@ fn a_map_whose_overlay_is_not_laid_out_is_not_ready() {
     drawn(&mut viewer);
     assert!(!viewer.presentation_ready(at(2), false), "the layers show hour 2, the overlay nothing");
     viewer.overlay_hour = Some(2);
+    viewer.overlay_view = Some({ let mut view = viewer.counter_view.clone(); view.set_mode(&viewer.map_mode); view });
     assert!(viewer.presentation_ready(at(2), false), "every part shows hour 2");
     viewer.overlay_missed = vec![TableId::Countries];
     assert!(!viewer.presentation_ready(at(2), false), "a read the overlay missed is still learned");
@@ -330,6 +332,7 @@ fn the_mode_on_screen_stays_the_previous_one_until_the_picture_for_the_new_one_i
     gate.store(true, Ordering::Release);
     frames_at(map(&mut viewer), 2, |side| side.mode_on_screen() == Some(&diplomacy));
     assert_eq!(*viewer.shown_mode(), diplomacy);
+    whole_at(&mut viewer, 2);
     assert!(viewer.picture_whole(at(2), false));
     assert!(!viewer.map_state(&target(2, false)).loading);
     let resistance = MapMode::Stock(Stock::Resistance);

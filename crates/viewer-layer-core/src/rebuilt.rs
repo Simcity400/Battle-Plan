@@ -556,6 +556,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
                 && through > built.stands()
             {
                 built.stands.store(through, Ordering::Release);
+                crate::landed::moved();
             }
             if state.generation != generation {
                 continue;
@@ -584,7 +585,9 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             let mut state = shared.lock();
             state.builds.confirm_ns += checked.elapsed().as_nanos() as u64;
             if stood {
-                held.current.store(frame.hour, Ordering::Release);
+                if held.current.swap(frame.hour, Ordering::AcqRel) != frame.hour {
+                    crate::landed::moved();
+                }
                 state.builds.confirmed += 1;
                 drop(state);
                 shared.built.notify_all();
@@ -602,6 +605,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             let absent = state.source.as_ref().map_or_else(Vec::new, |(entry, _)| absent(entry, &missed));
             if !absent.is_empty() {
                 state.refused = Some(refusal(&format!("the {} layer", rules.name), &absent));
+                crate::landed::moved();
                 drop(state);
                 shared.built.notify_all();
                 continue;
@@ -626,6 +630,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
         }
         if state.open {
             state.built = Some(Arc::new(Built::new(frame.hour, generation, product, ns, Some(frame), Some(seen))));
+            crate::landed::moved();
         }
         drop(state);
         shared.built.notify_all();

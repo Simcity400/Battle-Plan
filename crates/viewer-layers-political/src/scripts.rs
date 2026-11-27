@@ -145,7 +145,7 @@ impl Open {
     fn new(views: &Views, needs: &[Need]) -> io::Result<Self> {
         let reader = views.reader_at(NAME, needs, Pace::Ready);
         let (jobs, receive) = mpsc::channel::<Work>();
-        let (send, done) = mpsc::channel();
+        let (send, done) = viewer_layer_core::landed::channel();
         std::thread::Builder::new().name(NAME.into()).spawn(move || {
             viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             let mut evaluating = Evaluating::default();
@@ -725,7 +725,7 @@ impl Layer for Scripts {
     }
 
     fn carried(&self) -> Carried {
-        Carried::default()
+        Carried { entities: usize::from(self.open.is_some() && self.product.as_ref().is_some_and(|product| !product.complete)) }
     }
 
     fn published(&self) -> Published {

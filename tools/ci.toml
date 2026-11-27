@@ -95,7 +95,7 @@ name = "landed"
 group = "linux"
 tier = "check"
 toolchain = "python"
-inputs = ["crates/viewer-layer-core/src/**", "crates/viewer-layers-*/src/**", "tools/check-landed.py"]
+inputs = ["crates/viewer-layer-core/src/**", "crates/viewer-layers-*/src/**", "crates/viewer-playback/src/**", "crates/viewer/src/**", "crates/viewer-native-gui/src/**", "crates/viewer-combat/src/**", "tools/check-landed.py"]
 command = ["{python}", "tools/check-landed.py"]
 
 [[job]]
