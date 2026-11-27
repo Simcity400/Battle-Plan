@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn content_bound_read_ahead_keeps_all_three_first_log_reads_warm() {
-    use dashboard_base::{source::Work, test_fixtures::{source, visual_mods::{Machine, RED, png, select}}};
+    use dashboard_base::{products::Product, source::Work, test_fixtures::{source, visual_mods::{Machine, RED, png, select}}};
     let machine = Machine::new("feed_index_warm");
     machine.write_mod("art", "gfx/warm.png", &png(RED));
     let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
@@ -24,6 +24,7 @@ fn content_bound_read_ahead_keeps_all_three_first_log_reads_warm() {
         assert_eq!(!dashboard_base::catalogue::reads_recorded(context.content.as_ref().unwrap()), visual_mods);
         let catalogue = super::super::resolve_content(&source, &context).unwrap();
         let cancelled = AtomicBool::new(false);
+        super::super::EventFeedKinds::load(&source, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &cancelled).unwrap();
         let reused = [
             Arc::ptr_eq(&decisions, &decisions_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
             Arc::ptr_eq(&choices, &choices_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),

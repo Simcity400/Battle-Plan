@@ -1107,8 +1107,8 @@ impl Product for EventFeedKinds {
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = branch_id(&params.branch_id)?;
         let query = dashboard_base::queries::query(source, branch)?;
-        let scanned = index::scanned_for(source, &query, branch, cancelled)?;
         let content = super::resolve_content(source, context);
+        let scanned = index::scanned_for(source, &query, branch, content.as_ref().ok(), cancelled)?;
         let feed = index::feed_for(source, &query, branch, context, content.as_ref().ok(), cancelled)?;
         let mut first = scanned.observed_kinds();
         for at in 0..feed.index.len() {
