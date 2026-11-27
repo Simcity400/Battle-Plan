@@ -2696,7 +2696,7 @@ nameHour: number, exact: boolean, category: EventFeedCategory, kind: EventFeedKi
  * Native action roles, actor then target. Null keeps a role that names no country or that
  * no link and holder witnessed.
  */
-participants?: [string | null, string | null], item: EventFeedItem | null, amount?: number | null,
+participants?: [string | null, string | null], ownerMissing?: string, item: EventFeedItem | null, amount?: number | null,
 /**
  * A native event's recorded cause; absent when the recording holds none.
  */

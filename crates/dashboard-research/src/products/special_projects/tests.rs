@@ -467,6 +467,22 @@ fn feed_completions_keep_untagged_and_renamed_owners_once() {
     assert_eq!(found_no_tag[0].attribution.slot(), Some(7));
     assert_eq!(found_no_tag[0].attribution.tag(), None);
     assert!(found_no_tag[0].attribution.missing_reason().is_some_and(|why| why.contains("Countries")));
+
+    let mid_gap_src = synthetic("feed-mid-links-gap", 20, 34, |at| {
+        let mut f = frame(at, &Hour { history: if at >= 30 { vec![(0, M, 25)] } else { Vec::new() }, ..hour(at, COMPLETED) });
+        if let TableView::Complete(TableRows::Countries(countries)) = &mut *f.tables[TableId::Countries.index()] {
+            countries[0].tag = if at < 30 { b"AAA".to_vec() } else { b"BBB".to_vec() };
+        }
+        if at == 27 {
+            *f.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "Synthetic mid-gap links refusal".into() };
+        }
+        f
+    });
+    let q_mid_gap = dashboard_base::queries::query(&mid_gap_src, 1).unwrap();
+    let (found_mid_gap, _) = counted(&q_mid_gap, 20, 34, &cancelled).unwrap();
+    assert_eq!(found_mid_gap.len(), 1);
+    assert_eq!(found_mid_gap[0].attribution, CompletionOwner::Resolved { slot: 7, tag: "AAA".to_owned() });
+    assert_eq!((found_mid_gap[0].entry.date, found_mid_gap[0].read, found_mid_gap[0].definition), (25, 30, Some(40)));
 }
 
 fn adjacent(id: &str, first: i32, last: i32, load: i32, spec: impl Fn(i32) -> Hour) -> Source {
@@ -505,14 +521,18 @@ fn h3b_a_completed_read_before_a_marker_does_not_name_it() {
 fn reference_counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<Counted>, Vec<HourSpan>)> {
     let recording = query.replay.recording();
     let mut unrecorded: Vec<HourSpan> = Vec::new();
-    let mut cached_links: HashMap<u32, Arc<RunLinks>> = HashMap::new();
-    let get_links = |cached: &mut HashMap<u32, Arc<RunLinks>>, run: u32| -> io::Result<Arc<RunLinks>> {
+    let mut cached_links: HashMap<u32, Result<Arc<RunLinks>, String>> = HashMap::new();
+    let get_links = |cached: &mut HashMap<u32, Result<Arc<RunLinks>, String>>, run: u32| -> io::Result<Result<Arc<RunLinks>, String>> {
         if let Some(held) = cached.get(&run) {
-            return Ok(Arc::clone(held));
+            return Ok(held.clone());
         }
-        let loaded = Arc::new(dashboard_query::cost::storage(|| country_ids::run_links(recording, run))?);
-        cached.insert(run, Arc::clone(&loaded));
-        Ok(loaded)
+        let entry = match dashboard_query::cost::storage(|| country_ids::run_links(recording, run)) {
+            Ok(links) => Ok(Arc::new(links)),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => Err(error.to_string()),
+            Err(error) => return Err(error),
+        };
+        cached.insert(run, entry.clone());
+        Ok(entry)
     };
     let mut owners: BTreeSet<u32> = BTreeSet::new();
     for stretch in query.timeline.within(from, to) {
@@ -589,7 +609,7 @@ fn reference_counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBo
             for kept in evidence.entries.iter().filter(|kept| kept.counted && (from..=to).contains(&kept.entry.date)) {
                 let key = (owner, local, kept.entry.ordinal, kept.entry.date);
                 if let std::collections::btree_map::Entry::Vacant(vacant) = found.entry(key) {
-                    let attribution = resolve_owner(query, &mut cached_links, &get_links, owner, kept.entry.date, kept.read)?;
+                    let attribution = resolve_owner(query, &mut cached_links, &get_links, owner, kept.entry.date)?;
                     vacant.insert(Counted { attribution, owner, local, entry: kept.entry, read: kept.read, definition: kept.definition });
                 }
             }

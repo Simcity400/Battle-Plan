@@ -360,7 +360,7 @@ function buildFeedTableRow(
     countryEntries.push({
       tag,
       dimmed: idx === 1 && LOSER_SECOND_KINDS.has(event.kind) || (idx === 0 && (event.kind === 'capitulated' || event.kind === 'ceasedToExist')),
-      missingLabel: 'Country not identified',
+      missingLabel: idx === 0 && event.ownerMissing ? event.ownerMissing : 'Country not identified',
     });
   }
   if (!countryEntries.length && event.tags.length) {

@@ -720,13 +720,11 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     if let Some(made) = family(families::subject_rows(source, query, first, last, cancelled), &[Diplomacy], "subjects", "Subjects", &mut refused, (cancelled, &mut unsettled))? {
         rows.extend(made.into_iter().map(|row| (row, None)));
     }
-    let mut project_notices = Notices::default();
-    if let Some((made, notes, projects)) = family(families::project_completions(source, query, context, first, last, &mut project_notices, cancelled), &[Milestones], "projectFinished", "Special projects", &mut refused, (cancelled, &mut unsettled))? {
+    if let Some((made, notes, projects)) = family(families::project_completions(source, query, context, first, last, cancelled), &[Milestones], "projectFinished", "Special projects", &mut refused, (cancelled, &mut unsettled))? {
         rows.extend(made);
         warnings.extend(notes.into_iter().map(|note| (first, note)));
         unrecorded.push(projects);
     }
-    refused.extend(project_notices.into_list().into_iter().map(|notice| (vec![Milestones], notice.kind, notice.label, notice.reason, notice.count)));
     let localisation = match context.content.as_ref() {
         Some(content) => dashboard_base::content::localisation(source, content).map_err(|error| format!("Nuclear type names are unavailable: {error}")),
         None => Err("Nuclear type names are unavailable until the game folders are chosen".to_owned()),

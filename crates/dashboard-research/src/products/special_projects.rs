@@ -1708,58 +1708,33 @@ fn see_run_evidence(
 
 fn resolve_owner(
     query: &Query<'_>,
-    cached_links: &mut HashMap<u32, Arc<RunLinks>>,
-    get_links: &impl Fn(&mut HashMap<u32, Arc<RunLinks>>, u32) -> io::Result<Arc<RunLinks>>,
+    cached_links: &mut HashMap<u32, Result<Arc<RunLinks>, String>>,
+    get_links: &impl Fn(&mut HashMap<u32, Result<Arc<RunLinks>, String>>, u32) -> io::Result<Result<Arc<RunLinks>, String>>,
     owner: u32,
     date: i32,
-    read: i32,
 ) -> io::Result<CompletionOwner> {
-    let stretches: Vec<_> = query.timeline.within(date, read).collect();
-    if stretches.first().is_none_or(|s| s.first > date) {
+    let Some(stretch) = query.timeline.at(date) else {
         return Ok(CompletionOwner::NotRecorded {
             slot: None,
             reason: "Owner not recorded: the completion date falls in an unrecorded gap.".into(),
         });
-    }
-    let continuous = stretches.last().is_some_and(|s| s.last == read)
-        && stretches.windows(2).all(|pair| pair[0].last.checked_add(1) == Some(pair[1].first));
-    if !continuous {
-        return Ok(CompletionOwner::NotRecorded {
-            slot: None,
-            reason: "Owner not recorded: the recording has a gap between the completion date and the read that observed it.".into(),
-        });
-    }
-    let mut held_slot: Option<u32> = None;
-    for stretch in &stretches {
-        let links = get_links(cached_links, stretch.run)?;
-        for (slot, a, _) in links.within(owner, stretch.first, stretch.last) {
-            match (held_slot, slot) {
-                (None, Some(slot)) if a == date => held_slot = Some(slot),
-                (Some(prev), Some(slot)) if prev == slot => {}
-                (_, None) => {
-                    let reason = if let Some(why) = query.holders.unknown_reason(a) {
-                        format!("Owner not recorded: {why}")
-                    } else if a == date {
-                        format!("Owner not recorded: raw owner {owner} had no country link at this hour.")
-                    } else {
-                        format!("Owner not recorded: raw owner {owner} did not stay linked to one country between completion and observation.")
-                    };
-                    return Ok(CompletionOwner::NotRecorded { slot: None, reason });
-                }
-                (_, Some(_)) => {
-                    return Ok(CompletionOwner::NotRecorded {
-                        slot: None,
-                        reason: format!("Owner not recorded: raw owner {owner} changed country between completion and observation."),
-                    });
-                }
-            }
+    };
+    let links = match get_links(cached_links, stretch.run)? {
+        Ok(links) => links,
+        Err(reason) => {
+            return Ok(CompletionOwner::NotRecorded {
+                slot: None,
+                reason: format!("Owner not recorded: country links could not be read: {reason}"),
+            });
         }
-    }
-    let Some(slot) = held_slot else {
-        return Ok(CompletionOwner::NotRecorded {
-            slot: None,
-            reason: format!("Owner not recorded: raw owner {owner} had no country link at this hour."),
-        });
+    };
+    let Some(slot) = links.slot_at(owner, date) else {
+        let reason = if let Some(why) = query.holders.unknown_reason(date) {
+            format!("Owner not recorded: {why}")
+        } else {
+            format!("Owner not recorded: raw owner {owner} had no country link at this hour.")
+        };
+        return Ok(CompletionOwner::NotRecorded { slot: None, reason });
     };
     if let Some(tag) = query.holders.slot_tag(slot, date) {
         return Ok(CompletionOwner::Resolved { slot, tag: tag.to_owned() });
@@ -1782,19 +1757,24 @@ fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io:
 fn counted_with(source: Option<&Source>, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<Counted>, Vec<HourSpan>)> {
     let recording = query.replay.recording();
     let mut unrecorded: Vec<HourSpan> = Vec::new();
-    let mut cached_links: HashMap<u32, Arc<RunLinks>> = HashMap::new();
+    let mut cached_links: HashMap<u32, Result<Arc<RunLinks>, String>> = HashMap::new();
     let mut owners: BTreeSet<u32> = BTreeSet::new();
     let mut scanned_histories: HashMap<u32, (i32, i32, History)> = HashMap::new();
-    let get_links = |cached: &mut HashMap<u32, Arc<RunLinks>>, run: u32| -> io::Result<Arc<RunLinks>> {
+    let get_links = |cached: &mut HashMap<u32, Result<Arc<RunLinks>, String>>, run: u32| -> io::Result<Result<Arc<RunLinks>, String>> {
         if let Some(held) = cached.get(&run) {
-            return Ok(Arc::clone(held));
+            return Ok(held.clone());
         }
         let loaded = match source {
-            Some(source) => dashboard_base::queries::links(source, run)?,
-            None => Arc::new(dashboard_query::cost::storage(|| country_ids::run_links(recording, run))?),
+            Some(source) => dashboard_base::queries::links(source, run),
+            None => dashboard_query::cost::storage(|| country_ids::run_links(recording, run)).map(Arc::new),
         };
-        cached.insert(run, Arc::clone(&loaded));
-        Ok(loaded)
+        let entry = match loaded {
+            Ok(links) => Ok(links),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => Err(error.to_string()),
+            Err(error) => return Err(error),
+        };
+        cached.insert(run, entry.clone());
+        Ok(entry)
     };
     for stretch in query.timeline.within(from, to) {
         dashboard_text::metadata::check_cancel(cancelled)?;
@@ -1880,7 +1860,7 @@ fn counted_with(source: Option<&Source>, query: &Query<'_>, from: i32, to: i32, 
             for kept in evidence.entries.iter().filter(|kept| kept.counted && (from..=to).contains(&kept.entry.date)) {
                 let key = (owner, local, kept.entry.ordinal, kept.entry.date);
                 if let std::collections::btree_map::Entry::Vacant(vacant) = found.entry(key) {
-                    let attribution = resolve_owner(query, &mut cached_links, &get_links, owner, kept.entry.date, kept.read)?;
+                    let attribution = resolve_owner(query, &mut cached_links, &get_links, owner, kept.entry.date)?;
                     vacant.insert(Counted { attribution, owner, local, entry: kept.entry, read: kept.read, definition: kept.definition });
                 }
             }

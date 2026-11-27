@@ -38,6 +38,12 @@ const roles = (row: Record<string, unknown>): boolean => {
   if (LISTED_KINDS.has(row.kind as string)) return listed(row) && (row.kind === 'guaranteeGranted' || (row.participants as unknown[])[1] === null);
   return row.participants === undefined;
 };
+const ownerMissing = (row: Record<string, unknown>): boolean => {
+  if (row.kind === 'projectFinished' && Array.isArray(row.participants) && row.participants[0] === null) {
+    return typeof row.ownerMissing === 'string' && row.ownerMissing.length > 0;
+  }
+  return row.ownerMissing === undefined;
+};
 const cause = (row: Record<string, unknown>): boolean => {
   const value = row.cause;
   if (value === undefined) return true;
@@ -65,7 +71,7 @@ export function validateFeedRow(value: unknown): EventFeedRow {
   if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || !int(value.hour) || !int(value.readHour) || !int(value.nameHour)
     || value.hour > value.readHour || typeof value.exact !== 'boolean' || typeof value.category !== 'string' || !CATEGORY_NAMES.has(value.category)
     || typeof value.kind !== 'string' || !KINDS.has(value.kind) || !Array.isArray(value.tags) || !value.tags.every(opaqueTag)
-    || (!NATIVE_KINDS.has(value.kind) && !LISTED_KINDS.has(value.kind) && value.kind !== 'eventWindowPresented' && value.tags.length === 0) || !roles(value) || !cause(value) || !strike(value) || !decisionState(value)
+    || (!NATIVE_KINDS.has(value.kind) && !LISTED_KINDS.has(value.kind) && value.kind !== 'eventWindowPresented' && value.tags.length === 0) || !roles(value) || !ownerMissing(value) || !cause(value) || !strike(value) || !decisionState(value)
     || !(value.item === null || item(value.item)) || !(value.amount == null || (int(value.amount) && value.amount > 0))) {
     throw new Error('The event feed row is malformed.');
   }

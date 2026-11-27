@@ -156,6 +156,7 @@ pub(crate) fn presented(
         kind: EventFeedKind::EventWindowPresented,
         tags: actor.into_iter().collect(),
         participants: None,
+        owner_missing: None,
         item: None,
         amount: None,
         cause: None,
