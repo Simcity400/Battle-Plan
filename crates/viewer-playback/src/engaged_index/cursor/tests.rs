@@ -11,11 +11,15 @@ const NAVAL_COMBAT: u64 = 74;
 const CAMPAIGN: &[u8] = b"surface engagement";
 
 fn replay() -> Arc<Replay> {
+    replay_from(FIRST - 3, BranchReason::SessionStart)
+}
+
+fn replay_from(first: Hour, reason: BranchReason) -> Arc<Replay> {
     let mut records = vec![
         Record::SessionStart(viewer_layer_core::test_support::sample_playback::session(1)),
-        Record::BranchStart(BranchStart { id: 1, session: 1, loaded_hour: Some(FIRST), first_hour: FIRST, parent: Parentage::Unknown, reason: BranchReason::LoadSignal }),
+        Record::BranchStart(BranchStart { id: 1, session: 1, loaded_hour: (reason == BranchReason::LoadSignal).then_some(first), first_hour: first, parent: Parentage::Unknown, reason }),
     ];
-    records.extend((FIRST..=FIRST + 5).map(|hour| {
+    records.extend((first..=FIRST + 5).map(|hour| {
         let withdrawn = hour > FIRST;
         let allied = hour >= FIRST + 2;
         let mut naval = NavalCombatDetailsRow { combat: NAVAL_COMBAT, ..Default::default() };
@@ -44,7 +48,7 @@ fn replay() -> Arc<Replay> {
         });
         for rows in rows {
             let table = rows.table();
-            tables[table.index()] = TableUpdate::Snapshot(rows);
+            tables[table.index()] = TableUpdate::Snapshot(if hour < FIRST && matches!(table, TableId::LandCombats | TableId::LandCombatSides | TableId::NavalCombats | TableId::NavalCombatDetails) { TableRows::empty(table) } else { rows });
         }
         Record::Frame(Frame { branch: 1, hour, keyframe: true, metrics: Metrics::default(), tables })
     }));
@@ -59,6 +63,12 @@ fn flag(cursor: &mut Cursor, hour: Hour, epoch: u64, country: u32, kind: usize) 
     let relations = Relations::read(&frame, &links);
     let (flags, provenance) = combats(&frame, kind, country, &links, relations.as_ref().map_err(|reason| *reason), history.as_deref()).unwrap();
     let combat = if kind == LAND { COMBAT } else { NAVAL_COMBAT };
+    let selection = if kind == LAND { Selection::Land(combat) } else { Selection::Naval(combat) };
+    match flags[&combat] {
+        Engaged::Unknown => assert!(cursor.limitation(selection).is_some_and(|reason| reason.contains("its engaged flag is unknown"))),
+        Engaged::Yes | Engaged::No => assert_eq!(cursor.limitation(selection), None),
+        Engaged::Ambiguous(_) => assert!(cursor.limitation(selection).is_some()),
+    }
     if hour >= FIRST + 2 && country == 1 {
         let (unindexed, _) = combats(&frame, kind, country, &links, relations.as_ref().map_err(|reason| *reason), None).unwrap();
         assert_eq!(unindexed[&combat], Engaged::Yes);
@@ -88,20 +98,33 @@ fn the_battle_surface_rebuilds_its_country_history_on_forward_and_backward_seeks
 }
 
 #[test]
-fn a_forward_step_folds_one_hour_and_a_seek_folds_its_battle_prefix_once() {
+fn a_missing_seed_keeps_engagement_unknown_unless_a_native_load_proves_it() {
+    for kind in [LAND, NAVAL] {
+        let mut cursor = Cursor::new(replay_from(FIRST, BranchReason::SessionStart), &[]);
+        assert_eq!(flag(&mut cursor, FIRST, 0, 1, kind), (Engaged::Unknown, Provenance::Indexed));
+        let mut cursor = Cursor::new(replay_from(FIRST + 2, BranchReason::SessionStart), &[]);
+        assert_eq!(flag(&mut cursor, FIRST + 2, 0, 1, kind), (Engaged::Unknown, Provenance::Indexed));
+        assert_eq!(flag(&mut cursor, FIRST + 3, 0, 1, kind), (Engaged::Unknown, Provenance::Indexed));
+        let mut cursor = Cursor::new(replay_from(FIRST, BranchReason::LoadSignal), &[]);
+        assert_eq!(flag(&mut cursor, FIRST, 0, 1, kind), (Engaged::Yes, Provenance::Indexed));
+    }
+}
+
+#[test]
+fn a_forward_step_folds_one_hour_and_a_seek_folds_its_battle_prefix_and_seed_once() {
     let mut cursor = Cursor::new(replay(), &[]);
     let folded = |cursor: &Cursor| cursor.held.as_ref().unwrap().pass.check.summary.hours;
     flag(&mut cursor, FIRST + 2, 0, 1, LAND);
-    assert_eq!(folded(&cursor), 3);
-    flag(&mut cursor, FIRST + 3, 0, 1, LAND);
     assert_eq!(folded(&cursor), 4);
+    flag(&mut cursor, FIRST + 3, 0, 1, LAND);
+    assert_eq!(folded(&cursor), 5);
     cursor.declare(&[TableId::Divisions]);
     flag(&mut cursor, FIRST + 3, 0, 1, LAND);
-    assert_eq!(folded(&cursor), 4);
+    assert_eq!(folded(&cursor), 5);
     flag(&mut cursor, FIRST + 5, 1, 1, LAND);
-    assert_eq!(folded(&cursor), 6);
+    assert_eq!(folded(&cursor), 7);
     flag(&mut cursor, FIRST + 5, 1, 1, LAND);
-    assert_eq!(folded(&cursor), 6);
+    assert_eq!(folded(&cursor), 7);
     flag(&mut cursor, FIRST + 1, 2, 1, LAND);
-    assert_eq!(folded(&cursor), 2);
+    assert_eq!(folded(&cursor), 3);
 }

@@ -2,6 +2,7 @@ use super::{History, Pass, core, native_load, pass_tables};
 use replay::campaign::{HourCursor, Replay, SeekResult};
 use replay_data::{BranchId, Hour, rows::{TableId, tables}};
 use std::{io, sync::Arc};
+use viewer_engagements::{combat_selection::Selection, engaged::Engaged, engagement_history::{LAND, NAVAL}};
 use viewer_foundation::perspective::Country;
 
 pub struct Cursor {
@@ -38,6 +39,24 @@ impl Cursor {
         self.hours = HourCursor::new(Arc::clone(self.hours.replay()), &self.tables, false);
     }
 
+    pub fn limitation(&self, selection: Selection) -> Option<String> {
+        let (kind, combat) = match selection {
+            Selection::Land(combat) => (LAND, combat),
+            Selection::Naval(combat) => (NAVAL, combat),
+            _ => return None,
+        };
+        let held = self.held.as_ref()?;
+        let flag = held.pass.viewer.as_ref().and_then(|viewer| {
+            held.pass.shared.lookup(kind, held.branch, held.last?, viewer.slot?, &[combat]).ok()?.get(&combat).copied()
+        });
+        let reason = match flag {
+            Some(Engaged::Yes | Engaged::No) => return None,
+            Some(Engaged::Ambiguous(cause)) => cause.reason(),
+            _ => "its engaged flag is unknown",
+        };
+        Some(format!("Battle {combat}: {reason}."))
+    }
+
     pub fn read(&mut self, branch: BranchId, hour: Hour, epoch: u64, country: &Country, first: Option<Hour>) -> io::Result<(SeekResult, Option<Arc<History>>)> {
         let Some(first) = first else {
             return Ok((self.hours.seek(branch, hour)?, None));
@@ -52,20 +71,19 @@ impl Cursor {
         }
         let replay = Arc::clone(self.hours.replay());
         let pieces = replay.pieces(branch);
-        for between in held.last.map_or(first, |last| last + 1)..=hour {
+        for between in held.last.map_or(first.saturating_sub(1), |last| last + 1)..=hour {
             let read = self.hours.seek(branch, between);
             let frame = match &read {
                 Ok(SeekResult::Frame(frame)) if core::<tables::Campaign>(frame.as_ref()).is_ok_and(|rows| rows.len() == 1 && rows[0].id == replay.campaign_id) => Some(frame.as_ref()),
                 _ => None,
             };
             let piece = pieces.iter().enumerate().find(|(_, piece)| (piece.first_hour..=piece.last_hour).contains(&between));
-            let load = piece.and_then(|(_, piece)| replay.segments_recorded().iter().find(|start| start.id == piece.segment).and_then(native_load));
+            let load = piece.and_then(|(_, piece)| replay.segments_recorded().iter().find(|start| start.id == piece.segment).and_then(native_load).filter(|hour| (piece.first_hour..=piece.last_hour).contains(hour)));
             let restart = piece.is_some_and(|(at, piece)| at > 0 && piece.first_hour == between && load != Some(between));
             held.pass.fold_hour(branch, between, frame, load, restart);
             held.last = Some(between);
-            let read = read?;
             if between == hour {
-                return Ok((read, Some(history)));
+                return Ok((read?, Some(history)));
             }
         }
         Err(io::Error::new(io::ErrorKind::InvalidInput, "The requested hour is before the battle's first recorded hour."))
