@@ -92,12 +92,30 @@ function countryAt(readView: BoundedReadView, tag: string, hour: number): { read
   };
 }
 
-function duration(first: number, last: number): string {
+const hourForDays = (first: number, days: number): number => first + days * DAY - DAY / 2 - 1;
+
+function firstDayForMonths(targetMonths: number): number {
+  let days = Math.max(60, Math.floor((targetMonths - 0.5) * 30.4));
+  while (Math.round(days / 30.4) < targetMonths) days++;
+  return days;
+}
+
+function warDuration(first: number, last: number): { readonly text: string; readonly nextChangeAt: number } {
   const days = Math.max(1, Math.round((last - first + 1) / DAY));
-  if (days < 60) return `${days} ${days === 1 ? 'day' : 'days'}`;
+  if (days < 60) return { text: `${days} ${days === 1 ? 'day' : 'days'}`, nextChangeAt: hourForDays(first, days + 1) };
   const months = Math.round(days / 30.4);
-  if (months < 24) return `${months} months`;
-  return `${Math.round(months / 12)} years`;
+  if (months < 24) return { text: `${months} months`, nextChangeAt: hourForDays(first, firstDayForMonths(months + 1)) };
+  const years = Math.round(months / 12);
+  return { text: `${years} years`, nextChangeAt: hourForDays(first, firstDayForMonths(years * 12 + 6)) };
+}
+
+function nextWarsChange(reply: WarTimelineReply | undefined, hour: number, view: WarsView): number {
+  let until = reply?.nextChange ?? Infinity;
+  if (!reply || !reply.available || view === 'countries') return until;
+  for (const war of reply.wars) {
+    if (war.lastHour >= reply.hour) until = Math.min(until, warDuration(war.firstHour, hour).nextChangeAt);
+  }
+  return until;
 }
 
 interface Ending {
@@ -108,8 +126,8 @@ interface Ending {
   readonly mark: 'ongoing' | 'ended' | 'flag';
 }
 
-function endingOf(war: WarTimeline, sides: WarSides, hour: number, name: (tag: string) => string): Ending {
-  if (war.lastHour >= hour) return { ongoing: true, loser: null, text: 'Ongoing', detail: duration(war.firstHour, hour), mark: 'ongoing' };
+function endingOf(war: WarTimeline, sides: WarSides, replyHour: number, hour: number, name: (tag: string) => string): Ending {
+  if (war.lastHour >= replyHour) return { ongoing: true, loser: null, text: 'Ongoing', detail: warDuration(war.firstHour, hour).text, mark: 'ongoing' };
   if (war.endedBy) return { ongoing: false, loser: null, text: 'Last recorded', detail: formatDateOnly(war.lastHour), mark: 'ended' };
   const capitulated = new Set(war.capitulations.map(item => item.tag));
   const fallen = (runs: readonly WarParticipantRun[], lead: string | null) => lead !== null && capitulated.has(lead) && runs.length > 0;
@@ -152,7 +170,7 @@ function warLanes(readView: BoundedReadView, reply: WarTimelineReply, opt: WarsO
     const sides = warSides(war);
     const at = Math.min(war.lastHour, hour);
     const name = (tag: string) => countryAt(readView, tag, at).name;
-    const ending = endingOf(war, sides, reply.hour, name);
+    const ending = endingOf(war, sides, reply.hour, hour, name);
     const open = ending.ongoing;
     const lastHour = open ? hour : war.lastHour;
     const halves: readonly [string, string] = [sideColour(readView, sides.leads[0], at, opt.surface, 0), sideColour(readView, sides.leads[1], at, opt.surface, 1)];
@@ -245,8 +263,8 @@ export const warsProjection: TimelineProjection<WarsOptions> = registerFamilyPro
   family: 'timeline',
   kind: 'wars',
 
-  nextChange(readView) {
-    return readView.panel<WarTimelineReply>('main')?.nextChange ?? Infinity;
+  nextChange(readView, opt) {
+    return nextWarsChange(readView.panel<WarTimelineReply>('main'), readView.hour, opt.view);
   },
 
   project(readView, opt) {
@@ -255,7 +273,7 @@ export const warsProjection: TimelineProjection<WarsOptions> = registerFamilyPro
     const firstShown = reply?.wars.reduce((least, war) => Math.min(least, war.firstHour), Infinity) ?? Infinity;
     const base = { hour, firstHour: Number.isFinite(firstShown) ? Math.max(opt.firstHour, firstShown) : opt.firstHour, labelWidth: 300 };
     if (!reply) return timelineModel(base);
-    const nextChangeAt = reply.nextChange ?? Infinity;
+    const nextChangeAt = nextWarsChange(reply, hour, opt.view);
     if (!reply.available) return timelineModel({ ...base, empty: 'Wars were not recorded in this campaign', emptyKind: 'unavailable', warnings: reply.warnings, nextChangeAt });
     if (!reply.wars.length) {
       const unread = inHourSpans(reply.unobserved, reply.hour);
@@ -273,7 +291,7 @@ export const warsProjection: TimelineProjection<WarsOptions> = registerFamilyPro
     const span = hit.spanId ? lane?.spans.find(item => item.id === hit.spanId) : undefined;
     const meta = (span?.meta ?? lane?.meta) as WarLaneMeta | undefined;
     const war = meta && reply?.wars.find(item => item.id === meta.warId);
-    if (!lane || !war) return lane ? { title: lane.label, hour: hit.hour ?? model.hour, items: [] } : null;
+    if (!lane || !war || !reply) return lane ? { title: lane.label, hour: hit.hour ?? model.hour, items: [] } : null;
     const sides = warSides(war);
     const at = Math.min(war.lastHour, model.hour);
     const names = (runs: readonly WarParticipantRun[]) => [...new Set(runs.map(run => run.tag))].map(tag => {
@@ -284,7 +302,7 @@ export const warsProjection: TimelineProjection<WarsOptions> = registerFamilyPro
     const name = war.observations.at(-1)?.name;
     return {
       title: lane.label,
-      subtitle: `${formatDateOnly(war.firstHour)} – ${war.lastHour >= model.hour ? 'ongoing' : formatDateOnly(war.lastHour)}${name && !name.known ? ' · name not recorded' : name?.known ? ` · ${name.text}` : ''}`,
+      subtitle: `${formatDateOnly(war.firstHour)} – ${war.lastHour >= reply.hour ? 'ongoing' : formatDateOnly(war.lastHour)}${name && !name.known ? ' · name not recorded' : name?.known ? ` · ${name.text}` : ''}`,
       hour: hit.hour ?? model.hour,
       items: [
         { label: `Attackers (${new Set(sides.attackers.map(run => run.tag)).size})`, value: names(sides.attackers) || 'Not recorded' },
