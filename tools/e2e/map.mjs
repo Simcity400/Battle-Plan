@@ -23,8 +23,8 @@ export const MAP_INTERACTIONS = [
   { id: 'pan: middle drag', where: 'widget', run: async c => { await c.drag(-250, 0); await c.drag(250, 0); } },
   { id: 'playback', where: 'widget', run: async () => { await sleep(4000); } },
   { id: 'playback', where: 'campaign', camera: 'Map', run: async () => { await sleep(4000); } },
-  { id: 'fly', where: 'campaign', camera: 'Fly', moves: true, run: async c => { await c.click(); await sleep(500); await c.keys(['W'], 2000); await c.keys(['W', 'D'], 1000); await c.keys(['Escape'], 50); } },
-  { id: 'walk', where: 'campaign', camera: 'Walk', moves: true, run: async c => { await c.click(); await sleep(500); await c.keys(['W'], 2000); await c.keys(['W', 'A'], 1000); await c.keys(['Escape'], 50); } },
+  { id: 'fly', where: 'campaign', camera: 'Fly', moves: true, enter: async c => { await c.click(); }, run: async c => { await c.keys(['W'], 2000); await c.keys(['W', 'D'], 1000); await c.keys(['Escape'], 50); } },
+  { id: 'walk', where: 'campaign', camera: 'Walk', moves: true, enter: async c => { await c.click(); }, run: async c => { await c.keys(['W'], 2000); await c.keys(['W', 'A'], 1000); await c.keys(['Escape'], 50); } },
 ];
 
 export class NativeInput {
@@ -56,13 +56,13 @@ async function mapArea(s, dpr) {
 
 const stateAfter = (view, after, test) => `__e2e.mapState(${JSON.stringify(view)}, ${after}, ${test})`;
 
-async function drawnState(s, view, after, test, timeout) {
-  const end = Date.now() + timeout;
+async function drawnState(s, view, after, test, timeout, now = Date.now) {
+  const end = now() + timeout;
   while (true) {
     const state = await s.app.evaluate(stateAfter(view, after, test));
     if (state) return state;
-    if (Date.now() >= end) return null;
-    await sleep(16);
+    if (now() >= end) return null;
+    await sleep(Math.min(16, Math.max(1, end - now())));
   }
 }
 
@@ -107,11 +107,75 @@ async function campaignArea(s, dpr) {
   return { ...area, view: null, px: (x, y) => [x * dpr, y * dpr] };
 }
 
-export async function interactions(s, input, dpr, speedIndex, { label = null, only = null } = {}) {
+const CAMPAIGN_CAMERA_MOVE_EPS = 0.05;
+
+const desktopCameraState = s => s.app.evaluate(`window.__TAURI_INTERNALS__.invoke('desktop_state')`);
+
+const setCampaignOverlays = (s, mode, overlays) =>
+  s.app.evaluate(`window.__TAURI_INTERNALS__.invoke('map_action', { action: { kind: 'cameraMode', mode: ${JSON.stringify(mode)}, overlays: ${JSON.stringify(overlays)} } })`);
+
+const campaignSnapshot = s => s.app.evaluate(`window.__TAURI_INTERNALS__.invoke('map_export_snapshot', { viewId: null })`);
+
+async function readCampaignCamera(s, mode, timeoutMs = 1500) {
+  let overlaysOn = false;
+  try {
+    const state = await desktopCameraState(s);
+    if (state?.cameraMode !== mode) {
+      return { placement: null, error: `expected ${mode} camera mode, but the viewer reported ${state?.cameraMode ?? 'none'}`, overlaysOn };
+    }
+    await setCampaignOverlays(s, mode, true);
+    overlaysOn = true;
+    const end = Date.now() + timeoutMs;
+    while (true) {
+      const snapshot = await campaignSnapshot(s);
+      if (snapshot?.placement?.pose?.kind === 'free' || Date.now() >= end) return { placement: snapshot?.placement ?? null, error: null, overlaysOn };
+      await sleep(16);
+    }
+  } catch (error) {
+    return { placement: null, error: error.message, overlaysOn };
+  }
+}
+
+async function disableCampaignOverlays(s, mode, timeoutMs = 1500) {
+  const state = await desktopCameraState(s);
+  if (state?.cameraMode !== mode) {
+    throw new Error(`expected ${mode} camera mode before clearing overlays, but the viewer reported ${state?.cameraMode ?? 'none'}`);
+  }
+  await setCampaignOverlays(s, mode, false);
+  const end = Date.now() + timeoutMs;
+  while (true) {
+    const [latest, snapshot] = await Promise.all([desktopCameraState(s), campaignSnapshot(s)]);
+    if (latest?.cameraMode !== mode) {
+      throw new Error(`expected ${mode} camera mode while clearing overlays, but the viewer reported ${latest?.cameraMode ?? 'none'}`);
+    }
+    if (latest?.cameraOverlays === false && snapshot?.placement?.pose?.kind === 'map') return;
+    if (Date.now() >= end) {
+      throw new Error(`camera overlays did not turn off (overlays=${String(latest?.cameraOverlays)}, pose=${snapshot?.placement?.pose?.kind ?? 'none'})`);
+    }
+    await sleep(16);
+  }
+}
+
+export function campaignCameraMovementReason(before, after) {
+  if (before?.error) return `could not read the campaign map camera before movement: ${before.error}`;
+  if (after?.error) return `could not read the campaign map camera after movement: ${after.error}`;
+  const valid = p => Array.isArray(p?.center) && p.center.length === 2 && p.center.every(Number.isFinite) && Number.isFinite(p?.height);
+  if (!valid(before?.placement) || !valid(after?.placement)) return 'the campaign map camera snapshot did not include a position';
+  if (before.placement.pose?.kind !== 'free') return `the campaign map stayed in ${before.placement.pose?.kind ?? 'unknown'} pose before movement`;
+  if (after.placement.pose?.kind !== 'free') return `the campaign map returned to ${after.placement.pose?.kind ?? 'unknown'} pose after movement`;
+  const moved = Math.hypot(
+    after.placement.center[0] - before.placement.center[0],
+    after.placement.height - before.placement.height,
+    after.placement.center[1] - before.placement.center[1],
+  );
+  return moved > CAMPAIGN_CAMERA_MOVE_EPS ? null : 'the campaign map camera did not move';
+}
+
+export async function interactions(s, input, dpr, speedIndex, { label = null, only = null, playingModes = [false, true], settleMs = 1500, moveDelayMs = 500 } = {}) {
   for (const where of ['widget', 'campaign']) {
     const cases = MAP_INTERACTIONS.filter(entry => entry.where === where && (only === null || only.includes(entry.id)));
     if (!cases.length) continue;
-    if (where === 'campaign') { await s.click('#tab-map'); await sleep(3000); } else await s.openPage('Overview');
+    if (where === 'campaign') { await s.click('#tab-map'); if (settleMs > 0) await sleep(settleMs * 2); } else await s.openPage('Overview');
     const area = where === 'campaign' ? await campaignArea(s, dpr) : await mapArea(s, dpr);
     const [cx, cy] = area.px((area.left + area.right) / 2, (area.top + area.bottom) / 2);
     const c = {
@@ -120,46 +184,88 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
       click: () => input.ask({ op: 'click', x: cx, y: cy }),
       drag: (dx, dy) => input.ask({ op: 'drag', interval_ms: 16, points: Array.from({ length: 21 }, (_, i) => [cx + dx * dpr * i / 20, cy + dy * dpr * i / 20]) }),
     };
-    for (const playing of [false, true]) {
+    for (const playing of playingModes) {
       if (playing) {
         await s.click('.header-speed');
         await s.until(`document.querySelector('.playback-speed-menu:popover-open .playback-speed-presets button')`, 3000);
         await s.click('.playback-speed-menu:popover-open .playback-speed-presets button', { index: speedIndex });
         const line = await s.timeline();
         await s.app.click(Session.timelineX(line, 0.1), line.y);
-        await sleep(1000);
+        if (settleMs > 0) await sleep(1000);
         await s.click('button.header-play[aria-label="Play"]');
-        await sleep(1000);
+        if (settleMs > 0) await sleep(1000);
       }
       for (const entry of cases) {
         if (entry.id === 'playback' && !playing) continue;
         const item = `interaction: ${entry.id}${where === 'campaign' && !entry.moves ? ' (campaign map)' : ''}`;
         const while_ = `${label ? `${label}, ` : ''}${playing ? 'playing' : 'paused'}`;
+        let overlaysOn = false;
+        let overlayCleanupAttempted = false;
         try {
-          if (entry.camera) { await s.click('.segmented[aria-label="Camera"] button', { text: entry.camera }); await sleep(1500); }
+          if (entry.camera) { await s.click('.segmented[aria-label="Camera"] button', { text: entry.camera }); if (settleMs > 0) await sleep(settleMs); }
+          let beforeCamera = null;
+          if (entry.moves) {
+            await entry.enter(c);
+            if (moveDelayMs > 0) await sleep(moveDelayMs);
+            beforeCamera = await readCampaignCamera(s, entry.id, settleMs);
+            overlaysOn = beforeCamera.overlaysOn;
+            if (beforeCamera.error) {
+              let beforeCleanupError = null;
+              if (overlaysOn) {
+                overlayCleanupAttempted = true;
+                try { await disableCampaignOverlays(s, entry.id, settleMs); overlaysOn = false; }
+                catch (error) { beforeCleanupError = error.message; }
+              }
+              const why = [campaignCameraMovementReason(beforeCamera, null), beforeCleanupError && `could not turn off camera overlays: ${beforeCleanupError}`].filter(Boolean).join('; ');
+              await s.fail(label ? 'mapfps' : 'map', item, while_, why);
+              continue;
+            }
+            overlayCleanupAttempted = true;
+            await disableCampaignOverlays(s, entry.id, settleMs);
+            overlaysOn = false;
+            overlayCleanupAttempted = false;
+          }
           await s.watch();
           const from = Date.now();
           await entry.run(c);
-          await sleep(300);
+          if (settleMs > 0) await sleep(300);
           const to = Date.now();
           const flashed = await s.unwatch();
+          let afterCamera = null;
+          let cleanupError = null;
+          if (entry.moves) {
+            afterCamera = await readCampaignCamera(s, entry.id, settleMs);
+            overlaysOn = afterCamera.overlaysOn;
+            if (overlaysOn) {
+              overlayCleanupAttempted = true;
+              try { await disableCampaignOverlays(s, entry.id, settleMs); overlaysOn = false; }
+              catch (error) { cleanupError = error.message; }
+            }
+          }
           const drawn = area.view === null ? null : await s.app.evaluate(`(() => { const states = __e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)} && x.drawnAt >= ${from} && x.drawnAt <= ${to});
             return { states: states.length, loading: states.some(x => x.loading), zooms: new Set(states.filter(x => x.zoom != null).map(x => x.zoom)).size,
               centres: new Set(states.filter(x => x.center).map(x => x.center.join())).size }; })()`);
           const reasons = [...flashed];
           const moves = entry.id.startsWith('zoom') ? 'zooms' : entry.id.startsWith('pan') ? 'centres' : null;
-          if (entry.moves) reasons.push('the full map reports no camera, so its movement is unconfirmed');
-          else if (moves && drawn?.states === 0) reasons.push('the map acknowledged no frame during it: it was still loading or had stalled');
+          if (entry.moves) {
+            const cameraReason = campaignCameraMovementReason(beforeCamera, afterCamera);
+            if (cameraReason) reasons.push(cameraReason);
+            if (cleanupError) reasons.push(`could not turn off camera overlays after movement: ${cleanupError}`);
+          } else if (moves && drawn?.states === 0) reasons.push('the map acknowledged no frame during it: it was still loading or had stalled');
           else if (moves && drawn[moves] < 2) reasons.push(`the map did not ${moves === 'zooms' ? 'zoom' : 'pan'} (${drawn[moves]} ${moves === 'zooms' ? 'zoom levels' : 'camera centres'} drawn${drawn.loading ? ', while loading' : ''})`);
           const zooms = drawn?.zooms ?? null;
-          await s.record({ area: label ? 'mapfps' : 'map', item, label: while_, pass: true, reasons, from, to, view: area.view, zoomLevels: zooms, screenshot: false });
+          await s.record({ area: label ? 'mapfps' : 'map', item, label: while_, pass: reasons.length === 0, reasons, from, to, view: area.view, zoomLevels: zooms, screenshot: false });
         } catch (error) {
           await s.fail(label ? 'mapfps' : 'map', item, while_, `could not send its input: ${error.message}`);
         } finally {
           if (entry.moves) {
+            if (overlaysOn && !overlayCleanupAttempted) {
+              await disableCampaignOverlays(s, entry.id, settleMs)
+                .catch(error => s.fail(label ? 'mapfps' : 'map', item, while_, `could not turn off camera overlays after it: ${error.message}`));
+            }
             await s.click('.segmented[aria-label="Camera"] button', { text: 'Map' })
               .catch(error => s.fail(label ? 'mapfps' : 'map', item, while_, `the map camera could not be chosen again after it: ${error.message}`));
-            await sleep(500);
+            if (settleMs > 0) await sleep(500);
           }
         }
       }
@@ -174,74 +280,134 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
   await s.openPage('Overview');
 }
 
-export async function hover(s, input, dpr, { scanTimeoutMs = 400, timeoutMs = 4000, neutralPauseMs = 200 } = {}) {
+export function planHoverPoints(area) {
+  const grid = [];
+  for (let row = 0; row < 8; row++) for (let column = 0; column < 14; column++)
+    grid.push([area.left + (area.right - area.left) * (column + 0.5) / 14, area.top + (area.bottom - area.top) * (row + 0.5) / 8]);
+  const bar = [];
+  for (let y = area.bottom - 12; y > area.bottom - 120 && y >= area.top; y -= 24)
+    for (let x = area.right - 12; x >= area.left; x -= 24) bar.push([x, y]);
+  return { grid, bar };
+}
+
+export async function hover(s, input, dpr, { scanTimeoutMs = 150, timeoutMs = 4000, neutralPauseMs = 200, scanBudgetMs = 120_000, now = Date.now } = {}) {
   const area = await mapArea(s, dpr);
   const from = Date.now();
+  const scanDeadline = now() + scanBudgetMs;
+  const remainingMs = () => Math.max(0, scanDeadline - now());
+  const budgetExhausted = () => now() >= scanDeadline;
+  const hoverSettleMs = Math.min(neutralPauseMs, 40);
   const seen = new Map();
-  const at = async (x, y) => {
+  const initialState = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
+  let knownTooltipDelayMs = Number.isFinite(initialState?.tooltipDelayMs) ? initialState.tooltipDelayMs : 0;
+  let pointerAtNeutral = false;
+  const at = async (x, y, deadline = null) => {
+    pointerAtNeutral = false;
     const [px, py] = area.px(x, y);
     const [posted] = (await input.ask({ op: 'move', points: [[px, py]], interval_ms: 0 })).posted;
-    const state = await drawnState(s, area.view, posted, 'x => true', scanTimeoutMs);
-    return { posted, state, point: [px, py] };
+    const postedAt = now();
+    const cap = deadline === null ? scanTimeoutMs : Math.min(scanTimeoutMs, Math.max(0, deadline - postedAt));
+    const state = deadline !== null && postedAt >= deadline
+      ? null
+      : await drawnState(s, area.view, posted, 'x => true', cap, now);
+    return { posted, postedAt, state, point: [px, py] };
   };
   const recordSeen = (candidate, x, y, point) => {
     if (!candidate) return;
+    if (Number.isFinite(candidate.tooltipDelayMs)) knownTooltipDelayMs = candidate.tooltipDelayMs;
     for (const hoverCase of HOVER_CASES) if (!seen.has(hoverCase.id) && hoverCase.match(candidate[hoverCase.field] ?? null))
       seen.set(hoverCase.id, { x, y, hovered: candidate[hoverCase.field], point });
   };
-  const points = [];
-  for (let row = 0; row < 12; row++) for (let column = 0; column < 20; column++)
-    points.push([area.left + (area.right - area.left) * (column + 0.5) / 20, area.top + (area.bottom - area.top) * (row + 0.5) / 12]);
-  for (let y = area.bottom - 4; y > area.bottom - 140; y -= 12) for (let x = area.left + 4; x < area.right; x += 12) points.push([x, y]);
+  const { grid, bar } = planHoverPoints(area);
   let neutral = null;
-  for (const [x, y] of points) {
-    if (HOVER_CASES.every(hoverCase => seen.has(hoverCase.id)) && neutral) break;
-    const { posted, state, point } = await at(x, y);
+  let scanned = 0;
+  let cutShort = null;
+  const probe = async (x, y) => {
+    scanned++;
+    const { posted, postedAt, state, point } = await at(x, y, scanDeadline);
     recordSeen(state, x, y, point);
-    const waitMs = (state?.tooltipDelayMs ?? 0) + neutralPauseMs;
+    if (budgetExhausted()) return false;
+    const waitMs = (state?.tooltipDelayMs ?? knownTooltipDelayMs) + neutralPauseMs;
     let after = state?.drawnAt ?? posted;
     let end = null;
     let settledNeutral = false;
-    if (state && !state.hover && !state.tooltip && !neutral) {
-      end = Date.now() + waitMs;
-      const appeared = await drawnState(s, area.view, posted, 'x => Boolean(x.hover || x.tooltip)', waitMs);
+    if ((!state || (!state.hover && !state.tooltip)) && !neutral) {
+      end = postedAt + waitMs;
+      const appeared = await drawnState(s, area.view, posted, 'x => Boolean(x.hover || x.tooltip)', Math.min(Math.max(0, end - now()), remainingMs()), now);
       if (appeared) { recordSeen(appeared, x, y, point); after = appeared.drawnAt ?? after; }
+      else if (budgetExhausted()) return false;
       else {
-        const now = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
-        recordSeen(now, x, y, point);
-        if (now && !now.hover && !now.tooltip) neutral = [x, y];
+        const latest = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
+        if (latest && Number.isFinite(latest.tooltipDelayMs)) knownTooltipDelayMs = latest.tooltipDelayMs;
+        if ((latest?.drawnAt ?? 0) > posted) recordSeen(latest, x, y, point);
+        if (latest && !latest.hover && !latest.tooltip) { neutral = [x, y]; pointerAtNeutral = true; }
         settledNeutral = true;
       }
     }
-    if (state && !settledNeutral) {
+    if (!settledNeutral) {
       while (true) {
         const unseen = HOVER_CASES.filter(hoverCase => !seen.has(hoverCase.id));
         if (!unseen.length) break;
-        const wait = unseen.some(hoverCase => hoverCase.field === 'tooltip') ? waitMs : neutralPauseMs;
-        end ??= Date.now() + wait;
+        const needTooltip = unseen.some(hoverCase => hoverCase.field === 'tooltip');
+        if (!state && !needTooltip) break;
+        if (budgetExhausted()) return false;
+        const wait = needTooltip ? waitMs : hoverSettleMs;
+        end ??= postedAt + wait;
         const predicate = `x => ${unseen.map(hoverCase => `(${hoverCase.match.toString()})(x.${hoverCase.field} ?? null)`).join(' || ')}`;
-        const next = await drawnState(s, area.view, after, predicate, Math.max(0, end - Date.now()));
-        if (!next) break;
+        const next = await drawnState(s, area.view, after, predicate, Math.min(Math.max(0, end - now()), remainingMs()), now);
+        if (!next) return !budgetExhausted();
         recordSeen(next, x, y, point);
         after = next.drawnAt ?? after;
       }
+    }
+    return true;
+  };
+  const points = [...grid, ...bar];
+  const discoveryComplete = () => HOVER_CASES.every(hoverCase => seen.has(hoverCase.id)) && Boolean(neutral);
+  for (const [x, y] of points) {
+    if (discoveryComplete()) break;
+    if (budgetExhausted()) { cutShort = { scanned, total: points.length }; break; }
+    if (!(await probe(x, y)) && !discoveryComplete()) {
+      cutShort = { scanned, total: points.length };
+      break;
     }
   }
   for (const hoverCase of HOVER_CASES) {
     const target = seen.get(hoverCase.id);
     if (!target) {
-      await s.fail('map', `hover presence: ${hoverCase.id}`, null, `no ${hoverCase.id} under any of ${points.length} points over the map`);
-      await s.fail('map', `hover: ${hoverCase.id}`, null, `cannot time ${hoverCase.id}: it was never observed`);
+      if (cutShort) {
+        await s.fail('map', `hover presence: ${hoverCase.id}`, null, `search cut short after ${cutShort.scanned} of ${cutShort.total} points`);
+        await s.fail('map', `hover: ${hoverCase.id}`, null, `cannot time ${hoverCase.id}: search was cut short before it was observed`);
+      } else {
+        await s.fail('map', `hover presence: ${hoverCase.id}`, null, `no ${hoverCase.id} under any of ${scanned} points over the map`);
+        await s.fail('map', `hover: ${hoverCase.id}`, null, `cannot time ${hoverCase.id}: it was never observed`);
+      }
       continue;
     }
     await s.record({ area: 'map', item: `hover presence: ${hoverCase.id}`, label: target.hovered, ms: null, pass: true, reasons: [], screenshot: false });
-    if (!neutral) { await s.fail('map', `hover: ${hoverCase.id}`, target.hovered, 'no point over the map drew without a highlight or tooltip, so its appearance cannot be timed'); continue; }
-    const cleared = await at(...neutral);
-    if (!cleared.state || cleared.state.hover || cleared.state.tooltip) {
-      const gone = await drawnState(s, area.view, cleared.posted, 'x => !x.hover && !x.tooltip', timeoutMs);
-      if (!gone) { await s.fail('map', `hover: ${hoverCase.id}`, target.hovered, 'its highlight or tooltip never cleared away from it, so its appearance cannot be timed'); continue; }
+    if (!neutral) {
+      const why = cutShort
+        ? `search was cut short after ${cutShort.scanned} of ${cutShort.total} points before a neutral point was found, so its appearance cannot be timed`
+        : 'no point over the map drew without a highlight or tooltip, so its appearance cannot be timed';
+      await s.fail('map', `hover: ${hoverCase.id}`, target.hovered, why);
+      continue;
+    }
+    if (!pointerAtNeutral) {
+      const cleared = await at(...neutral);
+      if (!cleared.state || cleared.state.hover || cleared.state.tooltip) {
+        const gone = await drawnState(s, area.view, cleared.posted, 'x => !x.hover && !x.tooltip', timeoutMs);
+        if (!gone) {
+          const latest = cleared.state ? null : await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
+          if (!latest || latest.hover || latest.tooltip) {
+            await s.fail('map', `hover: ${hoverCase.id}`, target.hovered, 'its highlight or tooltip never cleared away from it, so its appearance cannot be timed');
+            continue;
+          }
+        }
+      }
+      pointerAtNeutral = true;
     }
     const [px, py] = target.point;
+    pointerAtNeutral = false;
     await s.watch();
     const [posted] = (await input.ask({ op: 'move', points: [[px, py]], interval_ms: 0 })).posted;
     const state = await drawnState(s, area.view, posted, `x => x.${hoverCase.field} === ${JSON.stringify(target.hovered)}`, timeoutMs);

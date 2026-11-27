@@ -14,6 +14,7 @@ import {
   cameraPoseMatches,
   deriveCloseCameraPose,
   hover,
+  interactions,
   mapModes,
   mapPictures,
   zoomedMapPicture,
@@ -711,4 +712,364 @@ test('hover separates presence from timing and does not require a neutral point 
   assert.equal(delayedButtonTiming?.pass, true);
   assert.equal(delayedButtonTiming?.label, 'button:supply');
   assert.equal(delayedButtonTiming?.ms, 6);
+});
+
+test('interactions confirms fly and walk movement from the campaign map camera snapshot and enforces camera mode and overlay cleanup', async () => {
+  const runCampaignCase = async ({ id, cameraMode = id, snapshots, rejectOverlayOff = false }) => {
+    const recorded = [];
+    const mapActions = [];
+    const inputOps = [];
+    let cameraOverlays = false;
+    let currentMode = cameraMode;
+    let snapshotIndex = 0;
+    const s = {
+      app: {
+        async evaluate(expression) {
+          if (expression.includes('.map-panel:not([hidden])')) {
+            return { left: 100, top: 100, right: 1100, bottom: 700 };
+          }
+          if (expression.includes("invoke('map_action'") || expression.includes("invoke('map_export_snapshot'") || expression.includes("invoke('desktop_state'")) {
+            const fakeWindow = {
+              __TAURI_INTERNALS__: {
+                async invoke(command, payload) {
+                  if (command === 'desktop_state') return { cameraMode: currentMode, cameraOverlays };
+                  if (command === 'map_action') {
+                    mapActions.push(payload.action);
+                    if (payload.action.overlays === false && rejectOverlayOff) throw new Error('overlay reset rejected');
+                    currentMode = payload.action.mode;
+                    cameraOverlays = payload.action.overlays;
+                    return null;
+                  }
+                  if (command === 'map_export_snapshot') {
+                    const next = typeof snapshots === 'function'
+                      ? snapshots({ cameraOverlays, index: snapshotIndex++ })
+                      : snapshots[Math.min(snapshotIndex++, snapshots.length - 1)];
+                    if (next instanceof Error) throw next;
+                    return next;
+                  }
+                  throw new Error(`unexpected invoke: ${command}`);
+                },
+              },
+            };
+            return await new Function('window', `return ${expression}`)(fakeWindow);
+          }
+          throw new Error(`unexpected evaluate: ${expression}`);
+        },
+        async click() {},
+      },
+      async click() {},
+      async until() { return true; },
+      async openPage() {},
+      async timeline() { return { left: 0, width: 500, y: 10, min: 0, max: 100, value: 10 }; },
+      async watch() {},
+      async unwatch() { return []; },
+      async record(entry) { recorded.push(entry); },
+      async fail(area, item, label, reason) { recorded.push({ area, item, label, pass: false, reasons: [reason] }); },
+    };
+    const input = { async ask(command) { inputOps.push(command.op); return { posted: [Date.now()] }; } };
+    await interactions(s, input, 1, 0, { only: [id], playingModes: [false], settleMs: 0, moveDelayMs: 0 });
+    return { recorded, mapActions, inputOps };
+  };
+
+  const freeAt = (x, z, height) => ({ placement: { center: [x, z], height, pose: { kind: 'free', yaw: 0, pitch: -0.2, roll: 0, fovY: 1, near: 0.1, far: 1000 } } });
+  const mapAt = (x, z, height) => ({ placement: { center: [x, z], height, pose: { kind: 'map' } } });
+
+  const movedFly = await runCampaignCase({
+    id: 'fly',
+    snapshots: [freeAt(100, 200, 40), mapAt(100, 200, 500), freeAt(140, 230, 45), mapAt(100, 200, 500)],
+  });
+  assert.equal(movedFly.recorded.length, 1);
+  assert.equal(movedFly.recorded[0].pass, true);
+  assert.deepEqual(movedFly.recorded[0].reasons, []);
+  assert.deepEqual(movedFly.mapActions, [
+    { kind: 'cameraMode', mode: 'fly', overlays: true },
+    { kind: 'cameraMode', mode: 'fly', overlays: false },
+    { kind: 'cameraMode', mode: 'fly', overlays: true },
+    { kind: 'cameraMode', mode: 'fly', overlays: false },
+  ]);
+
+  const unmovedWalk = await runCampaignCase({
+    id: 'walk',
+    snapshots: [freeAt(100, 200, 12), mapAt(100, 200, 500), freeAt(100, 200, 12), mapAt(100, 200, 500)],
+  });
+  assert.equal(unmovedWalk.recorded.length, 1);
+  assert.equal(unmovedWalk.recorded[0].pass, false);
+  assert.match(unmovedWalk.recorded[0].reasons.join('; '), /did not move/i);
+
+  const stuckMapPose = await runCampaignCase({
+    id: 'fly',
+    snapshots: [mapAt(100, 200, 500), mapAt(100, 200, 500), mapAt(100, 200, 500), mapAt(100, 200, 500)],
+  });
+  assert.equal(stuckMapPose.recorded.length, 1);
+  assert.equal(stuckMapPose.recorded[0].pass, false);
+  assert.match(stuckMapPose.recorded[0].reasons.join('; '), /map pose/i);
+
+  const snapshotError = await runCampaignCase({ id: 'walk', snapshots: [new Error('The map stopped')] });
+  assert.equal(snapshotError.recorded.length, 1);
+  assert.equal(snapshotError.recorded[0].pass, false);
+  assert.match(snapshotError.recorded[0].reasons.join('; '), /The map stopped/);
+
+  const resetRejected = await runCampaignCase({
+    id: 'fly',
+    rejectOverlayOff: true,
+    snapshots: [freeAt(100, 200, 40), freeAt(140, 230, 45)],
+  });
+  assert.equal(resetRejected.recorded.length, 1);
+  assert.equal(resetRejected.recorded[0].pass, false);
+  assert.match(resetRejected.recorded[0].reasons.join('; '), /overlay reset rejected/);
+  assert.deepEqual(resetRejected.inputOps, ['click']);
+
+  const wrongMode = await runCampaignCase({
+    id: 'walk',
+    cameraMode: 'fly',
+    snapshots: [freeAt(100, 200, 40), mapAt(100, 200, 500), freeAt(140, 230, 45), mapAt(100, 200, 500)],
+  });
+  assert.equal(wrongMode.recorded.length, 1);
+  assert.equal(wrongMode.recorded[0].pass, false);
+  assert.match(wrongMode.recorded[0].reasons.join('; '), /expected walk camera mode, but the viewer reported fly/i);
+  assert.deepEqual(wrongMode.mapActions, []);
+  assert.deepEqual(wrongMode.inputOps, ['click']);
+});
+
+test('hover bounds its scan to a deterministic point set, handles paused-viewer tooltip delays, and enforces scan budget within a probe', async () => {
+  const runBoundedHover = async ({ stateForMove, width = 800, height = 400, options = {}, onEvaluate = null }) => {
+    const mapStates = [];
+    const recorded = [];
+    let moves = 0;
+    let now = 1000;
+    const s = {
+      app: {
+        async evaluate(expression) {
+          onEvaluate?.(mapStates);
+          if (expression.includes('article.dash-widget.kind-map')) {
+            return { view: 'overview-map', left: 0, top: 0, right: width, bottom: height };
+          }
+          const match = expression.match(/^__e2e\.mapState\(("[^"]+"),\s*(\d+),\s*([\s\S]+)\)$/);
+          if (match) {
+            const view = JSON.parse(match[1]);
+            const after = Number(match[2]);
+            const predicate = new Function(`return (${match[3]});`)();
+            return mapStates.find(state => state.id === view && (state.drawnAt ?? 0) > after && predicate(state)) ?? null;
+          }
+          if (expression.includes('__e2e.mapStates.filter')) {
+            return mapStates.filter(state => state.id === 'overview-map').at(-1) ?? null;
+          }
+          throw new Error(`unexpected evaluate: ${expression}`);
+        },
+      },
+      async watch() {},
+      async unwatch() { return []; },
+      async record(entry) { recorded.push(entry); },
+      async fail(area, item, label, reason) { recorded.push({ area, item, label, ms: null, pass: false, reasons: [reason] }); },
+    };
+    const input = {
+      async ask(command) {
+        if (command.op !== 'move') throw new Error(`unexpected op: ${command.op}`);
+        moves++;
+        const posted = (now += 10);
+        const [px, py] = command.points[0];
+        const next = stateForMove(px, py, moves, posted);
+        if (next) mapStates.push({ id: 'overview-map', tooltipDelayMs: 0, drawnAt: posted + 2, ...next });
+        return { posted: [posted] };
+      },
+    };
+    await hover(s, input, 1, { scanTimeoutMs: 0, timeoutMs: 0, neutralPauseMs: 0, ...options });
+    return { recorded, moves };
+  };
+
+  const missingDivision = await runBoundedHover({
+    stateForMove: (px, py, move) => {
+      if (move === 1) return { hover: null, tooltip: null };
+      if (px >= 780 && py >= 380) return { hover: 'button:find-view', tooltip: null };
+      return { hover: null, tooltip: 'province:101' };
+    },
+  });
+  assert.ok(missingDivision.moves <= 290, `expected bounded scan <= 290 moves on 800x400 map, got ${missingDivision.moves}`);
+  const divPresence = missingDivision.recorded.find(e => e.item === 'hover presence: division counter');
+  const divTiming = missingDivision.recorded.find(e => e.item === 'hover: division counter');
+  assert.equal(divPresence?.pass, false);
+  assert.match(divPresence?.reasons.join('; ') ?? '', /no division counter under any of 277 points/);
+  assert.equal(divTiming?.pass, false);
+  assert.match(divTiming?.reasons.join('; ') ?? '', /never observed/i);
+  assert.equal(missingDivision.recorded.find(e => e.item === 'hover presence: map GUI button')?.pass, true);
+  assert.equal(missingDivision.recorded.find(e => e.item === 'hover presence: province tooltip')?.pass, true);
+
+  let barNeutralPoint = null;
+  let barCounterPoint = null;
+  let barButtonPoint = null;
+  const counterBehindBarButton = await runBoundedHover({
+    stateForMove: (px, py, move) => {
+      if (move === 1 || (barNeutralPoint && px === barNeutralPoint[0] && py === barNeutralPoint[1])) {
+        barNeutralPoint ??= [px, py];
+        return { hover: null, tooltip: null };
+      }
+      if (move === 113 || (barButtonPoint && px === barButtonPoint[0] && py === barButtonPoint[1])) {
+        barButtonPoint ??= [px, py];
+        return { hover: 'button:find-view', tooltip: null };
+      }
+      if (move === 114 || (barCounterPoint && px === barCounterPoint[0] && py === barCounterPoint[1])) {
+        barCounterPoint ??= [px, py];
+        return { hover: 'division:77', tooltip: null };
+      }
+      return { hover: null, tooltip: 'province:101' };
+    },
+  });
+  assert.equal(counterBehindBarButton.recorded.find(e => e.item === 'hover presence: division counter')?.label, 'division:77');
+  assert.equal(counterBehindBarButton.recorded.find(e => e.item === 'hover: division counter')?.pass, true);
+
+  let suppressedClock = 0;
+  let suppressedCurrentMove = 0;
+  let suppressedMove2PostedAt = null;
+  let suppressedMove2Posted = null;
+  let suppressedEmitted = false;
+  const suppressedTooltip = await runBoundedHover({
+    stateForMove: (px, py, move, posted) => {
+      suppressedCurrentMove = move;
+      if (move === 1) return { hover: null, tooltip: null, tooltipDelayMs: 600 };
+      if (move === 2) {
+        suppressedClock += 1000;
+        suppressedMove2PostedAt = suppressedClock;
+        suppressedMove2Posted = posted;
+        return null;
+      }
+      if (move === 3) return { hover: 'division:9', tooltip: null, tooltipDelayMs: 600 };
+      return { hover: 'button:find-view', tooltip: null, tooltipDelayMs: 600 };
+    },
+    onEvaluate: mapStates => {
+      if (!suppressedEmitted && suppressedCurrentMove === 2 && suppressedMove2PostedAt !== null && suppressedClock - suppressedMove2PostedAt >= 600) {
+        suppressedEmitted = true;
+        mapStates.push({ id: 'overview-map', hover: null, tooltip: 'province:500', tooltipDelayMs: 600, drawnAt: suppressedMove2Posted + 600 });
+      }
+    },
+    options: { scanTimeoutMs: 150, neutralPauseMs: 200, scanBudgetMs: 5_000, now: () => (suppressedClock += 25) },
+  });
+  const suppressedPresence = suppressedTooltip.recorded.find(e => e.item === 'hover presence: province tooltip');
+  assert.equal(suppressedPresence?.pass, true);
+  assert.equal(suppressedPresence?.label, 'province:500');
+
+  let postDelayClock = 0;
+  let postDelayAtStart = null;
+  const budgetAfterPost = await runBoundedHover({
+    stateForMove: (px, py, move) => {
+      if (move === 1) { postDelayClock += 40; postDelayAtStart = postDelayClock; }
+      return null;
+    },
+    options: { scanTimeoutMs: 150, neutralPauseMs: 200, scanBudgetMs: 60, now: () => (postDelayClock += 2) },
+  });
+  assert.equal(budgetAfterPost.moves, 2);
+  assert.ok(postDelayAtStart < 60, `expected positive budget remaining after post, got ${postDelayAtStart}`);
+  assert.ok(postDelayClock <= 72, `expected post delay + poll to stop near 60 ms budget, clock reached ${postDelayClock}`);
+  assert.match(budgetAfterPost.recorded.find(e => e.item === 'hover presence: division counter')?.reasons.join('; ') ?? '', /search cut short after 1 of \d+ points/);
+
+  let hugeDelayClock = 0;
+  let hugeDelayAfterAt = null;
+  const budgetWithinProbe = await runBoundedHover({
+    stateForMove: (px, py, move) => {
+      if (move === 1) hugeDelayAfterAt = hugeDelayClock;
+      return { hover: null, tooltip: null, tooltipDelayMs: 300_000 };
+    },
+    options: { scanTimeoutMs: 10, neutralPauseMs: 50, scanBudgetMs: 100, now: () => (hugeDelayClock += 10) },
+  });
+  assert.equal(budgetWithinProbe.moves, 2);
+  assert.ok(hugeDelayAfterAt < 100, `expected neutral wait to start with positive budget remaining, got ${hugeDelayAfterAt}`);
+  assert.ok(hugeDelayClock <= 200, `expected probe to stop within 100 ms scan budget, fake clock reached ${hugeDelayClock}`);
+  const timedOutPresence = budgetWithinProbe.recorded.find(e => e.item === 'hover presence: division counter');
+  const timedOutTiming = budgetWithinProbe.recorded.find(e => e.item === 'hover: division counter');
+  assert.equal(timedOutPresence?.pass, false);
+  assert.match(timedOutPresence?.reasons.join('; ') ?? '', /search cut short after 1 of \d+ points/);
+  assert.doesNotMatch(timedOutPresence?.reasons.join('; ') ?? '', /no division counter/);
+  assert.equal(timedOutTiming?.pass, false);
+  assert.match(timedOutTiming?.reasons.join('; ') ?? '', /cut short/i);
+
+  const staleMapStates = [];
+  const staleRecorded = [];
+  let staleMoves = 0;
+  let staleNow = 1000;
+  let realDivPt = null;
+  let realNeutralPt = null;
+  let realBtnPt = null;
+  const staleSession = {
+    app: {
+      async evaluate(expression) {
+        if (expression.includes('article.dash-widget.kind-map')) return { view: 'overview-map', left: 0, top: 0, right: 800, bottom: 400 };
+        const match = expression.match(/^__e2e\.mapState\(("[^"]+"),\s*(\d+),\s*([\s\S]+)\)$/);
+        if (match) {
+          const view = JSON.parse(match[1]);
+          const after = Number(match[2]);
+          const predicate = new Function(`return (${match[3]});`)();
+          return staleMapStates.find(state => state.id === view && (state.drawnAt ?? 0) > after && predicate(state)) ?? null;
+        }
+        if (expression.includes('__e2e.mapStates.filter')) return staleMapStates.filter(state => state.id === 'overview-map').at(-1) ?? null;
+        throw new Error(`unexpected evaluate: ${expression}`);
+      },
+    },
+    async watch() {},
+    async unwatch() { return []; },
+    async record(entry) { staleRecorded.push(entry); },
+    async fail(area, item, label, reason) { staleRecorded.push({ area, item, label, ms: null, pass: false, reasons: [reason] }); },
+  };
+  staleMapStates.push({ id: 'overview-map', hover: 'division:9', tooltip: null, tooltipDelayMs: 0, drawnAt: 500 });
+  const staleInput = {
+    async ask(command) {
+      staleMoves++;
+      const posted = (staleNow += 10);
+      const [px, py] = command.points[0];
+      if (staleMoves === 1) return { posted: [posted] };
+      if (staleMoves === 2 || (realNeutralPt && px === realNeutralPt[0] && py === realNeutralPt[1])) {
+        realNeutralPt ??= [px, py];
+        staleMapStates.push({ id: 'overview-map', hover: null, tooltip: null, tooltipDelayMs: 0, drawnAt: posted + 2 });
+        return { posted: [posted] };
+      }
+      if (staleMoves === 3 || (realDivPt && px === realDivPt[0] && py === realDivPt[1])) {
+        realDivPt ??= [px, py];
+        staleMapStates.push({ id: 'overview-map', hover: 'division:9', tooltip: 'province:15', tooltipDelayMs: 0, drawnAt: posted + 2 });
+        return { posted: [posted] };
+      }
+      if (staleMoves === 4 || (realBtnPt && px === realBtnPt[0] && py === realBtnPt[1])) {
+        realBtnPt ??= [px, py];
+        staleMapStates.push({ id: 'overview-map', hover: 'button:find-view', tooltip: null, tooltipDelayMs: 0, drawnAt: posted + 2 });
+        return { posted: [posted] };
+      }
+      staleMapStates.push({ id: 'overview-map', hover: null, tooltip: null, tooltipDelayMs: 0, drawnAt: posted + 2 });
+      return { posted: [posted] };
+    },
+  };
+  await hover(staleSession, staleInput, 1, { scanTimeoutMs: 0, timeoutMs: 0, neutralPauseMs: 0 });
+  assert.equal(staleRecorded.find(e => e.item === 'hover presence: division counter')?.label, 'division:9');
+  assert.equal(staleRecorded.find(e => e.item === 'hover: division counter')?.pass, true);
+
+  let lastPointKey = null;
+  const neutralLastTargets = new Map();
+  const neutralLast = await runBoundedHover({
+    stateForMove: (px, py, move) => {
+      const key = `${px},${py}`;
+      if (move === 1) neutralLastTargets.set(key, { hover: 'division:5', tooltip: 'province:11' });
+      else if (move === 2) neutralLastTargets.set(key, { hover: 'button:find-view', tooltip: null });
+      else if (move === 3) neutralLastTargets.set(key, { hover: null, tooltip: null });
+      const state = neutralLastTargets.get(key) ?? { hover: null, tooltip: null };
+      if (key === lastPointKey) return null;
+      lastPointKey = key;
+      return state;
+    },
+  });
+  for (const id of ['division counter', 'province tooltip', 'map GUI button']) {
+    assert.equal(neutralLast.recorded.find(e => e.item === `hover presence: ${id}`)?.pass, true, `${id} presence should pass`);
+    assert.equal(neutralLast.recorded.find(e => e.item === `hover: ${id}`)?.pass, true, `${id} timing should pass when neutral was discovered last`);
+  }
+
+  let barDivPoint = null;
+  const neutralOnBar = await runBoundedHover({
+    stateForMove: (px, py, move) => {
+      if (px >= 780 && py >= 380) return { hover: null, tooltip: null };
+      if (move === 1 || (barDivPoint && px === barDivPoint[0] && py === barDivPoint[1])) {
+        barDivPoint ??= [px, py];
+        return { hover: 'division:6', tooltip: 'province:12' };
+      }
+      return { hover: 'button:states', tooltip: 'province:12' };
+    },
+  });
+  for (const id of ['division counter', 'province tooltip', 'map GUI button']) {
+    assert.equal(neutralOnBar.recorded.find(e => e.item === `hover presence: ${id}`)?.pass, true, `${id} presence should pass`);
+    assert.equal(neutralOnBar.recorded.find(e => e.item === `hover: ${id}`)?.pass, true, `${id} timing should pass when neutral is on toolbar`);
+  }
 });
