@@ -132,7 +132,7 @@ fn naval_supremacy_legend_includes_only_states_present_in_displayed_regions() {
     assert_eq!(legend[0].label, "German Reich and friends");
 }
 
-fn gapped_navy(case: &str) -> (std::sync::Arc<Source>, LoadContext, std::path::PathBuf) {
+fn gapped_navy(case: &str, unavailable_ships: Option<i32>) -> (std::sync::Arc<Source>, LoadContext, std::path::PathBuf) {
     use dashboard_base::{
         Source,
         test_fixtures::{content_identity, records, source, with_facts},
@@ -182,6 +182,9 @@ fn gapped_navy(case: &str) -> (std::sync::Arc<Source>, LoadContext, std::path::P
                 ShipRow { id: 3, task_force: if hour < 30 { 300 } else { 100 }, ..Default::default() },
             ]),
         );
+        if unavailable_ships == Some(hour) {
+            *frame.tables[TableId::Ships.index()] = TableView::Unavailable { reason: "The ship input is unavailable in this fixture".into() };
+        }
         set_complete(
             &mut frame,
             TableId::NavalMissionLedgers.index(),
@@ -222,7 +225,7 @@ fn gapped_panel(source: &std::sync::Arc<Source>, load: &LoadContext) -> Box<dyn 
 
 #[test]
 fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
-    let (src, load, root) = gapped_navy("gap");
+    let (src, load, root) = gapped_navy("gap", None);
     let reply = NavalSupremacy::load(
         &src,
         &NavalSupremacyParams {
@@ -256,7 +259,7 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
 
 #[test]
 fn a_new_run_projects_its_own_naval_rows() {
-    let (src, load, root) = gapped_navy("run");
+    let (src, load, root) = gapped_navy("run", None);
     let panel = gapped_panel(&src, &load);
     let exact = panel.exact().unwrap();
     let cancelled = AtomicBool::new(false);
@@ -280,7 +283,7 @@ fn a_new_run_projects_its_own_naval_rows() {
 
 #[test]
 fn seeking_back_rebuilds_the_naval_projection() {
-    let (src, load, root) = gapped_navy("seek");
+    let (src, load, root) = gapped_navy("seek", None);
     let panel = gapped_panel(&src, &load);
     let exact = panel.exact().unwrap();
     let cancelled = AtomicBool::new(false);
@@ -293,7 +296,7 @@ fn seeking_back_rebuilds_the_naval_projection() {
 
 #[test]
 fn a_failed_naval_read_can_be_rebuilt() {
-    let (src, load, root) = gapped_navy("error");
+    let (src, load, root) = gapped_navy("error", None);
     let panel = gapped_panel(&src, &load);
     let exact = panel.exact().unwrap();
     let cancelled = AtomicBool::new(false);
@@ -308,7 +311,7 @@ fn a_failed_naval_read_can_be_rebuilt() {
 fn another_panels_ship_lane_does_not_make_an_empty_selection_read_ships() {
     use std::sync::Arc;
 
-    let (src, load, root) = gapped_navy("unneeded-ships");
+    let (src, load, root) = gapped_navy("unneeded-ships", None);
     let pinned = gapped_panel(&src, &load);
     let ships = (pinned.exact().unwrap().advance)(0, true, &AtomicBool::new(false), None)
         .lanes.into_iter().find(|lane| lane.table == TableId::Ships.index()).unwrap();
@@ -330,6 +333,21 @@ fn another_panels_ship_lane_does_not_make_an_empty_selection_read_ships() {
         read: exact.read.clone(),
     };
     dashboard_base::test_fixtures::proven_by_steps(src.replay_ref(), &checked, 0, 1, 1);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_unavailable_ship_input_retains_the_exact_refusal_and_control() {
+    let (src, load, root) = gapped_navy("unavailable-ships", Some(1));
+    let panel = gapped_panel(&src, &load);
+    let exact = panel.exact().unwrap();
+    let steps = dashboard_base::test_fixtures::played(src.replay_ref(), exact, 0, 1);
+    let read = steps.iter().find(|step| step.hour == 1).unwrap();
+    let cold = (exact.cold)(1, &AtomicBool::new(false));
+    assert_eq!(*read.value, cold);
+    let region = &read.value.as_ref().as_ref().unwrap()["regions"][0];
+    assert!(region["ownShips"]["reason"].as_str().is_some());
+    assert_eq!(region["runs"][0]["own"], "2");
     let _ = std::fs::remove_dir_all(&root);
 }
 
