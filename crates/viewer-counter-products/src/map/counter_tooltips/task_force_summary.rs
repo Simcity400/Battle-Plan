@@ -861,7 +861,7 @@ mod tests {
             medium_half_range_percent: 0,
             medium_min_ships: 4,
             medium_min_capitals: 1,
-            ..naval_count_approx::Defines::VANILLA
+            ..naval_count_approx::Defines::FIXTURE
         };
         let force = 7_u64 << 32;
         let carrier = type_range(0, 150, force, counter_order::CARRIER_FLAG, 4, &defines);

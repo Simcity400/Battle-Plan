@@ -351,7 +351,7 @@ pub fn counter_map_fixture() -> CounterMap {
         map: MapSize::TEST,
         aggression: Arc::new(Vec::new()),
         fog: Arc::new(Err("not needed".into())),
-        defines: CounterDefines::VANILLA,
+        defines: CounterDefines::FIXTURE,
         supply_grace: Err("not needed".into()),
         dig_in_factor: Err("unused in fixture".into()),
         attrition: Err("unused in fixture".into()),

@@ -7,7 +7,7 @@ fn lifetime(_: usize, seed: u32) -> f32 {
 
 #[test]
 fn hourly_aircraft_refreshes_match_an_uninterrupted_early_ending_scenario() {
-    let defines = FlightDefines::for_tests();
+    let defines = FlightDefines::fixture();
     let (source, rigs) = one_run(
         vec![height(3.0), height(1.0), height(-1.0), height(-1.0)],
         1.0,
@@ -160,7 +160,7 @@ fn repeated_hour_installs_without_a_frame_never_reuse_an_unretired_actor_key() {
 
 #[test]
 fn a_plan_that_changes_one_wings_flights_starts_that_run_anew() {
-    let defines = FlightDefines::for_tests();
+    let defines = FlightDefines::fixture();
     let (mut previous, rigs) = one_run(vec![height(3.0), height(1.0), height(-1.0), height(-1.0)], 1.0, false, false, Explode::Plays);
     let mut other = previous.flights[0].clone();
     other.wing = 2;
@@ -213,7 +213,7 @@ fn a_plans_seeds_do_not_depend_on_the_plans_before_it() {
 
 #[test]
 fn a_run_advanced_straight_to_a_time_stands_where_playing_to_it_stands() {
-    let defines = FlightDefines::for_tests();
+    let defines = FlightDefines::fixture();
     let (source, rigs) = one_run(vec![height(3.0); 4], 1.0, false, false, Explode::Plays);
     let stand = |_: (usize, u32, u32)| Some(Some((0.6, 2.0)));
     let at = 240.0 / 30.0;

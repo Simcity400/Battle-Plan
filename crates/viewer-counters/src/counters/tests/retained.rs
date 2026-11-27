@@ -88,22 +88,24 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
             let mut equal_groups = 0;
             let mut drawn = 0;
             let mut counter_drawn = 0;
+            let groups = inputs.content.defines.groups;
+            let low = groups.province_distance - 10.0;
             let heights = [
-                80.,
-                80.,
-                89.999,
-                90.,
-                90.,
-                179.999,
-                180.,
-                180.,
-                349.999,
-                350.,
-                350.,
+                low,
+                low,
+                groups.province_distance - 0.001,
+                groups.province_distance,
+                groups.province_distance,
+                groups.state_distance - 0.001,
+                groups.state_distance,
+                groups.state_distance,
+                groups.strategic_distance - 0.001,
+                groups.strategic_distance,
+                groups.strategic_distance,
                 inputs.content.defines.units_cutoff - 0.001,
                 inputs.content.defines.units_cutoff,
-                80.,
-                80.,
+                low,
+                low,
             ];
             use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
             use viewer_gpu::camera::{Free, Lens, Pose};
@@ -580,8 +582,20 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                         assert!(Arc::ptr_eq(&original_base, &tables.0.base));
                         assert!(!Arc::ptr_eq(&original_epoch, &tables.0.epoch));
                     }
-                    inputs.camera.height =
-                        [80., 90., 180., 80., 350., 80., 80., 180., 80., 80.][at];
+                    let groups = inputs.content.defines.groups;
+                    let low = groups.province_distance - 10.0;
+                    inputs.camera.height = [
+                        low,
+                        groups.province_distance,
+                        groups.state_distance,
+                        low,
+                        groups.strategic_distance,
+                        low,
+                        low,
+                        groups.state_distance,
+                        low,
+                        low,
+                    ][at];
                     inputs.camera.center = [2. + at as f32 * 0.125, 2.];
                     inputs.selected = if (4..8).contains(&at) {
                         &selected
@@ -1167,7 +1181,12 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
                 admitted += actual.headquarters.len() + actual.facilities.len();
                 refused += actual.unknown.totals().into_iter().sum::<usize>();
                 naval += actual.naval.len();
-                inputs.camera.height = if hour % 4 == 0 { 180. } else { 80. };
+                let groups = inputs.content.defines.groups;
+                inputs.camera.height = if hour % 4 == 0 {
+                    groups.state_distance
+                } else {
+                    groups.province_distance - 10.0
+                };
                 inputs.camera.center = [2. + (hour % 3) as f32 * 0.125, 2.];
                 let mut tables = synthetic_hour(content, &inputs, &frame);
                 let mut prepared = [expected, actual].map(|icons| {

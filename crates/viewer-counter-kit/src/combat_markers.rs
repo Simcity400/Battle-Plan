@@ -48,13 +48,13 @@ impl LandCombatDefines {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub const VANILLA: Self = Self {
+    pub const FIXTURE: Self = Self {
         colors: [
-            [0.0, 1.0, 0.0, 1.0],
-            [1.0, 0.0, 0.0, 1.0],
-            [1.0, 1.0, 0.0, 1.0],
+            [0.1, 0.8, 0.2, 1.0],
+            [0.8, 0.2, 0.1, 1.0],
+            [0.9, 0.8, 0.2, 1.0],
         ],
-        scores: ScoreDefines::VANILLA,
+        scores: ScoreDefines::FIXTURE,
     };
 }
 
@@ -769,7 +769,7 @@ mod tests {
             &engaged,
             &BTreeMap::new(),
             &crate::Movements::default(),
-            &LandCombatDefines::VANILLA,
+            &LandCombatDefines::FIXTURE,
         )
         .unwrap();
         assert!(markers.limits.is_empty(), "{:?}", markers.limits);

@@ -237,7 +237,7 @@ impl FlightDefines {
     }
 
     #[cfg(test)]
-    fn for_tests() -> Self {
+    fn fixture() -> Self {
         let sizing = FamilyDefines {
             factor: 1,
             triple: 3,
@@ -253,17 +253,17 @@ impl FlightDefines {
             transport: stepped,
             training: stepped,
             missile: Ok(sizing),
-            fire_threshold: 300_000,
-            carpet_threshold: 200_000,
+            fire_threshold: 370_000,
+            carpet_threshold: 240_000,
             clock_speed: 1.0,
-            curve_density: 2.0,
-            curve_extrapolation: 20.0,
-            curve_elevation: 4.0,
-            scale_takeoff: 0.1,
-            scale_landing: 0.9,
-            scale_min: 0.1,
-            smooth_move: 0.13,
-            smooth_turn: 0.12,
+            curve_density: 2.5,
+            curve_extrapolation: 17.0,
+            curve_elevation: 5.5,
+            scale_takeoff: 0.2,
+            scale_landing: 0.8,
+            scale_min: 0.15,
+            smooth_move: 0.25,
+            smooth_turn: 0.18,
         }
     }
 
@@ -3917,7 +3917,7 @@ impl AircraftPlan {
             ..Self::default()
         };
         let rigs = BTreeMap::from([(rig_key(scenario_name(scenarios::MISSILE_KIND), 0), rig)]);
-        let defines = FlightDefines::for_tests();
+        let defines = FlightDefines::fixture();
         frames
             .iter()
             .map(|&frame| {

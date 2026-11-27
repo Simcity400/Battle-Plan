@@ -25,7 +25,7 @@ use viewer_native_gui::test_support::SYNTHETIC_NAVY_GUI;
 
 #[test]
 fn mission_icons_are_drawn_strictly_below_the_contents_cutoff() {
-    let mut defines = CounterDefines::VANILLA;
+    let mut defines = CounterDefines::FIXTURE;
     let cutoff = defines.naval_mission_cutoff;
     assert!(mission_pass(cutoff - 0.5, &defines));
     assert!(!mission_pass(cutoff, &defines));

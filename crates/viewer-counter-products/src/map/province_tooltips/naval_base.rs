@@ -217,7 +217,7 @@ mod tests {
     }
 
     fn build(facts: &Facts) -> Tooltip {
-        lines(&loc(), &naval_count_approx::Defines::VANILLA, facts)
+        lines(&loc(), &naval_count_approx::Defines::FIXTURE, facts)
     }
 
     #[test]
@@ -245,8 +245,8 @@ mod tests {
     fn the_intel_feature_reads_the_detail_thresholds_at_full_ratio() {
         let tip = build(&Facts { intel_feature: Ok(true), ..facts() });
         assert_eq!(tip.title, "Kent\nNaval base: 6\n\n");
-        let mut defines = naval_count_approx::Defines::VANILLA;
-        defines.port_detail = Some([0, 10_000, 30_000, 70_000, 200_000]);
+        let mut defines = naval_count_approx::Defines::FIXTURE;
+        defines.port_detail = Some([0, 15_000, 35_000, 65_000, 200_000]);
         let partial = lines(&loc(), &defines, &Facts { intel_feature: Ok(true), occupied: Ok(true), ..facts() });
         assert_eq!(partial.title, "Kent
 Naval base: 6
@@ -254,7 +254,7 @@ Naval base: 6
 ");
         assert_eq!(partial.refused.len(), 1, "{:?}", partial.refused);
         assert!(partial.refused.keys().any(|line| line.starts_with("naval base taskforce count")));
-        defines.port_detail = Some([0, 10_000, 200_000, 200_000, 200_000]);
+        defines.port_detail = Some([0, 15_000, 200_000, 200_000, 200_000]);
         let level_one = lines(&loc(), &defines, &Facts { intel_feature: Ok(true), ..facts() });
         assert_eq!(level_one.title, "Kent\nNaval base: 6\n\n");
         defines.port_detail = None;

@@ -33,13 +33,13 @@ impl GroupDefines {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub const VANILLA: Self = Self {
-        province_distance: 90.0,
-        state_distance: 180.0,
-        strategic_distance: 350.0,
-        state_huge: 100.0,
-        strategic_area_huge: 220.0,
-        passes: 20,
+    pub const FIXTURE: Self = Self {
+        province_distance: 85.0,
+        state_distance: 165.0,
+        strategic_distance: 325.0,
+        state_huge: 115.0,
+        strategic_area_huge: 245.0,
+        passes: 14,
     };
 
     pub fn grouping(&self, height: f32) -> Level {

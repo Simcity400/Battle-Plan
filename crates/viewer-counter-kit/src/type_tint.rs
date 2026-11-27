@@ -60,14 +60,7 @@ impl Colors {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub const VANILLA: Self = Self {
-        friend: [0.7, 0.9, 0.7, 1.0],
-        enemy: [1.0, 0.7, 0.7, 1.0],
-        neutral: [1.0, 1.0, 1.0, 1.0],
-    };
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub const TEST: Self = Self {
+    pub const FIXTURE: Self = Self {
         friend: [0.2, 0.8, 0.3, 1.0],
         enemy: [0.9, 0.1, 0.4, 1.0],
         neutral: [0.8, 0.6, 0.4, 1.0],
