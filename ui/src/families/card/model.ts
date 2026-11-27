@@ -7,7 +7,7 @@ import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
 import { assertValue, type Value } from '../value.ts';
-import { LOADING_NAME, resolveName } from '../table/identityCell.ts';
+import { resolveName } from '../table/identityCell.ts';
 import { formatDateHover, formatDateOnly, formatValueState, notRecordedLabel } from '../valueFormat.ts';
 
 export interface CardMedia {
@@ -190,7 +190,12 @@ export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number
 }
 
 export function cardTitleText(title: Value<string>, figure = 'Name'): string {
-  return title.kind === 'known' || title.kind === 'partial' ? String(title.value) : title.kind === 'pending' ? LOADING_NAME : notRecordedLabel(figure);
+  const formatted = formatValueState(title);
+  return formatted.kind === 'pending' || formatted.kind === 'notApplicable'
+    ? formatted.label
+    : formatted.kind === 'notRecorded'
+      ? notRecordedLabel(figure)
+      : formatted.text;
 }
 
 export function cardTitle(row: CardItemRow | CardHeroRow): string {
@@ -304,7 +309,12 @@ export function deriveCardMirror(model: CardModel): MirrorModel {
       rows.push({ key: row.key, name: row.count !== undefined ? `${row.label} ${row.count}` : row.label, rowIndex: index, groupHeader: true, cells: [] });
       return;
     }
-    rows.push({ key: row.key, name: cardRowName(row), rowIndex: index, cells: spokenRow(row).map((spoken, at) => ({ column: String(at), spoken })) });
+    const name = row.kind === 'meter' || row.kind === 'list'
+      ? cardRowName(row)
+      : row.title.kind === 'pending'
+        ? formatValueState(row.title).spoken
+        : cardTitle(row);
+    rows.push({ key: row.key, name, rowIndex: index, cells: spokenRow(row).map((spoken, at) => ({ column: String(at), spoken })) });
   });
   return { first: 0, total: model.rows.length, rows };
 }

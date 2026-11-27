@@ -6,11 +6,11 @@ import { occurrenceSelection } from '../../families/table/logHelpers.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { unavailableArt } from '../../families/art/types.ts';
-import { artNameCell, identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
+import { artNameCell, identityFlags, LOADING_NAME, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { LeaseTerms, MarketItem, MarketLendLeaseReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -111,9 +111,24 @@ function agreementRows(
       ? identityFlags(readView, 'country', [tag], { boundary })[0]!
       : { tag: '?', art: unavailableArt(missing ?? 'Country not recorded') };
   const flags = [sideFlag(terms.giver, terms.giverMissing), sideFlag(terms.receiver, terms.receiverMissing)];
-  const sideName = (tag: string | null) => (tag === null ? 'Country not recorded' : identityName(readView, 'country', tag));
-  const pair = `${sideName(terms.giver)} → ${sideName(terms.receiver)}`;
-  const country: TableCell = { value: knownValue(pair), flags };
+  const sideValue = (tag: string | null, missing: string | null): Value<string> =>
+    tag === null ? notRecorded(missing ?? 'Country not recorded') : resolveName(readView, 'country', tag, { boundary }).value;
+  const sides = [sideValue(terms.giver, terms.giverMissing), sideValue(terms.receiver, terms.receiverMissing)];
+  const labelOf = (value: Value<string>) =>
+    value.kind === 'known' ? value.value : value.kind === 'pending' ? LOADING_NAME : 'Country not recorded';
+  const pair = `${labelOf(sides[0]!)} → ${labelOf(sides[1]!)}`;
+  const reasons: string[] = [];
+  for (const value of sides) {
+    if ((value.kind === 'pending' || value.kind === 'notRecorded') && !reasons.includes(value.reason)) reasons.push(value.reason);
+  }
+  const countryValue: Value<string> = !reasons.length
+    ? knownValue(pair)
+    : sides.every(value => value.kind === 'notRecorded')
+      ? notRecorded(reasons.join('; '))
+      : sides.some(value => value.kind === 'known')
+        ? partialValue(pair, reasons.join('; '))
+        : pendingValue(reasons.join('; '));
+  const country: TableCell = { value: countryValue, flags };
   const sent = valueFromLive(live, liveKey(terms.key, 'fuelSent'));
   const fuelLost = valueFromLive(live, liveKey(terms.key, 'fuelLost'));
   const last: TableCell = { value: lastDelivery(terms, sent, fuelLost) };

@@ -324,6 +324,7 @@ export type FlatTableRow =
       readonly kind: 'group-header';
       readonly key: string;
       readonly label: string;
+      readonly titleValue?: Value<string>;
       readonly count: number;
     }
   | {
@@ -1096,7 +1097,7 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
   for (let i = first; i < end; i++) {
     const item = flatRows[i]!;
     if (item.kind === 'group-header') {
-      out.push(auditCell(item.key, 'group', canonicalAuditData({ kind: 'group-header', label: item.label, count: item.count })));
+      out.push(auditCell(item.key, 'group', canonicalAuditData({ kind: 'group-header', label: item.label, ...(item.titleValue ? { value: item.titleValue } : {}), count: item.count })));
       continue;
     }
     if (item.kind === 'gap') {
@@ -1195,12 +1196,13 @@ export function deriveTableMirror(
   const rows: MirrorRow[] = indices.map(index => {
     const item = flatRows[index]!;
     if (item.kind === 'group-header') {
+      const spoken = item.titleValue ? spokenValue(item.titleValue) : item.label;
       return {
         key: item.key,
-        name: item.label,
+        name: spoken,
         rowIndex: offset + index,
         groupHeader: true,
-        cells: [{ column: columns[0]?.key ?? 'group', spoken: item.label }],
+        cells: [{ column: columns[0]?.key ?? 'group', spoken }],
       };
     }
     if (item.kind === 'gap') {
@@ -1316,7 +1318,7 @@ export function deriveRowTooltip(
     const col = allColumns[i]!;
     if (col.cellKind === 'kind' || col.cellKind === 'action' || col.cellKind === 'stockpileNet' || col.cellKind === 'stockpileSum' || col.cellKind === 'stockpileBalance') continue;
     if (!col.label && col.cellKind !== 'date') continue;
-    if (i === nameIndex && col.cellKind !== 'date' && (firstText === undefined || firstText === title)) continue;
+    if (i === nameIndex && col.cellKind !== 'date' && firstResolved?.value.kind !== 'pending' && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
     if (!cell || cell.blank) continue;
     if (cell.tooltipRows) {

@@ -27,6 +27,7 @@ import { gameScoreColumns, gameScoreProjection } from '../../widgets/game-score/
 import { marketLedgerProjection } from '../../widgets/market-ledger/marketLedgerProjection.ts';
 import { buildRowSourceFromHead, validateGenericTailReply } from './rowSource.ts';
 import { logCountryCell } from './logHelpers.ts';
+import { combinedPaneRows, resolvePanes } from './panes.ts';
 import { COLUMNS as OCCUPIED_DEFAULTS, TABLE_BASE as OCCUPIED_BASE } from '../../widgets/occupied-states/definition.ts';
 import { occupiedStatesProjection } from '../../widgets/occupied-states/occupiedProjection.ts';
 import { apmTableColumns, apmTableProjection } from '../../widgets/player-apm/apmProjection.ts';
@@ -172,7 +173,7 @@ function instrumentedContext() {
   };
 }
 
-test('declarative table projection refuses bare null where a 5-state value is required', () => {
+test('declarative table projection refuses bare null where a family value is required', () => {
   const broken = declareTableProjection<{ items: { id: string; count: number }[] }, { id: string; count: number }, Record<string, never>>({
     kind: 'test-null-guard',
     columns: [
@@ -6538,4 +6539,17 @@ test('pending identity yields a pending cell whose painted, mirror, hover and au
   const mixedCell = logCountryCell(mixedView, [{ tag: 'AAA' }, { tag: 'BBB' }], 10);
   assert.equal(mixedCell.value.kind, 'partial');
   assert.equal(mixedCell.value.kind === 'partial' ? mixedCell.value.reason : null, 'Name is loading');
+
+  const paneModel: TableModel = {
+    hour: 10,
+    columns: cols,
+    rows: [],
+    panes: [{ key: 'left', title: { name: { kind: 'pending', reason: 'Name is loading' } }, rows: [{ key: 'r1', name: 'Valdoria', cells: { country: { value: knownValue('Valdoria') }, item: { value: knownValue('A') }, place: { value: knownValue('B') } } }] }],
+  };
+  const paneFlat = combinedPaneRows(resolvePanes(paneModel, settings, undefined, 'standard'));
+  const paneMirror = deriveTableMirror(paneFlat, cols, false);
+  assert.equal(paneMirror.rows[0]!.name, 'Loading: Name is loading');
+  assert.equal(paneMirror.rows[0]!.cells[0]!.spoken, 'Loading: Name is loading');
+  const paneAudit = deriveTableAudit({ model: paneModel, flatRows: paneFlat, visibleColumns: buildColumnLayouts(cols, settings) });
+  assert.match(String(paneAudit.find(a => a.key === 'pane:left:group')!.value), /"pending"/);
 });

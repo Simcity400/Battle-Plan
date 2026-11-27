@@ -5,7 +5,7 @@ import { nextChangeAfter } from '../../families/holders.ts';
 import type { ArtHandle, BoundedReadView } from '../../families/plan.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { cellArt, NAME_LOADING, resolveIdentity, type CellArt } from '../../families/table/identityCell.ts';
+import { cellArt, LOADING_NAME, NAME_LOADING, resolveIdentity, type CellArt } from '../../families/table/identityCell.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableCellIconItem, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, textValue, zeroValue, type Value } from '../../families/value.ts';
@@ -204,7 +204,7 @@ export const generalsProjection: TableProjection<GeneralsOptions> = declareTable
     };
   },
   rowKey: row => row.leader.key,
-  rowName: row => row.name.kind === 'known' ? row.name.value : row.leader.name,
+  rowName: row => row.name.kind === 'known' ? row.name.value : row.name.kind === 'pending' ? LOADING_NAME : row.leader.name,
   tooltipExtra: row => traitRows(row.leader),
   tooltipNote: row => (row.leader.foughtPartial ? PARTIAL : undefined),
 });

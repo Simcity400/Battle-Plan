@@ -176,4 +176,28 @@ test('convoy-only sides show convoy counts and live zero sinkings stay qualified
       ['IC lost', 'notRecorded', null],
     ],
   );
+  const mixedHead: NavalBattlesTailReply = {
+    branchId: '1', total: '1', offset: '0', missing: [], warnings: [], nextChange: null,
+    rows: [{ ...raid, key: 'combat:15:20', countries: [[1, 2], [3]] }],
+  };
+  const mixedView = createBoundedReadView({
+    hour: 22,
+    rows: new Map([['main', buildRowSourceFromHead('branch', mixedHead, undefined, 22)!]]),
+    identity: {
+      resolve(kind, key) {
+        const name = key === '\u00001'
+          ? { status: 'pending' as const }
+          : key === '\u00002'
+            ? { status: 'absent' as const, reason: 'Country name unavailable' }
+            : { status: 'ready' as const, value: 'Bravo' };
+        return { kind, key, holder: { status: 'ready', value: key }, name, colour: { status: 'absent', reason: 'none' }, flagChoice: { status: 'absent', reason: 'none' }, validInterval: [0, Infinity] as const, nextChangeAt: Infinity };
+      },
+    },
+  });
+  const mixedModel = navalBattlesProjection.project(mixedView, { scope: 'test', following: true, byDate: true });
+  const mixedRow = mixedModel.rows[0]!;
+  const mixedFound = { kind: 'data', key: mixedRow.key, name: mixedRow.name, row: mixedRow, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
+  const mixedTip = deriveRowTooltip(mixedFound, mixedModel.columns).rows;
+  assert.deepEqual(mixedTip.find(line => line.label === 'Attackers')?.rawValue, { kind: 'pending', reason: 'Name is loading; Country name unavailable' });
+  assert.equal(JSON.stringify(mixedTip).includes('\u0000'), false);
 });

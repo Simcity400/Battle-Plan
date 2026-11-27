@@ -15,25 +15,24 @@ import { IC_UNRECORDED, LAND_BATTLES_COLUMNS, LOSSES_SO_FAR } from './definition
 function sideParticipants(side: readonly ReturnType<typeof resolveIdentity>[], unknown: boolean): Value<string> {
   if (!side.length) return notRecorded('Country not recorded');
   const known: string[] = [];
-  let missingReason: string | null = null;
-  let pendingReason: string | null = null;
+  const reasons: string[] = [];
+  let hasPending = false;
   for (const who of side) {
     if (who.value.kind === 'known') known.push(who.value.value);
-    else if (who.value.kind === 'pending') pendingReason ??= who.value.reason;
-    else if (missingReason === null && who.value.kind === 'notRecorded') missingReason = who.value.reason;
+    else if (who.value.kind === 'pending') {
+      hasPending = true;
+      if (!reasons.includes(who.value.reason)) reasons.push(who.value.reason);
+    } else if (who.value.kind === 'notRecorded') {
+      if (!reasons.includes(who.value.reason)) reasons.push(who.value.reason);
+    }
   }
+  if (unknown) reasons.push(reasons.length ? 'some participants on this side were not recorded' : 'Some participants on this side were not recorded');
   if (!known.length) {
-    if (pendingReason !== null && missingReason === null) return pendingValue(pendingReason);
-    return notRecorded(missingReason ?? 'Country not recorded');
+    if (hasPending) return pendingValue(reasons.join('; '));
+    return notRecorded(reasons.join('; ') || 'Country not recorded');
   }
-  const reasons: string[] = [];
-  if (missingReason) reasons.push(missingReason);
-  if (pendingReason) reasons.push(pendingReason);
-  if (unknown) reasons.push('some participants on this side were not recorded');
   const text = known.join(', ');
-  if (!reasons.length) return knownValue(text);
-  const reason = reasons.length === 1 && unknown ? 'Some participants on this side were not recorded' : reasons.join('; ');
-  return partialValue(text, reason);
+  return reasons.length ? partialValue(text, reasons.join('; ')) : knownValue(text);
 }
 
 function battleSidesValue(sideValues: readonly Value<string>[]): Value<string> {

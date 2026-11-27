@@ -3,12 +3,12 @@ import { contentSet } from '../../dashboard/options.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, LOADING_NAME, NAME_LOADING, newIdentityBoundary, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { artKindCell, NAME_LOADING, newIdentityBoundary, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logDateCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, type Value } from '../../families/value.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { formatScalar, formatValueState } from '../../families/valueFormat.ts';
 import type { PeaceDealsRow, PeaceDealsTailReply, PeaceTermCount, PeaceTermKind } from '../../generated/dashboard';
 import { PEACE_DEALS_COLUMNS } from './definition.ts';
 
@@ -73,7 +73,8 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
       : term.tag === null ? null : resolveName(view, 'country', term.tag, { atHour: term.at, boundary }).value;
     const known = name?.kind === 'known';
     const pending = name?.kind === 'pending';
-    const label = known ? String(name.value) : pending ? LOADING_NAME : term.kind === 'state' ? 'State name not recorded' : 'Country name not recorded';
+    const pendingLabel = pending ? (formatValueState(name) as { readonly label: string }).label : '';
+    const label = known ? String(name.value) : pending ? pendingLabel : term.kind === 'state' ? 'State name not recorded' : 'Country name not recorded';
     if (pending) pendingItems++;
     else if (!known) unnamedSet.add(label);
     return { ...flag, label, ...(known ? {} : { muted: true }), ...(term.kind === 'state' ? {} : { note: labels[term.kind][0] }) };
@@ -95,7 +96,7 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
             ? partialValue(String(shown.value), shown.reason)
             : notRecorded(shown.kind === 'notRecorded' ? shown.reason : 'Recipient not recorded');
     const note = summary(d.terms.map(quantity));
-    name = [text.kind === 'known' || text.kind === 'partial' ? String(text.value) : text.kind === 'pending' ? LOADING_NAME : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
+    name = [text.kind === 'known' || text.kind === 'partial' ? String(text.value) : text.kind === 'pending' ? (formatValueState(text) as { readonly label: string }).label : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
     const joined = [name, ...list].join(', ');
     const allPending = text.kind === 'pending' && pendingItems === d.items.length && !note;
     const reasons = [

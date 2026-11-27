@@ -21,13 +21,13 @@ const base = { columns: SERVICE_COLUMNS, hideHeader: true, unsorted: true, dateG
 const blank: TableCell = { value: notApplicable('Does not apply to this entry'), blank: true };
 const BATTLE_ART = { kind: 'sprite', key: 'GFX_landbattle_strip', frame: 0 } as const;
 
-function kindCell(view: BoundedReadView, row: ServiceEntry, sprite: string | null, name: string): TableCell {
+function kindCell(view: BoundedReadView, row: ServiceEntry, sprite: string | null, name: string | null): TableCell {
   if (row.kind === 'award') {
     const icon = row.medal?.icon;
     return artKindCell(view, icon ? { kind: 'sprite', key: icon.key, frame: icon.frame } : null, 'drawn', row.medal?.name ?? name,
       row.medal?.iconMissing ?? 'Medal artwork not recorded');
   }
-  if (row.kind === 'battle' || row.kind === 'career') return artKindCell(view, BATTLE_ART, 'square', name, 'Land battle artwork not in your installation');
+  if (row.kind === 'battle' || row.kind === 'career') return artKindCell(view, BATTLE_ART, 'square', name ?? 'Land battle', 'Land battle artwork not in your installation');
   return artKindCell(view, sprite ? { kind: 'sprite', key: sprite, frame: 0 } : null, 'drawn', name, 'Division artwork not recorded');
 }
 
@@ -47,7 +47,7 @@ function serviceRow(view: BoundedReadView, row: ServiceEntry, sprite: string | n
     key: row.key, name, rowHour: row.hour, meta: row.hour,
     cells: {
       date: logDateCell(row.hour),
-      kind: kindCell(view, row, sprite, name),
+      kind: kindCell(view, row, sprite, battlePending ? null : name),
       country: logCountryCell(view, countries, row.observed, boundary),
       item: { value: title ? knownValue(title) : battlePending ? place : notRecorded(name), missingFigure: award ? 'Medal' : 'Entry' },
       place: place ? { value: place }

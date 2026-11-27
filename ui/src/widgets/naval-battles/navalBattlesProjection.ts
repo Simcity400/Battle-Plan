@@ -8,7 +8,7 @@ import { artKindCell, LOADING_NAME, newIdentityBoundary, resolveIdentity, resolv
 import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
+import { knownValue, notRecorded, partialValue, pendingValue, type Value } from '../../families/value.ts';
 import type { NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/dashboard';
 import { NAVAL_BATTLES_COLUMNS } from './definition.ts';
 
@@ -110,10 +110,24 @@ function vesselPairCell(
 
 function sideNames(side: readonly ReturnType<typeof resolveIdentity>[]): Value<string> {
   if (!side.length) return notRecorded('Country not recorded');
-  if (side.every(who => who.value.kind === 'pending')) return side[0]!.value;
-  const reasons = side.flatMap(who => (who.value.kind === 'notRecorded' || who.value.kind === 'pending' ? [who.value.reason] : []));
-  const names = side.map(who => who.name).join(', ');
-  return reasons.length ? partialValue(names, [...new Set(reasons)].join('; ')) : knownValue(names);
+  const known: string[] = [];
+  const reasons: string[] = [];
+  let hasPending = false;
+  for (const who of side) {
+    if (who.value.kind === 'known') known.push(who.value.value);
+    else if (who.value.kind === 'pending') {
+      hasPending = true;
+      if (!reasons.includes(who.value.reason)) reasons.push(who.value.reason);
+    } else if (who.value.kind === 'notRecorded') {
+      if (!reasons.includes(who.value.reason)) reasons.push(who.value.reason);
+    }
+  }
+  if (!known.length) {
+    if (hasPending) return pendingValue(reasons.join('; '));
+    return notRecorded(reasons.join('; ') || 'Country not recorded');
+  }
+  const text = known.join(', ');
+  return reasons.length ? partialValue(text, reasons.join('; ')) : knownValue(text);
 }
 
 function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: IdentityBoundary, options: Options): TableRow {

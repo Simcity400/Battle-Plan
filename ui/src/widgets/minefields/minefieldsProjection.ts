@@ -50,6 +50,7 @@ function projectMineRegion(
   const named = regionLabel(readView, region.region, null);
   const name = named.label;
   const labelMissing = named.nameMissing !== undefined;
+  const labelLoading = named.namePending !== undefined;
   const live = readView.live('main');
   const meta: RegionRow = {
     region: id,
@@ -66,6 +67,7 @@ function projectMineRegion(
         subject: id,
         label: name,
         labelMissing,
+        ...(labelLoading ? { labelLoading: true } : {}),
         segments: [],
         countText: 'Not recorded',
         missing: notRecorded(reason),
@@ -82,6 +84,7 @@ function projectMineRegion(
       subject: id,
       label: name,
       labelMissing,
+      ...(labelLoading ? { labelLoading: true } : {}),
       segments: [],
       countText: '0 mines',
       tooltip: {
@@ -113,6 +116,7 @@ function projectMineRegion(
       subject: id,
       label: name,
       labelMissing,
+      ...(labelLoading ? { labelLoading: true } : {}),
       segments: [],
       countText: 'Not recorded',
       missing: notRecorded(reason),
@@ -171,6 +175,7 @@ function projectMineRegion(
     subject: id,
     label: name,
     labelMissing,
+    ...(labelLoading ? { labelLoading: true } : {}),
     segments,
     countText: minesCountText(total, scale),
     tooltip: {

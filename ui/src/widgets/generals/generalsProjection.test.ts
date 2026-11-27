@@ -130,6 +130,7 @@ test('a commander is named as at the hour, the portrait is the art cache’s, an
   assert.deepEqual(row!.cells.commander!.value, { kind: 'known', value: 'Erwin Rommel' });
   assert.deepEqual(row!.cells.country!.value, { kind: 'pending', reason: 'Name is loading' });
   assert.deepEqual(unnamedPending!.cells.commander!.value, { kind: 'pending', reason: 'Name is loading' });
+  assert.equal(unnamedPending!.name, 'Loading name…');
   assert.deepEqual(fallbackPending!.cells.commander!.value, { kind: 'known', value: 'Roster Fallback' });
   assert.equal(row!.cells.commander!.subtext, 'General');
   assert.equal(row!.cells.portrait!.art?.status === 'ready' ? row!.cells.portrait!.art.url : undefined, `art:${artHandleKey({ kind: 'portrait', leader: '1', hour: 10 })}`);

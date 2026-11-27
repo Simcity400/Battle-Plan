@@ -49,7 +49,7 @@ import { engineHour } from '../dashboard/calendar.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
-test('value constructors enforce the five states and reject bare null, undefined, NaN and empty reasons', () => {
+test('value constructors enforce the value states and reject bare null, undefined, NaN and empty reasons', () => {
   assert.deepEqual(knownValue(42), { kind: 'known', value: 42 });
   assert.deepEqual(knownValue(0), { kind: 'zero', value: 0 });
   assert.deepEqual(knownValue(0n), { kind: 'zero', value: 0n });
@@ -79,7 +79,7 @@ test('value constructors enforce the five states and reject bare null, undefined
   assert.throws(() => assertValue({ kind: 'bogus' }), InvalidFamilyValueError);
 });
 
-test('wire and exact adapters map every wire state and nullable meaning into the five states', () => {
+test('wire and exact adapters map every wire state and nullable meaning into Value states', () => {
   const big = (1n << 60n) + 7n;
   const rows = answer({
     keys: [1n, 2n, 3n, 4n, 5n, 6n],

@@ -34,4 +34,15 @@ test('a removed division keeps its last recorded facts and the opponent of its r
   const cells = model.rows[0]!.cells;
   assert.deepEqual(cells.place!.value, { kind: 'known', value: '5 at 91' });
   assert.deepEqual(cells.country!.flags?.map(flag => [flag.tag, Boolean(flag.dimmed)]), [['DEF', false], ['ABC', true]]);
+  const pendingBattle: ServiceRecordTailReply = {
+    ...head,
+    rows: [{ key: 'battle:17', hour: 90, observed: 90, kind: 'battle', exact: true, tag: 'ABC', other: 'DEF',
+      province: 5, placeHour: 90, title: null, status: 'won', medal: null }],
+  };
+  const pendingModel = serviceRecordProjection.project(
+    createBoundedReadView({ hour: 100, rows: new Map([['main', buildRowSourceFromHead('branch', pendingBattle, undefined, 100)!]]) }),
+    { campaign: 'c', chosen: subjectToken('c', '17') },
+  );
+  assert.deepEqual(pendingModel.rows[0]!.cells.kind!.value, { kind: 'known', value: 'Land battle' });
+  assert.deepEqual(pendingModel.rows[0]!.cells.item!.value, { kind: 'pending', reason: 'Name is loading' });
 });

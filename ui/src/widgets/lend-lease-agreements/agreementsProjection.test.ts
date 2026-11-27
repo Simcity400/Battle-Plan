@@ -94,6 +94,7 @@ test('an agreement whose terms list nothing still has its row and its delivery d
   const reply = { branchId: '1', offers: null, contracts: null, agreements: [lease], agreementsMissing: null, purchasesMissing: null, unattributed: 0, refused: null, variants: [], icons: [], warnings: [] };
   const model = agreementsProjection.project(createBoundedReadView({ hour: 120, panels: new Map([['main', reply]]) }), { direction: 'sent' });
   assert.equal(model.rows.length, 1);
+  assert.deepEqual(model.rows[0]!.cells.country!.value, { kind: 'pending', reason: 'Name is loading' });
   assert.deepEqual(model.rows[0]!.cells.last!.value, { kind: 'known', value: 115 });
   assert.equal(model.empty, undefined);
   const unread = agreementsProjection.project(createBoundedReadView({ hour: 120, panels: new Map([['main', reply]]), live: new Map([['main', { get: () => undefined, missing: () => 'Not read yet' }]]) }), { direction: 'sent' });
@@ -115,6 +116,7 @@ test('agreements with an unrecorded giver or receiver keep both flag slots with 
   };
   const model = agreementsProjection.project(createBoundedReadView({ hour: 120, panels: new Map([['main', reply]]) }), { direction: 'sent' });
   const flags = model.rows[0]!.cells.country!.flags!;
+  assert.deepEqual(model.rows[0]!.cells.country!.value, { kind: 'pending', reason: 'Name is loading; Receiver tag was unlinked at this hour' });
   assert.equal(flags.length, 2, 'both giver and receiver flag slots are preserved');
   assert.equal(flags[0]!.tag, 'GER');
   assert.equal(flags[1]!.tag, '?');

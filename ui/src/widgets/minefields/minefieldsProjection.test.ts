@@ -97,6 +97,9 @@ test('minefields projection marks truncated total as notRecorded rather than zer
   const model = minefieldsProjection.project(view, { surface: '#1e1e1e', order: 'mines' });
   assertBarsModelValid(model, 100);
   const first = model.rows.find(row => row.key === '3') as BarsDataRow;
+  assert.equal(first.label, 'Loading…');
+  assert.equal(first.labelLoading, true);
+  assert.equal(first.labelMissing, false);
   assert.equal(first.value?.value.kind, 'notRecorded');
   assert.equal(first.segments?.length, 0);
   assert.equal(first.readout?.primary, 'Not recorded');

@@ -168,11 +168,12 @@ export function countryColourAt(readView: BoundedReadView, key: string, hour: nu
 export interface RegionLabel {
   readonly label: string;
   readonly nameMissing?: string;
+  readonly namePending?: string;
 }
 
 export function regionLabel(readView: BoundedReadView, id: string | number, pendingLabel: string | null): RegionLabel {
   const name = readView.who('region', String(id)).name;
   if (name.status === 'ready') return { label: name.value };
   if (name.status === 'absent' || name.status === 'failed') return { label: 'Region name not recorded', nameMissing: name.reason };
-  return pendingLabel ? { label: pendingLabel } : { label: 'Region name not recorded', nameMissing: 'Region name not read yet' };
+  return pendingLabel ? { label: pendingLabel } : { label: 'Loading…', namePending: 'Name is loading' };
 }

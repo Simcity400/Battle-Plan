@@ -2,10 +2,10 @@ import { liveKey } from '../../charts/live.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { CardWidgetDeclaration } from '../../families/card/declaration.ts';
-import { cardFlag, type CardItemRow, type CardModel, type CardProjection } from '../../families/card/model.ts';
+import { cardFlag, cardTitleText, type CardItemRow, type CardModel, type CardProjection } from '../../families/card/model.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { identityName, LOADING_NAME } from '../../families/table/identityCell.ts';
+import { identityName } from '../../families/table/identityCell.ts';
 import { knownValue, notRecorded, valueFromLive, type Value } from '../../families/value.ts';
 import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
 import type { WargoalEntry, WargoalJustification, WargoalRemoved, WargoalState, WargoalsReply } from '../../generated/dashboard';
@@ -83,7 +83,7 @@ function grantItems(granted: number | null, grantedMissing: string | null): Tool
 }
 
 function tipTitle(row: Pick<CardItemRow, 'title'>): string {
-  return row.title.kind === 'pending' ? LOADING_NAME : row.title.kind === 'known' ? String(row.title.value) : 'Kind not recorded';
+  return cardTitleText(row.title, 'Kind');
 }
 
 function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options: WarGoalsOptions): CardItemRow {

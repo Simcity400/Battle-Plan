@@ -64,4 +64,5 @@ test('a treaty counts once when expanded, its transfers show the former owner at
   const pendingRows = peaceDealsProjection.project(pendingView, { expanded: [key] }).rows;
   assert.equal(pendingRows[0]?.cells.terms?.value.kind, 'partial', 'a recipient row with a pending state term is partial, never known');
   assert.deepEqual(pendingRows[1]?.cells.terms?.value, { kind: 'pending', reason: 'Name is loading' }, 'a sole pending peace term stays pending');
+  assert.equal(pendingRows[1]?.cells.terms?.flags?.[0]?.label, 'Loading…', 'expanded pending peace terms use the shared pending label');
 });
