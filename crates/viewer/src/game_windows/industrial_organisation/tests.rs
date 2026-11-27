@@ -105,6 +105,7 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
             policy_costs: Ok(BTreeMap::new()),
             history: None,
             history_reason: Some("history omitted".to_owned()),
+            sampled_tables: Vec::new(),
             funds_defines: Err("no defines".to_owned()),
             warnings: Vec::new(),
         },
@@ -114,7 +115,8 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
         emblem: Err(("organisation emblem".to_owned(), "not recorded".to_owned())),
         tree_background: None,
         history_icons: HashMap::new(),
-        history_art_label: None,
+        read_hour: 100,
+        cadence_warning: None,
         scroll: BTreeMap::new(),
     };
 
@@ -255,29 +257,30 @@ fn a_trait_is_locked_only_when_every_unlocked_and_queued_token_is_named() {
 
 #[test]
 fn history_lists_follow_each_entrys_recorded_design_date() {
-    let entry = |variant_id, units, design| HistoryEntry {
-        variant_id,
-        name: Ok(format!("design {variant_id}")),
-        archetype: String::new(),
+    let row = |organisation, variant, units, design_hour| IndustrialOrganisationHistoryRow {
+        organisation,
+        variant,
         units,
-        design,
+        design_hour,
     };
-    let entries = vec![
-        entry(1, 0, DesignDate::Designed(100)),
-        entry(2, 40, DesignDate::Absent),
-        entry(3, 5, DesignDate::Designed(200)),
+    let rows = vec![
+        row(1, 1, 0, Recorded::Value(Some(100))),
+        row(1, 2, 40, Recorded::Value(None)),
+        row(1, 3, 5, Recorded::Value(Some(200))),
     ];
-    let [designed, produced] = history_lists(&entries);
-    assert_eq!(designed, HistoryList::Entries(vec![&entries[0], &entries[2]]));
-    assert_eq!(produced, HistoryList::Entries(vec![&entries[1]]));
+    let index = HistoryIndex::build(&rows, 1);
+    assert_eq!(index.designed, HistoryIndexList::Indices(vec![0, 2]));
+    assert_eq!(index.produced, HistoryIndexList::Indices(vec![1]));
 
     let older = vec![
-        entry(1, 0, DesignDate::NotRecorded),
-        entry(2, 40, DesignDate::NotRecorded),
+        row(1, 1, 0, Recorded::NotRecorded),
+        row(1, 2, 40, Recorded::NotRecorded),
     ];
-    let [designed, produced] = history_lists(&older);
-    assert!(matches!(designed, HistoryList::Missing(reason) if reason.contains("design dates")));
-    assert!(matches!(produced, HistoryList::Missing(_)));
+    let older_index = HistoryIndex::build(&older, 1);
+    assert!(
+        matches!(older_index.designed, HistoryIndexList::Missing(reason) if reason.contains("design dates"))
+    );
+    assert!(matches!(older_index.produced, HistoryIndexList::Missing(_)));
 }
 
 #[test]
@@ -475,6 +478,7 @@ fn unread_organisation(token: &str) -> OrganisationViewData {
         policy_costs: Ok(BTreeMap::new()),
         history: None,
         history_reason: None,
+        sampled_tables: Vec::new(),
         funds_defines: Err("no defines".to_owned()),
         warnings: Vec::new(),
     }
@@ -655,6 +659,13 @@ fn missing_chosen_emblem_trait_policy_and_background_are_named_as_placeholders()
                         position = { x = 0 y = 0 }
                     }
                 }
+                synthetic_conv_organisation = {
+                    trait = {
+                        token = synthetic_conv_trait
+                        name = synthetic_conv_trait_name
+                        position = { x = 0 y = 0 }
+                    }
+                }
             "#,
         ),
         (
@@ -670,16 +681,49 @@ fn missing_chosen_emblem_trait_policy_and_background_are_named_as_placeholders()
     let org_db = cached_organisation_database(&layers);
     let tree = organisation_tree(&catalog, &data.token).unwrap();
     assert_eq!(
-        chosen_org_emblem(&data, Some(&tree)),
+        chosen_org_emblem(&data, Some(&tree), |_| true),
         Ok("GFX_synthetic_missing_emblem".to_owned())
     );
     let mut no_recorded = data.clone();
     no_recorded.recorded_icon.clear();
     assert_eq!(
-        chosen_org_emblem(&no_recorded, Some(&tree)),
+        chosen_org_emblem(&no_recorded, Some(&tree), |_| false),
         Ok("GFX_synthetic_fallback_emblem".to_owned())
     );
-    assert!(chosen_org_emblem(&no_recorded, None).is_err());
+    no_recorded.owner_tag = Some("SYN".to_owned());
+    assert_eq!(
+        chosen_org_emblem(&no_recorded, None, |name| name == "GFX_SYN_synthetic_works_organisation"),
+        Ok("GFX_SYN_synthetic_works_organisation".to_owned())
+    );
+    assert_eq!(
+        chosen_org_emblem(&no_recorded, None, |name| name == "GFX_synthetic_works_organisation"),
+        Ok("GFX_synthetic_works_organisation".to_owned())
+    );
+    assert!(chosen_org_emblem(&no_recorded, None, |_| false).is_err());
+    let conv_tree = organisation_tree(&catalog, &Ok("synthetic_conv_organisation".to_owned())).unwrap();
+    let omitted_icon_trait = &conv_tree.traits[0];
+    assert_eq!(
+        chosen_trait_icon_name(
+            omitted_icon_trait,
+            "synthetic_works_organisation",
+            Some("SYN"),
+            |name| name == "GFX_SYN_synthetic_works_organisation_synthetic_conv_trait",
+        ),
+        Ok("GFX_SYN_synthetic_works_organisation_synthetic_conv_trait".to_owned())
+    );
+    assert_eq!(
+        chosen_trait_icon_name(
+            omitted_icon_trait,
+            "synthetic_works_organisation",
+            Some("SYN"),
+            |name| name == "GFX_synthetic_works_organisation_synthetic_conv_trait",
+        ),
+        Ok("GFX_synthetic_works_organisation_synthetic_conv_trait".to_owned())
+    );
+    assert!(
+        chosen_trait_icon_name(omitted_icon_trait, "synthetic_works_organisation", Some("SYN"), |_| false)
+            .is_err()
+    );
 
     let gui_bytes = br#"guiTypes = {
         scrollbarType = {
@@ -818,6 +862,23 @@ fn missing_chosen_emblem_trait_policy_and_background_are_named_as_placeholders()
     details.unlocked = vec![Spelled::Text("synthetic_trait_a".to_owned())];
     data.details = RecordedDetails::Available(Box::new(details));
 
+    let exhausted_variant = VariantDefinitionRow {
+        id: 102,
+        display_name: b"Synthetic Missing\0".to_vec(),
+        icon_active: 1,
+        icon_kind: 0,
+        icon: b"GFX_synthetic_missing_equip".to_vec(),
+        ..Default::default()
+    };
+    let classified_missing = classify_exhausted_variant_icon(&exhausted_variant, "synthetic_tank");
+    assert!(
+        matches!(
+            &classified_missing,
+            ResolvedHistoryIcon::Missing { asset, .. } if asset == "GFX_synthetic_missing_equip"
+        ),
+        "exhausted recorded equipment icon must classify as Missing naming its asset: {classified_missing:?}"
+    );
+
     let prepared = PreparedMio {
         data,
         sub_view: SubView::Traits,
@@ -832,15 +893,10 @@ fn missing_chosen_emblem_trait_policy_and_background_are_named_as_placeholders()
                     icon: Icon::Sprite("GFX_synthetic_equip".to_owned()),
                 },
             ),
-            (
-                102,
-                ResolvedHistoryIcon::Missing {
-                    asset: "GFX_synthetic_missing_equip".to_owned(),
-                    reason: "missing from stack".to_owned(),
-                },
-            ),
+            (102, classified_missing),
         ]),
-        history_art_label: None,
+        read_hour: 0,
+        cadence_warning: None,
         scroll: BTreeMap::new(),
     };
 
@@ -928,23 +984,40 @@ fn missing_chosen_emblem_trait_policy_and_background_are_named_as_placeholders()
         "missing policy list icon must be named: {:?}",
         policy_plan.text
     );
+    assert!(
+        policy_plan.text.iter().any(|t| t.label == "synthetic_policy" && t.value.as_deref() == Some("Attached")),
+        "missing policy cost must not erase known Attached state from text: {:?}",
+        policy_plan.text
+    );
+    assert!(
+        policy_plan.text.iter().any(|t| t.label == "synthetic_policy cost" && t.missing.is_some()),
+        "missing policy cost must still appear alongside Attached state: {:?}",
+        policy_plan.text
+    );
 
     let item_tpl = guis.template(b"industrial_organisation_history_item").unwrap();
-    let hist_records = HistoryRecordList::Entries(vec![
-        HistoryRecord { variant_id: 101, units: 5, design: DesignDate::Absent },
-        HistoryRecord { variant_id: 102, units: 9, design: DesignDate::Absent },
-    ]);
+    let hist_rows = [
+        IndustrialOrganisationHistoryRow {
+            organisation: 1,
+            variant: 101,
+            units: 5,
+            design_hour: Recorded::Value(None),
+        },
+        IndustrialOrganisationHistoryRow {
+            organisation: 1,
+            variant: 102,
+            units: 9,
+            design_hour: Recorded::Value(None),
+        },
+    ];
+    let hist_index = HistoryIndex::build(&hist_rows, 1);
     let variants_rows = [
         VariantDefinitionRow {
             id: 101,
             display_name: b"Synthetic Ready\0".to_vec(),
             ..Default::default()
         },
-        VariantDefinitionRow {
-            id: 102,
-            display_name: b"Synthetic Missing\0".to_vec(),
-            ..Default::default()
-        },
+        exhausted_variant,
     ];
     let variants: Result<&[VariantDefinitionRow], String> = Ok(&variants_rows);
     let mut hist_plan = ComposedPlan::default();
@@ -960,10 +1033,12 @@ fn missing_chosen_emblem_trait_policy_and_background_are_named_as_placeholders()
             path: PRODUCTION_LIST_PATH,
             prefix: "production",
             kind: HistoryKind::Produced,
-            rows: &hist_records,
+            list: &hist_index.produced,
+            all_rows: &hist_rows,
             variants: &variants,
             lexical: &lexical,
             icons: &prepared.history_icons,
+            scroll: &prepared.scroll,
         },
         &mut hist_plan,
     )
@@ -1048,13 +1123,13 @@ fn history_scroll_cost_stays_constant_as_world_history_grows() {
     let data = unread_organisation("synthetic_works_organisation");
     let loc = Loc::new(&localisation, &frame, &scripted, &data, &failures);
 
-    let measure = |other_orgs: u64, scroll_y: f32| -> HistoryResolveCounts {
+    let measure = |other_orgs: u64, own_rows: u64, scroll_y: f32| -> (HistoryResolveCounts, bool) {
         let target_org = other_orgs / 2 + 1;
-        let mut world_rows = Vec::with_capacity((other_orgs * 20 + 30) as usize);
-        let mut variant_rows = Vec::with_capacity(60);
+        let mut world_rows = Vec::with_capacity((other_orgs * 20 + own_rows) as usize);
+        let mut variant_rows = Vec::with_capacity(own_rows as usize);
         for org in 1..=other_orgs {
             if org == target_org {
-                for i in 0..30u64 {
+                for i in 0..own_rows {
                     let vid = 10_000 + i;
                     world_rows.push(IndustrialOrganisationHistoryRow {
                         organisation: target_org,
@@ -1079,14 +1154,30 @@ fn history_scroll_cost_stays_constant_as_world_history_grows() {
                 }
             }
         }
-        let records = extract_history_records(&world_rows, target_org);
-        assert_eq!(records.len(), 30);
-        let [_, produced] = split_history_records(&records);
+        let key = HistoryIndexKey {
+            source_id: format!("src-{other_orgs}-{own_rows}"),
+            revision: "rev1".to_owned(),
+            branch_id: 1,
+            hour: 100,
+            organisation_id: target_org,
+            rows_ptr: world_rows.as_ptr() as usize,
+            rows_len: world_rows.len(),
+        };
+        let (index, first_hit) = cached_history_index(key.clone(), &world_rows, target_org);
+        assert!(!first_hit);
+        let (index_again, second_hit) = cached_history_index(key, &world_rows, target_org);
+        assert!(second_hit);
+        assert!(Arc::ptr_eq(&index, &index_again));
+        let HistoryIndexList::Indices(ref produced_indices) = index.produced else {
+            panic!("expected produced indices");
+        };
+        assert_eq!(produced_indices.len(), own_rows as usize);
         let variants: Result<&[VariantDefinitionRow], String> = Ok(&variant_rows);
         let lexical: Result<&[LexicalTokenRow], String> = Ok(&[]);
         let icons = HashMap::new();
-        let mut plan = ComposedPlan::scrolled(BTreeMap::from([(list_el.path.clone(), scroll_y)]));
-        compose_history_list(
+        let scroll = BTreeMap::from([(list_el.path.clone(), scroll_y)]);
+        let mut plan = ComposedPlan::scrolled(scroll.clone());
+        let counts = compose_history_list(
             &main_layout,
             root,
             item_tpl,
@@ -1096,24 +1187,31 @@ fn history_scroll_cost_stays_constant_as_world_history_grows() {
                 path: PRODUCTION_LIST_PATH,
                 prefix: "production",
                 kind: HistoryKind::Produced,
-                rows: &produced,
+                list: &index.produced,
+                all_rows: &world_rows,
                 variants: &variants,
                 lexical: &lexical,
                 icons: &icons,
+                scroll: &scroll,
             },
             &mut plan,
         )
-        .unwrap()
+        .unwrap();
+        (counts, second_hit)
     };
 
-    let small_top = measure(10, 0.0);
-    let large_top = measure(1500, 0.0);
-    let large_mid = measure(1500, 500.0);
-    assert_eq!(small_top, large_top);
-    assert_eq!(large_top, large_mid);
+    let (small_mid, _) = measure(10, 30, 500.0);
+    let (large_mid, _) = measure(1500, 2_000, 500.0);
+    let (huge_mid, _) = measure(1500, 20_000, 500_000.0);
+    assert_eq!(small_mid, large_mid);
+    assert_eq!(large_mid, huge_mid);
     assert!(
-        large_mid.variant_lookups <= 4 && large_mid.variant_lookups >= 3,
-        "only visible rows should resolve variants/names/layouts, got {large_mid:?}"
+        huge_mid.placed_slots <= 8,
+        "list placement must stay O(visible) even for 20,000 rows in the selected org, got {huge_mid:?}"
+    );
+    assert!(
+        huge_mid.variant_lookups <= 4 && huge_mid.variant_lookups >= 3,
+        "only visible rows should resolve variants/names/layouts, got {huge_mid:?}"
     );
 }
 
@@ -1190,16 +1288,33 @@ fn text_alternative_includes_visible_history_names_units_and_unread_facts() {
     }];
     let variants: Result<&[VariantDefinitionRow], String> = Ok(&variants_rows);
     let lexical: Result<&[LexicalTokenRow], String> = Ok(&[]);
-    let rows = HistoryRecordList::Entries(vec![
-        HistoryRecord { variant_id: 1, units: 42, design: DesignDate::Absent },
-        HistoryRecord { variant_id: 99, units: 7, design: DesignDate::Absent },
-        HistoryRecord { variant_id: 200, units: 999, design: DesignDate::Absent },
-    ]);
+    let hist_rows = [
+        IndustrialOrganisationHistoryRow {
+            organisation: 1,
+            variant: 1,
+            units: 42,
+            design_hour: Recorded::Value(None),
+        },
+        IndustrialOrganisationHistoryRow {
+            organisation: 1,
+            variant: 99,
+            units: 7,
+            design_hour: Recorded::Value(None),
+        },
+        IndustrialOrganisationHistoryRow {
+            organisation: 1,
+            variant: 200,
+            units: 999,
+            design_hour: Recorded::Value(None),
+        },
+    ];
+    let hist_index = HistoryIndex::build(&hist_rows, 1);
     let icons = HashMap::from([
         (1, ResolvedHistoryIcon::NoneExpected),
         (99, ResolvedHistoryIcon::NoneExpected),
         (200, ResolvedHistoryIcon::NoneExpected),
     ]);
+    let scroll = BTreeMap::new();
     let mut plan = ComposedPlan::default();
     compose_history_list(
         &main_layout,
@@ -1211,10 +1326,12 @@ fn text_alternative_includes_visible_history_names_units_and_unread_facts() {
             path: PRODUCTION_LIST_PATH,
             prefix: "production",
             kind: HistoryKind::Produced,
-            rows: &rows,
+            list: &hist_index.produced,
+            all_rows: &hist_rows,
             variants: &variants,
             lexical: &lexical,
             icons: &icons,
+            scroll: &scroll,
         },
         &mut plan,
     )
@@ -1246,6 +1363,14 @@ fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
         "common/military_industrial_organization/organizations/00_synthetic.txt",
         br#"
             synthetic_wide_organisation = {
+                tree_header_text = {
+                    text = synthetic_origin_header
+                    x = 0
+                }
+                tree_header_text = {
+                    text = synthetic_far_header
+                    x = 4
+                }
                 trait = {
                     token = synthetic_origin
                     name = synthetic_origin
@@ -1309,6 +1434,12 @@ fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
             size = { width = 320 height = 260 }
             background = { name = "Background" spriteType = "GFX_btn" }
             containerWindowType = {
+                name = "tree_header"
+                position = { x = 0 y = 0 }
+                size = { width = 260 height = 24 }
+                background = { name = "Background" spriteType = "GFX_btn" }
+            }
+            containerWindowType = {
                 name = "scrollbar_window"
                 position = { x = 10 y = 10 }
                 size = { width = 260 height = 220 }
@@ -1318,6 +1449,11 @@ fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
                 background = { name = "Background" spriteType = "GFX_btn" }
                 containerWindowType = { name = "traits_window" position = { x = 0 y = 0 } clipping = no }
             }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_flavortext_window"
+            size = { width = 80 height = 24 }
+            instantTextboxType = { name = "flavortext" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 80 maxHeight = 20 }
         }
         containerWindowType = {
             name = "industrial_organisation_trait_entry"
@@ -1358,7 +1494,8 @@ fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
             emblem: Ok("GFX_btn".to_owned()),
             tree_background: None,
             history_icons: HashMap::new(),
-            history_art_label: None,
+            read_hour: 0,
+            cadence_warning: None,
             scroll,
         };
         let mut plan = ComposedPlan::default();
@@ -1369,6 +1506,16 @@ fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
 
     let top = run(BTreeMap::new());
     assert!(top.text.iter().any(|t| t.label == "synthetic_origin"));
+    assert!(
+        top.text.iter().any(|t| t.label == "Tree header" && t.value.as_deref() == Some("synthetic_origin_header")),
+        "visible tree column header must appear in text alternative: {:?}",
+        top.text
+    );
+    assert!(
+        !top.text.iter().any(|t| t.label == "Tree header" && t.value.as_deref() == Some("synthetic_far_header")),
+        "offscreen tree column header must not appear before scrolling: {:?}",
+        top.text
+    );
     assert!(
         !top.text.iter().any(|t| t.label == "synthetic_far_corner"),
         "offscreen trait must be culled to the installed 260x220 container, not hardcoded 905x640"
@@ -1401,6 +1548,11 @@ fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
     assert!(
         scrolled.text.iter().any(|t| t.label == "synthetic_far_corner"),
         "scrolling to the far corner must bring the offscreen trait into view: {:?}",
+        scrolled.text
+    );
+    assert!(
+        scrolled.text.iter().any(|t| t.label == "Tree header" && t.value.as_deref() == Some("synthetic_far_header")),
+        "scrolling horizontally must expose the far tree column header in text alternative: {:?}",
         scrolled.text
     );
     assert!(

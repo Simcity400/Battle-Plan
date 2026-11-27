@@ -35,7 +35,7 @@ use content_reader_parser::parser::Item;
 use dashboard_text::organisation_quote;
 use dashboard_text::scripted_text::{EventScopes, ScriptedContent, ScriptedText};
 use dashboard_text::triggers::{Evaluator, OrganisationCondition, Undecided};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, TableView};
 use std::cell::RefCell;
 use replay_data::rows::{
     IndustrialOrganisationDetailsRow, IndustrialOrganisationHistoryRow,
@@ -44,8 +44,8 @@ use replay_data::rows::{
 };
 use serde::Deserialize;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    sync::{Arc, atomic::AtomicBool},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    sync::{Arc, Mutex, OnceLock, atomic::AtomicBool},
 };
 use viewer_native_gui::native_gui::{
     self, Assets, Layout, Resources, TextureFile, lifecycle::Instance,
@@ -108,6 +108,16 @@ const HISTORY_TABLES: &[TableId] = &[
     TableId::LexicalTokens,
     TableId::ModifierDefinitions,
     TableId::SimulationFeatures,
+];
+
+const HISTORY_ICON_TABLES: &[TableId] = &[
+    TableId::CountryAppearance,
+    TableId::ReservedCountryNaming,
+    TableId::PoliticalParties,
+    TableId::Politics,
+    TableId::Factions,
+    TableId::FactionMembers,
+    TableId::States,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,51 +240,84 @@ pub struct HistoryEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HistoryList<'h> {
-    Entries(Vec<&'h HistoryEntry>),
+pub enum HistoryIndexList {
+    Indices(Vec<usize>),
     Missing(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HistoryRecordList {
-    Entries(Vec<HistoryRecord>),
-    Missing(String),
+pub struct HistoryIndex {
+    pub designed: HistoryIndexList,
+    pub produced: HistoryIndexList,
 }
 
 const MISSING_DESIGN_DATES: &str = "Not recorded: this recording does not hold the organisation's design dates, so its research and designer history cannot be told apart from its production line history.";
 
-pub fn history_lists(entries: &[HistoryEntry]) -> [HistoryList<'_>; 2] {
-    if entries.iter().any(|entry| entry.design == DesignDate::NotRecorded) {
-        let reason = MISSING_DESIGN_DATES.to_owned();
-        return [HistoryList::Missing(reason.clone()), HistoryList::Missing(reason)];
-    }
-    let designed = entries
-        .iter()
-        .filter(|entry| matches!(entry.design, DesignDate::Designed(_)))
-        .collect();
-    let produced = entries
-        .iter()
-        .filter(|entry| entry.design == DesignDate::Absent)
-        .collect();
-    [HistoryList::Entries(designed), HistoryList::Entries(produced)]
+const MAX_CACHED_HISTORY_INDICES: usize = 16;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryIndexKey {
+    pub source_id: String,
+    pub revision: String,
+    pub branch_id: u64,
+    pub hour: i32,
+    pub organisation_id: u64,
+    pub rows_ptr: usize,
+    pub rows_len: usize,
 }
 
-pub fn split_history_records(records: &[HistoryRecord]) -> [HistoryRecordList; 2] {
-    if records.iter().any(|record| record.design == DesignDate::NotRecorded) {
-        let reason = MISSING_DESIGN_DATES.to_owned();
-        return [HistoryRecordList::Missing(reason.clone()), HistoryRecordList::Missing(reason)];
+impl HistoryIndex {
+    pub fn build(rows: &[IndustrialOrganisationHistoryRow], org_id: u64) -> Self {
+        let range = organisation_history_range(rows, org_id);
+        let slice = &rows[range.clone()];
+        if slice.iter().any(|row| row.design_hour == Recorded::NotRecorded) {
+            let reason = MISSING_DESIGN_DATES.to_owned();
+            return Self {
+                designed: HistoryIndexList::Missing(reason.clone()),
+                produced: HistoryIndexList::Missing(reason),
+            };
+        }
+        let mut designed = Vec::new();
+        let mut produced = Vec::new();
+        for (offset, row) in slice.iter().enumerate() {
+            let index = range.start + offset;
+            match row.design_hour {
+                Recorded::Value(Some(_)) => designed.push(index),
+                Recorded::Value(None) => produced.push(index),
+                Recorded::NotRecorded => {}
+            }
+        }
+        Self {
+            designed: HistoryIndexList::Indices(designed),
+            produced: HistoryIndexList::Indices(produced),
+        }
     }
-    let designed = records
-        .iter()
-        .copied()
-        .filter(|record| matches!(record.design, DesignDate::Designed(_)))
-        .collect();
-    let produced = records
-        .iter()
-        .copied()
-        .filter(|record| record.design == DesignDate::Absent)
-        .collect();
-    [HistoryRecordList::Entries(designed), HistoryRecordList::Entries(produced)]
+}
+
+fn cached_history_index(
+    key: HistoryIndexKey,
+    rows: &[IndustrialOrganisationHistoryRow],
+    org_id: u64,
+) -> (Arc<HistoryIndex>, bool) {
+    static CACHE: OnceLock<Mutex<VecDeque<(HistoryIndexKey, Arc<HistoryIndex>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
+    {
+        let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pos) = guard.iter().position(|(k, _)| *k == key) {
+            let entry = guard.remove(pos).expect("position in bounds");
+            let found = Arc::clone(&entry.1);
+            guard.push_back(entry);
+            return (found, true);
+        }
+    }
+    let built = Arc::new(HistoryIndex::build(rows, org_id));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    guard.retain(|(k, _)| *k != key);
+    guard.push_back((key, Arc::clone(&built)));
+    while guard.len() > MAX_CACHED_HISTORY_INDICES {
+        guard.pop_front();
+    }
+    (built, false)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -354,8 +397,9 @@ pub struct OrganisationViewData {
     pub recorded_icon: String,
     pub details: RecordedDetails,
     pub policy_costs: Result<BTreeMap<String, PolicySummary>, String>,
-    pub history: Option<Vec<HistoryRecord>>,
+    pub history: Option<Arc<HistoryIndex>>,
     pub history_reason: Option<String>,
+    pub sampled_tables: Vec<TableId>,
     pub funds_defines: Result<FundsDefines, String>,
     pub warnings: Vec<String>,
 }
@@ -558,13 +602,33 @@ pub fn owner_policy_roster(
     Ok(out)
 }
 
+pub fn organisation_history_range(
+    rows: &[IndustrialOrganisationHistoryRow],
+    org_id: u64,
+) -> std::ops::Range<usize> {
+    let first = rows.partition_point(|row| row.organisation < org_id);
+    let count = rows[first..].partition_point(|row| row.organisation == org_id);
+    first..first + count
+}
+
 pub fn organisation_history_slice(
     rows: &[IndustrialOrganisationHistoryRow],
     org_id: u64,
 ) -> &[IndustrialOrganisationHistoryRow] {
-    let first = rows.partition_point(|row| row.organisation < org_id);
-    let count = rows[first..].partition_point(|row| row.organisation == org_id);
-    &rows[first..first + count]
+    let range = organisation_history_range(rows, org_id);
+    &rows[range]
+}
+
+fn history_record_from_row(row: &IndustrialOrganisationHistoryRow) -> HistoryRecord {
+    HistoryRecord {
+        variant_id: row.variant,
+        units: row.units,
+        design: match row.design_hour {
+            Recorded::Value(Some(hour)) => DesignDate::Designed(hour),
+            Recorded::Value(None) => DesignDate::Absent,
+            Recorded::NotRecorded => DesignDate::NotRecorded,
+        },
+    }
 }
 
 pub fn extract_history_records(
@@ -573,15 +637,7 @@ pub fn extract_history_records(
 ) -> Vec<HistoryRecord> {
     organisation_history_slice(rows, org_id)
         .iter()
-        .map(|row| HistoryRecord {
-            variant_id: row.variant,
-            units: row.units,
-            design: match row.design_hour {
-                Recorded::Value(Some(hour)) => DesignDate::Designed(hour),
-                Recorded::Value(None) => DesignDate::Absent,
-                Recorded::NotRecorded => DesignDate::NotRecorded,
-            },
-        })
+        .map(history_record_from_row)
         .collect()
 }
 
@@ -891,6 +947,7 @@ pub fn sprite_ready(resources: &dyn Resources, name: &str) -> Result<(), String>
 pub fn chosen_org_emblem(
     data: &OrganisationViewData,
     tree: Option<&Tree<'_>>,
+    has_sprite: impl Fn(&str) -> bool,
 ) -> Result<String, (String, String)> {
     if !data.recorded_icon.is_empty() {
         return Ok(data.recorded_icon.clone());
@@ -898,15 +955,35 @@ pub fn chosen_org_emblem(
     if let Some(icon) = tree.and_then(|t| t.icon).filter(|icon| !icon.is_empty()) {
         return Ok(icon.to_owned());
     }
-    let why = match &data.token {
-        Ok(token) => format!(
-            "no emblem was recorded for '{token}' and none is declared in its organisation script"
-        ),
-        Err(reason) => format!(
-            "no emblem was recorded and the organisation's script key cannot be named ({reason})"
-        ),
-    };
-    Err(("organisation emblem".to_owned(), why))
+    match &data.token {
+        Ok(token) => {
+            let mut candidates = Vec::new();
+            if let Some(tag) = &data.owner_tag {
+                candidates.push(format!("GFX_{tag}_{token}"));
+            }
+            candidates.push(format!("GFX_{token}"));
+            if let Some(found) = candidates.iter().find(|candidate| has_sprite(candidate)) {
+                return Ok(found.clone());
+            }
+            let preferred = candidates
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "organisation emblem".to_owned());
+            let tried = candidates.join(" or ");
+            Err((
+                preferred,
+                format!(
+                    "no explicit emblem was recorded or declared for '{token}' and neither convention sprite ({tried}) is defined in the installed interface"
+                ),
+            ))
+        }
+        Err(reason) => Err((
+            "organisation emblem".to_owned(),
+            format!(
+                "no emblem was recorded and the organisation's script key cannot be named ({reason})"
+            ),
+        )),
+    }
 }
 
 fn resolve_policy_name(token: &str, policy: Option<&Policy>, loc: &Loc<'_>) -> String {
@@ -944,26 +1021,60 @@ pub fn chosen_policy_icon(
         .map_err(|why| (sprite, why))
 }
 
+pub fn chosen_trait_icon_name(
+    trait_def: &TraitName,
+    org_token: &str,
+    owner_tag: Option<&str>,
+    has_sprite: impl Fn(&str) -> bool,
+) -> Result<String, (String, String)> {
+    if !trait_def.icon.is_empty() {
+        return Ok(trait_def.icon.clone());
+    }
+    let mut candidates = Vec::new();
+    if !org_token.is_empty() {
+        if let Some(tag) = owner_tag {
+            candidates.push(format!("GFX_{tag}_{org_token}_{}", trait_def.token));
+        }
+        candidates.push(format!("GFX_{org_token}_{}", trait_def.token));
+    }
+    if let Some(found) = candidates.iter().find(|candidate| has_sprite(candidate)) {
+        return Ok(found.clone());
+    }
+    let preferred = candidates
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "trait icon".to_owned());
+    let why = if candidates.is_empty() {
+        format!(
+            "trait '{}' declares no icon in the recorded mod stack",
+            trait_def.token
+        )
+    } else {
+        format!(
+            "trait '{}' declares no icon and no convention sprite ({}) is defined in the installed interface",
+            trait_def.token,
+            candidates.join(" or ")
+        )
+    };
+    Err((preferred, why))
+}
+
 pub fn chosen_trait_icon(
     trait_def: &TraitName,
+    org_token: &str,
+    owner_tag: Option<&str>,
     resources: &dyn Resources,
 ) -> Result<String, (String, String)> {
-    if trait_def.icon.is_empty() {
-        return Err((
-            "trait icon".to_owned(),
-            format!(
-                "trait '{}' declares no icon in the recorded mod stack",
-                trait_def.token
-            ),
-        ));
-    }
-    sprite_ready(resources, &trait_def.icon)
-        .map(|()| trait_def.icon.clone())
-        .map_err(|why| (trait_def.icon.clone(), why))
+    let sprite = chosen_trait_icon_name(trait_def, org_token, owner_tag, |name| {
+        resources.sprite_info(name.as_bytes()).is_some()
+    })?;
+    sprite_ready(resources, &sprite)
+        .map(|()| sprite.clone())
+        .map_err(|why| (sprite, why))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum ResolvedHistoryIcon {
+pub enum ResolvedHistoryIcon {
     Ready { icon: Icon },
     Missing { asset: String, reason: String },
     NoneExpected,
@@ -1022,7 +1133,7 @@ fn visible_list_indices(
             .filter(|v| v.is_finite())
             .unwrap_or(0.0)
             .clamp(0.0, max_scroll);
-        let border = fields.border_size[axis] as f32;
+        let border = fields.border_size[0] as f32;
         let start = ((pos - border) / step as f32).floor().max(0.0) as usize;
         let end = (((pos + extent as f32 - border) / step as f32).ceil().max(0.0) as usize)
             .saturating_add(1)
@@ -1041,6 +1152,80 @@ fn visible_list_indices(
         let end = first.saturating_add(fit).min(count);
         first.min(count)..end
     }
+}
+
+fn push_spacer_sizes(out: &mut Vec<[i32; 2]>, item_size: [i32; 2], axis: usize, rows: usize) {
+    let step = i64::from(item_size[axis].max(1));
+    let mut remaining = step.saturating_mul(rows as i64);
+    let max_chunk = i64::from(i32::MAX / 2);
+    while remaining > 0 {
+        let chunk = remaining.min(max_chunk) as i32;
+        let mut size = item_size;
+        size[axis] = chunk;
+        out.push(size);
+        remaining -= i64::from(chunk);
+    }
+}
+
+fn place_uniform_visible_rows(
+    plan: &mut ComposedPlan,
+    list: &Element,
+    holder: &native_gui::Holder,
+    item_size: [i32; 2],
+    count: usize,
+    scroll: &BTreeMap<String, f32>,
+    resources: &dyn Resources,
+) -> Result<(Vec<(usize, [i32; 2])>, usize), GameWindowError> {
+    if count == 0 {
+        return Ok((Vec::new(), 0));
+    }
+    let Fields::ListBox(fields) = &list.fields else {
+        let places = plan.list_rows(list, holder, &vec![item_size; count], resources)?;
+        let out = places
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.map(|p| (i, p)))
+            .collect();
+        return Ok((out, count));
+    };
+    let smooth = list.kind == native::Kind::SmoothListBox;
+    if !smooth {
+        let places = plan.list_rows(list, holder, &vec![item_size; count], resources)?;
+        let out = places
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.map(|p| (i, p)))
+            .collect();
+        return Ok((out, count));
+    }
+    let vertical = fields.horizontal == 0;
+    let axis = usize::from(vertical);
+    let visible = visible_list_indices(list, item_size, count, scroll);
+    let mut summary = Vec::with_capacity(visible.len() + 3);
+    let mut mapped = Vec::with_capacity(visible.len());
+    summary.push(item_size);
+    if visible.contains(&0) {
+        mapped.push((0, 0));
+    }
+    let first_after_zero = visible.start.max(1);
+    if first_after_zero > 1 {
+        push_spacer_sizes(&mut summary, item_size, axis, first_after_zero - 1);
+    }
+    for idx in first_after_zero..visible.end {
+        mapped.push((idx, summary.len()));
+        summary.push(item_size);
+    }
+    let tail_start = visible.end.max(1);
+    if tail_start < count {
+        push_spacer_sizes(&mut summary, item_size, axis, count - tail_start);
+    }
+    let slots = summary.len();
+    let places = plan.list_rows(list, holder, &summary, resources)?;
+    let placed = mapped
+        .into_iter()
+        .filter_map(|(idx, slot)| places.get(slot).copied().flatten().map(|place| (idx, place)))
+        .collect();
+    Ok((placed, slots))
 }
 
 fn control_fallback_rect(
@@ -1200,7 +1385,8 @@ struct PreparedMio {
     emblem: Result<String, (String, String)>,
     tree_background: Option<String>,
     history_icons: HashMap<u64, ResolvedHistoryIcon>,
-    history_art_label: Option<String>,
+    read_hour: i32,
+    cadence_warning: Option<String>,
     scroll: BTreeMap<String, f32>,
 }
 
@@ -2565,12 +2751,6 @@ fn compose_trait_tree(
     let positions: Vec<(&TraitName, [i32; 2])> = raw_positions
         .into_iter()
         .filter(|(trait_def, _)| {
-            if matches!(
-                trait_status(&prepared.data.details, &trait_def.token),
-                TraitStatus::Unlocked | TraitStatus::Queued(_)
-            ) {
-                return true;
-            }
             match loc.trait_condition(organisation, &trait_def.token, OrganisationCondition::Visible)
             {
                 Ok(visible) => visible,
@@ -2848,12 +3028,20 @@ fn compose_trait_tree(
             .as_ref()
             .map(|h| h.logical[0] + traits_local_pos[0])
             .unwrap_or(0);
+        let [header_w, header_h] = flavor_tpl
+            .container()
+            .map(|c| [c.size.size[0].value.max(1) as f32, c.size.size[1].value.max(1) as f32])
+            .unwrap_or([250.0, 80.0]);
         for (idx, header_text) in tree.tree_header_texts.iter().enumerate() {
             let label = loc.get(&header_text.text);
+            let px = (header_text.x - min_x) * step_x + traits_left - scroll_offset[0];
+            let header_rect = [hdr.origin[0] + px as f32, hdr.origin[1], header_w, header_h];
+            if !label.is_empty() && clip_rect(header_rect, hdr.clip).is_some() {
+                plan.text(&format!("mio_header:{idx}"), "Tree header", Ok(label.clone()));
+            }
             let layout = layout_window(flavor_tpl, resources, viewport, |instance| {
                 set_text_by_name(instance, flavor_tpl, "flavortext", label);
             })?;
-            let px = (header_text.x - min_x) * step_x + traits_left - scroll_offset[0];
             plan.sub_windows.push(ComposedSubWindow {
                 before_part: tree_before,
                 parts: hdr.place([px, 0], &layout),
@@ -2960,9 +3148,14 @@ fn compose_trait_tree(
         let Some(visible_trait_rect) = clip_rect(trait_rect, traits_box.clip) else {
             continue;
         };
-        let status = match hidden_why.get(&trait_def.token.to_ascii_lowercase()) {
-            Some(why) => TraitStatus::Unknown(why.clone()),
-            None => status_of(&trait_def.token),
+        let recorded = trait_status(&prepared.data.details, &trait_def.token);
+        let visibility_why = hidden_why.get(&trait_def.token.to_ascii_lowercase());
+        let status = match recorded {
+            TraitStatus::Unlocked | TraitStatus::Queued(_) => recorded,
+            _ => match visibility_why {
+                Some(why) => TraitStatus::Unknown(why.clone()),
+                None => status_of(&trait_def.token),
+            },
         };
         let queue_pos = match status {
             TraitStatus::Queued(position) => Some(position),
@@ -2980,10 +3173,15 @@ fn compose_trait_tree(
             "GFX_industrial_org_trait_button"
         };
         let frame_ready = frame.map(|f| (f, sprite_ready(resources, chosen_frame)));
-        let icon_choice = chosen_trait_icon(trait_def, resources);
+        let icon_choice = chosen_trait_icon(
+            trait_def,
+            org_token,
+            prepared.data.owner_tag.as_deref(),
+            resources,
+        );
         let trait_name =
             resolve_trait_name(trait_def, org_token, prepared.data.owner_tag.as_deref(), loc);
-        let status_line = match &status {
+        let mut status_line = match &status {
             TraitStatus::Unknown(reason) => format!("Status: {NOT_RECORDED_VALUE} ({reason})"),
             TraitStatus::Unlocked => "Status: Unlocked".to_owned(),
             TraitStatus::Queued(pos) => format!("Status: Queued (#{pos})"),
@@ -2998,6 +3196,17 @@ fn compose_trait_tree(
             TraitStatus::Locked => Ok("Locked".to_owned()),
         };
         plan.text(&format!("trait:{idx}"), &trait_name, text_status);
+        if let Some(why) = visibility_why
+            && matches!(status, TraitStatus::Unlocked | TraitStatus::Queued(_))
+        {
+            status_line.push('\n');
+            status_line.push_str(why);
+            plan.text(
+                &format!("trait:{idx}/visibility"),
+                &format!("{trait_name} visibility"),
+                Err(why.clone()),
+            );
+        }
 
         let mut trait_layout = layout_window(trait_tpl, resources, viewport, |instance| {
             hide_by_name(instance, trait_tpl, "ai_value");
@@ -3189,6 +3398,7 @@ impl HistoryKind {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HistoryResolveCounts {
+    pub placed_slots: usize,
     pub variant_lookups: usize,
     pub name_resolutions: usize,
     pub row_layouts: usize,
@@ -3244,10 +3454,12 @@ struct HistoryListInput<'a> {
     path: &'a str,
     prefix: &'a str,
     kind: HistoryKind,
-    rows: &'a HistoryRecordList,
+    list: &'a HistoryIndexList,
+    all_rows: &'a [IndustrialOrganisationHistoryRow],
     variants: &'a Result<&'a [VariantDefinitionRow], String>,
     lexical: &'a Result<&'a [LexicalTokenRow], String>,
     icons: &'a HashMap<u64, ResolvedHistoryIcon>,
+    scroll: &'a BTreeMap<String, f32>,
 }
 
 fn compose_history_list(
@@ -3263,10 +3475,12 @@ fn compose_history_list(
         path,
         prefix,
         kind,
-        rows,
+        list,
+        all_rows,
         variants,
         lexical,
         icons,
+        scroll,
     } = input;
     let list_el = require_path(root, DETAIL_WINDOW_NAME, path)?;
     let holder = require_holder(main_layout, list_el)?;
@@ -3274,12 +3488,13 @@ fn compose_history_list(
     let size = row_size(item_tpl, "industrial_organisation_history_item")?;
     let mut counts = HistoryResolveCounts::default();
 
-    match rows {
-        HistoryRecordList::Missing(reason) => {
+    match list {
+        HistoryIndexList::Missing(reason) => {
             plan.text(path, kind.section_label(), Err(reason.clone()));
             let Some(place) = plan.list_rows(list_el, holder, &[size], resources)?[0] else {
                 return Ok(counts);
             };
+            counts.placed_slots += 1;
             counts.row_layouts += 1;
             let layout = layout_window(item_tpl, resources, viewport, |instance| {
                 hide_by_name(instance, item_tpl, "equipment_icon");
@@ -3314,14 +3529,26 @@ fn compose_history_list(
             });
             return Ok(counts);
         }
-        HistoryRecordList::Entries(records) => {
-            if records.is_empty() {
+        HistoryIndexList::Indices(indices) => {
+            if indices.is_empty() {
                 plan.text(path, kind.section_label(), Ok("None".to_owned()));
                 return Ok(counts);
             }
-            let places = plan.list_rows(list_el, holder, &vec![size; records.len()], resources)?;
-            for (idx, (&record, place)) in records.iter().zip(places).enumerate() {
-                let Some(place) = place else { continue };
+            let (placed, slots) = place_uniform_visible_rows(
+                plan,
+                list_el,
+                holder,
+                size,
+                indices.len(),
+                scroll,
+                resources,
+            )?;
+            counts.placed_slots += slots;
+            for (idx, place) in placed {
+                let Some(row) = all_rows.get(indices[idx]) else {
+                    continue;
+                };
+                let record = history_record_from_row(row);
                 counts.variant_lookups += 1;
                 counts.name_resolutions += 1;
                 counts.row_layouts += 1;
@@ -3459,29 +3686,30 @@ fn compose_history_lists(
     plan: &mut ComposedPlan,
 ) -> Result<HistoryResolveCounts, GameWindowError> {
     let item_tpl = require_template(guis, "industrial_organisation_history_item")?;
+    let all_rows = loc
+        .frame
+        .complete::<tables::IndustrialOrganisationHistory>()
+        .unwrap_or(&[]);
     let variants = loc
         .frame
         .complete::<tables::VariantDefinitions>()
         .map_err(|error| format!("VariantDefinitions is unavailable: {error}"));
     let lexical = witnessed_rows::<tables::LexicalTokens>(loc.frame).map(|(rows, _)| rows);
-    let lists = match &prepared.data.history {
-        Some(records) => split_history_records(records),
+    let fallback_missing;
+    let (designed, produced) = match &prepared.data.history {
+        Some(index) => (&index.designed, &index.produced),
         None => {
-            let reason = format!(
+            fallback_missing = HistoryIndexList::Missing(format!(
                 "Not recorded: the organisation's history is unavailable at this hour ({}).",
                 prepared
                     .data
                     .history_reason
                     .as_deref()
                     .unwrap_or("not read")
-            );
-            [
-                HistoryRecordList::Missing(reason.clone()),
-                HistoryRecordList::Missing(reason),
-            ]
+            ));
+            (&fallback_missing, &fallback_missing)
         }
     };
-    let [designed, produced] = lists;
     let first = compose_history_list(
         main_layout,
         root,
@@ -3492,10 +3720,12 @@ fn compose_history_lists(
             path: HISTORY_LIST_PATH,
             prefix: "history",
             kind: HistoryKind::Designed,
-            rows: &designed,
+            list: designed,
+            all_rows,
             variants: &variants,
             lexical: &lexical,
             icons: &prepared.history_icons,
+            scroll: &prepared.scroll,
         },
         plan,
     )?;
@@ -3509,14 +3739,17 @@ fn compose_history_lists(
             path: PRODUCTION_LIST_PATH,
             prefix: "production",
             kind: HistoryKind::Produced,
-            rows: &produced,
+            list: produced,
+            all_rows,
             variants: &variants,
             lexical: &lexical,
             icons: &prepared.history_icons,
+            scroll: &prepared.scroll,
         },
         plan,
     )?;
     Ok(HistoryResolveCounts {
+        placed_slots: first.placed_slots + second.placed_slots,
         variant_lookups: first.variant_lookups + second.variant_lookups,
         name_resolutions: first.name_resolutions + second.name_resolutions,
         row_layouts: first.row_layouts + second.row_layouts,
@@ -3717,18 +3950,30 @@ fn compose_policy_list(
                     Err(reason) => (NOT_RECORDED_VALUE.to_owned(), Some(reason), true),
                 };
                 let visibility_why = undecided.get(&key);
-                let text_value = match (visibility_why, &cost_missing) {
-                    (Some(v), Some(c)) => Err(format!("{v} {c}")),
-                    (Some(v), None) => Err(v.clone()),
-                    (None, Some(c)) => Err(c.clone()),
-                    (None, None) => Ok(match (is_attached, cost_shown) {
-                        (true, true) => format!("Attached, cost {cost_str}"),
-                        (true, false) => "Attached".to_owned(),
-                        (false, true) => format!("Cost {cost_str}"),
-                        (false, false) => "Available".to_owned(),
-                    }),
+                let known_cost = cost_missing.is_none() && cost_shown;
+                let summary = match (is_attached, known_cost) {
+                    (true, true) => Some(format!("Attached, cost {cost_str}")),
+                    (true, false) => Some("Attached".to_owned()),
+                    (false, true) => Some(format!("Cost {cost_str}")),
+                    (false, false) => cost_missing.is_none().then(|| "Available".to_owned()),
                 };
-                plan.text(&row_path, &name, text_value);
+                if let Some(value) = summary {
+                    plan.text(&row_path, &name, Ok(value));
+                }
+                if let Some(why) = visibility_why {
+                    plan.text(
+                        &format!("{row_path}/visibility"),
+                        &format!("{name} visibility"),
+                        Err(why.clone()),
+                    );
+                }
+                if let Some(why) = &cost_missing {
+                    plan.text(
+                        &format!("{row_path}/cost"),
+                        &format!("{name} cost"),
+                        Err(why.clone()),
+                    );
+                }
 
                 let mut layout = layout_window(item_tpl, resources, viewport, |instance| {
                     hide_by_name(instance, item_tpl, "ai_value");
@@ -3818,14 +4063,38 @@ struct HistoryIconPrep<'a> {
     decode: Decode,
 }
 
+pub fn classify_exhausted_variant_icon(
+    def: &VariantDefinitionRow,
+    equipment_key: &str,
+) -> ResolvedHistoryIcon {
+    let recorded = (def.icon_active != 0 && !def.icon.is_empty() && def.icon.as_slice() != b".")
+        .then(|| String::from_utf8_lossy(&def.icon).trim().to_owned())
+        .filter(|name| !name.is_empty());
+    match recorded {
+        Some(asset) => ResolvedHistoryIcon::Missing {
+            asset: asset.clone(),
+            reason: format!(
+                "recorded equipment icon '{asset}' and all fallback candidates are missing from the installed interface"
+            ),
+        },
+        None if !equipment_key.is_empty() => ResolvedHistoryIcon::Missing {
+            asset: format!("{equipment_key} icon"),
+            reason: format!(
+                "no equipment icon candidate for '{equipment_key}' was found in the installed interface"
+            ),
+        },
+        None => ResolvedHistoryIcon::NoneExpected,
+    }
+}
+
 fn prepare_visible_history_icons(
     prep: &HistoryIconPrep<'_>,
-    records: &[HistoryRecord],
+    index: &HistoryIndex,
     root: &Element,
     item_tpl: &Element,
     scroll: &BTreeMap<String, f32>,
     assets: &mut Assets,
-) -> (HashMap<u64, ResolvedHistoryIcon>, Option<String>) {
+) -> (HashMap<u64, ResolvedHistoryIcon>, Vec<TableId>) {
     let HistoryIconPrep {
         shared,
         layers,
@@ -3835,27 +4104,30 @@ fn prepare_visible_history_icons(
         decode,
     } = *prep;
     let mut resolved = HashMap::new();
-    let mut art_label = None;
     let Ok(item_size) = row_size(item_tpl, "industrial_organisation_history_item") else {
-        return (resolved, art_label);
+        return (resolved, Vec::new());
     };
-    let [designed, produced] = split_history_records(records);
+    let all_rows = frame
+        .complete::<tables::IndustrialOrganisationHistory>()
+        .unwrap_or(&[]);
     let mut visible_ids = BTreeSet::new();
     for (list_path, list) in [
-        (HISTORY_LIST_PATH, &designed),
-        (PRODUCTION_LIST_PATH, &produced),
+        (HISTORY_LIST_PATH, &index.designed),
+        (PRODUCTION_LIST_PATH, &index.produced),
     ] {
-        if let HistoryRecordList::Entries(entries) = list
+        if let HistoryIndexList::Indices(indices) = list
             && let Some(list_el) = find_direct(root, list_path)
         {
-            let range = visible_list_indices(list_el, item_size, entries.len(), scroll);
-            for record in &entries[range] {
-                visible_ids.insert(record.variant_id);
+            let range = visible_list_indices(list_el, item_size, indices.len(), scroll);
+            for &row_idx in &indices[range] {
+                if let Some(row) = all_rows.get(row_idx) {
+                    visible_ids.insert(row.variant);
+                }
             }
         }
     }
     if visible_ids.is_empty() {
-        return (resolved, art_label);
+        return (resolved, Vec::new());
     }
     let variants = frame
         .complete::<tables::VariantDefinitions>()
@@ -3876,6 +4148,20 @@ fn prepare_visible_history_icons(
         IconHour::read(frame, ic)
             .map_err(|error| format!("equipment icon hour context is unavailable: {error}"))
     });
+    let icon_tables: Vec<TableId> = if icon_hour.is_ok() {
+        HISTORY_ICON_TABLES
+            .iter()
+            .copied()
+            .filter(|table| {
+                !matches!(
+                    frame.tables[table.index()].held(),
+                    TableView::Unavailable { .. } | TableView::NotRecorded { .. }
+                )
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     for variant_id in visible_ids {
         let state = match (&variants, &icon_content, &icon_hour) {
             (Err(why), _, _) => ResolvedHistoryIcon::Missing {
@@ -3916,9 +4202,7 @@ fn prepare_visible_history_icons(
                                             &selected,
                                             decode,
                                         ) {
-                                            NativeIconResolution::Ready {
-                                                icon, provenance, ..
-                                            } => {
+                                            NativeIconResolution::Ready { icon, .. } => {
                                                 match &icon {
                                                     Icon::Sprite(sprite) => {
                                                         want_sprite(shared, assets, sprite);
@@ -3930,9 +4214,6 @@ fn prepare_visible_history_icons(
                                                                 .insert(path.as_bytes().to_vec());
                                                         }
                                                     }
-                                                }
-                                                if art_label.is_none() {
-                                                    art_label = Some(provenance.label);
                                                 }
                                                 ResolvedHistoryIcon::Ready { icon }
                                             }
@@ -3955,7 +4236,7 @@ fn prepare_visible_history_icons(
                                             },
                                         }
                                     }
-                                    Ok(None) => ResolvedHistoryIcon::NoneExpected,
+                                    Ok(None) => classify_exhausted_variant_icon(def, &equipment_key),
                                     Err(why) => ResolvedHistoryIcon::Missing {
                                         asset: "equipment icon".to_owned(),
                                         reason: why,
@@ -3969,7 +4250,7 @@ fn prepare_visible_history_icons(
         };
         resolved.insert(variant_id, state);
     }
-    (resolved, art_label)
+    (resolved, icon_tables)
 }
 
 #[expect(clippy::too_many_arguments, reason = "window render entry mirrors the host's request parts")]
@@ -4063,7 +4344,9 @@ pub fn render_data(
             let tree = organisation_tree(&catalog, &data.token).ok();
             tab_requirements(shared.guis.as_ref(), sub_view, tree.as_ref())?;
 
-            let emblem = chosen_org_emblem(&data, tree.as_ref());
+            let emblem = chosen_org_emblem(&data, tree.as_ref(), |sprite| {
+                has_declared_sprite(shared, sprite)
+            });
             if sub_view != SubView::Policy
                 && let Ok(sprite) = &emblem
             {
@@ -4096,7 +4379,7 @@ pub fn render_data(
             }
 
             let mut history_icons = HashMap::new();
-            let mut history_art_label = None;
+            let mut extra_sampled_tables = Vec::new();
             if sub_view == SubView::Traits {
                 for sprite in [
                     "GFX_industrial_org_trait_button",
@@ -4111,14 +4394,27 @@ pub fn render_data(
                 ] {
                     want_sprite(shared, &mut assets, sprite);
                 }
+                let org_token = data.token.as_deref().unwrap_or_default();
                 if let Some(tree) = tree {
                     for trait_def in tree.traits {
-                        want_sprite(shared, &mut assets, &trait_def.icon);
+                        if let Ok(sprite) = chosen_trait_icon_name(
+                            trait_def,
+                            org_token,
+                            data.owner_tag.as_deref(),
+                            |name| has_declared_sprite(shared, name),
+                        ) {
+                            want_sprite(shared, &mut assets, &sprite);
+                        }
                     }
                 }
             } else if sub_view == SubView::Policy {
                 if let RecordedDetails::Available(details) = &data.details {
-                    for tok in details.allowed_policies.iter().filter_map(Spelled::text) {
+                    for tok in details
+                        .allowed_policies
+                        .iter()
+                        .chain(details.policy.iter())
+                        .filter_map(Spelled::text)
+                    {
                         if let Some(def) = org_db
                             .as_deref()
                             .ok()
@@ -4131,7 +4427,7 @@ pub fn render_data(
                     }
                 }
             } else if sub_view == SubView::History
-                && let Some(records) = &data.history
+                && let Some(index) = &data.history
                 && let Some(root) = shared.guis.template(DETAIL_WINDOW_NAME.as_bytes())
                 && let Some(item_tpl) = shared
                     .guis
@@ -4145,17 +4441,26 @@ pub fn render_data(
                     language: &language,
                     decode,
                 };
-                let (icons, label) = prepare_visible_history_icons(
+                let (icons, icon_tables) = prepare_visible_history_icons(
                     &prep,
-                    records,
+                    index,
                     root,
                     item_tpl,
                     scroll,
                     &mut assets,
                 );
                 history_icons = icons;
-                history_art_label = label;
+                extra_sampled_tables = icon_tables;
             }
+
+            let mut all_tables: BTreeSet<TableId> = data.sampled_tables.iter().copied().collect();
+            all_tables.extend(extra_sampled_tables);
+            let samples: Vec<(TableId, i32)> = all_tables
+                .iter()
+                .filter_map(|&id| frame.tables[id.index()].sampled_at().map(|hour| (id, hour)))
+                .collect();
+            let (final_read_hour, cadence_warning) =
+                compute_read_hour(data.request_hour, &samples);
 
             Ok(Prepared::uncached(
                 assets,
@@ -4167,7 +4472,8 @@ pub fn render_data(
                     emblem,
                     tree_background,
                     history_icons,
-                    history_art_label,
+                    read_hour: final_read_hour,
+                    cadence_warning,
                     scroll: scroll.clone(),
                 },
             ))
@@ -4245,9 +4551,6 @@ pub fn render_data(
                         prepared,
                         plan,
                     )?;
-                    if let Some(label) = &prepared.history_art_label {
-                        plan.art_label = Some(label.clone());
-                    }
                 }
                 SubView::Policy => {
                     compose_policy_list(
@@ -4273,6 +4576,8 @@ pub fn render_data(
                 }
             }
             plan.title = Some(loc.organisation_name());
+            plan.read_hour = Some(prepared.read_hour);
+            plan.warnings.extend(prepared.cadence_warning.iter().cloned());
             plan.warnings.extend(failures.borrow_mut().drain(..));
             Ok(())
         },
@@ -4397,7 +4702,17 @@ pub fn render(
                 if frame.complete::<tables::VariantDefinitions>().is_ok() {
                     read_tables.push(TableId::VariantDefinitions);
                 }
-                (Some(extract_history_records(rows, org_id)), None)
+                let index_key = HistoryIndexKey {
+                    source_id: request.source_id.clone(),
+                    revision: request.revision.clone(),
+                    branch_id,
+                    hour: request.hour,
+                    organisation_id: org_id,
+                    rows_ptr: rows.as_ptr() as usize,
+                    rows_len: rows.len(),
+                };
+                let (index, _) = cached_history_index(index_key, rows, org_id);
+                (Some(index), None)
             }
             Err(error) => (None, Some(error.to_string())),
         }
@@ -4409,10 +4724,7 @@ pub fn render(
         .iter()
         .filter_map(|&id| frame.tables[id.index()].sampled_at().map(|hour| (id, hour)))
         .collect();
-    let (read_hour, cadence_warning) = compute_read_hour(request.hour, &samples);
-    if let Some(warning) = cadence_warning {
-        extra_warnings.push(warning);
-    }
+    let (read_hour, _) = compute_read_hour(request.hour, &samples);
 
     let funds_defines = if sub_view == SubView::Policy {
         Err("not read on policy tab".to_owned())
@@ -4431,6 +4743,7 @@ pub fn render(
         policy_costs,
         history,
         history_reason,
+        sampled_tables: read_tables,
         funds_defines,
         warnings: extra_warnings,
     };
