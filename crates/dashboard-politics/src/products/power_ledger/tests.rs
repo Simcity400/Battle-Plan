@@ -127,6 +127,7 @@ fn a_spans_payments_are_the_changes_of_its_totals_after_the_hour_before_it_and_r
 
     let (whole, counts) = replay_recording::cells::count_reads(|| asked(&source, FIRST, LAST));
     let items = &counts[&TableId::PowerItems];
+    assert_eq!((items.opened, items.restores), (2, 2), "the single-block run opens and restores one reader for membership and one for details");
     assert!(items.stretches > 0, "membership follows the recorded item changes across charge hours");
     assert_eq!(items.columns, TableId::PowerItems.schema().len() as u64, "only one reader opens the detail columns");
     let reads: Vec<_> = whole.payments.iter().map(|payment| (payment.read, payment.known_raw.clone())).collect();
