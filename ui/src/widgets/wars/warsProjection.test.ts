@@ -66,3 +66,59 @@ test('every bar in the countries view identifies its country and resolves its wa
     ['Defenders (1)', 'Bravo'],
   ]);
 });
+
+test('ongoing war duration transitions advance nextChangeAt between recorded events using the same rounding as the label', () => {
+  const first = 60807050;
+  const replyHour = 60828000;
+  const nextEvent = 60830000;
+  const identity = datedIdentity({ AAA: [{ from: 0, name: 'Alpha' }], BBB: [{ from: 0, name: 'Bravo' }], CCC: [{ from: 0, name: 'Charlie' }] });
+  const ongoingReply: WarTimelineReply = { ...reply(replyHour, [war('9', first, replyHour)]), nextChange: nextEvent };
+  const viewAt = (hour: number) => createBoundedReadView({ hour, identity, panels: new Map([['main', ongoingReply]]) });
+
+  const early = warsProjection.project(viewAt(replyHour), OPTIONS);
+  assert.equal(early.lanes[0]!.outcome?.detail, '2 years');
+  assert.equal(early.nextChangeAt, 60828565);
+  assert.equal(warsProjection.nextChange?.(viewAt(replyHour), OPTIONS), 60828565);
+
+  const before = warsProjection.project(viewAt(60828564), OPTIONS);
+  assert.equal(before.lanes[0]!.outcome?.detail, '2 years');
+  assert.equal(before.nextChangeAt, 60828565);
+
+  const atAudit = warsProjection.project(viewAt(60828569), OPTIONS);
+  assert.equal(atAudit.lanes[0]!.outcome?.detail, '3 years');
+  assert.equal(atAudit.nextChangeAt, nextEvent);
+  assert.equal(warsProjection.nextChange?.(viewAt(60828569), OPTIONS), nextEvent);
+
+  const tip = warsProjection.tooltip!(atAudit, { kind: 'lane', laneKey: 'war:9', hour: 60828569 }, viewAt(60828569), OPTIONS);
+  assert.ok(tip?.subtitle?.includes('ongoing'), 'ongoing war tooltip stays ongoing when readView.hour > reply.hour');
+  assert.equal(tip?.items?.find(item => item.label === 'Outcome')?.value, 'Ongoing 3 years');
+
+  const countriesModel = warsProjection.project(viewAt(replyHour), { ...OPTIONS, view: 'countries' });
+  assert.equal(countriesModel.nextChangeAt, nextEvent);
+  assert.equal(warsProjection.nextChange?.(viewAt(replyHour), { ...OPTIONS, view: 'countries' }), nextEvent);
+
+  const endedReply: WarTimelineReply = { ...reply(replyHour, [war('10', first, replyHour - 1)]), nextChange: nextEvent };
+  const endedView = createBoundedReadView({ hour: replyHour, identity, panels: new Map([['main', endedReply]]) });
+  assert.equal(warsProjection.project(endedView, OPTIONS).nextChangeAt, nextEvent);
+  assert.equal(warsProjection.nextChange?.(endedView, OPTIONS), nextEvent);
+
+  const longReply = reply(first, [war('11', first, first, {
+    participants: [run('AAA', 'attacker', first, first), run('BBB', 'defender', first, first)],
+  })]);
+  const labelAt = (hour: number) => warsProjection.project(createBoundedReadView({ hour, identity, panels: new Map([['main', longReply]]) }), OPTIONS);
+  let hour = first;
+  let steps = 0;
+  const end = first + 24 * 365 * 5;
+  while (hour < end) {
+    const model = labelAt(hour);
+    const next = model.nextChangeAt;
+    assert.ok(next > hour, `nextChangeAt ${next} must advance past ${hour}`);
+    assert.equal(warsProjection.nextChange?.(createBoundedReadView({ hour, identity, panels: new Map([['main', longReply]]) }), OPTIONS), next);
+    const text = model.lanes[0]!.outcome?.detail;
+    assert.equal(labelAt(next - 1).lanes[0]!.outcome?.detail, text, `duration must stay ${text} at ${next - 1}`);
+    assert.notEqual(labelAt(next).lanes[0]!.outcome?.detail, text, `duration must change from ${text} at ${next}`);
+    hour = next;
+    steps++;
+  }
+  assert.ok(steps < 100, `expected bounded transitions across 5 years, got ${steps}`);
+});
