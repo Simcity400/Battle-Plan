@@ -113,7 +113,7 @@ fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
     );
     let eng_anchor = [10.0, 9.5, 20.0];
     let pol_anchor = [50.0, 9.5, 60.0];
-    let defines = GroupDefines::VANILLA;
+    let defines = GroupDefines::FIXTURE;
     let extents = Extents::build(
         &[
             (2107, [0.0, 0.0, 20.0, 30.0]),
@@ -126,8 +126,8 @@ fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
         100.0,
     );
     for (height, level) in [
-        (114.5896835_f64 as f32, Level::Province),
-        (198.1034088_f64 as f32, Level::State),
+        (defines.province_distance + 20.0, Level::Province),
+        (defines.state_distance + 20.0, Level::State),
     ] {
         let sources: Vec<_> = [(&eng, 0, eng_anchor), (&pol, ATTACKING, pol_anchor)]
             .into_iter()
@@ -464,7 +464,7 @@ fn a_port_force_the_incomplete_census_lacks_leaves_its_roster_undecided() {
 
 #[test]
 fn strategic_port_frames_keep_fleet_mission_and_selected_splits() {
-    let mut defines = CounterDefines::VANILLA;
+    let mut defines = CounterDefines::FIXTURE;
     defines.coarse_distance = [100.0, 700.0];
     defines.groups.province_distance = 70.0;
     defines.groups.state_distance = 150.0;

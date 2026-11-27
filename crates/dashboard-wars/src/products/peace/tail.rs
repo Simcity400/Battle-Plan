@@ -356,7 +356,7 @@ impl Tail {
                     .chain(groups.iter().flat_map(|(tag, terms)| {
                         tag.iter().map(|tag| (tag, hour)).chain(terms.iter().filter_map(|term| Some((term.tag.as_ref()?, term.at))))
                     }))
-                    .map(|(tag, at)| Role { slot: holders.slot_at(&Country::Tag(tag.clone()), at), at })
+                    .map(|(tag, at)| Role::at(holders.slot_at(&Country::Tag(tag.clone()), at), at))
                     .collect();
             roles.sort_unstable_by_key(|role| (role.slot, role.at));
             roles.dedup();
@@ -371,7 +371,7 @@ impl Tail {
                     subjects: Box::default(),
                     states: Box::default(),
                     sort_keys: Box::default(),
-                    text: Box::default(),
+                    text: Default::default(),
                     payload: Line { row: PeaceDealsRow { key, parent, hour, detail, last: false }, ordinal, place, recipient },
                 });
             };

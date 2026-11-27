@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
 import { assertBarsModelValid, type BarsDataRow } from '../../families/bars/model.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
-import type { BranchToHourSourceRead, ExactHoverSourceRead, FamilyPlanContext, IdentityProvider } from '../../families/plan.ts';
+import { lazyActionKeys } from '../../families/host/adapter.ts';
+import { recordInstalled, resolveHostInput } from '../../families/host/installed.ts';
+import type { FamilyNavTuple } from '../../families/host/keyboard.ts';
+import type { BranchToHourSourceRead, ExactHoverSourceRead, FamilyPlanContext, IdentityProvider, InstalledAction, InstalledPicture } from '../../families/plan.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
+import { parseTimeChartHit, timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import { hoverTimeChartLayout, layoutTimeChart } from '../../families/time-chart/layout.ts';
 import { timeChartLane } from '../../families/time-chart/laneView.ts';
 import { LANE_THEME } from '../../families/laneRuntime.fixture.ts';
@@ -12,7 +20,7 @@ import { createLaneView } from '../../families/laneRuntime.ts';
 import type { CountryIdentitiesReply, OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
 import { FAMILY_VIEWS } from '../familyManifest.ts';
 import { occupationReserveBreakdownDeclaration, occupationReserveBreakdownProjection } from './occupationReserveBreakdownProjection.ts';
-import { occupationReserveRaceProjection } from './occupationReserveRaceProjection.ts';
+import { occupationReserveRaceDeclaration, occupationReserveRaceProjection } from './occupationReserveRaceProjection.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
   return {
@@ -751,4 +759,151 @@ test('occupation-reserve-manpower breakdown rejects malformed identities aux and
     pendingExplicitOpts,
   );
   assert.equal(pendingExplicitModel.empty, undefined, 'pending history for an explicit holder stays loading');
+});
+
+test('occupation-reserve-manpower drawer ignores chart-coordinate and untyped actions and opens only for a typed country row', async () => {
+  let capturedActivate: ((action: InstalledAction) => void) | undefined;
+  const opened: unknown[] = [];
+  const harness = {
+    captureActivate(fn: ((action: InstalledAction) => void) | undefined) { capturedActivate = fn; },
+    setDetail(next: unknown) { opened.push(next); },
+  };
+  const host = globalThis as typeof globalThis & { __ormDetailHarness?: typeof harness };
+  host.__ormDetailHarness = harness;
+
+  const vite = await createServer({
+    configFile: false,
+    optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{
+      name: 'orm-detail-action-test',
+      enforce: 'pre',
+      transform(code, id) {
+        const norm = id.replaceAll('\\', '/');
+        if (norm.endsWith('/widgets/occupation-reserve-manpower/family.tsx')) {
+          return code
+            .replace("from 'react'", "from 'orm-test-react'")
+            .replace("from '../../dashboard/regionGate'", "from 'orm-test-gate'")
+            .replace("from '../../families/host/index.ts'", "from 'orm-test-detailHost'")
+            .replace("from '../../families/host/registry.tsx'", "from 'orm-test-familyWidget'")
+            .replace("import './occupationReserve.css';", '');
+        }
+      },
+      resolveId(id) {
+        if (id.startsWith('orm-test-')) return `\0${id}`;
+      },
+      load(id) {
+        if (id === '\0orm-test-react') {
+          return `import { useCallback, useRef } from 'react';
+            export { useCallback, useRef };
+            export const useState = init => [init, next => globalThis.__ormDetailHarness.setDetail(next)];`;
+        }
+        if (id === '\0orm-test-gate') {
+          return `export const useGate = () => ({ recorded: hour => hour });`;
+        }
+        if (id === '\0orm-test-detailHost') {
+          return `export const DetailWindowHost = () => null;`;
+        }
+        if (id === '\0orm-test-familyWidget') {
+          return `export const FamilyWidget = props => {
+            globalThis.__ormDetailHarness.captureActivate(props.onActivate);
+            return null;
+          };`;
+        }
+      },
+    }],
+  });
+
+  try {
+    const { default: renderer } = await vite.ssrLoadModule('/ui/src/widgets/occupation-reserve-manpower/family.tsx') as typeof import('./family.tsx');
+    renderToStaticMarkup(createElement(renderer.render, {
+      widget: { id: 'w1', kind: 'occupation-reserve-manpower', trackIds: ['t1'], countries: { kind: 'all' }, time: { mode: 'follow' } } as never,
+      runtime: { tracks: [], clock: {}, client: {} } as never,
+      active: true,
+      options: {},
+      mapOptions: {} as never,
+      headerSlot: null,
+      onDiagnostics: () => {},
+      manifestDeclaration: occupationReserveRaceDeclaration,
+    }));
+    assert.ok(capturedActivate, 'race FamilyWidget receives onActivate');
+
+    const basePicture = (owner: string, nav: readonly FamilyNavTuple[]): InstalledPicture => ({
+      id: 1,
+      owner,
+      generation: { seek: 1, reset: 0, binding: 1 },
+      factRevisions: {},
+      validInterval: [0, 1000],
+      through: 1000,
+      hour: displayedHour(240),
+      viewport: { width: 400, height: 200, dpr: 1, scrollLeft: 0, scrollTop: 0 },
+      optionsRevision: '1',
+      themeRevision: '1',
+      actionKeys: lazyActionKeys(nav, displayedHour(240)),
+      accessibleDescription: null,
+    });
+
+    const chartPicture = basePicture('orm:breakdown', []);
+    const chartRecord = recordInstalled(chartPicture, { meta: { transform: { axisFrom: 0, axisTo: 1000 } } }, null);
+    const plotHit = parseTimeChartHit('plot:200')!;
+    const plotEffect = resolveHostInput(
+      timeChartHostAdapter,
+      'activate',
+      { key: plotHit.key, hit: plotHit, picture: chartPicture },
+      { current: chartRecord, held: false, expired: false },
+      { expansion: {}, takesToggles: false, regions: false, menu: false },
+      () => null,
+    );
+    assert.equal(plotEffect?.kind, 'activate');
+    if (plotEffect?.kind !== 'activate') return;
+
+    const reply: OccupationReserveReply = {
+      holders: [{
+        country: { id: 2, tag: 'AAA' },
+        slot: 7,
+        admitted: true,
+        total: 500,
+        entries: [{ ordinal: 0, source: { id: 9, tag: 'CCC' }, amount: 500 }],
+      }],
+      readHour: 240,
+      unnamed: 0,
+      noneMissing: null,
+      missing: null,
+      warnings: [],
+    };
+    const projected = occupationReserveRaceProjection.project(
+      createBoundedReadView({
+        hour: displayedHour(240),
+        panels: new Map([['main', reply]]),
+        identity: fakeIdentity({ AAA: { name: 'Alpha', color: '#6b7280' }, CCC: { name: 'Gamma', color: '#f59e0b' } }),
+      }),
+      { surface: '#1e1e1e', top: 10, all: false, group: false },
+    );
+    const row = projected.rows.find((item): item is BarsDataRow => item.kind === 'data')!;
+    const rowNav: FamilyNavTuple[] = [[row.key, row.label, 0, -1, '', row.meta]];
+    const barsPicture = basePicture('orm:race', rowNav);
+    const barsRecord = recordInstalled(barsPicture, { nav: rowNav }, null);
+    const rowHit = barsHostAdapter.parseHit!(`row:${row.key}`)!;
+    const rowEffect = resolveHostInput(
+      barsHostAdapter,
+      'activate',
+      { key: rowHit.key, hit: rowHit, picture: barsPicture },
+      { current: barsRecord, held: false, expired: false },
+      { expansion: {}, takesToggles: false, regions: false, menu: false },
+      () => null,
+    );
+    assert.equal(rowEffect?.kind, 'activate');
+    if (rowEffect?.kind !== 'activate') return;
+
+    capturedActivate!(plotEffect.action);
+    capturedActivate!({ ...plotEffect.action, meta: row.meta });
+    capturedActivate!({ ...rowEffect.action, meta: undefined });
+    assert.deepEqual(opened, [], 'chart-coordinate and untyped row actions must not open the country drawer');
+
+    capturedActivate!(rowEffect.action);
+    assert.deepEqual(opened, [{ tag: 'AAA', key: countryKey(7), hour: 240 }], 'typed country row opens the country drawer');
+  } finally {
+    delete host.__ormDetailHarness;
+    await vite.close();
+  }
 });

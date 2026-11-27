@@ -1016,3 +1016,103 @@ test('breakdown lane keeps mirror derivation out of layout and defers spoken row
   const derived = breakdownLane.mirror!({ layout: frameLayout } as never);
   assert.deepEqual(derived, deriveBreakdownMirror(frameLayout.layout, frameLayout.level.total));
 });
+
+test('breakdownLane.visibleArt clips parts flags to the painted scroll window and skips narrow and collapsed-body views', () => {
+  const ready = (url: string) => ({
+    status: 'ready',
+    assetId: url,
+    url,
+    origin: { kind: 'baseGame' },
+    file: url,
+    frame: { frameIndex: 0, frameCount: 1, frameWidth: 18, frameHeight: 12, textureWidth: 18, textureHeight: 12, outputWidth: 18, outputHeight: 12 },
+    provenance: { fromCurrentInstall: true, label: 'Current installation', scopeKey: 'test' },
+  }) as never;
+  const parts: BreakdownModel['parts'][number][] = Array.from({ length: 1_500 }, (_, i) => ({
+    key: `p${i}`,
+    ordinal: i,
+    name: `Country ${i}`,
+    value: 1500 - i,
+    text: String(1500 - i),
+    share: 1 / 1500,
+    flag: `C${i}`,
+    flagArt: ready(`asset://part-${i}.png`),
+  }));
+  const largeModel: BreakdownModel = {
+    hour: START,
+    rootLabel: 'All',
+    total: { value: 1_125_750, text: '1,125,750', unit: '', verb: '', known: true },
+    parts,
+  };
+  const fakeMeasure = { measureText: (text: string) => ({ width: text.length * 7 }) } as unknown as OffscreenCanvasRenderingContext2D;
+  const makeFrame = (width: number, height: number, scrollTop: number) => {
+    const binding = { family: 'breakdown' as const, kind: 'test', options: { view: 'parts' as const, namesInRing: false }, sources: {}, scrollTop, width, height, expanded: {} };
+    const layout = breakdownLane.layout(largeModel, binding, { width, height, dpr: 1 }, THEME, fakeMeasure, START, { previous: null, now: 0, speed: 24 });
+    return { model: largeModel, layout, binding };
+  };
+
+  const topFrame = makeFrame(600, 300, 0);
+  const topUrls = [...breakdownLane.visibleArt(topFrame as never)];
+  assert.ok(topUrls.length > 0 && topUrls.length <= 16, `viewport pins only visible rows, not all 1,500 (got ${topUrls.length})`);
+  assert.ok(topUrls.includes('asset://part-0.png'), 'first visible row flag is included at scrollTop=0');
+  assert.ok(!topUrls.includes('asset://part-500.png'), 'scrolled-off row 500 is excluded at scrollTop=0');
+  assert.equal(breakdownLane.visibleArt(topFrame as never), breakdownLane.visibleArt(topFrame as never), 'unchanged scrollTop reuses cached visibleArt array');
+
+  const row500Y = (topFrame.layout.layout as PartsViewLayout).rows[500]!.y;
+  const midFrame = { ...topFrame, binding: { ...topFrame.binding, scrollTop: row500Y } };
+  const midUrls = [...breakdownLane.visibleArt(midFrame as never)];
+  assert.ok(midUrls.length > 0 && midUrls.length <= 16, `mid-scroll viewport pins only visible rows (got ${midUrls.length})`);
+  assert.ok(midUrls.includes('asset://part-500.png'), 'row 500 flag is included after scrolling to row 500');
+  assert.ok(!midUrls.includes('asset://part-0.png'), 'row 0 flag is dropped after scrolling past it');
+
+  const narrowUrls = [...breakdownLane.visibleArt(makeFrame(300, 300, 0) as never)];
+  assert.deepEqual(narrowUrls, [], 'narrow parts layout draws swatches instead of flags and reports no visibleArt');
+
+  const tinyHeightUrls = [...breakdownLane.visibleArt(makeFrame(600, 30, 0) as never)];
+  assert.deepEqual(tinyHeightUrls, [], 'zero-height body viewport reports no visibleArt');
+
+  const nestedModel: BreakdownModel = {
+    hour: START,
+    rootLabel: 'All',
+    total: { value: 100, text: '100', unit: '', verb: '', known: true },
+    parts: [{
+      key: 'root',
+      ordinal: 0,
+      name: 'Root',
+      value: 100,
+      text: '100',
+      share: 1,
+      flag: 'R0',
+      flagArt: ready('asset://root.png'),
+      children: [{
+        key: 'child',
+        ordinal: 0,
+        name: 'Child',
+        value: 100,
+        text: '100',
+        share: 1,
+        parentShare: 1,
+        flag: 'C1',
+        flagArt: ready('asset://child.png'),
+        children: [{
+          key: 'grand',
+          ordinal: 0,
+          name: 'Grand',
+          value: 100,
+          text: '100',
+          share: 1,
+          parentShare: 1,
+          flag: 'G2',
+          flagArt: ready('asset://grand.png'),
+        }],
+      }],
+    }],
+  };
+  const nestedBinding0 = { family: 'breakdown' as const, kind: 'test', options: { view: 'parts' as const, namesInRing: false }, sources: {}, scrollTop: 0, width: 600, height: 300, expanded: { root: true } };
+  const nestedLayout = breakdownLane.layout(nestedModel, nestedBinding0, { width: 600, height: 300, dpr: 1 }, THEME, fakeMeasure, START, { previous: null, now: 0, speed: 24 });
+  const rootHeight = (nestedLayout.layout as PartsViewLayout).rows[0]!.height;
+  assert.deepEqual(
+    [...breakdownLane.visibleArt({ model: nestedModel, layout: nestedLayout, binding: { ...nestedBinding0, scrollTop: rootHeight } } as never)],
+    ['asset://child.png'],
+    'expanded view keeps visible depth-1 flag, drops scrolled-off root, and excludes depth-2 grandchild flag',
+  );
+});

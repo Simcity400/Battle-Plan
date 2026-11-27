@@ -653,14 +653,14 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
             .map_or(0, |at| at as u16 + 1);
         let mut roles = Vec::new();
         if let Some(origin) = &project.output_origin {
-            roles.push(Role { slot: origin.country_slot, at: observed });
+            roles.push(Role::at(origin.country_slot, observed));
             if let Some(census) = project.census_read
                 && project.country_slot != origin.country_slot
             {
-                roles.push(Role { slot: project.country_slot, at: census });
+                roles.push(Role::at(project.country_slot, census));
             }
         } else {
-            roles.push(Role { slot: project.country_slot, at: observed });
+            roles.push(Role::at(project.country_slot, observed));
         }
         let mut text: Vec<&str> = Vec::new();
         if let Some(slot) = project.country_slot
@@ -685,7 +685,7 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
             subjects: Box::new([]),
             states: states.into_boxed_slice(),
             sort_keys: Box::new([SortKey::Dated(changed_steps.into_boxed_slice())]),
-            text: text.join(" ").into_boxed_str(),
+            text: text.join(" ").into(),
             payload: IndexedProject { project, changes: changes.into_boxed_slice() },
         });
     }

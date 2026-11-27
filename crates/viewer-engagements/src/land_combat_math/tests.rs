@@ -14,6 +14,20 @@ fn members(rows: &[LandCombatDivisionRow]) -> impl Iterator<Item = LandCombatMem
     })
 }
 
+fn expected_early(
+    organisation: i64,
+    strength_factor: i64,
+    covered_attack: i64,
+    uncovered_attack: i64,
+    defines: ScoreDefines,
+) -> i64 {
+    let covered = (covered_attack * defines.avoid_with_defence / 100_000) * 1_000 / 100_000;
+    let uncovered = (uncovered_attack * defines.avoid_without_defence / 100_000) * 1_000 / 100_000;
+    let damage_scale = strength_factor * i64::from(defines.organisation_die) * 50_000 / 100_000;
+    let damage = damage_scale * (covered + uncovered) / 100_000;
+    organisation * 100_000 / damage
+}
+
 #[test]
 fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
     let mut detail = LandCombatDetailsRow {
@@ -58,23 +72,25 @@ fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
         (2, condition(6_000_000)),
         (3, condition(3_000_000)),
     ]);
+    let defines = ScoreDefines::FIXTURE;
     let scores = |detail: &LandCombatDetailsRow, conditions: &Conditions, first: &[u64]| {
         side_scores(
             detail,
             members(&divisions),
             conditions,
             [first, &[2]],
-            ScoreDefines::VANILLA,
+            defines,
         )
     };
-    assert_eq!(scores(&detail, &conditions, &[1]), Ok([200_000, 333_333]));
-    assert_eq!(
-        scores(&detail, &conditions, &[1, 3]),
-        Ok([400_000, 333_333])
-    );
+    let s0_one = expected_early(3_000_000, 100_000, 500_000, 500_000, defines);
+    let s0_two = expected_early(6_000_000, 100_000, 500_000, 500_000, defines);
+    let s1 = expected_early(6_000_000, 100_000, 1_000_000, 0, defines);
+    let s0_weak = expected_early(3_000_000, 50_000, 500_000, 500_000, defines);
+    assert_eq!(scores(&detail, &conditions, &[1]), Ok([s0_one, s1]));
+    assert_eq!(scores(&detail, &conditions, &[1, 3]), Ok([s0_two, s1]));
     conditions.get_mut(&2).unwrap().strength = 49_999;
     detail.defender_bonus = 10_000;
-    assert_eq!(scores(&detail, &conditions, &[1]), Ok([400_000, 333_333]));
+    assert_eq!(scores(&detail, &conditions, &[1]), Ok([s0_weak, s1]));
     detail.sides[1].committed.clear();
     assert_eq!(
         scores(&detail, &conditions, &[1]).map(|v| v[0]),
@@ -149,13 +165,14 @@ fn a_missing_status_row_blocks_only_early_firing_damage() {
         ..Default::default()
     };
     let divisions = [member(0, 1), member(1, 2), member(0, 3)];
+    let defines = ScoreDefines::FIXTURE;
     let scores = |detail: &LandCombatDetailsRow, conditions: &Conditions| {
         side_scores(
             detail,
             members(&divisions),
             conditions,
             [&[1, 3], &[2]],
-            ScoreDefines::VANILLA,
+            defines,
         )
     };
     let full = [(1, 100_000), (2, 100_000)];
@@ -176,7 +193,9 @@ fn a_missing_status_row_blocks_only_early_firing_damage() {
             max_organisation: None,
         }
     );
-    assert_eq!(scores(&detail, &conditions), Ok([400_000, 333_333]));
+    let expected_s0 = expected_early(6_000_000, 100_000, 500_000, 500_000, defines);
+    let expected_s1 = expected_early(6_000_000, 100_000, 1_000_000, 0, defines);
+    assert_eq!(scores(&detail, &conditions), Ok([expected_s0, expected_s1]));
     detail.sides[0].committed = vec![1, 3];
     assert_eq!(
         scores(&detail, &conditions),
@@ -206,12 +225,12 @@ fn a_missing_status_row_blocks_only_early_firing_damage() {
         )
         .map(|scores| scores[1])
     };
-    assert_eq!(defender(100_000, 100_000), Ok(333_333));
-    assert_eq!(defender(50_000, 0), Ok(333_333));
-    assert_eq!(defender(i64::MAX, 100_000), Ok(333_333));
-    assert_eq!(defender(250_000, 100_000), Ok(333_333));
+    assert_eq!(defender(100_000, 100_000), Ok(expected_s1));
+    assert_eq!(defender(50_000, 0), Ok(expected_s1));
+    assert_eq!(defender(i64::MAX, 100_000), Ok(expected_s1));
+    assert_eq!(defender(250_000, 100_000), Ok(expected_s1));
     assert_eq!(defender(-5, 100_000), defender(1, 100_000));
-    assert_ne!(defender(1, 100_000), Ok(333_333));
+    assert_ne!(defender(1, 100_000), Ok(expected_s1));
 }
 
 #[test]
@@ -243,7 +262,7 @@ fn survival_uses_full_roster_and_rejects_early_or_missing_rows() {
             members(&divisions),
             &conditions,
             [first, &[2]],
-            ScoreDefines::VANILLA,
+            ScoreDefines::FIXTURE,
         )
     };
     detail.sides[1].committed = vec![99];
@@ -312,7 +331,7 @@ fn survival_keeps_native_wrapping_sums_products_and_special_values() {
             members(&divisions),
             &conditions,
             [units, &[]],
-            ScoreDefines::VANILLA,
+            ScoreDefines::FIXTURE,
         )
         .ok()
         .map(|scores| scores[0])

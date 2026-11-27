@@ -14,7 +14,7 @@ import { persons, validateOccupationReserve } from './occupationReserveData.ts';
 
 export type OccupationReserveRaceOptions = SeriesRaceBaseOptions;
 
-export interface OccupationReserveRowMeta {
+interface OccupationReserveRowMeta {
   readonly tag: string;
   readonly id: number;
   readonly key: string;

@@ -9,7 +9,7 @@ use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals}, products::Load
 use dashboard_query::{
     Query,
     identity::Holder,
-    log::{Reader, occurrence::{Index, Occurrence, Role}},
+    log::{Reader, occurrence::{Index, Occurrence, Role, SearchText}},
     series::MissingSpan,
 };
 use replay_data::{event_feed_rows::EventFeedCoverage, rows::FeedEventRow};
@@ -315,18 +315,20 @@ fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &
     let tags = |roles: &[Role]| roles.iter().filter_map(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)).map(str::to_owned)).collect::<Vec<_>>();
     let (date, roles): (i32, Vec<Role>) = if !event.derived() {
         let ally = event.cause.and_then(|cause| cause.ally).and_then(|ally| slot_of(ally.slot));
-        (event.hour.min(at.hour), [slot_of(event.actor.slot), slot_of(event.target.slot), ally].into_iter().map(|slot| Role { slot, at: event.hour }).collect())
+        let date = event.hour.min(at.hour);
+        (date, [slot_of(event.actor.slot), slot_of(event.target.slot), ally].into_iter().map(|slot| Role::dated(slot, date, at.hour)).collect())
     } else if kind == EventFeedKind::CeasedToExist {
-        (event.read_hour.min(at.hour), vec![Role { slot: slot_of(event.actor.slot), at: event.dated.unwrap_or(event.read_hour) }])
+        let eff = event.dated.unwrap_or(event.read_hour).min(at.hour);
+        (event.read_hour.min(at.hour), vec![Role::dated(slot_of(event.actor.slot), eff, at.hour)])
     } else {
         let (actor, target) = (slot_of(event.actor.slot), slot_of(event.target.slot));
         let start = event.dated.unwrap_or(event.read_hour);
         let exact = [actor, target].iter().all(|slot| slot.is_some_and(|slot| names.slot_tag(slot, start).is_some() && names.slot_tag(slot, start) == names.slot_tag(slot, event.read_hour)));
-        let date = if exact { start } else { event.read_hour };
-        (date.min(at.hour), vec![Role { slot: actor, at: date }, Role { slot: target, at: date }])
+        let date = (if exact { start } else { event.read_hour }).min(at.hour);
+        (date, vec![Role::dated(actor, date, at.hour), Role::dated(target, date, at.hour)])
     };
     let token = event.token.as_deref().and_then(|bytes| std::str::from_utf8(bytes).ok());
-    let text = text_of(token, tags(&roles).into_iter());
+    let text = SearchText::from(text_of(token, tags(&roles).into_iter()));
     Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text, payload: Item::Log { head: at, edges: Box::new([]) } }
 }
 
@@ -564,8 +566,31 @@ fn choice_status(edges: &[&Brief], observed: i32, breaks: &[(i32, i32)], hour: i
 
 
 fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i32, u8)]>) -> Occurrence<Item> {
-    let roles: Vec<Role> = card.edges.iter().flat_map(|edge| edge.slots.iter().map(|&slot| Role { slot, at: edge.hour })).filter(|role| role.slot.is_some()).collect();
-    let tags = roles.iter().filter_map(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)).map(str::to_owned)).collect::<BTreeSet<_>>();
+    let roles: Vec<Role> = card.edges.iter().flat_map(|e| e.slots.iter().map(|&slot| Role::dated(slot, e.hour, e.at.hour.max(head.at.hour)))).filter(|r| r.slot.is_some()).collect();
+    let mut by_read: Vec<&Brief> = card.edges.clone();
+    by_read.sort_by_key(|edge| (edge.at.hour, edge.at.key));
+    let (mut seen_tokens, mut seen_tags, mut parts) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
+    let mut at = 0;
+    while at < by_read.len() {
+        let observed = by_read[at].at.hour.max(head.at.hour);
+        let mut end = at + 1;
+        while end < by_read.len() && by_read[end].at.hour.max(head.at.hour) == observed { end += 1; }
+        let mut words: Vec<String> = by_read[at..end].iter().filter_map(|e| e.token.as_deref()).filter(|t| seen_tokens.insert(*t)).map(str::to_owned).collect();
+        let tags: BTreeSet<String> = by_read[at..end]
+            .iter()
+            .flat_map(|e| e.slots.iter().flatten().filter_map(|&slot| names.slot_tag(slot, e.hour)))
+            .filter(|tag| seen_tags.insert((*tag).to_owned()))
+            .map(str::to_owned)
+            .collect();
+        words.extend(tags);
+        if !words.is_empty() { parts.push((observed, words.join(" ").into_boxed_str())); }
+        at = end;
+    }
+    let text = if parts.iter().all(|(at, _)| *at <= head.at.hour) {
+        SearchText::from(parts.into_iter().map(|(_, p)| p.into_string()).collect::<Vec<_>>().join(" "))
+    } else {
+        SearchText::dated(parts)
+    };
     Occurrence {
         id: head.at.key,
         date: head.hour,
@@ -575,7 +600,7 @@ fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i
         subjects: Box::new([]),
         states,
         sort_keys: Box::new([]),
-        text: text_of(card.edges.iter().find_map(|edge| edge.token.as_deref()), tags.into_iter()),
+        text,
         payload: Item::Log { head: head.at, edges: card.edges.iter().map(|edge| edge.at).collect() },
     }
 }
@@ -631,26 +656,29 @@ fn family_id(text: &str) -> u128 {
 }
 
 fn family_occurrence(query: &Query<'_>, row: EventFeedRow, slot: Option<u32>) -> Occurrence<Item> {
+    let observed = row.read_hour.max(row.hour);
+    let at = row.name_hour.min(observed);
     let roles: Vec<Role> = if let Some(slot) = slot {
-        vec![Role { slot: Some(slot), at: row.name_hour }]
+        vec![Role::dated(Some(slot), at, observed)]
     } else {
         row.tags
             .iter()
-            .map(|tag| Role {
-                slot: query.holders.at(tag.as_str(), row.name_hour).and_then(|run| match run.holder {
+            .map(|tag| Role::dated(
+                query.holders.at(tag.as_str(), row.name_hour).and_then(|run| match run.holder {
                     Holder::Found { slot, .. } => Some(slot),
                     _ => None,
                 }),
-                at: row.name_hour,
-            })
+                at,
+                observed,
+            ))
             .collect()
     };
     let name = row.item.as_ref().and_then(|item| item.name.clone());
-    let text = text_of(name.as_deref(), row.tags.iter().cloned());
+    let text = SearchText::from(text_of(name.as_deref(), row.tags.iter().cloned()));
     Occurrence {
         id: family_id(&row.id),
         date: row.hour,
-        observed: row.read_hour.max(row.hour),
+        observed,
         kind: kind_code(row.kind),
         roles: roles.into_boxed_slice(),
         subjects: Box::new([]),

@@ -1629,12 +1629,13 @@ fn a_full_side_skips_the_next_grouping_call() {
 fn take_off_and_landing_scale_with_the_content_distances() {
     let mut defines = paired::defines();
     defines.clock_speed = 0.22;
-    assert_eq!(defines.takeoff_scale(0.0), 0.1);
-    assert!((defines.takeoff_scale(0.05) - 0.5).abs() < 1e-6);
+    assert_eq!(defines.takeoff_scale(0.0), defines.scale_min);
+    assert!((defines.takeoff_scale(defines.scale_takeoff * 0.5) - 0.5).abs() < 1e-6);
     assert_eq!(defines.takeoff_scale(0.5), 1.0);
     assert_eq!(defines.landing_scale(0.5), 1.0);
-    assert!((defines.landing_scale(0.95) - 0.5).abs() < 1e-5);
-    assert_eq!(defines.landing_scale(1.0), 0.1);
+    let landing_mid = defines.scale_landing + (1.0 - defines.scale_landing) * 0.5;
+    assert!((defines.landing_scale(landing_mid) - 0.5).abs() < 1e-5);
+    assert_eq!(defines.landing_scale(1.0), defines.scale_min);
     defines.scale_takeoff = 0.0;
     defines.scale_landing = 1.0;
     assert!(defines.takeoff_scale(0.0).is_nan());
@@ -2325,7 +2326,7 @@ const BAND: Band = Band {
 
 #[test]
 fn the_band_is_met_at_the_viewer_s_frames() {
-    let defines = FlightDefines::for_tests();
+    let defines = FlightDefines::fixture();
     let dip = |sample: usize| {
         let mut poses = vec![height(3.0); 13];
         poses[sample] = height(-1.0);
@@ -2354,7 +2355,7 @@ fn the_band_is_met_at_the_viewer_s_frames() {
 
 #[test]
 fn an_actor_in_the_band_explodes_or_hides_by_its_own_player() {
-    let defines = FlightDefines::for_tests();
+    let defines = FlightDefines::fixture();
     let falling = || vec![height(3.0), height(1.0), height(-1.0), height(-1.0)];
     let (mut plan, rigs) = one_run(falling(), 1.0, false, false, Explode::Plays);
     plan.advance(&rigs, &defines, Some(BAND), 1.5, &|_| None);
@@ -2396,7 +2397,7 @@ fn an_actor_in_the_band_explodes_or_hides_by_its_own_player() {
 
 #[test]
 fn a_formation_finishing_on_successive_frames_ends_with_its_last_actor() {
-    let defines = FlightDefines::for_tests();
+    let defines = FlightDefines::fixture();
     let falling = vec![height(3.0), height(1.0), height(-1.0), height(-1.0)];
     let (mut plan, rigs) = one_run(falling, 1.0, false, false, Explode::Plays);
     let flight = plan.flights[0].clone();
@@ -2516,7 +2517,7 @@ fn a_retained_nonlooping_clip_reads_the_explosion_delay() {
 
 #[test]
 fn the_drawn_transform_eases_toward_the_pose_and_lags_it() {
-    let defines = FlightDefines::for_tests();
+    let defines = FlightDefines::fixture();
     let along = |x: f32| Transform {
         translation: [x, 3.0, 0.0],
         ..Transform::IDENTITY
@@ -2548,19 +2549,19 @@ fn the_drawn_transform_eases_toward_the_pose_and_lags_it() {
     let (pose, eased) = drawn(&mut plan, 2.0 + frame);
     assert!((pose.position[0] - 2.2).abs() < 1e-4);
     assert!(
-        (eased.position[0] - (2.0 + 0.2 * 0.13)).abs() < 1e-4,
+        (eased.position[0] - (2.0 + 0.2 * defines.smooth_move)).abs() < 1e-4,
         "{:?}",
         eased.position
     );
     let before = eased.position[0];
     let (pose, eased) = drawn(&mut plan, 2.0 + 3.0 * frame);
-    let expected = before + (pose.position[0] - before) * 0.26;
+    let expected = before + (pose.position[0] - before) * (defines.smooth_move * 2.0).min(1.0);
     assert!((eased.position[0] - expected).abs() < 1e-4);
     let (pose, eased) = drawn(&mut plan, 4.9);
     assert!((eased.position[0] - pose.position[0]).abs() < 1e-3);
     let (pose, eased) = drawn(&mut plan, 5.02);
     let start = [-10.0, 10.0, 2.0];
-    let moved = (0.13 * 0.12 * 1000.0 / EASING_FRAME_MS).min(1.0);
+    let moved = (defines.smooth_move * 0.12 * 1000.0 / EASING_FRAME_MS).min(1.0);
     let expected = add(start, mul(sub(pose.position, start), moved));
     assert!(
         (0..3).all(|axis| (eased.position[axis] - expected[axis]).abs() < 1e-3),
@@ -2583,7 +2584,7 @@ fn the_drawn_transform_eases_toward_the_pose_and_lags_it() {
 
 #[test]
 fn a_missile_scenario_finishes_once_per_cycle() {
-    let defines = FlightDefines::for_tests();
+    let defines = FlightDefines::fixture();
     let (mut plan, rigs) = one_run(vec![height(3.0); 4], 1.0, true, false, Explode::Absent);
     plan.advance(&rigs, &defines, Some(BAND), 4.9, &|_| None);
     assert!(plan.missile_explosions(0.0, 4.9).is_empty());

@@ -592,7 +592,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             push(&mut sunk, *at, vessels(read.sunk, read.convoys_sunk));
             push(&mut ic, *at, read.ic[0].zip(read.ic[1]).map(|(a, b)| a.saturating_add(b)));
             push(&mut ships, *at, vessels(read.ships, read.convoys));
-            roles.extend(read.countries.iter().flatten().map(|slot| Role { slot: Some(*slot), at: *at }));
+            roles.extend(read.countries.iter().flatten().map(|slot| Role::at(Some(*slot), *at)));
         }
         if let Some(joined) = line.joined {
             push(&mut states, joined, JOINED);
@@ -607,7 +607,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             subjects: Box::default(),
             states: states.into(),
             sort_keys: [SortKey::dated_numbers(sunk), SortKey::dated_numbers(ic), SortKey::dated_numbers(ships)].into(),
-            text: Box::default(),
+            text: Default::default(),
             payload: line,
         });
     }
@@ -932,7 +932,7 @@ mod tests {
             subjects: Box::default(),
             states: reads.iter().map(|(at, read)| (*at, read.result as u8)).collect::<Vec<_>>().into(),
             sort_keys: [SortKey::dated_numbers(Vec::new()), SortKey::dated_numbers(Vec::new()), SortKey::dated_numbers(Vec::new())].into(),
-            text: Box::default(),
+            text: Default::default(),
             payload: Line { key: key.into(), reads, joined: None },
         };
         let gap = |first_hour, last_hour| MissingSpan { first_hour, last_hour, reason: "Naval battle census incomplete".into() };

@@ -12,7 +12,7 @@ use dashboard_query::{
     identity::{Country, Holders},
     log::{
         Cell, Reader,
-        occurrence::{Ask, Chip, Direction, Index, Occurrence, Order, PlacedGap, Role, Selection, Shown},
+        occurrence::{Ask, Chip, Direction, Index, Occurrence, Order, PlacedGap, Role, SearchText, Selection, Shown},
     },
     series::{MissingSpan, ranked::GroupSelection},
     timeline::Timeline,
@@ -468,7 +468,7 @@ impl Unread {
 struct Contract {
     seller: Option<i64>,
     buyer: Option<i64>,
-    buyer_later: Option<(i64, i32)>,
+    buyer_later: Option<(i64, i32, i32)>,
     agreement: Option<u64>,
     request: bool,
     requested: Option<i32>,
@@ -491,7 +491,7 @@ struct Placed {
     observed: i32,
     roles: Box<[Role]>,
     states: Box<[(i32, u8)]>,
-    text: Box<str>,
+    text: SearchText,
     contract: Contract,
     measures: Measures,
     seller: Party,
@@ -792,7 +792,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             && contract.buyer.is_none_or(|raw| raw == 0)
             && let Some(raw) = buyer.filter(|&raw| raw != 0)
         {
-            contract.buyer_later = Some((raw, observed));
+            contract.buyer_later = Some((raw, hour, observed));
         }
         contract.children.push(Child { key, occurrence, hour, observed, kind: child_kind, variant, amount, total, reason });
     }
@@ -816,21 +816,26 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
         let Some(first) = contract.children.first() else { continue };
         let (date, observed) = (first.hour, first.observed);
         let opening = [slot(contract.seller, date), slot(contract.buyer, date)];
-        let text = opening.iter().flatten().filter_map(|&slot| tags.slot_tag(slot, date)).collect::<Vec<_>>().join(" ");
-        let later = contract.buyer_later.map(|(raw, seen)| Role { slot: slot(Some(raw), seen), at: seen });
-        let roles: Box<[Role]> = opening.into_iter().map(|slot| Role { slot, at: date }).chain(later).collect();
+        let opening_text = opening.iter().flatten().filter_map(|&slot| tags.slot_tag(slot, date)).collect::<Vec<_>>().join(" ");
+        let later = contract.buyer_later.map(|(raw, at, seen)| Role::dated(slot(Some(raw), at), at, seen));
+        let roles: Box<[Role]> = opening.into_iter().map(|slot| Role::dated(slot, date, observed)).chain(later).collect();
         let party = |raw: Option<i64>, hour: i32| resolve_party(query, &links, &tags, raw, hour);
+        let buyer_later = contract.buyer_later.map(|(raw, at, seen)| (seen, party(Some(raw), at)));
+        let text = match &buyer_later {
+            Some((seen, (Some(tag), _))) => SearchText::dated([(observed, opening_text.into_boxed_str()), (*seen, tag.as_str().into())]),
+            _ => SearchText::from(opening_text),
+        };
         contracts.push(Placed {
             key: contract_id(&contract, incarnation, first_key),
             date,
             observed,
             roles,
             states: states(&contract, &unread),
-            text: text.into_boxed_str(),
+            text,
             measures: Measures::of(&contract.children),
             seller: party(contract.seller, date),
             buyer: party(contract.buyer, date),
-            buyer_later: contract.buyer_later.map(|(raw, seen)| (seen, party(Some(raw), seen))),
+            buyer_later,
             contract,
         });
     }
