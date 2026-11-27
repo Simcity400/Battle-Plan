@@ -335,7 +335,10 @@ export class MapViewsStore {
         this.states.delete(id);
         if (this.shown.delete(id)) this.notify(id);
       }
-      if (!target || !surface.layout || mapHoles.outside(surface.element)) continue;
+      if (!target || !surface.layout || mapHoles.outside(surface.element)) {
+        this.lastViews.delete(id);
+        continue;
+      }
       const { bounds, clip, onScreen } = surface.layout;
       const visible = onScreen && !this.hidden && !covered && !document.hidden && !(owned && !target.playing) && !mapHoles.dimmed(surface.element) && !coveredBy(clip, holes);
       const view = { id, ...target, composedAt, clockId, options: this.viewOptions(id, target.options), bounds, clip, visible };
