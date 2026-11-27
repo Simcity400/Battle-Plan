@@ -18,6 +18,7 @@ export const browserTests = [
   'ui/src/components/Select.dom.test.ts',
   'ui/src/dashboard/outsideRecording.dom.test.ts',
   'ui/src/dashboard/controls.dom.test.ts',
+  'ui/src/dashboard/gameWindow.dom.test.ts',
   'ui/src/dashboard/timeFindings.dom.test.ts',
   'ui/src/dashboard/timeSweep.dom.test.ts',
   'ui/src/dashboard/widgetHeader.dom.test.ts',
