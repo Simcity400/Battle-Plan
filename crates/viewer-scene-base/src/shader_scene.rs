@@ -292,7 +292,7 @@ impl State {
                 .map_err(io::Error::other);
         }
         let stream = &mut self.stream;
-        let layouts = stream.vertex_layouts().map_err(io::Error::other)?;
+        let layouts = stream.vertex_layouts().unwrap_or_default();
         with_buffers(&self.vertices, &layouts, |buffers| {
             stream
                 .prepare_native_pass_with_cache(

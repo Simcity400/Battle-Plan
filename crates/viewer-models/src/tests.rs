@@ -1111,8 +1111,8 @@ fn a_visual_mod_entity_keeps_its_recorded_counterpart() {
     let counterpart = library.alternatives[&shown];
     assert!(library.meshes[shown].visual && !library.meshes[counterpart].visual);
     let geometry = |slot: usize| (library.meshes[slot].native[0].lods[0][0].geometry.load)(&mut None).unwrap();
-    assert_eq!(geometry(shown).vertices[8], 5.);
-    assert_eq!(geometry(counterpart).vertices[8], 1.);
+    assert_eq!(geometry(shown).vertices[14], 5.);
+    assert_eq!(geometry(counterpart).vertices[14], 1.);
     let _ = std::fs::remove_dir_all(&root);
 }
 
