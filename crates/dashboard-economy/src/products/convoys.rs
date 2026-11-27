@@ -791,15 +791,35 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                         let traffic_tables: [_; 4] = std::array::from_fn(|i| replay_lanes::at::Read {
                             table: TRAFFIC_TABLES[i].0, columns: None, keys: replay_lanes::at::Keys::These(keys[i]),
                         });
+                        let reads: Option<[_; 4]> = step.is_some().then(|| {
+                            std::array::from_fn(|i| at_hour::Read::these(TRAFFIC_TABLES[i].0, keys[i].iter().copied()))
+                        });
+                        if let (Some(step), Some(reads), Some(hour)) = (step.as_mut(), &reads, params.to)
+                            && step.step.is_none_or(|input| input.step.reset())
+                            && !eval_hours.contains(&hour) && spans.iter().any(|&(a, b)| a <= hour && hour <= b)
+                            && let Err(error) = step.frame(source, query, hour, reads, |_| None)
+                            && error.kind() == io::ErrorKind::WouldBlock {
+                            return Err(error);
+                        }
                         for &(span_a, span_b) in &spans {
                             let hours: Vec<i32> = eval_hours.range(span_a..=span_b).copied().collect();
                             for (idx, &hour) in hours.iter().enumerate() {
                                 dashboard_text::metadata::check_cancel(cancelled)?;
                                 let seg_end = hours.get(idx + 1).map_or(span_b, |&next| next - 1);
+                                let projected = if let (Some(step), Some(reads)) = (step.as_mut().filter(|_| params.to == Some(hour)), &reads) {
+                                    match step.frame(source, query, hour, reads, |_| None) {
+                                        Ok(frame) => Some(frame),
+                                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
+                                        Err(_) => None,
+                                    }
+                                } else {
+                                    None
+                                };
                                 let cold;
-                                let frame = if let Some(step) = step.as_mut().filter(|_| params.to == Some(hour)) {
-                                    let reads: [_; 4] = std::array::from_fn(|i| at_hour::Read::these(TRAFFIC_TABLES[i].0, keys[i].iter().copied()));
-                                    step.frame(source, query, hour, &reads, |_| None)?
+                                let frame = if let Some(frame) = projected.filter(|frame| TRAFFIC_TABLES.iter().all(|&(table, _)| {
+                                    !matches!(frame.tables[table.index()].held(), replay_frame::frame::TableView::Unavailable { .. })
+                                })) {
+                                    frame
                                 } else {
                                     cold = dashboard_query::cost::storage(|| seeker.frame(run, hour, &traffic_tables))?;
                                     &cold
