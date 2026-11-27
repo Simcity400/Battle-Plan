@@ -15,7 +15,7 @@ import type { ChartGap, ChartHoverDetail, ChartLegendEntry, ChartValueFormat, Ti
 import { seriesLookAt } from './model.ts';
 import {
   branchGapsOf,
-  chartTopOf,
+  chartTagsOf,
   countrySeriesLooks,
   auditReading,
   exactHoverByCountry,
@@ -348,8 +348,8 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
     countries: { mode: 'multi', allowSlots: true },
     ...(spec.aux ? { aux: spec.aux } : {}),
     sources(ctx: FamilyPlanContext<TAux>): SourcePlan {
-      const top = chartTopOf(ctx.countries);
-      const tags = top === null ? ctx.countries.tags : [];
+      const top = ctx.countries.top;
+      const tags = top === null ? chartTagsOf(ctx.countries) : [];
       const measure = measureOf(spec.measure(ctx.options, ctx.aux));
       const second = spec.second?.(ctx.options) ?? null;
       const owner = `${spec.kind}:${spec.view}:${ctx.track.source.id}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${measure?.measure ?? ''}:${second?.measure ?? ''}`;
@@ -466,10 +466,10 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
     },
     projectionOptions(ctx, { extent, surface }) {
       return {
-        tags: chartTopOf(ctx.countries) === null ? ctx.countries.tags : [],
-        top: chartTopOf(ctx.countries),
+        tags: ctx.countries.top === null ? chartTagsOf(ctx.countries) : [],
+        top: ctx.countries.top,
         holders: ctx.countries.holders,
-        membership: chartTopOf(ctx.countries) === null ? ctx.countries.membership : null,
+        membership: ctx.countries.top === null ? ctx.countries.membership : null,
         decimals: measureOf(spec.measure(ctx.options, ctx.aux))?.decimals ?? 0,
         unavailable: (() => {
           const chosen = spec.measure(ctx.options, ctx.aux);

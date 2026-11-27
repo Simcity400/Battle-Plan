@@ -7,6 +7,7 @@ import { compileFollowPlan, readPlanExact } from '../../families/broker.ts';
 import type { BoundedSeries, FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import { ReadTarget, unitEntries } from '../../families/readUnits.ts';
 import type { AutonomyLevelsReply, AutonomySubject } from '../../generated/dashboard';
+import { territoryRaceDeclaration } from '../territory/territoryRaceProjection.ts';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
 import {
   autonomyLinesDeclaration,
@@ -112,7 +113,7 @@ test('autonomy lines registers in TIME_CHART_VIEWS and uses autonomy-lines tiles
   assert.equal(main?.shape, 'pixel-binned');
   if (main?.shape === 'pixel-binned') {
     assert.equal(main.family.kind, 'autonomy-lines');
-    assert.ok((main.top?.n ?? 0) > 1500, 'every subject the recording holds, with no cap below the population');
+    assert.equal(main.top, undefined, 'the full population has no limit');
     assert.equal(main.headQuery, null);
   }
   assert.equal(head?.shape, 'point');
@@ -356,4 +357,49 @@ test('a quiet stretch of played hours makes zero extra requests for autonomy lin
   await Promise.resolve();
   assert.equal(requests, 0, '30 quiet played hours make zero extra requests');
   target.dispose();
+});
+
+test('All subjects and selected overlords request the full historical population without a limit', () => {
+  for (const countriesAre of ['subjects', 'overlords']) {
+    const base = makeCtx({ countriesAre });
+    const contexts = [base, { ...base, countries: { ...base.countries, all: false, filter: { ...base.countries.filter, passing: { AAA: [[100, 600]] as const } } } }];
+    for (const ctx of countriesAre === 'overlords' ? contexts : [base]) {
+      const read = autonomyLinesDeclaration.sources(ctx, { following: true, staticSpan: null }).entries[0]!.read;
+      assert.equal(read.shape, 'pixel-binned');
+      assert.equal('top' in read, false);
+      assert.deepEqual('coverage' in read && read.coverage, { mode: 'population', form: 'all' });
+    }
+  }
+});
+
+
+test('every former All ceiling requests the entire witnessed catalogue and preserves the chosen Top N', async () => {
+  const kinds = ['air-force-size', 'army-size', 'factories', 'game-score', 'occupation-trend', 'nuclear-arsenal', 'navy-size', 'air-kills-losses', 'equipment-produced', 'naval-losses', 'raid-tally'];
+  const base = makeCtx({ count: 'ic' });
+  const every = ['AAA', 'BBB', 'CCC'];
+  const ctx: FamilyPlanContext = { ...base, countries: { ...base.countries, every } };
+  for (const kind of kinds) {
+    const entry = TIME_CHART_VIEWS.find(view => view.kind === kind && view.view === 'lines')!;
+    const { declaration } = await entry.loadSpec();
+    const context = { ...ctx, widget: { ...ctx.widget, kind }, aux: kind === 'army-size' ? { measures: ['manpower'] } : undefined };
+    for (const top of [null, 2]) {
+      const plan = declaration.sources({ ...context, countries: { ...context.countries, all: top === null, top } }, { following: true, staticSpan: null });
+      const read = plan.entries[0]?.read;
+      assert.ok(read, kind);
+      if (read.shape === 'pixel-binned') {
+        assert.deepEqual(read.tags, top === null ? every : [], kind);
+        assert.deepEqual(read.top, top === null ? undefined : { n: top }, kind);
+      } else {
+        assert.equal(read.shape, 'branch-to-hour', kind);
+        assert.deepEqual(read.params.countries, top === null ? every : [], kind);
+        assert.equal(read.params.top ?? null, top, kind);
+      }
+    }
+  }
+  const race = territoryRaceDeclaration.sources(ctx, { following: true, staticSpan: null }).entries[0]!.read;
+  assert.equal(race.shape, 'point');
+  if (race.shape === 'point') {
+    assert.deepEqual(race.params?.countries, every);
+    assert.equal('top' in race.params!, false);
+  }
 });

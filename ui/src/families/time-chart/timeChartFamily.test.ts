@@ -1657,7 +1657,7 @@ describe('several countries, one measure', () => {
     assert.ok(!plan.entries.some(entry => entry.name === 'rank'), 'a ranked top takes its order from its own ranked read, not a second rank request');
     const fresh = occupationLinesDeclaration.sources({ ...ctx, countries: { tags: [], membership: null, top: null, all: true, every: [] } } as unknown as Parameters<typeof occupationLinesDeclaration.sources>[0],
       { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]);
-    assert.ok(((fresh.entries.find(entry => entry.name === 'main')!.read as { top?: { n: number } }).top?.n ?? 0) >= 1500, 'All countries before the country list loads asks the whole population, never a top of one');
+    assert.deepEqual(fresh.entries, [], 'All countries waits for the witnessed catalogue, with no numeric stand-in');
     const keyed = occupationLinesDeclaration.sources({ ...ctx, countries: { tags: ['A07', 'A01'], membership: null, top: null, all: false, every: [] } } as unknown as Parameters<typeof occupationLinesDeclaration.sources>[0],
       { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]);
     assert.deepEqual(keyed.entries.filter(entry => entry.read.shape === 'pixel-binned').map(entry => (entry.read as { headQuery: { coverage?: string } }).headQuery.coverage), ['row', 'row'], 'keyed heads ask row coverage');

@@ -298,7 +298,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
 
   const needsGroups = isFilter
-    || (isMulti && (policy.requireGroupsWhen ? policy.requireGroupsWhen(widget, options) : widget.countries.kind === 'group'));
+    || (isMulti && (widget.countries.kind === 'all' || (policy.requireGroupsWhen ? policy.requireGroupsWhen(widget, options) : widget.countries.kind === 'group')));
   const fetchGroups = isFilter || (isMulti && (needsGroups || policy.factions || policy.everyOnTop));
   const groups = useCountryGroups(runtime, track, active && fetchGroups);
 
@@ -653,7 +653,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     for (const entry of entries) {
       const read = entry.read;
       const keyed = read.keys && read.keys.length > 0 ? read.keys : null;
-      if (!keyed && !read.tags.length && !read.top) continue;
+      const population = read.coverage.mode === 'population' && read.coverage.form === 'all' && !read.tags.length;
+      if (!keyed && !read.tags.length && !read.top && !population) continue;
       const byId = keyed ? new Map<string, SeriesKey>(keyed.map(key => [keyId(key), key])) : null;
       const laneTags = keyed ? keyed.map(keyId) : read.tags;
       const tileRequest = (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): ProductRequest =>
@@ -688,7 +689,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       const promote = prepared ? (...asked: Parameters<typeof tileRequest>) => prepareGate(runtime.client).promote(tileRequest(...asked)) : undefined;
       const laneKey = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${JSON.stringify(read.family)}${keyed ? '|keyed' : ''}`;
       const readTop = read.top;
-      const top = readTop
+      const top = readTop || population
         ? {
             ask: async (binHours: number, index: number, hour: number) => {
               const gated = gateRecordedRef.current(hour);
@@ -697,7 +698,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 sourceId: entry.source.id,
                 revision: entry.source.revision,
                 product: 'series-tiles',
-                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}), hour: gated },
+                params: { branchId: entry.branch, family: read.family, binHours, index, ...(readTop ? { top: readTop.n, ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}) } : {}), hour: gated },
               });
               return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
             },

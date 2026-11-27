@@ -29,7 +29,7 @@ import {
   missingSpansOf,
   partialSpansOf,
   withinMapOf,
-  chartTopOf,
+  chartTagsOf,
   rowsBySelectedKey,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
@@ -364,8 +364,8 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
     const kind = navalKind(ctx.options);
     const attribution = navalAttribution(ctx.options);
     const period = navalPeriod(ctx.options);
-    const top = chartTopOf(ctx.countries);
-    const tags = top === null ? ctx.countries.tags : [];
+    const top = ctx.countries.top;
+    const tags = top === null ? chartTagsOf(ctx.countries) : [];
     const selection = forceSelection(ctx);
     const owner = `naval-losses:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${kind}:${attribution}:${period}`;
     if (selection.none || (top === null && tags.length === 0)) {
@@ -446,9 +446,9 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
     const kind = navalKind(ctx.options);
     const attribution = navalAttribution(ctx.options);
     const period = navalPeriod(ctx.options);
-    const top = chartTopOf(ctx.countries);
+    const top = ctx.countries.top;
     return {
-      tags: top === null ? ctx.countries.tags : [],
+      tags: top === null ? chartTagsOf(ctx.countries) : [],
       top,
       kind,
       attribution,

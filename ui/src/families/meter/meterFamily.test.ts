@@ -678,14 +678,12 @@ test('an autonomy sparkline breaks over hours not recorded instead of carrying t
   assert.equal(line[gapAt(hour - 150)], null, 'a sample inside the unread stretch is a break, not 20%');
 });
 
-test('autonomy meters ask for every subject the recording names, with no fixed cap', () => {
-  const topOf = (count: number) => {
-    const ctx = { track: { source: { id: 's', revision: 1 }, axisOffset: 0 }, branch: { id: '1' }, countries: { every: Array.from({ length: count }, (_, i) => `T${i}`) } };
-    const trend = autonomyLevelsDeclaration.sources(ctx as never, {} as never).entries.find(entry => entry.name === 'trend')!;
-    return trend.read.shape === 'pixel-binned' ? trend.read.top?.n : null;
-  };
-  assert.ok(topOf(0)! > 1500, 'more than 1,500 subjects get a trend before the population is known');
-  assert.equal(topOf(20_001), 20_001, 'a larger population is asked whole');
+test('autonomy meters request the subject population without a limit before the catalogue loads', () => {
+  const ctx = { track: { source: { id: 's', revision: 1 }, axisOffset: 0 }, branch: { id: '1' } };
+  const trend = autonomyLevelsDeclaration.sources(ctx as never, {} as never).entries.find(entry => entry.name === 'trend')!;
+  assert.equal(trend.read.shape, 'pixel-binned');
+  assert.equal('top' in trend.read, false);
+  assert.deepEqual('coverage' in trend.read && trend.read.coverage, { mode: 'population', form: 'all' });
 });
 
 test('an autonomy sparkline breaks across a short unread stretch that falls between two samples', () => {

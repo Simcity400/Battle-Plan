@@ -6447,7 +6447,7 @@ missing: string | null, warnings: Array<string>, };
 export type WorldTensionParamsAtHour = WorldTensionParams & { hour: number };
 export type TensionValueMode = "share" | "recorded";
 export type TensionStackPiece = "history" | "edge";
-export type WorldTensionStackParams = { branchId: string, firstHour: number, lastHour: number, layers: number, values: TensionValueMode, countries: Array<string> | null, top: number | null, group: GroupSelection | null, width: number | null, includeStack: boolean | null, includeEvents: boolean | null, piece?: TensionStackPiece, };
+export type WorldTensionStackParams = { branchId: string, firstHour: number, lastHour: number, layers?: number, values: TensionValueMode, countries: Array<string> | null, top: number | null, group: GroupSelection | null, width: number | null, includeStack: boolean | null, includeEvents: boolean | null, piece?: TensionStackPiece, };
 export type TensionHolder = { tag: string, firstHour: number, lastHour: number, remembered: boolean, };
 export type TensionStackBand = { slot: number, holders: Array<TensionHolder>, tag: string | null, remembered: boolean, values: Array<number | null>, valuesRaw: Array<string | null>, minValues: Array<number | null>, maxValues: Array<number | null>, endValue: number | null, endRaw: string | null, endMissing: string | null, };
 export type TensionStackOther = { count: number, values: Array<number | null>, valuesRaw: Array<string | null>, endValue: number | null, endRaw: string | null, endMissing: string | null, };

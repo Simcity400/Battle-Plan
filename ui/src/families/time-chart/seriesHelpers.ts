@@ -71,10 +71,8 @@ function scaledReading(rawInt: bigint, decimals: number, scale: number | Rationa
   return Number.isFinite(value) ? { value } : null;
 }
 
-export const ALL_POPULATION_TOP = 10_000;
-
-export function chartTopOf(countries: FamilyPlanContext['countries']): number | null {
-  return countries.top ?? (countries.all ? Math.max(ALL_POPULATION_TOP, countries.every.length) : null);
+export function chartTagsOf(countries: FamilyPlanContext['countries']): readonly string[] {
+  return countries.all ? countries.every : countries.tags;
 }
 
 export function rowsBySelectedKey<R extends { readonly tag: string | null }>(rows: readonly R[], slotKey: (row: R) => string): (key: string) => R | undefined {

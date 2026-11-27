@@ -17,11 +17,10 @@ import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
+import { chartTagsOf } from '../../families/time-chart/seriesHelpers.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { valueFromRawBigInt, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-
-const ALL_POPULATION_TOP = 10_000;
 
 export interface TerritoryRaceOptions {
   readonly mode: 'countries' | 'factions';
@@ -127,9 +126,9 @@ function territoryRaceSources(ctx: FamilyPlanContext): SourcePlan {
   if (isFactionTotalsSelection(ctx.widget.countries)) {
     return factionTotalsSources('territory:race', ctx, 'territory', seriesMeasure);
   }
-  const top = ctx.countries.top ?? (ctx.countries.all ? Math.max(ALL_POPULATION_TOP, ctx.countries.every.length) : null);
+  const top = ctx.countries.top;
   const group = top == null ? groupSelection(ctx.widget.countries) : null;
-  const tags = top == null && !group ? ctx.countries.tags : [];
+  const tags = top == null && !group ? chartTagsOf(ctx.countries) : [];
   const coverage: SourceCoverage = ctx.countries.top != null
     ? { mode: 'population', form: 'top', limit: ctx.countries.top }
     : ctx.countries.all || group

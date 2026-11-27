@@ -24,7 +24,7 @@ import {
   branchGapsOf,
   countrySeriesLooks,
   memberAt,
-  chartTopOf,
+  chartTagsOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -570,8 +570,8 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
   icon: 'target',
   countries: { mode: 'multi', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
-    const top = chartTopOf(ctx.countries);
-    const tags = top === null ? ctx.countries.tags : [];
+    const top = ctx.countries.top;
+    const tags = top === null ? chartTagsOf(ctx.countries) : [];
     const metric = raidTallyMetric(ctx.options.metric);
     const owner = `raid-tally:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${metric}`;
     if (top === null && tags.length === 0) {
@@ -614,9 +614,9 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
   },
   projection: raidTallyLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
-    const top = chartTopOf(ctx.countries);
+    const top = ctx.countries.top;
     return {
-      tags: top === null ? ctx.countries.tags : [],
+      tags: top === null ? chartTagsOf(ctx.countries) : [],
       top,
       metric: raidTallyMetric(ctx.options.metric),
       holders: ctx.countries.holders,

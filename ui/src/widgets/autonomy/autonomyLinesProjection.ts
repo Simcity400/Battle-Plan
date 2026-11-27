@@ -26,7 +26,6 @@ import {
   branchGapsOf,
   countrySeriesLooks,
   missingSpansOf,
-  ALL_POPULATION_TOP,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { AutonomyLevelsReply, AutonomyLinesTileFamily, AutonomySubject } from '../../generated/dashboard';
@@ -439,7 +438,6 @@ export const autonomyLinesDeclaration: TimeChartWidgetDeclaration<AutonomyLinesO
           coverage: { mode: 'population', form: 'all' },
           family: { kind: 'autonomy-lines', ...(within ? { overlords: [...within].map(([tag, spans]) => [countryFromKey(tag), spans]) } : {}) } satisfies AutonomyLinesTileFamily,
           tags: [],
-          top: { n: ALL_POPULATION_TOP },
           headQuery: null,
         };
     const head: SourceEntry = {

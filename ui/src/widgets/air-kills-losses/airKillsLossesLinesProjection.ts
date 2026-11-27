@@ -31,7 +31,7 @@ import {
   partialSpansOf,
   rowsBySelectedKey,
   withinMapOf,
-  chartTopOf,
+  chartTagsOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -441,8 +441,8 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
   icon: 'target',
   countries: { mode: 'multi', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
-    const top = chartTopOf(ctx.countries);
-    const tags = top === null ? ctx.countries.tags : [];
+    const top = ctx.countries.top;
+    const tags = top === null ? chartTagsOf(ctx.countries) : [];
     const rankMetric = rankMetricOf(ctx.options.measure);
     const filters = filtersOf(ctx);
     const fromHour = ctx.staticSpan && ctx.widget.time.mode === 'range' ? ctx.staticSpan[0] : undefined;
@@ -531,9 +531,9 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
   },
   projection: airKillsLossesLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
-    const top = chartTopOf(ctx.countries);
+    const top = ctx.countries.top;
     return {
-      tags: top === null ? ctx.countries.tags : [],
+      tags: top === null ? chartTagsOf(ctx.countries) : [],
       top,
       rankMetric: rankMetricOf(ctx.options.measure),
       holders: ctx.countries.holders,

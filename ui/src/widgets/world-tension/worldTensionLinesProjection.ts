@@ -187,11 +187,6 @@ export const worldTensionLinesDeclaration: TimeChartWidgetDeclaration<WorldTensi
     const top = ctx.countries.top ?? null;
     const keyed = !ctx.countries.all && top == null;
     const group = keyed ? groupSelection(ctx.widget.countries) : null;
-    const layers = top != null
-      ? Math.max(1, Math.min(1500, top))
-      : ctx.countries.all || group
-        ? 1500
-        : Math.max(1, Math.min(1500, ctx.countries.tags.length));
     const countries = keyed && !group ? [...ctx.countries.tags] : null;
     const width = Math.max(240, Math.min(2400, Math.ceil(view.width ?? 1024)));
     return {
@@ -209,7 +204,6 @@ export const worldTensionLinesDeclaration: TimeChartWidgetDeclaration<WorldTensi
             followQuery: null,
             params: {
               branchId: ctx.branch.id,
-              layers,
               values: 'recorded',
               countries,
               top,

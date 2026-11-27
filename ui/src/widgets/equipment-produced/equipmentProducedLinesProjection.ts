@@ -28,7 +28,7 @@ import {
   memberAt,
   missingSpansOf,
   withinMapOf,
-  chartTopOf,
+  chartTagsOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -376,10 +376,10 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
   },
   sources(ctx: FamilyPlanContext<ProducedTypesReply>): SourcePlan {
     const { count, measure, refits, shownTypes, noDataMessage } = resolvedEquipment(ctx);
-    const top = chartTopOf(ctx.countries);
+    const top = ctx.countries.top;
     const all = ctx.countries.all;
     const group = top === null && !all ? groupSelection(ctx.widget.countries) : null;
-    const tags = top === null ? ctx.countries.tags : [];
+    const tags = top === null ? chartTagsOf(ctx.countries) : [];
     const fromHour = measure === 'total' && ctx.widget.time.mode === 'range' && ctx.staticSpan ? ctx.staticSpan[0] : undefined;
     const waitingForDefault = count === 'units' && !shownTypes.length && !noDataMessage;
     const emptySelection = top === null && !all && !group && tags.length === 0;
@@ -474,10 +474,10 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
   projection: equipmentProducedLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
     const { count, measure, equipmentLabel, noDataMessage } = resolvedEquipment(ctx);
-    const top = chartTopOf(ctx.countries);
+    const top = ctx.countries.top;
     const fromHour = measure === 'total' && ctx.widget.time.mode === 'range' && ctx.staticSpan ? ctx.staticSpan[0] : null;
     return {
-      tags: top === null ? ctx.countries.tags : [],
+      tags: top === null ? chartTagsOf(ctx.countries) : [],
       top,
       count,
       measure,
