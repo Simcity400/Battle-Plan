@@ -181,6 +181,12 @@ impl Drop for Taken {
 }
 
 impl Taken {
+    pub(super) fn selected<'a>(&self, table: usize, columns: &[usize], hour: Hour, keys: &'a super::Keys) -> io::Result<Option<playhead::lane::Selected<'a>>> {
+        let placed = self.placed.as_ref().expect("held until dropped");
+        if placed.lanes.iter().any(|lane| lane.table() == table) { return Ok(None); }
+        playhead::lane::selected_at(&*self.pool.pages, placed.run, table, columns, hour, keys)
+    }
+
     pub(super) fn lane(&mut self, table: usize, columns: &[usize], hour: Hour) -> io::Result<&Lane> {
         let pages = Arc::clone(&self.pool.pages);
         let placed = self.placed.as_mut().expect("held until dropped");

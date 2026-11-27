@@ -3,7 +3,7 @@ use super::numbers;
 use crate::{
     invalid,
     state::Kind,
-    store::{Flags, NumberCells, Numbers, PAGE, TableState},
+    store::{Flags, NumberCells, Numbers, PAGE, TableState, Value},
     unit::{get_wide, unzig, unzig_wide},
 };
 use std::io;
@@ -121,6 +121,50 @@ fn scatter<const W: usize>(cells: &mut [u8], live: &Flags, from: u32, to: u32, v
         let at = slot as usize * W;
         cells[at..at + W].copy_from_slice(&value.to_le_bytes()[..W]);
     });
+}
+
+pub(crate) fn selected_cells(
+    bytes: &[u8], end: usize, range: (u32, u32), column: usize, live: &Flags,
+    compact: &mut TableState, slots: &[(u32, u32)],
+) -> io::Result<()> {
+    let kind = compact.column(column).expect("a selected column").kind();
+    let list = matches!(kind, Kind::U32List | Kind::U64List | Kind::Opaque);
+    let optional = compact.numbers(column).is_some_and(|cells| cells.present.is_some());
+    let mut selected = slots[slots.partition_point(|&(slot, _)| slot < range.0)..].iter().peekable();
+    let (mut at, mut damaged, mut result) = (0, false, Ok(()));
+    each_live(live, range.0, range.1, |slot| {
+        if result.is_err() || damaged { return; }
+        let value = if list {
+            let head = numbers::varint(&bytes[..end], &mut at, &mut damaged);
+            let start = at;
+            at = at.saturating_add((head >> 1).min(u64::from(u32::MAX)) as usize);
+            if damaged || at > end {
+                result = Err(invalid("A restore's list cell passes its chunk"));
+                return;
+            }
+            if head & 1 == 0 { Value::List(&bytes[start..at]) } else { Value::Unrecorded }
+        } else {
+            let (half, odd) = numbers::code(&bytes[..bytes.len().min(end + 8)], &mut at, &mut damaged);
+            match (odd, half, kind) {
+                (0, _, Kind::Bytes) => Value::Text(unzig(half) as u32),
+                (0, _, _) => Value::Number(unzig(half) as u64),
+                (_, 0, _) if optional => Value::Missing,
+                (_, 0, _) => {
+                    result = Err(invalid(format!("A restore leaves a cell missing in a {kind:?} column, whose cells are never missing")));
+                    return;
+                }
+                (_, 1, _) => Value::Unrecorded,
+                _ => { damaged = true; return; }
+            }
+        };
+        if let Some(&&(old, new)) = selected.peek() && old == slot {
+            selected.next();
+            result = compact.put_snapshot_cell(new, column, value);
+        }
+    });
+    result?;
+    if damaged || at != end { return Err(invalid("A restore's column holds bytes past its cells")); }
+    Ok(())
 }
 
 pub(crate) fn numbers(bytes: &[u8], end: usize, from: u32, to: u32, column: usize, table: &mut TableState, values: &mut Vec<u64>) -> io::Result<()> {

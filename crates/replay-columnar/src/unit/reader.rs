@@ -15,7 +15,7 @@ use crate::{
     invalid,
     manifest::Status,
     state::Kind,
-    store::{Lists, TableState, Value},
+    store::{Lists, Strings, TableState, Value},
 };
 use engine_allocation::zstd::{Decompressor, Holder};
 use std::{
@@ -502,8 +502,13 @@ impl Part {
 }
 
 pub fn fetch(source: &dyn Extents, entry: &PartEntry, last: u16, columns: &[usize], previous: Option<&Prefix>) -> io::Result<Part> {
+    fetch_streams(source, entry, last, columns, previous, false)
+}
+
+fn fetch_streams(source: &dyn Extents, entry: &PartEntry, last: u16, columns: &[usize], previous: Option<&Prefix>, names_only: bool) -> io::Result<Part> {
     let mut wanted: Vec<u32> = columns.iter().map(|&column| column_stream(column)).collect();
-    wanted.extend([LIFETIMES, STRINGS, READ, TOUCHED]);
+    wanted.push(STRINGS);
+    if !names_only { wanted.extend([LIFETIMES, READ, TOUCHED]); }
     wanted.sort_unstable();
     let wants = |id: u32| wanted.binary_search(&id).is_ok();
     let mut held = Frames::default();
@@ -640,6 +645,16 @@ pub fn fetch(source: &dyn Extents, entry: &PartEntry, last: u16, columns: &[usiz
         lives: 0,
         log: entry.log,
     })
+}
+
+pub fn part_text(source: &dyn Extents, parts: &[PartEntry], hour: u16, id: u32) -> io::Result<Option<Vec<u8>>> {
+    let mut previous = None;
+    for entry in parts.iter().take_while(|entry| entry.first <= hour) {
+        let part = fetch_streams(source, entry, hour, &[], previous.as_ref(), true)?;
+        if let Some((_, text)) = part.strings().iter().find(|(held, _)| *held == id) { return Ok(Some(text.clone())); }
+        previous = Some(part.prefix());
+    }
+    Ok(None)
 }
 
 fn verify(frame: &FrameEntry, stored: &[u8]) -> io::Result<()> {
@@ -1524,20 +1539,37 @@ fn chunk_and_prefix(source: &dyn Extents, chunk: &super::restore::Chunk, reading
 }
 
 pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize]) -> io::Result<(TableState, super::restore::Meta)> {
-    restore_into(source, entry, kinds, columns, false, false).map(|(table, meta, _)| (table, meta))
+    restore_into(source, entry, kinds, columns, false, false, None).map(|(table, meta, _)| (table, meta))
 }
 
 pub fn restore_keyed(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize]) -> io::Result<(TableState, super::restore::Meta)> {
-    restore_into(source, entry, kinds, columns, true, false).map(|(table, meta, _)| (table, meta))
+    restore_into(source, entry, kinds, columns, true, false, None).map(|(table, meta, _)| (table, meta))
 }
 
 pub fn restore_with_string_tables(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize], keyed: bool) -> io::Result<(TableState, super::restore::Meta, Vec<super::restore::StringTable>)> {
-    restore_into(source, entry, kinds, columns, keyed, true)
+    restore_into(source, entry, kinds, columns, keyed, true, None)
 }
 
 type Restored = (TableState, super::restore::Meta, Vec<super::restore::StringTable>);
 
-fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize], keyed: bool, lazy: bool) -> io::Result<Restored> {
+pub fn restore_text(source: &dyn Extents, entry: &super::restore::RestoreEntry, id: u32) -> io::Result<Option<Vec<u8>>> {
+    let chunk = entry.streams.iter().find(|(id, _)| *id == super::restore::META)
+        .and_then(|(_, chunks)| chunks.first()).ok_or_else(|| invalid("A restore holds no meta stream"))?;
+    reading(|reading| {
+        let (mut raw, mut prefix) = (Vec::new(), Vec::new());
+        let against = chunk_and_prefix(source, chunk, reading, &mut raw, &mut prefix)?;
+        let own = super::restore::meta_text(&raw[..chunk.frame.raw as usize], id)?;
+        if own.is_some() || !against { return Ok(own); }
+        super::restore::meta_text(&prefix, id)
+    })
+}
+
+pub fn restore_selected(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize], wants: &dyn Fn(u128) -> bool) -> io::Result<(TableState, Strings)> {
+    let (cells, _, strings) = restore_into(source, entry, kinds, columns, true, true, Some(wants))?;
+    Ok((cells, Strings::restored(strings)))
+}
+
+fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize], keyed: bool, lazy: bool, wants: Option<&dyn Fn(u128) -> bool>) -> io::Result<Restored> {
     use super::restore::{self as held, META, ROWS, ROWS_CHUNK};
     if entry.log {
         return logs::log_restore(source, entry, kinds, lazy);
@@ -1598,11 +1630,26 @@ fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kind
         if !keyed {
             table.clear_index();
         }
+        let mut selected = wants.map(|wants| {
+            let mut compact = TableState::new(kinds);
+            compact.set_status(table.status(), table.sampled_at());
+            compact.enable_index();
+            let mut slots = Vec::new();
+            for slot in table.rows() {
+                let key = table.key(slot).expect("a live slot");
+                if wants(key) {
+                    let at = slots.len() as u32;
+                    compact.insert_at(at, key)?;
+                    slots.push((slot, at));
+                }
+            }
+            Ok::<_, io::Error>((compact, slots))
+        }).transpose()?;
         let (mut values, mut cells) = (Vec::new(), Vec::new());
         for &column in columns {
             let chunks = stream(held::column_stream(column));
             if chunks.is_empty() {
-                table.unrecord_rows(column)?;
+                selected.as_mut().map_or(&mut table, |(compact, _)| compact).unrecord_rows(column)?;
                 continue;
             }
             let list = matches!(kinds.get(column), Some(Kind::U32List | Kind::U64List | Kind::Opaque));
@@ -1610,14 +1657,16 @@ fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kind
                 chunk_and_prefix(source, &chunks[index], reading, &mut raw, &mut prefix)?;
                 let end = chunks[index].frame.raw as usize;
                 let (from, to) = range(chunks, index);
-                if list {
+                if let Some((compact, slots)) = &mut selected {
+                    bulk::selected_cells(&raw, end, (from, to), column, table.live(), compact, slots)?;
+                } else if list {
                     bulk::lists(&raw, end, from, to, column, &mut table, &mut cells)?;
                 } else {
                     bulk::numbers(&raw, end, from, to, column, &mut table, &mut values)?;
                 }
             }
         }
-        Ok((table, meta, tables))
+        Ok((selected.map_or(table, |(compact, _)| compact), meta, tables))
     })
 }
 

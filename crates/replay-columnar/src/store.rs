@@ -1455,7 +1455,7 @@ impl TableState {
         Some(slot)
     }
 
-    fn insert_at(&mut self, slot: u32, key: u128) -> io::Result<()> {
+    pub(crate) fn insert_at(&mut self, slot: u32, key: u128) -> io::Result<()> {
         if !valid_slot(slot) {
             return Err(past_slots("A table"));
         }
@@ -1599,6 +1599,15 @@ impl TableState {
         }
         self.free_from = 0;
         Ok(())
+    }
+
+    pub(crate) fn put_snapshot_cell(&mut self, slot: u32, column: usize, value: Value<'_>) -> io::Result<()> {
+        let cells = &mut self.columns[column];
+        if value == Value::Unrecorded {
+            cells.unrecord(slot);
+            return Ok(());
+        }
+        cells.put(slot, value, self.slots as usize, self.lists)
     }
 
     pub(crate) fn unrecord_rows(&mut self, column: usize) -> io::Result<()> {
