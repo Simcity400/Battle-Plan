@@ -685,5 +685,63 @@ class HostedShellTests(unittest.TestCase):
             self.assertEqual((target_dir / "ci-built-from").read_text(encoding="utf-8").strip(), self.SHA)
 
 
+class CountAcceptanceTests(unittest.TestCase):
+    def test_copy_runs_share_baseline_state_without_locking_or_erasing_another_run(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            fixture = root / "example.battleplan"
+            fixture.write_bytes(b"recording fixture")
+            for name in (suite.APP_EXE, "hoi4.exe", *suite.SHADER_COMPILER):
+                (root / name).touch()
+            state = root / "state"
+            with suite.state_lock(state):
+                for name in ("one", "two"):
+                    args = suite.parse(["run", "--app", str(root), "--game-dir", str(root), "--user-dir", str(root),
+                                        "--state", str(state), "--fixture", str(root), "--out", str(root / name), "--stages", "copy"])
+                    self.assertEqual(suite.run(args), 0)
+            for name in ("one", "two"):
+                copied = root / name / "work" / "profile" / "local" / "BattlePlan" / "captures" / fixture.name
+                self.assertEqual(copied.read_bytes(), fixture.read_bytes())
+
+    def test_selected_only_archive_and_atomic_replace(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state, run = root / "state", root / "run"
+            state.mkdir(); run.mkdir()
+            metadata = {"commit": "head", "started": "today", "fixture": {"sha256": "sha256:fixture"}}
+            (run / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+            key = lambda action: hashlib.sha256(json.dumps(["sha256:fixture", "scenario", action], separators=(",", ":")).encode()).hexdigest()
+            entry = {"key": key("seek"), "recording": "sha256:fixture", "scenario": "scenario", "interaction": "seek", "complete": True, "counts": {"requests:total": 8}}
+            (run / "counts.json").write_text(json.dumps({"run": metadata, "entries": [entry, {**entry, "key": key("scroll"), "interaction": "scroll"}]}), encoding="utf-8")
+            (run / "e2e.json").write_text(json.dumps({"run": metadata, "sections": [{"title": "Accepted request counts", "rows": [{"pass": False}]}]}), encoding="utf-8")
+            args = SimpleNamespace(run=run, state=state, reason="reviewed", counts=[key("seek")])
+            suite.accept(args)
+            baseline = json.loads((state / "perf-baseline.json").read_text())
+            self.assertEqual(len(baseline["entries"]), 1)
+            self.assertEqual(baseline["entries"][0]["counts"]["requests:total"]["accepted"], 8)
+            selection = root / "selected-counts.json"
+            selection.write_text(json.dumps([key("scroll")]))
+            args.counts = None
+            args.counts_file = selection
+            suite.accept(args)
+            self.assertEqual(len(json.loads((state / "perf-baseline.json").read_text())["entries"]), 2)
+            self.assertNotIn("context", json.loads((state / "perf-baseline.json").read_text())["entries"][0])
+            self.assertEqual(len(list((state / "perf-archive").glob("*.json"))), 1)
+            before = (state / "perf-baseline.json").read_bytes()
+            with patch.object(suite.os, "replace", side_effect=OSError("atomic failure")):
+                with self.assertRaises(OSError):
+                    suite.accept(args)
+            self.assertEqual((state / "perf-baseline.json").read_bytes(), before)
+            for change in ["failed", "mismatch", "incomplete", "blank"]:
+                with self.subTest(change=change):
+                    (run / "e2e.json").write_text(json.dumps({"run": metadata, "sections": [{"title": "Functional", "rows": [{"pass": change != "failed"}]}]}))
+                    (run / "counts.json").write_text(json.dumps({"run": {**metadata, "commit": "wrong"} if change == "mismatch" else metadata,
+                        "entries": [{**entry, "key": key("scroll"), "interaction": "scroll", "complete": change != "incomplete"}]}))
+                    args.reason = " " if change == "blank" else "reviewed"
+                    with self.assertRaises(RuntimeError):
+                        suite.accept(args)
+
+
 if __name__ == "__main__":
     unittest.main()

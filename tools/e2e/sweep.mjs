@@ -5,12 +5,13 @@ import { promisify } from 'node:util';
 import { gzip } from 'node:zlib';
 import { connect, log, sleep } from './cdp.mjs';
 import { Session, settleCall } from './session.mjs';
+import { scenarioId, scopeScenario } from './perfBaseline.mjs';
 import { CASES } from './controls.mjs';
 import { PINS, readHistory } from './coverage.mjs';
 import { Visual } from './visual.mjs';
 import { NativeInput, hover, interactions, mapModes, mapPictures, zoomedMapPicture } from './map.mjs';
 import { classifyWidgetSnapshot, pageShown } from './verdicts.mjs';
-import { buildWidgetClassifierExpr, catalogueItemKey, createOutcomeWatcher, describeUncleanCataloguePage, finishCatalogueCard, measureIdleCost, mergeWidgetOutcomes, runThrottled, selectQuickCatalogueCards } from './sweepHelpers.mjs';
+import { buildWidgetClassifierExpr, catalogueItemKey, createOutcomeWatcher, describeUncleanCataloguePage, finishCatalogueCard, measureIdleCost, mergeWidgetOutcomes, restoreCountHour, runThrottled, selectQuickCatalogueCards } from './sweepHelpers.mjs';
 import { TRACE_MARKS, describeNodes, startTrace, summariseTrace, summaryNodes } from './trace.mjs';
 import { ReplyRecorder } from './replies.mjs';
 import { allWidgetPages, costPages, HEAVIEST, HEAVIEST_COUNT, SCREEN, SHELL_HEADER_HEIGHT, VIEWS, screenMetrics, tallViewportHeight } from './allWidgets.mjs';
@@ -104,6 +105,7 @@ await s.init();
 s.history = history;
 s.tier = tier;
 s.pin = pin;
+s.recipe = { version: 2, branchIndex: 0, tier, phases, cases: only, pages: onlyPages, rate, coresCount, allViews, heaviestCount, kinds: onlyKinds, pagesAt, playSeconds: PLAY_SECONDS };
 const visual = new Visual(app, out, session);
 await visual.init();
 const started = new Date();
@@ -115,6 +117,7 @@ const readConfinement = () => app.evaluate(`({
 })`);
 const meta = { session, tier, requestedPages: onlyPages, cpuThrottle: rate, coresCount, confinement: null, started: started.toISOString(), port, phases, epoch: s.epoch, pages: [], viewport: null, cataloguePage: CATALOGUE_PAGE, speeds, seeks: SEEKS, pictureSeek: PICTURE_SEEK };
 const save = async () => {
+  meta.recipe = s.recipe;
   await replies?.take();
   if (phases.includes('seeks')) meta.seekInputs = await app.evaluate('__e2e.seekInputs ?? []');
   const pageConf = await readConfinement().catch(() => null);
@@ -788,6 +791,8 @@ await phase('playback', async () => {
           const clockMark = trace && await app.evaluate("performance.timeOrigin + performance.mark('dated-playback-clock').startTime");
           await app.evaluate('window.__perf.start()');
           await s.watch();
+          const perfContext = await app.evaluate('__e2e.perfContext()');
+          const perfScenario = { ...scopeScenario(s.recipe, { ...perfContext, page }, 'play'), speed, scroll };
           const from = s.epoch + await app.evaluate('performance.now()');
           if (dated) { await playbackVisibility(); await s.frames(2); }
           await settledForReplies();
@@ -858,6 +863,7 @@ await phase('playback', async () => {
           await throttle(1);
           const allReasons = [...windowReasons, ...playbackReasons, ...(dated ? (inputs?.failures ?? []) : [])];
           await s.record({ area: 'playback', item: `${page}/${speed}`, label: null, pass: true, reasons: allReasons, playbackReasons, from, to, seekStart, speed, page, scroll, visibility: observedVisibility, seconds: PLAY_SECONDS, widgets, expectedWidgets, lastHour: (await s.timeline()).max,
+            perf: { family: 'play', context: perfContext, recipe: s.recipe, scenario: scenarioId(perfScenario), page, start: from, settled: to, complete: summary.complete },
             presented, pressureMerges, audit, inputs, idleCost, frames: summary.ui_frames, complete: summary.complete, losses: summary.losses, maps: summary.playback?.maps ?? null, screenshot: false });
         } catch (error) {
           if (trace) await trace().catch(() => {});
@@ -979,11 +985,12 @@ await phase('widget-costs', async () => {
 });
 
 await phase('catalogue', async () => {
+  await pausePlayback();
+  await seekTo(PICTURE_SEEK[1]);
   await s.step('catalogue', 'setup', 'add a page', () => s.click('button[aria-label="Add a page"]'), { done: `document.querySelector('.sidebar-page-list input')` });
   await s.key('Enter');
   await s.until(`!document.querySelector('.sidebar-page-list input')`, 3000);
   if (await app.evaluate(`document.querySelectorAll('article.dash-widget').length`)) throw new Error('a new page is not empty');
-  await seekTo(PICTURE_SEEK[1]);
   const editing = `document.querySelector('button[aria-label="Done editing"]')`;
   const notEditing = `document.querySelector('button[aria-label="Edit layout"]')`;
   const catalogueOpen = `document.querySelector('.widget-catalogue:popover-open')`;
@@ -1115,12 +1122,15 @@ async function controls() {
     if (quick && control.id !== 'widget/settings') continue;
     const pages = control.page === '*' ? meta.pages : control.page === null ? [await s.currentPage()] : [control.page];
     for (const page of pages.filter(name => onlyPages === null || onlyPages.includes(name))) {
+      let fixedHour = null;
       try {
         await s.openPage(page);
+        if (control.id === 'header/play-pause') fixedHour = (await s.timeline()).value;
         await control.run(s, page);
       } catch (error) {
         await s.fail('controls', control.id, page, error.message);
       }
+      if (fixedHour !== null) { await pausePlayback(); await restoreCountHour(fixedHour, s, seekTo); }
       await s.escape();
       await s.escape();
       if (await s.holds(`document.querySelector('button[aria-label="Done editing"]')`)) await discardLayout().catch(() => {});
@@ -1129,7 +1139,7 @@ async function controls() {
   }
 }
 
-await app.evaluate('window.__perf?.flush()').catch(() => {});
+try { await app.evaluate('window.__perf.stop()', 120_000); } catch (error) { await s.fail('measurement', 'finish', null, `measurement did not finish: ${error.message}`); }
 if (replies) {
   meta.replies = { file: recordReplies, counts: await replies.finish() };
   log('replies recorded', JSON.stringify(meta.replies.counts), 'to', recordReplies);

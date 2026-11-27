@@ -285,6 +285,19 @@
     return p.t0;
   };
   p.inFlight = () => { try { return window.__busy ? window.__busy.kinds() : null; } catch { return null; } };
+  p.prepared = timeout => new Promise(resolve => {
+    const start = performance.now(); let idle = 0;
+    const check = () => {
+      const now = performance.now(), kinds = p.inFlight(), preparing = window.__busy?.preparing?.();
+      const known = kinds !== null && Number.isFinite(preparing);
+      idle = known && preparing === 0 && !document.querySelector('.dash-prepare') && Object.values(kinds).every(n => n === 0) ? idle + 1 : 0;
+      if (!known || idle >= 2 || now - start >= timeout) resolve({ at: performance.timeOrigin + now, complete: known && idle >= 2 });
+      else requestAnimationFrame(check);
+    };
+    check();
+  });
+  p.perfContext = () => ({ enabled: !!window.__perf, page: document.querySelector('.sidebar-page-list [aria-current=page]')?.textContent.trim() ?? null,
+    hour: document.querySelector('input.header-timeline')?.value ?? null, viewport: [innerWidth, innerHeight, devicePixelRatio] });
   p.settle = (timeout, quiet, only = null, over) => new Promise(resolve => {
     let since = null, idle = 0;
     const check = () => {
@@ -293,7 +306,7 @@
       const finished = !p.done || p.doneAt !== null;
       const kinds = p.inFlight();
       const busy = kinds === null ? null : Object.values(kinds).reduce((sum, n) => sum + n, 0);
-      const settled = visible.every(w => w.state !== 'loading') && (finished || p.altAt !== null);
+      const settled = visible.every(w => w.state !== 'loading') && (finished || p.altAt !== null) && placeholders().length === 0;
       since = settled ? since ?? now : null;
       idle = settled && busy === 0 ? idle + 1 : 0;
       const wait = finished ? quiet : Math.max(quiet, p.altQuiet);
@@ -342,11 +355,11 @@
     return { t0: p.t0, now, timedOut, input: input?.t ?? null, last: lastInput, inputType: input?.type ?? null, inputs: p.inputs.length,
       paint: Number.isFinite(painted) ? painted : null,
       doneAt: shown(p.doneAt), doneAtSeen: p.doneAt !== null, altAt: p.altAt, widgets: [...widgets.values()].map(({ loadingFrom, states, ...w }) => w),
-      placeholderMs: (placeholderEnd(now), p.placeholders.ms), placeholderAt: [...p.placeholders.where],
+      placeholderMs: (placeholderEnd(now), p.placeholders.ms), placeholderAt: [...p.placeholders.where], placeholderStill: [...new Set(placeholders().map(placeholderAt))],
       loafs: p.loafs.filter(l => l.dur >= 50 && l.start + l.dur >= p.t0).map(l => ({ dur: Math.round(l.dur), top: l.top })) };
   };
   p.watch = () => { p.watching = true; placeholderSince = null; p.placeholders = { ms: 0, where: new Set() }; startLoop(); };
-  p.unwatch = () => { placeholderEnd(performance.now()); p.watching = false; stopLoopIfIdle(); return { ms: p.placeholders.ms, where: [...p.placeholders.where] }; };
+  p.unwatch = () => { placeholderEnd(performance.now()); p.watching = false; stopLoopIfIdle(); return { ms: p.placeholders.ms, where: [...p.placeholders.where], still: [...new Set(placeholders().map(placeholderAt))] }; };
   p.startFrames = () => { recordingFrames = true; startLoop(); };
   p.stopFrames = () => { recordingFrames = false; stopLoopIfIdle(); };
   p.gaps = (from, to) => { const f = p.frames.filter(t => t >= from && t <= to); const gaps = []; for (let i = 1; i < f.length; i++) gaps.push(f[i] - f[i - 1]); return gaps; };

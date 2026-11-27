@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { log, sleep } from './cdp.mjs';
 import { everFailed } from './coverage.mjs';
+import { familyOf, scenarioId, scopeScenario } from './perfBaseline.mjs';
 import { DRAWN_GRACE_MS, mapDrew, noVisibleChange, pageShown, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 export const BUDGET_MS = 100;
@@ -51,6 +52,10 @@ export class Session {
 
   async step(area, item, label, action, { done = null, changes = null, drew = null, from = 'first', timeout = 6000, quiet = 200, widget = null, awaits = true, budget = BUDGET_MS, check = true, control = label, unobservable = null, shot = false, extra = {} } = {}) {
     this.app.setCase(`${area}/${item}/${label}`);
+    const family = familyOf(area, item, label);
+    const countTimeout = Math.max(timeout, 120_000);
+    const preparedBefore = family ? await this.app.evaluate(`__e2e.prepared(${countTimeout})`, countTimeout + 30_000) : null;
+    const context = family ? await this.app.evaluate('__e2e.perfContext()') : null;
     let changed = null, sentBefore = null, settingsBefore = null, drawnSame = null;
     const article = key => `document.querySelector(${JSON.stringify(`article.dash-widget[data-widget="${key}"]`)})`;
     const settingsOf = key => `${article(key)}?.dataset.settings ?? null`;
@@ -97,6 +102,7 @@ export class Session {
       ms = ends.length ? Math.max(0, ...ends.map(end => end - start)) : null;
     }
     if (probe.placeholderMs > 0) reasons.push(`showed a loading placeholder for ${Math.round(probe.placeholderMs)} ms (${probe.placeholderAt.join(', ')})`);
+    for (const name of probe.placeholderStill ?? []) reasons.push(`${name}: still showing a loading placeholder at settlement`);
     if (until !== null && probe.doneAt === null) {
       if (changed !== null && !await this.holds(changed)) reasons.push(noVisibleChange(settingsBefore, await this.app.evaluate(settingsOf(changes.key))));
       else reasons.push(`never finished: ${until}`);
@@ -109,14 +115,23 @@ export class Session {
     }
     if (probe.inFlight) reasons.push(stillInFlight(probe.inFlight, timeout));
     if (probe.timedOut && !reasons.length) reasons.push(`not settled within ${timeout} ms`);
-    if (check && ms !== null && ms > budget) reasons.push(`${Math.round(ms)} ms, over ${budget} ms`);
+    const timing = check && ms !== null && ms > budget ? [`${Math.round(ms)} ms, over ${budget} ms`] : [];
+    const preparedAfter = family ? await this.app.evaluate(`__e2e.prepared(${countTimeout})`, countTimeout + 30_000) : null;
     const screenshot = shot ? true : reasons.every(reason => /ms, over/.test(reason)) ? false : undefined;
     const result = await this.record({ area, item, label, control, check, ms, budget, pass: true, reasons, screenshot, input: start === null ? null : this.epoch + start,
       gestureMs: from === 'last' && probe.input !== null && probe.last !== null ? probe.last - probe.input : null, drawnAt: drawnEpoch,
       widgets: touched.map(({ id, kind, title, first, ready, loadingMax, end, errors, notice }) => ({ id, kind, title,
         first: first === null || probe.input === null ? null : first - probe.input, ready: ready === null || probe.input === null ? null : ready - probe.input,
         loadingMax, end, errors, notice })),
-      loafs: probe.loafs, ...(acted && typeof acted === 'object' ? acted : {}), ...extra });
+      loafs: probe.loafs, placeholderMs: probe.placeholderMs, placeholderAt: probe.placeholderAt, ...(acted && typeof acted === 'object' ? acted : {}), ...extra });
+    if (family) {
+      const page = area === 'seeks' ? item : ['pages', 'pages-at'].includes(area) ? item.slice(item.indexOf('/') + 1) : context.page;
+      const scenario = scopeScenario(this.recipe, { ...context, page }, /warm/.test(`${item}/${label}`) || !check ? 'warm' : 'cold');
+      result.perf = { family, context, recipe: this.recipe, page, scenario: scenarioId(scenario), start: this.epoch + probe.t0,
+        settled: preparedAfter.at, complete: context.enabled && probe.busySignal && !probe.timedOut && start !== null && preparedBefore.complete && preparedAfter.complete,
+        ...(!preparedBefore.complete || !preparedAfter.complete ? { reason: 'background preparation has no complete settled boundary or preparation instrumentation is missing' } : {}) };
+    }
+    result.timing = timing;
     result.probe = probe;
     return result;
   }
@@ -192,7 +207,8 @@ export class Session {
   watch() { return this.app.evaluate('__e2e.watch()'); }
   async unwatch() {
     const shown = await this.app.evaluate('__e2e.unwatch()');
-    return shown.ms > 0 ? [`showed a loading placeholder for ${Math.round(shown.ms)} ms (${shown.where.join(', ')})`] : [];
+    return [...(shown.ms > 0 ? [`showed a loading placeholder for ${Math.round(shown.ms)} ms (${shown.where.join(', ')})`] : []),
+      ...(shown.still ?? []).map(name => `${name}: still showing a loading placeholder at settlement`)];
   }
 
   holds(expression) { return this.app.evaluate(`!!(${expression})`); }

@@ -22,7 +22,7 @@ interface LongFrameEntry extends PerformanceEntry {
 
 type PerfRecord = { t: string; at: number; [field: string]: unknown };
 
-export type WidgetWork = 'render' | 'hour' | 'held' | 'unheld' | 'read' | 'ahead' | 'reply' | 'same';
+export type WidgetWork = 'render' | 'hour' | 'held' | 'unheld' | 'read' | 'ahead' | 'reply' | 'same' | 'rebind';
 
 interface Tally { count: number; bytes: number; from: number; to: number }
 
@@ -426,7 +426,7 @@ export class PerfRecorder {
         this.lastFrame = null;
       }
     };
-    this.push({ t: 'page', at: epoch(performance.now()), dpr: devicePixelRatio, width: innerWidth, height: innerHeight, longtask, loaf,
+    this.push({ t: 'page', at: epoch(performance.now()), dpr: devicePixelRatio, width: innerWidth, height: innerHeight, longtask, loaf, rebinds: true,
       hardwareConcurrency: navigator.hardwareConcurrency }, true);
     if (longtask) this.observe('longtask', list => {
       for (const entry of list.getEntries()) this.push({ t: 'longtask', at: epoch(entry.startTime), dur: round(entry.duration) });
@@ -550,6 +550,7 @@ export class PerfRecorder {
   }
 
   count(widget: string, work: WidgetWork): void {
+    if (work === 'rebind') this.push({ t: 'rebind', at: epoch(performance.now()), widget });
     let counts = this.work.get(widget);
     if (!counts) this.work.set(widget, counts = {});
     counts[work] = (counts[work] ?? 0) + 1;

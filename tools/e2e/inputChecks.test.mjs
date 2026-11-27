@@ -10,11 +10,24 @@ import {
   finishCatalogueCard,
   measureIdleCost,
   runThrottled,
+  restoreCountHour,
   selectQuickCatalogueCards,
 } from './sweepHelpers.mjs';
 import { classifyWidgetSnapshot } from './verdicts.mjs';
 
 const source = readFileSync(new URL('./sweep.mjs', import.meta.url), 'utf8');
+
+test('free-running playback is restored to its captured hour before another count scope', async () => {
+  for (const stopped of [7, 19]) {
+    let hour = stopped;
+    const session = { timeline: async () => ({ min: 0, max: 100, value: hour }) };
+    await restoreCountHour(3, session, async fraction => { hour = Math.round(fraction * 100); });
+    assert.equal(hour, 3);
+  }
+  await assert.rejects(() => restoreCountHour(3, { timeline: async () => ({ min: 0, max: 100, value: 19 }) }, async () => {}), /unmeasured.*starting hour/);
+  const catalogue = source.slice(source.indexOf("await phase('catalogue'"));
+  assert.ok(catalogue.indexOf('await seekTo(PICTURE_SEEK[1])') < catalogue.indexOf("await s.step('catalogue'"));
+});
 
 test('scrub waits for the released timeline target and records a failure without stopping the phase', () => {
   const release = source.indexOf("await app.mouse('mouseReleased', x(.31), line.y);");

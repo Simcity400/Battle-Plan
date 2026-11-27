@@ -1,5 +1,11 @@
 export const OUTCOME_RANK = Object.freeze({ content: 0, outside: 1, 'not-recorded': 1, refusal: 2, error: 3 });
 
+export async function restoreCountHour(hour, session, seek) {
+  const line = await session.timeline();
+  await seek((hour - line.min) / (line.max - line.min));
+  if ((await session.timeline()).value !== hour) throw new Error('unmeasured: could not restore the fixed starting hour after free-running playback');
+}
+
 export function mergeWidgetOutcomes(widgets, observed) {
   return widgets.map(widget => {
     const seen = observed?.[widget.id];

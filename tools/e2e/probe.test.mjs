@@ -28,6 +28,7 @@ function loadProbe(dom = {}) {
     MessageChannel: FakeChannel,
     PerformanceObserver: FakeObserver,
     addEventListener: () => {},
+    __busy: dom.busy,
     document: {
       createElement: () => ({ width: 0, height: 0, getContext: () => ({ clearRect() {}, drawImage() {}, getImageData: () => ({ data: [] }) }) }),
       querySelector: dom.querySelector ?? (() => null),
@@ -172,6 +173,55 @@ test('probe ignores aria-busy on hidden screen-reader mirrors and the library ro
   const flagged = liveHost.probe.unwatch();
   assert.ok(flagged.ms > 0, 'visible loading widget and campaign row spinner must still record placeholder time');
   assert.deepEqual([...flagged.where], ['Fuel', 'spinner']);
+  assert.deepEqual([...flagged.still], ['Fuel', 'spinner']);
+  liveHost.probe.mark(null);
+  assert.deepEqual([...liveHost.probe.report(100, false, []).placeholderStill], ['Fuel', 'spinner']);
+  liveRoot.__children = [];
+  assert.deepEqual([...liveHost.probe.report(110, false, []).placeholderStill], []);
+});
+
+test('settlement waits for a transient global spinner and leaves a persistent one named at timeout', async () => {
+  const spinner = makeEl({ tag: 'span', classes: ['spinner'] });
+  const root = makeEl({ children: [spinner] });
+  const host = loadProbe({ querySelectorAll: sel => root.querySelectorAll(sel) });
+  host.probe.mark(null);
+  let finished = false;
+  const settled = host.probe.settle(1000, 0, null, ({ settled }) => settled).then(value => { finished = true; return value; });
+  for (let i = 0; i < 4; i++) { host.stepFrame(16); await Promise.resolve(); }
+  assert.equal(finished, false);
+  root.__children = [];
+  for (let i = 0; i < 5; i++) { host.stepFrame(16); await Promise.resolve(); }
+  const cleared = await settled;
+  assert.equal(cleared.timedOut, false);
+  assert.ok(cleared.placeholderMs > 0);
+  assert.deepEqual([...cleared.placeholderStill], []);
+  root.__children = [spinner];
+  host.probe.mark(null);
+  const timed = host.probe.settle(1, 0, null, ({ settled }) => settled);
+  for (let i = 0; i < 5; i++) { host.stepFrame(16); await Promise.resolve(); }
+  const persistent = await timed;
+  assert.equal(persistent.timedOut, true);
+  assert.deepEqual([...persistent.placeholderStill], ['spinner']);
+});
+
+test('count scopes drain background preparation separately from foreground paint settlement', async () => {
+  let preparing = 1, page = {};
+  const host = loadProbe({ busy: { kinds: () => ({ requests: 0 }), preparing: () => preparing }, querySelector: selector => selector === '.dash-prepare' ? page : null });
+  let finished = false;
+  const pending = host.probe.prepared(1000).then(value => { finished = true; return value; });
+  for (let i = 0; i < 4; i++) { host.stepFrame(16); await Promise.resolve(); }
+  assert.equal(finished, false);
+  preparing = 0;
+  for (let i = 0; i < 3; i++) { host.stepFrame(16); await Promise.resolve(); }
+  assert.equal(finished, false, 'between requests, the preparing page still owns outstanding work');
+  page = null;
+  for (let i = 0; i < 3; i++) { host.stepFrame(16); await Promise.resolve(); }
+  assert.equal((await pending).complete, true);
+  preparing = 1;
+  const timed = host.probe.prepared(1);
+  host.stepFrame(16);
+  assert.equal((await timed).complete, false);
+  assert.equal((await loadProbe().probe.prepared(1000)).complete, false);
 });
 
 test('probe countryRows and revealCountry handle both named and unnamed country options', async () => {

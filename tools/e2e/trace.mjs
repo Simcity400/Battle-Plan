@@ -51,7 +51,8 @@ export function traceSpans(events) {
     else if (event.ph === 'B') { const key = thread(event); if (!open.has(key)) open.set(key, []); open.get(key).push(event); }
     else if (event.ph === 'E') {
       const begun = open.get(thread(event))?.pop();
-      if (begun) spans.push({ ...begun, ph: 'X', dur: event.ts - begun.ts, args: { ...begun.args, ...event.args } });
+      if (begun) spans.push({ ...begun, ph: 'X', dur: event.ts - begun.ts,
+        tdur: Number.isFinite(begun.tts) && Number.isFinite(event.tts) ? event.tts - begun.tts : undefined, args: { ...begun.args, ...event.args } });
     }
   }
   return spans;
@@ -99,12 +100,17 @@ export function summariseTrace(events, marks = TRACE_MARKS) {
   const [pid] = main.split(':');
   const kinds = { style: 0, layout: 0, prePaint: 0, paint: 0, composite: 0, script: 0, gc: 0, other: 0 };
   let mainBusy = 0, raster = 0, gpu = 0, compositor = 0, dirtyObjects = 0, layouts = 0;
+  let mainCpu = 0, cpuComplete = true;
   const forced = new Map(), invalidated = new Map(), roots = new Map(), scripts = new Map();
   for (const span of spans) {
     if (!inside(span)) continue;
     const key = thread(span), name = names.get(key) ?? '';
     if (key === main) {
-      if (span.depth === 0) mainBusy += span.dur;
+      if (span.depth === 0) {
+        mainBusy += span.dur;
+        if (Number.isFinite(span.tdur) && span.tdur >= 0) mainCpu += span.tdur;
+        else cpuComplete = false;
+      }
       const kind = kindOf(span.name);
       kinds[kind] += Math.max(0, span.self);
       if (span.name === 'Layout') {
@@ -146,7 +152,8 @@ export function summariseTrace(events, marks = TRACE_MARKS) {
   const drawn = compositorThread ? events.filter(event => event.name === 'BeginFrame' && thread(event) === compositorThread && inside(event)).length : 0;
   return {
     marked, seconds: ms(to - from) / 1000, frames: frameEvents || drawn || null, framesFrom: frameEvents ? 'BeginMainThreadFrame' : drawn ? 'BeginFrame' : null,
-    main: ms(mainBusy), kinds: Object.fromEntries(Object.entries(kinds).map(([kind, value]) => [kind, ms(value)])),
+    main: ms(mainBusy), mainThreadCpuMs: cpuComplete ? ms(mainCpu) : null,
+    kinds: Object.fromEntries(Object.entries(kinds).map(([kind, value]) => [kind, ms(value)])),
     raster: ms(raster), gpu: ms(gpu), compositor: ms(compositor), layouts, dirtyObjects,
     forced: top(forced, 6), invalidated: top(invalidated, 8), layoutRoots: top(roots, 6), scripts: top(scripts, 6),
   };

@@ -201,6 +201,7 @@ export class Pipeline {
   private postLane(lane: number, message: ToLane, transfer?: Transferable[]) {
     if (this.closed || this.laneErrors[lane]) return;
     this.host.lanes[lane]!.postMessage(message, transfer);
+    if (message.type === 'bind') perfLog?.count('page', 'rebind');
   }
 
   private post(lane: number | 'all', message: PageMessage) {
