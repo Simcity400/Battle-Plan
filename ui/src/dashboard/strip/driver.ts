@@ -302,5 +302,5 @@ export class StripPage {
   }
 }
 
-export const configuredStripPage = (make: () => StripPage): StripPage | null => BUILD_TIMELINE_STRIPS ? make() : null;
+export const configuredStripPage = <T>(make: () => T): T | null => BUILD_TIMELINE_STRIPS ? make() : null;
 export const StripPageContext = createContext<StripPage | null>(null);

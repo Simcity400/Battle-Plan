@@ -6,7 +6,7 @@ import { laneModules, manifestFamilyView, resolveWidgetActiveView } from '../wid
 import { viewKey } from '../families/manifest.ts';
 import type { ProjectionKey } from '../draw/laneMessages';
 import { preloadOtherWidgetRenderers } from '../widgets/rendererLoaders.ts';
-import DashboardGrid, { bodiesWaiting } from './DashboardGrid';
+import DashboardGrid, { bodiesWaiting, LiveDashboardGrid } from './DashboardGrid';
 import PreparedPages, { type PreparedPage } from './PreparedPages';
 import type { WidgetRuntime } from './definitions';
 import { prepareLanes } from './follow/pipeline.ts';
@@ -72,7 +72,7 @@ export default function DashboardPages({ active, viewport, stripPageId, runtime,
 
   return <>
     {active && (template.widgets.length
-      ? <LiveMotion.Provider value={clock.getMotion}><DashboardGrid stripPageId={stripPageId} template={template} runtime={runtime} editing={editing} {...actions} /></LiveMotion.Provider>
+      ? <LiveMotion.Provider value={clock.getMotion}><LiveDashboardGrid stripPageId={stripPageId} template={template} runtime={runtime} editing={editing} {...actions} /></LiveMotion.Provider>
       : empty)}
     <PreparedPages pages={pages} clock={clock} client={client} viewport={viewport}
       enabled={active && drawn && preparing} draw={drawPrepared} mounting={bodiesWaiting} />

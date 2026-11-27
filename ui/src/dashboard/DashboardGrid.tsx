@@ -44,7 +44,6 @@ const READING_BADGE_DELAY_MS = 400;
 
 interface Props {
   prepared?: boolean;
-  stripPageId?: string;
   template: DashboardTemplate;
   runtime: WidgetRuntime;
   editing: boolean;
@@ -53,15 +52,20 @@ interface Props {
   onRemove: (id: string) => void;
 }
 
-function DashboardGrid({ prepared = false, stripPageId, template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
-  const { width, containerRef, mounted } = useContainerWidth({ initialWidth: 1200 });
+function StripDashboardGrid({ stripPageId, ...props }: Omit<Props, 'prepared'> & { stripPageId?: string }) {
+  const { runtime, template } = props;
   const reference = runtime.tracks.find(track => track.roleId === runtime.defaultRoleId);
-  const stripKey = !prepared && runtime.client.available && reference && !template.widgets.some(widget => widget.kind === 'map')
+  const stripKey = runtime.client.available && reference && !template.widgets.some(widget => widget.kind === 'map')
     ? JSON.stringify([stripPageId, reference.id, reference.source.id, reference.source.revision, reference.branch.id, reference.axisOffset]) : null;
   const strips = useMemo(() => stripKey && reference
-    ? configuredStripPage(() => new StripPage(stripLattice(reference.branch, reference.axisOffset), pageClock(runtime.clock), runtime.client, { name: stripPageId })) : null,
+    ? new StripPage(stripLattice(reference.branch, reference.axisOffset), pageClock(runtime.clock), runtime.client, { name: stripPageId }) : null,
   [stripKey, runtime.clock, runtime.client]);
   useEffect(() => strips?.start(), [strips]);
+  return <StripPageContext.Provider value={strips}><DashboardGrid {...props} /></StripPageContext.Provider>;
+}
+
+function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
+  const { width, containerRef, mounted } = useContainerWidth({ initialWidth: 1200 });
   const placement = useGridPlacement(containerRef);
   useEffect(() => { preloadPageRenderers(template.widgets); }, [template.widgets]);
   const changed = useCallback((_layout: Layout, layouts: ResponsiveLayouts<Breakpoint>) => {
@@ -73,7 +77,7 @@ function DashboardGrid({ prepared = false, stripPageId, template, runtime, editi
     }
     onLayouts(next);
   }, [onLayouts, runtime.maps]);
-  return <StripPageContext.Provider value={strips}><div className={`dash-grid${editing ? ' is-editing' : ''}`} ref={containerRef}>
+  return <div className={`dash-grid${editing ? ' is-editing' : ''}`} ref={containerRef}>
     {mounted && <Responsive<Breakpoint> width={width} layouts={template.layouts}
       breakpoints={{ lg: 1280, md: 850, sm: 520, xs: 0 }} cols={GRID_COLUMNS} rowHeight={26} margin={[6, 6]} containerPadding={[0, 0]} positionStrategy={placement}
       dragConfig={{ enabled: editing, handle: '.dash-drag-grip', cancel: 'input,select,textarea,a' }}
@@ -83,7 +87,7 @@ function DashboardGrid({ prepared = false, stripPageId, template, runtime, editi
         <WidgetFrame prepared={prepared} widget={widget} template={template} runtime={runtime} editing={editing} onApply={onApply} onRemove={onRemove} />
       </div>)}
     </Responsive>}
-  </div></StripPageContext.Provider>;
+  </div>;
 }
 
 const MOUNT_BUDGET = 4;
@@ -419,7 +423,9 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   </article>;
 }
 
-export default memo(DashboardGrid);
+const Grid = memo(DashboardGrid);
+export const LiveDashboardGrid = configuredStripPage(() => memo(StripDashboardGrid)) ?? Grid;
+export default Grid;
 
 commitZone(DashboardGrid, 'grid');
 commitZone(WidgetFrame, 'widget frame');
