@@ -243,7 +243,7 @@ test('S3: tail decoder turns per-row decode errors into refused slots with their
   const head = rawReply([
     { key: 'bad0', hour: 120 } as unknown as Row,
     { key: 'ok1', hour: 100, label: 'good' } as unknown as Row,
-  ], 2, { missing: [{ firstHour: 110, lastHour: 115, reason: 'Collector detached' }] });
+  ], 2, { missing: [{ firstHour: 110, lastHour: 115, reason: 'Collector detached', before: '1' }] });
   const source = buildRowSourceFromHead('q:head', head, undefined, 130, undefined, validate)!;
   assert.deepEqual(source.sliceAt(130, 0, 2), [
     { kind: 'refused', ordinal: 0, readAt: 130, reason: 'Row payload is malformed.' },
@@ -254,7 +254,7 @@ test('S3: tail decoder turns per-row decode errors into refused slots with their
     ['refused', 'refused:0', 'Row payload is malformed.'],
     ['gap', 'Collector detached'],
     ['data', 'ok1'],
-  ], 'a refused row at ordinal 0 keeps top-of-log gaps intact');
+  ], 'a refused row keeps its ordinal alongside placed gaps');
 
   const rawPage = rawReply([
     { key: 'p4', hour: 95, label: 'four' } as unknown as Row,

@@ -367,7 +367,7 @@ export function buildNavigableSlots<TRow extends DatedLogRow>(
   const firstData = slots.find(slot => slot.kind === 'data');
   const out: LogRowSlot<TRow>[] = [];
   let gapIndex = 0;
-  if (firstData && slots[0]!.kind !== 'gap' && slots[0]!.ordinal > 0 && previousRowHour === undefined) {
+  if (firstData && firstData.ordinal > 0 && previousRowHour === undefined) {
     while (gapIndex < activeGaps.length && activeGaps[gapIndex]!.firstHour > firstData.row.hour) {
       gapIndex++;
     }

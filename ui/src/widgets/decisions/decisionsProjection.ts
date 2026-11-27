@@ -307,10 +307,8 @@ const ASKED_STATUSES: Readonly<Record<StatusChoice, readonly ScriptStatus[]>> = 
 
 function validateDecisionsTail(raw: unknown, readAt?: number): TailReply<ScriptPageRow & DatedLogRow> {
   return validateRowTailReply(raw, (row, _columns, at): ScriptPageRow & DatedLogRow => {
-    const occurrence = validateOccurrence(row.occurrence);
-    if (at !== undefined && occurrence.edges[0]!.row.readHour > at) {
-      throw new Error(`Decision ${occurrence.id} was read at hour ${occurrence.edges[0]!.row.readHour} after displayed hour ${at}.`);
-    }
+    if (row.occurrence === null) throw new Error('Decision was not recorded.');
+    const occurrence = validateOccurrence(row.occurrence, at);
     return { ...(row as unknown as ScriptPageRow & DatedLogRow), occurrence };
   }, readAt);
 }

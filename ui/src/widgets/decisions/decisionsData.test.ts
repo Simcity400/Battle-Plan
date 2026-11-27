@@ -434,6 +434,28 @@ test('S3: a malformed decision row becomes a refused slot with its reason instea
   assert.equal(onlyBadModel.totalRows, 1);
   assert.equal(onlyBadModel.empty, undefined, 'a tail with one malformed decision never claims no decisions matched');
 
+  const futureLaterEdgeOcc = card([
+    { ...edge('decisionSelected', start), row: { ...edge('decisionSelected', start).row, item: null } },
+    edge('decisionCompleted', hour + 5),
+  ]);
+  const nullAndFutureSource = buildRowSourceFromHead('test:decisions-null-and-future-edge', {
+    ...mixedHead,
+    total: '2',
+    counts: [],
+    rows: [
+      { hour: start, key: 'null:dec', observed: start, ordinal: '0', live: false, status: null, occurrence: null },
+      { hour: start, key: futureLaterEdgeOcc.id, observed: start, ordinal: '1', live: false, status: 'active', occurrence: futureLaterEdgeOcc },
+    ],
+  }, undefined, hour, undefined, decisionsProjection.validateTail)!;
+  const nullAndFutureModel = decisionsProjection.project(
+    createBoundedReadView({ hour, rows: new Map([['main', nullAndFutureSource]]) }),
+    { artwork: false, breaks: [] },
+  );
+  assert.equal(nullAndFutureModel.slots?.length, 2);
+  assert.deepEqual(nullAndFutureModel.slots?.[0], { kind: 'refused', key: 'refused:0', reason: 'Decision was not recorded.' });
+  assert.equal(nullAndFutureModel.slots?.[1]?.kind, 'refused');
+  assert.match(nullAndFutureModel.slots?.[1]?.kind === 'refused' ? nullAndFutureModel.slots[1].reason : '', /after displayed hour/);
+
   for (const declaration of [decisionsDeclaration, eventChoicesDeclaration, eventFeedDeclaration]) {
     const entry = declaration.sources({
       track: { source: { id: 's1', revision: 'r1', metadata: { playerCountryId: '9' } }, axisOffset: 0, selectedSlot: 7 },

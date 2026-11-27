@@ -481,14 +481,12 @@ type ValidatedEventFeedPageRow = Omit<EventFeedPageRow, 'row'> & { readonly row:
 
 function validateEventFeedTail(raw: unknown, readAt?: number): TailReply<ValidatedEventFeedPageRow> {
   return validateRowTailReply(raw, (row, _columns, at): ValidatedEventFeedPageRow => {
+    if (row.row === null) throw new Error('Event was not recorded.');
     const valid = validateFeedRow(row.row);
     if (at !== undefined && valid.readHour > at) {
       throw new Error(`Event ${valid.id} was read at hour ${valid.readHour} after displayed hour ${at}.`);
     }
-    const choice = row.choice == null ? null : validateScriptEdge(row.choice);
-    if (choice && at !== undefined && choice.row.readHour > at) {
-      throw new Error(`Event choice for ${valid.id} was read at hour ${choice.row.readHour} after displayed hour ${at}.`);
-    }
+    const choice = row.choice == null ? null : validateScriptEdge(row.choice, at);
     return { ...(row as unknown as EventFeedPageRow & DatedLogRow), row: valid, choice };
   }, readAt);
 }

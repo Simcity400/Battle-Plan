@@ -473,4 +473,22 @@ test('S3: a malformed event feed row becomes a refused slot with its reason inst
   assert.equal(badChoiceModel.rows.length, 0);
   assert.deepEqual(badChoiceModel.slots, [{ kind: 'refused', key: 'refused:0', reason: 'The event feed row is malformed.' }]);
   assert.equal(badChoiceModel.empty, undefined);
+
+  const nullAndFutureNameHead = {
+    ...mixedHead,
+    total: '2',
+    rows: [
+      { key: 'null-row', hour: 100, observed: 100, ordinal: '0', live: false, row: null, choice: null },
+      { key: 'future-name', hour: 100, observed: 100, ordinal: '1', live: false, row: { ...good, readHour: 100, nameHour: 101 }, choice: null },
+    ],
+  };
+  const nullAndFutureSource = buildRowSourceFromHead('test:feed-null-and-name-hour', nullAndFutureNameHead, undefined, 100, undefined, eventFeedProjection.validateTail)!;
+  const nullAndFutureModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 100, rows: new Map([['main', nullAndFutureSource]]) }),
+    { categories: ['warsPeace'], artwork: false },
+  );
+  assert.deepEqual(nullAndFutureModel.slots, [
+    { kind: 'refused', key: 'refused:0', reason: 'Event was not recorded.' },
+    { kind: 'refused', key: 'refused:1', reason: 'The event feed row is malformed.' },
+  ]);
 });

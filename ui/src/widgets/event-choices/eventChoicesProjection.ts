@@ -173,12 +173,9 @@ function buildChoiceRow(
 
 function validateEventChoicesTail(raw: unknown, readAt?: number): TailReply<ScriptPageRow & DatedLogRow> {
   return validateRowTailReply(raw, (row, _columns, at): ScriptPageRow & DatedLogRow => {
-    const occurrence = validateOccurrence(row.occurrence);
-    const card = choiceCard(occurrence);
-    if (!card) throw new Error('The occurrence card is malformed.');
-    if (at !== undefined && card.first.row.readHour > at) {
-      throw new Error(`Event choice ${occurrence.id} was read at hour ${card.first.row.readHour} after displayed hour ${at}.`);
-    }
+    if (row.occurrence === null) throw new Error('Event choice was not recorded.');
+    const occurrence = validateOccurrence(row.occurrence, at);
+    if (!choiceCard(occurrence)) throw new Error('The occurrence card is malformed.');
     return { ...(row as unknown as ScriptPageRow & DatedLogRow), occurrence };
   }, readAt);
 }

@@ -241,4 +241,26 @@ test('S3: a malformed event choice row becomes a refused slot with its reason in
   assert.equal(onlyBadModel.titleSummary, '1 event');
   assert.equal(onlyBadModel.totalRows, 1);
   assert.equal(onlyBadModel.empty, undefined, 'a tail with one malformed row never claims no events matched');
+
+  const nullAndFutureEdgeOcc = occurrence([
+    edge('scriptEventFired', fired, ['GER', 'POL'], { item: null }),
+    choose(atHour + 5, 0, 'POL'),
+  ]);
+  const nullAndFutureSource = buildRowSourceFromHead('test:choices-null-and-future-edge', {
+    ...mixedHead,
+    total: '2',
+    counts: [],
+    rows: [
+      { hour: fired, key: 'null:choice', observed: fired, ordinal: '0', live: false, status: null, occurrence: null },
+      { hour: fired, key: nullAndFutureEdgeOcc.id, observed: fired, ordinal: '1', live: false, status: 'awaiting', occurrence: nullAndFutureEdgeOcc },
+    ],
+  }, undefined, atHour, undefined, eventChoicesProjection.validateTail)!;
+  const nullAndFutureModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', nullAndFutureSource]]) }),
+    { events: ['country'], awaiting: false, artwork: false, breaks: [] },
+  );
+  assert.equal(nullAndFutureModel.slots?.length, 2);
+  assert.deepEqual(nullAndFutureModel.slots?.[0], { kind: 'refused', key: 'refused:0', reason: 'Event choice was not recorded.' });
+  assert.equal(nullAndFutureModel.slots?.[1]?.kind, 'refused');
+  assert.match(nullAndFutureModel.slots?.[1]?.kind === 'refused' ? nullAndFutureModel.slots[1].reason : '', /after displayed hour/);
 });
