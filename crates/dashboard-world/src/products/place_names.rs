@@ -722,34 +722,41 @@ impl PlaceHistory {
         }
     }
 
-    fn state_display_cells(&self, content: &Content, id: u32, cells: &[Cell]) -> Result<String, String> {
+    fn state_display_cells(&self, content: &Content, id: u32, cells: &[Cell], scoped: impl FnOnce(u32, &str) -> Option<Result<String, String>>) -> Result<String, String> {
         let row = StateRow { id, custom_name: self.states.text(cells[1]).unwrap_or(&[]).to_vec(), owner_name: self.states.text(cells[2]).unwrap_or(&[]).to_vec(), ..StateRow::default() };
         let states = content.cat.cached_states();
         let names = states.as_ref().map(|states| &states.names).map_err(String::as_str);
-        scripted_text::state_display_name(&row, &content.cat, names, scripted_text::StateNameUsage::Place)
+        let plain = scripted_text::state_display_name(&row, &content.cat, names, scripted_text::StateNameUsage::Place);
+        if plain.is_err() && row.custom_name.is_empty() && row.owner_name.is_empty()
+            && let Some(Ok(key)) = names.ok().and_then(|names| names.get(&id))
+            && let Some(result) = scoped(id, key)
+        {
+            return result;
+        }
+        plain
     }
 
-    fn state_display_at(&self, content: &Content, id: u32, hour: i32, absent: impl FnOnce() -> String) -> Result<String, String> {
+    fn state_display_at(&self, content: &Content, id: u32, hour: i32, absent: impl FnOnce() -> String, scoped: impl FnOnce(u32, &str) -> Option<Result<String, String>>) -> Result<String, String> {
         if matches!(status_at(&self.states, hour).0, Status::NotRecorded) {
             return Err(not_recorded(hour, TableId::States, &self.mode));
         }
         let Reading::Cells(c) = self.states.reading(u128::from(id), hour) else { return Err(absent()); };
-        self.state_display_cells(content, id, c)
+        self.state_display_cells(content, id, c, scoped)
     }
 
-    pub fn state_reading(&self, content: &Content, id: u32, hour: i32) -> Result<Option<Name>, String> {
+    pub fn state_reading(&self, content: &Content, id: u32, hour: i32, scoped: impl FnOnce(u32, &str) -> Option<Result<String, String>>) -> Result<Option<Name>, String> {
         match reading_witness(TableId::States, self.states.reading(u128::from(id), hour)) {
-            Witness::Row(c) => Ok(Some(Name::of(self.state_display_cells(content, id, c)))),
+            Witness::Row(c) => Ok(Some(Name::of(self.state_display_cells(content, id, c, scoped)))),
             Witness::Absent => Ok(None),
             Witness::NotRecorded(reason) => Err(reason),
         }
     }
 
-    pub fn province_reading(&self, content: &Content, id: u32, mode: ProvinceMode, hour: i32) -> Result<Option<Name>, String> {
+    pub fn province_reading(&self, content: &Content, id: u32, mode: ProvinceMode, hour: i32, scoped: impl FnOnce(u32, &str) -> Option<Result<String, String>>) -> Result<Option<Name>, String> {
         match reading_witness(TableId::Provinces, self.provinces.reading(u128::from(id), hour)) {
             Witness::Row(c) => {
                 let state = cell_number(c[0]).and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
-                Ok(Some(resolve_province(content, id, state, mode, self.rename_at(id, hour), || self.victory_point_tag_at(id, state, hour), |s| self.state_display_at(content, s, hour, || format!("state {s}: Not in this recording")))))
+                Ok(Some(resolve_province(content, id, state, mode, self.rename_at(id, hour), || self.victory_point_tag_at(id, state, hour), |s| self.state_display_at(content, s, hour, || format!("state {s}: Not in this recording"), scoped))))
             }
             Witness::Absent => Ok(None),
             Witness::NotRecorded(reason) => Err(reason),
@@ -757,7 +764,7 @@ impl PlaceHistory {
     }
 
     pub fn province_name(&self, content: &Content, id: u32, mode: ProvinceMode, hour: i32) -> Name {
-        match self.province_reading(content, id, mode, hour) {
+        match self.province_reading(content, id, mode, hour, |_, _| None) {
             Ok(Some(name)) => name,
             Ok(None) => Name::missing(format!("Not in this recording: province {id} at this hour")),
             Err(reason) => Name::missing(reason),

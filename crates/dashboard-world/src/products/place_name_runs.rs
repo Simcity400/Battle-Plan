@@ -2,7 +2,11 @@ use crate::products::place_names::{Content, Name, PlaceHistory, ProvinceMode};
 use dashboard_base::{
     Source,
     catalogue::Refusals,
-    products::{LoadContext, Product},
+    products::{
+        LoadContext, Product,
+        at_hour::ReadDates,
+        scoped_text::{Scope, ScopedText, Validity, key_needs_scope},
+    },
 };
 use dashboard_core::dto::RecordingGap;
 use dashboard_text::metadata::check_cancel;
@@ -213,6 +217,7 @@ impl Product for PlaceNameRuns {
         let mut state_book = RunBook::new(states.iter().copied());
         let mut province_book = RunBook::new(provinces.iter().copied());
         let recording = query.replay.recording();
+        let scoped = ScopedText::new(query.replay, &content.cat);
         for stretch in query.timeline.stretches.iter().filter(|stretch| stretch.first <= to && stretch.last >= from) {
             let (first, last) = (stretch.first.max(from), stretch.last.min(to));
             let history = PlaceHistory::load(
@@ -225,16 +230,31 @@ impl Product for PlaceNameRuns {
                 false,
                 cancelled,
             )?;
-            for &id in &states {
-                check_cancel(cancelled)?;
-                for hour in history.state_change_hours(id, first, last) {
-                    state_book.settle(id, answer_of(history.state_reading(&content, id, hour)), hour, &unknown);
-                }
-            }
-            for &id in &provinces {
-                check_cancel(cancelled)?;
-                for hour in history.province_change_hours(id, first, last) {
-                    province_book.settle(id, answer_of(history.province_reading(&content, id, mode, hour)), hour, &unknown);
+            for (ids, book, is_state) in [(&states, &mut state_book, true), (&provinces, &mut province_book, false)] {
+                for &id in ids {
+                    let changes = if is_state { history.state_change_hours(id, first, last) } else { history.province_change_hours(id, first, last) };
+                    let ends = changes.iter().skip(1).map(|hour| hour - 1).chain([last]);
+                    for (mut hour, end) in changes.iter().copied().zip(ends) {
+                        loop {
+                            check_cancel(cancelled)?;
+                            let mut validity = Validity::default();
+                            let localise = |state, key: &str| {
+                                key_needs_scope(&content.cat.localisation, key, &[]).then(|| {
+                                    scoped.localise(stretch.run, hour, Scope::State(state), key, &[], Some(&mut validity)).and_then(|name| {
+                                        if name.trim().is_empty() { Err(format!("localisation {key}: the state name is empty")) } else { Ok(name) }
+                                    })
+                                })
+                            };
+                            let reading = if is_state { history.state_reading(&content, id, hour, localise) } else { history.province_reading(&content, id, mode, hour, localise) };
+                            book.settle(id, answer_of(reading), hour, &unknown);
+                            if hour == end || validity.is_empty() { break; }
+                            let dates = source.state::<ReadDates>();
+                            let mut dates = dates.lock().unwrap_or_else(|error| error.into_inner());
+                            let through = validity.through(&mut dates, query.replay, stretch.run, first, hour, last, cancelled)?;
+                            if through >= end { break; }
+                            hour = through + 1;
+                        }
+                    }
                 }
             }
             state_book.close(last, &unknown);
@@ -274,6 +294,54 @@ mod tests {
 
     fn name(text: &str) -> Answer {
         Answer { name: Some(text.to_owned()), missing: None, presence: Presence::Present }
+    }
+
+    #[test]
+    fn state_names_follow_scoped_inputs_and_refuse_unrecorded_operands() {
+        use replay_data::rows::{CountryAppearanceRow, CountryRow, PoliticsRow};
+        let (_catalogue, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+            ("common/defines/synth.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=7}}"),
+            ("history/states/7.txt", "state={id=7 name=SCOPED_REACH provinces={1}}"),
+            ("history/states/8.txt", "state={id=8 name=UNREAD_REACH provinces={2}}"),
+            ("history/states/9.txt", "state={id=9 name=PLAIN_REACH provinces={3}}"),
+            ("history/states/10.txt", "state={id=10 name=UNREAD_REACH provinces={4}}"),
+            ("localisation/english/synth_l_english.yml", concat!(
+                "\u{feff}l_english:\n AAA_ADJ:0 \"Alphan\"\n BBB_ADJ:0 \"Betan\"\n",
+                " SCOPED_REACH:0 \"[ROOT.owner.GetAdjective] Reach\"\n",
+                " UNREAD_REACH:0 \"[?temp_synth] Reach\"\n PLAIN_REACH:0 \"Plain Reach\"\n",
+            )),
+        ]);
+        let frames = (100..=104).map(|hour| {
+            let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
+            for rows in [
+                TableRows::Countries(vec![CountryRow { id: 9001, canonical_slot: 7, tag: if hour < 103 { b"AAA" } else { b"BBB" }.to_vec(), ..Default::default() }]),
+                TableRows::CountryAppearance(vec![CountryAppearanceRow { country: 9001, ..Default::default() }]),
+                TableRows::Politics(vec![PoliticsRow { country: 9001, ..Default::default() }]),
+                TableRows::States((7..=10).map(|id| StateRow {
+                    id, owner: 9001, controller: 9001,
+                    custom_name: if id == 10 { b"Recorded Reach".to_vec() } else { Vec::new() },
+                    ..Default::default()
+                }).collect()),
+                TableRows::Provinces(vec![ProvinceRow { id: 1, state: 7, ..Default::default() }]),
+                TableRows::ProvinceNames(vec![]),
+            ] {
+                let table = rows.table();
+                frame.tables[table.index()] = TableView::Complete(rows).into();
+            }
+            frame
+        }).collect();
+        let (source, load) = dashboard_base::test_fixtures::source_with_content(frames, &folder.0);
+        let params = PlaceNameRunsParams { branch_id: "1".into(), land: false, from: 100, to: 104, states: vec![7, 8, 9, 10], provinces: vec![1] };
+        let executable = dashboard_text::catalogue::tests::script_game::executable().build();
+        let reply = engine_executable::executable_tables::scope(Some(executable), || PlaceNameRuns::load(&source, &params, &load, &AtomicBool::new(false))).unwrap();
+        let runs = |i: usize| reply.states[i].runs.iter().map(|run| (run.first_hour, run.last_hour, run.name.as_deref())).collect::<Vec<_>>();
+        assert_eq!(runs(0), [(100, 102, Some("Alphan Reach")), (103, 104, Some("Betan Reach"))]);
+        let unread = &reply.states[1].runs[0];
+        assert!(unread.name.is_none());
+        assert!(unread.missing.as_deref().is_some_and(|why| why.contains("UNREAD_REACH") && why.contains("temp_synth")), "{:?}", unread.missing);
+        assert_eq!(runs(2), [(100, 104, Some("Plain Reach"))]);
+        assert_eq!(runs(3), [(100, 104, Some("Recorded Reach"))]);
+        assert_eq!(reply.provinces[0].runs.iter().map(|run| (run.first_hour, run.last_hour, run.name.as_deref())).collect::<Vec<_>>(), runs(0));
     }
 
     #[test]
@@ -369,11 +437,12 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        assert_eq!(answer_of(history.state_reading(&content, 7, 1_000)).presence, Presence::Present);
-        assert_eq!(answer_of(history.state_reading(&content, 8, 1_000)).presence, Presence::Absent, "a complete read without the row proves the state does not exist");
-        assert_eq!(answer_of(history.state_reading(&content, 7, 1_001)).presence, Presence::Present, "a witnessed row is present even in a truncated read");
-        assert_eq!(answer_of(history.state_reading(&content, 8, 1_001)).presence, Presence::Unknown, "a truncated read without the row proves nothing");
-        assert_eq!(answer_of(history.province_reading(&content, 3, ProvinceMode::Place, 1_002)).presence, Presence::Unknown);
+        let context_free = |_, _: &str| None;
+        assert_eq!(answer_of(history.state_reading(&content, 7, 1_000, context_free)).presence, Presence::Present);
+        assert_eq!(answer_of(history.state_reading(&content, 8, 1_000, context_free)).presence, Presence::Absent, "a complete read without the row proves the state does not exist");
+        assert_eq!(answer_of(history.state_reading(&content, 7, 1_001, context_free)).presence, Presence::Present, "a witnessed row is present even in a truncated read");
+        assert_eq!(answer_of(history.state_reading(&content, 8, 1_001, context_free)).presence, Presence::Unknown, "a truncated read without the row proves nothing");
+        assert_eq!(answer_of(history.province_reading(&content, 3, ProvinceMode::Place, 1_002, context_free)).presence, Presence::Unknown);
         assert_eq!(history.state_change_hours(7, 1_000, 1_002), vec![1_000, 1_002]);
         assert_eq!(history.state_change_hours(8, 1_000, 1_002), vec![1_000, 1_001, 1_002]);
         drop(query);
