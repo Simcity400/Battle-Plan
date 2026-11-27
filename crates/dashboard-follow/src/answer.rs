@@ -224,6 +224,15 @@ pub fn not_recorded(reason: &str, out: &mut Vec<u8>) {
     texts(out, std::iter::once(reason));
 }
 
+pub fn answers_cells(message: &[u8]) -> bool {
+    let mut at = 24;
+    while let Some(header) = message.get(at..).and_then(|tail| tail.get(..16)) {
+        if u32::from_le_bytes(header[..4].try_into().expect("answer id")) >= crate::live::CELLS { return true; }
+        at += 16 + u32::from_le_bytes(header[8..12].try_into().expect("answer length")) as usize;
+    }
+    false
+}
+
 pub fn resets(message: &[u8]) -> bool {
     message.len() >= 8 && message.starts_with(&MAGIC.to_le_bytes()) && u32::from_le_bytes(message[4..8].try_into().expect("four bytes")) & RESET != 0
 }

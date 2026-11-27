@@ -2205,6 +2205,18 @@ fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_o
     let kinds: Vec<u8> = std::iter::from_fn(|| push.try_take()).map(|(kind, ..)| kind).collect();
     assert_eq!(kinds, [crate::push::FOLLOW, PANEL, crate::push::FOLLOW], "the panel arrives after the reset it may depend on");
 
+    let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
+    push.head(3, 0, 20);
+    push.offer_kind(PANEL, record(46, 10, dated::DATA, &[9; 8]));
+    let mut cell = Vec::new();
+    crate::answer::begin(&mut cell, 3, 0, 20, 0, false);
+    crate::answer::push_held(&mut cell, crate::live::CELLS | 5, 20, &body(7, 3), 0);
+    push.offer(cell);
+    push.offer_kind(PANEL, dated::ProductBatch::new((0, 3, 0)).finish(Some(20)));
+    assert_eq!(push.counters().merges, 0, "a panel never folds past a cell answer of its route, which its data may register");
+    let kinds: Vec<u8> = std::iter::from_fn(|| push.try_take()).map(|(kind, ..)| kind).collect();
+    assert_eq!(kinds, [PANEL, crate::push::FOLLOW, PANEL]);
+
     let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
     push.head(3, 0, 10);
     push.offer_kind(PANEL, record(39, 5, dated::DATA, &[1; 1000]));

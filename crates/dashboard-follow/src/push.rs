@@ -223,6 +223,7 @@ impl State {
             q.stream.version().is_none_or(|(other, _)| other != route) || match (older.kind, q.kind) {
                 (PANEL, PANEL) => matches!((&older.panels, &q.panels), (Some(ids), Some(others)) if !others.iter().any(|id| ids.contains(id))),
                 (FOLLOW, PANEL) => !answer::resets(&older.bytes),
+                (PANEL, FOLLOW) => !answer::answers_cells(&q.bytes),
                 _ => true,
             }
         })
