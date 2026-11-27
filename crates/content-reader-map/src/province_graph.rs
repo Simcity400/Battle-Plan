@@ -39,7 +39,7 @@ impl ProvinceGraph {
         let rows = adjacencies::parse(
             &layers
                 .read(&path)
-                .map_err(|error| invalid(format!("{path}: {error}")))?,
+                .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))?,
         )
         .map_err(|error| invalid(format!("{path}: {error}")))?;
         let geometry = ProvinceGeometry::from_map(&map);

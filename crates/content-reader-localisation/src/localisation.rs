@@ -7,7 +7,7 @@ use std::{
 use crate::{ResolvedLayers, content::normalize_path};
 
 fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
+    content_reader_parser::fields::invalid(message)
 }
 
 const STORED: [(char, char); 5] = [
@@ -1198,7 +1198,12 @@ fn read_with(
             let bytes = layers.read_path(&normalize_path(path)?)?;
             io::Result::Ok(parse(&bytes))
         }))
-        .unwrap_or_else(|_| Err(invalid("Localisation reader worker failed")))
+        .unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Localisation reader worker failed",
+            ))
+        })
     });
     for ((replace, _, path), parsed) in files.iter().zip(read) {
         let parsed = parsed?;

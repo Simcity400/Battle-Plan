@@ -281,7 +281,8 @@ fn key_names_tables_status() -> Result<(), String> {
 
 fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<AdjacencyRule>> {
     let lazy_names = std::cell::OnceCell::new();
-    let mut interrupted: Option<io::Error> = None;
+    let mut key_names_error: Option<io::Error> = None;
+    let mut unsettled_by_read_error = false;
     let mut shaper: Option<content_reader_script::trigger_grammar::Shaper<'_>> = None;
     let provided = match names {
         TriggerNames::Provided(names) => Some(names),
@@ -313,9 +314,13 @@ fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<Adjacenc
                                 key_names_tables_status()?;
                                 match layers.key_names() {
                                     Ok(names) => Ok(names),
-                                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                                    Err(error)
+                                        if !content_reader_parser::fields::is_content_error(
+                                            &error,
+                                        ) =>
+                                    {
                                         let reason = error.to_string();
-                                        interrupted = Some(error);
+                                        key_names_error = Some(error);
                                         Err(reason)
                                     }
                                     Err(error) => Err(error.to_string()),
@@ -323,7 +328,11 @@ fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<Adjacenc
                             });
                             match loaded {
                                 Ok(names) => shaper.set_names(names),
-                                Err(why) if interrupted.is_some() => {
+                                Err(why)
+                                    if key_names_error.as_ref().is_some_and(|error| {
+                                        error.kind() == io::ErrorKind::Interrupted
+                                    }) =>
+                                {
                                     return Shape::Unsettled(why.clone());
                                 }
                                 Err(_) => {}
@@ -331,7 +340,10 @@ fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<Adjacenc
                         }
                         match shaper.shape(target, field).map(Node::Trigger) {
                             Shape::Unsettled(reason) => match lazy_names.get() {
-                                Some(Err(why)) => Shape::Unsettled(format!("{reason} ({why})")),
+                                Some(Err(why)) => {
+                                    unsettled_by_read_error = key_names_error.is_some();
+                                    Shape::Unsettled(format!("{reason} ({why})"))
+                                }
                                 _ => Shape::Unsettled(reason),
                             },
                             other => other,
@@ -436,10 +448,18 @@ fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<Adjacenc
             }
         },
     );
-    if let Some(error) = interrupted {
-        return Err(error);
+    if key_names_error
+        .as_ref()
+        .is_some_and(|error| error.kind() == io::ErrorKind::Interrupted)
+    {
+        return Err(key_names_error.expect("interrupted error present"));
     }
     if let Some(cause) = document.unsettled {
+        if unsettled_by_read_error
+            && let Some(error) = key_names_error
+        {
+            return Err(io::Error::new(error.kind(), cause.to_string()));
+        }
         return Err(invalid(cause.to_string()));
     }
     let mut rules = Vec::new();
@@ -498,12 +518,14 @@ pub fn read_map(layers: &ResolvedLayers, map: &DefaultMap) -> io::Result<Vec<Adj
     let path = map_file(map, "adjacency_rules")?;
     let bytes = layers
         .read(&path)
-        .map_err(|error| invalid(format!("{path}: {error}")))?;
+        .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))?;
     parse_inner(&bytes, TriggerNames::Lazy(layers)).map_err(|error| {
-        if error.kind() == io::ErrorKind::Interrupted {
+        if content_reader_parser::fields::is_content_error(&error) {
+            invalid(format!("{path}: {error}"))
+        } else if error.kind() == io::ErrorKind::Interrupted {
             error
         } else {
-            invalid(format!("{path}: {error}"))
+            io::Error::new(error.kind(), format!("{path}: {error}"))
         }
     })
 }
@@ -854,8 +876,15 @@ adjacency_rule = {
         needs.write(&needs.base(), "common/country_tags/broken.txt", "AAA = x\n");
         let layers = needs.layers(&[]);
         std::fs::remove_file(needs.base().join("common/country_tags/broken.txt")).unwrap();
-        let error = read(&layers).unwrap_err().to_string();
-        assert!(error.contains("custom_scope"), "{error}");
+        let error = read(&layers).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+        assert!(error.to_string().contains("changed since verification"), "{error}");
+        assert!(!content_reader_parser::fields::is_content_error(&error), "{error}");
+        assert!(error.to_string().contains("custom_scope"), "{error}");
+        needs.write(&needs.base(), "common/country_tags/broken.txt", "AAA = x\n");
+        let recovered = read(&layers).unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].name, "B");
     }
 
     #[test]

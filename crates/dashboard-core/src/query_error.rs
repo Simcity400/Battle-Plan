@@ -99,6 +99,8 @@ pub fn refusal(error: &io::Error) -> Option<&str> {
         }
         inner = if let Some(error) = inner.downcast_ref::<io::Error>() {
             error.get_ref()?
+        } else if let Some(error) = inner.downcast_ref::<std::sync::Arc<io::Error>>() {
+            error.get_ref()?
         } else {
             inner.source()?
         };
@@ -114,8 +116,10 @@ mod tests {
         let error = refused("Synthetic data was not recorded");
         assert_eq!(error.kind(), io::ErrorKind::Other);
         assert_eq!(refusal(&error), Some("Synthetic data was not recorded"));
+        let wrapped = io::Error::new(error.kind(), std::sync::Arc::new(error));
+        assert_eq!(refusal(&wrapped), Some("Synthetic data was not recorded"));
         assert_eq!(
-            QueryError::from(error),
+            QueryError::from(wrapped),
             QueryError::Refused {
                 text: "Synthetic data was not recorded".into()
             }

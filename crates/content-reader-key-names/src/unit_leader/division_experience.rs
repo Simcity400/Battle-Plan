@@ -19,8 +19,7 @@ impl DivisionExperience {
     pub fn read(defines: &Defines) -> io::Result<Self> {
         let thresholds = defines.fixed5_array("NMilitary", "UNIT_EXP_LEVELS")?;
         if thresholds.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+            return Err(content_reader_parser::fields::invalid(
                 "NMilitary.UNIT_EXP_LEVELS is empty",
             ));
         }
