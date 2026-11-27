@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { projectLaneRunsToPixels } from '../../families/heat/lanesLayout.ts';
-import { deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
+import { deriveLanesTooltip, readoutAuditText } from '../../families/heat/lanesModel.ts';
 import type { RegionalWeatherReply } from '../../generated/dashboard';
-import { projectWeather, temperatureText, weatherProjection } from './weatherProjection.ts';
+import { projectWeather, weatherProjection } from './weatherProjection.ts';
 
 const SURFACE = '#161616';
 
@@ -60,15 +60,28 @@ test('R3-S4: weather inspection preserves recorded precision and folded means wi
     regions: [{ id: '5', pinned: false, measures: [{ id: 'temp', days: [2], values: [['124681', '249363', '124682']] }],
       readout: { kind: 'value', value: '124682', as_of_hour: 47 } }] }, extrema: ['124681', '124682'] });
   const model = projectWeather(view(47, data), { show: 'temperature', modifier: null, surface: SURFACE });
-  assert.equal(temperatureText(124682n), '1.2 °C');
   const readout = model.rows[0]!.readout!;
   assert.equal(readout.kind === 'value' ? readout.primary : '', '1.2 °C');
   assert.equal(deriveLanesTooltip(model, 0, 0)!.items![0]!.value, '1.246815 °C (1.24681 °C to 1.24682 °C)');
-  assert.equal(readout.kind === 'value' ? readout.audit : '', '1.24682 °C');
-  data.columns.regions[0]!.measures[0]!.days[0] = 3;
-  data.columns.regions[0]!.measures[0]!.values![0] = ['1', '1', '1'];
-  const thirds = projectWeather(view(47, structuredClone(data)), { show: 'temperature', modifier: null, surface: SURFACE });
-  assert.equal(deriveLanesTooltip(thirds, 0, 0)!.items![0]!.value, '1/300000 °C (0.00001 °C to 0.00001 °C)');
+  assert.equal(deriveLanesTooltip(model, 0, null)!.exactValue, '1.24682 °C');
+  assert.equal(readoutAuditText(readout), '1.24682 °C (Average)');
+  for (const [show, stats, expected] of [
+    ['temperature', ['124681', '374046', '124683'], '1.24682 °C (1.24681 °C to 1.24683 °C)'],
+    ['temperature', ['-1', '0', '1'], '0 °C (−0.00001 °C to 0.00001 °C)'],
+    ['temperature', ['0', '1', '1'], '1/300000 °C (0 °C to 0.00001 °C)'],
+    ['modifiers', ['1', '3', '1'], '+0.001% (+0.001% to +0.001%)'],
+  ] as const) {
+    const folded = reply(71, { modifiers: [{ id: 'M01', name: 'M01' }], columns: { days: 3,
+      columns: [{ firstHour: 0, lastHour: 71, sampledHour: 71, readHour: 71, recorded: 3 }],
+      regions: [{ id: '5', pinned: false, measures: [{ id: show === 'temperature' ? 'temp' : 'mod:M01', days: [3], values: [[...stats]] }],
+        readout: { kind: 'value', value: '1', as_of_hour: 71 } }] }, extrema: [stats[0], stats[2]] });
+    const projected = projectWeather(view(71, folded), { show, modifier: show === 'temperature' ? null : 'M01', surface: SURFACE });
+    assert.equal(deriveLanesTooltip(projected, 0, 0)!.items![0]!.value, expected);
+    if (show === 'modifiers') {
+      assert.equal(deriveLanesTooltip(projected, 0, null)!.exactValue, '+0.001%');
+      assert.equal(readoutAuditText(projected.rows[0]!.readout), '+0.001% (M01)');
+    }
+  }
 });
 
 test('the current day is drawn once, with width, at midnight', () => {

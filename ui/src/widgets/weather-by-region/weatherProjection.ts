@@ -179,10 +179,10 @@ function readoutOf(readout: WeatherReadout | undefined, show: WeatherShow, modif
     ? signedRampColour(raw, low, high, colours.track, colours.cold, colours.warm)
     : signedRampColour(raw, -Math.max(Math.abs(low), Math.abs(high)), Math.max(Math.abs(low), Math.abs(high)), colours.track, colours.ramp, colours.ramp);
   const secondary = show === 'temperature' ? 'Average' : reply.modifiers.find(item => item.id === modifier)?.name ?? 'Modifier';
-  const audit = show === 'temperature'
+  const exact = show === 'temperature'
     ? formatExactRational(rawFixed, WEATHER_SCALE, { unit: '°C' })
     : formatExactRational(rawFixed * 100n, WEATHER_SCALE, { percent: true, signed: true });
-  return { kind: 'value', form: 'value', primary: text, secondary, swatch, audit };
+  return { kind: 'value', form: 'value', primary: text, secondary, swatch, exact };
 }
 
 function columnCell(

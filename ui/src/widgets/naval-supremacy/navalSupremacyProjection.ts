@@ -10,7 +10,7 @@ import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclar
 import { findRunAtHour, spanIndexAt, type HeatLaneCell, type HeatLaneReadout, type HeatLaneRow, type HeatLanesModel, type HeatLanesProjection } from '../../families/heat/lanesModel.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { contestedGrey, countryColourAt, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
-import { formatDateOnly, formatShare, formatShareRatio } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatExactRational, formatShare, formatShareRatio } from '../../families/valueFormat.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { ADD_REGION_LABEL, mostActiveHeading, noRegionsBody, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
@@ -305,7 +305,9 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
           : formatShare(readout.control > 0 ? share : 1 - share);
       shown = readout.control === 0
         ? { kind: 'value', form: 'value', primary: '', secondary: 'Contested', swatch: color, audit: 'Contested' }
-        : { kind: 'value', form: 'value', primary, secondary: readout.control > 0 ? look.friendlyLabel : look.enemyLabel, swatch: color };
+        : { kind: 'value', form: 'value', primary,
+          ...(ratio ? { exact: formatExactRational((readout.control > 0 ? ratio.raw : ratio.denom - ratio.raw) * 100n, ratio.denom, { percent: true }) } : {}),
+          secondary: readout.control > 0 ? look.friendlyLabel : look.enemyLabel, swatch: color };
     }
     return { id: region.id, label: named.label, labelValue: named.value, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, region: Number(region.id), runs, ...(shown ? { readout: shown } : {}) };
   });

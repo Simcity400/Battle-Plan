@@ -28,6 +28,15 @@ import {
   type BarsModel, type BarsProjection,
 } from './model.ts';
 
+import { axisCeiling, barsScrollHeight, layoutFamilyBars, visibleBarsRange } from './layout.ts';
+import { barsHostAdapter } from './hostAdapter.ts';
+import { drawFamilyBars, hitFamilyBars } from './painter.ts';
+import { registerFamilyProjection } from '../registry.ts';
+import { barsLane, type FamilyBarsBinding } from './laneView.ts';
+import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDated, firstRow, LaneTransport } from '../laneRuntime.fixture.ts';
+import { createLaneView } from '../laneRuntime.ts';
+import { buildShareRowsModel } from './shareRows.ts';
+
 test('R3-S5: both sides of a bars tooltip retain exact partial values and reasons', () => {
   const left = { value: partialValue(17.2468, 'Left coverage missing'), format: 'decimal1' as const };
   const right = { value: partialValue(31.8642, 'Right coverage missing'), format: 'decimal1' as const };
@@ -42,15 +51,6 @@ test('R3-S5: both sides of a bars tooltip retain exact partial values and reason
   assert.match(tooltipText(buildTooltipContent(deriveBarsTooltip(model, 'A01')!)), /Left coverage missing/);
   assert.match(tooltipText(buildTooltipContent(deriveBarsTooltip(model, 'A01')!)), /Right coverage missing/);
 });
-import { axisCeiling, barsScrollHeight, layoutFamilyBars, visibleBarsRange } from './layout.ts';
-import { barsHostAdapter } from './hostAdapter.ts';
-import { drawFamilyBars, hitFamilyBars } from './painter.ts';
-import { registerFamilyProjection } from '../registry.ts';
-import { barsLane, type FamilyBarsBinding } from './laneView.ts';
-import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDated, firstRow, LaneTransport } from '../laneRuntime.fixture.ts';
-import { createLaneView } from '../laneRuntime.ts';
-import { buildShareRowsModel } from './shareRows.ts';
-
 const THEME: FamilyTheme = {
   surface: '#16181d',
   raised: '#1e2128',

@@ -2,7 +2,7 @@ import { assertRunCounts } from '../../families/heat/runIdentity.fixture.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import { deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
+import { deriveLanesTooltip, readoutAuditText } from '../../families/heat/lanesModel.ts';
 import type { AirSide, AirTimelineReply } from '../../generated/dashboard';
 import { DAY_TILE_HOURS } from '../../families/heat/dayTiles.ts';
 import { projectAirTimeline } from './airTimelineProjection.ts';
@@ -53,6 +53,18 @@ function reply(lastHour: number, extra: Partial<AirTimelineReply> = {}): AirTime
 
 const view = (hour: number, data: AirTimelineReply) => createBoundedReadView({ hour, panels: new Map([['now', data]]) });
 const OPTIONS = { viewpointCountry: null, historyStart: 0, tiles: 0, surface: SURFACE };
+
+test('R3-S4: air readout inspection preserves recorded basis points behind the rounded share', () => {
+  for (const kind of ['leading', 'viewpoint'] as const) {
+    const data = reply(50);
+    data.rows[0]!.readout = { kind, side: 0, share_bp: 7123, as_of_hour: 50 };
+    const model = projectAirTimeline(view(50, data), OPTIONS);
+    const readout = model.rows[0]!.readout!;
+    assert.equal(readout.kind === 'value' && readout.primary, '71%');
+    assert.equal(deriveLanesTooltip(model, 0, null)!.exactValue, '71.23%');
+    assert.match(readoutAuditText(readout), /^71\.23% \(/);
+  }
+});
 
 test('the readout names the leading side by the product and paints it in its own colour', () => {
   const model = projectAirTimeline(view(50, reply(50)), OPTIONS);

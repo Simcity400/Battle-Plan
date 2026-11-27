@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { deriveBarsAudit } from '../../families/bars/model.ts';
-import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
+import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, readoutAuditText } from '../../families/heat/lanesModel.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
 import type { NavalSupremacyReply } from '../../generated/dashboard';
 import { projectSupremacyShares, projectSupremacyTimeline, shipsText, supremacySharesDeclaration, supremacyTimelineDeclaration } from './navalSupremacyProjection.ts';
@@ -29,6 +29,19 @@ function reply(lastHour: number): NavalSupremacyReply {
 }
 
 const view = (hour: number, data: NavalSupremacyReply) => createBoundedReadView({ hour, panels: new Map([['now', data]]) });
+
+test('R3-S4: naval readout inspection preserves the recorded share for either controlling side', () => {
+  for (const control of [1, -1]) {
+    const data = reply(60);
+    data.regions[0]!.readout = { kind: 'control', control, share: '59246', friendly: '59246', enemy: '40754', own: '7', as_of_hour: 60 };
+    const model = projectSupremacyTimeline(view(60, data), { viewer: null, surface: SURFACE, historyStart: 0, tiles: 0 });
+    const readout = model.rows[0]!.readout!;
+    assert.equal(readout.kind === 'value' && readout.primary, control > 0 ? '59%' : '40%');
+    const exact = control > 0 ? '59.246%' : '40.754%';
+    assert.equal(deriveLanesTooltip(model, 0, null)!.exactValue, exact);
+    assert.equal(readoutAuditText(readout), `${exact} (${control > 0 ? 'Friendly' : 'Enemy'} control)`);
+  }
+});
 
 test('each side keeps its own ship count or says it is missing', () => {
   assert.equal(shipsText({ kind: 'counted', ships: 13 }, { kind: 'counted', ships: 5 }), '13 v 5 ships');

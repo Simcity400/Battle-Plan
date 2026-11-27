@@ -129,6 +129,10 @@ export function formatExactRational(
   options?: Pick<RationalFormatOptions, 'signed' | 'percent' | 'unit'>,
 ): string {
   if (scale <= 0n) throw new InvalidFamilyValueError(`formatExactRational: non-positive denominator (${scale}) is not valid`);
+  let common = raw < 0n ? -raw : raw, rest = scale;
+  while (rest !== 0n) [common, rest] = [rest, common % rest];
+  raw /= common;
+  scale /= common;
   let denominator = scale, twos = 0, fives = 0;
   while (denominator % 2n === 0n) { denominator /= 2n; twos++; }
   while (denominator % 5n === 0n) { denominator /= 5n; fives++; }
