@@ -53,7 +53,7 @@ const pending = new Promise<never>(() => {});
 const requests: string[] = [];
 const asked: { product: string; hour: number }[] = [];
 const decoratedRegistrations: { count: number }[] = [];
-const decoratedRoute = 9;
+let decoratedRoute: number;
 let decoratedSub: number | undefined;
 let followPorts: readonly MessagePort[] = [];
 const decoratedReply: DecoratedDivisionsReply = {
@@ -76,8 +76,9 @@ const makeClient = (replies: Replies) => ({
     if (request.product !== 'follow' && request.product !== 'follow-clock') for (const hour of new Set(hoursIn(request.params))) asked.push({ product: request.product, hour });
     if (request.product === 'follow') {
       if (replies !== 'decorated') return reply(request, { available: false, reason: 'not followed in the sweep' });
-      const { id, query } = request.params as { id: number; query: { count: number } };
+      const { id, query, route } = request.params as { id: number; query: { count: number }; route: number };
       decoratedSub = id;
+      decoratedRoute = route;
       decoratedRegistrations.push(query);
       return reply(request, { available: true, route: decoratedRoute });
     }

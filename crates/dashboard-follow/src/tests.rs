@@ -759,7 +759,7 @@ impl crate::registry::Hosted for Paper {
 struct Papers(BTreeMap<String, Arc<Paper>>);
 
 impl crate::registry::Playheads for Papers {
-    fn open(&self, path: &std::path::Path, _branch: u64, clock: i32) -> Result<Arc<dyn crate::registry::Hosted>, String> {
+    fn open(&self, path: &std::path::Path, _branch: u64, clock: i32, _route: Option<u32>) -> Result<Arc<dyn crate::registry::Hosted>, String> {
         let path = path.to_string_lossy();
         self.0.get(&if clock == 0 { path.into_owned() } else { format!("{path}@{clock}") }).map(|paper| Arc::clone(paper) as Arc<dyn crate::registry::Hosted>).ok_or_else(|| "No playhead for this recording".to_owned())
     }
@@ -787,6 +787,11 @@ fn a_follow_for_a_table_the_playhead_lacks_answers_not_available_and_makes_no_re
     assert_eq!(reply["available"], false);
     assert_eq!(reply["reason"], "CountryStability is not in this playhead's files (a derived table, until format 12)");
     assert!(held.follow.declared().unwrap().is_empty(), "no reader made");
+    let mut mismatched = follow_request(1, "country-measure", "politicalPower");
+    mismatched["route"] = ((held.follow.route() + 1) & crate::answer::ROUTES).into();
+    let refused = registry.answer(path, "follow", &mismatched, |_| panic!("a mismatched route is refused before preparing a reading"), Box::new(|_| unreachable!())).unwrap();
+    assert_eq!(refused["reason"], "The playhead does not own the reserved route");
+    assert_eq!(registry.followed(), 0);
     let none = registry.answer(std::path::Path::new("b"), "follow", &follow_request(2, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     assert_eq!((none["available"].clone(), none["reason"].clone()), (serde_json::json!(false), serde_json::json!("No playhead for this recording")));
     let alone = crate::registry::Registry::new(None).answer(path, "follow", &follow_request(3, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();

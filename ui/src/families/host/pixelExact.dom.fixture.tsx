@@ -57,7 +57,6 @@ import FamilyHost from './FamilyHost.tsx';
 import '../../styles.css';
 import '../../dashboard/dashboard.css';
 
-const NATIVE = 9;
 const BOUNDS: readonly [number, number] = [0, 2_000_000_000];
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const H = (year: number, month = 1, day = 1) => engineHour({ year, month, day, hour: 1 })!;
@@ -67,7 +66,7 @@ let ports: readonly MessagePort[] = [];
 const client = {
   available: true,
   openFollow: (opened: readonly MessagePort[]) => { ports = opened; return Promise.resolve(); },
-  product: async () => ({ data: { available: true, route: NATIVE } }),
+  product: async (request: { params?: { route?: number } }) => ({ data: { available: true, route: request.params?.route } }),
 } as unknown as DashboardClient;
 const clock = new PlaybackController();
 clock.setBounds({ firstHour: BOUNDS[0], lastHour: BOUNDS[1] });

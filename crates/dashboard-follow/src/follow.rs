@@ -128,13 +128,14 @@ impl Follow {
         self.shared.clock
     }
 
-    pub fn new(clock: i32) -> Self {
+    pub fn new(clock: i32) -> Self { Self::with_route(clock, next_route()) }
+    pub fn with_route(clock: i32, route: u32) -> Self {
         Self {
             shared: Arc::new(Shared {
                 clock,
                 products: Mutex::default(),
                 page_seek: Mutex::default(),
-                route: next_route(),
+                route,
                 control: Mutex::new(Control { products: BTreeMap::new(), ops: Vec::new(), followed: BTreeMap::new(), declare: None, logs: None, classes: BTreeMap::new(), session: 0 }),
                 report: Mutex::default(),
                 wake: Mutex::default(),

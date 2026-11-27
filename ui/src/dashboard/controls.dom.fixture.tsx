@@ -8,7 +8,7 @@ import { FrameEngine } from '../engine/frame.ts';
 import { HOUR_EPOCH, formatDateTime } from './calendar.ts';
 import type { DashboardClient, DashboardSource } from './client';
 import type { BoundTrack } from './model';
-import type { ToLane } from '../draw/laneMessages.ts';
+import type { FromLane, ToLane } from '../draw/laneMessages.ts';
 import { PrepareGate } from './prepare.ts';
 import { StripPage } from './strip/driver.ts';
 import { stripLattice } from './strip/lattice.ts';
@@ -68,10 +68,14 @@ const fixture = {
     const client = { available: true, openFollow: async () => undefined,
       product: async (request: { product: string; params: Record<string, unknown> }) => {
         if (request.product === 'follow-clock') asks.push(request.params);
-        return { data: { available: true, route: 3 } };
+        return { data: { available: true, route: request.params.route } };
       } } as unknown as DashboardClient;
     pipeline = new Pipeline(clock, client, { lanes: [0, 1].map(() => ({
-      onmessage: null, postMessage(message: ToLane) { if (message.type === 'scrub') scrubWire.push(message); },
+      onmessage: null as ((event: MessageEvent<FromLane>) => void) | null,
+      postMessage(message: ToLane) {
+        if (message.type === 'scrub') scrubWire.push(message);
+        if (message.type === 'follow' && message.route) queueMicrotask(() => this.onmessage?.({ data: { type: 'route-bound', sub: message.sub, route: message.route!.id, seek: message.route!.seek } } as MessageEvent<FromLane>));
+      },
     })), open: () => Promise.resolve(undefined),
       channel: () => { const channel = new MessageChannel(); ports.push(channel.port1, channel.port2); return channel; }, frameRate: () => 60, rate: () => 1 });
     const id = pipeline.acquire('scrub|0', { offset: 0, pin: null });

@@ -192,7 +192,11 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
     }
     if (!lane) return;
     switch (m.type) {
-      case 'follow': lane.follow(m.sub, m.channel, m.product); break;
+      case 'follow':
+        lane.follow(m.sub, m.channel, m.product);
+        if (m.route) lane.bindRoute(m.sub, m.route.id, m.route.id, m.route.seek, m.route.offset);
+        if (m.route) post({ type: 'route-bound', sub: m.sub, route: m.route.id, seek: m.route.seek });
+        break;
       case 'route': lane.bindRoute(m.sub, m.route, m.native, m.seek, m.offset); break;
       case 'unfollow': lane.unfollow(m.sub); break;
       case 'mount': lane.mount(m.widget, m.subs, m.view, m.model); break;

@@ -495,7 +495,7 @@ pub fn install_export_follow(send: impl Fn(u8, Vec<u8>, u64) + Send + 'static) -
 
 type FollowHost = dashboard_follow::host::PlayheadHost<crate::playhead_host::Entry>;
 
-type FollowKey = (String, u64, i32);
+type FollowKey = (String, u64, i32, Option<u32>);
 
 struct FollowPlayheads {
     push: Arc<dashboard_follow::push::Push>,
@@ -533,14 +533,14 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         self.push.restart()
     }
 
-    fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {
+    fn open(&self, path: &Path, branch: u64, clock: i32, route: Option<u32>) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {
         let push = &self.push;
         if let Some(failed) = push.failed() {
             return Err(failed);
         }
         let recording = replay_recording::columnar_frames::Recording::open_path_as(path, replay_recording::columnar_frames::Open::Saved).map_err(|error| error.to_string())?;
         let capture = replay_data::scope::CaptureMode::from_byte(recording.root().identity.capture_mode).map_err(|error| error.to_string())?;
-        let key = (crate::playhead_host::units::name(&recording), branch, clock);
+        let key = (crate::playhead_host::units::name(&recording), branch, clock, route);
         if let Some(host) = self.hosted(&key) {
             return Ok(host as Arc<dyn dashboard_follow::registry::Hosted>);
         }
@@ -557,7 +557,7 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         }
         .map_err(|error| error.to_string())?;
         entry.set_capture(capture);
-        let follow = dashboard_follow::Follow::new(clock);
+        let follow = route.map_or_else(|| dashboard_follow::Follow::new(clock), |route| dashboard_follow::Follow::with_route(clock, route));
         let out = Arc::clone(push);
         let hook = follow.hook(Box::new(move |stats, message| {
             if let Some(message) = message { out.offer_from(stats.session, dashboard_follow::push::FOLLOW, message.bytes); }

@@ -688,7 +688,7 @@ test('differential: M2 future-seek panel replay preserves exact panel coverage a
   }
 });
 
-test('differential: Round 5 ordering hazards (same-packet valid+corrupt, reused cell answer-before-panel, unbound overflow, unbound superseded seek, stale refusal after switch, late registration after sub-failed, shared widget tokens, and credit invariant)', async () => {
+test('differential: Round 5 ordering hazards (same-packet valid+corrupt, reused cell answer-before-panel, future-seek overflow, unknown route refund, stale refusal after switch, late registration after sub-failed, shared widget tokens, and credit invariant)', async () => {
   const { managedInProcess, NATIVE: IN_PROC_NATIVE } = await import('./inProcess.fixture.ts');
   const { message: followMsg } = await import('./messages.fixture.ts');
   const CELL_BASE = 0x8000_0400;
@@ -833,6 +833,9 @@ test('differential: Round 5 ordering hazards (same-packet valid+corrupt, reused 
       lane.bindRoute(3, ROUTE, NATIVE, 1); checkCredit('bind at seek 1');
       assert.equal(subFailures.length, 0);
       await pump(20, 2);
+      assert.equal(page.view(1).mode, 'reading');
+      sendP(good2, 'bound good seek 2');
+      await pump(20, 2);
       assert.equal(page.view(1).mode, 'picture');
       assert.equal((page.view(1).fields?.['model:3'] as { structure?: string }).structure, 'good2');
     } else {
@@ -874,9 +877,8 @@ test('differential: Round 5 ordering hazards (same-packet valid+corrupt, reused 
     const wLate = p.acquire('diff-late|0', { offset: 0, pin: null });
     const sLate = p.subscribe(wLate, {}, env.source, '1', 0, { product: 'series-state', params: { gate: true } }, 'followed')!;
     await followStarted;
-    const huge = { keys: Array.from({ length: 12000 }, (_, i) => BigInt(i + 1)), columns: 1, values: Array.from({ length: 12000 }, () => 1n) };
-    const pkt = followMsg(10, [{ id: sLate, answer: huge }], false, IN_PROC_NATIVE, env.clock.getSnapshot().seekSequence);
-    for (let i = 0; i < 20 && p.status(sLate).status !== 'failed'; i++) env.send(pkt);
+    const noBase = { keys: [1n], columns: 1, values: [1n], changed: true };
+    env.send(followMsg(10, [{ id: sLate, answer: noBase }], false, IN_PROC_NATIVE, env.clock.getSnapshot().seekSequence));
     await env.waitView(p, wLate, v => v?.mode === 'failed');
     const unfollowed = env.nextEvent('unfollow');
     releaseFollow();
@@ -890,11 +892,12 @@ test('differential: Round 5 ordering hazards (same-packet valid+corrupt, reused 
     const sShared = p.subscribe(wShared, tok1, env.source, '1', 0, { product: 'series-state', params: { shared: 1 } }, 'followed')!;
     p.subscribe(wShared, tok2, env.source, '1', 0, { product: 'series-state', params: { shared: 1 } }, 'followed');
     await c1;
+    const sharedRoute = p.page.widgets.get(wShared)!.route;
     p.unsubscribe(wShared, tok2);
     await new Promise<void>(resolve => setImmediate(resolve));
-    env.send(followMsg(10, [{ id: sShared, answer: { keys: [1n], columns: 1, values: [1n] } }], true, IN_PROC_NATIVE, env.clock.getSnapshot().seekSequence));
+    env.send(followMsg(10, [{ id: sShared, answer: { keys: [1n], columns: 1, values: [1n] } }], true, sharedRoute, env.clock.getSnapshot().seekSequence));
     await env.waitView(p, wShared, v => v?.mode === 'picture');
-    env.send(followMsg(12, [{ id: sShared, answer: { keys: [99n], columns: 1, values: [99n], changed: true } }], false, IN_PROC_NATIVE, env.clock.getSnapshot().seekSequence));
+    env.send(followMsg(12, [{ id: sShared, answer: { keys: [99n], columns: 1, values: [99n], changed: true } }], false, sharedRoute, env.clock.getSnapshot().seekSequence));
     await env.waitView(p, wShared, v => v?.mode === 'failed');
     assert.equal(p.status(sShared).status, 'failed');
     assert.ok(p.status(sShared).error ?? p.widgetError(wShared));

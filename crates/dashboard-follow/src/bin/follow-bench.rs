@@ -343,7 +343,7 @@ impl dashboard_follow::registry::Hosted for BenchHost {
 struct BenchPlayheads(Arc<BenchHost>);
 
 impl dashboard_follow::registry::Playheads for BenchPlayheads {
-    fn open(&self, _path: &Path, _branch: u64, _clock: i32) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {
+    fn open(&self, _path: &Path, _branch: u64, _clock: i32, _route: Option<u32>) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {
         Ok(Arc::clone(&self.0) as Arc<dyn dashboard_follow::registry::Hosted>)
     }
 }

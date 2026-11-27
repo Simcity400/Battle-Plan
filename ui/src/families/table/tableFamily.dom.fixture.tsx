@@ -26,7 +26,7 @@ import { tableHostAdapter } from './hostAdapter.ts';
 import TableChrome from './TableChrome.tsx';
 import '../../styles.css';
 
-const NATIVE = 7;
+const NATIVE = 1;
 
 function followMessage(hour: number, seek: number, answers: { id: number; hour: number; body: Uint8Array }[], reset = false) {
   const out = new Uint8Array(24 + answers.reduce((sum, a) => sum + 16 + a.body.length, 0));

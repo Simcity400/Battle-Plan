@@ -39,7 +39,7 @@ pub trait Hosted: Send + Sync {
 }
 
 pub trait Playheads: Send + Sync {
-    fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn Hosted>, String>;
+    fn open(&self, path: &Path, branch: u64, clock: i32, route: Option<u32>) -> Result<Arc<dyn Hosted>, String>;
     fn credit(&self, _session: u64, _released: u64) {}
     fn restart(&self) -> u64 { 0 }
 }
@@ -208,10 +208,12 @@ impl Registry {
                 let Some(playheads) = &self.playheads else {
                     return Ok(unavailable("Values at the head are followed only in the map viewer's process, which has no playhead here"));
                 };
-                let host = match playheads.open(path, branch, clock) {
+                let route = route(params)?;
+                let host = match playheads.open(path, branch, clock, route) {
                     Ok(host) => host,
                     Err(reason) => return Ok(unavailable(reason)),
                 };
+                if route.is_some_and(|route| host.follow().route() != route) { return Ok(unavailable("The playhead does not own the reserved route")); }
                 let asked = params.get("query").unwrap_or(&Value::Null);
                 if let Some(other) = other_branch(asked, branch) {
                     return Ok(unavailable(format!("The followed query names branch {other}, not the followed branch {branch}")));
@@ -270,6 +272,7 @@ impl Registry {
             "follow-clock" => {
                 let branch = branch(params)?;
                 let clock = clock(params)?;
+                let route = route(params)?;
                 let number = |name: &str| params.get(name).and_then(Value::as_f64).ok_or_else(|| crate::invalid(format!("A clock anchor names no {name}")));
                 let anchor = Anchor {
                     frame_rate: params["frameRate"].as_f64().filter(|rate| rate.is_finite() && *rate > 0.0).ok_or_else(|| crate::invalid("A clock anchor needs a positive frame rate"))?,
@@ -285,7 +288,7 @@ impl Registry {
                 let host = {
                     let table = lock(&self.followed);
                     if !table.current(params) { return Ok(unavailable(RETIRED)); }
-                    table.held.values().filter_map(|sub| sub.installed.as_ref()).find(|held| held.path == path && held.branch == branch && held.clock == clock).map(|held| held.host.clone())
+                    table.held.values().filter_map(|sub| sub.installed.as_ref()).find(|held| held.path == path && held.branch == branch && held.clock == clock && route.is_none_or(|route| held.host.follow().route() == route)).map(|held| held.host.clone())
                 };
                 let Some(host) = host else { return Ok(json!({"available":false})) };
                 host.anchor(anchor);
@@ -366,6 +369,10 @@ fn lanes(params: &Value, id: u32) -> io::Result<u32> {
 
 fn clock(params: &Value) -> io::Result<i32> {
     params["clock"].as_i64().and_then(|clock| i32::try_from(clock).ok()).ok_or_else(|| crate::invalid("A follow request's clock is not an hour"))
+}
+
+fn route(params: &Value) -> io::Result<Option<u32>> {
+    params.get("route").map(|route| route.as_u64().filter(|&route| route <= u64::from(crate::answer::ROUTES)).map(|route| route as u32).ok_or_else(|| crate::invalid("A followed route is not a wire route number"))).transpose()
 }
 
 fn other_branch(asked: &Value, branch: u64) -> Option<String> {
