@@ -239,9 +239,7 @@ async fn shell_ready(webview: tauri::Webview) -> Result<(), String> {
         return Err("Only the main window starts BattlePlan’s background services.".into());
     }
     if !webview.state::<ShellReady>().0.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        let app = webview.app_handle().clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            app_update::start(&app);
+        tauri::async_runtime::spawn_blocking(|| {
             recorder::start_recorder();
             export_settings::sweep_pending_stages();
         }).await.map_err(|error| error.to_string())?;
@@ -778,6 +776,10 @@ fn main() {
         .build(context)
         .expect("Couldn’t start BattlePlan");
     app.run(move |app, event| match event {
+        tauri::RunEvent::Ready => {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || app_update::start(&app));
+        }
         tauri::RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
