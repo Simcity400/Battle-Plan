@@ -13,11 +13,32 @@ pub struct VariantPart {
     ticks: [u64; N],
 }
 impl VariantPart {
+    pub(super) fn allocated_bytes(&self) -> usize {
+        self.sources.capacity() * std::mem::size_of::<cequipment_variant::RegistryRow>()
+            + self.carried.capacity()
+                * std::mem::size_of::<Option<Arc<rows::VariantDesignState>>>()
+            + self.leaves.allocated_bytes()
+    }
+
+    fn reset(&mut self) {
+        self.first = 0;
+        self.sources.clear();
+        self.carried.clear();
+        self.certified_quiet = None;
+        self.leaves.reset();
+        self.leaves.organisation_holds.clear();
+        self.leaves.organisations_complete = false;
+        self.fresh = false;
+        self.details = false;
+        self.definitions_only = false;
+        self.ticks = [0; N];
+    }
+
     pub fn capture(&mut self, memory: &impl Memory, base: usize) {
         let source = &self.sources;
         let begin = qpc();
         let mut reads = read_accounting::table(TABLES[3]);
-        let mut carried = self.carried.iter();
+        let mut carried = self.carried.iter_mut();
         capture_text(
             &mut self.leaves.definitions,
             &mut self.leaves.definition_bytes,
@@ -29,7 +50,7 @@ impl VariantPart {
                     source,
                     rows,
                     arena,
-                    |_| Ok(carried.next().cloned().flatten()),
+                    |_| Ok(carried.next().and_then(Option::take)),
                     |state| bonus_snapshots::intern(state).map(Arc::new),
                 )
             },
@@ -165,7 +186,8 @@ impl Variants {
         if details {
             collector_observers::world_input_changes::prepare_design_mios(sources.len(), full);
         }
-        let mut carried_all = engine_allocation::vec(sources.len())
+        self.carried_scratch.clear();
+        engine_allocation::reserve(&mut self.carried_scratch, sources.len())
             .map_err(|_| "variant partition allocation failed")?;
         let certified_quiet = (!full && details)
             .then(|| design_changes::stat_timing_quiet().ok())
@@ -186,46 +208,62 @@ impl Variants {
             if entry.is_none() {
                 all_carried = false;
             }
-            carried_all.push(entry);
+            self.carried_scratch.push(entry);
         }
         let census = census.map(design_changes::held::Census::release);
         drop(held);
         if all_carried && !super::unique_source_ids(&mut self.unique_ids, sources) {
             all_carried = false;
         }
-        let mut carried_all = carried_all.into_iter();
-        let mut old_stats = std::mem::take(&mut self.stats.rows).into_iter();
-        let mut old_holds = std::mem::take(&mut self.organisation_holds).into_iter();
+        let mut carried_all = self.carried_scratch.drain(..);
+        let mut old_stats = details
+            .then(|| std::mem::take(&mut self.stats.rows).into_iter());
+        let mut old_holds = details
+            .then(|| std::mem::take(&mut self.organisation_holds).into_iter());
         let mut parts = engine_allocation::vec(lanes.min(sources.len().div_ceil(64)))
             .map_err(|_| "variant partition allocation failed")?;
         for range in ranges(sources.len(), lanes) {
-            let mut leaves = Variants::vacant();
-            leaves.stats.rows = engine_allocation::vec(range.len())
-                .map_err(|_| "variant partition allocation failed")?;
-            leaves.organisation_holds = engine_allocation::vec(range.len())
-                .map_err(|_| "variant partition allocation failed")?;
-            for _ in range.clone() {
-                leaves.stats.rows.push(old_stats.next().unwrap_or_default());
-                leaves
-                    .organisation_holds
-                    .push(old_holds.next().unwrap_or_default());
-            }
-            let mut carried = engine_allocation::vec(range.len())
-                .map_err(|_| "variant partition allocation failed")?;
-            carried.extend(carried_all.by_ref().take(range.len()));
-            parts.push(VariantPart {
-                first: range.start,
-                sources: engine_allocation::copy_vec(&sources[range])
-                    .map_err(|_| "variant partition allocation failed")?,
-                carried,
-                certified_quiet,
-                leaves,
-                fresh: full || !self.organisations_complete,
-                details,
+            let mut part = self.part_pool.pop().unwrap_or_else(|| VariantPart {
+                first: 0,
+                sources: Vec::new(),
+                carried: Vec::new(),
+                certified_quiet: None,
+                leaves: Variants::vacant(),
+                fresh: false,
+                details: false,
                 definitions_only: false,
                 ticks: [0; N],
             });
+            part.reset();
+            part.first = range.start;
+            engine_allocation::reserve(&mut part.sources, range.len())
+                .map_err(|_| "variant partition allocation failed")?;
+            part.sources.extend_from_slice(&sources[range.clone()]);
+            engine_allocation::reserve(&mut part.carried, range.len())
+                .map_err(|_| "variant partition allocation failed")?;
+            part.carried.extend(carried_all.by_ref().take(range.len()));
+            part.certified_quiet = certified_quiet;
+            part.fresh = full || !self.organisations_complete;
+            part.details = details;
+            part.definitions_only = false;
+            if let (Some(old_stats), Some(old_holds)) = (old_stats.as_mut(), old_holds.as_mut()) {
+                engine_allocation::reserve(&mut part.leaves.stats.rows, range.len())
+                    .map_err(|_| "variant partition allocation failed")?;
+                engine_allocation::reserve(&mut part.leaves.organisation_holds, range.len())
+                    .map_err(|_| "variant partition allocation failed")?;
+                for _ in range {
+                    part.leaves
+                        .stats
+                        .rows
+                        .push(old_stats.next().unwrap_or_default());
+                    part.leaves
+                        .organisation_holds
+                        .push(old_holds.next().unwrap_or_default());
+                }
+            }
+            parts.push(part);
         }
+        drop(carried_all);
         let mut parts = acquire(parts)?;
         let mut ticks = [0; N];
         add_phase_ticks(&mut ticks, &parts);
@@ -309,10 +347,12 @@ impl Variants {
                 .map_err(|_| "variant partition join allocation failed")?;
                 self.organisation_holds
                     .append(&mut part.leaves.organisation_holds);
-            } else {
-                self.stats.rows.append(&mut part.leaves.stats.rows);
-                self.organisation_holds
-                    .append(&mut part.leaves.organisation_holds);
+            }
+            part.reset();
+            if self.part_pool.len() < self.part_pool.capacity()
+                || engine_allocation::reserve(&mut self.part_pool, 1).is_ok()
+            {
+                self.part_pool.push(part);
             }
         }
         if details {

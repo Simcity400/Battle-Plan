@@ -672,20 +672,35 @@ pub(super) fn bases_pool_u32(log: &RawLog<AIR_BASES_N>, start: usize) -> u32 {
     u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
 }
 
+#[derive(Clone, Copy)]
+struct BaseVtables {
+    air_base: Option<u64>,
+    state: Option<u64>,
+    province: Option<u64>,
+}
+
+impl BaseVtables {
+    fn resolve(base: usize) -> Self {
+        Self {
+            air_base: engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA)
+                .map(|v| v as u64),
+            state: engine_sites::at(base, cstate::VTABLE_RVA).map(|v| v as u64),
+            province: engine_sites::at(base, cprovince::VTABLE_RVA).map(|v| v as u64),
+        }
+    }
+}
+
 fn base_identity(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native_memory::Memory,
-    base: usize,
+    vtables: BaseVtables,
     pointer: usize,
 ) -> (bool, u64) {
     let identity = bspan(log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
-    match (identity, engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA)) {
+    match (identity, vtables.air_base) {
         (Some(start), Some(expected)) => {
             let handle = bases_pool_u64(log, start + 8);
-            (
-                bases_pool_u64(log, start) == expected as u64 && handle != 0,
-                handle,
-            )
+            (bases_pool_u64(log, start) == expected && handle != 0, handle)
         }
         _ => (false, 0),
     }
@@ -948,7 +963,7 @@ fn block_word(log: &RawLog<AIR_BASES_N>, start: usize, index: usize) -> Option<u
 fn copy_air_base_row(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native_memory::Memory,
-    base: usize,
+    vtables: BaseVtables,
     pointer: usize,
     state_slot: Option<u32>,
     handle: u64,
@@ -966,10 +981,7 @@ fn copy_air_base_row(
         None
     } else {
         let vtable = bspan(log, memory, Some(state_pointer), 8, BASES_MASK)?;
-        let expected_state = match engine_sites::at(base, cstate::VTABLE_RVA) {
-            Some(expected) => expected as u64,
-            None => return None,
-        };
+        let expected_state = vtables.state?;
         if bases_pool_u64(log, vtable) != expected_state {
             return None;
         }
@@ -994,10 +1006,7 @@ fn copy_air_base_row(
     }
     let province = if province_pointer != 0 {
         let vtable = bspan(log, memory, Some(province_pointer), 8, BASES_MASK)?;
-        let expected_province = match engine_sites::at(base, cprovince::VTABLE_RVA) {
-            Some(expected) => expected as u64,
-            None => return None,
-        };
+        let expected_province = vtables.province?;
         if bases_pool_u64(log, vtable) != expected_province {
             return None;
         }
@@ -2396,6 +2405,7 @@ fn copy_air_bases_vectors(
             if let Some(store) = carry.store.as_deref_mut() {
                 store.census.read(log.spans.len() - manager_spans);
             }
+            let base_vtables = BaseVtables::resolve(base);
             for (array, (header_start, count, indexed)) in headers.into_iter().enumerate() {
                 if !bases_alive && !reg_alive {
                     break;
@@ -2477,7 +2487,7 @@ fn copy_air_bases_vectors(
                             }
                             None => {
                                 let (identity_ok, handle) =
-                                    base_identity(&mut *log, memory, base, pointer);
+                                    base_identity(&mut *log, memory, base_vtables, pointer);
                                 if !identity_ok {
                                     bases_alive = false;
                                     reg_alive = false;
@@ -2494,7 +2504,7 @@ fn copy_air_bases_vectors(
                                 match copy_air_base_row(
                                     &mut *log,
                                     memory,
-                                    base,
+                                    base_vtables,
                                     pointer,
                                     indexed.then_some(index),
                                     handle,
@@ -2553,7 +2563,8 @@ fn copy_air_bases_vectors(
                     } else if reg_alive {
                         let _reads = read_accounting::table(TableId::AirBaseRegistrations);
                         let begin = qpc();
-                        let (identity_ok, handle) = base_identity(&mut *log, memory, base, pointer);
+                        let (identity_ok, handle) =
+                            base_identity(&mut *log, memory, base_vtables, pointer);
                         if !identity_ok {
                             reg_alive = false;
                             reg_ticks += elapsed(begin);

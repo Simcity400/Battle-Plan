@@ -117,17 +117,59 @@ pub struct Census {
     theatres: ctheatre::UnitTheatres,
 }
 
+#[derive(Default)]
+struct PointerHasher(u64);
+
+impl std::hash::Hasher for PointerHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = self.0;
+        for &byte in bytes {
+            state = (state ^ u64::from(byte)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+        self.0 = state;
+    }
+
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.0 = (self.0 ^ (value as u64)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        self.0 ^= self.0 >> 32;
+    }
+}
+
+type FastMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<PointerHasher>>;
+
+#[derive(Clone, Copy, Debug)]
+struct HeldEntry<V> {
+    certificate: (u64, u64),
+    value: V,
+    seen: u64,
+}
+
+impl<V: PartialEq> PartialEq for HeldEntry<V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.certificate == other.certificate && self.value == other.value
+    }
+}
+
 #[derive(Debug, Default)]
 struct HeldLeaders {
-    held: std::collections::HashMap<usize, ((u64, u64), u64)>,
-    next: std::collections::HashMap<usize, ((u64, u64), u64)>,
+    held: FastMap<usize, HeldEntry<u64>>,
+    generation: u64,
+    seen: usize,
     fresh: Vec<(usize, (u64, u64))>,
 }
 
 #[derive(Debug, Default)]
 struct HeldGroups {
-    held: std::collections::HashMap<usize, ((u64, u64), carmy_leader::GroupFields)>,
-    next: std::collections::HashMap<usize, ((u64, u64), carmy_leader::GroupFields)>,
+    held: FastMap<usize, HeldEntry<carmy_leader::GroupFields>>,
+    generation: u64,
+    seen: usize,
     fresh: Vec<(usize, (u64, u64))>,
 }
 
@@ -139,20 +181,20 @@ struct Carry<'a, L, G> {
 }
 
 fn carried<V: Copy>(
-    held: &std::collections::HashMap<usize, ((u64, u64), V)>,
-    next: &mut std::collections::HashMap<usize, ((u64, u64), V)>,
+    held: &mut FastMap<usize, HeldEntry<V>>,
+    generation: u64,
+    seen: &mut usize,
     fresh: &mut Vec<(usize, (u64, u64))>,
     key: usize,
     certificate: (u64, u64),
 ) -> Option<V> {
-    match held.get(&key) {
-        Some(&(previous, value)) if previous == certificate => {
-            if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *next, 1))
-                .is_ok()
-            {
-                next.insert(key, (certificate, value));
+    match held.get_mut(&key) {
+        Some(entry) if entry.certificate == certificate => {
+            if entry.seen != generation {
+                entry.seen = generation;
+                *seen += 1;
             }
-            Some(value)
+            Some(entry.value)
         }
         _ => {
             if engine_allocation::advisory(|| engine_allocation::reserve(&mut *fresh, 1)).is_ok()
@@ -171,20 +213,47 @@ where
 {
     fn leader(&mut self, leader: usize) -> Option<u64> {
         let certificate = self.leader_changes.sequence(leader)?;
-        let HeldLeaders { held, next, fresh } = &mut *self.leaders;
-        carried(held, next, fresh, leader, certificate)
+        let HeldLeaders {
+            held,
+            generation,
+            seen,
+            fresh,
+        } = &mut *self.leaders;
+        carried(held, *generation, seen, fresh, leader, certificate)
     }
     fn group(&mut self, group: usize) -> Option<carmy_leader::GroupFields> {
         let certificate = self.group_changes.sequence(group)?;
-        let HeldGroups { held, next, fresh } = &mut *self.groups;
-        carried(held, next, fresh, group, certificate)
+        let HeldGroups {
+            held,
+            generation,
+            seen,
+            fresh,
+        } = &mut *self.groups;
+        carried(held, *generation, seen, fresh, group, certificate)
     }
     fn group_read(&mut self, group: usize, fields: carmy_leader::GroupFields) {
-        let HeldGroups { next, fresh, .. } = &mut *self.groups;
+        let HeldGroups {
+            held,
+            generation,
+            seen,
+            fresh,
+        } = &mut *self.groups;
         if let Ok(at) = fresh.binary_search_by_key(&group, |entry| entry.0)
-            && engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *next, 1)).is_ok()
+            && engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *held, 1)).is_ok()
         {
-            next.insert(group, (fresh[at].1, fields));
+            if held
+                .insert(
+                    group,
+                    HeldEntry {
+                        certificate: fresh[at].1,
+                        value: fields,
+                        seen: *generation,
+                    },
+                )
+                .is_none_or(|prev| prev.seen != *generation)
+            {
+                *seen += 1;
+            }
         }
     }
 }
@@ -198,9 +267,11 @@ fn select(
     leader_changes: &impl collector_observers::unit_leader_changes::Changes,
     group_changes: &impl collector_observers::orders_group_changes::Changes,
 ) {
-    leaders.next.clear();
+    leaders.generation = leaders.generation.wrapping_add(1).max(1);
+    leaders.seen = 0;
     leaders.fresh.clear();
-    groups.next.clear();
+    groups.generation = groups.generation.wrapping_add(1).max(1);
+    groups.seen = 0;
     groups.fresh.clear();
     let result = carmy_leader::capture_selections(
         memory,
@@ -216,18 +287,41 @@ fn select(
     let Ok(counts) = result else {
         return;
     };
-    let HeldLeaders { held, next, fresh } = leaders;
+    let HeldLeaders {
+        held,
+        generation,
+        seen,
+        fresh,
+    } = leaders;
     fresh.sort_unstable_by_key(|entry| entry.0);
     for selected in seeds.iter().filter_map(|seed| seed.selected) {
         if let (Some(Ok(leader)), Some(handle)) = (selected.leader, selected.handle)
             && let Ok(at) = fresh.binary_search_by_key(&leader, |entry| entry.0)
-            && engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *next, 1)).is_ok()
+            && engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *held, 1)).is_ok()
         {
-            next.insert(leader, (fresh[at].1, handle));
+            if held
+                .insert(
+                    leader,
+                    HeldEntry {
+                        certificate: fresh[at].1,
+                        value: handle,
+                        seen: *generation,
+                    },
+                )
+                .is_none_or(|prev| prev.seen != *generation)
+            {
+                *seen += 1;
+            }
         }
     }
-    std::mem::swap(held, next);
-    std::mem::swap(&mut groups.held, &mut groups.next);
+    if *seen != held.len() {
+        let current = *generation;
+        held.retain(|_, entry| entry.seen == current);
+    }
+    if groups.seen != groups.held.len() {
+        let current = groups.generation;
+        groups.held.retain(|_, entry| entry.seen == current);
+    }
     collector_observers::orders_group_changes::record(
         &collector_observers::orders_group_changes::Counts {
             carried: counts.carried_groups,

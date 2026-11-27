@@ -318,7 +318,9 @@ mod tests {
         }
         impl Memory for Trace<'_> {
             fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
-                self.scalars.set(self.scalars.get() + 1);
+                if std::mem::size_of::<T>() == 4 {
+                    self.scalars.set(self.scalars.get() + 1);
+                }
                 self.reads
                     .borrow_mut()
                     .push((address, std::mem::size_of::<T>()));

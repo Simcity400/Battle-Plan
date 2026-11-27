@@ -58,20 +58,24 @@ fn terminal_constructor_and_partial_growth_keep_scratch_ownership() {
 
     hooks.arm(usize::MAX);
     let mut scratch = Scratch::with_capacity(2).unwrap();
+    let generation = scratch.generation;
     scratch.pools[0] = Slot {
         key: 41,
-        value: Some(Pool {
+        value: Pool {
             index: Some(7),
             transport: Some(true),
-        }),
+        },
+        generation,
     };
     scratch.wings[0] = Slot {
         key: 43,
-        value: Some(Some(45)),
+        value: Some(45),
+        generation,
     };
     scratch.handles[0] = Slot {
         key: 45,
-        value: Some(Some(47)),
+        value: Some(47),
+        generation,
     };
     scratch.required_map_capacity = 3;
     scratch.failures = 9;
@@ -107,9 +111,9 @@ fn terminal_constructor_and_partial_growth_keep_scratch_ownership() {
         (capacities.1, capacities.2)
     );
     assert_eq!(scratch.pools[0].key, 41);
-    assert_eq!(scratch.pools[0].value.unwrap().index, Some(7));
-    assert_eq!(scratch.wings[0].value, Some(Some(45)));
-    assert_eq!(scratch.handles[0].value, Some(Some(47)));
+    assert_eq!(scratch.pools[0].value.index, Some(7));
+    assert_eq!(scratch.wings[0].value, Some(45));
+    assert_eq!(scratch.handles[0].value, Some(47));
     assert_eq!((scratch.required_map_capacity, scratch.failures), (3, 9));
     let retained = scratch.allocated_bytes();
     assert!(retained > bytes);
@@ -117,7 +121,7 @@ fn terminal_constructor_and_partial_growth_keep_scratch_ownership() {
         retained,
         scratch.pools.capacity() * size_of::<Slot<Pool>>()
             + scratch.wings.capacity() * size_of::<Slot<Option<u64>>>()
-            + scratch.handles.capacity() * size_of::<Slot<Option<bool>>>()
+            + scratch.handles.capacity() * size_of::<Slot<Option<usize>>>()
     );
     assert_eq!(
         scratch.grow(target).unwrap_err().kind(),
@@ -134,9 +138,24 @@ fn terminal_constructor_and_partial_growth_keep_scratch_ownership() {
     scratch.grow(target).unwrap();
     assert!(scratch.fits(target));
     assert_eq!((scratch.required_map_capacity, scratch.failures), (0, 0));
-    assert!(scratch.pools.iter().all(|slot| slot.value.is_none()));
-    assert!(scratch.wings.iter().all(|slot| slot.value.is_none()));
-    assert!(scratch.handles.iter().all(|slot| slot.value.is_none()));
+    assert!(
+        scratch
+            .pools
+            .iter()
+            .all(|slot| slot.generation != scratch.generation)
+    );
+    assert!(
+        scratch
+            .wings
+            .iter()
+            .all(|slot| slot.generation != scratch.generation)
+    );
+    assert!(
+        scratch
+            .handles
+            .iter()
+            .all(|slot| slot.generation != scratch.generation)
+    );
     drop(hooks);
     assert!(!allocation::capture_active() && !allocation::capture_stopped());
 }

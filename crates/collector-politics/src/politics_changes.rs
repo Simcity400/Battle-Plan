@@ -601,8 +601,85 @@ fn base() -> usize {
     BASE.load(Ordering::Relaxed)
 }
 
+#[derive(Clone, Copy)]
+struct ResolvedSites {
+    located: usize,
+    base: usize,
+    daily_pp: Option<usize>,
+    daily_cp: Option<usize>,
+    timed_pp: Option<usize>,
+    mission_completion: Option<usize>,
+    election_on_action: Option<usize>,
+    daily_relation_cost: Option<usize>,
+    mio_research_cost: Option<usize>,
+    mio_production_cost: Option<usize>,
+    ability_activation_cost: Option<usize>,
+    daily_cost_return: Option<usize>,
+    scripted_diplomacy_handler: Option<usize>,
+    game_state: Option<usize>,
+    blockade_cost_define: Option<usize>,
+}
+
+thread_local! {
+    static RESOLVED_SITES: Cell<Option<ResolvedSites>> = const { Cell::new(None) };
+}
+
+#[inline]
+fn cached_sites(base: usize) -> Option<ResolvedSites> {
+    let located = engine_sites::located().map_or(0, |l| std::ptr::from_ref(l) as usize);
+    if located == 0 {
+        return None;
+    }
+    if let Some(sites) = RESOLVED_SITES.get()
+        && sites.located == located
+        && sites.base == base
+    {
+        return Some(sites);
+    }
+    let sites = ResolvedSites {
+        located,
+        base,
+        daily_pp: engine_sites::resolve(base, native::DAILY_PP_CALLER).ok(),
+        daily_cp: engine_sites::resolve(base, native::DAILY_CP_CALLER).ok(),
+        timed_pp: engine_sites::resolve(base, native::TIMED_PP_CALLER).ok(),
+        mission_completion: engine_sites::resolve(
+            base,
+            engine_decisions::cdecision::MISSION_COMPLETION_RETURN_RVA,
+        )
+        .ok(),
+        election_on_action: engine_sites::resolve(base, ELECTION_ON_ACTION_RETURN).ok(),
+        daily_relation_cost: engine_sites::resolve(base, DAILY_RELATION_COST_RETURN).ok(),
+        mio_research_cost: engine_sites::resolve(base, MIO_RESEARCH_COST_RETURN).ok(),
+        mio_production_cost: engine_sites::resolve(base, MIO_PRODUCTION_COST_RETURN).ok(),
+        ability_activation_cost: engine_sites::resolve(base, ABILITY_ACTIVATION_COST_RETURN).ok(),
+        daily_cost_return: engine_sites::resolve(base, DAILY_COST_RETURN).ok(),
+        scripted_diplomacy_handler: engine_sites::resolve(base, SCRIPTED_DIPLOMACY_HANDLER).ok(),
+        game_state: engine_sites::resolve(base, engine_native::cgame_state::SINGLETON_RVA).ok(),
+        blockade_cost_define: engine_sites::resolve(base, native::BLOCKADE_COST_DEFINE_RVA).ok(),
+    };
+    RESOLVED_SITES.set(Some(sites));
+    Some(sites)
+}
+
+#[inline]
+fn caller_matches(
+    base: usize,
+    raw_caller: usize,
+    cached: Option<usize>,
+    expected: Rva,
+) -> bool {
+    if let Some(address) = cached {
+        return raw_caller == address;
+    }
+    engine_sites::reference(base, raw_caller) == Some(expected)
+}
+
 fn daily_cost_caller(caller: Option<u64>) -> bool {
-    caller.is_some_and(|caller| engine_sites::at(base(), DAILY_COST_RETURN) == Some(caller as usize))
+    let base = base();
+    let expected = cached_sites(base)
+        .and_then(|s| s.daily_cost_return)
+        .or_else(|| engine_sites::at(base, DAILY_COST_RETURN));
+    caller.is_some_and(|caller| expected == Some(caller as usize))
 }
 fn read<T: engine_native_memory::memory::Raw>(address: usize) -> Option<T> {
     engine_native_memory::read::<T>(&memory(), address)
@@ -616,13 +693,19 @@ fn operand<T: engine_native_memory::memory::Raw>(address: usize) -> Option<T> {
     engine_native_memory::read::<T>(&operand_memory(), address)
 }
 fn operand_hour() -> Option<i32> {
-    let state =
-        operand::<u64>(engine_sites::at(base(), engine_native::cgame_state::SINGLETON_RVA)?)? as usize;
+    let base = base();
+    let singleton = cached_sites(base)
+        .and_then(|s| s.game_state)
+        .or_else(|| engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA))?;
+    let state = operand::<u64>(singleton)? as usize;
     operand::<i32>(state.checked_add(engine_native::cgame_state::CURRENT_HOUR)?)
 }
 fn event_hour() -> Option<i32> {
-    let state =
-        read::<u64>(engine_sites::at(base(), engine_native::cgame_state::SINGLETON_RVA)?)? as usize;
+    let base = base();
+    let singleton = cached_sites(base)
+        .and_then(|s| s.game_state)
+        .or_else(|| engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA))?;
+    let state = read::<u64>(singleton)? as usize;
     read::<i32>(state.checked_add(engine_native::cgame_state::CURRENT_HOUR)?)
 }
 fn log() -> Option<&'static Log> {
@@ -2101,8 +2184,11 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                     .and_then(|vtable| at(vtable as usize, 0x150))
                     .and_then(item_read::<u64>)
                     .is_some_and(|handler| {
-                        engine_sites::at(base(), SCRIPTED_DIPLOMACY_HANDLER)
-                            == Some(handler as usize)
+                        let base = base();
+                        let expected = cached_sites(base)
+                            .and_then(|s| s.scripted_diplomacy_handler)
+                            .or_else(|| engine_sites::at(base, SCRIPTED_DIPLOMACY_HANDLER));
+                        expected == Some(handler as usize)
                     });
             if scripted && let Some(template) = at(a, 0x78).and_then(item_read::<u64>) {
                 identity.keys[0] = key(template as usize, 0x10);
@@ -2159,7 +2245,13 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
     context.identity = identity;
     context
 }
-fn government_context(scope: Scope, caller: Option<Rva>, mut context: Context) -> Context {
+fn government_context(
+    scope: Scope,
+    raw_caller: usize,
+    base: usize,
+    sites: Option<ResolvedSites>,
+    mut context: Context,
+) -> Context {
     let cause = match scope {
         Scope::CoupCompletion => GovernmentCause::CoupCompletion,
         Scope::CivilWar => GovernmentCause::CivilWar,
@@ -2168,7 +2260,12 @@ fn government_context(scope: Scope, caller: Option<Rva>, mut context: Context) -
         Scope::SubjectGovernment => GovernmentCause::SubjectGovernment,
         Scope::ConsoleGovernment | Scope::ConsoleSubject => GovernmentCause::Console,
         Scope::OnAction => {
-            context.government = if caller == Some(ELECTION_ON_ACTION_RETURN) {
+            context.government = if caller_matches(
+                base,
+                raw_caller,
+                sites.and_then(|s| s.election_on_action),
+                ELECTION_ON_ACTION_RETURN,
+            ) {
                 GovernmentCause::ElectionOnAction
             } else {
                 GovernmentCause::NotIdentified
@@ -2290,7 +2387,6 @@ unsafe extern "system-unwind" fn entry_body(
     caller: usize,
     native_rbp: usize,
 ) -> usize {
-    let _hook = crate::hook_timing::label();
     if index == SET_POWER_ENTRY {
         return unsafe { set_power(a, b, c, d, fifth) };
     }
@@ -2353,17 +2449,31 @@ unsafe fn entry_forward(
     if !ENABLED.load(Ordering::Acquire) {
         return timing.original(|| unsafe { original(a, b, c, d, fifth) });
     }
-    let caller = engine_sites::reference(base(), caller);
+    let current_base = base();
+    let sites = cached_sites(current_base);
     let mut restore = ScopeRestore::new();
     if index < 10 {
         let context = restore.context;
+        let resolved_caller = if let Some(sites) = sites {
+            if sites.daily_pp == Some(caller) {
+                Some(native::DAILY_PP_CALLER)
+            } else if sites.daily_cp == Some(caller) {
+                Some(native::DAILY_CP_CALLER)
+            } else if sites.timed_pp == Some(caller) {
+                Some(native::TIMED_PP_CALLER)
+            } else {
+                engine_sites::reference(current_base, caller)
+            }
+        } else {
+            engine_sites::reference(current_base, caller)
+        };
         let result = unsafe {
             writer(
                 &timing,
                 original,
                 [a, b, c, d, fifth],
                 index,
-                caller,
+                resolved_caller,
                 context,
             )
         };
@@ -2373,14 +2483,19 @@ unsafe fn entry_forward(
     let scope = SCOPE_ORDER[index - 10];
     let previous = restore.context;
     let mut context = context_identity(scope, a, b, c, previous);
-    context = government_context(scope, caller, context);
+    context = government_context(scope, caller, current_base, sites, context);
     if scope == Scope::PoliticsDaily {
         DAILY_HOUR.set(operand_hour());
     }
     CONTEXT.set(context);
     match scope {
         Scope::Decision
-            if caller != Some(engine_decisions::cdecision::MISSION_COMPLETION_RETURN_RVA) =>
+            if !caller_matches(
+                current_base,
+                caller,
+                sites.and_then(|s| s.mission_completion),
+                engine_decisions::cdecision::MISSION_COMPLETION_RETURN_RVA,
+            ) =>
         {
             crate::script_event_observer::decision(
                 replay_data::event_feed_rows::EventFeedSource::DecisionSelected,
@@ -2401,7 +2516,12 @@ unsafe fn entry_forward(
     if let Some(owner) = DAILY.get() {
         match scope {
             Scope::ImproveRelationDaily | Scope::BoostPartyDaily
-                if caller == Some(DAILY_RELATION_COST_RETURN) =>
+                if caller_matches(
+                    current_base,
+                    caller,
+                    sites.and_then(|s| s.daily_relation_cost),
+                    DAILY_RELATION_COST_RETURN,
+                ) =>
             {
                 if let Some(cost) = operand::<i64>(b) {
                     let identity = relation_identity(a);
@@ -2410,22 +2530,43 @@ unsafe fn entry_forward(
                     failed("politics daily relation cost output unreadable");
                 }
             }
-            Scope::MioResearchDaily if caller == Some(MIO_RESEARCH_COST_RETURN) => {
+            Scope::MioResearchDaily
+                if caller_matches(
+                    current_base,
+                    caller,
+                    sites.and_then(|s| s.mio_research_cost),
+                    MIO_RESEARCH_COST_RETURN,
+                ) =>
+            {
                 mio_component(owner, a, operand::<i64>(b), PowerDailyCostKind::MioResearch)
             }
-            Scope::MioProductionDaily if caller == Some(MIO_PRODUCTION_COST_RETURN) => mio_component(
-                owner,
-                a,
-                operand::<i64>(b),
-                PowerDailyCostKind::MioProduction,
-            ),
+            Scope::MioProductionDaily
+                if caller_matches(
+                    current_base,
+                    caller,
+                    sites.and_then(|s| s.mio_production_cost),
+                    MIO_PRODUCTION_COST_RETURN,
+                ) =>
+            {
+                mio_component(
+                    owner,
+                    a,
+                    operand::<i64>(b),
+                    PowerDailyCostKind::MioProduction,
+                )
+            }
             _ => {}
         }
     }
     if scope == Scope::AbilityCost
-        && caller == Some(ABILITY_ACTIVATION_COST_RETURN)
         && let Some(mut pending) = PENDING.get()
         && pending.site == PowerSite::ActivateAbility
+        && caller_matches(
+            current_base,
+            caller,
+            sites.and_then(|s| s.ability_activation_cost),
+            ABILITY_ACTIVATION_COST_RETURN,
+        )
         && let Some(cost) = read::<i64>(b)
     {
         pending.requested = Some(cost.wrapping_neg());
@@ -2859,7 +3000,10 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             let cost = registers.rbp.checked_sub(0x38).and_then(operand::<i64>);
             if let (Some(owner), Some(cost)) = (owner, cost) {
                 daily(owner, registers.rdi as i64, cost, registers.rax as i64);
-                if let Some(define) = engine_sites::at(base(), native::BLOCKADE_COST_DEFINE_RVA)
+                let current_base = base();
+                if let Some(define) = cached_sites(current_base)
+                    .and_then(|s| s.blockade_cost_define)
+                    .or_else(|| engine_sites::at(current_base, native::BLOCKADE_COST_DEFINE_RVA))
                     .and_then(operand::<i64>)
                 {
                     component(
@@ -4232,15 +4376,15 @@ mod tests {
         assert_eq!(caller_cause(key(0x76fe2e)), PowerCause::Decision);
         assert_eq!(caller_cause(key(0x7631ef)), PowerCause::NotIdentified);
         assert_eq!(caller_cause(Some(native::DAILY_CP_CALLER)), PowerCause::DailyGain);
-        let console = government_context(Scope::ConsoleSubject, None, Context::default());
+        let console = government_context(Scope::ConsoleSubject, 0, 0, None, Context::default());
         assert_eq!(
-            government_context(Scope::SubjectGovernment, None, console).government,
+            government_context(Scope::SubjectGovernment, 0, 0, None, console).government,
             GovernmentCause::Console
         );
-        let context = government_context(Scope::OnAction, key(0xbfb8ce), Context::default());
+        let context = government_context(Scope::OnAction, 0xbfb8ce, 0, None, Context::default());
         assert_eq!(context.government, GovernmentCause::ElectionOnAction);
         assert_eq!(
-            government_context(Scope::OnAction, key(0xbfb8cf), context).government,
+            government_context(Scope::OnAction, 0xbfb8cf, 0, None, context).government,
             GovernmentCause::NotIdentified
         );
     }

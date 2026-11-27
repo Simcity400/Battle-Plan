@@ -3686,6 +3686,57 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 raid_dispatch,
                 qpc(),
             );
+            let templates_pending = queue!(acquisition::Job::Templates(
+                frame.extended.take_templates_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    (clock.hour, force_full),
+                )
+            ));
+            let variants_pending = {
+                let request = frame.extended.take_variants_request(
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                );
+                queue!(acquisition::Job::Variants(request))
+            };
+            let stability_pending = frame
+                .extended
+                .records_any(&collector_stability::country_stability::TABLES)
+                .then(|| {
+                    let stability_store = unsafe {
+                        (*shared.slice_fingerprints[collector_certificates::slicing::STABILITY]
+                            .get())
+                        .take()
+                    };
+                    queue!(acquisition::Job::Stability(
+                        frame.extended.take_stability_request(
+                            &country_snapshot,
+                            shared.base,
+                            state,
+                            clock.hour,
+                            force_full,
+                            stability_store,
+                        )
+                    ))
+                });
+            let (mut intel_residual_request, script_variables_request) =
+                frame.extended.take_intel_residual_request(
+                    &country_snapshot,
+                    collector_intel::intel::CaptureContext {
+                        base: shared.base,
+                        game_state: state,
+                        hour: clock.hour,
+                        force_full,
+                    },
+                    unsafe { (*shared.script_flag_store.get()).take() },
+                    unsafe { (*shared.script_variable_store.get()).take() },
+                );
+            let script_variables_pending =
+                queue!(acquisition::Job::ScriptVariables(script_variables_request));
             let countries_pending = queue!(acquisition::Job::Countries(
                 frame.extended.take_countries_request(
                     &country_snapshot,
@@ -3695,14 +3746,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     &mut frame.links,
                     (clock.hour, force_full),
                     unsafe { (*shared.appearance_store.get()).take() },
-                )
-            ));
-            let templates_pending = queue!(acquisition::Job::Templates(
-                frame.extended.take_templates_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    (clock.hour, force_full),
                 )
             ));
             let world_pending = (frame.extended.records_any(&decode::PRODUCTION_REST)
@@ -3771,15 +3814,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     queue!(acquisition::Job::Buildings(buildings)),
                 )
             });
-            let variants_pending = {
-                let request = frame.extended.take_variants_request(
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                );
-                queue!(acquisition::Job::Variants(request))
-            };
             let ordinary_parts_pending = out_of_line(|| {
                 let parts = frame.extended.take_ordinary_parts(
                     &country_snapshot,
@@ -3875,26 +3909,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                         )
                     ))
                 });
-            let stability_pending = frame
-                .extended
-                .records_any(&collector_stability::country_stability::TABLES)
-                .then(|| {
-                    let stability_store = unsafe {
-                        (*shared.slice_fingerprints[collector_certificates::slicing::STABILITY]
-                            .get())
-                        .take()
-                    };
-                    queue!(acquisition::Job::Stability(
-                        frame.extended.take_stability_request(
-                            &country_snapshot,
-                            shared.base,
-                            state,
-                            clock.hour,
-                            force_full,
-                            stability_store,
-                        )
-                    ))
-                });
             let (relations_ctx, mut relations_selection) =
                 frame.extended.relations_pilot().begin_relations(
                     shared.base,
@@ -3903,22 +3917,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     force_full,
                     relations_refresh,
                 );
-            let (mut intel_residual_request, script_variables_request) =
-                frame.extended.take_intel_residual_request(
-                    &country_snapshot,
-                    collector_intel::intel::CaptureContext {
-                        base: shared.base,
-                        game_state: state,
-                        hour: clock.hour,
-                        force_full,
-                    },
-                    unsafe { (*shared.script_flag_store.get()).take() },
-                    unsafe { (*shared.script_variable_store.get()).take() },
-                );
             let intel_residual_aux_pending =
                 queue!(acquisition::Job::IntelResidualAux(intel_residual_request.take_aux()));
-            let script_variables_pending =
-                queue!(acquisition::Job::ScriptVariables(script_variables_request));
             let intel_residual_pending =
                 queue!(acquisition::Job::IntelResidual(intel_residual_request));
             let air_bases_ctx = collector_air::extended::air::AirBasesCopyContext {

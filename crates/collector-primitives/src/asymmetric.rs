@@ -2,7 +2,7 @@ use std::{
     cell::Cell,
     sync::atomic::{
         AtomicBool, AtomicU8, AtomicU64, AtomicUsize,
-        Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst},
+        Ordering::{AcqRel, Acquire, Relaxed, SeqCst},
         compiler_fence,
     },
 };
@@ -18,6 +18,7 @@ const OVERFLOW_SENTINEL: usize = THREAD_SLOTS;
 const QUIESCENCE_OFF: u8 = 0;
 const QUIESCENCE_ARMING: u8 = 1;
 const QUIESCENCE_ACTIVE: u8 = 2;
+const BROKEN_WORDS: usize = 4;
 
 #[repr(align(64))]
 struct ThreadSlot {
@@ -32,18 +33,42 @@ impl ThreadSlot {
     }
 }
 
+#[repr(align(64))]
+struct BrokenTags([AtomicU64; BROKEN_WORDS]);
+
 static SLOTS: [ThreadSlot; THREAD_SLOTS] = [const { ThreadSlot::new() }; THREAD_SLOTS];
 static CLAIMED: AtomicUsize = AtomicUsize::new(0);
 static QUIESCENCE: AtomicU8 = AtomicU8::new(QUIESCENCE_OFF);
+static BROKEN_TAGS: BrokenTags = BrokenTags([const { AtomicU64::new(0) }; BROKEN_WORDS]);
 
 thread_local! {
     static SLOT: Cell<usize> = const { Cell::new(usize::MAX) };
 }
 
+#[inline(always)]
+fn tag_bit(tag: usize) -> (usize, u64) {
+    let hash = (tag as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 56;
+    let index = (hash >> 6) as usize;
+    let bit = 1_u64 << (hash & 63);
+    (index, bit)
+}
+
+#[inline(always)]
+fn tag_broken(tag: usize) -> bool {
+    let (index, bit) = tag_bit(tag);
+    BROKEN_TAGS.0[index].load(SeqCst) & bit != 0
+}
+
 #[cold]
 #[inline(never)]
-fn break_capture_quiescence() {
-    QUIESCENCE.store(QUIESCENCE_OFF, SeqCst);
+fn mark_tag_broken(tag: usize) {
+    let (index, bit) = tag_bit(tag);
+    BROKEN_TAGS.0[index].fetch_or(bit, SeqCst);
+}
+
+#[inline(always)]
+fn is_quiescent_for(tag: usize) -> bool {
+    QUIESCENCE.load(Acquire) == QUIESCENCE_ACTIVE && !tag_broken(tag)
 }
 
 #[cold]
@@ -80,7 +105,7 @@ pub fn enter_slot(tag: usize) -> Option<(u8, u8)> {
         active[0].store(tag, Relaxed);
         compiler_fence(SeqCst);
         if QUIESCENCE.load(Relaxed) != QUIESCENCE_OFF {
-            break_capture_quiescence();
+            mark_tag_broken(tag);
         }
         return Some((slot_idx as u8, 0));
     }
@@ -89,7 +114,7 @@ pub fn enter_slot(tag: usize) -> Option<(u8, u8)> {
             active[entry].store(tag, Relaxed);
             compiler_fence(SeqCst);
             if QUIESCENCE.load(Relaxed) != QUIESCENCE_OFF {
-                break_capture_quiescence();
+                mark_tag_broken(tag);
             }
             return Some((slot_idx as u8, entry as u8));
         }
@@ -121,21 +146,9 @@ pub fn current_thread_has(tag: usize) -> bool {
     false
 }
 
-fn all_slots_empty() -> bool {
-    let count = CLAIMED.load(Acquire);
-    for slot in &SLOTS[..count] {
-        for entry in &slot.active {
-            if entry.load(SeqCst) != 0 {
-                return false;
-            }
-        }
-    }
-    true
-}
-
 #[inline]
 pub fn any_active(tag: usize) -> bool {
-    if QUIESCENCE.load(Acquire) == QUIESCENCE_ACTIVE {
+    if is_quiescent_for(tag) {
         return false;
     }
     let count = CLAIMED.load(Acquire);
@@ -151,7 +164,7 @@ pub fn any_active(tag: usize) -> bool {
 
 #[inline]
 pub fn count_active(tag: usize) -> usize {
-    if QUIESCENCE.load(Acquire) == QUIESCENCE_ACTIVE {
+    if is_quiescent_for(tag) {
         return 0;
     }
     let count = CLAIMED.load(Acquire);
@@ -173,44 +186,33 @@ pub struct CaptureQuiescence {
 impl Drop for CaptureQuiescence {
     fn drop(&mut self) {
         if self.active {
-            QUIESCENCE.store(QUIESCENCE_OFF, Release);
+            QUIESCENCE.store(QUIESCENCE_OFF, SeqCst);
         }
     }
 }
 
-pub fn begin_capture_quiescence(mut all_other_hooks_quiet: impl FnMut() -> bool) -> CaptureQuiescence {
-    let try_arm = |all_other_hooks_quiet: &mut dyn FnMut() -> bool| -> bool {
-        QUIESCENCE.store(QUIESCENCE_ARMING, SeqCst);
-        // SAFETY: `FlushProcessWriteBuffers` is a stateless kernel32 synchronization barrier.
-        unsafe { FlushProcessWriteBuffers() };
-        all_other_hooks_quiet()
-            && all_slots_empty()
-            && QUIESCENCE
-                .compare_exchange(QUIESCENCE_ARMING, QUIESCENCE_ACTIVE, SeqCst, SeqCst)
-                .is_ok()
-    };
-    let mut quiet = try_arm(&mut all_other_hooks_quiet);
-    if !quiet {
-        QUIESCENCE.store(QUIESCENCE_OFF, SeqCst);
-        for _ in 0..64 {
-            std::hint::spin_loop();
-            if all_other_hooks_quiet() && all_slots_empty() {
-                quiet = try_arm(&mut all_other_hooks_quiet);
-                if !quiet {
-                    QUIESCENCE.store(QUIESCENCE_OFF, SeqCst);
-                }
-                break;
+pub fn begin_capture_quiescence(_all_other_hooks_quiet: impl FnMut() -> bool) -> CaptureQuiescence {
+    for word in &BROKEN_TAGS.0 {
+        word.store(0, SeqCst);
+    }
+    QUIESCENCE.store(QUIESCENCE_ARMING, SeqCst);
+    // SAFETY: `FlushProcessWriteBuffers` is a stateless kernel32 synchronization barrier.
+    unsafe { FlushProcessWriteBuffers() };
+    let count = CLAIMED.load(Acquire);
+    for slot in &SLOTS[..count] {
+        for entry in &slot.active {
+            let tag = entry.load(SeqCst);
+            if tag != 0 {
+                mark_tag_broken(tag);
             }
         }
     }
-    CaptureQuiescence { active: quiet }
+    QUIESCENCE.store(QUIESCENCE_ACTIVE, SeqCst);
+    CaptureQuiescence { active: true }
 }
 
 #[inline]
-pub fn flush_writers() -> bool {
-    if QUIESCENCE.load(Acquire) == QUIESCENCE_ACTIVE {
-        return false;
-    }
+fn flush_writers_uncached() -> bool {
     let claimed = CLAIMED.load(Acquire);
     if claimed == 0 || (claimed == 1 && SLOT.get() == 0) {
         return false;
@@ -218,6 +220,24 @@ pub fn flush_writers() -> bool {
     // SAFETY: `FlushProcessWriteBuffers` is a stateless kernel32 synchronization barrier.
     unsafe { FlushProcessWriteBuffers() };
     true
+}
+
+#[inline]
+pub fn flush_writers_for(tag: usize) -> bool {
+    if is_quiescent_for(tag) {
+        return false;
+    }
+    flush_writers_uncached()
+}
+
+#[inline]
+pub fn flush_writers() -> bool {
+    if QUIESCENCE.load(Acquire) == QUIESCENCE_ACTIVE
+        && BROKEN_TAGS.0.iter().all(|word| word.load(SeqCst) == 0)
+    {
+        return false;
+    }
+    flush_writers_uncached()
 }
 
 pub const RETAIN_BIT: usize = 1 << (usize::BITS - 1);
@@ -297,8 +317,8 @@ impl FlightGate {
     }
 
     pub fn active(&self) -> usize {
-        flush_writers();
         let tag = self.tag();
+        flush_writers_for(tag);
         let before = self.overflow.load(SeqCst);
         let mut slots = count_active(tag);
         let mut after = self.overflow.load(SeqCst);
@@ -319,7 +339,7 @@ impl FlightGate {
         {
             return true;
         }
-        if flush_writers() {
+        if flush_writers_for(tag) {
             any_active(tag) || (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0
         } else {
             false
@@ -364,7 +384,7 @@ impl FlightGate {
         {
             return None;
         }
-        if flush_writers()
+        if flush_writers_for(tag)
             && (any_active(tag) || (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0)
         {
             return None;
@@ -376,7 +396,7 @@ impl FlightGate {
         let result = (|| {
             if self.dirty.swap(false, SeqCst) {
                 self.epoch.fetch_add(1, SeqCst);
-                flush_writers();
+                flush_writers_for(tag);
             }
             if any_active(tag) || (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0 {
                 self.dirty.store(true, SeqCst);
@@ -389,15 +409,15 @@ impl FlightGate {
     }
 
     pub fn revision(&self) -> u64 {
-        flush_writers();
         let tag = self.tag();
+        flush_writers_for(tag);
         if let Some(epoch) = self.clean_epoch() {
             return epoch;
         }
         let locked = self.lock_flush();
         let epoch = if self.dirty.swap(false, SeqCst) {
             let next = self.epoch.fetch_add(1, SeqCst).wrapping_add(1);
-            flush_writers();
+            flush_writers_for(tag);
             if any_active(tag) || (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0 {
                 self.dirty.store(true, SeqCst);
             }
@@ -550,7 +570,7 @@ mod tests {
                     entered.wait();
                     go.wait();
                     guard.leak_and_retain();
-                    done.store(true, Release);
+                    done.store(true, std::sync::atomic::Ordering::Release);
                 })
             };
             entered.wait();
@@ -602,26 +622,34 @@ mod tests {
     fn capture_quiescence_fast_path_breaks_immediately_on_slot_entry() {
         let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let gate = FlightGate::new(3);
+        let other = FlightGate::new(11);
         {
             let _held = gate.enter(false);
             let q = begin_capture_quiescence(|| true);
-            assert!(!q.active);
+            assert!(q.active);
             assert!(gate.any_active());
             assert_eq!(gate.active(), 1);
+            assert!(!other.any_active());
+            assert_eq!(other.active(), 0);
+            assert!(!flush_writers_for(other.tag()));
         }
         {
             let q = begin_capture_quiescence(|| true);
             assert!(q.active);
             assert!(!flush_writers());
+            assert!(!flush_writers_for(gate.tag()));
             assert!(!gate.any_active());
             assert_eq!(gate.active(), 0);
             let guard = gate.enter(true);
             assert!(gate.any_active());
             assert_eq!(gate.active(), 1);
             assert_eq!(gate.quiet_epoch(), None);
+            assert!(!other.any_active());
+            assert!(!flush_writers_for(other.tag()));
             drop(guard);
             assert!(!gate.any_active());
             assert!(gate.quiet_epoch().unwrap() > 3);
+            assert_eq!(other.quiet_epoch(), Some(11));
         }
     }
 }

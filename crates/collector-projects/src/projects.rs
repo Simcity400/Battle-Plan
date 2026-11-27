@@ -27,8 +27,8 @@ use engine_projects::{
 };
 use engine_raid_inputs::{raid_facilities, raid_path_memo};
 use engine_visibility::cplayer_status_cache;
-use replay_data::{rows, rows::TableId, rows::tables};
-use replay_frame::frame::TableView;
+use replay_data::{BranchId, Hour, rows, rows::TableId, rows::tables};
+use replay_frame::frame::{TableInput, TableView};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
@@ -281,6 +281,7 @@ pub struct Captured {
     project_owners: Vec<(u32, u32)>,
     project_read: Vec<(u32, u32)>,
     project_runtime: runtime::Runtime,
+    cold_parts: Vec<cold_parts::ProjectPart>,
     scientist_injury_read: bool,
     rest_lent: bool,
 }
@@ -372,6 +373,7 @@ impl Captured {
             project_owners: Vec::new(),
             project_read: Vec::new(),
             project_runtime: runtime::Runtime::default(),
+            cold_parts: Vec::new(),
             profile_acquisition: false,
             acquisition_phases: [0; 5],
             scientist_injury_read: false,
@@ -476,6 +478,12 @@ impl Captured {
             + self.project_links.capacity()
             + self.project_owners.capacity() * size_of::<(u32, u32)>()
             + self.project_read.capacity() * size_of::<(u32, u32)>()
+            + self.cold_parts.capacity() * size_of::<cold_parts::ProjectPart>()
+            + self
+                .cold_parts
+                .iter()
+                .map(cold_parts::ProjectPart::allocated_bytes)
+                .sum::<usize>()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -771,18 +779,75 @@ impl Captured {
         ]
     }
 
-    pub fn tables(&self) -> [TableView; N] {
-        let outcomes = self.outcomes();
-        [
-            self.program_table(outcomes[0]),
-            table::<tables::Projects, _>(outcomes[1], &self.projects.rows, |r| rows::ProjectRow {
-                owner: r.owner,
-                local_id: r.local_id,
-                definition_id: r.definition_id,
-                program_reference: r.program_reference,
-                started: r.started,
-                completed: r.completed,
-                state: rows::ProjectState {
+    pub fn project_row_owners(&self) -> std::io::Result<Vec<u32>> {
+        let len = match self.projects.outcome {
+            Outcome::Rows { len } => len.min(self.projects.rows.len()),
+            _ => 0,
+        };
+        let mut owners = Vec::new();
+        let mut last = None;
+        for row in &self.projects.rows[..len] {
+            if last != Some(row.owner) {
+                engine_allocation::reserve(&mut owners, 1)?;
+                owners.push(row.owner);
+                last = Some(row.owner);
+            }
+        }
+        Ok(owners)
+    }
+
+    fn project_row(&self, r: &nproject_cproject::Row, skip_runtime: bool) -> rows::ProjectRow {
+        rows::ProjectRow {
+            owner: r.owner,
+            local_id: r.local_id,
+            definition_id: r.definition_id,
+            program_reference: r.program_reference,
+            started: r.started,
+            completed: r.completed,
+            state: rows::ProjectState {
+                current_offset: r.state.current_offset,
+                state_enums: r.state.state_enums,
+                not_completed: r.state.not_completed,
+                phase_progress: r.state.phase_progress,
+                phase_target: r.state.phase_target,
+                prototype_progress: r.state.prototype_progress,
+                iterations: r.state.iterations,
+            },
+            runtime: if skip_runtime {
+                rows::Recorded::Value(rows::ProjectRuntime::default())
+            } else {
+                self.project_runtime.value(r)
+            },
+        }
+    }
+
+    fn projects_table_input(
+        &self,
+        outcome: Outcome,
+        projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> TableInput {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        struct ProjectFixed {
+            definition_id: u32,
+            program_reference: u64,
+            started: u8,
+            completed: u8,
+            current_offset: u32,
+            state_enums: [u32; 4],
+            not_completed: u8,
+            phase_progress: i64,
+            phase_target: i32,
+            prototype_progress: i32,
+            iterations: i32,
+            runtime_serial: u64,
+        }
+        impl ProjectFixed {
+            fn from_row(r: &nproject_cproject::Row, runtime_serial: u64) -> Self {
+                Self {
+                    definition_id: r.definition_id,
+                    program_reference: r.program_reference,
+                    started: r.started,
+                    completed: r.completed,
                     current_offset: r.state.current_offset,
                     state_enums: r.state.state_enums,
                     not_completed: r.state.not_completed,
@@ -790,9 +855,410 @@ impl Captured {
                     phase_target: r.state.phase_target,
                     prototype_progress: r.state.prototype_progress,
                     iterations: r.state.iterations,
-                },
-                runtime: self.project_runtime.value(r),
-            }),
+                    runtime_serial,
+                }
+            }
+            fn keep_mask(prev: &Self, cur: &Self) -> u64 {
+                let mut mask = 0_u64;
+                if prev.definition_id == cur.definition_id {
+                    mask |= 1 << 0;
+                }
+                if prev.program_reference == cur.program_reference {
+                    mask |= 1 << 1;
+                }
+                if prev.started == cur.started {
+                    mask |= 1 << 2;
+                }
+                if prev.completed == cur.completed {
+                    mask |= 1 << 3;
+                }
+                if prev.current_offset == cur.current_offset {
+                    mask |= 1 << 4;
+                }
+                if prev.state_enums[0] == cur.state_enums[0] {
+                    mask |= 1 << 5;
+                }
+                if prev.state_enums[1] == cur.state_enums[1] {
+                    mask |= 1 << 6;
+                }
+                if prev.state_enums[2] == cur.state_enums[2] {
+                    mask |= 1 << 7;
+                }
+                if prev.state_enums[3] == cur.state_enums[3] {
+                    mask |= 1 << 8;
+                }
+                if prev.not_completed == cur.not_completed {
+                    mask |= 1 << 9;
+                }
+                if prev.phase_progress == cur.phase_progress {
+                    mask |= 1 << 10;
+                }
+                if prev.phase_target == cur.phase_target {
+                    mask |= 1 << 11;
+                }
+                if prev.prototype_progress == cur.prototype_progress {
+                    mask |= 1 << 12;
+                }
+                if prev.iterations == cur.iterations {
+                    mask |= 1 << 13;
+                }
+                if cur.runtime_serial != 0 && cur.runtime_serial == prev.runtime_serial {
+                    mask |= 1 << 14;
+                }
+                mask
+            }
+        }
+        #[derive(Default)]
+        struct ProjectLedger {
+            encoder: u64,
+            expected_revision: u64,
+            branch: BranchId,
+            hour: Hour,
+            by_owner: Vec<(u32, Vec<(u32, ProjectFixed)>)>,
+            next_owners: Vec<(u32, Vec<(u32, ProjectFixed)>)>,
+            scratch: Vec<(u32, ProjectFixed)>,
+        }
+        let full_view = || {
+            TableInput::Sampled(table::<tables::Projects, _>(
+                outcome,
+                &self.projects.rows,
+                |r| self.project_row(r, false),
+            ))
+        };
+        let Some(projection) = projection else {
+            return full_view();
+        };
+        projection.timed(TableId::Projects, || {
+            let held = projection.take_custom::<ProjectLedger>(TableId::Projects);
+            let Outcome::Rows { len } = outcome else {
+                return full_view();
+            };
+            let Some(fresh) = self.projects.rows.get(..len) else {
+                return full_view();
+            };
+            let (encoder_id, branch, hour) = projection.current_stamp();
+            let revision = projection.encoder_revision();
+            let selection = &self.project_selection;
+            let key_of = |r: &nproject_cproject::Row| {
+                (u128::from(r.owner) << 32) | u128::from(r.local_id)
+            };
+            if selection.force_full {
+                let ordered = fresh
+                    .windows(2)
+                    .all(|pair| key_of(&pair[0]) < key_of(&pair[1]));
+                if ordered && let Some(next_revision) = revision.checked_add(1) {
+                    let mut ledger = match held {
+                        Some(ledger) => ledger,
+                        None => match engine_allocation::boxed(ProjectLedger::default()) {
+                            Ok(ledger) => ledger,
+                            Err(_) => return full_view(),
+                        },
+                    };
+                    ledger.by_owner.clear();
+                    let mut ok = true;
+                    for chunk in fresh.chunk_by(|a, b| a.owner == b.owner) {
+                        let owner = chunk[0].owner;
+                        let Ok(mut bucket) = engine_allocation::vec(chunk.len()) else {
+                            ok = false;
+                            break;
+                        };
+                        for r in chunk {
+                            bucket.push((
+                                r.local_id,
+                                ProjectFixed::from_row(r, self.project_runtime.runtime_serial(r)),
+                            ));
+                        }
+                        if ledger.by_owner.len() == ledger.by_owner.capacity()
+                            && engine_allocation::reserve(&mut ledger.by_owner, 1).is_err()
+                        {
+                            ok = false;
+                            break;
+                        }
+                        ledger.by_owner.push((owner, bucket));
+                    }
+                    if ok {
+                        ledger.encoder = encoder_id;
+                        ledger.expected_revision = next_revision;
+                        ledger.branch = branch;
+                        ledger.hour = hour;
+                        projection.put_custom(TableId::Projects, ledger);
+                    }
+                }
+                return full_view();
+            }
+            let Some(mut ledger) = held else {
+                return full_view();
+            };
+            if ledger.encoder != encoder_id
+                || ledger.expected_revision != revision
+                || ledger.branch != branch
+                || ledger.hour.checked_add(1) != Some(hour)
+            {
+                return full_view();
+            }
+            let valid_fresh = fresh
+                .windows(2)
+                .all(|pair| key_of(&pair[0]) < key_of(&pair[1]))
+                && fresh.iter().all(|r| selection.contains(r.owner));
+            if !valid_fresh {
+                return full_view();
+            }
+            let Some(next_revision) = revision.checked_add(1) else {
+                return full_view();
+            };
+            let token = projection.untracked_slice_token(TableId::Projects);
+            let emit_masked = projection.sliced_skip().projects_masked
+                && !projection.has_shared_rows(TableId::Projects)
+                && token.is_some();
+            let ProjectLedger {
+                by_owner,
+                next_owners,
+                scratch,
+                ..
+            } = &mut *ledger;
+            next_owners.clear();
+            let mut keys = Vec::new();
+            let mut rows = Vec::new();
+            let mut kept_masks = Vec::new();
+            let mut any_kept = false;
+            if engine_allocation::reserve(next_owners, by_owner.len()).is_err() {
+                return unavailable("collector allocation failed").into();
+            }
+            let mut old_iter = by_owner.drain(..).peekable();
+            let mut fresh_iter = fresh.chunk_by(|a, b| a.owner == b.owner).peekable();
+            enum OwnerStep {
+                Both(u32),
+                Old(u32),
+                Fresh(u32),
+            }
+            loop {
+                let step = match (
+                    old_iter.peek().map(|&(owner, _)| owner),
+                    fresh_iter.peek().map(|c| c[0].owner),
+                ) {
+                    (Some(o), Some(f)) => match o.cmp(&f) {
+                        std::cmp::Ordering::Equal => OwnerStep::Both(o),
+                        std::cmp::Ordering::Less => OwnerStep::Old(o),
+                        std::cmp::Ordering::Greater => OwnerStep::Fresh(f),
+                    },
+                    (Some(o), None) => OwnerStep::Old(o),
+                    (None, Some(f)) => OwnerStep::Fresh(f),
+                    (None, None) => break,
+                };
+                match step {
+                    OwnerStep::Both(old_owner) => {
+                        let (_, mut old_rows) = old_iter.next().unwrap();
+                        let chunk = fresh_iter.next().unwrap();
+                        scratch.clear();
+                        if engine_allocation::reserve(scratch, chunk.len()).is_err() {
+                            return unavailable("collector allocation failed").into();
+                        }
+                        let (mut oi, mut fi) = (0_usize, 0_usize);
+                        while oi < old_rows.len() || fi < chunk.len() {
+                            match (old_rows.get(oi).copied(), chunk.get(fi)) {
+                                (Some((ok, of)), Some(r)) if ok == r.local_id => {
+                                    oi += 1;
+                                    fi += 1;
+                                    let cf = ProjectFixed::from_row(
+                                        r,
+                                        self.project_runtime.runtime_serial(r),
+                                    );
+                                    scratch.push((r.local_id, cf));
+                                    if emit_masked && !(of == cf && cf.runtime_serial != 0) {
+                                        let kept = ProjectFixed::keep_mask(&of, &cf);
+                                        if (keys.len() == keys.capacity()
+                                            && engine_allocation::reserve(&mut keys, 1).is_err())
+                                            || (rows.len() == rows.capacity()
+                                                && engine_allocation::reserve(&mut rows, 1).is_err())
+                                            || (kept_masks.len() == kept_masks.capacity()
+                                                && engine_allocation::reserve(&mut kept_masks, 1)
+                                                    .is_err())
+                                        {
+                                            return unavailable("collector allocation failed")
+                                                .into();
+                                        }
+                                        any_kept |= kept != 0;
+                                        keys.push(key_of(r));
+                                        rows.push(self.project_row(r, kept & (1 << 14) != 0));
+                                        kept_masks.push(kept);
+                                    }
+                                }
+                                (Some((ok, _)), Some(r)) if r.local_id < ok => {
+                                    fi += 1;
+                                    let cf = ProjectFixed::from_row(
+                                        r,
+                                        self.project_runtime.runtime_serial(r),
+                                    );
+                                    scratch.push((r.local_id, cf));
+                                    if emit_masked {
+                                        if (keys.len() == keys.capacity()
+                                            && engine_allocation::reserve(&mut keys, 1).is_err())
+                                            || (rows.len() == rows.capacity()
+                                                && engine_allocation::reserve(&mut rows, 1).is_err())
+                                            || (kept_masks.len() == kept_masks.capacity()
+                                                && engine_allocation::reserve(&mut kept_masks, 1)
+                                                    .is_err())
+                                        {
+                                            return unavailable("collector allocation failed")
+                                                .into();
+                                        }
+                                        keys.push(key_of(r));
+                                        rows.push(self.project_row(r, false));
+                                        kept_masks.push(0);
+                                    }
+                                }
+                                (None, Some(r)) => {
+                                    fi += 1;
+                                    let cf = ProjectFixed::from_row(
+                                        r,
+                                        self.project_runtime.runtime_serial(r),
+                                    );
+                                    scratch.push((r.local_id, cf));
+                                    if emit_masked {
+                                        if (keys.len() == keys.capacity()
+                                            && engine_allocation::reserve(&mut keys, 1).is_err())
+                                            || (rows.len() == rows.capacity()
+                                                && engine_allocation::reserve(&mut rows, 1).is_err())
+                                            || (kept_masks.len() == kept_masks.capacity()
+                                                && engine_allocation::reserve(&mut kept_masks, 1)
+                                                    .is_err())
+                                        {
+                                            return unavailable("collector allocation failed")
+                                                .into();
+                                        }
+                                        keys.push(key_of(r));
+                                        rows.push(self.project_row(r, false));
+                                        kept_masks.push(0);
+                                    }
+                                }
+                                (Some((ok, _)), _) => {
+                                    oi += 1;
+                                    if emit_masked {
+                                        if keys.len() == keys.capacity()
+                                            && engine_allocation::reserve(&mut keys, 1).is_err()
+                                        {
+                                            return unavailable("collector allocation failed")
+                                                .into();
+                                        }
+                                        keys.push((u128::from(old_owner) << 32) | u128::from(ok));
+                                    }
+                                }
+                                (None, None) => break,
+                            }
+                        }
+                        std::mem::swap(&mut old_rows, scratch);
+                        if next_owners.len() == next_owners.capacity()
+                            && engine_allocation::reserve(next_owners, 1).is_err()
+                        {
+                            return unavailable("collector allocation failed").into();
+                        }
+                        next_owners.push((old_owner, old_rows));
+                    }
+                    OwnerStep::Old(old_owner) => {
+                        let (_, old_rows) = old_iter.next().unwrap();
+                        if !selection.live(old_owner) || selection.contains(old_owner) {
+                            if emit_masked && !old_rows.is_empty() {
+                                if engine_allocation::reserve(&mut keys, old_rows.len()).is_err() {
+                                    return unavailable("collector allocation failed").into();
+                                }
+                                let prefix = u128::from(old_owner) << 32;
+                                for &(ok, _) in &old_rows {
+                                    keys.push(prefix | u128::from(ok));
+                                }
+                            }
+                        } else {
+                            if next_owners.len() == next_owners.capacity()
+                                && engine_allocation::reserve(next_owners, 1).is_err()
+                            {
+                                return unavailable("collector allocation failed").into();
+                            }
+                            next_owners.push((old_owner, old_rows));
+                        }
+                    }
+                    OwnerStep::Fresh(fresh_owner) => {
+                        let chunk = fresh_iter.next().unwrap();
+                        let Ok(mut bucket) = engine_allocation::vec(chunk.len()) else {
+                            return unavailable("collector allocation failed").into();
+                        };
+                        if emit_masked
+                            && (engine_allocation::reserve(&mut keys, chunk.len()).is_err()
+                                || engine_allocation::reserve(&mut rows, chunk.len()).is_err()
+                                || engine_allocation::reserve(&mut kept_masks, chunk.len())
+                                    .is_err())
+                        {
+                            return unavailable("collector allocation failed").into();
+                        }
+                        for r in chunk {
+                            let cf = ProjectFixed::from_row(
+                                r,
+                                self.project_runtime.runtime_serial(r),
+                            );
+                            bucket.push((r.local_id, cf));
+                            if emit_masked {
+                                keys.push(key_of(r));
+                                rows.push(self.project_row(r, false));
+                                kept_masks.push(0);
+                            }
+                        }
+                        if next_owners.len() == next_owners.capacity()
+                            && engine_allocation::reserve(next_owners, 1).is_err()
+                        {
+                            return unavailable("collector allocation failed").into();
+                        }
+                        next_owners.push((fresh_owner, bucket));
+                    }
+                }
+            }
+            drop(old_iter);
+            std::mem::swap(by_owner, next_owners);
+            ledger.expected_revision = next_revision;
+            ledger.hour = hour;
+            projection.put_custom(TableId::Projects, ledger);
+            let Some(token) = token.filter(|_| emit_masked) else {
+                return full_view();
+            };
+            let update = if any_kept {
+                replay_data::sliced::SliceUpdate::keyed_masked(
+                    keys,
+                    rows::TableRows::Projects(rows),
+                    kept_masks,
+                )
+            } else {
+                replay_data::sliced::SliceUpdate::keyed(keys, rows::TableRows::Projects(rows))
+            };
+            TableInput::SliceUpdate {
+                token,
+                update: std::sync::Arc::new(update),
+            }
+        })
+    }
+
+    pub fn table_inputs(
+        &self,
+        projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> [TableInput; N] {
+        let outcomes = self.outcomes();
+        let projects = self.projects_table_input(outcomes[1], projection);
+        let mut views = self.tables_without_projects(outcomes).map(TableInput::Sampled);
+        views[1] = projects;
+        views
+    }
+
+    pub fn tables(&self) -> [TableView; N] {
+        let outcomes = self.outcomes();
+        let mut views = self.tables_without_projects(outcomes);
+        views[1] = table::<tables::Projects, _>(outcomes[1], &self.projects.rows, |r| {
+            self.project_row(r, false)
+        });
+        views
+    }
+
+    fn tables_without_projects(&self, outcomes: [Outcome; N]) -> [TableView; N] {
+        [
+            self.program_table(outcomes[0]),
+            TableView::Unavailable {
+                reason: String::new(),
+            },
             table::<tables::ProjectHistory, _>(outcomes[2], &self.history.rows, |r| {
                 rows::ProjectHistoryRow {
                     owner: r.owner,
@@ -1303,6 +1769,7 @@ impl Captured {
                         &self.project_read,
                         force_full && self.project_runtime.is_empty(),
                         dispatch,
+                        &mut self.cold_parts,
                     )
                 } else {
                     None
@@ -1314,6 +1781,7 @@ impl Captured {
                         &mut self.projects.rows,
                         &mut self.history.rows,
                         &mut self.project_runtime,
+                        &mut self.cold_parts,
                     );
                     if let Some(started) = started {
                         self.acquisition_phases[4] = elapsed(started);

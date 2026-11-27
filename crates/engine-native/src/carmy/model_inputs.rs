@@ -37,6 +37,9 @@ impl StatusPacket {
                 .map_err(|_| "division model input allocation failed")?;
             let countries = ccountry::Reader::new(memory, base, state);
             let identity = engine_sites::at(base, VTABLE_RVA).map(|at| at as u64);
+            let acclimatization_vtable =
+                engine_sites::at(base, engine_native_parts::acclimatization_data::VTABLE_RVA)
+                    .map(|at| at as u64);
             let len = seeds.len().min(output.len());
             let mut entries = self.acclimatization.take();
             for (unit, seed) in seeds[..len].iter().enumerate() {
@@ -65,11 +68,12 @@ impl StatusPacket {
                 let first = entries
                     .as_deref()
                     .and_then(|entries| entries.first(unit % 64));
-                row.camouflage = acclimatization_winner(memory, base, seed, first)
-                    .and_then(|(object, winner)| {
-                        self.read_camouflage(memory, base, &object, winner)
-                    })
-                    .ok();
+                row.camouflage =
+                    acclimatization_winner_with_vtable(memory, acclimatization_vtable, seed, first)
+                        .and_then(|(object, winner)| {
+                            self.read_camouflage(memory, base, &object, winner)
+                        })
+                        .ok();
                 row.exercising = (|| {
                     let group = seed
                         .orders_group

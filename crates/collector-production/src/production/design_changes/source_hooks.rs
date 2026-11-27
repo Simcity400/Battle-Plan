@@ -119,19 +119,14 @@ fn provider(log: &mut RawLog<1>, memory: &impl Memory, pointer: usize) -> Result
 }
 pub(super) static WRITES: AtomicU64 = AtomicU64::new(0);
 pub(super) static NOTES: AtomicU64 = AtomicU64::new(0);
-pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, retired: bool) {
-    WRITES.fetch_add(1, Ordering::Relaxed);
-    if matches!(key, sources::Key::Direct(0) | sources::Key::Provider(0)) {
-        unknown_receiver!();
-        return;
-    }
-    let Some(store) = STORE.get() else {
-        return;
-    };
-    let mut store = callback_store(store);
-    if store.epoch != EPOCH.load(Ordering::Acquire) {
-        return;
-    }
+fn observe_locked(
+    store: &mut Store,
+    memory: &impl Memory,
+    base: usize,
+    key: sources::Key,
+    retired: bool,
+    cached_hour: &mut Option<i32>,
+) {
     let Some(owner) = store.interests.changed(key) else {
         return;
     };
@@ -158,23 +153,43 @@ pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, reti
             },
         ),
     };
-    let result = (|| {
-        let hour = clock(memory, base)?;
-        store.batch.events.push(Event {
-            kind,
-            sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            hour,
-            pointer,
-            variant: 0,
-            removed: false,
-            start: 0,
-            end: 0,
-        });
-        Ok(())
-    })();
-    if let Err(reason) = result {
-        store.batch.failure = Some(reason);
+    let hour = match *cached_hour {
+        Some(hour) => Ok(hour),
+        None => clock(memory, base).inspect(|&hour| *cached_hour = Some(hour)),
+    };
+    match hour {
+        Ok(hour) => {
+            store.batch.events.push(Event {
+                kind,
+                sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                hour,
+                pointer,
+                variant: 0,
+                removed: false,
+                start: 0,
+                end: 0,
+            });
+        }
+        Err(reason) => {
+            store.batch.failure = Some(reason);
+        }
     }
+}
+pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, retired: bool) {
+    WRITES.fetch_add(1, Ordering::Relaxed);
+    if matches!(key, sources::Key::Direct(0) | sources::Key::Provider(0)) {
+        unknown_receiver!();
+        return;
+    }
+    let Some(store) = STORE.get() else {
+        return;
+    };
+    let mut store = callback_store(store);
+    if store.epoch != EPOCH.load(Ordering::Acquire) {
+        return;
+    }
+    let mut cached_hour = None;
+    observe_locked(&mut store, memory, base, key, retired, &mut cached_hour);
 }
 pub(super) fn materialize(
     batch: &mut Batch,
@@ -303,35 +318,63 @@ unsafe fn around<const SITE: usize>(
             observe(&memory, base, sources::Key::Provider(a), false);
         } else if SITE == 2 && SOURCE_BASELINE.load(Ordering::Acquire) {
             if let Some(roster) = Array::read(&memory, a + IDEA_SOURCES, 8) {
-                const SOURCE_BATCH: usize = 64;
-                let mut bytes = [0_u8; SOURCE_BATCH * 8];
-                let mut first = 0_u32;
-                while first < roster.count {
-                    let count = ((roster.count - first) as usize).min(SOURCE_BATCH);
-                    let batch_ok = roster
-                        .slice(first, count as u32, 8)
-                        .ok()
-                        .is_some_and(|span| {
-                            engine_native_memory::read_slice(&memory, span.data, &mut bytes[..count * 8])
-                        });
-                    if batch_ok {
-                        for chunk in bytes[..count * 8].chunks_exact(8) {
-                            let pointer = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
-                            observe(&memory, base, sources::Key::Direct(pointer), false);
+                if roster.count != 0 {
+                    let mut store_guard = STORE.get().map(callback_store);
+                    let current_epoch = EPOCH.load(Ordering::Acquire);
+                    let mut cached_hour = None;
+                    let mut handle_pointer = |pointer: usize| {
+                        WRITES.fetch_add(1, Ordering::Relaxed);
+                        if pointer == 0 {
+                            unknown_receiver!();
+                            return;
                         }
-                    } else {
-                        for ordinal in first..first + count as u32 {
-                            if let Some(pointer) = roster
-                                .element(ordinal, 8)
-                                .and_then(|at| engine_native_memory::read::<u64>(&memory, at))
-                            {
-                                observe(&memory, base, sources::Key::Direct(pointer as usize), false);
-                            } else {
-                                unobserved!();
+                        if let Some(store) = store_guard.as_mut()
+                            && store.epoch == current_epoch
+                        {
+                            observe_locked(
+                                store,
+                                &memory,
+                                base,
+                                sources::Key::Direct(pointer),
+                                false,
+                                &mut cached_hour,
+                            );
+                        }
+                    };
+                    const SOURCE_BATCH: usize = 64;
+                    let mut bytes = [0_u8; SOURCE_BATCH * 8];
+                    let mut first = 0_u32;
+                    while first < roster.count {
+                        let count = ((roster.count - first) as usize).min(SOURCE_BATCH);
+                        let batch_ok = roster
+                            .slice(first, count as u32, 8)
+                            .ok()
+                            .is_some_and(|span| {
+                                engine_native_memory::read_slice(
+                                    &memory,
+                                    span.data,
+                                    &mut bytes[..count * 8],
+                                )
+                            });
+                        if batch_ok {
+                            for chunk in bytes[..count * 8].chunks_exact(8) {
+                                let pointer = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
+                                handle_pointer(pointer);
+                            }
+                        } else {
+                            for ordinal in first..first + count as u32 {
+                                if let Some(pointer) = roster
+                                    .element(ordinal, 8)
+                                    .and_then(|at| engine_native_memory::read::<u64>(&memory, at))
+                                {
+                                    handle_pointer(pointer as usize);
+                                } else {
+                                    unobserved!();
+                                }
                             }
                         }
+                        first += count as u32;
                     }
-                    first += count as u32;
                 }
             } else {
                 unobserved!();

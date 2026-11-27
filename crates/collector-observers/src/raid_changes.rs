@@ -49,7 +49,7 @@ pub struct Watches {
     routes: DirtySet,
     origin_flights: collector_primitives::asymmetric::FlightGate,
     calls: CallCounters<SITES>,
-    origin_calls: AtomicU64,
+    origin_calls: CallCounters<1>,
     unnamed: AtomicU64,
     stats: CallCounters<STATS>,
     hooks: AtomicBool,
@@ -82,7 +82,7 @@ impl Watches {
             routes: DirtySet::new(),
             origin_flights: collector_primitives::asymmetric::FlightGate::new(0),
             calls: CallCounters::new(),
-            origin_calls: AtomicU64::new(0),
+            origin_calls: CallCounters::new(),
             unnamed: AtomicU64::new(0),
             stats: CallCounters::new(),
             hooks: AtomicBool::new(false),
@@ -107,7 +107,7 @@ impl Watches {
     #[inline]
     pub fn notify(&self, site: usize, target: Target) -> Option<Dirty<'_>> {
         if site == ORIGIN_ROUTE_SITE {
-            self.origin_calls.fetch_add(1, Ordering::Relaxed);
+            self.origin_calls.increment(0);
         } else {
             self.calls.increment(site);
         }
@@ -246,8 +246,8 @@ pub trait Changes: Sync {
 impl Changes for Watches {
     fn take(&self, family: Family, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         let origin_before = if family == Family::Routes {
-            let calls = self.origin_calls.load(Ordering::Acquire);
             let epoch = self.origin_flights.quiet_epoch()?;
+            let calls = self.origin_calls.total(0);
             Some((calls, epoch))
         } else {
             None
@@ -255,7 +255,7 @@ impl Changes for Watches {
         let epoch = self.sets()[family as usize].take(visit);
         if let Some((before_calls, before_epoch)) = origin_before
             && (self.origin_flights.quiet_epoch() != Some(before_epoch)
-                || self.origin_calls.load(Ordering::Acquire) != before_calls)
+                || self.origin_calls.total(0) != before_calls)
         {
             return None;
         }

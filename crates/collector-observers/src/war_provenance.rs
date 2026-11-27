@@ -117,10 +117,124 @@ fn performed(route: EventFeedRoute, state: Option<u32>, flags: u8) -> EventFeedC
     }
 }
 
-fn route(callers: &[Caller], caller: usize) -> EventFeedRoute {
-    match native::route(BASE.load(Ordering::Relaxed), callers, caller)
-        .and_then(EventFeedRoute::named)
-    {
+const MAX_CALLER_TABLE: usize = 20;
+
+#[derive(Clone, Copy)]
+struct ResolvedTable {
+    len: usize,
+    ready: bool,
+    entries: [(usize, EventFeedRoute); MAX_CALLER_TABLE],
+}
+
+impl ResolvedTable {
+    const EMPTY: Self = Self {
+        len: 0,
+        ready: false,
+        entries: [(0, EventFeedRoute::None); MAX_CALLER_TABLE],
+    };
+
+    fn resolve(base: usize, callers: &[Caller]) -> Self {
+        if callers.len() > MAX_CALLER_TABLE {
+            return Self::EMPTY;
+        }
+        let mut entries = [(0, EventFeedRoute::None); MAX_CALLER_TABLE];
+        for (slot, caller) in entries.iter_mut().zip(callers) {
+            let Some(address) = engine_sites::resolve(base, caller.return_rva).ok() else {
+                return Self::EMPTY;
+            };
+            let Some(route) = EventFeedRoute::named(caller.route) else {
+                return Self::EMPTY;
+            };
+            *slot = (address, route);
+        }
+        Self {
+            len: callers.len(),
+            ready: true,
+            entries,
+        }
+    }
+
+    #[inline]
+    fn find(&self, caller: usize) -> Option<EventFeedRoute> {
+        for &(address, route) in &self.entries[..self.len] {
+            if address == caller {
+                return Some(route);
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CallerSet {
+    Entry(usize),
+    Diplomacy,
+    CivilWar,
+    StateOwner,
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedTables {
+    located: usize,
+    base: usize,
+    entries: [ResolvedTable; ENTRIES],
+    diplomacy: ResolvedTable,
+    civil_war: ResolvedTable,
+    state_owner: ResolvedTable,
+}
+
+impl ResolvedTables {
+    fn build(located: usize, base: usize) -> Self {
+        Self {
+            located,
+            base,
+            entries: std::array::from_fn(|i| ResolvedTable::resolve(base, native::ENTRIES[i].callers)),
+            diplomacy: ResolvedTable::resolve(base, &native::DIPLOMACY_CALLERS),
+            civil_war: ResolvedTable::resolve(base, &native::CIVIL_WAR_CALLERS),
+            state_owner: ResolvedTable::resolve(base, &native::STATE_OWNER_CALLERS),
+        }
+    }
+
+    #[inline]
+    fn table(&self, set: CallerSet) -> &ResolvedTable {
+        match set {
+            CallerSet::Entry(index) => &self.entries[index],
+            CallerSet::Diplomacy => &self.diplomacy,
+            CallerSet::CivilWar => &self.civil_war,
+            CallerSet::StateOwner => &self.state_owner,
+        }
+    }
+}
+
+thread_local! {
+    static RESOLVED_TABLES: std::cell::RefCell<Option<ResolvedTables>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn route(set: CallerSet, callers: &[Caller], caller: usize) -> EventFeedRoute {
+    let base = BASE.load(Ordering::Relaxed);
+    let located = engine_sites::located().map_or(0, |l| std::ptr::from_ref(l) as usize);
+    if located != 0 {
+        let cached = RESOLVED_TABLES.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let tables = match *slot {
+                Some(ref tables) if tables.located == located && tables.base == base => tables,
+                _ => slot.insert(ResolvedTables::build(located, base)),
+            };
+            let table = tables.table(set);
+            table.ready.then(|| table.find(caller))
+        });
+        if let Some(found) = cached {
+            return match found {
+                Some(route) => route,
+                None => {
+                    UNCLASSIFIED.fetch_add(1, Ordering::Relaxed);
+                    EventFeedRoute::None
+                }
+            };
+        }
+    }
+    match native::route(base, callers, caller).and_then(EventFeedRoute::named) {
         Some(route) => route,
         None => {
             UNCLASSIFIED.fetch_add(1, Ordering::Relaxed);
@@ -169,8 +283,8 @@ pub fn politics(scope: PoliticsScope, caller: usize) -> Option<Scope> {
         return None;
     }
     let reached = match scope {
-        PoliticsScope::Diplomacy => route(&native::DIPLOMACY_CALLERS, caller),
-        PoliticsScope::CivilWar => route(&native::CIVIL_WAR_CALLERS, caller),
+        PoliticsScope::Diplomacy => route(CallerSet::Diplomacy, &native::DIPLOMACY_CALLERS, caller),
+        PoliticsScope::CivilWar => route(CallerSet::CivilWar, &native::CIVIL_WAR_CALLERS, caller),
         PoliticsScope::Decision => EventFeedRoute::Decision,
         PoliticsScope::TargetedDecision => EventFeedRoute::TargetedDecision,
         PoliticsScope::DecisionTimeout => EventFeedRoute::DecisionTimeout,
@@ -204,7 +318,7 @@ pub fn state_owner_before(
             id,
             owner,
             cause: performed(
-                route(&native::STATE_OWNER_CALLERS, caller),
+                route(CallerSet::StateOwner, &native::STATE_OWNER_CALLERS, caller),
                 Some(id),
                 flags(&[third, fourth]),
             ),
@@ -283,7 +397,7 @@ unsafe extern "system-unwind" fn body(
         JOIN_WAR => {
             let previous = CONTEXT.get();
             Some(set(Context {
-                route: route(callers, caller),
+                route: route(CallerSet::Entry(index), callers, caller),
                 within: previous.route,
                 conference: previous.conference,
                 ally: operand(|world| world.country_at(b)).map(country),
@@ -292,7 +406,11 @@ unsafe extern "system-unwind" fn body(
             }))
         }
         END_WAR => {
-            let cause = performed(route(callers, caller), None, flags(&[b]));
+            let cause = performed(
+                route(CallerSet::Entry(index), callers, caller),
+                None,
+                flags(&[b]),
+            );
             event_feed_observer::record(|world, _, _| {
                 let [first, second] = world.war_endpoints(a)?;
                 Ok(Some(Fact {
@@ -304,7 +422,11 @@ unsafe extern "system-unwind" fn body(
             });
             None
         }
-        CREATE_CONFERENCE => Some(enter(route(callers, caller), None, flags(&[g]))),
+        CREATE_CONFERENCE => Some(enter(
+            route(CallerSet::Entry(index), callers, caller),
+            None,
+            flags(&[g]),
+        )),
         START_CONFERENCE => {
             let mut context = CONTEXT.get();
             match operand(|world| world.conference(a)) {
@@ -332,9 +454,13 @@ unsafe extern "system-unwind" fn body(
                 .ok();
             Some(enter(EventFeedRoute::PeaceApplication, conference, 0))
         }
-        ANNEX => Some(enter(route(callers, caller), None, flags(&[d, e]))),
+        ANNEX => Some(enter(
+            route(CallerSet::Entry(index), callers, caller),
+            None,
+            flags(&[d, e]),
+        )),
         RELEASE | RELEASE_COMMAND => {
-            let reached = route(callers, caller);
+            let reached = route(CallerSet::Entry(index), callers, caller);
             let bytes = if index == RELEASE {
                 flags(&[c, d])
             } else {

@@ -27,6 +27,7 @@ pub use crate::advisor_mutations::MutationSite;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tables {
     pub stability: bool,
+    pub stability_lines: bool,
     pub research: bool,
     pub technologies: bool,
     pub focus: bool,
@@ -41,6 +42,7 @@ pub struct Tables {
 impl Tables {
     pub const NONE: Self = Self {
         stability: false,
+        stability_lines: false,
         research: false,
         technologies: false,
         focus: false,
@@ -53,6 +55,20 @@ impl Tables {
     };
     pub const STABILITY: Self = Self {
         stability: true,
+        stability_lines: false,
+        research: false,
+        technologies: false,
+        focus: false,
+        intel_networks: false,
+        projects: false,
+        appearance: false,
+        counters: false,
+        visibility: false,
+        weather: false,
+    };
+    pub const STABILITY_LINES: Self = Self {
+        stability: true,
+        stability_lines: true,
         research: false,
         technologies: false,
         focus: false,
@@ -65,6 +81,7 @@ impl Tables {
     };
     pub const RESEARCH: Self = Self {
         stability: false,
+        stability_lines: false,
         research: true,
         technologies: false,
         focus: false,
@@ -77,6 +94,7 @@ impl Tables {
     };
     pub const BOTH: Self = Self {
         stability: true,
+        stability_lines: true,
         research: true,
         technologies: false,
         focus: false,
@@ -89,6 +107,7 @@ impl Tables {
     };
     pub const TECHNOLOGY: Self = Self {
         stability: false,
+        stability_lines: false,
         research: true,
         technologies: true,
         focus: false,
@@ -101,6 +120,7 @@ impl Tables {
     };
     pub const FOCUS: Self = Self {
         stability: false,
+        stability_lines: false,
         research: false,
         technologies: false,
         focus: true,
@@ -113,6 +133,7 @@ impl Tables {
     };
     pub const INTEL_NETWORKS: Self = Self {
         stability: false,
+        stability_lines: false,
         research: false,
         technologies: false,
         focus: false,
@@ -125,6 +146,7 @@ impl Tables {
     };
     pub const PROJECTS: Self = Self {
         stability: false,
+        stability_lines: false,
         research: false,
         technologies: false,
         focus: false,
@@ -137,6 +159,7 @@ impl Tables {
     };
     pub const APPEARANCE: Self = Self {
         stability: false,
+        stability_lines: false,
         research: false,
         technologies: false,
         focus: false,
@@ -149,6 +172,7 @@ impl Tables {
     };
     pub const COUNTERS: Self = Self {
         stability: false,
+        stability_lines: false,
         research: false,
         technologies: false,
         focus: false,
@@ -161,6 +185,7 @@ impl Tables {
     };
     pub const VISIBILITY: Self = Self {
         stability: false,
+        stability_lines: false,
         research: false,
         technologies: false,
         focus: false,
@@ -173,6 +198,7 @@ impl Tables {
     };
     pub const WEATHER: Self = Self {
         stability: false,
+        stability_lines: false,
         research: false,
         technologies: false,
         focus: false,
@@ -185,6 +211,7 @@ impl Tables {
     };
     pub const ALL: Self = Self {
         stability: true,
+        stability_lines: true,
         research: true,
         technologies: true,
         focus: true,
@@ -199,6 +226,7 @@ impl Tables {
     pub const fn with(self, other: Self) -> Self {
         Self {
             stability: self.stability || other.stability,
+            stability_lines: self.stability_lines || other.stability_lines,
             research: self.research || other.research,
             technologies: self.technologies || other.technologies,
             focus: self.focus || other.focus,
@@ -319,7 +347,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
             rva: ccountry::WEEKLY_UPDATE_RVA,
         },
         Receiver::Country,
-        Tables::STABILITY,
+        Tables::STABILITY_LINES,
     ),
     (
         MutationSite {
@@ -335,7 +363,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
             rva: Rva(0xd7_8e60),
         },
         Receiver::RelationStatus,
-        Tables::STABILITY.with(Tables::COUNTERS),
+        Tables::STABILITY_LINES.with(Tables::COUNTERS),
     ),
     (
         MutationSite {
@@ -343,7 +371,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
             rva: Rva(0xd8_ea80),
         },
         Receiver::WarRelation,
-        Tables::STABILITY,
+        Tables::STABILITY_LINES,
     ),
     (
         MutationSite {
@@ -351,7 +379,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
             rva: Rva(0xd8_e930),
         },
         Receiver::WarRelation,
-        Tables::STABILITY,
+        Tables::STABILITY_LINES,
     ),
     (
         MutationSite {
@@ -359,7 +387,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
             rva: Rva(0xd9_8790),
         },
         Receiver::Every,
-        Tables::STABILITY,
+        Tables::STABILITY_LINES,
     ),
     (
         MutationSite {
@@ -367,7 +395,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
             rva: Rva(0xda_9380),
         },
         Receiver::Every,
-        Tables::STABILITY,
+        Tables::STABILITY_LINES,
     ),
     (
         MutationSite {
@@ -375,7 +403,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
             rva: Rva(0xda_9430),
         },
         Receiver::Every,
-        Tables::STABILITY,
+        Tables::STABILITY_LINES,
     ),
     (
         MutationSite {
@@ -383,7 +411,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
             rva: UNAPPOINT_ADVISOR_RVA,
         },
         Receiver::CountryCharacters,
-        Tables::STABILITY,
+        Tables::STABILITY_LINES,
     ),
     (
         MutationSite {

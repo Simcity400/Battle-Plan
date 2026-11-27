@@ -941,7 +941,7 @@ impl Captured {
     }
 }
 
-fn shifted(
+pub(super) fn shifted(
     mut row: native::IconRow,
     [bytes, counts, variants, names]: [usize; 4],
     carried: bool,

@@ -351,6 +351,7 @@ pub(crate) struct StabilityRequest {
     pub force_full: bool,
     pub packs: Box<crate::extended::StabilityPacks>,
     pub store: Option<Box<collector_certificates::slicing::SliceFingerprints>>,
+    pub workers: variant_workers::Dispatch,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct StabilityReport;
@@ -1968,13 +1969,22 @@ fn run_with_memory(
         }
         Job::Stability(request) => {
             let cached = request.countries.roster_view(memory);
-            request.packs.capture(
+            let workers = &request.workers;
+            let countries = &request.countries;
+            let base = request.base;
+            let game_state = request.game_state;
+            let mut acquire = |parts| workers.stability(parts, &cached, base, game_state, countries);
+            request.packs.capture_partitioned(
                 &cached,
-                request.base,
-                request.game_state,
+                base,
+                game_state,
                 request.hour,
                 request.force_full,
                 request.store.as_deref_mut(),
+                Some(collector_stability::country_stability::StabilityDispatch {
+                    lanes: workers.lanes(),
+                    acquire: &mut acquire,
+                }),
             );
             Report::Stability(StabilityReport)
         }
@@ -2562,7 +2572,9 @@ const fn jobs_per_hour(role: Role) -> usize {
     use Role::*;
     match role {
         Variants => 2 * collector_workers::acquisition::MAX_WORKERS,
-        Governance | GatedProjects | Templates => collector_workers::acquisition::MAX_WORKERS,
+        Governance | GatedProjects | Templates | Stability => {
+            collector_workers::acquisition::MAX_WORKERS
+        }
         AirWing => air::WING_PARTS,
         AirRelations => collector_air_relations::air_relations::PARTS,
         AirHistories => collector_air_histories::air_histories::PARTS,
@@ -2695,6 +2707,9 @@ impl Pool {
             Some(Job::Variants(request)) => request.workers.arm_at(self, VARIANT_LANES),
             Some(Job::Governance(request)) => request.workers.arm(self),
             Some(Job::GatedProjects(request)) => request.workers.arm(self),
+            Some(Job::Stability(request)) => request
+                .workers
+                .arm_at(self, Role::Stability.priority()),
             Some(Job::Templates(request)) => request
                 .workers
                 .arm_at(self, Role::Templates.priority()),

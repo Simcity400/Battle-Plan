@@ -37,24 +37,63 @@ static int copy_fault(EXCEPTION_POINTERS *ep, const unsigned char *src,
 
 static __forceinline void copy_other_bytes(unsigned char *dst,
                                           const unsigned char *src, size_t len) {
-    if (len == 16) {
-        memcpy(dst, src, 16);
-    } else if (len == 32) {
-        memcpy(dst, src, 32);
-    } else if (len == 1) {
-        memcpy(dst, src, 1);
-    } else if (len == 2) {
-        memcpy(dst, src, 2);
-    } else if (len == 12) {
-        memcpy(dst, src, 12);
-    } else if (len == 24) {
-        memcpy(dst, src, 24);
-    } else if (len == 26) {
-        memcpy(dst, src, 26);
-    } else if (len == 64) {
-        memcpy(dst, src, 64);
-    } else {
+    if (len >= 16) {
+        if (len <= 32) {
+            __m128i head = _mm_loadu_si128((const __m128i *)src);
+            __m128i tail = _mm_loadu_si128((const __m128i *)(src + len - 16));
+            _mm_storeu_si128((__m128i *)dst, head);
+            _mm_storeu_si128((__m128i *)(dst + len - 16), tail);
+            return;
+        }
+        if (len <= 64) {
+            __m128i a = _mm_loadu_si128((const __m128i *)src);
+            __m128i b = _mm_loadu_si128((const __m128i *)(src + 16));
+            __m128i c = _mm_loadu_si128((const __m128i *)(src + len - 32));
+            __m128i d = _mm_loadu_si128((const __m128i *)(src + len - 16));
+            _mm_storeu_si128((__m128i *)dst, a);
+            _mm_storeu_si128((__m128i *)(dst + 16), b);
+            _mm_storeu_si128((__m128i *)(dst + len - 32), c);
+            _mm_storeu_si128((__m128i *)(dst + len - 16), d);
+            return;
+        }
+        if (len <= 256) {
+            size_t offset = 0;
+            while (offset + 32 < len) {
+                __m128i a = _mm_loadu_si128((const __m128i *)(src + offset));
+                __m128i b = _mm_loadu_si128((const __m128i *)(src + offset + 16));
+                _mm_storeu_si128((__m128i *)(dst + offset), a);
+                _mm_storeu_si128((__m128i *)(dst + offset + 16), b);
+                offset += 32;
+            }
+            __m128i c = _mm_loadu_si128((const __m128i *)(src + len - 32));
+            __m128i d = _mm_loadu_si128((const __m128i *)(src + len - 16));
+            _mm_storeu_si128((__m128i *)(dst + len - 32), c);
+            _mm_storeu_si128((__m128i *)(dst + len - 16), d);
+            return;
+        }
         memcpy(dst, src, len);
+        return;
+    }
+    if (len >= 8) {
+        uint64_t head, tail;
+        memcpy(&head, src, 8);
+        memcpy(&tail, src + len - 8, 8);
+        memcpy(dst, &head, 8);
+        memcpy(dst + len - 8, &tail, 8);
+    } else if (len >= 4) {
+        uint32_t head, tail;
+        memcpy(&head, src, 4);
+        memcpy(&tail, src + len - 4, 4);
+        memcpy(dst, &head, 4);
+        memcpy(dst + len - 4, &tail, 4);
+    } else if (len >= 2) {
+        uint16_t head, tail;
+        memcpy(&head, src, 2);
+        memcpy(&tail, src + len - 2, 2);
+        memcpy(dst, &head, 2);
+        memcpy(dst + len - 2, &tail, 2);
+    } else if (len == 1) {
+        *dst = *src;
     }
 }
 
@@ -63,6 +102,26 @@ int seh_guarded_copy4(unsigned char *dst, const unsigned char *src) {
         memcpy(dst, src, 4);
         return 1;
     } __except (copy_fault(GetExceptionInformation(), src, 4, dst)
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return 0;
+    }
+}
+
+uint32_t seh_guarded_read1(const unsigned char *src) {
+    __try {
+        return 0x100u | (uint32_t)(*src);
+    } __except (copy_fault(GetExceptionInformation(), src, 1, src)
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return 0;
+    }
+}
+
+uint32_t seh_guarded_read2(const unsigned char *src) {
+    __try {
+        uint16_t value;
+        memcpy(&value, src, 2);
+        return 0x10000u | (uint32_t)value;
+    } __except (copy_fault(GetExceptionInformation(), src, 2, src)
                     ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
         return 0;
     }
@@ -329,20 +388,25 @@ static __forceinline void hint_record_fields(const uintptr_t *pointers,
                                              size_t row,
                                              const RecordField *fields,
                                              size_t count) {
-    uintptr_t pointer = 0;
-    int have_pointer = 0;
+    if (count == 0) {
+        return;
+    }
+    uintptr_t pointer = record_pointer(pointers, base, stride, row);
+    uintptr_t last_line = 0;
     for (size_t index = 0; index < count; ++index) {
         const RecordField *field = &fields[index];
         if (field->len != 0) {
-            if (!have_pointer) {
-                pointer = record_pointer(pointers, base, stride, row);
-                have_pointer = 1;
-            }
             uintptr_t first = pointer + field->source_offset;
+            uintptr_t first_line = first >> 6;
+            if (first_line != last_line) {
+                _mm_prefetch((const char *)first, _MM_HINT_T0);
+                last_line = first_line;
+            }
             uintptr_t last = first + field->len - 1;
-            _mm_prefetch((const char *)first, _MM_HINT_T0);
-            if ((first >> 6) != (last >> 6)) {
+            uintptr_t end_line = last >> 6;
+            if (end_line != last_line) {
                 _mm_prefetch((const char *)last, _MM_HINT_T0);
+                last_line = end_line;
             }
         }
     }
@@ -553,18 +617,13 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers,
                     hinted_fields += count;
                     ++hinted_rows;
                 }
-                uintptr_t pointer = 0;
-                int have_pointer = 0;
                 unsigned char *target = destination + row * row_stride;
                 size_t remaining = validated_field_count - index;
                 size_t row_fields = remaining < field_count ? remaining : field_count;
+                uintptr_t pointer = record_pointer(pointers, source_base, source_stride, row);
                 for (size_t field_index = 0; field_index < row_fields; ++field_index) {
                     const RecordField *field = &fields[field_index];
                     if (field->len != 0) {
-                        if (!have_pointer) {
-                            pointer = record_pointer(pointers, source_base, source_stride, row);
-                            have_pointer = 1;
-                        }
                         uintptr_t address = pointer + field->source_offset;
                         copy_bytes(target + field->destination_offset,
                                    (const unsigned char *)address, field->len);

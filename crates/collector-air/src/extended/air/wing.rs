@@ -3,7 +3,7 @@ use engine_allocation as allocation;
 
 pub const WING_PACK_N: usize = 2;
 pub const WING_PARTS: usize = collector_workers::acquisition::MAX_WORKERS;
-const PART_COST: u64 = 384;
+const PART_COST: u64 = 192;
 
 #[derive(Debug)]
 pub struct AirWingJob {
@@ -54,6 +54,7 @@ pub struct AirWingJob {
     pub carry: (collector_observers::wing_changes::Counts, usize),
     pub owner_costs: Vec<(u32, u32)>,
     pub cost: u32,
+    pub map_pointers: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -136,6 +137,7 @@ impl Default for AirWingJob {
             carry: Default::default(),
             owner_costs: Vec::new(),
             cost: 0,
+            map_pointers: Vec::new(),
         }
     }
 }
@@ -180,6 +182,7 @@ impl AirWingJob {
                 + self.game_score.allocated_bytes() as u64,
             auxiliary_vectors: vector_bytes(&self.sources)
                 + vector_bytes(&self.owner_costs)
+                + vector_bytes(&self.map_pointers)
                 + vector_bytes(&self.identities)
                 + vector_bytes(&self.naval_memberships)
                 + self.transport.allocated_bytes() as u64
@@ -230,6 +233,7 @@ impl AirWingJob {
         self.carry = Default::default();
         self.owner_costs.clear();
         self.cost = 0;
+        self.map_pointers.clear();
     }
     pub fn grow_for_next(&self) -> bool {
         self.transport.required_map_capacity > 0
@@ -364,12 +368,35 @@ impl<M: Memory> Memory for WingMemory<'_, M> {
         }
         ok
     }
+    fn prefetch(&self, address: usize, len: usize) {
+        self.inner.prefetch(address, len);
+    }
+    fn copy_uninit<'a>(
+        &self,
+        address: usize,
+        destination: &'a mut [std::mem::MaybeUninit<u8>],
+    ) -> Option<&'a mut [u8]> {
+        let copied = self.inner.copy_uninit(address, destination)?;
+        self.count(copied.len());
+        Some(copied)
+    }
     fn copy_scattered<const K: usize>(
         &self,
         addresses: [usize; K],
         destinations: &mut [&mut [u8]; K],
     ) -> usize {
         let completed = self.inner.copy_scattered(addresses, destinations);
+        for destination in destinations.iter().take(completed) {
+            self.count(destination.len());
+        }
+        completed
+    }
+    fn copy_scattered_prefetched<const K: usize>(
+        &self,
+        addresses: [usize; K],
+        destinations: &mut [&mut [u8]; K],
+    ) -> usize {
+        let completed = self.inner.copy_scattered_prefetched(addresses, destinations);
         for destination in destinations.iter().take(completed) {
             self.count(destination.len());
         }
@@ -493,6 +520,9 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
     let mut fuel_references = engine_native_parts::creference_registry::ScopedResolver::new(ctx.base);
     let map_rows = engine_native_memory::walk::Buffer::Growing(&mut job.map_rows);
     let sources = engine_native_memory::walk::Buffer::Growing(&mut job.sources);
+    let raid_token = collector_observers::wing_changes::map_quiet();
+    let crew_token = collector_observers::crew_changes::quiet();
+    let pref_token = collector_observers::wing_preferences::quiet_token();
     let walked = cair_wing::walk_shared_game_score_buffers_with_owners(
         &source,
         ctx.base,
@@ -505,10 +535,18 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
         |pointer, pool, row, admitted| {
             cost.set(cost.get().saturating_add(1));
             if admitted.map {
-                let crew =
-                    crate::crew::wing(memory, pointer, collector_observers::crew_changes::quiet);
+                let crew = if crew_token.is_some() {
+                    admitted.crew.or_else(|| {
+                        crate::crew::wing(memory, pointer, collector_observers::crew_changes::quiet)
+                    })
+                } else {
+                    crate::crew::wing(memory, pointer, collector_observers::crew_changes::quiet)
+                };
                 row.acquired_manpower = crew.map(|value| value[0]);
                 row.exile_country = crew.map(|value| value[1]);
+                if allocation::advisory(|| allocation::reserve(&mut job.map_pointers, 1)).is_ok() {
+                    job.map_pointers.push(pointer);
+                }
                 map_len += 1;
                 row.name = {
                     match cair_wing::capture_name_growing(
@@ -532,20 +570,34 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
 
                 let _transport_reads = read_accounting::table(TableId::AirWings);
                 source.mask.set(4);
-                let raid_token = collector_observers::wing_changes::map_quiet();
                 let started = qpc();
                 let raid_pointer = transport.capture(&source, pointer, pool, row);
                 job.transport_ticks += elapsed(started);
                 source.mask.set(1);
-                row.replacement_setting =
-                    collector_observers::wing_preferences::read(&source, pointer, row.id);
-                row.fuel_inputs = Some(cair_wing::fuel_inputs::capture(
-                    &source,
-                    ctx.base,
-                    pointer,
-                    row,
-                    &mut fuel_references,
-                ));
+                row.replacement_setting = if pref_token.is_some() {
+                    admitted.replacement_setting.or_else(|| {
+                        collector_observers::wing_preferences::read(&source, pointer, row.id)
+                    })
+                } else {
+                    collector_observers::wing_preferences::read(&source, pointer, row.id)
+                };
+                row.fuel_inputs = Some(match admitted.fuel {
+                    Some(ref gathered) => cair_wing::fuel_inputs::from_gathered(
+                        &source,
+                        ctx.base,
+                        pointer,
+                        row,
+                        gathered,
+                        &mut fuel_references,
+                    ),
+                    None => cair_wing::fuel_inputs::capture(
+                        &source,
+                        ctx.base,
+                        pointer,
+                        row,
+                        &mut fuel_references,
+                    ),
+                });
                 row.map_flags = Some(job.map_flags.capture(
                     &source,
                     ctx.base,
@@ -586,7 +638,15 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
                 let next = if let Err(reason) = output.ensure(required) {
                     Outcome::Unavailable { reason }
                 } else if let Some(destination) = output.get_mut(cumulative.len()) {
-                    match cair_wing::read_cumulative(&source, pointer, row) {
+                    let read = match admitted.cumulative {
+                        Some((accidents, experience)) => Ok(cair_wing::CumulativeRow {
+                            id: row.id,
+                            accidents,
+                            experience,
+                        }),
+                        None => cair_wing::read_cumulative(&source, pointer, row),
+                    };
+                    match read {
                         Ok(value) => {
                             *destination = value;
                             Outcome::Rows { len: 1 }
@@ -610,16 +670,29 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
                 }
                 let _reads = read_accounting::table(TableId::AirTheatreMembers);
                 source.mask.set(0);
-                let started = qpc();
-                job.memberships[membership_len] =
-                    match engine_native_air::cair_wing::read_wing_membership(&source, pointer, row) {
-                        Ok(value) => WingMembershipRead { value, error: None },
-                        Err(reason) => WingMembershipRead {
-                            error: Some(reason),
-                            ..Default::default()
+                job.memberships[membership_len] = match admitted.group_handle {
+                    Some(group) => WingMembershipRead {
+                        value: engine_native_air::cair_wing::WingMembership {
+                            wing: row.id,
+                            group,
                         },
-                    };
-                membership_ticks += elapsed(started);
+                        error: None,
+                    },
+                    None => {
+                        let started = qpc();
+                        let read = match engine_native_air::cair_wing::read_wing_membership(
+                            &source, pointer, row,
+                        ) {
+                            Ok(value) => WingMembershipRead { value, error: None },
+                            Err(reason) => WingMembershipRead {
+                                error: Some(reason),
+                                ..Default::default()
+                            },
+                        };
+                        membership_ticks += elapsed(started);
+                        read
+                    }
+                };
                 membership_len += 1;
                 source_len += usize::from(admitted.naval);
             }
@@ -657,6 +730,31 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
         },
     );
     job.map_flags.finish();
+    if crew_token.is_some() && collector_observers::crew_changes::quiet() != crew_token {
+        let len = walked.shared.map.len().min(job.map_rows.len());
+        let aligned = job.map_pointers.len() == map_len && job.map_pointers.len() >= len;
+        for i in 0..len {
+            let crew = aligned.then(|| job.map_pointers[i]).and_then(|pointer| {
+                crate::crew::wing(memory, pointer, collector_observers::crew_changes::quiet)
+            });
+            job.map_rows[i].acquired_manpower = crew.map(|value| value[0]);
+            job.map_rows[i].exile_country = crew.map(|value| value[1]);
+        }
+    }
+    if pref_token.is_some()
+        && collector_observers::wing_preferences::quiet_token() != pref_token
+    {
+        source.mask.set(1);
+        let len = walked.shared.map.len().min(job.map_rows.len());
+        let aligned = job.map_pointers.len() == map_len && job.map_pointers.len() >= len;
+        for i in 0..len {
+            let row = &mut job.map_rows[i];
+            row.replacement_setting = aligned.then(|| job.map_pointers[i]).and_then(|pointer| {
+                collector_observers::wing_preferences::read(&source, pointer, row.id)
+            });
+        }
+        source.mask.set(3);
+    }
 
     job.census = walked;
     job.equipment_outcome = equipment;
@@ -960,18 +1058,25 @@ pub fn part_starts(
     let count = total.div_ceil(PART_COST).clamp(1, WING_PARTS as u64);
     let mut starts = [0; WING_PARTS - 1];
     let mut filled = 0;
-    let mut start = |slot: u32| {
+    let mut start = |slot: u32| -> bool {
         if slot > 0 && (filled == 0 || slot > starts[filled - 1]) {
             starts[filled] = slot;
             filled += 1;
+            true
+        } else {
+            false
         }
     };
     let (mut part, mut offset, mut holder) = (1, 0, None);
     for job in jobs() {
         for &(slot, before) in &job.owner_costs {
+            let mut split_after = false;
             while part < count && offset + u64::from(before) > total * part / count {
-                if let Some(slot) = holder {
-                    start(slot);
+                if let Some(prev_slot) = holder
+                    && !start(prev_slot)
+                    && !split_after
+                {
+                    split_after = start(slot);
                 }
                 part += 1;
             }

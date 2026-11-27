@@ -76,9 +76,10 @@ pub enum Table {
     Visibility = 7,
     Designs = 8,
     UnitSpeeds = 9,
+    StabilityLines = 10,
 }
 
-const SETS: usize = 10;
+const SETS: usize = 11;
 
 const CONFIGURED: [bool; SETS] = [
     true,
@@ -91,6 +92,7 @@ const CONFIGURED: [bool; SETS] = [
     cfg!(feature = "visibility_changes"),
     true,
     cfg!(feature = "counter_changes"),
+    true,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,9 +167,9 @@ impl Forward {
             }
             Self::Popularity => Tables::STABILITY,
             Self::RulingParty | Self::PartyLeaders | Self::Roles => {
-                Tables::STABILITY.with(Tables::APPEARANCE)
+                Tables::STABILITY_LINES.with(Tables::APPEARANCE)
             }
-            Self::DiplomacyReset => Tables::STABILITY
+            Self::DiplomacyReset => Tables::STABILITY_LINES
                 .with(Tables::APPEARANCE)
                 .with(Tables::COUNTERS),
             Self::Focus => Tables::FOCUS,
@@ -213,6 +215,7 @@ const fn table_flags(tables: Tables) -> [bool; SETS] {
         tables.visibility,
         tables.visibility,
         tables.counters,
+        tables.stability_lines,
     ]
 }
 
@@ -393,6 +396,9 @@ impl Domain {
             tables.visibility.then_some(self.set(Table::Visibility)),
             tables.visibility.then_some(self.set(Table::Designs)),
             tables.counters.then_some(self.set(Table::UnitSpeeds)),
+            tables
+                .stability_lines
+                .then_some(self.set(Table::StabilityLines)),
         ]
     }
 

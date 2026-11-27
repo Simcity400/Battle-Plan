@@ -12,7 +12,7 @@ use std::{
 const OWNED_SLOTS: usize = 64;
 const SHARED_SLOT: usize = OWNED_SLOTS;
 const SLOT_COUNT: usize = OWNED_SLOTS + 1;
-const DEFAULT_PERIOD_LOG2: u32 = 8;
+const DEFAULT_PERIOD_LOG2: u32 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {

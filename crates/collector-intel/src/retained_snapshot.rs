@@ -1,10 +1,13 @@
 
 use crate::table_conversion::unavailable;
+use collector_projection::projection::Projection;
 use collector_projection::table_conversion::RowOrder;
 use engine_native_memory::walk::Outcome;
 use replay_data::{
+    BranchId, Hour,
     cadence::SKIPPED_REASON,
-    rows::{self, RowCodec, TableId, tables},
+    rows::{self, RowCodec, TableId, TableRows, tables},
+    sliced::SliceUpdate,
 };
 use replay_frame::frame::{TableInput, TableView};
 use std::{
@@ -15,9 +18,20 @@ use std::{
     },
 };
 
+#[derive(Debug, PartialEq)]
+pub(crate) struct ContributionsDelta {
+    pub(crate) prev_generation: u64,
+    pub(crate) generation: u64,
+    pub(crate) dirty_owners: Vec<u32>,
+    pub(crate) dirty_rows: Vec<rows::IntelContributionRow>,
+    pub(crate) all_owners: Vec<engine_allocation::SharedBox<Vec<rows::IntelContributionRow>>>,
+    pub(crate) total_len: usize,
+}
+
 pub(crate) enum AcquiredRows {
     Propaganda(Vec<crate::propaganda_changes::Row>),
     Contributions(Vec<rows::IntelContributionRow>),
+    ContributionsDelta(ContributionsDelta),
     Sources(Vec<rows::IntelSourceRow>),
     NetworkAuxiliaries(Vec<rows::IntelNetworkAuxiliaryRow>),
 }
@@ -26,7 +40,7 @@ impl AcquiredRows {
     fn table(&self) -> TableId {
         match self {
             Self::Propaganda(_) => TableId::PropagandaEfforts,
-            Self::Contributions(_) => TableId::IntelContributions,
+            Self::Contributions(_) | Self::ContributionsDelta(_) => TableId::IntelContributions,
             Self::Sources(_) => TableId::IntelSources,
             Self::NetworkAuxiliaries(_) => TableId::IntelNetworkAuxiliaries,
         }
@@ -35,6 +49,7 @@ impl AcquiredRows {
         match self {
             Self::Propaganda(rows) => rows.len(),
             Self::Contributions(rows) => rows.len(),
+            Self::ContributionsDelta(delta) => delta.total_len,
             Self::Sources(rows) => rows.len(),
             Self::NetworkAuxiliaries(rows) => rows.len(),
         }
@@ -43,6 +58,9 @@ impl AcquiredRows {
         match self {
             Self::Propaganda(rows) => rows.truncate(len),
             Self::Contributions(rows) => rows.truncate(len),
+            Self::ContributionsDelta(delta) => {
+                debug_assert_eq!(delta.total_len, len);
+            }
             Self::Sources(rows) => rows.truncate(len),
             Self::NetworkAuxiliaries(rows) => rows.truncate(len),
         }
@@ -51,6 +69,12 @@ impl AcquiredRows {
         match self {
             Self::Propaganda(rows) => rows.capacity() * size_of::<crate::propaganda_changes::Row>(),
             Self::Contributions(rows) => rows.capacity() * size_of::<rows::IntelContributionRow>(),
+            Self::ContributionsDelta(delta) => {
+                delta.dirty_owners.capacity() * size_of::<u32>()
+                    + delta.dirty_rows.capacity() * size_of::<rows::IntelContributionRow>()
+                    + delta.all_owners.capacity()
+                        * size_of::<engine_allocation::SharedBox<Vec<rows::IntelContributionRow>>>()
+            }
             Self::Sources(rows) => rows.capacity() * size_of::<rows::IntelSourceRow>(),
             Self::NetworkAuxiliaries(rows) => {
                 rows.capacity() * size_of::<rows::IntelNetworkAuxiliaryRow>()
@@ -76,6 +100,21 @@ impl AcquiredRows {
             Self::Contributions(rows) => {
                 order.table::<tables::IntelContributions, _>(outcome, rows, RowCodec::key, |r| *r)
             }
+            Self::ContributionsDelta(delta) => {
+                let mut flat = Vec::new();
+                if engine_allocation::reserve_exact(&mut flat, delta.total_len).is_err() {
+                    return unavailable("intel contribution snapshot allocation failed");
+                }
+                for owner in &delta.all_owners {
+                    flat.extend_from_slice(owner);
+                }
+                order.table::<tables::IntelContributions, _>(
+                    Outcome::Rows { len: flat.len() },
+                    &flat,
+                    RowCodec::key,
+                    |r| *r,
+                )
+            }
             Self::Sources(rows) => {
                 order.table::<tables::IntelSources, _>(outcome, rows, RowCodec::key, |r| *r)
             }
@@ -96,6 +135,7 @@ struct ProjectionOrder {
 
 pub(crate) struct Snapshot {
     table: TableId,
+    delta_meta: Option<(u64, u64)>,
     acquired: Mutex<Option<AcquiredRows>>,
     acquired_bytes: AtomicUsize,
     projected: OnceLock<TableInput>,
@@ -155,7 +195,85 @@ impl Snapshot {
             None => TableInput::Sampled(unavailable(refusal(self.table))),
         }
     }
+    pub(crate) fn contributions_input(
+        &self,
+        projection: Option<&mut Projection<'_>>,
+        held: &mut Option<((u64, BranchId, Hour), u64)>,
+    ) -> TableInput {
+        let Some((prev_generation, generation)) = self.delta_meta else {
+            *held = None;
+            return self.input();
+        };
+        if let Some(projection) = projection {
+            if let Some((token, _)) = projection.slice_meta(TableId::IntelContributions) {
+                if *held == Some((token.baseline(), generation)) {
+                    *held = Some((token.destination(), generation));
+                    return TableInput::ComparedEqual(token);
+                }
+                if prev_generation != 0 && *held == Some((token.baseline(), prev_generation)) {
+                    let guard = self
+                        .acquired
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Some(AcquiredRows::ContributionsDelta(delta)) = guard.as_ref()
+                        && !delta.dirty_owners.is_empty()
+                        && delta.dirty_owners.windows(2).all(|pair| pair[0] < pair[1])
+                        && delta
+                            .dirty_rows
+                            .windows(2)
+                            .all(|pair| pair[0].key() < pair[1].key())
+                    {
+                        let mut ranges = Vec::new();
+                        let mut rows = Vec::new();
+                        if engine_allocation::reserve_exact(&mut ranges, delta.dirty_owners.len())
+                            .is_ok()
+                            && engine_allocation::reserve_exact(&mut rows, delta.dirty_rows.len())
+                                .is_ok()
+                        {
+                            for &owner in &delta.dirty_owners {
+                                let lo = u128::from(owner) << 72;
+                                ranges.push(lo..(lo + (1_u128 << 72)));
+                            }
+                            rows.extend_from_slice(&delta.dirty_rows);
+                            drop(guard);
+                            let update = SliceUpdate::ranged(
+                                ranges,
+                                TableRows::IntelContributions(rows),
+                            );
+                            if update.fits_meta(TableId::IntelContributions) {
+                                *held = Some((token.destination(), generation));
+                                return TableInput::SliceUpdate {
+                                    token,
+                                    update: Arc::new(update),
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+            let input = self.input();
+            *held = matches!(input, TableInput::SharedComplete(_))
+                .then_some((projection.current_stamp(), generation));
+            return input;
+        }
+        *held = None;
+        self.input()
+    }
     pub(crate) fn recycle_acquired(&self) -> Option<AcquiredRows> {
+        if self.delta_meta.is_some() {
+            let mut guard = self
+                .acquired
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(AcquiredRows::ContributionsDelta(delta)) = guard.as_mut() {
+                let recycled = std::mem::take(&mut delta.dirty_rows);
+                delta.dirty_owners.clear();
+                self.acquired_bytes
+                    .store(guard.as_ref().map_or(0, AcquiredRows::bytes), Ordering::Relaxed);
+                return (!recycled.is_empty()).then_some(AcquiredRows::Contributions(recycled));
+            }
+            return None;
+        }
         self.projection()?;
         let rows = self
             .acquired
@@ -200,8 +318,15 @@ impl RetainedSnapshot {
                 }
                 acquired.truncate(len);
                 let bytes = acquired.bytes();
+                let delta_meta = match &acquired {
+                    AcquiredRows::ContributionsDelta(delta) => {
+                        Some((delta.prev_generation, delta.generation))
+                    }
+                    _ => None,
+                };
                 let rows = Arc::new(Snapshot {
                     table,
+                    delta_meta,
                     acquired: Mutex::new(Some(acquired)),
                     acquired_bytes: AtomicUsize::new(bytes),
                     projected: OnceLock::new(),

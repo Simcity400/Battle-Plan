@@ -100,6 +100,14 @@ impl<T: fmt::Debug> fmt::Debug for SharedBox<T> {
     }
 }
 
+impl<T: PartialEq> PartialEq for SharedBox<T> {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl<T: Eq> Eq for SharedBox<T> {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -69,7 +69,8 @@ static ACTIVE_GATE: collector_primitives::asymmetric::FlightGate =
     collector_primitives::asymmetric::FlightGate::new(0);
 const SITES: usize = MUTATIONS.len() + RELATIONS.len();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-static EVENTS: [AtomicU64; SITES + 1] = [const { AtomicU64::new(0) }; SITES + 1];
+static EVENTS: crate::hook_timing::CallCounters<{ SITES + 1 }> =
+    crate::hook_timing::CallCounters::new();
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 static WALKS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
@@ -104,7 +105,7 @@ impl Mutation {
     fn enter(site: usize) -> Self {
         let guard = ACTIVE_GATE.enter(false);
         if site != 0 {
-            EVENTS[site].fetch_add(1, Ordering::Relaxed);
+            EVENTS.increment(site);
         }
         Self { _guard: guard }
     }
@@ -137,7 +138,7 @@ pub fn relation_replaced(status: usize) -> Option<Replaced> {
     if !ENABLED.load(Ordering::SeqCst) {
         return None;
     }
-    EVENTS[SITES].fetch_add(1, Ordering::Relaxed);
+    EVENTS.increment(SITES);
     Some(Replaced {
         mutation: Mutation::enter(0),
         status,
@@ -338,7 +339,7 @@ pub fn record(
 pub fn status() -> impl serde::Serialize {
     let counts = COUNTS.each_ref().map(|value| value.load(Ordering::Relaxed));
     let walks = WALKS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let event_counts = EVENTS.each_ref().map(|value| value.load(Ordering::Relaxed));
+    let event_counts: [u64; SITES + 1] = std::array::from_fn(|site| EVENTS.total(site));
     let events = crate::status::map(
         MUTATIONS
             .iter()

@@ -266,6 +266,15 @@ impl FrameEncoder {
     pub fn identity(&self) -> u64 {
         self.identity
     }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn has_shared_rows(&self, table: TableId) -> bool {
+        matches!(
+            self.state.tables[table.index()],
+            Some((_, BaselineRows::Owned(_) | BaselineRows::Shared(_)))
+        )
+    }
     fn needs_keyframe(&self, branch: BranchId, hour: Hour, force: bool) -> bool {
         force
             || self.state.branch != Some(branch)

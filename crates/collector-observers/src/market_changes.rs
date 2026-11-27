@@ -66,11 +66,40 @@ static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 std::thread_local! {
     static DEPTH: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
 }
+const VARIABLES_BLOOM_WORDS: usize = 64;
+const VARIABLES_BLOOM_MASK: usize = VARIABLES_BLOOM_WORDS * 64 - 1;
 static VARIABLES_WATCH: WatchRegistry = WatchRegistry::marks_only();
+static VARIABLES_BLOOM: [AtomicU64; VARIABLES_BLOOM_WORDS] =
+    [const { AtomicU64::new(0) }; VARIABLES_BLOOM_WORDS];
 static VARIABLES_FORWARDED: AtomicBool = AtomicBool::new(false);
 static VARIABLES_UNOBSERVED: AtomicBool = AtomicBool::new(false);
+#[inline(always)]
+fn variables_bloom_bits(at: usize) -> (usize, u64, usize, u64) {
+    let mut hash = (at as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+    hash ^= hash >> 32;
+    let first = (hash as usize) & VARIABLES_BLOOM_MASK;
+    let second = ((hash >> 12) as usize) & VARIABLES_BLOOM_MASK;
+    (
+        first >> 6,
+        1_u64 << (first & 63),
+        second >> 6,
+        1_u64 << (second & 63),
+    )
+}
+#[inline(always)]
+fn variables_bloom_contains(at: usize) -> bool {
+    let (w0, m0, w1, m1) = variables_bloom_bits(at);
+    (VARIABLES_BLOOM[w0].load(Ordering::Relaxed) & m0 != 0)
+        && (VARIABLES_BLOOM[w1].load(Ordering::Relaxed) & m1 != 0)
+}
+fn register_variable_watch(at: usize) -> Option<((u64, u64), bool)> {
+    let (w0, m0, w1, m1) = variables_bloom_bits(at);
+    VARIABLES_BLOOM[w0].fetch_or(m0, Ordering::SeqCst);
+    VARIABLES_BLOOM[w1].fetch_or(m1, Ordering::SeqCst);
+    VARIABLES_WATCH.register(at)
+}
 pub fn variable_write(at: usize) -> Notification<'static> {
-    VARIABLES_WATCH.notify(at)
+    VARIABLES_WATCH.notify_if(at, || variables_bloom_contains(at))
 }
 pub fn variables_uncertified() {
     VARIABLES_UNOBSERVED.store(true, Ordering::SeqCst);
@@ -252,7 +281,14 @@ pub unsafe fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, in
             renewed[domain] = renew[domain];
         }
     }
-    VARIABLES_WATCH.boundary(invalidate);
+    if VARIABLES_WATCH.boundary(invalidate).renewed()
+        && VARIABLES_WATCH.registered() == 0
+        && VARIABLES_WATCH.active() == 0
+    {
+        for word in &VARIABLES_BLOOM {
+            word.store(0, Ordering::SeqCst);
+        }
+    }
     if RESET_WATCH
         .boundary(invalidate || renew[3].is_some())
         .renewed()
@@ -1758,5 +1794,63 @@ mod tests {
         publish(&mut events).unwrap();
         assert!(events[0].id > previous);
         assert!(events[0].occurrence > previous);
+    }
+
+    #[test]
+    fn preserving_growth_keeps_variable_watch_bloom_bits_live() {
+        let _serial = test_support::SERIAL.lock().unwrap();
+        let was_enabled = ENABLED.load(Ordering::SeqCst);
+        let was_reset = RESET_FORWARDED.load(Ordering::SeqCst);
+        let was_vars = VARIABLES_FORWARDED.load(Ordering::SeqCst);
+        ENABLED.store(true, Ordering::SeqCst);
+        RESET_FORWARDED.store(true, Ordering::SeqCst);
+        VARIABLES_FORWARDED.store(true, Ordering::SeqCst);
+        refresh_coverage();
+        LEDGER.reset();
+        let base_cap = VARIABLES_WATCH.capacity().max(8);
+        // SAFETY: Isolated serial unit test owns market observer sizing state.
+        unsafe { presize(8, base_cap) };
+        let clock = |hour| {
+            Some(engine_native::cgame_state::Clock {
+                hour,
+                ..Default::default()
+            })
+        };
+        unsafe { boundary(clock(10), true) };
+        unsafe { boundary(clock(11), false) };
+        let cap_before = VARIABLES_WATCH.capacity();
+        assert!(cap_before >= 8);
+        let watched = 0x55aa_1000_usize;
+        assert!(register_variable_watch(watched).is_some());
+        assert!(variables_bloom_contains(watched));
+        VARIABLES_WATCH.offer(cap_before * 2);
+        unsafe {
+            collector_certificates::watch_registry::with_quiescent_growth(|| {
+                boundary(clock(12), false);
+            });
+        }
+        assert!(VARIABLES_WATCH.capacity() > cap_before);
+        assert!(VARIABLES_WATCH.registered() >= 1);
+        assert!(variables_bloom_contains(watched));
+        drop(variable_write(watched));
+        let mut seen = false;
+        assert!(
+            VARIABLES_WATCH
+                .take(|at| {
+                    if at == watched {
+                        seen = true;
+                    }
+                })
+                .is_some()
+        );
+        assert!(
+            seen,
+            "variable write must still hit live watch after preserving growth"
+        );
+        VARIABLES_WATCH.collect();
+        ENABLED.store(was_enabled, Ordering::SeqCst);
+        RESET_FORWARDED.store(was_reset, Ordering::SeqCst);
+        VARIABLES_FORWARDED.store(was_vars, Ordering::SeqCst);
+        refresh_coverage();
     }
 }

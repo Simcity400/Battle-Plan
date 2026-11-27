@@ -4991,6 +4991,7 @@ struct SizingBackoff {
 impl SizingBackoff {
     const FAST: Duration = Duration::from_secs(1);
     const MAX: Duration = Duration::from_secs(5);
+    const SETTLED_START: Duration = Duration::from_secs(30);
     const SETTLED: Duration = Duration::from_secs(60);
 
     fn new() -> Self {
@@ -5018,8 +5019,12 @@ impl SizingBackoff {
         self.last = Some(now);
         self.interval = if demand {
             Self::FAST
+        } else if settled {
+            (self.interval * 2)
+                .max(Self::SETTLED_START)
+                .min(Self::SETTLED)
         } else {
-            (self.interval * 2).min(if settled { Self::SETTLED } else { Self::MAX })
+            (self.interval * 2).min(Self::MAX)
         };
     }
 }
@@ -5216,13 +5221,6 @@ impl SizingShared {
         // SAFETY: This stage owns the installed frame slot.
         unsafe { shared.frame_stage(index, sampling::FrameStage::Recycle) };
         let mut proposal = *self.capacities.lock();
-        if !collector_workers::tick_gate::game_ticking() {
-            let live = unsafe { LiveMemory::new() };
-            let _ = proposal
-                .extended
-                .combat_progress
-                .presize(&live, shared.base);
-        }
         let admitted = {
             let frame = unsafe {
                 // SAFETY: This is the runtime's frame pool for the current session.
@@ -5484,7 +5482,7 @@ fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
 }
 
 fn frame_builder(shared: &Shared, sizing: &SizingShared) {
-    frame_builder_with_grace(shared, sizing, Duration::from_millis(6), |_| {});
+    frame_builder_with_grace(shared, sizing, Duration::from_millis(35), |_| {});
 }
 
 #[cfg(test)]
@@ -5592,9 +5590,9 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         }
         let reclaim_interval = |followups: u8| {
             if followups > 0 {
-                Duration::from_millis(750)
+                Duration::from_secs(15)
             } else {
-                Duration::from_secs(8)
+                Duration::from_secs(60)
             }
         };
         if reclaim_now || last_reclaim.elapsed() >= reclaim_interval(followup_reclaims) {
@@ -5661,8 +5659,12 @@ fn sizing_pass(
     let registry = &mut state.registry;
     let loading = collector_lifetime::world_lifetime::invalidating();
     let hint_demand = sizing.hint_demand.swap(false, Ordering::AcqRel) || loading;
+    let settled = collector_lifetime::world_lifetime::token()
+        == Some(sizing.settled_world.load(Ordering::Acquire));
     let periodic_interval = if hint_demand {
         Duration::from_secs(2)
+    } else if settled {
+        Duration::from_secs(30)
     } else {
         Duration::from_secs(8)
     };

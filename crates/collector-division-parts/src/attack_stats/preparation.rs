@@ -206,6 +206,7 @@ impl PreparationPart {
             .then(|| engine_native::ccountry::Reader::new(memory, base, state).ok())
             .flatten();
         self.source_ready = source_reads && countries.is_some();
+        let vtables = crate::division_experience::Vtables::resolve(base);
         for (index, seed) in seeds.iter().enumerate() {
             let index = self.range.start + index;
             if supply_ready {
@@ -287,8 +288,8 @@ impl PreparationPart {
             let career_acquired = career_certificate.is_some();
             let experience = match experience_quiet {
                 Some((_, value)) => Some(Ok(value)),
-                None => store.experience.prefetch_value(
-                    base,
+                None => store.experience.prefetch_value_with_vtables(
+                    vtables,
                     index,
                     seed,
                     experience_certificate,
@@ -306,8 +307,8 @@ impl PreparationPart {
             };
             let progression = match progression_quiet {
                 Some((_, value)) => Some(Ok(value)),
-                None => store.progression.prefetch_value(
-                    base,
+                None => store.progression.prefetch_value_with_vtables(
+                    vtables,
                     index,
                     seed,
                     progression_certificate,
@@ -317,8 +318,8 @@ impl PreparationPart {
             };
             let officer = match officer_quiet {
                 Some((_, value)) => Some(Ok(value)),
-                None => store.officer.prefetch_value(
-                    base,
+                None => store.officer.prefetch_value_with_vtables(
+                    vtables,
                     index,
                     seed,
                     officer_certificate,
@@ -328,8 +329,8 @@ impl PreparationPart {
             };
             let career = match career_quiet {
                 Some((_, value)) => Some(Ok(value)),
-                None => store.career.prefetch_value(
-                    base,
+                None => store.career.prefetch_value_with_vtables(
+                    vtables,
                     index,
                     seed,
                     career_certificate,

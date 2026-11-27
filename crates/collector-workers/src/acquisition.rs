@@ -1173,7 +1173,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
             } != 0
                 && frequency > 0
             {
-                (frequency as u64 / 25_000).max(1)
+                (frequency as u64 / 100_000).max(1)
             } else {
                 0
             }

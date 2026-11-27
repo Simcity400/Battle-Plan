@@ -104,11 +104,17 @@ impl Watches {
 
 pub trait Changes: Sync {
     fn sequence(&self, pool: usize) -> Option<(u64, u64)>;
+    fn sequence_at(&self, pool: usize, _held_slot: usize) -> Option<((u64, u64), usize)> {
+        self.sequence(pool).map(|certificate| (certificate, usize::MAX))
+    }
 }
 
 impl Changes for Watches {
     fn sequence(&self, pool: usize) -> Option<(u64, u64)> {
         self.registry.sequence(pool)
+    }
+    fn sequence_at(&self, pool: usize, held_slot: usize) -> Option<((u64, u64), usize)> {
+        self.registry.sequence_at(pool, held_slot)
     }
 }
 
@@ -117,10 +123,16 @@ impl Changes for Observer {
     fn sequence(&self, pool: usize) -> Option<(u64, u64)> {
         WATCHES.sequence(pool)
     }
+    fn sequence_at(&self, pool: usize, held_slot: usize) -> Option<((u64, u64), usize)> {
+        WATCHES.sequence_at(pool, held_slot)
+    }
 }
 
 pub fn map_sequence(address: usize) -> Option<(u64, u64)> {
     WATCHES.registry.sequence(address)
+}
+pub fn map_sequence_at(address: usize, held_slot: usize) -> Option<((u64, u64), usize)> {
+    WATCHES.registry.sequence_at(address, held_slot)
 }
 pub fn map_quiet() -> Option<(u64, u64)> {
     WATCHES.registry.quiet()

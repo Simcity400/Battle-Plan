@@ -357,17 +357,23 @@ fn suspended() -> std::sync::MutexGuard<'static, Option<HashMap<u64, Binding>>> 
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 pub(super) fn suspend_all(watches: &[Watch]) -> Result<(), &'static str> {
-    if watches.is_empty() {
+    suspend_ids(watches.iter().map(|watch| watch.id), watches.len())
+}
+pub(super) fn suspend_ids(
+    ids: impl Iterator<Item = u64>,
+    hint: usize,
+) -> Result<(), &'static str> {
+    if hint == 0 {
         return Ok(());
     }
     let mut held = bindings();
     let mut suspended = suspended();
     let suspended = suspended.get_or_insert_with(HashMap::new);
-    engine_allocation::reserve_map(suspended, watches.len())
+    engine_allocation::reserve_map(suspended, hint)
         .map_err(|_| "design source binding allocation failed")?;
-    for watch in watches {
-        if let Some(binding) = held.remove(&watch.id) {
-            suspended.insert(watch.id, binding);
+    for id in ids {
+        if let Some(binding) = held.remove(&id) {
+            suspended.insert(id, binding);
         }
     }
     Ok(())

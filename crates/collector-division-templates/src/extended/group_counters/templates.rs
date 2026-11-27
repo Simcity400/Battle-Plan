@@ -37,11 +37,11 @@ pub(super) struct Store {
 }
 fn certificate(changes: &dyn Changes, pointer: usize, holder: usize) -> Option<Certificate> {
     Some([
-        changes.sequence(pointer)?,
+        changes.hq_sequence(pointer)?,
         if holder == 0 {
             (0, 0)
         } else {
-            changes.sequence(holder)?
+            changes.hq_sequence(holder)?
         },
     ])
 }
@@ -162,7 +162,7 @@ impl Store {
         entry.certificate = current;
         let previous_bytes = entry.allocated_bytes();
         let read = (|| {
-            let group_before = changes.sequence(root.pointer());
+            let group_before = changes.hq_sequence(root.pointer());
             if group_before.is_none() && !fresh {
                 entry.attempted = false;
                 return Err("headquarters context writer certificate unavailable");
@@ -193,7 +193,7 @@ impl Store {
             }
             entry.header = certified_header;
             native::pools(memory, base, &entry.header, &mut entry.pools)?;
-            if !fresh && (group_before != changes.sequence(root.pointer())
+            if !fresh && (group_before != changes.hq_sequence(root.pointer())
                 || before != certificate(changes, root.pointer(), entry.header.holder))
             {
                 entry.attempted = false;

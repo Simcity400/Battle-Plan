@@ -392,7 +392,7 @@ impl<M: Memory> Reader<'_, M> {
         let mut visit = |reader: &mut Self, ordinal, ship: &RosterShip<'_>| {
             ship.admit(
                 reader.memory,
-                reader.base,
+                reader.ship_vtable,
                 task,
                 "fresh task-force ship parent mismatch",
             )?;

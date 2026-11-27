@@ -1195,15 +1195,60 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
                 unobserved!();
                 return;
             };
-            for ordinal in 0..array.count {
-                let Some(pointer) = array
-                    .element(ordinal, 8)
-                    .and_then(|p| engine_native_memory::read::<u64>(memory, p))
-                else {
-                    unobserved!();
-                    return;
-                };
-                mark_design(memory, base, pointer as usize, false);
+            if array.count == 0 {
+                return;
+            }
+            let Some(mutex) = STORE.get() else {
+                unobserved!();
+                return;
+            };
+            const ROSTER_BATCH: usize = 64;
+            let mut bytes = [0_u8; ROSTER_BATCH * 8];
+            let mut to_mark = [0_usize; ROSTER_BATCH];
+            let mut first_ord = 0_u32;
+            while first_ord < array.count {
+                let count = ((array.count - first_ord) as usize).min(ROSTER_BATCH);
+                let batch_ok = array
+                    .slice(first_ord, count as u32, 8)
+                    .ok()
+                    .is_some_and(|span| {
+                        engine_native_memory::read_slice(memory, span.data, &mut bytes[..count * 8])
+                    });
+                let mut mark_len = 0usize;
+                {
+                    let store = callback_store(mutex);
+                    if store.epoch != EPOCH.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if batch_ok {
+                        for chunk in bytes[..count * 8].chunks_exact(8) {
+                            let pointer = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
+                            if store.watched.contains_key(&pointer) {
+                                to_mark[mark_len] = pointer;
+                                mark_len += 1;
+                            }
+                        }
+                    } else {
+                        for ordinal in first_ord..first_ord + count as u32 {
+                            let Some(pointer) = array
+                                .element(ordinal, 8)
+                                .and_then(|p| engine_native_memory::read::<u64>(memory, p))
+                            else {
+                                unobserved!();
+                                return;
+                            };
+                            let pointer = pointer as usize;
+                            if store.watched.contains_key(&pointer) {
+                                to_mark[mark_len] = pointer;
+                                mark_len += 1;
+                            }
+                        }
+                    }
+                }
+                for &pointer in &to_mark[..mark_len] {
+                    repair::mark(pointer);
+                }
+                first_ord += count as u32;
             }
         }
         Receiver::Removed => {}
@@ -1801,7 +1846,7 @@ fn drain_speculating(
         let stage = std::time::Instant::now();
         drain_profile_mut().boundary_ns[0] = elapsed_ns(start);
         let witnesses = witness::take(&repairs.watches, &removed);
-        let mut reads = snapshots::speculative::read_marked(
+        let reads = snapshots::speculative::read_marked(
             speculation,
             base,
             hour,
@@ -1809,26 +1854,61 @@ fn drain_speculating(
             witnesses,
             &removed,
         )?;
+        if reads.len() != repairs.watches.len() {
+            return Err("variant speculative read count mismatch");
+        }
         let walked = repairs.watches.len()
-            - reads
-                .values()
-                .filter(|read| matches!(read, snapshots::speculative::Read::Unchanged(_)))
+            - repairs
+                .watches
+                .iter()
+                .zip(&reads)
+                .filter(|(watch, (pointer, id, read))| {
+                    *pointer == watch.pointer
+                        && *id == watch.id
+                        && matches!(read, snapshots::speculative::Read::Unchanged(_))
+                })
                 .count();
         if walked != 0 {
             collector_observers::world_input_changes::prepare_design_mios(walked, true);
         }
         drain_profile_mut().stages_ns[0] = elapsed_ns(stage);
-        sources::suspend_all(&repairs.watches)?;
-        let begin = std::time::Instant::now();
-        decode_events(&batch, base, output)?;
-        drain_profile_mut().events_ns = elapsed_ns(begin);
-        sources::resume_all(repairs.watches.iter().filter_map(|watch| {
+        let has_source_events = batch.events.iter().any(|event| {
             matches!(
-                reads.get(&watch.pointer),
-                Some(snapshots::speculative::Read::Unchanged(_))
+                event.kind,
+                Kind::Source | Kind::SourceRemoved | Kind::Provider(_) | Kind::ProviderReset(_)
             )
-            .then_some(watch.id)
-        }))?;
+        });
+        if has_source_events {
+            sources::suspend_all(&repairs.watches)?;
+            let begin = std::time::Instant::now();
+            decode_events(&batch, base, output)?;
+            drain_profile_mut().events_ns = elapsed_ns(begin);
+            sources::resume_all(repairs.watches.iter().zip(&reads).filter_map(
+                |(watch, (pointer, id, read))| {
+                    (*pointer == watch.pointer
+                        && *id == watch.id
+                        && matches!(read, snapshots::speculative::Read::Unchanged(_)))
+                    .then_some(watch.id)
+                },
+            ))?;
+        } else {
+            if walked != 0 {
+                sources::suspend_ids(
+                    repairs.watches.iter().zip(&reads).filter_map(
+                        |(watch, (pointer, id, read))| {
+                            (!(*pointer == watch.pointer
+                                && *id == watch.id
+                                && matches!(read, snapshots::speculative::Read::Unchanged(_))))
+                            .then_some(watch.id)
+                        },
+                    ),
+                    walked,
+                )?;
+            }
+            let begin = std::time::Instant::now();
+            decode_events(&batch, base, output)?;
+            drain_profile_mut().events_ns = elapsed_ns(begin);
+        }
         liveness::refresh_context(memory, base, &batch.events)?;
         let stage = std::time::Instant::now();
         engine_allocation::reserve(output, repairs.watches.len())
@@ -1843,10 +1923,15 @@ fn drain_speculating(
         let mut flag_updates = engine_allocation::vec(walked)
             .map_err(|_| "variant repair allocation failed")?;
         let (mut unchanged, mut lane_walks) = (0, 0);
-        for watch in &repairs.watches {
+        for (watch, (pointer, id, read)) in repairs.watches.iter().zip(reads) {
             use snapshots::speculative::Read;
-            let (walk, recorded) = match reads.remove(&watch.pointer) {
-                Some(Read::Unchanged(witness)) => {
+            let read = if pointer == watch.pointer && id == watch.id {
+                read
+            } else {
+                Read::Refused
+            };
+            let (walk, recorded) = match read {
+                Read::Unchanged(witness) => {
                     if witness.team.0 != 0 {
                         teams.push(witness.team);
                     }
@@ -1873,7 +1958,7 @@ fn drain_speculating(
                     });
                     continue;
                 }
-                Some(Read::Walked(walk, decoded, recorded)) => (Some((walk, decoded)), recorded),
+                Read::Walked(walk, decoded, recorded) => (Some((walk, decoded)), recorded),
                 _ => (None, None),
             };
             lane_walks += u32::from(walk.is_some());

@@ -1,11 +1,39 @@
 use super::*;
 use collector_certificates::watch_registry::WatchRegistry;
+use std::hash::{BuildHasherDefault, Hasher};
+
+#[derive(Default)]
+struct PointerHasher(u64);
+
+impl Hasher for PointerHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = self.0;
+        for &byte in bytes {
+            state = (state ^ u64::from(byte)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+        self.0 = state;
+    }
+
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.0 = (self.0 ^ (value as u64)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        self.0 ^= self.0 >> 32;
+    }
+}
+
+type PointerSet = std::collections::HashSet<usize, BuildHasherDefault<PointerHasher>>;
 
 static MARKS: WatchRegistry = WatchRegistry::marks_only();
 static PENDING: AtomicBool = AtomicBool::new(false);
 static REPAIRING: AtomicBool = AtomicBool::new(false);
 static ADDED: AtomicBool = AtomicBool::new(false);
-static DIRTY: Mutex<Option<std::collections::HashSet<usize>>> = Mutex::new(None);
+static DIRTY: Mutex<Option<PointerSet>> = Mutex::new(None);
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -197,12 +225,38 @@ impl<M: Memory> Surviving<'_, M> {
     }
 }
 impl<M: Memory> Memory for Surviving<'_, M> {
+    fn prefetch(&self, address: usize, len: usize) {
+        if self.removed.is_empty() || !self.overlaps_removed(address, len) {
+            self.source.prefetch(address, len);
+        }
+    }
+
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
+        if self.overlaps_removed(address, std::mem::size_of::<T>()) {
+            self.consumed.set(true);
+            return None;
+        }
+        self.source.read_scalar(address)
+    }
+
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         if self.overlaps_removed(address, output.len()) {
             self.consumed.set(true);
             return false;
         }
         self.source.copy(address, output)
+    }
+
+    fn copy_uninit<'a>(
+        &self,
+        address: usize,
+        destination: &'a mut [std::mem::MaybeUninit<u8>],
+    ) -> Option<&'a mut [u8]> {
+        if self.overlaps_removed(address, destination.len()) {
+            self.consumed.set(true);
+            return None;
+        }
+        self.source.copy_uninit(address, destination)
     }
 
     fn copy_scattered<const N: usize>(

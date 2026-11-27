@@ -443,6 +443,7 @@ impl Captured {
             force_full,
             packs,
             store,
+            workers: Default::default(),
         }
     }
 
@@ -1813,7 +1814,11 @@ impl StabilityPacks {
         .ok()
     }
 
-    pub fn capture(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "partitioned stability capture forwards worker dispatch beside the read operands"
+    )]
+    pub fn capture_partitioned(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -1821,13 +1826,14 @@ impl StabilityPacks {
         hour: i32,
         force_full: bool,
         store: Option<&mut collector_certificates::slicing::SliceFingerprints>,
+        dispatch: Option<country_stability::StabilityDispatch<'_>>,
     ) {
         let _allocation_phase =
             collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
-        let cost = self
-            .country_stability
-            .capture(memory, base, game_state, hour, force_full, store);
+        let cost = self.country_stability.capture_partitioned(
+            memory, base, game_state, hour, force_full, store, dispatch,
+        );
         scatter(&country_stability::TABLES, cost, &mut ticks);
         self.ticks = ticks;
     }

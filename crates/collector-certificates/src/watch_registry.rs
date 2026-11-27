@@ -49,6 +49,9 @@ const fn revision(state: u64) -> u64 {
 #[repr(align(64))]
 struct Hot(AtomicU64);
 
+#[repr(align(64))]
+struct PaddedBool(AtomicBool);
+
 const PROBES: usize = 16;
 static REFUSED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static PEAK_LOAD: AtomicU64 = AtomicU64::new(0);
@@ -93,8 +96,8 @@ impl Table {
         engine_allocation::boxed(Self { slots, marks }).ok()
     }
 
-    #[inline]
-    fn find(&self, address: usize, register: bool) -> Lookup<'_> {
+    #[inline(always)]
+    fn find_impl<const REGISTER: bool>(&self, address: usize) -> Lookup<'_> {
         if address == 0 {
             return Lookup::Unwatched;
         }
@@ -105,7 +108,7 @@ impl Table {
             // SAFETY: `self.slots.len()` is a non-zero power of two and `mask == len - 1`, so `index < len`.
             let slot = unsafe { self.slots.get_unchecked(index) };
             let mut current = slot.address.load(SeqCst);
-            if current == 0 && register {
+            if REGISTER && current == 0 {
                 match slot.address.compare_exchange(0, address, SeqCst, SeqCst) {
                     Ok(_) => return Lookup::Registered(index, &slot.sequence),
                     Err(winner) => current = winner,
@@ -118,10 +121,29 @@ impl Table {
                 return Lookup::Unwatched;
             }
         }
-        if register {
+        if REGISTER {
             Lookup::Full
         } else {
             Lookup::Unwatched
+        }
+    }
+
+    #[inline(always)]
+    fn find_read(&self, address: usize) -> Lookup<'_> {
+        self.find_impl::<false>(address)
+    }
+
+    #[inline(always)]
+    fn find_or_register(&self, address: usize) -> Lookup<'_> {
+        self.find_impl::<true>(address)
+    }
+
+    #[cfg(test)]
+    fn find(&self, address: usize, register: bool) -> Lookup<'_> {
+        if register {
+            self.find_or_register(address)
+        } else {
+            self.find_read(address)
         }
     }
 
@@ -170,25 +192,25 @@ impl Admission {
 
 pub struct WatchRegistry {
     table: AtomicPtr<Table>,
-    offered: AtomicPtr<Table>,
-    offer_lock: std::sync::Mutex<()>,
-    draining: AtomicPtr<Table>,
-    retired: AtomicPtr<Table>,
+    epoch: AtomicU64,
     capacity: AtomicUsize,
-    requested: AtomicUsize,
-    registered: AtomicUsize,
+    enabled: AtomicBool,
+    poisoned: AtomicBool,
     purge: bool,
     marking: bool,
     sequences: bool,
     synchronous: bool,
-    epoch: AtomicU64,
     state: Hot,
-    dirty: AtomicBool,
+    dirty: PaddedBool,
     revision: AtomicU64,
     flush_seq: AtomicU64,
-    enabled: AtomicBool,
-    poisoned: AtomicBool,
+    registered: AtomicUsize,
     refused: AtomicU64,
+    offered: AtomicPtr<Table>,
+    offer_lock: std::sync::Mutex<()>,
+    draining: AtomicPtr<Table>,
+    retired: AtomicPtr<Table>,
+    requested: AtomicUsize,
     refused_at_offer: AtomicU64,
     refused_at_clear: AtomicU64,
     purged_for_refusal: AtomicBool,
@@ -261,7 +283,7 @@ impl WatchRegistry {
             synchronous: false,
             epoch: AtomicU64::new(1),
             state: Hot(AtomicU64::new(0)),
-            dirty: AtomicBool::new(false),
+            dirty: PaddedBool(AtomicBool::new(false)),
             revision: AtomicU64::new(0),
             flush_seq: AtomicU64::new(0),
             enabled: AtomicBool::new(false),
@@ -315,8 +337,8 @@ impl WatchRegistry {
             && self.state.0.load(Relaxed) == 0
             && let Some((slot_idx, entry_idx)) = asymmetric::enter_slot(self.tag())
         {
-            if writer && !self.dirty.load(Relaxed) {
-                self.dirty.store(true, Relaxed);
+            if writer && !self.dirty.0.load(Relaxed) {
+                self.dirty.0.store(true, Relaxed);
             }
             return Admission::Slot(slot_idx, entry_idx);
         }
@@ -424,6 +446,7 @@ impl WatchRegistry {
         self.flush_seq.store(locked + 1, SeqCst);
     }
 
+    #[inline]
     fn quiet_now_fast(&self) -> bool {
         let state = self.state.0.load(SeqCst);
         running(state) == 0
@@ -431,11 +454,12 @@ impl WatchRegistry {
             && (self.synchronous || !asymmetric::any_active(self.tag()))
     }
 
+    #[inline]
     fn quiet_now(&self) -> bool {
         if !self.quiet_now_fast() {
             return false;
         }
-        if !self.synchronous && asymmetric::flush_writers() {
+        if !self.synchronous && asymmetric::flush_writers_for(self.tag()) {
             self.quiet_now_fast()
         } else {
             true
@@ -444,7 +468,7 @@ impl WatchRegistry {
 
     fn clean_quiet_revision(&self) -> Option<u64> {
         let seq = self.flush_seq.load(SeqCst);
-        if seq & 1 != 0 || self.dirty.load(SeqCst) {
+        if seq & 1 != 0 || self.dirty.0.load(SeqCst) {
             return None;
         }
         let state = self.state.0.load(SeqCst);
@@ -457,7 +481,7 @@ impl WatchRegistry {
 
     fn clean_sole_runner_revision(&self) -> Option<u64> {
         let seq = self.flush_seq.load(SeqCst);
-        if seq & 1 != 0 || self.dirty.load(SeqCst) {
+        if seq & 1 != 0 || self.dirty.0.load(SeqCst) {
             return None;
         }
         let state = self.state.0.load(SeqCst);
@@ -481,7 +505,7 @@ impl WatchRegistry {
         if asymmetric::current_thread_has(tag) || asymmetric::any_active(tag) {
             return None;
         }
-        if asymmetric::flush_writers() {
+        if asymmetric::flush_writers_for(tag) {
             state = self.state.0.load(SeqCst);
             if running(state) != 0 || state & UNTRUSTED != 0 || asymmetric::any_active(tag) {
                 return None;
@@ -492,13 +516,13 @@ impl WatchRegistry {
         }
         let locked = self.lock_flush();
         let result = (|| {
-            if self.dirty.swap(false, SeqCst) {
+            if self.dirty.0.swap(false, SeqCst) {
                 self.revision.fetch_add(1, SeqCst);
-                asymmetric::flush_writers();
+                asymmetric::flush_writers_for(tag);
             }
             let state = self.state.0.load(SeqCst);
             if running(state) != 0 || state & UNTRUSTED != 0 || asymmetric::any_active(tag) {
-                self.dirty.store(true, SeqCst);
+                self.dirty.0.store(true, SeqCst);
                 return None;
             }
             Some(revision(state).wrapping_add(self.revision.load(SeqCst)))
@@ -507,6 +531,7 @@ impl WatchRegistry {
         result
     }
 
+    #[inline(always)]
     fn observing(&self) -> bool {
         self.enabled.load(SeqCst) && !self.poisoned.load(SeqCst)
     }
@@ -517,8 +542,8 @@ impl WatchRegistry {
             && self.state.0.load(Relaxed) == 0
             && let Some((slot_idx, entry_idx)) = asymmetric::enter_slot(self.tag())
         {
-            if !self.dirty.load(Relaxed) {
-                self.dirty.store(true, Relaxed);
+            if !self.dirty.0.load(Relaxed) {
+                self.dirty.0.store(true, Relaxed);
             }
             asymmetric::leave_slot(slot_idx, entry_idx);
             return;
@@ -547,7 +572,7 @@ impl WatchRegistry {
         let admit = self.enter();
         if receiver != 0
             && let Some(table) = self.table()
-            && let Lookup::Watched(index, sequence) = table.find(receiver, false)
+            && let Lookup::Watched(index, sequence) = table.find_read(receiver)
         {
             if self.sequences {
                 self.increment(sequence);
@@ -560,6 +585,40 @@ impl WatchRegistry {
     }
 
     #[inline]
+    pub fn touch_if(&self, receiver: usize, should_mark: impl FnOnce() -> bool) -> bool {
+        if receiver == 0 {
+            return false;
+        }
+        let admit = self.admit(false);
+        let mut marked = false;
+        if let Some(table) = self.table()
+            && let Lookup::Watched(index, sequence) = table.find_read(receiver)
+        {
+            let mark = table.mark_of(index);
+            let already_marked = !self.sequences
+                && mark.is_some_and(|(word, bit)| (word.load(Relaxed) & bit) != 0);
+            if !already_marked && should_mark() {
+                if !self.synchronous && matches!(admit, Admission::Slot(..)) {
+                    if !self.dirty.0.load(Relaxed) {
+                        self.dirty.0.store(true, Relaxed);
+                    }
+                } else {
+                    self.bump_revision_slow();
+                }
+                if self.sequences {
+                    self.increment(sequence);
+                }
+                if let Some((word, bit)) = mark {
+                    mark_slot(word, bit);
+                }
+                marked = true;
+            }
+        }
+        self.leave(admit);
+        marked
+    }
+
+    #[inline]
     pub fn touch_every(&self) {
         self.bump_revision();
         self.new_epoch();
@@ -569,7 +628,40 @@ impl WatchRegistry {
     pub fn notify(&self, receiver: usize) -> Notification<'_> {
         let admit = self.enter();
         let (sequence, mark) = match (receiver != 0).then(|| self.table()).flatten() {
-            Some(table) => match table.find(receiver, false) {
+            Some(table) => match table.find_read(receiver) {
+                Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
+                _ => (None, None),
+            },
+            None => (None, None),
+        };
+        if self.sequences
+            && let Some(sequence) = sequence
+        {
+            self.increment(sequence);
+        }
+        if let Some((word, bit)) = mark {
+            mark_slot(word, bit);
+        }
+        Notification {
+            registry: self,
+            mark,
+            every: false,
+            admit,
+        }
+    }
+
+    #[inline]
+    pub fn notify_if(
+        &self,
+        receiver: usize,
+        may_watch: impl FnOnce() -> bool,
+    ) -> Notification<'_> {
+        let admit = self.enter();
+        let (sequence, mark) = match (receiver != 0 && may_watch())
+            .then(|| self.table())
+            .flatten()
+        {
+            Some(table) => match table.find_read(receiver) {
                 Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
                 _ => (None, None),
             },
@@ -600,7 +692,7 @@ impl WatchRegistry {
                 if receiver == 0 || (slot == 1 && receiver == first) {
                     continue;
                 }
-                if let Lookup::Watched(index, sequence) = table.find(receiver, false) {
+                if let Lookup::Watched(index, sequence) = table.find_read(receiver) {
                     if self.sequences {
                         self.increment(sequence);
                     }
@@ -677,6 +769,7 @@ impl WatchRegistry {
         (self.taken.load(Relaxed), self.refused_takes.load(Relaxed))
     }
 
+    #[inline]
     pub fn quiet(&self) -> Option<(u64, u64)> {
         if !self.observing() {
             return None;
@@ -686,31 +779,34 @@ impl WatchRegistry {
         Some((epoch, rev))
     }
 
+    #[inline]
     pub fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         self.register(receiver).map(|(certificate, _)| certificate)
     }
 
+    #[inline]
     pub fn observed_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         if !self.observing() {
             return None;
         }
         let epoch = self.epoch.load(SeqCst);
-        let sequence = match self.table()?.find(receiver, false) {
+        let sequence = match self.table()?.find_read(receiver) {
             Lookup::Watched(_, sequence) => sequence.load(SeqCst),
             _ => return None,
         };
         (self.epoch.load(SeqCst) == epoch && self.quiet_now_fast()).then_some((epoch, sequence))
     }
 
+    #[inline]
     pub fn range_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         if !self.observing() {
             return None;
         }
         let epoch = self.epoch.load(SeqCst);
-        let (sequence, fresh) = match self.table()?.find(receiver, true) {
+        let (sequence, fresh) = match self.table()?.find_or_register(receiver) {
             Lookup::Watched(_, sequence) => (sequence, false),
             Lookup::Registered(_, sequence) => {
-                self.registered.fetch_add(1, Relaxed);
+                self.registered.fetch_add(1, SeqCst);
                 (sequence, true)
             }
             Lookup::Unwatched | Lookup::Full => return None,
@@ -724,6 +820,7 @@ impl WatchRegistry {
         (self.epoch.load(SeqCst) == epoch && quiet).then_some((epoch, sequence))
     }
 
+    #[inline]
     pub fn observed_sequence_at(
         &self,
         receiver: usize,
@@ -739,7 +836,7 @@ impl WatchRegistry {
             .get(held_slot)
             .filter(|slot| receiver != 0 && slot.address.load(SeqCst) == receiver)
             .map(|slot| Lookup::Watched(held_slot, &slot.sequence))
-            .unwrap_or_else(|| table.find(receiver, false));
+            .unwrap_or_else(|| table.find_read(receiver));
         let Lookup::Watched(index, sequence) = lookup else {
             return None;
         };
@@ -748,6 +845,7 @@ impl WatchRegistry {
             .then_some(((epoch, sequence), index))
     }
 
+    #[inline]
     pub fn sequence_at(&self, receiver: usize, held_slot: usize) -> Option<((u64, u64), usize)> {
         if !self.observing() {
             return None;
@@ -759,11 +857,11 @@ impl WatchRegistry {
             .get(held_slot)
             .filter(|slot| receiver != 0 && slot.address.load(SeqCst) == receiver)
             .map(|slot| Lookup::Watched(held_slot, &slot.sequence))
-            .unwrap_or_else(|| table.find(receiver, true));
+            .unwrap_or_else(|| table.find_or_register(receiver));
         let (index, sequence, fresh) = match lookup {
             Lookup::Watched(index, sequence) => (index, sequence, false),
             Lookup::Registered(index, sequence) => {
-                self.registered.fetch_add(1, Relaxed);
+                self.registered.fetch_add(1, SeqCst);
                 (index, sequence, true)
             }
             Lookup::Unwatched => return None,
@@ -781,15 +879,16 @@ impl WatchRegistry {
         (self.epoch.load(SeqCst) == epoch && quiet).then_some(((epoch, sequence), index))
     }
 
+    #[inline]
     pub fn register(&self, receiver: usize) -> Option<((u64, u64), bool)> {
         if !self.observing() {
             return None;
         }
         let epoch = self.epoch.load(SeqCst);
-        let (sequence, fresh) = match self.table()?.find(receiver, true) {
+        let (sequence, fresh) = match self.table()?.find_or_register(receiver) {
             Lookup::Watched(_, sequence) => (sequence, false),
             Lookup::Registered(_, sequence) => {
-                self.registered.fetch_add(1, Relaxed);
+                self.registered.fetch_add(1, SeqCst);
                 (sequence, true)
             }
             Lookup::Unwatched => return None,
@@ -837,7 +936,7 @@ impl WatchRegistry {
                     self.new_epoch();
                     table.clear();
                     self.new_epoch();
-                    self.registered.store(0, Relaxed);
+                    self.registered.store(0, SeqCst);
                     self.clears.fetch_add(1, Relaxed);
                     self.refused_at_clear.store(refused, Relaxed);
                     self.refused_at_offer.fetch_max(refused, Relaxed);
@@ -872,7 +971,7 @@ impl WatchRegistry {
                 let previous = self.table.swap(next, SeqCst);
                 self.new_epoch();
                 self.capacity.store(len, Relaxed);
-                self.registered.store(0, Relaxed);
+                self.registered.store(0, SeqCst);
                 self.installs.fetch_add(1, Relaxed);
                 self.refused_at_clear.store(refused, Relaxed);
                 self.purged_for_refusal.store(false, Relaxed);
@@ -888,7 +987,7 @@ impl WatchRegistry {
                 self.new_epoch();
                 table.clear();
                 self.new_epoch();
-                self.registered.store(0, Relaxed);
+                self.registered.store(0, SeqCst);
                 self.clears.fetch_add(1, Relaxed);
                 self.refused_at_clear.store(refused, Relaxed);
                 self.purged_for_refusal.store(false, Relaxed);
@@ -946,7 +1045,7 @@ impl WatchRegistry {
                 if receiver == 0 {
                     return true;
                 }
-                match next.find(receiver, true) {
+                match next.find_or_register(receiver) {
                     Lookup::Watched(new_index, sequence)
                     | Lookup::Registered(new_index, sequence) => {
                         sequence.store(slot.sequence.load(SeqCst), SeqCst);
@@ -977,7 +1076,7 @@ impl WatchRegistry {
         }
         self.table.store(offered, SeqCst);
         self.capacity.store(next.slots.len(), Relaxed);
-        self.registered.store(copied_count, Relaxed);
+        self.registered.store(copied_count, SeqCst);
         self.installs.fetch_add(1, Relaxed);
         self.refused_at_clear
             .store(self.refused.load(Relaxed), Relaxed);
@@ -1134,7 +1233,7 @@ impl WatchRegistry {
     }
 
     pub fn registered(&self) -> usize {
-        self.registered.load(Relaxed)
+        self.registered.load(SeqCst)
     }
 
     pub fn active(&self) -> usize {
@@ -1146,7 +1245,7 @@ impl WatchRegistry {
                 running(state) as usize
             };
         }
-        asymmetric::flush_writers();
+        asymmetric::flush_writers_for(self.tag());
         let state = self.state.0.load(SeqCst);
         if state & UNTRUSTED != 0 {
             UNTRUSTED_ACTIVE
@@ -1168,7 +1267,7 @@ impl WatchRegistry {
         if (running(state) as usize).saturating_add(asymmetric::count_active(tag)) > 1 {
             return None;
         }
-        asymmetric::flush_writers();
+        asymmetric::flush_writers_for(tag);
         let state = self.state.0.load(SeqCst);
         if state & UNTRUSTED != 0 {
             return None;
@@ -1182,14 +1281,14 @@ impl WatchRegistry {
         }
         let locked = self.lock_flush();
         let result = (|| {
-            if self.dirty.swap(false, SeqCst) {
+            if self.dirty.0.swap(false, SeqCst) {
                 self.revision.fetch_add(1, SeqCst);
-                asymmetric::flush_writers();
+                asymmetric::flush_writers_for(tag);
             }
             let state = self.state.0.load(SeqCst);
             let total = (running(state) as usize).saturating_add(asymmetric::count_active(tag));
             if state & UNTRUSTED != 0 || total != 1 {
-                self.dirty.store(true, SeqCst);
+                self.dirty.0.store(true, SeqCst);
                 return None;
             }
             Some(revision(state).wrapping_add(self.revision.load(SeqCst)))
@@ -1248,7 +1347,7 @@ impl Running<'_> {
         }
         let epoch = self.registry.epoch.load(SeqCst);
         let before = self.registry.sole_runner_revision()?;
-        let sequence = match self.registry.table()?.find(receiver, false) {
+        let sequence = match self.registry.table()?.find_read(receiver) {
             Lookup::Watched(_, sequence) => sequence.load(SeqCst),
             _ => return None,
         };
@@ -2241,7 +2340,7 @@ mod tests {
         let initial = registry.quiet().unwrap();
         drop(registry.notify(0x2000));
         let locked = registry.lock_flush();
-        assert!(registry.dirty.swap(false, SeqCst));
+        assert!(registry.dirty.0.swap(false, SeqCst));
         assert_eq!(registry.clean_quiet_revision(), None);
         {
             let _running = registry.running();

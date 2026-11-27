@@ -403,10 +403,12 @@ fn baseline_retention(
             | TableId::CountryRetiredCharacters
             | TableId::ShipModels
             | TableId::RailEdges
+            | TableId::DivisionStatus
             | TableId::DivisionPanelStats
             | TableId::DivisionHistory
             | TableId::CharacterRoleTraits
             | TableId::StateResistance
+            | TableId::Projects
     ) {
         return BaselineRetention::Meta;
     }
@@ -786,12 +788,14 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         selection: impl Fn(TableId) -> Option<&'a collector_certificates::slicing::SliceSelection>,
         walked: impl Fn(TableId) -> bool,
         carried_owner: impl Fn(TableId, u32) -> bool,
+        masked_owners: impl Fn(TableId) -> io::Result<Option<Vec<u32>>>,
     ) -> io::Result<(bool, u32)> {
         self.settle_failed_slices();
         if self.sliced_branch != Some(source.branch) {
             self.sliced_cache.clear();
             self.sliced_owners.fill(None);
             self.sliced_reads.clear();
+            self.projection_scratch.forget(TableId::Projects);
             self.sliced_branch = Some(source.branch);
         }
         let force = !self.spool.is_open();
@@ -818,6 +822,38 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
             let captured = |owner| selection.contains(owner);
             let live = |owner| selection.live(owner);
             match input {
+                TableInput::SliceUpdate { token, .. }
+                    if token.is_untracked()
+                        && self.owner_sliced(table)
+                        && !selection.force_full =>
+                {
+                    if let Some(fresh_owners) = masked_owners(table)? {
+                        self.sliced_reads
+                            .merge(table, &fresh_owners, selection, hour)?;
+                        if let Some(previous_owners) = self.sliced_owners[table.index()].as_deref()
+                        {
+                            let mut next = engine_allocation::vec(
+                                previous_owners.len().saturating_add(fresh_owners.len()),
+                            )?;
+                            let mut old = previous_owners
+                                .iter()
+                                .copied()
+                                .filter(|&owner| !captured(owner) && live(owner))
+                                .peekable();
+                            for &owner in &fresh_owners {
+                                while let Some(kept) = old.next_if(|&kept| kept < owner) {
+                                    next.push(kept);
+                                }
+                                if old.peek() == Some(&owner) {
+                                    old.next();
+                                }
+                                next.push(owner);
+                            }
+                            next.extend(old);
+                            self.sliced_owners[table.index()] = Some(next);
+                        }
+                    }
+                }
                 TableInput::Sampled(TableView::Complete(rows)) if self.owner_sliced(table) => {
                     let fresh = std::mem::replace(rows, TableRows::empty(table));
                     if selection.force_full || replay_data::sliced::replaces_whole(&fresh) {
@@ -827,7 +863,12 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                         self.sliced_owners[table.index()] = Some(owners);
                         *input = TableInput::SharedComplete(Arc::new(fresh));
                     } else if let Some(previous) = self.sliced_cache.remove(&table) {
-                        match replay_data::sliced::merge_slice(&previous, fresh, captured, live) {
+                        match replay_data::sliced::merge_slice(
+                            &previous,
+                            fresh,
+                            |owner| captured(owner) && !carried_owner(table, owner),
+                            live,
+                        ) {
                             Ok(merged) => {
                                 let owners = replay_data::sliced::try_owners(&merged)?;
                                 self.sliced_reads.merge(table, &owners, selection, hour)?;
@@ -910,7 +951,10 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                             fresh_owners = Some(replay_data::sliced::try_owners(&fresh)?);
                         }
                         match replay_data::sliced::SliceUpdate::diff_owners(
-                            previous, fresh, captured, live,
+                            previous,
+                            fresh,
+                            |owner| captured(owner) && !carried_owner(table, owner),
+                            live,
                         ) {
                             Ok(update) => Merged::Update(token, update),
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
@@ -931,7 +975,12 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                     } else if selection.force_full || replay_data::sliced::replaces_whole(&fresh) {
                         Merged::Rows(fresh)
                     } else if let Some(previous) = self.sliced_cache.get(&table) {
-                        match replay_data::sliced::merge_slice(previous, fresh, captured, live) {
+                        match replay_data::sliced::merge_slice(
+                            previous,
+                            fresh,
+                            |owner| captured(owner) && !carried_owner(table, owner),
+                            live,
+                        ) {
                             Ok(merged) => Merged::Rows(merged),
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                 return Err(error);
@@ -1049,6 +1098,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                 {
                     self.sliced_cache.remove(&table);
                     self.sliced_owners[table.index()] = None;
+                    self.projection_scratch.forget(table);
                     self.pending_slices.retain(|(pending, _)| *pending != table);
                     let previous = std::mem::take(&mut self.sliced_reads.0[table.index()]);
                     if frame_reads[table.index()].is_none() {
@@ -1107,7 +1157,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         selection: impl Fn(TableId) -> Option<&'a collector_certificates::slicing::SliceSelection>,
         walked: impl Fn(TableId) -> bool,
     ) -> (bool, u32) {
-        self.try_merge_sliced_inputs(source, selection, walked, |_, _| false)
+        self.try_merge_sliced_inputs(source, selection, walked, |_, _| false, |_| Ok(None))
             .unwrap()
     }
 
@@ -2789,6 +2839,7 @@ impl<S: Schedule> Processor<S> {
                     && can_skip_carried(TableId::ResearchModifiers),
                 technologies_carried: has_technology_carried
                     && can_skip_carried(TableId::ResearchTechnologies),
+                projects_masked: can_skip_carried(TableId::Projects),
             }
         };
         let mut characters = CharacterConversion::new(
@@ -2865,7 +2916,15 @@ impl<S: Schedule> Processor<S> {
                             .technology_carried_owners()
                             .is_some_and(|owners| owners.binary_search(&owner).is_ok())
                 }
+                TableId::CountryStabilityLines => captured
+                    .extended
+                    .stability_lines_carried_owners()
+                    .is_some_and(|owners| owners.binary_search(&owner).is_ok()),
                 _ => false,
+            },
+            |table| match table {
+                TableId::Projects => captured.extended.project_row_owners().map(Some),
+                _ => Ok(None),
             },
         )?;
         campaign.assemble_line_output(&mut source, captured);
@@ -10158,6 +10217,7 @@ mod tests {
         assert!(campaign.encoder.committed_rows(DAILY).is_none());
         assert!(campaign.encoder.committed_rows(TableId::Clock).is_some());
         for table in [
+            TableId::DivisionStatus,
             TableId::DivisionPanelStats,
             TableId::DivisionHistory,
             TableId::CharacterRoleTraits,
@@ -10170,7 +10230,6 @@ mod tests {
             );
         }
         for table in [
-            TableId::DivisionStatus,
             TableId::DivisionPanelSources,
             TableId::WeatherProvinces,
             TableId::RailCooldowns,
@@ -10531,6 +10590,7 @@ mod tests {
                 },
                 |_| true,
                 |_, _| false,
+                |_| Ok(None),
             )
             .unwrap();
         assert!(!retry && unpub == 0);
@@ -10569,6 +10629,7 @@ mod tests {
                         TableId::ResearchTechnologies | TableId::ResearchAppliedBonuses
                     ) && owner == 1
                 },
+                |_| Ok(None),
             )
             .unwrap();
         assert!(!retry && unpub == 0);
@@ -10637,6 +10698,7 @@ mod tests {
                         TableId::ResearchTechnologies | TableId::ResearchAppliedBonuses
                     ) && (owner == 1 || owner == 2)
                 },
+                |_| Ok(None),
             )
             .unwrap();
         assert!(!retry && unpub == 0);

@@ -191,6 +191,11 @@ pub(super) fn walk_projected(
                                         sources: source_needs,
                                         naval: naval_needs,
                                         name_header: None,
+                                        crew: None,
+                                        fuel: None,
+                                        cumulative: None,
+                                        group_handle: None,
+                                        replacement_setting: None,
                                     },
                                 );
                                 if map_needs {

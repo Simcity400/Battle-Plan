@@ -581,6 +581,42 @@ impl Memory for Calls<'_> {
         }
         N
     }
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        let Some(count) = layout.count(sources, destination.len()) else {
+            return 0;
+        };
+        if count == 0 {
+            return 0;
+        }
+        let mut completed = 0;
+        for row in 0..sources.len() {
+            let Some(pointer) = sources.pointer(row).filter(|&pointer| pointer != 0) else {
+                return completed;
+            };
+            self.calls.borrow_mut().push(pointer);
+            for field in layout.fields() {
+                if field.len != 0 {
+                    let Some(address) = pointer
+                        .checked_add(field.source_offset)
+                        .filter(|&address| address.checked_add(field.len).is_some())
+                    else {
+                        return completed;
+                    };
+                    let start = row * layout.stride() + field.destination_offset;
+                    if !self.span(address, &mut destination[start..start + field.len]) {
+                        return completed;
+                    }
+                }
+                completed += 1;
+            }
+        }
+        completed
+    }
 }
 
 #[test]

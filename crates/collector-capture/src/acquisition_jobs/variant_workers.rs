@@ -22,6 +22,11 @@ pub enum Work {
         game_state: usize,
         countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     },
+    Stability {
+        part: collector_stability::country_stability::StabilityPart,
+        game_state: usize,
+        countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
+    },
     TemplateWalk(collector_division_templates::extended::division_templates::WalkPart),
     NaviesBegin(Box<super::NaviesBeginPart>),
     SpeedTermsEntries {
@@ -38,6 +43,7 @@ impl Work {
         match self {
             Self::Technology(_) => Role::Governance,
             Self::Projects { .. } => Role::GatedProjects,
+            Self::Stability { .. } => Role::Stability,
             Self::TemplateWalk(_) => Role::Templates,
             Self::NaviesBegin(_) => Role::OrdinaryNavies,
             Self::SpeedTermsEntries { .. } | Self::SpeedTermsAux { .. } => {
@@ -71,6 +77,14 @@ impl Work {
                 } else {
                     part.capture(memory, base, *game_state);
                 }
+            }
+            Self::Stability {
+                part,
+                game_state,
+                countries,
+            } => {
+                let roster = countries.roster_view(memory);
+                part.capture(&roster, base, *game_state);
             }
             Self::TemplateWalk(part) => part.capture(
                 memory,
@@ -430,6 +444,29 @@ impl Dispatch {
         }))
         .map_err(|_| "project worker result allocation failed")
     }
+    pub(super) fn stability(
+        &self,
+        parts: Vec<collector_stability::country_stability::StabilityPart>,
+        memory: &impl engine_native_memory::Memory,
+        base: usize,
+        game_state: usize,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
+    ) -> Result<Vec<collector_stability::country_stability::StabilityPart>, &'static str> {
+        let parts = engine_allocation::collect_vec(parts.into_iter().map(|part| Work::Stability {
+            part,
+            game_state,
+            countries: engine_allocation::SharedBox::clone(countries),
+        }))
+        .map_err(|_| "stability worker allocation failed")?;
+        let parts = self.acquire_work(parts, memory, base)?;
+        engine_allocation::collect_vec(parts.into_iter().map(|part| {
+            let Work::Stability { part, .. } = part else {
+                unreachable!()
+            };
+            part
+        }))
+        .map_err(|_| "stability worker result allocation failed")
+    }
     pub(crate) fn template_walk(
         &self,
         parts: Vec<collector_division_templates::extended::division_templates::WalkPart>,
@@ -509,18 +546,24 @@ impl Dispatch {
             }
             return Ok(parts);
         };
+        let count = parts.len();
         let mut pending = Children {
             executor: &executor,
             calibration: self.calibration.as_deref().unwrap(),
-            tickets: engine_allocation::vec(parts.len())
+            tickets: engine_allocation::vec(count)
                 .map_err(|_| "variant worker ticket allocation failed")?,
         };
-        let mut output = engine_allocation::vec(parts.len())
+        let mut ticket_indices = engine_allocation::vec(count)
+            .map_err(|_| "variant worker ticket allocation failed")?;
+        let mut slots: Vec<Option<Work>> = engine_allocation::vec(count)
             .map_err(|_| "variant worker result allocation failed")?;
-        let mut parts = parts.into_iter();
+        for _ in 0..count {
+            slots.push(None);
+        }
+        let mut parts = parts.into_iter().enumerate();
         let local = parts.next();
         let mut failure = None;
-        for part in parts {
+        for (index, part) in parts {
             let role = part.role();
             let mut request = Some(Job::VariantPart(Request { base, part }));
             // SAFETY: the worker parent drains every child before returning its live lease.
@@ -528,22 +571,25 @@ impl Dispatch {
                 unsafe { executor.submit_with_priority(&mut request, self.priority, true, true) };
             note_dispatch(&pending.calibration.roles[role as usize], submitted.is_ok());
             match submitted {
-                Ok(ticket) => pending.tickets.push(Some(ticket)),
+                Ok(ticket) => {
+                    pending.tickets.push(Some(ticket));
+                    ticket_indices.push(index);
+                }
                 Err(SubmitError::Full) => {
                     let Some(Job::VariantPart(mut request)) = request else {
                         unreachable!()
                     };
                     request.part.capture(memory, base);
-                    output.push(request.part);
+                    slots[index] = Some(request.part);
                 }
                 Err(_) => failure = Some("variant partition admission stopped before reading"),
             }
         }
         if failure.is_none()
-            && let Some(mut local) = local
+            && let Some((index, mut local)) = local
         {
             local.capture(memory, base);
-            output.push(local);
+            slots[index] = Some(local);
         }
         for ticket in pending.tickets.iter().flatten() {
             executor.run_unclaimed_child(*ticket);
@@ -562,13 +608,24 @@ impl Dispatch {
                     let Job::VariantPart(request) = completed.request else {
                         unreachable!()
                     };
-                    output.push(request.part);
+                    slots[ticket_indices[index]] = Some(request.part);
                 }
                 Err(Failure::Panicked) => failure = Some("variant partition acquisition panicked"),
                 _ => failure = Some("variant partition acquisition stopped before reading"),
             }
         }
-        failure.map_or(Ok(output), Err)
+        if let Some(reason) = failure {
+            return Err(reason);
+        }
+        let mut output = engine_allocation::vec(count)
+            .map_err(|_| "variant worker result allocation failed")?;
+        for slot in slots {
+            let Some(part) = slot else {
+                return Err("variant partition completion missing");
+            };
+            output.push(part);
+        }
+        Ok(output)
     }
 }
 struct Fanout<'a>(&'a std::sync::atomic::AtomicUsize);

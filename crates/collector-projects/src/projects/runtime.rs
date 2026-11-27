@@ -1,6 +1,35 @@
 use super::*;
 use collector_observers::project_variable_changes;
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
+};
+
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl Hasher for KeyHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = self.0;
+        for &byte in bytes {
+            state = (state ^ u64::from(byte)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+        self.0 = state;
+    }
+
+    #[inline]
+    fn write_u32(&mut self, value: u32) {
+        self.0 = (self.0 ^ u64::from(value)).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<KeyHasher>>;
 
 #[derive(Default)]
 struct PendingRaw {
@@ -18,6 +47,11 @@ impl PendingRaw {
     }
 }
 
+fn next_runtime_serial() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 #[derive(Default)]
 struct Held {
     pointer: usize,
@@ -33,6 +67,8 @@ struct Held {
     pending_ordinal: Option<u32>,
     pending_stamp: Option<(u64, u64)>,
     iterations: i32,
+    runtime_serial: u64,
+    quiet_token: Option<(u64, u64)>,
 }
 
 impl Held {
@@ -40,6 +76,7 @@ impl Held {
         if !std::mem::take(&mut self.freeze_pending) {
             return;
         }
+        self.runtime_serial = next_runtime_serial();
         let Some(raw) = self.pending_raw.take() else {
             self.variables_known = false;
             return;
@@ -76,12 +113,18 @@ impl Held {
 
 #[derive(Default)]
 pub(super) struct Runtime {
-    held: HashMap<(u32, u32), Held>,
+    held: FastMap<(u32, u32), Held>,
     heap_bytes: usize,
     pending: Vec<(u32, u32)>,
 }
 
 impl Runtime {
+    pub(super) fn clear(&mut self) {
+        self.held.clear();
+        self.pending.clear();
+        self.heap_bytes = 0;
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.held.is_empty() && self.pending.is_empty()
     }
@@ -162,21 +205,85 @@ impl Runtime {
         selection: Option<&SliceSelection>,
         defer: bool,
     ) {
-        let mut reader = project_variable_changes::stamp_reader();
+        let quiet_before = (!force)
+            .then(project_variable_changes::global_quiet)
+            .flatten();
+        if !self.read_pass(memory, base, rows, force, defer, quiet_before) {
+            for row in rows {
+                if let Some(held) = self.held.get_mut(&(row.owner, row.local_id)) {
+                    held.quiet_token = None;
+                }
+            }
+            self.read_pass(memory, base, rows, force, defer, None);
+        }
+        if full_census {
+            self.finish_census(rows, selection);
+        }
+    }
+
+    fn read_pass(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        rows: &[nproject_cproject::Row],
+        force: bool,
+        defer: bool,
+        quiet_before: Option<(u64, u64)>,
+    ) -> bool {
+        let mut reader: Option<project_variable_changes::StampReader> = None;
+        let mut skipped_quiet = false;
+        let mut stamped_quiet = false;
         for row in rows {
             let key = (row.owner, row.local_id);
-            if !self.held.contains_key(&key) {
+            let held = if let Some(held) = self.held.get_mut(&key) {
+                held
+            } else {
                 if engine_allocation::reserve_map(&mut self.held, 1).is_err() {
                     PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
                     PROJECT_REWARD_REFUSALS.fetch_add(1, Relaxed);
                     continue;
                 }
-                self.held.insert(key, Held::default());
+                self.held.entry(key).or_default()
+            };
+            let pointer = row.source_pointer;
+            if !force
+                && pointer == held.pointer
+                && held.pending_known
+                && held.variables_known
+                && row.state.iterations == held.iterations
+            {
+                if quiet_before.is_some() && held.quiet_token == quiet_before {
+                    skipped_quiet = true;
+                    continue;
+                }
+                if reader.is_none() {
+                    reader = project_variable_changes::stamp_reader();
+                }
+                if let Some(store) = pointer.checked_add(nproject_cproject::VARIABLES)
+                    && let Some(r) = reader.as_ref()
+                    && let Some((stamp, pending_stamp)) = r.stamps(store, row.owner, row.local_id)
+                    && stamp.is_some()
+                    && stamp == held.stamp
+                    && pending_stamp.is_some()
+                    && pending_stamp == held.pending_stamp
+                {
+                    if quiet_before.is_some() {
+                        held.quiet_token = quiet_before;
+                        stamped_quiet = true;
+                    }
+                    continue;
+                }
             }
-            let held = self.held.get_mut(&key).unwrap();
             self.heap_bytes -= held.allocated_bytes();
+            let prev_state = (
+                held.pointer,
+                held.pending_known,
+                held.pending,
+                held.pending_ordinal,
+                held.variables_known,
+                held.freeze_pending,
+            );
             (|| {
-                let pointer = row.source_pointer;
                 if pointer != held.pointer {
                     *held = Held {
                         pointer,
@@ -184,6 +291,7 @@ impl Runtime {
                         ..Default::default()
                     };
                 }
+                held.quiet_token = None;
                 let Some(store) = pointer.checked_add(nproject_cproject::VARIABLES) else {
                     held.variables_known = false;
                     held.pending_known = false;
@@ -214,7 +322,6 @@ impl Runtime {
                     || pending_stamp != held.pending_stamp
                     || row.state.iterations != held.iterations
                 {
-                    reader = None;
                     let pending = pointer
                         .checked_add(nproject_cproject::PENDING_REWARD)
                         .and_then(|address| engine_native_memory::read::<u64>(memory, address))
@@ -245,8 +352,12 @@ impl Runtime {
                             held.pending_known = held.pending_ordinal.is_some();
                         }
                     }
-                    held.pending_known &=
-                        pending_stamp == project_variable_changes::pending_stamp(store);
+                    let current_pending = reader
+                        .as_ref()
+                        .and_then(|reader| reader.stamps(store, row.owner, row.local_id))
+                        .map(|(_, pending)| pending)
+                        .unwrap_or_else(|| project_variable_changes::pending_stamp(store));
+                    held.pending_known &= pending_stamp == current_pending;
                     held.pending_stamp = pending_stamp;
                     held.iterations = row.state.iterations;
                     if !held.pending_known {
@@ -262,7 +373,6 @@ impl Runtime {
                 if !force && held.variables_known && stamp == held.stamp {
                     return;
                 }
-                reader = None;
                 held.variables_known = false;
                 held.freeze_pending = false;
                 if held.pending_raw.is_none() {
@@ -287,10 +397,18 @@ impl Runtime {
                 {
                     raw.entries_len = len;
                     raw.seed = seed;
-                    held.variables_known = seed.is_some()
-                        && stamp.is_some()
-                        && stamp
-                            == project_variable_changes::register(store, row.owner, row.local_id);
+                    let after_stamp = match reader
+                        .as_ref()
+                        .and_then(|reader| reader.stamps(store, row.owner, row.local_id))
+                    {
+                        Some((stamp, _)) => stamp,
+                        None => {
+                            reader = None;
+                            project_variable_changes::register(store, row.owner, row.local_id)
+                        }
+                    };
+                    held.variables_known =
+                        seed.is_some() && stamp.is_some() && stamp == after_stamp;
                     held.stamp = stamp;
                     if held.variables_known {
                         if defer && !held.queued {
@@ -315,12 +433,45 @@ impl Runtime {
                     PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
                 }
             })();
+            if quiet_before.is_some()
+                && held.pending_known
+                && held.variables_known
+                && held.stamp.is_some()
+                && held.pending_stamp.is_some()
+            {
+                held.quiet_token = quiet_before;
+                stamped_quiet = true;
+            }
+            if held.runtime_serial == 0
+                || prev_state
+                    != (
+                        held.pointer,
+                        held.pending_known,
+                        held.pending,
+                        held.pending_ordinal,
+                        held.variables_known,
+                        held.freeze_pending,
+                    )
+            {
+                held.runtime_serial = next_runtime_serial();
+            }
             self.heap_bytes += held.allocated_bytes();
         }
         drop(reader);
-        if full_census {
-            self.finish_census(rows, selection);
+        if (skipped_quiet || stamped_quiet)
+            && project_variable_changes::global_quiet() != quiet_before
+        {
+            if !skipped_quiet {
+                for row in rows {
+                    if let Some(held) = self.held.get_mut(&(row.owner, row.local_id)) {
+                        held.quiet_token = None;
+                    }
+                }
+                return true;
+            }
+            return false;
         }
+        true
     }
 
     pub(super) fn finish_census(
@@ -344,6 +495,13 @@ impl Runtime {
             keep
         });
         project_variable_changes::retain_live(|owner, id| self.held.contains_key(&(owner, id)));
+    }
+
+    pub(super) fn runtime_serial(&self, row: &nproject_cproject::Row) -> u64 {
+        self.held
+            .get(&(row.owner, row.local_id))
+            .filter(|held| held.pointer == row.source_pointer && !held.freeze_pending)
+            .map_or(0, |held| held.runtime_serial)
     }
 
     pub(super) fn value(
@@ -391,7 +549,7 @@ impl Runtime {
         };
         Self {
             heap_bytes: held.allocated_bytes(),
-            held: [((5_000, 9), held)].into(),
+            held: FastMap::from_iter([((5_000, 9), held)]),
             pending: vec![(5_000, 9)],
         }
     }
@@ -455,13 +613,13 @@ mod tests {
         eager.freeze();
         let eager = Runtime {
             heap_bytes: eager.allocated_bytes(),
-            held: [((row.owner, row.local_id), eager)].into(),
+            held: FastMap::from_iter([((row.owner, row.local_id), eager)]),
             pending: Vec::new(),
         };
         let held = make();
         let mut deferred = Runtime {
             heap_bytes: held.allocated_bytes(),
-            held: [((row.owner, row.local_id), held)].into(),
+            held: FastMap::from_iter([((row.owner, row.local_id), held)]),
             pending: vec![(row.owner, row.local_id)],
         };
         let rows::Recorded::Value(before) = deferred.value(&row) else {
@@ -518,7 +676,7 @@ mod tests {
                 };
                 let mut runtime = Runtime {
                     heap_bytes: held.allocated_bytes(),
-                    held: [((row.owner, row.local_id), held)].into(),
+                    held: FastMap::from_iter([((row.owner, row.local_id), held)]),
                     pending: vec![(row.owner, row.local_id)],
                 };
                 install_terminal_hooks();
@@ -797,6 +955,21 @@ mod tests {
         let mut runtime = Runtime::default();
         runtime.read(&memory, 0, &[], false, false, None);
         assert_eq!(memory.variable_reads.get(), 0);
+        let pre_registration_write = project_variable_changes::writing_project(row.source_pointer);
+        runtime.read(&memory, 0, &[row], false, false, None);
+        let rows::Recorded::Value(unready) = runtime.value(&row) else {
+            panic!("captured runtime")
+        };
+        assert!(
+            !unready.pending_known,
+            "first pending reward must not certify while a pre-registration writer is active"
+        );
+        assert!(
+            unready.variables.is_none(),
+            "first variable store must not certify while a pre-registration writer is active"
+        );
+        assert_eq!(memory.pending_reads.get(), 0);
+        drop(pre_registration_write);
         runtime.read(&memory, 0, &[row], false, false, None);
         let rows::Recorded::Value(value) = runtime.value(&row) else {
             panic!("captured runtime")
@@ -900,6 +1073,25 @@ mod tests {
         drop(write);
         runtime.read(&memory, 0, &[row], false, false, None);
         assert_eq!(memory.pending_reads.get(), pending_reads + 1);
+        let evicted_pending = memory.pending_reads.get();
+        let evicted_variables = memory.variable_reads.get();
+        let mut other_frame = Runtime::default();
+        let other_census = SliceSelection::for_test(1, true, &[]).with_census(&[row.owner]);
+        other_frame.read(&memory, 0, &[], false, true, Some(&other_census));
+        drop(project_variable_changes::writing(0x1000 + store));
+        drop(project_variable_changes::writing_project(
+            row.source_pointer,
+        ));
+        runtime.read(&memory, 0, &[row], false, false, None);
+        assert_eq!(
+            memory.pending_reads.get(),
+            evicted_pending + 1,
+            "eviction from another frame must invalidate quiet tokens before a missed write"
+        );
+        assert!(
+            memory.variable_reads.get() > evicted_variables,
+            "eviction from another frame must force variable re-registration and reread"
+        );
         let variable_reads = memory.variable_reads.get();
         project_variable_changes::enabled(false);
         runtime.read(&memory, 0, &[row], false, false, None);

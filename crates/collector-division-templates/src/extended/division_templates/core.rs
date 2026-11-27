@@ -126,6 +126,7 @@ struct Entry {
     deployment: usize,
     core: Core,
     speed: Option<Vec<u32>>,
+    core_serial: u64,
     carried: bool,
     renewed: bool,
 }
@@ -200,6 +201,10 @@ impl Store {
 
     pub fn changed(&self) -> bool {
         self.changed
+    }
+
+    pub fn clear_changed(&mut self) {
+        self.changed = false;
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -333,7 +338,11 @@ impl Store {
         let at = match found {
             Some(at) => {
                 let entry = &mut self.entries[at];
-                self.changed |= entry.core != core;
+                let core_changed = entry.core != core;
+                self.changed |= core_changed;
+                if core_changed || entry.core_serial == 0 {
+                    entry.core_serial = collector_projection::projection::generation();
+                }
                 self.payload_bytes -= entry.core.allocated_bytes();
                 entry.certificate = certificate;
                 entry.deployment = deployment;
@@ -357,6 +366,7 @@ impl Store {
                     deployment,
                     core,
                     speed: None,
+                    core_serial: collector_projection::projection::generation(),
                     carried: false,
                     renewed: true,
                 });
@@ -387,6 +397,7 @@ impl Store {
         ) {
             self.changed = true;
             entry.speed = None;
+            entry.core_serial = 0;
             return;
         }
         if entry.speed.as_deref() == keys {
@@ -394,6 +405,72 @@ impl Store {
         }
         self.changed = true;
         entry.speed = keys.and_then(|keys| engine_allocation::copy_vec(keys).ok());
+        entry.core_serial = if entry.speed.is_some() {
+            collector_projection::projection::generation()
+        } else {
+            0
+        };
+    }
+
+    pub fn core_serial(&self, row: &native::IconRow) -> u64 {
+        if row.model_failure.is_some() || row.unit_type_failure.is_some() {
+            return 0;
+        }
+        self.lookup(row.template)
+            .map(|at| &self.entries[at])
+            .filter(|entry| {
+                (entry.carried || entry.renewed)
+                    && entry.speed.is_some()
+                    && entry.core.row.pointer == row.pointer
+                    && entry.core.row.owner == row.owner
+            })
+            .map_or(0, |entry| entry.core_serial)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "patching one dirty template updates its core, certificate, deployment and speed keys together"
+    )]
+    pub fn patch_dirty(
+        &mut self,
+        changes: &dyn Changes,
+        certificate: Certificate,
+        deployment: usize,
+        row: &native::IconRow,
+        bytes: &[u8],
+        counts: &[native::SubunitCount],
+        variants: &[u64],
+        names: &[u8],
+        speed: &[u32],
+    ) -> Option<u64> {
+        if !stands(changes, &certificate, row.pointer, row.owner, deployment) {
+            return None;
+        }
+        let at = self.lookup(row.template)?;
+        let core = Core::read(row, bytes, counts, variants, names)?;
+        let entry = &mut self.entries[at];
+        let core_changed = entry.core != core;
+        let speed_changed = entry.speed.as_deref() != Some(speed);
+        let new_speed = if speed_changed {
+            Some(engine_allocation::copy_vec(speed).ok()?)
+        } else {
+            None
+        };
+        if core_changed || speed_changed || entry.core_serial == 0 {
+            self.changed |= core_changed || speed_changed;
+            entry.core_serial = collector_projection::projection::generation();
+        }
+        self.payload_bytes -= entry.core.allocated_bytes();
+        entry.certificate = certificate;
+        entry.deployment = deployment;
+        entry.core = core;
+        if let Some(new_speed) = new_speed {
+            entry.speed = Some(new_speed);
+        }
+        entry.carried = false;
+        entry.renewed = true;
+        self.payload_bytes += entry.core.allocated_bytes();
+        Some(entry.core_serial)
     }
 
     pub fn prune(&mut self, rows: &[native::IconRow]) {

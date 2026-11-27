@@ -5,7 +5,7 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine_allocation::{copy_vec, owned_vec};
+use engine_allocation::{SharedBox, copy_vec, owned_vec};
 use engine_native_memory::{Memory, walk::Outcome};
 use engine_native::ccountry;
 use engine_stability::country_stability as native;
@@ -75,6 +75,222 @@ impl Capacities {
     }
 }
 
+pub struct StabilityDispatch<'a> {
+    pub lanes: usize,
+    pub acquire: &'a mut dyn FnMut(Vec<StabilityPart>) -> Result<Vec<StabilityPart>, &'static str>,
+}
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "serial capture keeps Context inline without heap allocation while partitioned capture shares it via SharedBox"
+)]
+enum ContextSlot {
+    Owned(native::Context),
+    Shared(SharedBox<native::Context>),
+}
+
+impl std::ops::Deref for ContextSlot {
+    type Target = native::Context;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(context) => context,
+            Self::Shared(context) => context,
+        }
+    }
+}
+
+pub struct StabilityPart {
+    ordinal: usize,
+    countries: Vec<(engine_native_memory::country_identity::Country, Option<u64>)>,
+    context: Option<SharedBox<native::Context>>,
+    memo: native::Memo,
+    scratch: native::Scratch,
+    inputs: Vec<native::InputRow>,
+    lines: Vec<native::LineRow>,
+    bytes: Vec<u8>,
+    bytes_len: usize,
+    bytes_required: usize,
+    lines_outcome: Outcome,
+    unread: Vec<u32>,
+    carried: Vec<u32>,
+    fingerprints: Vec<(u32, u64)>,
+    error: Option<&'static str>,
+    phase_ticks: [u64; 4],
+    acquired: bool,
+}
+
+impl StabilityPart {
+    fn new(demand: native::Demand) -> Self {
+        Self {
+            ordinal: 0,
+            countries: Vec::new(),
+            context: None,
+            memo: native::Memo::default(),
+            scratch: native::Scratch::with_demand(demand)
+                .map_err(crate::allocation::io)
+                .unwrap_or_else(|_| native::Scratch::vacant()),
+            inputs: Vec::new(),
+            lines: Vec::new(),
+            bytes: Vec::new(),
+            bytes_len: 0,
+            bytes_required: 0,
+            lines_outcome: Outcome::Rows { len: 0 },
+            unread: Vec::new(),
+            carried: Vec::new(),
+            fingerprints: Vec::new(),
+            error: None,
+            phase_ticks: [0; 4],
+            acquired: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.countries.clear();
+        self.context = None;
+        self.memo.clear();
+        self.inputs.clear();
+        self.lines.clear();
+        self.bytes_len = 0;
+        self.bytes_required = 0;
+        self.lines_outcome = Outcome::Rows { len: 0 };
+        self.unread.clear();
+        self.carried.clear();
+        self.fingerprints.clear();
+        self.error = None;
+        self.phase_ticks = [0; 4];
+        self.acquired = false;
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        self.countries.capacity()
+            * size_of::<(engine_native_memory::country_identity::Country, Option<u64>)>()
+            + self.memo.allocated_bytes()
+            + self.scratch.allocated_bytes()
+            + self.inputs.capacity() * size_of::<native::InputRow>()
+            + self.lines.capacity() * size_of::<native::LineRow>()
+            + self.bytes.capacity()
+            + (self.unread.capacity() + self.carried.capacity()) * size_of::<u32>()
+            + self.fingerprints.capacity() * size_of::<(u32, u64)>()
+    }
+
+    pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
+        let _reads = crate::read_accounting::table(TABLES[0]);
+        let started = qpc();
+        let mut timing = native::WalkTiming::new(started);
+        self.acquired = false;
+        self.error = None;
+        self.memo.clear();
+        self.inputs.clear();
+        self.lines.clear();
+        self.bytes_len = 0;
+        self.bytes_required = 0;
+        self.lines_outcome = Outcome::Rows { len: 0 };
+        self.unread.clear();
+        self.carried.clear();
+        self.fingerprints.clear();
+        let Some(context) = self.context.as_deref() else {
+            self.error = Some("stability partition missing context");
+            self.phase_ticks = timing.finish_at(qpc());
+            return;
+        };
+        let countries = match ccountry::Reader::new(memory, base, game_state) {
+            Ok(countries) => countries,
+            Err(reason) => {
+                self.error = Some(reason);
+                self.phase_ticks = timing.finish_at(qpc());
+                return;
+            }
+        };
+        if engine_allocation::reserve(&mut self.inputs, self.countries.len()).is_err() {
+            self.error = Some("stability input storage allocation failed");
+            self.phase_ticks = timing.finish_at(qpc());
+            return;
+        }
+        let mut lines = Outcome::Rows { len: 0 };
+        for &(country, expected_line_fp) in &self.countries {
+            let mut input = native::InputRow::default();
+            let start = lines.len();
+            let walk = native::walk_country_memo_timed_or_carry(
+                memory,
+                base,
+                &countries,
+                country,
+                context,
+                &mut self.memo,
+                &mut self.scratch,
+                &mut input,
+                &mut self.lines,
+                &mut self.bytes,
+                start,
+                self.bytes_len,
+                expected_line_fp,
+                &mut timing,
+            );
+            let fallbacks = self.scratch.batch_fallbacks();
+            if fallbacks != 0 {
+                BATCH_FALLBACKS.fetch_add(fallbacks, Ordering::Relaxed);
+            }
+            let carry = match walk {
+                Ok(carry) => carry,
+                Err(reason) => {
+                    self.error = Some(reason);
+                    self.phase_ticks = timing.finish_at(qpc());
+                    return;
+                }
+            };
+            if carry.carried_lines {
+                if self.carried.len() == self.carried.capacity()
+                    && engine_allocation::reserve(&mut self.carried, 1).is_err()
+                {
+                    self.error = Some("stability carried owner allocation failed");
+                    self.phase_ticks = timing.finish_at(qpc());
+                    return;
+                }
+                self.carried.push(country.id);
+            } else {
+                let walk = carry.walk;
+                let offset = self.bytes_len;
+                self.bytes_required = self
+                    .bytes_required
+                    .max(offset.saturating_add(walk.required_bytes));
+                self.bytes_len += walk.bytes_len;
+                lines = match combine(lines, walk.lines) {
+                    Ok(lines) => lines,
+                    Err(reason) => {
+                        self.error = Some(reason);
+                        self.phase_ticks = timing.finish_at(qpc());
+                        return;
+                    }
+                };
+                if matches!(walk.lines, Outcome::Rows { .. }) {
+                    if self.fingerprints.len() == self.fingerprints.capacity()
+                        && engine_allocation::reserve(&mut self.fingerprints, 1).is_err()
+                    {
+                        self.error = Some("stability line fingerprint allocation failed");
+                        self.phase_ticks = timing.finish_at(qpc());
+                        return;
+                    }
+                    self.fingerprints.push((country.id, carry.line_fingerprint));
+                } else {
+                    if self.unread.len() == self.unread.capacity()
+                        && engine_allocation::reserve(&mut self.unread, 1).is_err()
+                    {
+                        self.error = Some("stability unread allocation failed");
+                        self.phase_ticks = timing.finish_at(qpc());
+                        return;
+                    }
+                    self.unread.push(country.id);
+                }
+            }
+            self.inputs.push(input);
+        }
+        self.lines_outcome = lines;
+        self.phase_ticks = timing.finish_at(qpc());
+        self.acquired = true;
+    }
+}
+
 pub struct Captured {
     inputs: CaptureRows<native::InputRow>,
     lines: CaptureRows<native::LineRow>,
@@ -83,9 +299,14 @@ pub struct Captured {
     memo: native::Memo,
     selection: SliceSelection,
     changed: Changed,
+    lines_changed: Changed,
+    lines_carried: Vec<u32>,
     keys: Option<native::Keys>,
-    context: Option<native::Context>,
+    context: Option<ContextSlot>,
     phase_ticks: [u64; 4],
+    demand: native::Demand,
+    parts: Vec<StabilityPart>,
+    selected_countries: Vec<(engine_native_memory::country_identity::Country, Option<u64>)>,
 }
 
 impl Captured {
@@ -95,6 +316,7 @@ impl Captured {
         self.lines
             .fail(super::failed_capture(TABLES[1], hour, force_full, reason));
         self.selection.reset(hour, force_full);
+        self.lines_carried.clear();
         self.phase_ticks = [0; 4];
     }
     pub fn vacant() -> Self {
@@ -106,9 +328,14 @@ impl Captured {
             memo: native::Memo::default(),
             selection: SliceSelection::new(),
             changed: Changed::default(),
+            lines_changed: Changed::default(),
+            lines_carried: Vec::new(),
             keys: None,
             context: None,
             phase_ticks: [0; 4],
+            demand: native::Demand::default(),
+            parts: Vec::new(),
+            selected_countries: Vec::new(),
         }
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
@@ -122,15 +349,21 @@ impl Captured {
             memo: native::Memo::default(),
             selection: SliceSelection::new(),
             changed: Changed::default(),
+            lines_changed: Changed::default(),
+            lines_carried: Vec::new(),
             keys: None,
             context: None,
             phase_ticks: [0; 4],
+            demand: capacity.demand,
+            parts: Vec::new(),
+            selected_countries: Vec::new(),
         }
     }
     pub fn reset(&mut self) {
         self.inputs.reset();
         self.lines.reset();
         self.bytes.reset();
+        self.lines_carried.clear();
         self.context = None;
         self.memo.clear();
         self.phase_ticks = [0; 4];
@@ -141,10 +374,19 @@ impl Captured {
             + self.bytes.allocated_bytes()
             + self.scratch.allocated_bytes()
             + self.memo.allocated_bytes()
+            + self.lines_carried.capacity() * size_of::<u32>()
+            + self.context.as_ref().map_or(0, |context| {
+                context.language.capacity()
+                    + usize::from(matches!(context, ContextSlot::Shared(_)))
+                        * SharedBox::<native::Context>::BYTES
+            })
             + self
-                .context
-                .as_ref()
-                .map_or(0, |context| context.language.capacity())
+                .parts
+                .iter()
+                .map(StabilityPart::allocated_bytes)
+                .sum::<usize>()
+            + self.selected_countries.capacity()
+                * size_of::<(engine_native_memory::country_identity::Country, Option<u64>)>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.inputs.grow(&mut capacity.inputs);
@@ -156,12 +398,17 @@ impl Captured {
         &self.selection
     }
 
+    pub fn lines_carried_owners(&self) -> Option<&[u32]> {
+        (!self.lines_carried.is_empty()).then_some(self.lines_carried.as_slice())
+    }
+
     pub fn phase_ticks(&self) -> [u64; 4] {
         self.phase_ticks
     }
 
     pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
+        self.lines_carried.clear();
         self.phase_ticks = [0; 4];
     }
 
@@ -179,7 +426,7 @@ impl Captured {
         force_full: bool,
         fingerprints: Option<&mut SliceFingerprints>,
     ) -> [u64; N] {
-        self.capture_changed(
+        self.capture_changed_partitioned(
             memory,
             base,
             game_state,
@@ -187,6 +434,33 @@ impl Captured {
             force_full,
             fingerprints,
             &changes::Observer,
+            None,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands travel beside fingerprints and worker dispatch"
+    )]
+    pub fn capture_partitioned(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        fingerprints: Option<&mut SliceFingerprints>,
+        dispatch: Option<StabilityDispatch<'_>>,
+    ) -> [u64; N] {
+        self.capture_changed_partitioned(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints,
+            &changes::Observer,
+            dispatch,
         )
     }
 
@@ -204,6 +478,33 @@ impl Captured {
         fingerprints: Option<&mut SliceFingerprints>,
         changes: &dyn Changes,
     ) -> [u64; N] {
+        self.capture_changed_partitioned(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints,
+            changes,
+            None,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands travel beside fingerprints, change source and worker dispatch"
+    )]
+    pub fn capture_changed_partitioned(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        mut fingerprints: Option<&mut SliceFingerprints>,
+        changes: &dyn Changes,
+        dispatch: Option<StabilityDispatch<'_>>,
+    ) -> [u64; N] {
         self.reset();
         self.selection.reset(hour, force_full);
         if !should_walk(TABLES[0], hour, force_full) {
@@ -217,16 +518,35 @@ impl Captured {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
         let mut timing = native::WalkTiming::new(started);
-        let result = self.walk(memory, base, game_state, fingerprints, changes, &mut timing);
+        let result = self.walk(
+            memory,
+            base,
+            game_state,
+            fingerprints.as_deref_mut(),
+            changes,
+            dispatch,
+            &mut timing,
+        );
         if let Err(reason) = result {
+            self.lines_carried.clear();
+            if let Some(fingerprints) = fingerprints {
+                fingerprints.forget_all_secondary();
+            }
             self.inputs.outcome = Outcome::Unavailable { reason };
             self.lines.outcome = Outcome::Unavailable { reason };
         }
         let ended = qpc();
-        self.phase_ticks = timing.finish_at(ended);
+        let serial_ticks = timing.finish_at(ended);
+        for (dst, src) in self.phase_ticks.iter_mut().zip(serial_ticks) {
+            *dst = dst.saturating_add(src);
+        }
         [ended.saturating_sub(started).max(0) as u64, 0]
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "walk carries memory, game state, fingerprints, change source, worker dispatch and timing"
+    )]
     fn walk(
         &mut self,
         memory: &impl Memory,
@@ -234,6 +554,7 @@ impl Captured {
         game_state: usize,
         mut fingerprints: Option<&mut SliceFingerprints>,
         changes: &dyn Changes,
+        dispatch: Option<StabilityDispatch<'_>>,
         timing: &mut native::WalkTiming,
     ) -> Result<(), &'static str> {
         let cached = match self.keys {
@@ -254,6 +575,7 @@ impl Captured {
         let mut manpower_observed =
             fingerprints.is_none() && cfg!(any(test, feature = "test-support"));
         self.changed.reset();
+        self.lines_changed.reset();
         let mut ids = None;
         if let Some(fingerprints) = fingerprints.as_deref_mut() {
             let started = qpc();
@@ -274,6 +596,7 @@ impl Captured {
                 self.selection.finish_census(fingerprints);
                 ids = Some(bound.max(countries.arrays()[1].count as usize));
             }
+            let digest = context.digest();
             slicing::select_changed(
                 &mut self.selection,
                 fingerprints,
@@ -283,14 +606,17 @@ impl Captured {
                     manpower_observed = epoch.is_some();
                     epoch
                 },
-                context.digest(),
+                digest,
+            );
+            fingerprints.certify_secondary(
+                &mut self.lines_changed,
+                |visit| changes.take(Table::StabilityLines, visit),
+                digest,
             );
             self.selection.scan_ticks = qpc().saturating_sub(started).max(0) as u64;
         }
         context.manpower_enabled = manpower_observed;
-        let mut read = 0_u64;
-        let mut inputs = 0;
-        let mut lines = Outcome::Rows { len: 0 };
+        self.selected_countries.clear();
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
@@ -298,12 +624,223 @@ impl Captured {
             if !self.selection.contains(country.id) {
                 continue;
             }
-            let mut input = native::InputRow::default();
-            let start = lines.len();
-            let walk = native::walk_country_memo_timed(
+            let expected_line_fp = (!self.selection.force_full
+                && self.lines_changed.carries(country.id))
+            .then(|| {
+                fingerprints
+                    .as_deref()
+                    .and_then(|fp| fp.secondary_held(country.id))
+            })
+            .flatten();
+            if self.selected_countries.len() == self.selected_countries.capacity() {
+                engine_allocation::reserve(&mut self.selected_countries, 1)
+                    .map_err(|_| "stability country selection allocation failed")?;
+            }
+            self.selected_countries.push((country, expected_line_fp));
+        }
+        let full_walks = self
+            .selected_countries
+            .iter()
+            .filter(|(_, fp)| fp.is_none())
+            .count();
+        if let Some(dispatch) = dispatch
+            .filter(|d| d.lanes > 1 && (full_walks >= 4 || self.selected_countries.len() >= 32))
+        {
+            let context = engine_allocation::shared(context)
+                .map_err(|_| "stability context allocation failed")?;
+            let count = dispatch.lanes.min(self.selected_countries.len() / 2);
+            let width = self.selected_countries.len().div_ceil(count);
+            let prepared = engine_allocation::advisory(|| {
+                let mut parts = engine_allocation::vec(count).ok()?;
+                for (ordinal, chunk) in self.selected_countries.chunks(width).enumerate() {
+                    let mut part = self
+                        .parts
+                        .pop()
+                        .unwrap_or_else(|| StabilityPart::new(self.demand));
+                    part.reset();
+                    part.ordinal = ordinal;
+                    part.context = Some(SharedBox::clone(&context));
+                    engine_allocation::reserve(&mut part.countries, chunk.len()).ok()?;
+                    part.countries.extend_from_slice(chunk);
+                    parts.push(part);
+                }
+                Some(parts)
+            });
+            if let Some(parts) = prepared {
+                let expected = parts.len();
+                let mut returned = (dispatch.acquire)(parts)?;
+                returned.sort_unstable_by_key(|part| part.ordinal);
+                let result = (|| -> Result<(), &'static str> {
+                    if returned.len() != expected
+                        || returned
+                            .iter()
+                            .enumerate()
+                            .any(|(i, part)| part.ordinal != i || !part.acquired)
+                    {
+                        if let Some(reason) = returned.iter().find_map(|part| part.error) {
+                            return Err(reason);
+                        }
+                        return Err("stability partition acquisition incomplete");
+                    }
+                    if let Some(reason) = returned.iter().find_map(|part| part.error) {
+                        return Err(reason);
+                    }
+                    let total_inputs: usize = returned.iter().map(|part| part.inputs.len()).sum();
+                    let total_lines: usize =
+                        returned.iter().map(|part| part.lines_outcome.len()).sum();
+                    let total_bytes: usize = returned.iter().map(|part| part.bytes_len).sum();
+                    let total_carried: usize =
+                        returned.iter().map(|part| part.carried.len()).sum();
+                    if self.inputs.rows.len() < total_inputs {
+                        engine_allocation::resize_default(&mut self.inputs.rows, total_inputs)
+                            .map_err(|_| "stability input storage allocation failed")?;
+                    }
+                    if self.lines.rows.len() < total_lines {
+                        engine_allocation::resize_default(&mut self.lines.rows, total_lines)
+                            .map_err(|_| "stability line storage allocation failed")?;
+                    }
+                    if self.bytes.first.len() < total_bytes {
+                        engine_allocation::resize_default(&mut self.bytes.first, total_bytes)
+                            .map_err(|_| "stability byte storage allocation failed")?;
+                    }
+                    if total_carried != 0 {
+                        engine_allocation::reserve(&mut self.lines_carried, total_carried)
+                            .map_err(|_| "stability carried owner allocation failed")?;
+                    }
+                    let mut input_at = 0_usize;
+                    let mut line_at = 0_usize;
+                    let mut byte_at = 0_usize;
+                    let mut lines = Outcome::Rows { len: 0 };
+                    for part in &returned {
+                        let n_inputs = part.inputs.len();
+                        self.inputs.rows[input_at..input_at + n_inputs]
+                            .copy_from_slice(&part.inputs);
+                        input_at += n_inputs;
+                        let n_lines = part.lines_outcome.len();
+                        for (dst, src) in self.lines.rows[line_at..line_at + n_lines]
+                            .iter_mut()
+                            .zip(&part.lines[..n_lines])
+                        {
+                            *dst = native::LineRow {
+                                identity: native::Span {
+                                    start: src.identity.start + byte_at,
+                                    len: src.identity.len,
+                                },
+                                text: native::Span {
+                                    start: src.text.start + byte_at,
+                                    len: src.text.len,
+                                },
+                                ..*src
+                            };
+                        }
+                        line_at += n_lines;
+                        self.bytes.first[byte_at..byte_at + part.bytes_len]
+                            .copy_from_slice(&part.bytes[..part.bytes_len]);
+                        self.bytes.required = self
+                            .bytes
+                            .required
+                            .max(byte_at.saturating_add(part.bytes_required));
+                        byte_at += part.bytes_len;
+                        lines = combine(lines, part.lines_outcome)?;
+                        self.lines_carried.extend_from_slice(&part.carried);
+                        if let Some(fingerprints) = fingerprints.as_deref_mut() {
+                            for &(id, fp) in &part.fingerprints {
+                                fingerprints.hold_secondary(id, fp);
+                            }
+                            for &id in &part.unread {
+                                self.changed.unread(fingerprints, id);
+                                fingerprints.forget_secondary(id);
+                            }
+                        }
+                        for (dst, src) in self.phase_ticks.iter_mut().zip(part.phase_ticks) {
+                            *dst = dst.saturating_add(src);
+                        }
+                    }
+                    self.lines_carried.sort_unstable();
+                    self.bytes.len = byte_at;
+                    self.inputs.outcome = Outcome::Rows { len: input_at };
+                    self.lines.outcome = lines;
+                    self.context = Some(ContextSlot::Shared(context));
+                    if fingerprints.is_some() {
+                        let carried = self.lines_carried.len() as u64;
+                        changes::record(
+                            Table::Stability,
+                            &changes::Counts {
+                                marked: self.changed.marked() as u64,
+                                read: input_at as u64,
+                                full: !self.changed.certified,
+                            },
+                            ids,
+                        );
+                        changes::record(
+                            Table::StabilityLines,
+                            &changes::Counts {
+                                marked: self.lines_changed.marked() as u64,
+                                read: (input_at as u64).saturating_sub(carried),
+                                full: !self.lines_changed.certified || self.selection.force_full,
+                            },
+                            None,
+                        );
+                        changes::record_carried(Table::StabilityLines, carried);
+                    }
+                    Ok(())
+                })();
+                for mut part in returned {
+                    part.reset();
+                    if self.parts.len() < self.parts.capacity()
+                        || engine_allocation::reserve(&mut self.parts, 1).is_ok()
+                    {
+                        self.parts.push(part);
+                    }
+                }
+                return result;
+            }
+            return self.walk_serial(
                 memory,
                 base,
                 &countries,
+                ContextSlot::Shared(context),
+                fingerprints,
+                ids,
+                timing,
+            );
+        }
+        self.walk_serial(
+            memory,
+            base,
+            &countries,
+            ContextSlot::Owned(context),
+            fingerprints,
+            ids,
+            timing,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "serial stability walk receives memory, country reader, context slot, fingerprints and timing"
+    )]
+    fn walk_serial<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        countries: &ccountry::Reader<'_, M>,
+        context: ContextSlot,
+        mut fingerprints: Option<&mut SliceFingerprints>,
+        ids: Option<usize>,
+        timing: &mut native::WalkTiming,
+    ) -> Result<(), &'static str> {
+        let mut read = 0_u64;
+        let mut inputs = 0;
+        let mut lines = Outcome::Rows { len: 0 };
+        for index in 0..self.selected_countries.len() {
+            let (country, expected_line_fp) = self.selected_countries[index];
+            let mut input = native::InputRow::default();
+            let start = lines.len();
+            let walk = native::walk_country_memo_timed_or_carry(
+                memory,
+                base,
+                countries,
                 country,
                 &context,
                 &mut self.memo,
@@ -313,26 +850,39 @@ impl Captured {
                 &mut self.bytes.first,
                 start,
                 self.bytes.len,
+                expected_line_fp,
                 timing,
             );
             let fallbacks = self.scratch.batch_fallbacks();
             if fallbacks != 0 {
                 BATCH_FALLBACKS.fetch_add(fallbacks, Ordering::Relaxed);
             }
-            let walk = walk?;
-            let offset = self.bytes.len;
-            self.bytes.required = self
-                .bytes
-                .required
-                .max(offset.saturating_add(walk.required_bytes));
-            self.bytes.len += walk.bytes_len;
-            lines = combine(lines, walk.lines)?;
-            read += 1;
-            if let Some(fingerprints) = fingerprints.as_deref_mut()
-                && !matches!(walk.lines, Outcome::Rows { .. })
-            {
-                self.changed.unread(fingerprints, country.id);
+            let carry = walk?;
+            if carry.carried_lines {
+                if self.lines_carried.len() == self.lines_carried.capacity() {
+                    engine_allocation::reserve(&mut self.lines_carried, 1)
+                        .map_err(|_| "stability carried owner allocation failed")?;
+                }
+                self.lines_carried.push(country.id);
+            } else {
+                let walk = carry.walk;
+                let offset = self.bytes.len;
+                self.bytes.required = self
+                    .bytes
+                    .required
+                    .max(offset.saturating_add(walk.required_bytes));
+                self.bytes.len += walk.bytes_len;
+                lines = combine(lines, walk.lines)?;
+                if let Some(fingerprints) = fingerprints.as_deref_mut() {
+                    if matches!(walk.lines, Outcome::Rows { .. }) {
+                        fingerprints.hold_secondary(country.id, carry.line_fingerprint);
+                    } else {
+                        self.changed.unread(fingerprints, country.id);
+                        fingerprints.forget_secondary(country.id);
+                    }
+                }
             }
+            read += 1;
             if self.inputs.rows.len() <= inputs {
                 engine_allocation::resize_default(
                     &mut self.inputs.rows,
@@ -345,10 +895,12 @@ impl Captured {
             self.inputs.rows[inputs] = input;
             inputs += 1;
         }
+        self.lines_carried.sort_unstable();
         self.inputs.outcome = Outcome::Rows { len: inputs };
         self.lines.outcome = lines;
         self.context = Some(context);
         if fingerprints.is_some() {
+            let carried = self.lines_carried.len() as u64;
             changes::record(
                 Table::Stability,
                 &changes::Counts {
@@ -358,6 +910,16 @@ impl Captured {
                 },
                 ids,
             );
+            changes::record(
+                Table::StabilityLines,
+                &changes::Counts {
+                    marked: self.lines_changed.marked() as u64,
+                    read: read.saturating_sub(carried),
+                    full: !self.lines_changed.certified || self.selection.force_full,
+                },
+                None,
+            );
+            changes::record_carried(Table::StabilityLines, carried);
         }
         Ok(())
     }
@@ -916,5 +1478,205 @@ mod tests {
             })
         );
         let _ = TableRows::empty(TableId::CountryStabilityLines);
+    }
+
+    #[test]
+    fn scalar_only_stability_updates_carry_lines_without_walking_modifier_children() {
+        use engine_native::cgame_state;
+        use engine_native_memory::{cpdx_array::Array, msvc_string};
+        use engine_native_parts::{cidea, cideology_group, cstatic_modifier, modifier_definition};
+        use engine_native_politics::cpolitical_status;
+        use engine_stability::{cmodifier, cworld_threat};
+        use std::{cell::Cell, collections::BTreeMap};
+
+        struct World {
+            bytes: BTreeMap<usize, u8>,
+            child_reads: Cell<usize>,
+            child_range: std::ops::Range<usize>,
+        }
+        impl World {
+            fn put(&mut self, at: usize, bytes: &[u8]) {
+                self.bytes
+                    .extend(bytes.iter().enumerate().map(|(i, &b)| (at + i, b)));
+            }
+            fn word(&mut self, at: usize, value: u64) {
+                self.put(at, &value.to_le_bytes());
+            }
+            fn u32(&mut self, at: usize, value: u32) {
+                self.put(at, &value.to_le_bytes());
+            }
+            fn array(&mut self, at: usize, data: usize, count: u32) {
+                self.word(at, data as u64);
+                self.word(at + 8, u64::from(count) | (u64::from(count) << 32));
+            }
+            fn string(&mut self, at: usize, text: &[u8]) {
+                let mut storage = [0_u8; 16];
+                storage[..text.len()].copy_from_slice(text);
+                self.put(at, &storage);
+                self.word(at + msvc_string::LENGTH, text.len() as u64);
+                self.word(at + msvc_string::CAPACITY, 15);
+            }
+        }
+        impl Memory for World {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                if self.child_range.contains(&at) {
+                    self.child_reads.set(self.child_reads.get() + 1);
+                }
+                for (i, byte) in out.iter_mut().enumerate() {
+                    *byte = self.bytes.get(&(at + i)).copied().unwrap_or(0);
+                }
+                true
+            }
+        }
+        const BASE: usize = 0x1_4000_0000;
+        const STATE: usize = 0x1000;
+        const COUNTRY: usize = 0x10000;
+        const STATUS: usize = 0x20000;
+        const PARTY: usize = 0x21000;
+        const IDEA: usize = 0x22000;
+        const GROUP: usize = 0x23000;
+        const DIPLOMACY: usize = 0x24000;
+        const STATS: usize = 0x25000;
+        const RING: usize = 0x26000;
+        const WORLD: usize = 0x27000;
+        const DATABASE: usize = 0x28000;
+        const SUNK: usize = 0x29000;
+        const SUNK_ENTRIES: usize = 0x29400;
+        const CHILD: usize = 0x2a000;
+        const CHILDREN: usize = 0x2a400;
+        const CHILD_ENTRIES: usize = 0x2a800;
+        const TABLE: usize = 0x2b000;
+        const STABILITY_KEY: u32 = 5;
+
+        let mut memory = World {
+            bytes: BTreeMap::new(),
+            child_reads: Cell::new(0),
+            child_range: CHILD..CHILD + 0x1000,
+        };
+        memory.array(STATE + cgame_state::COUNTRIES, 0x3000, 2);
+        memory.array(STATE + cgame_state::COUNTRY_LINKS, 0x4000, 2);
+        memory.word(0x3008, COUNTRY as u64);
+        memory.u32(0x4004, 1);
+        memory.word(COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64);
+        memory.u32(COUNTRY + ccountry::ID, 1);
+        memory.word(COUNTRY + ccountry::STABILITY, 50_000);
+        memory.put(COUNTRY + native::PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[1]);
+        memory.word(COUNTRY + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
+        memory.word(
+            DIPLOMACY,
+            (BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64,
+        );
+        memory.word(
+            DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
+            COUNTRY as u64,
+        );
+        memory.word(COUNTRY + ccountry::POLITICAL_STATUS, STATUS as u64);
+        memory.word(
+            STATUS,
+            (BASE + engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0) as u64,
+        );
+        memory.word(
+            STATUS + engine_native_parts::cpolitical_status_layout::RULING_PARTY,
+            PARTY as u64,
+        );
+        memory.word(
+            PARTY,
+            (BASE + engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0) as u64,
+        );
+        memory.word(
+            PARTY + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP,
+            GROUP as u64,
+        );
+        memory.word(GROUP, (BASE + cideology_group::VTABLE_RVA.0) as u64);
+        memory.string(
+            GROUP + native::IDEOLOGY_GROUP_MODIFIER + cmodifier::DISPLAY_NAME,
+            b"",
+        );
+        memory.array(STATUS + cpolitical_status::IDEAS, 0x5000, 1);
+        memory.word(0x5000, IDEA as u64);
+        memory.word(IDEA, (BASE + cidea::VTABLE_RVA.0) as u64);
+        memory.word(COUNTRY + native::AIR_STATISTICS, STATS as u64);
+        memory.word(STATS + 0x10, RING as u64);
+        memory.word(STATE + cgame_state::WORLD_THREAT, WORLD as u64);
+        memory.word(WORLD, (BASE + cworld_threat::VTABLE_RVA.0) as u64);
+        memory.array(BASE + modifier_definition::TABLE_RVA.0, TABLE, 8);
+        memory.u32(
+            TABLE + STABILITY_KEY as usize * modifier_definition::STRIDE + modifier_definition::FLAGS,
+            3,
+        );
+        memory.word(BASE + native::STATIC_DATABASE_RVA.0, DATABASE as u64);
+        memory.word(DATABASE + 0xc0, SUNK as u64);
+        memory.word(SUNK, (BASE + cstatic_modifier::VTABLE_RVA.0) as u64);
+        memory.u32(SUNK_ENTRIES, STABILITY_KEY);
+        memory.word(SUNK_ENTRIES + 8, (-3_000_i64) as u64);
+        memory.array(SUNK + cmodifier::ACCUMULATOR, SUNK_ENTRIES, 1);
+        memory.string(SUNK + cmodifier::DISPLAY_NAME, b"Pride sunk");
+        memory.string(SUNK + native::STATIC_NAME, b"pride_sunk");
+        memory.array(COUNTRY + native::MODIFIER_CHILDREN, CHILDREN, 1);
+        memory.word(CHILDREN, CHILD as u64);
+        memory.word(CHILD, (BASE + cmodifier::VTABLE_RVA.0) as u64);
+        memory.u32(CHILD_ENTRIES, STABILITY_KEY);
+        memory.word(CHILD_ENTRIES + 8, (-3_000_i64) as u64);
+        memory.array(CHILD + cmodifier::ACCUMULATOR, CHILD_ENTRIES, 1);
+        memory.string(CHILD + cmodifier::DISPLAY_NAME, b"Pride sunk");
+
+        let mut keys = [None; native::TRACKED];
+        keys[0] = Some(STABILITY_KEY);
+        let mut captured = Captured::with_capacities(&Capacities {
+            inputs: 2,
+            lines: 4,
+            bytes: 64,
+            ..Default::default()
+        });
+        captured.keys = Some(native::Keys {
+            keys,
+            table: Array {
+                data: TABLE,
+                count: 8,
+            },
+        });
+        let domain = changes::Domain::enabled(16);
+        let mut fingerprints = SliceFingerprints::new();
+
+        captured.capture_changed(&memory, BASE, STATE, 0, true, Some(&mut fingerprints), &domain);
+        assert_eq!(
+            captured.outcomes(),
+            [Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 }]
+        );
+        assert_eq!(captured.lines_carried_owners(), None);
+        assert!(memory.child_reads.get() > 0);
+
+        memory.word(COUNTRY + ccountry::STABILITY, 60_000);
+        domain.write(Table::Stability, 1);
+        memory.child_reads.set(0);
+        captured.capture_changed(&memory, BASE, STATE, 1, false, Some(&mut fingerprints), &domain);
+        assert_eq!(
+            captured.outcomes(),
+            [Outcome::Rows { len: 1 }, Outcome::Rows { len: 0 }]
+        );
+        assert_eq!(captured.lines_carried_owners(), Some(&[1_u32][..]));
+        assert_eq!(memory.child_reads.get(), 0);
+
+        domain.write(Table::Stability, 1);
+        domain.write(Table::StabilityLines, 1);
+        memory.child_reads.set(0);
+        captured.capture_changed(&memory, BASE, STATE, 2, false, Some(&mut fingerprints), &domain);
+        assert_eq!(
+            captured.outcomes(),
+            [Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 }]
+        );
+        assert_eq!(captured.lines_carried_owners(), None);
+        assert!(memory.child_reads.get() > 0);
+
+        memory.put(COUNTRY + native::PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[0]);
+        domain.write(Table::Stability, 1);
+        memory.child_reads.set(0);
+        captured.capture_changed(&memory, BASE, STATE, 3, false, Some(&mut fingerprints), &domain);
+        assert_eq!(
+            captured.outcomes(),
+            [Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 }]
+        );
+        assert_eq!(captured.lines_carried_owners(), None);
+        assert!(memory.child_reads.get() > 0);
     }
 }

@@ -2,9 +2,19 @@ use super::*;
 use crate::template_changes::Changes;
 use std::sync::Arc;
 
+#[derive(Clone, Copy)]
+pub(super) struct CleanCountry {
+    pub id: u32,
+    pub canonical_slot: u32,
+    pub pointer: usize,
+    pub manager: usize,
+    pub occupation: Option<usize>,
+}
+
 #[derive(Default, Clone)]
 pub(super) struct Entry {
     country: u32,
+    canonical_slot: u32,
     pointer: usize,
     row: Option<CountryRow>,
     manager: usize,
@@ -105,6 +115,42 @@ impl Store {
             );
         }
         Some(hash)
+    }
+
+    pub fn clean_countries(&self) -> Option<Vec<CleanCountry>> {
+        let mut out = engine_allocation::vec(self.order.len()).ok()?;
+        for &id in &self.order {
+            let at = self
+                .entries
+                .binary_search_by_key(&id, |entry| entry.country)
+                .ok()?;
+            let entry = &self.entries[at];
+            if !entry.config_valid || (entry.occupation.is_some() && entry.garrison.is_none()) {
+                return None;
+            }
+            out.push(CleanCountry {
+                id: entry.country,
+                canonical_slot: entry.canonical_slot,
+                pointer: entry.pointer,
+                manager: entry.manager,
+                occupation: entry.occupation,
+            });
+        }
+        Some(out)
+    }
+
+    pub fn commit_dirty(&mut self, visit: Visit) -> Result<CountryRow, &'static str> {
+        let id = visit.country.id;
+        let index = self
+            .entries
+            .binary_search_by_key(&id, |entry| entry.country)
+            .map_err(|_| "dirty country missing from template cache")?;
+        let previous = self.entries[index].allocated_bytes();
+        self.entries[index] = visit.entry;
+        self.payload_bytes = self.payload_bytes - previous + self.entries[index].allocated_bytes();
+        let (row, changed) = visit.result?;
+        self.changed |= changed;
+        Ok(row)
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -222,6 +268,10 @@ impl Visit {
             .ok()
             .and_then(|(row, _)| row.garrison_failure)
     }
+
+    pub fn is_ok(&self) -> bool {
+        self.result.is_ok()
+    }
 }
 
 fn read_entry(
@@ -237,9 +287,12 @@ fn read_entry(
         if entry.pointer != country.pointer {
             *entry = Entry {
                 country: country.id,
+                canonical_slot: country.canonical_slot,
                 pointer: country.pointer,
                 ..Default::default()
             };
+        } else {
+            entry.canonical_slot = country.canonical_slot;
         }
         let mut row = entry.row.clone().unwrap_or_default();
         let fresh = changes.fresh_only();

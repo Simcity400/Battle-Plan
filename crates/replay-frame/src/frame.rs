@@ -775,6 +775,10 @@ impl BaselineToken {
         self.row_updates
     }
 
+    pub fn is_untracked(self) -> bool {
+        self.untracked
+    }
+
     pub fn baseline(self) -> (u64, BranchId, Hour) {
         (self.encoder, self.branch, self.baseline)
     }

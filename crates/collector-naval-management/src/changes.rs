@@ -204,12 +204,17 @@ unsafe extern "system-unwind" fn changed(registers: &Registers, tag: usize) {
         REFUSED.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    if let Some(write) = &site.write {
+    let registry = if site.base { &BASES } else { &FORCES };
+    let target = receiver | usize::from(site.retire);
+    let marked = registry.touch_if(target, || {
+        let Some(write) = &site.write else {
+            return true;
+        };
         let value = write
             .value
             .map_or(write.literal, |value| register(registers, value) as u64);
         let Some(address) = receiver.checked_add(write.offset) else {
-            return;
+            return false;
         };
         // SAFETY: the pinned native store is about to access this live object. Copies remain
         // guarded; an unreadable comparison invalidates the hold rather than hiding the write.
@@ -220,13 +225,11 @@ unsafe extern "system-unwind" fn changed(registers: &Registers, tag: usize) {
             8 => engine_native_memory::read::<u64>(&memory, address).map(|old| old == value),
             _ => None,
         };
-        if same == Some(true) {
-            return;
-        }
+        same != Some(true)
+    });
+    if marked {
+        CALLS.increment(0);
     }
-    CALLS.increment(0);
-    let registry = if site.base { &BASES } else { &FORCES };
-    registry.touch(receiver | usize::from(site.retire));
 }
 
 unsafe extern "system-unwind" fn method<const INDEX: usize>(

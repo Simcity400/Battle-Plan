@@ -13,25 +13,17 @@ pub struct RaidReference {
     pub resolves: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Pool {
     index: Option<u32>,
     transport: Option<bool>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Slot<T> {
     key: u64,
-    value: Option<T>,
-}
-
-impl<T> Default for Slot<T> {
-    fn default() -> Self {
-        Self {
-            key: 0,
-            value: None,
-        }
-    }
+    value: T,
+    generation: u32,
 }
 
 #[derive(Debug, Default)]
@@ -39,6 +31,7 @@ pub struct Scratch {
     pools: Vec<Slot<Pool>>,
     wings: Vec<Slot<Option<u64>>>,
     handles: Vec<Slot<Option<usize>>>,
+    generation: u32,
     pub required_map_capacity: usize,
     pub failures: usize,
 }
@@ -62,7 +55,7 @@ impl Scratch {
 
     pub fn grow(&mut self, map_capacity: usize) -> io::Result<()> {
         let slots = slot_count(map_capacity).ok_or_else(allocation::oom)?;
-        fn grow<T>(values: &mut Vec<Slot<T>>, slots: usize) -> io::Result<()> {
+        fn grow<T: Default>(values: &mut Vec<Slot<T>>, slots: usize) -> io::Result<()> {
             allocation::reserve_exact(values, slots.saturating_sub(values.len()))?;
             values.resize_with(slots.max(values.len()), Slot::default);
             Ok(())
@@ -81,14 +74,18 @@ impl Scratch {
     }
 
     pub fn clear(&mut self) {
-        for value in &mut self.pools {
-            *value = Slot::default();
-        }
-        for value in &mut self.wings {
-            *value = Slot::default();
-        }
-        for value in &mut self.handles {
-            *value = Slot::default();
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            for value in &mut self.pools {
+                value.generation = 0;
+            }
+            for value in &mut self.wings {
+                value.generation = 0;
+            }
+            for value in &mut self.handles {
+                value.generation = 0;
+            }
+            self.generation = 1;
         }
         self.reset_metadata();
     }
@@ -114,6 +111,7 @@ fn slot_count(map_capacity: usize) -> Option<usize> {
 
 fn memo<T: Copy>(
     values: &mut [Slot<T>],
+    generation: u32,
     count: &mut usize,
     key: u64,
     read: impl FnOnce() -> T,
@@ -123,16 +121,17 @@ fn memo<T: Copy>(
     let first = key.wrapping_mul(0x9e37_79b9_7f4a_7c15) as usize & mask;
     for offset in 0..length {
         let slot = &mut values[first.wrapping_add(offset) & mask];
-        if slot.value.is_some() && slot.key == key {
-            return slot.value;
+        if slot.generation == generation && slot.key == key {
+            return Some(slot.value);
         }
-        if slot.value.is_none() {
+        if slot.generation != generation {
             if *count >= length / 2 {
                 return None;
             }
             slot.key = key;
             let value = read();
-            slot.value = Some(value);
+            slot.value = value;
+            slot.generation = generation;
             *count += 1;
             return Some(value);
         }
@@ -173,16 +172,21 @@ impl<'a> Pass<'a> {
         }
         let capacity = required.max(self.capacity.saturating_mul(2));
         let slots = slot_count(capacity).ok_or_else(allocation::oom)?;
-        fn grow<T: Copy>(values: &mut Vec<Slot<T>>, slots: usize) -> io::Result<()> {
+        let generation = self.scratch.generation;
+        fn grow<T: Copy + Default>(
+            values: &mut Vec<Slot<T>>,
+            slots: usize,
+            generation: u32,
+        ) -> io::Result<()> {
             if values.len() >= slots {
                 return Ok(());
             }
             let mut replacement: Vec<Slot<T>> = Vec::new();
             allocation::resize_default(&mut replacement, slots)?;
             let mask = slots - 1;
-            for value in values.iter().filter(|value| value.value.is_some()) {
+            for value in values.iter().filter(|value| value.generation == generation) {
                 let mut index = value.key.wrapping_mul(0x9e37_79b9_7f4a_7c15) as usize & mask;
-                while replacement[index].value.is_some() {
+                while replacement[index].generation == generation {
                     index = (index + 1) & mask;
                 }
                 replacement[index] = *value;
@@ -190,9 +194,9 @@ impl<'a> Pass<'a> {
             *values = replacement;
             Ok(())
         }
-        grow(&mut self.scratch.pools, slots)?;
-        grow(&mut self.scratch.wings, slots)?;
-        grow(&mut self.scratch.handles, slots)?;
+        grow(&mut self.scratch.pools, slots, generation)?;
+        grow(&mut self.scratch.wings, slots, generation)?;
+        grow(&mut self.scratch.handles, slots, generation)?;
         self.capacity = capacity;
         self.scratch.required_map_capacity = 0;
         Ok(())
@@ -211,8 +215,10 @@ impl<'a> Pass<'a> {
             self.scratch.failures += 1;
             return None;
         }
+        let generation = self.scratch.generation;
         let pool = memo(
             &mut self.scratch.pools,
+            generation,
             &mut self.counts[0],
             pool as u64,
             || pool_identity(memory, self.base, pool, &mut self.database),
@@ -241,6 +247,7 @@ impl<'a> Pass<'a> {
         }
         let raw = memo(
             &mut self.scratch.wings,
+            generation,
             &mut self.counts[1],
             wing as u64,
             || field::<u64>(memory, wing, RAID_REFERENCE).ok(),
@@ -259,24 +266,30 @@ impl<'a> Pass<'a> {
         let resolves = if raw == 0 {
             Some(Some(0))
         } else {
-            memo(&mut self.scratch.handles, &mut self.counts[2], raw, || {
-                (|| {
-                    let Some(pointer) = self.resolver.resolve(memory, raw)? else {
-                        return Ok(0_usize);
-                    };
-                    let identity = field::<[u8; 16]>(memory, pointer, 0)?;
-                    if u64::from_le_bytes(identity[..8].try_into().unwrap())
-                        != engine_sites::at(self.base, crate::craid_instance::VTABLE_RVA)
-                            .ok_or("raid module overflow")? as u64
-                        || u64::from_le_bytes(identity[8..].try_into().unwrap()) != raw
-                        || raw as u32 != crate::craid_instance::REFERENCE_TYPE_VALUE
-                    {
-                        return Err("air wing raid identity mismatch");
-                    }
-                    Ok(pointer)
-                })()
-                .ok()
-            })
+            memo(
+                &mut self.scratch.handles,
+                generation,
+                &mut self.counts[2],
+                raw,
+                || {
+                    (|| {
+                        let Some(pointer) = self.resolver.resolve(memory, raw)? else {
+                            return Ok(0_usize);
+                        };
+                        let identity = field::<[u8; 16]>(memory, pointer, 0)?;
+                        if u64::from_le_bytes(identity[..8].try_into().unwrap())
+                            != engine_sites::at(self.base, crate::craid_instance::VTABLE_RVA)
+                                .ok_or("raid module overflow")? as u64
+                            || u64::from_le_bytes(identity[8..].try_into().unwrap()) != raw
+                            || raw as u32 != crate::craid_instance::REFERENCE_TYPE_VALUE
+                        {
+                            return Err("air wing raid identity mismatch");
+                        }
+                        Ok(pointer)
+                    })()
+                    .ok()
+                },
+            )
         };
         match resolves {
             Some(Some(pointer)) => {
@@ -349,26 +362,44 @@ fn pool_identity(
             .map_err(|_| "air definition pointer overflow")?;
         let (token, real) = header(memory, base, pointer)?;
         if !real {
-            return Ok((0, pointer));
+            return Ok((0, None));
         }
-        let index = field::<i32>(memory, pointer, definition::DATABASE_INDEX)?;
+        let index_addr = pointer
+            .checked_add(definition::DATABASE_INDEX)
+            .filter(|_| pointer != 0)
+            .ok_or("air transport operand unreadable or address overflow")?;
+        let flags_addr = pointer
+            .checked_add(definition::AIR_FLAGS)
+            .filter(|_| pointer != 0)
+            .unwrap_or(0);
+        let mut index_bytes = [0_u8; 4];
+        let mut flags_bytes = [0_u8; 4];
+        let completed = memory.copy_scattered(
+            [index_addr, flags_addr],
+            &mut [&mut index_bytes[..], &mut flags_bytes[..]],
+        );
+        if completed == 0 {
+            return Err("air transport operand unreadable or address overflow");
+        }
+        let index = i32::from_le_bytes(index_bytes);
+        let flags = (completed == 2).then(|| u32::from_le_bytes(flags_bytes));
         let data = *database.get_or_insert_with(|| definition::Database::read(memory, base));
         let global = data?.entry(memory, index)?;
-        let (global_token, global_real) = header(memory, base, global)?;
-        if !global_real || global_token != token {
-            return Err("air pool definition differs from its content database entry");
+        if global != pointer {
+            let (global_token, global_real) = header(memory, base, global)?;
+            if !global_real || global_token != token {
+                return Err("air pool definition differs from its content database entry");
+            }
         }
-        Ok((index as u32, pointer))
+        Ok((index as u32, flags))
     })();
     match identity {
-        Ok((index, pointer)) => Pool {
+        Ok((index, flags)) => Pool {
             index: Some(index),
             transport: if index == 0 {
                 Some(false)
             } else {
-                field::<u32>(memory, pointer, definition::AIR_FLAGS)
-                    .ok()
-                    .map(|flags| flags & TRANSPORT != 0)
+                flags.map(|flags| flags & TRANSPORT != 0)
             },
         },
         Err(_) => Pool {

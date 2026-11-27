@@ -335,6 +335,11 @@ pub struct Admitted {
     pub sources: bool,
     pub naval: bool,
     pub name_header: Option<[u8; msvc_string::STRIDE]>,
+    pub crew: Option<[i32; 2]>,
+    pub fuel: Option<fuel_inputs::Gathered>,
+    pub cumulative: Option<(i32, i64)>,
+    pub group_handle: Option<u64>,
+    pub replacement_setting: Option<u8>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -677,22 +682,37 @@ impl Projection {
 pub const ROW_BATCH: usize = 64;
 const STEP_BATCH: usize = 4 * ROW_BATCH;
 
+const MANDATORY_FIELDS: usize = 14;
+
+const _: () = {
+    assert!(ACQUIRED_MANPOWER == PLANE_COUNT + 4);
+    assert!(air_mission::ENABLED_MASK == 0x10);
+    assert!(air_mission::CURRENT_TYPE == 0x14);
+    assert!(air_mission::CONTEXT_MODE == 0x18);
+    assert!(air_mission::CAPACITY_CLASS == 0x1c);
+    assert!(air_mission::ACTIVE == 0x20);
+    assert!(air_mission::WING == 0x28);
+    assert!(air_mission::REGION == 0x30);
+    assert!(EXILE_COUNTRY == COUNTRY_OVERRIDE + 4);
+    assert!(replacement::SETTING == COUNTRY_OVERRIDE + 8);
+};
+
 const ROW_SPANS: [(usize, usize); 15] = [
     (0, 8),
     (SECONDARY, 16),
     (POOL, 8),
-    (PLANE_COUNT, 4),
     (BASE_OVERRIDE, 8),
-    (MISSION + air_mission::ENABLED_MASK, 4),
-    (MISSION + air_mission::REGION, 8),
-    (MISSION + air_mission::ACTIVE, 1),
+    (PLANE_COUNT, 8),
+    (MISSION, 56),
+    (MISSION + air_mission::EFFECTIVE_AIRCRAFTS, 4),
     (ELIGIBILITY_VETO, 1),
     (ELIGIBILITY_COUNTER, 8),
-    (COUNTRY_OVERRIDE, 4),
-    (BASE_RANGE, 8),
     (ACE_REFERENCE, 8),
-    (ATTACHED_ORDERS_GROUP, 8),
+    (BASE_RANGE, 8),
+    (BASE_FUEL, 8),
     (NAME, msvc_string::STRIDE),
+    (ATTACHED_ORDERS_GROUP, 8),
+    (COUNTRY_OVERRIDE, 9),
 ];
 const ROW_FIELDS: [RecordField; 15] = packed_fields(ROW_SPANS);
 const ROW_STRIDE: usize = packed_stride(ROW_SPANS);
@@ -952,6 +972,11 @@ fn walk_projected(
                                     sources: source_needs,
                                     naval: naval_needs,
                                     name_header: fields.name,
+                                    crew: fields.crew,
+                                    fuel: fields.fuel,
+                                    cumulative: fields.cumulative,
+                                    group_handle: fields.group_handle,
+                                    replacement_setting: fields.replacement_setting,
                                 },
                             );
                             if map_needs {
@@ -1185,7 +1210,8 @@ fn hint_wing(memory: &impl Memory, wing: usize) {
         (0, MISSION + air_mission::REGION + 8),
         (ACE_REFERENCE, 8),
         (BASE_RANGE, 8),
-        (NAME, COUNTRY_OVERRIDE + 4 - NAME),
+        (BASE_FUEL, 8),
+        (NAME, replacement::SETTING + 1 - NAME),
     ] {
         memory.prefetch(wing.wrapping_add(offset), len);
     }
@@ -1209,6 +1235,11 @@ struct RowFields {
     ace: [u8; 8],
     group: [u8; 8],
     name: Option<[u8; msvc_string::STRIDE]>,
+    crew: Option<[i32; 2]>,
+    fuel: Option<fuel_inputs::Gathered>,
+    cumulative: Option<(i32, i64)>,
+    group_handle: Option<u64>,
+    replacement_setting: Option<u8>,
 }
 
 impl RowFields {
@@ -1217,23 +1248,44 @@ impl RowFields {
             let at = ROW_FIELDS[field].destination_offset;
             record[at..at + N].try_into().unwrap()
         }
+        let planes_block: [u8; 8] = take(record, 4);
+        let mission_block: [u8; 56] = take(record, 5);
+        let effective_aircraft: [u8; 4] = take(record, 6);
+        let base_fuel: [u8; 8] = take(record, 11);
+        let country_block: [u8; 9] = take(record, 14);
         Self {
-            completed: ROW_FIELDS.len() - 1,
+            completed: MANDATORY_FIELDS,
             primary: take(record, 0),
             secondary_and_handle: take(record, 1),
             pool: take(record, 2),
-            planes: take(record, 3),
-            base_override: take(record, 4),
-            mask: take(record, 5),
-            region: take(record, 6),
-            active: take(record, 7),
-            veto: take(record, 8),
-            eligibility: take(record, 9),
-            country_override: take(record, 10),
-            base_range: take(record, 11),
-            ace: take(record, 12),
+            planes: planes_block[..4].try_into().unwrap(),
+            base_override: take(record, 3),
+            mask: mission_block[16..20].try_into().unwrap(),
+            region: mission_block[48..56].try_into().unwrap(),
+            active: [mission_block[32]],
+            veto: take(record, 7),
+            eligibility: take(record, 8),
+            country_override: country_block[..4].try_into().unwrap(),
+            base_range: take(record, 10),
+            ace: take(record, 9),
             group: take(record, 13),
-            name: Some(take(record, 14)),
+            name: Some(take(record, 12)),
+            crew: Some([
+                i32::from_le_bytes(planes_block[4..8].try_into().unwrap()),
+                i32::from_le_bytes(country_block[4..8].try_into().unwrap()),
+            ]),
+            fuel: Some(fuel_inputs::Gathered {
+                base_fuel: i64::from_le_bytes(base_fuel),
+                mission_vtable: u64::from_le_bytes(mission_block[..8].try_into().unwrap()),
+                current_type: i32::from_le_bytes(mission_block[20..24].try_into().unwrap()),
+                effective_aircraft: i32::from_le_bytes(effective_aircraft),
+                context_mode: mission_block[24],
+                wing_backlink: u64::from_le_bytes(mission_block[40..48].try_into().unwrap()),
+                capacity_class: i32::from_le_bytes(mission_block[28..32].try_into().unwrap()),
+            }),
+            cumulative: None,
+            group_handle: None,
+            replacement_setting: Some(country_block[8]),
         }
     }
 }
@@ -1385,6 +1437,11 @@ impl<M: Memory> Reader<'_, M> {
             ace,
             group,
             name: _,
+            crew: _,
+            fuel: _,
+            cumulative: _,
+            group_handle: _,
+            replacement_setting: _,
         } = *fields;
         let leaf = (|| {
             let expected_primary =
@@ -1424,7 +1481,7 @@ impl<M: Memory> Reader<'_, M> {
         if !details {
             return Ok(None);
         }
-        if completed != ROW_FIELDS.len() - 1 {
+        if completed != MANDATORY_FIELDS {
             return Err("air wing row field unreadable or address overflow");
         }
         let region = usize::try_from(u64::from_le_bytes(region))

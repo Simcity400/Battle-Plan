@@ -188,14 +188,17 @@ impl SmallVariantMemo {
 enum Memo<'a> {
     None,
     Heap(&'a mut VariantMemo),
-    Stack(&'a mut SmallVariantMemo),
+    LazyStack {
+        slot: &'a mut std::mem::MaybeUninit<SmallVariantMemo>,
+        ready: bool,
+    },
 }
 
 impl Memo<'_> {
     fn reserve(&mut self, additional: usize) -> std::io::Result<()> {
         match self {
             Self::Heap(memo) => memo.reserve(additional),
-            Self::None | Self::Stack(_) => Ok(()),
+            Self::None | Self::LazyStack { .. } => Ok(()),
         }
     }
 
@@ -203,7 +206,14 @@ impl Memo<'_> {
         match self {
             Self::None => None,
             Self::Heap(memo) => memo.get(pointer),
-            Self::Stack(memo) => memo.get(pointer),
+            Self::LazyStack { slot, ready } => {
+                if *ready {
+                    // SAFETY: `*ready` is set only after `slot` was zero-initialized.
+                    unsafe { slot.assume_init_ref() }.get(pointer)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -211,7 +221,15 @@ impl Memo<'_> {
         match self {
             Self::None => {}
             Self::Heap(memo) => memo.insert(pointer, id),
-            Self::Stack(memo) => memo.insert(pointer, id),
+            Self::LazyStack { slot, ready } => {
+                if !*ready {
+                    // SAFETY: `SmallVariantMemo` is valid when all-zero-initialized.
+                    unsafe { std::ptr::write_bytes(slot.as_mut_ptr(), 0, 1) };
+                    *ready = true;
+                }
+                // SAFETY: `slot` was initialized above or on an earlier call.
+                unsafe { slot.assume_init_mut() }.insert(pointer, id);
+            }
         }
     }
 }
@@ -1033,12 +1051,18 @@ fn deleted_logs_into(
     let groups = Array::from_header(header[GROUPS..GROUPS + 16].try_into().unwrap(), 8)
         .ok_or("combat log group array invalid")?;
     let country = u32_at(&header, COUNTRY);
-    let mut small_memo = SmallVariantMemo::default();
+    if groups.count == 0 {
+        return Ok((country, Outcome::Rows { len: 0 }, false));
+    }
+    let mut small_memo = std::mem::MaybeUninit::<SmallVariantMemo>::uninit();
     let mut output = Output {
         rows,
         len: 0,
         unread_rows: 0,
-        memo: Memo::Stack(&mut small_memo),
+        memo: Memo::LazyStack {
+            slot: &mut small_memo,
+            ready: false,
+        },
     };
     let mut resolver = engine_native_parts::creference_registry::ScopedResolver::new(base);
     let mut pointer_bytes = [0_u8; BATCH * 8];

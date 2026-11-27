@@ -9,6 +9,7 @@ struct Entry {
     address: usize,
     wing: u64,
     certificate: (u64, u64),
+    slot: usize,
     value: Option<u8>,
 }
 
@@ -16,6 +17,7 @@ struct Entry {
 pub struct Store {
     previous: Vec<Entry>,
     current: Vec<Entry>,
+    cursor: usize,
     training_groups: std::collections::HashSet<(u32, u64, u64)>,
     raid: super::wing_raid_flags::Store,
 }
@@ -34,6 +36,7 @@ impl Store {
         }
         std::mem::swap(&mut self.current, &mut self.previous);
         self.current.clear();
+        self.cursor = 0;
         self.training_groups.clear();
         self.ensure_capacity(wings);
     }
@@ -57,40 +60,71 @@ impl Store {
             + self.training_groups.capacity() * size_of::<(u32, u64, u64)>()) as u64
             + self.raid.allocated_bytes()
     }
+    #[cfg(test)]
     fn flag(
         &mut self,
         address: usize,
         wing: u64,
         mut certificate: impl FnMut(usize) -> Option<(u64, u64)>,
+        quiet: impl FnMut() -> Option<(u64, u64)>,
+        read: impl FnOnce(usize) -> Option<u8>,
+    ) -> Option<bool> {
+        self.flag_at(
+            address,
+            wing,
+            |at, _| certificate(at).map(|c| (c, usize::MAX)),
+            quiet,
+            read,
+        )
+    }
+    fn flag_at(
+        &mut self,
+        address: usize,
+        wing: u64,
+        mut certificate: impl FnMut(usize, usize) -> Option<((u64, u64), usize)>,
         mut quiet: impl FnMut() -> Option<(u64, u64)>,
         read: impl FnOnce(usize) -> Option<u8>,
     ) -> Option<bool> {
         if self.current.len() == self.current.capacity() {
             return None;
         }
-        let Some(before) = certificate(address) else {
+        let found = if let Some(entry) = self.previous.get(self.cursor)
+            && entry.address == address
+        {
+            self.cursor += 1;
+            Some(*entry)
+        } else {
+            self.previous
+                .binary_search_by_key(&address, |entry| entry.address)
+                .ok()
+                .map(|index| {
+                    self.cursor = index + 1;
+                    self.previous[index]
+                })
+        };
+        let held_slot = found.map_or(usize::MAX, |entry| entry.slot);
+        let Some((before, slot)) = certificate(address, held_slot) else {
             let token = quiet()?;
             let value = read(address)?;
             return (quiet() == Some(token)).then_some(value != 0);
         };
-        let held = self
-            .previous
-            .binary_search_by_key(&address, |entry| entry.address)
-            .ok()
-            .map(|index| self.previous[index])
-            .filter(|entry| entry.wing == wing && entry.certificate == before);
+        let held = found.filter(|entry| entry.wing == wing && entry.certificate == before);
         let value = match held {
             Some(entry) => entry.value,
-            None => read(address),
+            None => {
+                let value = read(address);
+                if certificate(address, slot).map(|(c, _)| c) != Some(before) {
+                    return None;
+                }
+                value
+            }
         };
-        if certificate(address) != Some(before) {
-            return None;
-        }
         if self.current.len() < self.current.capacity() {
             self.current.push(Entry {
                 address,
                 wing,
                 certificate: before,
+                slot,
                 value,
             });
         }
@@ -112,12 +146,12 @@ impl Store {
                 && row.mission_region.is_none()
                 && row.eligibility_veto == 0
                 && row.eligibility_counter <= row.eligibility_limit);
-        let mut flags = self.capture_with(
+        let mut flags = self.capture_with_at(
             pointer,
             row.id,
             stop_mask,
             coverage,
-            collector_observers::wing_changes::map_sequence,
+            collector_observers::wing_changes::map_sequence_at,
             collector_observers::wing_changes::map_quiet,
             |at| engine_native_memory::read::<u8>(memory, at),
         );
@@ -134,8 +168,11 @@ impl Store {
         flags
     }
     fn stop_demand(&mut self, row: &engine_native_air::cair_wing::Row) -> bool {
-        let key = (row.owner_slot, row.air_base, row.attached_group_pointer);
         let training = row.mission_mask & 0x800 != 0;
+        if !training && self.training_groups.is_empty() {
+            return false;
+        }
+        let key = (row.owner_slot, row.air_base, row.attached_group_pointer);
         if training
             && (self.training_groups.contains(&key)
                 || self.training_groups.len() < self.training_groups.capacity())
@@ -144,6 +181,7 @@ impl Store {
         }
         training || self.training_groups.contains(&key)
     }
+    #[cfg(test)]
     fn capture_with(
         &mut self,
         pointer: usize,
@@ -151,6 +189,30 @@ impl Store {
         mask: u32,
         attached: bool,
         mut certificate: impl FnMut(usize) -> Option<(u64, u64)>,
+        quiet: impl FnMut() -> Option<(u64, u64)>,
+        read: impl FnMut(usize) -> Option<u8>,
+    ) -> u32 {
+        self.capture_with_at(
+            pointer,
+            wing,
+            mask,
+            attached,
+            |at, _| certificate(at).map(|c| (c, usize::MAX)),
+            quiet,
+            read,
+        )
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors capture_with with cached registry slot lookup"
+    )]
+    fn capture_with_at(
+        &mut self,
+        pointer: usize,
+        wing: u64,
+        mask: u32,
+        attached: bool,
+        mut certificate: impl FnMut(usize, usize) -> Option<((u64, u64), usize)>,
         mut quiet: impl FnMut() -> Option<(u64, u64)>,
         mut read: impl FnMut(usize) -> Option<u8>,
     ) -> u32 {
@@ -164,7 +226,7 @@ impl Store {
             }
             if let Some(value) = pointer
                 .checked_add(offset)
-                .and_then(|at| self.flag(at, wing, &mut certificate, &mut quiet, &mut read))
+                .and_then(|at| self.flag_at(at, wing, &mut certificate, &mut quiet, &mut read))
             {
                 packed |= (1 | (u32::from(value) << 1)) << bit;
             }

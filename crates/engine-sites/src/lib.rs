@@ -172,6 +172,31 @@ pub fn reference(base: usize, address: usize) -> Option<Rva> {
 
 #[inline]
 pub fn classify(base: usize, address: usize, candidates: &[Rva]) -> Verified<Option<Rva>> {
+    if MODE.load(Ordering::Acquire) == INSTALLED
+        && let Some(located) = located()
+        && base == located.base()
+        && located.layouts().is_ok()
+    {
+        if let Some(key) = located.live_key(base, address) {
+            return Ok(candidates.contains(&key).then_some(key));
+        }
+        if located.all_keys_verified() && candidates.len() <= 8 {
+            let mut all_known = true;
+            for &candidate in candidates {
+                if let Some(live) = located.resolved_key(candidate) {
+                    if live == address {
+                        return Ok(Some(candidate));
+                    }
+                } else {
+                    all_known = false;
+                    break;
+                }
+            }
+            if all_known {
+                return Ok(None);
+            }
+        }
+    }
     let found = reference(base, address);
     if let Some(key) = found
         && candidates.contains(&key)

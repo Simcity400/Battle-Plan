@@ -7,7 +7,7 @@ use engine_fuel::fuel_awards as native;
 use engine_native_memory::{Memory, memory::LiveMemory};
 use engine_sites::Rva;
 use std::{
-    cell::{Cell, RefCell, UnsafeCell},
+    cell::{RefCell, UnsafeCell},
     ops::Range,
     sync::{
         Mutex, MutexGuard, OnceLock, PoisonError,
@@ -347,6 +347,42 @@ impl Spill {
         }
         true
     }
+    fn push_bytes(
+        &self,
+        index: u64,
+        mut entry: Entry,
+        name_required: usize,
+        name_bytes: Option<&[u8]>,
+    ) -> bool {
+        let mut bytes = Vec::new();
+        let copy_len = name_bytes.map_or(0, <[u8]>::len);
+        if engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut bytes, copy_len))
+            .is_err()
+        {
+            self.lost.fetch_min(index, Ordering::AcqRel);
+            return false;
+        }
+        if let Some(src) = name_bytes {
+            bytes.extend_from_slice(src);
+            entry.name = Some((0, src.len()));
+        }
+        let refusal = entry.name_reason;
+        let pushed = Pushed {
+            index,
+            entry,
+            name_required,
+            name: bytes,
+        };
+        if self.pushed.push(pushed).is_err() {
+            self.lost.fetch_min(index, Ordering::AcqRel);
+            return false;
+        }
+        if let Some(reason) = refusal {
+            REFUSAL.record(reason);
+            COUNTERS[8].fetch_add(1, Ordering::Relaxed);
+        }
+        true
+    }
     fn release(&self) {
         drop(self.pushed.take());
         *self.held.lock().unwrap_or_else(PoisonError::into_inner) = Spilled {
@@ -496,9 +532,295 @@ struct Pending {
     refused: bool,
     cause: Option<usize>,
 }
+#[derive(Clone, Copy)]
+struct BatchedRecipient {
+    kind: u32,
+    pointer: usize,
+    host_ptr: usize,
+    recipient: native::Recipient,
+    amount: i64,
+    name: Option<(usize, usize)>,
+    name_required: usize,
+    name_reason: Option<&'static str>,
+}
+
+#[derive(Clone, Copy)]
+enum CandidateName<'a> {
+    None,
+    Slice(&'a [u8]),
+    Range(usize, usize),
+}
+
+#[derive(Default)]
+struct PendingBatch {
+    items: Vec<BatchedRecipient>,
+    names: Vec<u8>,
+    total_name_bytes: usize,
+    max_name_len: usize,
+    table: Vec<u32>,
+    touched: Vec<usize>,
+    touched_overflow: bool,
+}
+
+impl PendingBatch {
+    #[inline(always)]
+    fn hash(kind: u32, pointer: usize, host_ptr: usize) -> usize {
+        let mut h = (pointer as u64).wrapping_mul(0x517c_c1b7_2722_0a95)
+            ^ (host_ptr as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            ^ u64::from(kind).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h ^= h >> 32;
+        h as usize
+    }
+
+    fn clear(&mut self) {
+        self.items.clear();
+        self.names.clear();
+        self.total_name_bytes = 0;
+        self.max_name_len = 0;
+        if !self.touched_overflow && self.touched.len() * 4 < self.table.len() {
+            for &slot in &self.touched {
+                self.table[slot] = 0;
+            }
+        } else {
+            self.table.fill(0);
+        }
+        self.touched.clear();
+        self.touched_overflow = false;
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "decoded coalescing checks every published recipient identity field"
+    )]
+    fn try_coalesce_decoded(
+        &mut self,
+        kind: u32,
+        pointer: usize,
+        host_ptr: usize,
+        recipient: native::Recipient,
+        amount: i64,
+        candidate: CandidateName<'_>,
+        name_reason: Option<&'static str>,
+    ) -> bool {
+        let len = self.table.len();
+        if len == 0 {
+            return false;
+        }
+        let candidate_bytes = match candidate {
+            CandidateName::None => None,
+            CandidateName::Slice(bytes) => Some(bytes),
+            CandidateName::Range(start, len) => Some(&self.names[start..start + len]),
+        };
+        let mask = len - 1;
+        let mut slot = Self::hash(kind, pointer, host_ptr) & mask;
+        loop {
+            let entry = self.table[slot];
+            if entry == 0 {
+                return false;
+            }
+            let item = &mut self.items[(entry - 1) as usize];
+            if item.kind == kind
+                && item.pointer == pointer
+                && item.host_ptr == host_ptr
+                && item.recipient == recipient
+                && item.name_reason == name_reason
+                && item.name.map(|(start, len)| &self.names[start..start + len]) == candidate_bytes
+                && let Some(sum) = item.amount.checked_add(amount)
+            {
+                item.amount = sum;
+                return true;
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+
+    fn rehash(&mut self) {
+        let Some(new_len) = self
+            .items
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(1))
+            .and_then(usize::checked_next_power_of_two)
+            .map(|n| n.max(64))
+        else {
+            self.table.clear();
+            self.touched.clear();
+            self.touched_overflow = false;
+            return;
+        };
+        let mut table = Vec::new();
+        if engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut table, new_len))
+            .is_err()
+        {
+            self.table.clear();
+            self.touched.clear();
+            self.touched_overflow = false;
+            return;
+        }
+        table.resize(new_len, 0);
+        let mask = new_len - 1;
+        self.touched.clear();
+        self.touched_overflow = false;
+        let _ = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.touched, self.items.len())
+        });
+        for (idx, item) in self.items.iter().enumerate() {
+            let mut slot = Self::hash(item.kind, item.pointer, item.host_ptr) & mask;
+            while table[slot] != 0 {
+                slot = (slot + 1) & mask;
+            }
+            table[slot] = (idx + 1) as u32;
+            if self.touched.len() < self.touched.capacity() {
+                self.touched.push(slot);
+            } else {
+                self.touched_overflow = true;
+            }
+        }
+        self.table = table;
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "batched recipient carries key fields, decoded recipient, amount, name and live memory"
+    )]
+    fn push(
+        &mut self,
+        kind: u32,
+        pointer: usize,
+        host_ptr: usize,
+        recipient: native::Recipient,
+        amount: i64,
+        stored_name: Option<&native::StoredName>,
+        mut name_reason: Option<&'static str>,
+        memory: &impl Memory,
+    ) -> bool {
+        let name_required = stored_name.map_or(0, native::StoredName::byte_len);
+        let mut copied_start = None;
+        let candidate = if let Some(stored) = stored_name {
+            if let Some(loaded) = stored.loaded_bytes() {
+                CandidateName::Slice(loaded)
+            } else {
+                let start = self.names.len();
+                if engine_allocation::advisory(|| {
+                    engine_allocation::reserve(&mut self.names, name_required)
+                })
+                .is_err()
+                {
+                    return false;
+                }
+                self.names.resize(start + name_required, 0);
+                match stored.copy(memory, &mut self.names[start..start + name_required]) {
+                    Ok(()) => {
+                        copied_start = Some(start);
+                        CandidateName::Range(start, name_required)
+                    }
+                    Err(reason) => {
+                        self.names.truncate(start);
+                        name_reason = Some(reason);
+                        CandidateName::None
+                    }
+                }
+            }
+        } else {
+            CandidateName::None
+        };
+        if self.try_coalesce_decoded(
+            kind,
+            pointer,
+            host_ptr,
+            recipient,
+            amount,
+            candidate,
+            name_reason,
+        ) {
+            if let Some(start) = copied_start {
+                self.names.truncate(start);
+            }
+            return true;
+        }
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.items, 1)).is_err() {
+            if let Some(start) = copied_start {
+                self.names.truncate(start);
+            }
+            return false;
+        }
+        let name = match candidate {
+            CandidateName::None => None,
+            CandidateName::Range(start, len) => Some((start, len)),
+            CandidateName::Slice(loaded) => {
+                let start = self.names.len();
+                if engine_allocation::advisory(|| {
+                    engine_allocation::reserve(&mut self.names, loaded.len())
+                })
+                .is_err()
+                {
+                    return false;
+                }
+                self.names.extend_from_slice(loaded);
+                Some((start, loaded.len()))
+            }
+        };
+        let idx = self.items.len();
+        self.items.push(BatchedRecipient {
+            kind,
+            pointer,
+            host_ptr,
+            recipient,
+            amount,
+            name,
+            name_required,
+            name_reason,
+        });
+        self.total_name_bytes = self.total_name_bytes.saturating_add(name_required);
+        self.max_name_len = self.max_name_len.max(name_required);
+        if idx < u32::MAX as usize {
+            if self.table.is_empty() || self.items.len().saturating_mul(2) >= self.table.len() {
+                self.rehash();
+            } else {
+                let mask = self.table.len() - 1;
+                let mut slot = Self::hash(kind, pointer, host_ptr) & mask;
+                while self.table[slot] != 0 {
+                    slot = (slot + 1) & mask;
+                }
+                self.table[slot] = (idx + 1) as u32;
+                if !self.touched_overflow {
+                    if self.touched.len() == self.touched.capacity() {
+                        let _ = engine_allocation::advisory(|| {
+                            engine_allocation::reserve(&mut self.touched, 1)
+                        });
+                    }
+                    if self.touched.len() < self.touched.capacity() {
+                        self.touched.push(slot);
+                    } else {
+                        self.touched_overflow = true;
+                    }
+                }
+            }
+        } else {
+            self.table.clear();
+            self.touched.clear();
+            self.touched_overflow = false;
+        }
+        true
+    }
+}
+
+#[derive(Default)]
+struct ThreadState {
+    pending: Option<Pending>,
+    batch: PendingBatch,
+    registry: native::Registry,
+}
+
+impl ThreadState {
+    fn begin_distribution(&mut self, next: Pending) -> Option<Pending> {
+        self.registry = native::Registry::default();
+        self.pending.replace(next)
+    }
+}
+
 thread_local! {
-    static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
-    static REGISTRY: RefCell<native::Registry> = RefCell::new(native::Registry::default());
+    static THREAD_STATE: RefCell<ThreadState> = RefCell::new(ThreadState::default());
 }
 
 fn stop_admission_and_drained() -> bool {
@@ -521,12 +843,18 @@ fn stamp() -> Stamp {
     )
 }
 
-fn held(pending: &Pending) -> Option<native::Located> {
+#[inline(always)]
+fn held_ref(pending: &Pending, epoch_current: bool) -> Option<&native::Located> {
     (!pending.refused
-        && pending.epoch == LOG.epoch.load(Ordering::SeqCst)
+        && epoch_current
         && pending.stamp == stamp()
         && !crate::world_lifetime::invalidating())
-    .then_some(pending.located)
+    .then_some(&pending.located)
+}
+
+#[cfg(test)]
+fn held(pending: &Pending) -> Option<native::Located> {
+    held_ref(pending, pending.epoch == LOG.epoch.load(Ordering::Acquire)).copied()
 }
 
 pub fn presize(memory: &impl Memory, base: usize) {
@@ -792,10 +1120,11 @@ fn append(
     );
     let attempted = match &name {
         Some(name) => {
-            let bytes = name.byte_len() as u64;
+            let len = name.byte_len();
+            raise(&NAME_STRIDE, len, Ordering::Release);
             NAME_ATTEMPTS
-                .fetch_add(bytes, Ordering::Relaxed)
-                .wrapping_add(bytes)
+                .fetch_add(len as u64, Ordering::Relaxed)
+                .wrapping_add(len as u64)
         }
         None => NAME_ATTEMPTS.load(Ordering::Relaxed),
     };
@@ -804,9 +1133,6 @@ fn append(
         attempted_since(attempted, &NAME_CONSUMED),
         Ordering::Release,
     );
-    if let Some(name) = &name {
-        raise(&NAME_STRIDE, name.byte_len(), Ordering::Release);
-    }
     let Some(buffer) = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing)
     else {
         let index = LOG.cursor.fetch_add(1, Ordering::SeqCst);
@@ -822,6 +1148,337 @@ fn append(
     }
     retained
 }
+fn flush_batch_orphans(_call: &Call<'_>, batch: &mut PendingBatch, root: u64, country: u32) {
+    let count = batch.items.len();
+    if count == 0 {
+        batch.clear();
+        return;
+    }
+    let attempted = ENTRY_ATTEMPTS
+        .fetch_add(count as u64, Ordering::Relaxed)
+        .wrapping_add(count as u64);
+    raise(
+        &ENTRY_DEMAND,
+        attempted_since(attempted, &ENTRY_CONSUMED),
+        Ordering::Release,
+    );
+    let attempted = if batch.total_name_bytes != 0 {
+        let bytes = batch.total_name_bytes as u64;
+        raise(&NAME_STRIDE, batch.max_name_len, Ordering::Release);
+        NAME_ATTEMPTS
+            .fetch_add(bytes, Ordering::Relaxed)
+            .wrapping_add(bytes)
+    } else {
+        NAME_ATTEMPTS.load(Ordering::Relaxed)
+    };
+    raise(
+        &NAME_DEMAND,
+        attempted_since(attempted, &NAME_CONSUMED),
+        Ordering::Release,
+    );
+    let buffer = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing);
+    let base_index = LOG.cursor.fetch_add(count as u64, Ordering::AcqRel);
+    if let Some(ref buffer) = buffer {
+        let buf = buffer.0;
+        buf.cursor
+            .fetch_max(base_index + count as u64, Ordering::Relaxed);
+        let pending_entries = (base_index + count as u64 - 1)
+            .wrapping_sub(
+                LOG.consumed
+                    .load(Ordering::Acquire)
+                    .max(buf.base.load(Ordering::Acquire)),
+            )
+            .saturating_add(1);
+        raise(
+            &buf.entries_required,
+            usize::try_from(pending_entries).unwrap_or(usize::MAX),
+            Ordering::Relaxed,
+        );
+        let entries_len = buf.entries.len();
+        let max_start = entries_len
+            .checked_sub(1)
+            .and_then(|last| last.checked_mul(buf.stride));
+        let fast = pending_entries <= entries_len as u64
+            && batch.max_name_len <= buf.stride
+            && u32::try_from(batch.max_name_len).is_ok()
+            && max_start.is_some_and(|m| u32::try_from(m).is_ok() && m < NO_NAME as usize);
+        if fast {
+            let pow2 = entries_len.is_power_of_two();
+            for (offset, item) in batch.items.iter().enumerate() {
+                let index = base_index + offset as u64;
+                let slot = if pow2 {
+                    index as usize & (entries_len - 1)
+                } else {
+                    index as usize % entries_len
+                };
+                let mut name_start = NO_NAME;
+                let mut name_len = 0_u32;
+                if let Some((start, len)) = item.name {
+                    let dst_start = slot * buf.stride;
+                    // SAFETY: `index` exclusively owns `slot` and `len <= buf.stride`.
+                    let dst = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            buf.names.as_ptr().add(dst_start).cast::<u8>().cast_mut(),
+                            len,
+                        )
+                    };
+                    dst.copy_from_slice(&batch.names[start..start + len]);
+                    name_start = dst_start as u32;
+                    name_len = len as u32;
+                }
+                if let Some(reason) = item.name_reason {
+                    REFUSAL.record(reason);
+                    COUNTERS[8].fetch_add(1, Ordering::Relaxed);
+                }
+                let compact = CompactEntry {
+                    root,
+                    payload: CompactPayload::Recipient {
+                        reference: item.recipient.reference,
+                        amount: item.amount,
+                        name_reason: item.name_reason,
+                        country,
+                        owner: item.recipient.owner,
+                        host: item.recipient.host,
+                        name_start,
+                        name_len,
+                        kind: item.recipient.kind,
+                    },
+                };
+                // SAFETY: `index` exclusively owns `buf.entries[slot]`.
+                unsafe {
+                    *buf.entries[slot].entry.get() = compact;
+                    *buf.entries[slot].name_required.get() = item.name_required as u32;
+                }
+                buf.entries[slot]
+                    .published
+                    .store(index + 1, Ordering::Release);
+            }
+            batch.clear();
+            return;
+        }
+    }
+    let absent = buffer.is_none();
+    for (offset, item) in batch.items.iter().enumerate() {
+        let entry = Entry {
+            root,
+            country,
+            recipient: Some(item.recipient),
+            amount: item.amount,
+            name_reason: item.name_reason,
+            ..Default::default()
+        };
+        let bytes = item.name.map(|(s, l)| &batch.names[s..s + l]);
+        if !SPILL.push_bytes(base_index + offset as u64, entry, item.name_required, bytes) {
+            refuse_append(entry, absent);
+        }
+    }
+    batch.clear();
+}
+
+fn append_batch(
+    _call: &Call<'_>,
+    batch: &mut PendingBatch,
+    pending: Pending,
+    settled: native::Settled,
+    memory: &impl Memory,
+) {
+    let items_len = batch.items.len();
+    let count = items_len + 1;
+    let attempted = ENTRY_ATTEMPTS
+        .fetch_add(count as u64, Ordering::Relaxed)
+        .wrapping_add(count as u64);
+    raise(
+        &ENTRY_DEMAND,
+        attempted_since(attempted, &ENTRY_CONSUMED),
+        Ordering::Release,
+    );
+    let attempted = if batch.total_name_bytes != 0 {
+        let bytes = batch.total_name_bytes as u64;
+        raise(&NAME_STRIDE, batch.max_name_len, Ordering::Release);
+        NAME_ATTEMPTS
+            .fetch_add(bytes, Ordering::Relaxed)
+            .wrapping_add(bytes)
+    } else {
+        NAME_ATTEMPTS.load(Ordering::Relaxed)
+    };
+    raise(
+        &NAME_DEMAND,
+        attempted_since(attempted, &NAME_CONSUMED),
+        Ordering::Release,
+    );
+    let root_entry = Entry {
+        root: pending.root,
+        country: pending.started.country,
+        started: pending.started,
+        settled,
+        refused: pending.refused,
+        ..Default::default()
+    };
+    let buffer = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing);
+    let base_index = LOG.cursor.fetch_add(count as u64, Ordering::AcqRel);
+    let root_index = base_index + items_len as u64;
+    let mut retained = true;
+    let mut published_fast = false;
+    if let Some(buffer) = &buffer {
+        let buf = buffer.0;
+        buf.cursor
+            .fetch_max(base_index + count as u64, Ordering::Relaxed);
+        let pending_entries = root_index
+            .wrapping_sub(
+                LOG.consumed
+                    .load(Ordering::Acquire)
+                    .max(buf.base.load(Ordering::Acquire)),
+            )
+            .saturating_add(1);
+        raise(
+            &buf.entries_required,
+            usize::try_from(pending_entries).unwrap_or(usize::MAX),
+            Ordering::Relaxed,
+        );
+        let entries_len = buf.entries.len();
+        let max_start = entries_len
+            .checked_sub(1)
+            .and_then(|last| last.checked_mul(buf.stride));
+        let fast = pending_entries <= entries_len as u64
+            && batch.max_name_len <= buf.stride
+            && u32::try_from(batch.max_name_len).is_ok()
+            && max_start.is_some_and(|m| u32::try_from(m).is_ok() && m < NO_NAME as usize);
+        if fast {
+            let root_count = buf.roots.len();
+            let start_pos = buf.root_cursor.fetch_add(1, Ordering::Relaxed) % root_count;
+            let owner = root_index + 1;
+            let mut claimed = None;
+            for step in 0..root_count {
+                let pos = (start_pos + step) % root_count;
+                let root_slot = &buf.roots[pos];
+                if root_slot.owner.load(Ordering::Relaxed) == 0
+                    && root_slot
+                        .owner
+                        .compare_exchange(0, owner, Ordering::Acquire, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    claimed = Some(pos);
+                    break;
+                }
+            }
+            if let Some(root_pos) = claimed {
+                let pow2 = entries_len.is_power_of_two();
+                for (offset, item) in batch.items.iter().enumerate() {
+                    let index = base_index + offset as u64;
+                    let slot = if pow2 {
+                        index as usize & (entries_len - 1)
+                    } else {
+                        index as usize % entries_len
+                    };
+                    let mut name_start = NO_NAME;
+                    let mut name_len = 0_u32;
+                    if let Some((start, len)) = item.name {
+                        let dst_start = slot * buf.stride;
+                        // SAFETY: `index` exclusively owns `slot` and `len <= buf.stride`.
+                        let dst = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                buf.names.as_ptr().add(dst_start).cast::<u8>().cast_mut(),
+                                len,
+                            )
+                        };
+                        dst.copy_from_slice(&batch.names[start..start + len]);
+                        name_start = dst_start as u32;
+                        name_len = len as u32;
+                    }
+                    if let Some(reason) = item.name_reason {
+                        REFUSAL.record(reason);
+                        COUNTERS[8].fetch_add(1, Ordering::Relaxed);
+                    }
+                    let compact = CompactEntry {
+                        root: pending.root,
+                        payload: CompactPayload::Recipient {
+                            reference: item.recipient.reference,
+                            amount: item.amount,
+                            name_reason: item.name_reason,
+                            country: pending.started.country,
+                            owner: item.recipient.owner,
+                            host: item.recipient.host,
+                            name_start,
+                            name_len,
+                            kind: item.recipient.kind,
+                        },
+                    };
+                    // SAFETY: `index` exclusively owns `buf.entries[slot]`.
+                    unsafe {
+                        *buf.entries[slot].entry.get() = compact;
+                        *buf.entries[slot].name_required.get() = item.name_required as u32;
+                    }
+                    buf.entries[slot]
+                        .published
+                        .store(index + 1, Ordering::Release);
+                }
+                // SAFETY: `buf.roots[root_pos].owner` was exclusively claimed from 0 to `root_index + 1`.
+                unsafe {
+                    *buf.roots[root_pos].data.get() = RootData {
+                        started: root_entry.started,
+                        settled: root_entry.settled,
+                        amount: root_entry.amount,
+                        name: root_entry.name,
+                        name_reason: root_entry.name_reason,
+                        refused: root_entry.refused,
+                    };
+                }
+                let root_slot = if pow2 {
+                    root_index as usize & (entries_len - 1)
+                } else {
+                    root_index as usize % entries_len
+                };
+                let compact = CompactEntry {
+                    root: root_entry.root,
+                    payload: CompactPayload::Root {
+                        country: root_entry.country,
+                        index: root_pos as u32,
+                    },
+                };
+                // SAFETY: `root_index` exclusively owns `buf.entries[root_slot]`.
+                unsafe {
+                    *buf.entries[root_slot].entry.get() = compact;
+                    *buf.entries[root_slot].name_required.get() = 0;
+                }
+                buf.entries[root_slot]
+                    .published
+                    .store(root_index + 1, Ordering::Release);
+                published_fast = true;
+            }
+        }
+    }
+    if !published_fast {
+        let absent = buffer.is_none();
+        for (offset, item) in batch.items.iter().enumerate() {
+            let entry = Entry {
+                root: pending.root,
+                country: pending.started.country,
+                recipient: Some(item.recipient),
+                amount: item.amount,
+                name_reason: item.name_reason,
+                ..Default::default()
+            };
+            let bytes = item.name.map(|(s, l)| &batch.names[s..s + l]);
+            if !SPILL.push_bytes(base_index + offset as u64, entry, item.name_required, bytes) {
+                refuse_append(entry, absent);
+                retained = false;
+            }
+        }
+        if !SPILL.push(root_index, root_entry, None, memory) {
+            refuse_append(root_entry, absent);
+            retained = false;
+        }
+    }
+    batch.clear();
+    if pending.refused || !retained {
+        if let Some(cause) = pending.cause {
+            SETTLED_CAUSES[cause].fetch_add(1, Ordering::Relaxed);
+        }
+        COUNTERS[2].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
 fn append_root(call: &Call<'_>, pending: Pending, settled: native::Settled, memory: &impl Memory) {
     let retained = append(
         call,
@@ -872,7 +1529,12 @@ fn append_buffer(
     {
         return spill.push(index, entry, name, memory);
     }
-    let slot = index as usize % buffer.entries.len();
+    let entries_len = buffer.entries.len();
+    let slot = if entries_len.is_power_of_two() {
+        index as usize & (entries_len - 1)
+    } else {
+        index as usize % entries_len
+    };
     let name_required = name.as_ref().map_or(0, native::StoredName::byte_len);
     let Ok(name_required_u32) = u32::try_from(name_required) else {
         return spill.push(index, entry, name, memory);
@@ -1048,13 +1710,15 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     let base = BASE.load(Ordering::Relaxed);
     if tag == 9 {
         let status = registers.rsi;
-        if let Some(mut pending) = PENDING.get()
-            && pending.started.status == status
-        {
-            pending.refused = true;
-            pending.cause.get_or_insert(1);
-            PENDING.set(Some(pending));
-        }
+        THREAD_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            if let Some(pending) = state.pending.as_mut()
+                && pending.started.status == status
+            {
+                pending.refused = true;
+                pending.cause.get_or_insert(1);
+            }
+        });
         if status == 0
             || !append(
                 &call,
@@ -1083,8 +1747,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     if tag == 0 {
         match native::start_held(&memory, base, registers.rsi, None) {
             Ok((started, located, _)) => {
-                REGISTRY.with(|registry| *registry.borrow_mut() = native::Registry::default());
-                let old = PENDING.replace(Some(Pending {
+                let next = Pending {
                     root: ROOT.fetch_add(1, Ordering::Relaxed),
                     epoch: LOG.epoch.load(Ordering::Acquire),
                     started,
@@ -1093,147 +1756,195 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                     received: [0; 3],
                     refused: false,
                     cause: None,
-                }));
-                if old.is_some() {
-                    COUNTERS[0].fetch_add(1, Ordering::Relaxed);
-                    PENDING.with(|pending| {
-                        if let Some(mut p) = pending.get() {
-                            p.refused = true;
-                            p.cause.get_or_insert(5);
-                            pending.set(Some(p));
+                };
+                THREAD_STATE.with(|state| {
+                    let state = &mut *state.borrow_mut();
+                    let old = state.begin_distribution(next);
+                    if let Some(prev) = old {
+                        flush_batch_orphans(
+                            &call,
+                            &mut state.batch,
+                            prev.root,
+                            prev.started.country,
+                        );
+                        COUNTERS[0].fetch_add(1, Ordering::Relaxed);
+                        if let Some(pending) = state.pending.as_mut() {
+                            pending.refused = true;
+                            pending.cause.get_or_insert(5);
                         }
-                    });
-                }
+                    } else {
+                        state.batch.clear();
+                    }
+                });
             }
             Err(reason) => {
                 REFUSAL.record(reason);
-                PENDING.set(None);
+                THREAD_STATE.with(|state| {
+                    let state = &mut *state.borrow_mut();
+                    state.registry = native::Registry::default();
+                    if let Some(prev) = state.pending.take() {
+                        flush_batch_orphans(
+                            &call,
+                            &mut state.batch,
+                            prev.root,
+                            prev.started.country,
+                        );
+                    } else {
+                        state.batch.clear();
+                    }
+                });
                 COUNTERS[0].fetch_add(1, Ordering::Relaxed);
             }
         }
         return;
     }
-    let Some(mut pending) = PENDING.get() else {
-        COUNTERS[1].fetch_add(1, Ordering::Relaxed);
-        return;
-    };
-    if pending.epoch != LOG.epoch.load(Ordering::Acquire) {
-        pending.refused = true;
-        pending.cause.get_or_insert(0);
-    }
-    let located = held(&pending);
-    if tag == 1 {
-        PENDING.set(None);
-        let settled = native::settle_held(
-            &memory,
-            base,
-            pending.started,
-            registers.rbx,
-            located.as_ref(),
-        )
-        .map(|(settled, taken)| {
-            if taken {
-                HELD.increment(0);
+    THREAD_STATE.with(|state| {
+        let state = &mut *state.borrow_mut();
+        if tag == 1 {
+            let Some(mut pending) = state.pending.take() else {
+                COUNTERS[1].fetch_add(1, Ordering::Relaxed);
+                return;
+            };
+            let epoch_current = pending.epoch == LOG.epoch.load(Ordering::Acquire);
+            if !epoch_current {
+                pending.refused = true;
+                pending.cause.get_or_insert(0);
             }
-            settled
-        });
-        if let Err(reason) = &settled {
-            pending.cause.get_or_insert(6);
-            REFUSAL.record(reason);
-        }
-        if !settled
-            .as_ref()
-            .is_ok_and(|s| s.received == pending.received)
-        {
-            pending.refused = true;
-            pending.cause.get_or_insert(4);
-        }
-        if pending.refused {
-            REFUSAL.record(SETTLED_NAMES[pending.cause.unwrap_or(4)]);
-        }
-        append_root(&call, pending, settled.unwrap_or_default(), &memory);
-        return;
-    }
-    let (kind, pointer, amount) = match tag {
-        2..=6 => (0, registers.rax, registers.rdx as i64),
-        7 => (2, registers.rcx, registers.rdx as i64),
-        8 => (1, registers.rdi, registers.rbx as i64),
-        _ => {
-            pending.refused = true;
-            pending.cause.get_or_insert(7);
-            PENDING.set(Some(pending));
-            return;
-        }
-    };
-    pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
-    let recipient_and_name = if kind == 1 {
-        if let Some(located) = located.as_ref() {
-            REGISTRY.with(|registry| {
-                native::air_held_with(
-                    &memory,
-                    base,
-                    pointer,
-                    registers.rdx,
-                    pending.started.country,
-                    Some(&located.country),
-                    Some(&mut registry.borrow_mut()),
-                )
-            })
-        } else {
-            native::air_held(
+            let settled = native::settle_held(
                 &memory,
                 base,
-                pointer,
-                registers.rdx,
-                pending.started.country,
-                None,
+                pending.started,
+                registers.rbx,
+                held_ref(&pending, epoch_current),
             )
-        }
-        .map(|(recipient, taken)| (recipient, None, taken))
-    } else if located.is_some() {
-        REGISTRY.with(|registry| {
-            native::unit_with_name(&memory, base, pointer, kind, Some(&mut registry.borrow_mut()))
-        })
-        .map(|(recipient, name, taken)| (recipient, Some(name), taken))
-    } else {
-        native::unit_with_name(&memory, base, pointer, kind, None)
-            .map(|(recipient, name, taken)| (recipient, Some(name), taken))
-    };
-    match recipient_and_name {
-        Ok((recipient, name, taken)) => {
-            if taken {
-                HELD.increment(if kind == 1 { 1 } else { 2 });
+            .map(|(settled, taken)| {
+                if taken {
+                    HELD.increment(0);
+                }
+                settled
+            });
+            if let Err(reason) = &settled {
+                pending.cause.get_or_insert(6);
+                REFUSAL.record(reason);
             }
-            let (name, name_reason) = match name {
-                Some(Ok(n)) => (Some(n), None),
-                Some(Err(reason)) => (None, Some(reason)),
-                None => (None, None),
-            };
-            if !append(
-                &call,
-                Entry {
-                    root: pending.root,
-                    country: pending.started.country,
-                    recipient: Some(recipient),
-                    amount,
-                    name_reason,
-                    ..Default::default()
-                },
-                name,
-                &memory,
-            ) {
+            if !settled
+                .as_ref()
+                .is_ok_and(|s| s.received == pending.received)
+            {
                 pending.refused = true;
-                pending.cause.get_or_insert(3);
+                pending.cause.get_or_insert(4);
+            }
+            if pending.refused {
+                REFUSAL.record(SETTLED_NAMES[pending.cause.unwrap_or(4)]);
+            }
+            append_batch(
+                &call,
+                &mut state.batch,
+                pending,
+                settled.unwrap_or_default(),
+                &memory,
+            );
+            return;
+        }
+        let Some(pending) = state.pending.as_mut() else {
+            COUNTERS[1].fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let epoch_current = pending.epoch == LOG.epoch.load(Ordering::Acquire);
+        if !epoch_current {
+            pending.refused = true;
+            pending.cause.get_or_insert(0);
+        }
+        let (kind, pointer, host_ptr, amount) = match tag {
+            2..=6 => (0, registers.rax, 0, registers.rdx as i64),
+            7 => (2, registers.rcx, 0, registers.rdx as i64),
+            8 => (1, registers.rdi, registers.rdx, registers.rbx as i64),
+            _ => {
+                pending.refused = true;
+                pending.cause.get_or_insert(7);
+                return;
+            }
+        };
+        pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
+        let recipient_and_name = {
+            let located = held_ref(pending, epoch_current);
+            if kind == 1 {
+                if let Some(located) = located {
+                    native::air_held_with(
+                        &memory,
+                        base,
+                        pointer,
+                        registers.rdx,
+                        pending.started.country,
+                        Some(&located.country),
+                        Some(&mut state.registry),
+                    )
+                } else {
+                    native::air_held(
+                        &memory,
+                        base,
+                        pointer,
+                        registers.rdx,
+                        pending.started.country,
+                        None,
+                    )
+                }
+                .map(|(recipient, taken)| (recipient, None, taken))
+            } else if located.is_some() {
+                native::unit_with_name(&memory, base, pointer, kind, Some(&mut state.registry))
+                    .map(|(recipient, name, taken)| (recipient, Some(name), taken))
+            } else {
+                native::unit_with_name(&memory, base, pointer, kind, None)
+                    .map(|(recipient, name, taken)| (recipient, Some(name), taken))
+            }
+        };
+        match recipient_and_name {
+            Ok((recipient, name, taken)) => {
+                if taken {
+                    HELD.increment(if kind == 1 { 1 } else { 2 });
+                }
+                let (name, name_reason) = match name {
+                    Some(Ok(n)) => (Some(n), None),
+                    Some(Err(reason)) => (None, Some(reason)),
+                    None => (None, None),
+                };
+                let buffered = state.batch.push(
+                    kind,
+                    pointer,
+                    host_ptr,
+                    recipient,
+                    amount,
+                    name.as_ref(),
+                    name_reason,
+                    &memory,
+                );
+                if !buffered
+                    && !append(
+                        &call,
+                        Entry {
+                            root: pending.root,
+                            country: pending.started.country,
+                            recipient: Some(recipient),
+                            amount,
+                            name_reason,
+                            ..Default::default()
+                        },
+                        name,
+                        &memory,
+                    )
+                {
+                    pending.refused = true;
+                    pending.cause.get_or_insert(3);
+                }
+            }
+            Err(reason) => {
+                REFUSAL.record(reason);
+                pending.refused = true;
+                pending.cause.get_or_insert(2);
+                COUNTERS[3].fetch_add(1, Ordering::Relaxed);
             }
         }
-        Err(reason) => {
-            REFUSAL.record(reason);
-            pending.refused = true;
-            pending.cause.get_or_insert(2);
-            COUNTERS[3].fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    PENDING.set(Some(pending));
+    });
 }
 
 pub fn drain(

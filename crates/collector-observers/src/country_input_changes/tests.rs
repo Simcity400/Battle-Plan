@@ -756,3 +756,36 @@ fn denied_startup_country_offer_stays_uncertified_and_retries_without_stopping()
     engine_allocation::set_hooks(None, None);
     engine_allocation::set_stop_hook(None);
 }
+
+#[test]
+fn scalar_stability_writes_leave_stability_lines_unmarked_while_modifier_writers_mark_both() {
+    let domain = Domain::enabled(64);
+    let country = country(4);
+    let first = country.as_ptr() as usize;
+    let stability = take(&domain, Table::Stability).0;
+    let lines = take(&domain, Table::StabilityLines).0;
+    assert!(stability.is_some() && lines.is_some());
+    for name in [
+        "add_stability",
+        "add_war_support",
+        "set_stability",
+        "set_war_support",
+    ] {
+        drop(domain.notify(site(name), first, 0));
+        assert_eq!(take(&domain, Table::Stability), (stability, vec![4]), "{name}");
+        assert_eq!(take(&domain, Table::StabilityLines), (lines, vec![]), "{name}");
+    }
+    for name in ["recalculate_modifiers", "weekly_update"] {
+        drop(domain.notify(site(name), first, 0));
+        assert_eq!(take(&domain, Table::Stability), (stability, vec![4]), "{name}");
+        assert_eq!(
+            take(&domain, Table::StabilityLines),
+            (lines, vec![4]),
+            "{name}"
+        );
+    }
+    drop(domain.forward(Forward::ResetCountry, first, 0));
+    assert_eq!(take(&domain, Table::Stability), (stability, vec![4]));
+    assert_eq!(take(&domain, Table::StabilityLines), (lines, vec![4]));
+    drop(country);
+}

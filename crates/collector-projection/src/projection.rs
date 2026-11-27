@@ -57,6 +57,7 @@ pub struct SlicedSkip {
     pub research_bonuses_carried: bool,
     pub research_modifiers_carried: bool,
     pub technologies_carried: bool,
+    pub projects_masked: bool,
 }
 
 pub struct ProjectionScratch {
@@ -120,6 +121,14 @@ impl<'a> Projection<'a> {
             .observed_comparison_baseline::<S>(self.branch, self.hour, self.force)
     }
 
+    pub fn slice_meta(
+        &self,
+        table: TableId,
+    ) -> Option<(replay_frame::frame::BaselineToken, Option<usize>)> {
+        self.encoder
+            .slice_meta(table, self.branch, self.hour, self.force)
+    }
+
     pub fn slice_baseline_rows<S: TableSchema>(
         &self,
     ) -> Option<(replay_frame::frame::BaselineToken, &'a [S::Row])> {
@@ -131,6 +140,22 @@ impl<'a> Projection<'a> {
 
     pub fn current_stamp(&self) -> (u64, BranchId, Hour) {
         (self.encoder.identity(), self.branch, self.hour)
+    }
+
+    pub fn encoder_revision(&self) -> u64 {
+        self.encoder.revision()
+    }
+
+    pub fn has_shared_rows(&self, table: TableId) -> bool {
+        self.encoder.has_shared_rows(table)
+    }
+
+    pub fn untracked_slice_token(
+        &self,
+        table: TableId,
+    ) -> Option<replay_frame::frame::BaselineToken> {
+        self.encoder
+            .untracked_slice_token(table, self.branch, self.hour, self.force)
     }
 
     pub fn take_custom<T: Send + 'static>(&self, table: TableId) -> Option<Box<T>> {
@@ -198,9 +223,27 @@ impl<'a> Projection<'a> {
         {
             return None;
         }
-        let (token, committed_hour) =
+        if let Some((token, committed_hour)) =
             self.encoder
-                .republish_token(S::ID, self.branch, self.hour, self.force)?;
+                .republish_token(S::ID, self.branch, self.hour, self.force)
+        {
+            if committed_hour != held.hour {
+                return None;
+            }
+            held.hour = self.hour;
+            if order.ledger_stamp == Some((self.encoder.identity(), self.branch, committed_hour)) {
+                order.ledger_stamp = Some((self.encoder.identity(), self.branch, self.hour));
+            }
+            order.republished = order.republished.saturating_add(1);
+            return Some(TableInput::ComparedEqual(token));
+        }
+        let baseline = self.encoder.certified_keyframe_baseline(
+            S::ID,
+            self.branch,
+            self.hour,
+            self.force,
+        )?;
+        let committed_hour = self.encoder.committed_hour(S::ID)?;
         if committed_hour != held.hour {
             return None;
         }
@@ -209,7 +252,7 @@ impl<'a> Projection<'a> {
             order.ledger_stamp = Some((self.encoder.identity(), self.branch, self.hour));
         }
         order.republished = order.republished.saturating_add(1);
-        Some(TableInput::ComparedEqual(token))
+        Some(TableInput::SharedComplete(std::sync::Arc::clone(baseline)))
     }
 
     pub fn republish_uniform_optional_i32<S: TableSchema>(
@@ -297,6 +340,7 @@ impl<'a> Projection<'a> {
                         keys: Vec::new(),
                         owners: Vec::new(),
                         ranges: snapshot.ranges.clone(),
+                        kept_masks: Vec::new(),
                         rows: S::wrap(snapshot.changed.clone()),
                     }),
                 }
@@ -338,6 +382,7 @@ impl<'a> Projection<'a> {
             ranges: Vec::new(),
             owners,
             keys: Vec::new(),
+            kept_masks: Vec::new(),
             rows,
         };
         self.certified_update(update)
@@ -792,7 +837,7 @@ struct Ledgers<C> {
     held: Ledger<C>,
     next: Ledger<C>,
     seen: Vec<bool>,
-    edits: Vec<(u128, Option<usize>)>,
+    edits: Vec<(u128, Option<(usize, u64)>)>,
     index: std::collections::HashMap<u128, usize, foldhash::fast::FixedState>,
     row_bytes: Vec<u8>,
     fixed_patches: Vec<(usize, Option<C>)>,
@@ -813,13 +858,16 @@ impl<C> Default for Ledgers<C> {
 }
 
 impl Projection<'_> {
+    #[expect(clippy::too_many_arguments, reason = "internal ledger projection helper")]
     fn ledger_table<S: TableSchema, T, C: Copy + PartialEq + Send + 'static>(
         &mut self,
         outcome: Outcome,
         source: &[T],
         key: impl Fn(&T) -> u128,
         record: impl Fn(usize, &T, &mut Record<'_>) -> Option<C>,
-        convert: impl Fn(&T) -> S::Row,
+        use_masks: bool,
+        keep_mask: impl Fn(&C, &C, bool) -> u64,
+        convert: impl Fn(&T, u64) -> S::Row,
     ) -> TableInput {
         let (held, held_stamp): (Option<Box<Ledgers<C>>>, Option<(u64, BranchId, Hour)>) = {
             let mut order = self.scratch.table(S::ID);
@@ -833,6 +881,7 @@ impl Projection<'_> {
         };
         let encoder = self.encoder;
         let shared = encoder.slice_meta(S::ID, self.branch, self.hour, self.force);
+        let mask_active = use_masks && !encoder.has_shared_rows(S::ID);
         let complete = matches!(outcome, Outcome::Rows { .. })
             && !replay_data::cadence::is_staggered(S::ID)
             && source.len() >= outcome.len();
@@ -846,8 +895,8 @@ impl Projection<'_> {
                 outcome,
                 source,
                 &key,
-                |row, previous| convert(row) == *previous,
-                &convert,
+                |row, previous| convert(row, 0) == *previous,
+                |row| convert(row, 0),
             );
         }
         let source = &source[..outcome.len()];
@@ -911,19 +960,25 @@ impl Projection<'_> {
                 }
                 let row_key = key(row);
                 if held.keys.get(at) == Some(&row_key) {
-                    if fixed.is_some()
-                        && fixed == held.fixed[at]
-                        && row_bytes.as_slice() == held.span(at)
-                    {
+                    let same_bytes = row_bytes.as_slice() == held.span(at);
+                    if fixed.is_some() && fixed == held.fixed[at] && same_bytes {
                         continue;
                     }
+                    let kept = if mask_active {
+                        match (held.fixed[at], fixed) {
+                            (Some(prev), Some(cur)) => keep_mask(&prev, &cur, same_bytes),
+                            _ => 0,
+                        }
+                    } else {
+                        0
+                    };
                     if edits.len() == edits.capacity()
                         && engine_allocation::reserve(edits, 1).is_err()
                     {
                         return unavailable("collector allocation failed").into();
                     }
-                    edits.push((row_key, Some(at)));
-                    if row_bytes.as_slice() == held.span(at) {
+                    edits.push((row_key, Some((at, kept))));
+                    if same_bytes {
                         if fixed_patches.len() == fixed_patches.capacity()
                             && engine_allocation::reserve(fixed_patches, 1).is_err()
                         {
@@ -985,16 +1040,22 @@ impl Projection<'_> {
             let row_key = key(row);
             if aligned {
                 if held.keys.get(at) == Some(&row_key) {
-                    if !(fixed.is_some()
-                        && fixed == held.fixed[at]
-                        && &next.bytes[start..end] == held.span(at))
-                    {
+                    let same_bytes = &next.bytes[start..end] == held.span(at);
+                    if !(fixed.is_some() && fixed == held.fixed[at] && same_bytes) {
+                        let kept = if mask_active {
+                            match (held.fixed[at], fixed) {
+                                (Some(prev), Some(cur)) => keep_mask(&prev, &cur, same_bytes),
+                                _ => 0,
+                            }
+                        } else {
+                            0
+                        };
                         if edits.len() == edits.capacity()
                             && engine_allocation::reserve(edits, 1).is_err()
                         {
                             return unavailable("collector allocation failed").into();
                         }
-                        edits.push((row_key, Some(at)));
+                        edits.push((row_key, Some((at, kept))));
                     }
                 } else {
                     aligned = false;
@@ -1026,7 +1087,7 @@ impl Projection<'_> {
                             edits.push((removed, None));
                         }
                     }
-                    finalize_ledger_edits::<S, T>(edits, source, &convert)
+                    finalize_ledger_edits::<S, T>(edits, source, mask_active, &convert)
                 } else {
                     ledger_update::<S, T, C>(
                         held,
@@ -1036,6 +1097,8 @@ impl Projection<'_> {
                         index,
                         first_unaligned,
                         source,
+                        mask_active,
+                        &keep_mask,
                         &convert,
                     )
                 };
@@ -1052,8 +1115,8 @@ impl Projection<'_> {
                 outcome,
                 source,
                 &key,
-                |row, previous| convert(row) == *previous,
-                &convert,
+                |row, previous| convert(row, 0) == *previous,
+                |row| convert(row, 0),
             ),
         };
         if matches!(
@@ -1136,11 +1199,13 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     held: &Ledger<C>,
     next: &Ledger<C>,
     seen: &mut Vec<bool>,
-    edits: &mut Vec<(u128, Option<usize>)>,
+    edits: &mut Vec<(u128, Option<(usize, u64)>)>,
     index: &mut std::collections::HashMap<u128, usize, foldhash::fast::FixedState>,
     first_unaligned: usize,
     source: &[T],
-    convert: impl Fn(&T) -> S::Row,
+    mask_active: bool,
+    keep_mask: impl Fn(&C, &C, bool) -> u64,
+    convert: impl Fn(&T, u64) -> S::Row,
 ) -> Result<Option<replay_data::sliced::SliceUpdate>, &'static str> {
     const DUPLICATE: &str = "walker produced duplicate engine ids";
     const ALLOCATION: &str = "collector allocation failed";
@@ -1198,17 +1263,23 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
             }
             found
         };
-        match old {
+        let kept = match old {
             Some(old) => {
                 if std::mem::replace(&mut seen[old], true) {
                     return Err(DUPLICATE);
                 }
                 matched += 1;
-                if next.fixed[at].is_some()
-                    && next.fixed[at] == held.fixed[old]
-                    && next.span(at) == held.span(old)
-                {
+                let same_bytes = next.span(at) == held.span(old);
+                if next.fixed[at].is_some() && next.fixed[at] == held.fixed[old] && same_bytes {
                     continue;
+                }
+                if mask_active {
+                    match (held.fixed[old], next.fixed[at]) {
+                        (Some(prev), Some(cur)) => keep_mask(&prev, &cur, same_bytes),
+                        _ => 0,
+                    }
+                } else {
+                    0
                 }
             }
             None => {
@@ -1216,12 +1287,13 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
                 if !added.insert(key) {
                     return Err(DUPLICATE);
                 }
+                0
             }
-        }
+        };
         if edits.len() == edits.capacity() {
             engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
         }
-        edits.push((key, Some(at)));
+        edits.push((key, Some((at, kept))));
     }
     if matched < held.keys.len() {
         for (old, _) in seen.iter().enumerate().filter(|(_, was_seen)| !**was_seen) {
@@ -1231,13 +1303,14 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
             edits.push((held.keys[old], None));
         }
     }
-    finalize_ledger_edits::<S, T>(edits, source, convert)
+    finalize_ledger_edits::<S, T>(edits, source, mask_active, convert)
 }
 
 fn finalize_ledger_edits<S: TableSchema, T>(
-    edits: &mut [(u128, Option<usize>)],
+    edits: &mut [(u128, Option<(usize, u64)>)],
     source: &[T],
-    convert: impl Fn(&T) -> S::Row,
+    mask_active: bool,
+    convert: impl Fn(&T, u64) -> S::Row,
 ) -> Result<Option<replay_data::sliced::SliceUpdate>, &'static str> {
     const ALLOCATION: &str = "collector allocation failed";
     if edits.is_empty() {
@@ -1248,18 +1321,34 @@ fn finalize_ledger_edits<S: TableSchema, T>(
     }
     let mut keys = Vec::new();
     let mut rows = Vec::new();
+    let mut kept_masks = Vec::new();
     engine_allocation::reserve(&mut keys, edits.len()).map_err(|_| ALLOCATION)?;
     engine_allocation::reserve(&mut rows, edits.len()).map_err(|_| ALLOCATION)?;
-    for &(key, at) in edits.iter() {
+    let any_kept = mask_active
+        && edits
+            .iter()
+            .any(|&(_, entry)| entry.is_some_and(|(_, kept)| kept != 0));
+    if any_kept {
+        engine_allocation::reserve(&mut kept_masks, edits.len()).map_err(|_| ALLOCATION)?;
+    }
+    for &(key, entry) in edits.iter() {
         keys.push(key);
-        if let Some(at) = at {
-            rows.push(convert(&source[at]));
+        if let Some((at, kept)) = entry {
+            rows.push(convert(&source[at], if any_kept { kept } else { 0 }));
+            if any_kept {
+                kept_masks.push(kept);
+            }
         }
     }
-    Ok(Some(replay_data::sliced::SliceUpdate::keyed(
-        keys,
-        TableRows::from_rows::<S>(rows),
-    )))
+    Ok(Some(if any_kept {
+        replay_data::sliced::SliceUpdate::keyed_masked(
+            keys,
+            TableRows::from_rows::<S>(rows),
+            kept_masks,
+        )
+    } else {
+        replay_data::sliced::SliceUpdate::keyed(keys, TableRows::from_rows::<S>(rows))
+    }))
 }
 
 pub fn ledger_table<S: TableSchema, T, C: Copy + PartialEq + Send + 'static>(
@@ -1271,12 +1360,43 @@ pub fn ledger_table<S: TableSchema, T, C: Copy + PartialEq + Send + 'static>(
     convert: impl Fn(&T) -> S::Row,
 ) -> TableInput {
     debug_assert!(replay_data::sliced::takes_keyed_updates(S::ID));
-    let convert = |native: &T| displayed::<S>(convert(native));
+    let convert = |native: &T, _kept: u64| displayed::<S>(convert(native));
     let Some(projection) = projection else {
-        return table::<S, _>(outcome, source, convert).into();
+        return table::<S, _>(outcome, source, |native| convert(native, 0)).into();
     };
     crate::table_clock::timed(S::ID, || {
-        projection.ledger_table::<S, T, C>(outcome, source, key, record, convert)
+        projection.ledger_table::<S, T, C>(
+            outcome,
+            source,
+            key,
+            record,
+            false,
+            |_, _, _| 0,
+            convert,
+        )
+    })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "masked ledger projection takes key, record, keep-mask and masked row converter"
+)]
+pub fn ledger_table_masked<S: TableSchema, T, C: Copy + PartialEq + Send + 'static>(
+    projection: Option<&mut Projection<'_>>,
+    outcome: Outcome,
+    source: &[T],
+    key: impl Fn(&T) -> u128,
+    record: impl Fn(usize, &T, &mut Record<'_>) -> Option<C>,
+    keep_mask: impl Fn(&C, &C, bool) -> u64,
+    convert: impl Fn(&T, u64) -> S::Row,
+) -> TableInput {
+    debug_assert!(replay_data::sliced::takes_keyed_updates(S::ID));
+    let convert = |native: &T, kept: u64| displayed::<S>(convert(native, kept));
+    let Some(projection) = projection else {
+        return table::<S, _>(outcome, source, |native| convert(native, 0)).into();
+    };
+    crate::table_clock::timed(S::ID, || {
+        projection.ledger_table::<S, T, C>(outcome, source, key, record, true, keep_mask, convert)
     })
 }
 

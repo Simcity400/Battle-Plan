@@ -65,7 +65,7 @@ impl RowCells {
     }
 
     pub fn release_scratch(&mut self) {
-        const LIMIT: usize = 1024 * 1024;
+        const LIMIT: usize = 4 * 1024 * 1024;
         self.batch.release_scratch();
         self.entries.clear();
         if self.entries.capacity().saturating_mul(size_of::<Entry>()) > LIMIT {
@@ -213,6 +213,64 @@ impl RowCells {
         }
         hour.row(row.key(), &inputs[..self.entries.len()])
     }
+
+    fn row_masked<R: RowCodec>(
+        &mut self,
+        hour: &mut Hour<'_>,
+        row: &R,
+        kept: u64,
+        columns: usize,
+    ) -> io::Result<()> {
+        if kept == 0 {
+            return self.row(hour, row, 0);
+        }
+        if columns > MAX_FIELDS {
+            return self.row(hour, row, kept);
+        }
+        self.entries.clear();
+        self.bytes.clear();
+        self.u32s.clear();
+        self.u64s.clear();
+        let mut inputs = [Input::Kept; MAX_FIELDS];
+        let mut present = [false; MAX_FIELDS];
+        let diff = !kept & if columns == MAX_FIELDS { u64::MAX } else { (1_u64 << columns) - 1 };
+        if diff != 0 {
+            row.visit_wire_masked(diff, &mut |index, field| {
+                if index >= columns || present[index] {
+                    return Err(invalid_static(
+                        "Row fields are not visited once each in schema order",
+                    ));
+                }
+                let entry = self.take(field)?;
+                engine_allocation::reserve(&mut self.entries, 1)?;
+                self.entries.push(entry);
+                present[index] = true;
+                Ok(())
+            })?;
+            let mut next = 0_usize;
+            for (column, input) in inputs.iter_mut().enumerate().take(columns) {
+                if !present[column] {
+                    continue;
+                }
+                *input = match self.entries[next] {
+                    Entry::Cell(cell) => Input::Value(cell),
+                    Entry::Text(start, len) => Input::Text(at(&self.bytes, (start, len))),
+                    Entry::Opaque(start, len) => {
+                        Input::Value(Cell::Opaque(at(&self.bytes, (start, len))))
+                    }
+                    Entry::U32s(start, len) => {
+                        Input::Value(Cell::U32List(at(&self.u32s, (start, len))))
+                    }
+                    Entry::U64s(start, len) => {
+                        Input::Value(Cell::U64List(at(&self.u64s, (start, len))))
+                    }
+                    Entry::Unrecorded => Input::Unrecorded,
+                };
+                next += 1;
+            }
+        }
+        hour.row(row.key(), &inputs[..columns])
+    }
 }
 
 fn put(batch: &mut Batch, column: usize, field: Field<'_>) -> io::Result<()> {
@@ -281,6 +339,13 @@ pub enum TableInput<'a, R> {
     Same { read: bool, sample: Sample },
     Changes {
         rows: &'a [R],
+        removed: &'a [u128],
+        read: bool,
+        sample: Sample,
+    },
+    ChangesMasked {
+        rows: &'a [R],
+        kept_masks: &'a [u64],
         removed: &'a [u128],
         read: bool,
         sample: Sample,
@@ -364,6 +429,54 @@ fn visit_keyed<R: RowCodec>(
         None,
         changed,
     )
+}
+
+fn stage_masked<R: RowCodec>(
+    writer: &mut TableWriter,
+    dictionary: Strings<'_>,
+    cells: &mut RowCells,
+    rows: &[R],
+    kept_masks: &[u64],
+    removed: &[u128],
+) -> io::Result<Prepared> {
+    if kept_masks.len() != rows.len() {
+        return Err(invalid_static("Kept masks differ in count from rows"));
+    }
+    let kinds = writer.kinds();
+    let coverage = Coverage::Changes { removed };
+    match cells.staging {
+        Staging::Columns => {
+            let wide = kinds.len() > MAX_FIELDS;
+            let full_mask = if kinds.len() >= MAX_FIELDS {
+                u64::MAX
+            } else {
+                (1_u64 << kinds.len()) - 1
+            };
+            cells.batch.begin_sparse(kinds, rows.len())?;
+            for (row, &kept) in rows.iter().zip(kept_masks) {
+                cells.batch.key(row.key())?;
+                if kept == 0 {
+                    row.visit_wire(&mut |column, field| put(&mut cells.batch, column, field))?;
+                } else {
+                    let diff = !kept & full_mask;
+                    if diff != 0 || wide {
+                        row.visit_wire_masked(diff, &mut |column, field| {
+                            put(&mut cells.batch, column, field)
+                        })?;
+                    }
+                }
+            }
+            writer.prepare(dictionary, coverage, &cells.batch)
+        }
+        Staging::Rows => {
+            let columns = kinds.len();
+            let mut hour = writer.begin(dictionary, coverage)?;
+            for (row, &kept) in rows.iter().zip(kept_masks) {
+                cells.row_masked(&mut hour, row, kept, columns)?;
+            }
+            hour.finish()
+        }
+    }
 }
 
 fn stage<'r, R: RowCodec + 'r>(
@@ -478,7 +591,10 @@ pub fn table_hour<'d, R: RowCodec>(
     };
     let unchanged = writer.sweep() == Sweep::Touched
         && match &input {
-            TableInput::Changes { rows, removed, .. } => rows.is_empty() && removed.is_empty(),
+            TableInput::Changes { rows, removed, .. }
+            | TableInput::ChangesMasked { rows, removed, .. } => {
+                rows.is_empty() && removed.is_empty()
+            }
             TableInput::Keyed { keys, removed, .. } => keys.is_empty() && removed.is_empty(),
             TableInput::Paired {
                 pairs,
@@ -494,6 +610,7 @@ pub fn table_hour<'d, R: RowCodec>(
             evidence: evidence(Status::Complete, read, sample),
         },
         TableInput::Changes { read, sample, .. }
+        | TableInput::ChangesMasked { read, sample, .. }
         | TableInput::Keyed { read, sample, .. }
         | TableInput::Paired { read, sample, .. }
             if unchanged =>
@@ -515,6 +632,23 @@ pub fn table_hour<'d, R: RowCodec>(
                 cells,
                 Coverage::Changes { removed },
                 rows,
+            )?),
+            evidence: evidence(Status::Complete, read, sample),
+        },
+        TableInput::ChangesMasked {
+            rows,
+            kept_masks,
+            removed,
+            read,
+            sample,
+        } => TableHour {
+            prepared: Some(stage_masked(
+                writer,
+                dictionary,
+                cells,
+                rows,
+                kept_masks,
+                removed,
             )?),
             evidence: evidence(Status::Complete, read, sample),
         },

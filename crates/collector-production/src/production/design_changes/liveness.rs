@@ -167,16 +167,24 @@ fn event(
     handle: u64,
     pointer: usize,
     live: bool,
+    cached_hour: &mut Option<i32>,
 ) -> Result<(), &'static str> {
     store.batch.room()?;
-    let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
-        .ok_or("design liveness clock unreadable")?;
-    let hour = engine_native_memory::read(
-        memory,
-        state as usize + engine_native::cgame_state::CURRENT_HOUR,
-    )
-    .ok_or("design liveness hour unreadable")?;
+    let hour = match *cached_hour {
+        Some(hour) => hour,
+        None => {
+            let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+                .and_then(|at| engine_native_memory::read::<u64>(memory, at))
+                .ok_or("design liveness clock unreadable")?;
+            let hour = engine_native_memory::read(
+                memory,
+                state as usize + engine_native::cgame_state::CURRENT_HOUR,
+            )
+            .ok_or("design liveness hour unreadable")?;
+            *cached_hour = Some(hour);
+            hour
+        }
+    };
     store.batch.events.push(Event {
         kind: Kind::Organisation(live),
         sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
@@ -195,6 +203,7 @@ fn record_registered(
     base: usize,
     pointer: usize,
     handle: u64,
+    cached_hour: &mut Option<i32>,
 ) {
     if !store.interests.organisations.contains_key(&handle) {
         return;
@@ -208,7 +217,7 @@ fn record_registered(
         }
         let resolved = engine_native_parts::creference_registry::resolve(memory, base, handle)?;
         store.interests.organisation(handle, resolved)?;
-        event(store, memory, base, handle, pointer, resolved.is_some())
+        event(store, memory, base, handle, pointer, resolved.is_some(), cached_hour)
     })();
     if let Err(reason) = result {
         store.batch.failure = Some(reason);
@@ -229,7 +238,8 @@ pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
-    record_registered(&mut store, memory, base, pointer, handle);
+    let mut cached_hour = None;
+    record_registered(&mut store, memory, base, pointer, handle, &mut cached_hour);
 }
 pub(super) fn retired(memory: &impl Memory, base: usize, pointer: usize) {
     if !DEMANDED.load(Ordering::Acquire) {
@@ -247,7 +257,8 @@ pub(super) fn retired(memory: &impl Memory, base: usize, pointer: usize) {
     };
     store.interests.author_changed(handle);
     store.interests.organisations.insert(handle, 0);
-    if let Err(reason) = event(&mut store, memory, base, handle, pointer, false) {
+    let mut cached_hour = None;
+    if let Err(reason) = event(&mut store, memory, base, handle, pointer, false, &mut cached_hour) {
         store.batch.failure = Some(reason);
     }
 }
@@ -269,6 +280,7 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
     if store.epoch != EPOCH.load(Ordering::Acquire) || store.interests.organisations.is_empty() {
         return;
     }
+    let mut cached_hour = None;
     const ROSTER_BATCH: usize = 64;
     const REFERENCE_FIELDS: [engine_native_memory::memory::RecordField; 1] =
         [engine_native_memory::memory::RecordField {
@@ -304,7 +316,7 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
                     unobserved!();
                     continue;
                 };
-                record_registered(&mut store, memory, base, pointer as usize, handle);
+                record_registered(&mut store, memory, base, pointer as usize, handle, &mut cached_hour);
             }
             first += count as u32;
             continue;
@@ -322,7 +334,7 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
         );
         for index in 0..copied {
             let handle = u64::from_le_bytes(handle_bytes[index * 8..(index + 1) * 8].try_into().unwrap());
-            record_registered(&mut store, memory, base, pointers[index], handle);
+            record_registered(&mut store, memory, base, pointers[index], handle, &mut cached_hour);
         }
         if copied < count {
             for &pointer in &pointers[copied..count] {
@@ -332,7 +344,7 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
                     unobserved!();
                     continue;
                 };
-                record_registered(&mut store, memory, base, pointer, handle);
+                record_registered(&mut store, memory, base, pointer, handle, &mut cached_hour);
             }
         }
         first += count as u32;
