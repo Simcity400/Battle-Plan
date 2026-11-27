@@ -12,6 +12,7 @@ import { RefusedError } from '../queryError.ts';
 import { productRequest, type ProductRequest } from '../request.ts';
 import type { StripTileClaim, StripTileRead } from '../tiles/cache.ts';
 import { tileCache } from '../tiles/view.ts';
+import { readStripHeader } from './decode.ts';
 import type { StripDensity, StripLattice } from './lattice.ts';
 import { stripCoverageAt, type StripFrame, type StripKeyframe, type StripScenePlan, type StripTrack } from './scrub.ts';
 import { EMPTY_STRIP_RECEIPT, type StripReceipt, type StripUpdate } from './store.ts';
@@ -36,6 +37,8 @@ type IdentityLevel = { scopes: Map<string, IdentityLease>; ready: boolean };
 type Status = 'not ready' | 'coarse' | 'ready' | 'will not follow';
 export const STRIP_PAGE_BUDGET_BYTES = 64 * 1024 * 1024;
 const BUILD_TIMELINE_STRIPS = false;
+const YIELD_FRAME_FACTOR = 2;
+const MAX_YIELD_FRAMES = 32;
 const DENSITIES = [16, 8, 4] as const;
 let nextBuild = 0;
 let nextPage = 0;
@@ -87,7 +90,8 @@ export class StripPage {
   private readonly identityWindows = new Map<string, { bytes: number; claims: Map<IdentityLease, StripIdentityCosts> }>();
   private identityBytes = 0;
   private readonly products = new Set<string>();
-  private readonly counts = { groupsAsked: 0, groupsCancelled: 0, groupsResumed: 0, anchorsAsked: 0, anchorsCommitted: 0,
+  private readonly counts = { groupsAsked: 0, groupsCancelled: 0, groupsResumed: 0, groupsGaveWay: 0, anchorsAsked: 0, anchorsCommitted: 0,
+    yieldedToForeign: 0, foreignYieldFrames: 0,
     keyframesAsked: 0, asksDiscarded: 0, releaseCount: 0, releasedBytes: 0, startedWhilePlaying: 0, startedWhileSeeking: 0, startedWhileForeground: 0,
     tilesAsked: 0, tilesCancelled: 0, tilesStartedWhileScrubbing: 0,
     identityAsked: 0, identityCancelled: 0, identityResumed: 0, identityScans: 0, identityRounds: 0 };
@@ -427,7 +431,7 @@ export class StripPage {
     };
     const chain = async (widget: HeldWidget, slot: Slot, hours: number[], fine: boolean, closesAtAnchor: boolean) => {
       const first = hours[0]!;
-      let next = fine ? slot.fineNext.get(first) ?? 1 : slot.coarseNext, isolateUntil = 0;
+      let next = fine ? slot.fineNext.get(first) ?? 1 : slot.coarseNext, isolateUntil = 0, retryFrames = 1;
       while (next < hours.length) {
         const start = Math.max(0, next - 1);
         const end = next < isolateUntil ? next + 1 : Math.min(hours.length, start + 17);
@@ -436,10 +440,34 @@ export class StripPage {
           const group = hours.slice(start, end), anchors = Number(next !== 0) + Number(closesAtAnchor && end === hours.length);
           const bytes = await send(widget, slot, group, next === 0, anchors);
           signal.throwIfAborted();
-          state = await update(widget, slot, { kind: 'append', slot: slot.name, hours: group, bytes, fine });
-          next = end;
+          const { whole, count } = readStripHeader(bytes);
+          if (whole !== (next === 0) || count > group.length) throw new Error('Invalid dashboard strip prefix');
+          const gaveWay = count < group.length;
+          if (gaveWay) this.counts.groupsGaveWay++;
+          const answered = start + count;
+          if (answered === next) {
+            if (idle()) {
+              this.counts.yieldedToForeign++;
+              let framesLeft = retryFrames;
+              retryFrames = Math.min(MAX_YIELD_FRAMES, retryFrames * YIELD_FRAME_FACTOR);
+              await new Promise<void>(resolve => {
+                const task = this.frames.every('data', () => {
+                  this.counts.foreignYieldFrames++;
+                  if (--framesLeft > 0 && idle() && !signal.aborted) return true;
+                  task.stop();
+                  resolve();
+                });
+              });
+            }
+            report();
+            continue;
+          }
+          state = await update(widget, slot, { kind: 'append', slot: slot.name, hours: group.slice(0, count), bytes, fine });
+          retryFrames = 1;
+          this.counts.anchorsCommitted += Number(next !== 0) + Number(closesAtAnchor && answered === hours.length);
+          next = answered;
           if (fine) slot.fineNext.set(first, next); else slot.coarseNext = next;
-          this.counts.anchorsCommitted += anchors;
+          if (gaveWay) report();
           signal.throwIfAborted();
         } catch (error) {
           if (signal.aborted) throw error;

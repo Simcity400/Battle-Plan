@@ -13,10 +13,10 @@ The request is `{ product: string, asks: object[], whole: boolean }`. The caller
 | 0–3 | ASCII `BPST` |
 | 4 | Version, `1` |
 | 5 | Flags: bit 0 means the first state is included whole; other bits are zero |
-| 6 | Number of asks, 1 to 17, including the first even when omitted |
+| 6 | Number of asks, 1 to 17 including an omitted first state, or 0 for the whole-group give-way marker |
 | 7 | Reserved, zero |
 
-After the eight-byte header, every part has a four-byte byte length followed by exactly that many MessagePack bytes. There is no padding. When flag bit 0 is set, the first part is state 0. For each index `i` from 1 to count minus one, the next two parts are the forward patch from state `i-1` to state `i`, then the backward patch from `i` to `i-1`. No parts follow the last pair. With `whole: false`, only state 0's part is omitted: the caller must already hold it. A one-ask reply without a whole is just the header. Unknown versions, flags, nonzero reserved bytes, invalid counts, truncated parts and trailing bytes are invalid.
+After the eight-byte header, every part has a four-byte byte length followed by exactly that many MessagePack bytes. There is no padding. When flag bit 0 is set, the first part is state 0. For each index `i` from 1 to count minus one, the next two parts are the forward patch from state `i-1` to state `i`, then the backward patch from `i` to `i-1`. No parts follow the last pair. With `whole: false`, only state 0's part is omitted: the caller must already hold it. A one-ask reply without a whole is just the header. A strip reply may answer a prefix of its asks when the service gives way to interactive work, and the caller continues from the last answered ask. A header-only reply with count zero and the whole flag set means the service gave way before the first ask. Unknown versions, flags, nonzero reserved bytes, invalid counts, truncated parts and trailing bytes are invalid.
 
 Each state is a one-key map: `{ "answer": <the exact JSON reply> }` or `{ "refused": <the named refusal text> }`. Refusals returned through `QueryError::Refused` carry the same text. Missing fields and not-recorded states inside a successful reply remain inside `answer`, unchanged. Failures that are not named refusals are errors of the strip request, never fabricated keyframes.
 

@@ -21,7 +21,7 @@ import { WidgetStrips, type StripUpdate } from './store.ts';
 import type { StripFrame } from './scrub.ts';
 
 function packet(whole: boolean, states: unknown[]) {
-  const parts = whole ? [encode(states[0])] : [];
+  const parts = whole && states.length ? [encode(states[0])] : [];
   for (let i = 1; i < states.length; i++) {
     parts.push(encode([{ replace: [[], states[i]] }]), encode([{ replace: [[], states[i - 1]] }]));
   }
@@ -51,6 +51,7 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
   let identityDelay: ((signal: AbortSignal) => Promise<void>) | undefined;
   let nameOf = (_id: number, from: number) => `Dated state ${from}`;
   let answer = (hour: number): unknown => ({ answer: { hour, value: hour * 3 } });
+  let replyCount = (hours: number[], _whole: boolean) => hours.length;
   let delay: ((hours: number[], signal: AbortSignal) => Promise<void> | void) | undefined;
   let delayTile: ((signal: AbortSignal) => Promise<void>) | undefined;
   const client = { product: async (request: ProductRequest, signal: AbortSignal) => {
@@ -74,7 +75,7 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
     const hours = asks.map(ask => Number(ask.hour));
     groups.push({ source: request.sourceId, hours, whole, signal, busy: clock.getSnapshot().playing || !settled || busyKinds().requests > 0 });
     await delay?.(hours, signal);
-    return { ...request, data: { data: packet(whole, hours.map(answer)) } };
+    return { ...request, data: { data: packet(whole, hours.slice(0, replyCount(hours, whole)).map(answer)) } };
   } } as unknown as DashboardClient;
   const page = new StripPage(lattice, clock, client, { budget, gate, frames });
   const stop = page.start();
@@ -122,6 +123,7 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
     identityDelay: (value: typeof identityDelay) => { identityDelay = value; },
     nameOf: (value: typeof nameOf) => { nameOf = value; },
     answer: (value: typeof answer) => { answer = value; },
+    replyCount: (value: typeof replyCount) => { replyCount = value; },
   };
 }
 
@@ -312,6 +314,56 @@ test('the driver yields to playback, seeks and foreground reads and resumes afte
   assert.equal(stats.asksDiscarded, 3 * firstInterrupt!.hours.length);
   assert.equal(stats.anchorsAsked - stats.anchorsCommitted, 3);
   t.diagnostic(`${h.groups.length} groups, 3 cancelled and resumed, ${lateAsks.length} late asks, ${stats.asksDiscarded} discarded group asks, 0 groups during playback, seek or foreground reads`);
+});
+
+test('a strip reply that gives way commits its prefix and resumes at the held anchor', async t => {
+  const h = setup(3200);
+  t.after(h.stop);
+  h.replyCount((hours, whole) => {
+    switch (h.groups.length) {
+      case 1: assert.ok(whole); h.settle(false); return 0;
+      case 2: assert.ok(whole); return 4;
+      case 3: assert.ok(!whole); return 1;
+      default: return hours.length;
+    }
+  });
+  const { held } = h.mount('state');
+  await h.until(() => h.page['counts'].groupsGaveWay === 1 && h.gate.pending === 1);
+  assert.equal(h.groups.length, 1);
+  assert.equal(h.page['counts'].yieldedToForeign, 0);
+  h.settle(true);
+  await h.until(() => h.page['counts'].yieldedToForeign === 1);
+  h.frames.tick(0);
+  await h.until(() => h.page.status === 'ready');
+  const [empty, prefix, heldOnly, resumed] = h.groups;
+  assert.deepEqual(empty!.hours, prefix!.hours);
+  assert.equal(heldOnly!.hours[0], prefix!.hours[3]);
+  assert.deepEqual(heldOnly!.hours, resumed!.hours);
+  assert.deepEqual(held.slots.get('source')?.at(prefix!.hours[2]!),
+    { answer: { hour: prefix!.hours[2]!, value: prefix!.hours[2]! * 3 } });
+  assert.equal(h.page['counts'].groupsGaveWay, 3);
+  assert.equal(h.page['counts'].groupsCancelled, 0);
+});
+
+test('consecutive zero-progress replies back off for at most 32 frames and progress resets the wait', async t => {
+  const h = setup(3200);
+  t.after(h.stop);
+  h.replyCount(hours => h.groups.length <= 7 ? 0 : h.groups.length === 8 ? 4 : h.groups.length === 9 ? 1 : hours.length);
+  h.mount('state');
+  let frame = 0;
+  for (const [index, wait] of [1, 2, 4, 8, 16, 32, 32, 1].entries()) {
+    const count = index + 1;
+    await h.until(() => h.page['counts'].yieldedToForeign === count);
+    const asks = h.groups.length;
+    for (let i = 1; i < wait; i++) h.frames.tick(++frame);
+    await Promise.resolve();
+    assert.equal(h.groups.length, asks);
+    h.frames.tick(++frame);
+    await h.until(() => h.groups.length > asks);
+  }
+  await h.until(() => h.page.status === 'ready');
+  assert.equal(h.page['counts'].foreignYieldFrames, frame);
+  assert.equal(h.page['counts'].groupsCancelled, 0);
 });
 
 test('the shipped switch allocates no page and leaves zero requests and zero held bytes', () => {
