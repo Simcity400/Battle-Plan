@@ -378,9 +378,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let columns = Columns::new()?;
-    let presenter = super::text::Presenter::new(query, catalogue.cloned(), super::text::kept_naming(source))
-        .without_effects()
-        .without_artwork();
+    let presenter = super::text::Presenter::new(query, catalogue, super::text::kept_naming(source)).for_index();
     let names = Names::new(&query.holders);
     let mut runs: Vec<u32> = query.timeline.stretches.iter().map(|stretch| stretch.run).collect();
     runs.sort_unstable();
@@ -411,7 +409,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
             if decision_state::applies(&event) && event.lifecycle.is_some() {
                 lifecycles.push(event.clone());
             }
-            let item = super::present(&event, &names, &presenter, &mut Notices::default())?.and_then(|row| row.item);
+            let item = super::present(&event, &names, &presenter, &mut Notices::discarded())?.and_then(|row| row.item);
             let name = item.as_ref().filter(|item| !item.gaps.iter().any(|gap| gap.field == super::EventFeedGapField::Title)).and_then(|item| item.name.clone());
             let choice = event.option.filter(|&option| option >= 0).and_then(|option| {
                 let item = item.as_ref()?;

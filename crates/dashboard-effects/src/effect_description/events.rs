@@ -113,6 +113,8 @@ fn name_key(
         .unwrap_or_else(|| base.to_owned())
 }
 
+pub type DecisionNameKeys = std::collections::HashMap<[String; 4], String>;
+
 pub fn decision_name_key_at<'f>(
     frame: impl Into<HourFrame<'f>>,
     recorded: &crate::scope::RecordedScopes<'_>,
@@ -120,6 +122,7 @@ pub fn decision_name_key_at<'f>(
     definition: &Decision,
     country: u32,
     tag: &str,
+    held: Option<&mut DecisionNameKeys>,
 ) -> Result<String, String> {
     let frame = frame.into();
     let ours = |key: u128| recorded.slot(key as u32) == Some(country);
@@ -155,13 +158,22 @@ pub fn decision_name_key_at<'f>(
             .map(str::to_owned)
             .map_err(|_| "decision-name key is not UTF-8".to_owned())
     };
-    Ok(name_key(
-        &utf8(&definition.name)?,
-        &utf8(&appearance.cosmetic_tag)?,
-        tag,
-        &utf8(&party.token)?,
-        |key| localisation.get(key).is_some(),
-    ))
+    let parts = [
+        utf8(&definition.name)?,
+        utf8(&appearance.cosmetic_tag)?,
+        tag.to_owned(),
+        utf8(&party.token)?,
+    ];
+    let resolve = |[base, cosmetic, tag, ideology]: &[String; 4]| {
+        name_key(base, cosmetic, tag, ideology, |key| localisation.get(key).is_some())
+    };
+    let Some(held) = held else { return Ok(resolve(&parts)) };
+    if let Some(key) = held.get(&parts) {
+        return Ok(key.clone());
+    }
+    let key = resolve(&parts);
+    held.insert(parts, key.clone());
+    Ok(key)
 }
 
 impl Renderer<'_, '_, '_> {
@@ -395,6 +407,7 @@ impl Renderer<'_, '_, '_> {
             definition,
             country,
             self.tag(country)?,
+            None,
         )
     }
 
