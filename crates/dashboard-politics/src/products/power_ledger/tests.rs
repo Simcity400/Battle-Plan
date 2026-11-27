@@ -1421,3 +1421,22 @@ fn cached_power_items_keep_their_overlay_notes() {
     assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
     assert_eq!(read(), first);
 }
+
+#[test]
+fn naming_reads_the_country_tables_with_only_the_columns_it_names_by() {
+    use replay_data::rows::PowerObjectKind;
+    let source = recording();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let context = naming::context(&source, &LoadContext { content: None }).unwrap();
+    let columns = |row: PowerItemRow| {
+        let (_, counts) = replay_recording::cells::count_reads(|| naming::name(&query, &[naming::Asked { run: 1, row: &row }], &context, &mut Default::default(), &AtomicBool::new(false)).unwrap());
+        [TableId::Countries, TableId::CountryLinks].map(|table| counts[&table].columns)
+    };
+    let decision = PowerItemRow { holder: SLOT, first_read: 120, cause: PowerCause::Decision, ..Default::default() };
+    assert_eq!(columns(decision.clone()), [2, 1], "a country is named by its slot and tag, and a link by its slot");
+    let recording = query.replay.recording();
+    let whole = [TableId::Countries, TableId::CountryLinks].map(|table| replay_recording::cells::read_columns(recording, 0, table.index(), None).len() as u64);
+    assert!(whole[0] > 2, "the fixture's countries hold more columns than naming reads: {whole:?}");
+    let organisation = PowerItemRow { ordinal: 1, object_kind: PowerObjectKind::Organisation, object_reference: Some(1), ..decision };
+    assert_eq!(columns(organisation), whole, "an organisation's name reads whole country rows");
+}

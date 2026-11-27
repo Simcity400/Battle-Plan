@@ -8,6 +8,24 @@ import type { FlowLayout } from './painter.ts';
 
 export type FlowMode = 'centred' | 'bipartite';
 export type FlowSide = 'left' | 'centre' | 'right';
+export type FlowProduct = 'trade-flow' | 'production-licences' | 'volunteer-flow';
+
+export interface FlowProjectionOptions {
+  readonly foldRead?: {
+    readonly product: FlowProduct;
+    readonly sourceId: string;
+    readonly revision: string;
+    readonly params: Readonly<Record<string, unknown>> & { readonly branchId: string };
+  };
+}
+
+export interface FlowFold {
+  readonly read: NonNullable<FlowProjectionOptions['foldRead']>;
+  readonly side: 'left' | 'right';
+  readonly count: number;
+  readonly total: string;
+  readonly title: string;
+}
 
 export interface FlowPartKey {
   readonly key: string;
@@ -25,6 +43,7 @@ export interface FlowNode {
   readonly numeric: number | null;
   readonly figure: string;
   readonly others?: number;
+  readonly fold?: FlowFold;
   readonly unknown?: string;
   readonly spoken: string;
   readonly audit: string;
@@ -70,7 +89,7 @@ export interface FlowModel {
   readonly refused?: string;
 }
 
-export interface FlowProjection<TOptions = unknown> {
+export interface FlowProjection<TOptions = FlowProjectionOptions> {
   readonly family: 'flow';
   readonly kind: string;
   project(readView: BoundedReadView, options: TOptions): FlowModel;
@@ -94,7 +113,7 @@ export function deriveFlowNav(model: FlowModel, layout?: FlowLayout): readonly F
   return [
     ...nodes.map((node, index) => {
       const box = nodeBox.get(node.key);
-      return stop(`node:${node.key}`, node.spoken, index, node.subject ?? null, box ? [box.slotTop, box.slotHeight] : null);
+      return stop(`node:${node.key}`, node.spoken, index, node.fold ?? node.subject ?? null, box ? [box.slotTop, box.slotHeight] : null);
     }),
     ...model.ribbons.filter(flowRibbonMarked).map((ribbon, index) => {
       const box = ribbonBox.get(ribbon.key);

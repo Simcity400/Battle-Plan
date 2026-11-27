@@ -2,6 +2,7 @@ import type { ComponentType } from 'react';
 import type { FamilyViewProps } from '../../dashboard/definitions';
 import type { FamilyViewModule } from '../manifest.ts';
 import type { FamilyId } from '../plan.ts';
+import FlowWidget from '../flow/FlowWidget.tsx';
 import TableChrome from '../table/TableChrome.tsx';
 import { familyHostAdapters } from './adapters.ts';
 import DeclaredFamilyWidget, { type DeclaredFamilyWidgetDeclaration, type DeclaredFamilyWidgetProps } from './DeclaredFamilyWidget.tsx';
@@ -43,5 +44,6 @@ function AdaptedFamilyHost({ spec, ...props }: FamilyHostProps) {
 }
 
 export function familyHost(family: FamilyId): ComponentType<FamilyHostProps> | undefined {
+  if (family === 'flow') return FlowWidget;
   return familyHostAdapters.has(family) ? AdaptedFamilyHost : undefined;
 }

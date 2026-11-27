@@ -772,6 +772,19 @@ fn underscore(token: String) -> String {
 
 pub use replay_data::country_flags::original_tag;
 
+pub fn fields(table: TableId) -> u64 {
+    match table {
+        TableId::Countries => COUNTRY,
+        TableId::CountryLinks => LINK,
+        TableId::CountryAppearance => APPEARANCE,
+        TableId::Politics => POLITICS,
+        TableId::PoliticalParties => PARTY,
+        TableId::Autonomy => AUTONOMY,
+        TableId::ReservedCountryNaming => RESERVED,
+        _ => 0,
+    }
+}
+
 const SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
 const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
 const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);

@@ -232,6 +232,7 @@ pub struct FlowShape<'a> {
     pub between: bool,
     pub limit: Option<usize>,
     pub top: Option<usize>,
+    pub side_totals_only: bool,
     pub table: bool,
     pub not_recorded: &'a str,
     pub unlinked: &'a str,
@@ -473,7 +474,7 @@ pub fn build_flows(edges: &[FlowEdge], gaps: &[FlowGap], parts: Vec<FlowPart>, d
         let out_of = |gap: &&FlowGap| gap.from.covers(FlowEnd::Slot(subject)) && gap.to != GapEnd::Slot(subject);
         withhold(&mut incoming, gaps, |gap, partner| into(&gap) && gap.from.covers(partner));
         withhold(&mut outgoing, gaps, |gap, partner| out_of(&gap) && gap.to.covers(partner));
-        if shape.table {
+        if shape.table && !shape.side_totals_only {
             reply.table = table(&incoming, &outgoing, count, &mut names);
         }
         let in_missing = gaps.iter().find(into).map(|gap| gap.reason.as_str()).or(in_maybe.then_some(shape.unlinked));
@@ -497,7 +498,9 @@ pub fn build_flows(edges: &[FlowEdge], gaps: &[FlowGap], parts: Vec<FlowPart>, d
                 }
                 Belongs::Yes => {}
             }
-            pairs.entry((edge.from, edge.to)).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount, shape.not_recorded);
+            if !shape.side_totals_only {
+                pairs.entry((edge.from, edge.to)).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount, shape.not_recorded);
+            }
             sent.entry(edge.from).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount, shape.not_recorded);
             received.entry(edge.to).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount, shape.not_recorded);
         }
@@ -591,7 +594,7 @@ mod tests {
     }
 
     fn shape(subject: Option<u32>, limit: Option<usize>, table: bool) -> FlowShape<'static> {
-        FlowShape { subject, chosen: None, between: false, limit, top: None, table, not_recorded: "not recorded", unlinked: "unlinked" }
+        FlowShape { subject, chosen: None, between: false, limit, top: None, side_totals_only: false, table, not_recorded: "not recorded", unlinked: "unlinked" }
     }
 
     fn build(edges: &[FlowEdge], parts: usize, shape: &FlowShape<'_>) -> CountryFlowReply {
@@ -771,6 +774,38 @@ mod tests {
         let receiver = reply.receivers.links.iter().find(|link| slot(&reply, link.to) == Some(Some(ITA))).unwrap();
         assert_eq!((sender.total.as_deref(), receiver.total.as_deref()), (Some("9"), Some("1")));
         assert_eq!(reply.links.len(), 2);
+    }
+
+    #[test]
+    fn if_the_last_named_partner_fits_it_uses_the_fold_row() {
+        let edges: Vec<_> = (1..=6).map(|from| edge(from, from + 6, 0, Some(1))).collect();
+        let reply = build(&edges, 1, &shape(None, Some(5), false));
+        assert_eq!(reply.links.len(), 6);
+        for side in [reply.senders, reply.receivers] {
+            assert_eq!(side.links.len(), 6);
+            assert!(side.links.iter().all(|link| link.others.is_none()));
+        }
+    }
+
+    #[test]
+    fn side_totals_fit_the_reply_budget_regardless_of_pair_count() {
+        let countries = 1_500;
+        let partners = 256;
+        let ring = |width, amount| {
+            (0..countries).flat_map(|from| {
+                (1..=width).map(move |offset| edge(from, (from + offset) % countries, 0, Some(amount)))
+            }).collect::<Vec<_>>()
+        };
+        let drill = FlowShape { side_totals_only: true, ..shape(None, None, false) };
+        let sparse = build(&ring(1, i128::from(partners)), 1, &drill);
+        let dense = build(&ring(partners, 1), 1, &drill);
+
+        assert_eq!(dense.endpoints.len(), countries as usize);
+        assert_eq!(dense.senders.links.len(), dense.endpoints.len());
+        assert_eq!(dense.receivers.links.len(), dense.endpoints.len());
+        assert!(dense.links.is_empty());
+        assert_eq!(serde_json::to_vec(&dense).unwrap(), serde_json::to_vec(&sparse).unwrap());
+        crate::products::check_reply_budget(&dense).unwrap();
     }
 
     #[test]

@@ -6,9 +6,9 @@ import type {
   FamilyViewportRequest,
   SourcePlan,
 } from '../plan.ts';
-import type { FlowProjection } from './model.ts';
+import type { FlowProjection, FlowProjectionOptions } from './model.ts';
 
-export interface FlowWidgetDeclaration<TProjectionOptions = Record<string, never>, TAux = unknown> {
+export interface FlowWidgetDeclaration<TProjectionOptions = FlowProjectionOptions, TAux = unknown> {
   readonly family: 'flow';
   readonly kind: string;
   readonly label: string;
