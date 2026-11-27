@@ -74,13 +74,6 @@ fn recording_open_error(error: std::io::Error) -> String {
 }
 
 impl Inner {
-    pub(super) fn priority_work(&self) -> bool {
-        let loader = self.loader.lock().unwrap_or_else(|error| error.into_inner());
-        loader.as_ref().is_some_and(|lanes| {
-            Lane::ALL.iter().any(|&lane| lanes.sender(lane).busy_other_than(crate::strip::PRODUCT))
-        })
-    }
-
     pub(super) fn recording_revision(&self, path: &Path) -> std::io::Result<String> {
         replay_revision(path)
     }

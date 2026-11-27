@@ -159,15 +159,50 @@ fn settled_strip_groups_reopen_byte_for_byte_and_damaged_files_recompute() {
 fn strip_writes_yield_to_priority_work() {
     let folder = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
     let library = folder.join("library");
-    let cache = cache::Cache::new(Some(folder.clone()), move || Ok(library.clone()), || true);
+    let busy = Arc::new(AtomicBool::new(false));
+    let cache = cache::Cache::new(Some(folder.clone()), move || Ok(library.clone()), {
+        let busy = Arc::clone(&busy);
+        move || busy.load(std::sync::atomic::Ordering::Acquire)
+    });
     let source = recording();
     let params = json!({"product":"nuclear-arsenal","asks":[{"branchId":"1","hour":100}],"whole":true});
     let load = LoadContext { content: None };
     let dropped = (0..2).filter(|_| {
+        busy.store(false, std::sync::atomic::Ordering::Release);
         let (_, pending) = cache.answer(&source, &params, &load, &false.into()).unwrap();
+        busy.store(true, std::sync::atomic::Ordering::Release);
         !cache.store(pending.unwrap())
     }).count();
     assert_eq!(dropped, 2);
+    for (whole, count) in [(true, 0), (false, 1)] {
+        let mut params = params.clone();
+        params["whole"] = json!(whole);
+        let (reply, pending) = cache.answer(&source, &params, &load, &false.into()).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD.decode(reply.data).unwrap();
+        assert_eq!(bytes, [b'B', b'P', b'S', b'T', 1, u8::from(whole), count, 0]);
+        assert!(pending.is_none());
+    }
+    assert!(!folder.exists());
+    cache.shutdown();
+}
+
+#[test]
+fn a_strip_prefix_does_not_offer_a_disk_write() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let folder = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+    let library = folder.join("library");
+    let checks = AtomicUsize::new(0);
+    let cache = cache::Cache::new(Some(folder.clone()), move || Ok(library.clone()),
+        move || checks.fetch_add(1, Ordering::Relaxed) != 0);
+    let source = recording();
+    let params = json!({"product":"nuclear-arsenal", "asks":asks(), "whole":true});
+    let load = LoadContext { content: None };
+    assert!(cache::key(&source, &params, &load).is_some());
+    let (reply, pending) = cache.answer(&source, &params, &load, &false.into()).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD.decode(reply.data).unwrap();
+    assert!(decode(&bytes, true, 1).0.is_some());
+    assert!(pending.is_none());
     assert!(!folder.exists());
     cache.shutdown();
 }
@@ -365,10 +400,40 @@ fn a_strip_uses_the_series_answer_path_and_rejects_commands_and_bad_requests() {
 }
 
 #[test]
+fn priority_work_stops_a_strip_at_the_next_ask_boundary() {
+    let mut started = Vec::new();
+    let priority = std::cell::Cell::new(false);
+    let (bytes, complete) = build(4, true, &false.into(), || priority.get(), |index| {
+        started.push(index);
+        priority.set(index == 1);
+        Ok(json!({"answer": index}))
+    })
+    .unwrap();
+    assert_eq!(started, [0, 1]);
+    assert!(!complete);
+    let (base, forward, _) = decode(&bytes, true, 2);
+    let base = base.unwrap();
+    assert_eq!(base, json!({"answer": 0}));
+    assert_eq!(apply(&base, &forward[0]).unwrap(), json!({"answer": 1}));
+    let (continued, complete) = build(3, false, &false.into(), || false, |index| {
+        Ok(json!({"answer": index + 1}))
+    }).unwrap();
+    assert!(complete);
+    let (uninterrupted, complete) = build(4, true, &false.into(), || false, |index| {
+        Ok(json!({"answer": index}))
+    }).unwrap();
+    assert!(complete);
+    let mut stitched = bytes;
+    stitched[6] = 4;
+    stitched.extend_from_slice(&continued[8..]);
+    assert_eq!(stitched, uninterrupted);
+}
+
+#[test]
 fn cancellation_between_answers_and_the_reply_budget_are_preserved() {
     let cancelled = AtomicBool::new(false);
     let mut calls = 0;
-    let error = build(3, true, &cancelled, |_| {
+    let error = build(3, true, &cancelled, || false, |_| {
         calls += 1;
         cancelled.store(true, std::sync::atomic::Ordering::Release);
         Ok(json!({"answer":1}))
@@ -400,10 +465,10 @@ fn the_shared_fixture_is_the_real_encoders_bytes_in_both_modes() {
     for (whole, field) in [(true, "whole"), (false, "patchesOnly")] {
         let bytes = decode_fixture(&fixture[field]);
         assert_eq!(
-            build(states.len(), whole, &false.into(), |index| Ok(states
+            build(states.len(), whole, &false.into(), || false, |index| Ok(states
                 [index]
                 .clone()))
-            .unwrap(),
+            .unwrap().0,
             bytes
         );
         let (base, forward, backward) = decode(&bytes, whole, states.len());
@@ -430,7 +495,7 @@ fn the_shared_fixture_is_the_real_encoders_bytes_in_both_modes() {
         let states = case["states"].as_array().unwrap();
         let bytes = decode_fixture(&case["whole"]);
         assert_eq!(
-            build(2, true, &false.into(), |index| Ok(states[index].clone())).unwrap(),
+            build(2, true, &false.into(), || false, |index| Ok(states[index].clone())).unwrap().0,
             bytes,
             "{name}"
         );

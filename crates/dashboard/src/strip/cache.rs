@@ -73,10 +73,11 @@ impl Cache {
                     Err(_) => {}
                 }
             }
-            let bytes = compute(source, &ask, load, cancelled)?;
-            Ok((StripReply::from_bytes(&bytes), Some(pending(Action::Save(bytes)))))
+            let (bytes, complete) = compute(source, &ask, load, cancelled, &*self.busy)?;
+            Ok((StripReply::from_bytes(&bytes), complete.then(|| pending(Action::Save(bytes)))))
         } else {
-            Ok((StripReply::from_bytes(&compute(source, &ask, load, cancelled)?), None))
+            let (bytes, _) = compute(source, &ask, load, cancelled, &*self.busy)?;
+            Ok((StripReply::from_bytes(&bytes), None))
         }
     }
 

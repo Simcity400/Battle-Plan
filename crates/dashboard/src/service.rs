@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
 };
@@ -134,21 +134,21 @@ impl Service {
         folder: Option<PathBuf>,
     ) -> io::Result<Arc<Self>> {
         let parallelism = parallelism();
-        let lane = |lane: Lane| channel::<LoadJob>(MAX_PENDING, queue::share(lane.threads(parallelism)));
+        let priority_jobs = Arc::new(AtomicUsize::new(0));
+        let lane = |lane: Lane| channel::<LoadJob>(MAX_PENDING, queue::share(lane.threads(parallelism)), Arc::clone(&priority_jobs));
         let (history, history_jobs) = lane(Lane::History);
         let (interactive, interactive_jobs) = lane(Lane::Interactive);
         let (replies, replies_jobs) = lane(Lane::Replies);
         let (replays, replays_jobs) = lane(Lane::Replays);
-        let inner = Arc::new_cyclic(|service: &std::sync::Weak<Inner>| Inner {
+        let inner = Arc::new(Inner {
             lease_namespace: uuid::Uuid::new_v4(),
             map_settings: Mutex::new(map_settings::Store::open()),
             content: dashboard_base::presentation::Config::new(None),
             visual_catalogue: Mutex::new(None),
             presentation_generation: std::sync::atomic::AtomicU64::new(0),
             sources: Mutex::new(Sources::default()),
-            strips: crate::strip::cache::Cache::new(folder, Config::recording_library, {
-                let service = service.clone();
-                move || service.upgrade().is_some_and(|service| service.priority_work())
+            strips: crate::strip::cache::Cache::new(folder, Config::recording_library, move || {
+                priority_jobs.load(Ordering::Acquire) != 0
             }),
             pending: Mutex::new(Pending::default()),
             loader: Mutex::new(Some(Lanes { history, interactive, replies, replays })),

@@ -8,10 +8,17 @@ type Edit = { replace: [Path, Value] } | { remove: Path } | { splice: [Path, num
 
 function invalid(): never { throw new Error('Invalid dashboard strip'); }
 
-export function readStrip(bytes: Uint8Array) {
+export function readStripHeader(bytes: Uint8Array) {
   const [b, p, s, t, version, flags, count, reserved] = bytes;
-  if (bytes.length < 8 || b !== 66 || p !== 80 || s !== 83 || t !== 84 || version !== 1 ||
-      (flags !== 0 && flags !== 1) || !count || count > 17 || reserved !== 0) invalid();
+  if (b !== 66 || p !== 80 || s !== 83 || t !== 84 || version !== 1 || (flags !== 0 && flags !== 1) ||
+      reserved !== 0 || count === undefined || count > 17 ||
+      (count === 0 && flags !== 1) || ((count === 0 || (count === 1 && flags === 0)) && bytes.length !== 8)) invalid();
+  return { whole: flags === 1, count };
+}
+
+export function readStrip(bytes: Uint8Array) {
+  const { whole: includesWhole, count } = readStripHeader(bytes);
+  if (!count) invalid();
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let at = 8;
   const part = () => {
@@ -23,7 +30,7 @@ export function readStrip(bytes: Uint8Array) {
     at += length;
     return value;
   };
-  const whole = flags ? part() : null;
+  const whole = includesWhole ? part() : null;
   const patches = Array.from({ length: count - 1 }, () => [part(), part()] as const);
   if (at !== bytes.length) invalid();
   return { whole, patches };

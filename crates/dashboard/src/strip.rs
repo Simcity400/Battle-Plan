@@ -51,7 +51,7 @@ pub fn answer(
     cancelled: &AtomicBool,
 ) -> io::Result<StripReply> {
     let params = request(params)?;
-    Ok(StripReply::from_bytes(&compute(source, &params, load, cancelled)?))
+    Ok(StripReply::from_bytes(&compute(source, &params, load, cancelled, || false)?.0))
 }
 
 fn request(params: &Value) -> io::Result<StripParams> {
@@ -79,9 +79,10 @@ fn compute(
     params: &StripParams,
     load: &LoadContext,
     cancelled: &AtomicBool,
-) -> io::Result<Vec<u8>> {
+    busy: impl Fn() -> bool,
+) -> io::Result<(Vec<u8>, bool)> {
     dashboard_base::products::at_hour::with_strip_pool(source, || {
-        build(params.asks.len(), params.whole, cancelled, |index| {
+        build(params.asks.len(), params.whole, cancelled, busy, |index| {
             state(crate::answer::answer(
                 source,
                 &params.product,
@@ -121,12 +122,17 @@ fn build(
     count: usize,
     whole: bool,
     cancelled: &AtomicBool,
+    busy: impl Fn() -> bool,
     mut answer: impl FnMut(usize) -> io::Result<Value>,
-) -> io::Result<Vec<u8>> {
+) -> io::Result<(Vec<u8>, bool)> {
     let mut bytes = vec![b'B', b'P', b'S', b'T', VERSION, u8::from(whole), count as u8, 0];
     let mut previous = None;
     for index in 0..count {
         dashboard_text::metadata::check_cancel(cancelled)?;
+        if busy() {
+            bytes[6] = index.max(usize::from(!whole)) as u8;
+            return Ok((bytes, false));
+        }
         let current = answer(index)?;
         dashboard_text::metadata::check_cancel(cancelled)?;
         match previous {
@@ -148,7 +154,7 @@ fn build(
         }
         previous = Some(current);
     }
-    Ok(bytes)
+    Ok((bytes, true))
 }
 
 fn append(bytes: &mut Vec<u8>, part: Vec<u8>) -> io::Result<()> {
