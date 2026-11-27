@@ -1,8 +1,8 @@
 
 use super::group_members::GroupsAt;
 use dashboard_base::products::{Country, LoadContext, validate_country};
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{at_hour::{At, AtHour}, breakdown::{self, Amount, Breakdown, Exact, Leaf, Node, Unrecorded}}};
-use dashboard_query::coverage::witnessed_rows;
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{at_hour::{At, AtHour, Edits, Keys, Owner, Read, ReadsAt, at_hour, before}, breakdown::{self, Amount, Breakdown, Exact, Leaf, Node, Unrecorded}}};
+use dashboard_query::coverage::{WitnessedRows, witnessed_rows, witnessed_selection};
 use dashboard_query::identity::{Holder, Holders};
 use dashboard_query::series::ranked::GroupSelection;
 use replay_data::rows::{Recorded, TableId, TerritoryRegionTotalRow, TerritoryTotalRow, tables};
@@ -518,9 +518,77 @@ pub struct CountryTotals {
     missing: Option<String>,
 }
 
-fn country_totals(frame: &DecodedFrame, params: &TerritoryBreakdownParams) -> CountryTotals {
+fn holder_ranges(slots: &HashSet<u32>) -> Keys {
+    let mut sorted: Vec<u32> = slots.iter().copied().collect();
+    sorted.sort_unstable();
+    Keys::Ranges(sorted.into_iter().map(|slot| (u128::from(slot) << 32, (u128::from(slot) << 32) | u128::from(u32::MAX))).collect())
+}
+
+fn covers_holders(keys: &Keys, slots: &HashSet<u32>) -> bool {
+    slots.iter().all(|&slot| {
+        let lo = u128::from(slot) << 32;
+        let hi = lo | u128::from(u32::MAX);
+        match keys {
+            Keys::All => true,
+            Keys::Range(a, b) => *a <= lo && hi <= *b,
+            Keys::Ranges(ranges) => ranges.get(ranges.partition_point(|&(_, b)| b < lo)).is_some_and(|&(a, b)| a <= lo && hi <= b),
+            Keys::These(_) => false,
+        }
+    })
+}
+
+fn territory_region_read<'f>(frame: &'f DecodedFrame, chosen: Option<&HashSet<u32>>) -> WitnessedRows<'f, TerritoryRegionTotalRow> {
+    let Some(slots) = chosen else {
+        return witnessed_rows::<tables::TerritoryRegionTotals>(frame);
+    };
+    let mut result = witnessed_selection::<tables::TerritoryRegionTotals>(frame);
+    if result.missing.is_none() && !covers_holders(frame.tables[TableId::TerritoryRegionTotals.index()].keys(), slots) {
+        result.missing = Some("Territory region totals read only for chosen rows at this hour".into());
+    }
+    result
+}
+
+fn needs_totals(read: &WitnessedRows<'_, TerritoryRegionTotalRow>, chosen: Option<&HashSet<u32>>, column: usize) -> bool {
+    if read.missing.is_some() {
+        return true;
+    }
+    let mut witnessed: HashMap<u32, Option<Exact>> = HashMap::new();
+    for row in read.rows {
+        let held = (row.holder != TerritoryRegionTotalRow::NO_COUNTRY).then_some(row.holder);
+        if let Some(chosen) = chosen
+            && !held.is_some_and(|slot| chosen.contains(&slot))
+        {
+            continue;
+        }
+        match amount(row, column) {
+            Amount::Known(known) => {
+                if let Some(slot) = held {
+                    let entry = witnessed.entry(slot).or_insert(Some(Exact::ZERO));
+                    *entry = entry.and_then(|sum| sum.plus(known));
+                    if entry.is_none() {
+                        return true;
+                    }
+                }
+            }
+            _ => return true,
+        }
+    }
+    false
+}
+
+fn country_totals(frame: &DecodedFrame, params: &TerritoryBreakdownParams, chosen: Option<&HashSet<u32>>) -> CountryTotals {
     let Some(at) = totals_column(params) else { return CountryTotals::default() };
-    let read = witnessed_rows::<tables::TerritoryTotals>(frame);
+    let read = match chosen {
+        None => witnessed_rows::<tables::TerritoryTotals>(frame),
+        Some(slots) => {
+            let mut result = witnessed_selection::<tables::TerritoryTotals>(frame);
+            let keys = frame.tables[TableId::TerritoryTotals.index()].keys();
+            if result.missing.is_none() && !slots.iter().all(|&slot| keys.contains(u128::from(slot))) {
+                result.missing = Some("Territory totals read only for chosen rows at this hour".into());
+            }
+            result
+        }
+    };
     let mut out = CountryTotals { missing: read.missing.map(|reason| format!("Country territory totals were not read whole at this hour: {reason}")), ..CountryTotals::default() };
     for row in read.rows {
         if row.slot == WORLD {
@@ -550,6 +618,7 @@ impl AtHour for TerritoryBreakdown {
     const TITLE: &'static str = "Territory breakdown";
     const CONTENT_DEPENDENT: bool = true;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
+    const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(at_hour);
     type Params = TerritoryBreakdownParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure, rule, countries, "countries[]", group];
     type Reply = TerritoryBreakdownReply;
@@ -570,6 +639,48 @@ impl AtHour for TerritoryBreakdown {
         vec![TableId::TerritoryRegionTotals, TableId::TerritoryTotals]
     }
 
+    fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        if step > 1 {
+            return Vec::new();
+        }
+        let Ok(Ok(chosen)) = at.context.groups.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour) else {
+            return Vec::new();
+        };
+        if chosen.as_ref().is_some_and(HashSet::is_empty) {
+            return Vec::new();
+        }
+        if step == 0 {
+            return vec![match &chosen {
+                Some(slots) => Read { table: TableId::TerritoryRegionTotals, keys: holder_ranges(slots) },
+                None => Read::all(TableId::TerritoryRegionTotals),
+            }];
+        }
+        let Some(column) = breakdown_column(params) else {
+            return Vec::new();
+        };
+        let read = territory_region_read(held, chosen.as_ref());
+        if !needs_totals(&read, chosen.as_ref(), column) {
+            return Vec::new();
+        }
+        vec![match &chosen {
+            Some(slots) => Read::these(TableId::TerritoryTotals, slots.iter().copied().map(u128::from)),
+            None => Read::all(TableId::TerritoryTotals),
+        }]
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let until = if stage <= 1 && (params.group.is_some() || !params.countries.is_empty()) {
+            before(at.holders.next_change(at.hour)).min(at.context.groups.slots_until(params.group.as_ref(), at.holders, at.hour))
+        } else {
+            i32::MAX
+        };
+        (Self::reads_in(params, owner, stage, held, at), until)
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        stage == 1 && edits.fields(TableId::TerritoryRegionTotals, u64::MAX)
+    }
+
     fn projection(params: &Self::Params, table: TableId, _plan: &[(Vec<dashboard_base::products::at_hour::Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         match table {
             TableId::TerritoryRegionTotals => breakdown_column(params).map(|column| if column % RULE_COLUMNS == STATES { vec![column, column + 1] } else { vec![column] }),
@@ -588,7 +699,11 @@ impl AtHour for TerritoryBreakdown {
     }
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        at.context.groups.valid_through(params.group.as_ref(), at.hour)
+        before(at.holders.next_change(at.hour)).min(at.context.groups.slots_until(params.group.as_ref(), at.holders, at.hour))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, _reply: &Self::Reply, _partial: bool) -> i32 {
+        Self::valid_through(frame, params, at)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -597,18 +712,24 @@ impl AtHour for TerritoryBreakdown {
             Err(reason) => (Err(reason.as_str()), vec![format!("Strategic region names are unavailable: {reason}")]),
         };
         let chosen = at.context.groups.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)?;
-        let read = witnessed_rows::<tables::TerritoryRegionTotals>(frame);
-        breakdown_column(params).ok_or_else(|| dashboard_core::invalid("Unknown territory measure or rule"))?;
-        let breakdown = match (read.missing, chosen) {
-            (_, Err(refused)) => not_recorded(refused),
-            (missing, Ok(chosen)) => {
-                let truncated = missing.is_some();
-                let reason = match missing {
-                    Some(reason) => format!("Territory by strategic region was not read whole at this hour: {reason}"),
-                    None => "Territory was not recorded in some strategic regions at this hour".to_owned(),
-                };
-                let totals = country_totals(frame, params);
-                territory_breakdown(read.rows, &slot_tags(at.holders, frame.hour), params, chosen.as_ref(), regions, Some((reason.as_str(), &totals, truncated)))
+        let column = breakdown_column(params).ok_or_else(|| dashboard_core::invalid("Unknown territory measure or rule"))?;
+        let breakdown = match chosen {
+            Err(refused) => not_recorded(refused),
+            Ok(Some(slots)) if slots.is_empty() => breakdown::breakdown(&[], &Unrecorded::default()),
+            Ok(chosen) => {
+                let read = territory_region_read(frame, chosen.as_ref());
+                let tags = slot_tags(at.holders, frame.hour);
+                if needs_totals(&read, chosen.as_ref(), column) {
+                    let truncated = read.missing.is_some();
+                    let reason = match read.missing {
+                        Some(reason) => format!("Territory by strategic region was not read whole at this hour: {reason}"),
+                        None => "Territory was not recorded in some strategic regions at this hour".to_owned(),
+                    };
+                    let totals = country_totals(frame, params, chosen.as_ref());
+                    territory_breakdown(read.rows, &tags, params, chosen.as_ref(), regions, Some((reason.as_str(), &totals, truncated)))
+                } else {
+                    territory_breakdown(read.rows, &tags, params, chosen.as_ref(), regions, None)
+                }
             }
         };
         warnings.dedup();
@@ -823,5 +944,230 @@ mod tests {
         assert_eq!(parts(vec![Country::Tag("AAA".into())], 150), Vec::new(), "no slot holds AAA at 150: the chosen tag holds nothing then");
         assert_eq!(parts(vec![Country::Slot(1)], 150), one("slot:1", "BBB"), "a chosen slot keeps its part across a retag, named by the tag it holds at the hour");
         assert_eq!(parts(Vec::new(), 150).len(), 3, "no choice is every country and the land no country holds");
+    }
+
+    #[test]
+    fn territory_breakdown_played_steps_match_whole_frame_across_edits_groups_damage_seeks_and_branches() {
+        use crate::registrations::TERRITORY_TERRITORYBREAKDOWN;
+        use dashboard_base::{SourceKey, products::at_hour::frame_panel, test_fixtures::{CAMPAIGN, materialized_frame, played, records, source}};
+        use replay::campaign::Replay;
+        use replay_data::rows::{CountryLinkRow, CountryRow, FactionMemberRow, FactionRow, TableRows, TerritoryTotalRow};
+        use replay_frame::frame::TableView;
+        use serde_json::{Value, json};
+
+        let make_writers = || {
+            let current: Vec<usize> = replay_recording::schema::schema().unwrap().iter().map(Vec::len).collect();
+            let mut cols = current.clone();
+            cols[TableId::TerritoryRegionTotals.index()] = 0;
+            cols[TableId::TerritoryTotals.index()] = 0;
+            recorder_derive::writers_within(&cols, &current)
+        };
+        let country = |id: u32, canonical_slot: u32, tag: &[u8]| CountryRow {
+            id,
+            canonical_slot,
+            tag: tag.to_vec(),
+            border_land_doctrine_level: Recorded::Value(None),
+            ..CountryRow::default()
+        };
+        let region_row = |holder: u32, region: u32, owned_states: i64, owned_denom: i64, controlled_provinces: i64, owned_vp: i64| TerritoryRegionTotalRow {
+            holder,
+            region,
+            controlled_provinces: Recorded::Value(controlled_provinces),
+            controlled_victory_points: Recorded::Value(owned_vp),
+            controlled_area: Recorded::Value(10),
+            controlled_states: Recorded::Value(1),
+            controlled_states_denominator: Recorded::Value(1),
+            owned_provinces: Recorded::Value(controlled_provinces),
+            owned_victory_points: Recorded::Value(owned_vp),
+            owned_area: Recorded::Value(10),
+            owned_states: Recorded::Value(owned_states),
+            owned_states_denominator: Recorded::Value(owned_denom),
+        };
+        let total_row = |slot: u32, owned_states: i64, controlled_provinces: i64, owned_vp: i64| TerritoryTotalRow {
+            slot,
+            owned_states: Recorded::Value(owned_states),
+            controlled_states: Recorded::Value(owned_states),
+            occupied_states: Recorded::Value(0),
+            owned_provinces: Recorded::Value(controlled_provinces),
+            controlled_provinces: Recorded::Value(controlled_provinces),
+            occupied_provinces: Recorded::Value(0),
+            owned_victory_points: Recorded::Value(owned_vp),
+            controlled_victory_points: Recorded::Value(owned_vp),
+            occupied_victory_points: Recorded::Value(0),
+            owned_area: Recorded::Value(10),
+            controlled_area: Recorded::Value(10),
+            occupied_area: Recorded::Value(0),
+        };
+        let build_frame = |branch: u64, h: i32| {
+            let mut f = source(branch, h, Some(i64::from(h)));
+            let mut countries = vec![country(9001, 7, b"AAA"), country(9002, 8, b"BBB")];
+            let mut links = vec![
+                CountryLinkRow { id: 9001, canonical_slot: 7 },
+                CountryLinkRow { id: 9002, canonical_slot: 8 },
+            ];
+            if branch == 1 && (108..=110).contains(&h) {
+                countries.push(country(9003, 9, b"CCC"));
+                links.push(CountryLinkRow { id: 9003, canonical_slot: 9 });
+            }
+            *f.tables[TableId::Countries.index()] = if branch == 1 && (121..=122).contains(&h) {
+                TableView::Unavailable { reason: "countries damaged".into() }
+            } else {
+                TableView::Complete(TableRows::Countries(countries))
+            };
+            *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links));
+            *f.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![
+                FactionRow { id: 10, name: b"SynBloc".to_vec(), ..FactionRow::default() },
+            ]));
+            let mut members = vec![FactionMemberRow { country: 9001, faction: 10, ordinal: 0 }];
+            if branch == 2 || h >= 106 {
+                members.push(FactionMemberRow { country: 9002, faction: 10, ordinal: 1 });
+            }
+            *f.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+
+            let aaa_owned = if branch == 2 { 5 } else if h >= 104 { 3 } else { 2 };
+            let aaa_ctrl_prov = if h >= 105 { 9 } else { 4 };
+            let bbb_vp = if h < 103 { i64::from(h) } else { 103 };
+            let mut regions = if branch == 1 && h == 112 {
+                vec![
+                    region_row(7, 1, 1, 9_223_372_036_854_775_783, aaa_ctrl_prov, 20),
+                    region_row(7, 3, 1, 9_223_372_036_854_775_643, 0, 0),
+                    region_row(7, 4, 1, 9_223_372_036_854_775_549, 0, 0),
+                ]
+            } else {
+                vec![region_row(7, 1, aaa_owned, 1, aaa_ctrl_prov, 20)]
+            };
+            regions.push(region_row(8, 2, 2, 1, 5 + i64::from(h % 2), bbb_vp));
+            let totals = vec![
+                total_row(7, aaa_owned, aaa_ctrl_prov, 20),
+                total_row(8, 2, 5 + i64::from(h % 2), bbb_vp),
+                total_row(TerritoryTotalRow::WORLD, aaa_owned + 2, aaa_ctrl_prov + 5 + i64::from(h % 2), 20 + bbb_vp),
+            ];
+            *f.tables[TableId::TerritoryRegionTotals.index()] = if branch == 1 && (115..=117).contains(&h) {
+                TableView::Unavailable { reason: "regions damaged".into() }
+            } else if branch == 1 && (118..=119).contains(&h) {
+                TableView::Truncated { rows: TableRows::TerritoryRegionTotals(regions[..1].to_vec()), missing: 1 }
+            } else {
+                TableView::Complete(TableRows::TerritoryRegionTotals(regions))
+            };
+            *f.tables[TableId::TerritoryTotals.index()] = TableView::Complete(TableRows::TerritoryTotals(totals));
+            f
+        };
+
+        let branch1: Vec<DecodedFrame> = (100..=124).map(|h| build_frame(1, h)).collect();
+        let replay = Replay::from_records(make_writers(), CAMPAIGN.into(), &[records(1, branch1.clone())])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let source = Arc::new(
+            Source::from_replay(
+                SourceKey { source_id: "territory-breakdown-played".into(), revision: "1".into() },
+                "synthetic.battleplan".into(),
+                Arc::new(replay),
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap(),
+        );
+        let load = LoadContext { content: None };
+        let requests = [
+            json!({"branchId": "1", "measure": "states", "rule": "owned", "countries": []}),
+            json!({"branchId": "1", "measure": "provinces", "rule": "controlled", "countries": []}),
+            json!({"branchId": "1", "measure": "states", "rule": "owned", "countries": ["AAA"]}),
+            json!({"branchId": "1", "measure": "victoryPoints", "rule": "owned", "countries": [], "group": {"type": "faction", "id": "10", "membership": "hour"}}),
+        ];
+        for params in &requests {
+            let mut whole = frame_panel::<TerritoryBreakdown>(&source, &load, params).unwrap();
+            let panel = (TERRITORY_TERRITORYBREAKDOWN.panel.unwrap().open)(&source, &load, params).unwrap();
+            let reader = panel.exact().unwrap();
+            let steps = played(source.replay_ref(), reader, 100, 124);
+            for step in &steps {
+                if step.hour < 112 {
+                    assert!(!step.pending, "{params} must not pend before stage-1 totals at {}", step.hour);
+                }
+                if step.pending {
+                    continue;
+                }
+                let expected = materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour).unwrap();
+                let mut got = step.value.as_ref().as_ref().unwrap().clone();
+                if !step.fresh {
+                    got["hour"] = Value::from(step.hour);
+                }
+                assert_eq!(got, expected, "{params} at {}", step.hour);
+            }
+            if params["countries"] == json!(["AAA"]) {
+                assert_eq!(steps[1].product_calls, 0, "unrelated BBB/controlled edits must not rebuild chosen AAA");
+                assert_eq!(steps[2].product_calls, 0, "unrelated BBB/controlled edits must not rebuild chosen AAA");
+                assert_eq!(steps[4].product_calls, 1, "owned_states change for AAA must rebuild");
+                assert_eq!(steps[5].product_calls, 0, "controlled_provinces change must not rebuild owned states");
+            }
+            let fallback_panel = (TERRITORY_TERRITORYBREAKDOWN.panel.unwrap().open)(&source, &load, params).unwrap();
+            let fallback_reader = fallback_panel.exact().unwrap();
+            let fallback_steps = played(source.replay_ref(), fallback_reader, 115, 124);
+            for step in &fallback_steps {
+                assert!(!step.pending, "{params} fallback walk must stay ready at {}", step.hour);
+                let expected = materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour).unwrap();
+                let mut got = step.value.as_ref().as_ref().unwrap().clone();
+                if !step.fresh {
+                    got["hour"] = Value::from(step.hour);
+                }
+                assert_eq!(got, expected, "{params} fallback walk at {}", step.hour);
+            }
+            if params["countries"] == json!(["AAA"]) {
+                assert_eq!(fallback_steps[1].product_calls, 0, "steady damaged stretch holds on playhead lanes");
+                assert_eq!(fallback_steps[2].product_calls, 0, "steady damaged stretch holds on playhead lanes");
+                assert_eq!(fallback_steps[4].product_calls, 0, "steady truncated stretch holds on playhead lanes");
+            }
+            let sync_panel = (TERRITORY_TERRITORYBREAKDOWN.panel.unwrap().open)(&source, &load, params).unwrap();
+            let sync_reader = sync_panel.exact().unwrap();
+            for h in 100..=124 {
+                let read = (sync_reader.advance)(h, h == 100, &false.into(), None);
+                assert!(!read.pending, "{params} sync walk at {h}");
+                let expected = materialized_frame(&mut *whole, source.replay_ref(), 1, h).unwrap();
+                let mut got = read.value.as_ref().as_ref().unwrap().clone();
+                if !read.fresh {
+                    got["hour"] = Value::from(h);
+                }
+                assert_eq!(got, expected, "{params} sync walk at {h}");
+                if params["countries"] == json!(["AAA"]) && matches!(h, 116 | 117 | 119) {
+                    assert!(!read.fresh, "steady damaged/truncated stretch holds at {h}");
+                }
+                if params["countries"] == json!(["AAA"]) && h == 112 {
+                    assert!(read.fresh, "overflow at {h} must rebuild via stage-1 TerritoryTotals");
+                }
+            }
+            for h in [116, 101, 104, 106, 112, 118, 121, 123] {
+                let read = (reader.advance)(h, true, &false.into(), None);
+                assert!(read.fresh);
+                assert_eq!(*read.value, materialized_frame(&mut *whole, source.replay_ref(), 1, h), "{params} seek {h}");
+            }
+        }
+        let branch2: Vec<DecodedFrame> = (100..=104).map(|h| build_frame(2, h)).collect();
+        let multi = Replay::from_records(make_writers(), CAMPAIGN.into(), &[records(1, branch1), records(2, branch2)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let multi_source = Arc::new(
+            Source::from_replay(
+                SourceKey { source_id: "territory-breakdown-branches".into(), revision: "1".into() },
+                "synthetic.battleplan".into(),
+                Arc::new(multi),
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap(),
+        );
+        for branch in &multi_source.metadata().unwrap().branches {
+            let id: u64 = branch.id.parse().unwrap();
+            let req = json!({"branchId": branch.id, "measure": "states", "rule": "owned", "countries": ["AAA"]});
+            let mut whole_b = frame_panel::<TerritoryBreakdown>(&multi_source, &load, &req).unwrap();
+            let panel_b = (TERRITORY_TERRITORYBREAKDOWN.panel.unwrap().open)(&multi_source, &load, &req).unwrap();
+            let reader_b = panel_b.exact().unwrap();
+            for h in 100..=104 {
+                let read = (reader_b.advance)(h, h == 100, &false.into(), None);
+                let mut got = read.value.as_ref().as_ref().unwrap().clone();
+                if !read.fresh {
+                    got["hour"] = Value::from(h);
+                }
+                assert_eq!(got, materialized_frame(&mut *whole_b, multi_source.replay_ref(), id, h).unwrap(), "branch {} at {h}", branch.id);
+            }
+        }
     }
 }

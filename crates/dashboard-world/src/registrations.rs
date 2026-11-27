@@ -21,11 +21,11 @@ dashboard_base::register_products! {
 
     @hourly
     TERRITORY_TERRITORYSHARE => exact<crate::products::territory::TerritoryShare>,
-    TERRITORY_TERRITORYBREAKDOWN => whole_frame<crate::products::territory::TerritoryBreakdown>,
+    TERRITORY_TERRITORYBREAKDOWN => exact<crate::products::territory::TerritoryBreakdown>,
     SCALARS_GAMESCORE => exact<crate::products::scalars::GameScore>,
     SCALARS_NUCLEARARSENAL => exact<crate::products::scalars::NuclearArsenal>,
-    SCALARS_WORLDTENSION => whole_frame<crate::products::scalars::WorldTension>,
-    SCALARS_FACTORYPARTS => whole_frame<crate::products::scalars::FactoryParts>,
+    SCALARS_WORLDTENSION => exact<crate::products::scalars::WorldTension>,
+    SCALARS_FACTORYPARTS => exact<crate::products::scalars::FactoryParts>,
     SCALARS_FACTORYMIX => exact<crate::products::scalars::FactoryMix>,
-    AUTONOMY_LEVELS_AUTONOMYLEVELS => whole_frame<crate::products::autonomy_levels::AutonomyLevels>,
+    AUTONOMY_LEVELS_AUTONOMYLEVELS => exact<crate::products::autonomy_levels::AutonomyLevels>,
 }
