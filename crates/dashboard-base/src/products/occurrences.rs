@@ -82,7 +82,7 @@ where
         let reply = read(hour, cancelled)?;
         let through = reply.next_change().map_or(i32::MAX, |next| next.saturating_sub(1));
         let rows = reply.row_count() as u64;
-        Ok((serde_json::to_value(reply)?, through, rows))
+        Ok((serde_json::to_value(reply)?, hour..=through, rows))
     })
 }
 

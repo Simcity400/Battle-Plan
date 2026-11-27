@@ -10,7 +10,7 @@ import type { FromLane, FromPull, ToLane } from './laneMessages';
 import { fieldsView } from './views/fields.ts';
 import { Page, type Bitmap, type FrameRequest, type PageMessage } from '../dashboard/follow/page.ts';
 import { message } from '../dashboard/follow/messages.fixture.ts';
-import { parseAnswer, cellValue } from '../dashboard/follow/message.ts';
+import { parseAnswer, cellValue, DATED_PANEL_VERSION } from '../dashboard/follow/message.ts';
 import { splitForLanes } from '../dashboard/follow/split.ts';
 import { PayloadSender, PayloadStore } from '../dashboard/follow/payloads.ts';
 import { boundDated } from '../families/host/dated.ts';
@@ -30,7 +30,7 @@ function panels(records: PanelRow[], seek = 0): Uint8Array {
     return out;
   });
   const out = new Uint8Array(24 + parts.reduce((sum, part) => sum + part.length, 0)), view = new DataView(out.buffer);
-  view.setUint32(0, 0x324c4e50, true); view.setUint16(4, 6, true); view.setUint32(8, records.length, true); view.setUint32(16, NATIVE, true); view.setUint32(20, seek, true);
+  view.setUint32(0, 0x324c4e50, true); view.setUint16(4, DATED_PANEL_VERSION, true); view.setUint32(8, records.length, true); view.setUint32(16, NATIVE, true); view.setUint32(20, seek, true);
   let at = 24;
   for (const part of parts) { out.set(part, at); at += part.length; }
   return out;

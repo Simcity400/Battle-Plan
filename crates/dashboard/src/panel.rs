@@ -32,8 +32,9 @@ fn rank_panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result
         let mut request = params.clone();
         at_hour(&mut request, hour);
         let reply = crate::answer::answer(&source, dashboard_query::series::ranked::PRODUCT, &request, &load, cancelled)?;
-        let through = reply["until"].as_i64().and_then(|n| i32::try_from(n).ok()).unwrap_or(hour);
+        let bound = |name: &str| reply[name].as_i64().and_then(|n| i32::try_from(n).ok()).unwrap_or(hour);
+        let proven = bound("from")..=bound("until");
         let rows = reply["rows"].as_array().map_or(0, |rows| rows.len() as u64);
-        Ok((reply, through, rows))
+        Ok((reply, proven, rows))
     }))
 }

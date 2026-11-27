@@ -365,7 +365,7 @@ fn apm_played_hours_update_only_entering_and_expiring_slices_and_ranks() {
                 (&head.ids[rank.series], value)
             }).collect();
             let value = serde_json::to_value(rows).unwrap();
-            ProductRead { value: Arc::new(Ok(value)), rows: (head.participants_ranked - before) as u64, fresh: true, pending: false, live: None, lanes: vec![] }
+            ProductRead { value: Arc::new(Ok(value)), rows: (head.participants_ranked - before) as u64, fresh: true, pending: false, live: None, lanes: vec![], from: i32::MIN }
         }),
     };
     let replay = replay((170..=176).map(|hour| source(1, hour, None)).collect()).into_timelines(&Default::default()).unwrap();

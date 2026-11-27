@@ -96,9 +96,10 @@ impl Projection {
             self.at = None;
             self.selection = Some(Arc::new(read.keys.clone()));
         }
-        let Input { pool, hour, count, step, placed, mode, .. } = input;
+        let previous = self.at;
+        let Input { pool, hour, count, step, placed, mode, gap, .. } = input;
         let (run, table) = (self.run, read.table.index());
-        match step.and_then(|step| self.lane(read.table, *hour, step)) {
+        let stepped = match step.and_then(|step| self.lane(read.table, *hour, step)) {
             Some((step, lane, change)) => self.from_lane(read, sample, view, edits, count, lane, Some((step, change)), *mode)?,
             None => {
                 let warm = if step.is_some_and(|step| step.lanes_table(table)) {
@@ -112,19 +113,22 @@ impl Projection {
                     Warm::Cold => {
                         let placed = placed.get_or_insert_with(|| pool.take(run, *hour));
                         let lane = placed.lane(table, &self.columns, *hour)?;
-                        self.from_lane(read, sample, view, edits, count, lane, None, *mode)?;
+                        self.from_lane(read, sample, view, edits, count, lane, None, *mode)?
                     }
                 }
             }
-        }
+        };
+        *gap |= !stepped && previous.is_none_or(|at| at.saturating_add(1) < *hour);
         *view = view.clone().with_keys(self.selection.clone());
         self.at = Some(*hour);
         Ok(())
     }
 
     #[expect(clippy::too_many_arguments, reason = "one table's read, its lane and the reply's edits")]
-    pub(super) fn from_lane(&mut self, read: &Read, sample: bool, view: &mut SharedView, edits: &mut Edits, count: &mut u64, lane: &Lane, step: Option<(&Step, &Changes)>, mode: CaptureMode) -> io::Result<()> {
+    pub(super) fn from_lane(&mut self, read: &Read, sample: bool, view: &mut SharedView, edits: &mut Edits, count: &mut u64, lane: &Lane, step: Option<(&Step, &Changes)>, mode: CaptureMode) -> io::Result<bool> {
         let table = read.table;
+        let continues = |step: &Step, change: &Changes| self.at.is_some_and(|at| at.checked_add(1) == Some(step.first())) && !change.reset();
+        let proven = step.is_some_and(|(step, change)| continues(step, change));
         let (status, sampled) = lane.status();
         let other = match status {
             Status::Complete | Status::Truncated { .. } => None,
@@ -136,18 +140,17 @@ impl Projection {
                 *view = made.into();
                 edits.replaced.insert(table);
             }
-            return Ok(());
+            return Ok(proven);
         }
         let cells = lane.view();
-        let continues = |step: &Step, change: &Changes| self.at.is_some_and(|at| at.checked_add(1) == Some(step.first())) && !change.reset();
         if let (TableView::Truncated { missing, .. }, Status::Truncated { missing: still }, Some((step, change))) = (view.held(), status, step)
             && *missing == still && continues(step, change) && !change.read_rows_changed() && change.renumber().is_none()
             && change.inserted().is_empty() && change.deleted().is_empty() && change.columns().iter().all(|written| written.is_empty()) {
-            return Ok(());
+            return Ok(true);
         }
         let (held, change) = match (view.held(), step) {
             (TableView::Complete(held), Some((step, change))) if status == Status::Complete && continues(step, change) => (held, change),
-            _ => return self.whole(read, &cells, status, lane.read_rows(), sampled, sample, view, edits, count),
+            _ => return self.whole(read, &cells, status, lane.read_rows(), sampled, sample, view, edits, count).map(|()| false),
         };
         let mut dirty: BTreeMap<u128, u64> = BTreeMap::new();
         for &key in change.deleted().keys().into_iter().flatten().chain(change.inserted().keys().into_iter().flatten()) {
@@ -174,7 +177,7 @@ impl Projection {
                 *view = view.clone().with_sampled_at(sampled);
                 if sample { edits.replaced.insert(table); }
             }
-            return Ok(());
+            return Ok(true);
         }
         let mut keyed = Vec::new();
         let mut deleted = Vec::new();
@@ -185,7 +188,7 @@ impl Projection {
         *count += keyed.len() as u64;
         let fresh = match cells_rows_of(table, &cells, &keyed, self.format, self.fields | self.validity) {
             Ok(rows) => rows,
-            Err(e) if Unsayable::of(&e).is_some() => return self.whole(read, &cells, status, None, sampled, sample, view, edits, count),
+            Err(e) if Unsayable::of(&e).is_some() => return self.whole(read, &cells, status, None, sampled, sample, view, edits, count).map(|()| false),
             Err(e) => return Err(e),
         };
         if let TableView::Complete(old) = &mut **view {
@@ -194,7 +197,7 @@ impl Projection {
         }
         *view = view.clone().with_sampled_at(sampled);
         edits.record(table, dirty);
-        Ok(())
+        Ok(true)
     }
 
     #[expect(clippy::too_many_arguments, reason = "one table's cells at an hour and the reply's edits")]
@@ -255,6 +258,7 @@ pub(super) struct Input<'a> {
     pub(super) count: &'a mut u64,
     pub(super) step: Option<ProductStep<'a>>,
     pub(super) placed: Option<Taken>,
+    pub(super) gap: bool,
 }
 
 impl Input<'_> {
@@ -359,6 +363,7 @@ struct Stream {
     reply: Option<Box<dyn std::any::Any + Send>>,
     sampled: Option<BTreeSet<TableId>>,
     rebuild: bool,
+    from: i32,
 }
 
 impl Stream {
@@ -451,7 +456,7 @@ where P::Context: Sync, P::Params: Sync {
         let result = engine_executable::executable_tables::scope(executable, || -> io::Result<_> {
             let run = timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)))?.run;
             let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
-            let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step, placed: None };
+            let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step, placed: None, gap: false };
             if let Some(state) = held.as_mut().filter(|s| s.frame.hour == hour && s.run == run && !s.rebuild) {
                 return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
             }
@@ -459,7 +464,7 @@ where P::Context: Sync, P::Params: Sync {
             let seeking = P::RESEED_ON_SEEK && values && step.is_none_or(|input| input.step.reset());
             let seed = seeking || held.as_ref().is_none_or(|s| s.run != run || hour < s.frame.hour);
             if seed {
-                *held = Some(Stream { tables: HashMap::new(), repeated: RepeatedReads::default(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, context_revision: 0, identity_through: hour, reply_through: i32::MAX, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None, rebuild: true });
+                *held = Some(Stream { tables: HashMap::new(), repeated: RepeatedReads::default(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, context_revision: 0, identity_through: hour, reply_through: i32::MAX, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None, rebuild: true, from: hour });
             }
             let state = held.as_mut().expect("seeded");
             let previous_hour = state.frame.hour;
@@ -541,6 +546,9 @@ where P::Context: Sync, P::Params: Sync {
             let at = At { owner, holders: &holders, context: &*context, cancelled, hour, live: &cells };
             let revision = P::context_revision(&context);
             let expired = hour > state.reply_through || revision != state.context_revision;
+            if state.rebuild || identity_changed || input.gap || expired || !edits.tables.is_empty() || !edits.replaced.is_empty() || P::clock_dependent(&state.plans, &context) {
+                state.from = hour;
+            }
             if !state.rebuild && !identity_changed {
                 let changed = !edits.tables.is_empty() || !edits.replaced.is_empty();
                 if !changed && !expired && !P::clock_dependent(&state.plans, &context) {
@@ -612,6 +620,7 @@ where P::Context: Sync, P::Params: Sync {
         let fresh = !pending && held.as_ref().is_some_and(|s| s.values_at == Some(hour));
         let live = held.as_ref().map(|s| s.live.clone()).filter(|live| !live.is_empty());
         let lanes = held.as_ref().map_or_else(Vec::new, Stream::lanes);
-        dashboard_follow::panel::ProductRead { value: result, rows: count, fresh, pending, live, lanes }
+        let from = held.as_ref().map_or(hour, |s| s.from);
+        dashboard_follow::panel::ProductRead { value: result, rows: count, fresh, pending, live, lanes, from }
     })
 }

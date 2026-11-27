@@ -1725,6 +1725,11 @@ fn dated_panel_merge_survives_a_waiting_product_and_coalesces_siblings() {
         [(7, dated::WAITING, 34, &b""[..]), (7, dated::DATA, 58, &b"ready"[..]), (0, dated::COMPLETED, 58, &b""[..])]
     );
     assert!(dated::merge(&step(10, &[(7, dated::DATA, b"x")]), &step(34, &[(8, dated::STANDS, b"")])).is_ok());
+    let records = |merged: &[u8]| dated::records(merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>();
+    let (merged, _) = dated::merge(&step(10, &[(7, dated::DATA, b"v1")]), &step(34, &[(7, dated::AGAIN, b"")])).unwrap();
+    assert_eq!(records(&merged), [(7, dated::DATA, 10), (7, dated::AGAIN, 34), (0, dated::COMPLETED, 34)], "AGAIN restates the reading before it, so it never travels without it");
+    let (merged, _) = dated::merge(&step(34, &[(7, dated::AGAIN, b"")]), &step(58, &[(7, dated::DATA, b"v2")])).unwrap();
+    assert_eq!(records(&merged), [(7, dated::DATA, 58), (0, dated::COMPLETED, 58)]);
 }
 
 #[test]
@@ -2260,9 +2265,9 @@ fn a_pending_product_on_a_paused_seek_delivers_its_anchored_hour_after_warming()
             if let Some(wake) = step.and_then(|s| s.wake.cloned()) {
                 wake_reader.send(wake).unwrap();
             }
-            return ProductRead { value: Arc::new(Err(String::new())), rows: 0, fresh: false, pending: true, live: None, lanes: Vec::new() };
+            return ProductRead { value: Arc::new(Err(String::new())), rows: 0, fresh: false, pending: true, live: None, lanes: Vec::new(), from: Hour::MIN };
         }
-        ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN }
     });
     let cold: ExactReader = Arc::new(|hour, _: &AtomicBool| Ok(serde_json::json!({ "hour": hour })));
     let panel = Box::new(AtHour { read: Arc::clone(&cold), cold, advance });
@@ -2346,7 +2351,7 @@ fn a_new_page_seek_while_paused_reads_again_a_product_whose_read_it_cancelled() 
                 std::thread::yield_now();
             }
         }
-        ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN }
     });
     let cold: ExactReader = Arc::new(|hour, _: &AtomicBool| Ok(serde_json::json!({ "hour": hour })));
     host.prepare_panel(Box::new(AtHour { read: Arc::clone(&cold), cold, advance })).unwrap()(8, 4).unwrap();
@@ -2408,7 +2413,7 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     let steps = clock_steps;
     let push = Arc::new(Push::default());
     host.show_panels(Arc::new(NoRows), push.clone());
-    let reading = |hour| ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new() };
+    let reading = |hour| ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN };
     let first_data = |id| {
         host.prepare_panel(product(Arc::new(move |hour, _, _, _| reading(hour)))).unwrap()(id, 1).unwrap();
         loop {
@@ -2530,7 +2535,7 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
                 "cells": [0, 0, 1, 0, 0, 0],
             }
         })));
-        ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
     }))).unwrap()(7, 1).unwrap();
     let start7 = s7_entered_rx.recv().unwrap();
     let target7 = start7 + quantum;
@@ -2550,6 +2555,83 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     let expected_wide = (9_007_199_254_740_990 + i64::from(target7)).to_string();
     assert_eq!(wide7["live"]["groups"][0]["rawValues"], serde_json::json!([expected_wide]), "multi-hour (quantum=6) catch-up preserves lossless wide rawValues");
     assert!(wide7["live"]["groups"][0].get("follow").is_none());
+}
+
+fn playing_panel(advance: crate::panel::ProductReader) -> (Arc<crate::host::PlayheadHost<Playhead>>, Arc<crate::push::Push>) {
+    use crate::{panel::{AtHour, ExactReader, PanelRows}, registry::Hosted};
+    struct NoRows;
+    impl PanelRows for NoRows {
+        fn reader(&self, _tables: &[TableId]) -> io::Result<Box<dyn crate::panel::PanelReader>> {
+            unreachable!("exact panels supply their own rows")
+        }
+    }
+    let pages = record(quiet);
+    let follow = Follow::new(0);
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 8, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead = Arc::new(Playhead::new(pages.clone(), Timeline::whole(&*pages).unwrap(), settings, Some(follow.hook(Box::new(|_, _| {})))).unwrap());
+    let host = crate::host::PlayheadHost::new(playhead, |p| p, |p, a| { if a.sought { p.seek(a.hour); } }, follow, vec![true; TABLE + 1]).unwrap();
+    let push = Arc::new(crate::push::Push::default());
+    host.show_panels(Arc::new(NoRows), push.clone());
+    let cold: ExactReader = Arc::new(|_, _| unreachable!("the product reader supplies the seed"));
+    host.anchor(crate::registry::Anchor { seek: 1, hour: 0, position: 0.0, playing: false, sought: true, frame_rate: 60.0, speed: 360.0, timestamps: None });
+    host.prepare_panel(Box::new(AtHour { read: cold.clone(), cold, advance })).unwrap()(1, 1).unwrap();
+    host.playhead().pace(360.0);
+    host.playhead().anchor(0.0, true, 360.0, std::time::Instant::now(), false);
+    (host, push)
+}
+
+fn completed_batch(push: &crate::push::Push) -> (Hour, Vec<(u32, u8, Hour, bool)>) {
+    use crate::panel::dated;
+    loop {
+        let (kind, bytes, session) = push.take_sent().expect("panel batches while playing");
+        push.credit(session, u64::MAX);
+        if kind != crate::push::PANEL { continue; }
+        let records = dated::records(&bytes).unwrap();
+        if let Some(completed) = records.iter().find(|r| r.kind == dated::COMPLETED).map(|r| r.hour) {
+            return (completed, records.iter().filter(|r| r.kind != dated::COMPLETED).map(|r| (r.id, r.kind, r.hour, r.stepped())).collect());
+        }
+    }
+}
+
+fn steady(proven_from_read: bool) -> crate::panel::ProductReader {
+    Arc::new(move |hour, _, _, _| crate::panel::ProductRead {
+        value: Arc::new(Ok(serde_json::json!({ "steady": true }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(),
+        from: if proven_from_read { hour } else { Hour::MIN },
+    })
+}
+
+#[test]
+fn a_step_never_completes_a_panel_whose_product_it_did_not_read() {
+    use crate::panel::dated;
+    let (host, push) = playing_panel(steady(false));
+    while !completed_batch(&push).1.iter().any(|&(id, kind, _, stepped)| id == 1 && stepped && kind != crate::panel::dated::WAITING) {}
+    let held = std::iter::repeat_with(|| host.hold_product(1)).find_map(|hold| hold).unwrap();
+    for _ in 0..3 {
+        let (completed, records) = completed_batch(&push);
+        assert!(records.iter().any(|&(id, kind, ..)| id == 1 && kind == dated::WAITING),
+            "the step completed through {completed} while panel 1's product was busy and unread: its last value would be claimed for those hours");
+    }
+    held();
+}
+
+#[test]
+fn a_step_restates_a_reading_its_product_proves_only_from_the_step_end() {
+    use crate::panel::dated;
+    let (_host, push) = playing_panel(steady(true));
+    while !completed_batch(&push).1.iter().any(|&(id, kind, _, stepped)| id == 1 && stepped && kind != crate::panel::dated::WAITING) {}
+    let mut restated = 0;
+    for _ in 0..4 {
+        let (completed, records) = completed_batch(&push);
+        let own: Vec<_> = records.iter().filter(|r| r.0 == 1).map(|&(_, kind, hour, _)| (kind, hour)).collect();
+        assert!(matches!(own[..], [(dated::AGAIN | dated::DATA, hour)] if hour == completed),
+            "a value proven only at {completed} starts again there instead of standing over the step's unread hours: {own:?}");
+        restated += usize::from(own[0].0 == dated::AGAIN);
+    }
+    assert!(restated >= 3, "an equal value restates itself without its body");
+    let (_host, push) = playing_panel(steady(false));
+    while !completed_batch(&push).1.iter().any(|&(id, kind, _, stepped)| id == 1 && stepped && kind != crate::panel::dated::WAITING) {}
+    let (_, records) = completed_batch(&push);
+    assert!(records.iter().all(|r| r.0 != 1), "a value proven across the step stays silent");
 }
 
 #[test]
@@ -2722,10 +2804,10 @@ mod paused_reset {
 
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             if hour == 4 {
-                ProductRead { value: Arc::new(Ok(serde_json::json!({ "gap": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+                ProductRead { value: Arc::new(Ok(serde_json::json!({ "gap": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN }
             } else {
                 let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
-                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
             }
         }))).unwrap()(10, 1).unwrap();
 
@@ -2759,7 +2841,7 @@ mod paused_reset {
 
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(10, 1).unwrap();
         let _ = take_panel_data(&mut seen, &push, 10, 0);
         playhead.wait_declarations().unwrap();
@@ -2774,16 +2856,16 @@ mod paused_reset {
             if hour == 0 && step.is_none() {
                 let _ = seed_entered_tx.send(());
                 let _ = seed_release_rx.lock().unwrap().recv();
-                return ProductRead { value: Arc::new(Ok(serde_json::json!({ "init": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() };
+                return ProductRead { value: Arc::new(Ok(serde_json::json!({ "init": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN };
             }
             if hour == 4 {
-                return ProductRead { value: Arc::new(Ok(serde_json::json!({ "gap": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() };
+                return ProductRead { value: Arc::new(Ok(serde_json::json!({ "gap": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN };
             }
             if hour == 5 && step.is_none() {
                 catch_up_hour_5_read.store(true, std::sync::atomic::Ordering::Release);
             }
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(11, 1).unwrap();
 
         seed_entered_rx.recv().unwrap();
@@ -2828,7 +2910,7 @@ mod paused_reset {
 
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(3, 105, i64::from(hour));
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(40, 1).unwrap();
         let _ = take_panel_data(&mut seen, &push, 40, 0);
         playhead.wait_declarations().unwrap();
@@ -2841,7 +2923,7 @@ mod paused_reset {
         seen.clear();
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 100, i64::from(hour));
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(40, 1).unwrap();
         let _ = take_panel_data(&mut seen, &push, 40, 0);
         playhead.wait_declarations().unwrap();
@@ -2988,7 +3070,7 @@ mod paused_reset {
         playhead.wait_newest(0).unwrap();
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(10, 1).unwrap();
         let _ = take_panel_data(&mut seen, &push, 10, 0);
         playhead.wait_declarations().unwrap();
@@ -2999,10 +3081,10 @@ mod paused_reset {
         let epoch_before_cross_piece = playhead.epoch();
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             if hour < 5 {
-                ProductRead { value: Arc::new(Ok(serde_json::json!({ "empty": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+                ProductRead { value: Arc::new(Ok(serde_json::json!({ "empty": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN }
             } else {
                 let (live, value) = live_cell(3, 105, i64::from(hour));
-                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
             }
         }))).unwrap()(11, 1).unwrap();
         let joined = take_panel_data(&mut seen, &push, 11, 5);
@@ -3023,10 +3105,10 @@ mod paused_reset {
         playhead2.wait_newest(0).unwrap();
         host2.prepare_panel(product(Arc::new(|hour, _, _, _| {
             if hour < 5 {
-                ProductRead { value: Arc::new(Ok(serde_json::json!({ "before": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+                ProductRead { value: Arc::new(Ok(serde_json::json!({ "before": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN }
             } else {
                 let (live, value) = live_cell(3, 105, i64::from(hour));
-                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
             }
         }))).unwrap()(20, 1).unwrap();
         let _ = take_panel_data(&mut seen2, &push2, 20, 0);
@@ -3053,11 +3135,11 @@ mod paused_reset {
         playhead3.wait_newest(0).unwrap();
         host3.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 100, i64::from(hour));
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(30, 1).unwrap();
         host3.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(3, 105, i64::from(hour));
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(31, 1).unwrap();
         let _ = take_panel_data(&mut seen3, &push3, 30, 0);
         let _ = take_panel_data(&mut seen3, &push3, 31, 0);
@@ -3092,7 +3174,7 @@ mod paused_reset {
         playhead.wait_newest(0).unwrap();
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(10, 1).unwrap();
         let _ = take_panel_data(&mut seen, &push, 10, 0);
         playhead.wait_declarations().unwrap();
@@ -3196,7 +3278,7 @@ mod paused_reset {
 
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(10, 1).unwrap();
         let _ = take_panel_data(&mut seen, &push, 10, 0);
         playhead.wait_declarations().unwrap();
@@ -3207,7 +3289,7 @@ mod paused_reset {
         let epoch_before_same_table_seed = playhead.epoch();
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 101, i64::from(hour) * 10 + 1);
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(12, 1).unwrap();
 
         let seeded_extra = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_before_same_table_seed)), 12, 0);
@@ -3234,7 +3316,7 @@ mod paused_reset {
                     built
                 }
             };
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(13, 1).unwrap();
         let wide_h0 = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_before_same_table_seed)), 13, 0);
         assert_eq!(wide_h0["live"]["groups"][0]["seedHour"], 0);
@@ -3263,7 +3345,7 @@ mod paused_reset {
                     built
                 }
             };
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(15, 1).unwrap();
         let end_wide_h0 = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_before_same_table_seed)), 15, 0);
         let end_wide_follow = end_wide_h0["live"]["groups"][0]["follow"].as_u64().expect("initial follow id");
@@ -3302,7 +3384,7 @@ mod paused_reset {
             if step.is_none() && (1..=8).contains(&hour) {
                 catchup_seeds_ref.lock().unwrap().push((hour, seed));
             }
-            ProductRead { value: Arc::new(Ok(serde_json::json!({ "interval": hour }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+            ProductRead { value: Arc::new(Ok(serde_json::json!({ "interval": hour }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(14, 1).unwrap();
         let _interval_h8 = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_before_same_table_seed)), 14, 8);
         let seen_seeds = catchup_seeds.lock().unwrap().clone();
@@ -3317,7 +3399,7 @@ mod paused_reset {
         let epoch_before_covered = playhead.epoch();
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(3, 105, i64::from(hour));
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(16, 1).unwrap();
         let covered_seed = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_before_covered)), 16, 0);
         assert_eq!(covered_seed["live"]["groups"][0]["seedHour"], 0);
@@ -3348,7 +3430,7 @@ mod paused_reset {
 
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(100, 1).unwrap();
         let _ = take_panel_data(&mut seen, &push, 100, 0);
         playhead.wait_declarations().unwrap();
@@ -3361,7 +3443,7 @@ mod paused_reset {
             let offset = i64::from(id);
             host.prepare_panel(product(Arc::new(move |hour, _, _, _| {
                 let (live, value) = live_cell(0, 100, i64::from(hour) * 10 + offset);
-                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
             }))).unwrap()(id, 1).unwrap();
             let data = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_after_warm)), id, 0);
             assert_eq!(data["live"]["groups"][0]["seedHour"], 0);
@@ -3381,7 +3463,7 @@ mod paused_reset {
                 }
             }
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10 + 103);
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(103, 1).unwrap();
         inflight_entered_rx.recv().unwrap();
 
@@ -3424,7 +3506,7 @@ mod paused_reset {
         seen.clear();
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 100, 9_007_199_254_740_995 + i64::from(hour));
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(104, 1).unwrap();
         let unseeded = drain_checking(&mut seen, 104, 0);
         let unseeded_follow = unseeded["live"]["groups"][0]["follow"].as_u64().expect("unseeded follow id") as u32;
@@ -3531,7 +3613,7 @@ mod paused_reset {
 
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(10, 1).unwrap();
         let _ = take_panel_data(&mut seen, &push, 10, 0);
         playhead.wait_declarations().unwrap();
@@ -3638,7 +3720,7 @@ mod paused_reset {
 
         host.prepare_panel(product(Arc::new(|hour, _, _, _| {
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
-            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
         }))).unwrap()(10, 1).unwrap();
         let _ = take_panel_data(&mut seen, &push, 10, 0);
         playhead.wait_declarations().unwrap();

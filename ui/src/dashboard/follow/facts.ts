@@ -27,6 +27,7 @@ export type PanelRecord<V> =
   | { kind: 'data'; id: number; hour: number; value: V; stepped?: boolean; cells?: readonly CellSeed<V>[]; bytes?: number }
   | { kind: 'refused'; id: number; hour: number; reason: string; value: V; stepped?: boolean; bytes?: number }
   | { kind: 'stands'; id: number; hour: number; stepped?: boolean }
+  | { kind: 'again'; id: number; hour: number; stepped?: boolean }
   | { kind: 'waiting'; id: number; hour: number };
 
 export interface FollowAnswer<V> { id: number; hour: number; value: V; refused?: string | null; bytes?: number }
@@ -272,7 +273,7 @@ export class Facts<V> {
       const sub = this.subs.get(record.id);
       if (!sub || sub.route !== route || sub.channel !== 'panel') { if ('bytes' in record) this.freed += record.bytes ?? 0; continue; }
       this.materializePanel(sub);
-      if ((record.kind === 'data' || record.kind === 'refused' || record.kind === 'stands') && record.stepped) {
+      if ((record.kind === 'data' || record.kind === 'refused' || record.kind === 'stands' || record.kind === 'again') && record.stepped) {
         if (!sub.stepped) { sub.stepped = true; sub.openSeq = at.completedSeq; }
       }
       if (record.kind === 'data' || record.kind === 'refused') {
@@ -287,6 +288,13 @@ export class Facts<V> {
           cells.map(cell => cell.id), seeds));
         sub.openSeq = at.completedSeq;
         if (sub.stepped) { at.openStepped.add(sub.id); at.pendingConfirm.add(sub.id); }
+      } else if (record.kind === 'again') {
+        const last = sub.facts.at(-1);
+        if (last) {
+          this.add(sub, this.fact(record.hour, record.hour, last.value, last.refused, 'panel', 0, last.cells, last.seeds));
+          sub.openSeq = at.completedSeq;
+          if (sub.stepped) { at.openStepped.add(sub.id); at.pendingConfirm.add(sub.id); }
+        }
       } else if (record.kind === 'stands') {
         const last = sub.facts.at(-1);
         if (last) {
@@ -296,8 +304,6 @@ export class Facts<V> {
           if (sub.stepped) { at.openStepped.add(sub.id); at.pendingConfirm.add(sub.id); }
         }
       } else {
-        const last = sub.facts.at(-1);
-        if (last && sub.open) last.c = Math.max(last.c, record.hour - 1);
         sub.open = false;
         at.openStepped.delete(sub.id);
         at.pendingConfirm.delete(sub.id);

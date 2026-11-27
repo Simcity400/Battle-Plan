@@ -5,7 +5,7 @@ import { Lane } from '../../draw/lane.ts';
 import { fieldsView } from '../../draw/views/fields.ts';
 import { Page, type Bitmap, type PageMessage } from './page.ts';
 import { splitForLanes } from './split.ts';
-import { cellValue, parseAnswer, rowKey } from './message.ts';
+import { cellValue, DATED_PANEL_VERSION, parseAnswer, rowKey } from './message.ts';
 import { answerBody } from './messages.fixture.ts';
 import { createLaneView, type LaneBinding, type LaneFamily } from '../../families/laneRuntime.ts';
 import { driveLane, installRecordingCanvas, LANE_THEME, type RecordedCanvas } from '../../families/laneRuntime.fixture.ts';
@@ -223,7 +223,7 @@ function panelPacket(records: { id: number; hour: number; kind: 'data' | 'comple
   });
   const out = new Uint8Array(24 + parts.reduce((sum, part) => sum + part.length, 0)), view = new DataView(out.buffer);
   view.setUint32(0, 0x324c4e50, true);
-  view.setUint16(4, 6, true);
+  view.setUint16(4, DATED_PANEL_VERSION, true);
   view.setUint32(8, records.length, true);
   view.setUint32(16, NATIVE, true);
   view.setUint32(20, seek, true);
@@ -508,7 +508,7 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
       const rec = new Uint8Array(16), rv = new DataView(rec.buffer);
       rv.setUint32(0, 3, true); rv.setInt32(4, atHour, true); rv.setUint8(8, 3); rv.setUint8(9, 1); rv.setUint32(12, 0, true);
       const out = new Uint8Array(24 + 16), dv = new DataView(out.buffer);
-      dv.setUint32(0, 0x324c4e50, true); dv.setUint16(4, 6, true); dv.setUint32(8, 1, true); dv.setUint32(16, NATIVE, true); dv.setUint32(20, atSeek, true);
+      dv.setUint32(0, 0x324c4e50, true); dv.setUint16(4, DATED_PANEL_VERSION, true); dv.setUint32(8, 1, true); dv.setUint32(16, NATIVE, true); dv.setUint32(20, atSeek, true);
       out.set(rec, 24);
       return out;
     };
@@ -631,7 +631,7 @@ test('differential: M2 future-seek panel replay preserves exact panel coverage a
       return out;
     });
     const out = new Uint8Array(24 + parts.reduce((sum, part) => sum + part.length, 0)), view = new DataView(out.buffer);
-    view.setUint32(0, 0x324c4e50, true); view.setUint16(4, 6, true); view.setUint32(8, records.length, true);
+    view.setUint32(0, 0x324c4e50, true); view.setUint16(4, DATED_PANEL_VERSION, true); view.setUint32(8, records.length, true);
     view.setUint32(16, NATIVE, true); view.setUint32(20, seek, true);
     let at = 24;
     for (const part of parts) { out.set(part, at); at += part.length; }
@@ -1054,7 +1054,7 @@ test('dated admission (#117): branch, seek, requested hour and coverage agree ac
         return out;
       });
       const out = new Uint8Array(24 + parts.reduce((sum, p) => sum + p.length, 0)), dv = new DataView(out.buffer);
-      dv.setUint32(0, 0x324c4e50, true); dv.setUint16(4, 6, true); dv.setUint32(8, parts.length, true);
+      dv.setUint32(0, 0x324c4e50, true); dv.setUint16(4, DATED_PANEL_VERSION, true); dv.setUint32(8, parts.length, true);
       dv.setUint32(16, native, true); dv.setUint32(20, seek, true);
       let at = 24;
       for (const part of parts) { out.set(part, at); at += part.length; }

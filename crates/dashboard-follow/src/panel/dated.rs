@@ -3,7 +3,7 @@ use replay_data::Hour;
 use std::{collections::BTreeMap, io};
 
 pub const MAGIC: &[u8; 4] = b"PNL2";
-const VERSION: u16 = 6;
+const VERSION: u16 = 7;
 const HEAD: usize = 24;
 const PANEL_HEAD: usize = 16;
 pub const REFUSED: u8 = 0;
@@ -11,6 +11,7 @@ pub const DATA: u8 = 1;
 pub const STANDS: u8 = 3;
 pub const COMPLETED: u8 = 4;
 pub const WAITING: u8 = 5;
+pub const AGAIN: u8 = 6;
 
 pub struct ProductBatch {
     bytes: Vec<u8>,
@@ -193,6 +194,7 @@ struct PanelState<'a> {
     stands_before: Option<Record<'a>>,
     wait_before: Option<Record<'a>>,
     reading: Option<Record<'a>>,
+    again: Option<Record<'a>>,
     tail: Option<Record<'a>>,
 }
 
@@ -200,6 +202,18 @@ impl<'a> PanelState<'a> {
     fn push(&mut self, r: Record<'a>) {
         match r.kind {
             DATA | REFUSED => {
+                if self.wait_before.is_none() {
+                    self.stands_before = None;
+                }
+                self.reading = Some(r);
+                self.again = None;
+                self.tail = None;
+            }
+            AGAIN if self.reading.is_some() => {
+                self.again = Some(r);
+                self.tail = None;
+            }
+            AGAIN => {
                 if self.wait_before.is_none() {
                     self.stands_before = None;
                 }
@@ -229,7 +243,7 @@ impl<'a> PanelState<'a> {
     }
 
     fn iter(&self) -> impl Iterator<Item = Record<'a>> {
-        [self.stands_before, self.wait_before, self.reading, self.tail].into_iter().flatten()
+        [self.stands_before, self.wait_before, self.reading, self.again, self.tail].into_iter().flatten()
     }
 }
 
@@ -242,7 +256,7 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     for r in records(older)?.into_iter().chain(records(newer)?) {
         count += 1;
         match r.kind {
-            DATA | REFUSED | STANDS | WAITING => panels.entry(r.id).or_default().push(r),
+            DATA | REFUSED | STANDS | WAITING | AGAIN => panels.entry(r.id).or_default().push(r),
             COMPLETED => {
                 if completed.is_none_or(|c| r.hour >= c.hour) {
                     completed = Some(r);

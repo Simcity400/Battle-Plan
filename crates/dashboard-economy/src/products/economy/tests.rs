@@ -863,6 +863,27 @@ mod market {
     }
 
     #[test]
+    fn an_equal_reply_after_unread_hours_is_proven_only_from_its_own_hour() {
+        let brief = 112..=113;
+        let source = open((FIRST..=LAST).map(|hour| {
+            let mut frame = frame(hour);
+            let mut terms = frame.complete::<tables::MarketContractTerms>().unwrap().to_vec();
+            terms.retain(|row| row.kind != 0 || brief.contains(&hour));
+            set::<tables::MarketContractTerms>(&mut frame, terms);
+            frame
+        }).collect());
+        let panel = dashboard_base::products::at_hour::exact_panel::<MarketLendLease>(&source, &load(), &json!({ "panel": MarketLendLease::KEY, "branchId": "1", "countries": [], "only": "requests" })).unwrap();
+        let exact = panel.exact().unwrap();
+        let read = |hour, seed| (exact.advance)(hour, seed, &false.into(), None);
+        let (opened, next) = (read(110, true), read(111, false));
+        assert_eq!((opened.from, next.from), (110, 110), "an adjacent hour with no input edit is proven from the first read");
+        assert_eq!(asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": [], "only": "requests" }), 112).unwrap()["contracts"].as_array().unwrap().len(), 1);
+        let after = read(116, false);
+        assert_eq!(after.value, next.value, "the request came and went between the two reads");
+        assert_eq!(after.from, 116, "hours 112 and 113 held a request: the equal reply at 116 proves nothing before 116");
+    }
+
+    #[test]
     fn hours_where_only_an_agreements_fuel_counters_move_reread_no_row() {
         let source = recording();
         let panel = dashboard_base::products::at_hour::exact_panel::<MarketLendLease>(&source, &load(), &json!({ "panel": MarketLendLease::KEY, "branchId": "1", "countries": [], "only": "agreements" })).unwrap();
