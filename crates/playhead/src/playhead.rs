@@ -21,7 +21,7 @@ use std::{
     io,
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread::JoinHandle,
@@ -551,6 +551,9 @@ struct Shared {
     wake: Condvar,
     jobs: Mutex<Jobs>,
     work: Condvar,
+    lent_work: Condvar,
+    #[cfg(test)]
+    lent_live: AtomicUsize,
     ring: Mutex<Ring>,
     clock: Mutex<Clock>,
     flight: Arc<Flight>,
@@ -706,7 +709,9 @@ impl Shared {
     fn queue(&self, jobs: impl IntoIterator<Item = ((u8, i64), Job)>) {
         let mut held = lock(&self.jobs);
         let before = held.heap.len();
+        let mut urgent = false;
         for (rank, job) in jobs {
+            urgent |= rank.0 <= 1;
             held.push(rank, job);
         }
         let added = held.heap.len() - before;
@@ -716,6 +721,9 @@ impl Shared {
             1 => self.work.notify_one(),
             _ => self.work.notify_all(),
         }
+        if urgent {
+            self.lent_work.notify_all();
+        }
     }
 
     fn queue_joins(&self, jobs: Vec<Job>) {
@@ -724,16 +732,7 @@ impl Shared {
         }
         lock(&self.jobs).joins.extend(jobs);
         self.work.notify_all();
-    }
-
-    fn pop_join(&self) -> Option<Job> {
-        let mut jobs = lock(&self.jobs);
-        if jobs.stop {
-            return None;
-        }
-        let job = jobs.joins.pop_front()?;
-        jobs.running += 1;
-        Some(job)
+        self.lent_work.notify_all();
     }
 
     fn free(&self, retired: impl Send + 'static) {
@@ -754,18 +753,59 @@ impl Shared {
     }
 
     fn run(&self, job: Job) -> Option<Done> {
-        let done = match job {
+        struct Running<'a>(&'a Shared);
+        impl Drop for Running<'_> {
+            fn drop(&mut self) {
+                lock(&self.0.jobs).running -= 1;
+            }
+        }
+        struct OnPanic<'a> {
+            shared: &'a Shared,
+            done: Option<Done>,
+        }
+        impl Drop for OnPanic<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    if let Some(done) = self.done.take() {
+                        self.shared.nudge(|control| control.done.push(done));
+                    }
+                    self.shared.work.notify_all();
+                    self.shared.lent_work.notify_all();
+                }
+            }
+        }
+        let mut guard = OnPanic { shared: self, done: None };
+        let _running = Running(self);
+        match job {
             Job::Prepare(prepare) if prepare.epoch != self.epoch.load(Ordering::Acquire) => None,
             Job::Prepare(prepare) => {
+                let (epoch, purpose, table, generation) = (prepare.epoch, prepare.purpose, prepare.table, prepare.generation);
+                guard.done = Some(Done::Prepared {
+                    epoch,
+                    purpose,
+                    table,
+                    generation,
+                    result: Err(io::Error::other("playhead worker panicked")),
+                });
                 let result = self.prepare(&prepare);
-                let Prepare { epoch, purpose, table, generation, .. } = prepare;
+                guard.done = None;
                 Some(Done::Prepared { epoch, purpose, table, generation, result })
             }
             Job::Fetch { epoch, fetch, .. } if epoch != self.epoch.load(Ordering::Acquire) => {
                 drop(fetch);
                 None
             }
-            Job::Fetch { epoch, table, generation, fetch } => Some(Done::Fetched { epoch, table, generation, result: fetch.run() }),
+            Job::Fetch { epoch, table, generation, fetch } => {
+                guard.done = Some(Done::Fetched {
+                    epoch,
+                    table,
+                    generation,
+                    result: Err(io::Error::other("playhead worker panicked")),
+                });
+                let result = fetch.run();
+                guard.done = None;
+                Some(Done::Fetched { epoch, table, generation, result })
+            }
             Job::Rows(wanted, reply) => {
                 reply.give(log::rows(&*self.pages, &wanted));
                 None
@@ -776,9 +816,7 @@ impl Shared {
                 self.freed_ns.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 None
             }
-        };
-        lock(&self.jobs).running -= 1;
-        done
+        }
     }
 }
 
@@ -1142,6 +1180,9 @@ impl Playhead {
             wake: Condvar::new(),
             jobs: Mutex::new(Jobs::default()),
             work: Condvar::new(),
+            lent_work: Condvar::new(),
+            #[cfg(test)]
+            lent_live: AtomicUsize::new(0),
             ring: Mutex::new(Ring::new(settings.ring)),
             clock: Mutex::new(Clock::new(first, last, settings.speed)),
             flight: Arc::new(Flight::default()),
@@ -1628,6 +1669,7 @@ impl Playhead {
         self.shared.notify_control();
         lock(&self.shared.jobs).stop = true;
         self.shared.work.notify_all();
+        self.shared.lent_work.notify_all();
         let lanes = self.stepper.take().map(|stepper| stepper.join().unwrap_or_default()).unwrap_or_default();
         for thread in self.threads.drain(..) {
             let _ = thread.join();
@@ -1696,6 +1738,112 @@ fn fetcher(shared: &Shared) {
         };
         if let Some(done) = shared.run(job) {
             shared.nudge(|control| control.done.push(done));
+        }
+    }
+}
+
+fn pop_lent(jobs: &mut Jobs) -> Option<Job> {
+    if jobs.heap.peek().is_some_and(|queued| queued.rank.0 <= 1) {
+        return Some(jobs.heap.pop().expect("peeked").job);
+    }
+    jobs.joins.pop_front()
+}
+
+struct WorkerExit {
+    shared: Arc<Shared>,
+    exited: Arc<AtomicBool>,
+}
+
+impl Drop for WorkerExit {
+    fn drop(&mut self) {
+        #[cfg(test)]
+        self.shared.lent_live.fetch_sub(1, Ordering::Release);
+        self.exited.store(true, Ordering::Release);
+        if std::thread::panicking() {
+            self.shared.work.notify_all();
+            self.shared.lent_work.notify_all();
+            self.shared.nudge(|_| {});
+        }
+    }
+}
+
+fn lent_worker(shared: Arc<Shared>, exited: Arc<AtomicBool>) {
+    let _exit = WorkerExit { shared: Arc::clone(&shared), exited };
+    loop {
+        let job = {
+            let mut jobs = lock(&shared.jobs);
+            loop {
+                if jobs.stop {
+                    return;
+                }
+                if let Some(job) = pop_lent(&mut jobs) {
+                    jobs.running += 1;
+                    break job;
+                }
+                jobs = shared.lent_work.wait(jobs).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        };
+        if let Some(done) = shared.run(job) {
+            shared.nudge(|control| control.done.push(done));
+        }
+    }
+}
+
+struct LentWorkers {
+    shared: Arc<Shared>,
+    handles: Vec<(JoinHandle<()>, Arc<AtomicBool>)>,
+}
+
+impl LentWorkers {
+    fn new(shared: Arc<Shared>) -> Self {
+        Self { shared, handles: Vec::new() }
+    }
+
+    fn reap(&mut self) -> usize {
+        let mut reaped = 0;
+        let mut at = 0;
+        while at < self.handles.len() {
+            if self.handles[at].1.load(Ordering::Acquire) || self.handles[at].0.is_finished() {
+                let (handle, _) = self.handles.swap_remove(at);
+                let _ = handle.join();
+                reaped += 1;
+            } else {
+                at += 1;
+            }
+        }
+        reaped
+    }
+
+    fn ensure(&mut self, want: usize) {
+        self.reap();
+        while self.handles.len() < want {
+            let shared = Arc::clone(&self.shared);
+            let exited = Arc::new(AtomicBool::new(false));
+            #[cfg(test)]
+            self.shared.lent_live.fetch_add(1, Ordering::AcqRel);
+            let worker_exited = Arc::clone(&exited);
+            match std::thread::Builder::new().name("playhead lent".into()).spawn(move || lent_worker(shared, worker_exited)) {
+                Ok(handle) => self.handles.push((handle, exited)),
+                Err(_) => {
+                    #[cfg(test)]
+                    self.shared.lent_live.fetch_sub(1, Ordering::Release);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+impl Drop for LentWorkers {
+    fn drop(&mut self) {
+        if self.handles.is_empty() {
+            return;
+        }
+        lock(&self.shared.jobs).stop = true;
+        self.shared.work.notify_all();
+        self.shared.lent_work.notify_all();
+        for (handle, _) in self.handles.drain(..) {
+            let _ = handle.join();
         }
     }
 }
@@ -1784,6 +1932,7 @@ struct Stepper {
     shared: Arc<Shared>,
     hook: Option<Hook>,
     helpers: Vec<Sender<Help>>,
+    lent: LentWorkers,
     epoch: u64,
     head: Hour,
     pace: f64,
@@ -1825,11 +1974,13 @@ struct Stepper {
 impl Stepper {
     fn new(shared: Arc<Shared>, hook: Option<Hook>, helpers: Vec<Sender<Help>>) -> Self {
         let settings = shared.settings;
+        let lent = LentWorkers::new(Arc::clone(&shared));
         Self {
             head: shared.timeline.first(),
             shared,
             hook,
             helpers,
+            lent,
             epoch: 0,
             pace: settings.speed, rate: settings.rate,
             seek: None,
@@ -1921,6 +2072,16 @@ impl Stepper {
                 done.into_iter().for_each(|done| self.discard(done));
                 idle = true;
                 continue;
+            }
+            if self.lent.reap() > 0 {
+                let pending = {
+                    let jobs = lock(&self.shared.jobs);
+                    jobs.joins.len() + jobs.heap.iter().filter(|queued| queued.rank.0 <= 1).count()
+                };
+                if pending > 0 {
+                    let cap = self.lent_cap(true);
+                    self.lent.ensure(pending.min(cap));
+                }
             }
             let mut moved = !lands.is_empty();
             self.lands.extend(lands);
@@ -2086,22 +2247,17 @@ impl Stepper {
         self.seek = Some(Seek { hour, gap, piece, asked, started: Instant::now(), pending, prepared: Vec::new() });
     }
 
-    fn lend_seek_threads(&self, tables: usize) {
+    fn lent_cap(&self, at_least_one: bool) -> usize {
         let own = 1 + self.helpers.len() + self.shared.settings.fetch_threads;
         let width = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-        for _ in 0..tables.saturating_sub(own).min(width.saturating_sub(own)) {
-            let shared = Arc::clone(&self.shared);
-            let lent = std::thread::Builder::new().name("playhead seek".into()).spawn(move || {
-                while let Some(job) = shared.pop_urgent() {
-                    if let Some(done) = shared.run(job) {
-                        shared.nudge(|control| control.done.push(done));
-                    }
-                }
-            });
-            if lent.is_err() {
-                break;
-            }
-        }
+        let extra = width.saturating_sub(own);
+        if at_least_one { extra.max(1) } else { extra }
+    }
+
+    fn lend_seek_threads(&mut self, tables: usize) {
+        let own = 1 + self.helpers.len() + self.shared.settings.fetch_threads;
+        let want = tables.saturating_sub(own).min(self.lent_cap(false));
+        self.lent.ensure(want);
     }
 
     fn help_seek(&mut self) -> io::Result<bool> {
@@ -2503,22 +2659,9 @@ impl Stepper {
         Job::Prepare(prepare)
     }
 
-    fn lend_join_threads(&self, joins: usize) {
-        let own = 1 + self.helpers.len() + self.shared.settings.fetch_threads;
-        let width = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-        for _ in 0..joins.min(width.saturating_sub(own).max(1)) {
-            let shared = Arc::clone(&self.shared);
-            let lent = std::thread::Builder::new().name("playhead join".into()).spawn(move || {
-                while let Some(job) = shared.pop_join() {
-                    if let Some(done) = shared.run(job) {
-                        shared.nudge(|control| control.done.push(done));
-                    }
-                }
-            });
-            if lent.is_err() {
-                break;
-            }
-        }
+    fn lend_join_threads(&mut self, joins: usize) {
+        let want = joins.min(self.lent_cap(true));
+        self.lent.ensure(want);
     }
 
     fn publish_joins(&mut self) {

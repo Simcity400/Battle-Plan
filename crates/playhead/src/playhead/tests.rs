@@ -3326,3 +3326,215 @@ fn paused_seed_hold_allows_stalled_slot_catch_up_at_head() {
     assert_eq!(playhead.epoch(), epoch_at_stall, "same-hour catch-up runs under the paused-seed hold so the join lands without stalling or seeking");
     assert_eq!(playhead.held().2.joins_open, 0);
 }
+
+#[test]
+fn many_join_and_seek_bursts_reuse_a_bounded_lent_worker_set_and_stop_joins_all() {
+    use std::collections::HashSet;
+    use std::thread::ThreadId;
+
+    let width = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let cap = width.saturating_sub(2).max(1);
+    let tables = cap + 4;
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, tables, &[(0, BLOCK)]);
+    let lent_ids = Arc::new(Mutex::new(HashSet::<ThreadId>::new()));
+    let ids = Arc::clone(&lent_ids);
+    let track: Rebuild = Arc::new(move |lane: &Lane, columns: &[usize]| {
+        let name = std::thread::current().name().unwrap_or("").to_owned();
+        if name != "playhead stepper" && !name.starts_with("playhead fetch") && !name.starts_with("playhead step") {
+            ids.lock().unwrap().insert(std::thread::current().id());
+        }
+        Ok(State::new(Kept::rebuilt(lane, columns), 0))
+    });
+
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap();
+    let shared = Arc::clone(&playhead.shared);
+    let base = playhead.declare(every(&[0]), Some(Arc::clone(&track))).unwrap();
+    let mut consumer = playhead.consumer(base);
+    consumer.set_blocking(true);
+    playhead.pause();
+    playhead.seek(0);
+    playhead.wait_until(|| playhead.newest().is_some());
+    let mut steps = Vec::new();
+    let _ = consumer.take(0, &mut steps);
+
+    let gated = &pages.extents[0];
+    let join_expected = (cap + 1).min(tables - 1);
+    for _ in 0..6 {
+        gated.close(0, u64::MAX);
+        let reader = playhead.declare(every(&(1..tables).collect::<Vec<_>>()), Some(Arc::clone(&track))).unwrap();
+        {
+            let mut closed = gated.closed.lock().unwrap();
+            while closed.1 < join_expected {
+                closed = gated.opened.wait(closed).unwrap();
+            }
+        }
+        assert!(shared.lent_live.load(Ordering::Acquire) <= cap);
+        gated.open();
+        playhead.wait_until(|| {
+            let (declared, counters) = (playhead.declarations(), playhead.held().2);
+            counters.declarations_applied == declared && counters.joins_open == 0
+        });
+        playhead.retire(reader);
+        playhead.wait_until(|| playhead.held().2.declarations_applied == playhead.declarations());
+    }
+
+    let reader = playhead.declare(every(&(1..tables).collect::<Vec<_>>()), Some(Arc::clone(&track))).unwrap();
+    let seek_expected = tables.min(width);
+    for burst in 0..4 {
+        gated.close(0, u64::MAX);
+        playhead.seek(if burst % 2 == 0 { 100 } else { 0 });
+        {
+            let mut closed = gated.closed.lock().unwrap();
+            while closed.1 < seek_expected {
+                closed = gated.opened.wait(closed).unwrap();
+            }
+        }
+        assert!(shared.lent_live.load(Ordering::Acquire) <= cap);
+        gated.open();
+        playhead.wait_until(|| playhead.ring_len() >= 1);
+        steps.clear();
+        let _ = consumer.take(if burst % 2 == 0 { 100 } else { 0 }, &mut steps);
+    }
+    playhead.retire(reader);
+    let _ = playhead.finish();
+
+    let seen = lent_ids.lock().unwrap().len();
+    assert!(seen >= 1, "expected lent workers to participate in join and seek bursts");
+    assert!(seen <= cap, "saw {seen} distinct lent worker threads across bursts, exceeding cap {cap}");
+    assert_eq!(shared.lent_live.load(Ordering::Acquire), 0, "stop joins every lent worker");
+}
+
+#[test]
+fn a_panicking_lent_worker_is_replaced_without_wedging_the_queue() {
+    use std::sync::atomic::AtomicBool;
+    use std::thread::ThreadId;
+
+    let width = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let cap = width.saturating_sub(2).max(1);
+    let tables = cap + 4;
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, tables, &[(0, BLOCK)]);
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap();
+    let shared = Arc::clone(&playhead.shared);
+    let log = Log::default();
+    let base = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(base);
+    consumer.set_blocking(true);
+    playhead.pause();
+    playhead.seek(0);
+    playhead.wait_until(|| playhead.newest().is_some());
+    let mut steps = Vec::new();
+    let _ = consumer.take(0, &mut steps);
+
+    let fired = Arc::new(AtomicBool::new(false));
+    let gate = Arc::new((Mutex::new((None::<ThreadId>, false)), Condvar::new()));
+    let fired_cb = Arc::clone(&fired);
+    let gate_cb = Arc::clone(&gate);
+    let panicker: Rebuild = Arc::new(move |lane: &Lane, columns: &[usize]| {
+        if std::thread::current().name() == Some("playhead lent") && !fired_cb.swap(true, Ordering::AcqRel) {
+            let mut state = gate_cb.0.lock().unwrap();
+            state.0 = Some(std::thread::current().id());
+            gate_cb.1.notify_all();
+            while !state.1 {
+                state = gate_cb.1.wait(state).unwrap();
+            }
+            panic!("injected lent worker panic");
+        }
+        Ok(State::new(Kept::rebuilt(lane, columns), 0))
+    });
+
+    let gated = &pages.extents[0];
+    let join_expected = (cap + 1).min(tables - 1);
+    gated.close(0, u64::MAX);
+    let retired = playhead.declare(every(&(1..tables).collect::<Vec<_>>()), Some(panicker)).unwrap();
+    {
+        let mut closed = gated.closed.lock().unwrap();
+        while closed.1 < join_expected {
+            closed = gated.opened.wait(closed).unwrap();
+        }
+    }
+    gated.open();
+    let panicked_tid = {
+        let mut state = gate.0.lock().unwrap();
+        while state.0.is_none() {
+            state = gate.1.wait(state).unwrap();
+        }
+        let tid = state.0.unwrap();
+        playhead.retire(retired);
+        state.1 = true;
+        gate.1.notify_all();
+        tid
+    };
+    playhead.wait_until(|| {
+        let (declared, counters) = (playhead.declarations(), playhead.held().2);
+        counters.declarations_applied == declared && counters.joins_open == 0 && super::lock(&shared.jobs).running == 0
+    });
+    assert_eq!(playhead.error(), None);
+
+    let after_ids = Arc::new(Mutex::new(std::collections::HashSet::<ThreadId>::new()));
+    let after_cb = Arc::clone(&after_ids);
+    let track: Rebuild = Arc::new(move |lane: &Lane, columns: &[usize]| {
+        if std::thread::current().name() == Some("playhead lent") {
+            after_cb.lock().unwrap().insert(std::thread::current().id());
+        }
+        Ok(State::new(Kept::rebuilt(lane, columns), 0))
+    });
+    gated.close(0, u64::MAX);
+    let replacement = playhead.declare(every(&(1..tables).collect::<Vec<_>>()), Some(track)).unwrap();
+    {
+        let mut closed = gated.closed.lock().unwrap();
+        while closed.1 < join_expected {
+            closed = gated.opened.wait(closed).unwrap();
+        }
+    }
+    assert_eq!(shared.lent_live.load(Ordering::Acquire), cap, "panicked worker is replaced back to cap");
+    gated.open();
+    playhead.wait_until(|| {
+        let (declared, counters) = (playhead.declarations(), playhead.held().2);
+        counters.declarations_applied == declared && counters.joins_open == 0
+    });
+    assert_eq!(playhead.error(), None);
+    let seen_after = after_ids.lock().unwrap();
+    assert!(!seen_after.contains(&panicked_tid) && !seen_after.is_empty());
+    playhead.retire(replacement);
+    let _ = playhead.finish();
+    assert_eq!(shared.lent_live.load(Ordering::Acquire), 0);
+
+    let (pages2, _) = recording(Writing { cap: 256, ..Writing::at(3) }, tables, &[(0, BLOCK)]);
+    let playhead2 = Playhead::new(Arc::clone(&pages2) as Arc<dyn Pages>, Timeline::whole(&*pages2).unwrap(), settings(), None).unwrap();
+    let shared2 = Arc::clone(&playhead2.shared);
+    let base2 = playhead2.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer2 = playhead2.consumer(base2);
+    consumer2.set_blocking(true);
+    playhead2.pause();
+    playhead2.seek(0);
+    playhead2.wait_until(|| playhead2.newest().is_some());
+    steps.clear();
+    let _ = consumer2.take(0, &mut steps);
+
+    let fired2 = Arc::new(AtomicBool::new(false));
+    let live_panicker: Rebuild = Arc::new(move |lane: &Lane, columns: &[usize]| {
+        if std::thread::current().name() == Some("playhead lent") && !fired2.swap(true, Ordering::AcqRel) {
+            panic!("injected live lent worker panic");
+        }
+        Ok(State::new(Kept::rebuilt(lane, columns), 0))
+    });
+    let gated2 = &pages2.extents[0];
+    gated2.close(0, u64::MAX);
+    let _live = playhead2.declare(every(&(1..tables).collect::<Vec<_>>()), Some(live_panicker)).unwrap();
+    {
+        let mut closed = gated2.closed.lock().unwrap();
+        while closed.1 < join_expected {
+            closed = gated2.opened.wait(closed).unwrap();
+        }
+    }
+    gated2.open();
+    let mut control = super::lock(&shared2.control);
+    while control.error.is_none() {
+        control = shared2.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    assert!(control.error.as_deref().is_some_and(|e| e.contains("panicked")), "live panic surfaces error: {:?}", control.error);
+    drop(control);
+    let _ = playhead2.finish();
+    assert_eq!(super::lock(&shared2.jobs).running, 0);
+    assert_eq!(shared2.lent_live.load(Ordering::Acquire), 0);
+}
