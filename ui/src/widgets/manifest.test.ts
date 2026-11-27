@@ -40,6 +40,7 @@ import {
 import { viewSlotProps } from './viewProps.ts';
 import type { WidgetMeta } from '../dashboard/definitions';
 import type { WidgetSpec } from '../dashboard/model';
+import type { CountryPolicy, SourcePlan } from '../families/plan.ts';
 
 test('manifest accounts for every widget kind across family and native entries', () => {
   const familyKinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
@@ -520,4 +521,45 @@ test('every setting a time-chart view shows reaches what that view reads or proj
   }
   assert.ok(checked.length > 30, `the walk reaches the views' settings: ${checked.length}`);
   assert.deepEqual(silent, [], 'a setting that changes neither the read nor the projection does nothing: wire it or remove it');
+});
+
+test('every multi and filter view says whether it draws one hour or history, and none that reads a span or resolves membership at the hour says otherwise (#1031)', async () => {
+  const spanShapes = new Set(['range', 'branch-to-hour', 'trailing-window', 'pixel-binned', 'paged-rows']);
+  const contradictions: string[] = [];
+  const declared: string[] = [];
+  let read = 0;
+  for (const entry of FAMILY_VIEWS) {
+    const view = normalizeView(entry.view);
+    const spec = await entry.loadSpec();
+    const declaration = spec.declaration as { readonly countries?: CountryPolicy; readonly sources?: (ctx: unknown, viewport: unknown) => SourcePlan } | undefined;
+    const policy = declaration?.countries;
+    if (policy?.mode !== 'multi' && policy?.mode !== 'filter') continue;
+    const name = `${entry.kind}/${view}`;
+    declared.push(`${name}:${policy.content}`);
+    if (policy.mode === 'multi' && policy.datedAtHour && policy.content !== 'hour') contradictions.push(`${name} resolves membership at the hour, so it draws one hour`);
+    const options = resolveOptions(familyViewOptionFields(entry.kind, view), view === DEFAULT_VIEW ? {} : { [entry.viewOption ?? 'view']: view });
+    const shapes = new Set<string>();
+    for (const [following, time] of [[true, { mode: 'follow' }], [false, { mode: 'range', firstOffset: 100, lastOffset: 900 }]] as const) {
+      const branch = { id: '1', firstHour: 0, lastHour: 1000, gaps: [] };
+      const ctx = {
+        track: { id: 't', source: { id: 's', revision: '1', metadata: { campaignKey: 'c' } }, branch, axisOffset: 0 }, branch, lastRecordedHour: 1000,
+        widget: { kind: entry.kind, options: {}, countries: { kind: 'tags', tags: ['AAA'] }, time, trackIds: ['t'] }, options, following, aux: undefined,
+        countryTag: 'AAA', countrySubject: 'AAA', countryName: 'AAA',
+        countries: { all: false, tags: ['AAA'], holders: null, every: ['AAA'], top: null, membership: null, membershipRuns: null, unobserved: [],
+          filter: { passing: null, unrecorded: [], bounds: [] }, labels: {}, factions: null, factionUnobserved: [], factionIncomplete: [],
+          rankedAt: () => ['AAA'], reason: null, known: () => true, unobservedIn: () => false },
+        gateSpan: (first: number, last: number) => ({ firstHour: first, lastHour: last }), staticSpan: following ? null : [100, 900], planHour: 900,
+      };
+      try {
+        const plan = declaration?.sources?.(ctx, { following, width: 800, height: 300 });
+        for (const source of [...plan?.entries ?? [], plan?.staticEntry, plan?.exactEntry]) if (source) shapes.add(source.read.shape);
+      } catch {
+        continue;
+      }
+    }
+    if (shapes.size) read++;
+    if (policy.content === 'hour' && [...shapes].some(shape => spanShapes.has(shape))) contradictions.push(`${name} reads ${[...shapes].join(', ')}, so it draws history`);
+  }
+  assert.ok(declared.length > 50 && read > 40, `the walk reaches the multi and filter views: ${declared.length} declared, ${read} read`);
+  assert.deepEqual(contradictions, []);
 });

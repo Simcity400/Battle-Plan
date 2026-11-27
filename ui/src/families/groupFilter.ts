@@ -343,3 +343,51 @@ export function resolveTimelineSelection(
   }
   return { kind: 'filtered', countries: new Set(opt.selected), countryIds: identities.selected(opt.selected) };
 }
+
+export interface GroupSpanCover {
+  readonly members: HourRanges;
+  readonly unobserved: HourRanges;
+}
+
+export interface GroupSpanState {
+  readonly kind: 'members' | 'empty' | 'unrecorded';
+  readonly from: number;
+  readonly until: number;
+}
+
+export function groupSpanCover(selection: CountrySelection, groups: CountryGroupReply | undefined): GroupSpanCover | null {
+  if (selection.kind !== 'group' || !groups) return null;
+  const runs = groupRuns(groups, selection.group);
+  if (!runs) return null;
+  const raw = groupUnobserved(groups, selection.group);
+  if (selection.membership === 'hour') {
+    return { members: runs.map(run => [run.firstHour, run.lastHour] as const), unobserved: raw.map(span => [span.firstHour, span.lastHour] as const) };
+  }
+  const unknownFrom = everKnownBefore(raw);
+  let firstJoin = Infinity;
+  for (const run of runs) if (run.firstHour < firstJoin) firstJoin = run.firstHour;
+  return {
+    members: firstJoin < unknownFrom ? [[firstJoin, unknownFrom - 1]] : [],
+    unobserved: unknownFrom === Infinity ? [] : [[unknownFrom, Number.MAX_SAFE_INTEGER]],
+  };
+}
+
+function firstHourFrom(ranges: HourRanges, first: number): number {
+  let at = Infinity;
+  for (const [lo, hi] of ranges) if (hi >= first && Math.max(lo, first) < at) at = Math.max(lo, first);
+  return at;
+}
+
+export function groupSpanStateAt(cover: GroupSpanCover, first: number, hour: number): GroupSpanState {
+  const member = firstHourFrom(cover.members, first);
+  const unread = firstHourFrom(cover.unobserved, first);
+  if (hour >= member) return { kind: 'members', from: member, until: Infinity };
+  if (hour >= unread) return { kind: 'unrecorded', from: unread, until: member - 1 };
+  return { kind: 'empty', from: -Infinity, until: Math.min(member, unread) - 1 };
+}
+
+export function groupSpanBodyStatus(kind: GroupSpanState['kind'] | null, selection: CountrySelection, startsLater: boolean): FamilyBodyStatus | null {
+  if (kind === 'unrecorded') return { kind: 'not-recorded', reason: selection.kind === 'group' && selection.membership === 'ever' ? EVER_UNRECORDED : GROUP_UNAVAILABLE };
+  if (kind === 'empty') return { kind: 'no-members', reason: startsLater ? NO_MEMBERS.span : NO_MEMBERS.yet };
+  return null;
+}
