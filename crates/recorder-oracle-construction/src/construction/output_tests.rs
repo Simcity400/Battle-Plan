@@ -130,7 +130,7 @@ fn replay_of(frames: Vec<DecodedFrame>) -> Replay {
     let mut encoder = FrameEncoder::new();
     for mut frame in frames {
         for table in TableId::ALL {
-            if !OUTPUT_TABLES.contains(&table) {
+            if !OUTPUT_TABLES.contains(&table) && table != TableId::Provinces {
                 *frame.tables[table.index()] = TableView::Unavailable {
                     reason: "outside the construction output fixture".into(),
                 };
@@ -148,6 +148,67 @@ fn replay_of(frames: Vec<DecodedFrame>) -> Replay {
         records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
     }
     Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap()
+}
+
+#[test]
+fn output_only_projects_recover_identity_on_a_later_publication() {
+    use engine_native_parts::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
+    use replay::campaign::SeekResult;
+    use replay_data::rows::{ConstructionCompletion, ConstructionProjectRow as Project, ProvinceRow};
+
+    for railway in [false, true] {
+        let queue = if railway { TableId::RailwayConstruction } else { TableId::BuildingConstruction };
+        let mut identified = frame(101, 59, 0, 0, railway);
+        *identified.tables[queue.index()] = TableView::Complete(TableRows::empty(queue));
+        *identified.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![
+            ProvinceRow { id: 7, state: 67, ..Default::default() },
+            ProvinceRow { id: 9, state: 71, ..Default::default() },
+        ]));
+        let row = output(&mut identified);
+        row.country = Recorded::Value(Some(271));
+        row.ended = true;
+        row.completion = Recorded::Value(Some(ConstructionCompletion { hour: 101, cancelled: false }));
+
+        let mut unread = identified.clone();
+        unread.hour = 100;
+        *output(&mut unread) = ConstructionLineOutputRow {
+            line: 1,
+            railway,
+            construction_raw: 37,
+            since_hour: 100,
+            exact: true,
+            ..Default::default()
+        };
+
+        let replay = replay_of(vec![unread, identified]);
+        let selected = [TableId::ConstructionProjects, TableId::ConstructionLineEnds];
+        let SeekResult::Frame(before) = replay.seek_selected(1, 100, Some(&selected)).unwrap() else {
+            panic!("missing first output hour");
+        };
+        let [project] = complete::<tables::ConstructionProjects>(&before).unwrap() else {
+            panic!("expected one project from output");
+        };
+        assert!(project.output_alone && project.census_read.is_none());
+        assert_eq!(project.output_reason, Project::OUTPUT_OWNER_UNKNOWN);
+        assert_eq!(project.construction_raw, Recorded::NotRecorded);
+        assert_eq!((project.target_state, project.to_state), (None, None));
+
+        let SeekResult::Frame(after) = replay.seek_selected(1, 101, Some(&selected)).unwrap() else {
+            panic!("missing final output hour");
+        };
+        let [project] = complete::<tables::ConstructionProjects>(&after).unwrap() else {
+            panic!("expected one project from final output");
+        };
+        let (building, target, destination) = if railway { (RAILWAY_TEMPLATE_TOKEN, 67, Some(71)) } else { (9, 7, None) };
+        assert_eq!((project.country, project.building_type, project.target_state, project.to_state), (271, Some(building), Some(target), destination));
+        assert_eq!((project.first_read, project.census_read, project.end_hour), (100, None, Some(101)));
+        assert_eq!(project.construction_raw, Recorded::Value(59));
+
+        let [end] = complete::<tables::ConstructionLineEnds>(&after).unwrap() else {
+            panic!("expected one recorded ending");
+        };
+        assert_eq!((end.country, end.building_type, end.target_state, end.to_state), (271, Some(building), Some(target), destination));
+    }
 }
 
 fn checked(frames: &[DecodedFrame]) -> Report {
