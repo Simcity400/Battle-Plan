@@ -379,6 +379,57 @@ test('MapViewsStore stamps clockId on populated and teardown snapshots and filte
     assert.equal(store.getState('map-1'), null, 'R22: a target outside the recording carries no error raised inside it');
     stop();
     await tick();
+
+    const { mapRequests } = await vite.ssrLoadModule('/ui/src/widgets/map/presentation.ts');
+    let issued = 0;
+    const pinClock = clock('page-D');
+    const pinStore = new MapViewsStore(client, pinClock);
+    const requests = mapRequests({ issue: () => ++issued });
+    const pin = { follow: false, hour: 140 };
+    pinStore.register('map-2', element, (now: ReturnType<typeof pinClock.getSnapshot>) => requests({ sourceId: 'source', path: 'campaign.battleplan', revision: 'rev-1',
+      branchId: '1', playing: pin.follow && now.playing, hoursPerSecond: now.hoursPerSecond, hour: pin.follow ? now.hour : pin.hour, fraction: 0, seekSequence: pin.follow ? now.seekSequence : undefined }));
+    const reply = (requestedSequence: number, error: string | null, hour: number | null = null): DashboardMapState => ({ id: 'map-2', clockId: 'page-D', sourceId: 'source',
+      revision: 'rev-1', branchId: error ? null : '1', hour, fraction: hour == null ? null : 0, sequence: requestedSequence, requestedSequence, loading: false, error });
+    const sentNow = async () => { flushFrames(); await tick(); return sent.at(-1)!.find(view => view.id === 'map-2')!; };
+    const stopPin = pinStore.start(element);
+    const pinnedA = await sentNow();
+    pin.hour = 150;
+    pinStore.schedule();
+    const pinnedB = await sentNow();
+    assert.ok(pinnedB.sequence > pinnedA.sequence, 'a pin moved while the clock stands still is a new request');
+    emitStates([reply(pinnedA.sequence, 'gap')]);
+    assert.equal((await sentNow()).visible, true, 'a late error for the old pin does not hide the new one');
+    assert.equal(pinStore.getState('map-2')?.error ?? null, null, 'nor is it shown as the new pin’s error');
+    emitStates([reply(pinnedB.sequence, 'gap')]);
+    assert.equal((await sentNow()).visible, false, 'the new pin’s own error still hides it');
+    assert.equal(pinStore.getState('map-2')?.error, 'gap');
+
+    Object.assign(pin, { follow: true });
+    pinClock.seek(140);
+    const followed = await sentNow();
+    emitStates([reply(followed.sequence, null, 140)]);
+    Object.assign(pin, { follow: false, hour: 140 });
+    pinStore.schedule();
+    const pinned = await sentNow();
+    assert.ok(pinned.sequence > followed.sequence, 'switching from follow to a pin at the same hour is a new, later request');
+    emitStates([reply(followed.sequence, 'gap')]);
+    assert.equal((await sentNow()).visible, true, 'an error answering the followed request does not hide the pin');
+    assert.equal(pinStore.getState('map-2')?.error ?? null, null);
+    emitStates([reply(pinned.sequence, null, 140), reply(followed.sequence, null, 130)]);
+    assert.equal(pinStore.getState('map-2')?.requestedSequence, pinned.sequence, 'a reply from before the switch is not taken after the pin’s own reply');
+
+    Object.assign(pin, { follow: true });
+    pinClock.play(140);
+    const run = await sentNow();
+    pinClock.update({ hour: 141, hoursPerSecond: 48 });
+    const later = await sentNow();
+    assert.ok(later.sequence > run.sequence, 'a playing map recomposed at a later hour is a new request');
+    emitStates([reply(run.sequence, 'gap')]);
+    flushFrames();
+    await tick();
+    assert.equal(pinStore.getState('map-2')?.error ?? null, null, 'an error answering an earlier hour of the run is not shown at the later one');
+    stopPin();
+    await tick();
   } finally {
     await vite.close();
     Object.assign(globalThis, saved);
