@@ -3,7 +3,7 @@ import test from 'node:test';
 import { liveKey } from '../../charts/live.ts';
 import { FUEL_QUANTITY, validateMarketReply } from '../../dashboard/market.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import { resolveTableRows } from '../../families/table/model.ts';
+import { deriveRowTooltip, resolveTableRows } from '../../families/table/model.ts';
 import { tableDefaults } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
@@ -126,4 +126,16 @@ test('agreements with an unrecorded giver or receiver keep both flag slots with 
   assert.deepEqual(eq.value, { kind: 'notRecorded', reason: 'Localisation missing' });
   assert.equal(eq.art?.status, 'unavailable');
   assert.equal((eq.art as { readonly reason: string }).reason, 'Sprite missing');
+  const halfReady = agreementsProjection.project(createBoundedReadView({
+    hour: 120,
+    panels: new Map([['main', { ...reply, agreements: [{ ...lease, receiver: 'FRA', receiverMissing: null }] }]]),
+    identity: {
+      resolve(kind, key) {
+        return { kind, key, holder: { status: 'ready', value: key }, name: key === 'GER' ? { status: 'ready', value: 'Aster' } : { status: 'pending' }, colour: { status: 'absent', reason: 'none' }, flagChoice: { status: 'absent', reason: 'none' }, validInterval: [0, Infinity] as const, nextChangeAt: Infinity };
+      },
+    },
+  }), { direction: 'sent' });
+  const halfRow = halfReady.rows[0]!;
+  const halfTip = deriveRowTooltip({ kind: 'data', key: halfRow.key, name: halfRow.name, rank: 1, level: 1, parent: null, childCount: 0, isTreeGroup: false, isOpen: false, isTotal: false, row: halfRow }, halfReady.columns);
+  assert.deepEqual(halfTip.rows.find(entry => entry.label === 'Country')?.rawValue, { kind: 'partial', value: 'Aster → Loading name…', reason: 'Name is loading' });
 });

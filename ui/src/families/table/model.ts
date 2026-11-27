@@ -1318,7 +1318,7 @@ export function deriveRowTooltip(
     const col = allColumns[i]!;
     if (col.cellKind === 'kind' || col.cellKind === 'action' || col.cellKind === 'stockpileNet' || col.cellKind === 'stockpileSum' || col.cellKind === 'stockpileBalance') continue;
     if (!col.label && col.cellKind !== 'date') continue;
-    if (i === nameIndex && col.cellKind !== 'date' && firstResolved?.value.kind !== 'pending' && (firstText === undefined || firstText === title)) continue;
+    if (i === nameIndex && col.cellKind !== 'date' && firstResolved?.value.kind !== 'pending' && firstResolved?.value.kind !== 'partial' && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
     if (!cell || cell.blank) continue;
     if (cell.tooltipRows) {

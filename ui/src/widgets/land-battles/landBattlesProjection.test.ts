@@ -66,7 +66,7 @@ test('a coalition battle identifies every participant on both sides in the row a
       };
     },
   };
-  const head: LandBattlesTailReply = { branchId: '1', total: '5', offset: '0', missing: [], warnings: [], nextChange: null, rows: [
+  const head: LandBattlesTailReply = { branchId: '1', total: '6', offset: '0', missing: [], warnings: [], nextChange: null, rows: [
     { key: '1:9:10', hour: 10, exact: true, province: null, state: null,
       countries: [[1, 2], [3, 4]], countriesUnknown: [false, false], countriesHour: [10, 10],
       result: 'ongoing', casualties: [10, 20], icLost: [1, 2], lossesSoFar: true, divisions: [4, 3] },
@@ -82,6 +82,9 @@ test('a coalition battle identifies every participant on both sides in the row a
     { key: '1:13:10', hour: 10, exact: true, province: null, state: null,
       countries: [[6, 4], [3]], countriesUnknown: [false, false], countriesHour: [10, 10],
       result: 'ongoing', casualties: [1, 1], icLost: [0, 0], lossesSoFar: true, divisions: [1, 1] },
+    { key: '1:14:10', hour: 10, exact: true, province: null, state: null,
+      countries: [[6], [4]], countriesUnknown: [false, false], countriesHour: [10, 10],
+      result: 'ongoing', casualties: [1, 1], icLost: [0, 0], lossesSoFar: true, divisions: [1, 1] },
   ] };
   const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
   const view = createBoundedReadView({ hour: 18, identity, rows: new Map([['main', source]]) });
@@ -92,7 +95,7 @@ test('a coalition battle identifies every participant on both sides in the row a
   for (const row of landBattlesProjection.project(unreadFlags, { byDate: true }).rows) {
     assert.doesNotThrow(() => structuredClone(row.meta), 'a row’s subject crosses the lane worker boundary, so it carries no art callbacks');
   }
-  const [coalition, unresolved, mixedSide, mixedSides, pendingAndAbsent] = model.rows as [TableRow, TableRow, TableRow, TableRow, TableRow];
+  const [coalition, unresolved, mixedSide, mixedSides, pendingAndAbsent, pendingVsAbsent] = model.rows as [TableRow, TableRow, TableRow, TableRow, TableRow, TableRow];
   assert.deepEqual(
     coalition.cells.country!.flags?.map(flag => [flag.tag, flag.separator === true]),
     [[countryKey(1), false], [countryKey(2), false], [countryKey(3), true], [countryKey(4), false]],
@@ -121,9 +124,10 @@ test('a coalition battle identifies every participant on both sides in the row a
   const mixedTip = deriveRowTooltip({ kind: 'data', key: mixedSide.key, name: mixedSide.name, rank: 3, level: 1, parent: null, childCount: 0, isTreeGroup: false, isOpen: false, isTotal: false, row: mixedSide }, model.columns);
   assert.deepEqual(mixedTip.rows.find(entry => entry.label === 'Attackers')?.rawValue, { kind: 'partial', value: 'Alpha', reason: 'Name is loading' });
   assert.deepEqual(mixedSide.cells.country!.value, { kind: 'partial', value: 'Alpha · Bravo', reason: 'Name is loading' });
-  assert.deepEqual(mixedSides.cells.country!.value, { kind: 'partial', value: `Alpha · ${LOADING_NAME}`, reason: 'Name is loading' });
+  assert.deepEqual(mixedSides.cells.country!.value, { kind: 'partial', value: 'Alpha', reason: 'Name is loading' });
   const pendingAbsentTip = deriveRowTooltip({ kind: 'data', key: pendingAndAbsent.key, name: pendingAndAbsent.name, rank: 5, level: 1, parent: null, childCount: 0, isTreeGroup: false, isOpen: false, isTotal: false, row: pendingAndAbsent }, model.columns);
   assert.deepEqual(pendingAbsentTip.rows.find(entry => entry.label === 'Attackers')?.rawValue, { kind: 'pending', reason: 'Name is loading; Country name unavailable' });
+  assert.deepEqual(pendingVsAbsent.cells.country!.value, { kind: 'pending', reason: 'Name is loading; Country name unavailable' });
 });
 
 test('pending land battle identities stay pending through cell, mirror, hover and audit until resolved, while unrecorded names stay missing', () => {

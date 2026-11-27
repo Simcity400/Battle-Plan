@@ -10,7 +10,7 @@ import type { CountrySelection } from '../../dashboard/model';
 import type { ArtHandle, BoundedReadView, SourceEntry } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { FamilyPlanContext } from '../plan.ts';
-import { NAME_LOADING, resolveIdentity, type IdentityBoundary } from './identityCell.ts';
+import { resolveIdentity, type IdentityBoundary } from './identityCell.ts';
 
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
   return url ? { kind: 'url', url } : null;
@@ -204,16 +204,16 @@ export function logCountryCell(
   boundary?: IdentityBoundary,
 ): TableCell {
   const flags: TableCellFlag[] = [];
-  const names: string[] = [];
+  const known: string[] = [];
   const roles: TooltipExtraRow[] = [];
-  const missing: string[] = [];
-  let pending = 0;
+  const reasons: string[] = [];
+  let hasPending = false;
+  const pushReason = (reason: string) => { if (!reasons.includes(reason)) reasons.push(reason); };
   for (const entry of entries) {
     if (entry.tag === null) {
       const reason = entry.missingLabel ?? 'Country not recorded';
       flags.push({ tag: '?', art: unavailableArt(reason), ...(entry.dimmed ? { dimmed: true } : {}) });
-      names.push(reason);
-      missing.push(reason);
+      pushReason(reason);
       if (entry.role) roles.push({ label: entry.role, value: notRecorded(reason) });
     } else {
       const hour = entry.atHour ?? atHour;
@@ -224,26 +224,27 @@ export function logCountryCell(
         ...(who.artKey ? { artKey: who.artKey } : {}),
         ...(entry.dimmed ? { dimmed: true } : {}),
       });
-      names.push(who.name);
-      if (who.value.kind === 'pending') {
-        pending++;
-      } else if (who.value.kind !== 'known') {
-        missing.push(who.value.kind === 'notRecorded' ? `${entry.tag}: ${who.value.reason}` : `${entry.tag}: Name not recorded`);
+      if (who.value.kind === 'known') {
+        known.push(who.value.value);
+      } else if (who.value.kind === 'pending') {
+        hasPending = true;
+        pushReason(who.value.reason);
+      } else {
+        const reason = who.value.kind === 'notRecorded' ? who.value.reason : 'Name not recorded';
+        pushReason(entry.tag.startsWith('\u0000') ? reason : `${entry.tag}: ${reason}`);
       }
-      if (entry.role) roles.push({ label: entry.role, value: who.value.kind === 'notRecorded' ? partialValue(entry.tag, who.value.reason) : who.value });
+      if (entry.role) roles.push({ label: entry.role, value: who.value.kind === 'notRecorded' ? (entry.tag.startsWith('\u0000') ? who.value : partialValue(entry.tag, who.value.reason)) : who.value });
     }
   }
-  const joined = names.join(' · ');
-  const reasons = pending > 0 ? [...missing, NAME_LOADING] : missing;
-  const value: Value = !names.length
+  const value: Value = !entries.length
     ? notApplicable('No country')
-    : !reasons.length
-      ? knownValue(joined)
-      : pending === entries.length
-        ? pendingValue(NAME_LOADING)
-        : entries.every(entry => entry.tag === null)
-          ? notRecorded(missing.join('; '))
-          : partialValue(joined, reasons.join('; '));
+    : !known.length
+      ? hasPending
+        ? pendingValue(reasons.join('; '))
+        : notRecorded(reasons.join('; ') || 'Country not recorded')
+      : reasons.length
+        ? partialValue(known.join(' · '), reasons.join('; '))
+        : knownValue(known.join(' · '));
   return { value, flags, ...(roles.length ? { tooltipRows: roles } : {}) };
 }
 
