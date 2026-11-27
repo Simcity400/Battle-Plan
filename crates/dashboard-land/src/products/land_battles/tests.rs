@@ -15,6 +15,33 @@ fn a_battle_id_names_its_branch_combat_and_start_and_a_roster_counts_each_unit_o
 }
 
 #[test]
+fn an_unread_roster_keeps_the_other_sides_count_and_splits_known_zero_from_unknown() {
+    let battle = Battle { combat: 7, start: 10, exact: true, live: vec![(10, 14)], ..Battle::default() };
+    let data = Combats {
+        from: 10,
+        census: HashMap::from([(7, vec![
+            (10, Some(CensusRead { province: Some(3), counts: [Some(2), None] })),
+            (11, Some(CensusRead { province: Some(3), counts: [None, Some(1)] })),
+            (12, Some(CensusRead { province: Some(3), counts: [Some(0), None] })),
+            (13, Some(CensusRead::default())),
+            (14, None),
+        ])]),
+        durations: HashMap::from([(7, (10..=14).map(|hour| (hour, Some(hour - 10))).collect())]),
+        ..Combats::default()
+    };
+    let names = Names::new(&Holders::default());
+    let links = dashboard_base::queries::country_ids::RunLinks { slots: HashMap::new() };
+    let runs: Vec<_> = shape(&battle, &data, &names, &links, 1, 14).battle.runs.into_iter()
+        .map(|run| (run.first_hour, run.last_hour, run.counts, run.counts_unknown)).collect();
+    assert_eq!(runs, [
+        (10, 10, [2, 0], [false, true]),
+        (11, 11, [0, 1], [true, false]),
+        (12, 12, [0, 0], [false, true]),
+        (13, 14, [0, 0], [true, true]),
+    ]);
+}
+
+#[test]
 fn every_written_end_row_is_an_end_of_its_own() {
     let row = |id: i64| Some(vec![Cell::Number(i64::from(LandBattleEndRow::RESULT_ONLY)), Cell::Number(10), Cell::Number(id)].into_boxed_slice());
     let battle = 7_u128 << 33 | 10;
@@ -107,8 +134,8 @@ fn unread_end_kind_hour_side_lists_and_lengths_stay_unknown_in_the_course() {
     let mut decoded = BTreeMap::new();
     decode_ended_rows(&ended, &mut decoded);
     let mut census = HashMap::new();
-    census.insert(7, vec![(10, Some(CensusRead { province: Some(7), counts: Some([2, 2]) }))]);
-    census.insert(12, vec![(10, Some(CensusRead { province: Some(7), counts: Some([2, 2]) }))]);
+    census.insert(7, vec![(10, Some(CensusRead { province: Some(7), counts: [Some(2), Some(2)] }))]);
+    census.insert(12, vec![(10, Some(CensusRead { province: Some(7), counts: [Some(2), Some(2)] }))]);
     let mut durations = HashMap::new();
     durations.insert(12, vec![(10, Some(1)), (11, Some(2)), (12, None), (14, Some(5)), (15, Some(6)), (16, Some(9)), (18, Some(10)), (19, Some(11)), (20, Some(12)), (22, None)]);
     let data = Combats { from: 10, census, sides: HashMap::new(), leads: HashMap::new(), losses: HashMap::new(), durations };
@@ -158,7 +185,7 @@ fn unread_end_kind_hour_side_lists_and_lengths_stay_unknown_in_the_course() {
     assert!(spans.iter().all(|&(first, last)| last < 13 || first > 15), "the hours between a battle's live stretches are no run, so they show as not recorded: {spans:?}");
 
     let result_only_runs = &result_only.runs;
-    assert!(result_only_runs.iter().all(|run| run.roster_unknown && run.counts == [0, 0] && run.countries_unknown == [true, true]), "a result-only key never borrows a live battle's divisions or countries: {result_only_runs:?}");
+    assert!(result_only_runs.iter().all(|run| run.counts_unknown == [true, true] && run.counts == [0, 0] && run.countries_unknown == [true, true]), "a result-only key never borrows a live battle's divisions or countries: {result_only_runs:?}");
 
     let mut sides = HashMap::new();
     sides.insert(13, vec![(10, Some([Some(vec![7]), Some(vec![8])]))]);

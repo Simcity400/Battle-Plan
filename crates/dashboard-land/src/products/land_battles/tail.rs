@@ -239,7 +239,7 @@ fn scan_block(query: &Query<'_>, columns: &Columns, span: Stretch, readings: &Re
                 push(
                     &mut line.divisions,
                     hour,
-                    read.and_then(|r| r.counts).map_or([None; 2], |pair| pair.map(Some)),
+                    read.map_or([None; 2], |r| r.counts),
                 );
             }
             for (hour, through, sides) in during(data.sides.get(&combat).map_or(&[][..], Vec::as_slice), first, last) {

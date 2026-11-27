@@ -18,7 +18,7 @@ test('paired figures keep the recorded side when the other side is missing, and 
   const battle = { hour: 10, exact: false, province: null, state: null, countries: [[], []] as [number[], number[]], countriesUnknown: [true, true] as [boolean, boolean],
     countriesHour: [10, 10] as [number, number], result: 'unknown' as const };
   const head: LandBattlesTailReply = { branchId: '1', total: '3', offset: '0', missing: [], warnings: [], nextChange: null, rows: [
-    { ...battle, key: '1:3:10', casualties: [0, null], icLost: [null, 12], lossesSoFar: false, divisions: [2, 4] },
+    { ...battle, key: '1:3:10', casualties: [0, null], icLost: [null, 12], lossesSoFar: false, divisions: [2, null] },
     { ...battle, key: '1:4:10', casualties: [360, 80_030], icLost: [0, 0], lossesSoFar: false, divisions: [12, 9] },
     { ...battle, key: '1:5:10', result: 'ongoing', casualties: [2_729, 0], icLost: [3.5, 0], lossesSoFar: true, divisions: [3, 2] },
   ] };
@@ -37,7 +37,9 @@ test('paired figures keep the recorded side when the other side is missing, and 
   assert.deepEqual(row.cells.casualties!.pair!.map(x => x.kind), ['zero', 'notRecorded']);
   assert.equal(row.cells.casualties!.value.kind, 'notRecorded');
   assert.deepEqual(row.cells.icLost!.splitBar, [{ fraction: 1, fill: '', hatched: true }]);
-  assert.deepEqual(row.cells.divisions!.value, { kind: 'known', value: 6 });
+  assert.deepEqual(row.cells.divisions!.pair, [{ kind: 'known', value: 2 }, { kind: 'notRecorded', reason: 'Divisions not recorded' }]);
+  assert.deepEqual(row.cells.divisions!.value, { kind: 'notRecorded', reason: 'Divisions not recorded' });
+  assert.deepEqual(lopsided.cells.divisions!.value, { kind: 'known', value: 21 });
   assert.equal(row.cells.status!.value.kind, 'notRecorded');
   assert.equal(row.cells.action!.actionLabel, 'Watch');
 });

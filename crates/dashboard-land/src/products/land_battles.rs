@@ -50,7 +50,7 @@ pub struct LandBattleRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub counts: [u32; 2],
-    pub roster_unknown: bool,
+    pub counts_unknown: [bool; 2],
     pub countries: [Vec<String>; 2],
     pub countries_unknown: [bool; 2],
     pub leads: [Option<LandBattleLead>; 2],
@@ -468,7 +468,7 @@ fn battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, c
 #[derive(Clone, Debug, Default)]
 struct CensusRead {
     province: Option<u32>,
-    counts: Option<[u32; 2]>,
+    counts: [Option<u32>; 2],
 }
 
 #[derive(Default)]
@@ -501,10 +501,7 @@ fn combats(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, c
     dashboard_query::cost::storage(|| {
         lanes::at_each(recording, run, TableId::LandCombats, Some(&sorted(&shape)), &asks, &mut |hour, key, row| {
             if let Some((view, slot)) = row {
-                let counts = match (view.list(columns.combat[2], slot), view.list(columns.combat[3], slot)) {
-                    (Some(attackers), Some(defenders)) => distinct(attackers).zip(distinct(defenders)).map(|(a, d)| [a, d]),
-                    _ => None,
-                };
+                let counts = [columns.combat[2], columns.combat[3]].map(|column| view.list(column, slot).and_then(distinct));
                 read.insert((hour, key as u64), CensusRead { province: view.number(columns.combat[0], slot).map(|value| value as u32), counts });
             }
             Ok(())
@@ -692,20 +689,20 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &dashboard_base:
         }
         let last = changes.get(index + 1).map_or(live_last, |next| next - 1);
         let read = census.iter().rev().filter(|_| battle.result_only.is_none()).find(|(hour, _)| *hour <= first).and_then(|(hour, read)| read.as_ref().map(|read| (*hour, read)));
-        let (counts, roster_unknown) = match read {
+        let counts = match read {
             Some((_, read)) => {
                 if battle.result_only.is_none() {
                     province = province.or(read.province);
                 }
-                (read.counts.unwrap_or([0, 0]), read.counts.is_none())
+                read.counts
             }
-            None => ([0, 0], true),
+            None => [None, None],
         };
         let duration = at(counter, first).copied().flatten();
         let (countries, countries_unknown, leads) = countries_at(first);
-        let run = LandBattleRun { first_hour: first, last_hour: last, counts, roster_unknown, countries, countries_unknown, leads, duration };
+        let run = LandBattleRun { first_hour: first, last_hour: last, counts: counts.map(|count| count.unwrap_or(0)), counts_unknown: counts.map(|count| count.is_none()), countries, countries_unknown, leads, duration };
         match runs.last_mut() {
-            Some(held) if held.last_hour + 1 == first && held.counts == run.counts && held.roster_unknown == run.roster_unknown && held.countries == run.countries && held.countries_unknown == run.countries_unknown && held.leads == run.leads && held.duration.zip(run.duration).is_some_and(|(held_at, now)| i64::from(held_at) + i64::from(first - held.first_hour) == i64::from(now)) => {
+            Some(held) if held.last_hour + 1 == first && held.counts == run.counts && held.counts_unknown == run.counts_unknown && held.countries == run.countries && held.countries_unknown == run.countries_unknown && held.leads == run.leads && held.duration.zip(run.duration).is_some_and(|(held_at, now)| i64::from(held_at) + i64::from(first - held.first_hour) == i64::from(now)) => {
                 held.last_hour = last;
             }
             _ => runs.push(run),
