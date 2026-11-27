@@ -415,12 +415,37 @@ fn incomplete_reads_raise_the_notices_a_walk_of_the_reads_asked_raises() {
 
 #[test]
 fn two_projects_completing_in_one_hour_are_two_rows() {
-    use dashboard_research::products::special_projects::ProjectCompletion;
-    let completion = |project, ordinal| ProjectCompletion { tag: Some("GER".into()), date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None, icon_missing: None };
-    let ids: std::collections::BTreeSet<String> = [completion(1, 4), completion(2, 4), completion(1, 7)].into_iter().filter_map(families::completion_row).map(|row| row.id).collect();
+    use dashboard_research::products::special_projects::{CompletionOwner, ProjectCompletion};
+    let completion = |project, ordinal, attribution| ProjectCompletion { attribution, date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None, icon_missing: None };
+    let mut notices = Notices::default();
+    let resolved = || CompletionOwner::Resolved { slot: 7, tag: "X01".into() };
+    let ids: std::collections::BTreeSet<String> = [completion(1, 4, resolved()), completion(2, 4, resolved()), completion(1, 7, resolved())]
+        .into_iter()
+        .map(|item| families::completion_row(item, &mut notices).0.id)
+        .collect();
     assert_eq!(ids.len(), 3, "each project's completion marker is its own row: {ids:?}");
-    let row = families::completion_row(completion(1, 4)).unwrap();
-    assert_eq!((row.hour, row.read_hour, row.name_hour, row.tags.as_slice()), (100, 101, 100, ["GER".to_owned()].as_slice()), "named, flagged and coloured at its completion, not at the read");
+    let (row, slot) = families::completion_row(completion(1, 4, resolved()), &mut notices);
+    assert_eq!(
+        (row.hour, row.read_hour, row.name_hour, row.tags.as_slice(), row.participants, slot),
+        (100, 101, 100, ["X01".to_owned()].as_slice(), Some([Some("X01".to_owned()), None]), Some(7)),
+        "named, flagged and coloured at its completion, not at the read"
+    );
+    assert!(notices.into_list().is_empty());
+
+    let mut unknown_notices = Notices::default();
+    let reason = "Owner not recorded: Countries was not complete at these hours".to_owned();
+    let (unknown_row, unknown_slot) = families::completion_row(
+        completion(3, 0, CompletionOwner::NotRecorded { slot: Some(7), reason: reason.clone() }),
+        &mut unknown_notices,
+    );
+    assert_eq!(
+        (unknown_row.hour, unknown_row.read_hour, unknown_row.name_hour, unknown_row.tags.as_slice(), unknown_row.participants, unknown_slot),
+        (100, 101, 100, [].as_slice(), Some([None, None]), Some(7)),
+        "an unidentified project owner keeps its row with a null participant and preserves its known slot"
+    );
+    let listed = unknown_notices.into_list();
+    assert_eq!(listed.len(), 1);
+    assert_eq!((listed[0].kind.as_str(), listed[0].reason.as_str()), ("projectFinishedOwner", reason.as_str()));
 }
 
 #[test]

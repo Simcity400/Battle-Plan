@@ -303,23 +303,30 @@ pub(crate) fn content(source: &Source, load: &LoadContext) -> io::Result<Arc<Pro
     Ok(held)
 }
 
-fn country_key(content: &ProjectContent, tag: &str, key: &str) -> String {
-    let prefixed = format!("{tag}_{key}");
-    if content.politics.catalogue.localisation.get(&prefixed).is_some() { prefixed } else { key.to_owned() }
+fn country_key(content: &ProjectContent, tag: Option<&str>, key: &str) -> String {
+    if let Some(tag) = tag {
+        let prefixed = format!("{tag}_{key}");
+        if content.politics.catalogue.localisation.get(&prefixed).is_some() {
+            return prefixed;
+        }
+    }
+    key.to_owned()
 }
 
 fn needs_scope(content: &ProjectContent, key: &str) -> bool {
     content.politics.catalogue.localisation.localise(key.as_bytes()).is_ok_and(|text| text.contains('['))
 }
 
-fn icon_key(authored: Option<&str>, token: &str, tag: &str, has: impl Fn(&str) -> Result<bool, String>) -> Result<String, String> {
+fn icon_key(authored: Option<&str>, token: &str, tag: Option<&str>, has: impl Fn(&str) -> Result<bool, String>) -> Result<String, String> {
     if let Some(icon) = authored.filter(|icon| !icon.is_empty()) {
         return Ok(icon.to_owned());
     }
     let prefix = if token.starts_with("GFX_") { "" } else { "GFX_" };
-    let country = format!("{prefix}{tag}_{token}");
-    if has(&country)? {
-        return Ok(country);
+    if let Some(tag) = tag {
+        let country = format!("{prefix}{tag}_{token}");
+        if has(&country)? {
+            return Ok(country);
+        }
     }
     let generic = format!("{prefix}{token}");
     Ok(if has(&generic)? { generic } else { PLACEHOLDER_ICON.to_owned() })
@@ -374,7 +381,7 @@ impl<'c> Naming<'c> {
         drawn
     }
 
-    pub fn definition(&mut self, token: Option<&str>, id: u32, tag: &str, scoped: &mut dyn FnMut(&str) -> Result<Option<String>, String>) -> Named {
+    pub fn definition(&mut self, token: Option<&str>, id: u32, tag: Option<&str>, scoped: &mut dyn FnMut(&str) -> Result<Option<String>, String>) -> Named {
         let Some(token) = token else {
             self.note("its definition token is not recorded", id.to_string());
             return Named::unread(format!("Definition {id} is not recorded."));
@@ -413,7 +420,7 @@ impl<'c> Naming<'c> {
         named
     }
 
-    fn name(&self, definition: &Project, token: &str, tag: &str, scoped: &mut dyn FnMut(&str) -> Result<Option<String>, String>) -> Option<String> {
+    fn name(&self, definition: &Project, token: &str, tag: Option<&str>, scoped: &mut dyn FnMut(&str) -> Result<Option<String>, String>) -> Option<String> {
         let authored = definition.name.as_deref().filter(|name| !name.is_empty()).unwrap_or(token);
         let key = country_key(self.content, tag, authored);
         if needs_scope(self.content, &key) {
@@ -1235,7 +1242,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
                 Holder::Found { slot, .. } => Some(slot),
                 Holder::Unresolved => None,
             });
-            naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, tag, &mut |key| match slot {
+            naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, Some(tag), &mut |key| match slot {
                 Some(slot) => scoped_at(query, content, key, hour, slot),
                 None => Err(holder_not_known(&query.holders, &params.country, hour).unwrap_or_else(|| "The project's name needs its country's scope, which is unresolved".to_owned())),
             })
@@ -1418,8 +1425,37 @@ impl Product for SpecialProjects {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompletionOwner {
+    Resolved { slot: u32, tag: String },
+    NotRecorded { slot: Option<u32>, reason: String },
+}
+
+impl CompletionOwner {
+    pub fn tag(&self) -> Option<&str> {
+        match self {
+            Self::Resolved { tag, .. } => Some(tag),
+            Self::NotRecorded { .. } => None,
+        }
+    }
+
+    pub fn slot(&self) -> Option<u32> {
+        match self {
+            Self::Resolved { slot, .. } => Some(*slot),
+            Self::NotRecorded { slot, .. } => *slot,
+        }
+    }
+
+    pub fn missing_reason(&self) -> Option<&str> {
+        match self {
+            Self::Resolved { .. } => None,
+            Self::NotRecorded { reason, .. } => Some(reason),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectCompletion {
-    pub tag: Option<String>,
+    pub attribution: CompletionOwner,
     pub date: i32,
     pub observed_hour: i32,
     pub owner: u32,
@@ -1438,8 +1474,7 @@ pub struct Completions {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Counted {
-    tag: String,
-    slot: u32,
+    attribution: CompletionOwner,
     owner: u32,
     local: u32,
     entry: Entry,
@@ -1461,7 +1496,7 @@ fn slice_read_value(reader: &TableReader, col: usize, table: TableId, owner: u32
 }
 
 struct PendingHit {
-    piece_idx: usize,
+    stretch_idx: usize,
     raw: u32,
     hour: i32,
     h_stamp: i32,
@@ -1472,21 +1507,21 @@ struct PendingHit {
 struct CompletionWatch {
     win_start: i32,
     win_end: i32,
-    piece_idx: usize,
+    stretch_idx: usize,
     raw: u32,
     project: u32,
     entry: Entry,
 }
 
 fn see_run_evidence(
-    tag_facts: &mut BTreeMap<String, Facts>,
-    seen: &mut std::collections::HashSet<(usize, u32, u32, u32, u32, Entry)>,
+    owner_facts: &mut BTreeMap<u32, Facts>,
+    seen: &mut std::collections::HashSet<(u32, u32, Entry)>,
     query: &Query<'_>,
     campaign_start: i32,
     recording: &Recording,
     run: u32,
     held_run: &RecordingRun,
-    prepared: &[(usize, String, Piece, Custody, Vec<u32>)],
+    stretches: &[(i32, i32, i32)],
     history_by_owner: &HashMap<u32, Vec<(u32, u32, Vec<Step>)>>,
     from: i32,
     to: i32,
@@ -1496,27 +1531,25 @@ fn see_run_evidence(
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
     let mut watches: Vec<CompletionWatch> = Vec::new();
-    for (piece_idx, (tag_id, _, piece, _, owners)) in prepared.iter().enumerate() {
-        let reach = piece.reach();
-        for &raw in owners {
-            let Some(held) = history_by_owner.get(&raw) else { continue };
+    for (stretch_idx, &(s_first, s_last, s_reach)) in stretches.iter().enumerate() {
+        for (&raw, held) in history_by_owner {
             for (project, ordinal, steps) in held {
                 for (idx, step) in steps.iter().enumerate() {
                     let Some(entry) = step.cells.as_deref().and_then(|cells| history_entry(*ordinal, cells)) else { continue };
                     if !entry.completion() || !(from..=to).contains(&entry.date) {
                         continue;
                     }
-                    if seen.contains(&(*tag_id, piece.slot, piece.id, raw, *project, entry)) {
+                    if seen.contains(&(raw, *project, entry)) {
                         continue;
                     }
-                    let step_end = steps.get(idx + 1).map_or(piece.last, |next| (next.hour - 1).min(piece.last));
-                    if step_end < reach || step.hour > piece.last {
+                    let step_end = steps.get(idx + 1).map_or(s_last, |next| (next.hour - 1).min(s_last));
+                    if step_end < s_reach || step.hour > s_last {
                         continue;
                     }
-                    let win_start = step.hour.max(piece.first);
-                    let win_end = step_end.saturating_add(STAGGER_PERIOD - 1).min(piece.last);
+                    let win_start = step.hour.max(s_first);
+                    let win_end = step_end.saturating_add(STAGGER_PERIOD - 1).min(s_last);
                     if win_start <= win_end {
-                        watches.push(CompletionWatch { win_start, win_end, piece_idx, raw, project: *project, entry });
+                        watches.push(CompletionWatch { win_start, win_end, stretch_idx, raw, project: *project, entry });
                     }
                 }
             }
@@ -1527,7 +1560,7 @@ fn see_run_evidence(
     }
     let projects_complete = available(query, run, TableId::Projects, run_reach, run_last)?;
     let history_complete = available(query, run, TableId::ProjectHistory, run_reach, run_last)?;
-    watches.sort_unstable_by_key(|w| (w.win_start, w.piece_idx, w.raw, w.project));
+    watches.sort_unstable_by_key(|w| (w.win_start, w.stretch_idx, w.raw, w.project));
     let mut slice_reader = dashboard_query::cost::storage(|| TableReader::new(recording, run, TableId::SliceReads, Some(sample)))?;
     slice_reader.index_keys();
     let sample_col = sample[0];
@@ -1543,17 +1576,12 @@ fn see_run_evidence(
         dashboard_text::metadata::check_cancel(cancelled)?;
         active.retain(|&w| {
             let watch = &watches[w];
-            if hour > watch.win_end {
-                return false;
-            }
-            let (tag_id, _, piece, ..) = &prepared[watch.piece_idx];
-            !seen.contains(&(*tag_id, piece.slot, piece.id, watch.raw, watch.project, watch.entry))
+            hour <= watch.win_end && !seen.contains(&(watch.raw, watch.project, watch.entry))
         });
         if active.is_empty() {
             while next_watch < watches.len() {
                 let watch = &watches[next_watch];
-                let (tag_id, _, piece, ..) = &prepared[watch.piece_idx];
-                if !seen.contains(&(*tag_id, piece.slot, piece.id, watch.raw, watch.project, watch.entry)) {
+                if !seen.contains(&(watch.raw, watch.project, watch.entry)) {
                     break;
                 }
                 next_watch += 1;
@@ -1565,8 +1593,7 @@ fn see_run_evidence(
         }
         while next_watch < watches.len() && watches[next_watch].win_start <= hour {
             let watch = &watches[next_watch];
-            let (tag_id, _, piece, ..) = &prepared[watch.piece_idx];
-            if hour <= watch.win_end && !seen.contains(&(*tag_id, piece.slot, piece.id, watch.raw, watch.project, watch.entry)) {
+            if hour <= watch.win_end && !seen.contains(&(watch.raw, watch.project, watch.entry)) {
                 active.push(next_watch);
             }
             next_watch += 1;
@@ -1578,23 +1605,23 @@ fn see_run_evidence(
             dashboard_query::cost::storage(|| slice_reader.go_to(recording, ordinal))?;
             active_pairs.clear();
             for &w in &active {
-                active_pairs.push((watches[w].piece_idx, watches[w].raw));
+                active_pairs.push((watches[w].stretch_idx, watches[w].raw));
             }
             active_pairs.sort_unstable();
             active_pairs.dedup();
-            for &(piece_idx, raw) in &active_pairs {
-                let (tag_id, _, piece, custody, _) = &prepared[piece_idx];
+            for &(stretch_idx, raw) in &active_pairs {
+                let (_, _, s_reach) = stretches[stretch_idx];
                 let h_raw = slice_read_value(&slice_reader, sample_col, TableId::ProjectHistory, raw);
-                let Some(hs) = custody.usable(raw, h_raw, &history_complete, hour) else { continue };
-                if last_h_stamp.get(&(piece_idx, raw)) == Some(&hs) {
+                let Some(hs) = h_raw.filter(|&s| current(s, hour) && s >= s_reach && within(&history_complete, s)) else { continue };
+                if last_h_stamp.get(&(stretch_idx, raw)) == Some(&hs) {
                     continue;
                 }
-                last_h_stamp.insert((piece_idx, raw), hs);
+                last_h_stamp.insert((stretch_idx, raw), hs);
                 let p_raw = slice_read_value(&slice_reader, sample_col, TableId::Projects, raw);
-                let ps = custody.usable(raw, p_raw, &projects_complete, hour);
+                let ps = p_raw.filter(|&s| current(s, hour) && s >= s_reach && within(&projects_complete, s));
                 let Some(held) = history_by_owner.get(&raw) else { continue };
                 let cursors = history_cursors
-                    .entry((piece_idx, raw))
+                    .entry((stretch_idx, raw))
                     .or_insert_with(|| held.iter().map(|(project, ordinal, steps)| (*project, *ordinal, Cursor::new(steps))).collect());
                 let mut listed: BTreeMap<(u32, u32), Vec<Entry>> = BTreeMap::new();
                 for (project, ordinal, cursor) in cursors.iter_mut() {
@@ -1607,13 +1634,12 @@ fn see_run_evidence(
                 let mut introduces = false;
                 for (&(_, project), entries) in &listed {
                     for (at, &entry) in entries.iter().enumerate() {
-                        if seen.insert((*tag_id, piece.slot, piece.id, raw, project, entry)) {
+                        if seen.insert((raw, project, entry)) {
                             introduces = true;
                             if entry.completion()
                                 && at + 1 == entries.len()
                                 && campaign_start <= entry.date
                                 && entry.date <= hs
-                                && custody.held(raw, entry.date, hs)
                                 && let Some(p_stamp) = ps
                                 && p_stamp <= hs
                                 && p_stamp >= entry.date
@@ -1624,7 +1650,7 @@ fn see_run_evidence(
                     }
                 }
                 if introduces {
-                    hits.push(PendingHit { piece_idx, raw, hour, h_stamp: hs, p_stamp: ps, listed });
+                    hits.push(PendingHit { stretch_idx, raw, hour, h_stamp: hs, p_stamp: ps, listed });
                 }
             }
         }
@@ -1647,12 +1673,11 @@ fn see_run_evidence(
             }
         }
     }
-    hits.sort_unstable_by_key(|hit| (hit.piece_idx, hit.raw, hit.hour));
+    hits.sort_unstable_by_key(|hit| (hit.stretch_idx, hit.raw, hit.hour));
     let mut projects_read: BTreeMap<u32, i32> = BTreeMap::new();
     let mut histories_read: BTreeMap<u32, i32> = BTreeMap::new();
     let mut rows: Vec<(Row, i32)> = Vec::new();
     for hit in hits {
-        let (_, tag, piece, custody, _) = &prepared[hit.piece_idx];
         histories_read.clear();
         histories_read.insert(hit.raw, hit.h_stamp);
         projects_read.clear();
@@ -1666,11 +1691,11 @@ fn see_run_evidence(
             }
         }
         let shown: Vec<facts::Read<'_>> = rows.iter().map(|(row, stamp)| facts::Read { row, read: *stamp, program: Program::Unassigned }).collect();
-        let facts = tag_facts.entry(tag.clone()).or_insert_with(|| Facts::new(campaign_start));
+        let facts = owner_facts.entry(hit.raw).or_insert_with(|| Facts::new(campaign_start));
         facts.histories_only(&facts::Hour {
-            country: (piece.slot, piece.id),
+            country: (hit.raw, 0),
             at: hit.hour,
-            held: &|owner, from, through| custody.held(owner, from, through),
+            held: &|_, _, _| true,
             projects: &projects_read,
             histories: &histories_read,
             listed: &hit.listed,
@@ -1681,33 +1706,72 @@ fn see_run_evidence(
     Ok(())
 }
 
-fn slot_tag_index<'a>(query: &'a Query<'_>) -> HashMap<u32, Vec<(&'a str, Vec<(i32, i32)>)>> {
-    let mut grouped: HashMap<u32, HashMap<&str, Vec<(i32, i32)>>> = HashMap::new();
-    for (tag, runs) in &query.holders.tags {
-        for run in runs {
-            if let Holder::Found { slot, .. } = run.holder {
-                grouped.entry(slot).or_default().entry(tag.as_str()).or_default().push((run.first, run.last));
+fn resolve_owner(
+    query: &Query<'_>,
+    cached_links: &mut HashMap<u32, Arc<RunLinks>>,
+    get_links: &impl Fn(&mut HashMap<u32, Arc<RunLinks>>, u32) -> io::Result<Arc<RunLinks>>,
+    owner: u32,
+    date: i32,
+    read: i32,
+) -> io::Result<CompletionOwner> {
+    let stretches: Vec<_> = query.timeline.within(date, read).collect();
+    if stretches.first().is_none_or(|s| s.first > date) {
+        return Ok(CompletionOwner::NotRecorded {
+            slot: None,
+            reason: "Owner not recorded: the completion date falls in an unrecorded gap.".into(),
+        });
+    }
+    let continuous = stretches.last().is_some_and(|s| s.last == read)
+        && stretches.windows(2).all(|pair| pair[0].last.checked_add(1) == Some(pair[1].first));
+    if !continuous {
+        return Ok(CompletionOwner::NotRecorded {
+            slot: None,
+            reason: "Owner not recorded: the recording has a gap between the completion date and the read that observed it.".into(),
+        });
+    }
+    let mut held_slot: Option<u32> = None;
+    for stretch in &stretches {
+        let links = get_links(cached_links, stretch.run)?;
+        for (slot, a, _) in links.within(owner, stretch.first, stretch.last) {
+            match (held_slot, slot) {
+                (None, Some(slot)) if a == date => held_slot = Some(slot),
+                (Some(prev), Some(slot)) if prev == slot => {}
+                (_, None) => {
+                    let reason = if let Some(why) = query.holders.unknown_reason(a) {
+                        format!("Owner not recorded: {why}")
+                    } else if a == date {
+                        format!("Owner not recorded: raw owner {owner} had no country link at this hour.")
+                    } else {
+                        format!("Owner not recorded: raw owner {owner} did not stay linked to one country between completion and observation.")
+                    };
+                    return Ok(CompletionOwner::NotRecorded { slot: None, reason });
+                }
+                (_, Some(_)) => {
+                    return Ok(CompletionOwner::NotRecorded {
+                        slot: None,
+                        reason: format!("Owner not recorded: raw owner {owner} changed country between completion and observation."),
+                    });
+                }
             }
         }
     }
-    grouped
-        .into_iter()
-        .map(|(slot, by_tag)| {
-            let list = by_tag
-                .into_iter()
-                .map(|(tag, mut spans)| {
-                    spans.sort_unstable();
-                    (tag, spans)
-                })
-                .collect();
-            (slot, list)
-        })
-        .collect()
-}
-
-fn span_contains(spans: &[(i32, i32)], hour: i32) -> bool {
-    let at = spans.partition_point(|&(_, last)| last < hour);
-    spans.get(at).is_some_and(|&(first, _)| first <= hour)
+    let Some(slot) = held_slot else {
+        return Ok(CompletionOwner::NotRecorded {
+            slot: None,
+            reason: format!("Owner not recorded: raw owner {owner} had no country link at this hour."),
+        });
+    };
+    if let Some(tag) = query.holders.slot_tag(slot, date) {
+        return Ok(CompletionOwner::Resolved { slot, tag: tag.to_owned() });
+    }
+    let reason = if let Some(why) = query.holders.unknown_reason(date) {
+        format!("Owner not recorded: {why}")
+    } else if within(query.holders.unlinked(), date) {
+        format!("Owner not recorded: {}", dashboard_query::identity::TAG_UNLINKED)
+    } else {
+        format!("Owner not recorded: {}", dashboard_query::identity::NOT_HELD_AT_HOUR)
+    };
+    Ok(CompletionOwner::NotRecorded { slot: Some(slot), reason })
 }
 
 #[cfg(test)]
@@ -1719,9 +1783,8 @@ fn counted_with(source: Option<&Source>, query: &Query<'_>, from: i32, to: i32, 
     let recording = query.replay.recording();
     let mut unrecorded: Vec<HourSpan> = Vec::new();
     let mut cached_links: HashMap<u32, Arc<RunLinks>> = HashMap::new();
-    let mut tags: BTreeSet<String> = BTreeSet::new();
+    let mut owners: BTreeSet<u32> = BTreeSet::new();
     let mut scanned_histories: HashMap<u32, (i32, i32, History)> = HashMap::new();
-    let by_slot = slot_tag_index(query);
     let get_links = |cached: &mut HashMap<u32, Arc<RunLinks>>, run: u32| -> io::Result<Arc<RunLinks>> {
         if let Some(held) = cached.get(&run) {
             return Ok(Arc::clone(held));
@@ -1738,74 +1801,47 @@ fn counted_with(source: Option<&Source>, query: &Query<'_>, from: i32, to: i32, 
         let held = available(query, stretch.run, TableId::ProjectHistory, stretch.first, stretch.last)?;
         unrecorded.extend(uncovered(&held, stretch.first, stretch.last).into_iter().map(|(first, last)| HourSpan { first_hour: first, last_hour: last }));
         let history = dashboard_query::cost::storage(|| lanes::history(recording, stretch.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::All, stretch.first, stretch.last))?;
-        let mut run_links: Option<Arc<RunLinks>> = None;
         for (key, steps) in &history.keys {
-            for step in steps {
-                let Some(entry) = step.cells.as_deref().and_then(|cells| history_entry(*key as u32, cells)) else { continue };
-                if !entry.completion() || !(from..=to).contains(&entry.date) {
-                    continue;
-                }
-                let links = match &run_links {
-                    Some(links) => links,
-                    None => run_links.insert(get_links(&mut cached_links, stretch.run)?),
-                };
-                let Some(slot) = links.slot_at((key >> 64) as u32, step.hour) else { continue };
-                if let Some(holders) = by_slot.get(&slot) {
-                    for (tag, spans) in holders {
-                        if !tags.contains(*tag) && span_contains(spans, step.hour) {
-                            tags.insert((*tag).to_owned());
-                        }
-                    }
-                }
+            let owner = (key >> 64) as u32;
+            if owners.contains(&owner) {
+                continue;
+            }
+            if steps.iter().any(|step| step.cells.as_deref().and_then(|cells| history_entry(*key as u32, cells)).is_some_and(|entry| entry.completion() && (from..=to).contains(&entry.date))) {
+                owners.insert(owner);
             }
         }
         if let std::collections::hash_map::Entry::Vacant(slot) = scanned_histories.entry(stretch.run) {
             slot.insert((stretch.first, stretch.last, history));
         }
     }
-    if tags.is_empty() {
+    if owners.is_empty() {
         return Ok((Vec::new(), unrecorded));
     }
     let mut stretch_runs: Vec<u32> = Vec::new();
     let mut run_order: HashMap<u32, usize> = HashMap::new();
+    let mut by_run: Vec<Vec<(i32, i32, i32)>> = Vec::new();
     for stretch in query.timeline.within(query.timeline.first, to) {
-        run_order.entry(stretch.run).or_insert_with(|| {
+        let opened = recording.run(stretch.run).map_or(stretch.first, |run| run.first_hour);
+        let reach = stretch.first.saturating_sub(STAGGER_PERIOD - 1).max(opened);
+        let order = *run_order.entry(stretch.run).or_insert_with(|| {
             let at = stretch_runs.len();
             stretch_runs.push(stretch.run);
+            by_run.push(Vec::new());
             at
         });
+        by_run[order].push((stretch.first, stretch.last, reach));
     }
-    let mut by_run: Vec<Vec<(usize, String, Piece)>> = (0..stretch_runs.len()).map(|_| Vec::new()).collect();
-    for (tag_id, tag) in tags.iter().enumerate() {
-        let (pieces, _) = pieces(query, &Country::Tag(tag.clone()), query.timeline.first, to);
-        for piece in pieces {
-            if let Some(&order) = run_order.get(&piece.run) {
-                by_run[order].push((tag_id, tag.clone(), piece));
-            }
-        }
-    }
-    let mut tag_facts: BTreeMap<String, Facts> = BTreeMap::new();
-    let mut seen: std::collections::HashSet<(usize, u32, u32, u32, u32, Entry)> = std::collections::HashSet::new();
+    let mut owner_facts: BTreeMap<u32, Facts> = BTreeMap::new();
+    let mut seen: std::collections::HashSet<(u32, u32, Entry)> = std::collections::HashSet::new();
     let sample = read_columns()?;
-    for (order, batch) in by_run.into_iter().enumerate() {
-        if batch.is_empty() {
+    for (order, stretches) in by_run.into_iter().enumerate() {
+        if stretches.is_empty() {
             continue;
         }
         dashboard_text::metadata::check_cancel(cancelled)?;
         let run = stretch_runs[order];
-        let run_links = get_links(&mut cached_links, run)?;
-        let mut run_reach = i32::MAX;
-        let mut run_last = i32::MIN;
-        let mut all_owners: BTreeSet<u32> = BTreeSet::new();
-        let mut prepared: Vec<(usize, String, Piece, Custody, Vec<u32>)> = Vec::with_capacity(batch.len());
-        for (tag_id, tag, piece) in batch {
-            run_reach = run_reach.min(piece.reach());
-            run_last = run_last.max(piece.last);
-            let custody = Custody::new(&run_links, piece.slot, piece.held_from, piece.last);
-            let owners: Vec<u32> = custody.owners.iter().filter(|(_, spans)| spans.iter().any(|&(_, last)| last >= piece.reach())).map(|(&raw, _)| raw).collect();
-            all_owners.extend(&owners);
-            prepared.push((tag_id, tag, piece, custody, owners));
-        }
+        let run_reach = stretches.iter().map(|&(_, _, reach)| reach).min().unwrap_or(i32::MAX);
+        let run_last = stretches.iter().map(|&(_, last, _)| last).max().unwrap_or(i32::MIN);
         let history = match scanned_histories.remove(&run) {
             Some((first, last, history)) if first <= run_reach && run_last <= last => history,
             _ => dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::All, run_reach, run_last))?,
@@ -1813,7 +1849,7 @@ fn counted_with(source: Option<&Source>, query: &Query<'_>, from: i32, to: i32, 
         let mut completion_projects: BTreeSet<(u32, u32)> = BTreeSet::new();
         for (key, steps) in &history.keys {
             let owner = (key >> 64) as u32;
-            if !all_owners.contains(&owner) {
+            if !owners.contains(&owner) {
                 continue;
             }
             let project = (key >> 32) as u32;
@@ -1836,15 +1872,17 @@ fn counted_with(source: Option<&Source>, query: &Query<'_>, from: i32, to: i32, 
             }
         }
         let held_run = recording.run(run)?;
-        see_run_evidence(&mut tag_facts, &mut seen, query, query.timeline.first, recording, run, held_run, &prepared, &history_by_owner, from, to, run_reach, run_last, &sample, cancelled)?;
+        see_run_evidence(&mut owner_facts, &mut seen, query, query.timeline.first, recording, run, held_run, &stretches, &history_by_owner, from, to, run_reach, run_last, &sample, cancelled)?;
     }
     let mut found: BTreeMap<(u32, u32, u32, i32), Counted> = BTreeMap::new();
-    for (tag, facts) in tag_facts {
-        for (&(slot, _, owner, local), evidence) in &facts.evidence {
+    for facts in owner_facts.values() {
+        for (&(_, _, owner, local), evidence) in &facts.evidence {
             for kept in evidence.entries.iter().filter(|kept| kept.counted && (from..=to).contains(&kept.entry.date)) {
-                found
-                    .entry((owner, local, kept.entry.ordinal, kept.entry.date))
-                    .or_insert_with(|| Counted { tag: tag.clone(), slot, owner, local, entry: kept.entry, read: kept.read, definition: kept.definition });
+                let key = (owner, local, kept.entry.ordinal, kept.entry.date);
+                if let std::collections::btree_map::Entry::Vacant(vacant) = found.entry(key) {
+                    let attribution = resolve_owner(query, &mut cached_links, &get_links, owner, kept.entry.date, kept.read)?;
+                    vacant.insert(Counted { attribution, owner, local, entry: kept.entry, read: kept.read, definition: kept.definition });
+                }
             }
         }
     }
@@ -1920,13 +1958,17 @@ pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from:
     let mut events = Vec::with_capacity(found.len());
     for counted in found {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let Counted { tag, slot, owner, local, entry, read, definition } = counted;
+        let Counted { attribution, owner, local, entry, read, definition } = counted;
+        let slot = attribution.slot();
         let mut completion =
-            ProjectCompletion { tag: Some(tag.clone()), date: entry.date, observed_hour: read, owner, project: local, ordinal: entry.ordinal, name: None, icon: None, icon_missing: Some("The completed project's name is not recorded.".into()) };
+            ProjectCompletion { attribution, date: entry.date, observed_hour: read, owner, project: local, ordinal: entry.ordinal, name: None, icon: None, icon_missing: Some("The completed project's name is not recorded.".into()) };
         match definition {
             Some(definition) => {
                 let token = spelled.get(&(read, definition)).map(String::as_str);
-                let named = naming.definition(token, definition, &tag, &mut |key| scoped_at_in(query, &mut scoped_frames, &content, key, read, slot));
+                let named = naming.definition(token, definition, completion.attribution.tag(), &mut |key| match slot {
+                    Some(slot) => scoped_at_in(query, &mut scoped_frames, &content, key, entry.date, slot),
+                    None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
+                });
                 completion.name = Some(named.name);
                 completion.icon = named.icon;
                 completion.icon_missing = named.icon_missing;

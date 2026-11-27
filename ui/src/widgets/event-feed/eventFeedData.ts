@@ -29,7 +29,7 @@ const optionalText = (value: unknown) => value === undefined || typeof value ===
 const item = (value: unknown): value is EventFeedItem => object(value) && text(value.token) && text(value.name) && text(value.icon) && (value.description === undefined || text(value.description))
   && optionalText(value.nameMissing) && optionalText(value.gaps)
   && (value.options === undefined || (Array.isArray(value.options) && value.options.every(option => object(option) && int(option.ordinal) && text(option.name))));
-const LISTED_KINDS = new Set(['ceasedToExist', 'guaranteeGranted']);
+const LISTED_KINDS = new Set(['ceasedToExist', 'guaranteeGranted', 'projectFinished']);
 const listed = (row: Record<string, unknown>): boolean => Array.isArray(row.participants) && row.participants.length === 2
   && row.participants.every(value => value === null || opaqueTag(value))
   && JSON.stringify(row.participants.filter(value => value !== null)) === JSON.stringify(row.tags);
