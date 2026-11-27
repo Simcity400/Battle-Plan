@@ -3,7 +3,7 @@ use super::*;
 use dashboard_base::{
     SourceKey,
     products::at_hour::interactive_pool_snapshot,
-    test_fixtures::{replay, source},
+    test_fixtures::{replay, source, source_with_content},
 };
 use replay_data::rows::{NukeRow, TableId, TableRows};
 use replay_frame::frame::TableView;
@@ -105,12 +105,13 @@ fn settled_strip_groups_reopen_byte_for_byte_and_damaged_files_recompute() {
     assert_eq!(exercise(&recording(), &page, &load).0, [0, 3]);
 
     let content_folder = folder.join("content");
-    let (options, _) = dashboard_base::test_fixtures::content_identity(&content_folder.join("first"));
-    let configured = LoadContext { content: Some(options) };
+    let content_fixture = |name| {
+        source_with_content(vec![source(1, 100, Some(100))], &content_folder.join(name))
+    };
+    let (_, configured) = content_fixture("first");
     assert_eq!(exercise(&recording(), &page, &configured).0, [3, 0]);
     assert_eq!(exercise(&recording(), &page, &configured).0, [0, 3]);
-    let (options, _) = dashboard_base::test_fixtures::content_identity(&content_folder.join("second"));
-    let changed = LoadContext { content: Some(options) };
+    let (_, changed) = content_fixture("second");
     assert_eq!(exercise(&recording(), &page, &changed).0, [3, 0]);
     assert_eq!(exercise(&recording(), &page, &changed).0, [0, 3]);
 
@@ -129,9 +130,7 @@ fn settled_strip_groups_reopen_byte_for_byte_and_damaged_files_recompute() {
     assert_eq!(exercise(&finished, &live_page, &load).0, [0, 2]);
     assert!(files.into_iter().all(|file| !file.path().exists()));
 
-    let (textured, load) = dashboard_base::test_fixtures::source_with_content(
-        vec![source(1, 100, Some(100))], &content_folder.join("texture-setting"),
-    );
+    let (textured, load) = content_fixture("texture-setting");
     let textured = Arc::new(textured);
     let settings = load.content.as_ref().unwrap().options.user_dir.join("settings.txt");
     let page = [params("series-rank", &[100], true)];
