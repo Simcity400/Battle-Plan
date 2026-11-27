@@ -1400,10 +1400,10 @@ fn parse_visibility_templates(
     let mut next = 0;
     index_lines(&document.items, &spans, &mut next, &mut lines);
     if next != spans.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{path}: {next} blocks but {} spans", spans.len()),
-        ));
+        return Err(content_reader_parser::fields::invalid(format!(
+            "{path}: {next} blocks but {} spans",
+            spans.len()
+        )));
     }
     let mut templates = Vec::new();
     for root in document
@@ -1458,8 +1458,7 @@ fn parse_role_visibility_templates(
     let mut next = 0;
     index_lines(&document.items, &spans, &mut next, &mut lines);
     if next != spans.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(content_reader_parser::fields::invalid(
             "role visibility block lines differ",
         ));
     }

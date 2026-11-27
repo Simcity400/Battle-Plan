@@ -163,9 +163,9 @@ pub fn content_loads(source: &Source) -> usize {
         .flatten()
         .map(|(_, result)| {
             let loads = result.loads();
-            match result.get_or_init(|| unreachable!("binding was loaded")) {
-                Ok(content) => loads + content.power_result.loads(),
-                Err(_) => loads,
+            match result.get() {
+                Some(Ok(content)) => loads + content.power_result.loads(),
+                _ => loads,
             }
         })
         .sum()
@@ -181,7 +181,7 @@ impl PoliticsContent {
             self.ideas
                 .idea(token)
                 .map(|idea| idea.map(|idea| idea.law))
-                .map_err(|gap| io::Error::other(gap.to_string()))
+                .map_err(|gap| content_reader_parser::fields::invalid(gap.to_string()))
         })
     }
     pub fn load(catalogue: Arc<Catalogue>) -> io::Result<Self> {

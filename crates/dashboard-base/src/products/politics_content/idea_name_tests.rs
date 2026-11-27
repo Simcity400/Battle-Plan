@@ -19,6 +19,91 @@ fn shared_defines_choose_the_recorded_officer_seat_and_name_an_unreadable_list()
 }
 
 #[test]
+fn politics_content_recovers_after_one_shot_read_failure_and_keeps_content_errors() {
+    let original = "ideas={ probe_seat={ probe_advisor={} } }";
+    let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/mod.lua",
+            "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={'probe_seat'}}}",
+        ),
+        ("common/ideas/probe.txt", original),
+    ]);
+    let catalogue = Arc::new(catalogue);
+    let replay = replay::campaign::Replay::from_records(
+        recorder_derive::writers(),
+        "politics-recovery".into(),
+        &[crate::test_fixtures::records(
+            1,
+            vec![crate::test_fixtures::source(1, 100, Some(1))],
+        )],
+    )
+    .unwrap();
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "politics-recovery".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(replay),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let file = folder.0.join("common/ideas/probe.txt");
+
+    let io_error = {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let _locked = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&file)
+                .unwrap();
+            super::kept(&source, Arc::clone(&catalogue)).err().unwrap()
+        }
+        #[cfg(unix)]
+        {
+            let parent = folder.0.join("common/ideas");
+            let backup = folder.0.join("common/ideas_bak");
+            std::fs::rename(&parent, &backup).unwrap();
+            std::fs::write(&parent, b"").unwrap();
+            let error = super::kept(&source, Arc::clone(&catalogue)).err().unwrap();
+            std::fs::remove_file(&parent).unwrap();
+            std::fs::rename(&backup, &parent).unwrap();
+            error
+        }
+    };
+    assert_ne!(io_error.kind(), std::io::ErrorKind::InvalidData, "{io_error}");
+
+    std::fs::write(&file, "ideas={ probe_seat={ changed_advisor={} } }").unwrap();
+    let changed = super::kept(&source, Arc::clone(&catalogue)).err().unwrap();
+    assert_eq!(changed.kind(), std::io::ErrorKind::InvalidData);
+    assert!(changed.to_string().contains("changed since verification"), "{changed}");
+
+    std::fs::write(&file, original).unwrap();
+    let recovered = super::kept(&source, Arc::clone(&catalogue)).unwrap();
+    assert!(Arc::ptr_eq(&recovered.catalogue, &catalogue));
+    assert!(recovered.advisor("probe_advisor").unwrap().is_some());
+    assert_eq!(super::content_loads(&source), 3);
+    assert!(Arc::ptr_eq(&recovered, &super::kept(&source, Arc::clone(&catalogue)).unwrap()));
+    assert_eq!(super::content_loads(&source), 3);
+
+    let (_broken_machine, broken_source, broken_load) = crate::test_fixtures::recorded_mod_defines(
+        "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={'base_seat'}}}",
+        "NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU=false",
+        &[("common/ideas/probe.txt", original)],
+    );
+    let broken_options = broken_load.content().unwrap();
+    for _ in 0..3 {
+        let error = super::politics_content(&broken_source, broken_options).err().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(content_reader_parser::fields::is_content_error(&error));
+        assert_eq!(error.to_string(), "NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU is not a table");
+    }
+    assert_eq!(super::content_loads(&broken_source), 1);
+}
+
+#[test]
 fn idea_case_aliases_use_authored_name_description_and_picture_keys() {
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
