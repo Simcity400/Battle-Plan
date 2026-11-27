@@ -448,15 +448,25 @@ pub(super) fn gained(change: &Change<'_>) -> Option<SpendGain> {
     (gain.days > 0 || gain.unknown_days > 0 || gain.unmatched > 0 || moved(&gain.gained_raw) || moved(&gain.capped_raw)).then_some(gain)
 }
 
-fn changes(query: &Query<'_>, piece: &Piece, low: u128, high: u128, each: &mut dyn FnMut(Change<'_>)) -> io::Result<()> {
-    let columns: Vec<usize> = TOTALS.iter().map(|name| dashboard_declare::field(TableId::PowerSpendTotals, name)).collect::<io::Result<_>>()?;
+fn changes(query: &Query<'_>, piece: &Piece, low: u128, high: u128, has_day_log: bool, each: &mut dyn FnMut(Change<'_>)) -> io::Result<()> {
+    let recording = query.replay.recording();
+    let table = TableId::PowerSpendTotals;
+    let all: Vec<usize> = TOTALS.iter().map(|name| dashboard_declare::field(table, name)).collect::<io::Result<_>>()?;
+    let recorded = recording.columns()[table.index()];
+    let day_log = has_day_log && all.iter().all(|&column| column < recorded && !table.column_withheld_at(column, recording.format()));
+    let day = position("days")..=position("credits");
+    let slots: Vec<_> = (0..TOTALS.len()).filter(|at| !day_log || !day.contains(at)).collect();
+    let columns: Vec<_> = slots.iter().map(|&at| all[at]).collect();
     let from = piece.baseline.unwrap_or(piece.first);
     let order = column_order(&columns);
     let mut previous = HashMap::<u128, Cells>::new();
     let (read, _) = dashboard_query::cost::storage(|| {
-        points::cells(query.replay.recording(), piece.run, TableId::PowerSpendTotals, &columns, Keys::Range(low, high), from, piece.last, None, &mut |hour, key, cells| {
+        points::cells(recording, piece.run, table, &columns, Keys::Range(low, high), from, piece.last, None, &mut |hour, key, cells| {
             let Some(cells) = cells.filter(|cells| cells.len() == order.len()) else { return true };
-            let after = std::array::from_fn(|at| Value::of(cells[order[at]]));
+            let mut after = [Value::Unrecorded; TOTALS.len()];
+            for (&slot, &at) in slots.iter().zip(&order) {
+                after[slot] = Value::of(cells[at]);
+            }
             let before = previous.insert(key, after);
             if piece.baseline != Some(hour) && before.as_ref() != Some(&after) {
                 each(Change { ordinal: key as u32, hour, before: before.as_ref(), after: &after });
@@ -744,7 +754,7 @@ fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i3
         return Ok(vec![(first, last, Some(format!("{label} was not recorded in this format")))]);
     }
     let runs = dashboard_query::cost::storage(|| lanes::statuses(recording, run, table, first, last))?;
-    let reads = dashboard_query::cost::storage(|| lanes::complete_reads(recording, run, table, first, last))?;
+    let reads = dashboard_query::cost::storage(|| lanes::reads(recording, run, table, first, last))?;
     let mut out: Vec<(i32, i32, Option<String>)> = Vec::new();
     let mut read_at = 0usize;
     let mut cursor = first;
@@ -1478,7 +1488,7 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
         let mut ask = |ordinal: u32, hour: i32, recurring: bool| {
             asks.entry((hour, ordinal)).or_insert(recurring);
         };
-        changes(query, piece, low, low | u128::from(u32::MAX), &mut |change| {
+        changes(query, piece, low, low | u128::from(u32::MAX), has_day_log, &mut |change| {
             if change.ordinal == PowerSpendTotalRow::GAINS {
                 if let Some(gain) = gained(&change) {
                     unmatched += u64::from(gain.unmatched);
