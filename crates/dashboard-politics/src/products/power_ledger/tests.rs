@@ -1434,7 +1434,9 @@ fn naming_reads_the_country_tables_with_only_the_columns_it_names_by() {
     };
     let decision = PowerItemRow { holder: SLOT, first_read: 120, cause: PowerCause::Decision, ..Default::default() };
     assert_eq!(columns(decision.clone()), [2, 1], "a country is named by its slot and tag, and a link by its slot");
-    let organisation = PowerItemRow { object_kind: PowerObjectKind::Organisation, object_reference: Some(1), ..decision };
-    let [countries, links] = columns(organisation);
-    assert!(countries > 2 && links >= 1, "an organisation's name reads whole country rows: {countries} {links}");
+    let recording = query.replay.recording();
+    let whole = [TableId::Countries, TableId::CountryLinks].map(|table| replay_recording::cells::read_columns(recording, 0, table.index(), None).len() as u64);
+    assert!(whole[0] > 2, "the fixture's countries hold more columns than naming reads: {whole:?}");
+    let organisation = PowerItemRow { ordinal: 1, object_kind: PowerObjectKind::Organisation, object_reference: Some(1), ..decision };
+    assert_eq!(columns(organisation), whole, "an organisation's name reads whole country rows");
 }
