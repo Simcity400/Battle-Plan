@@ -365,6 +365,37 @@ test('a witnessed cessation or guarantee with an unidentified country keeps its 
   assert.ok(tip('k1').includes('Observed at') && !tip('k1').includes('Time'), 'an inexact row is dated by its observation, and says so');
 });
 
+test('an unidentified decision owner has one country slot unless a target was recorded, while two-country events keep both roles', () => {
+  const cases: { event: EventFeedRow; flags: string[] }[] = [
+    { event: row('decisionRemoved', 100, [], { category: 'politics' }), flags: ['?'] },
+    { event: row('decisionSelected', 100, [], { category: 'politics' }), flags: ['?'] },
+    { event: row('decisionRemoved', 100, ['AAA'], { category: 'politics' }), flags: ['AAA'] },
+    { event: row('decisionRemoved', 100, ['BBB'], { category: 'politics', participants: [null, 'BBB'] }), flags: ['?', 'BBB'] },
+    { event: row('decisionRemoved', 100, [], { category: 'politics', cause: { notes: [], targetRecorded: true } }), flags: ['?', '?'] },
+    { event: row('decisionRemoved', 100, ['AAA'], { category: 'politics', cause: { notes: [], targetRecorded: true } }), flags: ['AAA', '?'] },
+    { event: row('warDeclared', 100, []), flags: ['?', '?'] },
+    { event: row('stateTransferred', 100, []), flags: ['?', '?'] },
+  ];
+  const source = buildRowSourceFromHead('test:feed-roles', {
+    branchId: '1', offset: '0', total: String(cases.length),
+    rows: cases.map(({ event }, i) => ({ line: 'event', hour: event.hour, observed: event.hour, key: `k${i}`, ordinal: String(i), live: false, row: event, choice: null })),
+    missing: [], unavailable: [], warnings: [],
+  }, undefined, 120, undefined, eventFeedProjection.validateTail)!;
+  const model = eventFeedProjection.project(createBoundedReadView({
+    hour: 120,
+    identity: datedIdentity({ AAA: [{ from: 0, name: 'Amber Republic' }], BBB: [{ from: 0, name: 'Blue Republic' }] }),
+    rows: new Map([['main', source]]),
+  }), { categories: ['politics', 'warsPeace'], artwork: false });
+  assert.equal(model.rows.length, cases.length);
+  for (const [i, { flags }] of cases.entries()) {
+    const country = model.rows.find(r => r.key === `k${i}`)!.cells.country!;
+    assert.deepEqual(country.flags?.map(flag => flag.tag), flags, `case ${i}`);
+    if (flags.every(tag => tag === '?')) {
+      assert.deepEqual(country.value, { kind: 'notRecorded', reason: 'Country not identified' });
+    }
+  }
+});
+
 test('a finished project with an unidentified owner keeps its row and carries its own missing reason in the country cell', () => {
   const firstReason = 'Owner not recorded: Countries was not complete at these hours';
   const secondReason = 'Owner not recorded: raw owner 9001 had no country link at this hour.';

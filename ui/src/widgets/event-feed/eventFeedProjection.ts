@@ -279,7 +279,7 @@ function buildFeedTableRow(
     if (tag === null && event.participants === undefined) continue;
     if (idx > 0 && ONE_COUNTRY_KINDS.has(event.kind)) continue;
     if (idx > 0 && tag !== null && tag === rawRoles[0]) continue;
-    if (tag === null && idx === 1 && rawRoles[0] !== null && !['scriptEventFired', 'newsEventFired', 'warDeclared', 'warJoined', 'annexed', 'released', 'guaranteeGranted'].includes(event.kind)) {
+    if (tag === null && idx === 1 && (rawRoles[0] !== null || event.kind.startsWith('decision')) && !event.cause?.targetRecorded && !['scriptEventFired', 'newsEventFired', 'warDeclared', 'warJoined', 'annexed', 'released', 'guaranteeGranted'].includes(event.kind)) {
       continue;
     }
     countryEntries.push({
