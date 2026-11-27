@@ -1638,8 +1638,8 @@ impl Viewer {
 
     fn layered_orders(&self) -> Option<LayeredOrders> {
         let side = live_of(&self.playhead_map)?;
-        let plan = side.products().plan.as_ref().map(|(_, plan)| Arc::clone(plan));
-        let routes = side.products().routes.as_ref().map(|(seq, _)| *seq);
+        let plan = side.products().plan.as_deref().map(|(_, plan)| Arc::clone(plan));
+        let routes = side.products().routes.as_deref().map(|(seq, _)| *seq);
         let raids = self.overlay_tables.as_ref().map(|tables| Arc::clone(tables.raid_arrows()));
         Some(LayeredOrders { plan, raids, routes })
     }
@@ -2613,12 +2613,14 @@ impl Viewer {
 
     fn picture_whole(&self, target: Playhead, playing: bool) -> bool {
         self.playhead_map.as_ref().is_some_and(|side| {
-            side.on_screen().is_some_and(|on| {
-                if !side.products().overlay_coming() {
-                    return layers_show(&on, target.hour, playing);
-                }
-                whole_picture(&on, self.overlay_hour(), target.hour, playing)
-            })
+            side.mode_on_screen() == Some(&self.map_mode)
+                && side.on_screen().is_some_and(|on| {
+                    if !side.products().overlay_coming() {
+                        return layers_show(&on, target.hour, playing);
+                    }
+                    self.overlay_view.as_ref().is_some_and(|view| view.matches_mode(&self.map_mode))
+                        && whole_picture(&on, self.overlay_hour(), target.hour, playing)
+                })
         })
     }
 
@@ -2929,7 +2931,7 @@ impl Viewer {
     pub(crate) fn diagnostics_ui(&mut self, ui: &mut egui::Ui, max_height: f32) {
         let side = self.playhead_map.as_ref().filter(|side| side.on_screen().is_some());
         let stats = side.map(|side| {
-            side.products().snow.map(|summary| vec![format!("Snow and mud: {}", summary.line())]).unwrap_or_default()
+            side.products().snow.as_deref().map(|summary| vec![format!("Snow and mud: {}", summary.line())]).unwrap_or_default()
         });
         if let Some(stats) = stats {
             for line in stats {
@@ -3543,7 +3545,7 @@ impl Viewer {
                         music: self
                             .playhead_map
                             .as_ref()
-                            .and_then(|side| side.products().music.clone())
+                            .and_then(|side| side.products().music.as_deref().cloned())
                             .or_else(|| self.music.clone()),
                         battles: self.battles.clone(),
                         interface: std::mem::take(&mut self.interface_sounds),
@@ -3768,6 +3770,7 @@ impl Viewer {
         document: &Document,
         device: &eframe::wgpu::Device,
         queue: &eframe::wgpu::Queue,
+        ctx: &egui::Context,
         point: Option<[f32; 2]>,
     ) -> Result<(), String> {
         let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
@@ -3833,7 +3836,10 @@ impl Viewer {
         });
         if let Some(prepared) = self.faction_highlight.update_with(
             key,
-            |job| pool.try_submit(job),
+            |job| {
+                let wake = ctx.clone();
+                pool.try_submit(job, move || wake.request_repaint())
+            },
             move || {
                 let source = over;
                 move || {
@@ -4172,7 +4178,7 @@ impl Viewer {
             }
         }
         let view = self.last_view.as_ref()?;
-        let routes = self.open_map().and_then(|side| side.products().routes.as_ref()).map(|(_, routes)| Arc::clone(routes));
+        let routes = self.open_map().and_then(|side| side.products().routes.as_deref()).map(|(_, routes)| Arc::clone(routes));
         let route_lines: Vec<_> = routes
             .as_ref()
             .filter(|_| self.counter_view.visibility.trade_routes)
@@ -4288,10 +4294,90 @@ impl Viewer {
         let result = engine_executable::executable_tables::scope(tables, || {
             self.draw_map(ui, state, document, view_id)
         });
+        self.ask_live(document);
         if !self.drew_frame {
             self.silence_unshown();
         }
         result
+    }
+
+    fn side_ask(
+        &mut self,
+        document: &Document,
+    ) -> (
+        viewer_layer_core::layers::View,
+        crate::playhead_host::Head,
+        Option<viewer_playback::overlay::Ask>,
+        Option<viewer_combat::Asking>,
+    ) {
+        let drawing = self.last_view.is_some() && self.picture_ready();
+        let at = head_wanted(
+            self.capture.as_ref().map(|capture| capture.paced),
+            self.playhead.map(|head| head.hour),
+            self.options.window_dump,
+            drawing,
+        );
+        let view = viewer_layer_core::layers::View {
+            map_mode: self.map_mode.clone(),
+            perspective: self.perspective.clone(),
+            camera_height: self.last_view.as_ref().map_or(0.0, |view| view.camera.height),
+            camera: self.last_view.as_ref().map(|view| view.camera.placement()),
+            target: self.zoom.target(),
+            viewport: self.last_view.as_ref().map_or([0, 0], |view| view.viewport),
+            fog: self.perspective.fog,
+            graphics: self.graphics,
+            sound: self.audio_focus,
+            audio: self.volumes,
+            overlay: self.overlay_layers.clone(),
+            counters: self.counter_filter.clone(),
+            player_counters: self.player_counters,
+            selected: self.diplomatic_selected,
+        };
+        let shown_mode = match at {
+            crate::playhead_host::Head::Stepped(_) => self.map_mode.clone(),
+            _ => self.shown_mode().clone(),
+        };
+        let overlay_view = {
+            let mut view = self.counter_view.clone();
+            view.set_mode(&shown_mode);
+            view
+        };
+        let overlay_ask = self.last_view.as_ref().filter(|_| drawing).map(|last| viewer_playback::overlay::Ask {
+            camera: last.camera,
+            target: self.zoom.target().map(|target| target.height),
+            pixels: last.viewport,
+            ui_scale: last.ui_scale,
+            view: overlay_view,
+            rosters: document.playback.air_rosters(),
+        });
+        self.combat.set_playing(self.playing);
+        self.combat.set_settled(self.settles_windows());
+        let content_at = Arc::as_ptr(&document.content) as usize;
+        if self.combat_inputs != Some(content_at) {
+            self.combat_inputs = Some(content_at);
+            let raids = Arc::clone(&document.icons.raids);
+            self.combat.set_rule_relations(Arc::new(move |frame, rule, country| {
+                viewer_unit_reads::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
+            }));
+            let content = Arc::clone(&document.content);
+            self.combat.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
+            self.combat.set_battle_title_source(crate::battle_title_source(document));
+        }
+        let combat_ask = self.combat.asking(&document.combat, &document.playback.roster_sampler(), &self.perspective, self.counter_view.settings.nato);
+        self.overlay_asked = overlay_ask.as_ref().map(|ask| ask.shown(&document.content.counters.defines));
+        (view, at, overlay_ask, combat_ask)
+    }
+
+    fn ask_live(&mut self, document: &Document) {
+        if self.playhead_map.is_none() {
+            return;
+        }
+        let (view, at, overlay_ask, combat_ask) = self.side_ask(document);
+        if !matches!(at, crate::playhead_host::Head::Stepped(_))
+            && let Some(side) = self.playhead_map.as_ref()
+        {
+            side.ask(view, at, overlay_ask, combat_ask);
+        }
     }
 
     fn draw_map(
@@ -4362,7 +4448,11 @@ impl Viewer {
         }
         if let Some(made) = self.playhead_opening.as_ref().and_then(crate::playhead_host::Opening::poll) {
             self.playhead_opening = None;
-            match made.and_then(viewer_playback::side::SideThread::new) {
+            let wake: Arc<dyn Fn() + Send + Sync> = {
+                let ctx = ui.ctx().clone();
+                Arc::new(viewer_runtime::worker_priority::waking(move || ctx.request_repaint()))
+            };
+            match made.and_then(|side| viewer_playback::side::SideThread::new(side, wake)) {
                 Ok(side) if self.playhead.is_some_and(|clock| side.branch().is_some_and(|branch| branch != clock.branch)) => {
                     self.drop_later(side);
                     self.playhead_opened = false;
@@ -4392,54 +4482,7 @@ impl Viewer {
                 self.options.window_dump,
                 drawing,
             );
-            let view = viewer_layer_core::layers::View {
-                map_mode: self.map_mode.clone(),
-                perspective: self.perspective.clone(),
-                camera_height: self.last_view.as_ref().map_or(0.0, |view| view.camera.height),
-                camera: self.last_view.as_ref().map(|view| view.camera.placement()),
-                target: self.zoom.target(),
-                viewport: self.last_view.as_ref().map_or([0, 0], |view| view.viewport),
-                fog: self.perspective.fog,
-                graphics: self.graphics,
-                sound: self.audio_focus,
-                audio: self.volumes,
-                overlay: self.overlay_layers.clone(),
-                counters: self.counter_filter.clone(),
-                player_counters: self.player_counters,
-                selected: self.diplomatic_selected,
-            };
-            let shown_mode = match at {
-                crate::playhead_host::Head::Stepped(_) => self.map_mode.clone(),
-                _ => self.shown_mode().clone(),
-            };
-            let overlay_view = {
-                let mut view = self.counter_view.clone();
-                view.set_mode(&shown_mode);
-                view
-            };
-            let overlay_ask = self.last_view.as_ref().filter(|_| drawing).map(|last| viewer_playback::overlay::Ask {
-                camera: last.camera,
-                target: self.zoom.target().map(|target| target.height),
-                pixels: last.viewport,
-                ui_scale: last.ui_scale,
-                view: overlay_view.clone(),
-                rosters: document.playback.air_rosters(),
-            });
-            self.combat.set_playing(self.playing);
-            self.combat.set_settled(self.settles_windows());
-            let content_at = Arc::as_ptr(&document.content) as usize;
-            if self.combat_inputs != Some(content_at) {
-                self.combat_inputs = Some(content_at);
-                let raids = Arc::clone(&document.icons.raids);
-                self.combat.set_rule_relations(Arc::new(move |frame, rule, country| {
-                    viewer_unit_reads::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
-                }));
-                let content = Arc::clone(&document.content);
-                self.combat.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
-                self.combat.set_battle_title_source(crate::battle_title_source(document));
-            }
-            let combat_ask = self.combat.asking(&document.combat, &document.playback.roster_sampler(), &self.perspective, self.counter_view.settings.nato);
-            self.overlay_asked = overlay_ask.as_ref().map(|ask| ask.shown(&document.content.counters.defines));
+            let stepped = matches!(at, crate::playhead_host::Head::Stepped(_)).then(|| self.side_ask(document));
             let wanted = builds_warnings(self.diagnostics, self.capture.as_ref());
             let saved = self.saves_a_frame();
             let through = shown_head.map(|head| head.hour).filter(|_| !saved && self.playing);
@@ -4449,9 +4492,11 @@ impl Viewer {
             {
                 let presentation = Arc::clone(&self.counter_view.presentation);
                 let side = self.playhead_map.as_mut().expect("the map's side is open");
-                side.ask(view, at, overlay_ask, combat_ask);
-                let window = match at {
-                    crate::playhead_host::Head::Stepped(hour) => side.stepped_window(hour),
+                let window = match stepped {
+                    Some((view, crate::playhead_host::Head::Stepped(hour), overlay_ask, combat_ask)) => {
+                        side.ask(view, crate::playhead_host::Head::Stepped(hour), overlay_ask, combat_ask);
+                        side.stepped_window(hour)
+                    }
                     _ => side.window(),
                 };
                 if let Some(mut window) = { window } {
@@ -4469,14 +4514,18 @@ impl Viewer {
                     window.take(viewer_playback::side::Wants { warnings: wanted, highlight: self.highlight_wanted });
                     withdrawn = window.take_overlay_withdrawal();
                     if let Some(made) = window.take_overlay() {
+                        let made = made.into_inner();
                         if !Arc::ptr_eq(&presentation, &made.on) {
                             presentation.take_memory(&made.on);
                         }
                         installed = Some(made);
                     }
                     if let Some(made) = window.take_combat() {
-                        self.combat.offer(made);
+                        self.combat.offer(made.into_inner());
                     }
+                }
+                if side.products().missed.is_some() {
+                    ui.ctx().request_repaint();
                 }
                 if let Some(why) = side.take_refusal() {
                     unsettled = Some(format!("A saved frame draws its own hour whole: {why}"));
@@ -4518,7 +4567,7 @@ impl Viewer {
             if let Some(retired) = self.combat.take_retired() {
                 self.retire(retired);
             }
-            if let Some(battles) = self.playhead_map.as_ref().and_then(|side| side.products().battles.clone()) {
+            if let Some(battles) = self.playhead_map.as_ref().and_then(|side| side.products().battles.as_deref().cloned()) {
                 self.battles = battles;
             }
         }
@@ -4579,11 +4628,6 @@ impl Viewer {
         let map_error = self.map_error_of(document);
         self.hour_error(map_error, ui.ctx());
         self.follow_continuity(&document.playback.replay().gaps);
-        if self.playhead.is_some_and(|head| {
-            self.playhead_map.as_ref().is_some_and(|side| side.on_screen().is_some_and(|on| on.drawn != Some(head.hour) || !on.settled))
-        }) {
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
-        }
         if let Some(error) = self.map_error.clone() {
             self.rendered = None;
             ui.centered_and_justified(|ui| {
@@ -5321,7 +5365,7 @@ impl Viewer {
                 self.counter_view.visibility.trade_routes,
             )
         };
-        let posed = live_of(&self.playhead_map).and_then(|side| side.products().units.clone());
+        let posed = live_of(&self.playhead_map).and_then(|side| side.products().units.as_deref().cloned());
         let sailing = posed.as_ref().is_some_and(|prepared| {
             prepared.has_convoys()
                 && document
@@ -5561,7 +5605,6 @@ impl Viewer {
                 if let Some(texture) = self.scene_target.kept(self.scene.as_ref().map(|scene| scene.generation())) {
                     ui.painter().image(texture, rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
                 }
-                ui.ctx().request_repaint();
                 return Ok(());
             }
             if self.drop_overlay_drawn()
@@ -5587,8 +5630,8 @@ impl Viewer {
             }
             if std::mem::take(&mut self.overlay_routes_pending) && tables.counters().routes_by_key() {
                 let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
-                let (fill, counters, movement) = (Arc::clone(&tables), Arc::clone(&document.content.counters), document.content.movement.clone());
-                pool.try_submit(Box::new(move || viewer_runtime::redraws::apart(|| fill.counters().fill_routes(&counters, movement.as_deref()))));
+                let (fill, counters, movement, wake) = (Arc::clone(&tables), Arc::clone(&document.content.counters), document.content.movement.clone(), ui.ctx().clone());
+                pool.try_submit(Box::new(move || viewer_runtime::redraws::apart(|| fill.counters().fill_routes(&counters, movement.as_deref()))), move || wake.request_repaint());
             }
             let overlay_state = live_of(&self.playhead_map).map(|side| {
                 let products = side.products();
@@ -5631,12 +5674,17 @@ impl Viewer {
                 OverlayPlaced::Failed(why) => Some(why),
                 _ => None,
             };
-            if let Some(side) = live_of(&self.playhead_map)
-                && let Some(names) = side.products().placements.clone()
-                && !self.placements.as_ref().is_some_and(|held| Arc::ptr_eq(held, &names))
-            {
-                viewer_runtime::view_record::add("names window", "taken_from_layer", 1);
-                drop(self.placements.replace(names));
+            if let Some(side) = live_of(&self.playhead_map) {
+                match side.products().placements.as_deref().cloned() {
+                    Some(names) if !self.placements.as_ref().is_some_and(|held| Arc::ptr_eq(held, &names)) => {
+                        viewer_runtime::view_record::add("names window", "taken_from_layer", 1);
+                        drop(self.placements.replace(names));
+                    }
+                    None if side.draws("names") => {
+                        self.placements = None;
+                    }
+                    _ => {}
+                }
             }
             if viewer_runtime::view_record::on() {
                 let draws = live_of(&self.playhead_map).is_some_and(|side| side.draws("names"));
@@ -5843,7 +5891,7 @@ impl Viewer {
                             }
                             Err(_) => break,
                         };
-                        self.install_overlay(made, &document.playback.replay().gaps);
+                        self.install_overlay(made.into_inner(), &document.playback.replay().gaps);
                         installed = true;
                         rounds = viewer_native_gui::icon_windows::DumpFrames::default();
                     }
@@ -6555,6 +6603,7 @@ impl Viewer {
             document,
             &state.device,
             &state.queue,
+            ui.ctx(),
             point.filter(|_| !over_combat),
         )?;
         let radar_at = point
@@ -6650,7 +6699,7 @@ impl Viewer {
                     }
                     _ => None,
                 };
-                let routes_field = routes.and(live_of(&self.playhead_map)).and_then(|side| side.products().routes.as_ref()).map(|(_, routes)| &routes.field);
+                let routes_field = routes.and(live_of(&self.playhead_map)).and_then(|side| side.products().routes.as_deref()).map(|(_, routes)| &routes.field);
                 scene
                     .apply(device, queue, SceneInput::SetOrders { assets: &document.orders, parts: [plan.as_deref(), raids.as_deref(), routes_field, air_field.as_deref()] })
                     .map_err(|error| error.to_string())?;
@@ -6801,7 +6850,7 @@ impl Viewer {
                     volumes: self.volumes,
                     muted: self.muted,
                     reset: std::mem::take(&mut self.audio_reset),
-                    music: self.playhead_map.as_ref().and_then(|side| side.products().music.clone()).or_else(|| self.music.clone()),
+                    music: self.playhead_map.as_ref().and_then(|side| side.products().music.as_deref().cloned()).or_else(|| self.music.clone()),
                     battles: self.battles.clone(),
                     interface: std::mem::take(&mut self.interface_sounds),
                     interface_key: &mut self.interface_key,
@@ -6967,7 +7016,7 @@ impl Viewer {
                 ));
             }
             let music = match &self.playhead_map {
-                Some(side) => side.products().music.clone(),
+                Some(side) => side.products().music.as_deref().cloned(),
                 None => self.music.clone(),
             };
             if let Some(music) = &music

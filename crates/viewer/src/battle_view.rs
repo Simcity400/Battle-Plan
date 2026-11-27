@@ -264,11 +264,13 @@ impl BattleView {
         }
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         let (held, device, queue, wake) = (Arc::clone(content), device.clone(), queue.clone(), ctx.clone());
-        let submitted = pool.try_submit(Box::new(move || {
-            let made = held.scene_textures.icons(&device, &queue).map_err(|error| format!("Could not upload the battle window's art: {error}"));
-            let _ = sender.send(made);
-            wake.request_repaint();
-        }));
+        let submitted = pool.try_submit(
+            Box::new(move || {
+                let made = held.scene_textures.icons(&device, &queue).map_err(|error| format!("Could not upload the battle window's art: {error}"));
+                let _ = sender.send(made);
+            }),
+            move || wake.request_repaint(),
+        );
         if submitted {
             self.warming = Some((Arc::downgrade(content), receiver));
         } else {
@@ -550,9 +552,10 @@ impl Held {
 
     fn take(&mut self) {
         let generation = self.generation;
-        let Some((key, (hours, spent))) = self.reads.take(|key| key.generation == generation) else {
+        let Some((key, taken)) = self.reads.take(|key| key.generation == generation) else {
             return;
         };
+        let (hours, spent) = taken.into_inner();
         let current = key.epoch == self.epoch && self.asked.as_ref() == Some(&key);
         if current {
             self.asked = None;
@@ -805,11 +808,13 @@ impl Held {
             return;
         }
         let (lazy, art, wake) = (Arc::clone(lazy), Arc::clone(&self.art), ctx.clone());
-        let submitted = pool.try_submit(Box::new(move || {
-            while lazy.settle() {}
-            art.store(false, Ordering::Release);
-            wake.request_repaint();
-        }));
+        let submitted = pool.try_submit(
+            Box::new(move || {
+                while lazy.settle() {}
+                art.store(false, Ordering::Release);
+            }),
+            move || wake.request_repaint(),
+        );
         if !submitted {
             self.art.store(false, Ordering::Release);
             ctx.request_repaint();

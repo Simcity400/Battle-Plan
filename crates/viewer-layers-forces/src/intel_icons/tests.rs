@@ -79,7 +79,7 @@ fn at(side: &mut MapSide, hour: replay_data::Hour, what: &str, done: impl Fn(&Ic
 
 fn icons_at(side: &mut MapSide, hour: replay_data::Hour, what: &str) {
     sought(side, hour);
-    at(side, hour, what, |layer| layer.icons().is_some_and(|(_, at)| *at == hour));
+    at(side, hour, what, |layer| layer.icons().is_some_and(|(_, at)| at == hour));
 }
 
 fn learned_at(side: &mut MapSide, hour: replay_data::Hour) {
@@ -113,7 +113,7 @@ fn play(side: &mut MapSide, from: replay_data::Hour, what: &str, mut each: impl 
 
 fn read(side: &MapSide) -> Option<(String, i32)> {
     let (icons, hour) = layer(side).icons()?;
-    Some((icons.report.reasons.keys().next()?.clone(), *hour))
+    Some((icons.report.reasons.keys().next()?.clone(), hour))
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn a_whole_settle_at_each_step_gets_the_icons_of_each_hour_with_no_one_else_mark
     learned_at(&mut side, 2);
     let mut steps = 0;
     play(&mut side, 2, "the icons of each hour applied", |side, frame| {
-        assert_eq!(layer(side).icons().map(|(_, hour)| *hour), frame.applied, "the icons of the hour applied: {}", state(side));
+        assert_eq!(layer(side).icons().map(|(_, hour)| hour), frame.applied, "the icons of the hour applied: {}", state(side));
         steps += 1;
         steps >= 8
     });

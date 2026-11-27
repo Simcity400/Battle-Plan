@@ -233,14 +233,14 @@ fn a_battle_the_list_renumbers_keeps_its_battle_and_is_not_made_again() {
     sought(&mut side, 0);
     let made = fed(&side).made();
     assert_eq!(made, 2);
-    assert_eq!(super::drawn(&side).flatten().as_deref(), composed(&side).as_ref(), "a reset publishes the sought hour's mix at once");
+    assert_eq!(super::drawn(&side).and_then(|drawn| drawn.into_inner()).as_deref(), composed(&side).as_ref(), "a reset publishes the sought hour's mix at once");
     play(&mut side, 0, |_, frame| frame.applied.unwrap() >= 8);
     side.settle_all().unwrap();
     let product = fed(&side).battles().map(|battles| (**battles).clone()).unwrap();
     assert_eq!(product.battles.iter().map(|battle| (battle.key, battle.provinces.clone())).collect::<Vec<_>>(), [(88, vec![11])]);
     assert_eq!(fed(&side).made(), made, "battle 88 moved to ordinal 0 without being made again");
     assert_eq!(Some(product.clone()), composed(&side));
-    assert_eq!(super::drawn(&side).flatten().as_deref(), Some(&product), "the worker's mix reaches the head's battles");
+    assert_eq!(super::drawn(&side).and_then(|drawn| drawn.into_inner()).as_deref(), Some(&product), "the worker's mix reaches the head's battles");
 }
 
 fn template_only(at: u32, store: &mut Store) {

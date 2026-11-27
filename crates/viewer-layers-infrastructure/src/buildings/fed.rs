@@ -11,6 +11,7 @@ use std::{
     thread,
 };
 use viewer_foundation::perspective::{Choice, Vision};
+use viewer_runtime::landed;
 
 type SceneInputs = ([u8; 32], Option<(i64, i64)>);
 
@@ -163,7 +164,7 @@ impl Work {
     }
 }
 
-fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
+fn run(jobs: mpsc::Receiver<Job>, made: landed::Sender<Made>) {
     let mut work: Option<Work> = None;
     let mut epoch = 0;
     let mut next = None;
@@ -225,7 +226,7 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
 pub struct BuildingsFed {
     spec: Buildings,
     jobs: Option<mpsc::Sender<Job>>,
-    made: Option<mpsc::Receiver<Made>>,
+    made: Option<landed::Receiver<Made>>,
     epoch: u64,
     started: bool,
     owed: usize,
@@ -380,7 +381,7 @@ impl BuildingsFed {
             }
         }
         let mut due = Vec::new();
-        self.products.take(|made| due.push(made));
+        self.products.take(|made| due.push(made.into_inner()));
         for made in due {
             if let Some((product, continues)) = made.install {
                 if made.scene == self.scene {
@@ -430,7 +431,7 @@ impl Layer for BuildingsFed {
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = landed::channel();
             thread::Builder::new().name("buildings".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();
                 run(receive, send)

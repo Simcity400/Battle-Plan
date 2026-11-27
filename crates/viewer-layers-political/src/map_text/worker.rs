@@ -16,7 +16,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use viewer_runtime::memo::Keyed;
+use viewer_runtime::{landed, memo::Keyed};
 use viewer_foundation::{
     perspective::{Choice, VISION_TABLES, VisionKey, Vision as Seen, cached_vision},
     visibility::FogContent,
@@ -47,7 +47,7 @@ type Made = (u64, u64, Presented);
 
 pub(super) struct Worker {
     jobs: Option<Sender<Sent>>,
-    made: Receiver<Made>,
+    made: landed::Receiver<Made>,
     generation: Arc<AtomicU64>,
     serial: u64,
     stop: Arc<AtomicBool>,
@@ -59,7 +59,7 @@ pub(super) struct Worker {
 impl Worker {
     pub(super) fn start(source: Arc<dyn Source>, branch: BranchId, stepped: Result<Stepped, String>) -> io::Result<Self> {
         let (jobs, received) = mpsc::channel::<Sent>();
-        let (made, taken) = mpsc::channel::<Made>();
+        let (made, taken) = landed::channel::<Made>();
         let generation = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let alive = Arc::new(AtomicBool::new(true));
@@ -102,7 +102,12 @@ impl Worker {
     pub(super) fn take(&mut self) -> Vec<(u64, Presented)> {
         let generation = self.generation.load(Ordering::Acquire);
         let mut made = std::mem::take(&mut self.held);
-        made.extend(self.made.try_iter().filter(|&(at, ..)| at == generation).map(|(_, serial, presented)| (serial, presented)));
+        while let Ok(item) = self.made.try_recv() {
+            let (at, serial, presented) = item.into_inner();
+            if at == generation {
+                made.push((serial, presented));
+            }
+        }
         made
     }
 
@@ -114,11 +119,13 @@ impl Worker {
                 return true;
             }
             match self.made.recv_timeout(LOOK.min(until.saturating_duration_since(Instant::now()))) {
-                Ok((at, serial, presented)) if at == generation => {
-                    self.held.push((serial, presented));
-                    return true;
+                Ok(item) => {
+                    let (at, serial, presented) = item.into_inner();
+                    if at == generation {
+                        self.held.push((serial, presented));
+                        return true;
+                    }
                 }
-                Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) if Instant::now() < until => {}
                 Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return false,
             }
@@ -155,7 +162,7 @@ struct Run {
 type Through = Option<(u64, u64, Hour)>;
 
 impl Run {
-    fn run(mut self, received: &Receiver<Sent>, made: &Sender<Made>) {
+    fn run(mut self, received: &Receiver<Sent>, made: &landed::Sender<Made>) {
         let mut pending: VecDeque<(u64, u64, Job)> = VecDeque::new();
         let mut through: Through = None;
         loop {
@@ -183,7 +190,7 @@ impl Run {
         }
     }
 
-    fn progress(&mut self, pending: &mut VecDeque<(u64, u64, Job)>, through: Through, made: &Sender<Made>) -> bool {
+    fn progress(&mut self, pending: &mut VecDeque<(u64, u64, Job)>, through: Through, made: &landed::Sender<Made>) -> bool {
         let current = self.generation.load(Ordering::Acquire);
         pending.retain(|&(generation, ..)| generation == current);
         let through = through.filter(|&(generation, ..)| generation == current).map(|(_, epoch, hour)| (epoch, hour));

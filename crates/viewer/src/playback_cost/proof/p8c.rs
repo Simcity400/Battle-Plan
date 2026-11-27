@@ -137,7 +137,7 @@ pub(super) fn aircraft_today(layer: &dyn Layer, document: &Document) -> io::Resu
         Err(why) => {
             if let Some(stopped) = layer.rebuilt().stopped() {
                 compared.entries = 1;
-                note(&mut compared, stopped);
+                note(&mut compared, stopped.into_inner());
                 return Ok(compared);
             }
             return Ok(loading(format!("the aircraft plan is not built at hour {hour}, awaiting the rows of {:?}: {why}", layer.rebuilt().awaiting())));
@@ -189,7 +189,7 @@ pub(super) fn aircraft_fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &
     let mut compared = Compared { entries: 1, ..Compared::default() };
     let Some(built) = layer.product() else {
         if let Some(stopped) = layer.rebuilt().stopped() {
-            note(&mut compared, stopped);
+            note(&mut compared, stopped.into_inner());
             return Ok(compared);
         }
         return Ok(loading(format!("the aircraft plan is not built yet, awaiting the rows of {:?}", layer.rebuilt().awaiting())));

@@ -136,7 +136,7 @@ impl Gate {
     }
 }
 
-fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, #[cfg(any(test, feature = "test-support"))] gate: Arc<Gate>) {
+fn run(jobs: mpsc::Receiver<Job>, made: viewer_runtime::landed::Sender<Made>, #[cfg(any(test, feature = "test-support"))] gate: Arc<Gate>) {
     let mut work: Option<Work> = None;
     let mut epoch = 0;
     let mut next = None;
@@ -212,7 +212,7 @@ pub struct Tally {
 pub struct Fed {
     spec: Counters,
     jobs: Option<mpsc::Sender<Job>>,
-    made: Option<mpsc::Receiver<Made>>,
+    made: Option<viewer_runtime::landed::Receiver<Made>>,
     epoch: u64,
     owed: usize,
     products: Products<Made>,
@@ -388,7 +388,7 @@ impl Fed {
             }
         }
         let mut due = Vec::new();
-        self.products.take(|made| due.push(made));
+        self.products.take(|made| due.push(made.into_inner()));
         for made in due {
             let tally = &mut self.tally;
             (tally.products, tally.jobs, tally.made_ns, tally.made_ns_worst) = (tally.products + 1, tally.jobs + made.answers as u64, tally.made_ns + made.made_ns, tally.made_ns_worst.max(made.made_ns));
@@ -428,7 +428,7 @@ impl Layer for Fed {
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = viewer_runtime::landed::channel();
             #[cfg(any(test, feature = "test-support"))]
             let gate = Arc::clone(&self.gate);
             thread::Builder::new().name("counters fold".into()).spawn(move || {

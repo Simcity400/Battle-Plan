@@ -21,7 +21,7 @@ use std::{
     time::Instant,
 };
 use store::{Batch, Forget, Meta, ROWS, class};
-use viewer_runtime::presentation::Continuity;
+use viewer_runtime::{landed, presentation::Continuity};
 use viewer_rail::{railways::RailNetwork, trains::{Curve, PlanCache, TrainPlan}};
 
 #[derive(Clone, Copy)]
@@ -419,7 +419,7 @@ fn superseded(queue: &VecDeque<Job>, epoch: u64, due: &Due) -> bool {
     })
 }
 
-fn run(jobs: Receiver<Job>, out: Sender<Product>, due: Due) {
+fn run(jobs: Receiver<Job>, out: landed::Sender<Product>, due: Due) {
     let mut work: Option<Box<Work>> = None;
     let (mut epoch, mut stamp) = (0, None);
     while let Ok(job) = jobs.recv() {
@@ -496,7 +496,7 @@ pub struct Trains {
     to_scene: Option<TrainPlan>,
     drawn_stale: Option<Continuity>,
     epoch: u64,
-    worker: Option<(Sender<Job>, Receiver<Product>)>,
+    worker: Option<(Sender<Job>, landed::Receiver<Product>)>,
     fed: Fed<Product>,
     curved: HashSet<u32>,
     frame: u64,
@@ -707,7 +707,7 @@ impl Trains {
             }
         }
         let mut due = Vec::new();
-        self.fed.take(|product| due.push(product));
+        self.fed.take(|product| due.push(product.into_inner()));
         for product in due {
             self.home(product);
         }
@@ -843,7 +843,7 @@ impl Layer for Trains {
         self.worker_held = work.held();
         if self.worker.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = landed::channel();
             let due = self.fed.due();
             std::thread::Builder::new().name("trains plan".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();

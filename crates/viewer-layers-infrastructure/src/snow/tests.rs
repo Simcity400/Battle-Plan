@@ -78,12 +78,14 @@ fn edited(grid: &SnowMud, cells: &[u32], value: u8) -> Arc<SnowMud> {
     Arc::new(SnowMud { texels, ..grid.clone() })
 }
 
-fn made(grid: &Arc<SnowMud>, cells: Option<&[u32]>) -> Made {
+fn made(grid: &Arc<SnowMud>, cells: Option<&[u32]>) -> viewer_runtime::landed::Landed<Made> {
     made_at(None, grid, cells)
 }
 
-fn made_at(stamp: Option<i32>, grid: &Arc<SnowMud>, cells: Option<&[u32]>) -> Made {
-    Made { epoch: 0, stamp, grid: Ok(Some(Arc::clone(grid))), changed: cells.map_or(Changed::Unknown, |cells| Changed::of_cells(cells, WIDTH)), refused: None, marked: [0; 3], held: 0, ns: 0 }
+fn made_at(stamp: Option<i32>, grid: &Arc<SnowMud>, cells: Option<&[u32]>) -> viewer_runtime::landed::Landed<Made> {
+    let (send, receive) = viewer_runtime::landed::channel();
+    send.send(Made { epoch: 0, stamp, grid: Ok(Some(Arc::clone(grid))), changed: cells.map_or(Changed::Unknown, |cells| Changed::of_cells(cells, WIDTH)), refused: None, marked: [0; 3], held: 0, ns: 0 }).unwrap();
+    receive.try_recv().unwrap()
 }
 
 fn layer() -> Snow {

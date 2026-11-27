@@ -101,7 +101,7 @@ fn viewer(side: MapSide, hour: Hour) -> Viewer {
     viewer.playhead = Some(at(hour));
     viewer.rendered_sequence = 1;
     viewer.playhead_opened = true;
-    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side, Arc::new(|| {})).unwrap();
     side.driven(|_| ());
     viewer.playhead_map = Some(side);
     viewer
@@ -113,6 +113,9 @@ fn at(hour: Hour) -> Playhead {
 
 fn whole_at(viewer: &mut Viewer, hour: Hour) {
     viewer.overlay_hour = Some(hour);
+    let mut view = viewer_playback::map_views::CounterView::default();
+    view.set_mode(&viewer.map_mode);
+    viewer.overlay_view = Some(view);
 }
 
 fn drawn(viewer: &mut Viewer) {
@@ -212,6 +215,26 @@ fn a_reader_not_made_over_the_maps_content_is_let_go_and_opens_again_over_it() {
     viewer.follow_content(std::ptr::NonNull::dangling().as_ptr());
     assert!(viewer.playhead_map.is_none(), "the reader made over other content is let go");
     assert!(!viewer.playhead_opened, "the next frame opens a reader over the map's content");
+}
+
+#[test]
+fn picture_whole_requires_mode_and_overlay_mode_to_match() {
+    use viewer_map_modes::map_mode::{MapMode, Stock};
+    let (side, _gate) = side("spine mode match");
+    let mut viewer = viewer(side, 2);
+    map(&mut viewer).anchor(2, false, 0.0, true);
+    shown(map(&mut viewer), 2);
+    drawn(&mut viewer);
+    whole_at(&mut viewer, 2);
+    assert!(!viewer.map_state(&target(2, false)).loading, "political mode matches");
+
+    viewer.map_mode = MapMode::Stock(Stock::Supply);
+    assert!(viewer.map_state(&target(2, false)).loading, "mode switch before layers settle is loading");
+    map(&mut viewer).driven(|side| side.set_view(View { map_mode: MapMode::Stock(Stock::Supply), ..View::default() })).unwrap();
+    shown(map(&mut viewer), 2);
+    assert!(viewer.map_state(&target(2, false)).loading, "layers switched to supply, but overlay still holds political");
+    whole_at(&mut viewer, 2);
+    assert!(!viewer.map_state(&target(2, false)).loading, "overlay matches supply mode: ready");
 }
 
 #[test]

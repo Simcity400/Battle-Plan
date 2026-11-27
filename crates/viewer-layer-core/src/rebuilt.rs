@@ -15,15 +15,15 @@ use replay_frame::frame::{DecodedFrame, SharedView, TableView, discovering};
 use std::{
     io,
     panic::AssertUnwindSafe,
-    sync::{
-        Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicI32, Ordering},
-    },
+    sync::{Arc, Condvar, Mutex, MutexGuard},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 use viewer_foundation::perspective::{Choice, Vision};
-use viewer_runtime::presentation::Continuity;
+use viewer_runtime::{
+    landed::{Landed, Published as PublishedSlot, PublishedHour},
+    presentation::Continuity,
+};
 
 const TICK: Duration = Duration::from_micros(16_667);
 
@@ -68,21 +68,21 @@ pub struct Built<P> {
     pub ns: u64,
     pub frame: Option<Arc<DecodedFrame>>,
     pub seen: Option<Seen>,
-    current: AtomicI32,
-    stands: AtomicI32,
+    current: PublishedHour,
+    stands: PublishedHour,
 }
 
 impl<P> Built<P> {
     fn new(hour: Hour, generation: u64, product: Result<P, String>, ns: u64, frame: Option<Arc<DecodedFrame>>, seen: Option<Seen>) -> Self {
-        Self { hour, generation, product, ns, frame, seen, current: AtomicI32::new(hour), stands: AtomicI32::new(hour) }
+        Self { hour, generation, product, ns, frame, seen, current: PublishedHour::new(hour), stands: PublishedHour::new(hour) }
     }
 
     pub fn current(&self) -> Hour {
-        self.current.load(Ordering::Acquire)
+        self.current.load()
     }
 
     pub fn stands(&self) -> Hour {
-        self.stands.load(Ordering::Acquire).max(self.current())
+        self.stands.load().max(self.current())
     }
 
     fn of(&self, hour: Hour) -> bool {
@@ -150,14 +150,14 @@ struct State<P> {
     head: Option<Hour>,
     views: Option<views::Views>,
     reader: Option<views::Reader>,
-    built: Option<Arc<Built<P>>>,
+    built: PublishedSlot<Option<Arc<Built<P>>>>,
     tables: Vec<TableId>,
     builds: Builds,
     seen_hour: Option<Hour>,
     settled: Option<(Hour, u64)>,
     awaiting: Vec<TableId>,
-    refused: Option<String>,
-    stopped: Option<String>,
+    refused: PublishedSlot<Option<String>>,
+    stopped: PublishedSlot<Option<String>>,
     retired: Vec<Box<dyn Send>>,
 }
 
@@ -194,7 +194,7 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
                 head: None,
                 views: None,
                 reader: None,
-                built: None,
+                built: PublishedSlot::default(),
                 tables: {
                     let mut tables = tables.to_vec();
                     if build.hourly() && !tables.contains(&TableId::Clock) {
@@ -206,8 +206,8 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
                 seen_hour: None,
                 settled: None,
                 awaiting: Vec::new(),
-                refused: None,
-                stopped: None,
+                refused: PublishedSlot::default(),
+                stopped: PublishedSlot::default(),
                 retired: Vec::new(),
             }),
             wake: Condvar::new(),
@@ -219,7 +219,7 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
             viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             let worked = std::panic::catch_unwind(AssertUnwindSafe(|| work(&working, &*build, &Rules { name, timed, maker })));
             if let Err(panic) = worked {
-                working.lock().stopped = Some(format!("The {name} worker stopped: {}", panicked(&*panic)));
+                working.lock().stopped.set_some(format!("The {name} worker stopped: {}", panicked(&*panic)));
                 working.built.notify_all();
             }
         })?;
@@ -238,7 +238,7 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
             return Ok(());
         }
         let absent = absent(&entry, &state.tables);
-        state.refused = (!absent.is_empty()).then(|| refusal(&format!("the {} layer", self.name), &absent));
+        state.refused.set_if_changed((!absent.is_empty()).then(|| refusal(&format!("the {} layer", self.name), &absent)));
         state.source = Some((entry, recording));
         Ok(())
     }
@@ -284,7 +284,7 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         if state.open != open || declared {
             state.open = open;
             if !open {
-                state.built = None;
+                state.built.clear();
             }
             drop(state);
             self.shared.wake.notify_all();
@@ -302,12 +302,12 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         self.shared.wake.notify_all();
     }
 
-    pub fn newer(&self, held: Option<&Arc<Built<P>>>) -> Option<Arc<Built<P>>> {
+    pub fn newer(&self, held: Option<&Arc<Built<P>>>) -> Option<Landed<Arc<Built<P>>>> {
         timeline::mark(self.maker, Mark::Joined);
         let state = self.shared.lock();
         let built = state.built.as_ref()?;
         let newer = held.is_none_or(|held| !Arc::ptr_eq(held, built));
-        newer.then(|| Arc::clone(built))
+        newer.then(|| state.built.landed_clone()).flatten()
     }
 
     pub fn retire(&self, gone: impl Send + 'static) {
@@ -315,21 +315,22 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         self.shared.wake.notify_all();
     }
 
-    pub fn wait(&self, hour: Hour, limit: Duration) -> io::Result<Arc<Built<P>>> {
+    pub fn wait(&self, hour: Hour, limit: Duration) -> io::Result<Landed<Arc<Built<P>>>> {
         let until = Instant::now() + limit;
         let mut state = self.shared.lock();
         loop {
-            if let Some(built) = &state.built
+            if let Some(built) = state.built.as_ref()
                 && built.of(hour)
                 && built.generation == state.generation
             {
-                return Ok(Arc::clone(built));
+                return Ok(state.built.landed_clone().expect("checked above"));
             }
-            if let Some(why) = &state.stopped {
+            if let Some(why) = state.stopped.as_ref() {
                 return Err(io::Error::other(why.clone()));
             }
-            if let Some(why) = &state.refused {
-                return Ok(Arc::new(Built::new(hour, state.generation, Err(why.clone()), 0, None, None)));
+            if let Some(why) = state.refused.landed_clone() {
+                let generation = state.generation;
+                return Ok(why.map(|why| Arc::new(Built::new(hour, generation, Err(why), 0, None, None))));
             }
             let now = Instant::now();
             if now >= until {
@@ -349,17 +350,17 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
     pub fn wait_settled(&self, hour: Hour, before_discovered: u64) -> io::Result<Option<Arc<Built<P>>>> {
         let mut state = self.shared.lock();
         loop {
-            if let Some(why) = &state.stopped {
+            if let Some(why) = state.stopped.as_ref() {
                 return Err(io::Error::other(why.clone()));
             }
-            if let Some(why) = &state.refused {
+            if let Some(why) = state.refused.as_ref() {
                 return Ok(Some(Arc::new(Built::new(hour, state.generation, Err(why.clone()), 0, None, None))));
             }
             if state.builds.discovered > before_discovered {
-                return Ok(state.built.clone());
+                return Ok(state.built.as_ref().cloned());
             }
             if state.settled.is_some_and(|(settled_hour, settled_gen)| settled_hour >= hour && settled_gen == state.generation) {
-                return Ok(state.built.clone());
+                return Ok(state.built.as_ref().cloned());
             }
             state = self.shared.built.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
@@ -392,8 +393,8 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         self.shared.lock().awaiting.clone()
     }
 
-    pub fn stopped(&self) -> Option<String> {
-        self.shared.lock().stopped.clone()
+    pub fn stopped(&self) -> Option<Landed<String>> {
+        self.shared.lock().stopped.landed_clone()
     }
 }
 
@@ -472,7 +473,7 @@ fn report<P>(name: &str, state: &State<P>) {
     let line = serde_json::json!({
         "worker": name, "builds": builds.count, "build_ms": {"p50": at(0.5), "p99": at(0.99), "most": builds.most_ns as f64 / 1e6, "mean": builds.total_ns as f64 / 1e6 / builds.count.max(1) as f64},
         "passed_over": builds.skipped, "discovered": builds.discovered, "confirmed": builds.confirmed, "tables": state.tables.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(),
-        "awaiting": state.awaiting.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(), "refused": state.refused, "stopped": state.stopped,
+        "awaiting": state.awaiting.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(), "refused": state.refused.as_ref(), "stopped": state.stopped.as_ref(),
     });
     eprintln!("{line}");
 }
@@ -488,7 +489,7 @@ fn refuse<P>(shared: &Shared<P>, state: &mut State<P>, why: String) {
     if state.built.as_ref().is_some_and(|built| built.hour == hour && built.generation == state.generation) {
         return;
     }
-    state.built = Some(Arc::new(Built::new(hour, state.generation, Err(why), 0, None, None)));
+    state.built.set_some(Arc::new(Built::new(hour, state.generation, Err(why), 0, None, None)));
     shared.built.notify_all();
 }
 
@@ -533,7 +534,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             let _ = shared.wake.wait_timeout(state, TICK);
             continue;
         }
-        if let Some(why) = state.refused.clone() {
+        if let Some(why) = state.refused.as_ref().cloned() {
             reader = None;
             state.reader = None;
             state.awaiting.clear();
@@ -555,7 +556,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
                 && let Some(through) = reader.as_ref().and_then(|reader| reader.through(Arc::as_ptr(&frame)))
                 && through > built.stands()
             {
-                built.stands.store(through, Ordering::Release);
+                built.stands.advance(through);
             }
             if state.generation != generation {
                 continue;
@@ -575,7 +576,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
         timeline::mark(rules.maker, Mark::Rows);
         let seen = state.seen.clone().expect("checked above");
         state.seen_hour = Some(frame.hour);
-        let held = state.built.clone().filter(|built| built.generation == generation);
+        let held = state.built.as_ref().cloned().filter(|built| built.generation == generation);
         let tables = state.tables.clone();
         drop(state);
         if let Some(held) = held {
@@ -584,7 +585,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             let mut state = shared.lock();
             state.builds.confirm_ns += checked.elapsed().as_nanos() as u64;
             if stood {
-                held.current.store(frame.hour, Ordering::Release);
+                held.current.set(frame.hour);
                 state.builds.confirmed += 1;
                 drop(state);
                 shared.built.notify_all();
@@ -601,7 +602,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
         if !missed.is_empty() {
             let absent = state.source.as_ref().map_or_else(Vec::new, |(entry, _)| absent(entry, &missed));
             if !absent.is_empty() {
-                state.refused = Some(refusal(&format!("the {} layer", rules.name), &absent));
+                state.refused.set_if_changed(Some(refusal(&format!("the {} layer", rules.name), &absent)));
                 drop(state);
                 shared.built.notify_all();
                 continue;
@@ -625,7 +626,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             build.counts(product, &mut |name, count| builds.count(name, count));
         }
         if state.open {
-            state.built = Some(Arc::new(Built::new(frame.hour, generation, product, ns, Some(frame), Some(seen))));
+            state.built.set_some(Arc::new(Built::new(frame.hour, generation, product, ns, Some(frame), Some(seen))));
         }
         drop(state);
         shared.built.notify_all();
@@ -638,7 +639,7 @@ pub struct Whole<B: Build> {
     drawn: fn(&B, &crate::layers::View) -> bool,
     bytes: fn(&B::Product) -> usize,
     rebuilt: Rebuilt<B::Product>,
-    held: Option<Arc<Built<B::Product>>>,
+    held: Option<Landed<Arc<Built<B::Product>>>>,
     open: bool,
     since: u64,
     marked: [usize; 2],
@@ -694,7 +695,7 @@ impl<B: Build> Whole<B> {
         &self.build
     }
 
-    pub fn product(&self) -> Option<&Arc<Built<B::Product>>> {
+    pub fn product(&self) -> Option<&Landed<Arc<Built<B::Product>>>> {
         self.held.as_ref()
     }
 
@@ -816,11 +817,12 @@ impl<B: Build> crate::layers::Layer for Whole<B> {
             }
         }
         if let Some(why) = self.rebuilt.stopped() {
-            let refused = self.held.as_ref().is_some_and(|built| built.product.as_ref().err() == Some(&why));
+            let refused = self.held.as_ref().is_some_and(|built| built.product.as_ref().err() == Some(&*why));
             if let Some(hour) = hour
                 && !(refused && self.held.as_ref().is_some_and(|built| built.hour == hour))
             {
-                if let Some(old) = self.held.replace(Arc::new(Built::new(hour, self.since, Err(why), 0, None, None))) {
+                let since = self.since;
+                if let Some(old) = self.held.replace(why.map(|why| Arc::new(Built::new(hour, since, Err(why), 0, None, None)))) {
                     self.rebuilt.retire(old);
                 }
                 if let Some(window) = self.window.as_mut().filter(|_| !refused) {
@@ -829,7 +831,7 @@ impl<B: Build> crate::layers::Layer for Whole<B> {
             }
             return Ok(());
         }
-        if let Some(newer) = self.rebuilt.newer(self.held.as_ref()).filter(|built| built.generation >= self.since) {
+        if let Some(newer) = self.rebuilt.newer(self.held.as_deref()).filter(|built| built.generation >= self.since) {
             if let Some(old) = self.held.replace(newer) {
                 self.rebuilt.retire(old);
             }

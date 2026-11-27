@@ -97,7 +97,7 @@ pub struct Sounds {
     compositions: HashMap<u64, Option<Vec<(u32, usize)>>>,
     names: Names,
     notes: Vec<String>,
-    published: Arc<std::sync::Mutex<Option<Arc<Battles>>>>,
+    published: Arc<std::sync::Mutex<viewer_runtime::landed::Published<Option<Arc<Battles>>>>>,
     mixer: Option<std::sync::mpsc::Sender<Mix>>,
     mix_inline: bool,
     last_notes: Option<Vec<String>>,
@@ -186,7 +186,7 @@ impl Sounds {
         let unknown = kept().map(|held| held.unknown).sum();
         let job = Mix { battles, notes, unknown, drawn: self.columns.is_some() };
         if self.mix_inline {
-            *self.published.lock().unwrap_or_else(|p| p.into_inner()) = job.make();
+            self.published.lock().unwrap_or_else(|p| p.into_inner()).set(job.make());
             return;
         }
         let jobs = self.mixer.get_or_insert_with(|| {
@@ -199,7 +199,7 @@ impl Sounds {
                         job = newer;
                     }
                     let mixed = job.make();
-                    *out.lock().unwrap_or_else(|p| p.into_inner()) = mixed;
+                    out.lock().unwrap_or_else(|p| p.into_inner()).set(mixed);
                 }
             });
             jobs
@@ -523,12 +523,12 @@ impl Sounds {
     }
 }
 
-pub fn drawn(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<Option<Arc<Battles>>> {
+pub fn drawn(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<viewer_runtime::landed::Landed<Option<Arc<Battles>>>> {
     if !side.draws("sounds") {
         return None;
     }
     let (_, layers) = side.parts()?;
-    layers.iter().find_map(|layer| layer.any().downcast_ref::<SoundsFed>()).map(|layer| layer.battles().cloned())
+    layers.iter().find_map(|layer| layer.any().downcast_ref::<SoundsFed>()).and_then(SoundsFed::landed_battles)
 }
 
 struct Mix {

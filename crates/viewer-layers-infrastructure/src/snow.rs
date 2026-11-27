@@ -17,7 +17,7 @@ use std::{
     },
     time::Instant,
 };
-use viewer_runtime::presentation::Continuity;
+use viewer_runtime::{landed::{self, Landed}, presentation::Continuity};
 
 const BAND: u32 = 8;
 const RUN: u32 = 8;
@@ -288,7 +288,7 @@ fn superseded(next: Option<&Job>, epoch: u64, due: &Due) -> bool {
     }
 }
 
-fn run(content: Arc<Content>, jobs: Receiver<Job>, made: Sender<Made>, due: Due) {
+fn run(content: Arc<Content>, jobs: Receiver<Job>, made: landed::Sender<Made>, due: Due) {
     let mut work: Option<(Fold, Option<Table>, [u64; 3], Option<Hour>)> = None;
     let mut epoch = 0;
     while let Ok(job) = jobs.recv() {
@@ -343,10 +343,11 @@ pub struct Snow {
     content: Result<Arc<Content>, String>,
     columns: Option<Columns>,
     jobs: Option<Sender<Job>>,
-    made: Option<Receiver<Made>>,
+    made: Option<landed::Receiver<Made>>,
     epoch: u64,
     fed: Fed<Made>,
     grid: Result<Option<Arc<SnowMud>>, String>,
+    landed_summary: Option<Landed<Summary>>,
     refused: Option<String>,
     marked: [u64; 3],
     worker_held: usize,
@@ -370,6 +371,7 @@ impl Snow {
             epoch: 0,
             fed: Fed::default(),
             grid: Ok(None),
+            landed_summary: None,
             refused: None,
             marked: [0; 3],
             worker_held: 0,
@@ -420,6 +422,10 @@ impl Snow {
         self.drawn().map(|grid| grid.summary)
     }
 
+    pub fn landed_summary(&self) -> Option<Landed<Summary>> {
+        self.landed_summary.clone()
+    }
+
     pub fn marked(&self) -> [u64; 3] {
         self.marked
     }
@@ -441,7 +447,9 @@ impl Snow {
         self.fed.made_through()
     }
 
-    fn take(&mut self, made: Made) {
+    fn take(&mut self, made: Landed<Made>) {
+        self.landed_summary = made.as_ref().map(|made| made.grid.as_ref().ok().and_then(Option::as_deref).map(|grid| grid.summary)).transpose();
+        let made = made.into_inner();
         if let Ok(Some(grid)) = &made.grid {
             self.figures.grids += 1;
             self.figures.bands += made.changed.bands(grid.height) as u64;
@@ -583,7 +591,7 @@ impl Layer for Snow {
         let (Ok(content), Some(columns)) = (&self.content, self.columns) else { return Ok(()) };
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = landed::channel();
             let (content, due) = (Arc::clone(content), self.fed.due());
             std::thread::Builder::new().name("snow fold".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();

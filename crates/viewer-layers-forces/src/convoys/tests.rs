@@ -425,7 +425,7 @@ fn a_viewing_country_change_withholds_the_lines_made_for_the_country_before() {
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     through(&mut side, 30);
     side.settle_all().unwrap();
-    assert!(layer(&side).shown().is_some_and(|(_, lines)| lines.report.drawn == 2), "slot 3's lines are shown for slot 3");
+    assert!(layer(&side).shown().is_some_and(|shown| shown.1.report.drawn == 2), "slot 3's lines are shown for slot 3");
     routes.set(false);
     let at = |side: &MapSide| side.parts().and_then(|(mirrors, _)| mirrors.get(TableId::ConvoyClients).and_then(viewer_layer_core::playhead_host::mirror::Mirror::head));
     frames_within(&mut side, 56, |side, _| at(side).is_some_and(|hour| hour >= 51) && layer(side).in_flight > 0);

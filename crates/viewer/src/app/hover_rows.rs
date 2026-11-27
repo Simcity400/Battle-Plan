@@ -684,7 +684,7 @@ impl super::Viewer {
 
     pub(super) fn shown_vision(&self) -> Result<Arc<Vision>, String> {
         match self.playhead_map.as_ref().filter(|side| side.on_screen().is_some()) {
-            Some(side) => side.products().vision.clone(),
+            Some(side) => side.products().vision.as_ref().map(|vision| Arc::clone(&**vision)).map_err(Clone::clone),
             None => Err("the playhead's map is not open".into()),
         }
     }

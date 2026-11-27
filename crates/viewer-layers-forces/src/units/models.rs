@@ -170,10 +170,10 @@ impl Counts {
 struct Held {
     asked: Option<Asked>,
     generation: u64,
-    made: Option<Made>,
+    made: viewer_runtime::landed::PublishedKeyed<(u64, u64, Hour), Made>,
     published: u64,
-    answered: Option<Hour>,
-    refused: Option<String>,
+    answered: viewer_runtime::landed::Published<Option<Hour>>,
+    refused: viewer_runtime::landed::Published<Option<String>>,
     working: bool,
     tables: Vec<TableId>,
     counts: Counts,
@@ -197,24 +197,21 @@ impl Shared {
 
     fn answered(&self, stands: Hour) {
         let mut held = self.lock();
-        (held.answered, held.working) = (held.answered.max(Some(stands)), false);
+        held.answered.advance(stands);
+        held.working = false;
         drop(held);
         self.done.notify_all();
     }
 
-    fn stood(&self, generation: u64, stands: Hour, frame: &Arc<DecodedFrame>) {
+    fn stood(&self, generation: u64, build_seq: u64, stands: Hour, frame: &Arc<DecodedFrame>) {
         let mut held = self.lock();
-        let stamp = held.published + 1;
-        let moved = held.generation == generation
-            && held.made.as_mut().is_some_and(|made| {
-                if made.generation != generation {
-                    return false;
-                }
-                (made.stands, made.frame, made.stamp) = (made.stands.max(stands), Some(Arc::clone(frame)), stamp);
-                true
-            });
-        if moved {
+        if held.generation == generation
+            && let Some(mut made) = held.made.as_ref().filter(|made| made.generation == generation && stands > made.stands).cloned()
+        {
+            let stamp = held.published + 1;
             held.published = stamp;
+            (made.stands, made.frame, made.stamp) = (stands, Some(Arc::clone(frame)), stamp);
+            held.made.publish((generation, build_seq, made.stands), made);
         }
         drop(held);
         self.done.notify_all();
@@ -227,6 +224,7 @@ fn work(shared: &Shared, select: &dyn Select, reader: &views::Reader, maker: tim
     let (mut built, mut standing): (Option<(TableKey, Key)>, Option<(TableKey, Key)>) = (None, None);
     let mut handled: Option<(u64, Key)> = None;
     let mut generation = 0;
+    let mut build_seq = 0u64;
     loop {
         let (asked, want) = {
             let held = shared.lock();
@@ -267,7 +265,7 @@ fn work(shared: &Shared, select: &dyn Select, reader: &views::Reader, maker: tim
         let at = (TableKey::of(&*newest, &tables), key);
         if built.as_ref() == Some(&at) {
             if standing.as_ref() == Some(&at) {
-                shared.stood(generation, stands, &newest);
+                shared.stood(generation, build_seq, stands, &newest);
             }
             shared.answered(stands);
             continue;
@@ -306,13 +304,21 @@ fn work(shared: &Shared, select: &dyn Select, reader: &views::Reader, maker: tim
         match prepared {
             Ok(prepared) => {
                 let stamp = held.published + 1;
-                (held.published, held.refused) = (stamp, None);
-                held.made = Some(Made { generation, stamp, hour: frame.hour, perspective, stands, frame: Some(frame), prepared: Arc::new(prepared) });
+                held.published = stamp;
+                held.refused.set_if_changed(None);
+                build_seq += 1;
+                held.made.publish(
+                    (generation, build_seq, stands),
+                    Made { generation, stamp, hour: frame.hour, perspective, stands, frame: Some(frame), prepared: Arc::new(prepared) },
+                );
                 standing = Some(at);
             }
-            Err(error) => held.refused = Some(format!("Today's unit models cannot be made from the rows at the head: {error}")),
+            Err(error) => {
+                held.refused.set_if_changed(Some(format!("Today's unit models cannot be made from the rows at the head: {error}")));
+            }
         }
-        (held.answered, held.working) = (held.answered.max(Some(stands)), false);
+        held.answered.advance(stands);
+        held.working = false;
         drop(held);
         shared.done.notify_all();
     }
@@ -324,11 +330,11 @@ pub struct Models {
     reader: Arc<views::Reader>,
     maker: timeline::Maker,
     lines: Option<(u64, Arc<Vec<ConvoyLine>>)>,
-    made: Option<Made>,
+    made: Option<viewer_runtime::landed::Landed<Made>>,
     generation: u64,
     shipless: Option<Arc<PreparedModels>>,
     joined: Option<u64>,
-    pub prepared: Option<(Hour, Arc<PreparedModels>)>,
+    pub prepared: Option<(Hour, viewer_runtime::landed::Landed<Arc<PreparedModels>>)>,
     pub refused: Option<String>,
     asked: Option<Choice>,
     prepared_for: Option<Choice>,
@@ -365,7 +371,8 @@ impl Models {
     pub fn composed(&mut self) {
         self.generation += 1;
         let mut held = self.shared.lock();
-        (held.generation, held.answered) = (self.generation, None);
+        held.generation = self.generation;
+        held.answered.clear();
     }
 
     pub fn join_ships(&mut self, ships: Option<&crate::ships::Ships>) -> bool {
@@ -377,7 +384,7 @@ impl Models {
         let (sources, report) = ships.handover();
         let joined = shipless.with_ships(sources, &report);
         joined.inherit_convoys(&prepared);
-        (self.prepared, self.joined) = (Some((hour, Arc::new(joined))), Some(ships.seq()));
+        (self.prepared, self.joined) = (Some((hour, prepared.map(|_| Arc::new(joined)))), Some(ships.seq()));
         true
     }
 
@@ -399,7 +406,7 @@ impl Models {
         let mut arrived = false;
         loop {
             arrived |= self.take();
-            if self.stands().is_some_and(|stands| stands >= hour) || self.shared.lock().answered.is_some_and(|at| at >= hour) {
+            if self.stands().is_some_and(|stands| stands >= hour) || self.shared.lock().answered.as_ref().is_some_and(|&at| at >= hour) {
                 return arrived;
             }
             if Instant::now() >= until {
@@ -413,30 +420,37 @@ impl Models {
         let mut arrived = false;
         {
             let held = self.shared.lock();
-            self.refused.clone_from(&held.refused);
+            self.refused = held.refused.as_ref().cloned();
             if let Some(made) = held.made.as_ref().filter(|made| made.generation == self.generation && self.asked.as_ref() == Some(&made.perspective))
                 && self.made.as_ref().is_none_or(|ours| ours.stamp < made.stamp)
             {
                 arrived = self.made.as_ref().is_none_or(|ours| !Arc::ptr_eq(&ours.prepared, &made.prepared));
-                self.made = Some(made.clone());
+                self.made = held.made.landed_clone();
             }
         }
-        if let Some(made) = &mut self.made
-            && let Some(frame) = &made.frame
-        {
-            match self.reader.through(Arc::as_ptr(frame)) {
-                Some(through) => made.stands = made.stands.max(through),
-                None => made.frame = None,
-            }
+        if let Some(made) = self.made.take() {
+            let made = if let Some(frame) = &made.frame {
+                let through = self.reader.through(Arc::as_ptr(frame));
+                made.map(|mut made| {
+                    match through {
+                        Some(through) => made.stands = made.stands.max(through),
+                        None => made.frame = None,
+                    }
+                    made
+                })
+            } else {
+                made
+            };
+            self.made = Some(made);
         }
         if arrived && let Some(made) = &self.made {
-            let prepared = Arc::clone(&made.prepared);
-            (self.shipless, self.joined) = ((!prepared.naval()).then(|| Arc::clone(&prepared)), None);
+            let prepared = made.as_ref().map(|made| Arc::clone(&made.prepared));
+            (self.shipless, self.joined) = ((!prepared.naval()).then(|| Arc::clone(&*prepared)), None);
             (self.prepared, self.prepared_for) = (Some((made.hour, prepared)), Some(made.perspective.clone()));
         }
-        if let Some((hour, _)) = self.prepared.as_ref().filter(|_| self.prepared_for.is_some() && self.prepared_for != self.asked) {
+        if let Some((hour, prepared)) = self.prepared.clone().filter(|_| self.prepared_for.is_some() && self.prepared_for != self.asked) {
             let withheld = PreparedModels::withheld("the models of the viewing country chosen are being made");
-            (self.prepared, self.prepared_for, self.shipless, self.joined) = (Some((*hour, Arc::new(withheld))), None, None, None);
+            (self.prepared, self.prepared_for, self.shipless, self.joined) = (Some((hour, prepared.map(|_| Arc::new(withheld)))), None, None, None);
             arrived = true;
         }
         arrived
@@ -457,7 +471,7 @@ impl Models {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn answered(&self) -> Option<Hour> {
-        self.shared.lock().answered
+        self.shared.lock().answered.as_ref().copied()
     }
 
     pub fn waiting(&self) -> bool {

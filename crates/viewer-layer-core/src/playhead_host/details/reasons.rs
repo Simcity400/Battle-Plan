@@ -16,7 +16,7 @@ enum Text {
 
 #[derive(Default)]
 struct Reason {
-    text: Mutex<Option<Text>>,
+    text: Mutex<viewer_runtime::landed::Published<Option<Text>>>,
     read: Condvar,
 }
 
@@ -27,7 +27,7 @@ impl Reason {
             Ok(None) => Text::Unheld(id),
             Err(error) => Text::Failed(error.to_string()),
         };
-        *lock(&self.text) = Some(text);
+        lock(&self.text).set_some(text);
         self.read.notify_all();
     }
 
@@ -45,7 +45,7 @@ impl Reason {
                 self.read.wait(text).unwrap_or_else(std::sync::PoisonError::into_inner)
             };
         }
-        match &*text {
+        match text.as_ref() {
             None if wait.is_zero() => BEING_READ.to_owned(),
             None => NOT_IN_TIME.to_owned(),
             Some(Text::Words(words)) => words.clone(),

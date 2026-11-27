@@ -12,9 +12,13 @@ use std::{
 };
 
 fn side(name: &str, layer: Box<dyn Layer>) -> SideThread {
+    side_waking(name, layer, Arc::new(|| {}))
+}
+
+fn side_waking(name: &str, layer: Box<dyn Layer>, wake: Arc<dyn Fn() + Send + Sync>) -> SideThread {
     let (recording, _) = record(1, 8, busy);
     let entry = open(units(recording, name), quick()).unwrap();
-    let side = SideThread::new(MapSide::with_products(entry, vec![layer], View::default()).unwrap()).unwrap();
+    let side = SideThread::new(MapSide::with_products(entry, vec![layer], View::default()).unwrap(), wake).unwrap();
     side.anchor(0, false, 1.0, true);
     side
 }
@@ -123,4 +127,49 @@ fn a_stepped_frames_window_is_the_picture_of_exactly_its_hour() {
     window.take(Default::default());
     drop(window);
     assert_eq!(side.view().camera_height, 4.0, "the picture stands at the view asked");
+}
+
+#[test]
+fn a_paused_side_wakes_on_seek_mode_switch_and_landed_answer_and_stops_at_rest() {
+    use std::sync::mpsc;
+    let (woke_send, woke_recv) = mpsc::channel::<()>();
+    let composes = Arc::new(Mutex::new(0));
+    let mut side = side_waking("paused wake", Box::new(Sum::new(&composes)), Arc::new(move || {
+        let _ = woke_send.send(());
+    }));
+    fn drive_until(side: &mut SideThread, woke_recv: &mpsc::Receiver<()>, mut done: impl FnMut(&SideThread) -> bool) {
+        for _ in 0..64 {
+            woke_recv.recv_timeout(Duration::from_secs(5)).expect("side woke the frame");
+            side.driven(|_| ());
+            if done(side) {
+                return;
+            }
+        }
+        panic!("paused side did not settle within 64 woken turns");
+    }
+
+    side.ask(View::default(), Head::Paced(3), None, None);
+    drive_until(&mut side, &woke_recv, |side| side.applied() == Some(3) && side.on_screen().is_some_and(|on| on.settled && on.drawn == Some(3)));
+
+    side.anchor(6, false, 0.0, true);
+    side.ask(View::default(), Head::Paced(6), None, None);
+    drive_until(&mut side, &woke_recv, |side| side.applied() == Some(6) && side.on_screen().is_some_and(|on| on.settled && on.drawn == Some(6)));
+
+    let switched = View { map_mode: viewer_map_modes::map_mode::MapMode::Stock(viewer_map_modes::map_mode::Stock::Supply), ..View::default() };
+    side.ask(switched.clone(), Head::Paced(6), None, None);
+    drive_until(&mut side, &woke_recv, |side| side.mode_on_screen() == Some(&switched.map_mode) && side.on_screen().is_some_and(|on| on.settled && on.drawn == Some(6)));
+
+    let ask_before = side.shared.asked().expect("ask held").serial;
+    side.ask(switched, Head::Paced(6), None, None);
+    {
+        let turn = super::lock(&side.shared.held);
+        let ask = side.shared.asked().expect("ask held");
+        assert_eq!(ask.serial, ask_before, "an identical live ask does not advance serial");
+        assert!(super::rests(&turn, &ask, 6, false, false), "a settled paused side rests on an identical ask");
+    }
+    assert!(woke_recv.try_recv().is_err(), "an identical ask at rest wakes nothing");
+
+    let (send, _receive) = viewer_runtime::landed::channel::<u32>();
+    send.send(1).unwrap();
+    woke_recv.recv_timeout(Duration::from_secs(5)).expect("a landed answer wakes a resting paused side");
 }

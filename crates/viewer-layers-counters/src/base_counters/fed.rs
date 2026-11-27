@@ -50,7 +50,7 @@ impl Work {
     }
 }
 
-fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
+fn run(jobs: mpsc::Receiver<Job>, made: viewer_runtime::landed::Sender<Made>) {
     let mut work: Option<Work> = None;
     let mut epoch = 0;
     let mut next = None;
@@ -99,7 +99,7 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
 pub struct BaseCountersFed {
     spec: BaseCounters,
     jobs: Option<mpsc::Sender<Job>>,
-    made: Option<mpsc::Receiver<Made>>,
+    made: Option<viewer_runtime::landed::Receiver<Made>>,
     epoch: u64,
     owed: usize,
     products: Products<Made>,
@@ -197,7 +197,7 @@ impl BaseCountersFed {
             }
         }
         let mut due = Vec::new();
-        self.products.take(|made| due.push(made));
+        self.products.take(|made| due.push(made.into_inner()));
         for made in due {
             (self.values, self.refused, self.units, self.work, self.worker_held) = (made.values, made.refused, made.made, made.work, made.held);
         }
@@ -227,7 +227,7 @@ impl Layer for BaseCountersFed {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = viewer_runtime::landed::channel();
             thread::Builder::new().name("base counters".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();
                 run(receive, send)

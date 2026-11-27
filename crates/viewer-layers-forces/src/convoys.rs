@@ -10,7 +10,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Sender},
     },
     time::Instant,
 };
@@ -194,9 +194,9 @@ impl Maker {
     fn spawn(
         routes: Arc<dyn Routes>,
         #[cfg(test)] sent: Arc<(Mutex<(usize, bool)>, std::sync::Condvar)>,
-    ) -> io::Result<(Sender<Job>, Receiver<Made>)> {
+    ) -> io::Result<(Sender<Job>, viewer_runtime::landed::Receiver<Made>)> {
         let (jobs, receive) = mpsc::channel::<Job>();
-        let (send, made) = mpsc::channel::<Made>();
+        let (send, made) = viewer_runtime::landed::channel::<Made>();
         let mut maker = Self { routes, stops: HashMap::new(), ribbons: HashMap::new(), provinces_version: 0 };
         std::thread::Builder::new().name("convoys".into()).spawn(move || {
             #[cfg(test)]
@@ -457,7 +457,7 @@ pub struct Convoys {
     links_held: bool,
     referenced: HashSet<RouteKey>,
     serving: HashSet<u32>,
-    worker: Option<(Sender<Job>, Receiver<Made>)>,
+    worker: Option<(Sender<Job>, viewer_runtime::landed::Receiver<Made>)>,
     in_flight: usize,
     #[cfg(test)]
     blocking_waits: usize,
@@ -474,6 +474,7 @@ pub struct Convoys {
     pending: Vec<(usize, Vec<u32>, Vec<u128>)>,
     stale: bool,
     product: Arc<TradeRoutes>,
+    landed: Option<viewer_runtime::landed::Landed<Arc<TradeRoutes>>>,
     product_for: Option<u32>,
     statuses: HashMap<usize, Status>,
     hidden: bool,
@@ -524,6 +525,7 @@ impl Convoys {
             pending: Vec::new(),
             stale: false,
             product: Arc::default(),
+            landed: None,
             product_for: None,
             statuses: HashMap::new(),
             hidden: false,
@@ -580,9 +582,10 @@ impl Convoys {
         Arc::clone(&self.product)
     }
 
-    pub fn shown(&self) -> Option<(u64, Arc<TradeRoutes>)> {
+    pub fn shown(&self) -> Option<viewer_runtime::landed::Landed<(u64, Arc<TradeRoutes>)>> {
         let ours = self.vision.as_ref().map(|&(_, ours)| ours)?;
-        (self.product_for == Some(ours)).then(|| (self.product_seq, self.product_shared()))
+        let landed = self.landed.as_ref().filter(|_| self.product_for == Some(ours))?;
+        Some(landed.clone().map(|routes| (self.product_seq, routes)))
     }
 
     pub fn marked(&self) -> [usize; 5] {
@@ -901,14 +904,17 @@ impl Convoys {
             if self.vision.as_ref().is_none_or(|&(_, ours)| ours != made.ours) {
                 continue;
             }
-            self.product = Arc::new(made.product);
-            self.product_for = Some(made.ours);
-            self.product_hour = made.hour;
+            let (ours, hour, reused, built, micros, bytes) = (made.ours, made.hour, made.reused, made.made, made.micros, made.bytes);
+            let routes = made.map(|made| Arc::new(made.product));
+            self.product = Arc::clone(&*routes);
+            self.landed = Some(routes);
+            self.product_for = Some(ours);
+            self.product_hour = hour;
             self.product_seq += 1;
-            self.marked[2] += made.reused;
-            self.marked[3] += made.made;
-            self.marked[4] += made.micros;
-            self.worker_bytes = made.bytes;
+            self.marked[2] += reused;
+            self.marked[3] += built;
+            self.marked[4] += micros;
+            self.worker_bytes = bytes;
         }
         self.stale |= self.moved && self.product.report.unavailable.is_some();
     }
@@ -926,7 +932,7 @@ impl Convoys {
             self.refused = Some("The convoys layer is refused: it is given no vision of the viewing country yet".into());
             (self.pending, self.stale, self.since) = (Vec::new(), false, None);
             (self.worker, self.in_flight, self.worker_bytes) = (None, 0, 0);
-            (self.product, self.product_for, self.product_hour) = (Arc::default(), None, None);
+            (self.product, self.landed, self.product_for, self.product_hour) = (Arc::default(), None, None, None);
             return;
         }
         if TABLES.iter().any(|&table| mirrors.get(table).is_none()) {
