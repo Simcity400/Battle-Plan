@@ -569,11 +569,32 @@ fn compose_branches(
     let pip = template(guis, PIP_TEMPLATE)?;
     let frames = pip_frames(pip, resources);
     let pip_grid = find_direct(entry, "researched_icons");
-    let places = grid_places(grid, holder, &vec![entry; branches.len()])?;
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
-    for (index, (branch, place)) in branches.iter().zip(places).enumerate() {
+    let grid_fields = grid.grid().ok_or_else(|| GameWindowError::refused(format!("{} is not a grid.", grid.path)))?;
+    let (_, extent, _) = native_gui::grid_geometry(grid, grid_fields, holder.content)
+        .map_err(GameWindowError::failed)?;
+    let laid = native_gui::finalize_grid(grid, holder.content, viewport, &vec![entry; branches.len()], holder.position)
+        .map_err(|refusal| GameWindowError::failed(refusal.to_string()))?;
+    let places = laid.places();
+    let slots = native_gui::grid_slots(grid, holder.content, branches.len(), holder.position)
+        .map_err(GameWindowError::failed)?;
+    for (index, branch) in branches.iter().enumerate() {
         let title = shown_or(&branch.name);
         plan.text(&format!("branch:{index}"), "Branch", branch.name.clone());
+        for (pip_index, pip) in branch.pips.iter().enumerate() {
+            let name = pip.name.as_deref().unwrap_or(pip.token.as_str());
+            plan.text(&format!("branch:{index}:pip:{pip_index}"), name,
+                pip.level.as_ref().map(|level| format!("{level} / {}", pip.levels)).map_err(Clone::clone));
+        }
+        let Some((&place, _)) = places.get(index).zip(slots.get(index)).filter(|(_, slot)| {
+            slot.iter().zip(laid.origin).zip(extent).all(|((&coordinate, origin), limit)| {
+                (0..limit).contains(&coordinate.wrapping_sub(origin))
+            })
+        }) else {
+            plan.text(&format!("branch:{index}/display"), &title,
+                Ok("Shown in the game's separate upgrades window, which BattlePlan does not have.".to_owned()));
+            continue;
+        };
         let layout = layout_window(entry, resources, viewport, |instance| {
             set_text_by_name(instance, entry, "agency_branches_title", title.clone());
             hide_by_name(instance, entry, "opportunities");
@@ -618,7 +639,6 @@ fn compose_branches(
                     )
                 }),
             };
-            plan.text(&path, &name, pip_state.level.as_ref().map(|level| format!("{level} / {}", pip_state.levels)).map_err(Clone::clone));
             let mut pip_layout = layout_window(pip, resources, viewport, |instance| {
                 hide_by_name(instance, pip, "agency_upgrade_anim");
                 if let Ok(frame) = &frame {
