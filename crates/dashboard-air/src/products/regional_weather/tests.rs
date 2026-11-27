@@ -111,12 +111,11 @@ fn temp_measures_at(days: &[Day]) -> Vec<(String, Daily)> {
 
 #[test]
 fn unavailable_and_truncated_weather_days_carry_their_reasons() {
-    use dashboard_base::{Source, SourceKey, test_fixtures::{CAMPAIGN, recorded_mod_defines, records, source}};
-    use replay::campaign::Replay;
+    use dashboard_base::test_fixtures::{played, recorded_mod_defines, source, source_with_mods};
     use replay_data::rows::TableRows;
     use replay_frame::frame::TableView;
 
-    let (_machine, cat_source, load) = recorded_mod_defines("", "", &[]);
+    let (machine, cat_source, load) = recorded_mod_defines("", "", &[]);
     let cat = catalogue::catalogue(&cat_source, load.content().unwrap()).unwrap();
     let weather = Weather {
         members: BTreeMap::new(),
@@ -132,7 +131,7 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
         ..Default::default()
     };
     let mut frames = Vec::new();
-    for hour in 0..(4 * DAY) {
+    for hour in (0..4 * DAY).filter(|hour| !(10..12).contains(hour)) {
         let mut frame = source(1, hour, Some(i64::from(hour)));
         *frame.tables[TableId::WeatherRegions.index()] = if hour < 5 {
             TableView::Complete(TableRows::WeatherRegions(vec![make_row(1, 0, 1), make_row(2, 0, 2), make_row(3, 0, 3)]))
@@ -158,8 +157,8 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
         };
         frames.push(frame);
     }
-    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let source = Source::from_replay(SourceKey { source_id: "weather-test".into(), revision: "1".into() }, "weather.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+    let (source, load) = source_with_mods(frames, &machine.root, &["mod/probe.mod"]);
+    let source = Arc::new(source);
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let params = |show, last_hour| RegionalWeatherParams {
         branch_id: "1".into(),
@@ -176,17 +175,17 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
     };
 
     for show in [Show::Conditions, Show::Modifier] {
-        let before_outage = history(&query, &params(show, 0), &weather, &AtomicBool::new(false)).unwrap();
+        let before_outage = history(&query, &params(show, 0), &weather, None, &AtomicBool::new(false)).unwrap();
         assert_eq!(before_outage.valid_through, 4, "{show:?}: reply must expire before the status change at hour 5");
 
-        let unavailable = history(&query, &params(show, 2 * DAY - 1), &weather, &AtomicBool::new(false)).unwrap();
+        let unavailable = history(&query, &params(show, 2 * DAY - 1), &weather, None, &AtomicBool::new(false)).unwrap();
         assert_eq!(unavailable.columns.columns.last().unwrap().recorded, 0);
         assert!(unavailable.warnings.iter().any(|why| why.contains("weather sensor failed")), "{show:?}: {:?}", unavailable.warnings);
         assert!(unavailable.rank_missing.as_deref().is_some_and(|why| why.contains("weather sensor failed")), "{show:?}: {:?}", unavailable.rank_missing);
         let r1 = unavailable.columns.regions.iter().find(|region| region.id == "1").unwrap();
         assert!(matches!(&r1.readout, Some(WeatherReadout::NotRecorded { reason }) if reason.contains("weather sensor failed")), "{show:?}: {:?}", r1.readout);
 
-        let truncated = history(&query, &params(show, 3 * DAY - 1), &weather, &AtomicBool::new(false)).unwrap();
+        let truncated = history(&query, &params(show, 3 * DAY - 1), &weather, None, &AtomicBool::new(false)).unwrap();
         assert!(truncated.warnings.iter().any(|why| why.contains("2 rows not read")), "{show:?}: {:?}", truncated.warnings);
         assert!(truncated.warnings.iter().any(|why| why.contains("weather sensor failed")), "{show:?}: {:?}", truncated.warnings);
         assert!(truncated.rank_missing.as_deref().is_some_and(|why| why.contains("2 rows not read")), "{show:?}: {:?}", truncated.rank_missing);
@@ -207,17 +206,43 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
             );
         }
 
-        let not_recorded = history(&query, &params(show, 3 * DAY), &weather, &AtomicBool::new(false)).unwrap();
+        let not_recorded = history(&query, &params(show, 3 * DAY), &weather, None, &AtomicBool::new(false)).unwrap();
         assert_eq!(not_recorded.valid_through, 3 * DAY, "{show:?}: hour-stamped NotRecorded reason must not be reused on later hours");
         let r1 = not_recorded.columns.regions.iter().find(|region| region.id == "1").unwrap();
         assert!(matches!(&r1.readout, Some(WeatherReadout::NotRecorded { reason }) if reason.contains(&format!("hour {}", 3 * DAY))), "{show:?}: {:?}", r1.readout);
     }
 
-    let temp_unavailable = history(&query, &params(Show::Temperature, 2 * DAY - 1), &weather, &AtomicBool::new(false)).unwrap();
+    let temp_unavailable = history(&query, &params(Show::Temperature, 2 * DAY - 1), &weather, None, &AtomicBool::new(false)).unwrap();
     let r1 = temp_unavailable.columns.regions.iter().find(|region| region.id == "1").unwrap();
     assert!(
         matches!(&r1.readout, Some(WeatherReadout::NotRecorded { reason }) if reason.contains("provinces sensor failed")),
         "unsampled WeatherProvinces day should preserve the recorded table reason even when temperature content fails: {:?}",
         r1.readout
     );
+
+    let request = serde_json::json!({"panel": "regional-weather", "branchId": "1", "firstHour": 0, "width": 10, "show": "conditions", "top": 5});
+    let open = crate::registrations::REGIONAL_WEATHER_REGIONALWEATHER.panel.unwrap().open;
+    let panel = open(&source, &load, &request).unwrap();
+    let exact = panel.exact().unwrap();
+    let advance = exact.advance.clone();
+    let with_error = dashboard_follow::panel::AtHour {
+        cold: exact.cold.clone(),
+        read: exact.read.clone(),
+        advance: Arc::new(move |hour, seed, token, step| {
+            if hour == 9 {
+                assert!(advance(hour, seed, &true.into(), step).value.is_err());
+            }
+            advance(hour, seed, token, step)
+        }),
+    };
+    let reads = played(source.replay_ref(), &with_error, 4, 2 * DAY + 1);
+    for (hour, rows) in [(4, 3), (5, 0), (9, 3), (10, 3), (11, 3), (12, 3), (13, 0), (DAY, 0), (2 * DAY, 2), (2 * DAY + 1, 2)] {
+        let read = reads.iter().find(|read| read.hour == hour).unwrap();
+        assert!(read.value.is_ok(), "hour {hour}: {:?}", read.value);
+        assert_eq!(read.rows, rows, "weather sample reads at hour {hour}");
+        assert_eq!(*read.value, (exact.cold)(hour, &false.into()));
+    }
+    let sought = (exact.advance)(6, true, &false.into(), None);
+    assert_eq!(*sought.value, (exact.cold)(6, &false.into()));
+    assert_eq!(sought.rows, 3);
 }

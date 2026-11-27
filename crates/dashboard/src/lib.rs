@@ -9,8 +9,10 @@ pub mod products;
 pub mod reply_check;
 pub mod panel;
 pub mod service;
+mod strip;
 
 pub use service::Service;
+pub use strip::patch;
 
 #[cfg(any(test, feature = "export-types"))]
 mod contract;

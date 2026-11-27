@@ -110,7 +110,7 @@ fn kind(params: &Value) -> Option<&str> {
 }
 
 pub fn answers(product: &str, params: &Value) -> bool {
-    if follows(product) {
+    if product == crate::strip::PRODUCT || follows(product) {
         return true;
     }
     if SERIES_PRODUCTS.contains(&product) {
@@ -135,6 +135,9 @@ pub fn follows(product: &str) -> bool {
 pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Value> {
     let check_cancel = || dashboard_text::metadata::check_cancel(cancelled);
     check_cancel()?;
+    if product == crate::strip::PRODUCT {
+        return Ok(serde_json::to_value(crate::strip::answer(source, params, context, cancelled)?)?);
+    }
     if follows(product) {
         return dashboard_follow::registry::for_session(params).answer_heads(
             source.path(),
@@ -239,7 +242,7 @@ mod tests {
     #[test]
     fn forgetting_the_dashboard_clears_every_cache() {
         use dashboard_air::products::air_ledger;
-        use dashboard_base::{SourceKey, queries, test_fixtures::{replay, source}};
+        use dashboard_base::{queries, test_fixtures::{source, source_with_content}};
         use dashboard_economy::products::convoys;
         use dashboard_land::products::{army, division_log, leaders::LeadersContext};
         use dashboard_politics::products::feed::index as feed_index;
@@ -256,23 +259,17 @@ mod tests {
         let hour = 100;
         let branch = 1;
         let frames = [hour, hour + 1].map(|hour| source(branch, hour, None));
-        let replay = replay(frames.into()).into_timelines(&Default::default()).unwrap();
+        let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[]);
+        let (source, load) = source_with_content(frames.into(), &folder.0);
         let cancelled = AtomicBool::new(false);
-        let source = Source::from_replay(
-            SourceKey { source_id: "forget".into(), revision: "1".into() },
-            "synthetic.battleplan".into(),
-            Arc::new(replay),
-            &cancelled,
-        ).unwrap();
         let source = Arc::new(source);
         let run = query(&source, branch).unwrap().timeline.stretches[0].run;
-        let load = LoadContext { content: None };
         let leaders = LeadersContext::load(&source, &load).unwrap();
         leaders.keep_test_verdict(run, hour);
         answer(&source, "wars", &serde_json::json!({ "branchId": branch.to_string() }), &load, &cancelled).unwrap();
         queries::spellings(&source, run, hour, &std::collections::BTreeSet::from([7])).unwrap();
         answer(&source, "division-log-tail", &serde_json::json!({ "branchId": branch.to_string(), "limit": 1 }), &load, &cancelled).unwrap();
-        feed_index::warm(&source, branch).unwrap();
+        feed_index::warm(&source, branch, &load).unwrap();
         air_ledger::warm_observed(&source, branch).unwrap();
 
         let caches = [

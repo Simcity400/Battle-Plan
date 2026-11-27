@@ -132,3 +132,15 @@ test('table family plays live with zero React commits, zero layout reads on inst
     assert.equal(r5.hasKnownState, true, 'F8: known tooltip cell renders ValueState known');
   }, 180_000));
 });
+
+test('shared log chrome renders a sortable header and debounces search with an immediate clear', () =>
+  withNativePage('log-controls', '/ui/src/families/table/tableFamily.dom.fixture.tsx', page => page.stage('log controls', async () => {
+    const got = await page.evaluate<{ sorted: { column: string }; before: number; searched: string[][]; cleared: string[]; header: boolean; offset: number; resetEvent: number }>('window.tableFamilyDom.logControls()');
+    assert.equal(got.header, true);
+    assert.equal(got.sorted.column, 'country');
+    assert.equal(got.before, 0);
+    assert.deepEqual(got.searched, [['search', 'deep match']]);
+    assert.deepEqual(got.cleared, ['search', '']);
+    assert.equal(got.offset, 0);
+    assert.equal(got.resetEvent, 0, 'the host receives the reset before the search option changes');
+  })));

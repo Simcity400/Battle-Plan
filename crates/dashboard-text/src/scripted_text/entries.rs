@@ -355,6 +355,7 @@ impl EnvironmentInputs {
         World::read_in(frame, self.facts(environment))
             .with_geography(self.geography(content, environment))
             .with_prepared_special_projects(content)
+            .with_name_indexes(&content.name_indexes)
             .with_template_names(
                 &content.template_names,
                 &content.layers.layers,

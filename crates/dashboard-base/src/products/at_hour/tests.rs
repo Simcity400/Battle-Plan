@@ -124,6 +124,55 @@ fn recording() -> (Source, Arc<dyn Pages>) {
     (source, pages)
 }
 
+#[test]
+fn a_dated_panel_projects_the_same_changed_rows_from_the_step_and_the_recording() {
+    let (source, _) = recording();
+    let source = Arc::new(source);
+    let replay = source.replay();
+    let panel = dated_interval(source.tables(), move |hour, _, step| {
+        let query = crate::queries::query(&source, 1)?;
+        let reads = [Read::all(TableId::Countries)];
+        let mut step = step;
+        let cold;
+        let frame = match &mut step {
+            Some(step) => step.frame(&source, &query, hour, &reads, |_| None)?,
+            None => {
+                cold = super::frame(&query, hour, &reads, "Countries")?;
+                &cold
+            }
+        };
+        let rows: Vec<_> = frame.complete::<tables::Countries>()?.iter().map(|row| (row.id, row.political_power_raw)).collect();
+        Ok((json!(rows), hour..=hour, 0))
+    }, |_, _| {});
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let seed = (exact.advance)(FIRST, true, &cancelled, None);
+    assert!(seed.lanes.iter().any(|lane| lane.table == TableId::Countries.index()));
+    let steps = crate::test_fixtures::played(&replay, exact, FIRST, LAST);
+    let quiet = steps.iter().find(|read| read.hour == ITA_LEAVES + 1).unwrap();
+    assert_eq!(quiet.visited, 0, "no country row changed at this hour");
+    for read in steps {
+        assert!(!read.pending);
+        assert_eq!(*read.value, (exact.cold)(read.hour, &cancelled), "hour {}", read.hour);
+    }
+}
+
+#[test]
+fn strip_pools_are_dropped_and_restore_the_interactive_pool() {
+    let (source, _) = recording();
+    let interactive = placed::Pool::of(&source).unwrap();
+    let strip = with_strip_pool(&source, || {
+        let strip = placed::Pool::of(&source).unwrap();
+        assert!(!Arc::ptr_eq(&strip, &interactive));
+        let nested = with_strip_pool(&source, || Arc::downgrade(&placed::Pool::of(&source).unwrap()));
+        assert!(nested.upgrade().is_none());
+        assert!(Arc::ptr_eq(&strip, &placed::Pool::of(&source).unwrap()));
+        Arc::downgrade(&strip)
+    });
+    assert!(strip.upgrade().is_none());
+    assert!(Arc::ptr_eq(&interactive, &placed::Pool::of(&source).unwrap()));
+}
+
 fn load() -> LoadContext {
     LoadContext { content: None }
 }
@@ -1006,6 +1055,9 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
     #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
     #[serde(rename_all = "camelCase")]
     struct ExpiryReply {
+        #[serde(skip)]
+        #[ts(skip)]
+        through: i32,
         expired: bool,
         count: usize,
         warnings: Vec<String>,
@@ -1046,25 +1098,29 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
         type Params = PlannedParams;
         const FIELDS: crate::products::Fields = crate::fields![branchId];
         type Reply = ExpiryReply;
-        type Context = std::sync::atomic::AtomicUsize;
+        type Context = (std::sync::atomic::AtomicUsize, ScriptedInputs);
 
         fn tables(_params: &Self::Params) -> Vec<TableId> {
             vec![TableId::CountryLinks]
         }
 
-        fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
-            if frame.hour < EXPIRES_AT { EXPIRES_AT - 1 } else { i32::MAX }
+        fn valid_reply_through(_: &DecodedFrame, _: &Self::Params, _: &At<'_, Self::Context>, reply: &Self::Reply, _: bool) -> i32 {
+            reply.through
         }
 
-        fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-            Ok(0.into())
+        fn context(source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+            Ok((0.into(), ScriptedInputs::new(source.replay())))
         }
 
         fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-            let count = at.context.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let (calls, inputs) = at.context;
+            let count = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let links = frame.complete::<tables::CountryLinks>()?;
             assert!(!links.is_empty());
-            Ok(ExpiryReply { expired: frame.hour >= EXPIRES_AT, count, warnings: Vec::new() })
+            let (expired, through) = inputs.evaluate(frame, &[TableId::Countries], at.cancelled, |world| {
+                world.complete::<tables::Countries>().map(|rows| rows.iter().any(|row| row.political_power_raw == Some(1)))
+            })?;
+            Ok(ExpiryReply { through, expired: expired?, count, warnings: Vec::new() })
         }
     }
 
@@ -1072,6 +1128,11 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
         .map(|hour| {
             let mut f = frame(FIRST);
             f.hour = hour;
+            if hour >= EXPIRES_AT
+                && let TableView::Complete(TableRows::Countries(rows)) = &mut *f.tables[TableId::Countries.index()]
+            {
+                rows[0].political_power_raw = Some(1);
+            }
             f
         })
         .collect();
@@ -1089,6 +1150,11 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
     }
 
     let expiring_panel = exact_panel::<Expiring>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
+    let query = crate::queries::query(&source, 1).unwrap();
+    let pool = placed::Pool::of(&source).unwrap();
+    let params = PlannedParams { branch_id: "1".into() };
+    let (exact, _) = answered::<Expiring, _>(&query, &pool, &params, FIRST, || Expiring::context(&source, &load()), &false.into()).unwrap();
+    assert_eq!(exact.through, FIRST);
     let expiring_reads = run_declared(expiring_panel.exact().unwrap());
     assert!(expiring_reads.iter().all(|r| !r.pending));
     let before = expiring_reads.iter().find(|r| r.hour == EXPIRES_AT - 1).unwrap();

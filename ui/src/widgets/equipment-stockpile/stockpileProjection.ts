@@ -4,15 +4,15 @@ import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../famil
 import { urlArtHandle } from '../../families/art/provider.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, resolveIdentity } from '../../families/table/identityCell.ts';
-import type { TableCellStockpile, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
+import type { TableCellStockpile, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { OFFERED, TABLE_SETTINGS_KEY, type TableBase } from '../../families/table/settings.ts';
+import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar, formatShare, type ValueFormat } from '../../families/valueFormat.ts';
 import type { StockFigure, StockTypeRow, StockVariantRow, StockpileArtworkReply, StockpileTypesReply } from '../../generated/dashboard';
 import { validateStockpileArtwork } from './stockpileArtwork.ts';
 
-export type StockpileLayout = 'sum' | 'parts';
+import { STOCKPILE_BASE, stockpileColumns, type StockpileLayout } from './stockpileColumns.ts';
 
 export interface StockpileProjectionOptions {
   readonly layout: StockpileLayout;
@@ -23,26 +23,6 @@ const RATE_SMALL: ValueFormat = { decimals: 0, maxDecimals: 1, fixedDecimals: tr
 const RATE_LARGE: ValueFormat = { decimals: 0, maxDecimals: 0 };
 const RATE_CUT = 100n * 100_000n;
 const UNIT = 100_000;
-
-const PICTURE: TableColumnSpec = { key: 'picture', label: 'Picture', as: 'plain', cellKind: 'kind', offered: OFFERED.text, priority: 0, sortable: false, hideable: false, pinned: true };
-const NAME: TableColumnSpec = { key: 'equipment', label: 'Equipment', as: 'plain', cellKind: 'item', offered: OFFERED.text, priority: 0, text: true, hideable: false, sortable: false, pinned: true, minWidth: 92, grow: 1 };
-const NET: TableColumnSpec = { key: 'net', label: 'Short or over', as: 'plain', cellKind: 'stockpileNet', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, headerGroup: { kind: 'shortOver' }, minWidth: 76, grow: 1 };
-
-function sumColumn(ai: string | null): TableColumnSpec {
-  return {
-    key: 'sum', label: 'Produced − Need = Balance', unit: 'per day', as: 'plain', cellKind: 'stockpileSum', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, numeric: true, minWidth: 174, grow: 0,
-    headerGroup: { kind: 'parts', parts: [{ label: 'Produced' }, { label: 'Need', operator: '−', ...(ai ? { notRecordedReason: ai } : {}) }, { label: 'Balance', operator: '=', ...(ai ? { notRecordedReason: ai } : {}) }] },
-  };
-}
-
-const BALANCE: TableColumnSpec = { key: 'sum', label: 'Balance a day', as: 'plain', cellKind: 'stockpileBalance', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, numeric: true, minWidth: 174, grow: 0 };
-
-export function stockpileColumns(layout: StockpileLayout, ai: string | null): TableColumnSpec[] {
-  const figures = layout === 'parts' ? BALANCE : sumColumn(ai);
-  return ai ? [PICTURE, NAME, figures] : [PICTURE, NAME, NET, figures];
-}
-
-export const STOCKPILE_BASE: TableBase = { density: 'normal', barsBehind: 'off', showRank: false, sort: { column: 'equipment', direction: 'ascending' } };
 
 function figureOf(figure: StockFigure): bigint | null {
   return figure.raw === null ? null : BigInt(figure.raw);

@@ -1,14 +1,12 @@
 import { projectCountryFlow } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, flowPerSide, flowViewSubject } from '../../families/flow/countryFlowPlan.ts';
+import { countryFlowPicture, flowProjectionOptions } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
-
-const EMPTY_OPTIONS: Readonly<Record<string, never>> = {};
 
 export const volunteersProjection: FlowProjection = {
   family: 'flow',
   kind: 'volunteers',
-  project: readView => projectCountryFlow(readView, {
+  project: (readView, options) => projectCountryFlow(readView, {
     leftHeader: 'Hosted from',
     rightHeader: 'Sent to',
     unitNote: 'divisions',
@@ -19,7 +17,7 @@ export const volunteersProjection: FlowProjection = {
     none: 'No volunteers or expeditionary forces at this date.',
     others: count => `${count} other ${count === 1 ? 'country' : 'countries'}`,
     ribbonTitle: (from, to) => `${from} → ${to}`,
-  }),
+  }, options),
 };
 
 export const volunteersDeclaration: FlowWidgetDeclaration = {
@@ -30,8 +28,8 @@ export const volunteersDeclaration: FlowWidgetDeclaration = {
   emptyCampaign: 'Load a campaign to see its volunteers and expeditionary forces.',
   icon: 'flows',
   countries: { mode: 'multi', content: 'hour' },
-  sources: (ctx, view) => countryFlowPlan(ctx, 'volunteer-flow', { limit: flowPerSide(view) }, flowViewSubject(ctx)),
+  sources: (ctx, view) => countryFlowPicture(ctx, view, 'volunteer-flow', true),
   projection: volunteersProjection,
-  projectionOptions: () => EMPTY_OPTIONS,
+  projectionOptions: ctx => flowProjectionOptions(ctx, 'volunteer-flow'),
   jumpToDate: true,
 };

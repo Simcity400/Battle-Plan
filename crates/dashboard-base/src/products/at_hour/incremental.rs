@@ -258,6 +258,49 @@ fn settle(table: TableId, made: io::Result<TableView>, sampled: Option<i32>, sam
 
 type Projections = HashMap<TableId, Result<Projection, TableView>>;
 
+fn declared((&table, projection): (&TableId, &Result<Projection, TableView>)) -> Option<Declared> {
+    let projection = projection.as_ref().ok()?;
+    Some(Declared { table: table.index(), columns: projection.columns.clone(), keyed: true, passing: projection.passing, hourly: false })
+}
+
+#[derive(Default)]
+pub(super) struct StepFrame(Option<(u32, Box<DecodedFrame>, Projections)>);
+
+impl StepFrame {
+    pub(super) fn lanes(&self) -> Vec<Declared> {
+        self.0.iter().flat_map(|(_, _, tables)| tables.iter().filter_map(declared)).collect()
+    }
+}
+
+pub struct DatedStep<'a> {
+    pub step: Option<ProductStep<'a>>,
+    pub(super) frame: &'a mut StepFrame,
+}
+
+impl DatedStep<'_> {
+    pub fn frame(&mut self, source: &Source, query: &Query<'_>, hour: i32, reads: &[Read], columns: fn(TableId) -> Option<Vec<usize>>) -> io::Result<&DecodedFrame> {
+        let prior = self.frame.0.take();
+        let run = query.timeline.at(hour).ok_or_else(|| dashboard_core::refused("The recording holds no hour here"))?.run;
+        let pool = Pool::of(source)?;
+        let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused("The recording cannot read this run"))?;
+        let (_, mut frame, mut tables) = prior.filter(|(held, frame, tables)| *held == run && frame.branch == query.timeline.id && frame.hour <= hour
+            && tables.len() == reads.len() && reads.iter().all(|read| tables.contains_key(&read.table)))
+            .unwrap_or_else(|| (run, Box::new(empty(query.timeline.id, hour)), Projections::new()));
+        frame.hour = hour;
+        let mut count = 0;
+        let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step: self.step, placed: None, gap: false };
+        for read in reads {
+            let fields = columns(read.table);
+            if let Err(error) = input.read(&mut tables, read, &mut frame.tables[read.table.index()], || (fields.clone(), fields.clone()), false, &mut Edits::default()) {
+                if error.kind() == io::ErrorKind::WouldBlock { self.frame.0 = Some((run, frame, tables)); }
+                return Err(error);
+            }
+        }
+        count_rows(|| count);
+        Ok(&self.frame.0.insert((run, frame, tables)).1)
+    }
+}
+
 pub(super) struct Input<'a> {
     pub(super) pool: &'a Arc<Pool>,
     pub(super) run: usize,
@@ -376,10 +419,6 @@ struct Stream {
 
 impl Stream {
     fn lanes(&self) -> Vec<Declared> {
-        let declared = |(&table, projection): (&TableId, &Result<Projection, TableView>)| {
-            let projection = projection.as_ref().ok()?;
-            Some(Declared { table: table.index(), columns: projection.columns.clone(), keyed: true, passing: projection.passing, hourly: false })
-        };
         let mut lanes: Vec<_> = self.tables.iter().filter_map(declared).collect();
         for extra in self.extra.tables.iter().filter_map(declared) {
             if let Some(main) = lanes.iter_mut().find(|lane| lane.table == extra.table) {

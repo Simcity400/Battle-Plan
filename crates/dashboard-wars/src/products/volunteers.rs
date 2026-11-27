@@ -44,6 +44,9 @@ pub struct VolunteerFlowParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub side_totals_only: Option<bool>,
 }
 
 fn parts() -> Vec<FlowPart> {
@@ -96,7 +99,7 @@ impl AtHour for VolunteerFlow {
     const TITLE: &'static str = "Volunteers & expeditionaries";
     const CONTENT_DEPENDENT: bool = false;
     type Params = VolunteerFlowParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top, sideTotalsOnly];
     type Reply = CountryFlowReply;
     type Context = GroupsAt;
 
@@ -161,6 +164,7 @@ impl AtHour for VolunteerFlow {
             between: params.between,
             limit: params.limit.map(|limit| limit.max(1) as usize),
             top: params.top.map(|top| top.max(1) as usize),
+            side_totals_only: params.side_totals_only.unwrap_or_default(),
             table: false,
             not_recorded: NOT_RECORDED,
             unlinked: UNLINKED,
@@ -206,7 +210,7 @@ mod tests {
     }
 
     fn shape(subject: Option<u32>) -> FlowShape<'static> {
-        FlowShape { subject, chosen: None, between: false, limit: None, top: None, table: false, not_recorded: NOT_RECORDED, unlinked: UNLINKED }
+        FlowShape { subject, chosen: None, between: false, limit: None, top: None, side_totals_only: false, table: false, not_recorded: NOT_RECORDED, unlinked: UNLINKED }
     }
 
     fn flows(rows: &[MilitaryAidRow], subject: Option<u32>) -> CountryFlowReply {

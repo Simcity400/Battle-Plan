@@ -787,6 +787,8 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
       hideHeader: model.hideHeader === true,
       rhythm: model.rhythm,
       kindFilter: model.kindFilter,
+      searchable: model.searchable === true,
+      search: model.search,
       subjectSummary: model.subjectSummary,
       rowHeightMode: shape.rowHeightMode,
       notes: [],

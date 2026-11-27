@@ -510,16 +510,17 @@ fn resolve_selection_at(
     let live = dashboard_follow::live::Cells::default();
     let reads_at = ReadsAt { holders: &query.holders, context: &context, run: stretch.run, hour, since: None };
     let mut battle_keys = None;
-    for step in 0..8 {
+    for step in 0..3 {
         let reads = if step == 1 && context.roster.is_some() {
             let kept = UnitLeaders::kept(&asked, &frame, &reads_at);
             let ranges = leader_ranges(kept.iter().map(|row| u64::from(row.id)), 32);
             battle_keys = Some(ranges);
             UnitLeaders::people(&kept)
         } else if step == 2 {
-            let (reads, clocked) = UnitLeaders::visibility_reads(&asked, &frame, &reads_at, true);
-            if clocked || !reads.is_empty() { next.see(hour.saturating_add(1)); }
-            reads
+            let (needed, clocked) = UnitLeaders::visibility_needed(&asked, &frame, &reads_at);
+            if clocked { next.see(hour.saturating_add(1)); }
+            if needed { super::RECORDED_TABLES.iter().copied().filter(|table| !super::BASE_TABLES.contains(table)).map(Read::all).collect() }
+            else { Vec::new() }
         } else {
             UnitLeaders::reads_in(&asked, None, step, &frame, &reads_at)
         };
@@ -928,6 +929,7 @@ impl AtHour for LeaderHour {
     fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
         let reads = match (stage, &params.selection) {
             (2, Some(selection)) => return super::visibility::prepare(&top_asked(&params.branch_id, selection), held, at),
+            (3.., Some(_)) => Vec::new(),
             _ => Self::reads_in(params, owner, stage, held, at),
         };
         (reads, at.context.through(at.hour))

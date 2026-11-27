@@ -123,6 +123,7 @@ fn ranked(a: (Option<&SortValue>, u32), b: (Option<&SortValue>, u32), direction:
 pub enum SortKey {
     Static(Option<SortValue>),
     Dated(Box<[(i32, Option<SortValue>)]>),
+    SharedDated(Arc<[(i32, Option<SortValue>)]>),
 }
 
 impl SortKey {
@@ -142,10 +143,19 @@ impl SortKey {
         Self::Dated(steps.into_iter().map(|(at, value)| (at, value.map(SortValue::Text))).collect())
     }
 
+    pub fn shared(self) -> Self {
+        match self { Self::Dated(steps) => Self::SharedDated(steps.into()), key => key }
+    }
+
+    fn steps(&self) -> &[(i32, Option<SortValue>)] {
+        match self { Self::Static(_) => &[], Self::Dated(steps) => steps, Self::SharedDated(steps) => steps }
+    }
+
     pub fn at(&self, hour: i32) -> Option<&SortValue> {
         match self {
             Self::Static(value) => value.as_ref(),
-            Self::Dated(steps) => {
+            _ => {
+                let steps = self.steps();
                 let at = steps.partition_point(|&(from, _)| from <= hour);
                 at.checked_sub(1).and_then(|at| steps[at].1.as_ref())
             }
@@ -155,7 +165,8 @@ impl SortKey {
     fn after(&self, hour: i32) -> &[(i32, Option<SortValue>)] {
         match self {
             Self::Static(_) => &[],
-            Self::Dated(steps) => {
+            _ => {
+                let steps = self.steps();
                 let at = steps.partition_point(|&(from, _)| from <= hour);
                 &steps[at..]
             }
@@ -563,8 +574,7 @@ impl<P> Index<P> {
                 return Err(invalid(format!("Occurrence {} has {} sort keys, expected {}", entry.id, entry.sort_keys.len(), expected_keys)));
             }
             for key in &entry.sort_keys {
-                if let SortKey::Dated(steps) = key
-                    && steps.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+                if key.steps().windows(2).any(|pair| pair[0].0 >= pair[1].0)
                 {
                     return Err(invalid(format!("Occurrence {} has dated sort keys out of order", entry.id)));
                 }

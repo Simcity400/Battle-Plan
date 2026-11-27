@@ -3,9 +3,8 @@ use crate::triggers::refusal::refused;
 
 use std::{
     borrow::Cow,
-    cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
-    sync::{Arc, OnceLock},
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::{Arc, Mutex, OnceLock, PoisonError},
 };
 
 use content_reader_key_names::{characters::{LeaderTemplate, ScientistVisibilityTemplate}, tag_aliases::TagAliases, unit_leader::Traits};
@@ -15,7 +14,8 @@ use content_reader_script::trigger_keys::TriggerNames;
 use replay_data::{
     Hour, rows::CharacterRow, rows::CountryAppearanceRow, rows::CountryCounterInputRow,
     rows::CountryLinkRow, rows::CountryRow, rows::InvasionPreparationRow, rows::LexicalTokenRow,
-    rows::ProvinceRow, rows::Recorded, rows::RowCodec, rows::ScriptVariablesRow, rows::StateRow,
+    rows::ProvinceRow, rows::Recorded, rows::RowCodec, rows::ScriptVariableNameRow,
+    rows::ScriptVariablesRow, rows::StateRow,
     rows::TableSchema, rows::column, rows::mask, rows::tables,
 };
 use replay_frame::frame::{HourFrame, Leader, OperandStatus, Province, Rowset};
@@ -102,14 +102,36 @@ pub(crate) trait PreparedContent: Send + Sync {
 #[path = "world/folds.rs"]
 mod folds;
 use folds::Folds;
-thread_local! {
-    static FOLDS: RefCell<Vec<(ViewIdentity, Arc<Folds>)>> = const { RefCell::new(Vec::new()) };
-    static VAR_NAMES: RefCell<Vec<(ViewIdentity, Arc<std::collections::HashMap<Vec<u8>, u32>>)>> =
-        const { RefCell::new(Vec::new()) };
+
+type NameRows<'a, R> = (Option<ViewIdentity>, &'a [R]);
+type RecentIndexes<T> = Mutex<Vec<(Option<ViewIdentity>, T)>>;
+
+#[derive(Default)]
+pub(crate) struct NameIndexes {
+    folded: RecentIndexes<Folds>,
+    variables: RecentIndexes<HashMap<Vec<u8>, u32>>,
 }
 
-pub(in crate::triggers) enum Names {
-    Own(Arc<Folds>),
+fn with_index<T, R>(
+    indexes: &RecentIndexes<T>,
+    view: &Option<ViewIdentity>,
+    build: impl FnOnce() -> T,
+    lookup: impl FnOnce(&T) -> R,
+) -> R {
+    let mut indexes = indexes.lock().unwrap_or_else(PoisonError::into_inner);
+    match indexes.iter().position(|(held, _)| held == view) {
+        Some(0) => {}
+        Some(at) => indexes.swap(0, at),
+        None => {
+            const KEPT: usize = 2;
+            if indexes.len() == KEPT {
+                indexes.pop();
+            }
+            let _cpu = replay_frame::cpu::scope_phase("triggers:index");
+            indexes.insert(0, (view.clone(), build()));
+        }
+    }
+    lookup(&indexes[0].1)
 }
 type Linked<T> = (T, Option<Failure>);
 #[derive(Debug)]
@@ -541,8 +563,10 @@ pub struct World<'a> {
     character_tables: OnceLock<character_scope::Tables<'a>>,
     aliases: &'a Arc<TagAliases>,
     recorded: OnceLock<RecordedScopes<'a>>,
-    names: Index<Names>,
-    variable_names: Index<Arc<std::collections::HashMap<Vec<u8>, u32>>>,
+    names: Index<NameRows<'a, LexicalTokenRow>>,
+    variable_names: Index<NameRows<'a, ScriptVariableNameRow>>,
+    shared_name_indexes: Option<&'a NameIndexes>,
+    local_name_indexes: OnceLock<Box<NameIndexes>>,
     literals: Index<literals::Lookup<'a>>,
     factions: Index<Linked<BTreeMap<u32, u64>>>,
     wars: Index<Linked<BTreeSet<(u32, u32)>>>,
@@ -1587,6 +1611,8 @@ impl<'a> World<'a> {
             recorded: OnceLock::new(),
             names: OnceLock::new(),
             variable_names: OnceLock::new(),
+            shared_name_indexes: None,
+            local_name_indexes: OnceLock::new(),
             literals: OnceLock::new(),
             factions: OnceLock::new(),
             wars: OnceLock::new(),
@@ -1994,48 +2020,31 @@ impl<'a> World<'a> {
     }
 
     fn token_of_unrecorded(&self, name: &[u8]) -> Result<Option<u32>, Failure> {
-        match self.names()? {
-            Names::Own(folds) => match folds.get(name) {
-                None => Ok(None),
-                Some(Ok(token)) => Ok(Some(token)),
-                Some(Err(reason)) => {
-                    reason.reached();
-                    Err(reason.clone())
-                }
-            },
-        }
+        super::inputs::table(self.frame, tables::LexicalTokens::ID);
+        let (view, rows) = get(&self.names, || {
+            let Rowset::Decoded(rows) = lexical(self.frame)?;
+            Ok((self.frame.identity(tables::LexicalTokens::ID), rows))
+        })?;
+        with_index(
+            &self.name_indexes(view).folded,
+            view,
+            || Folds::read(rows),
+            |index| index.get(rows, name),
+        )
     }
 
-    pub(super) fn names(&self) -> Result<&Names, Failure> {
-        super::inputs::table(self.frame, replay_data::rows::TableId::LexicalTokens);
-        get(&self.names, || {
-            let view = self.frame.identity(replay_data::rows::TableId::LexicalTokens);
-            let cached = FOLDS.with_borrow(|cache| {
-                cache
-                    .iter()
-                    .find(|(source, _)| view.as_ref().is_some_and(|view| source.same(view)))
-                    .map(|(_, folds)| Arc::clone(folds))
-            });
-            if let Some(folds) = cached {
-                return Ok(Names::Own(folds));
-            }
-            let rows = lexical(self.frame)?;
-            let out = Arc::new(Folds::read(
-                rows.len(),
-                rows.keys()
-                    .zip(rows.texts(|row| &row.literal, LITERAL_COLUMN))
-                    .map(|(key, literal)| {
-                        Ok((key as u32, literal.map_err(walked::<tables::LexicalTokens>)?))
-                    }),
-            )?);
-            if let Some(view) = view {
-                FOLDS.with_borrow_mut(|cache| {
-                    cache.insert(0, (view, Arc::clone(&out)));
-                    cache.truncate(2);
-                });
-            }
-            Ok(Names::Own(out))
-        })
+    pub(crate) fn with_name_indexes(mut self, indexes: &'a NameIndexes) -> Self {
+        self.shared_name_indexes = Some(indexes);
+        self
+    }
+
+    fn name_indexes(&self, view: &Option<ViewIdentity>) -> &NameIndexes {
+        if let Some(shared) = self.shared_name_indexes
+            && view.is_some()
+        {
+            return shared;
+        }
+        self.local_name_indexes.get_or_init(Box::default)
     }
 
     pub(super) fn unlinked(&self, table: &str, raw: u32) -> Failure {
@@ -3366,8 +3375,7 @@ impl<'a> World<'a> {
         }
         const VALUE: u64 = mask::<replay_data::rows::ScriptVariableValueRow>(&["value_raw"]);
         let values = table::<tables::ScriptVariableValues>(self.frame, VALUE)?;
-        let names = self.variable_names()?;
-        let Some(&var_id) = names.get(key) else {
+        let Some(var_id) = self.variable_id(key)? else {
             return Ok(None);
         };
         let row_key = (u128::from(variables.scope_kind) << 64)
@@ -3376,38 +3384,19 @@ impl<'a> World<'a> {
         Ok(keyed::<tables::ScriptVariableValues>(&values, row_key)?.map(|row| row.value_raw))
     }
 
-    fn variable_names(&self) -> Result<&std::collections::HashMap<Vec<u8>, u32>, Failure> {
-        const NAME: u64 = mask::<replay_data::rows::ScriptVariableNameRow>(&["name"]);
-        super::inputs::table(self.frame, replay_data::rows::TableId::ScriptVariableNames);
-        get(&self.variable_names, || {
-            let view = self
-                .frame
-                .identity(replay_data::rows::TableId::ScriptVariableNames);
-            let cached = VAR_NAMES.with_borrow(|cache| {
-                cache
-                    .iter()
-                    .find(|(source, _)| view.as_ref().is_some_and(|view| source.same(view)))
-                    .map(|(_, names)| Arc::clone(names))
-            });
-            if let Some(names) = cached {
-                return Ok(names);
-            }
-            let rows = table::<tables::ScriptVariableNames>(self.frame, NAME)?;
-            let mut out = std::collections::HashMap::with_capacity(rows.len());
-            for row in each::<tables::ScriptVariableNames>(rows) {
-                let row = row?;
-                out.insert(row.name.clone(), row.id);
-            }
-            let out = Arc::new(out);
-            if let Some(view) = view {
-                VAR_NAMES.with_borrow_mut(|cache| {
-                    cache.insert(0, (view, Arc::clone(&out)));
-                    cache.truncate(2);
-                });
-            }
-            Ok(out)
-        })
-        .map(Arc::as_ref)
+    fn variable_id(&self, key: &[u8]) -> Result<Option<u32>, Failure> {
+        const NAME: u64 = mask::<ScriptVariableNameRow>(&["name"]);
+        super::inputs::table(self.frame, tables::ScriptVariableNames::ID);
+        let (view, rows) = get(&self.variable_names, || {
+            let Rowset::Decoded(rows) = table::<tables::ScriptVariableNames>(self.frame, NAME)?;
+            Ok((self.frame.identity(tables::ScriptVariableNames::ID), rows))
+        })?;
+        Ok(with_index(
+            &self.name_indexes(view).variables,
+            view,
+            || rows.iter().map(|row| (row.name.clone(), row.id)).collect(),
+            |names| names.get(key).copied(),
+        ))
     }
 
     pub(super) fn variable_seed(&self, store: Store) -> Result<u32, Failure> {

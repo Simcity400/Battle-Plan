@@ -169,6 +169,47 @@ fn division_templates_follows_the_selected_countrys_template_fields() {
 }
 
 #[test]
+fn division_templates_recompute_for_their_own_grid_tokens_and_ignore_other_templates() {
+    let frames = (100..=120).map(|hour| {
+        let mut frame = frame(1, hour);
+        if let TableView::Complete(TableRows::DivisionTemplateIcons(icons)) = &mut *frame.tables[TableId::DivisionTemplateIcons.index()] {
+            let grid = |token| Recorded::Value(TemplateGrids {
+                regimental_support: vec![TemplateSubunit { token, count: 1, local: 0 }],
+                ..Default::default()
+            });
+            icons[0].grids = grid(if hour < 110 { 120 } else { 121 });
+            icons[1].grids = grid(121);
+        }
+        if let TableView::Complete(TableRows::DivisionTemplates(templates)) = &mut *frame.tables[TableId::DivisionTemplates.index()] {
+            templates[0].unit_type = i32::from(hour >= 103);
+            templates[1].name = if hour < 105 { b"Other".to_vec() } else { b"Renamed".to_vec() };
+        }
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow { token: 120, literal: b"unit_one".to_vec() },
+            LexicalTokenRow { token: 121, literal: match hour {
+                ..104 => b"foreign_one".to_vec(),
+                ..111 => b"foreign_two".to_vec(),
+                _ => b"selected_unit".to_vec(),
+            } },
+        ]));
+        frame
+    }).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Arc::new(Source::from_replay(SourceKey { source_id: "template-names".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
+    let request = json!({"branchId":"1", "country":"GER", "countFor":"owner"});
+    let panel = (DIVISIONS_TEMPLATES_DIVISIONTEMPLATES.panel.unwrap().open)(&source, &LoadContext { content: None }, &request).unwrap();
+    let reads = played(source.replay_ref(), panel.exact().unwrap(), 100, 112);
+    let at = |hour| reads.iter().find(|read| read.hour == hour).unwrap();
+    assert_eq!(at(103).product_calls, 0, "the template's unit type is outside the reply");
+    assert_eq!(at(104).product_calls, 0, "a token used by another owner's grid is outside the reply");
+    assert_eq!(at(105).product_calls, 0, "a foreign template name is outside the reply");
+    assert_eq!(at(110).product_calls, 1, "a displayed subunit token changes the reply");
+    assert_eq!(at(110).value.as_ref().as_ref().unwrap()["templates"][0]["units"][0]["key"], "foreign_two");
+    assert_eq!(at(111).product_calls, 1, "the selected grid now needs this token");
+    assert_eq!(at(111).value.as_ref().as_ref().unwrap()["templates"][0]["units"][0]["key"], "selected_unit");
+}
+
+#[test]
 fn training_queue_tracks_owned_orders_lines_and_manpower() {
     follows::<crate::products::training_queue::TrainingQueue>(TRAINING_QUEUE_TRAININGQUEUE, json!({"country":"GER"}), false);
 }
@@ -199,6 +240,13 @@ fn training_locations_follow_only_the_state_of_each_queued_province() {
     use dashboard_base::test_fixtures::{source_with_content, visual_mods::Machine};
     let machine = Machine::new("land_queue_locations");
     machine.write("common/defines/test.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    machine.write("interface/queue_fixture.gui", br#"
+        guiTypes = { containerWindowType = {
+            name = "military_deployment_conveyor_view"
+            buttonType = { name = "low_prio" pdx_tooltip = "queue_fixture_priority" }
+        } }
+    "#);
+    machine.write("localisation/queue_fixture_l_english.yml", "\u{feff}l_english:\n queue_fixture_priority:0 \"Wait your turn\"\n".as_bytes());
     let frames = (100..=120).map(|hour| {
         let mut frame = frame(1, hour);
         if let TableView::Complete(TableRows::DeploymentConveyors(orders)) = &mut *frame.tables[TableId::DeploymentConveyors.index()] {
@@ -209,9 +257,14 @@ fn training_locations_follow_only_the_state_of_each_queued_province() {
             ProvinceRow { id: 2, state: hour as u32, controller: hour as u32, ..Default::default() },
             ProvinceRow { id: 3, state: if hour < 110 { 2 } else { 1 }, ..Default::default() },
         ]));
+        let second_name = match hour {
+            100 => "Old second camp",
+            101..=108 => "Second camp",
+            _ => "Renamed camp",
+        };
         *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
             StateRow { id: 1, custom_name: b"First camp".to_vec(), ..Default::default() },
-            StateRow { id: 2, custom_name: b"Second camp".to_vec(), ..Default::default() },
+            StateRow { id: 2, custom_name: second_name.as_bytes().to_vec(), ..Default::default() },
         ]));
         frame
     }).collect();
@@ -219,8 +272,15 @@ fn training_locations_follow_only_the_state_of_each_queued_province() {
     let source = Arc::new(source);
     let request = json!({"branchId":"1", "country":"GER"});
     let panel = (TRAINING_QUEUE_TRAININGQUEUE.panel.unwrap().open)(&source, &load, &request).unwrap();
-    for (hour, name) in [(100, "First camp"), (108, "Second camp"), (110, "First camp")] {
-        assert_eq!((panel.exact().unwrap().cold)(hour, &false.into()).unwrap()["orders"][0]["locationName"], name);
-    }
+    let exact = &panel.exact().unwrap().cold;
+    let (_, reads) = replay_recording::cells::count_reads(|| {
+        for (hour, name) in [(100, "First camp"), (108, "Second camp")] {
+            let reply = exact(hour, &false.into()).unwrap();
+            assert_eq!(reply["orders"][0]["locationName"], name);
+            assert_eq!(reply["orders"][0]["priorityName"], "Wait your turn");
+        }
+    });
+    assert_eq!(reads.get(&TableId::ActiveIdeas).map_or(0, |read| read.opened), 0, "plain deployment names do not open the scripted world on either read");
+    assert_eq!(exact(110, &false.into()).unwrap()["orders"][0]["locationName"], "First camp");
     played_replies::<crate::products::training_queue::TrainingQueue>(TRAINING_QUEUE_TRAININGQUEUE, &source, &load, &request);
 }

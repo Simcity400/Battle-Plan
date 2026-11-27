@@ -403,6 +403,7 @@ pub(crate) struct Presenter<'q> {
     frames: RefCell<Frames>,
     kept: Arc<Mutex<KeptNaming>>,
     effects: bool,
+    artwork: bool,
 }
 
 const HELD: [(TableId, u64); 8] = [
@@ -497,6 +498,7 @@ pub(super) struct Art<'a> {
     catalogue: &'a Arc<Catalogue>,
     kept: &'a Mutex<KeptNaming>,
     effects: bool,
+    artwork: bool,
 }
 
 impl Art<'_> {
@@ -543,11 +545,15 @@ struct Frames {
 
 impl<'q> Presenter<'q> {
     pub fn new(query: &'q Query<'q>, catalogue: Option<Arc<Catalogue>>, kept: Arc<Mutex<KeptNaming>>) -> Self {
-        Self { query, catalogue, frames: RefCell::default(), kept, effects: true }
+        Self { query, catalogue, frames: RefCell::default(), kept, effects: true, artwork: true }
     }
 
     pub fn without_effects(self) -> Self {
         Self { effects: false, ..self }
+    }
+
+    pub(super) fn without_artwork(self) -> Self {
+        Self { artwork: false, ..self }
     }
 
     pub fn catalogue(&self) -> Option<&Catalogue> {
@@ -617,7 +623,7 @@ impl<'q> Presenter<'q> {
     }
 
     pub fn picture(&self, token: &str, key: &str, notices: &mut Notices) -> Option<String> {
-        draw_picture(notices, &Art { catalogue: self.catalogue.as_ref()?, kept: &self.kept, effects: self.effects }, token, key)
+        draw_picture(notices, &Art { catalogue: self.catalogue.as_ref()?, kept: &self.kept, effects: self.effects, artwork: self.artwork }, token, key)
     }
 
     pub fn item(&self, event: &FeedEvent, kind: EventFeedKind, token: Option<String>, notices: &mut Notices) -> io::Result<EventFeedItem> {
@@ -629,7 +635,7 @@ impl<'q> Presenter<'q> {
         let present = |frame: Result<&DecodedFrame, String>, notices: &mut Notices| -> io::Result<EventFeedItem> {
             let mut item = item.clone();
             let inputs = Inputs::of(event, frame.as_ref().ok().copied());
-            presentation(notices, &Art { catalogue: shown, kept: &self.kept, effects: self.effects }, kind, &mut item, &inputs, frame.map(HourFrame::from))?;
+            presentation(notices, &Art { catalogue: shown, kept: &self.kept, effects: self.effects, artwork: self.artwork }, kind, &mut item, &inputs, frame.map(HourFrame::from))?;
             Ok(item)
         };
         let dated = match self.frame(event.hour)? {
@@ -667,10 +673,12 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
                     item.name_missing = Some(reason);
                 }
             }
-            let icon = art.drawn(("decision", &token), || catalogue::draw(|| format!("decision {token} icon"), catalogue, |catalogue| decision_icon(catalogue, &token)));
-            match icon {
-                Ok(url) => item.icon = Some(url),
-                Err(reason) => notices.unavailable("decisionIcon", "Decision icon", format!("Decision {token}: {reason}"), Some(1)),
+            if art.artwork {
+                let icon = art.drawn(("decision", &token), || catalogue::draw(|| format!("decision {token} icon"), catalogue, |catalogue| decision_icon(catalogue, &token)));
+                match icon {
+                    Ok(url) => item.icon = Some(url),
+                    Err(reason) => notices.unavailable("decisionIcon", "Decision icon", format!("Decision {token}: {reason}"), Some(1)),
+                }
             }
         }
         return if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) };
@@ -785,6 +793,9 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
 }
 
 fn draw_picture(notices: &mut Notices, art: &Art<'_>, token: &str, picture: &str) -> Option<String> {
+    if !art.artwork {
+        return None;
+    }
     let catalogue: &Catalogue = art.catalogue;
     let image = art.drawn((token, picture), || catalogue::draw(
         || format!("event {token} picture"),

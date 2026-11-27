@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { choiceVariants, contentKey, contentSet, MAX_OPTION_KEYS, parseStoredOptions, resolveOptions, sectionFields, setLimit, setOption, setToken, storableToken,
   toggleContentSet, UNSTORABLE } from './options.ts';
-import type { OptionField } from './options';
+import type { OptionField, WidgetOptions } from './options';
 import { settingsSections, SETTINGS_SECTIONS } from './settingsSections.ts';
 import type { WidgetMeta } from './definitions';
 import { mergeViewPreferences } from './model.ts';
@@ -42,6 +42,19 @@ test('scalar content choices round-trip opaque keys without the content-set deli
   assert.deepEqual(setOption(fields, selected!, 'category', ''), {}, 'empty still means automatic');
   assert.equal(setOption(fields, undefined, 'category', 3), null);
   assert.equal(storableToken(key), false, 'content sets keep their distinct token rules');
+});
+
+test('plain text options trim, keep spaces and punctuation, bound stored text and drop empty searches', () => {
+  const fields: readonly OptionField[] = [{ key: 'search', section: 'options', label: 'Search', kind: 'text', default: '', maxLength: 12 }];
+  const stored = setOption(fields, undefined, 'search', '  beta, gamma  ');
+  assert.deepEqual(stored, { search: 'beta, gamma' });
+  assert.deepEqual(resolveOptions(fields, stored!), { search: 'beta, gamma' });
+  assert.deepEqual(resolveOptions(fields, { search: '  beta  ' }), { search: 'beta' });
+  assert.deepEqual(setOption(fields, stored!, 'search', '   '), {});
+  assert.equal(setOption(fields, undefined, 'search', 'x'.repeat(13)), null);
+  assert.equal(setOption(fields, undefined, 'search', 7), null);
+  assert.equal(setOption(fields, undefined, 'search', 'x'.repeat(12))?.search, 'x'.repeat(12));
+  for (const search of [undefined, 'x'.repeat(13), false]) assert.equal(resolveOptions(fields, { search } as unknown as WidgetOptions).search, '');
 });
 
 test('setting an option keeps unknown keys, drops defaults and refuses illegal values', () => {

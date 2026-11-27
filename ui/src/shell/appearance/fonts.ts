@@ -14,7 +14,7 @@ export const FONT_PRESETS: readonly FontPreset[] = [
 ];
 const bundledFamilies = new Set(FONT_PRESETS.map(preset => preset.family));
 
-function familyNames(family: string): string[] {
+export function familyNames(family: string): string[] {
   return family.replace(/["'`;{}<>\\]/g, '').split(',').map(name => name.trim()).filter(Boolean);
 }
 function fontList(family: string): string {

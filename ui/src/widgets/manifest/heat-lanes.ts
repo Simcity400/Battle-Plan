@@ -1,4 +1,3 @@
-import { heatLanesHostAdapter } from '../../families/heat/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 
 export const HEAT_LANES_VIEWS: readonly FamilyViewEntry[] = [
@@ -46,5 +45,4 @@ export const heatLanesFamilyManifest: FamilyManifestModule = {
   family: 'heat-lanes',
   lane: () => import('../../families/heat/lanesLaneView.ts').then(m => m.heatLanesLane),
   views: HEAT_LANES_VIEWS,
-  hostAdapter: heatLanesHostAdapter,
 };

@@ -3,7 +3,7 @@ import { barsLabelText } from '../../families/bars/model.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { flowEndpointKey, flowSideNotes, presentFlowEndpoint, projectCountryFlow, scaledAmount, UNKNOWN_COUNTRY, unknownEndpointLabel } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, flowPerSide, flowViewSubject } from '../../families/flow/countryFlowPlan.ts';
+import { countryFlowPicture, countryFlowPlan, flowProjectionOptions } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
@@ -26,7 +26,7 @@ const exactAmountFormat = (decimals: number): ValueFormat => ({ decimals });
 export const tradeFlowProjection: FlowProjection = {
   family: 'flow',
   kind: 'trade-flows',
-  project: readView => projectCountryFlow(readView, {
+  project: (readView, options) => projectCountryFlow(readView, {
     leftHeader: 'Imports from',
     rightHeader: 'Exports to',
     unitNote: 'per day',
@@ -37,7 +37,7 @@ export const tradeFlowProjection: FlowProjection = {
     none: NO_TRADE,
     others: count => `${count} other ${count === 1 ? 'partner' : 'partners'}`,
     ribbonTitle: (from, to) => `${from} → ${to}`,
-  }),
+  }, options),
 };
 
 export const tradeFlowDeclaration: FlowWidgetDeclaration = {
@@ -48,9 +48,9 @@ export const tradeFlowDeclaration: FlowWidgetDeclaration = {
   emptyCampaign: 'Load a campaign to see its trade.',
   icon: 'flows',
   countries: { mode: 'multi', content: 'hour' },
-  sources: (ctx, view) => countryFlowPlan(ctx, 'trade-flow', { limit: flowPerSide(view) }, flowViewSubject(ctx)),
+  sources: (ctx, view) => countryFlowPicture(ctx, view, 'trade-flow', true),
   projection: tradeFlowProjection,
-  projectionOptions: () => EMPTY_OPTIONS,
+  projectionOptions: ctx => flowProjectionOptions(ctx, 'trade-flow'),
   jumpToDate: true,
 };
 

@@ -588,6 +588,7 @@ pub struct ScriptedContent {
     >,
     pub(crate) template_names:
         content_reader_layers::content::diagnostics::Once<Result<Localisation, String>>,
+    name_indexes: crate::triggers::world::NameIndexes,
     event_index: content_reader_layers::content::diagnostics::Once<content_reader_events::events::LazyEvents>,
     effect_describer: Option<Box<dyn EffectDescriber>>,
     static_modifiers: std::sync::Arc<content_reader_politics::static_modifiers::Descriptions>,
@@ -624,6 +625,7 @@ impl ScriptedContent {
             environment,
             state_content: std::sync::Arc::new(content_reader_layers::content::diagnostics::Once::new()),
             template_names: content_reader_layers::content::diagnostics::Once::new(),
+            name_indexes: Default::default(),
             event_index: content_reader_layers::content::diagnostics::Once::new(),
             effect_describer: None,
             static_modifiers: Default::default(),

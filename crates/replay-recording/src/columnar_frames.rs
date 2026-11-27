@@ -351,6 +351,23 @@ impl<R: std::ops::Deref<Target = Recording>> Frames<R> {
     }
 
     pub fn frame(&mut self, branch: u64) -> io::Result<DecodedFrame> {
+        self.build_frame(branch, false)
+    }
+
+    pub fn frame_recorded(&mut self, branch: u64) -> io::Result<(DecodedFrame, RecordedFrame)> {
+        let keyframe = self.anew;
+        let frame = self.build_frame(branch, true)?;
+        let mut slots = [None; TABLE_COUNT];
+        let mut updates = Vec::with_capacity(self.slots.len());
+        for (at, slot) in self.slots.iter().enumerate() {
+            slots[slot.id.index()] = Some(at);
+            updates.push(slot.update.clone().ok_or_else(|| invalid("A table's update was not built"))?);
+        }
+        let recorded = RecordedFrame::from_updates(branch, frame.hour, keyframe, frame.metrics.clone(), Arc::new(slots), updates, Arc::new(TableUpdate::Unavailable { reason: String::new() }))?;
+        Ok((frame, recorded))
+    }
+
+    fn build_frame(&mut self, branch: u64, updates: bool) -> io::Result<DecodedFrame> {
         let hour = self.first_hour + self.ordinal as i32;
         let build = Build {
             hour,
@@ -359,6 +376,7 @@ impl<R: std::ops::Deref<Target = Recording>> Frames<R> {
             anew: self.anew,
             stepped: self.patching && self.stepped,
             facts: self.facts.then_some(self.stepped && !self.anew),
+            updates,
             timed: self.timed,
         };
         self.built = None;
@@ -373,19 +391,6 @@ impl<R: std::ops::Deref<Target = Recording>> Frames<R> {
             }
         }
         Ok(DecodedFrame { branch, hour, tables, metrics: self.metrics()? })
-    }
-
-    pub fn frame_recorded(&mut self, branch: u64) -> io::Result<(DecodedFrame, RecordedFrame)> {
-        let keyframe = self.anew;
-        let frame = self.frame(branch)?;
-        let mut slots = [None; TABLE_COUNT];
-        let mut updates = Vec::with_capacity(self.slots.len());
-        for (at, slot) in self.slots.iter().enumerate() {
-            slots[slot.id.index()] = Some(at);
-            updates.push(slot.update.clone().ok_or_else(|| invalid("A table's update was not built"))?);
-        }
-        let recorded = RecordedFrame::from_updates(branch, frame.hour, keyframe, frame.metrics.clone(), Arc::new(slots), updates, Arc::new(TableUpdate::Unavailable { reason: String::new() }))?;
-        Ok((frame, recorded))
     }
 
     pub fn held_bytes(&self) -> usize {
@@ -426,6 +431,7 @@ struct Build {
     anew: bool,
     stepped: bool,
     facts: Option<bool>,
+    updates: bool,
     timed: bool,
 }
 
@@ -433,13 +439,13 @@ fn build_slot(slot: &mut Slot, build: &Build) -> io::Result<()> {
     let Slot { id, reader, lost, view, update, spent } = slot;
     let id = *id;
     let Some(reader) = reader.as_ref() else {
-        unavailable(view, update, lost.clone().unwrap_or_default());
+        unavailable(view, update, lost.clone().unwrap_or_default(), build.updates);
         return Ok(());
     };
     let (hour, format) = (build.hour, build.format);
     let changes = reader.changes();
     if !build.anew && view.is_some() && changes.quiet() {
-        *update = Some(Arc::new(TableUpdate::Unchanged { baseline: hour - 1 }));
+        *update = build.updates.then(|| Arc::new(TableUpdate::Unchanged { baseline: hour - 1 }));
         return Ok(());
     }
     let started = build.timed.then(Instant::now);
@@ -447,50 +453,60 @@ fn build_slot(slot: &mut Slot, build: &Build) -> io::Result<()> {
     let complete_before = matches!(previous, Some(TableView::Complete(_)));
     let withheld = !matches!(previous, None | Some(TableView::Complete(_) | TableView::Truncated { .. }));
     let snapshot = build.anew || changes.anew || view.is_none() || changes.status_changed || withheld;
-    let edits = hour_edits(reader);
+    let patchable = build.stepped && !changes.anew && complete_before && reader.status() == Status::Complete;
+    let stamped = matches!(build.facts, Some(true)) && !changes.anew && complete_before;
+    let edits = (build.updates || patchable || stamped).then(|| hour_edits(reader));
     let stamp = match (build.facts, view.as_ref()) {
-        (Some(true), Some(previous)) if !changes.anew && complete_before => Some(edited(id, &edits, previous, hour, format)?),
+        (Some(true), Some(previous)) if !changes.anew && complete_before => Some(edited(id, edits.as_ref().expect("edits built for stamp"), previous, hour, format)?),
         (Some(_), _) => Some(Stamp::new(hour)),
         (None, _) => None,
     };
     let mut patched = None;
-    if build.stepped && !changes.anew && complete_before && reader.status() == Status::Complete {
+    if patchable {
+        let edits = edits.as_ref().expect("edits built for patch");
         let held = view.take().ok_or_else(|| invalid("A patched table holds no view"))?;
         let deleted = present(held.held(), &edits.deleted);
-        if let Ok((rows, in_place)) = patch(id, reader, held, &edits, deleted.clone(), format) {
+        let kept_deleted = build.updates.then(|| deleted.clone());
+        if let Ok((rows, in_place)) = patch(id, reader, held, edits, deleted, format) {
             spent.patched += 1;
             spent.in_place += u64::from(in_place);
-            patched = Some((TableView::Complete(rows), deleted));
+            patched = Some((TableView::Complete(rows), kept_deleted));
         }
     }
     let (made, deleted) = match patched {
-        Some((made, deleted)) => (made, Some(deleted)),
+        Some((made, deleted)) => (made, deleted),
         None => {
             spent.rebuilt += 1;
             match cells_view(id, &reader.view(), reader.status(), reader.read_rows(), build.mode, format) {
                 Ok(made) => (made, None),
                 Err(error) if Unsayable::of(&error).is_some() => {
+                    unavailable(view, update, error.to_string(), build.updates);
                     lap(&mut spent.view_ns, started);
-                    unavailable(view, update, error.to_string());
                     return Ok(());
                 }
                 Err(error) => return Err(error),
             }
         }
     };
-    lap(&mut spent.view_ns, started);
-    let started = build.timed.then(Instant::now);
-    let before = update.take();
-    let made_update = match (&made, snapshot) {
-        (TableView::Complete(rows), true) => {
-            let (rows, reused) = snapshot_rows(rows, before, &edits, deleted)?;
-            spent.snapshots_patched += u64::from(reused);
-            TableUpdate::Snapshot(rows)
-        }
-        (TableView::Complete(_), false) => delta(id, &edits, hour - 1, format),
-        (TableView::Truncated { rows, missing }, _) => TableUpdate::Truncated { rows: rows.try_clone_validated()?, missing: *missing },
-        (TableView::Unavailable { reason }, _) => TableUpdate::Unavailable { reason: reason.clone() },
-        (TableView::NotRecorded { mode }, _) => TableUpdate::NotRecorded { mode: *mode },
+    let made_update = if build.updates {
+        lap(&mut spent.view_ns, started);
+        let started = build.timed.then(Instant::now);
+        let before = update.take();
+        let edits = edits.as_ref().expect("edits built for updates");
+        let made_update = match (&made, snapshot) {
+            (TableView::Complete(rows), true) => {
+                let (rows, reused) = snapshot_rows(rows, before, edits, deleted)?;
+                spent.snapshots_patched += u64::from(reused);
+                TableUpdate::Snapshot(rows)
+            }
+            (TableView::Complete(_), false) => delta(id, edits, hour - 1, format),
+            (TableView::Truncated { rows, missing }, _) => TableUpdate::Truncated { rows: rows.try_clone_validated()?, missing: *missing },
+            (TableView::Unavailable { reason }, _) => TableUpdate::Unavailable { reason: reason.clone() },
+            (TableView::NotRecorded { mode }, _) => TableUpdate::NotRecorded { mode: *mode },
+        };
+        Some((Arc::new(made_update), started))
+    } else {
+        None
     };
     let complete = matches!(made, TableView::Complete(_));
     let mut made = SharedView::from(made);
@@ -501,16 +517,29 @@ fn build_slot(slot: &mut Slot, build: &Build) -> io::Result<()> {
         }
     }
     *view = Some(made);
-    *update = Some(Arc::new(made_update));
-    lap(&mut spent.update_ns, started);
+    if let Some((made_update, update_started)) = made_update {
+        *update = Some(made_update);
+        lap(&mut spent.update_ns, update_started);
+    } else {
+        *update = None;
+        lap(&mut spent.view_ns, started);
+    }
     Ok(())
 }
 
-fn unavailable(view: &mut Option<SharedView>, update: &mut Option<Arc<TableUpdate>>, reason: String) {
-    if !matches!(view.as_ref().map(SharedView::held), Some(TableView::Unavailable { reason: held }) if *held == reason) {
-        *view = Some(TableView::Unavailable { reason: reason.clone() }.into());
+fn unavailable(view: &mut Option<SharedView>, update: &mut Option<Arc<TableUpdate>>, reason: String, updates: bool) {
+    let existing = matches!(view.as_ref().map(SharedView::held), Some(TableView::Unavailable { reason: held }) if *held == reason);
+    if updates {
+        if !existing {
+            *view = Some(TableView::Unavailable { reason: reason.clone() }.into());
+        }
+        *update = Some(Arc::new(TableUpdate::Unavailable { reason }));
+    } else {
+        if !existing {
+            *view = Some(TableView::Unavailable { reason }.into());
+        }
+        *update = None;
     }
-    *update = Some(Arc::new(TableUpdate::Unavailable { reason }));
 }
 
 fn present(view: &TableView, deleted: &[u128]) -> Vec<u128> {

@@ -24,8 +24,8 @@ use dashboard_query::{
     identity::{Holder, Holders},
 };
 use content_reader_country_names::country_names::{CountryNames, Operands};
-use inputs::{Hour, Resolve, State, holds};
-use native::{Blob, Pair};
+use inputs::{Change, Hour, Input, Resolve, State, holds};
+use native::{Blob, Grouping, Pair};
 use replay_looks::Look;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -373,27 +373,27 @@ impl Names<'_> {
     }
 }
 
-fn observed_hours(inputs: &RunWars, links: &dashboard_base::queries::country_ids::RunLinks, names: &SlotNames, holders: &Holders, first: i32, last: i32) -> Vec<i32> {
-    let mut hours = BTreeSet::from([first]);
-    let mut add = |hour: i32| {
+fn observed_hours(inputs: &RunWars, links: &dashboard_base::queries::country_ids::RunLinks, names: &SlotNames, holders: &Holders, first: i32, last: i32) -> Vec<(i32, bool)> {
+    let mut hours = BTreeMap::from([(first, true)]);
+    let mut add = |hour: i32, links_changed: bool| {
         if first < hour && hour <= last {
-            hours.insert(hour);
+            *hours.entry(hour).or_default() |= links_changed;
         }
     };
     for change in &inputs.changes {
-        add(change.hour);
+        add(change.hour, false);
     }
     for runs in [&inputs.read, &inputs.capitulations] {
         for &(a, b) in runs.iter() {
-            add(a);
-            add(b.saturating_add(1));
+            add(a, false);
+            add(b.saturating_add(1), false);
         }
     }
     let mut slots = BTreeSet::new();
     for raw in &inputs.raws {
         for &(a, b, slot) in links.slots.get(raw).into_iter().flatten() {
-            add(a);
-            add(b.saturating_add(1));
+            add(a, true);
+            add(b.saturating_add(1), true);
             if let Some(slot) = slot {
                 slots.insert(slot as u32);
             }
@@ -401,17 +401,31 @@ fn observed_hours(inputs: &RunWars, links: &dashboard_base::queries::country_ids
     }
     for slot in slots {
         for hour in names.changes(slot) {
-            add(hour);
+            add(hour, false);
         }
     }
     for &(a, b, _) in &holders.unknown {
-        add(a);
-        add(b.saturating_add(1));
+        add(a, false);
+        add(b.saturating_add(1), false);
     }
     hours.into_iter().collect()
 }
 
+fn changes_grouping(change: &Change, group: &Grouping, link: impl Fn(u32) -> Option<u32>) -> bool {
+    let relevant = |raw| link(raw).is_none_or(|slot| group.countries.contains(&slot));
+    let first = (change.key >> 32) as u32;
+    let second = change.key as u32;
+    match change.input {
+        Input::Relation => relevant(first) || relevant(second),
+        Input::Owned => relevant(first),
+        Input::Faction => relevant(second),
+        Input::Score | Input::Rule | Input::Local | Input::Capitulation => false,
+    }
+}
+
 fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat: Option<&Catalogue>, cancelled: &AtomicBool) -> io::Result<WarsReply> {
+    #[cfg(test)]
+    tests::count_walk();
     let timeline = &query.timeline;
     let names = SlotNames::new(&query.holders);
     let mut walk = Walk::new(timeline.id, timeline.first);
@@ -433,8 +447,11 @@ fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat
         let hours = observed_hours(&inputs, &links, &names, &query.holders, stretch.first, stretch.last);
         let mut state = State::default();
         let mut applied = 0;
-        for (index, &hour) in hours.iter().enumerate() {
+        let mut grouping = None::<Grouping>;
+        let mut zero_link = None;
+        for (index, &(hour, links_changed)) in hours.iter().enumerate() {
             dashboard_text::metadata::check_cancel(cancelled)?;
+            let before = applied;
             while let Some(change) = inputs.changes.get(applied).filter(|change| change.hour <= hour) {
                 state.apply(change);
                 applied += 1;
@@ -444,14 +461,26 @@ fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat
                 let resolve = Resolved { links: &link, names: &names, holders: &query.holders, hour };
                 match Hour::build(&state, &resolve, view) {
                     Ok(read) => {
+                        let current_zero = read.raw_to_slot.get(&0).copied();
+                        if links_changed || current_zero != zero_link || grouping.as_ref().is_some_and(|held| {
+                            held.view != read.view || inputs.changes[before..applied].iter().any(|change| changes_grouping(change, held, link))
+                        }) {
+                            grouping = None;
+                        }
+                        zero_link = current_zero;
+                        let groups = grouping.get_or_insert_with(|| {
+                            #[cfg(test)]
+                            tests::count_grouping(hour);
+                            read.world.grouping(read.view)
+                        });
                         let mut observed = Vec::new();
-                        for blob in read.world.blobs(read.view) {
-                            let named = match read.world.representative(&blob) {
+                        for (blob, pairs) in &groups.blobs {
+                            let named = match read.world.representative(blob, pairs) {
                                 Ok(p) => {
                                     let name = match &run_looks {
                                         Some(looks) => {
                                             let prefix = state.rules.get(&0).map(|(prefix, _)| prefix.as_slice());
-                                            naming.name(&read, p, &blob, &Dated { inputs: &inputs, looks, prefix, at: hour })?
+                                            naming.name(&read, p, blob, &Dated { inputs: &inputs, looks, prefix, at: hour })?
                                         }
                                         None => naming::unknown("Not recorded: the recorded content stack is not resolved"),
                                     };
@@ -459,7 +488,7 @@ fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat
                                 }
                                 Err(reason) => Err(reason),
                             };
-                            observed.push(walk::observed(&read.world, (&read.tags, &read.identities), read.view, &blob, named, hour));
+                            observed.push(walk::observed(&read.world, (&read.tags, &read.identities), read.view, (blob, pairs), named, hour));
                         }
                         Ok((Viewed { countries: Arc::new(read.countries()), view: read.view }, observed))
                     }
@@ -468,10 +497,13 @@ fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat
             } else {
                 Err("Not recorded: the war tables were not read at this hour".to_owned())
             };
+            if read.is_err() {
+                grouping = None;
+            }
             let capitulated = state.capitulated();
             let capitulations = if holds(&inputs.capitulations, hour) { Ok(capitulated.as_slice()) } else { Err(()) };
             walk.observe(Seen { hour, read, capitulations });
-            walk.extend(hours.get(index + 1).map_or(stretch.last, |next| next - 1));
+            walk.extend(hours.get(index + 1).map_or(stretch.last, |(next, _)| next - 1));
         }
     }
     let mut reply = walk.finish(timeline.last);

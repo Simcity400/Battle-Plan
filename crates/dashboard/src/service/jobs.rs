@@ -622,8 +622,9 @@ impl Inner {
         source: &Arc<Source>,
         body: &ProductRequest,
     ) -> Result<String, dashboard_core::QueryError> {
+        let content_dependent = body.product == crate::strip::PRODUCT && crate::strip::content_dependent(&body.params);
         let context = LoadContext {
-            content: self.content_for(source, work(false, request)),
+            content: self.content_for(source, work(content_dependent, request)),
         };
         let data = source
             .in_scope(|| crate::answer::answer(source, &body.product, &body.params, &context, &request.cancelled))
@@ -669,7 +670,7 @@ impl Inner {
             crate::answer::open_all(&source).map_err(|error| error.to_string())?;
             read_key_names_ahead(&source, self.content());
             read_naming_ahead(&source);
-            read_feed_scope_ahead(&source);
+            read_feed_scope_ahead(&source, self.content_for(&source, dashboard_base::source::Work::Ahead));
             read_air_observed_ahead(&source);
             source
                 .name_countries(self.content().as_ref())
@@ -764,13 +765,13 @@ fn read_naming_ahead(source: &Arc<Source>) {
     });
 }
 
-fn read_feed_scope_ahead(source: &Arc<Source>) {
+fn read_feed_scope_ahead(source: &Arc<Source>, content: Option<ContentOptions>) {
     let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) else { return };
     let source = Arc::downgrade(source);
     let _ = std::thread::Builder::new().name("feed scope ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            let _ = source.in_scope(|| dashboard_politics::products::feed::index::warm(&source, branch));
+            let _ = source.in_scope(|| dashboard_politics::products::feed::index::warm(&source, branch, &LoadContext { content }));
         })
     });
 }
@@ -876,6 +877,13 @@ impl LoadJob {
 #[cfg(test)]
 mod lane_tests {
     use super::*;
+
+    #[test]
+    fn strips_use_non_interactive_reply_workers() {
+        assert_eq!(product_lane(crate::strip::PRODUCT, &serde_json::Value::Null), Lane::Replies);
+        assert!(crate::strip::content_dependent(&serde_json::json!({"product":"nuclear-arsenal"})));
+        assert!(!crate::strip::content_dependent(&serde_json::json!({"product":"series-rank"})));
+    }
 
     #[test]
     fn pages_that_replay_hours_wait_apart_from_every_reply() {

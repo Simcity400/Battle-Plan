@@ -5,7 +5,7 @@ import { knownValue, notRecorded, type Value } from '../value.ts';
 import type { ArtResult, BoundedReadView } from '../contract.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { formatCompactScalar, formatScalar, type ValueFormat } from '../valueFormat.ts';
-import type { FlowBand, FlowModel, FlowNode, FlowPartKey, FlowRibbon, FlowSide } from './model.ts';
+import type { FlowBand, FlowFold, FlowModel, FlowNode, FlowPartKey, FlowProjectionOptions, FlowRibbon, FlowSide } from './model.ts';
 
 export interface CountryFlowText {
   readonly leftHeader: string;
@@ -68,7 +68,7 @@ export function presentFlowEndpoint(readView: BoundedReadView, endpoint: FlowEnd
 export function flowSideNotes(...sides: readonly ReplySide[]): readonly string[] {
   return [...new Set(sides.flatMap(side => [
     ...(side.missing ? [side.missing] : []),
-    ...(side.unranked ? [`Top countries not applied, every partner shown: ${side.unranked}`] : []),
+    ...(side.unranked ? [`Top countries not applied${side.links.some(link => link.others !== null) ? '' : ', every partner shown'}: ${side.unranked}`] : []),
   ]))];
 }
 
@@ -76,7 +76,20 @@ function blank(hour: number, extra: Partial<FlowModel>): FlowModel {
   return { hour, mode: 'centred', left: [], right: [], ribbons: [], parts: [], ...extra };
 }
 
-export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowText): FlowModel {
+export function foldedFlowMembers(reply: CountryFlowReply, fold: Pick<FlowFold, 'side' | 'count' | 'total'>) {
+  const left = fold.side === 'left';
+  const side = reply.subject === null ? (left ? reply.senders : reply.receivers) : (left ? reply.incoming : reply.outgoing);
+  const ranked = side.links.flatMap(link => {
+    const index = left ? link.from : link.to;
+    const endpoint = index === null ? undefined : reply.endpoints[index];
+    return endpoint && !endpoint.collective && link.total !== null ? [{ endpoint, total: link.total }] : [];
+  });
+  const members = ranked.slice(-fold.count);
+  const sum = members.reduce((total, member) => total + BigInt(member.total), 0n);
+  return members.length === fold.count && sum === BigInt(fold.total) ? members : null;
+}
+
+export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowText, { foldRead }: FlowProjectionOptions = {}): FlowModel {
   const hour = readView.hour;
   const refused = readView.refused('main');
   if (refused) return blank(hour, { refused });
@@ -144,16 +157,20 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     const amount = link.total;
     if (index === null) {
       const label = text.others(others ?? 0);
+      const fold = foldRead && side !== 'centre' && others && amount !== null
+        ? { read: foldRead, side, count: others, total: amount, title: `${label} · ${exact(amount)}` }
+        : undefined;
       return {
         key,
         side,
         label: knownValue(label),
         numeric: value(amount),
-        figure: figure(amount),
+        figure: amount === null ? figure(amount) : formatScalar(BigInt(amount), plainFormat),
         others: others ?? 0,
+        ...(fold ? { fold } : {}),
         spoken: `${label}: ${detail(link)}`,
         audit: `${label} · ${detail(link)}`,
-        tooltip: { title: label, hour, items: items(link) },
+        tooltip: { title: label, hour, items: items(link), ...(fold ? { note: 'Open to see these partners.' } : {}) },
       };
     }
     const shown = endpoints[index]!;

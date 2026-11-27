@@ -2,10 +2,13 @@ use crate::{answer, products};
 
 pub fn typescript_contract() -> String {
     use dashboard_core::{QueryError, dto::*, map_display, map_settings, protocol, transport};
+    use dashboard_politics::products::feed::EventFeedKind;
     use dashboard_politics::products::focus_dto::*;
     use ts_rs::TS;
     let mut declarations = vec![
         QueryError::decl(),
+        crate::strip::StripParams::decl(),
+        crate::strip::StripReply::decl(),
         ReplayMetadata::decl(),
         CaptureMode::decl(),
         PartialRecording::decl(),
@@ -116,6 +119,13 @@ pub fn typescript_contract() -> String {
         );
         text.push('\n');
     }
+    let feed_labels: std::collections::BTreeMap<_, _> = EventFeedKind::ALL.into_iter()
+        .filter_map(|kind| kind.row_label().map(|label| (kind, label)))
+        .collect();
+    text.push_str(&format!(
+        "export const EVENT_FEED_ROW_LABELS: Readonly<Partial<Record<EventFeedKind, string>>> = {};\n",
+        serde_json::to_string(&feed_labels).unwrap()
+    ));
     text.push_str(&format!(
         "/** The native command byte budget, including its envelope. */\nexport const MAX_MESSAGE_BYTES = {};\n",
         protocol::MAX_MESSAGE_BYTES

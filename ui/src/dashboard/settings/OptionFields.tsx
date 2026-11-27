@@ -79,9 +79,20 @@ function OptionRow({ field, value, choices, regionSource, onChange }: {
       return regionSource ? <RegionsField field={field} value={value} onChange={onChange} client={regionSource.client} track={regionSource.track} hour={regionSource.hour} /> : null;
     case 'number':
       return <NumberRow field={field} value={typeof value === 'number' ? value : null} caption={caption} onChange={onChange} />;
+    case 'text':
+      return <TextRow field={field} value={typeof value === 'string' ? value : ''} caption={caption} onChange={onChange} />;
     case 'table':
       return <TableSettingsField field={field} value={value} onChange={onChange} />;
   }
+}
+
+function TextRow({ field, value, caption, onChange }: {
+  field: Extract<OptionField, { kind: 'text' }>; value: string; caption: ReactNode; onChange: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(current => current.trim() === value ? current : value), [value]);
+  return <label data-setting={field.key} className="setting-row">{caption}<input type="text" maxLength={field.maxLength} value={draft}
+    onChange={event => { setDraft(event.currentTarget.value); onChange(event.currentTarget.value); }} onBlur={() => setDraft(draft.trim())} /></label>;
 }
 
 function NumberRow({ field, value, caption, onChange }: {

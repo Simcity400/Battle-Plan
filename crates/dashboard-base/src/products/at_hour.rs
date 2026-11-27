@@ -26,9 +26,12 @@ use ts_rs::TS;
 
 mod incremental;
 mod placed;
+pub use placed::with_strip_pool;
+#[cfg(any(test, feature = "test-support"))]
+pub use placed::interactive_pool_snapshot;
 mod validity;
 pub use validity::{ReadDates, ScriptedInputs, reads_through, row_change_hours};
-pub use incremental::{Edits, Held};
+pub use incremental::{DatedStep, Edits, Held};
 
 pub use replay_frame::frame::Keys;
 
@@ -284,7 +287,9 @@ fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, po
         answer.read(reads, &mut read_frame)?;
     }
     let cells = Cells::default();
-    let reply = P::reply(&answer.frame, params, &At { owner, holders: &query.holders, hour, context, cancelled, live: &cells })?;
+    let reply = validity::without_read_dates(|| {
+        P::reply(&answer.frame, params, &At { owner, holders: &query.holders, hour, context, cancelled, live: &cells })
+    })?;
     let live = answer.live(&cells.finish(), &mut read_frame)?;
     Ok((reply, live))
 }
@@ -394,31 +399,31 @@ pub fn interval_panel(
     executable: Option<engine_executable::executable_tables::Tables>,
     read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, RangeInclusive<i32>, u64)> + Send + Sync + 'static,
 ) -> Box<dyn Panel> {
-    dated_interval(executable, read, |_, _| {})
+    dated_interval(executable, move |hour, cancelled, _| read(hour, cancelled), |_, _| {})
 }
 
 fn dated_interval(
     executable: Option<engine_executable::executable_tables::Tables>,
-    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, RangeInclusive<i32>, u64)> + Send + Sync + 'static,
+    read: impl Fn(i32, &AtomicBool, Option<DatedStep<'_>>) -> io::Result<(Value, RangeInclusive<i32>, u64)> + Send + Sync + 'static,
     date: impl Fn(&mut Arc<PanelData>, i32) + Send + Sync + 'static,
 ) -> Box<dyn Panel> {
     use dashboard_follow::panel::{ExactReader, ProductRead, ProductReader};
-    let read = Arc::new(move |hour, cancelled: &AtomicBool| {
-        engine_executable::executable_tables::scope(executable, || read(hour, cancelled))
-            .map_err(|error| error.to_string())
+    let read = Arc::new(move |hour, cancelled: &AtomicBool, step: Option<DatedStep<'_>>| {
+        engine_executable::executable_tables::scope(executable, || read(hour, cancelled, step))
     });
     let cold_read = Arc::clone(&read);
-    let cold: ExactReader = Arc::new(move |hour, cancelled| cold_read(hour, cancelled).map(|(data, _, _)| data));
-    let held = Mutex::new(None::<(RangeInclusive<i32>, Arc<PanelData>, u64)>);
-    let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _| {
-        let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cold: ExactReader = Arc::new(move |hour, cancelled| cold_read(hour, cancelled, None).map(|(data, _, _)| data).map_err(|error| error.to_string()));
+    let held = Mutex::new((None::<(RangeInclusive<i32>, Arc<PanelData>, u64)>, incremental::StepFrame::default()));
+    let advance: ProductReader = Arc::new(move |hour, seed, cancelled, step| {
+        let (held, frame) = &mut *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if seed || step.is_some_and(|input| input.step.reset() || input.step.gap()) { *frame = incremental::StepFrame::default(); }
         if !seed && let Some((interval, value, rows)) = &mut *held && interval.contains(&hour) {
             let undated = value.clone();
             date(value, hour);
             if !Arc::ptr_eq(&undated, value) { *interval = hour..=*interval.end(); }
             return ProductRead { value: value.clone(), rows: *rows, fresh: false, pending: false, live: None, lanes: Vec::new(), from: *interval.start() };
         }
-        let (value, rows, from) = match read(hour, cancelled) {
+        let (value, rows, from) = match read(hour, cancelled, Some(DatedStep { step, frame })) {
             Ok((reply, proven, rows)) => {
                 let value = Arc::new(Ok(reply));
                 let holds = *proven.end() >= hour;
@@ -426,12 +431,16 @@ fn dated_interval(
                 *held = holds.then(|| (from..=*proven.end(), value.clone(), rows));
                 (value, rows, from)
             }
+            Err(error) if step.is_some() && error.kind() == io::ErrorKind::WouldBlock => return ProductRead {
+                value: Arc::new(Ok(Value::Null)), rows: 0, fresh: false, pending: true, live: None, lanes: frame.lanes(), from: hour,
+            },
             Err(error) => {
                 *held = None;
-                (Arc::new(Err(error)), 0, hour)
+                *frame = incremental::StepFrame::default();
+                (Arc::new(Err(error.to_string())), 0, hour)
             }
         };
-        ProductRead { value, rows, fresh: true, pending: false, live: None, lanes: Vec::new(), from }
+        ProductRead { value, rows, fresh: true, pending: false, live: None, lanes: frame.lanes(), from }
     });
     product_panel(advance, cold)
 }
@@ -462,6 +471,15 @@ pub fn dated_day_panel<P: super::Product>(
     through: impl Fn(&P::Params, &P::Reply) -> i32 + Send + Sync + 'static,
     date_held: impl Fn(&mut Arc<PanelData>, i32) + Send + Sync + 'static,
 ) -> Result<Box<dyn Panel>, String> {
+    stepped_day_panel::<P>(source, load, asked, (start, end), through, date_held, |source, params, load, cancelled, _| P::load(source, params, load, cancelled))
+}
+
+pub fn stepped_day_panel<P: super::Product>(
+    source: &Arc<Source>, load: &LoadContext, asked: &Value, (start, end): (&'static str, &'static str),
+    through: impl Fn(&P::Params, &P::Reply) -> i32 + Send + Sync + 'static,
+    date_held: impl Fn(&mut Arc<PanelData>, i32) + Send + Sync + 'static,
+    load_step: impl Fn(&Source, &P::Params, &LoadContext, &AtomicBool, DatedStep<'_>) -> io::Result<P::Reply> + Send + Sync + 'static,
+) -> Result<Box<dyn Panel>, String> {
     let first = dashboard_query::branch(asked).and_then(|branch| crate::queries::query(source, branch))
         .map_err(|e| e.to_string())?.timeline.first;
     let day_start = |hour: i32| hour.div_euclid(24).saturating_mul(24);
@@ -469,7 +487,7 @@ pub fn dated_day_panel<P: super::Product>(
         return dated_product::<P>(source, load, asked, move |request, hour| {
             request[start] = first.max(day_start(hour)).into();
             request[end] = hour.into();
-        }, through, date_held);
+        }, through, date_held, load_step);
     };
     let tile_first = i32::try_from(tile_first).map_err(|_| "Invalid history start")?;
     let tile_last = asked[end].as_i64().and_then(|n| i32::try_from(n).ok()).ok_or("Invalid history end")?;
@@ -498,28 +516,32 @@ pub fn product_interval_panel<P: super::Product>(
     date: impl Fn(&mut Value, i32) + Send + Sync + 'static,
     valid_through: fn(&P::Reply) -> i32,
 ) -> Result<Box<dyn Panel>, String> {
-    dated_product::<P>(source, load, asked, date, move |_, reply| valid_through(reply), |_, _| {})
+    dated_product::<P>(source, load, asked, date, move |_, reply| valid_through(reply), |_, _| {}, |source, params, load, cancelled, _| P::load(source, params, load, cancelled))
 }
 
-pub fn dated_product<P: super::Product>(
+fn dated_product<P: super::Product>(
     source: &Arc<Source>, load: &LoadContext, asked: &Value,
     date: impl Fn(&mut Value, i32) + Send + Sync + 'static,
     valid_through: impl Fn(&P::Params, &P::Reply) -> i32 + Send + Sync + 'static,
     date_held: impl Fn(&mut Arc<PanelData>, i32) + Send + Sync + 'static,
+    load_step: impl Fn(&Source, &P::Params, &LoadContext, &AtomicBool, DatedStep<'_>) -> io::Result<P::Reply> + Send + Sync + 'static,
 ) -> Result<Box<dyn Panel>, String> {
     let mut params = asked.clone();
     params.as_object_mut().ok_or("Expected panel parameters")?.remove("panel");
     let source = Arc::clone(source);
     let load = LoadContext { content: load.content.clone() };
     let finish = Finish::new(&source, &load, P::CONTENT_DEPENDENT);
-    Ok(dated_interval(source.tables(), move |hour, cancelled| {
+    Ok(dated_interval(source.tables(), move |hour, cancelled, step| {
         let mut request = params.clone();
         date(&mut request, hour);
         let params = dashboard_query::named::named::<P::Params>(&request)?;
         P::validate(&params).map_err(dashboard_core::invalid)?;
         #[cfg(any(test, feature = "test-support"))]
         crate::test_fixtures::product_called();
-        let (reply, rows) = counted(|| finish.reply(|| P::load(&source, &params, &load, cancelled)));
+        let (reply, rows) = counted(|| finish.reply(|| match step {
+            Some(step) => load_step(&source, &params, &load, cancelled, step),
+            None => P::load(&source, &params, &load, cancelled),
+        }));
         let reply = reply?;
         let through = valid_through(&params, &reply);
         Ok((serde_json::to_value(reply)?, hour..=through, rows))

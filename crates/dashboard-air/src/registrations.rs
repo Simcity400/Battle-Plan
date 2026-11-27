@@ -8,7 +8,7 @@ dashboard_base::register_products! {
     AIR_LEDGER_MILITARYAIRLEDGER => crate::products::air_ledger::MilitaryAirLedger,
     AIR_LEDGER_AT_MILITARYAIRAT => crate::products::air_ledger::at::MilitaryAirAt,
     AIR_LEDGER_BREAKDOWN_BOMBINGDAMAGEBREAKDOWN => crate::products::air_ledger::breakdown::BombingDamageBreakdown; interval(at_hour, |r| r.through),
-    REGIONAL_WEATHER_REGIONALWEATHER => crate::products::regional_weather::RegionalWeather; interval(|request, hour| request["lastHour"] = hour.into(), |r| r.valid_through),
+    REGIONAL_WEATHER_REGIONALWEATHER => crate::products::regional_weather::RegionalWeather; panel(crate::products::regional_weather::panel),
     AIR_SUPERIORITY_AIRSUPERIORITYCHOICES => crate::products::air_superiority::AirSuperiorityChoices,
     AIR_STATISTICS_AIRSTATISTICSREGIONS => crate::products::air_statistics::AirStatisticsRegions,
     AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE => crate::products::air_superiority::timeline::AirSuperiorityTimeline; panel(crate::products::air_superiority::timeline::panel),

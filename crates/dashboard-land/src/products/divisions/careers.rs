@@ -230,44 +230,68 @@ impl AtHour for DecoratedDivisions {
             1 => {
                 let countries = Countries::witnessed(frame).0.named(at.holders, at.hour);
                 let filter = selected_tags(params, at.hour);
-                let eligible: Vec<_> = frame.complete::<tables::Divisions>().unwrap_or(&[]).iter()
+                let ids: Vec<_> = frame.complete::<tables::Divisions>().unwrap_or(&[]).iter()
                     .filter(|row| row.reveal_skip == 0 && filter.as_ref().is_none_or(|tags|
-                        countries.tag(attributed(row, ArmyAttribution::Owner)).is_some_and(|tag| tags.contains(tag.as_str())))).collect();
-                let ids = eligible.iter().map(|row| u128::from(row.id));
-                let templates = eligible.iter().map(|row| u128::from(row.template));
-                let mut history = Vec::new();
-                for id in ids.clone() {
-                    let first = id << 34;
-                    history.push((first, first | u128::from(u32::MAX)));
-                    let awards = first | u128::from(DivisionHistoryRow::AWARDS) << 32;
-                    history.push((awards, awards | u128::from(u32::MAX)));
+                        countries.tag(attributed(row, ArmyAttribution::Owner)).is_some_and(|tag| tags.contains(tag.as_str()))))
+                    .map(|row| u128::from(row.id)).collect();
+                let mut reads = vec![
+                    Read::these(TableId::DivisionStatus, ids.iter().copied()),
+                    Read::these(TableId::DivisionLandInputs, ids.iter().copied()),
+                    Read { table: TableId::DivisionHistory, keys: Keys::Ranges(ids.iter()
+                        .flat_map(|&id| [DivisionHistoryRow::SUMMARY, DivisionHistoryRow::AWARDS].map(|list| history_range(id, list))).collect()) },
+                ];
+                if params.by == DecoratedRank::EnemyKilled {
+                    reads.push(Read::these(TableId::DivisionKills, ids));
                 }
-                vec![
-                    Read::these(TableId::DivisionStatus, ids.clone()), Read::these(TableId::DivisionLandInputs, ids.clone()), Read::these(TableId::DivisionKills, ids),
-                    Read { table: TableId::DivisionHistory, keys: Keys::Ranges(history) },
-                    Read::these(TableId::DivisionTemplates, templates.clone()), Read::these(TableId::DivisionTemplateIcons, templates),
-                ]
+                reads
             }
             2 => {
-                let rows = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
-                vec![Read::these(TableId::LexicalTokens, rows.iter().filter(|row| row.list == DivisionHistoryRow::AWARDS && row.medal_enabled != 0)
-                    .filter_map(|row| row.medal_token.map(|token| u128::from(token as u32))))]
+                let divisions = frame.complete::<tables::Divisions>().unwrap_or(&[]);
+                let countries = Countries::witnessed(frame).0.named(at.holders, at.hour);
+                let (first, _, _) = place(frame, params, at.context, &countries, divisions, None).expect("planning does not cancel");
+                let templates = first.iter().filter_map(|rank| find(Some(divisions), rank.id, |row| row.id)).map(|row| u128::from(row.template));
+                let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
+                let medals = first.iter().map(|rank| history_of(history, rank.id))
+                    .filter(|rows| summary_medals(rows).is_some())
+                    .flatten()
+                    .filter(|row| row.list == DivisionHistoryRow::AWARDS && row.medal_enabled != 0)
+                    .filter_map(|row| row.medal_token.map(|token| u128::from(token as u32)));
+                let mut reads = vec![
+                    Read::these(TableId::LexicalTokens, medals),
+                    Read::these(TableId::DivisionTemplates, templates.clone()),
+                    Read::these(TableId::DivisionTemplateIcons, templates),
+                ];
+                if params.by != DecoratedRank::EnemyKilled {
+                    reads.push(Read::these(TableId::DivisionKills, first.iter().map(|rank| u128::from(rank.id))));
+                }
+                reads
             }
             _ => Vec::new(),
         }
     }
 
     fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
-        let through = if stage == 1 && params.countries.is_some() {
-            filter_valid_through(params.countries.as_deref(), at.hour).min(dashboard_base::products::at_hour::before(at.holders.next_change(at.hour)))
-        } else { i32::MAX };
+        let through = match stage {
+            1 | 2 if params.countries.is_some() => filter_valid_through(params.countries.as_deref(), at.hour)
+                .min(dashboard_base::products::at_hour::before(at.holders.next_change(at.hour))),
+            _ => i32::MAX,
+        };
+        let through = match (&at.context.looks, stage) {
+            (Ok(looks), 2) => through.min(looks.next_change(at.hour).saturating_sub(1)),
+            _ => through,
+        };
         (Self::reads_in(params, owner, stage, frame, at), through)
     }
 
     fn plan_changes(stage: usize, edits: &Edits, _frame: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        let eligibility = edits.fields(TableId::Divisions, mask::<DivisionRow>(&["roster_owner", "expeditionary_owner", "reveal_skip"]))
+            || edits.fields(TableId::CountryLinks, u64::MAX);
         match stage {
-            1 => edits.fields(TableId::Divisions, u64::MAX) || edits.fields(TableId::CountryLinks, u64::MAX),
-            2 => edits.fields(TableId::DivisionHistory, dashboard_base::products::at_hour::field_mask(TableId::DivisionHistory, &["medal_token", "medal_enabled"])),
+            1 => eligibility,
+            2 => eligibility || edits.fields(TableId::Divisions, mask::<DivisionRow>(&["template"]))
+                || edits.fields(TableId::DivisionStatus, u64::MAX) || edits.fields(TableId::DivisionLandInputs, u64::MAX)
+                || edits.fields(TableId::DivisionKills, u64::MAX)
+                || edits.fields(TableId::DivisionHistory, mask::<DivisionHistoryRow>(&["available", "amount", "medal_token", "medal_enabled"])),
             _ => false,
         }
     }
@@ -315,6 +339,11 @@ impl AtHour for DecoratedDivisions {
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+fn history_range(id: u128, list: u8) -> (u128, u128) {
+    let first = (id << 34) | (u128::from(list) << 32);
+    (first, first | u128::from(u32::MAX))
 }
 
 #[derive(Default)]
@@ -597,29 +626,17 @@ fn selected_tags(params: &DecoratedDivisionsParams, hour: i32) -> Option<HashSet
     params.countries.as_ref().map(|spans| spans.iter().filter(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.tag.as_str()).collect())
 }
 
-fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_, DecoratedContext>, refusals: &mut Refusals) -> io::Result<DecoratedDivisionsReply> {
-    let mut reply = DecoratedDivisionsReply { divisions: Vec::new(), medals: Vec::new(), templates: Vec::new(), partial: None, missing: None, warnings: Vec::new() };
-    let divisions = match frame.complete::<tables::Divisions>() {
-        Ok(rows) => rows,
-        Err(why) => {
-            reply.missing = Some(format!("Divisions were not read at this hour: {why}"));
-            return Ok(reply);
-        }
-    };
-    dashboard_base::products::at_hour::count_rows(|| divisions.len() as u64);
-    let content = &at.context.content;
-    let (countries, links_missing) = Countries::witnessed(frame);
-    let countries = countries.named(at.holders, at.hour);
-    if let Some(why) = links_missing {
-        refusals.note(format!("Division countries unavailable: {why}"));
-    }
-    let passing = selected_tags(params, at.hour);
+fn place(
+    frame: &DecodedFrame, params: &DecoratedDivisionsParams, context: &DecoratedContext,
+    countries: &Countries<'_>, divisions: &[DivisionRow], cancelled: Option<&std::sync::atomic::AtomicBool>,
+) -> io::Result<(Vec<Measures>, Option<String>, Option<String>)> {
+    let passing = selected_tags(params, frame.hour);
     let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
     let mut measured = Vec::new();
     let (mut unplaced, mut unmeasured) = (0usize, 0usize);
     for (seen, division) in divisions.iter().filter(|row| row.reveal_skip == 0).enumerate() {
-        if seen.is_multiple_of(4096) {
-            dashboard_text::metadata::check_cancel(at.cancelled)?;
+        if seen.is_multiple_of(4096) && let Some(cancelled) = cancelled {
+            dashboard_text::metadata::check_cancel(cancelled)?;
         }
         let tag = (passing.is_some() || params.by == DecoratedRank::CountryName).then(|| countries.tag(attributed(division, ArmyAttribution::Owner))).flatten();
         if let Some(passing) = &passing {
@@ -638,15 +655,14 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
             medals: summary_medals(history_of(history, division.id)),
             experience: status.zip(manpower_of(frame, division.id)).and_then(|(status, manpower)| status.normalized_experience(manpower)),
             casualties_taken: status.and_then(DivisionStatusRow::casualties_taken),
-            enemy_killed: enemy_killed(frame, division.id).killed,
-            name: rank_name(params.by, content, &at.context.looks, status, tag.as_deref(), at.hour),
+            enemy_killed: (params.by == DecoratedRank::EnemyKilled).then(|| enemy_killed(frame, division.id).killed).flatten(),
+            name: rank_name(params.by, &context.content, &context.looks, status, tag.as_deref(), frame.hour),
         };
         unmeasured += usize::from(!measures.known(params.by));
         measured.push(measures);
     }
     if passing.is_some() && measured.is_empty() && unplaced > 0 {
-        reply.missing = Some(format!("{unplaced} divisions' countries were not recorded at this hour, so which belong to the chosen countries is not known"));
-        return Ok(reply);
+        return Ok((Vec::new(), None, Some(format!("{unplaced} divisions' countries were not recorded at this hour, so which belong to the chosen countries is not known"))));
     }
     let mut partial = Vec::new();
     if unmeasured > 0 {
@@ -659,7 +675,32 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
     if unproven {
         partial.push(format!("Divisions with equal {} are ordered by a measure not read for some of them", rank_word(params.by)));
     }
-    reply.partial = (!partial.is_empty()).then(|| partial.join(". "));
+    Ok((first, (!partial.is_empty()).then(|| partial.join(". ")), None))
+}
+
+fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_, DecoratedContext>, refusals: &mut Refusals) -> io::Result<DecoratedDivisionsReply> {
+    let mut reply = DecoratedDivisionsReply { divisions: Vec::new(), medals: Vec::new(), templates: Vec::new(), partial: None, missing: None, warnings: Vec::new() };
+    let divisions = match frame.complete::<tables::Divisions>() {
+        Ok(rows) => rows,
+        Err(why) => {
+            reply.missing = Some(format!("Divisions were not read at this hour: {why}"));
+            return Ok(reply);
+        }
+    };
+    dashboard_base::products::at_hour::count_rows(|| divisions.len() as u64);
+    let content = &at.context.content;
+    let (countries, links_missing) = Countries::witnessed(frame);
+    let countries = countries.named(at.holders, at.hour);
+    if let Some(why) = links_missing {
+        refusals.note(format!("Division countries unavailable: {why}"));
+    }
+    let (first, partial, missing) = place(frame, params, at.context, &countries, divisions, Some(at.cancelled))?;
+    reply.partial = partial;
+    reply.missing = missing;
+    if reply.missing.is_some() {
+        return Ok(reply);
+    }
+    let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
     let mut facts = Facts { frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
     content.group_notes(refusals);
     let mut templates = BTreeMap::<u64, ()>::new();

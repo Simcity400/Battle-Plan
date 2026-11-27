@@ -15,7 +15,7 @@ import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { laneDispatch } from '../../draw/laneDispatch.ts';
 import type { CadenceTimers } from '../cadence.ts';
 import { tableLane } from './laneView.ts';
-import { tableSettingsOf } from './settings.ts';
+import { tableSettingsOf, type TableSettings } from './settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDom.fixture.ts';
 import FamilyHost from '../host/FamilyHost.tsx';
 import { DetailWindowHost } from '../host/DetailWindowHost.tsx';
@@ -323,6 +323,48 @@ declare global {
 }
 
 window.tableFamilyDom = {
+  async logControls() {
+    const node = document.createElement('div');
+    const slot = document.createElement('div');
+    node.style.width = '900px';
+    const body = document.createElement('div');
+    body.style.cssText = 'height:10px;overflow:auto';
+    body.innerHTML = '<div style="height:1000px"></div>';
+    document.body.append(node, slot, body);
+    const offsets: number[] = [];
+    body.addEventListener('scroll', () => offsets.push(body.scrollTop));
+    const root = createRoot(node);
+    let sorted: TableSettings['sort'] = SETTINGS.sort;
+    const sent: [string, string][] = [];
+    const timers = new Map<number, () => void>();
+    const originalSet = window.setTimeout, originalClear = window.clearTimeout;
+    window.setTimeout = ((fn: () => void) => { const id = timers.size + 10000; timers.set(id, fn); return id; }) as typeof window.setTimeout;
+    window.clearTimeout = ((id?: number) => { timers.delete(id ?? -1); }) as typeof window.clearTimeout;
+    try {
+      flushSync(() => root.render(<TableChrome state={{ meta: { columns: SPECS, searchable: true } }}
+        meta={{ mode: 'ready', reason: null, failureOrigin: 'local', empty: null, emptyDetail: null, emptyKind: 'empty', summaryText: null, summaryPartial: null, notes: [], warnings: [] }}
+        settings={SETTINGS} onSettings={next => { sorted = next.sort; }} editable viewportWidth={900} bodyBlocked={false}
+        announce={() => {}} targets={{ body, bodyWrap: null, extent: null }} shownHour={() => 100} headerSlot={null}
+        filterSlot={slot} setFilterOption={(key, value) => { sent.push([key, value]); }} />));
+      const header = [...node.querySelectorAll<HTMLButtonElement>('.tf-th-label')].find(button => button.textContent?.includes('Country'))!;
+      header.click();
+      const input = slot.querySelector<HTMLInputElement>('input[type="search"]')!;
+      const type = (value: string) => flushSync(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      body.scrollTop = 300;
+      type('deep'); type('deep match');
+      const before = sent.length;
+      flushSync(() => { for (const fn of timers.values()) fn(); timers.clear(); });
+      const searched = sent.slice();
+      slot.querySelector<HTMLButtonElement>('[aria-label="Clear search"]')!.click();
+      return { sorted, before, searched, cleared: sent.at(-1), header: !!header, offset: body.scrollTop, resetEvent: offsets.at(-1) };
+    } finally {
+      window.setTimeout = originalSet; window.clearTimeout = originalClear;
+      flushSync(() => root.unmount()); node.remove(); slot.remove(); body.remove();
+    }
+  },
   async mount() {
     commits = 0;
     activated = [];

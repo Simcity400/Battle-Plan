@@ -1,7 +1,7 @@
 
 use dashboard_base::products::{Country, validate_country};
 use super::{ArmyAttribution, Content, Countries, Refusals, find, side, token_key};
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read}}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Edits, Held, Keys, Owner, Read, ReadsAt, field_mask}}};
 use replay_data::rows::{DivisionEquipmentTemplateRow, Recorded, TableId, TemplateSubunit, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -175,14 +175,42 @@ impl AtHour for DivisionTemplates {
                     Read::all(TableId::Countries),
                     Read::all(TableId::CountryLinks),
                     Read::all(TableId::DivisionTemplates),
-                    Read::all(TableId::LexicalTokens),
                     Read::these(TableId::DivisionEquipmentCounts, [u128::from(owner.slot) << 8 | u128::from(side)]),
                     Read { table: TableId::DivisionEquipmentByTemplate, keys: Keys::Range(lo, hi) },
                 ]
             }
             1 => vec![Read::these(TableId::DivisionTemplateIcons, owned(held, owner.slot).0.into_iter().map(u128::from))],
+            2 => vec![Read::these(TableId::LexicalTokens, held.complete::<tables::DivisionTemplateIcons>().unwrap_or(&[]).iter()
+                .filter(|row| row.model_unreadable == 0)
+                .filter_map(|row| row.grids.require("template grids").ok())
+                .flat_map(|grid| grid.regiments.iter().chain(&grid.regimental_support).chain(&grid.support))
+                .filter(|unit| unit.token != 0)
+                .map(|unit| u128::from(unit.token)))],
             _ => Vec::new(),
         }
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _frame: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        let roster = edits.fields(TableId::DivisionTemplates, field_mask(TableId::DivisionTemplates, &["owner"]))
+            || edits.fields(TableId::CountryLinks, u64::MAX);
+        match stage {
+            1 => roster,
+            2 => roster || edits.fields(TableId::DivisionTemplateIcons, field_mask(TableId::DivisionTemplateIcons, &["grids", "model_unreadable"])),
+            _ => false,
+        }
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, _data: &mut Held<'_>) -> io::Result<bool> {
+        let table = TableId::DivisionTemplates;
+        if !edits.only_columns(table, field_mask(table, &["name", "name_key"])) {
+            return Ok(false);
+        }
+        let (Some(owner), Ok(countries), Ok(roster)) = (at.owner, Countries::read(frame), frame.complete::<tables::DivisionTemplates>()) else {
+            return Ok(false);
+        };
+        Ok(edits.tables.get(&table).is_some_and(|names| names.keys().all(|&key| {
+            find(Some(roster), key as u64, |row| row.template).is_some_and(|row| countries.slot(row.owner) != Some(owner.slot))
+        })))
     }
 
     fn columns(table: TableId) -> Option<Vec<usize>> {

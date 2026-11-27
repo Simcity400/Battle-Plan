@@ -3,6 +3,7 @@ use dashboard_base::products::{Country, validate_country};
 use dashboard_base::products::LoadContext;
 use super::divisions::{Content, Refusals};
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}, products::at_hour::{At, AtHour, Edits, Held, Keys, Owner, Read, ScriptedInputs, field_columns}};
+use content_reader_layers::content::ByMode;
 use dashboard_text::{
     metadata::link_slot,
     scripted_text::ScriptedText,
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::Arc,
+    sync::{Arc, OnceLock, Weak},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -39,6 +40,20 @@ const CONVEYOR_VIEW: &str = "military_deployment_conveyor_view";
 const PRIORITY_BUTTONS: [&str; 3] = ["low_prio", "medium_prio", "high_prio"];
 
 pub struct TrainingQueue;
+
+type PreparedPriorities = ByMode<OnceLock<(Priorities, catalogue::OwnRefusals)>>;
+
+#[derive(Default)]
+struct PriorityCache {
+    catalogue: Weak<Catalogue>,
+    prepared: Arc<PreparedPriorities>,
+}
+
+pub struct Context {
+    names: Content,
+    inputs: ScriptedInputs,
+    priorities: Arc<PreparedPriorities>,
+}
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -209,40 +224,74 @@ fn template_name(frame: &DecodedFrame, handle: u64, cat: &Result<Arc<Catalogue>,
         .map_err(|why| format!("Template name unavailable: {why}"))
 }
 
-fn priorities(cat: &Result<Arc<Catalogue>, String>, frame: &DecodedFrame, root: u32, refusals: &mut Refusals) -> Vec<Result<String, String>> {
-    let cat = match cat {
-        Ok(cat) => cat,
-        Err(_) => return vec![Err("Names need the recorded content stack".to_owned()); PRIORITY_BUTTONS.len()],
-    };
-    let guis = match cat.guis() {
-        Ok(guis) => guis,
-        Err(why) => return vec![Err(format!("Deployment priority names unavailable: {why}")); PRIORITY_BUTTONS.len()],
-    };
-    let scripted = cat.scripted_content().ok().map(|content| ScriptedText::new(frame, &cat.localisation, content, root));
-    let text = |key: &str| {
-        if cat.localisation.get(key).is_none() {
-            return Err(format!("{key} has no localised name"));
-        }
-        let text = match &scripted {
-            Some(scripted) => dashboard_text::catalogue::localised_in(&cat.localisation, key, &[], scripted),
-            None => dashboard_text::catalogue::localised(&cat.localisation, key, View::Scripted),
+enum PriorityName {
+    Fixed(Result<String, String>),
+    Scripted(String),
+}
+
+struct Priorities {
+    names: [PriorityName; PRIORITY_BUTTONS.len()],
+    notes: BTreeSet<String>,
+}
+
+impl Priorities {
+    fn unavailable(reason: &str) -> Self {
+        Self { names: std::array::from_fn(|_| PriorityName::Fixed(Err(reason.to_owned()))), notes: BTreeSet::new() }
+    }
+
+    fn load(cat: &Result<Arc<Catalogue>, String>) -> Self {
+        let Ok(cat) = cat else {
+            return Self::unavailable("Names need the recorded content stack");
         };
-        text.map_err(|why| format!("Deployment priority name refused: {why}"))
-    };
-    let mut notes = BTreeSet::new();
-    let names = PRIORITY_BUTTONS
-        .iter()
-        .map(|button| {
+        let guis = match cat.guis() {
+            Ok(guis) => guis,
+            Err(why) => return Self::unavailable(&format!("Deployment priority names unavailable: {why}")),
+        };
+        let scripted = cat.scripted_content().is_ok();
+        let mut notes = BTreeSet::new();
+        let names = PRIORITY_BUTTONS.map(|button| {
             let mut warnings = Vec::new();
             let key = content_reader_gui::gui::native::window_button_tooltip(guis, CONVEYOR_VIEW, button, &mut warnings);
             notes.extend(warnings);
-            key.map_err(|why| format!("Deployment priority name unavailable: {why}")).and_then(|key| text(&key))
-        })
-        .collect();
-    for note in notes {
-        refusals.note(note);
+            let key = match key {
+                Ok(key) => key,
+                Err(why) => return PriorityName::Fixed(Err(format!("Deployment priority name unavailable: {why}"))),
+            };
+            if cat.localisation.get(&key).is_none() {
+                return PriorityName::Fixed(Err(format!("{key} has no localised name")));
+            }
+            if scripted && cat.localisation.localise(key.as_bytes()).is_ok_and(|text| text.contains('[')) {
+                return PriorityName::Scripted(key);
+            }
+            PriorityName::Fixed(dashboard_text::catalogue::localised(&cat.localisation, &key, View::Scripted)
+                .map_err(|why| format!("Deployment priority name refused: {why}")))
+        });
+        Self { names, notes }
     }
-    names
+
+    fn resolve(&self, cat: &Result<Arc<Catalogue>, String>, frame: &DecodedFrame, root: u32) -> [Result<String, String>; PRIORITY_BUTTONS.len()] {
+        let scripted = std::cell::OnceCell::new();
+        self.names.each_ref().map(|name| match name {
+            PriorityName::Fixed(text) => text.clone(),
+            PriorityName::Scripted(key) => {
+                let cat = cat.as_ref().map_err(Clone::clone)?;
+                let text = scripted.get_or_init(|| cat.scripted_content().map(|content| ScriptedText::new(frame, &cat.localisation, content, root)));
+                text.as_ref().map_err(Clone::clone)
+                    .and_then(|text| dashboard_text::catalogue::localised_in(&cat.localisation, key, &[], text))
+                    .map_err(|why| format!("Deployment priority name refused: {why}"))
+            }
+        })
+    }
+
+    fn tables(&self, located: bool) -> &'static [TableId] {
+        if self.names.iter().any(|name| matches!(name, PriorityName::Scripted(_))) {
+            dashboard_text::scripted_text::TABLES
+        } else if located {
+            &[TableId::States]
+        } else {
+            &[]
+        }
+    }
 }
 
 fn location(frame: &DecodedFrame, cat: &Result<Arc<Catalogue>, String>, province: u32, provinces: &io::Result<&[ProvinceRow]>) -> Result<String, String> {
@@ -252,7 +301,8 @@ fn location(frame: &DecodedFrame, cat: &Result<Arc<Catalogue>, String>, province
     let cat = cat.as_ref().map_err(|_| "Location names need the recorded content stack".to_owned())?;
     let provinces = provinces.as_ref().map_err(|why| format!("Provinces were not read: {why}"))?;
     let row = provinces.binary_search_by_key(&province, |row| row.id).ok().map(|at| &provinces[at]).ok_or_else(|| format!("Province {province} was not read"))?;
-    let text = ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, 0);
+    let content = cat.scripted_content()?;
+    let text = dashboard_text::triggers::inputs::unrecorded(|| ScriptedText::new(frame, &cat.localisation, content, 0));
     text.plain_state_name(row.state).and_then(|name| catalogue::plain_text(&name))
 }
 
@@ -304,7 +354,7 @@ impl AtHour for TrainingQueue {
     type Params = TrainingQueueParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = TrainingQueueReply;
-    type Context = (Content, ScriptedInputs);
+    type Context = Context;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -358,7 +408,7 @@ impl AtHour for TrainingQueue {
                     Read::these(TableId::DivisionTemplates, templates.iter().copied()), Read::these(TableId::DivisionTemplateIcons, templates),
                     Read { table: TableId::DeploymentManpower, keys: parts(33_u32) }, Read { table: TableId::DeploymentEquipment, keys: parts(32_u32) },
                 ];
-                if at.context.0.cat.is_ok() {
+                if at.context.names.cat.is_ok() {
                     let locations = owned().map(|order| order.location).filter(|&id| id != 0).map(u128::from);
                     let mut locations = locations.peekable();
                     if locations.peek().is_some() { reads.push(Read::these(TableId::Provinces, locations)); }
@@ -424,7 +474,14 @@ impl AtHour for TrainingQueue {
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok((Content::load(source, load), ScriptedInputs::new(source.replay())))
+        let names = Content::load(source, load);
+        let catalogue = names.cat.as_ref().map(Arc::downgrade).unwrap_or_default();
+        let cache = source.state::<PriorityCache>();
+        let mut cache = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !Weak::ptr_eq(&cache.catalogue, &catalogue) {
+            *cache = PriorityCache { catalogue, ..PriorityCache::default() };
+        }
+        Ok(Context { names, inputs: ScriptedInputs::new(source.replay()), priorities: Arc::clone(&cache.prepared) })
     }
 
     fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
@@ -434,7 +491,7 @@ impl AtHour for TrainingQueue {
     fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
         Self::valid_through(frame, params, at)
             .min(reply.text_through)
-            .min(super::divisions::names_through(frame, reply.orders.iter().map(|order| order.template.as_str()), &at.context.0))
+            .min(super::divisions::names_through(frame, reply.orders.iter().map(|order| order.template.as_str()), &at.context.names))
             .min(dashboard_base::products::at_hour::warnings_through(frame.hour, reply.missing.iter().chain(&reply.warnings).map(String::as_str)))
     }
 
@@ -451,7 +508,7 @@ impl AtHour for TrainingQueue {
         };
         reply.read_hour = Some(read);
         let mut refusals = Refusals::default();
-        let (names, inputs) = at.context;
+        let Context { names, inputs, priorities } = at.context;
         let cat = &names.cat;
         names.group_notes(&mut refusals);
         let links = frame.complete::<tables::CountryLinks>()?;
@@ -478,17 +535,22 @@ impl AtHour for TrainingQueue {
         let icons = frame.complete::<tables::DivisionTemplateIcons>().ok();
         let mut orders: Vec<_> = conveyors.iter().filter(|row| link_slot(links, row.country) == Some(owner.slot)).collect();
         let provinces = frame.complete::<tables::Provinces>();
+        let (priorities, diagnostics) = priorities.current().get_or_init(|| catalogue::capture(|| Priorities::load(cat)));
+        catalogue::credit(diagnostics);
+        for note in &priorities.notes {
+            refusals.note(note.clone());
+        }
         let text = |world: &DecodedFrame| {
-            let names = priorities(cat, world, owner.slot, &mut refusals);
+            let names = priorities.resolve(cat, world, owner.slot);
             let locations: BTreeMap<_, _> = orders.iter().map(|order| order.location).collect::<BTreeSet<_>>().into_iter()
                 .map(|province| (province, location(world, cat, province, &provinces))).collect();
             (names, locations)
         };
-        let ((priority_names, locations), through) = if cat.is_ok() {
-            inputs.evaluate(frame, dashboard_text::scripted_text::TABLES, at.cancelled, text)?
-        } else {
-            let mut text = text;
+        let tables = priorities.tables(cat.is_ok() && orders.iter().any(|order| order.location != 0));
+        let ((priority_names, locations), through) = if tables.is_empty() {
             (text(frame), i32::MAX)
+        } else {
+            inputs.evaluate(frame, tables, at.cancelled, text)?
         };
         reply.text_through = through;
         orders.sort_by_key(|row| (row.ordinal, row.handle));

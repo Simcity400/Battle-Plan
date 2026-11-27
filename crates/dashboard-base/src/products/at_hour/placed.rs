@@ -14,6 +14,39 @@ use std::{
 
 const HELD_SETS: usize = 4;
 
+struct StripPool {
+    source: *const Source,
+    pool: Option<Arc<Pool>>,
+}
+
+thread_local! {
+    static STRIP: std::cell::RefCell<Option<StripPool>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn with_strip_pool<T>(source: &Source, work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<StripPool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            STRIP.set(self.0.take());
+        }
+    }
+    let _restore = Restore(STRIP.replace(Some(StripPool {
+        source: std::ptr::from_ref(source),
+        pool: None,
+    })));
+    work()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn interactive_pool_snapshot(source: &Source) -> io::Result<Vec<String>> {
+    let pool = Pool::interactive(source)?;
+    let free = pool.free.lock().unwrap_or_else(PoisonError::into_inner);
+    Ok(free.iter().map(|placed| {
+        let lanes: Vec<_> = placed.lanes.iter().map(|lane| (lane.table(), lane.head(), lane.requested())).collect();
+        format!("{:?}", (placed.run, placed.at, lanes))
+    }).collect())
+}
+
 pub struct Pool {
     pub(super) pages: Arc<WorldPages>,
     free: Mutex<Vec<Placed>>,
@@ -40,6 +73,22 @@ pub(super) struct Taken {
 
 impl Pool {
     pub fn of(source: &Source) -> io::Result<Arc<Self>> {
+        let strip = STRIP.with_borrow_mut(|held| -> io::Result<_> {
+            let Some(held) = held.as_mut().filter(|held| std::ptr::eq(held.source, source)) else {
+                return Ok(None);
+            };
+            if held.pool.is_none() {
+                held.pool = Some(Self::new(source)?);
+            }
+            Ok(held.pool.clone())
+        })?;
+        if let Some(pool) = strip {
+            return Ok(pool);
+        }
+        Self::interactive(source)
+    }
+
+    fn interactive(source: &Source) -> io::Result<Arc<Self>> {
         #[derive(Default)]
         struct Held(Option<Arc<Pool>>);
         let state = source.state::<Held>();
@@ -47,9 +96,18 @@ impl Pool {
         if let Some(pool) = &held.0 {
             return Ok(Arc::clone(pool));
         }
-        let pool = Arc::new(Self { pages: WorldPages::shared(source.replay_ref().recording())?, free: Mutex::default(), warming: Mutex::default(), unplaceable: Mutex::default() });
+        let pool = Self::new(source)?;
         held.0 = Some(Arc::clone(&pool));
         Ok(pool)
+    }
+
+    fn new(source: &Source) -> io::Result<Arc<Self>> {
+        Ok(Arc::new(Self {
+            pages: WorldPages::shared(source.replay_ref().recording())?,
+            free: Mutex::default(),
+            warming: Mutex::default(),
+            unplaceable: Mutex::default(),
+        }))
     }
 
     pub(super) fn take(self: &Arc<Self>, run: usize, hour: Hour) -> Taken {

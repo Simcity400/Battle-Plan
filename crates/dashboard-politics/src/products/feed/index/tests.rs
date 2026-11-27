@@ -1,5 +1,44 @@
 use super::*;
 
+#[test]
+fn content_bound_read_ahead_keeps_all_three_first_log_reads_warm() {
+    use dashboard_base::{products::Product, source::Work, test_fixtures::{source, visual_mods::{Machine, RED, png, select}}};
+    let machine = Machine::new("feed_index_warm");
+    machine.write_mod("art", "gfx/warm.png", &png(RED));
+    let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
+    let (source, mut options) = machine.open_frames(frames);
+    let unbound = LoadContext { content: None };
+    warm(&source, 1, &unbound).unwrap();
+    assert!(kept(&source).is_empty(), "unavailable content never starts a competing unbound scan");
+    for visual_mods in [false, true] {
+        select(&source, &mut options, if visual_mods { &["art"] } else { &[] });
+        warm(&source, 1, &LoadContext { content: source.admit_resolved(Work::Ahead) }).unwrap();
+        assert_eq!(kept(&source), [1], "the source-open warm keeps the branch index");
+        let (scanned, decisions, choices, feed) = {
+            let branch = branch_of(&source, 1);
+            let held = branch.lock().unwrap();
+            (held.scanned.clone().unwrap(), held.decisions.clone().unwrap(), held.choices.clone().unwrap(), held.feed.clone().unwrap())
+        };
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let context = LoadContext { content: source.admit_resolved(Work::Content(Arc::new(AtomicBool::new(false)))) };
+        assert_eq!(!dashboard_base::catalogue::reads_recorded(context.content.as_ref().unwrap()), visual_mods);
+        let catalogue = super::super::resolve_content(&source, &context).unwrap();
+        let cancelled = AtomicBool::new(false);
+        super::super::EventFeedKinds::load(&source, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &cancelled).unwrap();
+        let reused = [
+            Arc::ptr_eq(&decisions, &decisions_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
+            Arc::ptr_eq(&choices, &choices_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
+            Arc::ptr_eq(&feed, &feed_for(&source, &query, 1, &context, Some(&catalogue), &cancelled).unwrap()),
+        ];
+        assert_eq!(reused.into_iter().filter(|reused| !reused).count(), 0, "index builds on first log reads after open, visual mods: {visual_mods}");
+        warm(&source, 1, &unbound).unwrap();
+        assert!(Arc::ptr_eq(&scanned, &scanned_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()));
+    }
+    dashboard_base::queries::forget(&source);
+    crate::forget(&source);
+    assert!(kept(&source).is_empty(), "forgotten with the recording's index");
+}
+
 fn brief(sequence: u64, kind: EventFeedKind, hour: i32, opener: Option<u64>, days: Option<i32>) -> Brief {
     Brief {
         at: Locator { run: 1, hour, key: (1u128 << 64) | u128::from(sequence) },
@@ -12,6 +51,9 @@ fn brief(sequence: u64, kind: EventFeedKind, hour: i32, opener: Option<u64>, day
         option: None,
         days,
         token: Some("mission_a".into()),
+        costs: [None, None],
+        name: None,
+        choice: None,
     }
 }
 
@@ -111,7 +153,8 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
     };
     let held = |slot: u32| vec![HolderRun { first: 0, last: 1_000, holder: Holder::Found { slot, id: slot }, starts_segment: true }];
     let holders = Holders::new([("GER".to_owned(), held(7)), ("POL".to_owned(), held(8))].into_iter().collect(), Vec::new());
-    let opener = brief(1, EventFeedKind::DecisionSelected, 100, None, Some(30));
+    let mut opener = brief(1, EventFeedKind::DecisionSelected, 100, None, Some(30));
+    opener.name = Some("Opening name".into());
     let later = Brief {
         at: Locator { run: 1, hour: 110, key: (1u128 << 64) | 2 },
         kind: EventFeedKind::DecisionDurationChanged,
@@ -123,6 +166,9 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
         option: None,
         days: Some(40),
         token: Some("mission_b".into()),
+        costs: [None, None],
+        name: Some("Later name".into()),
+        choice: None,
     };
     let scanned = Scanned {
         briefs: vec![opener, later],
@@ -157,6 +203,8 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
     assert_eq!(index.ask(&holders, &Ask { search: Some("POL"), ..ask_at(110) }).unwrap().total, 1);
     assert_eq!(index.ask(&holders, &Ask { search: Some("mission_b"), ..ask_at(109) }).unwrap().total, 0);
     assert_eq!(index.ask(&holders, &Ask { search: Some("mission_b"), ..ask_at(110) }).unwrap().total, 1);
+    assert_eq!(index.ask(&holders, &Ask { search: Some("Later name"), ..ask_at(109) }).unwrap().total, 0);
+    assert_eq!(index.ask(&holders, &Ask { search: Some("Later name"), ..ask_at(110) }).unwrap().total, 1);
     assert_eq!(index.ask(&holders, &Ask { search: Some("mission_a"), ..ask_at(100) }).unwrap().total, 1);
 
     let mut swapped = brief(3, EventFeedKind::DecisionSelected, 100, None, None);
@@ -164,4 +212,20 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
     let swapped_scanned = Scanned { briefs: vec![swapped], ..scanned };
     let swapped_index = decisions(&swapped_scanned, &Names::new(&holders)).unwrap();
     assert_eq!(swapped_index.ask(&holders, &Ask { search: Some("GER POL"), ..ask_at(100) }).unwrap().total, 1, "tags observed together keep sorted order in search text");
+}
+
+#[test]
+fn decision_cost_sort_keeps_unrecorded_after_recorded_in_both_directions() {
+    use dashboard_query::{identity::Holders, log::occurrence::{Ask, Direction, Order}};
+    let mut briefs: Vec<_> = (0..4).map(|i| brief(i + 1, EventFeedKind::DecisionSelected, 100 + i as i32, None, None)).collect();
+    briefs[0].costs = [Some(Some(-20)), Some(None)];
+    briefs[1].costs = [Some(Some(-10)), Some(None)];
+    briefs[2].costs = [Some(Some(0)), Some(Some(-15))];
+    let scanned = Scanned { briefs, gaps: Vec::new(), ..Scanned::refused(0, 0, "fixture") };
+    let index = decisions(&scanned, &Names { slots: HashMap::new() }).unwrap();
+    for (direction, expected) in [(Direction::Ascending, [101, 102, 100, 103]), (Direction::Descending, [100, 102, 101, 103])] {
+        let answer = index.ask(&Holders::new(BTreeMap::new(), Vec::new()), &Ask { hour: 110, from: None, to: None, gap_end: None, selection: None, subject: None, kinds: None, states: None, search: None, order: Order::Key(2, direction), live_first: false, offset: 0, limit: 4, chips: &[] }).unwrap();
+        assert_eq!(answer.rows.iter().map(|shown| index.get(shown.at).date).collect::<Vec<_>>(), expected);
+        assert_eq!(index.get(answer.rows[3].at).sort_keys[2].at(110), None);
+    }
 }

@@ -3,6 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { columnsControl } from '../../families/settingsControls.ts';
 import {
   LOG_TABLE_BASE,
+  LOG_SEARCH_OPTION,
   logActionColumn,
   logCountryColumn,
   logDateColumn,
@@ -20,10 +21,10 @@ export const CATEGORIES = [
 ] as const;
 
 export const EVENT_FEED_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn(),
+  logDateColumn({ sortable: true }),
   logKindColumn({ minWidth: 44, maxWidth: 50 }),
-  logCountryColumn({ minWidth: 54 }),
-  logItemColumn({ label: 'Event', minWidth: 220 }),
+  logCountryColumn({ sortable: true, minWidth: 54 }),
+  logItemColumn({ sortable: true, label: 'Event', minWidth: 220 }),
   {
     key: 'detail',
     label: 'Detail',
@@ -39,6 +40,7 @@ export const EVENT_FEED_COLUMNS: readonly TableColumnSpec[] = [
 ];
 
 export const OPTIONS: readonly OptionField[] = [
+  LOG_SEARCH_OPTION,
   ...CATEGORIES.map(category => ({
     key: category.value,
     section: 'options' as const,

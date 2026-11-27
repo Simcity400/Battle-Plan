@@ -19,7 +19,7 @@ import {
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, validateRowTailReply, type DatedLogRow, type TailReply } from '../../families/table/rowSource.ts';
-import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptCurrency, ScriptPageRow, ScriptStatus } from '../../generated/dashboard';
@@ -41,6 +41,8 @@ import {
 import { DECISIONS_COLUMNS } from './definition.ts';
 
 export interface DecisionsProjectionOptions {
+  readonly byDate?: boolean;
+  readonly search?: string;
   readonly artwork: boolean;
   readonly breaks: readonly RecordingBreak[];
   readonly hover?: TooltipTexts;
@@ -323,14 +325,14 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
     const hour = readView.hour;
     const refused = readView.refused('main');
     if (refused !== undefined) {
-      return { columns: DECISIONS_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused };
+      return { columns: DECISIONS_COLUMNS, rows: [], hour, searchable: true, search: options.search ?? '', dateGrouped: options.byDate !== false, refused };
     }
     const source = readView.rows<ScriptPageRow & DatedLogRow>('main');
     if (!source) {
-      return { columns: DECISIONS_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true };
+      return { columns: DECISIONS_COLUMNS, rows: [], hour, searchable: true, search: options.search ?? '', dateGrouped: options.byDate !== false };
     }
     if (source.refused !== null) {
-      return { columns: DECISIONS_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused: source.refused };
+      return { columns: DECISIONS_COLUMNS, rows: [], hour, searchable: true, search: options.search ?? '', dateGrouped: options.byDate !== false, refused: source.refused };
     }
     const boundary = newIdentityBoundary();
     const asOf = source.at ?? hour;
@@ -367,9 +369,8 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
       rows,
       slots,
       hour,
-      hideHeader: true,
-      unsorted: true,
-      dateGrouped: true,
+      searchable: true, search: options.search ?? '',
+      dateGrouped: options.byDate !== false,
       windowOffset,
       totalRows,
       ...(gapBefore?.length ? { gapBefore } : {}),
@@ -394,6 +395,8 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
   columns: DECISIONS_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {
+    const { sort } = tableSettingsOf(ctx.options[TABLE_SETTINGS_KEY], DECISIONS_COLUMNS, LOG_TABLE_BASE);
+    const search = typeof ctx.options.search === 'string' ? ctx.options.search : '';
     const win = !ctx.following ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;
     const rawFrom = ctx.widget.time.mode === 'range' && win ? Math.max(Math.floor(win.firstHour), ctx.branch.firstHour) : null;
     const boundFrom = rawFrom !== null ? ctx.gateSpan(rawFrom, ctx.branch.lastHour)?.firstHour ?? null : null;
@@ -401,7 +404,7 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
     const statuses = chosen.length === STATUS_CHOICES.length ? null : chosen.flatMap(choice => ASKED_STATUSES[choice]);
     const selection = occurrenceSelection(ctx);
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:decisions:${statuses ? statuses.join(',') : 'every'}:${selection ? JSON.stringify(selection) : 'all'}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:decisions:${statuses ? statuses.join(',') : 'every'}:${selection ? JSON.stringify(selection) : 'all'}:${JSON.stringify([search, sort])}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -413,7 +416,7 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
             branchId: ctx.branch.id,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ask: { ...(statuses ? { statuses } : {}), ...selection },
+            ask: { search, sort, ...(statuses ? { statuses } : {}), ...selection },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
@@ -424,6 +427,6 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
   },
   projection: decisionsProjection,
   projectionOptions(ctx): DecisionsProjectionOptions {
-    return { artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch), hover: hoverTextOf(ctx.options) };
+    return { byDate: ctx.settings.sort.column === 'date', search: typeof ctx.options.search === 'string' ? ctx.options.search : '', artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch), hover: hoverTextOf(ctx.options) };
   },
 };

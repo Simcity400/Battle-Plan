@@ -8,6 +8,7 @@ import type { ThemeColors, ThemeMode } from './themes';
 import { getBackdrop } from './backdrops';
 import { APPEARANCE_EVENT } from './events';
 import { SIDEBAR_ICONS, sidebarIconIds } from './sidebarIcons';
+import { prepareInterfaceFonts } from './bundledFonts';
 
 function mediaStore(query: string) {
   let list: MediaQueryList | undefined;
@@ -51,9 +52,12 @@ export function applyAppearance(root: HTMLElement, settings: AppearanceSettings,
   if (root === document.documentElement) window.dispatchEvent(new Event(APPEARANCE_EVENT));
 }
 
-export function applySavedAppearance(): void {
+export function applySavedAppearance(): Promise<void> | undefined {
   const { settings } = loadAppearance();
-  applyAppearance(document.documentElement, settings, resolveAppearance(settings, dark.matches(), motion.matches()));
+  const apply = () => applyAppearance(document.documentElement, settings, resolveAppearance(settings, dark.matches(), motion.matches()));
+  const fonts = prepareInterfaceFonts(settings);
+  if (fonts) return fonts.catch(error => console.error('Could not load the saved fonts:', error)).then(apply);
+  apply();
 }
 
 export interface ThemePreview { colors: ThemeColors; mode: ThemeMode }
@@ -82,10 +86,18 @@ export function useAppearance() {
 
   useLayoutEffect(() => {
     const root = document.documentElement;
-    root.classList.add('theme-switching');
-    applyAppearance(root, settings, resolved, preview?.colors, preview?.mode);
-    const frame = requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('theme-switching')));
-    return () => cancelAnimationFrame(frame);
+    let live = true;
+    let frame = 0;
+    const apply = () => {
+      if (!live) return;
+      root.classList.add('theme-switching');
+      applyAppearance(root, settings, resolved, preview?.colors, preview?.mode);
+      frame = requestAnimationFrame(() => { frame = requestAnimationFrame(() => root.classList.remove('theme-switching')); });
+    };
+    const fonts = prepareInterfaceFonts(settings);
+    if (fonts) void fonts.catch(error => console.error('Could not load the selected fonts:', error)).then(apply);
+    else apply();
+    return () => { live = false; cancelAnimationFrame(frame); root.classList.remove('theme-switching'); };
   }, [settings, resolved, preview]);
 
   const backdropImage = useBackdropImage(settings.backdrop);
