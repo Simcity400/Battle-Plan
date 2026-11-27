@@ -24,9 +24,10 @@ impl PendingStates {
 }
 
 #[derive(Debug)]
-pub(crate) struct PendingState(Weak<States>, u64);
+pub(crate) struct PendingState(Weak<States>, u64, usize);
 
 impl PendingState {
+    pub(crate) fn bytes(&self) -> usize { self.2 }
     pub(crate) fn take(&self) -> Option<State> {
         self.0.upgrade()?.lock().unwrap_or_else(std::sync::PoisonError::into_inner).1.remove(&self.1)
     }
@@ -66,10 +67,10 @@ impl State {
         flight.add(self.bytes);
         self.flight = Some(Arc::clone(flight));
         let mut states = pending.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let id = states.0;
+        let held = PendingState(Arc::downgrade(&pending.0), states.0, self.bytes);
         states.0 += 1;
-        states.1.insert(id, self);
-        PendingState(Arc::downgrade(&pending.0), id)
+        states.1.insert(held.1, self);
+        held
     }
 
     pub(crate) fn release(&mut self) {

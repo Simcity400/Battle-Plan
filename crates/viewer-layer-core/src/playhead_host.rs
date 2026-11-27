@@ -2433,7 +2433,6 @@ fn merged(layers: &BTreeMap<usize, Read>, makers: Vec<Declared>) -> BTreeMap<usi
         held.columns.sort_unstable();
         held.columns.dedup();
         held.keyed |= maker.keyed;
-        held.hourly |= maker.hourly;
     }
     union
 }
