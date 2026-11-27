@@ -8,7 +8,7 @@ const read = (hour: number, extra: Partial<NavalCourseRead> = {}): NavalCourseRe
   shipsSunk: [0, 1], convoysSunk: [0, 2], icLost: [0, 12.5], resulted: false, ...extra });
 
 test('the sides band reads each side at the hour shown, with losses marked as counted so far while the battle is live', () => {
-  const course = validateNavalBattleCourse({ branchId: '1', warnings: [], missing: [{ firstHour: HOUR + 3, lastHour: HOUR + 5, reason: 'Naval battle census incomplete' }],
+  const course = validateNavalBattleCourse({ branchId: '1', warnings: [], row: null, missing: [{ firstHour: HOUR + 3, lastHour: HOUR + 5, reason: 'Naval battle census incomplete' }],
     reads: [read(HOUR), read(HOUR + 2, { ships: [3, null], icLost: [0, null] }), read(HOUR + 6, { result: 'unknown' }), read(HOUR + 8, { result: 'defenderWon', shipsSunk: [2, 1], resulted: true })] });
   const [before] = navalCourseFigures(course, HOUR - 1);
   assert.deepEqual(before.ships, { missing: NOT_AT_THIS_HOUR });
@@ -25,13 +25,13 @@ test('the sides band reads each side at the hour shown, with losses marked as co
   assert.deepEqual(settled.sunk, { value: 2, soFar: false }, 'after the result the losses are final');
   assert.deepEqual(navalCourseGaps(course, HOUR, HOUR + 4), [{ first: HOUR + 3, last: HOUR + 4 }]);
   assert.deepEqual(navalCourseGaps(course, HOUR + 6, HOUR + 9), []);
-  const resultOnly = validateNavalBattleCourse({ branchId: '1', warnings: [], missing: [{ firstHour: HOUR, lastHour: HOUR + 9, reason: 'Naval battle census incomplete' }],
+  const resultOnly = validateNavalBattleCourse({ branchId: '1', warnings: [], row: null, missing: [{ firstHour: HOUR, lastHour: HOUR + 9, reason: 'Naval battle census incomplete' }],
     reads: [read(HOUR + 2, { result: 'attackerWon', resulted: true })] });
   assert.deepEqual(navalCourseFigures(resultOnly, HOUR + 3)[1].sunk, { value: 3, soFar: false }, 'a recorded result is shown even where the census was not read');
 });
 
 test('a malformed course is refused', () => {
-  assert.throws(() => validateNavalBattleCourse({ branchId: '1', warnings: [], missing: [], reads: [read(HOUR + 1), read(HOUR)] }));
-  assert.throws(() => validateNavalBattleCourse({ branchId: '1', warnings: [], missing: [], reads: [read(HOUR, { ships: [-1, 0] })] }));
-  assert.throws(() => validateNavalBattleCourse({ branchId: '1', warnings: [], missing: [], reads: [read(HOUR, { result: 'won' as never })] }));
+  assert.throws(() => validateNavalBattleCourse({ branchId: '1', warnings: [], row: null, missing: [], reads: [read(HOUR + 1), read(HOUR)] }));
+  assert.throws(() => validateNavalBattleCourse({ branchId: '1', warnings: [], row: null, missing: [], reads: [read(HOUR, { ships: [-1, 0] })] }));
+  assert.throws(() => validateNavalBattleCourse({ branchId: '1', warnings: [], row: null, missing: [], reads: [read(HOUR, { result: 'won' as never })] }));
 });

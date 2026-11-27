@@ -15,7 +15,8 @@ const count = (item: number) => Number.isInteger(item) && item >= 0;
 const amount = (item: number) => Number.isFinite(item) && item >= 0;
 
 export function validateNavalBattleCourse(v: unknown): NavalBattleCourseReply {
-  if (!object(v) || typeof v.branchId !== 'string' || !Array.isArray(v.reads) || !Array.isArray(v.missing) || !Array.isArray(v.warnings)) throw malformed();
+  if (!object(v) || typeof v.branchId !== 'string' || !Array.isArray(v.reads) || !Array.isArray(v.missing) || !Array.isArray(v.warnings)
+    || !(v.row === null || object(v.row) && typeof v.row.key === 'string')) throw malformed();
   v.reads.forEach((read: unknown, index: number, all: unknown[]) => {
     if (!object(read) || !hour(read.hour) || !STATUSES.includes(read.result as NavalBattleStatus)
       || !pair(read.ships, count) || !pair(read.convoys, count) || !pair(read.shipsSunk, count) || !pair(read.convoysSunk, count) || !pair(read.icLost, amount) || typeof read.resulted !== 'boolean'
