@@ -1325,17 +1325,22 @@ fn a_listed_log_added_at_the_final_paused_hour_delivers_when_its_read_completes(
 
 #[derive(Default)]
 struct Gate {
-    held: Mutex<(bool, usize)>,
+    held: Mutex<(bool, usize, usize)>,
     moved: Condvar,
 }
 
 impl Gate {
     fn close(&self) {
-        *self.held.lock().unwrap() = (true, 0);
+        *self.held.lock().unwrap() = (true, 0, 0);
     }
 
     fn open(&self) {
         self.held.lock().unwrap().0 = false;
+        self.moved.notify_all();
+    }
+
+    fn open_one(&self) {
+        self.held.lock().unwrap().2 += 1;
         self.moved.notify_all();
     }
 
@@ -1350,8 +1355,11 @@ impl Gate {
         let mut held = self.held.lock().unwrap();
         held.1 += 1;
         self.moved.notify_all();
-        while held.0 {
+        while held.0 && held.2 == 0 {
             held = self.moved.wait(held).unwrap();
+        }
+        if held.0 {
+            held.2 -= 1;
         }
     }
 }
@@ -1440,14 +1448,16 @@ fn a_listed_read_that_lands_after_read_ahead_answers_the_hour_it_was_asked_for()
     };
     assert!(held.iter().flat_map(Played::answers).all(|(id, ..)| id != 2 && id != 3), "no list answers while its rows are being read");
     assert!(held.iter().filter(|played| played.message.is_some()).all(|played| limits(played).contains(&(2, Hour::MIN))), "a list being read holds no hour");
-    reads.gate.open();
     let (mut first, mut played): (BTreeMap<u32, (Hour, Answer, Vec<(u32, Hour)>, Hour)>, Vec<Played>) = (BTreeMap::new(), Vec::new());
-    while first.len() < 2 {
-        let next = harness.played.recv().unwrap();
-        for (id, hour, answer) in next.answers() {
-            first.entry(id).or_insert_with(|| (hour, answer, limits(&next), next.stats.last));
+    for (id, open) in [(2, Gate::open_one as fn(&Gate)), (3, Gate::open)] {
+        open(&reads.gate);
+        while !first.contains_key(&id) {
+            let next = harness.played.recv().unwrap();
+            for (id, hour, answer) in next.answers() {
+                first.entry(id).or_insert_with(|| (hour, answer, limits(&next), next.stats.last));
+            }
+            played.push(next);
         }
-        played.push(next);
     }
     let (hour, answer, pinned, sent) = &first[&2];
     assert!(*sent > ASKED, "read-ahead passed the asked hour before the rows were read");
@@ -1457,10 +1467,15 @@ fn a_listed_read_that_lands_after_read_ahead_answers_the_hour_it_was_asked_for()
     assert_eq!((*hour, held_rows(answer)), (second, listed_fewer(second)), "a second list answers the hour it was asked at");
     let sent = *sent;
     played.extend(harness.play(sent + 6));
-    let next = played.iter().find(|played| played.stats.last > sent).expect("a step past the late answer");
-    let answers = next.answers();
-    let Some((_, hour, answer)) = answers.iter().find(|(id, ..)| *id == 2) else { panic!("the next step answers the list at its own hour: {answers:?}") };
-    assert_eq!((*hour, held_rows(answer)), (next.head, listed(next.head)));
+    let answered = |played: &Played| played.answers().into_iter().find(|(id, ..)| *id == 2);
+    let late = played.iter().position(|played| answered(played).is_some()).expect("the late answer");
+    let next = played[late + 1..].iter().find(|played| answered(played).is_some() || played.stats.last > sent).expect("a step past the late answer");
+    for between in played[late + 1..].iter().take_while(|played| !std::ptr::eq(*played, next)) {
+        assert!(limits(between).contains(&(2, ASKED)), "every message before the list's own hour holds it at the hour read: {:?}", limits(between));
+    }
+    let Some((_, hour, answer)) = answered(next) else { panic!("the next step answers the list at its own hour: {:?}", next.answers()) };
+    assert!(next.stats.last > sent, "the list's own hour is answered in a message past the late one");
+    assert_eq!((hour, held_rows(&answer)), (next.head, listed(next.head)));
     for (id, hour, answer) in played.iter().flat_map(Played::answers) {
         let want = if id == 2 { listed(hour) } else { listed_fewer(hour) };
         assert_eq!(held_rows(&answer), want, "list {id} at {hour}");

@@ -370,6 +370,7 @@ struct Followed {
     log: Table,
     standing: BTreeMap<Ordinal, Option<Listed>>,
     reading: Option<Reading>,
+    late: Option<Hour>,
     unread: Option<String>,
 }
 
@@ -378,7 +379,6 @@ type Listed = (u128, Box<[(i64, State)]>);
 struct Reading {
     asked: Asked,
     hour: Hour,
-    rows: usize,
     unrecorded: Option<String>,
 }
 
@@ -386,7 +386,6 @@ impl Reading {
     fn answer(&self, read: &io::Result<Read>, columns: usize, listed: &mut Table, body: &mut Vec<u8>) {
         let rows = match read {
             Err(error) => return answer::not_recorded(&error.to_string(), body),
-            Ok(rows) if rows.len() < self.rows => return answer::not_recorded(UNREAD, body),
             Ok(rows) => rows,
         };
         if let Some(reason) = &self.unrecorded {
@@ -555,8 +554,6 @@ impl Find for Index {
 
 const GAP: &str = "No game hours are recorded here";
 
-const UNREAD: &str = "The listed rows' cells were not read";
-
 const HELD_EVERY: u64 = 64;
 
 struct Engine {
@@ -569,7 +566,6 @@ struct Engine {
     waiting: Vec<usize>,
     heads: Vec<usize>,
     marked: Vec<usize>,
-    deferred: Vec<(usize, Hour)>,
     queue: Vec<usize>,
     scratch: Scratch,
     reasons: Reasons,
@@ -603,9 +599,9 @@ fn relist(shared: &Arc<Shared>, reasons: &Reasons, followed: &mut Followed, lane
     let logs = lock(&shared.control).logs.clone();
     match logs {
         Some(logs) => {
-            let (hour, rows, unrecorded) = (evaluate::head(lane), ordinals.len(), reasons.unrecorded(lane));
+            let (hour, unrecorded) = (evaluate::head(lane), reasons.unrecorded(lane));
             let asked = logs.rows_notifying(Wanted { run: lane.run(), table: followed.table, ordinals, columns: followed.declared.clone() }, rehooker_for(shared));
-            followed.reading = Some(Reading { asked, hour, rows, unrecorded });
+            followed.reading = Some(Reading { asked, hour, unrecorded });
         }
         None => followed.unread = Some("Follow is bound to no playhead, which reads a log's listed rows".to_owned()),
     }
@@ -680,7 +676,6 @@ impl Engine {
             waiting: Vec::new(),
             heads: Vec::new(),
             marked: Vec::new(),
-            deferred: Vec::new(),
             queue: Vec::new(),
             scratch: Scratch::default(),
             reasons: Reasons::default(),
@@ -710,17 +705,6 @@ impl Engine {
             self.check_withheld(lanes);
             self.follow_holders(lanes);
             self.activate(lanes, &mut stats);
-            let (slab, marked) = (&mut self.slab, &mut self.marked);
-            self.deferred.retain(|&(query, sent)| {
-                if sent >= step.last() {
-                    return true;
-                }
-                if let Some(followed) = &mut slab[query] {
-                    followed.has_sent = false;
-                }
-                mark(slab, marked, query);
-                false
-            });
             self.fill(lanes, step.last());
             stats.touched += self.marked.len() as u32;
             self.evaluate(step, lanes, &mut stats);
@@ -808,7 +792,6 @@ impl Engine {
 
     fn resend(&mut self, hour: Hour) {
         self.queue.clear();
-        self.deferred.clear();
         for (query, held) in self.slab.iter_mut().enumerate() {
             let Some(followed) = held else { continue };
             let refusal = (followed.phase == Phase::Refused).then(|| {
@@ -817,6 +800,7 @@ impl Engine {
             followed.queued = false;
             followed.has_pending = false;
             followed.has_sent = false;
+            followed.late = None;
             followed.log.clear(followed.declared.len(), true);
             followed.live.resend();
             if let Some(mut body) = refusal {
@@ -848,6 +832,7 @@ impl Engine {
             log: Table::default(),
             standing: BTreeMap::new(),
             reading: None,
+            late: None,
             unread: None,
         };
         let at = match self.free.pop() {
@@ -875,7 +860,6 @@ impl Engine {
         let followed = self.slab[at].take().expect("a followed query");
         self.free.push(at);
         self.waiting.retain(|&held| held != at);
-        self.deferred.retain(|&(held, _)| held != at);
         self.heads.retain(|&held| held != at);
         self.queue.retain(|&held| held != at);
         if followed.phase != Phase::Active {
@@ -1162,13 +1146,18 @@ impl Engine {
             let head = lanes.get(table).and_then(Lane::head);
             for &query in &index.standing {
                 let followed = self.slab[query].as_mut().expect("a followed list");
+                if followed.late.is_some_and(|late| late < sent) {
+                    mark(&mut self.slab, &mut self.marked, query);
+                    continue;
+                }
                 let Some(answer) = followed.reading.as_ref().and_then(|reading| reading.asked.take()) else { continue };
                 let reading = followed.reading.take().expect("an answered reading");
-                let late = head.is_some_and(|head| reading.hour < head);
-                if late {
+                let overtaken = head.is_some_and(|head| reading.hour < head);
+                if overtaken {
                     self.body.clear();
                     reading.answer(&answer, followed.declared.len(), &mut self.listed, &mut self.body);
                     queue_body(followed, query, &mut self.body, reading.hour, &mut self.queue);
+                    followed.late = Some(sent);
                 }
                 match answer {
                     Ok(rows) => {
@@ -1180,9 +1169,7 @@ impl Engine {
                     }
                     Err(error) => followed.unread = Some(error.to_string()),
                 }
-                if late {
-                    self.deferred.push((query, sent));
-                } else {
+                if !overtaken {
                     mark(&mut self.slab, &mut self.marked, query);
                 }
             }
@@ -1229,11 +1216,14 @@ impl Engine {
             followed.dirty = false;
             let Some(lane) = lanes.get(followed.table).filter(|lane| evaluate::holds(&followed.query, lane)) else { continue };
             if followed.query.listed() {
-                if followed.reading.is_some() || (followed.queued && followed.pending_hour < evaluate::head(lane)) {
+                if followed.reading.is_some() || followed.late.is_some_and(|late| late >= step.last()) {
                     continue;
                 }
+                if followed.late.take().is_some() {
+                    followed.has_sent = false;
+                }
                 self.body.clear();
-                let unread = followed.standing.values().any(Option::is_none).then(|| UNREAD.to_owned());
+                let unread = followed.standing.values().any(Option::is_none).then(|| "The listed rows' cells were not read".to_owned());
                 match followed.unread.clone().or(unread).or_else(|| self.reasons.unrecorded(lane)) {
                     Some(reason) => answer::not_recorded(&reason, &mut self.body),
                     None => {
@@ -1353,7 +1343,7 @@ impl Engine {
                     let q = self.slab[at].as_ref().expect("indexed reading");
                     let through = match &q.reading {
                         Some(_) => Hour::MIN,
-                        None if q.queued => q.pending_hour.min(head),
+                        None if q.queued || q.late.is_some() => q.pending_hour.min(head),
                         None => head,
                     };
                     if through < step.last() { answer::push(&mut self.message, q.id, through, &[]); }
@@ -1411,7 +1401,7 @@ impl Engine {
         held.queries_bytes += self.slab.capacity() * size_of::<Option<Followed>>() + self.ids.capacity() * (4 + 8 + 1);
         held.index = self.tables.values().map(Index::bytes).sum::<usize>()
             + self.tables.len() * (8 + size_of::<Index>())
-            + (self.waiting.capacity() + self.marked.capacity() + self.deferred.capacity() + self.queue.capacity() + self.free.capacity()) * 8;
+            + (self.waiting.capacity() + self.marked.capacity() + self.queue.capacity() + self.free.capacity()) * 8;
         held.total = held.sent + held.pending + held.queries_bytes + held.index + self.body.capacity() + self.message.capacity();
         held
     }
