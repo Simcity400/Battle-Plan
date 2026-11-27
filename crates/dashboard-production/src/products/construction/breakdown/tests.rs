@@ -402,7 +402,7 @@ fn construction_spellings_and_warnings_are_dated_to_their_charge_hours() {
             } else {
                 TableView::Unavailable { reason: "lexical unread at end".into() }.into()
             };
-            for table in [TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
+            for table in [TableId::CountryLinks, TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
                 frame.metrics.table_ns[table.index()] = 1;
             }
             if hour < 128 || (130..=132).contains(&hour) {
@@ -472,6 +472,9 @@ fn owner_unknown_before_census_qualifies_both_eventual_owner_and_other_countries
     let frames = (100..=115)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
+            if hour < 110 {
+                frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(Vec::new())).into();
+            }
             let buildings = if hour >= 110 {
                 vec![BuildingConstructionRow {
                     id: 5, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95, amount: 1, ..Default::default()
@@ -482,18 +485,25 @@ fn owner_unknown_before_census_qualifies_both_eventual_owner_and_other_countries
             frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(buildings)).into();
             frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
             frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
-            let output = ConstructionLineOutputRow {
-                line: 5,
-                since_hour: 100,
-                construction_raw: 100_000,
-                exact: true,
-                country: Recorded::Value((hour >= 110).then_some(9001)),
-                building_type: Recorded::Value(Some(7)),
-                target_state: Recorded::Value(Some(12)),
-                ..Default::default()
+            frame.tables[TableId::ConstructionLineOutput.index()] = if (105..110).contains(&hour) {
+                TableView::Unavailable { reason: "output unread before census".into() }.into()
+            } else {
+                TableView::Complete(TableRows::ConstructionLineOutput(vec![
+                    ConstructionLineOutputRow {
+                        line: 5,
+                        since_hour: 100,
+                        construction_raw: 100_000,
+                        repair_ticks: 1,
+                        exact: true,
+                        country: Recorded::Value((hour >= 110).then_some(9001)),
+                        building_type: Recorded::Value(Some(7)),
+                        target_state: Recorded::Value(Some(12)),
+                        ..Default::default()
+                    },
+                ]))
+                .into()
             };
-            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(vec![output])).into();
-            for table in [TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
+            for table in [TableId::CountryLinks, TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
                 frame.metrics.table_ns[table.index()] = 1;
             }
             frame
@@ -504,7 +514,7 @@ fn owner_unknown_before_census_qualifies_both_eventual_owner_and_other_countries
         .into_timelines(&Default::default())
         .unwrap();
     let cancel = AtomicBool::new(false);
-    let source = Source::from_replay(
+    let loaded = Source::from_replay(
         SourceKey { source_id: "construction-owner-before-census".into(), revision: "1".into() },
         "synthetic.battleplan".into(),
         Arc::new(replay),
@@ -512,26 +522,87 @@ fn owner_unknown_before_census_qualifies_both_eventual_owner_and_other_countries
     )
     .unwrap();
     for slot in [7, 8] {
-        let at_100 = ConstructionBreakdown::load(
-            &source,
-            &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(slot), hour: 100 },
-            &LoadContext { content: None },
-            &cancel,
-        )
-        .unwrap();
-        assert_eq!(at_100.unattributed, 1, "slot {slot} must count the owner-unknown gap at 100 even after the line enters the census at 110");
-        assert_eq!(at_100.before_first_read, 0, "slot {slot} must not reveal eventual owner via before_first_read at 100");
-        assert_eq!(at_100.breakdown.total.state, BreakdownState::Partial, "slot {slot} total must be partial at 100");
+        for hour in [100, 105] {
+            let reply = ConstructionBreakdown::load(
+                &loaded,
+                &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(slot), hour },
+                &LoadContext { content: None },
+                &cancel,
+            )
+            .unwrap();
+            assert_eq!(reply.unattributed, 1, "slot {slot} at {hour} must count the owner-unknown gap");
+            assert_eq!(reply.before_first_read, 0, "slot {slot} at {hour} must not reveal eventual owner via before_first_read");
+            assert!(reply.breakdown.parts.is_empty(), "slot {slot} at {hour} must not reveal eventual owner via child gap during unread output");
+            assert_eq!(reply.breakdown.total.state, BreakdownState::Partial);
+        }
         let at_110 = ConstructionBreakdown::load(
-            &source,
+            &loaded,
             &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(slot), hour: 110 },
             &LoadContext { content: None },
             &cancel,
         )
         .unwrap();
         assert_eq!(at_110.unattributed, 1);
-        assert_eq!(at_110.before_first_read, u32::from(slot == 7), "only the owner counts before_first_read once ownership is known at 110");
+        assert_eq!(at_110.before_first_read, u32::from(slot == 7), "link recorded at 110 attributes before_first_read once ownership is known");
     }
+
+    let recovered_frames = (100..=112)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let buildings = if hour >= 110 {
+                vec![BuildingConstructionRow {
+                    id: 5, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95, amount: 1, ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(buildings)).into();
+            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
+            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(vec![
+                ConstructionLineOutputRow {
+                    line: 5,
+                    since_hour: 100,
+                    construction_raw: 100_000,
+                    exact: true,
+                    country: Recorded::Value((hour >= 105).then_some(9001)),
+                    building_type: Recorded::Value(Some(7)),
+                    target_state: Recorded::Value(Some(12)),
+                    ..Default::default()
+                },
+            ]))
+            .into();
+            for table in [TableId::CountryLinks, TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+            frame
+        })
+        .collect();
+    let recovered_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, recovered_frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let recovered_source = Source::from_replay(
+        SourceKey { source_id: "construction-owner-recovered-output".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(recovered_replay),
+        &cancel,
+    )
+    .unwrap();
+    let counts: Vec<u32> = [100, 105, 110]
+        .into_iter()
+        .map(|hour| {
+            ConstructionBreakdown::load(
+                &recovered_source,
+                &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour },
+                &LoadContext { content: None },
+                &cancel,
+            )
+            .unwrap()
+            .before_first_read
+        })
+        .collect();
+    assert_eq!(counts, [0, 1, 1], "ownership recovered by output at 105 counts before_first_read immediately at 105");
 }
 
 #[test]

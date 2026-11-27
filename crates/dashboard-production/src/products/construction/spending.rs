@@ -259,6 +259,7 @@ struct LineHistory {
     repair_tick: Option<i32>,
     first_new: Option<i32>,
     first_repair: Option<i32>,
+    first_known_owner: Option<i32>,
     before_observation: Option<i32>,
 }
 
@@ -279,22 +280,27 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
     );
     let new_at = NEW_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
     let repair_at = REPAIR_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
-    let number = |cells: &[Cell], at: usize| match cells.get(at) {
-        Some(Cell::Number(value)) => Some(*value),
-        _ => None,
-    };
+    let number = |cells: &[Cell], at: usize| match cells.get(at) { Some(Cell::Number(value)) => Some(*value), _ => None };
+    let unknown_owner = replay_data::rows::ConstructionProjectRow::OUTPUT_OWNER_UNKNOWN;
+    let unread_output = replay_data::rows::ConstructionProjectRow::OUTPUT_NOT_RECORDED;
     let mut out = ReasonSteps::new();
     for (key, steps) in &history.keys {
         let held = out.entry(*key as u64).or_default();
-        let mut prev_new = [0_i64; NEW_COLS.len()];
-        let mut prev_repair = [0_i64; REPAIR_COLS.len()];
+        let (mut prev_new, mut prev_repair) = ([0_i64; NEW_COLS.len()], [0_i64; REPAIR_COLS.len()]);
         for step in steps {
             let Some(cells) = step.cells.as_deref() else { continue };
             let had_output = number(cells, since).is_some();
             let reason_val = number(cells, reason).and_then(|value| u8::try_from(value).ok());
-            held.read.push((step.hour, reason_val, had_output));
-            let known_owner = !(number(cells, alone) == Some(1) && reason_val == Some(replay_data::rows::ConstructionProjectRow::OUTPUT_OWNER_UNKNOWN))
-                && number(cells, owner).is_some_and(|v| v != 0 || number(cells, alone) == Some(0));
+            let known_owner = number(cells, alone) == Some(0)
+                || match reason_val {
+                    Some(r) if r == unknown_owner => false,
+                    Some(r) if r == unread_output => held.first_known_owner.is_some() || number(cells, owner).is_some_and(|v| v != 0),
+                    Some(_) => true,
+                    None => false,
+                };
+            if known_owner && held.first_known_owner.is_none() { held.first_known_owner = Some(step.hour); }
+            let effective_reason = if had_output && !known_owner { Some(unknown_owner) } else { reason_val };
+            held.read.push((step.hour, effective_reason, had_output));
             if held.before_observation.is_none() && had_output && known_owner && number(cells, obs) == Some(0) {
                 held.before_observation = Some(step.hour);
             }
@@ -428,15 +434,14 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         let lines = crate::products::construction::cached_construction(source, stretch.run)?;
         let links = dashboard_base::queries::links(source, stretch.run)?;
         let unowned = owner_unknown_lines(query, stretch.run, stretch.first, stretch.last)?;
+        let is_owner = |owner: u32, at: i32| match country {
+            Country::Slot(slot) => links.slot_at(owner, at) == Some(*slot),
+            Country::Tag(_) => names.tag_at(&links, owner, at).is_some_and(|tag| query.holders.goes_by(country, tag, at)),
+        };
         let mut kept: Vec<(&Line, bool)> = Vec::new();
         for line in lines.within(stretch.first, stretch.last) {
-            let matched = line.country.is_some_and(|owner| match country {
-                Country::Slot(slot) => links.slot_at(owner, line.first_read) == Some(*slot),
-                Country::Tag(_) => names.tag_at(&links, owner, line.first_read).is_some_and(|tag| query.holders.goes_by(country, tag, line.first_read)),
-            });
-            if matched || line.country.is_none() || line.output_alone || unowned.contains(&line.id) {
-                kept.push((line, matched));
-            }
+            let matched = line.country.is_some_and(|owner| is_owner(owner, line.first_read));
+            if matched || line.country.is_none() || line.output_alone || unowned.contains(&line.id) { kept.push((line, matched)); }
         }
         let ids: Vec<u128> = kept.iter().map(|(line, _)| u128::from(line.id)).collect();
         let mut steps = if ids.is_empty() { ReasonSteps::new() } else { reason_steps(query, stretch.run, &ids, stretch.first, stretch.last)? };
@@ -446,6 +451,7 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             entry.line.country = entry.line.country.or(line.country);
             entry.line.building = entry.line.building.or(line.building);
             if let Some(part) = steps.remove(&line.id) {
+                if let (Some(owner), Some(at)) = (line.country, part.first_known_owner) { entry.matched |= is_owner(owner, at); }
                 entry.history.read.extend(part.read);
                 entry.history.purpose.extend(part.purpose);
                 entry.history.repair_tick = min_opt(entry.history.repair_tick, part.repair_tick);
@@ -462,10 +468,7 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         acc.history.read.sort_by_key(|step| step.0);
         let mut merged_read: Vec<(i32, Option<u8>, bool)> = Vec::with_capacity(acc.history.read.len());
         for step in acc.history.read {
-            match merged_read.last_mut() {
-                Some(last) if last.0 == step.0 => *last = step,
-                _ => merged_read.push(step),
-            }
+            if merged_read.last().is_some_and(|last| last.0 == step.0) { *merged_read.last_mut().unwrap() = step; } else { merged_read.push(step); }
         }
         acc.history.purpose.sort_by_key(|step| step.0);
         acc.history.purpose.dedup_by(|next, prev| next.1 == prev.1);
@@ -478,18 +481,13 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         }
         if let Some(hour) = owner_gap { out.unattributed.push(hour); }
         if !acc.matched { continue; }
-        let gaps: Vec<(i32, i32, SpendingGap)> = gaps.into_iter().filter(|&(_, _, gap)| gap != SpendingGap::OwnerUnknown).collect();
+        let gaps = gaps.into_iter().filter(|&(_, _, gap)| gap != SpendingGap::OwnerUnknown).collect();
         let leaf = leaf_keys(&acc.line)[0];
         let repair_from = min_opt(acc.history.repair_tick, acc.history.first_repair).map(|hour| hour.max(acc.line.first_read));
         let new_from = acc.history.first_new.map(|hour| hour.max(acc.line.first_read));
         out.lines.push(LineFacts {
-            leaf: (leaf.1, leaf.2, leaf.3, leaf.4),
-            building: acc.line.building,
-            new_from,
-            repair_from,
-            purpose: acc.history.purpose,
-            gaps,
-            before_first_read: acc.history.before_observation.map(|hour| hour.max(acc.line.first_read)),
+            leaf: (leaf.1, leaf.2, leaf.3, leaf.4), building: acc.line.building, new_from, repair_from,
+            purpose: acc.history.purpose, gaps, before_first_read: acc.history.before_observation.map(|hour| hour.max(acc.line.first_read)),
         });
     }
     let buildings = place_buildings(&out.spent, &out.lines);
@@ -504,11 +502,8 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         steps.sort_by_key(|(hour, _)| *hour);
         let mut compacted: Vec<(i32, Option<String>)> = Vec::with_capacity(steps.len());
         for (hour, text) in std::mem::take(steps) {
-            match compacted.last_mut() {
-                Some(last) if last.0 == hour => last.1 = text,
-                Some(last) if last.1 == text => {}
-                _ => compacted.push((hour, text)),
-            }
+            if let Some(last) = compacted.last_mut() && last.0 == hour { last.1 = text; }
+            else if compacted.last().is_none_or(|last| last.1 != text) { compacted.push((hour, text)); }
         }
         *steps = compacted;
     }
@@ -522,21 +517,16 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
     for hour in change_hours {
         for (&id, &start) in &first_at {
             if start <= hour {
-                let text = raw_spellings.get(&id).and_then(|s| s[..s.partition_point(|(at, _)| *at <= hour)].last()).and_then(|(_, t)| t.clone());
-                active.insert(id, text);
+                active.insert(id, raw_spellings.get(&id).and_then(|s| s[..s.partition_point(|(at, _)| *at <= hour)].last()).and_then(|(_, t)| t.clone()));
             }
         }
         let mut warnings = Vec::new();
         let named = content.name(source, &active, &BTreeSet::new(), &mut warnings);
-        if out.warnings.last().is_none_or(|(_, held)| *held != warnings) {
-            out.warnings.push((hour, warnings));
-        }
+        if out.warnings.last().is_none_or(|(_, held)| *held != warnings) { out.warnings.push((hour, warnings)); }
         for kind in named.types {
             let label = kind.name.or(kind.token).unwrap_or_else(|| "Building name unavailable".into());
             let entry = out.names.entry(kind.id).or_default();
-            if entry.last().is_none_or(|(_, held)| *held != label) {
-                entry.push((hour, label));
-            }
+            if entry.last().is_none_or(|(_, held)| *held != label) { entry.push((hour, label)); }
         }
     }
     queue_gaps(query, &mut out.unrecorded)?;
