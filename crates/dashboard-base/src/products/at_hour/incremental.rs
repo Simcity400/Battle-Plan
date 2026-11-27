@@ -1,5 +1,5 @@
 use super::{placed::{Pool, Taken, Warm}, *};
-use crate::catalogue::{OwnRefusals, own_refusals};
+use crate::catalogue::OwnRefusals;
 use dashboard_follow::panel::{ProductReader, ProductStep};
 use playhead::{Step, changes::Changes, lane::Lane, pages::WorldPages};
 use replay_columnar::{manifest::Status, store::TableView as StoreView};
@@ -578,7 +578,7 @@ where P::Context: Sync, P::Params: Sync {
             let mut own = OwnRefusals::default();
             #[cfg(any(test, feature = "test-support"))]
             crate::test_fixtures::product_called();
-            let result = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::playback_reply(&state.frame, &params, &at)));
+            let result = sampling(&state.frame, &mut state.sampled, || finish.scope(&mut own, || P::playback_reply(&state.frame, &params, &at)));
             let mut reply = match result {
                 Ok(reply) => reply,
                 Err(error) if dashboard_core::refusal(&error).is_some() && P::holds_refusal(&state.frame) => {

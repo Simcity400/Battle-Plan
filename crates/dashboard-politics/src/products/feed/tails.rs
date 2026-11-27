@@ -797,26 +797,22 @@ pub fn event_feed_dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, None, (params.countries.as_deref(), params.group.as_ref()), &AtomicBool::new(false)));
-    let held = Mutex::new(Arc::new(prepared.map_err(|error| error.to_string())?));
+    let held = Mutex::new((finish, Arc::new(prepared.map_err(|error| error.to_string())?)));
     let owned = Owned::of(&query, source.replay());
     let (shared, load) = (Arc::clone(source), LoadContext { content: load.content.clone() });
     Ok(dashboard_base::products::at_hour::interval_panel(source.tables(), move |hour, cancelled| {
         let query = owned.query();
         let hour = occurrences::cutoff(&query, Some(hour))?;
-        let mut read = None;
-        let reply = finish.reply(|| {
-            let prepared = {
-                let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if held.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
-                    *held = Arc::new(prepare(&shared, &query, branch, &load, None, (params.countries.as_deref(), params.group.as_ref()), cancelled)?);
-                }
-                Arc::clone(&held)
-            };
-            let reply = load_feed_at(&prepared, &query, &params, hour, cancelled);
-            read = Some(prepared);
-            reply
-        })?;
-        let through = match read.is_some_and(|prepared| prepared.feed.as_ref().is_some_and(|feed| feed.unsettled())) {
+        let (finish, prepared) = {
+            let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if held.1.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
+                let (finish, prepared) = dashboard_base::products::Finish::open(&shared, &load, EventFeedTail::CONTENT_DEPENDENT, || prepare(&shared, &query, branch, &load, None, (params.countries.as_deref(), params.group.as_ref()), cancelled));
+                *held = (finish, Arc::new(prepared.map_err(|error| dashboard_core::duplicate(&error))?));
+            }
+            (held.0.clone(), Arc::clone(&held.1))
+        };
+        let reply = finish.reply(|| load_feed_at(&prepared, &query, &params, hour, cancelled))?;
+        let through = match prepared.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
             true => hour.saturating_sub(1),
             false => reply.next_change().map_or(i32::MAX, |next| next.saturating_sub(1)),
         };

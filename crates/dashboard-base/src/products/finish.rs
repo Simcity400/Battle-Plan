@@ -32,26 +32,33 @@ impl Finish {
         (finish, value)
     }
 
-    pub fn reply<R: ReplyWarnings>(&self, read: impl FnOnce() -> io::Result<R>) -> io::Result<R> {
-        let mut own = OwnRefusals::default();
-        let read = catalogue::own_refusals(&mut own, || {
+    pub fn scope<T>(&self, own: &mut OwnRefusals, read: impl FnOnce() -> T) -> T {
+        catalogue::own_refusals(own, || {
             catalogue::credit(&self.opened);
             read()
-        });
-        let mut reply = read.map_err(|error| dashboard_core::duplicate(&error))?;
+        })
+    }
+
+    pub fn reply<R: ReplyWarnings>(&self, read: impl FnOnce() -> io::Result<R>) -> io::Result<R> {
+        let mut own = OwnRefusals::default();
+        let mut reply = self.scope(&mut own, read).map_err(|error| dashboard_core::duplicate(&error))?;
         self.seal(reply.warnings_mut(), &own);
         Ok(reply)
     }
 
     pub fn seal(&self, warnings: &mut Vec<String>, own: &OwnRefusals) {
-        own.diagnostics().append_to(warnings);
+        let mut noted = OwnRefusals::clone(&self.opened);
+        noted.merge(own);
+        noted.diagnostics().append_to(warnings);
         if let Some(content) = &self.changed {
             content.append_changed_to(warnings);
         }
         if let Some(presented) = &self.presented {
             presented.append_to(warnings);
         }
-        warnings.extend(own.fallback_line());
+        if let Some(line) = noted.fallback_line().filter(|line| !warnings.contains(line)) {
+            warnings.push(line);
+        }
     }
 
     pub fn refusal(error: &io::Error) -> String {

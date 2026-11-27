@@ -384,9 +384,9 @@ where P::Params: Sync, P::Context: Sync {
     P::validate(&params)?;
     let branch = dashboard_query::branch(asked).map_err(|e| e.to_string())?;
     let query = crate::queries::query(source, branch).map_err(|e| e.to_string())?;
-    let context = Arc::new(P::context_for(source, load, &params).map_err(|e| e.to_string())?);
+    let (finish, context) = Finish::open(source, load, P::CONTENT_DEPENDENT, || P::context_for(source, load, &params));
+    let context = Arc::new(context.map_err(|e| e.to_string())?);
     let params = Arc::new(params);
-    let finish = Finish::new(source, load, P::CONTENT_DEPENDENT);
     let pool = placed::Pool::of(source).map_err(|e| e.to_string())?;
     let advance = shared_reader(source, load, P::KEY, asked, || incremental::reader::<P>(source, pool.clone(), params.clone(), context.clone(), Query { replay: query.replay, holders: query.holders.clone(), timeline: query.timeline.clone() }, finish.clone()));
     let (replay, holders, timeline, executable) = (source.replay(), query.holders, query.timeline, source.tables());
@@ -605,8 +605,9 @@ pub fn frame_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value
     P::validate(&params).map_err(str::to_owned)?;
     let branch = dashboard_query::branch(&asked).map_err(|error| error.to_string())?;
     let holders = Arc::clone(&crate::queries::query(source, branch).map_err(|error| error.to_string())?.holders);
-    let context = P::context_for(source, load, &params).map_err(|error| error.to_string())?;
-    Ok(Box::new(Followed::<P> { tables: P::tables(&params), params, holders, context, finish: Finish::new(source, load, P::CONTENT_DEPENDENT), live: None, executable: source.tables(), product: PhantomData }))
+    let (finish, context) = Finish::open(source, load, P::CONTENT_DEPENDENT, || P::context_for(source, load, &params));
+    let context = context.map_err(|error| error.to_string())?;
+    Ok(Box::new(Followed::<P> { tables: P::tables(&params), params, holders, context, finish, live: None, executable: source.tables(), product: PhantomData }))
 }
 
 #[cfg(any(test, feature = "export-types"))]
