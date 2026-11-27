@@ -2,7 +2,7 @@ import { colour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { productIconArt } from '../../families/art/provider.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
-import type { HourRanges } from '../../families/holders.ts';
+import { inHourRanges, type HourRanges } from '../../families/holders.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { clipSpansToHour, countryLook, inHourSpans, nextBoundaryAfter, spanStart, timelineModel } from '../../families/timeline/helpers.ts';
@@ -16,6 +16,7 @@ export const HISTORY_VIEW = 'history';
 export interface SpecialProjectsHistoryOptions {
   readonly tags: readonly string[];
   readonly membership: Readonly<Record<string, HourRanges>> | null;
+  readonly unobserved: HourRanges;
   readonly firstHour: number;
   readonly branchFirstHour: number;
   readonly surface: string;
@@ -44,11 +45,11 @@ function mergeSpans(spans: readonly HourSpan[]): HourSpan[] {
   return out;
 }
 
-function isRecordedAt(reply: SpecialProjectsReply, hour: number): boolean {
-  return inHourSpans(reply.available, hour) && !inHourSpans(reply.partial, hour) && !inHourSpans(reply.unresolved, hour);
+function isRecordedAt(reply: SpecialProjectsReply, hour: number, unobserved: HourRanges): boolean {
+  return inHourSpans(reply.available, hour) && !inHourSpans(reply.partial, hour) && !inHourSpans(reply.unresolved, hour) && !inHourRanges(unobserved, hour);
 }
 
-function gapsOf(reply: SpecialProjectsReply, hour: number, branchFirstHour: number): HourSpan[] {
+function gapsOf(reply: SpecialProjectsReply, hour: number, branchFirstHour: number, unobserved: HourRanges): HourSpan[] {
   const gaps: HourSpan[] = [];
   let cursor = branchFirstHour - 1;
   for (const span of reply.available) {
@@ -57,7 +58,8 @@ function gapsOf(reply: SpecialProjectsReply, hour: number, branchFirstHour: numb
     cursor = Math.max(cursor, span.lastHour);
   }
   if (cursor < hour) gaps.push({ firstHour: cursor + 1, lastHour: hour });
-  return mergeSpans(clipSpansToHour([...gaps, ...reply.partial, ...reply.unresolved], hour));
+  const roster = unobserved.map(([firstHour, lastHour]) => ({ firstHour, lastHour }));
+  return mergeSpans(clipSpansToHour([...gaps, ...reply.partial, ...reply.unresolved, ...roster], hour));
 }
 
 function within(ranges: HourRanges | undefined, first: number, last: number): readonly (readonly [number, number])[] {
@@ -160,7 +162,7 @@ function projectLane(readView: BoundedReadView, sourceKey: string, reply: Specia
     }
   }
   if (ranges && !spans.length && !within(ranges, project.firstRead, hour).length) return null;
-  const subtitle = current ? statusSummary(project, current) : isRecordedAt(reply, hour) ? 'Not in progress' : 'Not recorded';
+  const subtitle = current && !inHourRanges(options.unobserved, hour) ? statusSummary(project, current) : isRecordedAt(reply, hour, options.unobserved) ? 'Not in progress' : 'Not recorded';
   return {
     key: `${sourceKey}:${project.id}`,
     kind: 'item',
@@ -173,8 +175,9 @@ function projectLane(readView: BoundedReadView, sourceKey: string, reply: Specia
   };
 }
 
-function boundaries(replies: readonly SpecialProjectsReply[]): number[] {
+function boundaries(replies: readonly SpecialProjectsReply[], unobserved: HourRanges): number[] {
   const hours: number[] = [];
+  for (const [first, last] of unobserved) hours.push(first, last + 1);
   for (const reply of replies) {
     for (const project of reply.projects) for (const status of project.statuses) hours.push(status.firstHour, status.lastHour + 1);
     for (const span of reply.available) hours.push(span.firstHour, span.lastHour + 1);
@@ -197,7 +200,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
 
   nextChange(readView, options) {
     const replies = repliesOf(readView, options.tags).filter((reply): reply is SpecialProjectsReply => reply !== undefined);
-    return nextBoundaryAfter(boundaries(replies), readView.hour);
+    return nextBoundaryAfter(boundaries(replies, options.unobserved), readView.hour);
   },
 
   project(readView, options) {
@@ -206,7 +209,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
     const replies = repliesOf(readView, options.tags);
     if (!options.tags.length || replies.some(reply => reply === undefined)) return timelineModel(base);
     const shown = replies as SpecialProjectsReply[];
-    const nextChangeAt = nextBoundaryAfter(boundaries(shown), hour);
+    const nextChangeAt = nextBoundaryAfter(boundaries(shown, options.unobserved), hour);
     const warnings = [...new Set(shown.flatMap(reply => reply.warnings))];
     if (shown.every(reply => reply.unavailable)) {
       return timelineModel({ ...base, empty: shown[0]!.unavailable ?? 'Special projects were not recorded.', emptyKind: 'unavailable', warnings, nextChangeAt });
@@ -217,7 +220,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
     for (let i = 0; i < shown.length; i++) {
       const sourceKey = options.tags[i]!;
       const reply = shown[i]!;
-      const own = gapsOf(reply, hour, options.branchFirstHour);
+      const own = gapsOf(reply, hour, options.branchFirstHour, options.unobserved);
       gaps.push(...own);
       const projectLanes = reply.projects
         .map(project => projectLane(readView, sourceKey, reply, project, ordinal++, hour, own, options))
@@ -228,7 +231,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
           ? reply.unavailable
           : projectLanes.length
             ? undefined
-            : isRecordedAt(reply, hour) ? 'No special projects yet' : 'Not recorded at this date';
+            : isRecordedAt(reply, hour, options.unobserved) ? 'No special projects yet' : 'Not recorded at this date';
         lanes.push({
           key: `country:${sourceKey}`,
           kind: 'heading',
@@ -242,10 +245,10 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
       lanes.push(...projectLanes);
     }
     if (!lanes.some(lane => lane.kind === 'item')) {
-      if (shown.every(reply => !isRecordedAt(reply, hour))) {
+      if (shown.every(reply => !isRecordedAt(reply, hour, options.unobserved))) {
         return timelineModel({ ...base, empty: 'Special projects were not recorded at this date.', emptyKind: 'unavailable', warnings, nextChangeAt });
       }
-      if (shown.every(reply => !reply.unavailable && isRecordedAt(reply, hour))) {
+      if (shown.every(reply => !reply.unavailable && isRecordedAt(reply, hour, options.unobserved))) {
         return timelineModel({ ...base, lanes, empty: 'No special projects yet.', warnings, nextChangeAt });
       }
       return timelineModel({ ...base, lanes, unobserved: gaps, warnings, nextChangeAt });
@@ -253,7 +256,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
     return timelineModel({ ...base, lanes, unobserved: gaps, warnings, nextChangeAt });
   },
 
-  tooltip(model, hit, readView) {
+  tooltip(model, hit, readView, options) {
     const lane = laneByKey(model, hit.laneKey);
     if (!lane || lane.kind !== 'item') return null;
     const span = spanAt(lane, hit);
@@ -267,7 +270,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
     const title = project
       ? (titleStatus ? reply!.presentations[titleStatus.presentation]!.name : 'Special project')
       : span?.label ?? lane.label;
-    if (span && status) {
+    if (span && status && !inHourRanges(options.unobserved, at)) {
       const since = where?.since ?? span.firstHour;
       const heldBefore = where?.heldBefore ?? span.heldBefore;
       return {
@@ -281,8 +284,8 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
         ],
       };
     }
-    const recorded = reply ? isRecordedAt(reply, at) : !inHourSpans(model.unobserved, at);
-    const stateText = status && project
+    const recorded = reply ? isRecordedAt(reply, at, options.unobserved) : !inHourSpans(model.unobserved, at);
+    const stateText = status && project && recorded
       ? statusSummary(project, status)
       : recorded ? 'Not in progress' : 'Not recorded';
     return {
@@ -325,6 +328,7 @@ export const specialProjectsHistoryDeclaration: TimelineWidgetDeclaration<Specia
   projectionOptions: (ctx, extra) => ({
     tags: ctx.countries.tags,
     membership: ctx.countries.membership,
+    unobserved: ctx.countries.unobserved,
     firstHour: extra.extent[0],
     branchFirstHour: ctx.branch.firstHour,
     surface: extra.surface,

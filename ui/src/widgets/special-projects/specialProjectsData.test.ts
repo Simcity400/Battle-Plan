@@ -92,7 +92,7 @@ test('the card, text mirror, history and hover show the played hour inside a hel
   const { deriveCardMirror } = await import('../../families/card/model.ts');
   const { specialProjectsProjection } = await import('./specialProjectsProjection.ts');
   const { specialProjectsHistoryProjection: history } = await import('./historyProjection.ts');
-  const options = { tags: ['GER'], membership: null, firstHour: 100, branchFirstHour: 100, surface: '#111111' };
+  const options = { tags: ['GER'], membership: null, unobserved: [], firstHour: 100, branchFirstHour: 100, surface: '#111111' };
   const until = (lastHour: number) => {
     const reply = fixture();
     reply.tag = 'GER';
@@ -164,7 +164,7 @@ test('History lanes come from each country’s recorded statuses: one bar per wo
   const a = reply('AAA', [status(10, 29, 20, 'running'), status(30, 39, 40, 'running'), status(45, 99, 40, 'running'), status(100, 200, 100, 'completed')]);
   const b = reply('BBB', [status(10, 39, 50, 'running'), status(45, 200, 50, 'running')]);
   const panels = new Map<string, unknown>([['projects:AAA', a], ['projects:BBB', b]]);
-  const options = { tags: ['AAA', 'BBB'], membership: { BBB: [[20, 30]] as const } as Record<string, readonly (readonly [number, number])[]>, firstHour: 0, branchFirstHour: 0, surface: '#111111' };
+  const options = { tags: ['AAA', 'BBB'], membership: { BBB: [[20, 30]] as const } as Record<string, readonly (readonly [number, number])[]>, unobserved: [], firstHour: 0, branchFirstHour: 0, surface: '#111111' };
   const model = specialProjectsHistoryProjection.project(createBoundedReadView({ hour: 60, panels }), options);
   assert.deepEqual(model.lanes.map(lane => [lane.kind, lane.key]), [['heading', 'country:AAA'], ['item', 'AAA:AAA:p'], ['heading', 'country:BBB'], ['item', 'BBB:BBB:p']]);
   const own = model.lanes[1]!;
@@ -176,6 +176,30 @@ test('History lanes come from each country’s recorded statuses: one bar per wo
   assert.equal(later.lanes.length, 1, 'one country has no heading');
   assert.equal(later.lanes[0]!.subtitle?.startsWith('Completed'), true);
   assert.equal(specialProjectsHistoryProjection.nextChange!(createBoundedReadView({ hour: 60, panels }), options), 100, 'quiet until the next recorded status');
+});
+
+test('History marks a group roster gap as not recorded: bars cut by it have uncertain ends, its hours read Not recorded, and its edges are changes', async () => {
+  const { specialProjectsHistoryProjection } = await import('./historyProjection.ts');
+  const { createBoundedReadView } = await import('../../families/boundedView.ts');
+  const reply: SpecialProjectsReply = {
+    ...fixture(), tag: 'AAA', identities: [{ firstHour: 0, lastHour: 300, slot: 5, countryId: 10 }],
+    available: [{ firstHour: 0, lastHour: 200 }], partial: [], unresolved: [],
+    projects: [{ id: 'p', owner: 1, local: 0, firstRead: 10, firstState: 'running', entries: [], attempts: [],
+      statuses: [{ firstHour: 10, lastHour: 200, readHour: 10, presentation: 0, progress: 30, state: 'running', iterations: null, scientistRead: null, lastScientistRead: null }] }],
+  };
+  const panels = new Map<string, unknown>([['projects:AAA', reply]]);
+  const options = { tags: ['AAA'], membership: { AAA: [[0, 49], [80, 300]] as const }, unobserved: [[50, 79]] as const, firstHour: 0, branchFirstHour: 0, surface: '#111111' };
+  const view = createBoundedReadView({ hour: 100, panels });
+  const model = specialProjectsHistoryProjection.project(view, options);
+  const lane = model.lanes[0]!;
+  assert.deepEqual(lane.spans.map(span => [span.firstHour, span.lastHour, span.endUnseen === true, span.startBy === true]), [[10, 49, true, false], [80, 100, false, true]],
+    'both ends at the roster gap are uncertain, never a known leave and rejoin');
+  assert.deepEqual(model.unobserved.map(span => [span.firstHour, span.lastHour]), [[50, 79]]);
+  const inGap = specialProjectsHistoryProjection.tooltip!(model, { kind: 'lane', laneKey: lane.key, hour: 60 }, view, options);
+  assert.deepEqual(inGap?.items, [{ label: 'State', value: 'Not recorded' }], 'hover inside the gap withholds the state');
+  const atGap = specialProjectsHistoryProjection.project(createBoundedReadView({ hour: 60, panels }), options);
+  assert.equal(atGap.lanes[0]!.subtitle, 'Not recorded');
+  assert.equal(specialProjectsHistoryProjection.nextChange!(createBoundedReadView({ hour: 30, panels }), options), 50, 'the gap edge is a change');
 });
 
 test('R2-S6: History clips ended statuses, dates earlier span names and tooltip titles, and looks up slot-keyed hovers', async () => {
@@ -211,7 +235,7 @@ test('R2-S6: History clips ended statuses, dates earlier span names and tooltip 
     ],
   };
   const panels = new Map<string, unknown>([[`projects:${slotKey}`, reply]]);
-  const options = { tags: [slotKey], membership: { [slotKey]: [[0, 100]] as const }, firstHour: 0, branchFirstHour: 0, surface: '#111111' };
+  const options = { tags: [slotKey], membership: { [slotKey]: [[0, 100]] as const }, unobserved: [], firstHour: 0, branchFirstHour: 0, surface: '#111111' };
 
   const unreadView = createBoundedReadView({ hour: 55, panels });
   const unreadModel = specialProjectsHistoryProjection.project(unreadView, options);
@@ -267,7 +291,7 @@ test('R2-S6: History clips ended statuses, dates earlier span names and tooltip 
     }),
   } as Parameters<typeof createBoundedReadView>[0]['identity'];
   const mixed = specialProjectsHistoryProjection.project(createBoundedReadView({ hour: 50, panels: mixedPanels, identity }), {
-    tags: ['AAA', 'BBB'], membership: null, firstHour: 0, branchFirstHour: 0, surface: '#111111',
+    tags: ['AAA', 'BBB'], membership: null, unobserved: [], firstHour: 0, branchFirstHour: 0, surface: '#111111',
   });
   assert.equal(mixed.empty, undefined, 'mixed coverage leaves per-country headings visible instead of a global empty message');
   assert.deepEqual(mixed.lanes.map(lane => [lane.key, lane.label]), [
@@ -275,7 +299,7 @@ test('R2-S6: History clips ended statuses, dates earlier span names and tooltip 
     ['country:BBB', 'BBB · Not recorded at this date'],
   ], 'each empty country heading shows its own coverage status in its visible label');
   const bothUnread = specialProjectsHistoryProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['projects:BBB', emptyUnread]]) }), {
-    tags: ['BBB'], membership: null, firstHour: 0, branchFirstHour: 0, surface: '#111111',
+    tags: ['BBB'], membership: null, unobserved: [], firstHour: 0, branchFirstHour: 0, surface: '#111111',
   });
   assert.equal(bothUnread.emptyKind, 'unavailable', 'earlier coverage does not mask an unread displayed hour');
 });
