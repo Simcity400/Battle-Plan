@@ -233,6 +233,18 @@ fn a_branch_or_a_backwards_clock_starts_cold() {
     history.set(prepared(12, 0, true), true);
     at(&mut history, 50.0, 3.0);
     assert!(at(&mut history, 500.0, 0.0).is_empty());
+    let popped = |history: &mut BuildingHistory, time: f32| {
+        history
+            .frame(camera([0.0, 0.0], 50.0), [1024, 768], time, true, false)
+            .finish(&mut viewer_scene_base::mesh_budget::Budget::new(8, false));
+        history.collect(None, 0.0)[0].1.scale
+    };
+    let mut popping = BuildingHistory::default();
+    popping.set(prepared(10, 10_000_000, false), true);
+    assert_eq!(popped(&mut popping, 40.0), 0.0);
+    assert!((popped(&mut popping, 40.1) - 0.5).abs() < 1e-4);
+    assert_eq!(popped(&mut popping, 0.0), 0.0, "a backwards clock pops up from no scale");
+    assert!((popped(&mut popping, 0.1) - 0.5).abs() < 1e-4);
 }
 
 #[test]

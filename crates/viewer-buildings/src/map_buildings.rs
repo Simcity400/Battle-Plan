@@ -401,6 +401,7 @@ impl BuildingHistory {
         if self.last_time.is_some_and(|previous| time < previous) {
             self.clear();
             self.dirty = true;
+            self.last_time = None;
         }
         let delta = self.last_time.map_or(0.0, |previous| time - previous);
         self.last_time = Some(time);
