@@ -293,4 +293,37 @@ mod reply {
         assert!(reply.missing.unwrap().contains("the read failed"));
         assert!(cells.finish().is_empty());
     }
+
+    #[test]
+    fn unavailable_auxiliary_tables_carry_their_reason_into_state_garrison_and_law_missing() {
+        let mut no_garrisons = frame();
+        *no_garrisons.tables[TableId::StateGarrisons.index()] = TableView::Unavailable { reason: "garrison table damaged".into() };
+        let reply = states::reply(&no_garrisons, &content(), &Cells::default()).unwrap();
+        assert!(reply.missing.is_none());
+        assert!(reply.states[0].garrison_missing.as_deref().is_some_and(|why| why.contains("garrison table damaged")), "{:?}", reply.states[0].garrison_missing);
+
+        let mut no_assigned = frame();
+        *no_assigned.tables[TableId::StateAssignedManpower.index()] = TableView::Unavailable { reason: "manpower table damaged".into() };
+        let reply = states::reply(&no_assigned, &content(), &Cells::default()).unwrap();
+        assert!(!reply.states[0].assigned_known);
+        assert!(reply.states[0].garrison_missing.as_deref().is_some_and(|why| why.contains("manpower table damaged")), "{:?}", reply.states[0].garrison_missing);
+
+        let mut no_overrides = frame();
+        *no_overrides.tables[TableId::StateOccupationLaws.index()] = TableView::Unavailable { reason: "law overrides damaged".into() };
+        let reply = states::reply(&no_overrides, &content(), &Cells::default()).unwrap();
+        assert_eq!(reply.states[1].law, None);
+        assert!(reply.states[1].law_missing.as_deref().is_some_and(|why| why.contains("law overrides damaged")), "{:?}", reply.states[1].law_missing);
+
+        let mut no_settings = frame();
+        *no_settings.tables[TableId::OccupationSettings.index()] = TableView::Unavailable { reason: "settings damaged".into() };
+        let reply = states::reply(&no_settings, &content(), &Cells::default()).unwrap();
+        assert_eq!(reply.states[0].law, None);
+        assert!(reply.states[0].law_missing.as_deref().is_some_and(|why| why.contains("settings damaged")), "{:?}", reply.states[0].law_missing);
+
+        let mut old_recording = frame();
+        *old_recording.tables[TableId::StateGarrisons.index()] = TableView::NotRecorded { mode: replay_data::scope::CaptureMode::Full };
+        let reply = states::reply(&old_recording, &content(), &Cells::default()).unwrap();
+        assert!(reply.missing.is_none());
+        assert!(reply.states[0].garrison_missing.as_deref().is_some_and(|why| why.contains("not recorded")), "{:?}", reply.states[0].garrison_missing);
+    }
 }

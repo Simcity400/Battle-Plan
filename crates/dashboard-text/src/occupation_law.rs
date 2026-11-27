@@ -10,7 +10,7 @@ pub enum GroupLaw<'a> {
 pub struct LawInputs<'a> {
     pub state: Option<&'a [u8]>,
     pub key_resolved: bool,
-    pub overrides_complete: bool,
+    pub overrides_missing: Option<String>,
     pub group: GroupLaw<'a>,
     pub default: Option<(bool, &'a [u8])>,
     pub fallback: Result<&'a [u8], String>,
@@ -18,7 +18,7 @@ pub struct LawInputs<'a> {
 
 impl LawInputs<'_> {
     pub fn reaches_default(&self) -> bool {
-        self.key_resolved && self.state.is_none() && self.overrides_complete && matches!(self.group, GroupLaw::Law(None)) && self.default.is_some()
+        self.key_resolved && self.state.is_none() && self.overrides_missing.is_none() && matches!(self.group, GroupLaw::Law(None)) && self.default.is_some()
     }
 }
 
@@ -33,8 +33,8 @@ pub fn law_for(input: LawInputs<'_>, valid: impl FnOnce(&str) -> Result<bool, St
     if let Some(bytes) = input.state {
         return token(bytes);
     }
-    if !input.overrides_complete {
-        return Err("The occupation-law overrides are incomplete; this state's override may not have been recorded".into());
+    if let Some(reason) = input.overrides_missing {
+        return Err(format!("The occupation-law overrides are incomplete ({reason}); this state's override may not have been recorded"));
     }
     match input.group {
         GroupLaw::Law(Some(bytes)) => return token(bytes),
@@ -69,7 +69,7 @@ mod tests {
     use super::*;
 
     fn inputs<'a>(state: Option<&'a [u8]>, group: GroupLaw<'a>, default: Option<(bool, &'a [u8])>) -> LawInputs<'a> {
-        LawInputs { state, key_resolved: true, overrides_complete: true, group, default, fallback: Ok("fallback".as_bytes()) }
+        LawInputs { state, key_resolved: true, overrides_missing: None, group, default, fallback: Ok("fallback".as_bytes()) }
     }
 
     fn never(_: &str) -> Result<bool, String> {
@@ -92,8 +92,9 @@ mod tests {
     fn a_law_not_established_says_why_and_is_never_a_guess() {
         let unresolved = LawInputs { key_resolved: false, ..inputs(Some("state".as_bytes()), GroupLaw::Law(None), None) };
         assert!(law_for(unresolved, never).unwrap_err().contains("unresolved"));
-        let incomplete = LawInputs { overrides_complete: false, ..inputs(None, GroupLaw::Law(Some("group".as_bytes())), None) };
-        assert!(law_for(incomplete, never).unwrap_err().contains("overrides are incomplete"));
+        let incomplete = LawInputs { overrides_missing: Some("state occupation laws: not available (read failed)".into()), ..inputs(None, GroupLaw::Law(Some("group".as_bytes())), None) };
+        let error = law_for(incomplete, never).unwrap_err();
+        assert!(error.contains("overrides are incomplete") && error.contains("read failed"), "{error}");
         assert_eq!(law_for(inputs(None, GroupLaw::Unknown("not recorded".into()), None), never), Err("not recorded".into()));
         assert!(law_for(inputs(None, GroupLaw::Law(None), None), never).unwrap_err().contains("default law is missing"));
         let no_fallback = LawInputs { fallback: Err("no fallback".into()), ..inputs(None, GroupLaw::Law(None), Some((true, "default".as_bytes()))) };

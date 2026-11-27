@@ -135,28 +135,75 @@ pub fn sprite(values: &mut Values, key: &str, value: String) {
 pub(super) fn fill(values: &mut Values, key: &str, value: f32) {
     values.entry(key.into()).or_default().fill = Some(value);
 }
-pub(super) type Flags = BTreeMap<u32, Result<String, String>>;
+pub(super) enum Flags {
+    Available {
+        by_country: BTreeMap<u32, Result<String, String>>,
+        incomplete: Option<String>,
+    },
+    Unavailable(String),
+}
+
+impl Default for Flags {
+    fn default() -> Self {
+        Self::Available {
+            by_country: BTreeMap::new(),
+            incomplete: None,
+        }
+    }
+}
+
+impl FromIterator<(u32, Result<String, String>)> for Flags {
+    fn from_iter<T: IntoIterator<Item = (u32, Result<String, String>)>>(iter: T) -> Self {
+        Self::Available {
+            by_country: iter.into_iter().collect(),
+            incomplete: None,
+        }
+    }
+}
+
+impl<const N: usize> From<[(u32, Result<String, String>); N]> for Flags {
+    fn from(items: [(u32, Result<String, String>); N]) -> Self {
+        items.into_iter().collect()
+    }
+}
 
 pub(super) fn country_flag(flags: &Flags, country: u32) -> Result<String, String> {
-    flags.get(&country).cloned().unwrap_or_else(|| Err({
-        format!(
-            "no combat flag resolves for country {country} (the hour's country rows or the content's flag artwork lack it)"
-        )
-    }))
+    match flags {
+        Flags::Unavailable(why) => Err(why.clone()),
+        Flags::Available {
+            by_country,
+            incomplete,
+        } => by_country.get(&country).cloned().unwrap_or_else(|| {
+            Err(incomplete.clone().unwrap_or_else(|| {
+                format!(
+                    "no combat flag resolves for country {country} (the hour's country rows or the content's flag artwork lack it)"
+                )
+            }))
+        }),
+    }
 }
 fn ratio(value: i64, maximum: i64) -> Option<f32> {
     (maximum > 0).then(|| (value as f64 / maximum as f64).clamp(0.0, 1.0) as f32)
 }
 pub(super) fn flags(static_content: &StaticContent, frame: &DecodedFrame) -> io::Result<Flags> {
-    Ok(dashboard_text::flag_choices::choices(frame)?
-        .into_iter()
-        .map(|choice| {
-            let key = choice
-                .key(|key| static_content.assets.has_flag(key))
-                .map(str::to_owned);
-            (choice.raw, key)
-        })
-        .collect())
+    match dashboard_text::flag_choices::choices(frame)? {
+        dashboard_text::flag_choices::Choices::Unavailable(why) => Ok(Flags::Unavailable(why)),
+        dashboard_text::flag_choices::Choices::Available {
+            choices,
+            incomplete,
+        } => Ok(Flags::Available {
+            by_country: choices
+                .into_iter()
+                .map(|choice| {
+                    let key = choice
+                        .key(|key| static_content.assets.has_flag(key))
+                        .map(str::to_owned);
+                    (choice.raw, key)
+                })
+                .collect(),
+            incomplete,
+        }),
+    }
 }
 impl Bindings {
     #[expect(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
@@ -539,8 +586,25 @@ impl Bindings {
                 .iter()
                 .filter(|r| r.combat == id && r.side == side as u8)
                 .collect();
-            if let Some(flag) = members.iter().find_map(|r| flags.get(&r.owner)) {
-                self.bind(&format!("{prefix}/flag_{label}"), FLAG, flag.clone());
+            let side_flag = match flags {
+                Flags::Unavailable(why) if !members.is_empty() => Some(Err(why.clone())),
+                Flags::Unavailable(_) => None,
+                Flags::Available {
+                    by_country,
+                    incomplete,
+                } => members
+                    .iter()
+                    .find_map(|r| by_country.get(&r.owner).cloned())
+                    .or_else(|| {
+                        incomplete
+                            .as_ref()
+                            .filter(|_| !members.is_empty())
+                            .cloned()
+                            .map(Err)
+                    }),
+            };
+            if let Some(flag) = side_flag {
+                self.bind(&format!("{prefix}/flag_{label}"), FLAG, flag);
             }
             let positioning = if side == 0 {
                 combat.attacker_positioning

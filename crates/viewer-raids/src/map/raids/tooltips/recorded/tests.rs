@@ -7,15 +7,18 @@ use std::time::Instant;
 use viewer_native_gui::native_text::FLAG;
 #[test]
 fn controller_flag_uses_native_control_and_three_codepoints() {
-    use dashboard_text::flag_choices::FlagChoice;
+    use dashboard_text::flag_choices::{Choices, FlagChoice};
     with_context(|context| {
         for tag in ["GER", "ÄØ中", "ABCD"] {
-            let flags = OnceCell::from(Ok(vec![FlagChoice {
-                raw: 10,
-                tag: tag.into(),
-                candidates: vec!["GER_fascism".into()],
-                refusal: None,
-            }]));
+            let flags = OnceCell::from(Ok(Choices::Available {
+                choices: vec![FlagChoice {
+                    raw: 10,
+                    tag: tag.into(),
+                    candidates: vec!["GER_fascism".into()],
+                    refusal: None,
+                }],
+                incomplete: None,
+            }));
             let result = context.flag(2, &flags);
             if tag == "ABCD" {
                 assert_eq!(
@@ -26,6 +29,13 @@ fn controller_flag_uses_native_control_and_three_codepoints() {
                 assert_eq!(result, Ok(format!("{}{tag}", FLAG)));
             }
         }
+        let unavailable = OnceCell::from(Ok(Choices::Unavailable(
+            "country links: not available (damaged block)".into(),
+        )));
+        assert_eq!(
+            context.flag(2, &unavailable),
+            Err("country links: not available (damaged block)".into())
+        );
     });
 }
 

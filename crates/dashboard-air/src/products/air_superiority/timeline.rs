@@ -850,14 +850,13 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
         }
         let reads = [Read::all(TableId::RaidAirScores), Read::all(TableId::CountryLinks)];
         let frame = at_hour::frame_with(query, read.hour, &reads, AirSuperiorityAt::columns, "Air superiority")?;
-        match dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(&frame) {
-            Ok(rows) => {
-                let complete = frame.complete::<tables::RaidAirScores>().is_ok();
+        match dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(&frame)?.into_rows(TableId::RaidAirScores, read.hour) {
+            Ok((rows, incomplete)) => {
                 let links = frame.complete::<tables::CountryLinks>().ok().map(|links| Arc::new(links.to_vec()));
-                at_hours.insert(at, (rows.to_vec(), complete, links));
+                at_hours.insert(at, (rows.to_vec(), incomplete.is_none(), links));
             }
-            Err(error) => {
-                unread_notes.push((at, read.hour, error.to_string()));
+            Err(why) => {
+                unread_notes.push((at, read.hour, why));
                 unread.insert(at);
             }
         }
@@ -1081,7 +1080,13 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
         let candidates: Vec<u32> = shown_window.candidates().into_iter().filter(|region| !pinned_set.contains(region)).collect();
         let ranked = composer.rank_at(&candidates, cancelled)?;
         filtered = (ranked.regions.iter().filter(|region| hidden_set.contains(region)).count() as u32, ranked.outside);
-        rank_missing = ranked.missing;
+        rank_missing = shown_window
+            .unread
+            .iter()
+            .rev()
+            .find(|(at, _, _)| *at + 1 == shown_window.reads.len())
+            .map(|(_, _, reason)| format!("{reason}; the most active regions are not known"))
+            .or(ranked.missing);
         let chosen = automatic(ranked.regions, &hidden_set, params.top.unwrap_or(TOP), rank_missing.clone());
         active_unlisted = chosen.active_unlisted;
         let mut shown = pinned_list;

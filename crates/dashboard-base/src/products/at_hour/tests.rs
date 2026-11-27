@@ -722,7 +722,7 @@ fn an_older_recordings_law_can_rule_out_a_variable_only_with_a_recorded_store() 
     ] {
         *frame.tables[TableId::ScriptVariables.index()] = store;
         let world = script.recorded_world(&frame).unwrap();
-        let inputs = LawInputs { state: None, key_resolved: true, overrides_complete: true, group: GroupLaw::Law(None), default: Some((true, b"candidate")), fallback: Ok(b"fallback") };
+        let inputs = LawInputs { state: None, key_resolved: true, overrides_missing: None, group: GroupLaw::Law(None), default: Some((true, b"candidate")), fallback: Ok(b"fallback") };
         let choice = law_for(inputs, |_| admitted(&world, &law, 7, 8));
         match frame.complete::<tables::ScriptVariables>() {
             Ok(_) => assert_eq!(choice.as_deref(), Ok("fallback")),

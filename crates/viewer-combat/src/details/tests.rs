@@ -811,7 +811,7 @@ fn stale() -> Bindings {
 
 fn bind_pictures(frame: &DecodedFrame, sprites: &[&str]) -> Bindings {
     let terrain = BTreeMap::from([(PROVINCE, "plains".to_owned())]);
-    let flags = BTreeMap::from([(7, Ok("GER".to_owned()))]);
+    let flags = Flags::from([(7, Ok("GER".to_owned()))]);
     let has_sprite = |name: &str| sprites.contains(&name);
     let mut out = stale();
     pictures(&mut out, frame, COMBAT, &terrain, &has_sprite, &flags).unwrap();
@@ -844,7 +844,7 @@ fn a_side_without_a_commander_takes_its_recorded_country_flag() {
         ..Default::default()
     };
     let out = bind_pictures(
-        &window_frame(Some(detail), snow(0)),
+        &window_frame(Some(detail.clone()), snow(0)),
         &["GFX_terrain_plains"],
     );
     let attacker = &out.values["attacker_flag"];
@@ -857,6 +857,17 @@ fn a_side_without_a_commander_takes_its_recorded_country_flag() {
         &out,
         "Land combat 62 defender flag is hidden: no combat flag resolves for country 9"
     ));
+    let mut unavailable = stale();
+    pictures(
+        &mut unavailable,
+        &window_frame(Some(detail), snow(0)),
+        COMBAT,
+        &BTreeMap::from([(PROVINCE, "plains".to_owned())]),
+        &|name| name == "GFX_terrain_plains",
+        &Flags::Unavailable("country links: not available (damaged block)".into()),
+    )
+    .unwrap();
+    assert!(refused(&unavailable, "damaged block"));
     let out = bind_pictures(&window_frame(None, snow(0)), &["GFX_terrain_plains"]);
     for key in ["attacker_flag", "defender_flag"] {
         assert!(out.values[key].hidden && out.values[key].flag.is_none());

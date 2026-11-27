@@ -1505,3 +1505,139 @@ fn a_restored_wire_vector_without_a_spare_slot_returns_a_named_failure_without_a
         Err(super::MetadataError::WireAllocationFailed)
     ));
 }
+
+#[test]
+fn recorded_rows_preserve_unavailable_truncated_and_not_recorded_states() {
+    use super::{RecordedRows, recorded_rows, recorded_rows_in};
+    use replay_data::scope::CaptureMode;
+    use replay_frame::frame::HourFrame;
+
+    let complete = source(1, 100, Some(1));
+    let expected = complete.complete::<tables::Countries>().unwrap();
+    let got = recorded_rows::<tables::Countries>(&complete).unwrap();
+    assert_eq!(got, RecordedRows::Complete(expected));
+    assert_eq!(got.missing_reason(TableId::Countries, 100), None);
+    let got_in = recorded_rows_in::<tables::Countries>(HourFrame::from(&complete), 0).unwrap();
+    assert!(matches!(got_in, RecordedRows::Complete(rows) if rows.len() == expected.len()));
+    assert_eq!(got_in.missing_reason(TableId::Countries, 100), None);
+
+    let mut empty = complete.clone();
+    *empty.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(Vec::new()));
+    assert_eq!(
+        recorded_rows::<tables::Countries>(&empty).unwrap(),
+        RecordedRows::Complete(&[][..])
+    );
+    assert!(matches!(
+        recorded_rows_in::<tables::Countries>(HourFrame::from(&empty), 0).unwrap(),
+        RecordedRows::Complete(rows) if rows.is_empty()
+    ));
+
+    let mut unavailable = complete.clone();
+    *unavailable.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "damaged countries block".into(),
+    };
+    let got = recorded_rows::<tables::Countries>(&unavailable).unwrap();
+    assert_eq!(
+        got,
+        RecordedRows::Unavailable {
+            reason: "damaged countries block"
+        }
+    );
+    assert_eq!(
+        got.missing_reason(TableId::Countries, 100).as_deref(),
+        Some("countries: not available (damaged countries block)")
+    );
+    let got_in = recorded_rows_in::<tables::Countries>(HourFrame::from(&unavailable), 0).unwrap();
+    assert!(matches!(
+        got_in,
+        RecordedRows::Unavailable {
+            reason: "damaged countries block"
+        }
+    ));
+    assert_eq!(
+        got_in.missing_reason(TableId::Countries, 100).as_deref(),
+        Some("countries: not available (damaged countries block)")
+    );
+
+    let mut blank_reason = complete.clone();
+    *blank_reason.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: String::new(),
+    };
+    assert_eq!(
+        recorded_rows::<tables::Countries>(&blank_reason)
+            .unwrap()
+            .missing_reason(TableId::Countries, 100)
+            .as_deref(),
+        Some("countries: not available")
+    );
+
+    let mut truncated = complete.clone();
+    *truncated.tables[TableId::Countries.index()] = TableView::Truncated {
+        rows: TableRows::Countries(expected.to_vec()),
+        missing: 3,
+    };
+    let got = recorded_rows::<tables::Countries>(&truncated).unwrap();
+    assert_eq!(
+        got,
+        RecordedRows::Truncated {
+            rows: expected,
+            missing: 3,
+        }
+    );
+    assert_eq!(
+        got.missing_reason(TableId::Countries, 100).as_deref(),
+        Some("countries: read only in part (3 rows not read)")
+    );
+    let got_in = recorded_rows_in::<tables::Countries>(HourFrame::from(&truncated), 0).unwrap();
+    assert!(matches!(
+        got_in,
+        RecordedRows::Truncated { rows, missing: 3 } if rows.len() == expected.len()
+    ));
+
+    let mut unrecorded = complete.clone();
+    *unrecorded.tables[TableId::Countries.index()] = TableView::NotRecorded {
+        mode: CaptureMode::Full,
+    };
+    let got = recorded_rows::<tables::Countries>(&unrecorded).unwrap();
+    assert_eq!(
+        got,
+        RecordedRows::NotRecorded {
+            mode: CaptureMode::Full
+        }
+    );
+    assert_eq!(
+        got.missing_reason(TableId::Countries, 100).as_deref(),
+        Some("countries is not recorded at hour 100 in a full recording")
+    );
+    assert!(matches!(
+        recorded_rows_in::<tables::Countries>(HourFrame::from(&unrecorded), 0).unwrap(),
+        RecordedRows::NotRecorded {
+            mode: CaptureMode::Full
+        }
+    ));
+
+    for bad_view in [
+        TableView::Complete(TableRows::States(Vec::new())),
+        TableView::Truncated {
+            rows: TableRows::States(Vec::new()),
+            missing: 1,
+        },
+    ] {
+        let mut bad = complete.clone();
+        *bad.tables[TableId::Countries.index()] = bad_view;
+        assert_eq!(
+            recorded_rows::<tables::Countries>(&bad)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            recorded_rows_in::<tables::Countries>(HourFrame::from(&bad), 0)
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+}

@@ -728,12 +728,18 @@ fn land(
                 if let Some(row) = divisions.get(&(side as u8, *unit)) {
                     let flag = if committed {
                         let cause = match exiles.entry_owner(row.row) {
-                            Ok(owner) => match flags.get(&owner) {
-                                Some(Ok(flag)) => Ok(flag),
-                                Some(Err(reason)) => Err(reason.clone()),
-                                None => Err(format!(
-                                    "no combat flag resolves for its owner country {owner}"
-                                )),
+                            Ok(owner) => match flags {
+                                Flags::Unavailable(why) => Err(why.clone()),
+                                Flags::Available {
+                                    by_country,
+                                    incomplete,
+                                } => match by_country.get(&owner) {
+                                    Some(Ok(flag)) => Ok(flag),
+                                    Some(Err(reason)) => Err(reason.clone()),
+                                    None => Err(incomplete.clone().unwrap_or_else(|| {
+                                        format!("no combat flag resolves for its owner country {owner}")
+                                    })),
+                                },
                             },
                             Err(refused) => Err(refused.to_string()),
                         };

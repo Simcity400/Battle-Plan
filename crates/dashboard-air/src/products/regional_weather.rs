@@ -626,6 +626,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     let mut known: Vec<(u32, i32, i32)> = Vec::new();
     let mut complete: Vec<(i32, i32)> = Vec::new();
     let mut terminal_failure: Option<String> = None;
+    let mut terminal_reason: Option<String> = None;
     let mut reads: Vec<(i32, i32)> = Vec::new();
     let mut rows: BTreeSet<u32> = BTreeSet::new();
     let sampled = if params.show == Show::Temperature { TableId::WeatherProvinces } else { TableId::WeatherRegions };
@@ -637,7 +638,8 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
         known.extend(statuses.into_iter().filter(|run| whole(run.status)).map(|run| (stretch.run, run.first, run.last)));
         reads.extend(dashboard_query::cost::storage(|| replay_lanes::lanes::reads(recording, stretch.run, sampled, from, to))?);
     }
-    let days = days(first, last, &known, &reads);
+    let mut days = days(first, last, &known, &reads);
+    let days_len = days.len();
     let wanted: Option<BTreeSet<u32>> = params.regions.as_ref().map(|ids| ids.iter().filter_map(|id| id.parse().ok()).collect());
     let keeps = |region: u32| wanted.as_ref().is_none_or(|wanted| wanted.contains(&region));
     let mut measures: Vec<(String, Daily)> = Vec::new();
@@ -645,22 +647,37 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     match params.show {
         Show::Conditions => {
             let mut daily: Vec<Daily> = FLAGS.iter().map(|_| BTreeMap::new()).collect();
+            let mut refused = Refusals::default();
             let mut seeker = replay_lanes::at::Seeker::new(recording)?;
-            for (index, day) in days.iter().enumerate() {
+            for (index, day) in days.iter_mut().enumerate() {
                 dashboard_text::metadata::check_cancel(cancelled)?;
                 let Some((run, at)) = day.at else { continue };
                 let frame = dashboard_query::cost::storage(|| seeker.frame(run, at, &[replay_lanes::at::Read::all(TableId::WeatherRegions)]))?;
-                for row in dashboard_text::metadata::recorded_rows::<tables::WeatherRegions>(&frame)? {
-                    rows.insert(row.id);
-                    if !keeps(row.id) {
-                        continue;
+                match dashboard_text::metadata::recorded_rows::<tables::WeatherRegions>(&frame)?.into_rows(TableId::WeatherRegions, at) {
+                    Ok((held, _)) => {
+                        for row in held {
+                            rows.insert(row.id);
+                            if !keeps(row.id) {
+                                continue;
+                            }
+                            let flags = [row.light_rain, row.heavy_rain, row.snow, row.blizzard, row.sandstorm, row.arctic_water];
+                            for (daily_flag, value) in daily.iter_mut().zip(flags) {
+                                daily_flag.entry(row.id).or_insert_with(|| vec![None; days_len])[index] = Some(i128::from(value));
+                            }
+                        }
                     }
-                    let flags = [row.light_rain, row.heavy_rain, row.snow, row.blizzard, row.sandstorm, row.arctic_water];
-                    for (held, value) in daily.iter_mut().zip(flags) {
-                        held.entry(row.id).or_insert_with(|| vec![None; days.len()])[index] = Some(i128::from(value));
+                    Err(why) => {
+                        day.at = None;
+                        day.read = None;
+                        if index + 1 == days_len {
+                            terminal_failure = Some(format!("Weather was not available at this hour ({why}), so the most active regions are not known"));
+                            terminal_reason = Some(why.clone());
+                        }
+                        refused.note(why, format!("hour {at}"));
                     }
                 }
             }
+            warnings.extend(refused.counts("weather condition days"));
             measures.extend(FLAGS.iter().zip(daily).map(|((flag, _, _), daily)| ((*flag).to_owned(), daily)));
         }
         Show::Modifier | Show::Temperature => {
@@ -670,17 +687,30 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
             let mut memo = Memo::default();
             let mut refused = Refusals::default();
             let mut seeker = replay_lanes::at::Seeker::new(recording)?;
-            for (index, day) in days.iter().enumerate() {
+            for (index, day) in days.iter_mut().enumerate() {
                 dashboard_text::metadata::check_cancel(cancelled)?;
                 let Some((run, at)) = day.at else { continue };
                 let frame = dashboard_query::cost::storage(|| seeker.frame(run, at, &[replay_lanes::at::Read::all(sampled)]))?;
                 if params.show == Show::Modifier {
-                    for row in dashboard_text::metadata::recorded_rows::<tables::WeatherRegions>(&frame)? {
-                        rows.insert(row.id);
-                        if keeps(row.id)
-                            && let Some(value) = modifiers(row)[slot]
-                        {
-                            daily.entry(row.id).or_insert_with(|| vec![None; days.len()])[index] = Some(value);
+                    match dashboard_text::metadata::recorded_rows::<tables::WeatherRegions>(&frame)?.into_rows(TableId::WeatherRegions, at) {
+                        Ok((held, _)) => {
+                            for row in held {
+                                rows.insert(row.id);
+                                if keeps(row.id)
+                                    && let Some(value) = modifiers(row)[slot]
+                                {
+                                    daily.entry(row.id).or_insert_with(|| vec![None; days_len])[index] = Some(value);
+                                }
+                            }
+                        }
+                        Err(why) => {
+                            day.at = None;
+                            day.read = None;
+                            if index + 1 == days_len {
+                                terminal_failure = Some(format!("Weather was not available at this hour ({why}), so the most active regions are not known"));
+                                terminal_reason = Some(why.clone());
+                            }
+                            refused.note(why, format!("hour {at}"));
                         }
                     }
                     continue;
@@ -688,7 +718,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                 let found = frame.complete::<tables::WeatherProvinces>().map_err(|error| error.to_string()).and_then(|held| states(&mut memo, weather, frame.branch, at, held));
                 match found {
                     Err(why) => {
-                        if index + 1 == days.len() {
+                        if index + 1 == days_len {
                             terminal_failure = Some(format!("Temperature was not known at this hour ({why}), so the most active regions are not known"));
                         }
                         refused.note(why, format!("hour {at}"))
@@ -697,7 +727,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                         for (&region, members) in weather.members.iter().filter(|(region, _)| keeps(**region)) {
                             rows.insert(region);
                             if let Some(value) = mean(members, states) {
-                                daily.entry(region).or_insert_with(|| vec![None; days.len()])[index] = Some(value);
+                                daily.entry(region).or_insert_with(|| vec![None; days_len])[index] = Some(value);
                             }
                         }
                     }
@@ -707,6 +737,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                 warnings.extend(refused.counts("weather temperature days"));
                 measures.push(("temp".to_owned(), daily));
             } else {
+                warnings.extend(refused.counts("weather modifier days"));
                 measures.push((format!("mod:{modifier}"), daily));
             }
         }
@@ -782,7 +813,10 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                 measures: Vec::new(),
             });
             entry.pinned = pinned;
-            entry.readout = Some(region_readout(region, &days, &measures, params.show, &flags, &temperature));
+            entry.readout = Some(match (region_readout(region, &days, &measures, params.show, &flags, &temperature), &terminal_reason) {
+                (WeatherReadout::NotRecorded { .. }, Some(reason)) => WeatherReadout::NotRecorded { reason: reason.clone() },
+                (readout, _) => readout,
+            });
             entry
         })
         .collect();

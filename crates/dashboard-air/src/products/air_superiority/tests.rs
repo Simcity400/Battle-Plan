@@ -127,7 +127,20 @@ fn scores_not_known_are_unknown_sides_never_zero() {
     let mut empty = frame(Vec::new(), false);
     *empty.tables[TableId::RaidAirScores.index()] = TableView::Unavailable { reason: "withheld".into() };
     let (reply, _) = moment_of(&empty, &params(AirMode::Sides));
-    assert!(reply.missing.is_some() && reply.regions.is_empty());
+    assert!(reply.missing.as_deref().is_some_and(|why| why.contains("withheld")), "{:?}", reply.missing);
+    assert!(reply.regions.is_empty());
+    *empty.tables[TableId::RaidAirScores.index()] = TableView::Truncated { rows: TableRows::RaidAirScores(Vec::new()), missing: 4 };
+    let (reply, _) = moment_of(&empty, &params(AirMode::Sides));
+    assert!(reply.missing.as_deref().is_some_and(|why| why.contains("4 rows not read")), "{:?}", reply.missing);
+    *empty.tables[TableId::RaidAirScores.index()] = TableView::NotRecorded { mode: replay_data::scope::CaptureMode::Full };
+    let (reply, _) = moment_of(&empty, &params(AirMode::Sides));
+    assert!(reply.missing.as_deref().is_some_and(|why| why.contains("not recorded")), "{:?}", reply.missing);
+    let mut no_wings = frame(scores(), true);
+    *no_wings.tables[TableId::AirRegionWings.index()] = TableView::Unavailable { reason: "wings damaged".into() };
+    let (reply, _) = moment_of(&no_wings, &params(AirMode::Sides));
+    assert_eq!(reply.regions.iter().find(|region| region.id == 10).map(|region| region.wings), Some(AirWings::Unknown));
+    assert!(reply.unlisted.as_deref().is_some_and(|why| why.contains("wings damaged")), "{:?}", reply.unlisted);
+    assert!(reply.warnings.iter().any(|why| why.contains("wings damaged")), "{:?}", reply.warnings);
 }
 
 #[test]

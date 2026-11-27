@@ -2402,19 +2402,23 @@ fn ideology_groups(
     frame: &DecodedFrame,
     countries: &BTreeMap<u32, &replay_data::rows::CountryRow>,
 ) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
-    let groups = dashboard_text::flag_choices::ruling_groups(frame)?;
-    Ok(countries
-        .iter()
-        .map(|(&slot, country)| {
-            let group = groups.get(&country.id).cloned().unwrap_or_else(|| {
-                Err(format!(
-                    "country {} flag needs its ruling group",
-                    country.id
-                ))
-            });
-            (slot, group)
-        })
-        .collect())
+    match dashboard_text::flag_choices::ruling_groups(frame)? {
+        dashboard_text::flag_choices::RulingGroups::Unavailable(why) => Ok(countries
+            .keys()
+            .map(|&slot| (slot, Err(why.clone())))
+            .collect()),
+        dashboard_text::flag_choices::RulingGroups::Available { groups, incomplete } => Ok(countries
+            .iter()
+            .map(|(&slot, country)| {
+                let group = groups.get(&country.id).cloned().unwrap_or_else(|| {
+                    Err(incomplete.clone().unwrap_or_else(|| {
+                        format!("country {} flag needs its ruling group", country.id)
+                    }))
+                });
+                (slot, group)
+            })
+            .collect()),
+    }
 }
 
 impl HourTables {

@@ -141,6 +141,14 @@ fn the_current_air_day_follows_score_changes_and_dates_the_held_readouts() {
             if read.hour < 110 && request["theatres"].is_null() {
                 assert_eq!(read.product_calls, u64::from(read.hour == 107), "{request} at {}", read.hour);
             }
+            if read.hour == 110 {
+                let reply = read.value.as_ref().as_ref().unwrap();
+                assert_eq!(reply["days"], json!([null]), "{request} at 110 must not treat unavailable scores as recorded");
+                assert!(reply["warnings"].as_array().unwrap().iter().any(|line| line.as_str().is_some_and(|line| line.contains("damaged air table"))), "{reply}");
+                if request["every"].is_null() {
+                    assert!(reply["rankMissing"].as_str().is_some_and(|why| why.contains("damaged air table")), "{reply}");
+                }
+            }
         }
         assert_eq!(*(exact.advance)(101, true, &false.into(), None).value, (exact.cold)(101, &false.into()));
     }
