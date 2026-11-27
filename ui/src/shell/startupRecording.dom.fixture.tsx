@@ -73,7 +73,19 @@ Object.assign(window, { startupRecording: {
     return mapVisibility.at(-1);
   },
   async choose() {
-    await act(async () => click('.sidebar-campaigns-empty:not([inert]) button, button[aria-label="Open a recording"]:not([hidden])'));
+    const button = await new Promise<HTMLButtonElement>(resolve => {
+      const check = () => {
+        const candidates = document.querySelectorAll<HTMLButtonElement>('.sidebar-campaigns-empty button, button[aria-label="Open a recording"]');
+        const available = Array.from(candidates).find(button => !button.matches(':disabled') && !button.closest('[hidden], [inert]'));
+        if (!available) return;
+        observer.disconnect();
+        resolve(available);
+      };
+      const observer = new MutationObserver(check);
+      observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['disabled', 'hidden', 'inert'] });
+      check();
+    });
+    await act(async () => button.click());
     return opened;
   },
   async deliverChoice() { await act(async () => sendChosen(source('chosen.battleplan'))); },
