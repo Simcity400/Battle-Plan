@@ -2,7 +2,7 @@ dashboard_base::register_products! {
     RESEARCH_RESEARCH => crate::products::research::Research,
     RESEARCH_BREAKDOWN_RESEARCHBREAKDOWN => crate::products::research::breakdown::ResearchBreakdown,
     RESEARCH_HISTORY_RESEARCHHISTORYAT => crate::products::research::history::ResearchHistoryAt,
-    SPECIAL_PROJECTS_SPECIALPROJECTS => crate::products::special_projects::SpecialProjects; Interval(crate::products::special_projects::dated_panel),
+    SPECIAL_PROJECTS_SPECIALPROJECTS => crate::products::special_projects::SpecialProjects; panel(crate::products::special_projects::dated_panel),
 
     @hourly
     RESEARCH_SLOTS_RESEARCHSLOTS => exact<crate::products::research::slots::ResearchSlots>,

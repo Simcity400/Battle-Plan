@@ -1,5 +1,5 @@
 
-use super::{LoadContext, PanelKind, PanelReader, Registered, ReplyWarnings};
+use super::{LoadContext, PanelReader, Registered, ReplyWarnings};
 use crate::{
     Source,
     catalogue::{OwnRefusals, own_refusals},
@@ -19,10 +19,11 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    marker::PhantomData,
     ops::RangeInclusive,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "test-support"))]
+use std::marker::PhantomData;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -88,7 +89,6 @@ pub struct ReadsAt<'a, C> {
 pub enum Clock {
     InputsOnly,
     Boundaries,
-    EveryHour(&'static str),
 }
 
 pub trait AtHour: 'static {
@@ -165,10 +165,6 @@ pub trait AtHour: 'static {
     const RESEED_ON_SEEK: bool = false;
 
     fn context_revision(_context: &Self::Context) -> u64 { 0 }
-
-    fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool {
-        matches!(Self::CLOCK, Clock::EveryHour(_))
-    }
 
     fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, _edits: &Edits, _live: &Live, _data: &mut Held<'_>) -> io::Result<bool> {
         Ok(false)
@@ -587,6 +583,7 @@ pub fn shared_reader(source: &Source, load: &LoadContext, product: &str, params:
     reader
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct Followed<P: AtHour> {
     params: P::Params,
     tables: Vec<TableId>,
@@ -598,6 +595,7 @@ struct Followed<P: AtHour> {
     product: PhantomData<fn() -> P>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl<P: AtHour> Panel for Followed<P> {
     fn tables(&self) -> &[TableId] {
         &self.tables
@@ -625,6 +623,7 @@ impl<P: AtHour> Panel for Followed<P> {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn frame_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
     let mut asked = asked.clone();
     if let Some(fields) = asked.as_object_mut() {
@@ -649,17 +648,9 @@ where
     out
 }
 
-pub const fn whole_frame<P: AtHour>() -> PanelReader {
-    PanelReader {
-        kind: PanelKind::WholeFrame,
-        open: |source, load, asked| frame_panel::<P>(source, load, asked),
-    }
-}
-
 pub const fn exact<P: AtHour>() -> PanelReader
 where P::Params: Sync, P::Context: Sync {
-    let kind = if matches!(P::CLOCK, Clock::EveryHour(_)) { PanelKind::ExactHourly } else { PanelKind::Exact };
-    PanelReader { kind, open: |source, load, asked| exact_panel::<P>(source, load, asked) }
+    PanelReader { open: |source, load, asked| exact_panel::<P>(source, load, asked) }
 }
 
 pub const fn entry<P: AtHour>() -> Registered {

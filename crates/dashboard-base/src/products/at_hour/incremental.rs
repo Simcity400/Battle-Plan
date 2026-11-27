@@ -487,7 +487,6 @@ where P::Context: Sync, P::Params: Sync {
             let mut selected = BTreeSet::new();
             let at = ReadsAt { holders: &holders, context: &*context, run, hour, since: (!seed).then_some(previous_hour) };
             let mut tried: HashMap<TableId, Vec<u64>> = HashMap::new();
-            let clocked = hour != previous_hour && P::clock_dependent(&state.plans, &context);
             loop {
                 selected.clear();
                 for stage in 0.. {
@@ -495,7 +494,7 @@ where P::Context: Sync, P::Params: Sync {
                     if stage >= state.plans.len() {
                         let planned = sampling(&state.frame, &mut state.sampled, || P::retained_reads(&params, owner, stage, &state.frame, &at));
                         state.plans.push(planned);
-                    } else if state.rebuild || identity_changed || clocked || hour > state.plans[stage].1 || P::plan_changes(stage, &edits, &state.frame, &at) {
+                    } else if state.rebuild || identity_changed || hour > state.plans[stage].1 || P::plan_changes(stage, &edits, &state.frame, &at) {
                         state.plans[stage] = sampling(&state.frame, &mut state.sampled, || P::retained_reads(&params, owner, stage, &state.frame, &at));
                     }
                     let (asks, _) = &state.plans[stage];
@@ -556,12 +555,12 @@ where P::Context: Sync, P::Params: Sync {
             let at = At { owner, holders: &holders, context: &*context, cancelled, hour, live: &cells };
             let revision = P::context_revision(&context);
             let expired = hour > state.reply_through || revision != state.context_revision;
-            if state.rebuild || identity_changed || input.gap || expired || !edits.tables.is_empty() || !edits.replaced.is_empty() || P::clock_dependent(&state.plans, &context) {
+            if state.rebuild || identity_changed || input.gap || expired || !edits.tables.is_empty() || !edits.replaced.is_empty() {
                 state.from = hour;
             }
             if !state.rebuild && !identity_changed {
                 let changed = !edits.tables.is_empty() || !edits.replaced.is_empty();
-                if !changed && !expired && !P::clock_dependent(&state.plans, &context) {
+                if !changed && !expired {
                     return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
                 }
                 if state.data.is_ok() && hour <= state.reply_through && (revision == state.context_revision || P::UPDATES_REVISION) && selected.iter().all(|table| matches!(state.frame.tables[table.index()].held(), TableView::Complete(_))) {

@@ -382,8 +382,8 @@ impl AtHour for Planned {
         (table == TableId::Countries && !linked(plan)).then(|| field_columns(table, &["canonical_slot", "tag"]))
     }
 
-    fn clock_dependent(plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool {
-        linked(plan)
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        if frame.complete::<tables::CountryLinks>().is_ok() { at.hour } else { i32::MAX }
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
@@ -424,74 +424,6 @@ fn a_followed_reply_reads_each_table_under_the_projection_its_final_plan_asks() 
             let [lane] = lanes.as_slice() else { panic!("the tags and their live power need one countries lane: {lanes:?}") };
             assert!(lane.keyed && ["tag", "political_power_raw"].iter().all(|name| lane.columns.contains(&column(TableId::Countries, name))));
         }
-    }
-}
-
-struct Clocked;
-
-const CLOCKED_FROM: i32 = 105;
-
-#[derive(Serialize, PartialEq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-struct ClockedReply {
-    tags: Vec<String>,
-    linked: bool,
-    hour: i32,
-    warnings: Vec<String>,
-}
-
-crate::reply_warnings!(ClockedReply);
-
-impl AtHour for Clocked {
-    const KEY: &'static str = "test-clocked";
-    const TITLE: &'static str = "Clocked";
-    const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::EveryHour("test fixture reads CountryLinks starting at CLOCKED_FROM and stamps at.hour");
-    type Params = PlannedParams;
-    const FIELDS: crate::products::Fields = crate::fields![branchId];
-    type Reply = ClockedReply;
-    type Context = ();
-
-    fn tables(_params: &Self::Params) -> Vec<TableId> {
-        vec![TableId::Countries, TableId::CountryLinks]
-    }
-
-    fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
-        match step {
-            0 => vec![Read::all(TableId::Countries)],
-            1 if held.hour >= CLOCKED_FROM => vec![Read::all(TableId::CountryLinks)],
-            _ => Vec::new(),
-        }
-    }
-
-    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
-        (table == TableId::Countries).then(|| field_columns(table, &["canonical_slot", "tag"]))
-    }
-
-    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(())
-    }
-
-    fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        Ok(ClockedReply {
-            tags: frame.complete::<tables::Countries>()?.iter().map(|row| String::from_utf8_lossy(&row.tag).into_owned()).collect(),
-            linked: frame.complete::<tables::CountryLinks>().is_ok(),
-            hour: at.hour,
-            warnings: Vec::new(),
-        })
-    }
-}
-
-#[test]
-fn a_reply_that_reads_the_hour_plans_its_stages_again_at_each_hour() {
-    let (source, _) = recording();
-    let panel = exact_panel::<Clocked>(&source, &load(), &json!({"branchId": "1"})).unwrap();
-    let reader = panel.exact().unwrap();
-    let token = false.into();
-    for hour in FIRST..ITA_LEAVES {
-        let read = (reader.advance)(hour, hour == FIRST, &token, None);
-        assert_eq!(streamed(&read.value, read.fresh), streamed(&(reader.cold)(hour, &token), read.fresh), "hour {hour}: the links from hour {CLOCKED_FROM}, no table having changed");
     }
 }
 

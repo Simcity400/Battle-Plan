@@ -1,7 +1,7 @@
 dashboard_base::register_products! {
-    INTELLIGENCE_ESPIONAGE_TAIL_ESPIONAGELOGTAIL => crate::products::intelligence::espionage_tail::EspionageLogTail; LogTail(crate::products::intelligence::espionage_tail::dated_panel),
+    INTELLIGENCE_ESPIONAGE_TAIL_ESPIONAGELOGTAIL => crate::products::intelligence::espionage_tail::EspionageLogTail; panel(crate::products::intelligence::espionage_tail::dated_panel),
     RAIDS_RAIDLOG => crate::products::raids::RaidLog,
-    RAIDS_TAIL_RAIDLOGTAIL => crate::products::raids::tail::RaidLogTail; LogTail(crate::products::raids::tail::dated_panel),
+    RAIDS_TAIL_RAIDLOGTAIL => crate::products::raids::tail::RaidLogTail; panel(crate::products::raids::tail::dated_panel),
     RAIDS_RAIDTALLY => crate::products::raids::tally::RaidTally,
     RAIDS_RAIDTALLYAT => crate::products::raids::RaidTallyAt,
 

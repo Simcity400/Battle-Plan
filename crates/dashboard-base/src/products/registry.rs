@@ -8,12 +8,12 @@ macro_rules! register_products {
     (
         $($name:ident => $product:ty $(; $kind:ident($($args:tt)*))?,)*
         @hourly
-        $($hour_name:ident => $reader:ident<$hour_product:ty> $(($custom:expr))?,)*
+        $($hour_name:ident => exact<$hour_product:ty>,)*
     ) => {
         $($crate::register_products!(@declare $name, $product, $crate::products::register, $crate::products::register_for_export
             $(, $crate::register_products!(@ $kind $product, $($args)*))?);)*
         $($crate::register_products!(@declare $hour_name, $hour_product, $crate::products::at_hour::entry, $crate::products::at_hour::entry_for_export,
-            $crate::register_products!(@hour $reader $hour_product $(, $custom)?));)*
+            $crate::products::at_hour::exact::<$hour_product>());)*
         pub const PRODUCTS: &[$crate::products::Registered] = &[$($name,)* $($hour_name,)*];
     };
     (@declare $name:ident, $product:ty, $register:path, $export:path $(, $panel:expr)?) => {
@@ -36,44 +36,23 @@ macro_rules! register_products {
             $crate::products::Registered { load, $(panel: Some($panel),)? ..registration::<$product>() }
         };
     };
-    (@hour exact $product:ty, $conditions:expr) => {
-        $crate::products::PanelReader {
-            kind: $crate::products::PanelKind::ExactHourlyWhen($conditions),
-            ..$crate::products::at_hour::exact::<$product>()
-        }
-    };
-    (@hour $reader:ident $product:ty) => { $crate::products::at_hour::$reader::<$product>() };
     (@ interval $product:ty, $date:expr, $through:expr) => {
         $crate::products::PanelReader {
-            kind: $crate::products::PanelKind::Interval,
             open: |source, load, asked| $crate::products::at_hour::product_interval_panel::<$product>(source, load, asked, $date, $through),
         }
     };
-    (@ day $product:ty, $kind:ident, $start:literal, $end:literal, $through:expr) => {
+    (@ day $product:ty, $start:literal, $end:literal, $through:expr) => {
         $crate::products::PanelReader {
-            kind: $crate::products::PanelKind::$kind,
             open: |source, load, asked| $crate::products::at_hour::day_panel::<$product>(source, load, asked, $start, $end, $through),
         }
     };
-    (@ $kind:ident $product:ty, $reader:path) => {
-        $crate::products::PanelReader { kind: $crate::products::PanelKind::$kind, open: |source, load, asked| $reader(source, load, asked) }
+    (@ panel $product:ty, $reader:path) => {
+        $crate::products::PanelReader { open: |source, load, asked| $reader(source, load, asked) }
     };
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PanelKind {
-    Exact,
-    ExactHourly,
-    ExactHourlyWhen(&'static [&'static str]),
-    Interval,
-    DayThroughHour,
-    LogTail,
-    WholeFrame,
 }
 
 #[derive(Clone, Copy)]
 pub struct PanelReader {
-    pub kind: PanelKind,
     pub open: fn(&std::sync::Arc<Source>, &LoadContext, &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String>,
 }
 
