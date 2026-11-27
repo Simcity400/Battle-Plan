@@ -2588,8 +2588,9 @@ fn playing_panel(advance: crate::panel::ProductReader) -> (Arc<crate::host::Play
     host.anchor(crate::registry::Anchor { seek: 1, hour: 0, position: 0.0, playing: false, sought: true, frame_rate: 60.0, speed: 360.0, timestamps: None });
     let cold: ExactReader = Arc::new(|_, _| unreachable!("the product reader supplies the seed"));
     host.prepare_panel(Box::new(AtHour { read: cold.clone(), cold, advance })).unwrap()(1, 1).unwrap();
+    let (_, _, _, offered) = push.take_kind().expect("the seed's first record");
     host.playhead().pace(360.0);
-    host.playhead().anchor(0.0, true, 360.0, std::time::Instant::now(), false);
+    host.playhead().anchor(0.0, true, 360.0, offered, false);
     (host, push, gate_from, gated)
 }
 
