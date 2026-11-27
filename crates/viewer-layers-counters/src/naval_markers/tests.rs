@@ -97,7 +97,7 @@ fn history() -> Arc<History> {
     for (combat, flag) in [(500, Engaged::Yes), (501, Engaged::No)] {
         covered.fold(false).record(NAVAL, 0, &[((combat, 0), flag), ((combat, 1), flag)], &[]);
     }
-    history.branches.lock().unwrap().insert(0, covered);
+    history.insert_branch(0, covered);
     history
 }
 

@@ -225,6 +225,13 @@ impl<K: Eq + Hash, V> Published<HashMap<K, V>> {
     }
 }
 
+impl Published<u64> {
+    pub fn inc(&mut self) {
+        self.0 = self.0.wrapping_add(1);
+        bump();
+    }
+}
+
 #[derive(Debug)]
 pub struct PublishedKeyed<K, V> {
     last: Option<K>,
@@ -278,6 +285,10 @@ impl<K, V> PublishedKeyed<K, V> {
 
     pub fn clear(&mut self) {
         (self.last, self.value) = (None, None);
+    }
+
+    pub fn forget_key(&mut self) {
+        self.last = None;
     }
 }
 

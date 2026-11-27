@@ -173,3 +173,98 @@ fn a_paused_side_wakes_on_seek_mode_switch_and_landed_answer_and_stops_at_rest()
     send.send(1).unwrap();
     woke_recv.recv_timeout(Duration::from_secs(5)).expect("a landed answer wakes a resting paused side");
 }
+
+struct StubOverlay {
+    pending_refusal: Arc<AtomicBool>,
+    refused: bool,
+    hour: Option<replay_data::Hour>,
+}
+
+impl viewer_layer_core::playhead_host::Overlaying<crate::map_open::Products> for StubOverlay {
+    fn ask(&mut self, _ask: crate::overlay::Ask) {}
+    fn ask_step(&mut self, side: viewer_layer_core::playhead_host::OverlayStep<'_>, _whole: bool, _lay: bool, _moved: Arc<viewer_unit_reads::counter_move::MovedHours>) -> bool {
+        self.hour = side.applied;
+        true
+    }
+    fn join(&mut self, _layers: &[Box<dyn Layer>], _perspective: &viewer_foundation::perspective::Choice, _branch: Option<replay_data::BranchId>, _settling: viewer_layer_core::layers::Settling) -> bool {
+        true
+    }
+    fn stepped(&mut self) {}
+    fn stands_at(&self, hour: replay_data::Hour) -> bool {
+        !self.refused && self.hour.is_some_and(|held| held >= hour)
+    }
+    fn take(&mut self) -> Option<viewer_runtime::landed::Landed<crate::overlay::Made>> {
+        if self.pending_refusal.load(Ordering::Acquire) {
+            self.refused = true;
+            self.hour = None;
+        }
+        None
+    }
+    fn reset(&mut self) {
+        self.hour = None;
+        self.refused = false;
+    }
+    fn generation(&self) -> u64 {
+        0
+    }
+    fn hour(&self) -> Option<replay_data::Hour> {
+        (!self.refused).then_some(self.hour).flatten()
+    }
+    fn loading(&self) -> &[String] {
+        &[]
+    }
+    fn missed(&self) -> &[replay_data::rows::TableId] {
+        &[]
+    }
+    fn refused(&self) -> bool {
+        self.refused
+    }
+    fn needs_reask(&self) -> bool {
+        false
+    }
+    fn offered_stale(&self, _layers: viewer_layer_core::playhead_host::LayerParts<'_>, _branch: Option<replay_data::BranchId>) -> bool {
+        false
+    }
+}
+
+#[test]
+fn a_paused_side_with_an_overlay_rests_when_settled_and_wakes_on_refusal() {
+    use std::sync::mpsc;
+    let (woke_send, woke_recv) = mpsc::channel::<()>();
+    let composes = Arc::new(Mutex::new(0));
+    let refused = Arc::new(AtomicBool::new(false));
+    let (recording, _) = record(1, 8, busy);
+    let entry = open(units(recording, "paused overlay rest"), quick()).unwrap();
+    let mut map_side = MapSide::with_products(entry, vec![Box::new(Sum::new(&composes))], View::default()).unwrap();
+    map_side.set_overlay(Box::new(StubOverlay { pending_refusal: Arc::clone(&refused), refused: false, hour: None }));
+    let mut side = SideThread::new(map_side, Arc::new(move || {
+        let _ = woke_send.send(());
+    })).unwrap();
+    fn drive_until(side: &mut SideThread, woke_recv: &mpsc::Receiver<()>, mut done: impl FnMut(&SideThread) -> bool) {
+        for _ in 0..64 {
+            woke_recv.recv_timeout(Duration::from_secs(5)).expect("side woke the frame");
+            side.driven(|_| ());
+            if done(side) {
+                return;
+            }
+        }
+        panic!("paused side with overlay did not settle within 64 woken turns");
+    }
+    side.anchor(0, false, 1.0, true);
+    side.ask(View::default(), Head::Paced(4), None, None);
+    drive_until(&mut side, &woke_recv, |side| side.applied() == Some(4) && side.on_screen().is_some_and(|on| on.settled && on.drawn == Some(4)));
+    {
+        let turn = super::lock(&side.shared.held);
+        let ask = side.shared.asked().expect("ask held");
+        assert!(super::rests(&turn, &ask, 4, false, false), "a settled paused side with an overlay rests");
+    }
+    assert!(woke_recv.try_recv().is_err(), "no extra wake once settled");
+    refused.store(true, Ordering::Release);
+    let (send, _recv) = viewer_runtime::landed::channel::<()>();
+    send.send(()).unwrap();
+    drive_until(&mut side, &woke_recv, |side| side.products().overlay_refused);
+    assert!(side.products().overlay_refused && !side.products().overlay_coming() && side.products().overlay_hour.is_none());
+    let turn = super::lock(&side.shared.held);
+    let ask = side.shared.asked().expect("ask held");
+    assert!(super::rests(&turn, &ask, 4, false, false), "a refused overlay settles and rests");
+}

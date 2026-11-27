@@ -92,7 +92,7 @@ fn history() -> Arc<History> {
     covered.last = 399;
     covered.viewers.push((0, 0));
     covered.fold(false).record(LAND, 0, &[((100, 0), Engaged::Yes), ((100, 1), Engaged::Yes), ((101, 0), Engaged::No), ((101, 1), Engaged::No)], &[]);
-    history.branches.lock().unwrap().insert(0, covered);
+    history.insert_branch(0, covered);
     history
 }
 
