@@ -6,9 +6,11 @@ use crate::{
     presentation::{Presentation, Presented},
     products::ContentOptions,
 };
+use content_reader_layers::content::ResolvedContent;
+use content_reader_localisation::localisation;
 use dashboard_text::scripted_text::ScriptedContent;
 use kept::Keeping;
-use std::{io, sync::Arc};
+use std::{io, sync::{Arc, Weak}};
 
 fn load(
     source: &Source,
@@ -20,7 +22,6 @@ fn load(
         source,
         options,
         settings,
-        || source.content(&options.options),
         || Ok(presented),
         Keeping::On,
     )
@@ -80,20 +81,21 @@ fn kept_in<S: Slot>(
 ) -> io::Result<Arc<Catalogue>> {
     let settings = key.3.clone();
     let presented = presented()?;
+    let mount = Arc::downgrade(&presented.content);
     let stack_key = presented.content.layers.art_stack_key();
     let result = {
         let state = source.state::<S>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
         let slot = state.slot();
-        let matches = slot.as_ref().is_some_and(|(cached, existing)| {
-            *cached == key
+        let matches = slot.as_ref().is_some_and(|(cached, existing, previous)| {
+            *cached == key && previous.ptr_eq(&mount)
                 && existing
                     .get()
                     .and_then(Result::ok)
                     .is_none_or(|cat| cat.content.layers.art_stack_key() == stack_key)
         });
         if !matches {
-            *slot = Some((key, Arc::new(CachedResult::default())));
+            *slot = Some((key, Arc::new(CachedResult::default()), mount));
         }
         Arc::clone(&slot.as_ref().expect("catalogue binding retained").1)
     };
@@ -116,7 +118,6 @@ fn load_with(
     source: &Source,
     options: &ContentOptions,
     settings: &Settings,
-    resolved: impl Fn() -> io::Result<Arc<content_reader_layers::content::ResolvedContent>>,
     presented: impl FnOnce() -> io::Result<Arc<Presented>>,
     keeping: Keeping,
 ) -> io::Result<Catalogue> {
@@ -126,13 +127,14 @@ fn load_with(
     let recorded_language = content::recorded_language(&replay);
     let presented = presented()?;
     let warnings = Vec::new();
-    let localisation = content::localisation_in(
-        source,
-        options,
-        content::localisation_key(options),
-        &resolved,
-        keeping,
-    )?;
+    let layers = &presented.content.layers;
+    let cache = &options.options.cache_dir;
+    let localisation = match keeping {
+        Keeping::On => content::localisation_for(
+            source, &options.options, options.allow_unverified, &presented.content,
+        ),
+        Keeping::Off => localisation::read_cached(layers, &recorded_language, cache).map(Arc::new),
+    }?;
     let gui_decode = settings
         .as_ref()
         .map(|&force_pow2_textures| content_reader_image::native::Decode {
@@ -187,7 +189,6 @@ pub fn built_catalogue(source: &Source, options: &ContentOptions) -> io::Result<
         source,
         options,
         &settings(options),
-        || source.content(&options.options),
         || source.recorded_presented(&options.options),
         Keeping::Off,
     )
@@ -199,7 +200,7 @@ pub type Binding = (
     Presentation,
     Settings,
 );
-type Cached = Option<(Binding, Arc<CachedResult<Catalogue>>)>;
+type Cached = Option<(Binding, Arc<CachedResult<Catalogue>>, Weak<ResolvedContent>)>;
 
 pub type Settings = Result<bool, String>;
 
@@ -518,19 +519,19 @@ pub(crate) fn bound_catalogue_with(
     options: &ContentOptions,
     before_load: impl FnOnce(),
 ) -> Option<io::Result<Arc<Catalogue>>> {
-    let content = source.bound_content(&options.options)?;
     let presented = source.bound_presented_for(options)?;
     let key = binding(options);
     let settings = key.3.clone();
+    let mount = Arc::downgrade(&presented.content);
     let result = with_slot(source, options, |slot| {
-        if slot.as_ref().is_some_and(|(cached, _)| *cached != key) {
+        if slot.as_ref().is_some_and(|(cached, _, _)| *cached != key) {
             return None;
         }
         Some(match slot.as_ref() {
-            Some((_, result)) => Arc::clone(result),
-            None => {
+            Some((_, result, previous)) if previous.ptr_eq(&mount) => Arc::clone(result),
+            _ => {
                 let result = Arc::new(CachedResult::default());
-                *slot = Some((key, Arc::clone(&result)));
+                *slot = Some((key, Arc::clone(&result), mount));
                 result
             }
         })
@@ -541,7 +542,6 @@ pub(crate) fn bound_catalogue_with(
             source,
             options,
             &settings,
-            || Ok(Arc::clone(&content)),
             || Ok(Arc::clone(&presented)),
             Keeping::On,
         )
@@ -557,8 +557,8 @@ pub(crate) fn bound_catalogue_with(
 pub fn catalogue_loads(source: &Source, options: &ContentOptions) -> usize {
     with_slot(source, options, |slot| {
         slot.as_ref()
-            .filter(|(key, _)| binding_matches(key, options))
-            .map_or(0, |(_, result)| result.loads())
+            .filter(|(key, _, _)| binding_matches(key, options))
+            .map_or(0, |(_, result, _)| result.loads())
     })
 }
 

@@ -812,16 +812,12 @@ impl Catalogue {
             let (localisation, fallbacks) =
                 content_reader_layers::content::observe_overlay_refusals(|| {
                     layers.artwork("localisation", |stack| {
-                        content_reader_localisation::localisation::read(
-                            stack,
-                            &self.localisation.language,
-                        )
+                        use content_reader_localisation::localisation::{read, read_shared};
+                        read_shared(stack, &self.localisation.language, read)
                     })
                 });
             (
-                localisation
-                    .map(Arc::new)
-                    .map_err(|error| error.to_string()),
+                localisation.map_err(|error| error.to_string()),
                 fallbacks,
             )
         });

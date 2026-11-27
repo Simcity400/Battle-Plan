@@ -282,3 +282,32 @@ fn a_cold_source_reads_the_kept_catalogue_as_it_was_built() {
     drop(source);
     std::fs::remove_dir_all(bare).unwrap();
 }
+
+#[test]
+fn catalogue_shares_the_refreshed_table_when_the_art_key_is_unchanged() {
+    crate::test_fixtures::game::enter();
+    let (root, path, options) = recording_with_facts(
+        "refreshed-localisation",
+        &[("localisation/test.yml", "\u{feff}l_english:\n NAME:0 \"Recorded name\"\n")],
+    );
+    for bound_first in [false, true] {
+        let source = open(&path, &options);
+        let previous = source.content(&options.options).unwrap();
+        let scripted = content_reader_localisation::localisation::read_shared(
+            &previous.layers, "english", content_reader_localisation::localisation::read,
+        ).unwrap();
+        let old = catalogue(&source, &options).unwrap();
+        assert!(Arc::ptr_eq(&old.localisation, &scripted));
+        let fresh = source.refresh_content(&options.options, &previous).unwrap();
+        assert_eq!(fresh.layers.art_stack_key(), previous.layers.art_stack_key());
+        let new = if bound_first {
+            crate::catalogue::bound_catalogue(&source, &options).unwrap().unwrap()
+        } else {
+            catalogue(&source, &options).unwrap()
+        };
+        assert!(!Arc::ptr_eq(&old.localisation, &new.localisation));
+        assert!(Arc::ptr_eq(&new.localisation, &crate::content::localisation(&source, &options).unwrap()));
+        assert_eq!(new.localisation.get("NAME"), Some("Recorded name"));
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

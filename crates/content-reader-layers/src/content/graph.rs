@@ -464,6 +464,21 @@ impl Graph {
         }
     }
 
+    pub(super) fn release_source(&self, request: Digest) {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(node) = state.by_id.get(&request) else {
+            return;
+        };
+        let dependencies = node.dependencies.lock().unwrap_or_else(|error| error.into_inner());
+        for node in std::iter::once(node).chain(dependencies.iter().filter_map(|id| state.by_id.get(id))) {
+            if matches!(node.key.parser, "resolved bytes" | "source bytes")
+                && let Some(entry) = node.result.lock().unwrap_or_else(|error| error.into_inner()).as_ref()
+            {
+                entry.release();
+            }
+        }
+    }
+
     pub(super) fn depends(&self, parent: &Arc<Node>, product: &Product) -> io::Result<()> {
         self.depends_on(parent, product.request)
     }

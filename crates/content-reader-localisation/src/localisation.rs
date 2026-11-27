@@ -1122,6 +1122,15 @@ pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation>
     read_with(layers, language, &|bytes| parse_file(bytes, language))
 }
 
+pub fn read_shared(
+    layers: &ResolvedLayers,
+    language: &str,
+    build: impl FnOnce(&ResolvedLayers, &str) -> io::Result<Localisation>,
+) -> io::Result<std::sync::Arc<Localisation>> {
+    let language = carried(layers, language);
+    layers.retained_product("localisation", 1, language.as_bytes(), |reader| build(reader, language))
+}
+
 pub fn declared_languages(layers: &ResolvedLayers) -> io::Result<Vec<String>> {
     let bytes = layers
         .read(LANGUAGE_LIST)
@@ -1195,7 +1204,8 @@ pub fn observe_files(layers: &ResolvedLayers, language: &str) -> io::Result<()> 
     let files = localisation_files(layers, language)?;
     let read = content_reader_layers::parallel::map(&files, |(_, _, path)| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = layers.read_path(&normalize_path(path)?)?;
+            let bytes = layers.read_path(&normalize_path(path)?)?;
+            content_reader_layers::content::Generation::release_source(&bytes);
             io::Result::Ok(())
         }))
         .unwrap_or_else(|_| {
@@ -1225,7 +1235,9 @@ fn read_with(
     let read = content_reader_layers::parallel::map(&files, |(_, _, path)| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let bytes = layers.read_path(&normalize_path(path)?)?;
-            io::Result::Ok(parse(&bytes))
+            let parsed = parse(&bytes);
+            content_reader_layers::content::Generation::release_source(&bytes);
+            io::Result::Ok(parsed)
         }))
         .unwrap_or_else(|_| {
             Err(io::Error::new(
@@ -1461,6 +1473,75 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_parsed_file_releases_its_raw_graph_entry_without_revoking_borrows() {
+        let root = std::env::temp_dir().join(format!("localisation-borrow-{}", std::process::id()));
+        let path = "localisation/test.yml";
+        let unrelated = "map/other.txt";
+        let text = "\u{feff}l_english:\n key:0 \"value\"\n";
+        for (file, bytes) in [(path, text), (unrelated, "other")] {
+            let file = root.join(file);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, bytes).unwrap();
+        }
+        let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+        let loading = layers.loading();
+        drop(layers.read(unrelated).unwrap());
+        let held = layers.read(path).unwrap();
+        let weak = held.downgrade();
+        assert_eq!(loading.counts().retained_source_bytes, (text.len() + 5) as u64);
+        assert_eq!(read(&layers, "english").unwrap().get("key"), Some("value"));
+        assert_eq!(loading.counts().retained_source_bytes, 5);
+        assert_eq!(held.as_slice(), text.as_bytes());
+        assert_eq!(layers.read(path).unwrap().as_slice().as_ptr(), held.as_slice().as_ptr());
+        drop(held);
+        assert!(weak.upgrade().is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_shared_table_credits_both_readers_and_follows_language_and_generation() {
+        use std::sync::{Arc, Mutex};
+
+        let root = std::env::temp_dir().join(format!("shared-localisation-{}", std::process::id()));
+        let path = "localisation/test.yml";
+        std::fs::create_dir_all(root.join("localisation")).unwrap();
+        std::fs::write(root.join(path), "\u{feff}l_english:\n key:0 \"value\"\nl_french:\n key:0 \"valeur\"\n").unwrap();
+        let make_layers = || {
+            let _generation = content_reader_layers::content::Generation::enter();
+            ResolvedLayers::from_folders(&[(&root, &[])]).unwrap()
+        };
+        let mut previous = None;
+        for traced_first in [false, true] {
+            let layers = make_layers();
+            let reads = Arc::new(Mutex::new(Vec::new()));
+            let captured = Arc::clone(&reads);
+            let traced = layers.with_read_trace(
+                Arc::new(move |read| captured.lock().unwrap().push(read)),
+            ).with_read_purpose("scripted text");
+            let readers = [&layers, &traced];
+            let first = usize::from(traced_first);
+            let table_for = |layers| read_shared(layers, "english", read).unwrap();
+            let table = table_for(readers[first]);
+            assert!(Arc::ptr_eq(&table, &table_for(readers[1 - first])));
+            assert_eq!(table.get("key"), Some("value"));
+            assert!(!previous.is_some_and(|old| Arc::ptr_eq(&old, &table)));
+            previous = Some(Arc::clone(&table));
+            let reads = reads.lock().unwrap();
+            assert_eq!(reads.len(), 1);
+            assert_eq!(reads[0].purpose, "scripted text");
+            assert_eq!(reads[0].path, path.as_bytes());
+            drop(reads);
+            let why = read_shared(&layers, "FRENCH", read).unwrap_err().to_string();
+            assert!(why.contains("unsupported language name"), "{why}");
+            assert!(why.contains("FRENCH"), "{why}");
+            let french = read_shared(&layers, "french", read).unwrap();
+            assert_eq!(french.get("key"), Some("valeur"));
+            assert!(!Arc::ptr_eq(&french, &table));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn a_memoised_read_reads_as_a_cold_one() {
