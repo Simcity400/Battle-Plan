@@ -31,6 +31,8 @@ mod facts;
 mod incremental;
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "test-support")]
+pub mod test_fixtures;
 
 use facts::{Entry, Facts, Person, Program, Row};
 
@@ -284,6 +286,23 @@ pub(crate) struct ProjectContent {
     icons: Mutex<HashMap<String, (Result<String, String>, OwnRefusals)>>,
 }
 
+impl ProjectContent {
+    fn icon(&self, key: &str) -> Result<String, String> {
+        let (drawn, noted) = self.icons
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entry(key.to_owned())
+            .or_insert_with(|| catalogue::capture(|| match self.politics.sprite_png_sized(key, ICON_EDGE) {
+                Ok(Some(icon)) => Ok(icon),
+                Ok(None) => Err(format!("Content has no sprite {key}.")),
+                Err(error) => Err(format!("Sprite {key} could not be drawn: {error}")),
+            }))
+            .clone();
+        catalogue::credit(&noted);
+        drawn
+    }
+}
+
 #[derive(Default)]
 struct State {
     held: Option<Arc<ProjectContent>>,
@@ -380,18 +399,16 @@ fn icon_key(authored: Option<&str>, token: &str, tag: Option<&str>, has: impl Fn
     Ok(if has(&generic)? { generic } else { PLACEHOLDER_ICON.to_owned() })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Named {
-    pub name: String,
-    pub specialization: Option<String>,
-    pub specialization_name: Option<String>,
-    pub icon: Option<String>,
-    pub icon_missing: Option<String>,
+struct Named {
+    name: String,
+    specialization: Option<String>,
+    specialization_name: Option<String>,
+    icon_key: Result<String, String>,
 }
 
 impl Named {
     fn unread(why: impl Into<String>) -> Self {
-        Self { name: "Project name unavailable".into(), specialization: None, specialization_name: None, icon: None, icon_missing: Some(why.into()) }
+        Self { name: "Project name unavailable".into(), specialization: None, specialization_name: None, icon_key: Err(why.into()) }
     }
 }
 
@@ -411,26 +428,14 @@ impl<'c> Naming<'c> {
     }
 
     fn icon(&mut self, key: &str) -> Result<String, String> {
-        let content: &'c ProjectContent = self.content;
-        let (drawn, noted) = content
-            .icons
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .entry(key.to_owned())
-            .or_insert_with(|| catalogue::capture(|| match content.politics.sprite_png_sized(key, ICON_EDGE) {
-                Ok(Some(icon)) => Ok(icon),
-                Ok(None) => Err(format!("Content has no sprite {key}.")),
-                Err(error) => Err(format!("Sprite {key} could not be drawn: {error}")),
-            }))
-            .clone();
-        catalogue::credit(&noted);
+        let drawn = self.content.icon(key);
         if let Err(reason) = &drawn {
             *self.art.entry(reason.clone()).or_default() += 1;
         }
         drawn
     }
 
-    pub fn definition(&mut self, token: Option<&str>, id: u32, tag: Option<&str>, scoped: &mut dyn FnMut(&str) -> Result<Option<String>, String>) -> Named {
+    fn definition(&self, token: Option<&str>, id: u32, tag: Option<&str>, scoped: &mut dyn FnMut(&str) -> Result<Option<String>, String>) -> Named {
         let Some(token) = token else {
             self.note("its definition token is not recorded", id.to_string());
             return Named::unread(format!("Definition {id} is not recorded."));
@@ -446,7 +451,6 @@ impl<'c> Naming<'c> {
             return Named::unread(format!("Definition {token} is absent from content."));
         };
         let mut named = Named::unread("");
-        named.icon_missing = None;
         match self.name(definition, token, tag, scoped) {
             Some(name) => named.name = name,
             None => self.note("its name could not be resolved", token),
@@ -461,11 +465,7 @@ impl<'c> Naming<'c> {
             }
         }
         let sprites = &content.politics.catalogue.sprites;
-        let key = icon_key(definition.icon.as_deref(), token, tag, |key| sprites.find(key).map(|sprite| sprite.is_some()).map_err(|error| format!("Sprite {key}: {error}")));
-        match key.and_then(|key| self.icon(&key)) {
-            Ok(icon) => named.icon = Some(icon),
-            Err(reason) => named.icon_missing = Some(reason),
-        }
+        named.icon_key = icon_key(definition.icon.as_deref(), token, tag, |key| sprites.find(key).map(|sprite| sprite.is_some()).map_err(|error| format!("Sprite {key}: {error}")));
         named
     }
 
@@ -1304,15 +1304,17 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
     let mut presentations = Interned::new();
     let mut names = HashMap::new();
     let mut shown = |look: &facts::Look, hour: i32, naming: &mut Naming<'_>| {
-        let name = names.entry((look.definition, hour)).or_insert_with(|| {
+        let (name, specialization, specialization_name, icon) = names.entry((look.definition, hour)).or_insert_with(|| {
             let slot = query.holders.at(&params.country, hour).and_then(|run| match run.holder {
                 Holder::Found { slot, .. } => Some(slot),
                 Holder::Unresolved => None,
             });
-            naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, Some(tag), &mut |key| match slot {
+            let Named { name, specialization, specialization_name, icon_key } = naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, Some(tag), &mut |key| match slot {
                 Some(slot) => scoped_at(query, content, key, hour, slot),
                 None => Err(holder_not_known(&query.holders, &params.country, hour).unwrap_or_else(|| "The project's name needs its country's scope, which is unresolved".to_owned())),
-            })
+            });
+            let icon = icon_key.and_then(|key| naming.icon(&key));
+            (name, specialization, specialization_name, icon)
         });
         let person = |person: &Person| match person {
             Person::Character(id) => spelled.people.get(id).cloned().unwrap_or_else(|| unread_person(person)),
@@ -1321,11 +1323,11 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         let scientist = people.id(person(&look.person));
         let last_scientist = look.last.map(|id| people.id(person(&Person::Character(id))));
         presentations.id(ProjectPresentation {
-            name: name.name.clone(),
-            specialization: name.specialization.clone(),
-            specialization_name: name.specialization_name.clone(),
-            icon: name.icon.clone(),
-            icon_missing: name.icon_missing.clone(),
+            name: name.clone(),
+            specialization: specialization.clone(),
+            specialization_name: specialization_name.clone(),
+            icon: icon.as_ref().ok().cloned(),
+            icon_missing: icon.as_ref().err().cloned(),
             scientist,
             last_scientist,
         })
@@ -1522,7 +1524,18 @@ impl CompletionOwner {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
+pub struct CompletionIcon {
+    content: Arc<ProjectContent>,
+    key: String,
+}
+
+impl CompletionIcon {
+    pub fn draw(&self) -> Result<String, String> {
+        self.content.icon(&self.key)
+    }
+}
+
 pub struct ProjectCompletion {
     pub attribution: CompletionOwner,
     pub date: i32,
@@ -1531,8 +1544,7 @@ pub struct ProjectCompletion {
     pub project: u32,
     pub ordinal: u32,
     pub name: Option<String>,
-    pub icon: Option<String>,
-    pub icon_missing: Option<String>,
+    pub icon: Option<CompletionIcon>,
 }
 
 pub struct Completions {
@@ -2002,15 +2014,14 @@ pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from:
     let (mut found, unrecorded) = counted_with(Some(source), query, from, to, cancelled)?;
     found.sort_by_key(|counted| (counted.read, counted.owner, counted.local, counted.entry.ordinal, counted.entry.date));
     let spelled = spell_completions(query, &found, cancelled)?;
-    let mut naming = Naming::new(&content);
+    let naming = Naming::new(&content);
     let mut scoped_frames = None;
     let mut events = Vec::with_capacity(found.len());
     for counted in found {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let Counted { attribution, owner, local, entry, read, definition } = counted;
         let slot = attribution.slot();
-        let mut completion =
-            ProjectCompletion { attribution, date: entry.date, observed_hour: read, owner, project: local, ordinal: entry.ordinal, name: None, icon: None, icon_missing: Some("The completed project's name is not recorded.".into()) };
+        let mut completion = ProjectCompletion { attribution, date: entry.date, observed_hour: read, owner, project: local, ordinal: entry.ordinal, name: None, icon: None };
         match definition {
             Some(definition) => {
                 let token = spelled.get(&(read, definition)).map(String::as_str);
@@ -2019,8 +2030,7 @@ pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from:
                     None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
                 });
                 completion.name = Some(named.name);
-                completion.icon = named.icon;
-                completion.icon_missing = named.icon_missing;
+                completion.icon = named.icon_key.ok().map(|key| CompletionIcon { content: Arc::clone(&content), key });
             }
             None => naming.note("the completed project's name is not recorded", format!("{owner}:{local}")),
         }

@@ -66,6 +66,7 @@ dashboard = { workspace = true, features = ["export-types"] }
 dashboard-air = { workspace = true, features = ["export-types", "test-support"] }
 dashboard-land = { workspace = true, features = ["export-types", "test-support"] }
 dashboard-politics = { workspace = true, features = ["export-types", "test-support"] }
+dashboard-research = { workspace = true, features = ["export-types", "test-support"] }
 dashboard-wars = { workspace = true, features = ["export-types", "test-support"] }
 engine-native-land = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }

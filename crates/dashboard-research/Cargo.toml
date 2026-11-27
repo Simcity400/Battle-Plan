@@ -65,6 +65,7 @@ content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-politics = { workspace = true, features = ["test-support"] }
+dashboard-research = { workspace = true, features = ["export-types", "test-support"] }
 engine-native-land = { workspace = true, features = ["test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
