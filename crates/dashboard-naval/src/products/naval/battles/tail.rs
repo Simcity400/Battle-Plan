@@ -81,6 +81,7 @@ pub struct NavalBattleLogRow {
     pub province: Option<u32>,
     pub countries: [Vec<u32>; 2],
     pub countries_hour: [i32; 2],
+    pub countries_missing: [Option<&'static str>; 2],
     pub read_hour: i32,
     pub ships_sunk: [Option<u32>; 2],
     pub convoys_sunk: [Option<u32>; 2],
@@ -139,6 +140,8 @@ struct Snapshot {
     province: Option<u32>,
     countries: [Vec<u32>; 2],
     countries_hour: [Option<i32>; 2],
+    country_links_failed: [bool; 2],
+    roster_status: RosterStatus,
     ships: [Option<u32>; 2],
     convoys: [Option<u32>; 2],
     sunk: [Option<u32>; 2],
@@ -228,9 +231,20 @@ fn edges(steps: &[Step], first: i32, last: i32, hours: &mut Vec<i32>) {
     hours.extend(steps[from..].iter().take_while(|s| s.hour <= last).map(|s| s.hour));
 }
 
-fn complete(history: &History, hour: i32) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RosterStatus {
+    Complete,
+    Truncated,
+    Unread,
+}
+
+fn status_at(history: &History, hour: i32) -> RosterStatus {
     let at = history.statuses.partition_point(|span| span.last < hour);
-    history.statuses.get(at).is_some_and(|s| s.first <= hour && s.status == Status::Complete)
+    match history.statuses.get(at).filter(|s| s.first <= hour).map(|s| s.status) {
+        Some(Status::Complete) => RosterStatus::Complete,
+        Some(Status::Truncated { .. }) => RosterStatus::Truncated,
+        _ => RosterStatus::Unread,
+    }
 }
 
 fn country(countries: &mut Vec<u32>, slot: Option<u32>) {
@@ -238,6 +252,17 @@ fn country(countries: &mut Vec<u32>, slot: Option<u32>) {
         && !countries.contains(&slot)
     {
         countries.push(slot);
+    }
+}
+
+fn country_gap(status: RosterStatus, unresolved: bool) -> Option<&'static str> {
+    match (status, unresolved) {
+        (RosterStatus::Complete, false) => None,
+        (RosterStatus::Complete, true) => Some("A recorded owner has no country link"),
+        (RosterStatus::Truncated, false) => Some("Country roster is truncated"),
+        (RosterStatus::Truncated, true) => Some("Country roster is truncated and a recorded owner has no country link"),
+        (RosterStatus::Unread, false) => Some("Country roster was not recorded"),
+        (RosterStatus::Unread, true) => Some("Country roster was not recorded and a recorded owner has no country link"),
     }
 }
 
@@ -314,9 +339,11 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
             hours.dedup();
             let lost = lost_by.entry(first_hour).or_default();
             for hour in hours {
-                let mut ships = [complete(participants, hour).then_some(0); 2];
-                let mut convoys = [complete(participants, hour).then_some(0); 2];
+                let status = status_at(participants, hour);
+                let mut ships = [(status == RosterStatus::Complete).then_some(0); 2];
+                let mut convoys = ships;
                 let mut countries = [Vec::new(), Vec::new()];
+                let mut unresolved = [false; 2];
                 for (key, reads) in roster {
                     let Some(cells) = at(reads, hour) else {
                         continue;
@@ -338,7 +365,9 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                             convoys[side] = None;
                         }
                     }
-                    country(&mut countries[side], count(cells, 1).and_then(|raw| links.slot_at(raw, hour)));
+                    let slot = count(cells, 1).and_then(|raw| links.slot_at(raw, hour));
+                    unresolved[side] |= slot.is_none();
+                    country(&mut countries[side], slot);
                     if sunk_ship(cells) {
                         lost.entry(*key).or_insert_with(|| prices.of(*key, hour));
                     }
@@ -354,6 +383,8 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                         convoys,
                         countries,
                         countries_hour: [None; 2],
+                        country_links_failed: unresolved,
+                        roster_status: status,
                         sunk,
                         convoys_sunk,
                         ic: ic_lost(lost, sunk),
@@ -368,7 +399,7 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                 );
             }
             if last < last_hour && !next_battle.and_then(|s| s.cells.as_deref()).is_some_and(|c| number(c, 0) == Some(i64::from(first_hour))) {
-                line.end_live(last + 1, last < span.last && complete(battles, last + 1));
+                line.end_live(last + 1, last < span.last && status_at(battles, last + 1) == RosterStatus::Complete);
             }
         }
     }
@@ -395,6 +426,8 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
             for (_, reads) in lists {
                 edges(reads, first, last, &mut hours);
             }
+            let i = countries.statuses.partition_point(|s| s.last < first);
+            hours.extend(countries.statuses[i..].iter().take_while(|s| s.first <= last).map(|s| s.first.max(first)));
             hours.sort_unstable();
             hours.dedup();
             for hour in hours {
@@ -414,17 +447,20 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                 let battle = linked.unwrap_or(result);
                 let named_at = |when: i32| {
                     let mut sides = [Vec::new(), Vec::new()];
+                    let mut unresolved = [false; 2];
                     for (key, reads) in lists {
                         let side = ((key >> 32) & 255) as usize;
                         if let Some(list) = sides.get_mut(side)
                             && at(reads, hour).is_some()
                         {
-                            country(list, links.slot_at(*key as u32, when));
+                            let slot = links.slot_at(*key as u32, when);
+                            unresolved[side] |= slot.is_none();
+                            country(list, slot);
                         }
                     }
-                    sides
+                    (sides, unresolved)
                 };
-                let mut sides = named_at(date);
+                let (mut sides, mut failed_links) = named_at(date);
                 let result_hour = [&battle, &result]
                     .into_iter()
                     .filter_map(|of| lines.get(of))
@@ -441,14 +477,21 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                         return Some(date);
                     }
                     if let Some((at, prior)) = line.reads.iter().rev().find(|(_, read)| !read.countries[i].is_empty()) {
-                        sides[i].clone_from(&prior.countries[i]);
-                        return prior.countries_hour[i].or(Some(*at));
+                        let supplied = prior.countries_hour[i].unwrap_or(*at);
+                        let refreshed = (span.first..=span.last).contains(&supplied).then(|| named_at(supplied));
+                        let (slots, failed) = match &refreshed {
+                            Some((slots, missing)) if !slots[i].is_empty() => (&slots[i], missing[i]),
+                            _ => (&prior.countries[i], prior.country_links_failed[i]),
+                        };
+                        (sides[i], failed_links[i]) = (slots.clone(), failed);
+                        return Some(supplied);
                     }
                     if named == date {
                         return None;
                     }
-                    let found: &[Vec<u32>; 2] = late.get_or_insert_with(|| named_at(named));
+                    let (found, unresolved) = late.get_or_insert_with(|| named_at(named));
                     sides[i].clone_from(&found[i]);
+                    failed_links[i] = unresolved[i];
                     (!sides[i].is_empty()).then_some(named)
                 });
                 let sunk = [count(obs, 6), count(obs, 10)];
@@ -476,6 +519,8 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                         province: count(cells, 0),
                         countries: sides,
                         countries_hour,
+                        country_links_failed: failed_links,
+                        roster_status: status_at(countries, hour),
                         ships: [count(obs, 4), count(obs, 8)],
                         convoys: [count(obs, 5), count(obs, 9)],
                         sunk,
@@ -770,6 +815,7 @@ fn log_row(entry: &Occurrence<Line>, hour: i32) -> Option<(NavalBattleLogRow, Op
         convoys: read.convoys,
         countries: read.countries.clone(),
         countries_hour: read.countries_hour.map(|h| h.unwrap_or(*at)),
+        countries_missing: read.country_links_failed.map(|failed| country_gap(read.roster_status, failed)),
         read_hour: *at,
     };
     Some((row, line.reads.get(partition).map(|step| step.0)))
@@ -980,8 +1026,10 @@ mod tests {
     fn a_battle_course_shows_census_gaps_up_to_the_branch_end_while_the_battle_is_live() {
         let read = |result| Snapshot {
             province: None,
-            countries: [Vec::new(), Vec::new()],
+            countries: Default::default(),
             countries_hour: [None; 2],
+            country_links_failed: [false; 2],
+            roster_status: RosterStatus::Complete,
             ships: [Some(2), Some(1)],
             convoys: [Some(0); 2],
             sunk: [Some(0); 2],
@@ -1069,16 +1117,22 @@ mod tests {
         live_lines(&mut lines, span, span.last, &RunLinks::default(), &battles, &History::default(), &participants, &prices);
         let reads = &lines[&Battle::Live(7, 10)].reads;
         assert_eq!(reads.iter().map(|(hour, read)| (*hour, read.ic)).collect::<Vec<_>>(), [
-            (10, [Some(0), Some(0)]), (12, [Some(92_250_000), Some(0)]), (14, [Some(92_250_000), None]),
+            (10, [Some(0), Some(0)]), (12, [Some(92_250_000), Some(0)]),
+            (13, [Some(92_250_000), Some(0)]), (14, [Some(92_250_000), None]),
         ]);
+        let attacker_gap = |read: &Snapshot| country_gap(read.roster_status, read.country_links_failed[0]);
+        assert_eq!(attacker_gap(&reads[1].1), Some("Country roster was not recorded and a recorded owner has no country link"));
+        assert_eq!(attacker_gap(&reads[2].1), Some("Country roster was not recorded"));
     }
 
     #[test]
     fn a_linked_result_keeps_the_ic_lost_of_the_hour_it_observed() {
         let read = |sunk: [u32; 2], ic: [Option<i64>; 2]| Snapshot {
             province: None,
-            countries: [Vec::new(), Vec::new()],
+            countries: Default::default(),
             countries_hour: [None; 2],
+            country_links_failed: [false; 2],
+            roster_status: RosterStatus::Complete,
             ships: [Some(5); 2],
             convoys: [Some(0); 2],
             sunk: sunk.map(Some),
@@ -1174,24 +1228,64 @@ mod tests {
     fn a_result_from_before_the_recording_names_its_sides_at_the_first_recorded_hour() {
         let results = History { keys: vec![(99, vec![step(10, Some(&[1, 5, 0, 2]))])], ..History::default() };
         let countries = History {
-            keys: vec![((99 << 40) | 7, vec![step(10, Some(&[0]))]), ((99 << 40) | (1 << 32) | 8, vec![step(10, Some(&[0]))])],
+            keys: vec![
+                ((99 << 40) | 7, vec![step(10, Some(&[0]))]),
+                ((99 << 40) | 9, vec![step(11, Some(&[0]))]),
+                ((99 << 40) | (1 << 32) | 8, vec![step(10, Some(&[0]))]),
+            ],
+            statuses: vec![
+                lanes::StatusRun { first: 10, last: 10, status: Status::Truncated { missing: 1 } },
+                lanes::StatusRun { first: 11, last: 20, status: Status::Complete },
+            ],
             ..History::default()
         };
-        let links = RunLinks { slots: HashMap::from([(7, vec![(10, 20, Some(3))]), (8, vec![(10, 20, Some(4))])]) };
+        let links = RunLinks { slots: HashMap::from([(7, vec![(10, 20, Some(3))]), (8, vec![(10, 20, Some(4))]), (9, vec![(10, 20, Some(5))])]) };
         let span = Stretch { run: 1, first: 10, last: 20, join: dashboard_query::timeline::Join::Start };
         let mut lines = BTreeMap::new();
         result_lines(&mut lines, span, &links, &results, &History::default(), &countries);
         let (hour, read) = lines[&Battle::Result(99, 5)].reads.first().unwrap();
-        assert_eq!((*hour, read.result, read.countries.clone(), read.countries_hour), (10, NavalBattleStatus::DefenderWon, [vec![3], vec![4]], [Some(10); 2]));
+        assert_eq!((*hour, read.result), (10, NavalBattleStatus::DefenderWon));
+        assert_eq!((&read.countries, read.countries_hour), (&[vec![3], vec![4]], [Some(10); 2]));
+        assert_eq!(read.roster_status, RosterStatus::Truncated);
+        let (hour, read) = lines[&Battle::Result(99, 5)].reads.last().unwrap();
+        assert_eq!(*hour, 11);
+        assert_eq!((&read.countries, read.countries_hour), (&[vec![3, 5], vec![4]], [Some(10); 2]));
+        assert_eq!(read.country_links_failed.map(|failed| country_gap(read.roster_status, failed)), [None; 2]);
         let after = History { keys: vec![(99, vec![step(30, Some(&[1, 5, 0, 2]))])], ..History::default() };
         let lists = History {
-            keys: vec![((99 << 40) | 7, vec![step(30, Some(&[0]))]), ((99 << 40) | (1 << 32) | 8, vec![step(30, Some(&[0]))])],
+            keys: vec![
+                ((99 << 40) | 7, vec![step(30, Some(&[0]))]),
+                ((99 << 40) | 9, vec![step(30, Some(&[0]))]),
+                ((99 << 40) | (1 << 32) | 8, vec![step(30, Some(&[0]))]),
+            ],
+            statuses: vec![lanes::StatusRun { first: 30, last: 40, status: Status::Complete }],
             ..History::default()
         };
-        let relinked = RunLinks { slots: HashMap::from([(7, vec![(30, 40, Some(5))]), (8, vec![(30, 40, Some(6))])]) };
+        let relinked = RunLinks { slots: HashMap::from([(7, vec![(30, 40, Some(5))]), (8, vec![(30, 40, Some(6))]), (9, vec![(30, 40, Some(7))])]) };
         let loaded = Stretch { run: 2, first: 30, last: 40, join: dashboard_query::timeline::Join::Start };
         result_lines(&mut lines, loaded, &relinked, &after, &History::default(), &lists);
         let (hour, read) = lines[&Battle::Result(99, 5)].reads.last().unwrap();
-        assert_eq!((*hour, read.countries.clone(), read.countries_hour), (30, [vec![3], vec![4]], [Some(10); 2]));
+        assert_eq!(*hour, 30);
+        assert_eq!((&read.countries, read.countries_hour), (&[vec![3, 5], vec![4]], [Some(10); 2]));
+        assert_eq!(read.country_links_failed.map(|failed| country_gap(read.roster_status, failed)), [None; 2]);
+    }
+
+    #[test]
+    fn a_later_truncated_result_keeps_failures_from_the_roster_that_supplies_its_countries() {
+        let mut lines = BTreeMap::new();
+        for (run, first, status, slot) in [(1, 10, Status::Complete, 3), (2, 30, Status::Truncated { missing: 1 }, 5)] {
+            let span = Stretch { run, first, last: first + 10, join: dashboard_query::timeline::Join::Start };
+            let links = RunLinks { slots: HashMap::from([(7, vec![(span.first, span.last, Some(slot))])]) };
+            let results = History { keys: vec![(99, vec![step(first, Some(&[1, 5, 0, 2]))])], ..History::default() };
+            let countries = History {
+                keys: vec![((99 << 40) | 7, vec![step(first, Some(&[0]))]), ((99 << 40) | 9, vec![step(first, Some(&[0]))])],
+                statuses: vec![lanes::StatusRun { first, last: span.last, status }],
+                ..History::default()
+            };
+            result_lines(&mut lines, span, &links, &results, &History::default(), &countries);
+        }
+        let (hour, read) = lines[&Battle::Result(99, 5)].reads.last().unwrap();
+        assert_eq!((*hour, read.countries[0].as_slice(), read.countries_hour[0]), (30, &[3][..], Some(10)));
+        assert_eq!(country_gap(read.roster_status, read.country_links_failed[0]), Some("Country roster is truncated and a recorded owner has no country link"));
     }
 }

@@ -38,7 +38,7 @@ Object.assign(window, { battleTitle: {
     const anchor = createRef<HTMLDivElement>();
     anchor.current = element;
     const row = { key: kind === 'land' ? '1:7:101' : 'result:7', hour: kind === 'land' ? 101 : 98, province: 51, state: null, countries: [[], []], countriesHour: [101, 101],
-      countriesUnknown: [false, false], result: 'ongoing', readHour: 103, detailId: 'result:7', detailHour: null,
+      countriesUnknown: [false, false], countriesMissing: [null, null], result: 'ongoing', readHour: 103, detailId: 'result:7', detailHour: null,
       resultHour: null, lastLiveHour: null, endSeen: false, shipsSunk: [0, 0], convoysSunk: [0, 0], icLost: [0, 0],
       ships: [0, 0], convoys: [0, 0], casualties: [0, 0], divisions: [0, 0] };
     const props = { opened: { scope: kind, subject: { row, title: 'Loading name…', colors: [] }, hour: 103 }, track, runtime, anchor, onClose() {} };

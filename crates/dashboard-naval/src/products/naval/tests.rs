@@ -138,10 +138,8 @@ mod details {
         assert_eq!(together[5]["unavailable"], "Details are kept for battles at a recorded hour", "an hour outside the recording");
     }
 
-    #[test]
-    fn followed_battles_keep_recorded_flags_and_withhold_incomplete_side_totals() {
-        use super::super::battles::tail::NavalBattlesTail;
-        use replay_data::rows::{CountryLinkRow, CountryRow, NavalCombatParticipantRow, NavalCombatRow, NavalResultRow, NavalResultSourceRow, TableId, TableRows};
+    fn battle_tail_recording() -> Source {
+        use replay_data::rows::{CountryLinkRow, CountryRow, NavalCombatParticipantRow, NavalCombatRow, NavalResultCountryRow, NavalResultRow, NavalResultSourceRow, TableId, TableRows};
 
         let frames = (100..=108)
             .map(|hour| {
@@ -164,8 +162,25 @@ mod details {
                 if hour == 108 {
                     *frame.tables[TableId::NavalResults.index()] = TableView::Unavailable { reason: "results unread".into() };
                 } else if hour >= 107 {
-                    set::<tables::NavalResults>(&mut frame, vec![NavalResultRow { id: 61, province: 500, result_hour: 106, retire_hour: 180, winning_side: 2, ..Default::default() }]);
+                    set::<tables::NavalResults>(&mut frame, vec![
+                        NavalResultRow { id: 61, province: 500, result_hour: 106, retire_hour: 180, winning_side: 2, ..Default::default() },
+                        NavalResultRow { id: 62, province: 600, result_hour: 106, retire_hour: 180, winning_side: 2, ..Default::default() },
+                    ]);
                     set::<tables::NavalResultSources>(&mut frame, vec![NavalResultSourceRow { id: 1, game_hour: 106, result: 61, combat: 7, combat_created_hour: Some(100), ..Default::default() }]);
+                    set::<tables::NavalResultCountries>(&mut frame, vec![
+                        NavalResultCountryRow { result: 62, list: 0, country: 44, ordinal: 0 },
+                        NavalResultCountryRow { result: 62, list: 1, country: 99, ordinal: 0 },
+                    ]);
+                } else if hour == 106 {
+                    set::<tables::NavalResults>(&mut frame, vec![NavalResultRow { id: 62, province: 600, result_hour: 106, retire_hour: 180, winning_side: 2, ..Default::default() }]);
+                    *frame.tables[TableId::NavalResultCountries.index()] = TableView::Truncated {
+                        rows: TableRows::NavalResultCountries(vec![
+                            NavalResultCountryRow { result: 62, list: 0, country: 44, ordinal: 0 },
+                            NavalResultCountryRow { result: 62, list: 1, country: 99, ordinal: 0 },
+                        ]),
+                        missing: 1,
+                    };
+                    frame.metrics.table_ns[TableId::NavalResultCountries.index()] = 1;
                 } else {
                     set::<tables::NavalResults>(&mut frame, vec![]);
                 }
@@ -181,34 +196,55 @@ mod details {
                 } else if hour == 105 {
                     *frame.tables[TableId::NavalCombatParticipants.index()] = TableView::Unavailable { reason: "participants unreadable".into() };
                 } else {
-                    set::<tables::NavalCombatParticipants>(&mut frame, vec![
+                    let mut participants = vec![
                         NavalCombatParticipantRow { combat: 7, side: 0, battle_slot: 0, ship: 11, owner: 44, state: 0 },
                         NavalCombatParticipantRow { combat: 7, side: 0, battle_slot: 1, ship: 12, owner: 44, state: 0 },
                         NavalCombatParticipantRow { combat: 7, side: 1, battle_slot: 0, ship: 21, owner: 45, state: 0 },
-                    ]);
+                    ];
+                    if hour == 106 {
+                        participants.push(NavalCombatParticipantRow { combat: 8, side: 1, battle_slot: 0, ship: 31, owner: 99, state: 0 });
+                    }
+                    set::<tables::NavalCombatParticipants>(&mut frame, participants);
                 }
                 frame
             })
             .collect();
         let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "naval-runs".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        Source::from_replay(dashboard_base::SourceKey { source_id: "naval-runs".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+    }
+
+    #[test]
+    fn followed_battles_keep_recorded_flags_and_withhold_incomplete_side_totals() {
+        use super::super::battles::tail::NavalBattlesTail;
+        let source = battle_tail_recording();
 
         let page = |hour| NavalBattlesTail::load(&source, &serde_json::from_value(serde_json::json!({"branchId":"1","hour":hour,"limit":64})).unwrap(),
             &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
         let row = |hour| page(hour).rows.into_iter().find(|row| row.key == "combat:7:100").unwrap();
+        let coverage = |row| serde_json::to_value(row).unwrap()["countriesMissing"].clone();
+        let truncated = "Country roster is truncated";
+        let unread = "Country roster was not recorded";
         assert_eq!(row(103).ships, [Some(2), Some(1)]);
+        let empty = page(103).rows.into_iter().find(|row| row.key == "combat:8:100").unwrap();
+        assert!(empty.countries.iter().all(Vec::is_empty));
+        assert_eq!(coverage(empty), serde_json::json!([null, null]));
         assert_eq!(page(103).next_change, Some(104));
         assert_eq!(row(104).ships, [None, None]);
         assert_eq!(row(104).countries, [vec![2], vec![]]);
+        assert_eq!(coverage(row(104)), serde_json::json!([truncated, truncated]));
         assert_eq!(row(105).ships, [None, None]);
         assert!(row(105).countries.iter().all(Vec::is_empty));
+        assert_eq!(coverage(row(105)), serde_json::json!([unread, unread]));
         assert!(page(105).rows.iter().any(|row| row.key == "combat:8:105"));
         assert_eq!(row(106).detail_id, "combat:7:100");
+        let unlinked = page(106).rows.into_iter().find(|row| row.key == "combat:8:105").unwrap();
+        assert_eq!(coverage(unlinked), serde_json::json!([null, "A recorded owner has no country link"]));
         let settled = row(107);
         assert_eq!(settled.detail_id, "result:61");
         assert_eq!(settled.result, super::super::battles::tail::NavalBattleStatus::DefenderWon);
         assert_eq!(settled.countries, [vec![2], vec![3]]);
         assert_eq!(settled.detail_hour, Some(107));
+        assert_eq!(coverage(settled), serde_json::json!([null, null]));
         assert_eq!(page(107).total, page(106).total);
         assert!(page(108).missing.iter().any(|gap| gap.first_hour == 108));
         let filtered = NavalBattlesTail::load(&source, &serde_json::from_value(serde_json::json!({
@@ -227,7 +263,22 @@ mod details {
         let (shown, listed) = (at(107), row(107));
         assert_eq!((shown.detail_id, shown.result, shown.countries, shown.read_hour), (listed.detail_id, listed.result, listed.countries, listed.read_hour), "the course's row at an hour is the table's row then");
         assert_eq!(at(103).ships, [Some(2), Some(1)]);
+        assert_eq!(coverage(at(104)), coverage(row(104)));
         assert!(NavalBattleCourse::validate(&serde_json::from_value(serde_json::json!({"branchId":"1","key":"province:7"})).unwrap()).is_err());
+    }
+
+    #[test]
+    fn result_rosters_keep_witnessed_countries_and_explain_missing_ones() {
+        use super::super::battles::tail::NavalBattlesTail;
+        let source = battle_tail_recording();
+        let result = |hour| {
+            let params = serde_json::from_value(serde_json::json!({"branchId":"1","hour":hour,"limit":64})).unwrap();
+            let page = NavalBattlesTail::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+            serde_json::to_value(page.rows.into_iter().find(|row| row.key == "result:62").unwrap()).unwrap()
+        };
+        assert_eq!(result(106)["countries"], serde_json::json!([[2], []]));
+        assert_eq!(result(106)["countriesMissing"], serde_json::json!(["Country roster is truncated", "Country roster is truncated and a recorded owner has no country link"]));
+        assert_eq!(result(107)["countriesMissing"], serde_json::json!([null, "A recorded owner has no country link"]));
     }
 
     #[test]
