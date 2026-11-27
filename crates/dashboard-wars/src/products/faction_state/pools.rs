@@ -9,7 +9,7 @@ use dashboard_base::{
     catalogue,
     products::{
         Country, LoadContext,
-        at_hour::{At, AtHour, Clock, Keys, Owner, Read, ReadsAt},
+        at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt},
         resources::{Learned, RESOURCE_DECIMALS, ResourceNaming},
     },
 };
@@ -480,7 +480,6 @@ impl AtHour for FactionPools {
     const KEY: &'static str = "faction-pools";
     const TITLE: &'static str = "Faction pooled strength";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: Clock = Clock::InputsOnly;
     type Params = FactionPoolsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, faction, pool];
     type Reply = FactionPoolsReply;

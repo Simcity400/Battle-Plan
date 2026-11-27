@@ -1,6 +1,6 @@
 
 use dashboard_base::products::{Country, validate_country};
-use dashboard_base::products::at_hour::{At, AtHour, Clock, Keys, Owner, Read, at_hour, before, field_columns, warnings_through};
+use dashboard_base::products::at_hour::{At, AtHour, Keys, Owner, Read, at_hour, before, field_columns, warnings_through};
 use dashboard_base::products::LoadContext;
 use dashboard_base::Source;
 use dashboard_base::products::politics_content::{PoliticsContent, politics_content};
@@ -374,7 +374,6 @@ impl AtHour for CountryStabilityBreakdown {
     const KEY: &'static str = "country-stability-breakdown";
     const TITLE: &'static str = "Stability breakdown";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: Clock = Clock::Boundaries;
     const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(|reply, hour| {
         at_hour(reply, hour);
         if let Some(breakdown) = reply.get_mut("breakdown").filter(|value| value.is_object()) { at_hour(breakdown, hour); }
@@ -529,7 +528,6 @@ impl AtHour for StabilityPartNames {
     const KEY: &'static str = "stability-part-names";
     const TITLE: &'static str = "Stability parts";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: Clock = Clock::Boundaries;
     const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(at_hour);
     type Params = StabilityPartNamesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, parts];

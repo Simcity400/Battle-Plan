@@ -193,7 +193,6 @@ impl AtHour for TradeFlow {
     const KEY: &'static str = "trade-flow";
     const TITLE: &'static str = "Trade flows";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = TradeFlowParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top, resource, table];
     type Reply = CountryFlowReply;

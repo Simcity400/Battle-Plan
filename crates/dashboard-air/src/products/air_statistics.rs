@@ -217,7 +217,6 @@ impl AtHour for AirStatisticsAt {
     const KEY: &'static str = "air-statistics";
     const TITLE: &'static str = "Air statistics";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = AirStatisticsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, channel, regions, "regions[]", theatres, "theatres[]", top];
     type Reply = AirStatisticsReply;

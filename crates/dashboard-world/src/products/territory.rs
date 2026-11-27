@@ -240,7 +240,6 @@ impl AtHour for TerritoryShare {
         MEASURES.contains(&params.measure.as_str()).then_some(()).ok_or("Unknown territory measure")
     }
 
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
     fn projection(params: &Self::Params, table: TableId, _plan: &[(Vec<dashboard_base::products::at_hour::Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         (table == TableId::TerritoryTotals).then(|| vec![MEASURES.iter().position(|&m| m == params.measure).expect("validated measure")])
@@ -617,7 +616,6 @@ impl AtHour for TerritoryBreakdown {
     const KEY: &'static str = "territory-breakdown";
     const TITLE: &'static str = "Territory breakdown";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(at_hour);
     type Params = TerritoryBreakdownParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure, rule, countries, "countries[]", group];

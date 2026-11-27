@@ -3,7 +3,7 @@
 pub mod tiles;
 
 use dashboard_base::products::{Country, LoadContext, validate_country};
-use dashboard_base::{Source, products::at_hour::{At, AtHour, Clock, Owner, Read, ReadsAt}};
+use dashboard_base::{Source, products::at_hour::{At, AtHour, Owner, Read, ReadsAt}};
 use dashboard_world::products::{group_members::{self, GroupsAt}, groups::{CountryGroupReply, MembershipRun}, scalars::factory_channel_value, territory::{slot_tags, territory_value}};
 use dashboard_declare::{Measure, Series};
 use dashboard_query::{
@@ -352,7 +352,6 @@ impl AtHour for FactionTotalsAt {
     const KEY: &'static str = "faction-totals-at";
     const TITLE: &'static str = "Faction totals";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::Boundaries;
     type Params = FactionTotalsAtParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, kind, measure, top, members, group, membership, "members[]"];
     type Reply = FactionTotalsAtReply;

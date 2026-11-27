@@ -1,7 +1,7 @@
 use super::details::{self, DetailContent, FactionDetailParams, FactionDetailReply, FactionDetails};
 use super::goals::{self, FactionGoalDefinition};
 use dashboard_base::products::Country;
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Clock, Edits, Held, Owner, Read, ReadsAt, field_columns, warnings_through}}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Edits, Held, Owner, Read, ReadsAt, field_columns, warnings_through}}};
 use dashboard_text::metadata::link_slot;
 use replay_data::rows::{CountryLinkRow, FactionMemberRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -152,7 +152,6 @@ impl AtHour for CountryFactionGoals {
     const KEY: &'static str = "country-faction-goals";
     const TITLE: &'static str = "Country faction goals";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: Clock = Clock::Boundaries;
     type Params = CountryFactionGoalsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, goals];
     type Reply = CountryFactionGoalsReply;

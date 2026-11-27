@@ -96,7 +96,6 @@ impl AtHour for TemplateRoster {
     const KEY: &'static str = "template-roster";
     const TITLE: &'static str = "Template roster";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = TemplateRosterParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = TemplateRosterReply;

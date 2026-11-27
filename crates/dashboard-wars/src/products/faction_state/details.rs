@@ -11,7 +11,7 @@ use dashboard_base::{
     catalogue::{self, Catalogue},
     products::{
         LoadContext,
-        at_hour::{At, AtHour, Clock, Edits, Held, Keys, Owner, Read, ReadsAt, ScriptedInputs, before, field_columns, warnings_through},
+        at_hour::{At, AtHour, Edits, Held, Keys, Owner, Read, ReadsAt, ScriptedInputs, before, field_columns, warnings_through},
     },
 };
 use dashboard_world::products::territory::slot_tags;
@@ -238,7 +238,6 @@ impl AtHour for FactionDetails {
     const KEY: &'static str = "faction-details";
     const TITLE: &'static str = "Faction details";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: Clock = Clock::Boundaries;
     type Params = FactionDetailParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, faction, viewpoint];
     type Reply = FactionDetailReply;

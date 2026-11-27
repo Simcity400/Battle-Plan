@@ -848,7 +848,6 @@ impl AtHour for LeaderHour {
     const KEY: &'static str = "unit-leader-hour";
     const TITLE: &'static str = "General career";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = LeaderHourParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, reference, selection, "selection.countries[]"];
     type Reply = LeaderHourReply;
