@@ -1,6 +1,6 @@
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { colour } from '../../charts/palette.ts';
-import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsLegendItem, type BarsValueField, type BarsModel, type BarsReadout, type BarsSegment } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsLegendItem, type BarsValueField, type BarsModel, type BarsReadout, type BarsSegment } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
 import { knownValue, notRecorded, partialValue, zeroValue } from '../../families/value.ts';
@@ -145,7 +145,7 @@ function absentRows(readView: BoundedReadView, reply: MilitaryAirAtReply, shape:
     const key = countryKey(country);
     const pres = countryRowPresentation(readView, key);
     const value = notRecorded(ABSENT);
-    const shared = { kind: 'data' as const, key, subject: key, label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media, ...(pres.color ? { color: pres.color } : {}) };
+    const shared = { kind: 'data' as const, key, subject: key, label: pres.label, media: pres.media, ...(pres.color ? { color: pres.color } : {}) };
     return shape === 'two-sided'
       ? { ...shared, left: { value: { value }, numeric: null }, right: { value: { value }, numeric: null } }
       : { ...shared, segments: [], value: { value } };
@@ -204,14 +204,14 @@ export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirA
       })
       : [];
     return {
-      kind: 'data', key: row.identity, subject: slotKeyOf(row), label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media,
+      kind: 'data', key: row.identity, subject: slotKeyOf(row), label: pres.label, media: pres.media,
       ...(pres.color ? { color: pres.color } : {}),
       segments,
       ...(row.complete ? {} : { value: total }),
       meta: rowMeta(row, reply, options),
       readout: { primary: `${compact(row.taken, options)} lost`, ...(row.partial ? { tone: 'muted' as const } : {}) },
       tooltip: {
-        title: pres.labelMissing ? 'Name not recorded' : pres.label,
+        title: barsLabelText(pres.label),
         hour: readView.hour,
         ...(row.partial ? { note: row.partial } : {}),
         items: [
@@ -256,7 +256,7 @@ export function militaryAirModel(readView: BoundedReadView, options: MilitaryAir
     const ratio = options.ratio ? ratioText(row) : null;
     const readout: BarsReadout | undefined = options.paired ? pairedReadout(row, options) : ratio ? { primary: `${ratio} : 1`, secondary: 'Ratio' } : undefined;
     return {
-      kind: 'data', key: row.identity, subject: slotKeyOf(row), label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media,
+      kind: 'data', key: row.identity, subject: slotKeyOf(row), label: pres.label, media: pres.media,
       ...(pres.color ? { color: pres.color } : {}),
       left: { value: militaryAirAmount(row.taken, row.partial, options), numeric: magnitude(row.taken, options) },
       right: { value: militaryAirAmount(row.dealt, row.partial, options), numeric: magnitude(row.dealt, options) },

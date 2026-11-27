@@ -36,8 +36,7 @@ function row(readView: BoundedReadView, info: ResourceInfo, ordinal: number, net
     kind: 'data',
     key: String(net.resource),
     subject: String(net.resource),
-    label: resourceName(info),
-    ...(info.name === null ? { labelMissing: true } : {}),
+    label: info.name === null ? notRecorded('Resource name not recorded') : resourceName(info),
     media: media(readView, info),
     color: colour(surface, ordinal),
     value: {

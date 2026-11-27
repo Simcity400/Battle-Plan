@@ -2,7 +2,7 @@ import { colour } from '../../charts/palette.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { GROUP_EMPTY } from '../../families/bars/forceAtRace.ts';
 import { seriesRaceSelection, seriesRaceUnavailable, seriesRaceWarnings, type SeriesRaceBaseOptions } from '../../families/bars/seriesRace.ts';
-import { type BarsLegendItem, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
+import { barsLabelText, type BarsLegendItem, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
@@ -51,11 +51,10 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
           key,
           subject: key,
           label: pres.label,
-          labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
           media: pres.media,
           segments: [],
           countText,
-          tooltip: { title: pres.labelMissing ? 'Name not recorded' : pres.label, hour, items: tooltipItems },
+          tooltip: { title: barsLabelText(pres.label), hour, items: tooltipItems },
         });
         continue;
       }
@@ -69,12 +68,11 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
           key,
           subject: key,
           label: pres.label,
-          labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
           media: pres.media,
           segments: [],
           countText,
           missing: notRecorded(reason),
-          tooltip: { title: pres.labelMissing ? 'Name not recorded' : pres.label, hour, missingReason: reason, items: tooltipItems },
+          tooltip: { title: barsLabelText(pres.label), hour, missingReason: reason, items: tooltipItems },
         });
         continue;
       }
@@ -106,11 +104,10 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
         key,
         subject: key,
         label: pres.label,
-        labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         segments,
         countText,
-        tooltip: { title: pres.labelMissing ? 'Name not recorded' : pres.label, hour, items: tooltipItems },
+        tooltip: { title: barsLabelText(pres.label), hour, items: tooltipItems },
       });
     }
 

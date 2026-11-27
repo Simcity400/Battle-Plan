@@ -8,7 +8,7 @@ import { resolveName } from '../table/identityCell.ts';
 import { knownValue, notRecorded, zeroValue } from '../value.ts';
 import { formatScalar } from '../valueFormat.ts';
 import type { FactionTotalRow, FactionTotalsAtReply } from '../../generated/dashboard';
-import type { BarsDataRow, BarsModel } from './model.ts';
+import { barsLabelText, type BarsDataRow, type BarsModel, type BarsRowLabel } from './model.ts';
 
 export type FactionTotalsKind = 'territory' | 'country-factories';
 
@@ -169,30 +169,41 @@ export function factionTotalsSources(
 }
 
 function factionPresentation(readView: BoundedReadView, id: string, aggregated: boolean, groupLabel: string, surface: string, ordinal: number): {
-  readonly label: string;
-  readonly labelMissing: boolean;
-  readonly labelLoading: boolean;
+  readonly label: BarsRowLabel;
   readonly color: string;
 } {
   if (aggregated) {
-    return { label: groupLabel, labelMissing: false, labelLoading: false, color: colour(surface, 0) };
+    return { label: groupLabel, color: colour(surface, 0) };
   }
-  const { value, name, who: identity } = resolveName(readView, 'faction', id);
-  const labelLoading = value.kind === 'pending';
-  const labelMissing = value.kind !== 'known' && !labelLoading;
-  const label = value.kind === 'known' || labelLoading ? name : `Faction ${id}`;
+  const { value, who: identity } = resolveName(readView, 'faction', id);
   const color = identity.colour?.status === 'ready' ? identity.colour.value : colour(surface, ordinal);
-  return { label, labelMissing, labelLoading, color };
+  return { label: value, color };
 }
 
-function memberNames(readView: BoundedReadView, row: FactionTotalRow): string {
+function memberNamesItem(readView: BoundedReadView, row: FactionTotalRow): TooltipListItem {
   const limit = 8;
   const keys = row.memberCountries.length ? row.memberCountries.map(countryKey) : row.members;
-  const shown = keys.slice(0, limit).map((key, index) => {
+  const label = `Members (${keys.length})`;
+  const shown: string[] = [];
+  let pendingReason: string | undefined;
+  for (let index = 0; index < Math.min(limit, keys.length); index++) {
+    const key = keys[index]!;
     const who = resolveName(readView, 'country', key);
-    return who.value.kind === 'known' || who.value.kind === 'pending' ? who.name : (row.members[index] ?? key);
-  });
-  return keys.length > limit ? `${shown.join(', ')} +${keys.length - limit} more` : shown.join(', ');
+    if (who.value.kind === 'known') {
+      shown.push(who.value.value);
+    } else if (who.value.kind === 'pending') {
+      pendingReason ??= who.value.reason;
+    } else {
+      shown.push(row.members[index] ?? key);
+    }
+  }
+  if (!shown.length && pendingReason) return { label, pendingReason };
+  const suffix = keys.length > limit ? ` +${keys.length - limit} more` : '';
+  return {
+    label,
+    value: `${shown.join(', ')}${suffix}`,
+    ...(pendingReason ? { partialReason: pendingReason } : {}),
+  };
 }
 
 export function projectFactionTotalsRace(
@@ -238,19 +249,18 @@ export function projectFactionTotalsRace(
     ];
     const memberCount = row.memberCountries.length || row.members.length;
     if (memberCount > 0) {
-      tooltipItems.push({ label: `Members (${memberCount})`, value: memberNames(readView, row) });
+      tooltipItems.push(memberNamesItem(readView, row));
     }
     rows.push({
       kind: 'data',
       key: row.id,
       subject: row.id,
       label: pres.label,
-      labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
       color: pres.color,
       value: { value, format: { decimals: 0 }, label: options.measureLabel },
       numeric: row.total,
       tooltip: {
-        title: pres.labelMissing ? 'Faction name not recorded' : pres.label,
+        title: barsLabelText(pres.label, 'Faction name'),
         hour,
         items: tooltipItems,
         ...(value.kind === 'notRecorded' ? { missingReason: value.reason } : {}),

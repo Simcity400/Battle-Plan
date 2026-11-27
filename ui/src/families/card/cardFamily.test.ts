@@ -22,6 +22,8 @@ import { cardLane } from './laneView.ts';
 import { layoutCards } from './layout.ts';
 import { datedIdentity } from '../identity/dated.fixture.ts';
 import { LOADING_NAME, NAME_LOADING } from '../table/identityCell.ts';
+import { buildTooltipContent } from '../host/tooltips.ts';
+import { tooltipText } from '../../charts/tooltip.ts';
 import { assertCardModelValid, cardRowHours, cardRowName, deriveCardAudit, deriveCardMirror, deriveCardTooltip, FutureCardDataError, type CardHeroRow, type CardItemRow, type CardModel } from './model.ts';
 
 const DAY = 24;
@@ -143,7 +145,15 @@ test('a war goal target whose name is still loading reads as loading on the card
   assert.equal(cardRowName(row), 'Loading…', 'the painted title uses the shared pending label');
   assert.equal(row.place, `Invented state 4 · Liberate ${LOADING_NAME}`);
   assert.equal(deriveCardMirror(waiting).rows[0]!.name, `Loading: ${NAME_LOADING}`);
-  assert.equal(deriveCardTooltip(waiting, items(waiting)[1]!.key)?.title, 'Loading…', 'a removed goal’s tooltip is titled with the loading target, not a missing kind');
+  const activeTip = deriveCardTooltip(waiting, row.key)!;
+  const removedTip = deriveCardTooltip(waiting, items(waiting)[1]!.key)!;
+  assert.equal(activeTip.items?.[0]?.label, 'Target');
+  assert.equal(activeTip.items?.[0]?.pendingReason, NAME_LOADING);
+  assert.match(tooltipText(buildTooltipContent(activeTip)), /Target Loading: Name is loading/);
+  assert.equal(removedTip.title, 'Loading…', 'a removed goal’s tooltip is titled with the loading target, not a missing kind');
+  assert.equal(removedTip.items?.[0]?.label, 'Target');
+  assert.equal(removedTip.items?.[0]?.pendingReason, NAME_LOADING);
+  assert.match(tooltipText(buildTooltipContent(removedTip)), /Target Loading: Name is loading/);
   assert.ok(deriveCardAudit(waiting).some(cell => cell.row === row.key && cell.key === `${row.key}:title` && cell.value === JSON.stringify(['pending', NAME_LOADING])), 'the audit says the title is pending');
   const named = items(at({ BBB: [{ from: 0, name: 'Bravo' }], CCC: [{ from: 0, name: 'Charlie' }] }))[0]!;
   assert.deepEqual(named.title, { kind: 'known', value: 'Bravo' });

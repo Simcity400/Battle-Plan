@@ -6,9 +6,9 @@ import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } f
 import { groupSelection } from '../groupSelection.ts';
 import type { DeclaredProjectionExtra } from '../host/DeclaredFamilyWidget.tsx';
 import type { TooltipListItem } from '../host/tooltips.ts';
-import { knownValue, valueFromRawBigInt, zeroValue, type Value } from '../value.ts';
+import { knownValue, notRecorded, valueFromRawBigInt, zeroValue, type Value } from '../value.ts';
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
-import { countryRowPresentation, type BarsDataRow, type CountryRowPresentation, type BarsModel, type BarsSegment } from './model.ts';
+import { barsLabelText, countryRowPresentation, type BarsDataRow, type CountryRowPresentation, type BarsModel, type BarsSegment } from './model.ts';
 
 const ALL_POPULATION_TOP = 10_000;
 
@@ -89,7 +89,7 @@ export function rankRowKey(row: SeriesRankRow): string {
 function makeRow(readView: BoundedReadView, reply: SeriesRankReply, rankRow: SeriesRankRow, decimals: number, config: SeriesRaceProjectConfig): BarsDataRow {
   const key = rankRowKey(rankRow);
   const named = countryRowPresentation(readView, key);
-  const pres: CountryRowPresentation = rankRow.unnamed ? { label: 'Name not recorded', labelMissing: true, labelLoading: false, media: named.media } : named;
+  const pres: CountryRowPresentation = rankRow.unnamed ? { label: notRecorded(rankRow.unnamed), media: named.media } : named;
   const state = rankRow.readings[0]!;
   const { value, numeric } = scaleValue(
     valueFromRawBigInt(state.run?.valueRaw ?? null, { kind: 'notRecorded', reason: state.missing ?? 'Not recorded at this hour' }),
@@ -110,15 +110,14 @@ function makeRow(readView: BoundedReadView, reply: SeriesRankReply, rankRow: Ser
     kind: 'data',
     key,
     subject: key,
-    label: !pres.labelMissing || tag === null ? pres.label : tag,
-    labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
+    label: pres.label,
     media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
     value: { value, format: config.valueFormat, label: config.valueLabel },
     numeric,
     ...(parts?.segments ? { segments: parts.segments } : {}),
     tooltip: {
-      title: pres.labelMissing ? 'Name not recorded' : pres.label,
+      title: barsLabelText(pres.label),
       hour: readView.hour,
       items: [...(rankRow.unnamed ? [{ label: 'Country', missingReason: rankRow.unnamed }] : []), item, ...(parts?.items ?? [])],
       ...(config.note ? { note: config.note } : {}),

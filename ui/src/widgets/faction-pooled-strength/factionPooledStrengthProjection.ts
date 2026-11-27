@@ -4,7 +4,7 @@ import { contentKey } from '../../dashboard/options.ts';
 import { artTooltipItem } from '../../families/art/adapters.ts';
 import { unavailableArt } from '../../families/art/types.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsRowMedia } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsRowLabel, type BarsRowMedia, type CountryRowPresentation } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -107,22 +107,15 @@ function memberPresentation(
   slot: number | null,
   tag: string | null,
   reason: string | null,
-): {
-  readonly label: string;
-  readonly labelMissing: boolean;
-  readonly labelLoading: boolean;
-  readonly color?: string;
-  readonly media: BarsRowMedia;
-} {
+): CountryRowPresentation {
   const key = slot !== null ? countryKey(slot) : tag;
   if (key !== null) {
     return countryRowPresentation(readView, key);
   }
+  const missingReason = reason ?? 'Country identity was not recorded at this hour';
   return {
-    label: 'Country unavailable',
-    labelMissing: true,
-    labelLoading: false,
-    media: { kind: 'flag', art: unavailableArt(reason ?? 'Country identity was not recorded at this hour') },
+    label: notRecorded(missingReason),
+    media: { kind: 'flag', art: unavailableArt(missingReason) },
   };
 }
 
@@ -158,8 +151,7 @@ function projectResources(readView: BoundedReadView, reply: FactionPoolsReply, s
     const value = fixedValue(entry.amount, entry.missing);
     const numeric = entry.amount === null ? null : Number(BigInt(entry.amount)) / scale;
     const media = resourceMedia(readView, entry);
-    const label = entry.name ?? 'Resource name unavailable';
-    const labelMissing = entry.name === null;
+    const label: BarsRowLabel = entry.name !== null ? entry.name : notRecorded(entry.nameReason ?? 'Resource name not recorded');
     const formatted = value.kind === 'known' || value.kind === 'zero' ? formatValueState(value, format) : null;
     const exactFormatted = value.kind === 'known' || value.kind === 'zero' ? formatValueState(value, exactFormat) : null;
     const items: TooltipListItem[] = [
@@ -175,7 +167,6 @@ function projectResources(readView: BoundedReadView, reply: FactionPoolsReply, s
       key: `resource:${entry.ordinal}`,
       subject: String(entry.ordinal),
       label,
-      labelMissing,
       media,
       color: colour(surface, entry.ordinal),
       value: { value, format, label: 'Pooled' },
@@ -184,7 +175,7 @@ function projectResources(readView: BoundedReadView, reply: FactionPoolsReply, s
         readout: { primary: formatted.text, ...(value.kind === 'zero' ? { tone: 'muted' as const } : {}) },
       } : {}),
       tooltip: {
-        title: labelMissing ? 'Resource name not recorded' : label,
+        title: entry.name ?? 'Resource name not recorded',
         hour: readView.hour,
         items,
         ...(value.kind === 'notRecorded' ? { missingReason: value.reason } : {}),
@@ -226,8 +217,6 @@ function projectManpower(readView: BoundedReadView, reply: FactionPoolsReply): B
       key: `manpower:${entry.ordinal}`,
       subject: entry.slot !== null ? countryKey(entry.slot) : (entry.tag ?? String(entry.ordinal)),
       label: pres.label,
-      labelMissing: pres.labelMissing,
-      ...(pres.labelLoading ? { labelLoading: true } : {}),
       media: pres.media,
       ...(pres.color ? { color: pres.color } : {}),
       value: { value, format: 'integer', label: 'Manpower contributed' },
@@ -236,7 +225,7 @@ function projectManpower(readView: BoundedReadView, reply: FactionPoolsReply): B
         readout: { primary: formatted.text, ...(value.kind === 'zero' ? { tone: 'muted' as const } : {}) },
       } : {}),
       tooltip: {
-        title: pres.labelMissing ? 'Country not recorded' : pres.label,
+        title: barsLabelText(pres.label, 'Country'),
         hour: readView.hour,
         items,
         ...(value.kind === 'notRecorded' ? { missingReason: value.reason } : {}),
@@ -287,13 +276,11 @@ function projectResearch(readView: BoundedReadView, reply: FactionPoolsReply): B
         key: `research:member:${index}`,
         subject: member.slot !== null ? countryKey(member.slot) : (member.tag ?? String(index)),
         label: pres.label,
-        labelMissing: pres.labelMissing,
-        ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         numeric: null,
         readout: { primary: 'Sharing', tone: 'muted' },
         tooltip: {
-          title: pres.labelMissing ? 'Country not recorded' : pres.label,
+          title: barsLabelText(pres.label, 'Country'),
           hour: readView.hour,
           items,
         },
@@ -311,19 +298,17 @@ function projectDoctrines(readView: BoundedReadView, reply: FactionPoolsReply): 
     return { ...base, rows: [], summaryText, empty: 'This faction shares no doctrines yet.', emptyKind: 'empty', warnings: reply.warnings };
   }
   const rows: BarsDataRow[] = reply.doctrines.map(folder => {
-    const label = folder.name ?? 'Doctrine name unavailable';
-    const labelMissing = folder.name === null;
+    const label: BarsRowLabel = folder.name !== null ? folder.name : notRecorded(folder.reason ?? 'Doctrine name not recorded');
     const items: TooltipListItem[] = [{ label: 'Doctrine', value: 'Shared with the faction' }];
     if (folder.reason) items.push({ label: 'Name', missingReason: folder.reason });
     return {
       kind: 'data',
       key: `doctrine:${folder.ordinal}`,
       label,
-      labelMissing,
       numeric: null,
       readout: { primary: 'Shared', tone: 'muted' },
       tooltip: {
-        title: labelMissing ? 'Doctrine name not recorded' : label,
+        title: folder.name ?? 'Doctrine name not recorded',
         hour: readView.hour,
         items,
       },

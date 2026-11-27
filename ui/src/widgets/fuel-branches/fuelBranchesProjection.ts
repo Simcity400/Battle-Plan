@@ -8,7 +8,7 @@ import type { BarsDataRow, BarsModel, BarsProjection, BarsRowMedia } from '../..
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { knownValue, zeroValue } from '../../families/value.ts';
+import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import type { ValueFormat } from '../../families/valueFormat.ts';
 import type { FuelBranchesReply, FuelConsumerRow } from '../../generated/dashboard';
 import { FUEL_BRANCHES, FUEL_PLACES, branchName, fuelAmount, fuelDecimals, validateFuelBranches } from './fuelBranchesData.ts';
@@ -77,8 +77,7 @@ function branchRow(
     kind: 'data',
     key: String(consumer.index),
     subject: String(consumer.index),
-    label,
-    ...(rawName === null ? { labelMissing: true } : {}),
+    label: rawName === null ? notRecorded('Branch name not recorded') : label,
     media,
     color: colour(surface, consumer.index),
     value: {

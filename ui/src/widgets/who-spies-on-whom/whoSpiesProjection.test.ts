@@ -122,7 +122,7 @@ test('top pairs keep the product order, scale, and unknown-target rows with hove
   assert.equal(pinned.rows[0]?.label, 'Not recorded');
   assert.equal(pinned.rows[1]?.label, 'Agent 7');
   const audit = deriveBarsAudit(model);
-  assert.ok(audit.some(entry => entry.key === 'ITA:unknown-target:label' && entry.value === 'ITA → Target not recorded'));
+  assert.ok(audit.some(entry => entry.key === 'ITA:unknown-target:label' && entry.value === canonicalAuditValue(knownValue('ITA → Target not recorded'))));
   assert.ok(audit.some(entry => entry.key === 'ITA:unknown-target:value' && entry.value === canonicalAuditValue(knownValue(2))));
   const mirror = deriveBarsMirror(model);
   assert.equal(mirror.rows[1]?.name, 'ITA → Target not recorded');
@@ -133,9 +133,8 @@ test('top pairs keep the product order, scale, and unknown-target rows with hove
   const unnamedRow = unnamedModel.rows[1]!;
   assert.equal(unnamedRow.kind, 'data');
   assert.equal(unnamedRow.label, 'ITA → Target not recorded');
-  assert.equal(unnamedRow.labelMissing, undefined);
   assert.equal(deriveBarsTooltip(unnamedModel, 'ITA:unknown-target')?.title, 'ITA has 2 operatives (target not recorded)');
-  assert.ok(deriveBarsAudit(unnamedModel).some(entry => entry.key === 'ITA:unknown-target:label' && entry.value === 'ITA → Target not recorded'));
+  assert.ok(deriveBarsAudit(unnamedModel).some(entry => entry.key === 'ITA:unknown-target:label' && entry.value === canonicalAuditValue(knownValue('ITA → Target not recorded'))));
   assert.equal(deriveBarsMirror(unnamedModel).rows[1]?.name, 'ITA → Target not recorded');
 });
 

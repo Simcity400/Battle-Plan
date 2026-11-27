@@ -27,7 +27,6 @@ import { gameScoreColumns, gameScoreProjection } from '../../widgets/game-score/
 import { marketLedgerProjection } from '../../widgets/market-ledger/marketLedgerProjection.ts';
 import { buildRowSourceFromHead, validateGenericTailReply } from './rowSource.ts';
 import { logCountryCell } from './logHelpers.ts';
-import { combinedPaneRows, resolvePanes } from './panes.ts';
 import { COLUMNS as OCCUPIED_DEFAULTS, TABLE_BASE as OCCUPIED_BASE } from '../../widgets/occupied-states/definition.ts';
 import { occupiedStatesProjection } from '../../widgets/occupied-states/occupiedProjection.ts';
 import { apmTableColumns, apmTableProjection } from '../../widgets/player-apm/apmProjection.ts';

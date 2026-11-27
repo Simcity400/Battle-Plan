@@ -91,7 +91,7 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
   const look = lookOf(readView, reply, options);
   const entry = (region: SupremacyRegion): ShareRowEntry => {
     const named = regionLabel(readView, region.id, region.name);
-    const base = { key: region.id, subject: region.id, region: Number(region.id), label: named.label, ...(named.nameMissing ? { labelMissing: true } : {}), countText: shipsText(region.ownShips, region.enemyShips) };
+    const base = { key: region.id, subject: region.id, region: Number(region.id), label: named.value, countText: shipsText(region.ownShips, region.enemyShips) };
     const readout = region.readout;
     if (!readout || readout.kind === 'notRecorded') {
       const reason = readout?.reason ?? 'Naval region control was not recorded';

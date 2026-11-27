@@ -7,12 +7,45 @@ import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
 import { resolveName } from '../table/identityCell.ts';
-import { assertValue, hasMeasuredValue, type Value } from '../value.ts';
+import { assertValue, hasMeasuredValue, knownValue, type Value } from '../value.ts';
 import { formatShare, formatValueState, notRecordedLabel, type ValueFormat } from '../valueFormat.ts';
 
 export type BarsForm = 'ordered' | 'two-sided' | 'share' | 'net' | 'stacked';
 
 export type BarsTwoSidedLayout = 'paired' | 'split-sides' | 'stacked-pair';
+
+export type BarsRowLabel = string | Value<string>;
+
+export function barsLabelValue(label: BarsRowLabel): Value<string> | null {
+  if (typeof label !== 'string') return label;
+  return label.trim() ? knownValue(label) : null;
+}
+
+export function barsLabelMissing(label: BarsRowLabel): boolean {
+  return typeof label !== 'string' && label.kind === 'notRecorded';
+}
+
+export function barsLabelMuted(label: BarsRowLabel): boolean {
+  return typeof label !== 'string' && (label.kind === 'notRecorded' || label.kind === 'notApplicable' || label.kind === 'pending');
+}
+
+export function barsLabelText(label: BarsRowLabel, figure = 'Name'): string {
+  if (typeof label === 'string') return label;
+  const formatted = formatValueState(label, undefined, { figure });
+  if (formatted.kind === 'notRecorded') return notRecordedLabel(figure);
+  if (formatted.kind === 'notApplicable' || formatted.kind === 'pending') return formatted.label;
+  return formatted.text;
+}
+
+export function barsLabelSpoken(label: BarsRowLabel, figure = 'Name'): string {
+  if (typeof label === 'string') return label;
+  return formatValueState(label, undefined, { figure }).spoken;
+}
+
+export function barsLabelAudit(label: BarsRowLabel): string {
+  const value = barsLabelValue(label);
+  return value === null ? '' : canonicalAuditValue(value);
+}
 
 export interface BarsRowMedia {
   readonly kind: 'none' | 'flag' | 'art';
@@ -23,9 +56,7 @@ export interface BarsRowMedia {
 }
 
 export interface CountryRowPresentation {
-  readonly label: string;
-  readonly labelMissing: boolean;
-  readonly labelLoading: boolean;
+  readonly label: Value<string>;
   readonly color?: string;
   readonly media: BarsRowMedia;
   readonly flagKey?: string;
@@ -38,16 +69,12 @@ export function countryRowPresentation(
   dimmed?: boolean,
   atHour?: number,
 ): CountryRowPresentation {
-  const { value, name: label, who: identity } = resolveName(readView, 'country', tag, atHour === undefined ? {} : { atHour });
-  const labelLoading = value.kind === 'pending';
-  const labelMissing = value.kind !== 'known' && !labelLoading;
+  const { value, who: identity } = resolveName(readView, 'country', tag, atHour === undefined ? {} : { atHour });
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
   const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
   const flagKey = identity.flagChoice?.status === 'ready' ? artHandleKey(flagArtHandle(identity.flagChoice.value, 'panel')) : undefined;
   return {
-    label,
-    labelMissing,
-    labelLoading,
+    label: value,
     color,
     media: { kind: 'flag', art, tag, dimmed },
     ...(flagKey ? { flagKey } : {}),
@@ -94,9 +121,7 @@ export interface BarsSideMeasure {
 export interface BarsOppositeRow {
   readonly key: string;
   readonly subject?: string;
-  readonly label: string;
-  readonly labelMissing?: boolean;
-  readonly labelLoading?: boolean;
+  readonly label: BarsRowLabel;
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly value: BarsValueField;
@@ -126,9 +151,7 @@ export interface BarsDataRow {
   readonly kind: 'data';
   readonly key: string;
   readonly subject?: string;
-  readonly label: string;
-  readonly labelMissing?: boolean;
-  readonly labelLoading?: boolean;
+  readonly label: BarsRowLabel;
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly muted?: boolean;
@@ -279,10 +302,14 @@ export function assertBarsModelValid(model: BarsModel, displayedHour: number): v
     const row = model.rows[i]!;
     if (row.kind !== 'data') continue;
     const prefix = `bars[${row.key}]`;
+    if (typeof row.label !== 'string') assertValue(row.label, `${prefix}.label`);
     if (row.value) validateValueAndNumeric(row.value, row.numeric, `${prefix}.value`);
     if (row.left) validateValueAndNumeric(row.left.value, row.left.numeric, `${prefix}.left`);
     if (row.right) validateValueAndNumeric(row.right.value, row.right.numeric, `${prefix}.right`);
-    if (row.rightSide) validateValueAndNumeric(row.rightSide.value, row.rightSide.numeric, `${prefix}.rightSide`);
+    if (row.rightSide) {
+      if (typeof row.rightSide.label !== 'string') assertValue(row.rightSide.label, `${prefix}.rightSide.label`);
+      validateValueAndNumeric(row.rightSide.value, row.rightSide.numeric, `${prefix}.rightSide`);
+    }
     if (row.target) {
       assertValue(row.target.value, `${prefix}.target`);
       if (row.target.shortfall) assertValue(row.target.shortfall, `${prefix}.target.shortfall`);
@@ -343,27 +370,50 @@ export function barsRowIndex(model: BarsModel, key: string): number {
   return index.get(key) ?? -1;
 }
 
+function withPendingLabelItem(label: BarsRowLabel, tooltip: FamilyTooltipPayload): FamilyTooltipPayload {
+  if (typeof label === 'string' || label.kind !== 'pending') return tooltip;
+  const items = tooltip.items ?? [];
+  if (items.some(item => item.label === 'Name' && item.pendingReason !== undefined)) return tooltip;
+  return {
+    ...tooltip,
+    items: [{ label: 'Name', pendingReason: label.reason }, ...items],
+  };
+}
+
 export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left' | 'right'): FamilyTooltipPayload | null {
   const row = model.rows[barsRowIndex(model, rowKey)];
   if (row?.kind !== 'data') return null;
   const tipHour = model.dataHours?.length === 1 ? model.dataHours[0]! : model.hour;
   if (side === 'right' && row.rightSide) {
-    if (row.rightSide.tooltip) return row.rightSide.tooltip;
+    if (row.rightSide.tooltip) {
+      const tip = row.rightSide.tooltip.hour !== undefined ? row.rightSide.tooltip : { ...row.rightSide.tooltip, hour: tipHour };
+      return withPendingLabelItem(row.rightSide.label, tip);
+    }
     const formatted = formatBarsValueField(row.rightSide.value);
+    const items: TooltipListItem[] = [];
+    if (typeof row.rightSide.label !== 'string' && row.rightSide.label.kind === 'pending') {
+      items.push({ label: 'Name', pendingReason: row.rightSide.label.reason });
+    }
+    if (!formatted.missingReason) items.push({ label: model.rightHeader ?? 'Value', value: formatted.exact });
     return {
-      title: row.rightSide.labelMissing ? notRecordedLabel('Name') : row.rightSide.label,
+      title: barsLabelText(row.rightSide.label),
       hour: tipHour,
-      ...(formatted.missingReason ? { missingReason: formatted.missingReason } : { items: [{ label: model.rightHeader ?? 'Value', value: formatted.exact }] }),
+      ...(formatted.missingReason ? { missingReason: formatted.missingReason } : {}),
+      ...(items.length ? { items } : {}),
     };
   }
   if (row.tooltip) {
-    return row.tooltip.hour !== undefined ? row.tooltip : { ...row.tooltip, hour: tipHour };
+    const tip = row.tooltip.hour !== undefined ? row.tooltip : { ...row.tooltip, hour: tipHour };
+    return withPendingLabelItem(row.label, tip);
   }
-  if (!row.label && !row.labelMissing && !row.value && !row.left && !row.right && !row.pair && !row.segments?.length && !row.readout) {
+  if (typeof row.label === 'string' && !row.label && !row.value && !row.left && !row.right && !row.pair && !row.segments?.length && !row.readout) {
     return null;
   }
-  const title = row.labelMissing ? notRecordedLabel('Name') : row.label;
+  const title = barsLabelText(row.label);
   const items: TooltipListItem[] = [];
+  if (typeof row.label !== 'string' && row.label.kind === 'pending') {
+    items.push({ label: 'Name', pendingReason: row.label.reason });
+  }
   let missingReason: string | undefined;
   let exactValue: string | undefined;
 
@@ -461,13 +511,13 @@ export function deriveBarsMirror(
       rows.push({ key: item.key, name: item.label, rowIndex: index, cells: [{ column: 'action', spoken: item.label }] });
       return;
     }
-    const name = item.labelMissing ? notRecordedLabel('Name') : item.label;
+    const name = barsLabelSpoken(item.label);
     const cells: { readonly column: string; readonly spoken: string }[] = [];
     if (item.value) cells.push({ column: 'value', spoken: formatBarsValueField(item.value).spoken });
     if (item.left) cells.push({ column: model.leftHeader ?? 'left', spoken: formatBarsValueField(item.left.value).spoken });
     if (item.right) cells.push({ column: model.rightHeader ?? 'right', spoken: formatBarsValueField(item.right.value).spoken });
     if (item.rightSide) {
-      const rightName = item.rightSide.labelMissing ? notRecordedLabel('Name') : item.rightSide.label;
+      const rightName = barsLabelSpoken(item.rightSide.label);
       cells.push({ column: 'rightSide', spoken: `${rightName}: ${formatBarsValueField(item.rightSide.value).spoken}` });
     }
     if (item.segments?.length) {
@@ -512,7 +562,7 @@ export function deriveBarsAudit(
   for (let i = first; i < end; i++) {
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
-    const label = item.labelMissing ? notRecordedLabel('Name') : item.label;
+    const label = barsLabelAudit(item.label);
     const cell = (row: string, name: string, value: string) => rows.push(auditCell(row, name, value));
     cell(item.key, 'label', label);
     if (item.value) cell(item.key, 'value', canonicalAuditValue(item.value.value));

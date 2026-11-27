@@ -256,6 +256,7 @@ export function deriveCardTooltip(model: CardModel, key: string): FamilyTooltipP
     return { title, fullText: title, hour: model.hour, ...(items.length ? { items } : {}) };
   }
   if (row.title.kind === 'notRecorded') items.push({ label: 'Name', missingReason: row.title.reason });
+  else if (row.title.kind === 'pending') items.push({ label: 'Name', pendingReason: row.title.reason });
   if (row.kind === 'item') {
     if (row.date) {
       items.push(row.date.hour === null

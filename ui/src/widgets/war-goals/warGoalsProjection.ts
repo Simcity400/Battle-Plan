@@ -90,6 +90,9 @@ function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options:
   const base = removed.recipient
     ? titled(readView, removed.recipient, removed.name ?? UNNAMED_GOAL, options, removed.seen)
     : { title: removed.name ? knownValue(removed.name) : notRecorded('The kind of war goal was not recorded') };
+  const targetItems: TooltipListItem[] = base.title.kind === 'pending'
+    ? [{ label: 'Target', pendingReason: base.title.reason }]
+    : [];
   return {
     kind: 'item',
     key: `removed:${removed.handle}:${removed.removed}`,
@@ -101,6 +104,7 @@ function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options:
       title: tipTitle(base),
       hour: readView.hour,
       items: [
+        ...targetItems,
         ...grantItems(removed.granted, removed.grantedMissing),
         { label: 'Removed', value: formatDateHover(removed.removed) },
         { label: 'Reason', missingReason: removed.reasonMissing },
@@ -121,10 +125,14 @@ function goalRow(reply: WargoalsReply, readView: BoundedReadView, goal: WargoalE
   } else if (goal.state === 'expired' && goal.expires !== null) {
     figure = { value: knownValue(formatDateOnly(goal.expires)), figure: 'Expired' };
   }
+  const head = titled(readView, goal.recipient, goal.name, options);
+  const targetItems: TooltipListItem[] = head.title.kind === 'pending'
+    ? [{ label: 'Target', pendingReason: head.title.reason }]
+    : [];
   return {
     kind: 'item',
     key: `goal:${goal.handle}`,
-    ...titled(readView, goal.recipient, goal.name, options),
+    ...head,
     place: placeOf(reply, readView, goal.states, goal.liberate, goal.puppets),
     ...(figure ? { figure } : {}),
     ...(state ? { state } : {}),
@@ -133,6 +141,7 @@ function goalRow(reply: WargoalsReply, readView: BoundedReadView, goal: WargoalE
       title: kindOf(goal.name).kind === 'known' ? goal.name : 'Kind not recorded',
       hour: readView.hour,
       items: [
+        ...targetItems,
         state ? { label: 'State', value: state.label } : { label: 'State', missingReason: WAR_UNREAD },
         ...(goal.expires !== null ? [{ label: 'Expires', value: formatDateHover(goal.expires) }] : []),
         ...grantItems(goal.granted, goal.grantedMissing),

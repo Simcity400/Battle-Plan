@@ -1,10 +1,10 @@
 import { artTooltipItem } from '../../families/art/adapters.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import { countryRowPresentation, type BarsCaptionSide, type BarsDataRow, type BarsModel, type BarsOppositeRow, type BarsPickRow, type BarsProjection } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation, type BarsCaptionSide, type BarsDataRow, type BarsModel, type BarsOppositeRow, type BarsPickRow, type BarsProjection } from '../../families/bars/model.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
-import { formatDateOnly, formatScalar, formatShare, notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatScalar, formatShare } from '../../families/valueFormat.ts';
 import type { WarContributionGroup, WarMeasure, WarMeasureKey, WarMeasureMember, WarsReply } from '../../generated/dashboard';
 import { DEFAULT_MEASURE, MEASURE_LIST } from './definition.ts';
 import { chosenGroup, leadOf, savedWar, sideCountries, warContributionNextChange, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
@@ -40,10 +40,10 @@ function rowsOf(readView: BoundedReadView, group: WarContributionGroup, measure:
     const value = typeof member === 'string' ? notRecorded(missing) : shareOf(member, participation, missing);
     const numeric = numericOf(value);
     return {
-      key: `${side}:${tag}`, subject: tag, label: who.label, labelMissing: who.labelMissing, labelLoading: who.labelLoading,
+      key: `${side}:${tag}`, subject: tag, label: who.label,
       media: who.media, color: who.color, value: { value, format: value.kind === 'zero' ? { decimals: 0 } : 'share' }, numeric,
       ...(typeof member !== 'string' ? { tooltip: {
-        title: who.labelMissing ? notRecordedLabel('Name') : who.label, hour,
+        title: barsLabelText(who.label), hour,
         get items() {
           const flag = artTooltipItem('Flag', who.media.art);
           return [
@@ -90,7 +90,7 @@ function captionSides(readView: BoundedReadView, group: WarContributionGroup, me
   return sides.map(side => {
     const who = countryRowPresentation(readView, leadOf(group, side), undefined, false, hour);
     const share = measure[side].shareOfWar;
-    return { media: who.media, label: who.label, value: share === null ? 'Not recorded' : `${formatShare(share / 10000)}${measure[side].partial ? ' partial' : ''}` };
+    return { media: who.media, label: barsLabelText(who.label), value: share === null ? 'Not recorded' : `${formatShare(share / 10000)}${measure[side].partial ? ' partial' : ''}` };
   });
 }
 

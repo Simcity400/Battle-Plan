@@ -13,7 +13,9 @@ import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, zeroValue } from '../value.ts';
+import { buildTooltipContent } from '../host/tooltips.ts';
+import { tooltipText } from '../../charts/tooltip.ts';
 import {
   assertBarsModelValid,
   countryRowPresentation,
@@ -163,8 +165,7 @@ test('guards reject future hours, bare nulls, and missing values carrying bar ma
   });
   assert.throws(() => rv.who('country', 'GER', h + 1), FutureDataError);
   const pres = countryRowPresentation(rv, 'GER');
-  assert.equal(pres.label, 'German Reich');
-  assert.equal(pres.labelMissing, false);
+  assert.deepEqual(pres.label, knownValue('German Reich'));
   assert.equal(pres.color, '#666666');
   assert.equal(pres.media.kind, 'flag');
   assert.equal(pres.media.art.status, 'pending');
@@ -564,8 +565,8 @@ test('a backward seek drops a cached model from a later hour', () => {
       model,
     });
     const label = (painted: ReturnType<typeof view.paint>) => (painted.fields.audit?.value as { rows: readonly { key: string; value?: string }[] }).rows.find(row => row.key.endsWith('label'))?.value;
-    assert.equal(label(view.paint(input(20), state, () => `c${++seq}`)), 'After');
-    assert.equal(label(view.paint(input(5), state, () => `c${++seq}`)), 'Before', 'after seeking back the picture equals a fresh paint');
+    assert.equal(label(view.paint(input(20), state, () => `c${++seq}`)), '["known",["str","After"]]');
+    assert.equal(label(view.paint(input(5), state, () => `c${++seq}`)), '["known",["str","Before"]]', 'after seeking back the picture equals a fresh paint');
   } finally {
     (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
   }
@@ -914,4 +915,50 @@ test('C1.7: offscreen rank swaps and scrolling unchanged ranks in a 1,500-countr
   } finally {
     (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
   }
+});
+
+test('bars row labels carry Value<string> states through mirror, audit, tooltip, and muted painting', () => {
+  const h = engineHour({ year: 1939, month: 1, day: 1, hour: 1 })!;
+  const model: BarsModel = {
+    form: 'ordered',
+    hour: h,
+    rows: [
+      { kind: 'data', key: 'pending-row', label: pendingValue('Name is loading'), color: '#4f86f7', value: { value: knownValue(10), format: 'integer' }, numeric: 10 },
+      { kind: 'data', key: 'literal-row', label: knownValue('Loading…'), color: '#3fb950', value: { value: knownValue(8), format: 'integer' }, numeric: 8 },
+      { kind: 'data', key: 'missing-row', label: notRecorded('Country not recorded'), color: '#d29922', value: { value: knownValue(6), format: 'integer' }, numeric: 6 },
+      {
+        kind: 'data',
+        key: 'custom-tip-row',
+        label: pendingValue('Name is loading'),
+        color: '#4f86f7',
+        value: { value: knownValue(5), format: 'integer' },
+        numeric: 5,
+        tooltip: { title: 'Loading…', hour: h, items: [{ label: 'Factories', value: '5' }] },
+      },
+    ],
+  };
+  assertBarsModelValid(model, h);
+
+  const mirror = deriveBarsMirror(model);
+  assert.equal(mirror.rows[0]?.name, 'Loading: Name is loading');
+  assert.equal(mirror.rows[1]?.name, 'Loading…');
+  assert.equal(mirror.rows[2]?.name, 'Name not recorded: Country not recorded');
+
+  const audit = deriveBarsAudit(model);
+  const labelAudit = (key: string) => audit.find(entry => entry.key === `${key}:label`)?.value;
+  assert.equal(labelAudit('pending-row'), '["pending","Name is loading"]');
+  assert.equal(labelAudit('literal-row'), '["known",["str","Loading…"]]');
+  assert.equal(labelAudit('missing-row'), '["notRecorded","Country not recorded"]');
+
+  const defaultTip = deriveBarsTooltip(model, 'pending-row')!;
+  assert.match(tooltipText(buildTooltipContent(defaultTip)), /Loading: Name is loading/);
+  const customTip = deriveBarsTooltip(model, 'custom-tip-row')!;
+  assert.match(tooltipText(buildTooltipContent(customTip)), /Loading: Name is loading/);
+
+  const layout = layoutFamilyBars(model, 480, 220, THEME);
+  const fake = makeFakeCtx();
+  drawFamilyBars(fake.ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const textOps = fake.ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  assert.ok(textOps.includes('Loading…'));
+  assert.ok(textOps.includes('Name not recorded'));
 });

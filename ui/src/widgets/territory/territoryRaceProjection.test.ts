@@ -157,8 +157,8 @@ test('territoryRaceProjection renders faction totals in factions mode using slot
   const model = territoryRaceProjection.project(view, baseOptions({ mode: 'factions' }));
   assertBarsModelValid(model, 300);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
-  assert.equal(rows[0]!.label, 'Axis');
+  assert.deepEqual(rows[0]!.label, { kind: 'known', value: 'Axis' });
   assert.equal(rows[0]!.numeric, 75);
-  assert.equal(rows[1]!.label, 'Allies');
+  assert.deepEqual(rows[1]!.label, { kind: 'known', value: 'Allies' });
   assert.equal(rows[1]!.value?.value.kind, 'notRecorded');
 });

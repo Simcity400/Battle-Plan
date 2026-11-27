@@ -4,7 +4,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { forceAtSources, GROUP_EMPTY } from '../../families/bars/forceAtRace.ts';
 import { seriesRaceSelection, seriesRaceUnavailable, seriesRaceWarnings, type SeriesRaceBaseOptions } from '../../families/bars/seriesRace.ts';
-import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
@@ -27,7 +27,7 @@ function sourcePresentation(readView: BoundedReadView, source: Country, surface:
   const pres = countryRowPresentation(readView, source.tag);
   return {
     key: source.tag,
-    label: pres.labelMissing ? 'Source country unavailable' : pres.label,
+    label: pres.label.kind === 'known' ? pres.label.value : pres.label.kind === 'pending' ? barsLabelText(pres.label) : 'Source country unavailable',
     color: pres.color ?? colour(surface, 0),
   };
 }
@@ -36,8 +36,7 @@ function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHou
   const tag = holder.country.tag;
   if (tag === null) return null;
   const key = holder.slot === null ? tag : countryKey(holder.slot);
-  const shown = countryRowPresentation(readView, key);
-  const pres = shown.labelMissing ? { ...shown, label: tag } : shown;
+  const pres = countryRowPresentation(readView, key);
   const total = holder.total;
   const value = total === 0 ? zeroValue() : knownValue(total);
 
@@ -84,14 +83,13 @@ function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHou
     key,
     subject: key,
     label: pres.label,
-    labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
     media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
     value: { value, format: { decimals: 0 }, label: 'Reserve manpower' },
     numeric: total,
     ...(segments ? { segments } : {}),
     tooltip: {
-      title: pres.labelMissing ? 'Name not recorded' : pres.label,
+      title: barsLabelText(pres.label),
       hour: readView.hour,
       items: tooltipItems,
     },

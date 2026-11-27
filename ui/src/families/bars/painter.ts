@@ -42,6 +42,9 @@ import {
   type BarsLayout,
 } from './layout.ts';
 import {
+  barsLabelMissing,
+  barsLabelMuted,
+  barsLabelText,
   formatBarsValueField,
   type BarsDataRow,
   type BarsModel,
@@ -170,7 +173,7 @@ function drawStackedPair(ctx: Canvas2D, row: BarsDataRow, layout: BarsLayout, th
 
 function measured(field: BarsValueField): boolean {
   const kind = formatBarsValueField(field).kind;
-  return kind !== 'notRecorded' && kind !== 'notApplicable';
+  return kind !== 'notRecorded' && kind !== 'notApplicable' && kind !== 'pending';
 }
 
 function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: FamilyTheme): void {
@@ -337,13 +340,13 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     const singleWidths: number[] = [];
     for (let i = first; i < last; i++) {
       const item = model.rows[i]!;
-      if (item.kind !== 'data' || item.labelMissing) continue;
+      if (item.kind !== 'data' || barsLabelMuted(item.label)) continue;
       if (labelFitsTwoLines(layout.rowHeights[i]!, nameLineH)) continue;
       const isHovered = inspectedKey === item.key || (item.rightSide && inspectedKey === item.rightSide.key);
       const isFocused = focusedKey === item.key || (item.rightSide && focusedKey === item.rightSide.key);
       const reserveRemove = item.region !== undefined && (isHovered || isFocused) ? ROW_REMOVE_SIZE + 4 : 0;
       singleKeys.push(item.key);
-      singleLabels.push(item.label);
+      singleLabels.push(barsLabelText(item.label));
       singleWidths.push(Math.max(12, layout.nameWidth - reserveRemove));
     }
     if (singleLabels.length > 1) {
@@ -359,10 +362,10 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     const rightLabels: string[] = [];
     for (let i = first; i < last; i++) {
       const item = model.rows[i]!;
-      if (item.kind !== 'data' || !item.rightSide || item.rightSide.labelMissing) continue;
+      if (item.kind !== 'data' || !item.rightSide || barsLabelMuted(item.rightSide.label)) continue;
       if (labelFitsTwoLines(layout.rowHeights[i]!, nameLineH)) continue;
       rightKeys.push(item.rightSide.key);
-      rightLabels.push(item.rightSide.label);
+      rightLabels.push(barsLabelText(item.rightSide.label));
     }
     if (rightLabels.length > 1) {
       ctx.save();
@@ -428,9 +431,10 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     if (layout.nameWidth > 0) {
       const regionTools = row.region !== undefined && (isHovered || isFocused);
       const reserveRemove = regionTools ? ROW_REMOVE_SIZE + 4 : 0;
-      const nameColor = row.labelMissing || row.labelLoading || row.muted ? theme.muted : row.group === 'auto' ? tokens.autoName : theme.text;
-      const rawLabel = row.labelMissing ? notRecordedLabel('Name') : row.label;
-      const shownLabel = row.labelMissing ? rawLabel : (disambiguatedNames.get(row.key) ?? rawLabel);
+      const labelMuted = barsLabelMuted(row.label);
+      const nameColor = labelMuted || row.muted ? theme.muted : row.group === 'auto' ? tokens.autoName : theme.text;
+      const rawLabel = barsLabelText(row.label);
+      const shownLabel = labelMuted ? rawLabel : (disambiguatedNames.get(row.key) ?? rawLabel);
       const fitted = drawNameSlot(
         ctx,
         shownLabel,
@@ -449,7 +453,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     }
 
     const barY = Math.round(middleY - layout.barHeight / 2);
-    const barColor = row.labelMissing ? theme.grey : readableColour(row.color ?? theme.accent, theme.surface);
+    const barColor = barsLabelMissing(row.label) ? theme.grey : readableColour(row.color ?? theme.accent, theme.surface);
     const eased = easedValues?.get(row.key);
 
     if (model.form === 'net') {
@@ -613,7 +617,8 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         const right = row.rightSide;
         const rightFmt = formatBarsValueField(right.value);
         const rightSpan = Math.max(1, layout.rightPlotRight - layout.rightPlotLeft);
-        const rightColor = right.labelMissing ? theme.grey : (right.color ?? theme.accent);
+        const rightMuted = barsLabelMuted(right.label);
+        const rightColor = barsLabelMissing(right.label) ? theme.grey : (right.color ?? theme.accent);
         if (rightFmt.kind === 'notRecorded' || rightFmt.kind === 'notApplicable') {
           drawMissingMark(ctx, layout.rightPlotLeft, middleY, rightSpan, theme, { align: 'left', notApplicable: rightFmt.kind === 'notApplicable' });
         } else {
@@ -630,8 +635,8 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
             drawBar(ctx, layout.rightPlotLeft, barY, w, layout.barHeight, rightColor, 'right');
           }
         }
-        const rawRightLabel = right.labelMissing ? notRecordedLabel('Name') : right.label;
-        const shownRightLabel = right.labelMissing ? rawRightLabel : (disambiguatedRightNames.get(right.key) ?? rawRightLabel);
+        const rawRightLabel = barsLabelText(right.label);
+        const shownRightLabel = rightMuted ? rawRightLabel : (disambiguatedRightNames.get(right.key) ?? rawRightLabel);
         const rightName = drawNameSlot(
           ctx,
           shownRightLabel,
@@ -640,7 +645,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           layout.rightNameWidth,
           rowH,
           theme,
-          { align: 'right', color: right.labelMissing || right.labelLoading ? theme.muted : theme.text },
+          { align: 'right', color: rightMuted ? theme.muted : theme.text },
         );
         if (rightName.truncated || shownRightLabel !== rawRightLabel) truncatedKeys.push(right.key);
         drawMediaSlot(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, { artCache, radius: 2 });
