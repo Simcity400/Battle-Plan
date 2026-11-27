@@ -1,121 +1,129 @@
 use super::*;
-use dashboard_follow::panel::{Panel, PanelData};
-use replay_recording::columnar_frames::Recording;
+use dashboard_follow::panel::{Panel, ProductStep};
+use replay_frame::frame::TableView;
 use serde_json::Value;
 use std::sync::{Mutex, OnceLock};
 
-struct Changes {
-    first: i32,
-    next: BTreeSet<i32>,
+fn covers(input: ProductStep<'_>, table: TableId, columns: u64) -> bool {
+    input.lanes.get(table.index()).is_some_and(|lane| {
+        let held = lane.requested().iter().fold(0u64, |mask, &column| mask | (1 << column));
+        held & columns == columns && (input.step.first() == input.step.last() || lane.passing())
+    })
 }
 
-impl Changes {
-    fn read(query: &Query<'_>, params: &AirTimelineParams) -> io::Result<Self> {
-        let first = params.last_hour.div_euclid(DAY).saturating_mul(DAY);
-        let end = first.saturating_add(DAY - 1);
-        let mut out = Self { first, next: BTreeSet::new() };
-        let recording = query.replay.recording();
-        let ranges = theatre_ranges(params.theatres.iter().flatten().filter_map(|id| id.parse().ok()));
-        for stretch in query.timeline.within(first, end) {
-            out.next.insert(stretch.first);
-            out.next.insert(stretch.last.saturating_add(1));
-            let mut countries = BTreeSet::new();
-            out.table(recording, &stretch, TableId::RaidAirScores, &["friendly", "enemy"], lanes::Keys::All, |key| { countries.insert(key >> 32); })?;
-            let countries: Vec<_> = countries.into_iter().collect();
-            out.table(recording, &stretch, TableId::CountryLinks, &["canonical_slot"], lanes::Keys::These(&countries), |_| {})?;
-            if params.theatres.as_ref().is_some_and(|ids| !ids.is_empty()) {
-                out.table(recording, &stretch, TableId::AirTheatreRegions, &["wings"], lanes::Keys::Ranges(&ranges), |_| {})?;
-                for (start, stop) in lanes::reads(recording, stretch.run, TableId::AirTheatreRegions, stretch.first, stretch.last)? {
-                    out.next.insert(start);
-                    out.next.insert(stop.saturating_add(1));
-                }
-            }
-        }
-        let gaps = &query.timeline.unheld;
-        let at = gaps.partition_point(|gap| gap.last < first);
-        for gap in gaps[at..].iter().take_while(|gap| gap.first <= end) {
-            out.next.insert(gap.first);
-            out.next.insert(gap.last.saturating_add(1));
-        }
-        Ok(out)
-    }
-
-    fn table(&mut self, recording: &Recording, stretch: &Stretch, table: TableId, names: &[&str], keys: lanes::Keys<'_>, mut observed: impl FnMut(u128)) -> io::Result<()> {
-        let columns = at_hour::field_columns(table, names);
-        let mut statuses = Vec::new();
-        replay_lanes::points::cells(recording, stretch.run, table, &columns, keys, stretch.first, stretch.last, Some(&mut statuses), &mut |hour, key, cells| {
-            observed(key);
-            self.next.insert(hour);
-            if table == TableId::RaidAirScores && cells.is_none() {
-                let last = bucket_end(hour);
-                self.next.insert(last);
-                self.next.insert(last.saturating_add(1));
-            }
-            true
-        })?;
-        for status in statuses {
-            self.next.insert(status.first);
-            self.next.insert(status.last.saturating_add(1));
-            if table == TableId::RaidAirScores && !replay_recording::columnar_frames::complete(status.status) {
-                for hour in status.first..=status.last {
-                    if hour == bucket_end(hour) {
-                        self.next.insert(hour);
-                        self.next.insert(hour.saturating_add(1));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn through(&self, hour: i32) -> i32 {
-        self.next.range((std::ops::Bound::Excluded(hour), std::ops::Bound::Unbounded)).next().map_or(self.first.saturating_add(DAY - 1), |next| next.saturating_sub(1)).min(self.first.saturating_add(DAY - 1))
-    }
+struct Held {
+    piece: usize,
+    through: i32,
+    bucket_proven: bool,
+    reply: AirTimelineReply,
 }
 
-fn date(reply: &mut Arc<PanelData>, hour: i32) {
-    let Ok(value) = reply.as_ref() else { return };
-    let old = value["lastHour"].as_i64();
-    if old == Some(i64::from(hour)) { return; }
-    let Ok(value) = Arc::make_mut(reply) else { return };
-    value["lastHour"] = hour.into();
-    if value["days"][0].as_i64().is_some_and(|day| Some(day) == old) {
-        value["days"][0] = hour.into();
-        for row in value["rows"].as_array_mut().into_iter().flatten() {
-            if let Some(date) = row["readout"].get_mut("as_of_hour") { *date = hour.into(); }
-        }
+impl Held {
+    fn adjacent(&self, input: ProductStep<'_>) -> bool {
+        let step = input.step;
+        !step.reset()
+            && step.piece() == Some(self.piece)
+            && step.first().checked_sub(1) == Some(self.reply.last_hour)
     }
-    if let Some(last) = value["gaps"].as_array_mut().and_then(|gaps| gaps.last_mut())
-        && last["lastHour"].as_i64() == old {
-        last["lastHour"] = hour.into();
+
+    fn continues(&self, hour: i32, input: ProductStep<'_>, columns: [(TableId, u64); 2], bucket_proven: bool) -> bool {
+        let step = input.step;
+        let previous = self.reply.last_hour;
+        self.adjacent(input)
+            && previous.div_euclid(DAY) == hour.div_euclid(DAY)
+            && (hour < bucket_end(previous)
+                || previous.checked_add(1) == Some(hour)
+                    && if previous == bucket_end(previous) { self.bucket_proven } else { bucket_proven })
+            && hour <= self.through
+            && columns.into_iter().all(|(table, mask)| {
+                covers(input, table, mask) && step.table(table.index()).is_some_and(|change| {
+                    change.head() == Some(hour)
+                        && !change.reset()
+                        && change.status_left().is_none()
+                        && change.inserted().is_empty()
+                        && change.deleted().is_empty()
+                        && change.passing().is_empty()
+                        && change.columns().iter().all(|column| column.is_empty() || mask & (1 << column.column()) == 0)
+                })
+            })
+    }
+
+    fn date(&mut self, hour: i32) {
+        self.reply.last_hour = hour;
+        self.reply.days[0] = Some(hour);
+        for row in &mut self.reply.rows {
+            match &mut row.readout {
+                Some(AirReadout::Leading { as_of_hour, .. }
+                    | AirReadout::Contested { as_of_hour }
+                    | AirReadout::Viewpoint { as_of_hour, .. }
+                    | AirReadout::NoActivity { as_of_hour }) => *as_of_hour = hour,
+                _ => {}
+            }
+        }
     }
 }
 
 pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
-    let branch = dashboard_query::branch(asked).map_err(|e| e.to_string())?;
-    let held = Mutex::new(None::<Changes>);
+    let branch = dashboard_query::branch(asked).map_err(|error| error.to_string())?;
+    let held = Mutex::new(None::<Held>);
     let styles = OnceLock::new();
-    let index = OnceLock::new();
-    let owned = Arc::clone(source);
-    let options = LoadContext { content: load.content.clone() };
-    at_hour::dated_day_panel::<AirSuperiorityTimeline>(source, load, asked, "firstHour", "lastHour", move |params, reply| {
-        let hour = params.last_hour;
-        let Ok(query) = dashboard_base::queries::query(&owned, branch) else { return hour };
-        let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if held.as_ref().is_none_or(|day| day.first.div_euclid(DAY) != hour.div_euclid(DAY)) {
-            *held = Changes::read(&query, params).ok();
-        }
-        let Some(day) = held.as_ref() else { return hour };
-        let mut through = day.through(hour);
-        if query.timeline.at(hour).is_some() {
-            let Ok(index) = index.get_or_init(|| index::index(&owned, branch)) else { return hour };
-            through = through.min(super::super::epoch_through(index, hour)).min(at_hour::before(query.holders.next_change(hour)));
-            if !reply.sides.is_empty() {
-                let Ok(styles) = styles.get_or_init(|| super::super::BranchSideResolver::load(&owned, &query, &options, &AtomicBool::new(false), &mut Vec::new())) else { return hour };
-                through = through.min(styles.through(hour, &reply.sides, None));
+    let side_index = OnceLock::new();
+    let score_columns = at_hour::field_mask(TableId::RaidAirScores, &["friendly", "enemy"]);
+    let link_columns = at_hour::field_mask(TableId::CountryLinks, &["canonical_slot"]);
+    let columns = [(TableId::RaidAirScores, score_columns), (TableId::CountryLinks, link_columns)];
+    at_hour::stepped_day_panel::<AirSuperiorityTimeline>(source, load, asked, ("firstHour", "lastHour"),
+        |params, _| params.last_hour, |_, _| {},
+        move |source, params, load, cancelled, mut step| {
+            let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let previous = held.take();
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let hour = params.last_hour;
+            let query = dashboard_base::queries::query(source, branch)?;
+            let stretch = query.timeline.at(hour);
+            let input = step.step.filter(|input| input.step.last() == hour);
+            let reads = [Read::all(TableId::RaidAirScores), Read::all(TableId::CountryLinks)];
+            let projected = if params.every != Some(true) && stretch.is_some() {
+                Some(step.frame(source, &query, hour, &reads, AirSuperiorityAt::columns)?)
+            } else {
+                None
+            };
+            let complete = projected.is_some_and(|frame| reads.iter().all(|read| {
+                matches!(frame.tables[read.table.index()].held(), TableView::Complete(_))
+            }));
+            let bucket_proven = complete && (hour.rem_euclid(BUCKET) == 0 || previous.as_ref().is_some_and(|prior| {
+                prior.bucket_proven && prior.reply.last_hour.div_euclid(BUCKET) == hour.div_euclid(BUCKET)
+                    && input.is_some_and(|input| prior.adjacent(input)
+                        && covers(input, TableId::RaidAirScores, score_columns)
+                        && input.step.table(TableId::RaidAirScores.index()).is_some_and(|change| {
+                        change.head() == Some(hour) && !change.reset() && change.status_left().is_none()
+                            && change.deleted().is_empty() && change.passing().is_empty()
+                    }))
+            }));
+            if complete && let Some(input) = input
+                && let Some(mut previous) = previous
+                && previous.continues(hour, input, columns, bucket_proven)
+            {
+                previous.bucket_proven = bucket_proven;
+                previous.date(hour);
+                let reply = previous.reply.clone();
+                *held = Some(previous);
+                return Ok(reply);
             }
-            if reply.days[0].is_none() { return hour; }
-        }
-        through
-    }, date)
+
+            let reply = timeline(source, params, load, projected, cancelled)?;
+            if complete && params.theatres.as_ref().is_none_or(Vec::is_empty)
+                && reply.days.first() == Some(&Some(hour))
+                && let Some(stretch) = stretch
+                && let Some(piece) = input.and_then(|input| input.step.piece())
+                && let Ok(index) = side_index.get_or_init(|| index::index(source, branch))
+            {
+                let mut through = stretch.last.min(super::super::epoch_through(index, hour)).min(at_hour::before(query.holders.next_change(hour)));
+                if !reply.sides.is_empty() {
+                    let styles = styles.get_or_init(|| super::super::BranchSideResolver::load(source, &query, load, &false.into(), &mut Vec::new()));
+                    through = through.min(styles.as_ref().map_or(hour, |styles| styles.through(hour, &reply.sides, None)));
+                }
+                *held = Some(Held { piece, through, bucket_proven, reply: reply.clone() });
+            }
+            Ok(reply)
+        })
 }

@@ -163,11 +163,16 @@ fn the_current_air_day_follows_score_changes_and_dates_the_held_readouts() {
         request["panel"] = registration.key.into();
         let panel = (registration.panel.unwrap().open)(&source, &load, &request).unwrap();
         let exact = panel.exact().unwrap();
+        if request["every"].is_null() {
+            let seed = (exact.advance)(100, true, &false.into(), None);
+            assert!(seed.lanes.iter().any(|lane| lane.table == TableId::RaidAirScores.index()), "{request}");
+            assert!(seed.lanes.iter().any(|lane| lane.table == TableId::CountryLinks.index()), "{request}");
+        }
         let reads = played(source.replay_ref(), exact, 100, 149);
         for read in reads.iter().filter(|r| r.hour > 100) {
             assert_eq!(*read.value, (exact.cold)(read.hour, &false.into()), "{request} at {}", read.hour);
-            if read.hour < 110 && request["theatres"].is_null() {
-                assert_eq!(read.product_calls, u64::from(read.hour == 107), "{request} at {}", read.hour);
+            if matches!(read.hour, 103..=106 | 109) && request["theatres"].is_null() && request["every"].is_null() {
+                assert_eq!(read.rows, 0, "{request} at {} holds unchanged lane rows", read.hour);
             }
             if matches!(read.hour, 110 | 113) {
                 let reply = read.value.as_ref().as_ref().unwrap();
@@ -206,6 +211,69 @@ fn the_current_air_day_follows_score_changes_and_dates_the_held_readouts() {
                 );
             }
         }
-        assert_eq!(*(exact.advance)(101, true, &false.into(), None).value, (exact.cold)(101, &false.into()));
+        let sought = (exact.advance)(101, true, &false.into(), None);
+        assert!(sought.fresh);
+        assert_eq!(*sought.value, (exact.cold)(101, &false.into()));
+        if request["mode"] == "sides" {
+            let advance = exact.advance.clone();
+            let enemy = dashboard_base::products::at_hour::field_columns(TableId::RaidAirScores, &["enemy"]);
+            let partial = dashboard_follow::panel::AtHour {
+                cold: exact.cold.clone(),
+                read: exact.read.clone(),
+                advance: Arc::new(move |hour, seed, token, input| {
+                    let mut read = advance(hour, seed, token, input.map(|input| dashboard_follow::panel::ProductStep { held: Some(&[]), ..input }));
+                    if input.is_none() {
+                        let scores = read.lanes.iter_mut().find(|lane| lane.table == TableId::RaidAirScores.index()).unwrap();
+                        scores.columns.clone_from(&enemy);
+                    }
+                    read
+                }),
+            };
+            let reads = played(source.replay_ref(), &partial, 100, 107);
+            assert_eq!(*reads.last().unwrap().value, (exact.cold)(107, &false.into()));
+        }
     }
+}
+
+#[test]
+fn the_air_day_rebuilds_on_read_errors_gaps_and_new_runs() {
+    let segments = [(1, 96..=107), (2, 109..=125)].map(|(branch, hours)| {
+        records(branch, hours.map(|hour| {
+            let mut snapshot = frame(branch, hour);
+            if (98..100).contains(&hour) {
+                let mut rows = snapshot.complete::<tables::RaidAirScores>().unwrap().to_vec();
+                rows.push(RaidAirScoreRow { country: 9001, region: 22, friendly: 13, enemy: 1, ..Default::default() });
+                *snapshot.tables[TableId::RaidAirScores.index()] = TableView::Complete(TableRows::RaidAirScores(rows));
+            }
+            snapshot
+        }).collect())
+    });
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Arc::new(Source::from_replay(SourceKey { source_id: "gapped-air".into(), revision: "1".into() }, "air.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
+    let request = json!({"panel": "air-superiority-timeline", "branchId": "1", "mode": "sides", "top": 7});
+    let panel = (AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE.panel.unwrap().open)(&source, &LoadContext { content: None }, &request).unwrap();
+    let exact = panel.exact().unwrap();
+    let advance = exact.advance.clone();
+    let with_error = dashboard_follow::panel::AtHour {
+        cold: exact.cold.clone(),
+        read: exact.read.clone(),
+        advance: Arc::new(move |hour, seed, token, step| {
+            if hour == 104 {
+                let failed = advance(hour, seed, &true.into(), step);
+                assert!(failed.value.is_err());
+            }
+            advance(hour, seed, token, step)
+        }),
+    };
+    let reads = played(source.replay_ref(), &with_error, 96, 125);
+    for hour in [100, 101, 102, 104, 107, 108, 109, 125] {
+        let read = reads.iter().find(|read| read.hour == hour).unwrap();
+        assert!(read.fresh, "hour {hour} rebuilds the current day");
+        assert_eq!(*read.value, (exact.cold)(hour, &false.into()));
+    }
+    assert!(reads.iter().find(|read| read.hour == 104).unwrap().rows > 0, "an error discards the projected rows");
+    let reply = |hour| reads.iter().find(|read| read.hour == hour).unwrap().value.as_ref().as_ref().unwrap();
+    assert!(!reply(100)["rows"].as_array().unwrap().iter().any(|row| row["region"] == 22));
+    assert!(reply(101)["rows"].as_array().unwrap().iter().any(|row| row["region"] == 22), "the summary can retain a deleted score at the bucket close");
+    assert_eq!(reply(108)["gaps"], json!([{"firstHour": 108, "lastHour": 108}]));
 }
