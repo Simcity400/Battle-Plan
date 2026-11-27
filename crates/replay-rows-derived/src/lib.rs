@@ -744,6 +744,38 @@ pub struct PowerSpendDayRow {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct PowerSpendPaymentRow {
+    pub holder: u32,
+    pub hour: i32,
+    pub currency: u8,
+    pub entry: u32,
+    pub ordinal: u32,
+    pub known: Recorded<i64>,
+    pub payments: i64,
+    pub unknown: i64,
+    pub uncovered: i64,
+    pub latest_hour: Option<i32>,
+    pub latest_sequence: Option<u64>,
+    pub latest_ordinal: Option<u32>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct PowerSpendGainRow {
+    pub holder: u32,
+    pub hour: i32,
+    pub currency: u8,
+    pub entry: u32,
+    pub event_hour: Option<i32>,
+    pub gained: Recorded<i64>,
+    pub capped: Recorded<i64>,
+    pub days: i64,
+    pub unknown_days: i64,
+    pub unmatched: i64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PowerItemRow {
     pub holder: u32,
     pub ordinal: u32,
@@ -2071,6 +2103,8 @@ row_codec!(LeaderBattleRow, 128, |row| (row.leader as u128) << 64 | (row.hour as
 row_codec!(LeaderTraitGainRow, 128, |row| (row.leader as u128) << 64 | (row.hour as u32 as u128) << 32 | row.token as u128, |key| { leader: (key >> 64) as u64, hour: (key >> 32) as u32 as i32, token: key as u32 }, {0 => class: U8, 1 => spelling: Bytes}, |row| if row.class > LeaderTraitGainRow::FIRST_OBSERVED { Err(invalid("a trait gain's class is past first observed")) } else { Ok(()) });
 row_codec!(PowerSpendTotalRow, 72, |row| (row.holder as u128) << 40 | (row.currency as u128) << 32 | row.ordinal as u128, |key| { holder: (key >> 40) as u32, currency: (key >> 32) as u8, ordinal: key as u32 }, {0 => known: I64, 1 => payments: I64, 2 => entries: I64, 3 => unknown: I64, 4 => uncovered: I64, 5 => latest_hour: OptionalI32, 6 => latest_sequence: OptionalU64, 7 => latest_ordinal: OptionalU32, 8 => latest_read: OptionalI32, 9 => days: I64, 10 => day_payments: I64, 11 => day_entries: I64, 12 => day_charge: I64, 13 => day_unknown: I64, 14 => days_uncovered: I64, 15 => realized_gained: I64, 16 => realized_lost: I64, 17 => realized_unknown: I64, 18 => first_day: OptionalI32, 19 => last_day: OptionalI32, 20 => last_lag: OptionalI32, 21 => last_hour: OptionalI32, 22 => last_sequence: OptionalU64, 23 => last_ordinal: OptionalU32, 24 => last_covered: Bool, 25 => balances: I64, 26 => credits: I64, 27 => gained: I64, 28 => capped: I64, 29 => gain_days: I64, 30 => gain_unknown_days: I64, 31 => unmatched: I64}, |row| if row.currency > PowerCurrency::Command as u8 { Err(invalid("a power total's currency is past command")) } else { Ok(()) });
 row_codec!(PowerSpendDayRow, 104, |row| (row.holder as u128) << 72 | (row.hour as u32 as u128) << 40 | (row.currency as u128) << 32 | row.entry as u128, |key| { holder: (key >> 72) as u32, hour: (key >> 40) as u32 as i32, currency: (key >> 32) as u8, entry: key as u32 }, {0 => ordinal: U32, 1 => day: I32, 2 => days: I64, 3 => payments: I64, 4 => charge: I64, 5 => unknown: I64, 6 => uncovered: I64, 7 => realized_gained: I64, 8 => realized_lost: I64, 9 => realized_unknown: I64, 10 => credits: I64}, |row| if row.currency > PowerCurrency::Command as u8 || row.day.rem_euclid(24) != 0 { Err(invalid("a power spend day's currency is past command or its day is not a midnight")) } else { Ok(()) });
+row_codec!(PowerSpendPaymentRow, 104, |row| (row.holder as u128) << 72 | (row.hour as u32 as u128) << 40 | (row.currency as u128) << 32 | row.entry as u128, |key| { holder: (key >> 72) as u32, hour: (key >> 40) as u32 as i32, currency: (key >> 32) as u8, entry: key as u32 }, {0 => ordinal: U32, 1 => known: I64, 2 => payments: I64, 3 => unknown: I64, 4 => uncovered: I64, 5 => latest_hour: OptionalI32, 6 => latest_sequence: OptionalU64, 7 => latest_ordinal: OptionalU32}, |row| if PowerCurrency::try_from(row.currency).is_err() || row.payments < 0 || row.unknown < 0 || row.uncovered < 0 { Err(invalid("a power spend payment's currency is unsupported or a count is negative")) } else { Ok(()) });
+row_codec!(PowerSpendGainRow, 104, |row| (row.holder as u128) << 72 | (row.hour as u32 as u128) << 40 | (row.currency as u128) << 32 | row.entry as u128, |key| { holder: (key >> 72) as u32, hour: (key >> 40) as u32 as i32, currency: (key >> 32) as u8, entry: key as u32 }, {0 => event_hour: OptionalI32, 1 => gained: I64, 2 => capped: I64, 3 => days: I64, 4 => unknown_days: I64, 5 => unmatched: I64}, |row| if PowerCurrency::try_from(row.currency).is_err() || row.days < 0 || row.unknown_days < 0 || row.unmatched < 0 { Err(invalid("a power spend gain's currency is unsupported or a count is negative")) } else { Ok(()) });
 row_codec!(PowerItemRow, 64, |row| (row.holder as u128) << 32 | row.ordinal as u128, |key| { holder: (key >> 32) as u32, ordinal: key as u32 }, {0 => kind: U8, 1 => currency: U8, 2 => cause: U16, 3 => component: OptionalU32, 4 => charged: Bool, 5 => site: U16, 6 => action: U8, 7 => item_token: OptionalU32, 8 => item_key: Bytes, 9 => slot_key: Bytes, 10 => character: OptionalU32, 11 => object_kind: U8, 12 => object_reference: OptionalU64, 13 => target_country: OptionalU32, 14 => target_state: OptionalU32, 15 => target_region: OptionalU32, 16 => origin_kind: U8, 17 => origin_token: OptionalU32, 18 => origin_key: Bytes, 19 => first_hour: I32, 20 => first_read: I32, 21 => first_country: U32, 22 => first_epoch: U64, 23 => first_sequence: U64}, |row| if row.kind > PowerItemRow::ABILITY_UPKEEP { Err(invalid("a power item's kind is past ability upkeep")) } else { Ok(()) });
 row_codec!(PowerDayPartRow, 72, |row| (row.holder as u128) << 40 | (row.currency as u128) << 32 | row.ordinal as u128, |key| { holder: (key >> 40) as u32, currency: (key >> 32) as u8, ordinal: key as u32 }, {0 => day: I32, 1 => spent: I64, 2 => payments: I64, 3 => covered: Bool, 4 => sequence: OptionalU64, 5 => cost_ordinal: OptionalU32, 6 => read: I32}, |row| if row.day.rem_euclid(24) != 0 { Err(invalid("a power day part's day is not a midnight")) } else { Ok(()) });
 row_codec!(PowerHoldRow, 96, |row| (row.holder as u128) << 64 | row.hold as u128, |key| { holder: (key >> 64) as u32, hold: key as u64 }, {0 => amount: I64, 1 => check: U64, 2 => cause: U16, 3 => object_kind: U8, 4 => object_reference: OptionalU64, 5 => ability: Bool, 6 => item_token: OptionalU32, 7 => item_key: Bytes, 8 => slot_key: Bytes, 9 => character: OptionalU32, 10 => target_country: OptionalU32, 11 => target_state: OptionalU32, 12 => target_region: OptionalU32, 13 => capture_country: U32, 14 => capture_epoch: U64}, |_row| Ok(()));

@@ -308,6 +308,26 @@ const DAYS: [&str; 11] = [
     "credits",
 ];
 
+const PAYMENTS: [&str; 8] = [
+    "ordinal",
+    "known",
+    "payments",
+    "unknown",
+    "uncovered",
+    "latest_hour",
+    "latest_sequence",
+    "latest_ordinal",
+];
+
+const GAINS: [&str; 6] = [
+    "event_hour",
+    "gained",
+    "capped",
+    "days",
+    "unknown_days",
+    "unmatched",
+];
+
 type Cells = [Value; TOTALS.len()];
 
 pub(super) struct Change<'a> {
@@ -460,7 +480,8 @@ fn day_log(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, each: &mut
     let wanted_currency = currency.code();
     let span = dashboard_query::cost::storage(|| {
         lanes::log_span(query.replay.recording(), piece.run, TableId::PowerSpendDays, &columns, Keys::Range(low, high), piece.first, piece.last, &mut |hour, key, cells| {
-            if (key >> 32) as u8 != wanted_currency {
+            let Ok(row_currency) = PowerCurrency::try_from((key >> 32) as u8) else { return };
+            if row_currency as u8 != wanted_currency || cells.len() != DAYS.len() {
                 return;
             }
             let value = |at: usize| Value::of(cells[at]);
@@ -499,16 +520,143 @@ fn day_log(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, each: &mut
     Ok(span.gaps)
 }
 
-fn day_gap_reason(gap: &lanes::LogGap) -> String {
+fn payment_log(
+    query: &Query<'_>,
+    piece: &Piece,
+    from: i32,
+    currency: SpendCurrency,
+    each: &mut dyn FnMut(i32, u32, Option<SpendPayment>, Option<SpendDay>),
+) -> io::Result<Vec<lanes::LogGap>> {
+    if from > piece.last {
+        return Ok(Vec::new());
+    }
+    let columns: Vec<usize> = PAYMENTS.iter().map(|name| dashboard_declare::field(TableId::PowerSpendPayments, name)).collect::<io::Result<_>>()?;
+    let low = u128::from(piece.slot) << 72;
+    let high = low | ((1_u128 << 72) - 1);
+    let wanted_currency = currency.code();
+    let span = dashboard_query::cost::storage(|| {
+        lanes::log_span(query.replay.recording(), piece.run, TableId::PowerSpendPayments, &columns, Keys::Range(low, high), from, piece.last, &mut |hour, key, cells| {
+            let Ok(row_currency) = PowerCurrency::try_from((key >> 32) as u8) else { return };
+            if row_currency as u8 != wanted_currency || cells.len() != PAYMENTS.len() {
+                return;
+            }
+            let value = |at: usize| Value::of(cells[at]);
+            let Some(ordinal) = value(0).number().and_then(|value| u32::try_from(value).ok()) else { return };
+            let count_u32 = |at: usize| value(at).number().map_or(0, |value| u32::try_from(value.max(0)).unwrap_or(u32::MAX));
+            let payments = count_u32(2);
+            let unknown = count_u32(3);
+            if payments > 0 {
+                let payment = SpendPayment {
+                    item: ordinal,
+                    hour: value(5).number().map(|value| value as i32),
+                    read: hour,
+                    sequence: value(6).number().map(|value| (value as u64).to_string()),
+                    ordinal: value(7).number().map(|value| value as u32),
+                    known_raw: raw(value(1).number()),
+                    payments,
+                    unknown,
+                    uncovered: count_u32(4) > 0,
+                };
+                each(hour, ordinal, Some(payment), None);
+            } else if unknown > 0 {
+                let credit = SpendDay {
+                    item: ordinal,
+                    day: None,
+                    read: hour,
+                    days: 0,
+                    charge_raw: Some("0".into()),
+                    payments: 0,
+                    unknown: 0,
+                    uncovered: 0,
+                    realized_raw: None,
+                    credits: 0,
+                    unknown_credits: unknown,
+                };
+                each(hour, ordinal, None, Some(credit));
+            }
+        })
+    })?;
+    Ok(span.gaps)
+}
+
+fn gain_log(
+    query: &Query<'_>,
+    piece: &Piece,
+    from: i32,
+    currency: SpendCurrency,
+    buckets: &mut BTreeMap<(i32, Option<i32>), GainBucket>,
+    unmatched: &mut u64,
+) -> io::Result<Vec<lanes::LogGap>> {
+    if from > piece.last {
+        return Ok(Vec::new());
+    }
+    let columns: Vec<usize> = GAINS.iter().map(|name| dashboard_declare::field(TableId::PowerSpendGains, name)).collect::<io::Result<_>>()?;
+    let low = u128::from(piece.slot) << 72;
+    let high = low | ((1_u128 << 72) - 1);
+    let wanted_currency = currency.code();
+    let span = dashboard_query::cost::storage(|| {
+        lanes::log_span(query.replay.recording(), piece.run, TableId::PowerSpendGains, &columns, Keys::Range(low, high), from, piece.last, &mut |hour, key, cells| {
+            let Ok(row_currency) = PowerCurrency::try_from((key >> 32) as u8) else { return };
+            if row_currency as u8 != wanted_currency || cells.len() != GAINS.len() {
+                return;
+            }
+            let value = |at: usize| Value::of(cells[at]);
+            let count_u32 = |at: usize| value(at).number().map_or(0, |value| u32::try_from(value.max(0)).unwrap_or(u32::MAX));
+            let event_hour = value(0).number().map(|value| value as i32);
+            let gained = value(1).number().map(i128::from);
+            let capped = value(2).number().map(i128::from);
+            let days = count_u32(3);
+            let unknown_days = count_u32(4);
+            let unmatched_count = count_u32(5);
+            if days == 0 && unknown_days == 0 && unmatched_count == 0 && gained == Some(0) && capped == Some(0) {
+                return;
+            }
+            *unmatched += u64::from(unmatched_count);
+            buckets.entry((hour, event_hour)).or_default().push(gained, capped, days, unknown_days, unmatched_count);
+        })
+    })?;
+    Ok(span.gaps)
+}
+
+fn log_gap_reason(gap: &lanes::LogGap, label: &str) -> String {
     match gap.status {
         Status::Unavailable { .. } => match gap.reason.as_deref().filter(|reason| !reason.is_empty()) {
-            Some(reason) => format!("Daily spending log unavailable: {reason}"),
-            None => "Daily spending log unavailable".into(),
+            Some(reason) => format!("{label} unavailable: {reason}"),
+            None => format!("{label} unavailable"),
         },
-        Status::NotRecorded => "Daily spending log was not recorded".into(),
-        Status::Truncated { missing } => format!("Daily spending log was read in part: {missing} missing"),
+        Status::NotRecorded => format!("{label} was not recorded"),
+        Status::Truncated { missing } => format!("{label} was read in part: {missing} missing"),
         Status::Complete => String::new(),
     }
+}
+
+fn uncovered_gaps(gaps: &[lanes::LogGap], covered: &[lanes::LogGap]) -> Vec<lanes::LogGap> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    for gap in gaps {
+        let mut cursor = gap.first;
+        let mut done = false;
+        while at < covered.len() && covered[at].last < cursor {
+            at += 1;
+        }
+        let mut idx = at;
+        while idx < covered.len() && covered[idx].first <= gap.last {
+            let cut = &covered[idx];
+            if cursor < cut.first {
+                out.push(lanes::LogGap { first: cursor, last: cut.first - 1, status: gap.status, reason: gap.reason.clone() });
+            }
+            if cut.last >= gap.last {
+                done = true;
+                break;
+            }
+            cursor = cut.last + 1;
+            idx += 1;
+        }
+        if !done && cursor <= gap.last {
+            out.push(lanes::LogGap { first: cursor, last: gap.last, status: gap.status, reason: gap.reason.clone() });
+        }
+    }
+    out
 }
 
 fn push_coverage(out: &mut Vec<SpendCoverage>, run: SpendCoverage) {
@@ -531,17 +679,19 @@ fn combine_gap_reason(covered: bool, existing: Option<&str>, day_reason: &str) -
     }
 }
 
-fn apply_day_gaps(coverage: &mut Vec<SpendCoverage>, start_at: usize, gaps: &[lanes::LogGap], gap_hours: &mut BTreeMap<String, u64>) {
+fn apply_log_gaps(coverage: &mut Vec<SpendCoverage>, start_at: usize, gaps: &[lanes::LogGap], label: &str, gap_hours: &mut BTreeMap<String, u64>, only_covered: bool) {
     if gaps.is_empty() {
         return;
     }
     let mut resolved = Vec::with_capacity(gaps.len());
     for gap in gaps {
-        let reason = day_gap_reason(gap);
+        let reason = log_gap_reason(gap, label);
         if reason.is_empty() {
             continue;
         }
-        *gap_hours.entry(reason.clone()).or_default() += u64::try_from(i64::from(gap.last) - i64::from(gap.first) + 1).unwrap_or(0);
+        if !only_covered {
+            *gap_hours.entry(reason.clone()).or_default() += u64::try_from(i64::from(gap.last) - i64::from(gap.first) + 1).unwrap_or(0);
+        }
         resolved.push((gap.first, gap.last, reason));
     }
     if resolved.is_empty() {
@@ -550,6 +700,10 @@ fn apply_day_gaps(coverage: &mut Vec<SpendCoverage>, start_at: usize, gaps: &[la
     let mut next: Vec<SpendCoverage> = Vec::with_capacity(coverage.len().saturating_sub(start_at) + resolved.len());
     let mut gap_at = 0usize;
     for run in coverage.drain(start_at..) {
+        if only_covered && !run.covered {
+            push_coverage(&mut next, run);
+            continue;
+        }
         let mut cursor = run.first_hour;
         let mut done = false;
         while gap_at < resolved.len() && resolved[gap_at].1 < cursor {
@@ -561,6 +715,9 @@ fn apply_day_gaps(coverage: &mut Vec<SpendCoverage>, start_at: usize, gaps: &[la
             let b = last.min(run.last_hour);
             if cursor < a {
                 push_coverage(&mut next, SpendCoverage { first_hour: cursor, last_hour: a - 1, covered: run.covered, reason: run.reason.clone() });
+            }
+            if only_covered {
+                *gap_hours.entry(day_reason.clone()).or_default() += u64::try_from(i64::from(b) - i64::from(a) + 1).unwrap_or(0);
             }
             let reason = combine_gap_reason(run.covered, run.reason.as_deref(), day_reason);
             push_coverage(&mut next, SpendCoverage { first_hour: a, last_hour: b, covered: false, reason: Some(reason) });
@@ -1212,47 +1369,121 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
     let mut day_gap_hours: BTreeMap<String, u64> = BTreeMap::new();
     let mut gain_buckets: BTreeMap<(i32, Option<i32>), GainBucket> = BTreeMap::new();
     let mut unmatched = 0_u64;
-    let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
+    let recording = query.replay.recording();
+    let has_day_log = recording.predates(TableId::PowerSpendDays.index()).is_none();
+    let has_summary_logs = recording.predates(TableId::PowerSpendPayments.index()).is_none()
+        && recording.predates(TableId::PowerSpendGains.index()).is_none();
     let held = pieces(query, &params.country, params.from, params.to)?;
     reply.tag = query.holders.tag_at(&params.country, params.to).map_or_else(|| params.country.key().into_owned(), str::to_owned);
     let mut batches = Vec::new();
     for piece in &held {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
-        coverage(query, piece, currency, &mut reply.coverage)?;
-        instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets)?;
-        let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
         let (payments_from, days_from) = (reply.payments.len(), reply.days.len());
         let mut asks = BTreeMap::new();
         let mut ask = |ordinal: u32, hour: i32, recurring: bool| {
             asks.entry((hour, ordinal)).or_insert(recurring);
         };
-        changes(query, piece, low, low | u128::from(u32::MAX), has_day_log, &mut |change| {
-            if change.ordinal == PowerSpendTotalRow::GAINS {
-                if let Some(gain) = gained(&change) {
-                    unmatched += u64::from(gain.unmatched);
-                    let gained_val = gain.gained_raw.as_deref().and_then(|value| value.parse::<i128>().ok());
-                    let capped_val = gain.capped_raw.as_deref().and_then(|value| value.parse::<i128>().ok());
-                    gain_buckets.entry((gain.read, None)).or_default().push(gained_val, capped_val, gain.days, gain.unknown_days, gain.unmatched);
-                }
-                return;
+        if has_summary_logs {
+            let gain_coverage_start = reply.gain_coverage.len();
+            let summary_from = if piece.baseline == Some(piece.first) { piece.first.saturating_add(1) } else { piece.first };
+            let ((cov_res, pay_res), (gain_res, day_res)) = rayon::join(
+                || {
+                    rayon::join(
+                        || -> io::Result<(Vec<SpendCoverage>, Vec<(i32, i32, Option<String>)>)> {
+                            let mut cov = Vec::new();
+                            coverage(query, piece, currency, &mut cov)?;
+                            let change_statuses = status_runs(query, piece.run, TableId::CountryPowerChanges, piece.first, piece.last, "Power changes")?;
+                            let link_statuses = status_runs(query, piece.run, TableId::CountryLinks, piece.first, piece.last, "Country links")?;
+                            Ok((cov, intersect_status_runs(&change_statuses, &link_statuses)))
+                        },
+                        || -> io::Result<(Vec<lanes::LogGap>, Vec<(i32, u32, Option<SpendPayment>, Option<SpendDay>)>)> {
+                            let mut rows = Vec::new();
+                            let gaps = payment_log(query, piece, summary_from, currency, &mut |hour, ordinal, payment, credit| {
+                                rows.push((hour, ordinal, payment, credit));
+                            })?;
+                            Ok((gaps, rows))
+                        },
+                    )
+                },
+                || {
+                    rayon::join(
+                        || -> io::Result<(Vec<lanes::LogGap>, BTreeMap<(i32, Option<i32>), GainBucket>, u64)> {
+                            let mut buckets = BTreeMap::new();
+                            let mut piece_unmatched = 0_u64;
+                            let gaps = gain_log(query, piece, summary_from, currency, &mut buckets, &mut piece_unmatched)?;
+                            Ok((gaps, buckets, piece_unmatched))
+                        },
+                        || -> io::Result<(Vec<lanes::LogGap>, Vec<(i32, u32, SpendDay)>)> {
+                            let mut rows = Vec::new();
+                            let gaps = day_log(query, piece, currency, &mut |hour, ordinal, mut day| {
+                                day.item = ordinal;
+                                day.read = hour;
+                                rows.push((hour, ordinal, day));
+                            })?;
+                            Ok((gaps, rows))
+                        },
+                    )
+                },
+            );
+            let (piece_cov, gain_runs) = cov_res?;
+            for span in piece_cov {
+                push_coverage(&mut reply.coverage, span);
             }
-            let (payment, day) = listed(&change, change.ordinal, !has_day_log);
-            if payment.is_none() && day.is_none() {
-                return;
+            for (first_hour, last_hour, reason) in gain_runs {
+                push_coverage(&mut reply.gain_coverage, SpendCoverage { first_hour, last_hour, covered: reason.is_none(), reason });
             }
-            ask(change.ordinal, change.hour, payment.is_none());
-            reply.payments.extend(payment);
-            reply.days.extend(day);
-        })?;
-        if has_day_log {
-            let gaps = day_log(query, piece, currency, &mut |hour, ordinal, mut day| {
+            let (payment_gaps, payment_rows) = pay_res?;
+            for (hour, ordinal, payment, credit) in payment_rows {
+                ask(ordinal, hour, payment.is_none());
+                reply.payments.extend(payment);
+                reply.days.extend(credit);
+            }
+            let (gain_gaps, piece_gains, piece_unmatched) = gain_res?;
+            unmatched += piece_unmatched;
+            for (key, bucket) in piece_gains {
+                gain_buckets.entry(key).or_default().push(bucket.gained, bucket.capped, bucket.days, bucket.unknown_days, bucket.unmatched);
+            }
+            let (day_gaps, day_rows) = day_res?;
+            for (hour, ordinal, day) in day_rows {
                 ask(ordinal, hour, true);
-                day.item = ordinal;
-                day.read = hour;
                 reply.days.push(day);
+            }
+            apply_log_gaps(&mut reply.coverage, coverage_start, &day_gaps, "Daily spending log", &mut day_gap_hours, false);
+            let extra_payment_gaps = uncovered_gaps(&payment_gaps, &day_gaps);
+            apply_log_gaps(&mut reply.coverage, coverage_start, &extra_payment_gaps, "Spending payments log", &mut day_gap_hours, false);
+            apply_log_gaps(&mut reply.gain_coverage, gain_coverage_start, &gain_gaps, "Spending gains log", &mut day_gap_hours, true);
+        } else {
+            coverage(query, piece, currency, &mut reply.coverage)?;
+            instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets)?;
+            let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
+            changes(query, piece, low, low | u128::from(u32::MAX), has_day_log, &mut |change| {
+                if change.ordinal == PowerSpendTotalRow::GAINS {
+                    if let Some(gain) = gained(&change) {
+                        unmatched += u64::from(gain.unmatched);
+                        let gained_val = gain.gained_raw.as_deref().and_then(|value| value.parse::<i128>().ok());
+                        let capped_val = gain.capped_raw.as_deref().and_then(|value| value.parse::<i128>().ok());
+                        gain_buckets.entry((gain.read, None)).or_default().push(gained_val, capped_val, gain.days, gain.unknown_days, gain.unmatched);
+                    }
+                    return;
+                }
+                let (payment, day) = listed(&change, change.ordinal, !has_day_log);
+                if payment.is_none() && day.is_none() {
+                    return;
+                }
+                ask(change.ordinal, change.hour, payment.is_none());
+                reply.payments.extend(payment);
+                reply.days.extend(day);
             })?;
-            apply_day_gaps(&mut reply.coverage, coverage_start, &gaps, &mut day_gap_hours);
+            if has_day_log {
+                let gaps = day_log(query, piece, currency, &mut |hour, ordinal, mut day| {
+                    ask(ordinal, hour, true);
+                    day.item = ordinal;
+                    day.read = hour;
+                    reply.days.push(day);
+                })?;
+                apply_log_gaps(&mut reply.coverage, coverage_start, &gaps, "Daily spending log", &mut day_gap_hours, false);
+            }
         }
         batches.push(ItemAsks { piece, payments: payments_from..reply.payments.len(), days: days_from..reply.days.len(), asks });
     }

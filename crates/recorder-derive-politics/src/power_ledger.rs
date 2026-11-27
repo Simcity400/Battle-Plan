@@ -6,7 +6,7 @@ use replay_columnar::{
 use replay_data::rows::{
     CountryPowerChangeRow, CountryPowerDailyCostRow, CountryPowerDailyRow, Field, Opaque, PoliticsCaptureCoverageRow as Streams, PowerCause, PowerCurrency, PowerDayPartRow as Part,
     PowerHoldRow as Hold, PowerIdentity, PowerItemRow as Item, PowerObjectKind, PowerOperation, PowerSite, PowerSpendCoverageRow as Coverage, PowerSpendDayRow as SpendDay,
-    PowerSpendTotalRow as Total, Recorded, RowCodec, TableId, TagHolderRow,
+    PowerSpendGainRow as SpendGain, PowerSpendPaymentRow as SpendPayment, PowerSpendTotalRow as Total, Recorded, RowCodec, TableId, TagHolderRow,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -32,12 +32,13 @@ const READS: &[Read] = &[
 ];
 
 const TABLES: &[Output] = &[
-    Output::State(TableId::PowerSpendTotals),
     Output::State(TableId::PowerItems),
     Output::State(TableId::PowerDayParts),
     Output::State(TableId::PowerHolds),
     Output::State(TableId::PowerSpendCoverage),
     Output::Log(TableId::PowerSpendDays, Keys::Hour(40)),
+    Output::Log(TableId::PowerSpendPayments, Keys::Hour(40)),
+    Output::Log(TableId::PowerSpendGains, Keys::Hour(40)),
 ];
 
 const NONE: u32 = TagHolderRow::NONE;
@@ -51,16 +52,12 @@ fn currency_bit(currency: PowerCurrency) -> u8 {
     }
 }
 
-fn total_key(holder: u32, currency: u8, ordinal: u32) -> u128 {
-    u128::from(holder) << 40 | u128::from(currency) << 32 | u128::from(ordinal)
-}
-
 fn item_key(holder: u32, ordinal: u32) -> u128 {
     u128::from(holder) << 32 | u128::from(ordinal)
 }
 
 fn part_key(holder: u32, currency: u8, ordinal: u32) -> u128 {
-    total_key(holder, currency, ordinal)
+    u128::from(holder) << 40 | u128::from(currency) << 32 | u128::from(ordinal)
 }
 
 fn hold_key(holder: u32, hold: u64) -> u128 {
@@ -434,10 +431,166 @@ impl DayEvent {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PaymentEvent {
+    known: Recorded<i64>,
+    payments: i64,
+    unknown: i64,
+    uncovered: i64,
+    latest: Option<(i32, u64, u32)>,
+}
+
+impl Default for PaymentEvent {
+    fn default() -> Self {
+        Self { known: Recorded::Value(0), payments: 0, unknown: 0, uncovered: 0, latest: None }
+    }
+}
+
+impl PaymentEvent {
+    fn pay(&mut self, payment: &Payment) {
+        if payment.count <= 0 {
+            return;
+        }
+        DayEvent::add(&mut self.known, payment.charge.unwrap_or(0));
+        self.payments = self.payments.saturating_add(payment.count);
+        if payment.charge.is_none() {
+            self.unknown = self.unknown.saturating_add(payment.count);
+        }
+        if !payment.covered {
+            self.uncovered = self.uncovered.saturating_add(payment.count);
+        }
+        let latest = (payment.hour, payment.sequence, payment.ordinal);
+        if self.latest.is_none_or(|held| latest >= held) {
+            self.latest = Some(latest);
+        }
+    }
+
+    fn unknown_credit(&mut self, times: i64) {
+        if times > 0 {
+            self.unknown = self.unknown.saturating_add(times);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GainEvent {
+    gained: Recorded<i64>,
+    capped: Recorded<i64>,
+    days: i64,
+    unknown_days: i64,
+    unmatched: i64,
+}
+
+impl Default for GainEvent {
+    fn default() -> Self {
+        Self { gained: Recorded::Value(0), capped: Recorded::Value(0), days: 0, unknown_days: 0, unmatched: 0 }
+    }
+}
+
+impl GainEvent {
+    fn add_opt(cell: &mut Recorded<i64>, amount: Option<i128>) {
+        match (*cell, amount) {
+            (Recorded::Value(held), Some(add)) => {
+                *cell = i64::try_from(i128::from(held) + add).map_or(Recorded::NotRecorded, Recorded::Value);
+            }
+            _ => *cell = Recorded::NotRecorded,
+        }
+    }
+
+    fn push_day(&mut self, (gained, capped, read): tally::GainDay) {
+        match gained {
+            Some(gained) => DayEvent::add(&mut self.gained, i128::from(gained)),
+            None => self.unknown_days = self.unknown_days.saturating_add(1),
+        }
+        DayEvent::add(&mut self.capped, i128::from(capped));
+        if read {
+            self.days = self.days.saturating_add(1);
+        }
+    }
+
+    fn push_instant(&mut self, gained: Option<i128>, capped: Option<i128>, unknown_days: i64) {
+        Self::add_opt(&mut self.gained, gained);
+        Self::add_opt(&mut self.capped, capped);
+        self.unknown_days = self.unknown_days.saturating_add(unknown_days);
+    }
+
+    fn add_unmatched(&mut self, times: i64) {
+        if times > 0 {
+            self.unmatched = self.unmatched.saturating_add(times);
+        }
+    }
+
+    fn is_nonempty(&self) -> bool {
+        self.days > 0
+            || self.unknown_days > 0
+            || self.unmatched > 0
+            || self.gained != Recorded::Value(0)
+            || self.capped != Recorded::Value(0)
+    }
+}
+
+fn instant_gain(row: &CountryPowerChangeRow) -> Option<(Option<i128>, Option<i128>, i64)> {
+    let before = row.balance_before_raw;
+    let after = match row.realized_delta_raw {
+        Recorded::Value(delta) => Some(before.wrapping_add(delta)),
+        Recorded::NotRecorded => None,
+    };
+    if is_hold(row) {
+        return match row.operation {
+            PowerOperation::AllocationClamp => match after {
+                Some(after) => {
+                    let delta = i128::from(after) - i128::from(before);
+                    (delta < 0).then_some((Some(0), Some(-delta), 0))
+                }
+                None => Some((Some(0), None, 1)),
+            },
+            PowerOperation::Refund => {
+                let after = after?;
+                let delta = i128::from(after) - i128::from(before);
+                let requested = row.requested_delta_raw.map(i128::from).filter(|&req| req > delta && delta >= 0)?;
+                Some((Some(0), Some(requested - delta), 0))
+            }
+            _ => None,
+        };
+    }
+    if skipped(row.cause) {
+        return None;
+    }
+    match row.operation {
+        PowerOperation::Grant | PowerOperation::Refund | PowerOperation::Add => match row.requested_delta_raw {
+            Some(req) if req > 0 => {
+                let req = i128::from(req);
+                let capped = after.map(|after| {
+                    let realized = i128::from(after) - i128::from(before);
+                    if realized < req { req - realized } else { 0 }
+                });
+                Some((Some(req), capped, i64::from(capped.is_none())))
+            }
+            Some(_) => None,
+            None => Some((None, None, 1)),
+        },
+        PowerOperation::Set => match row.requested_delta_raw {
+            Some(req) if req > 0 => {
+                let req = i128::from(req);
+                let capped = after.map(|after| {
+                    let realized = i128::from(after) - i128::from(before);
+                    if realized < req { req - realized } else { 0 }
+                });
+                Some((Some(req), capped, i64::from(capped.is_none())))
+            }
+            Some(_) => None,
+            None if after.is_some_and(|after| after <= before) => None,
+            None => Some((None, None, 1)),
+        },
+        PowerOperation::Subtract | PowerOperation::Reset | PowerOperation::AllocationClamp | PowerOperation::Clamp => None,
+    }
+}
+
 #[derive(Default)]
 struct Pending {
-    totals: BTreeMap<u128, Total>,
     day_events: BTreeMap<(u32, u8, u32, i32), DayEvent>,
+    payment_events: BTreeMap<(u32, u8, u32), PaymentEvent>,
+    gain_events: BTreeMap<(u32, u8, Option<i32>), GainEvent>,
     items: Vec<(Item, ItemId)>,
     fresh: HashMap<(u32, u64), Vec<usize>>,
     change_parts: BTreeMap<u128, Part>,
@@ -617,22 +770,6 @@ impl PowerLedger {
         self.aliases.get(&holder)?.iter().rev().find_map(|&raw| inputs::witness(witnesses, raw))
     }
 
-    fn total<'p>(own: &Rows<'_>, pending: &'p mut Pending, key: u128, make: impl FnOnce() -> Total) -> io::Result<&'p mut Total> {
-        if let std::collections::btree_map::Entry::Vacant(vacant) = pending.totals.entry(key) {
-            let held = inputs::keyed::<Total>(&own.table(TableId::PowerSpendTotals), key)?.unwrap_or_else(make);
-            vacant.insert(held);
-        }
-        Ok(pending.totals.get_mut(&key).expect("just held"))
-    }
-
-    fn item_total<'p>(own: &Rows<'_>, pending: &'p mut Pending, holder: u32, currency: u8, ordinal: u32) -> io::Result<&'p mut Total> {
-        Self::total(own, pending, total_key(holder, currency, ordinal), || tally::item(holder, currency, ordinal))
-    }
-
-    fn gains_total<'p>(own: &Rows<'_>, pending: &'p mut Pending, holder: u32, currency: u8) -> io::Result<&'p mut Total> {
-        Self::total(own, pending, total_key(holder, currency, Total::GAINS), || tally::gains(holder, currency))
-    }
-
     fn held_change_part(own: &Rows<'_>, pending: &Pending, key: u128, day: i32) -> io::Result<Option<Part>> {
         if let Some(part) = pending.change_parts.get(&key) {
             return Ok(Some(part.clone()));
@@ -709,21 +846,20 @@ impl PowerLedger {
             return Ok(());
         }
         if part.ordinal == Total::GAINS {
-            let total = Self::gains_total(own, pending, part.holder, POLITICAL)?;
-            tally::unmatched(total, part.payments);
+            pending.gain_events.entry((part.holder, POLITICAL, None)).or_default().add_unmatched(part.payments);
             return Ok(());
         }
         let Some(sequence) = part.sequence else { return Ok(()) };
         let item = Self::item_row(own, pending, part.holder, part.ordinal)?;
-        let total = Self::item_total(own, pending, part.holder, part.currency, part.ordinal)?;
         if !item.charged {
             match part.spent {
                 Recorded::Value(_) => {
-                    tally::count(total, true, part.payments);
                     let event = pending.day_events.entry((part.holder, part.currency, part.ordinal, part.day)).or_default();
                     event.credits = event.credits.saturating_add(part.payments);
                 }
-                Recorded::NotRecorded => tally::unknown(total, part.payments),
+                Recorded::NotRecorded => {
+                    pending.payment_events.entry((part.holder, part.currency, part.ordinal)).or_default().unknown_credit(part.payments);
+                }
             }
             return Ok(());
         }
@@ -731,13 +867,9 @@ impl PowerLedger {
             Recorded::Value(spent) => Some(i128::from(spent)),
             Recorded::NotRecorded => None,
         };
-        let key = (part.holder, part.currency, part.ordinal);
-        let seen = self.item_days.entry(key).or_default();
         let payment = Payment {
             recurring: recurring(item.kind, item.cause),
-            upkeep: item.cause == PowerCause::AbilityUpkeep,
             hour: part.day,
-            read: part.read,
             sequence,
             ordinal: part.cost_ordinal.unwrap_or(0),
             charge: spent,
@@ -745,11 +877,17 @@ impl PowerLedger {
             realized: None,
             count: part.payments,
         };
-        if let Some((day, new_day, newly_uncovered)) = tally::pay(total, seen, &payment) {
-            pending.day_events.entry((part.holder, part.currency, part.ordinal, day)).or_default().pay(&payment, new_day, newly_uncovered);
-        }
-        if seen.counted.0.is_empty() {
-            self.item_days.remove(&key);
+        if payment.recurring {
+            let key = (part.holder, part.currency, part.ordinal);
+            let seen = self.item_days.entry(key).or_default();
+            if let Some((day, new_day, newly_uncovered)) = tally::count_day(seen, &payment) {
+                pending.day_events.entry((part.holder, part.currency, part.ordinal, day)).or_default().pay(&payment, new_day, newly_uncovered);
+            }
+            if seen.counted.0.is_empty() {
+                self.item_days.remove(&key);
+            }
+        } else {
+            pending.payment_events.entry((part.holder, part.currency, part.ordinal)).or_default().pay(&payment);
         }
         Ok(())
     }
@@ -1046,27 +1184,28 @@ impl PowerLedger {
             if is_hold(&row) {
                 pending.holds.push(HoldRow { row: row.clone(), covered });
             }
+            let holder = self.slot(row.country);
+            if let Some((gained, capped, unknown_days)) = instant_gain(&row) {
+                pending
+                    .gain_events
+                    .entry((holder, row.currency as u8, Some(row.hour)))
+                    .or_default()
+                    .push_instant(gained, capped, unknown_days);
+            }
             let charge = charge(&row);
             if charge.is_none() && skipped(row.cause) {
                 continue;
             }
-            let holder = self.slot(row.country);
             let first = First { site: row.site, hour: row.hour, read: at, country: row.country, epoch: row.epoch, sequence: row.sequence };
             let id = ItemId::change(&row);
             let item_kind = id.kind;
             let ordinal = self.item(own, pending, holder, id, first)?;
-            let total = Self::item_total(own, pending, holder, row.currency as u8, ordinal)?;
             let Some(charge) = charge else {
-                tally::count(total, false, 1);
                 continue;
             };
-            let item_key = (holder, row.currency as u8, ordinal);
-            let seen = self.item_days.entry(item_key).or_default();
             let payment = Payment {
                 recurring: recurring(item_kind, row.cause),
-                upkeep: row.cause == PowerCause::AbilityUpkeep,
                 hour: row.hour,
-                read: at,
                 sequence: row.sequence,
                 ordinal: 0,
                 charge,
@@ -1074,11 +1213,17 @@ impl PowerLedger {
                 realized: Some(row.realized_delta_raw()),
                 count: 1,
             };
-            if let Some((day, new_day, newly_uncovered)) = tally::pay(total, seen, &payment) {
-                pending.day_events.entry((holder, row.currency as u8, ordinal, day)).or_default().pay(&payment, new_day, newly_uncovered);
-            }
-            if seen.counted.0.is_empty() {
-                self.item_days.remove(&item_key);
+            if payment.recurring {
+                let item_key = (holder, row.currency as u8, ordinal);
+                let seen = self.item_days.entry(item_key).or_default();
+                if let Some((day, new_day, newly_uncovered)) = tally::count_day(seen, &payment) {
+                    pending.day_events.entry((holder, row.currency as u8, ordinal, day)).or_default().pay(&payment, new_day, newly_uncovered);
+                }
+                if seen.counted.0.is_empty() {
+                    self.item_days.remove(&item_key);
+                }
+            } else {
+                pending.payment_events.entry((holder, row.currency as u8, ordinal)).or_default().pay(&payment);
             }
             let day = midnight(at);
             if row.cause != PowerCause::DailyGain && midnight(row.hour) == day {
@@ -1113,7 +1258,7 @@ impl PowerLedger {
             if day.day_hour > run_first {
                 let holder = self.slot(day.country);
                 for (currency, gain) in tally::day_gains(&day).iter().enumerate() {
-                    tally::gain(Self::gains_total(own, pending, holder, currency as u8)?, *gain, 1);
+                    pending.gain_events.entry((holder, currency as u8, None)).or_default().push_day(*gain);
                 }
             }
         }
@@ -1737,16 +1882,23 @@ fn moved(hour: &Hour<'_>) -> bool {
 }
 
 fn partial(hour: &Hour<'_>, out: &mut Rows) {
-    for table in [TableId::CountryPowerChanges, TableId::CountryPowerDailyCosts] {
-        let status = hour.status(table);
-        if status != Status::Complete {
-            for derived in [TableId::PowerSpendTotals, TableId::PowerDayParts, TableId::PowerSpendDays] {
-                match status {
-                    Status::NotRecorded => out.unavailable(derived, format!("{table:?} is not recorded").as_bytes()),
-                    other => out.status(derived, other),
-                }
+    let changes = hour.status(TableId::CountryPowerChanges);
+    if changes != Status::Complete {
+        for derived in [TableId::PowerDayParts, TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
+            match changes {
+                Status::NotRecorded => out.unavailable(derived, b"CountryPowerChanges is not recorded"),
+                other => out.status(derived, other),
             }
-            return;
+        }
+        return;
+    }
+    let costs = hour.status(TableId::CountryPowerDailyCosts);
+    if costs != Status::Complete {
+        for derived in [TableId::PowerDayParts, TableId::PowerSpendDays] {
+            match costs {
+                Status::NotRecorded => out.unavailable(derived, b"CountryPowerDailyCosts is not recorded"),
+                other => out.status(derived, other),
+            }
         }
     }
 }
@@ -1841,7 +1993,7 @@ impl Writer for PowerLedger {
     }
 
     fn version(&self) -> u32 {
-        4
+        5
     }
 
     fn tables(&self) -> &'static [Output] {
@@ -1872,7 +2024,9 @@ impl Writer for PowerLedger {
             self.last = Some(at);
             return Ok(());
         }
-        recorder_derive_framework::forces::forget_listed(hour, out, TableId::PowerSpendDays);
+        for log in [TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
+            recorder_derive_framework::forces::forget_listed(hour, out, log);
+        }
         if hour.first {
             self.recover = false;
         } else if hour.fresh {
@@ -1899,10 +2053,6 @@ impl Writer for PowerLedger {
         for (item, _) in &pending.items {
             let cells = cells(item, out)?;
             out.set(TableId::PowerItems, item.key(), cells);
-        }
-        for (key, total) in &pending.totals {
-            let cells = cells(total, out)?;
-            out.set(TableId::PowerSpendTotals, *key, cells);
         }
         for (key, part) in &pending.change_parts {
             let cells = cells(part, out)?;
@@ -1967,8 +2117,68 @@ impl Writer for PowerLedger {
             let cells = cells(&row, out)?;
             out.append(TableId::PowerSpendDays, row.key(), cells);
         }
+        let mut logged_payments = false;
+        let mut previous_group: Option<(u32, u8)> = None;
+        let mut entry = 0u32;
+        for ((holder, currency, ordinal), event) in pending.payment_events {
+            if event.payments == 0 && event.unknown == 0 {
+                continue;
+            }
+            logged_payments = true;
+            if previous_group == Some((holder, currency)) {
+                entry = entry.checked_add(1).ok_or_else(|| invalid(format!("Holder {holder}'s power spend payments pass u32 entries in one hour")))?;
+            } else {
+                previous_group = Some((holder, currency));
+                entry = 0;
+            }
+            let row = SpendPayment {
+                holder,
+                hour: at,
+                currency,
+                entry,
+                ordinal,
+                known: event.known,
+                payments: event.payments,
+                unknown: event.unknown,
+                uncovered: event.uncovered,
+                latest_hour: event.latest.map(|(hour, _, _)| hour),
+                latest_sequence: event.latest.map(|(_, sequence, _)| sequence),
+                latest_ordinal: event.latest.map(|(_, _, ordinal)| ordinal),
+            };
+            let cells = cells(&row, out)?;
+            out.append(TableId::PowerSpendPayments, row.key(), cells);
+        }
+        let mut logged_gains = false;
+        let mut previous_group: Option<(u32, u8)> = None;
+        let mut entry = 0u32;
+        for ((holder, currency, event_hour), event) in pending.gain_events {
+            if !event.is_nonempty() {
+                continue;
+            }
+            logged_gains = true;
+            if previous_group == Some((holder, currency)) {
+                entry = entry.checked_add(1).ok_or_else(|| invalid(format!("Holder {holder}'s power spend gains pass u32 entries in one hour")))?;
+            } else {
+                previous_group = Some((holder, currency));
+                entry = 0;
+            }
+            let row = SpendGain {
+                holder,
+                hour: at,
+                currency,
+                entry,
+                event_hour,
+                gained: event.gained,
+                capped: event.capped,
+                days: event.days,
+                unknown_days: event.unknown_days,
+                unmatched: event.unmatched,
+            };
+            let cells = cells(&row, out)?;
+            out.append(TableId::PowerSpendGains, row.key(), cells);
+        }
         partial(hour, out);
-        self.idle = !current && self.holds.is_empty() && !logged_days;
+        self.idle = !current && self.holds.is_empty() && !logged_days && !logged_payments && !logged_gains;
         self.rebuild = false;
         self.last = Some(at);
         Ok(())
@@ -2003,7 +2213,7 @@ impl Writer for PowerLedger {
         item_days.sort_unstable_by_key(|&(key, _)| key);
         blob.varint(item_days.len() as u64)?;
         for ((holder, currency, ordinal), seen) in item_days {
-            if currency > PowerCurrency::Command as u8 || ordinal == Total::GAINS {
+            if PowerCurrency::try_from(currency).is_err() || ordinal == Total::GAINS {
                 return Err(invalid("PowerLedger's state names an invalid item day key"));
             }
             if !seen.uncovered.is_subset_of(&seen.counted) {
@@ -2095,8 +2305,8 @@ impl Writer for PowerLedger {
         for _ in 0..item_days {
             let holder = reader.varint_u32()?;
             let currency = u8::try_from(reader.varint()?).map_err(|_| invalid("PowerLedger's state names an item currency past u8"))?;
-            if currency > PowerCurrency::Command as u8 {
-                return Err(invalid("PowerLedger's state names an item currency past command"));
+            if PowerCurrency::try_from(currency).is_err() {
+                return Err(invalid("PowerLedger's state names an unsupported item currency"));
             }
             let ordinal = reader.varint_u32()?;
             if ordinal == Total::GAINS {
