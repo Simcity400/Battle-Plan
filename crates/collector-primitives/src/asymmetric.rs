@@ -2,7 +2,7 @@ use std::{
     cell::Cell,
     sync::atomic::{
         AtomicBool, AtomicU8, AtomicU64, AtomicUsize,
-        Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst},
+        Ordering::{AcqRel, Acquire, Relaxed, SeqCst},
         compiler_fence,
     },
 };
@@ -570,7 +570,7 @@ mod tests {
                     entered.wait();
                     go.wait();
                     guard.leak_and_retain();
-                    done.store(true, Release);
+                    done.store(true, std::sync::atomic::Ordering::Release);
                 })
             };
             entered.wait();
