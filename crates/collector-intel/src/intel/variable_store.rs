@@ -1,5 +1,5 @@
 use crate::variable_changes::{Changes, Counts, Taken};
-use engine_allocation as allocation;
+use engine_allocation::{self as allocation, SharedBox};
 use engine_native_memory::{
     Memory,
     cpdx_array::Array,
@@ -10,7 +10,6 @@ use engine_scripts::{
     cvariables, cvariables::HEADER, cvariables::Row, cvariables::Scope, cvariables::ScopeRow,
     cvariables::ScopeWalk, cvariables::Store, cvariables::VariableCarry,
 };
-use std::sync::Arc;
 
 const SCOPE_CHUNK: usize = 64;
 
@@ -28,7 +27,7 @@ impl HeldScope {
         seed: Option<u32>,
         entries: &[Row],
         names: &[u8],
-    ) -> Option<Arc<Self>> {
+    ) -> Option<SharedBox<Self>> {
         if !entries
             .iter()
             .all(|entry| entry.name_start.checked_add(entry.name_len).is_some_and(|end| end <= names.len()))
@@ -38,13 +37,13 @@ impl HeldScope {
         allocation::advisory(|| {
             let entries = allocation::copy_vec(entries).ok()?;
             let names = allocation::copy_vec(names).ok()?;
-            allocation::allocation_attempt().ok()?;
-            Some(Arc::new(Self {
+            allocation::shared(Self {
                 scope,
                 seed,
                 entries,
                 names,
-            }))
+            })
+            .ok()
         })
     }
 
@@ -53,7 +52,7 @@ impl HeldScope {
         seed: Option<u32>,
         raw_entries: &[Row],
         all_names: &[u8],
-    ) -> Option<Arc<Self>> {
+    ) -> Option<SharedBox<Self>> {
         let mut total_bytes = 0_usize;
         for entry in raw_entries {
             let end = entry.name_start.checked_add(entry.name_len)?;
@@ -75,13 +74,13 @@ impl HeldScope {
                     ..*entry
                 });
             }
-            allocation::allocation_attempt().ok()?;
-            Some(Arc::new(Self {
+            allocation::shared(Self {
                 scope,
                 seed,
                 entries,
                 names,
-            }))
+            })
+            .ok()
         })
     }
 
@@ -101,7 +100,11 @@ struct FlatBase {
 }
 
 impl FlatBase {
-    fn from_flat(rows: &[ScopeRow], all_entries: &[Row], all_names: &[u8]) -> Option<Arc<Self>> {
+    fn from_flat(
+        rows: &[ScopeRow],
+        all_entries: &[Row],
+        all_names: &[u8],
+    ) -> Option<SharedBox<Self>> {
         let mut total_entries = 0_usize;
         let mut total_bytes = 0_usize;
         for row in rows {
@@ -172,13 +175,13 @@ impl FlatBase {
                     seed: row.seed,
                 });
             }
-            allocation::allocation_attempt().ok()?;
-            Some(Arc::new(Self {
+            allocation::shared(Self {
                 rows: out_rows,
                 name_spans,
                 entries: out_entries,
                 names: out_names,
-            }))
+            })
+            .ok()
         })
     }
 
@@ -202,18 +205,18 @@ impl FlatBase {
 #[derive(Clone, Debug)]
 enum ScopeSlot {
     Base(usize),
-    Override(Arc<HeldScope>),
+    Override(SharedBox<HeldScope>),
 }
 
 #[derive(Clone, Debug)]
 enum ScopeChunk {
     Base(usize, usize),
-    Owned(Arc<Vec<ScopeSlot>>),
+    Owned(SharedBox<Vec<ScopeSlot>>),
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct VariableSnapshot {
-    base: Option<Arc<FlatBase>>,
+    base: Option<SharedBox<FlatBase>>,
     chunks: Vec<ScopeChunk>,
     len: usize,
     entries_len: usize,
@@ -300,7 +303,7 @@ impl VariableSnapshot {
             Some(out)
         })?;
         Some(Self {
-            base: self.base.as_ref().map(Arc::clone),
+            base: self.base.as_ref().map(SharedBox::clone),
             chunks,
             len: self.len,
             entries_len: self.entries_len,
@@ -309,7 +312,7 @@ impl VariableSnapshot {
         })
     }
 
-    fn from_base(base: Arc<FlatBase>) -> Option<Self> {
+    fn from_base(base: SharedBox<FlatBase>) -> Option<Self> {
         let len = base.rows.len();
         let entries_len = base.entries.len();
         let bytes_len = base.names.len();
@@ -412,16 +415,13 @@ impl VariableSnapshot {
                         slots.push(ScopeSlot::Override(held));
                     }
                 }
-                let arc = allocation::advisory(|| {
-                    allocation::allocation_attempt().ok()?;
-                    Some(Arc::new(slots))
-                })?;
-                chunks.push(ScopeChunk::Owned(arc));
+                let shared = allocation::advisory(|| allocation::shared(slots).ok())?;
+                chunks.push(ScopeChunk::Owned(shared));
             }
             chunk_start += count;
         }
         Some(Self {
-            base: Some(Arc::clone(base)),
+            base: Some(SharedBox::clone(base)),
             chunks,
             len,
             entries_len,
@@ -430,7 +430,7 @@ impl VariableSnapshot {
         })
     }
 
-    fn replace(&mut self, ordinal: usize, scope: Arc<HeldScope>) -> Option<()> {
+    fn replace(&mut self, ordinal: usize, scope: SharedBox<HeldScope>) -> Option<()> {
         let (old_entries, old_bytes) = {
             let (_, _, entries, names) = self.get(ordinal)?;
             (entries.len(), names.len())
@@ -451,13 +451,12 @@ impl VariableSnapshot {
                     let mut slots = allocation::vec(base_count).ok()?;
                     for offset in 0..base_count {
                         if offset == slot {
-                            slots.push(ScopeSlot::Override(Arc::clone(&scope)));
+                            slots.push(ScopeSlot::Override(SharedBox::clone(&scope)));
                         } else {
                             slots.push(ScopeSlot::Base(base_start + offset));
                         }
                     }
-                    allocation::allocation_attempt().ok()?;
-                    Some(Arc::new(slots))
+                    allocation::shared(slots).ok()
                 })?;
                 *chunk_ref = ScopeChunk::Owned(next);
                 added_override = true;
@@ -467,15 +466,14 @@ impl VariableSnapshot {
                     return None;
                 }
                 added_override = matches!(chunk_arc[slot], ScopeSlot::Base(_));
-                if let Some(chunk) = Arc::get_mut(chunk_arc) {
+                if let Some(chunk) = SharedBox::get_mut(chunk_arc) {
                     chunk[slot] = ScopeSlot::Override(scope);
                 } else {
                     let next = allocation::advisory(|| {
                         let mut chunk = allocation::vec(chunk_arc.len()).ok()?;
                         chunk.extend(chunk_arc.iter().cloned());
                         chunk[slot] = ScopeSlot::Override(scope);
-                        allocation::allocation_attempt().ok()?;
-                        Some(Arc::new(chunk))
+                        allocation::shared(chunk).ok()
                     })?;
                     *chunk_arc = next;
                 }
@@ -873,7 +871,7 @@ pub struct VariableStore {
     changed: Vec<u32>,
     scratch_entries: Vec<Row>,
     scratch_names: Vec<u8>,
-    pending_updates: Vec<(usize, Arc<HeldScope>)>,
+    pending_updates: Vec<(usize, SharedBox<HeldScope>)>,
     unlisted: bool,
     quiet: bool,
     shallow_carry: bool,
@@ -1061,7 +1059,7 @@ impl VariableStore {
             + self.changed.capacity() * size_of::<u32>()
             + self.scratch_entries.capacity() * size_of::<Row>()
             + self.scratch_names.capacity()
-            + self.pending_updates.capacity() * size_of::<(usize, Arc<HeldScope>)>();
+            + self.pending_updates.capacity() * size_of::<(usize, SharedBox<HeldScope>)>();
     }
 }
 

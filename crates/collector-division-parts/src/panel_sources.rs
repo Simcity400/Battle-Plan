@@ -1326,8 +1326,10 @@ impl Store {
                     }
                     if observed.result.is_ok() {
                         cached_values.clear();
-                        if engine_allocation::reserve(&mut cached_values, observed.values.len())
-                            .is_ok()
+                        if engine_allocation::advisory(|| {
+                            engine_allocation::reserve(&mut cached_values, observed.values.len())
+                        })
+                        .is_ok()
                         {
                             cached_values.extend_from_slice(&observed.values);
                             next_values = std::mem::take(&mut cached_values);
@@ -1336,8 +1338,7 @@ impl Store {
                 }
                 observed.result
             } else {
-                let old_slice = cached_values.as_slice();
-                let mut recorded = Vec::new();
+                let mut seen = 0_usize;
                 let mut record_ok = true;
                 let res = engine_native_land::division_panel_operands::terrain(
                     memory,
@@ -1345,15 +1346,26 @@ impl Store {
                     pointer,
                     handle,
                     |ordinal, raw| {
-                        if old_slice.get(ordinal as usize).copied() != Some(raw) {
+                        let ordinal = ordinal as usize;
+                        if cached_values.get(ordinal).copied() != Some(raw) {
                             self.terrain_operand(handle, ordinal as u32, raw)?;
                         }
                         if record_ok {
-                            if recorded.len() == ordinal as usize
-                                && (recorded.len() < recorded.capacity()
-                                    || engine_allocation::reserve(&mut recorded, 1).is_ok())
-                            {
-                                recorded.push(raw);
+                            if ordinal == seen {
+                                if ordinal < cached_values.len() {
+                                    cached_values[ordinal] = raw;
+                                    seen += 1;
+                                } else if cached_values.len() < cached_values.capacity()
+                                    || engine_allocation::advisory(|| {
+                                        engine_allocation::reserve(&mut cached_values, 1)
+                                    })
+                                    .is_ok()
+                                {
+                                    cached_values.push(raw);
+                                    seen += 1;
+                                } else {
+                                    record_ok = false;
+                                }
                             } else {
                                 record_ok = false;
                             }
@@ -1362,7 +1374,8 @@ impl Store {
                     },
                 );
                 if res.is_ok() && record_ok {
-                    next_values = recorded;
+                    cached_values.truncate(seen);
+                    next_values = std::mem::take(&mut cached_values);
                 }
                 res
             };

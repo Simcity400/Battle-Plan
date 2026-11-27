@@ -1885,13 +1885,20 @@ fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() 
         }
     }
     let clean = &fast.fast_clean.as_ref().expect("clean snapshot").clean;
-    for ordinal in 1..=3 {
+    let mut refusals = 0_usize;
+    for ordinal in 1.. {
         let guard = collector_test_support::NullGuard::new(ordinal);
         let materialized = clean.tables();
+        let denied = collector_test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed);
         drop(guard);
-        assert!(materialized.is_none(), "ordinal {ordinal}");
         assert!(!collector_memory::terminal::failed(), "ordinal {ordinal}");
+        if denied == 0 {
+            assert!(materialized.is_some(), "ordinal {ordinal}");
+            break;
+        }
+        assert!(materialized.is_none(), "ordinal {ordinal}");
+        refusals += 1;
     }
-    assert!(clean.tables().is_some());
+    assert!(refusals >= 4);
     assert_eq!(fast.tables(), reference.tables());
 }
