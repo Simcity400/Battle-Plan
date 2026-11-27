@@ -286,6 +286,9 @@ impl NativeHost {
             closing.destroy();
             format!("Couldn’t start the map: {error}")
         })?;
+        if inner.popout_open {
+            map.send(viewer::host::Command::PopoutOpen(true));
+        }
         inner.map = Some(map);
         inner.flush();
         Ok(())

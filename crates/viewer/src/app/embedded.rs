@@ -20,6 +20,9 @@ impl Viewer {
         if pending.close {
             return;
         }
+        if let Some(open) = pending.popout_open {
+            self.popout_open = open;
+        }
         if pending.campaign_map {
             self.dashboard_active = false;
             self.last_step = Instant::now();
@@ -258,6 +261,19 @@ impl Viewer {
             self.error = Some(error);
         }
         self.report_embedded(ctx);
+    }
+
+    pub(super) fn retire_hidden_cursor(&mut self) {
+        if self.dashboard_active
+            && !self.popout_open
+            && self.loading.is_none()
+            && self.capture.is_none()
+            && self.dashboard.as_deref().is_none_or(|dashboard| !dashboard.holds_views())
+            && let Some(document) = &mut self.document
+            && let Some(cursor) = document.playback.release_bootstrap_cursor()
+        {
+            self.retire(cursor);
+        }
     }
 
     pub(super) fn follow_campaign_preferences(

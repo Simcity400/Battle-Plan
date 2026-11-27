@@ -465,6 +465,7 @@ impl Owner {
             }
             Effect::Publish { generation, open } => {
                 self.shared.published.store(generation, Ordering::Release);
+                self.app.state::<NativeHost>().note_popout(open);
                 let sequence = self.next_sequence();
                 let state = if open {
                     self.state(sequence)
