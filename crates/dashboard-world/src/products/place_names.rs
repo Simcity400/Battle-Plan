@@ -24,14 +24,7 @@ pub const TABLES: [TableId; 7] = [
     TableId::States,
 ];
 
-const PROVINCE_STATE: usize = 0;
-const PROVINCE_VICTORY_POINTS: usize = 3;
-const STATE_COLUMNS: [usize; 3] = [0, 3, 4];
-const COUNTRY_COLUMNS: [usize; 2] = [0, 1];
-const APPEARANCE_ORIGINAL_TAG: usize = 19;
-const APPEARANCE_COLUMNS: [usize; 2] = [APPEARANCE_ORIGINAL_TAG, 20];
-const RESERVED_ORIGINAL_TAG: usize = 8;
-const RESERVED_COLUMNS: [usize; 3] = [0, RESERVED_ORIGINAL_TAG, 9];
+const STATE_FIELDS: &[&str] = &["owner", "custom_name", "owner_name"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProvinceMode { Place, Land, Naval }
@@ -437,26 +430,40 @@ fn unavailable_history(from: i32, to: i32, reason: String) -> History {
     }
 }
 
-fn read_history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, from: i32, to: i32) -> io::Result<History> {
+fn read_history(recording: &Recording, run: u32, table: TableId, fields: &[&str], keys: Keys<'_>, from: i32, to: i32) -> io::Result<History> {
     if recording.predates(table.index()).is_some() { return Ok(History::default()); }
-    match recording.table_coverage(table.index(), run) {
-        TableCoverage::Valid => dashboard_query::cost::storage(|| lanes::history(recording, run, table, columns, keys, from, to)),
-        TableCoverage::WithheldAll(reason) => Ok(unavailable_history(from, to, reason.to_owned())),
+    let (first, withheld) = match recording.table_coverage(table.index(), run) {
+        TableCoverage::Valid => (from, None),
+        TableCoverage::WithheldAll(reason) => return Ok(unavailable_history(from, to, reason.to_owned())),
         TableCoverage::WithheldBefore { ordinal, reason } => {
             let valid = recording.run(run)?.first_hour + ordinal as i32;
             if to < valid { return Ok(unavailable_history(from, to, reason.to_owned())); }
-            let mut history = dashboard_query::cost::storage(|| lanes::history(recording, run, table, columns, keys, from.max(valid), to))?;
-            if from < valid {
-                let id = history.reasons.keys().copied().max().map_or(0, |max| max + 1);
-                history.reasons.insert(id, reason.to_owned());
-                history.statuses.insert(0, StatusRun { first: from, last: valid - 1, status: Status::Unavailable { reason: id } });
-            }
-            Ok(history)
+            (from.max(valid), (from < valid).then_some(reason))
         }
+    };
+    let columns = match fields.iter().map(|name| recording.field(table, name)).collect::<io::Result<Vec<_>>>() {
+        Ok(columns) => columns,
+        Err(error) => return Ok(unavailable_history(from, to, error.to_string())),
+    };
+    let mut history = dashboard_query::cost::storage(|| lanes::history(recording, run, table, &columns, keys, first, to))?;
+    if columns != history.columns && !history.keys.is_empty() {
+        let order: Vec<_> = columns.iter().map(|column| history.columns.binary_search(column).expect("a recorded field was requested")).collect();
+        for step in history.keys.iter_mut().flat_map(|(_, steps)| steps) {
+            if let Some(cells) = &mut step.cells {
+                *cells = order.iter().map(|&index| cells[index]).collect();
+            }
+        }
+        history.columns = columns;
     }
+    if let Some(reason) = withheld {
+        let id = history.reasons.keys().copied().max().map_or(0, |max| max + 1);
+        history.reasons.insert(id, reason.to_owned());
+        history.statuses.insert(0, StatusRun { first: from, last: first - 1, status: Status::Unavailable { reason: id } });
+    }
+    Ok(history)
 }
 
-fn decode_written_tags(recording: &Recording, run: u32, table: TableId, column: usize, history: &History, orig: usize, ref_col: usize) -> io::Result<HashMap<(i32, u128), Option<Vec<u8>>>> {
+fn decode_written_tags(recording: &Recording, run: u32, table: TableId, history: &History, orig: usize, ref_col: usize) -> io::Result<HashMap<(i32, u128), Option<Vec<u8>>>> {
     let stored = recording.run(run)?;
     let mut asks = Vec::new();
     for (key, steps) in &history.keys {
@@ -474,6 +481,7 @@ fn decode_written_tags(recording: &Recording, run: u32, table: TableId, column: 
     asks.dedup();
     let mut out = HashMap::new();
     if asks.is_empty() { return Ok(out); }
+    let column = history.columns[orig];
     let format = recording.format();
     dashboard_query::cost::storage(|| {
         lanes::at_each(recording, run, table, Some(&[column]), &asks, &mut |hour, key, row| {
@@ -551,8 +559,8 @@ fn build_slot_tags(
     first: i32,
     last: i32,
 ) -> io::Result<HashMap<u32, Vec<(i32, Result<String, String>)>>> {
-    let written_res = decode_written_tags(recording, run, TableId::ReservedCountryNaming, RESERVED_ORIGINAL_TAG, reserved, 1, 2)?;
-    let written_app = decode_written_tags(recording, run, TableId::CountryAppearance, APPEARANCE_ORIGINAL_TAG, appearance, 0, 1)?;
+    let written_res = decode_written_tags(recording, run, TableId::ReservedCountryNaming, reserved, 1, 2)?;
+    let written_app = decode_written_tags(recording, run, TableId::CountryAppearance, appearance, 0, 1)?;
     let mut by_slot: HashMap<u32, Vec<u128>> = HashMap::new();
     for (key, steps) in &countries.keys {
         for step in steps {
@@ -632,12 +640,12 @@ impl PlaceHistory {
     pub fn load(recording: &Recording, run: u32, first: i32, last: i32, province_keys: Keys<'_>, state_keys: Keys<'_>, with_victory_points: bool, cancelled: &AtomicBool) -> io::Result<Self> {
         check_cancel(cancelled)?;
         let mode = CaptureMode::from_byte(recording.root_identity().capture_mode)?;
-        let read = |table, cols: &[usize], keys: Keys<'_>| read_history(recording, run, table, cols, keys, first, last);
+        let read = |table, fields: &[&str], keys: Keys<'_>| read_history(recording, run, table, fields, keys, first, last);
         let want_provinces = !matches!(province_keys, Keys::These([]));
-        let province_cols: &[usize] = if with_victory_points { &[PROVINCE_STATE, PROVINCE_VICTORY_POINTS] } else { &[PROVINCE_STATE] };
-        let provinces = if want_provinces { read(TableId::Provinces, province_cols, province_keys)? } else { History::default() };
+        let province_fields: &[&str] = if with_victory_points { &["state", "victory_points"] } else { &["state"] };
+        let provinces = if want_provinces { read(TableId::Provinces, province_fields, province_keys)? } else { History::default() };
         check_cancel(cancelled)?;
-        let renames = if want_provinces { read(TableId::ProvinceNames, &[0], province_keys)? } else { History::default() };
+        let renames = if want_provinces { read(TableId::ProvinceNames, &["name"], province_keys)? } else { History::default() };
         check_cancel(cancelled)?;
         let states = match (want_provinces, state_keys) {
             (false, Keys::These([])) => History::default(),
@@ -652,16 +660,16 @@ impl PlaceHistory {
                 }
                 needed.sort_unstable();
                 needed.dedup();
-                if needed.is_empty() { History::default() } else { read(TableId::States, &STATE_COLUMNS, Keys::These(&needed))? }
+                if needed.is_empty() { History::default() } else { read(TableId::States, STATE_FIELDS, Keys::These(&needed))? }
             }
-            _ => read(TableId::States, &STATE_COLUMNS, Keys::All)?,
+            _ => read(TableId::States, STATE_FIELDS, Keys::All)?,
         };
         check_cancel(cancelled)?;
         let (links, country_statuses, slot_tags) = if want_provinces {
-            let links = read(TableId::CountryLinks, &[0], Keys::All)?;
-            let countries = read(TableId::Countries, &COUNTRY_COLUMNS, Keys::All)?;
-            let appearance = read(TableId::CountryAppearance, &APPEARANCE_COLUMNS, Keys::All)?;
-            let reserved = read(TableId::ReservedCountryNaming, &RESERVED_COLUMNS, Keys::All)?;
+            let links = read(TableId::CountryLinks, &["canonical_slot"], Keys::All)?;
+            let countries = read(TableId::Countries, &["canonical_slot", "tag"], Keys::All)?;
+            let appearance = read(TableId::CountryAppearance, &["original_tag", "original_tag_reference"], Keys::All)?;
+            let reserved = read(TableId::ReservedCountryNaming, &["tag", "original_tag", "original_tag_reference"], Keys::All)?;
             let slot_tags = build_slot_tags(recording, run, &countries, &appearance, &reserved, mode, first, last)?;
             (links, countries.statuses, slot_tags)
         } else {
