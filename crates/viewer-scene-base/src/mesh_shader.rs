@@ -17,6 +17,37 @@ pub struct Geometry {
     pub stride: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GeometryFormat {
+    pub uv1: bool,
+    pub skinned: bool,
+    pub stride: u64,
+}
+
+pub struct ModelGeometry {
+    pub format: GeometryFormat,
+    pub load: Box<dyn Fn(&mut Option<content_reader_mesh::mesh::Mesh>) -> io::Result<Geometry> + Send + Sync>,
+}
+
+impl PartialEq for ModelGeometry {
+    fn eq(&self, other: &Self) -> bool {
+        self.format == other.format
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ModelGeometry {
+    pub fn held(geometry: Geometry) -> Arc<Self> {
+        Arc::new(Self { format: (&geometry).into(), load: Box::new(move |_| Ok(geometry.clone())) })
+    }
+}
+
+impl From<&Geometry> for GeometryFormat {
+    fn from(geometry: &Geometry) -> Self {
+        Self { uv1: geometry.uv1, skinned: !geometry.skin.is_empty(), stride: geometry.stride }
+    }
+}
+
 impl Geometry {
     pub fn from_mesh(sub: &content_reader_mesh::mesh::SubMesh, scale: f32) -> io::Result<Self> {
         let count = sub.vertex_count();
@@ -122,14 +153,14 @@ impl Pass {
         cache: &mut gpu::Cache,
         device: &wgpu::Device,
         selection: &shader_pipeline::library::Selection,
-        geometry: &Geometry,
+        geometry: impl Into<GeometryFormat>,
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         samples: u32,
         instanced: u32,
     ) -> io::Result<Self> {
         Self::with_mode(
-            cache, device, selection, geometry, format, depth, samples, false, instanced,
+            cache, device, selection, geometry.into(), format, depth, samples, false, instanced,
         )
     }
 
@@ -137,13 +168,13 @@ impl Pass {
         cache: &mut gpu::Cache,
         device: &wgpu::Device,
         selection: &shader_pipeline::library::Selection,
-        geometry: &Geometry,
+        geometry: impl Into<GeometryFormat>,
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         instanced: u32,
     ) -> io::Result<Self> {
         Self::with_mode(
-            cache, device, selection, geometry, format, depth, 1, true, instanced,
+            cache, device, selection, geometry.into(), format, depth, 1, true, instanced,
         )
     }
 
@@ -152,7 +183,7 @@ impl Pass {
         cache: &mut gpu::Cache,
         device: &wgpu::Device,
         selection: &shader_pipeline::library::Selection,
-        geometry: &Geometry,
+        geometry: GeometryFormat,
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         samples: u32,
@@ -171,7 +202,7 @@ impl Pass {
         cache: &mut gpu::Cache,
         device: &wgpu::Device,
         selection: &shader_pipeline::library::Selection,
-        geometry: &Geometry,
+        geometry: GeometryFormat,
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         samples: u32,
@@ -195,7 +226,7 @@ impl Pass {
         pass.vertices = vertex_layouts(
             &compiled.vertex.inputs,
             geometry.uv1,
-            !geometry.skin.is_empty(),
+            geometry.skinned,
         )?;
         let raster = source.rasterizer(technique);
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleList).0;

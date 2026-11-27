@@ -244,7 +244,7 @@ fn sharing(library: &ModelLibrary) -> [Vec<usize>; 5] {
                 .map_or(usize::MAX, |animation| class(&mut animations, animation)),
         );
     }
-    for cached in library.geometry_cache.values() {
+    for cached in library.geometry_sources.values() {
         walk[1].push(class(&mut geometry, cached));
     }
     for model in &library.meshes {
@@ -344,7 +344,7 @@ fn meshes_equal(left: &ModelMesh, right: &ModelMesh) {
                 (geometry_key, material, material_index),
                 (&right.geometry_key, &right.material, &right.material_index)
             );
-            geometry_equal(geometry, &right.geometry);
+            assert_eq!(geometry.format, right.geometry.format);
         }
     }
 }
@@ -495,11 +495,14 @@ fn libraries_equal(left: &ModelLibrary, right: &ModelLibrary) {
         meshes_equal(left, right);
     }
     assert_eq!(
-        left.geometry_cache.keys().collect::<Vec<_>>(),
-        right.geometry_cache.keys().collect::<Vec<_>>()
+        left.geometry_sources.keys().collect::<Vec<_>>(),
+        right.geometry_sources.keys().collect::<Vec<_>>()
     );
-    for (key, geometry) in &left.geometry_cache {
-        geometry_equal(geometry, &right.geometry_cache[key]);
+    for (key, geometry) in &left.geometry_sources {
+        geometry_equal(
+            &(geometry.load)(&mut None).unwrap(),
+            &(right.geometry_sources[key].load)(&mut None).unwrap(),
+        );
     }
     assert_eq!(left.rigs.len(), right.rigs.len());
     for (left, right) in left.rigs.iter().zip(&right.rigs) {
@@ -806,7 +809,7 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
         assert!(shard.rigs.is_empty());
         assert!(shard.palette.is_empty());
         assert!(shard.materials.is_empty());
-        assert!(shard.geometry_cache.is_empty());
+        assert!(shard.geometry_sources.is_empty());
         if names.is_empty() {
             assert!(warnings.is_empty());
             assert!(shard.failed.is_empty());
@@ -867,7 +870,7 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
         assert_eq!(library.meshes[0].asset, expected_asset);
         assert_eq!(library.rigs.len(), 1);
         assert_eq!(library.palette.len(), 1);
-        assert_eq!(library.geometry_cache.len(), 1);
+        assert_eq!(library.geometry_sources.len(), 1);
     }
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -935,7 +938,7 @@ fn skeleton_only_bakes_keep_geometry_palette_rig_and_merge_bytes() {
             .sum::<usize>()
             > 0
     );
-    assert!(!new.geometry_cache.is_empty());
+    assert!(!new.geometry_sources.is_empty());
     assert!(
         new.rigs
             .iter()
@@ -1062,7 +1065,7 @@ fn repeated_hour_bakes_keep_fixed_names_bytes_and_source_ordered_refusals() {
             ("destroyer".to_owned(), 250),
         ])
     );
-    assert!(!warm.geometry_cache.is_empty());
+    assert!(!warm.geometry_sources.is_empty());
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1191,6 +1194,12 @@ fn paired(name: &str, animation: &[u8]) -> ModelLibrary {
         ..ModelLibrary::empty(Decode::default())
     };
     library.add(&layers, &descriptors, "paired").unwrap();
+    for source in library.geometry_sources.values_mut() {
+        *source = viewer_scene_base::mesh_shader::ModelGeometry::held((source.load)(&mut None).unwrap());
+    }
+    for part in library.meshes[0].native[0].lods.iter_mut().flatten() {
+        part.geometry = Arc::clone(&library.geometry_sources[&part.geometry_key]);
+    }
     let _ = std::fs::remove_dir_all(&root);
     library
 }

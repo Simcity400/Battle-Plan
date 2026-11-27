@@ -2,7 +2,7 @@ use eframe::wgpu;
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use viewer_gpu::gpu_contract::Targets;
 use shader_pipeline::{gpu, stream, vertices::NativeBuffer};
-use crate::mesh_shader::Geometry;
+use crate::mesh_shader::{Geometry, ModelGeometry};
 use std::sync::MutexGuard;
 use std::{
     collections::BTreeMap,
@@ -154,16 +154,22 @@ enum Bytes {
 #[derive(Clone)]
 enum Complete {
     Bytes(Arc<[u8]>),
-    Vertices(Arc<Geometry>),
-    Skin(Arc<Geometry>),
+    Model(Arc<ModelGeometry>, bool),
 }
 
 impl Complete {
-    fn bytes(&self) -> &[u8] {
+    fn load(&self) -> io::Result<Option<Geometry>> {
+        match self {
+            Self::Bytes(_) => Ok(None),
+            Self::Model(source, _) => (source.load)(&mut None).map(Some),
+        }
+    }
+
+    fn bytes<'a>(&'a self, geometry: Option<&'a Geometry>) -> &'a [u8] {
         match self {
             Self::Bytes(bytes) => bytes,
-            Self::Vertices(geometry) => bytemuck::cast_slice(&geometry.vertices),
-            Self::Skin(geometry) => bytemuck::cast_slice(&geometry.skin),
+            Self::Model(_, false) => bytemuck::cast_slice(&geometry.unwrap().vertices),
+            Self::Model(_, true) => bytemuck::cast_slice(&geometry.unwrap().skin),
         }
     }
 }
@@ -195,10 +201,10 @@ impl State {
         self.bind_complete_vertex(slot, stride, Complete::Bytes(bytes));
     }
 
-    pub fn bind_model_geometry(&mut self, vertices: &Arc<Geometry>, skin: Option<&Arc<Geometry>>) {
-        self.bind_complete_vertex(0, vertices.stride, Complete::Vertices(Arc::clone(vertices)));
+    pub fn bind_model_geometry(&mut self, vertices: &Arc<ModelGeometry>, skin: Option<&Arc<ModelGeometry>>) {
+        self.bind_complete_vertex(0, vertices.format.stride, Complete::Model(Arc::clone(vertices), false));
         if let Some(skin) = skin {
-            self.bind_complete_vertex(1, 16, Complete::Skin(Arc::clone(skin)));
+            self.bind_complete_vertex(1, 16, Complete::Model(Arc::clone(skin), true));
         }
     }
 
@@ -286,7 +292,8 @@ impl State {
                 .map_err(io::Error::other);
         }
         let stream = &mut self.stream;
-        with_buffers(&self.vertices, |buffers| {
+        let layouts = stream.vertex_layouts().map_err(io::Error::other)?;
+        with_buffers(&self.vertices, &layouts, |buffers| {
             stream
                 .prepare_native_pass_with_cache(
                     arena, label, template, buffers, vertices, instances, None, previous, cache,
@@ -301,15 +308,11 @@ impl State {
         vertices: u32,
         instances: u32,
     ) -> io::Result<shader_pipeline::vertices::PackedBuffers> {
-        with_buffers(&self.vertices, |buffers| {
-            shader_pipeline::vertices::pack_native(
-                &self.stream.vertex_layouts()?,
-                buffers,
-                vertices,
-                instances,
-            )
+        let layouts = self.stream.vertex_layouts().map_err(io::Error::other)?;
+        with_buffers(&self.vertices, &layouts, |buffers| {
+            shader_pipeline::vertices::pack_native(&layouts, buffers, vertices, instances)
+                .map_err(io::Error::other)
         })
-        .map_err(io::Error::other)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -344,7 +347,10 @@ impl State {
                     return false;
                 }
                 match (&a.bytes, &b.bytes) {
-                    (Bytes::Complete(a), Bytes::Complete(b)) => a.bytes() == b.bytes(),
+                    (Bytes::Complete(a), Bytes::Complete(b)) => {
+                        let (Ok(left), Ok(right)) = (a.load(), b.load()) else { return false };
+                        a.bytes(left.as_ref()) == b.bytes(right.as_ref())
+                    }
                     (Bytes::Partial(a), Bytes::Partial(b)) => {
                         if Arc::ptr_eq(a, b) {
                             return true;
@@ -361,18 +367,24 @@ impl State {
 
 fn with_buffers<R>(
     vertices: &BTreeMap<u32, Buffer>,
-    work: impl FnOnce(&BTreeMap<u32, Option<NativeBuffer<'_>>>) -> R,
-) -> R {
+    layouts: &[gpu::VertexLayout],
+    work: impl FnOnce(&BTreeMap<u32, Option<NativeBuffer<'_>>>) -> io::Result<R>,
+) -> io::Result<R> {
     enum Locked<'a> {
         Complete(&'a [u8], [Range<u64>; 1]),
         Partial(MutexGuard<'a, Partial>),
     }
-    let locked: Vec<_> = vertices
-        .iter()
-        .map(|(slot, buffer)| {
+    let used = vertices.iter().filter(|(slot, _)| {
+        layouts.get(**slot as usize).is_some_and(|layout| !layout.attributes.is_empty())
+    });
+    let models = used.clone().filter_map(|(&slot, buffer)| match &buffer.bytes {
+        Bytes::Complete(bytes @ Complete::Model(..)) => Some(bytes.load().map(|geometry| (slot, geometry))),
+        _ => None,
+    }).collect::<io::Result<BTreeMap<_, _>>>()?;
+    let locked: Vec<_> = used.map(|(slot, buffer)| {
             let bytes = match &buffer.bytes {
                 Bytes::Complete(bytes) => {
-                    let bytes = bytes.bytes();
+                    let bytes = bytes.bytes(models.get(slot).and_then(Option::as_ref));
                     Locked::Complete(
                         bytes,
                         [Range {

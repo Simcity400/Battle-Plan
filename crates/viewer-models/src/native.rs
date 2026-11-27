@@ -19,9 +19,37 @@ use viewer_gpu::gpu_contract::SCENE_FORMAT;
 
 pub(super) type GeometryKey = (String, u32, usize, usize);
 
+pub(super) fn installed_geometry(
+    layers: Arc<ResolvedLayers>,
+    (path, scale, shape, sub): GeometryKey,
+    initial: &mesh::SubMesh,
+) -> io::Result<Arc<mesh_shader::ModelGeometry>> {
+    let scale = f32::from_bits(scale);
+    let format = (&mesh_shader::Geometry::from_mesh(initial, scale)?).into();
+    let load = move |decoded: &mut Option<mesh::Mesh>| {
+        let geometry = (|| {
+            if decoded.is_none() {
+                let _loading = (!layers.is_generation_scoped()).then(|| layers.loading());
+                let tree = mesh::parse_in(&layers, &path)?;
+                *decoded = Some(mesh::read_tree(&tree)?);
+            }
+            let sub = decoded.as_ref().and_then(|mesh| mesh.shapes.get(shape))
+                .and_then(|shape| shape.meshes.get(sub))
+                .ok_or_else(|| invalid("geometry part is missing"))?;
+            let geometry = mesh_shader::Geometry::from_mesh(sub, scale)?;
+            if format != (&geometry).into() {
+                return Err(invalid("geometry layout changed"));
+            }
+            Ok(geometry)
+        })();
+        geometry.map_err(|error| invalid(format!("{path}: {error}")))
+    };
+    Ok(Arc::new(mesh_shader::ModelGeometry { format, load: Box::new(load) }))
+}
+
 #[derive(Clone, PartialEq)]
 pub(super) struct Part {
-    pub geometry: Arc<mesh_shader::Geometry>,
+    pub geometry: Arc<mesh_shader::ModelGeometry>,
     pub geometry_key: GeometryKey,
     pub material: mesh::Material,
     pub material_index: usize,
@@ -74,7 +102,7 @@ pub(super) fn descriptor(
     resolved: &mesh::ResolvedMesh<'_>,
     node: usize,
     name: &str,
-    mut geometry: impl FnMut(GeometryKey, &mesh::SubMesh) -> io::Result<Arc<mesh_shader::Geometry>>,
+    mut geometry: impl FnMut(GeometryKey, &mesh::SubMesh) -> io::Result<Arc<mesh_shader::ModelGeometry>>,
     mut material_index: impl FnMut(&str, &mesh::SubMesh) -> io::Result<usize>,
 ) -> io::Result<Descriptor> {
     let mut records = Vec::new();
@@ -338,15 +366,16 @@ impl Resident {
 #[derive(Clone)]
 struct SharedGeometry {
     stride: u64,
-    source: Arc<mesh_shader::Geometry>,
+    source: Arc<mesh_shader::ModelGeometry>,
     vertices: (usize, i32),
     indices: (usize, u32),
     skin_bones: usize,
+    count: u32,
 }
 
 impl SharedGeometry {
     fn has_skin(&self) -> bool {
-        !self.source.skin.is_empty()
+        self.source.format.skinned
     }
 }
 
@@ -1127,7 +1156,7 @@ impl Pool {
 
 fn part_program(
     pipeline: &mesh_shader::Pass,
-    geometry: &mesh_shader::Geometry,
+    geometry: mesh_shader::GeometryFormat,
 ) -> io::Result<(Arc<shader_pipeline::Compiled>, shader_scene::Program)> {
     let selection = &pipeline.selection;
     let compiled = selection
@@ -1137,7 +1166,7 @@ fn part_program(
     let mut layouts = mesh_shader::vertex_layouts(
         &compiled.vertex.inputs,
         geometry.uv1,
-        !geometry.skin.is_empty(),
+        geometry.skinned,
     )?;
     layouts[0].stride = geometry.stride;
     let effect = &selection.effect.source;
@@ -1161,7 +1190,7 @@ fn material_effect(
     library: &mut Library,
     part: &Part,
 ) -> io::Result<Arc<shader_pipeline::library::Effect>> {
-    let defines = if part.geometry.uv1 {
+    let defines = if part.geometry.format.uv1 {
         vec!["PDX_MESH_UV1".to_owned()]
     } else {
         Vec::new()
@@ -2509,7 +2538,7 @@ impl ModelPass {
 
                             let skin_pose = descriptor.lods[lod]
                                 .iter()
-                                .any(|source| !source.geometry.skin.is_empty())
+                                .any(|source| source.geometry.format.skinned)
                                 .then(|| {
                                     actor.pose.as_ref().map_err(|why| {
                                         PrepareError::Actor(invalid(format!("skin: {why}")))
@@ -2602,6 +2631,7 @@ impl ModelPass {
                                 return Ok(());
                             }
                             let mut submitted_mask = 0;
+                            let mut decoded = None;
                             for (part, source) in descriptor.lods[lod].iter().enumerate() {
                                 let key = match native.slots[group.mesh][descriptor.node][lod][part]
                                     [variants]
@@ -2646,39 +2676,24 @@ impl ModelPass {
                                             order,
                                         );
                                         let (compiled, retained) =
-                                            part_program(&pipeline, &source.geometry)?;
+                                            part_program(&pipeline, source.geometry.format)?;
                                         let geometry = match native
                                             .geometry
                                             .get(&source.geometry_key)
                                         {
                                             Some(geometry) => geometry.clone(),
                                             None => {
-                                                let stride =
-                                                    if source.geometry.uv1 { 56 } else { 48 };
-                                                let skin: Option<&[u8]> =
-                                                    (!source.geometry.skin.is_empty()).then(|| {
-                                                        bytemuck::cast_slice(&source.geometry.skin)
-                                                    });
-                                                let packed = match native
-                                                    .builds
-                                                    .packed(&source.geometry_key)
-                                                {
-                                                    Some(packed) => packed,
-                                                    None => {
-                                                        crate::count(crate::Count::PackedHere, 1);
-                                                        Arc::new(
-                                                            source
-                                                                .geometry
-                                                                .packed(source.geometry.uv1)
-                                                                .map_err(PrepareError::Actor)?,
-                                                        )
-                                                    }
-                                                };
+                                                let data = (source.geometry.load)(&mut decoded)
+                                                    .map_err(PrepareError::Actor)?;
+                                                let stride = if data.uv1 { 56 } else { 48 };
+                                                let skin = (!data.skin.is_empty()).then(|| bytemuck::cast_slice(&data.skin));
+                                                crate::count(crate::Count::PackedHere, 1);
+                                                let packed = data.packed(data.uv1).map_err(PrepareError::Actor)?;
                                                 crate::count(
                                                     crate::Count::FirstGeometryBytes,
                                                     (packed.len() * 4
-                                                        + source.geometry.skin.len() * 16
-                                                        + source.geometry.indices.len() * 4)
+                                                        + data.skin.len() * 16
+                                                        + data.indices.len() * 4)
                                                         as u64,
                                                 );
                                                 let vertices = native
@@ -2698,18 +2713,17 @@ impl ModelPass {
                                                     [4, 0],
                                                     [
                                                         Some(bytemuck::cast_slice(
-                                                            &source.geometry.indices,
+                                                            &data.indices,
                                                         )),
                                                         None,
                                                     ],
-                                                    source.geometry.indices.len() as u64,
+                                                    data.indices.len() as u64,
                                                 )?;
                                                 let geometry = SharedGeometry {
                                                     stride,
                                                     source: Arc::clone(&source.geometry),
-                                                    skin_bones: source
-                                                        .geometry
-                                                        .skin
+                                                    count: u32::try_from(data.indices.len()).map_err(io::Error::other)?,
+                                                    skin_bones: data.skin
                                                         .iter()
                                                         .flat_map(|v| v.indices)
                                                         .map(|i| usize::from(i) + 1)
@@ -2873,7 +2887,7 @@ impl ModelPass {
                                         bindings,
                                         textures: texture_mask,
                                         material: source.material_index,
-                                        count: source.geometry.indices.len() as u32,
+                                        count: gpu.geometry.count,
                                     });
                                 }
                             }
@@ -3401,7 +3415,7 @@ mod tests {
         assert!(Arc::ptr_eq(&pass.selection.effect, &recorded));
         let layouts = vertex_layouts(&inputs(&pass.selection), false, false).unwrap();
         assert_eq!(layouts[0].attributes.len(), 2);
-        let (compiled, retained) = part_program(&pass, &geometry).unwrap();
+        let (compiled, retained) = part_program(&pass, (&geometry).into()).unwrap();
         assert!(Arc::ptr_eq(&retained.selection().effect, &recorded));
         assert_eq!(compiled.vertex.inputs[1].semantic, "TEXCOORD0");
         let layouts = retained.layouts();

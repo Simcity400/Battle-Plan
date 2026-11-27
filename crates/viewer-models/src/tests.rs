@@ -449,7 +449,7 @@ fn custom_material_source_reaches_native_geometry() {
         0,
         "synthetic_actor",
         |_, sub| {
-            Ok(Arc::new(viewer_scene_base::mesh_shader::Geometry::from_mesh(
+            Ok(viewer_scene_base::mesh_shader::ModelGeometry::held(viewer_scene_base::mesh_shader::Geometry::from_mesh(
                 sub, 1.,
             )?))
         },
@@ -462,7 +462,7 @@ fn custom_material_source_reaches_native_geometry() {
         part.material.shader_file.as_deref(),
         Some("gfx/FX/authored.lua")
     );
-    assert_eq!(part.geometry.indices, [0, 1, 2]);
+    assert_eq!((part.geometry.load)(&mut None).unwrap().indices, [0, 1, 2]);
     assert_eq!(library.materials.len(), 1);
 }
 
@@ -832,13 +832,12 @@ fn two_entities_share_a_partial_stream_mesh_and_keep_placed_vertices() {
         &mut Vec::new(),
     )
     .unwrap();
-    std::fs::remove_dir_all(&root).unwrap();
     assert_eq!(library.meshes.len(), 2);
-    assert_eq!(library.geometry_cache.len(), 1);
+    assert_eq!(library.geometry_sources.len(), 1);
     let first = &library.meshes[0].native[0].lods[0][0];
     let second = &library.meshes[1].native[0].lods[0][0];
     assert!(Arc::ptr_eq(&first.geometry, &second.geometry));
-    let geometry = &first.geometry;
+    let geometry = (first.geometry.load)(&mut None).unwrap();
     assert_eq!(geometry.stride, 24);
     assert_eq!(geometry.vertices.len(), 18);
     assert_eq!(geometry.vertices[6..10], [4., 5., 6., 0.]);
@@ -865,6 +864,7 @@ fn two_entities_share_a_partial_stream_mesh_and_keep_placed_vertices() {
             assert_eq!(placed, old);
         }
     }
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -1107,12 +1107,13 @@ fn a_visual_mod_entity_keeps_its_recorded_counterpart() {
         ],
     );
     let library = baked(layers.presentation(), "plane");
-    let _ = std::fs::remove_dir_all(&root);
     let shown = library.slot("plane").unwrap();
     let counterpart = library.alternatives[&shown];
     assert!(library.meshes[shown].visual && !library.meshes[counterpart].visual);
-    let geometry = |slot: usize| library.meshes[slot].native[0].lods[0][0].geometry.clone();
-    assert!(!Arc::ptr_eq(&geometry(shown), &geometry(counterpart)));
+    let geometry = |slot: usize| (library.meshes[slot].native[0].lods[0][0].geometry.load)(&mut None).unwrap();
+    assert_eq!(geometry(shown).vertices[8], 5.);
+    assert_eq!(geometry(counterpart).vertices[8], 1.);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

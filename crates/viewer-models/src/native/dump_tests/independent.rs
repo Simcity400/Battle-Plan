@@ -85,41 +85,43 @@ impl Resources {
             b.geometry.keys().collect::<Vec<_>>()
         );
         for (a, b) in a.geometry.values().zip(b.geometry.values()) {
+            let source_a = (a.source.load)(&mut None).unwrap();
+            let source_b = (b.source.load)(&mut None).unwrap();
             assert_eq!(
                 (
                     a.stride,
-                    a.source.stride,
-                    bytemuck::cast_slice::<_, u8>(&a.source.vertices),
-                    bytemuck::cast_slice::<_, u8>(&a.source.skin),
+                    source_a.stride,
+                    bytemuck::cast_slice::<_, u8>(&source_a.vertices),
+                    bytemuck::cast_slice::<_, u8>(&source_a.skin),
                     a.vertices,
                     a.indices,
                     a.skin_bones
                 ),
                 (
                     b.stride,
-                    b.source.stride,
-                    bytemuck::cast_slice::<_, u8>(&b.source.vertices),
-                    bytemuck::cast_slice::<_, u8>(&b.source.skin),
+                    source_b.stride,
+                    bytemuck::cast_slice::<_, u8>(&source_b.vertices),
+                    bytemuck::cast_slice::<_, u8>(&source_b.skin),
                     b.vertices,
                     b.indices,
                     b.skin_bones
                 )
             );
             if a.has_skin() {
-                let rigid = Arc::new(mesh_shader::Geometry {
+                let rigid = mesh_shader::Geometry {
                     vertices: vec![1.0],
                     stride: 4,
                     ..Default::default()
-                });
+                };
                 let mut retained = shader_scene::State::default();
-                retained.bind_model_geometry(&rigid, Some(&a.source));
+                retained.bind_model_geometry(&mesh_shader::ModelGeometry::held(rigid.clone()), Some(&a.source));
                 let mut copied = shader_scene::State::default();
                 copied.bind_vertex(0, rigid.stride, bytemuck::cast_slice(&rigid.vertices).into());
-                copied.bind_vertex(1, 16, bytemuck::cast_slice(&a.source.skin).into());
+                copied.bind_vertex(1, 16, bytemuck::cast_slice(&source_a.skin).into());
                 assert!(retained.same_bindings(&copied));
 
                 retained.bind_model_geometry(&b.source, None);
-                copied.bind_vertex(0, b.source.stride, bytemuck::cast_slice(&b.source.vertices).into());
+                copied.bind_vertex(0, source_b.stride, bytemuck::cast_slice(&source_b.vertices).into());
                 assert!(retained.same_bindings(&copied));
             }
         }

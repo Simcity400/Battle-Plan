@@ -62,7 +62,7 @@ pub(super) fn snapshot(library: &ModelLibrary, slot: usize, textures: &[String])
                 for texture in [material.diffuse, material.normal, material.specular] {
                     bytes.text(&textures[texture]);
                 }
-                let geometry = &part.geometry;
+                let geometry = (part.geometry.load)(&mut None).expect("snapshot geometry is readable");
                 bytes.floats(&geometry.vertices);
                 bytes.words(&geometry.indices);
                 bytes.count(geometry.skin.len());
@@ -81,7 +81,13 @@ pub(super) fn snapshot(library: &ModelLibrary, slot: usize, textures: &[String])
 #[cfg(test)]
 mod tests {
     use crate::draw_snapshot::*;
-    use viewer_scene_base::mesh_shader::{Geometry, SkinVertex};
+    use viewer_scene_base::mesh_shader::{Geometry, ModelGeometry, SkinVertex};
+
+    fn alter(part: &mut native::Part, edit: impl FnOnce(&mut Geometry)) {
+        let mut geometry = (part.geometry.load)(&mut None).unwrap();
+        edit(&mut geometry);
+        part.geometry = ModelGeometry::held(geometry);
+    }
 
     fn shard(name: &str, reach: f32, color: u8) -> ModelLibrary {
         let descriptors = mesh::parse_descriptors(
@@ -112,7 +118,7 @@ mod tests {
             specular: 0,
         });
         let part = native::Part {
-            geometry: Arc::new(Geometry {
+            geometry: ModelGeometry::held(Geometry {
                 vertices: vec![
                     0.,
                     -0.,
@@ -145,7 +151,7 @@ mod tests {
         let mut second_part = part.clone();
         second_part.material.shader = Some("SecondaryShader".into());
         second_part.geometry_key.3 = 1;
-        Arc::make_mut(&mut second_part.geometry).vertices[8] += 1.;
+        alter(&mut second_part, |geometry| geometry.vertices[8] += 1.);
         library.meshes[0].native = ["root", "attachment"]
             .into_iter()
             .map(|descriptor| native::Descriptor {
@@ -212,12 +218,12 @@ mod tests {
         let other = reversed.meshes[second].native[0].lods[0][0].material_index;
         assert_ne!(binding, other);
         assert_ne!(
-            reversed.meshes[first].native[0].lods[0][0]
-                .geometry
+            (reversed.meshes[first].native[0].lods[0][0].geometry.load)(&mut None)
+                .unwrap()
                 .vertices[8]
                 .to_bits(),
-            reversed.meshes[second].native[0].lods[0][0]
-                .geometry
+            (reversed.meshes[second].native[0].lods[0][0].geometry.load)(&mut None)
+                .unwrap()
                 .vertices[8]
                 .to_bits()
         );
@@ -253,21 +259,14 @@ mod tests {
                 1 => descriptors[0].node += 1,
                 2 => descriptors[0].lods.reverse(),
                 3 => descriptors[0].distances[0] = -0.,
-                4 => {
-                    Arc::make_mut(&mut descriptors[0].lods[0][0].geometry).vertices[2] =
-                        f32::from_bits(0x7fc00002)
-                }
-                5 => Arc::make_mut(&mut descriptors[0].lods[0][0].geometry).skin[0].weights[1] = 0.,
-                6 => Arc::make_mut(&mut descriptors[0].lods[0][0].geometry)
-                    .indices
-                    .reverse(),
+                4 => alter(&mut descriptors[0].lods[0][0], |g| g.vertices[2] = f32::from_bits(0x7fc00002)),
+                5 => alter(&mut descriptors[0].lods[0][0], |g| g.skin[0].weights[1] = 0.),
+                6 => alter(&mut descriptors[0].lods[0][0], |g| g.indices.reverse()),
                 7 => descriptors[0].lods[1].reverse(),
                 8 => descriptors[0].lods[1][0].material.shader = Some("DifferentShader".into()),
-                9 => Arc::make_mut(&mut descriptors[0].lods[0][0].geometry).skin[0]
-                    .indices
-                    .reverse(),
-                10 => Arc::make_mut(&mut descriptors[0].lods[0][0].geometry).stride += 4,
-                11 => Arc::make_mut(&mut descriptors[0].lods[0][0].geometry).uv1 = true,
+                9 => alter(&mut descriptors[0].lods[0][0], |g| g.skin[0].indices.reverse()),
+                10 => alter(&mut descriptors[0].lods[0][0], |g| g.stride += 4),
+                11 => alter(&mut descriptors[0].lods[0][0], |g| g.uv1 = true),
                 _ => unreachable!(),
             }
             assert_ne!(draws(&changed), expected, "native draw change {change}");
