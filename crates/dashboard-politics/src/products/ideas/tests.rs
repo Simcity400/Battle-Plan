@@ -381,7 +381,7 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
                 " synth_dynamic:0 \"[synth_level_loc]\"\n",
                 " synth_dynamic_desc:0 \"[ROOT.GetName] brief\"\n",
                 " synth_tip:0 \"[1.owner.GetAdjective] bonus\"\n",
-                " synth_refused:0 \"[(yes)A|B]\"\n",
+                " synth_refused:0 \"[(ROOT.GetName?a:b)]\"\n",
             ),
         ),
     ]);

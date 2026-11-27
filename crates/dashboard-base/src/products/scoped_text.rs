@@ -13,10 +13,7 @@ use dashboard_text::{
         EventObject, EventScope, EventScopes, Link, ScriptedText, TABLES as SCRIPTED_TABLES,
         probe_unselected_tables,
     },
-    triggers::{
-        NULL_STATE,
-        inputs::{Inputs, TableRead},
-    },
+    triggers::inputs::{Inputs, TableRead},
 };
 use replay::campaign::Replay;
 use replay_data::rows::TableId;
@@ -40,13 +37,13 @@ pub enum Scope {
 
 impl Scope {
     fn root_and_scopes(self) -> (u32, EventScopes) {
-        let (root_id, object, root_link) = match self {
-            Self::Empty => (0, EventObject::State(NULL_STATE), Link::Unknown),
-            Self::Country(slot) => (slot, EventObject::Country(slot), Link::Itself),
-            Self::State(state) => (0, EventObject::State(state), Link::Itself),
+        let (root_id, object) = match self {
+            Self::Empty => return (0, EventScopes::new(Vec::new())),
+            Self::Country(slot) => (slot, EventObject::Country(slot)),
+            Self::State(state) => (0, EventObject::State(state)),
         };
         let mut scope = EventScope::of(object);
-        scope.root = root_link;
+        scope.root = Link::Itself;
         scope.from = Link::Unknown;
         scope.prev = Link::Unknown;
         scope.random_seed_refusal = Some(UNRECORDED_RANDOM_SEED);
@@ -571,6 +568,8 @@ mod tests {
                         ..Default::default()
                     }]),
                 );
+                set(&mut frame, TableId::Characters, TableRows::Characters(Vec::new()));
+                set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(Vec::new()));
                 set(
                     &mut frame,
                     TableId::ActiveIdeas,
@@ -671,7 +670,7 @@ mod tests {
                     " TIER_KEY:0 \"[synth_tier_loc]\"\n",
                     " SYNTH_TIER_LOW:0 \"Tier Low\"\n",
                     " SYNTH_TIER_HIGH:0 \"Tier High\"\n",
-                    " COND_KEY:0 \"[(yes)A|B]\"\n",
+                    " COND_KEY:0 \"[(ROOT.GetName?a:b)]\"\n",
                     " DAYS_KEY:0 \"[?synth_flag:days_left]\"\n",
                     " TEMP_KEY:0 \"[?temp_synth]\"\n",
                     " RAND_KEY:0 \"[synth_random_loc]\"\n",
