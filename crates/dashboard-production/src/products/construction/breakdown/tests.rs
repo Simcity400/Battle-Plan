@@ -485,7 +485,7 @@ fn owner_unknown_before_census_qualifies_both_eventual_owner_and_other_countries
             let output = ConstructionLineOutputRow {
                 line: 5,
                 since_hour: 100,
-                construction_raw: if hour >= 110 { 100_000 } else { 0 },
+                construction_raw: 100_000,
                 exact: true,
                 country: Recorded::Value((hour >= 110).then_some(9001)),
                 building_type: Recorded::Value(Some(7)),
@@ -512,14 +512,104 @@ fn owner_unknown_before_census_qualifies_both_eventual_owner_and_other_countries
     )
     .unwrap();
     for slot in [7, 8] {
-        let reply = ConstructionBreakdown::load(
+        let at_100 = ConstructionBreakdown::load(
             &source,
             &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(slot), hour: 100 },
             &LoadContext { content: None },
             &cancel,
         )
         .unwrap();
-        assert_eq!(reply.unattributed, 1, "slot {slot} must count the owner-unknown gap at 100 even after the line enters the census at 110");
-        assert_eq!(reply.breakdown.total.state, BreakdownState::Partial, "slot {slot} total must be partial at 100");
+        assert_eq!(at_100.unattributed, 1, "slot {slot} must count the owner-unknown gap at 100 even after the line enters the census at 110");
+        assert_eq!(at_100.before_first_read, 0, "slot {slot} must not reveal eventual owner via before_first_read at 100");
+        assert_eq!(at_100.breakdown.total.state, BreakdownState::Partial, "slot {slot} total must be partial at 100");
+        let at_110 = ConstructionBreakdown::load(
+            &source,
+            &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(slot), hour: 110 },
+            &LoadContext { content: None },
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(at_110.unattributed, 1);
+        assert_eq!(at_110.before_first_read, u32::from(slot == 7), "only the owner counts before_first_read once ownership is known at 110");
     }
+}
+
+#[test]
+fn closed_gap_in_earlier_stretch_does_not_reopen_after_clipped_second_stretch() {
+    use super::{ConstructionBreakdown, ConstructionBreakdownParams};
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{Country, LoadContext, Product},
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_capture_spool::spool::Record;
+    use replay_data::rows::{BuildingConstructionRow, ConstructionLineOutputRow, Recorded, TableId, TableRows};
+    use replay_frame::{
+        branches::{BranchReason, BranchStart, Parentage},
+        frame::TableView,
+    };
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let build_frame = |branch: u64, hour: i32, has_line: bool, amount: i32, exact: bool, spent: i64| {
+        let mut frame = source(branch, hour, Some(1));
+        let buildings = if has_line {
+            vec![BuildingConstructionRow {
+                id: 1, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95, amount, ..Default::default()
+            }]
+        } else {
+            Vec::new()
+        };
+        let outputs = if has_line && hour >= 105 {
+            vec![ConstructionLineOutputRow {
+                line: 1, since_hour: 100, construction_raw: spent, exact,
+                country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(7)), target_state: Recorded::Value(Some(12)), ..Default::default()
+            }]
+        } else {
+            Vec::new()
+        };
+        frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(buildings)).into();
+        frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+        frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
+        frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(outputs)).into();
+        for table in [TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
+            frame.metrics.table_ns[table.index()] = 1;
+        }
+        frame
+    };
+
+    let run1 = records(1, (100..=109).map(|hour| build_frame(1, hour, true, 0, false, 0)).collect());
+    let mut run2 = records(2, (110..=130).map(|hour| build_frame(2, hour, true, i32::from(hour >= 120), true, if hour >= 120 { 100_000 } else { 0 })).collect());
+    run2[1] = Record::BranchStart(BranchStart {
+        id: 2, session: 2, loaded_hour: Some(109), first_hour: 110,
+        parent: Parentage::Probable { branch: 1, hour: 109 }, reason: BranchReason::LoadSignal,
+    });
+    let mut run3 = records(3, (126..=128).map(|hour| build_frame(3, hour, false, 0, true, 0)).collect());
+    run3[1] = Record::BranchStart(BranchStart {
+        id: 3, session: 3, loaded_hour: Some(125), first_hour: 126,
+        parent: Parentage::Probable { branch: 2, hour: 125 }, reason: BranchReason::LoadSignal,
+    });
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[run1, run2, run3])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let branch_id = replay.timelines().expect("timelines").list.iter().find(|t| t.last_hour() == 128).expect("clipped branch").id;
+    let cancel = AtomicBool::new(false);
+    let source = Source::from_replay(
+        SourceKey { source_id: "construction-clipped-second-stretch".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &cancel,
+    )
+    .unwrap();
+    let at_122 = ConstructionBreakdown::load(
+        &source,
+        &ConstructionBreakdownParams { branch_id: branch_id.to_string(), country: Country::Slot(7), hour: 122 },
+        &LoadContext { content: None },
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(at_122.breakdown.total.state, BreakdownState::Partial, "the closed gap from run 1 keeps the total partial");
+    let new_part = at_122.breakdown.parts.iter().find(|part| part.key == "new").expect("new spending at 120");
+    assert_eq!(new_part.children[0].state, BreakdownState::Known, "run 1's end at 109 must not reopen the closed gap after run 2 clipped at 125");
 }

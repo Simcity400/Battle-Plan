@@ -269,13 +269,13 @@ const REPAIR_COLS: [usize; 5] = [col::REPAIR_LEVELS, col::REPAIRED, col::ADDED_R
 
 fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32) -> io::Result<ReasonSteps> {
     let columns = [
-        col::REMAINING, col::REPAIR_LEVELS, col::BUILT, col::REPAIRED, col::ADDED_NEW, col::ADDED_REPAIR, col::POSSIBLE, col::UNACCOUNTED_NEW,
-        col::UNACCOUNTED_REPAIR, col::CONSTRUCTION_RAW, col::REPAIR_RAW, col::OUTPUT_SINCE, col::OBSERVED_SINCE_CREATION, col::OUTPUT_REASON, col::FIRST_REPAIR_TICK,
+        col::OUTPUT_ALONE, col::COUNTRY, col::REMAINING, col::REPAIR_LEVELS, col::BUILT, col::REPAIRED, col::ADDED_NEW, col::ADDED_REPAIR, col::POSSIBLE,
+        col::UNACCOUNTED_NEW, col::UNACCOUNTED_REPAIR, col::CONSTRUCTION_RAW, col::REPAIR_RAW, col::OUTPUT_SINCE, col::OBSERVED_SINCE_CREATION, col::OUTPUT_REASON, col::FIRST_REPAIR_TICK,
     ];
     let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(query.replay.recording(), run, TableId::ConstructionProjects, &columns, Keys::These(ids), first, last))?;
     let at = |column: usize| history.columns.binary_search(&column).map_err(|_| dashboard_core::invalid("A construction project column was not read"));
-    let (reason, since, obs, repair, rem, rep_lvl) = (
-        at(col::OUTPUT_REASON)?, at(col::OUTPUT_SINCE)?, at(col::OBSERVED_SINCE_CREATION)?, at(col::FIRST_REPAIR_TICK)?, at(col::REMAINING)?, at(col::REPAIR_LEVELS)?,
+    let (alone, owner, reason, since, obs, repair, rem, rep_lvl) = (
+        at(col::OUTPUT_ALONE)?, at(col::COUNTRY)?, at(col::OUTPUT_REASON)?, at(col::OUTPUT_SINCE)?, at(col::OBSERVED_SINCE_CREATION)?, at(col::FIRST_REPAIR_TICK)?, at(col::REMAINING)?, at(col::REPAIR_LEVELS)?,
     );
     let new_at = NEW_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
     let repair_at = REPAIR_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
@@ -291,8 +291,11 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
         for step in steps {
             let Some(cells) = step.cells.as_deref() else { continue };
             let had_output = number(cells, since).is_some();
-            held.read.push((step.hour, number(cells, reason).and_then(|value| u8::try_from(value).ok()), had_output));
-            if held.before_observation.is_none() && had_output && number(cells, obs) == Some(0) {
+            let reason_val = number(cells, reason).and_then(|value| u8::try_from(value).ok());
+            held.read.push((step.hour, reason_val, had_output));
+            let known_owner = !(number(cells, alone) == Some(1) && reason_val == Some(replay_data::rows::ConstructionProjectRow::OUTPUT_OWNER_UNKNOWN))
+                && number(cells, owner).is_some_and(|v| v != 0 || number(cells, alone) == Some(0));
+            if held.before_observation.is_none() && had_output && known_owner && number(cells, obs) == Some(0) {
                 held.before_observation = Some(step.hour);
             }
             let tick = number(cells, repair).and_then(|value| i32::try_from(value).ok());
@@ -412,7 +415,7 @@ fn owner_unknown_lines(query: &Query<'_>, run: u32, first: i32, last: i32) -> io
         .collect())
 }
 
-struct SeenLine { line: Line, matched: bool, history: LineHistory, final_state: Option<(i32, u8, bool)> }
+struct SeenLine { line: Line, matched: bool, history: LineHistory }
 
 fn min_opt(a: Option<i32>, b: Option<i32>) -> Option<i32> { [a, b].into_iter().flatten().min() }
 
@@ -438,13 +441,10 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         let ids: Vec<u128> = kept.iter().map(|(line, _)| u128::from(line.id)).collect();
         let mut steps = if ids.is_empty() { ReasonSteps::new() } else { reason_steps(query, stretch.run, &ids, stretch.first, stretch.last)? };
         for (line, matched) in kept {
-            let entry = seen.entry(line.id).or_insert_with(|| SeenLine { line: line.clone(), matched, history: LineHistory::default(), final_state: None });
+            let entry = seen.entry(line.id).or_insert_with(|| SeenLine { line: line.clone(), matched, history: LineHistory::default() });
             entry.matched |= matched;
             entry.line.country = entry.line.country.or(line.country);
             entry.line.building = entry.line.building.or(line.building);
-            if stretch.first <= line.last && line.last <= stretch.last {
-                entry.final_state = Some((line.last, line.output_reason, line.had_output));
-            }
             if let Some(part) = steps.remove(&line.id) {
                 entry.history.read.extend(part.read);
                 entry.history.purpose.extend(part.purpose);
@@ -453,16 +453,26 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
                 entry.history.first_repair = min_opt(entry.history.first_repair, part.first_repair);
                 entry.history.before_observation = min_opt(entry.history.before_observation, part.before_observation);
             }
+            if stretch.first <= line.last && line.last <= stretch.last {
+                entry.history.read.push((line.last, Some(line.output_reason), line.had_output));
+            }
         }
     }
     for mut acc in seen.into_values() {
         acc.history.read.sort_by_key(|step| step.0);
+        let mut merged_read: Vec<(i32, Option<u8>, bool)> = Vec::with_capacity(acc.history.read.len());
+        for step in acc.history.read {
+            match merged_read.last_mut() {
+                Some(last) if last.0 == step.0 => *last = step,
+                _ => merged_read.push(step),
+            }
+        }
         acc.history.purpose.sort_by_key(|step| step.0);
         acc.history.purpose.dedup_by(|next, prev| next.1 == prev.1);
-        let gaps = dated_gaps(&acc.history.read, acc.final_state, &acc.history.purpose);
+        let gaps = dated_gaps(&merged_read, None, &acc.history.purpose);
         let owner_gap = gaps.iter().find(|gap| gap.2 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
         if acc.line.country.is_none() {
-            let first_output = acc.history.read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);
+            let first_output = merged_read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);
             if let Some(hour) = owner_gap.into_iter().chain(first_output).min() { out.unattributed.push(hour); }
             continue;
         }
