@@ -129,6 +129,7 @@ export const nuclearArsenalRaceDeclaration: BarsWidgetDeclaration<NuclearArsenal
   icon: 'target',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
   },

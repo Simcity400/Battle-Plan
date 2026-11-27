@@ -312,6 +312,7 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
   icon: 'chart-bars',
   countries: {
     mode: 'multi',
+    content: 'history',
     allowSingleSlot: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group',
   },

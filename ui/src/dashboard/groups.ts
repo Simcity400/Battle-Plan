@@ -232,22 +232,12 @@ function worldFilterHours(groups: CountryGroupReply): ReadonlyArray<number> {
   return hours;
 }
 
-export function selectionChangeHours(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  index: CountryIdentityIndex | null): readonly number[] {
-  if (selection.kind === 'all' || !index) return [];
-  if (selection.kind !== 'group') return index.changeHoursOf(selection.kind === 'tags' ? selection.tags : fallback);
-  const runs = groups ? groupRuns(groups, selection.group) : null;
-  if (!groups || !runs) return [];
-  return [...new Set([...spanChanges([...runs, ...groupUnobserved(groups, selection.group)]), ...index.changeHoursOf([...new Set(runs.map(run => run.tag))])])]
-    .sort((a, b) => a - b);
-}
-
 export function worldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
   hour: number, index?: CountryIdentityIndex | null): WorldFilter {
   return worldFilterQuery(selection, fallback, groups, index).at(hour);
 }
 
-export function worldFilterQuery(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
+function worldFilterQuery(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
   index?: CountryIdentityIndex | null): PlaybackIntervals<WorldFilter> {
   const identities = identitiesFor(groups, index);
   let queries: FilterQueries;
@@ -423,23 +413,4 @@ export function noMembersAt(selection: CountrySelection, resolved: ResolvedCount
   if (selection.kind !== 'group' || resolved.top != null || resolved.factionId != null || resolved.tags.length || resolved.reason || !groups) return null;
   const { reason } = worldFilter(selection, [], groups, hour);
   return reason === null ? null : { reason };
-}
-
-export interface WorldRequestTags { tags: string[]; ready: boolean; reason: string | null }
-export function worldRequestTags(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number,
-  index?: CountryIdentityIndex | null): WorldRequestTags {
-  if (selection.kind === 'all' || (selection.kind === 'group' && selection.group.type === 'top')) return { tags: [], ready: true, reason: null };
-  const identities = identitiesFor(groups, index);
-  if (!identities || selection.kind === 'group' && !groups) return { tags: [], ready: false, reason: null };
-  if (selection.kind !== 'group') {
-    const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
-    const reason = resolved.reason ?? worldFilter(selection, fallback, groups, lastHour, identities).reason;
-    return { tags: resolved.tags, ready: reason === null && resolved.tags.length > 0, reason };
-  }
-  const runs = groupRuns(groups!, selection.group);
-  if (!runs) return { tags: [], ready: false, reason: UNAVAILABLE };
-  const tags = [...new Set([...runs].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag)).map(run => run.tag))];
-  const reason = !tags.length ? groupUnobserved(groups!, selection.group).length ? INCOMPLETE : NO_MEMBERS.ever
-    : identities.keysDuring(runs).size ? null : MEMBERS_UNAVAILABLE;
-  return { tags, ready: reason === null, reason };
 }

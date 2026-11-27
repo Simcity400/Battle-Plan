@@ -544,7 +544,7 @@ export const civilWarsDeclaration: TimelineWidgetDeclaration<CivilWarsProjection
   subject: 'civil wars',
   emptyCampaign: 'Load a campaign to see its civil wars.',
   icon: 'flag-torn',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'history', allowSlots: true },
   jumpToDate: true,
   keyByBranch: true,
   sources: ctx => ({

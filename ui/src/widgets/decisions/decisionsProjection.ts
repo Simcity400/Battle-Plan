@@ -388,7 +388,7 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
   subject: 'decisions',
   emptyCampaign: 'Load a campaign to see decisions.',
   icon: 'ballot',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'history' },
   columns: DECISIONS_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {

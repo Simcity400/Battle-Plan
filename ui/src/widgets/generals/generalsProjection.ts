@@ -224,7 +224,7 @@ export const generalsDeclaration: TableWidgetDeclaration<GeneralsOptions> = {
   subject: 'leaders',
   emptyCampaign: 'Load a campaign to see its leaders.',
   icon: 'star',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'hour' },
   sources: ctx => {
     const params = { branchId: ctx.branch.id, selection: leaderSelection(ctx.countries.filter), leaders: kindOf(ctx.options.leaders) };
     return {

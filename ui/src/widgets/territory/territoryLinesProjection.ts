@@ -78,6 +78,7 @@ export const territoryLinesDeclaration: TimeChartWidgetDeclaration<TerritoryLine
   icon: 'map',
   countries: {
     mode: 'multi',
+    content: 'history',
     allowSlots: true,
     everyOnTop: true,
     factions: true,

@@ -412,7 +412,7 @@ export const careerTimelineDeclaration: TimelineWidgetDeclaration<CareerTimeline
   subject: 'general',
   emptyCampaign: 'Load a campaign to see a general’s career.',
   icon: 'history',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'history', allowSlots: true },
   jumpToDate: true,
   keyByBranch: true,
   sources: ctx => {

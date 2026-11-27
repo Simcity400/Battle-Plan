@@ -2,6 +2,7 @@ import { liveKey, type LiveValues } from '../../charts/live.ts';
 import { gameDate } from '../../dashboard/calendar.ts';
 import { subjectHandle } from '../../dashboard/chosen.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import type { CountrySelection } from '../../dashboard/model';
 import type { CardWidgetDeclaration } from '../../families/card/declaration.ts';
 import { cardFlag, type CardItemRow, type CardModel, type CardProjection, type CardRow } from '../../families/card/model.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
@@ -39,10 +40,15 @@ export function leaderParams(ctx: FamilyPlanContext): { readonly reference: stri
     const reference = subjectHandle(ctx.track.source.metadata.campaignKey, chosen);
     return reference === null ? null : { reference };
   }
-  const group = groupSelection(ctx.widget.countries);
-  if (group) return { selection: { kind: 'group', group } };
-  if (ctx.countries.all) return { selection: { kind: 'all' } };
-  return ctx.countries.tags.length ? { selection: { kind: 'countries', countries: ctx.countries.tags.map(countryFromKey) } } : null;
+  const selection = leaderSelectionOf(ctx.widget.countries, ctx.countries.tags);
+  return selection && { selection };
+}
+
+export function leaderSelectionOf(countries: CountrySelection, tags: readonly string[]): LeaderSelection | null {
+  const group = groupSelection(countries);
+  if (group) return { kind: 'group', group };
+  if (countries.kind === 'all') return { kind: 'all' };
+  return tags.length ? { kind: 'countries', countries: tags.map(countryFromKey) } : null;
 }
 
 function experience(live: Live, key: string): { readonly raw: string | null; readonly reason: string } {
@@ -250,7 +256,7 @@ export const dossierDeclaration: CardWidgetDeclaration<DossierOptions> = {
   subject: 'general',
   emptyCampaign: 'Load a campaign to see a general’s career.',
   icon: 'history',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'hour', allowSlots: true },
   keyByBranch: true,
   unavailable: ctx => (String(ctx.options.leader ?? '') && leaderParams(ctx) === null ? 'The saved general is from another campaign. Choose one in widget settings.' : null),
   sources: ctx => {

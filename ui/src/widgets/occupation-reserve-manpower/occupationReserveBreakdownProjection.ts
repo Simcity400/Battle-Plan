@@ -602,7 +602,7 @@ export const occupationReserveBreakdownDeclaration: TimeChartWidgetDeclaration<O
   subject: 'occupation manpower',
   emptyCampaign: 'Load a campaign to see occupation manpower.',
   icon: 'flag',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'history', allowSlots: true },
   aux: {
     product: 'country-identities',
     label: 'the countries',

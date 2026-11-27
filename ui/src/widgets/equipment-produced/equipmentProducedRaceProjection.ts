@@ -367,6 +367,7 @@ export const equipmentProducedRaceDeclaration: BarsWidgetDeclaration<EquipmentPr
   icon: 'layers',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     everyOnTop: true,
   },

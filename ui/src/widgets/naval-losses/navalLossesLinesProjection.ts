@@ -356,6 +356,7 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
   icon: 'shield',
   countries: {
     mode: 'multi',
+    content: 'history',
     allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',

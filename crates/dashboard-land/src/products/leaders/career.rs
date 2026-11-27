@@ -3,6 +3,7 @@ use super::{
     Asked, Content, EvaluatedLeader, LeaderKinds, LeaderRole, LeaderSelection, LeaderTrait, LeadersContext, RESULTS_MISSING, Tally, TopLeader, TraitList, UnitLeaders, UnitLeadersParams,
     cell_number, cell_text, handle, held_traits_for, parse_branch,
 };
+use super::membership::Served;
 use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt}}, queries::country_ids::{Names, RunLinks}};
 use dashboard_intelligence::products::intelligence::Tags;
 use dashboard_follow::live::Source as Cell;
@@ -1271,7 +1272,7 @@ pub struct LeaderChoicesParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderChoicesReply {
-    pub choices: Vec<(String, Option<String>, Option<String>, i32)>,
+    pub choices: Vec<(String, Option<String>, Option<String>, i32, Option<String>)>,
     pub warnings: Vec<String>,
 }
 
@@ -1291,15 +1292,18 @@ impl Product for LeaderChoices {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        parse_branch(&params.branch_id)?;
-        match params.selection {
-            LeaderSelection::Group { .. } => Err("Branch-wide leader choices need countries or all leaders"),
-            _ => Ok(()),
-        }
+        parse_branch(&params.branch_id).map(drop)
     }
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let query = dashboard_base::queries::query(source, parse_branch(&params.branch_id).map_err(dashboard_core::invalid)?)?;
+        let roster = match &params.selection {
+            LeaderSelection::Group { group } => Some(super::membership::Roster::load(source, &query, load, group, cancelled)?),
+            _ => None,
+        };
+        if let Some(reason) = roster.as_deref().and_then(super::membership::Roster::refused) {
+            return Err(dashboard_core::refused(reason));
+        }
         let content = Content::load(source, load);
         let names = Names::new(&query.holders);
         let recording = query.replay.recording();
@@ -1308,11 +1312,16 @@ impl Product for LeaderChoices {
         leader_columns.sort_unstable();
         let token = field(TableId::Characters, "token")?;
         let mut last: BTreeMap<u128, (u32, i32)> = BTreeMap::new();
+        let mut lives: HashMap<u128, Vec<(i32, i32)>> = HashMap::new();
         for stretch in &query.timeline.stretches {
-            for &(key, first, end) in dashboard_base::queries::lifetimes(source, stretch.run, TableId::UnitLeaders)?.iter() {
-                let hour = end.min(i64::from(stretch.last));
-                if first <= i64::from(stretch.last) && hour >= i64::from(stretch.first) {
-                    last.insert(key, (stretch.run, hour as i32));
+            let (from, to) = (i64::from(stretch.first), i64::from(stretch.last));
+            for (key, spans) in dashboard_query::cost::presences(recording, stretch.run, TableId::UnitLeaders, (0, u128::MAX), from, to)? {
+                let seen: Vec<(i32, i32)> = spans.into_iter().filter(|&(a, b)| a <= to && b >= from).map(|(a, b)| (a.max(from) as i32, b.min(to) as i32)).collect();
+                if let Some(&(_, end)) = seen.last() {
+                    last.insert(key, (stretch.run, end));
+                }
+                if roster.is_some() {
+                    lives.entry(key).or_default().extend(seen);
                 }
             }
         }
@@ -1351,13 +1360,22 @@ impl Product for LeaderChoices {
                 if leader_kind != super::KIND_ARMY && leader_kind != super::KIND_NAVY {
                     continue;
                 }
-                let tag = names.tag_at(&links, raw, hour).map(str::to_owned);
-                if let super::LeaderSelection::Countries { countries } = &params.selection
+                let slot = links.slot_at(raw, hour);
+                let tag = slot.and_then(|slot| names.slot_tag(slot, hour)).map(str::to_owned);
+                if let LeaderSelection::Countries { countries } = &params.selection
                     && !tag.as_ref().is_some_and(|tag| countries.iter().any(|country| query.holders.goes_by(country, tag, hour)))
                 {
                     continue;
                 }
-                choices.push((key.to_string(), named.get(&(hour, character)).cloned(), tag, hour));
+                let missing = match roster.as_deref() {
+                    None => None,
+                    Some(roster) => match roster.served(slot, lives.get(&key).map(Vec::as_slice).unwrap_or_default()) {
+                        Served::Member => None,
+                        Served::Unknown(reason) => Some(reason.to_owned()),
+                        Served::Never => continue,
+                    },
+                };
+                choices.push((key.to_string(), named.get(&(hour, character)).cloned(), tag, hour, missing));
             }
         }
         choices.sort_by_key(|choice| choice.0.parse::<u64>().unwrap_or_default());

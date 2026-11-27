@@ -25,6 +25,7 @@ export const bombingDamageDeclaration: BarsWidgetDeclaration<MilitaryAirAtOption
   icon: 'target',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
   },
   sources,

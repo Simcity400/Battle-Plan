@@ -11,7 +11,7 @@ import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, EVER_UNRECORDED, everBounds, everStateAt, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
-import { cumulativeEverMembership, datedIdentityMembership, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
+import { cumulativeEverMembership, datedIdentityMembership, groupSpanBodyStatus, groupSpanCover, groupSpanStateAt, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -1080,7 +1080,28 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     ? compiledFollow.allowEmptyFollow
     : (plan?.allowEmptyFollow === true && !plan.refused && !plan.unavailable);
 
-  const everDates = useMemo(() => ((isMulti || isFilter) ? everBounds(widget.countries, groups.data) : null), [isMulti, isFilter, widget.countries, groups.data]);
+  const history = (isMulti || isFilter) && policy.content === 'history';
+  const spanCover = useMemo(() => (history ? groupSpanCover(widget.countries, groups.data) : null), [history, widget.countries, groups.data]);
+  const spanFirst = rangeSpan?.[0] ?? firstHour;
+  const spanClock = useMemo(() => {
+    const at = () => (following ? Math.floor(runtime.clock.getHour()) + trackOffset : moment);
+    return {
+      subscribe: (changed: () => void) => (spanCover && following && active
+        ? watchBoundary(runtime.clock, axis => {
+            const state = groupSpanStateAt(spanCover, spanFirst, Math.floor(axis) + trackOffset);
+            return [state.from - trackOffset, state.until + 1 - trackOffset];
+          }, changed)
+        : () => {}),
+      read: () => (spanCover ? groupSpanStateAt(spanCover, spanFirst, at()).kind : null),
+    };
+  }, [spanCover, spanFirst, following, active, runtime.clock, trackOffset, moment]);
+  const spanKind = useSyncExternalStore(spanClock.subscribe, spanClock.read, spanClock.read);
+  const spanBody = useMemo(
+    () => groupSpanBodyStatus(spanKind, spanCover, widget.countries, spanFirst > firstHour),
+    [spanKind, spanCover, widget.countries, spanFirst, firstHour],
+  );
+
+  const everDates = useMemo(() => ((isMulti || isFilter) && !history ? everBounds(widget.countries, groups.data) : null), [isMulti, isFilter, history, widget.countries, groups.data]);
   const everClock = useMemo(() => {
     const at = () => (following ? Math.floor(runtime.clock.getHour()) + trackOffset : moment);
     return {
@@ -1142,7 +1163,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         const msg = nameFailureDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`;
         return { kind: 'absent', message: s.reason ?? msg, detail: nameFailureDetail };
       }
-      if (s.stage === 'no-members') return { kind: 'no-members', reason: s.reason };
     } else if (!isSingle && coverage.outside) {
       return {
         kind: 'outside',
@@ -1159,13 +1179,16 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return compiledFollow.refused ? { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused } : null;
   })();
   const outcome = ((): FamilyBodyStatus | null => {
+    if (history && spanBody) return spanBody;
     if (isFilter) {
       if (filterMatch?.reason) return { kind: 'refused', reason: filterMatch.reason };
       if (countriesState.reason) return { kind: 'refused', reason: countriesState.reason };
       if (everBody) return everBody;
     }
 
-    if (isMulti) {
+    if (isMulti && history) {
+      if (countriesState.reason) return { kind: 'empty', message: countriesState.reason };
+    } else if (isMulti) {
       if (incompleteBody) return incompleteBody;
       if (countriesState.reason) return { kind: 'empty', message: countriesState.reason };
       if (everBody) return everBody;

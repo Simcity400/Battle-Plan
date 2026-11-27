@@ -161,7 +161,7 @@ export const mostDecoratedDeclaration: TableWidgetDeclaration<DecoratedOptions> 
   subject: 'divisions',
   emptyCampaign: 'Load a campaign to see divisions.',
   icon: 'star',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'hour' },
   sources: (ctx, view) => {
     const settings = tableSettingsOf(ctx.options[TABLE_SETTINGS_KEY], COLUMNS, TABLE_BASE);
     const params = {

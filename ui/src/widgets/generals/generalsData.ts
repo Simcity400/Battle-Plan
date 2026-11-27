@@ -1,11 +1,10 @@
 import type { GatedTime, PinnedSpec } from '../../dashboard/regionTime';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import { subjectToken } from '../../dashboard/chosen.ts';
 import type { TraitDate } from './types';
-import type { LeaderRow as WireRow, LeaderKinds, LeaderRole, LeaderSelection, LeaderTrait, LeaderWithheld, UnitLeadersReply } from '../../generated/dashboard';
+import type { LeaderRow as WireRow, LeaderKinds, LeaderRole, LeaderTrait, LeaderWithheld, UnitLeadersReply } from '../../generated/dashboard';
 
 const KIND_ARMY = 1;
 const KIND_NAVY = 2;
@@ -64,8 +63,4 @@ export function pinnedCareer(source: WidgetBase, reference: string, track: Pick<
   const base = createWidget('general-career', track.id);
   return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
     contentScale: source.contentScale, options: { leader: subjectToken(track.source.metadata.campaignKey, reference) } };
-}
-
-export function leaderRequestSelection(tags: readonly string[] | null): LeaderSelection {
-  return tags === null ? { kind: 'all' } : { kind: 'countries', countries: tags.map(countryFromKey) };
 }

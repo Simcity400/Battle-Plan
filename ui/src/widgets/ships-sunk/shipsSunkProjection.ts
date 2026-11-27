@@ -118,7 +118,7 @@ const prefixOf = (campaign: string, branch: string) => setToken(`${campaign}:${b
 
 export const shipsSunkDeclaration: TableWidgetDeclaration<Options> = {
   family: 'table', kind: 'ships-sunk', label: 'Ships sunk', subject: 'ships', icon: 'ship',
-  emptyCampaign: 'Load a campaign to see its ships sunk log.', countries: { mode: 'filter' }, columns: SHIPS_SUNK_COLUMNS,
+  emptyCampaign: 'Load a campaign to see its ships sunk log.', countries: { mode: 'filter', content: 'history' }, columns: SHIPS_SUNK_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx) {
     const win = ctx.widget.time.mode === 'range' ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;

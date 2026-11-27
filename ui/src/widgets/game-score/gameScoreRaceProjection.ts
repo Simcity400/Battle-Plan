@@ -92,6 +92,7 @@ export const gameScoreRaceDeclaration: BarsWidgetDeclaration<GameScoreRaceOption
   icon: 'grid',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
   },

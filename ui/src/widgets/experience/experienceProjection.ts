@@ -133,7 +133,7 @@ export const experienceDeclaration: TimeChartWidgetDeclaration<ExperienceOptions
   subject: 'experience',
   emptyCampaign: 'Load a campaign to see experience.',
   icon: 'chart-line',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'history', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tag = ctx.countries.tags[0];
     return {

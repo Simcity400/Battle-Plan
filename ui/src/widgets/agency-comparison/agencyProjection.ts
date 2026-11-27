@@ -151,7 +151,7 @@ export const agencyDeclaration: TableWidgetDeclaration<AgencyProjectionOptions> 
   subject: 'agencies',
   emptyCampaign: 'Load a campaign to see agencies.',
   icon: 'shield',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'hour' },
   sources: ctx => {
     const top = topOf(ctx.widget);
     const by = typeof ctx.options.topMeasure === 'string' && TOP_MEASURES.has(ctx.options.topMeasure) ? ctx.options.topMeasure : 'defense';

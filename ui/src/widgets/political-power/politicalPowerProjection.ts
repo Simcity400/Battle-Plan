@@ -140,7 +140,7 @@ export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowe
   subject: 'political power',
   emptyCampaign: 'Load a campaign to see political power.',
   icon: 'chart-line',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'history', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;
     const withinEntries = ctx.countries.membership

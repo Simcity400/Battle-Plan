@@ -255,7 +255,7 @@ export const casualtyMatrixDeclaration: HeatMatrixWidgetDeclaration<CasualtyMatr
   subject: 'casualties',
   emptyCampaign: 'Load a campaign to see its casualties.',
   icon: 'target',
-  countries: { mode: 'multi', datedAtHour: true },
+  countries: { mode: 'multi', content: 'hour', datedAtHour: true },
   sources: ctx => plan(ctx, null),
   projection: casualtyMatrixProjection,
   projectionOptions: ctx => ({

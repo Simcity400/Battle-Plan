@@ -82,7 +82,7 @@ export const resourceTimeDeclaration: TimeChartWidgetDeclaration<ResourceTimeOpt
   subject: 'resource balance',
   emptyCampaign: 'Load a campaign and choose a country to see its resource balance.',
   icon: 'layers',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'history', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tag = ctx.countries.tags[0];
     const owner = `resource-balance:time:${ctx.track.source.id}:${ctx.branch.id}:${tag ?? ''}`;

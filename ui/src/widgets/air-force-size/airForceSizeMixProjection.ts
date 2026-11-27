@@ -63,6 +63,7 @@ export const airForceSizeMixDeclaration: BarsWidgetDeclaration<AirForceSizeMixOp
   icon: 'layers',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',

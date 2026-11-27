@@ -108,7 +108,7 @@ export const transfersDeclaration: TableWidgetDeclaration<TransfersProjectionOpt
   subject: 'territory transfers',
   emptyCampaign: 'Load a campaign to see territory transfers.',
   icon: 'flows',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'hour' },
   sources: ctx => ({
     owner: `territory-transfers:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
     entries: [{

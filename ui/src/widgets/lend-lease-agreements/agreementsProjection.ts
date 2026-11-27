@@ -259,7 +259,7 @@ export const agreementsDeclaration: TableWidgetDeclaration<AgreementsProjectionO
   subject: 'lend-lease agreements',
   emptyCampaign: 'Load a campaign to see lend-lease.',
   icon: 'link',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'hour' },
   sources: ctx => {
     const selection = occurrenceSelection(ctx);
     const params = {

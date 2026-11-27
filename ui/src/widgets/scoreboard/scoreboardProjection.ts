@@ -645,6 +645,7 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
   className: 'scoreboard',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',

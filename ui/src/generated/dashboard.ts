@@ -6188,7 +6188,7 @@ traitGains: Array<[number, number, number]>, traits: Array<LeaderTrait>, command
  */
 observed: Array<[number, number]>, battlesPartialFrom: number | null, resultsMissing: string, missing: string | null, warnings: Array<string>, };
 export type LeaderChoicesParams = { branchId: string, selection: LeaderSelection, };
-export type LeaderChoicesReply = { choices: Array<[string, string | null, string | null, number]>, warnings: Array<string>, };
+export type LeaderChoicesReply = { choices: Array<[string, string | null, string | null, number, string | null]>, warnings: Array<string>, };
 export type LeaderHourParams = { branchId: string, reference?: string, selection?: LeaderSelection, };
 export type LeaderTraining = { key: string, token: string | null, name: string | null, requiredRaw: string | null, };
 export type LeaderFactor = { token: string | null, name: string | null, factorRaw: string, };

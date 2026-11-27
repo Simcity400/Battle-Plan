@@ -279,6 +279,21 @@ export function overlapsHourRanges(ranges: HourRanges | null | undefined, firstH
   return low < merged.length && merged[low]![0] <= lastHour;
 }
 
+export function withoutHourRanges(ranges: HourRanges, cut: HourRanges): HourRanges {
+  if (!cut.length) return ranges;
+  const out: (readonly [number, number])[] = [];
+  for (const [first, last] of ranges) {
+    let at = first;
+    for (const [lo, hi] of cut) {
+      if (hi < at || lo > last) continue;
+      if (lo > at) out.push([at, lo - 1]);
+      at = Math.max(at, hi + 1);
+    }
+    if (at <= last) out.push([at, last]);
+  }
+  return out;
+}
+
 export function inHourRanges(ranges: HourRanges | null | undefined, hour: number): boolean {
   return overlapsHourRanges(ranges, hour, hour);
 }

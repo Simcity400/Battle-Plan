@@ -107,7 +107,7 @@ export const territoryBreakdown: BreakdownWidgetSpec<TerritoryBreakdownOptions> 
   subject: 'territory',
   emptyCampaign: 'Load a campaign to see its territory breakdown.',
   icon: 'sunburst',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'hour' },
   projection: territoryBreakdownProjection,
   projectionOptions: ctx => ({
     measure: measureOf(ctx.options.measure),

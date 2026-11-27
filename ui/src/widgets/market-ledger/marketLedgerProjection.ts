@@ -430,7 +430,7 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
   subject: 'market ledger',
   emptyCampaign: 'Load a campaign to see market activity.',
   icon: 'history',
-  countries: { mode: 'multi' },
+  countries: { mode: 'multi', content: 'history' },
   columns: MARKET_LEDGER_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {

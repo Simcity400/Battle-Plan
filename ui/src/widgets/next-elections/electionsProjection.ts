@@ -126,7 +126,7 @@ export const electionsDeclaration: TableWidgetDeclaration<ElectionsProjectionOpt
   subject: 'elections',
   emptyCampaign: 'Load a campaign to see elections.',
   icon: 'ballot',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'hour' },
   sources: ctx => {
     const selection = occurrenceSelection(ctx);
     const params = { branchId: ctx.branch.id, ...selection };

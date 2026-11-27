@@ -322,6 +322,7 @@ export const raidTallyRaceDeclaration: BarsWidgetDeclaration<RaidTallyRaceOption
   icon: 'target',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     everyOnTop: true,
   },

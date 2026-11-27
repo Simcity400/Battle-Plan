@@ -47,6 +47,7 @@ export const navalLossesRaceDeclaration: BarsWidgetDeclaration<NavalLossesRaceOp
   icon: 'shield',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',

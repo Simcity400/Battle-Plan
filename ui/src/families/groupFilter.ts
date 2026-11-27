@@ -4,7 +4,7 @@ import type { CountrySelection, GroupMembership } from '../dashboard/model';
 import { NO_MEMBERS } from '../dashboard/noMembers.ts';
 import type { CountryGroupReply, CountryIdentityHistory, MembershipRun } from '../generated/dashboard';
 import type { FamilyBodyStatus } from './plan.ts';
-import { inHourRanges, nextMembershipChange, nextRangesChange, type HourRanges } from './holders.ts';
+import { inHourRanges, nextMembershipChange, nextRangesChange, withoutHourRanges, type HourRanges } from './holders.ts';
 
 export const GROUP_UNAVAILABLE = 'Group membership is unavailable at this time.';
 const MEMBERS_UNAVAILABLE = 'Group members are unavailable at this time.';
@@ -342,4 +342,55 @@ export function resolveTimelineSelection(
     return { kind: 'filtered', countries: new Set(active), countryIds };
   }
   return { kind: 'filtered', countries: new Set(opt.selected), countryIds: identities.selected(opt.selected) };
+}
+
+export interface GroupSpanCover {
+  readonly members: HourRanges;
+  readonly unobserved: HourRanges;
+}
+
+export interface GroupSpanState {
+  readonly kind: 'members' | 'empty' | 'unrecorded';
+  readonly from: number;
+  readonly until: number;
+}
+
+export function groupSpanCover(selection: CountrySelection, groups: CountryGroupReply | undefined): GroupSpanCover | null {
+  if (selection.kind !== 'group' || !groups) return null;
+  const runs = groupRuns(groups, selection.group);
+  if (!runs) return null;
+  const raw = groupUnobserved(groups, selection.group);
+  if (selection.membership === 'hour') {
+    const unobserved = mergedRanges(raw.map(span => [span.firstHour, span.lastHour] as const));
+    return { members: withoutHourRanges(runs.map(run => [run.firstHour, run.lastHour] as const), unobserved), unobserved };
+  }
+  const unknownFrom = everKnownBefore(raw);
+  let firstJoin = Infinity;
+  for (const run of runs) if (run.firstHour < firstJoin) firstJoin = run.firstHour;
+  return {
+    members: firstJoin < unknownFrom ? [[firstJoin, unknownFrom - 1]] : [],
+    unobserved: unknownFrom === Infinity ? [] : [[unknownFrom, Number.MAX_SAFE_INTEGER]],
+  };
+}
+
+function firstHourFrom(ranges: HourRanges, first: number): number {
+  let at = Infinity;
+  for (const [lo, hi] of ranges) if (hi >= first && Math.max(lo, first) < at) at = Math.max(lo, first);
+  return at;
+}
+
+export function groupSpanStateAt(cover: GroupSpanCover, first: number, hour: number): GroupSpanState {
+  const member = firstHourFrom(cover.members, first);
+  const unread = firstHourFrom(cover.unobserved, first);
+  if (hour >= member) return { kind: 'members', from: member, until: Infinity };
+  if (hour >= unread) return { kind: 'unrecorded', from: unread, until: member - 1 };
+  return { kind: 'empty', from: -Infinity, until: Math.min(member, unread) - 1 };
+}
+
+export function groupSpanBodyStatus(kind: GroupSpanState['kind'] | null, cover: GroupSpanCover | null, selection: CountrySelection, startsLater: boolean): FamilyBodyStatus | null {
+  if (!cover) return null;
+  if (kind === 'unrecorded') return { kind: 'not-recorded', reason: selection.kind === 'group' && selection.membership === 'ever' ? EVER_UNRECORDED : GROUP_UNAVAILABLE };
+  if (kind !== 'empty') return null;
+  if (!cover.members.length && !cover.unobserved.length) return { kind: 'no-members', reason: NO_MEMBERS.ever };
+  return { kind: 'no-members', reason: startsLater ? NO_MEMBERS.span : NO_MEMBERS.yet };
 }

@@ -172,6 +172,7 @@ export const lendLeaseBalanceDeclaration: BarsWidgetDeclaration<LendLeaseBalance
   icon: 'chart-bars',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
   },

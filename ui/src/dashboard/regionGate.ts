@@ -1,34 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { WidgetRuntime } from './definitions';
-import type { BoundTrack, CountrySelection, WidgetBase } from './model';
+import type { BoundTrack, WidgetBase } from './model';
 import type { Failure } from './queryError';
 import type { Span } from '../charts/series';
 import type { CountryIdentityHistory } from '../generated/dashboard';
-import { defaultCountryKey, selectedCountryKeys } from './countrySelection.ts';
+import { selectedCountryKeys } from './countrySelection.ts';
 import { countryFromKey, countryKey } from './countryKey.ts';
 import { countryDrillTagAt, countryIdentityIndex } from './countryIdentity.ts';
 import { useSlotTagsState } from './countrySlots.ts';
 import { choiceAt, resolveChoice, type CountryHolder, type ReachedCountry } from './reachedCountry.ts';
 import { boundCountryToken, datedCountrySpans, readDatedCountry, type BoundCountry, type DatedCountrySelection } from './datedCountry.ts';
-import { selectionChangeHours, worldFilterQuery, worldRequestTags } from './groups.ts';
 import { useCountryGroups } from './useCountryGroups.ts';
 import { axisAt, checkedTime, followedProduct, FOLLOW, lastRecordedHour, recordedHour, refusedHours, regionFollows, regionHour, regionTrack, regionWindow, SPEC, type AxisHour,
   type BoundHour, type BoundWindow, type FollowQuery, type FollowRequest, type GatedHour, type GatedTime, type GatedWindow, type Outside, type PinTime, type Region, type RegionAction,
   type TimeRefusal, type TrackHour } from './regionTime.ts';
 import { epochOf, useRegion, useRegionHour, useRegionOutside } from './widgetTime.ts';
-import { NO_MEMBERS } from './noMembers.ts';
 
 export interface CountryNeed { stored?: unknown; held?: Holder | null; key?: string; setOption?: (key: string, value: string) => void }
-export interface GateNeeds { country?: CountryNeed; members?: boolean; holders?: boolean; changes?: readonly number[] }
+export interface GateNeeds { country?: CountryNeed; holders?: boolean; changes?: readonly number[] }
 
 export interface CountryAt extends ReachedCountry {
   holders: CountryHolder[] | null; pick: (holder: CountryHolder) => void; error?: Failure; retry: () => void; historyHeld: boolean;
   aliasAt: (hour: number) => string | null; edges: readonly number[]; holder: Holder | null;
   history: { key: string; spans: readonly Span[] } | null; aliases: ReadonlyMap<string, readonly Span[]> | null;
-}
-export interface MembersAt {
-  countries: ReadonlySet<string> | null | undefined; requestTags: string[] | null | undefined; selectionReason: string | null; known: boolean;
-  includes: (key: string) => boolean;
 }
 export interface Holder { tag: string; origin: number }
 declare const HELD: unique symbol;
@@ -41,7 +35,6 @@ export type GateStage =
   | { stage: 'choose' }
   | { stage: 'holders'; holders: CountryHolder[]; pick: (holder: CountryHolder) => void }
   | { stage: 'absent'; reason: string | null }
-  | { stage: 'no-members'; reason: string }
   | { stage: 'failed'; failure: Failure; retry: () => void }
   | { stage: 'loading' }
   | { stage: 'open' };
@@ -49,7 +42,7 @@ export type GateStage =
 export interface Gate {
   region: Region; track: BoundTrack | undefined; active: boolean;
   hour: GatedHour | null; lastRecorded: GatedHour | null; window: GatedWindow | null; outside: Outside | null; stage: GateStage; open: boolean;
-  country: CountryAt | null; members: MembersAt | null; groups: ReturnType<typeof useCountryGroups>; held: HeldCountry | null;
+  country: CountryAt | null; groups: ReturnType<typeof useCountryGroups>; held: HeldCountry | null;
   hourAt: (axis: AxisHour) => GatedHour | null;
   recorded: (hour: number | null | undefined, within?: readonly Span[] | null) => GatedHour | null;
   within: (hour: number | null | undefined) => BoundHour | null;
@@ -116,7 +109,6 @@ function identityHistory(histories: readonly CountryIdentityHistory[], selection
   return { ...identity, history: { key: countryKey(identity.slot), spans } };
 }
 
-const ranksCountries = (countries: CountrySelection) => countries.kind === 'all' || countries.kind === 'group' && countries.group.type === 'top';
 
 const NO_EDGES: readonly number[] = [];
 
@@ -203,48 +195,18 @@ function useCountryAt(region: Region, runtime: Runtime, track: BoundTrack | unde
 
 export function useRegionGate(runtime: Runtime, region: Region, active: boolean, needs: GateNeeds = {}): Gate {
   const track = regionTrack(region, runtime.tracks);
-  const widget = region.widget;
   const outside = useRegionOutside(runtime, region, active);
   const covered = !!track && outside === null;
-  const wantsMembers = !!needs.members && !ranksCountries(widget.countries);
-  const groups = useCountryGroups(runtime, covered && (!!needs.country || wantsMembers || !!needs.holders) ? track : undefined, active);
-  const fallback = needs.members ? defaultCountryKey(track) : null;
-  const lastHour = track?.branch.lastHour ?? null;
-  const query = useMemo(() => wantsMembers && groups.data && lastHour !== null
-    ? worldFilterQuery(widget.countries, fallback ? [fallback] : [], groups.data) : null,
-  [wantsMembers, widget.countries, fallback, groups.data, lastHour]);
-  const request = useMemo(() => !needs.members || lastHour === null ? null
-    : ranksCountries(widget.countries) ? worldRequestTags(widget.countries, [], undefined, lastHour)
-    : groups.data ? worldRequestTags(widget.countries, fallback ? [fallback] : [], groups.data, lastHour) : null,
-  [needs.members, widget.countries, fallback, groups.data, lastHour]);
+  const groups = useCountryGroups(runtime, covered && (!!needs.country || !!needs.holders) ? track : undefined, active);
   const histories = groups.data?.countryIdentities;
-  const index = useMemo(() => wantsMembers && histories ? countryIdentityIndex(histories) : null, [wantsMembers, histories]);
-  const memberEdges = useMemo(() => wantsMembers ? selectionChangeHours(widget.countries, fallback ? [fallback] : [], groups.data, index) : NO_EDGES,
-    [wantsMembers, widget.countries, fallback, groups.data, index]);
   const [countryEdges, setCountryEdges] = useState<readonly number[]>(NO_EDGES);
   const changes = needs.changes ?? NO_EDGES;
-  const epochs = useMemo(() => mergedEdges(countryEdges, memberEdges, changes), [countryEdges, memberEdges, changes]);
+  const epochs = useMemo(() => mergedEdges(countryEdges, changes), [countryEdges, changes]);
   const hour = useRegionHour(runtime, region, active, epochs);
   const country = useCountryAt(region, runtime, track, groups, covered ? hour : null, active, needs.country);
   const edges = country?.edges ?? NO_EDGES;
   useEffect(() => { setCountryEdges(before => before.length === edges.length && before.every((edge, at) => edge === edges[at]) ? before : edges); }, [edges]);
-  const members = useMemo<MembersAt | null>(() => {
-    if (!needs.members) return null;
-    if (!wantsMembers) return { countries: null, requestTags: request?.ready ? request.tags.length ? request.tags : null : undefined,
-      selectionReason: null, known: true, includes: () => true };
-    const filter = hour === null ? null : query?.at(hour) ?? null;
-    const ids = filter?.countryIds;
-    return { countries: filter && !filter.reason ? filter.tags : undefined,
-      requestTags: request?.ready ? request.tags.length ? request.tags : null : undefined,
-      selectionReason: filter ? filter.reason ?? request?.reason ?? null : null, known: filter?.known ?? false,
-      includes: key => {
-        if (!filter || filter.reason || hour === null) return false;
-        if (filter.tags === null) return true;
-        const id = index?.keyAt(key, hour) ?? null;
-        return ids ? id !== null && ids.has(id) : filter.tags.has(key);
-      } };
-  }, [needs.members, wantsMembers, hour, query, request, index]);
-  const stage = gateStage(track, outside, hour, country, needs.country !== undefined, wantsMembers, groups, members);
+  const stage = gateStage(track, outside, hour, country, needs.country !== undefined);
   const open = stage.stage === 'open';
   const gated = open && hour !== null ? mint(hour) : null;
   const tracks = runtime.tracks;
@@ -309,11 +271,10 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
   const held = useMemo(() => hold(holder), [hold, holder?.tag, holder?.origin]);
   const lastRecordedRaw = lastRecordedHour(track);
   const lastRecorded = lastRecordedRaw !== null ? mint(lastRecordedRaw) : null;
-  return { region, track, active, hour: gated, lastRecorded, window, outside, stage, open, country, members, groups, held, hourAt, recorded, within, span, follow, checkFollow, time, checkTime, hold, checkHold };
+  return { region, track, active, hour: gated, lastRecorded, window, outside, stage, open, country, groups, held, hourAt, recorded, within, span, follow, checkFollow, time, checkTime, hold, checkHold };
 }
 
-export function gateStage(track: BoundTrack | undefined, outside: Outside | null, hour: TrackHour | null, country: CountryAt | null, needsCountry: boolean,
-  needsMembers: boolean, groups: Gate['groups'], members: MembersAt | null): GateStage {
+export function gateStage(track: BoundTrack | undefined, outside: Outside | null, hour: TrackHour | null, country: CountryAt | null, needsCountry: boolean): GateStage {
   if (!track) return { stage: 'unbound' };
   if (outside) return { stage: 'outside', outside };
   if (hour === null) return { stage: 'loading' };
@@ -324,11 +285,6 @@ export function gateStage(track: BoundTrack | undefined, outside: Outside | null
     if (country.reason) return { stage: 'absent', reason: country.reason };
     if (country.absent || country.aliases?.size === 0) return { stage: 'absent', reason: null };
     if (!country.tag) return country.historyHeld ? { stage: 'absent', reason: null } : { stage: 'loading' };
-  }
-  if (needsMembers && members) {
-    if (!groups.data) return groups.error ? { stage: 'failed', failure: groups.error, retry: groups.retry } : { stage: 'loading' };
-    if (members.selectionReason) return { stage: 'no-members', reason: members.selectionReason };
-    if (members.countries?.size === 0) return { stage: 'no-members', reason: NO_MEMBERS.hour };
   }
   return { stage: 'open' };
 }

@@ -285,6 +285,7 @@ export const factoriesMixDeclaration: BarsWidgetDeclaration<FactoriesMixOptions>
   icon: 'factory',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     everyOnTop: true,
   },

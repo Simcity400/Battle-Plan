@@ -34,6 +34,7 @@ export const factionStrengthLinesDeclaration: TimeChartWidgetDeclaration<Faction
   icon: 'shield',
   countries: {
     mode: 'multi',
+    content: 'history',
     allowSlots: true,
     factions: true,
     requireGroupsWhen: () => true,

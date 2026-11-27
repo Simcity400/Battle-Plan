@@ -103,7 +103,7 @@ export const diplomaticRelationsDeclaration: HeatMatrixWidgetDeclaration<Diploma
   subject: 'diplomatic relations',
   emptyCampaign: 'Load a campaign to see diplomatic relations.',
   icon: 'handshake',
-  countries: { mode: 'multi' },
+  countries: { mode: 'multi', content: 'hour' },
   sources: (ctx): SourcePlan => {
     const order = orderOf(ctx.options.order);
     const top = ctx.countries.top;

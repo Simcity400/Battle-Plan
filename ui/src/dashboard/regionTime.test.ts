@@ -98,19 +98,15 @@ test('only a recorded track hour is a track hour; the region key tells regions r
 
 test('the gate’s stages run in a fixed order, and a country that holds nothing once its history is known is absent, never loading', () => {
   const outside = { message: OUTSIDE_MESSAGE, detail: 'Change this widget’s time setting to view a recorded date.' };
-  const groups = { data: {}, error: undefined, retry() {} } as unknown as Parameters<typeof gateStage>[6];
   const country = (at: Partial<NonNullable<Parameters<typeof gateStage>[3]>>) => ({ chosen: 'GER', tag: 'GER', absent: false, reason: null, holders: null, historyHeld: true,
     aliases: null, ...at }) as unknown as Parameters<typeof gateStage>[3];
-  const members = (selectionReason: string | null) => ({ selectionReason }) as unknown as Parameters<typeof gateStage>[7];
-  const stage = (at: Partial<{ outside: typeof outside | null; hour: number | null; country: Parameters<typeof gateStage>[3]; members: Parameters<typeof gateStage>[7] }>) =>
-    gateStage(late, at.outside ?? null, (at.hour === undefined ? 1005 : at.hour) as TrackHour | null, at.country ?? country({}), true, true, groups, at.members ?? members(null)).stage;
-  assert.equal(stage({ outside, country: country({ absent: true }), members: members('none') }), 'outside', 'coverage comes first');
+  const stage = (at: Partial<{ outside: typeof outside | null; hour: number | null; country: Parameters<typeof gateStage>[3] }>) =>
+    gateStage(late, at.outside ?? null, (at.hour === undefined ? 1005 : at.hour) as TrackHour | null, at.country ?? country({}), true).stage;
+  assert.equal(stage({ outside, country: country({ absent: true }) }), 'outside', 'coverage comes first');
   assert.equal(stage({ hour: null }), 'loading');
   assert.equal(stage({ country: country({ tag: null, historyHeld: false }) }), 'loading', 'a country whose history is pending is loading');
   assert.equal(stage({ country: country({ tag: null }) }), 'absent', 'a country whose history is known but holds no tag here is absent');
   assert.equal(stage({ country: country({ aliases: new Map() }) }), 'absent', 'a held identity with no aliases at all is absent, not an empty open view');
-  assert.equal(stage({ members: members('No members') }), 'no-members');
-  assert.equal(stage({ members: { selectionReason: null, countries: new Set() } as unknown as Parameters<typeof gateStage>[7] }), 'no-members', 'a selection with no member at the hour is no-members, never an open empty read');
   assert.equal(stage({}), 'open');
 });
 
