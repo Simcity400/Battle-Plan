@@ -51,6 +51,7 @@ serde_json = { workspace = true }
 ts-rs = "11.1"
 
 [dev-dependencies]
+dashboard-research = { workspace = true, features = ["test-support"] }
 engine-native-memory = { workspace = true, features = ["test-support"] }
 content-reader-layers = { workspace = true, features = ["test-support"] }
 content-reader-script = { workspace = true, features = ["test-support"] }

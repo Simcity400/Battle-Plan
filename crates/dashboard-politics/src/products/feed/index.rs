@@ -79,10 +79,10 @@ pub(crate) struct Locator {
     pub key: u128,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub(crate) enum Item {
     Log { head: Locator, edges: Box<[Locator]>, valid_clock: bool },
-    Family(Box<EventFeedRow>),
+    Family(Box<families::FamilyRow>),
 }
 
 #[derive(Clone, Debug)]
@@ -673,7 +673,7 @@ fn choices(scanned: &Scanned, names: &Names) -> io::Result<Index<Item>> {
 }
 
 pub(crate) fn family_at(index: &Index<Item>, id: &str) -> Option<u32> {
-    index.find(family_id(id)).filter(|&at| matches!(&index.get(at).payload, Item::Family(row) if row.id == id))
+    index.find(family_id(id)).filter(|&at| matches!(&index.get(at).payload, Item::Family(family) if family.row.id == id))
 }
 
 fn family_id(text: &str) -> u128 {
@@ -685,7 +685,8 @@ fn family_id(text: &str) -> u128 {
     (u128::from(FeedEventRow::DERIVED - 1) << 64) | u128::from(hash)
 }
 
-fn family_occurrence(query: &Query<'_>, row: EventFeedRow, slot: Option<u32>) -> Occurrence<Item> {
+fn family_occurrence(query: &Query<'_>, family: families::FamilyRow, slot: Option<u32>) -> Occurrence<Item> {
+    let row = &family.row;
     let observed = row.read_hour.max(row.hour);
     let at = row.name_hour.min(observed);
     let roles: Vec<Role> = if let Some(slot) = slot {
@@ -715,7 +716,7 @@ fn family_occurrence(query: &Query<'_>, row: EventFeedRow, slot: Option<u32>) ->
         states: Box::new([]),
         sort_keys: Box::new([]),
         text,
-        payload: Item::Family(Box::new(row)),
+        payload: Item::Family(Box::new(family)),
     }
 }
 
@@ -791,17 +792,17 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     let (first, last) = (query.timeline.first, query.timeline.last);
     let mut refused: Vec<Notice> = Vec::new();
     let mut unsettled = false;
-    let mut rows: Vec<(EventFeedRow, Option<u32>)> = Vec::new();
+    let mut rows = Vec::new();
     let mut warnings: families::DatedNotes = Vec::new();
     let mut unattributed = Vec::new();
     let mut unrecorded = Vec::new();
     if let Some((made, notes, left_out)) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, (cancelled, &mut unsettled))? {
-        rows.extend(made.into_iter().map(|row| (row, None)));
+        rows.extend(made.into_iter().map(|row| (row.into(), None)));
         warnings.extend(notes);
         unattributed = left_out;
     }
     if let Some(made) = family(families::subject_rows(source, query, first, last, cancelled), &[Diplomacy], "subjects", "Subjects", &mut refused, (cancelled, &mut unsettled))? {
-        rows.extend(made.into_iter().map(|row| (row, None)));
+        rows.extend(made.into_iter().map(|row| (row.into(), None)));
     }
     if let Some((made, notes, projects)) = family(families::project_completions(source, query, context, first, last, cancelled), &[Milestones], "projectFinished", "Special projects", &mut refused, (cancelled, &mut unsettled))? {
         rows.extend(made);
@@ -818,13 +819,13 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     let localise = |spelling: &str| localisation.as_ref().ok().and_then(|held| dashboard_text::catalogue::localised(held, spelling, dashboard_text::catalogue::View::Plain).ok());
     let mut notices = Notices::default();
     if let Some(made) = family(super::nuclear::strike_rows(query, first, last, &localise, &mut notices, cancelled), &[WarsPeace], "nuclearStrike", "Nuclear strikes", &mut refused, (cancelled, &mut unsettled))? {
-        rows.extend(made.into_iter().map(|row| (row, None)));
+        rows.extend(made.into_iter().map(|row| (row.into(), None)));
     }
     refused.extend(notices.into_list().into_iter().map(|notice| (vec![WarsPeace], notice.kind, notice.label, notice.reason, notice.count)));
     let mut occurrences = script_feed(scanned);
     let mut seen: BTreeSet<u128> = occurrences.iter().map(|occurrence| occurrence.id).collect();
-    for (row, slot) in rows {
-        let occurrence = family_occurrence(query, row, slot);
+    for (family, slot) in rows {
+        let occurrence = family_occurrence(query, family, slot);
         if seen.insert(occurrence.id) {
             occurrences.push(occurrence);
         }
@@ -842,10 +843,13 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
         let primary = match &occ.payload {
             Item::Log { valid_clock: true, .. } => occ.roles.first().and_then(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at))),
             Item::Log { valid_clock: false, .. } => None,
-            Item::Family(row) if row.hour <= row.read_hour && row.name_hour <= row.read_hour => match &row.participants {
-                Some([first, _]) => first.as_deref(),
-                None => row.tags.first().map(String::as_str),
-            },
+            Item::Family(family) if family.row.hour <= family.row.read_hour && family.row.name_hour <= family.row.read_hour => {
+                let row = &family.row;
+                match &row.participants {
+                    Some([first, _]) => first.as_deref(),
+                    None => row.tags.first().map(String::as_str),
+                }
+            }
             Item::Family(_) => None,
         };
         let meta = primary.and_then(|tag| {
