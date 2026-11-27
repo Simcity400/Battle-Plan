@@ -62,8 +62,6 @@ struct Picture {
     rect: [f32; 2],
 }
 
-const RESULT_UNCHECKED: &str = "The naval result window has not yet been checked against the game's own window.";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Battle {
     first: Selection,
@@ -471,9 +469,6 @@ impl Held {
                 self.answered_sequence = self.at_sequence;
                 self.refused = None;
                 self.notes = self.window.warnings(&self.document.icons.combat.warnings);
-                if matches!(self.selection, Selection::NavalResult(_)) {
-                    self.notes.push(RESULT_UNCHECKED.to_owned());
-                }
                 self.notes.extend(self.pass.native_refusals.iter().map(|(reason, count)| format!("{reason} ({count} times)")));
                 if let Some(at) = self.at.filter(|_| crate::perf_log::enabled()) {
                     crate::perf_log::mark("battle_drawn", serde_json::json!({"hour": at.hour, "step_ms": self.read_ms[0], "read_ms": self.read_ms[1], "draw_ms": started.elapsed().as_secs_f64() * 1e3, "tables": self.tables.len(), "art_bytes": self.document.icons.lazy.resident_bytes(), "why": why}));
