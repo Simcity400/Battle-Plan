@@ -13,9 +13,8 @@ import { readableRow, useEventDetail, useTooltipText } from '../event-choices/ev
 import { withHoverText } from './hoverText.ts';
 import { CATEGORIES } from './definition.ts';
 import EventFeedActivityStrip from './EventFeedActivityStrip.tsx';
-import { feedKindLabel, kindsRequest, validateKinds } from './eventFeedData.ts';
+import { feedKindItems, kindsRequest, validateKinds } from './eventFeedData.ts';
 
-const CATEGORY_LABEL = new Map<string, string>(CATEGORIES.map(cat => [cat.value, cat.label]));
 const isEventRow = (key: string): boolean => readableRow(key) && !key.startsWith('group:') && !key.startsWith('all:') && !key.startsWith('loading:');
 
 function EventFeedView(props: FamilyViewProps) {
@@ -53,30 +52,9 @@ function EventFeedView(props: FamilyViewProps) {
     return [];
   }, [options.excludedKinds]);
 
-  const filterItems = useMemo<LogKindFilterItem[]>(() => {
-    const excludedSet = new Set(excludedKinds);
-    const categorySet = new Set<string>(categories);
-    if (recordingKinds && recordingKinds.length > 0) {
-      return recordingKinds
-        .map(item => ({
-          value: `kind:${item.kind}`,
-          label: feedKindLabel(item.kind),
-          group: CATEGORY_LABEL.get(item.category) ?? item.category,
-          checked: categorySet.has(item.category) && !excludedSet.has(item.kind),
-        }));
-    }
-    return CATEGORIES.map(cat => ({
-      value: `cat:${cat.value}`,
-      label: cat.label,
-      checked: categorySet.has(cat.value),
-    }));
-  }, [recordingKinds, categories, excludedKinds]);
+  const filterItems = useMemo<LogKindFilterItem[]>(() => feedKindItems(recordingKinds ?? [], CATEGORIES, categories, excludedKinds, Infinity), [recordingKinds, categories, excludedKinds]);
 
   const onToggleFilter = useCallback((value: string, nextChecked: boolean) => {
-    if (value.startsWith('cat:')) {
-      props.setOption?.(value.slice(4), nextChecked);
-      return;
-    }
     const kind = value.slice(5);
     const entry = recordingKinds?.find(item => item.kind === kind);
     const nextExcluded = new Set(excludedKinds);
@@ -126,9 +104,10 @@ function EventFeedView(props: FamilyViewProps) {
 
   return (
     <div ref={anchor} className="fh-detail-anchor">
-      <PickerContext.Provider value={(_hour, _selected, children) => kinds.error
+      <PickerContext.Provider value={(hour, _selected, children) => kinds.error
         ? children([], { kind: 'failed', message: failureText(kinds.error, 'Event kinds could not be loaded.') })
-        : recordingKinds === undefined ? children([], { kind: 'loading' }) : children(filterItems)}><LogKindFilter
+        : recordingKinds === undefined ? children([], { kind: 'loading' }) : children(feedKindItems(recordingKinds, CATEGORIES, categories, excludedKinds, hour))}><LogKindFilter
+        shownHour={() => frozenHour ?? installedHour ?? pinnedHour ?? (track ? resolveWindow(props.widget, track, props.runtime.tracks, props.runtime.clock.getHour())?.lastHour ?? null : null)}
         slot={props.filterSlot}
         allLabel="All kinds"
         noun="kinds"

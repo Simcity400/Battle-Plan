@@ -9,12 +9,35 @@ import { buildColumnLayouts, selectVisibleColumns } from '../../families/table/l
 import { deriveRowTooltip, deriveTableAudit, deriveTableMirror, resolveTableRows, type TableRow } from '../../families/table/model.ts';
 import { LOG_TABLE_BASE } from '../../families/table/logHelpers.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
-import { validateFeedRow } from './eventFeedData.ts';
+import { feedKindItems, validateFeedRow, validateKinds } from './eventFeedData.ts';
 import { eventFeedDeclaration, eventFeedProjection } from './eventFeedProjection.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import type { EventFeedRow } from '../../generated/dashboard';
 
 let serial = 0;
+test('kind availability requires either a first observation or a named absence', () => {
+  assert.throws(() => validateKinds({ kinds: [{ kind: 'warDeclared', category: 'warsPeace' }] }), /malformed/);
+  const kinds = [
+    { kind: 'warDeclared', category: 'warsPeace', firstObserved: 105, unavailable: null },
+    { kind: 'lawChanged', category: 'politics', firstObserved: null, unavailable: 'Ideas were not recorded.' },
+  ];
+  assert.deepEqual(validateKinds({ kinds }), kinds);
+  const held = validateKinds({ kinds });
+  const items = (hour: number, excluded: string[]) => feedKindItems(held, [{ value: 'warsPeace', label: 'Wars' }], ['warsPeace'], excluded, hour);
+  assert.deepEqual(items(104, ['warDeclared']).map(item => item.value), ['kind:lawChanged']);
+  const selected = items(104, []).find(item => item.value === 'kind:warDeclared')!;
+  assert.equal(selected.checked, true);
+  assert.match(selected.unavailable!, /shown hour/);
+  assert.equal(items(105, []).find(item => item.value === 'kind:warDeclared')!.unavailable, undefined);
+  assert.equal(items(105, []).find(item => item.value === 'kind:lawChanged')!.unavailable, 'Ideas were not recorded.');
+  for (const bad of [
+    { ...kinds[0], firstObserved: 1.5 },
+    { ...kinds[0], unavailable: 'Missing' },
+    { ...kinds[1], unavailable: '' },
+    { ...kinds[1], unavailable: null },
+  ]) assert.throws(() => validateKinds({ kinds: [bad] }), /malformed/);
+});
+
 const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Partial<EventFeedRow> = {}): EventFeedRow => ({
   id: `native:1:${serial++}`, hour, readHour: hour, nameHour: hour, exact: true, category: 'warsPeace', kind, tags,
   participants: [tags[0] ?? null, tags[1] ?? null], item: null, amount: null, ...more });

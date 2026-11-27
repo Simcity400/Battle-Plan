@@ -43,13 +43,14 @@ function Row({ entry, single, active, id, onChoose, onPoint }: {
   entry: Extract<Entry, { kind: 'item' }>; single: boolean; active: boolean; id: string; onChoose: () => void; onPoint: () => void;
 }) {
   const { item } = entry;
-  return <div id={id} role="option" aria-selected={item.checked} className="tf-picker-row" data-active={active || undefined} data-last={entry.last || undefined}
+  return <div id={id} role="option" aria-selected={item.checked} aria-disabled={!!item.unavailable || undefined} className="tf-picker-row" data-active={active || undefined} data-last={entry.last || undefined}
     style={{ top: entry.top, height: entry.height }} onPointerMove={onPoint} onClick={onChoose}>
     {single
       ? <span className="tf-picker-art">{item.icon ? <TrimmedArt src={item.icon} /> : <span className="val-picture-missing" />}</span>
       : <span className="tf-picker-check" aria-hidden="true">{item.checked ? <Icon name="check" /> : null}</span>}
     {!single && item.icon ? <img className="tf-picker-kind" src={item.icon} alt="" /> : null}
     <span className="tf-picker-name"><span className="tf-picker-label" data-tooltip-overflow={item.label}>{item.label}</span>
+      {item.unavailable ? <span className="tf-picker-detail"><ValueState kind="missing" reason={item.unavailable} /></span> : null}
       {single && item.detail ? <span className="tf-picker-detail" data-tooltip-overflow={item.detail}>{item.detail}</span> : null}
       {single && !item.detail && item.detailMissing ? <span className="tf-picker-detail"><ValueState kind="missing" reason={item.detailMissing} /></span> : null}</span>
     {single ? <span className="tf-picker-note">{item.state ? <Mark state={item.state} /> : item.quantity ? <Quantity quantity={item.quantity} /> : null}</span> : null}
@@ -92,7 +93,8 @@ function FilterList({ items, status, single, noun, allLabel, searchThreshold = 8
   }, [items, query, country, kind, single]);
   const laid = useMemo(() => layoutEntries(filtered, ROW_HEIGHT[mode]), [filtered, mode]);
   const shown = visibleEntries(laid.entries, view.scrollTop, view.height);
-  const allSelected = items.length > 0 && items.every(item => item.checked);
+  const selectable = items.filter(item => !item.unavailable);
+  const allSelected = selectable.length > 0 && selectable.every(item => item.checked);
   const optionId = (index: number) => `${id}-option-${index}`;
 
   useLayoutEffect(() => {
@@ -116,7 +118,7 @@ function FilterList({ items, status, single, noun, allLabel, searchThreshold = 8
     setView(previous => ({ ...previous, scrollTop: top }));
   };
   const choose = (entry: Entry | undefined) => {
-    if (entry?.kind !== 'item') return;
+    if (entry?.kind !== 'item' || entry.item.unavailable) return;
     onToggle(entry.item.value, !entry.item.checked);
     if (single) close();
   };
@@ -173,7 +175,7 @@ function FilterList({ items, status, single, noun, allLabel, searchThreshold = 8
       {empty}
     </div>
     {status.kind === 'ready' && status.notice ? <p className="tf-picker-notice"><span className="val-hatch" aria-hidden="true" />{status.notice}</p> : null}
-    {(single ? single.pinned : items.length > 0 && !allSelected) ? <button type="button" className="tf-picker-reset" onClick={() => {
+    {(single ? single.pinned : selectable.length > 0 && !allSelected) ? <button type="button" className="tf-picker-reset" onClick={() => {
       onSelectAll(); setQuery({ ...filters, query: '' }); if (single) close();
     }}>{allLabel}</button> : null}
   </>;
@@ -186,17 +188,18 @@ export default function LogKindFilter(props: LogKindFilterProps) {
   const picker = useContext(PickerContext);
   const [hour, setHour] = useState<number | null>(null);
   const [filters, setFilters] = useState<Filters>({ query: '', country: '', kind: '' });
-  const selectedCount = items.filter(item => item.checked).length;
-  const allSelected = items.length > 0 && selectedCount === items.length;
-  const label = single?.label ?? (allSelected || items.length === 0
+  const selectable = items.filter(item => !item.unavailable);
+  const selectedCount = selectable.filter(item => item.checked).length;
+  const allSelected = selectable.length > 0 && selectedCount === selectable.length;
+  const label = single?.label ?? (allSelected || selectable.length === 0
     ? allLabel
     : selectedCount === 0
       ? `No ${noun}`
       : selectedCount === 1
-        ? items.find(item => item.checked)!.label
-        : `${selectedCount} of ${items.length} ${noun}`);
+        ? selectable.find(item => item.checked)!.label
+        : `${selectedCount} of ${selectable.length} ${noun}`);
 
-  if (!slot || (items.length === 0 && !single)) return null;
+  if (!slot || (items.length === 0 && !single && !picker)) return null;
 
   const list = (choices: readonly LogKindFilterItem[], status: PickerStatus = READY): ReactNode =>
     <FilterList {...props} items={choices} status={status} filters={filters} setFilters={setFilters} close={menu.close} />;

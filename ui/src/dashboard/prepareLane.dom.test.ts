@@ -7,9 +7,24 @@ type Played = { commits: number; preparedRenders: number; asked: string[]; hostW
 
 test('two event feeds share one kinds read through page preparation, playback and two seeks', async t => {
   await withNativePage('event-feed-kinds', '/ui/src/dashboard/prepareLane.dom.fixture.tsx', page => page.stage('event feed kinds', async () => {
-    const count = await page.evaluate<number>('window.prepareLane.eventFeedKinds()');
-    t.diagnostic(`event-feed-kinds requests: ${count}`);
-    assert.equal(count, 1);
+    const count = await page.evaluate<{ before: number; after: number }>('window.prepareLane.eventFeedKinds()');
+    t.diagnostic(`event-feed-kinds requests before playback: ${count.before}, after: ${count.after}`);
+    assert.deepEqual(count, { before: 1, after: 1 });
+    type Choice = { label: string; disabled: boolean; checked: boolean; reason: string | null };
+    const availability = await page.evaluate<{ before: Choice[]; later: Choice[]; soughtBack: Choice[]; changes: string[]; beforeRequests: number; afterRequests: number }>(
+      'window.prepareLane.eventFeedKindsAvailability()');
+    assert.deepEqual(availability.before.map(item => item.label), ['War declared', 'Law changed']);
+    const absent = availability.before.find(item => item.label === 'Law changed')!;
+    assert.equal(absent.disabled, true);
+    assert.match(absent.reason!, /Ideas were not recorded/);
+    assert.equal(availability.later.find(item => item.label === 'News events')!.disabled, false);
+    const retained = availability.soughtBack.find(item => item.label === 'News events')!;
+    assert.equal(retained.checked, true);
+    assert.equal(retained.disabled, true);
+    assert.match(retained.reason!, /shown hour/);
+    assert.deepEqual(availability.changes, [''], 'absent and not-yet-reached kinds cannot be toggled');
+    assert.equal(availability.beforeRequests, 1);
+    assert.equal(availability.afterRequests, 1);
     for (const state of ['pending', 'failed', 'missing', 'ready']) {
       const shown = await page.evaluate<{ status: string | null; choices: string[] }>(`window.prepareLane.eventFeedKindsState('${state}')`);
       if (state === 'ready') {

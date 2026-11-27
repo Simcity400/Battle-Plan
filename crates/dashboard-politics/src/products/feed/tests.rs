@@ -1055,6 +1055,26 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     );
     let cancel = AtomicBool::new(false);
     let context = LoadContext { content: None };
+    let kinds = super::EventFeedKinds::load(&replay_source, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &cancel).unwrap();
+    let kind = |wanted| kinds.kinds.iter().find(|item| item.kind == wanted).unwrap();
+    assert_eq!(kind(EventFeedKind::ScriptEventFired).first_observed, Some(100));
+    assert_eq!(kind(EventFeedKind::NewsEventFired).first_observed, Some(105));
+    assert_eq!(kind(EventFeedKind::EventOptionSelected).first_observed, Some(102));
+    assert_eq!(kind(EventFeedKind::WarDeclared).first_observed, None);
+    assert!(kind(EventFeedKind::WarDeclared).unavailable.as_deref().unwrap().contains("No events"));
+    assert!(kind(EventFeedKind::LawChanged).unavailable.as_deref().unwrap().contains("does not read"));
+    let mut unrecorded_frame = source(1, 100, Some(1));
+    *unrecorded_frame.tables[TableId::EventFeedHistory.index()] = TableView::Unavailable { reason: "Synthetic native history unavailable".into() };
+    let unrecorded = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![unrecorded_frame])])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let unrecorded = dashboard_base::Source::from_replay(
+        dashboard_base::SourceKey { source_id: "unrecorded-kinds".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(unrecorded), &cancel,
+    ).unwrap();
+    let unrecorded = super::EventFeedKinds::load(&unrecorded, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &cancel).unwrap();
+    let declaration = unrecorded.kinds.iter().find(|item| item.kind == EventFeedKind::WarDeclared).unwrap();
+    assert_eq!(declaration.first_observed, None);
+    assert!(declaration.unavailable.as_deref().unwrap().contains("Synthetic native history unavailable"));
     let selection = |tag: &str| Some(vec![Country::Tag(tag.into())]);
     let feed = |hour: i32, from: Option<i32>, countries: Option<Vec<Country>>| EventFeedTailParams {
         branch_id: "1".into(),

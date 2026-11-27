@@ -6,6 +6,7 @@ export interface LogKindFilterItem {
   readonly label: string;
   readonly group?: string;
   readonly checked: boolean;
+  readonly unavailable?: string;
   readonly country?: string;
   readonly countryName?: string;
   readonly countryFlag?: string;
