@@ -245,6 +245,7 @@ export const rulingPartyDeclaration: TimeChartWidgetDeclaration<RulingPartyOptio
   countries: { mode: 'single', choose: 'Choose a country to see its politics.' },
   aux: {
     product: 'party-history',
+    label: 'the party history',
     params: (track, _options, _country, subject) => (
       subject ? { branchId: track.branch.id, country: countryFromKey(subject) } : null
     ),

@@ -372,6 +372,7 @@ export const equipmentProducedRaceDeclaration: BarsWidgetDeclaration<EquipmentPr
   },
   aux: {
     product: 'equipment-produced-types',
+    label: 'the equipment types',
     params: (track, options) => ({ branchId: track.branch.id, refits: options.refits === true }),
     validate: validateEquipmentProducedTypes,
   },

@@ -572,6 +572,7 @@ export const armySizeBreakdownDeclaration: TimeChartWidgetDeclaration<ArmySizeBr
   countries: { mode: 'single', choose: 'Choose a country to see its army breakdown.' },
   aux: {
     product: 'army-size',
+    label: 'the army types',
     params: track => ({ ...armyMetadataParams(track.branch.id) }),
     validate: validateArmyMetadata,
   },

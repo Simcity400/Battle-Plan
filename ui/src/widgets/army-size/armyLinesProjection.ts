@@ -11,6 +11,7 @@ export const { projection: armyLinesProjection, declaration: armyLinesDeclaratio
   format: 'compact',
   aux: {
     product: 'army-size',
+    label: 'the army types',
     params: track => ({ ...armyMetadataParams(track.branch.id) }),
     validate: validateArmyMetadata,
   },

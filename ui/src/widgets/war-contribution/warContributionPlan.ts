@@ -24,6 +24,7 @@ export const warCountries: CountryPolicy = { mode: 'single', choose: 'Choose a c
 
 export const warsAux: AuxProductSpec<WarsReply> = {
   product: 'wars',
+  label: 'the wars',
   params: (track, _options, country) => ({ branchId: track.branch.id, viewpoint: country === null ? null : countryFromKey(country) }),
   validate: validateWarsReply,
 };
