@@ -1,6 +1,6 @@
 import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, occurrenceItem } from '../event-feed/scriptOccurrences.ts';
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
-import { plainScripted } from '../event-feed/scriptedGaps.ts';
+import { gapsForField, plainScripted } from '../event-feed/scriptedGaps.ts';
 import type { EventFeedItem, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
 const TITLE_UNAVAILABLE = 'Title not recorded';
@@ -47,7 +47,7 @@ export function choiceAt(card: ChoiceCard | null, hour: number, breaks: readonly
 
 export const isOpen = (at: ChoiceAt) => !at.choice && !at.pause;
 export const choiceTitle = (card: ChoiceCard) => card.item?.name ?? TITLE_UNAVAILABLE;
-export const choiceText = (card: ChoiceCard) => plainScripted(choiceTitle(card));
+export const choiceText = (card: ChoiceCard) => plainScripted(choiceTitle(card), gapsForField(card.item?.gaps, 'title'));
 
 export function optionLetter(index: number): string {
   let letters = '';
@@ -55,15 +55,15 @@ export function optionLetter(index: number): string {
   return letters;
 }
 
-export interface OptionLine { key: string; letter: string | null; text: string; missing: boolean; chosen: boolean }
+export interface OptionLine { key: string; ordinal: number | null; letter: string | null; text: string; missing: boolean; chosen: boolean }
 
 export function optionLines(at: ChoiceAt): OptionLine[] {
   const authored = at.card.item?.options ?? [];
   const chosen = at.choice?.option ?? null;
-  const lines = authored.map((option, index): OptionLine => ({ key: String(option.ordinal), letter: optionLetter(index),
+  const lines = authored.map((option, index): OptionLine => ({ key: String(option.ordinal), ordinal: option.ordinal, letter: optionLetter(index),
     text: option.name ?? OPTION_UNAVAILABLE, missing: option.name === null, chosen: chosen !== null && option.ordinal === chosen }));
   if (at.choice && (chosen === null || !lines.some(line => line.chosen)))
-    lines.push({ key: 'chosen', letter: null, text: chosen === null ? 'Chosen option not recorded' : OPTION_UNAVAILABLE, missing: chosen !== null, chosen: true });
+    lines.push({ key: 'chosen', ordinal: null, letter: null, text: chosen === null ? 'Chosen option not recorded' : OPTION_UNAVAILABLE, missing: chosen !== null, chosen: true });
   return lines;
 }
 

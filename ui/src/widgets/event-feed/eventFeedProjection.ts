@@ -25,8 +25,8 @@ import { optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
 import { effectiveEventItem, validateFeedRow } from './eventFeedData.ts';
-import { descriptionRows, gapRows, hoverTextOf, optionLines, optionRows, type TooltipTexts } from './hoverText.ts';
-import { plainScripted, reasonsOf } from './scriptedGaps.ts';
+import { descriptionRows, gapRows, hasTooltipGaps, hoverTextOf, optionLines, optionRows, type TooltipTexts } from './hoverText.ts';
+import { gapsForField, plainScripted, reasonsOf, scriptedValue } from './scriptedGaps.ts';
 
 export interface EventFeedProjectionOptions {
   readonly categories: readonly string[];
@@ -83,7 +83,7 @@ function optionCellOf(item: EventFeedItem | null, ordinal: number): TableCell {
     const opt = options[index]!;
     const letter = optionLetter(index);
     const text = nonBlank(opt.name);
-    if (text !== null) return { value: knownValue(text), inlinePrefix: letter };
+    if (text !== null) return { value: scriptedValue(text, gapsForField(item?.gaps, 'option', ordinal)), inlinePrefix: letter };
     return { value: notRecorded('Event presentation was not recorded'), inlinePrefix: letter };
   }
   if (ordinal >= 0) {
@@ -405,7 +405,8 @@ function buildFeedTableRow(
     };
   }
 
-  const titleLabel = primary !== null ? plainScripted(primary) : (missingReason ?? 'Not recorded');
+  const titleGaps = gapsForField(item?.gaps, 'title');
+  const titleLabel = primary !== null ? plainScripted(primary, titleGaps) : (missingReason ?? 'Not recorded');
   const tooltipExtra = (): TooltipExtraRow[] => {
     const out: TooltipExtraRow[] = [
       { label: event.exact ? 'Time' : 'Observed at', value: knownValue(formatDateTime(event.hour)) },
@@ -424,10 +425,17 @@ function buildFeedTableRow(
     }
     if (item?.token) out.push({ label: 'Content identity', value: knownValue(item.token) });
     if (reasons.nameMissing) out.push({ label: 'Name not recorded', value: notRecorded(reasons.nameMissing) });
-    out.push(...gapRows(hover, key));
-    out.push(...descriptionRows(hover, key, item?.description));
+    out.push(...gapRows(hover, key, item?.gaps, optionLetter));
+    out.push(...descriptionRows(hover, key, item?.description, item?.gaps));
     const choiceOptions = !event.item?.options?.length ? page.choice?.row.item?.options : undefined;
-    out.push(...(choiceOptions?.length ? optionLines(choiceOptions.map(option => option.name), optionLetter) : optionRows(hover, key, optionLetter)));
+    out.push(...(choiceOptions?.length
+      ? optionLines(
+          choiceOptions.map(option => option.name),
+          optionLetter,
+          item?.gaps,
+          choiceOptions.map(option => option.ordinal),
+        )
+      : optionRows(hover, key, optionLetter, item?.gaps)));
     return out;
   };
 
@@ -455,13 +463,14 @@ function buildFeedTableRow(
           : { value: notApplicable('Game artwork hidden'), blank: true },
         country: logCountryCell(readView, countryEntries, event.nameHour, boundary),
         item: primary !== null
-          ? { value: knownValue(primary), ...(secondary ? { inlineSubtext: secondary } : {}) }
+          ? { value: scriptedValue(primary, titleGaps), ...(secondary ? { inlineSubtext: secondary } : {}) }
           : { value: notRecorded(missingReason ?? 'Not recorded') },
         detail: detail ?? { value: notApplicable('No extra detail'), blank: true },
         action: viewable ? { value: knownValue('View'), actionLabel: 'View' } : { value: notApplicable('No event window for this entry'), blank: true },
       },
       tooltipTitle: titleLabel,
       tooltipExtra,
+      ...(hasTooltipGaps(hover, key, item?.gaps) ? { tooltipScrollId: key } : {}),
       ...(viewable ? { tooltipAction: 'Click to view event', meta: detailSubject } : {}),
     },
   };

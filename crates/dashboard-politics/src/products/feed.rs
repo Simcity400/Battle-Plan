@@ -338,6 +338,27 @@ pub struct EventFeedCause {
     pub target_recorded: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum EventFeedGapField {
+    Title,
+    Description,
+    Option,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedGap {
+    pub field: EventFeedGapField,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub ordinal: Option<u32>,
+    pub key: String,
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -357,11 +378,11 @@ pub struct EventFeedItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub name_missing: Option<String>,
-    #[doc = " Why the name, description or options hold U+FFFC where scripted text could not be"]
-    #[doc = r#" expanded: the UI shows each as a "not recorded" token."#]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub gaps: Option<String>,
+    #[doc = " Unresolved scripted-text placeholders in the name, description or options, in order per"]
+    #[doc = " field, each with its original key and reason."]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional, as = "Option<_>"))]
+    pub gaps: Vec<EventFeedGap>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

@@ -53,19 +53,25 @@ test('titles and options the content could not resolve fall back cleanly; a chos
   const missing = { ...card, item: { ...authored(), name: null } };
   assert.equal(choiceTitle(missing), 'Title not recorded');
   const lines = optionLines(choiceAt(unnamed, day(3, 4), [])!);
-  assert.deepEqual(lines.at(-1), { key: 'chosen', letter: null, text: 'Option text not recorded', missing: true, chosen: true });
+  assert.deepEqual(lines.at(-1), { key: 'chosen', ordinal: null, letter: null, text: 'Option text not recorded', missing: true, chosen: true });
   assert.deepEqual([optionLetter(0), optionLetter(25), optionLetter(26)], ['A', 'Z', 'AA']);
 });
 
-test('an event the recording cannot title reads "Title not recorded"; a gap in its text becomes [not recorded]', () => {
+test('an event the recording cannot title reads "Title not recorded"; a gap in its text shows its reason in place', () => {
   const why = 'event fra.1 has no title in its content';
   const untitled = edge('scriptEventFired', day(1, 6), ['GER', 'FRA'], { item: { ...authored(), name: null, nameMissing: why } as EventFeedItem });
   const at = choiceAt(choiceCard(occurrence([untitled])), day(1, 7), [])!;
   assert.equal(choiceTitle(at.card), 'Title not recorded');
   assert.deepEqual(optionLines(at).map(line => line.text), ['Stand firm', 'Back down'], 'its authored options still show');
-  const gapped = edge('scriptEventFired', day(1, 6), ['GER', 'FRA'], { item: { ...authored(), name: 'Recruit in \uFFFC', gaps: 'it names a highlighted state the recording does not hold' } as EventFeedItem });
+  const gapped = edge('scriptEventFired', day(1, 6), ['GER', 'FRA'], {
+    item: {
+      ...authored(),
+      name: 'Build in \uFFFC',
+      gaps: [{ field: 'title', key: 'FROM.GetName', reason: 'it names a highlighted state the recording does not hold' }],
+    } as EventFeedItem,
+  });
   const shown = choiceAt(choiceCard(occurrence([gapped])), day(1, 7), [])!;
-  assert.equal(choiceText(shown.card), 'Recruit in [not recorded]');
+  assert.equal(choiceText(shown.card), 'Build in [not recorded: FROM.GetName: it names a highlighted state the recording does not hold]');
 });
 
 test('event choices projection turns blank authored title or option text into notRecorded and tracks awaiting day boundaries', () => {

@@ -2576,6 +2576,8 @@ export type EventFeedOption = { ordinal: number,
  * In a list row only the chosen option's name; the opened row holds every option's.
  */
 name: string | null, };
+export type EventFeedGapField = "title" | "description" | "option";
+export type EventFeedGap = { field: EventFeedGapField, ordinal?: number, key: string, reason: string, };
 export type EventFeedItem = { token: string | null, name: string | null, icon: string | null, description?: string | null,
 /**
  * A scripted event's authored options in the game's order; absent for other kinds and when
@@ -2587,10 +2589,10 @@ options?: Array<EventFeedOption>,
  */
 nameMissing?: string,
 /**
- * Why the name, description or options hold U+FFFC where scripted text could not be
- * expanded: the UI shows each as a "not recorded" token.
+ * Unresolved scripted-text placeholders in the name, description or options, in order per
+ * field, each with its original key and reason.
  */
-gaps?: string, };
+gaps?: Array<EventFeedGap>, };
 export type EventFeedCause = {
 /**
  * The native operation the event happened in.

@@ -1,11 +1,12 @@
 import type { EventDetail } from '../event-choices/eventDetail.ts';
-import type { RefObject } from 'react';
+import { Fragment, type RefObject } from 'react';
 import { dayLabel } from '../../charts/draw.ts';
 import ArtFallback from '../../components/ArtFallback.tsx';
 import { CountryFlagUrl } from '../../components/CountryFlag.tsx';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
-import { plainScripted } from '../event-feed/scriptedGaps.ts';
+import type { EventFeedGap } from '../../generated/dashboard';
+import { gapSummary, gapsForField, plainScripted, scriptedParts } from '../event-feed/scriptedGaps.ts';
 import './decisionDetailWindow.css';
 
 export interface DecisionDetailSubject {
@@ -34,7 +35,7 @@ export interface DecisionDetailSubject {
   readonly failedAt: number | null;
   readonly failureMissing: string | null;
   readonly nameMissing: string | null;
-  readonly gaps: string | null;
+  readonly gaps: readonly EventFeedGap[] | null;
 }
 
 export interface DecisionDetailWindowProps {
@@ -46,8 +47,10 @@ export interface DecisionDetailWindowProps {
 
 export default function DecisionDetailWindow({ subject, detail, anchor, onClose }: DecisionDetailWindowProps) {
   const description = detail?.item?.description ?? subject?.description ?? null;
-  const gaps = detail?.item?.gaps ?? subject?.gaps ?? null;
-  const titleText = subject?.name ? plainScripted(subject.name) : 'Decision name not recorded';
+  const gaps = detail?.item?.gaps?.length ? detail.item.gaps : (subject?.gaps ?? []);
+  const titleGaps = gapsForField(gaps, 'title');
+  const descriptionGaps = gapsForField(gaps, 'description');
+  const titleText = subject?.name ? plainScripted(subject.name, titleGaps) : 'Decision name not recorded';
 
   return (
     <DetailWindowHost
@@ -143,12 +146,12 @@ export default function DecisionDetailWindow({ subject, detail, anchor, onClose 
                 <dd className="dcd-missing">{subject.nameMissing}</dd>
               </>
             ) : null}
-            {gaps ? (
-              <>
-                <dt>Text not recorded</dt>
-                <dd className="dcd-missing">{gaps}</dd>
-              </>
-            ) : null}
+            {gaps.map((gap, index) => (
+              <Fragment key={`${gap.field}:${gap.ordinal ?? ''}:${gap.key}:${index}`}>
+                <dt>Text not recorded ({gap.field})</dt>
+                <dd className="dcd-missing">{gapSummary(gap)}</dd>
+              </Fragment>
+            ))}
           </dl>
 
           {detail?.pending ? (
@@ -157,7 +160,13 @@ export default function DecisionDetailWindow({ subject, detail, anchor, onClose 
             <p className="dcd-desc dcd-missing" title={detail.missing}>Not recorded: {detail.missing}</p>
           ) : (
             <>
-              {description ? <p className="dcd-desc">{plainScripted(description)}</p> : null}
+              {description ? (
+                <p className="dcd-desc">
+                  {scriptedParts(description, descriptionGaps).map((part, index) => ('gap' in part
+                    ? <span key={index} className="dcd-missing" title={part.gap}>[{part.inline}]</span>
+                    : <span key={index}>{part.text}</span>))}
+                </p>
+              ) : null}
               {detail?.effectsMissing?.map(reason => <p key={reason} className="dcd-desc dcd-missing" title={reason}>Authored effects not recorded: {reason}</p>)}
             </>
           )}

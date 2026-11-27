@@ -604,3 +604,47 @@ test('P8: equal completion confirms a replacement stepped panel opened since the
   f.panels(R, 0, [], 50);
   assert.equal(f.stats.completionVisits - before, 0, 'redundant equal completion with no newly opened panels does zero visits');
 });
+
+test('S12: an old-epoch STANDS(through) arriving after a same-seek paused follow reset preserves panel rows and never treats cleared follow cells as covered', () => {
+  const f = facts([1, 'panel'], [2, 'panel'], [3, 'panel']);
+  f.seek(R, 1, 0);
+  f.panels(R, 1, [
+    data(1, 0, { value: 'rows@0', cells: [{ id: A, seedHour: 0, values: ['a0'] }] }),
+    data(2, 0, { value: 'rows@0', cells: [{ id: B }] }),
+    data(3, 0, { value: 'rows@0' }),
+  ]);
+  f.followed(R, 1, msg(5, [{ id: A, hour: 0, value: 'a0' }, { id: B, hour: 0, value: 'b0' }]));
+  assert.deepEqual(hc(f.select(1, 0)), [0, 0]);
+  assert.deepEqual(hc(f.select(2, 0)), [0, 0]);
+
+  f.resetFollowed(R, 1);
+  f.addFollowedAnswer(R, 1, { id: A, hour: 0, value: 'a0' });
+  f.confirmFollowed(R, 1, 0);
+  f.panels(R, 1, [stands(1, 5), stands(2, 5), stands(3, 5)]);
+
+  const fresh = facts([1, 'panel'], [2, 'panel'], [3, 'panel']);
+  fresh.seek(R, 1, 0);
+  fresh.panels(R, 1, [
+    data(1, 0, { value: 'rows@0', cells: [{ id: A, seedHour: 0, values: ['a0'] }] }),
+    data(2, 0, { value: 'rows@0', cells: [{ id: B }] }),
+    data(3, 0, { value: 'rows@0' }),
+    stands(3, 5),
+  ]);
+  fresh.followed(R, 1, msg(0, [{ id: A, hour: 0, value: 'a0' }]));
+
+  assert.deepEqual(hc(f.select(1, 0)), hc(fresh.select(1, 0)));
+  assert.equal(f.select(1, 0)?.value, fresh.select(1, 0)?.value);
+  assert.equal(f.select(1, 0)?.parts[1]?.value, fresh.select(1, 0)?.parts[1]?.value);
+  assert.deepEqual(hc(f.select(1, 3)), [0, 0], 'delayed STANDS(5) does not treat reset-cleared follow cell A as covered past hour 0');
+  assert.deepEqual(hc(f.select(1, 3)), hc(fresh.select(1, 3)));
+  assert.equal(f.select(2, 0), null, 'unseeded cell B cleared by the paused reset stays uncovered despite delayed STANDS(5)');
+  assert.equal(f.select(2, 3), null);
+  assert.deepEqual(hc(f.select(3, 3)), [0, 5], 'immutable cell-less panel rows remain true through hour 5');
+  assert.equal(f.select(3, 3)?.value, fresh.select(3, 3)?.value);
+
+  f.followed(R, 1, msg(3, [{ id: A, hour: 3, value: 'a3' }, { id: B, hour: 3, value: 'b3' }]));
+  assert.deepEqual(hc(f.select(1, 3)), [3, 3]);
+  assert.equal(f.select(1, 3)?.parts[1]?.value, 'a3');
+  assert.deepEqual(hc(f.select(2, 3)), [3, 3]);
+  assert.equal(f.select(2, 3)?.parts[1]?.value, 'b3');
+});
