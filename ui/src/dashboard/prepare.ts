@@ -70,11 +70,6 @@ export class PrepareGate {
     this.told();
   }
 
-  release(): void {
-    for (const entry of this.waiting.splice(0)) entry.send(false);
-    this.told();
-  }
-
   get pending(): number { return this.waiting.length + this.running; }
 
   note(request: ProductRequest): void { this.asked.push(request); }
