@@ -74,18 +74,112 @@ fn a_hunk_pairs_rows_but_keeps_a_whole_replacement_when_it_is_smaller() {
 }
 
 #[test]
+fn keyed_rows_scroll_and_keep_field_edits_at_their_destination_indices() {
+    let before = json!([
+        {"key": "a", "count": 1},
+        {"key": "b", "count": 2},
+        {"key": "gone", "count": 3},
+    ]);
+    let after = json!([
+        {"key": "new-1", "count": 4},
+        {"key": "new-2", "count": 5},
+        {"key": "a", "count": 11},
+        {"key": "b", "count": 12},
+    ]);
+    let patch = diff(&before, &after);
+    assert_eq!(
+        patch,
+        [
+            Operation::Splice(Vec::new(), 0, 0, vec![after[0].clone(), after[1].clone()]),
+            Operation::Replace(vec![Part::Index(2), Part::Key("count".into())], json!(11)),
+            Operation::Replace(vec![Part::Index(3), Part::Key("count".into())], json!(12)),
+            Operation::Splice(Vec::new(), 4, 1, Vec::new()),
+        ]
+    );
+    assert_eq!(apply(&before, &patch).unwrap(), after);
+    assert_eq!(apply(&after, &diff(&after, &before)).unwrap(), before);
+}
+
+#[test]
+fn reordered_keys_outside_the_longest_run_are_spliced_with_their_full_value() {
+    let before = json!([
+        {"key": "head", "count": 0},
+        {"key": "a", "count": 1},
+        {"key": "b", "count": 2},
+        {"key": "c", "count": 3},
+        {"key": "d", "count": 4},
+        {"key": "tail", "count": 5},
+    ]);
+    let after = json!([
+        {"key": "head", "count": 0},
+        {"key": "b", "count": 2},
+        {"key": "c", "count": 3},
+        {"key": "d", "count": 4},
+        {"key": "a", "count": 11},
+        {"key": "tail", "count": 5},
+    ]);
+    let patch = diff(&before, &after);
+    assert_eq!(
+        patch,
+        [
+            Operation::Splice(Vec::new(), 1, 1, Vec::new()),
+            Operation::Splice(Vec::new(), 4, 0, vec![after[4].clone()]),
+        ]
+    );
+    assert_eq!(apply(&before, &patch).unwrap(), after);
+    assert_eq!(apply(&after, &diff(&after, &before)).unwrap(), before);
+}
+
+#[test]
+fn duplicate_keys_and_mixed_rows_match_by_value() {
+    let first = json!({"key": "a", "count": 1});
+    let changed = json!({"key": "a", "count": 11});
+    for anchor in [json!({"key": "a", "count": 2}), json!(2)] {
+        let before = json!([first, anchor]);
+        let after = json!([anchor, changed]);
+        let patch = diff(&before, &after);
+        assert_eq!(
+            patch,
+            [
+                Operation::Splice(Vec::new(), 0, 1, Vec::new()),
+                Operation::Splice(Vec::new(), 1, 0, vec![changed.clone()]),
+            ]
+        );
+        assert_eq!(apply(&before, &patch).unwrap(), after);
+        assert_eq!(apply(&after, &diff(&after, &before)).unwrap(), before);
+    }
+}
+
+#[test]
+fn value_search_matches_across_more_than_thirty_two_edits() {
+    let before = json!((0..511).collect::<Vec<_>>());
+    let after = json!((20..531).collect::<Vec<_>>());
+    let patch = diff(&before, &after);
+    assert_eq!(
+        patch,
+        [
+            Operation::Splice(Vec::new(), 0, 20, Vec::new()),
+            Operation::Splice(Vec::new(), 491, 0, (511..531).map(|n| json!(n)).collect()),
+        ]
+    );
+    assert_eq!(apply(&before, &patch).unwrap(), after);
+    assert_eq!(apply(&after, &diff(&after, &before)).unwrap(), before);
+}
+
+#[test]
 fn an_oversized_equal_length_search_edits_only_the_changed_elements() {
-    let before: Vec<_> = (0..4_100).map(|index| json!(index)).collect();
+    let before: Vec<_> = (0..514).map(|index| json!(index)).collect();
     let mut after = before.clone();
-    after[1] = json!(9_019);
-    after[4_098] = json!(9_021);
+    after.swap(1, 2);
+    after[512] = json!(9_021);
     let (before, after) = (Value::Array(before), Value::Array(after));
     let patch = diff(&before, &after);
     assert_eq!(
         patch,
         [
-            Operation::Replace(vec![Part::Index(1)], json!(9_019)),
-            Operation::Replace(vec![Part::Index(4_098)], json!(9_021)),
+            Operation::Replace(vec![Part::Index(1)], json!(2)),
+            Operation::Replace(vec![Part::Index(2)], json!(1)),
+            Operation::Replace(vec![Part::Index(512)], json!(9_021)),
         ]
     );
     assert_eq!(apply(&before, &patch).unwrap(), after);
@@ -93,7 +187,7 @@ fn an_oversized_equal_length_search_edits_only_the_changed_elements() {
 }
 
 #[test]
-fn an_exhausted_search_in_a_table_keeps_single_field_edits() {
+fn an_equal_count_hunk_in_a_table_keeps_single_field_edits() {
     let rows = |offset: i32| {
         let rows = (0..100).map(|id| {
             json!({
@@ -121,17 +215,17 @@ fn an_exhausted_search_in_a_table_keeps_single_field_edits() {
 }
 
 #[test]
-fn an_exhausted_unequal_length_search_splices_only_the_middle() {
-    let before = json!((0..80).collect::<Vec<_>>());
-    let after = json!((0..30).chain(110..129).chain(50..80).collect::<Vec<_>>());
+fn a_search_just_over_the_cell_budget_splices_only_the_unequal_middle() {
+    let before = json!((0..514).collect::<Vec<_>>());
+    let after = json!((0..1).chain(2..512).chain([900, 513]).collect::<Vec<_>>());
     let patch = diff(&before, &after);
     assert_eq!(
         patch,
         [Operation::Splice(
             Vec::new(),
-            30,
-            20,
-            (110..129).map(|index| json!(index)).collect()
+            1,
+            512,
+            (2..512).chain([900]).map(|index| json!(index)).collect()
         )]
     );
     assert_eq!(apply(&before, &patch).unwrap(), after);

@@ -1,14 +1,13 @@
 use super::{Operation, Part, encode, walk};
 use serde_json::Value;
 use std::{
+    collections::{HashMap, HashSet},
     hash::{BuildHasher, RandomState},
+    iter,
     ops::Range,
 };
 
-const MAX_EDITS: usize = 32;
-const WIDTH: usize = MAX_EDITS * 2 + 1;
 const MAX_CELLS: usize = 256 * 1024;
-const UNREACHABLE: u8 = MAX_EDITS as u8 + 1;
 
 pub(super) fn diff(
     before: &[Value],
@@ -25,6 +24,31 @@ pub(super) fn diff(
         .count();
     let before = &before[prefix..before.len() - suffix];
     let after = &after[prefix..after.len() - suffix];
+    if let Some(matches) = keyed_matches(before, after) {
+        let (mut first_old, mut first_new) = (0, 0);
+        for (old, new) in matches
+            .into_iter()
+            .rev()
+            .chain(iter::once((before.len(), after.len())))
+        {
+            if old != first_old || new != first_new {
+                out.push(Operation::Splice(
+                    path.clone(),
+                    prefix + first_new,
+                    old - first_old,
+                    after[first_new..new].to_vec(),
+                ));
+            }
+            if old == before.len() {
+                break;
+            }
+            path.push(Part::Index(prefix + new));
+            walk(&before[old], &after[new], path, out);
+            path.pop();
+            (first_old, first_new) = (old + 1, new + 1);
+        }
+        return;
+    }
     if !before.is_empty()
         && !after.is_empty()
         && find_hunks(before, after, |removed, inserted| {
@@ -40,6 +64,52 @@ pub(super) fn diff(
         return;
     }
     emit(prefix, before, after, path, out);
+}
+
+fn row_key(row: &Value) -> Option<&str> {
+    row.get("key")?.as_str()
+}
+
+fn keyed_matches(before: &[Value], after: &[Value]) -> Option<Vec<(usize, usize)>> {
+    row_key(before.first()?)?;
+    row_key(after.first()?)?;
+
+    let mut positions = HashMap::with_capacity(before.len());
+    for (index, row) in before.iter().enumerate() {
+        if positions.insert(row_key(row)?, index).is_some() {
+            return None;
+        }
+    }
+    let mut seen = HashSet::with_capacity(after.len());
+    let mut pairs = Vec::new();
+    for (index, row) in after.iter().enumerate() {
+        let key = row_key(row)?;
+        if !seen.insert(key) {
+            return None;
+        }
+        if let Some(&old) = positions.get(key) {
+            pairs.push((old, index));
+        }
+    }
+
+    let mut tails: Vec<usize> = Vec::new();
+    let mut predecessors = Vec::with_capacity(pairs.len());
+    for (index, &(old, _)) in pairs.iter().enumerate() {
+        let length = tails.partition_point(|&end| pairs[end].0 < old);
+        predecessors.push(length.checked_sub(1).map(|previous| tails[previous]));
+        if length == tails.len() {
+            tails.push(index);
+        } else {
+            tails[length] = index;
+        }
+    }
+    let mut matches = Vec::with_capacity(tails.len());
+    let mut cursor = tails.last().copied();
+    while let Some(index) = cursor {
+        matches.push(pairs[index]);
+        cursor = predecessors[index];
+    }
+    Some(matches)
 }
 
 fn emit(
@@ -77,58 +147,43 @@ fn emit(
     }
 }
 
-fn cell(i: usize, j: usize) -> Option<usize> {
-    (i.abs_diff(j) <= MAX_EDITS).then(|| i * WIDTH + j + MAX_EDITS - i)
-}
-
-fn cost(cells: &[u8], i: usize, j: usize) -> u8 {
-    cell(i, j)
-        .and_then(|index| cells.get(index))
-        .copied()
-        .unwrap_or(UNREACHABLE)
-}
-
 fn find_hunks(
     before: &[Value],
     after: &[Value],
     mut emit: impl FnMut(Range<usize>, Range<usize>),
 ) -> bool {
     let (n, m) = (before.len(), after.len());
-    if n.abs_diff(m) > MAX_EDITS || n.max(m) >= MAX_CELLS / WIDTH {
+    let width = m + 1;
+    let count = (n + 1).saturating_mul(width);
+    if count > MAX_CELLS {
         return false;
     }
     let hasher = RandomState::new();
     let a: Vec<_> = before.iter().map(|value| hasher.hash_one(value)).collect();
     let b: Vec<_> = after.iter().map(|value| hasher.hash_one(value)).collect();
-    let same = |i: usize, j: usize| i < n && j < m && a[i] == b[j] && before[i] == after[j];
-    let mut cells = vec![UNREACHABLE; (n + 1) * WIDTH];
-    for i in (0..=n).rev() {
-        for j in (i.saturating_sub(MAX_EDITS)..=m.min(i + MAX_EDITS)).rev() {
-            let value = if i == n && j == m {
-                0
-            } else if same(i, j) {
-                cost(&cells, i + 1, j + 1)
+    let same = |i: usize, j: usize| a[i] == b[j] && before[i] == after[j];
+    let mut cells = vec![0_u16; count];
+    for i in (0..n).rev() {
+        let row = i * width;
+        let next = row + width;
+        for j in (0..m).rev() {
+            cells[row + j] = if same(i, j) {
+                cells[next + j + 1] + 1
             } else {
-                let remove = cost(&cells, i + 1, j);
-                let insert = cost(&cells, i, j + 1);
-                (remove.min(insert) + 1).min(UNREACHABLE)
+                cells[next + j].max(cells[row + j + 1])
             };
-            cells[cell(i, j).expect("search stays within its band")] = value;
         }
-    }
-    if cost(&cells, 0, 0) == UNREACHABLE {
-        return false;
     }
     let (mut i, mut j, mut first_a, mut first_b) = (0, 0, 0, 0);
     while i < n || j < m {
-        if same(i, j) {
+        if i < n && j < m && same(i, j) {
             if i != first_a || j != first_b {
                 emit(first_a..i, first_b..j);
             }
             i += 1;
             j += 1;
             (first_a, first_b) = (i, j);
-        } else if i < n && (j == m || cost(&cells, i + 1, j) <= cost(&cells, i, j + 1)) {
+        } else if i < n && (j == m || cells[(i + 1) * width + j] >= cells[i * width + j + 1]) {
             i += 1;
         } else {
             j += 1;
