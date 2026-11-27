@@ -262,27 +262,13 @@ impl Source {
         Ok(Arc::new(self.play(options)?))
     }
 
-    pub fn append_changed_warnings(
-        &self,
-        warnings: &mut Vec<String>,
-        content: Option<&ContentOptions>,
-    ) {
-        if let Some(own) = content.and_then(|content| self.own_content(&content.options).ok()) {
-            own.append_changed_to(warnings);
-        }
+    pub fn changed_content(&self, content: &ContentOptions) -> Option<Arc<ResolvedContent>> {
+        self.own_content(&content.options).ok()
     }
 
-    pub fn append_presentation_warnings(
-        &self,
-        warnings: &mut Vec<String>,
-        content: Option<&ContentOptions>,
-    ) {
-        if let Some(content) = content.filter(|content| {
-            content.presentation.content_work() && content.presentation.shows_mods()
-        }) && let Ok(presented) = self.presented_for(content)
-        {
-            presented.append_to(warnings);
-        }
+    pub fn presentation_refusals(&self, content: &ContentOptions) -> Option<Arc<Presented>> {
+        let shown = content.presentation.content_work() && content.presentation.shows_mods();
+        shown.then(|| self.presented_for(content).ok()).flatten()
     }
 
     pub fn name_countries(&self, content: Option<&ContentOptions>) -> io::Result<()> {

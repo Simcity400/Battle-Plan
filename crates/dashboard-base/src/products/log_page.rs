@@ -456,15 +456,16 @@ struct TailSeed<R> {
 
 pub fn dated_tail_panel<R, F, Q>(
     executable: Option<engine_executable::executable_tables::Tables>,
+    finish: super::Finish,
     quiet: Q,
     read: F,
 ) -> Box<dyn Panel>
 where
-    R: TailPanelReply,
+    R: TailPanelReply + super::ReplyWarnings,
     Q: Fn(i32, i32, &AtomicBool) -> io::Result<Option<Vec<MissingSpan>>> + Send + Sync + 'static,
     F: Fn(i32, &AtomicBool) -> io::Result<R> + Send + Sync + 'static,
 {
-    let read = Arc::new(read);
+    let read = Arc::new(move |hour, cancelled: &AtomicBool| finish.reply(|| read(hour, cancelled)));
     let step_read = Arc::clone(&read);
     let held: Arc<Mutex<Option<TailSeed<R>>>> = Arc::new(Mutex::new(None));
     let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _step| {
@@ -507,7 +508,7 @@ where
                         }
                         Ok(None) => {}
                         Err(error) => {
-                            return ProductRead { value: Arc::new(Err(error.to_string())), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour };
+                            return ProductRead { value: Arc::new(Err(super::Finish::refusal(&error))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour };
                         }
                     }
                 }

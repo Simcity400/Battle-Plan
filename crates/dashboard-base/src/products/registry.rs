@@ -1,4 +1,4 @@
-use super::{Envelope, LoadContext, Product, ReplyWarnings};
+use super::{Envelope, Finish, LoadContext, Product, ReplyWarnings};
 use crate::Source;
 use dashboard_core::transport::{MAX_REPLY_BYTES, bounded_json};
 use std::sync::atomic::AtomicBool;
@@ -135,29 +135,23 @@ pub fn reply_json<R: serde::Serialize + ReplyWarnings>(
     load: impl FnOnce() -> std::io::Result<R>,
 ) -> Result<String, dashboard_core::QueryError> {
     let mut reply = JsonReply::new(source, lease_id, key, content_dependent, context, cancelled)?;
-    let mut own = crate::catalogue::OwnRefusals::default();
-    let mut data =
-        crate::catalogue::own_refusals(&mut own, load).map_err(dashboard_core::QueryError::from)?;
-    reply.append_warnings(data.warnings_mut(), &own);
+    let data = Finish::new(source, context, content_dependent).reply(load)?;
     reply.finish(bounded_json(&data, cancelled)?)
 }
 
-struct JsonReply<'a> {
-    source: &'a Source,
-    context: &'a LoadContext,
-    content_dependent: bool,
+struct JsonReply {
     prefix: String,
     _content: Option<std::sync::Arc<content_reader_layers::content::ResolvedContent>>,
 }
 
-impl<'a> JsonReply<'a> {
+impl JsonReply {
     #[inline(never)]
     fn new(
-        source: &'a Source,
+        source: &Source,
         lease_id: &str,
         key: &'static str,
         content_dependent: bool,
-        context: &'a LoadContext,
+        context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> Result<Self, dashboard_core::QueryError> {
         crate::metadata::check_cancel(cancelled).map_err(dashboard_core::QueryError::from)?;
@@ -176,25 +170,7 @@ impl<'a> JsonReply<'a> {
             cancelled,
         )?;
         prefix.truncate(prefix.len() - "null}".len());
-        Ok(Self {
-            source,
-            context,
-            content_dependent,
-            prefix,
-            _content: content,
-        })
-    }
-
-    #[inline(never)]
-    fn append_warnings(&self, warnings: &mut Vec<String>, own: &crate::catalogue::OwnRefusals) {
-        own.diagnostics().append_to(warnings);
-        if self.content_dependent {
-            self.source
-                .append_changed_warnings(warnings, self.context.content.as_ref());
-        }
-        self.source
-            .append_presentation_warnings(warnings, self.context.content.as_ref());
-        warnings.extend(own.fallback_line());
+        Ok(Self { prefix, _content: content })
     }
 
     #[inline(never)]

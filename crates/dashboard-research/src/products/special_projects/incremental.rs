@@ -63,7 +63,7 @@ struct Followed {
     data: Arc<dashboard_follow::panel::PanelData>,
 }
 
-pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<Holders>, params: Arc<SpecialProjectsParams>, content: Arc<ProjectContent>, executable: Option<engine_executable::executable_tables::Tables>) -> ProductReader {
+pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<Holders>, params: Arc<SpecialProjectsParams>, content: Arc<ProjectContent>, executable: Option<engine_executable::executable_tables::Tables>, finish: dashboard_base::products::Finish) -> ProductReader {
     let state = Mutex::new(None::<Followed>);
     Arc::new(move |hour, reset, cancelled, _step| {
         let query = Query { replay: &replay, holders: holders.clone(), timeline: timeline.clone() };
@@ -81,11 +81,13 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
                 let size = replay_columnar::unit::BLOCK;
                 let block_end = run.block_first_hour(ordinal / size).saturating_add(size as i32 - 1);
                 let limit = block_end.min(stretch.last).min(holders.interval(hour).1);
-                s.follow.cover(&query, &params.country, hour, limit, cancelled)?;
-                let tag = query.holders.name(&params.country, hour);
-                #[cfg(any(test, feature = "test-support"))]
-                dashboard_base::test_fixtures::product_called();
-                let reply = present(&query, &params, &content, &s.follow, &tag, cancelled, &mut s.spelling)?;
+                let reply = finish.reply(|| {
+                    s.follow.cover(&query, &params.country, hour, limit, cancelled)?;
+                    let tag = query.holders.name(&params.country, hour);
+                    #[cfg(any(test, feature = "test-support"))]
+                    dashboard_base::test_fixtures::product_called();
+                    present(&query, &params, &content, &s.follow, &tag, cancelled, &mut s.spelling)
+                })?;
                 s.data = Arc::new(Ok(serde_json::to_value(reply)?));
                 s.first = hour;
             }
@@ -93,7 +95,7 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
         }));
         let (value, fresh, from) = answer.unwrap_or_else(|e| {
             *held = None;
-            (Arc::new(Err(e.to_string())), true, hour)
+            (Arc::new(Err(dashboard_base::products::Finish::refusal(&e))), true, hour)
         });
         dashboard_follow::panel::ProductRead { value, rows, fresh, pending: false, live: None, lanes: Vec::new(), from }
     })

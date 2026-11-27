@@ -580,9 +580,10 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     RaidLogTail::validate(&params)?;
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let prepared = prepare(source, &query, branch, load, &params, &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, RaidLogTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, &params, &AtomicBool::new(false)));
+    let prepared = prepared.map_err(|error| error.to_string())?;
     let owned = Owned { replay: source.replay(), timeline: Arc::clone(&query.timeline), holders: Arc::clone(&query.holders) };
-    Ok(occurrences::occurrence_panel(source.tables(), move |hour, cancelled| {
+    Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         let query = Query { replay: &owned.replay, timeline: Arc::clone(&owned.timeline), holders: Arc::clone(&owned.holders) };
         let hour = occurrences::cutoff(&query, Some(hour))?;
         load_tail_at(&prepared, &query, &params, hour, cancelled)

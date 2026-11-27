@@ -1,4 +1,5 @@
 use super::{placed::{Pool, Taken, Warm}, *};
+use crate::catalogue::{OwnRefusals, own_refusals};
 use dashboard_follow::panel::{ProductReader, ProductStep};
 use playhead::{Step, changes::Changes, lane::Lane, pages::WorldPages};
 use replay_columnar::{manifest::Status, store::TableView as StoreView};
@@ -394,11 +395,11 @@ impl Stream {
     }
 }
 
-pub struct Held<'a>(&'a mut Arc<PanelData>, &'a [String]);
+pub struct Held<'a>(&'a mut Arc<PanelData>, &'a Finish);
 
 impl Held<'_> {
     pub fn warnings(&mut self, mut warnings: Vec<String>, own: &OwnRefusals) {
-        finish(&mut warnings, own, self.1);
+        self.1.seal(&mut warnings, own);
         self["warnings"] = warnings.into();
     }
 }
@@ -444,7 +445,7 @@ fn sampling<T>(frame: &DecodedFrame, sampled: &mut Option<BTreeSet<TableId>>, co
     value
 }
 
-pub(super) fn reader<P: AtHour>(source: &Source, pool: Arc<Pool>, params: Arc<P::Params>, context: Arc<P::Context>, query: Query<'_>, warnings: Vec<String>) -> ProductReader
+pub(super) fn reader<P: AtHour>(source: &Source, pool: Arc<Pool>, params: Arc<P::Params>, context: Arc<P::Context>, query: Query<'_>, finish: Finish) -> ProductReader
 where P::Context: Sync, P::Params: Sync {
     let (timeline, holders, executable) = (query.timeline, query.holders, source.tables());
     use dashboard_query::identity::{Country, Holder};
@@ -565,7 +566,7 @@ where P::Context: Sync, P::Params: Sync {
                 }
                 if state.data.is_ok() && hour <= state.reply_through && (revision == state.context_revision || P::UPDATES_REVISION) && selected.iter().all(|table| matches!(state.frame.tables[table.index()].held(), TableView::Complete(_))) {
                     let kept = state.data.clone();
-                    if P::advance(&state.frame, &params, &at, &edits, &state.live, &mut Held(&mut state.data, &warnings))? {
+                    if P::advance(&state.frame, &params, &at, &edits, &state.live, &mut Held(&mut state.data, &finish))? {
                         state.reply = None;
                         state.context_revision = revision;
                         state.reply_through = state.reply_through.min(P::valid_through(&state.frame, &params, &at));
@@ -581,7 +582,7 @@ where P::Context: Sync, P::Params: Sync {
             let mut reply = match result {
                 Ok(reply) => reply,
                 Err(error) if dashboard_core::refusal(&error).is_some() && P::holds_refusal(&state.frame) => {
-                    state.data = Arc::new(Err(error.to_string()));
+                    state.data = Arc::new(Err(Finish::refusal(&error)));
                     state.live = Arc::default();
                     state.extra = Supplemental::default();
                     state.reply = None;
@@ -595,7 +596,7 @@ where P::Context: Sync, P::Params: Sync {
             };
             let partial = selected.iter().any(|table| matches!(state.frame.tables[table.index()].held(), TableView::Truncated { .. }));
             let reply_through = sampling(&state.frame, &mut state.sampled, || P::valid_reply_through(&state.frame, &params, &at, &reply, partial));
-            finish(reply.warnings_mut(), &own, &warnings);
+            finish.seal(reply.warnings_mut(), &own);
             let live = cells.finish();
             let projected = |table: TableId| P::projection(&params, table, &state.plans, &context);
             state.extra.set(&live, |g| state.plans.iter().flat_map(|(reads, _)| reads).rev().find(|r| r.table == g.table)
@@ -624,7 +625,7 @@ where P::Context: Sync, P::Params: Sync {
                 state.rebuild = true;
                 state.data.clone()
             }
-            Err(e) => { *held = None; Arc::new(Err(e.to_string())) }
+            Err(e) => { *held = None; Arc::new(Err(Finish::refusal(&e))) }
         };
         let fresh = !pending && held.as_ref().is_some_and(|s| s.values_at == Some(hour));
         let live = held.as_ref().map(|s| s.live.clone()).filter(|live| !live.is_empty());

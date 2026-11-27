@@ -1374,14 +1374,15 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     SpecialProjects::validate(&params)?;
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|e| e.to_string())?;
-    let content = content(source, load).map_err(|e| e.to_string())?;
+    let (finish, content) = dashboard_base::products::Finish::open(source, load, SpecialProjects::CONTENT_DEPENDENT, || content(source, load));
+    let content = content.map_err(|e| e.to_string())?;
     let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
     let params = Arc::new(params);
-    let advance = at_hour::shared_reader(source, load, SpecialProjects::KEY, asked, || incremental::reader(replay.clone(), timeline.clone(), holders.clone(), params.clone(), content.clone(), executable));
+    let advance = at_hour::shared_reader(source, load, SpecialProjects::KEY, asked, || incremental::reader(replay.clone(), timeline.clone(), holders.clone(), params.clone(), content.clone(), executable, finish.clone()));
     let read: dashboard_follow::panel::ExactReader = Arc::new(move |hour, cancelled| {
         if timeline.at(hour).is_none() { return Err("Special projects hour is not recorded".into()); }
         let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
-        let reply = engine_executable::executable_tables::scope(executable, || reply_through(query, &params, &content, hour, cancelled)).map_err(|e| e.to_string())?;
+        let reply = engine_executable::executable_tables::scope(executable, || finish.reply(|| reply_through(query, &params, &content, hour, cancelled))).map_err(|e| e.to_string())?;
         serde_json::to_value(reply).map_err(|e| e.to_string())
     });
     Ok(at_hour::product_panel(advance, read))

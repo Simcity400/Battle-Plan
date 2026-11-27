@@ -1,9 +1,6 @@
 
-use super::{LoadContext, PanelReader, Registered, ReplyWarnings};
-use crate::{
-    Source,
-    catalogue::{OwnRefusals, own_refusals},
-};
+use super::{Finish, LoadContext, PanelReader, Registered, ReplyWarnings};
+use crate::Source;
 use dashboard_follow::{
     live::{Cells, Group, GroupState, Live},
     panel::{Declared, Panel, PanelData},
@@ -363,21 +360,6 @@ impl<R: ReplyWarnings> ReplyWarnings for WithLive<R> {
     }
 }
 
-fn finish(warnings: &mut Vec<String>, own: &OwnRefusals, content: &[String]) {
-    own.diagnostics().append_to(warnings);
-    warnings.extend(content.iter().cloned());
-    warnings.extend(own.fallback_line());
-}
-
-fn content_warnings<P: AtHour>(source: &Source, load: &LoadContext) -> Vec<String> {
-    let mut warnings = Vec::new();
-    if P::CONTENT_DEPENDENT {
-        source.append_changed_warnings(&mut warnings, load.content.as_ref());
-    }
-    source.append_presentation_warnings(&mut warnings, load.content.as_ref());
-    warnings
-}
-
 fn request_hour(request: &mut Value) -> Option<i32> {
     let hour = request.as_object_mut()?.remove("hour")?;
     i32::try_from(hour.as_i64()?).ok()
@@ -404,17 +386,15 @@ where P::Params: Sync, P::Context: Sync {
     let query = crate::queries::query(source, branch).map_err(|e| e.to_string())?;
     let context = Arc::new(P::context_for(source, load, &params).map_err(|e| e.to_string())?);
     let params = Arc::new(params);
-    let warnings = content_warnings::<P>(source, load);
+    let finish = Finish::new(source, load, P::CONTENT_DEPENDENT);
     let pool = placed::Pool::of(source).map_err(|e| e.to_string())?;
-    let advance = shared_reader(source, load, P::KEY, asked, || incremental::reader::<P>(source, pool.clone(), params.clone(), context.clone(), Query { replay: query.replay, holders: query.holders.clone(), timeline: query.timeline.clone() }, warnings.clone()));
+    let advance = shared_reader(source, load, P::KEY, asked, || incremental::reader::<P>(source, pool.clone(), params.clone(), context.clone(), Query { replay: query.replay, holders: query.holders.clone(), timeline: query.timeline.clone() }, finish.clone()));
     let (replay, holders, timeline, executable) = (source.replay(), query.holders, query.timeline, source.tables());
     let cold: dashboard_follow::panel::ExactReader = Arc::new(move |hour, cancelled| {
         let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
-        let mut own = OwnRefusals::default();
-        let (mut reply, live) = engine_executable::executable_tables::scope(executable, || own_refusals(&mut own, ||
-            answered::<P, _>(&query, &pool, &params, hour, || Ok(context.as_ref()), cancelled))).map_err(|e| e.to_string())?;
-        finish(reply.warnings_mut(), &own, &warnings);
-        serde_json::to_value(WithLive { reply, live }).map_err(|e| e.to_string())
+        let reply = engine_executable::executable_tables::scope(executable, || finish.reply(||
+            answered::<P, _>(&query, &pool, &params, hour, || Ok(context.as_ref()), cancelled).map(|(reply, live)| WithLive { reply, live }))).map_err(|e| e.to_string())?;
+        serde_json::to_value(reply).map_err(|e| e.to_string())
     });
     Ok(product_panel(advance, cold))
 }
@@ -540,22 +520,16 @@ pub fn dated_product<P: super::Product>(
     params.as_object_mut().ok_or("Expected panel parameters")?.remove("panel");
     let source = Arc::clone(source);
     let load = LoadContext { content: load.content.clone() };
-    let mut warnings = Vec::new();
-    if P::CONTENT_DEPENDENT {
-        source.append_changed_warnings(&mut warnings, load.content.as_ref());
-    }
-    source.append_presentation_warnings(&mut warnings, load.content.as_ref());
+    let finish = Finish::new(&source, &load, P::CONTENT_DEPENDENT);
     Ok(dated_interval(source.tables(), move |hour, cancelled| {
         let mut request = params.clone();
         date(&mut request, hour);
         let params = dashboard_query::named::named::<P::Params>(&request)?;
         P::validate(&params).map_err(dashboard_core::invalid)?;
-        let mut own = OwnRefusals::default();
         #[cfg(any(test, feature = "test-support"))]
         crate::test_fixtures::product_called();
-        let (reply, rows) = counted(|| own_refusals(&mut own, || P::load(&source, &params, &load, cancelled)));
-        let mut reply = reply?;
-        finish(reply.warnings_mut(), &own, &warnings);
+        let (reply, rows) = counted(|| finish.reply(|| P::load(&source, &params, &load, cancelled)));
+        let reply = reply?;
         let through = valid_through(&params, &reply);
         Ok((serde_json::to_value(reply)?, hour..=through, rows))
     }, date_held))
@@ -589,7 +563,7 @@ struct Followed<P: AtHour> {
     tables: Vec<TableId>,
     holders: Arc<Holders>,
     context: P::Context,
-    content_warnings: Vec<String>,
+    finish: Finish,
     live: Option<Live>,
     executable: Option<engine_executable::executable_tables::Tables>,
     product: PhantomData<fn() -> P>,
@@ -603,17 +577,15 @@ impl<P: AtHour> Panel for Followed<P> {
 
     fn data(&mut self, frame: &DecodedFrame) -> PanelData {
         let cancelled = AtomicBool::new(false);
-        let mut own = OwnRefusals::default();
         let cells = Cells::default();
         self.live = None;
         let made = engine_executable::executable_tables::scope(self.executable, || {
-            own_refusals(&mut own, || {
+            self.finish.reply(|| {
                 let owner = holder::<P>(&self.holders, &self.params, frame.hour)?;
                 P::reply(frame, &self.params, &At { owner, holders: &self.holders, hour: frame.hour, context: &self.context, cancelled: &cancelled, live: &cells })
             })
         });
-        let mut reply = made.map_err(|error| error.to_string())?;
-        finish(reply.warnings_mut(), &own, &self.content_warnings);
+        let reply = made.map_err(|error| error.to_string())?;
         self.live = Some(cells.finish()).filter(|live| !live.is_empty());
         serde_json::to_value(&reply).map_err(|error| error.to_string())
     }
@@ -634,7 +606,7 @@ pub fn frame_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value
     let branch = dashboard_query::branch(&asked).map_err(|error| error.to_string())?;
     let holders = Arc::clone(&crate::queries::query(source, branch).map_err(|error| error.to_string())?.holders);
     let context = P::context_for(source, load, &params).map_err(|error| error.to_string())?;
-    Ok(Box::new(Followed::<P> { tables: P::tables(&params), params, holders, context, content_warnings: content_warnings::<P>(source, load), live: None, executable: source.tables(), product: PhantomData }))
+    Ok(Box::new(Followed::<P> { tables: P::tables(&params), params, holders, context, finish: Finish::new(source, load, P::CONTENT_DEPENDENT), live: None, executable: source.tables(), product: PhantomData }))
 }
 
 #[cfg(any(test, feature = "export-types"))]
