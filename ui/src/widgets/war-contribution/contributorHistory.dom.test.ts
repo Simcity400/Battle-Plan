@@ -49,6 +49,11 @@ test('installed War contribution rows open a cancellable history and keep its re
       assert.ok(await act<{ caption: string }>('read()').then(reply => reply.caption.includes(formatDateHover(lastHour - 1))));
       assert.match(await act<string>('tooltip()'), /BBB.*partial.*not attributed/);
       assert.match(await act<{ spoken: string }>('read()').then(reply => reply.spoken), /EEE.*partial.*not attributed/);
+      assert.ok((await act<string[]>('drawnNames()')).includes('BBB'));
+      await act('resolveNames()');
+      assert.ok((await act<string[]>('drawnNames()')).includes('Beryl'));
+      assert.match(await act<string>('tooltip()'), /Beryl.*partial.*not attributed/);
+      assert.match(await act<{ title: string }>('loading(1)').then(reply => reply.title), /Accord.*Fixture War/);
       await mouse('.war-history-chart', 0.53, 66, false);
       assert.match(await act<string>('tooltip()'), /Recording paused in the fixture|partial.*not attributed|WarParticipation/);
       await page.press('Escape');

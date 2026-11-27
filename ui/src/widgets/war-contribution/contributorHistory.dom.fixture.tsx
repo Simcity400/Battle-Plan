@@ -34,6 +34,16 @@ const source = { id: 'fixture', revision: '1', path: '', metadata: { campaignKey
 const track = { id: 'main', roleId: 'primary', label: 'Main', branchIndex: 0, anchorOffset: 0, source, branch, axisOffset: 0, selectedSlot: 0 } as unknown as BoundTrack;
 const calls: { call: ProductRequest; signal: AbortSignal; answer: (data: WarContributionHistoryReply) => void }[] = [];
 const snapshotHours: number[] = [];
+const names = ['Accord', 'Beryl', 'Cinder', 'Dale', 'Elm', 'Fern', 'Grove'];
+let answerNames!: () => void;
+const nameGate = new Promise<void>(resolve => { answerNames = resolve; });
+const painted = new Set<string>();
+const fillText = OffscreenCanvasRenderingContext2D.prototype.fillText;
+OffscreenCanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+  painted.add(text);
+  if (maxWidth === undefined) fillText.call(this, text, x, y);
+  else fillText.call(this, text, x, y, maxWidth);
+};
 const client = { available: true, async product(call: ProductRequest, signal: AbortSignal) {
   const reply = (data: unknown) => ({ sourceId: call.sourceId, revision: call.revision, product: call.product, data });
   if (call.product === 'war-contribution-history') return new Promise(resolve => calls.push({ call, signal, answer: data => resolve(reply(data)) }));
@@ -44,6 +54,11 @@ const client = { available: true, async product(call: ProductRequest, signal: Ab
     return reply({ branchId: branch.id, available: true, hour, warnings: [], missing: null, contributions: [snapshot] });
   }
   if (call.product === 'country-identities') return reply({ branchId: branch.id, known: [], countries: tags.map((tag, slot) => ({ tag, identities: [{ slot, countryId: slot + 1, firstHour, lastHour: branch.lastHour }], unresolved: [] })), unknown: [], warnings: [] });
+  if (call.product === 'country-facts') {
+    await nameGate;
+    return reply({ branchId: branch.id, known: [[firstHour, branch.lastHour]], names, reasons: ['Fixture flag unavailable'], flags: [],
+      countries: tags.map((tag, i) => ({ tag, runs: [[firstHour, i, 0x334455, 0, -1]] })), warnings: [] });
+  }
   if (call.product === 'country-identity') return reply({ branchId: branch.id, countries: [], warnings: [] });
   return reply({ branchId: branch.id, known: [], countries: [], unknown: [], warnings: [] });
 } } as unknown as DashboardClient;
@@ -112,6 +127,12 @@ Object.assign(window, { warHistoryFixture: {
   async nextFrames() { await frame(); await frame(); },
   compare() { flushSync(() => detail()!.querySelector<HTMLButtonElement>('button[aria-pressed]')!.click()); },
   tooltip: () => { const tip = tooltipStore.get(); return tip ? tooltipText(tip.content) : null; },
+  drawnNames: () => [...painted],
+  async resolveNames() {
+    painted.clear();
+    answerNames();
+    await wait(() => detail()?.querySelector('caption')?.textContent?.includes('Accord') === true);
+  },
   hitsBody(x: number, y: number) { return document.elementFromPoint(x, y)?.closest('.fh-body') != null; },
   box(selector: string) { const { x, y, width, height } = document.querySelector(selector)!.getBoundingClientRect(); return { x, y, width, height }; },
   lastHour, pause,

@@ -7,8 +7,10 @@ import type { WarContributionHistoryReply, WarHistoryContributor, WarMeasureKey,
 import { observationAt } from '../wars/warsData.ts';
 import { MEASURE_LIST } from './definition.ts';
 import { contributionPartial, groupCoverageReason } from './warContributionPlan.ts';
+
 const coverage = new WeakMap<WarObservation, { listed: readonly Set<string>[]; reason?: string }>();
 export const HISTORY_SCALES = ['Recorded amount', 'Share of side', 'Share of war'] as const;
+
 export function permyriad(part: bigint | null, whole: bigint | null): bigint | null {
   if (part === null || whole === null || whole <= 0n) return null;
   const rounded = ((part < 0n ? -part : part) * 20_000n + whole) / (whole * 2n);
@@ -95,18 +97,20 @@ export function historyChart(history: WarContributionHistoryReply, people: reado
   const includes = (tag: string, hour: number) => people.some(person => memberAt(person, hour)?.[3] === tag);
   const markers = [
     ...participants.flatMap((run, i) => [
-      ...(includes(run.tag, run.firstHour) ? [{ id: `join-${i}`, hour: run.firstHour, title: `${run.tag} ${run.joinedBy ? 'in war by' : 'joined'} ${formatDateOnly(run.firstHour)}` }] : []),
+      ...(includes(run.tag, run.firstHour) ? [{ id: `join-${i}`, hour: run.firstHour, tag: run.tag, title: `${run.tag} ${run.joinedBy ? 'in war by' : 'joined'} ${formatDateOnly(run.firstHour)}` }] : []),
       ...(run.lastHour < lastHour && includes(run.tag, run.lastHour) ? [{
-        id: `leave-${i}`, hour: run.lastHour, title: `${run.tag} ${run.leftBy ? 'last seen' : 'left'} ${formatDateOnly(run.lastHour)}`,
+        id: `leave-${i}`, hour: run.lastHour, tag: run.tag, title: `${run.tag} ${run.leftBy ? 'last seen' : 'left'} ${formatDateOnly(run.lastHour)}`,
       }] : []),
     ]),
-    ...capitulations.filter(event => includes(event.tag, event.hour)).map((event, i) => ({ id: `capitulation-${i}`, hour: event.hour, title: `${event.tag} capitulated` })),
+    ...capitulations.filter(event => includes(event.tag, event.hour)).map((event, i) => ({ id: `capitulation-${i}`, hour: event.hour, tag: event.tag, title: `${event.tag} capitulated` })),
   ];
   return { kind: 'war-contribution-history', measureTitle: MEASURE_LIST.find(item => item.key === measure)!.label, mode: 'lines', hour: until,
     extent: [Math.min(firstHour, until - 1), until], yAxis: scale ? { format: 'percent' } : { format: 'number', exactDecimals: 5 },
     series, gaps: history.gaps, markers, legend: series.length > 1 ? series.map(({ id, name, color }) => ({ id, label: name, color })) : undefined,
-    detailAt: (hour: number): ChartHoverDetail => ({ hour, replacesSeries: true, items: people.map((person, i) => ({
-      label: memberAt(person, hour)?.[3] ?? series[i]!.name, swatch: series[i]!.color, value: readingText(detailAt(history, person, index, hour)[scale]!, scale),
-    })) }),
+    detailAt: (hour: number, nameAt?: (person: WarHistoryContributor, at: number) => { label: string; reason?: string }): ChartHoverDetail => ({ hour, replacesSeries: true, items: people.map((person, i) => {
+      const name = nameAt?.(person, hour) ?? { label: memberAt(person, hour)?.[3] ?? series[i]!.name };
+      const value = readingText(detailAt(history, person, index, hour)[scale]!, scale);
+      return { label: name.label, swatch: series[i]!.color, value: name.reason ? `${value} · Name not recorded. ${name.reason}` : value };
+    }) }),
   } satisfies TimeChartModel & { detailAt(hour: number): ChartHoverDetail };
 }

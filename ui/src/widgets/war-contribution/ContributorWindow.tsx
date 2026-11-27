@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { drawingSurface, sizeCanvas, watchCanvasSize } from '../../charts/surface.ts';
 import { canvasMeasureText } from '../../charts/textWidth.ts';
 import { hideTooltip, showTooltip } from '../../charts/tooltip.ts';
@@ -13,13 +13,14 @@ import type { FamilyTheme } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { useFamilyTheme } from '../../families/host/theme.ts';
 import { resolveTooltipEntryContent } from '../../families/host/tooltips.ts';
-import { countryTagKey, useIdentities, useIdentityScope } from '../../families/identity/react.ts';
+import { countryTagKey, useIdentities, useIdentityScope, type CountryIdentityResult } from '../../families/identity/react.ts';
+import { countryHolderKey } from '../../families/identity/types.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart, type TimeChartLayout } from '../../families/time-chart/layout.ts';
 import { drawTimeChart } from '../../families/time-chart/painter.ts';
 import { hasMeasuredValue } from '../../families/value.ts';
 import { formatDateHover } from '../../families/valueFormat.ts';
-import type { WarContributionHistoryReply, WarMeasureKey } from '../../generated/dashboard';
+import type { WarContributionHistoryReply, WarHistoryContributor, WarMeasureKey } from '../../generated/dashboard';
 import { HISTORY_SCALES, detailAt, historyChart, memberAt, readingText } from './contributorHistory.ts';
 import { MEASURE_LIST } from './definition.ts';
 
@@ -31,8 +32,22 @@ export interface OpenedContributor {
   readonly side: number;
   readonly measure: WarMeasureKey;
 }
+
+const keyAt = (person: WarHistoryContributor, hour: number) => {
+  const member = memberAt(person, hour);
+  return member ? countryTagKey(member[3]) : countryHolderKey(person.slot, person.id);
+};
+
+function countryName(identity: CountryIdentityResult, tag: string) {
+  const field = identity.kind === 'known' ? identity.name : identity;
+  const fallback = identity.kind === 'known' && identity.tag.kind === 'known' ? identity.tag.value : tag;
+  return { label: field.kind === 'known' ? field.value : fallback, reason: field.kind === 'failed' ? field.failure.message : 'reason' in field ? field.reason : undefined };
+}
+type Heading = ReturnType<typeof countryName> & { tag: string };
+
 function HistoryCanvas({ model, hour, first, inspect, theme }: { readonly model: ReturnType<typeof historyChart>; readonly hour: number; readonly first: number; readonly inspect: (hour: number) => void; readonly theme: FamilyTheme }) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const lastVisit = useRef<[string, number, number] | null>(null);
   const state = useRef<{ layout: TimeChartLayout | null; key: string | null; paint?: () => void }>({ layout: null, key: null });
   const tooltip = useId();
   useLayoutEffect(() => {
@@ -66,6 +81,7 @@ function HistoryCanvas({ model, hour, first, inspect, theme }: { readonly model:
     return () => { size.disconnect(); state.current = { layout: null, key: null }; hideTooltip(tooltip); };
   }, [model, theme, tooltip]);
   const visit = (key: string | null, x = 0, y = 0) => {
+    lastVisit.current = key ? [key, x, y] : null;
     const { layout } = state.current;
     if (!layout) return;
     const hit = parseChartInspect(key);
@@ -78,6 +94,7 @@ function HistoryCanvas({ model, hour, first, inspect, theme }: { readonly model:
     inspect(Math.max(first, Math.min(model.hour, Math.floor(entry.hour))));
     showTooltip(tooltip, resolveTooltipEntryContent(entry), x, y);
   };
+  useLayoutEffect(() => { if (lastVisit.current) visit(...lastVisit.current); }, [model, theme]);
   return <canvas ref={canvas} className="war-history-chart" role="img" tabIndex={0}
     aria-label={`${model.measureTitle} over the war. Use arrow keys to inspect the chart by hour.`}
     onPointerLeave={() => visit(null)} onBlur={() => visit(null)}
@@ -96,7 +113,7 @@ function HistoryCanvas({ model, hour, first, inspect, theme }: { readonly model:
     }} />;
 }
 
-function HistoryBody({ history, opened, track, runtime }: { readonly history: WarContributionHistoryReply; readonly opened: OpenedContributor; readonly track: BoundTrack; readonly runtime: WidgetRuntime }) {
+function HistoryBody({ history, opened, track, runtime, setHeading }: { readonly history: WarContributionHistoryReply; readonly opened: OpenedContributor; readonly track: BoundTrack; readonly runtime: WidgetRuntime; readonly setHeading: (heading: Heading) => void }) {
   const { theme } = useFamilyTheme();
   const [measure, setMeasure] = useState(opened.measure);
   const [scale, setScale] = useState(1);
@@ -109,17 +126,28 @@ function HistoryBody({ history, opened, track, runtime }: { readonly history: Wa
     return hasMeasuredValue(value) ? [{ person, magnitude: value.value < 0n ? -value.value : value.value }] : [];
   }).sort((a, b) => a.magnitude === b.magnitude ? a.person.slot - b.person.slot : a.magnitude > b.magnitude ? -1 : 1), [side, history, index, opened.at]);
   const focused = opened.tag === null ? rank[0]?.person ?? side[0] : side.find(person => memberAt(person, opened.at)?.[3] === opened.tag);
-  const model = useMemo(() => theme ? historyChart(history, compare && rank.length ? rank.slice(0, 5).map(({ person }) => person) : focused ? [focused] : [], measure, scale, theme.surface) : null,
-    [history, compare, rank, focused, measure, scale, theme]);
-  const hidden = compare ? side.length - (model?.series.length ?? 0) : 0;
+  const people = useMemo(() => compare && rank.length ? rank.slice(0, 5).map(({ person }) => person) : focused ? [focused] : [], [compare, rank, focused]);
+  const base = useMemo(() => theme ? historyChart(history, people, measure, scale, theme.surface) : null, [history, people, measure, scale, theme]);
+  const hidden = compare ? side.length - people.length : 0;
   const tag = focused && memberAt(focused, hour)?.[3];
   const openingTag = focused && memberAt(focused, opened.at)?.[3];
   const scope = useIdentityScope(runtime.client, track.source, track.branch.id);
-  const identities = useIdentities(runtime.client, track.source, scope, openingTag ? [{ key: countryTagKey(openingTag), hour: opened.at }] : [],
+  const subjects = focused && !people.includes(focused) ? [...people, focused] : people;
+  const { resolve, flagFor } = useIdentities(runtime.client, track.source, scope, subjects.map(person => ({ key: keyAt(person, hour), hour })),
     { needFlags: true, flagSize: 'small', branchBounds: [track.branch.firstHour, track.branch.lastHour] });
-  const identity = tag && identities.resolve(countryTagKey(tag), hour);
-  const name = identity && identity.kind === 'known' && identity.name.kind === 'known' ? identity.name.value : tag ?? openingTag;
-  const flag = identity && identity.kind === 'known' && identity.flagChoice.kind === 'known' ? identities.flagFor(identity.flagChoice.value) : null;
+  const nameAt = useCallback((person: WarHistoryContributor, at: number) => countryName(resolve(keyAt(person, at), at), memberAt(person, at)?.[3] ?? memberAt(person, opened.at)![3]), [resolve, opened.at]);
+  const labelsKey = JSON.stringify(people.map(person => nameAt(person, hour).label));
+  const model = useMemo(() => {
+    if (!base) return null;
+    const labels = JSON.parse(labelsKey) as string[];
+    return { ...base, series: base.series.map((line, i) => ({ ...line, name: labels[i]! })), legend: base.legend?.map((entry, i) => ({ ...entry, label: labels[i]! })),
+      markers: base.markers.map(mark => { const name = countryName(resolve(countryTagKey(mark.tag), mark.hour), mark.tag); return { ...mark, title: name.label + mark.title.slice(mark.tag.length), detail: name.reason }; }),
+      detailAt: (at: number) => base.detailAt(at, nameAt) };
+  }, [base, labelsKey, nameAt, resolve]);
+  const identity = focused && resolve(keyAt(focused, hour), hour);
+  const { label: name, reason } = identity ? countryName(identity, (tag ?? openingTag)!) : { label: undefined, reason: undefined };
+  const flag = identity && identity.kind === 'known' && identity.flagChoice.kind === 'known' ? flagFor(identity.flagChoice.value) : null;
+  useLayoutEffect(() => { if (opened.tag && name) setHeading({ tag: opened.tag, label: name, reason }); }, [opened.tag, name, reason, setHeading]);
   const unread = history.gaps.find(gap => gap.firstHour <= hour && hour <= gap.lastHour)?.reason ?? 'The contributor’s history was not recorded for this selection.';
   return <>
     <div className="war-history-options">
@@ -134,7 +162,7 @@ function HistoryBody({ history, opened, track, runtime }: { readonly history: Wa
     </div>
     {model && theme && <HistoryCanvas model={model} hour={hour} first={history.war.firstHour} inspect={setHour} theme={theme} />}
     {focused ? <table className="war-history-readings">
-      <caption aria-live="polite">{tag && <CountryFlag image={flag?.image} tag={tag} name={name} decorative />}
+      <caption aria-live="polite" data-tooltip={reason}>{tag && <CountryFlag image={flag?.image} tag={tag} name={name} decorative />}
         {name} · {formatDateHover(hour)}<span className="sr-only"> {model?.measureTitle}. {model?.detailAt(hour).items.map(item => `${item.label} ${item.value}`).join('. ')}</span></caption>
       <thead><tr><th scope="col">Measure</th>{HISTORY_SCALES.map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
       <tbody>{MEASURE_LIST.map(({ key, label }) => <tr key={key}><th scope="row">{label}</th>
@@ -153,6 +181,7 @@ export default function ContributorWindow({ opened, track, runtime, anchor, onCl
   readonly onClose: () => void;
 }) {
   const [result, setResult] = useState<WarContributionHistoryReply | string>();
+  const [heading, setHeading] = useState<Heading>();
   const [request] = useState(opened.request);
   useEffect(() => {
     const controller = new AbortController();
@@ -165,10 +194,11 @@ export default function ContributorWindow({ opened, track, runtime, anchor, onCl
     );
     return () => controller.abort();
   }, [runtime.client, request]);
+  const title = heading?.tag === opened.tag ? heading : undefined;
   return <DetailWindowHost open subject={String(request.params.warId)} hour={opened.at} anchor={anchor} returnFocus=".fh-body[tabindex], .fh-sr-only[tabindex='0'], .fh-sr-only [tabindex='0']"
     className="war-history" settled={result !== undefined} onClose={onClose}
-    title={`${opened.tag ? `${opened.tag} · ` : ''}Contributor history · ${opened.warName}`}>
-    {typeof result === 'object' ? <HistoryBody key={`${opened.side}:${opened.tag}:${opened.measure}`} history={result} opened={opened} track={track} runtime={runtime} />
+    title={<>{opened.tag && <span data-tooltip={title?.reason}>{title?.label ?? opened.tag} · </span>}Contributor history · {opened.warName}</>}>
+    {typeof result === 'object' ? <HistoryBody key={`${opened.side}:${opened.tag}:${opened.measure}`} history={result} opened={opened} track={track} runtime={runtime} setHeading={setHeading} />
       : <p role="status">{result ?? 'Reading contributor history…'}</p>}
   </DetailWindowHost>;
 }
