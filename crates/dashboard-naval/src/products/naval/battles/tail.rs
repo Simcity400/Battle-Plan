@@ -235,12 +235,12 @@ fn status_at(history: &History, hour: i32) -> Status {
     history.statuses.get(at).filter(|s| s.first <= hour).map_or(Status::NotRecorded, |s| s.status)
 }
 
-fn country(countries: &mut Vec<u32>, slot: Option<u32>) -> bool {
-    let Some(slot) = slot else { return false };
-    if !countries.contains(&slot) {
+fn country(countries: &mut Vec<u32>, slot: Option<u32>) {
+    if let Some(slot) = slot
+        && !countries.contains(&slot)
+    {
         countries.push(slot);
     }
-    true
 }
 
 fn country_gap(status: Status, unresolved: bool) -> Option<&'static str> {
@@ -352,7 +352,9 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                             convoys[side] = None;
                         }
                     }
-                    unresolved[side] |= !country(&mut countries[side], count(cells, 1).and_then(|raw| links.slot_at(raw, hour)));
+                    let slot = count(cells, 1).and_then(|raw| links.slot_at(raw, hour));
+                    unresolved[side] |= slot.is_none();
+                    country(&mut countries[side], slot);
                     if sunk_ship(cells) {
                         lost.entry(*key).or_insert_with(|| prices.of(*key, hour));
                     }
@@ -437,7 +439,9 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                         if let Some(list) = sides.get_mut(side)
                             && at(reads, hour).is_some()
                         {
-                            unresolved[side] |= !country(list, links.slot_at(*key as u32, when));
+                            let slot = links.slot_at(*key as u32, when);
+                            unresolved[side] |= slot.is_none();
+                            country(list, slot);
                         }
                     }
                     (sides, unresolved)
@@ -461,9 +465,11 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                         return Some(date);
                     }
                     if let Some((at, prior)) = line.reads.iter().rev().find(|(_, read)| !read.countries[i].is_empty()) {
+                        let supplied = prior.countries_hour[i].unwrap_or(*at);
+                        let unresolved = supplied >= span.first && named_at(supplied).1[i];
                         sides[i].clone_from(&prior.countries[i]);
-                        countries_missing[i] = countries_missing[i].or(prior.countries_missing[i]);
-                        return prior.countries_hour[i].or(Some(*at));
+                        countries_missing[i] = country_gap(coverage, unresolved).or(prior.countries_missing[i]);
+                        return Some(supplied);
                     }
                     if named == date {
                         return None;
@@ -1198,9 +1204,11 @@ mod tests {
 
     #[test]
     fn a_result_from_before_the_recording_names_its_sides_at_the_first_recorded_hour() {
-        let results = History { keys: vec![(99, vec![step(10, Some(&[1, 5, 0, 2]))])], ..History::default() };
+        let report = [1, 5, 0, 2];
+        let results = History { keys: vec![(99, vec![step(10, Some(&report)), step(11, Some(&report))])], ..History::default() };
         let countries = History {
             keys: vec![((99 << 40) | 7, vec![step(10, Some(&[0]))]), ((99 << 40) | (1 << 32) | 8, vec![step(10, Some(&[0]))])],
+            statuses: vec![lanes::StatusRun { first: 10, last: 20, status: Status::Complete }],
             ..History::default()
         };
         let links = RunLinks { slots: HashMap::from([(7, vec![(10, 20, Some(3))]), (8, vec![(10, 20, Some(4))])]) };
@@ -1209,15 +1217,18 @@ mod tests {
         result_lines(&mut lines, span, &links, &results, &History::default(), &countries);
         let (hour, read) = lines[&Battle::Result(99, 5)].reads.first().unwrap();
         assert_eq!((*hour, read.result, read.countries.clone(), read.countries_hour), (10, NavalBattleStatus::DefenderWon, [vec![3], vec![4]], [Some(10); 2]));
+        let (hour, read) = lines[&Battle::Result(99, 5)].reads.last().unwrap();
+        assert_eq!((*hour, read.countries_hour, read.countries_missing), (11, [Some(10); 2], [None; 2]));
         let after = History { keys: vec![(99, vec![step(30, Some(&[1, 5, 0, 2]))])], ..History::default() };
         let lists = History {
             keys: vec![((99 << 40) | 7, vec![step(30, Some(&[0]))]), ((99 << 40) | (1 << 32) | 8, vec![step(30, Some(&[0]))])],
+            statuses: vec![lanes::StatusRun { first: 30, last: 40, status: Status::Complete }],
             ..History::default()
         };
         let relinked = RunLinks { slots: HashMap::from([(7, vec![(30, 40, Some(5))]), (8, vec![(30, 40, Some(6))])]) };
         let loaded = Stretch { run: 2, first: 30, last: 40, join: dashboard_query::timeline::Join::Start };
         result_lines(&mut lines, loaded, &relinked, &after, &History::default(), &lists);
         let (hour, read) = lines[&Battle::Result(99, 5)].reads.last().unwrap();
-        assert_eq!((*hour, read.countries.clone(), read.countries_hour), (30, [vec![3], vec![4]], [Some(10); 2]));
+        assert_eq!((*hour, read.countries.clone(), read.countries_hour, read.countries_missing), (30, [vec![3], vec![4]], [Some(10); 2], [None; 2]));
     }
 }

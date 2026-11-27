@@ -167,7 +167,10 @@ mod details {
                         NavalResultRow { id: 62, province: 600, result_hour: 106, retire_hour: 180, winning_side: 2, ..Default::default() },
                     ]);
                     set::<tables::NavalResultSources>(&mut frame, vec![NavalResultSourceRow { id: 1, game_hour: 106, result: 61, combat: 7, combat_created_hour: Some(100), ..Default::default() }]);
-                    set::<tables::NavalResultCountries>(&mut frame, vec![NavalResultCountryRow { result: 62, list: 0, country: 44, ordinal: 0 }]);
+                    set::<tables::NavalResultCountries>(&mut frame, vec![
+                        NavalResultCountryRow { result: 62, list: 0, country: 44, ordinal: 0 },
+                        NavalResultCountryRow { result: 62, list: 1, country: 99, ordinal: 0 },
+                    ]);
                 } else if hour == 106 {
                     set::<tables::NavalResults>(&mut frame, vec![NavalResultRow { id: 62, province: 600, result_hour: 106, retire_hour: 180, winning_side: 2, ..Default::default() }]);
                     *frame.tables[TableId::NavalResultCountries.index()] = TableView::Truncated {
@@ -275,7 +278,7 @@ mod details {
         };
         assert_eq!(result(106)["countries"], serde_json::json!([[2], []]));
         assert_eq!(result(106)["countriesMissing"], serde_json::json!(["Country roster is truncated", "Country roster is truncated and a recorded owner has no country link"]));
-        assert_eq!(result(107)["countriesMissing"], serde_json::json!([null, null]));
+        assert_eq!(result(107)["countriesMissing"], serde_json::json!([null, "A recorded owner has no country link"]));
     }
 
     #[test]

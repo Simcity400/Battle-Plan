@@ -69,14 +69,17 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   for (const each of navalBattlesProjection.project(unreadFlags, { scope: 'test', following: true, byDate: true }).rows) {
     assert.doesNotThrow(() => structuredClone(each.meta), 'a row’s subject crosses the lane worker boundary, so it carries no art callbacks');
     assert.deepEqual(each.cells.item?.value, { kind: 'known', value: 'Second Battle of Shale Strait' });
-    assert.deepEqual(each.cells.country?.value, { kind: 'partial', value: 'Recorded country', reason: TRUNCATED });
+    assert.deepEqual(each.cells.country?.value, { kind: 'partial', value: 'Attackers: Recorded country · Defenders: No countries on this side', reason: `Attackers: ${TRUNCATED}` });
     const found = { kind: 'data', key: each.key, name: each.name, row: each, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
     const columns = model(true).columns;
     assert.deepEqual(deriveRowTooltip(found, columns).rows.filter(line => line.label === 'Attackers' || line.label === 'Defenders').map(line => line.rawValue), [
       { kind: 'partial', value: 'Recorded country', reason: TRUNCATED }, { kind: 'known', value: 'No countries on this side' },
     ]);
     const mirror = deriveTableMirror([found], columns, false);
-    assert.match(mirror.rows[0]!.cells.find(cell => cell.column === 'country')!.spoken, /Recorded country.*Country roster is truncated/);
+    const spoken = mirror.rows[0]!.cells.find(cell => cell.column === 'country')!.spoken;
+    assert.match(spoken, /Attackers: Recorded country/);
+    assert.match(spoken, /Defenders: No countries on this side/);
+    assert.match(spoken, /Country roster is truncated/);
   }
   assert.equal(model(true).rows[2]!.cells.action?.actionLabel, 'Watch', 'a battle held only as a result offers Watch on its result window');
   assert.match(model(true).columns.find(column => column.key === 'shipsSunk')!.partialReason!, /lower bound/);
@@ -100,7 +103,7 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   assert.equal(row.cells.ships!.value.kind, 'known');
   assert.equal(row.cells.ships!.pair![1].kind, 'zero');
   assert.deepEqual(row.cells.country!.flags!.map(flag => flag.tag), ['?', '?']);
-  assert.deepEqual(row.cells.country!.value, { kind: 'notRecorded', reason: UNREAD });
+  assert.deepEqual(row.cells.country!.value, { kind: 'notRecorded', reason: `Attackers: ${UNREAD}; Defenders: ${UNREAD}` });
   assert.equal(row.live, true);
   assert.deepEqual(JSON.parse(row.tooltipScrollId!), ['test', 'combat:9:10', 15]);
   assert.deepEqual(JSON.parse(project(false).tooltipScrollId!), ['test', 'combat:9:10', 18]);
@@ -153,6 +156,7 @@ test('convoy-only sides show convoy counts and live zero sinkings stay qualified
   assert.deepEqual(raidRow!.cells.shipsSunk!.splitBar?.map(segment => segment.fraction), [0, 1]);
   assert.deepEqual(escortedRow!.cells.ships!.pair, [{ kind: 'known', value: 4 }, { kind: 'known', value: '2s+5c' }]);
   assert.deepEqual(escortedRow!.cells.shipsSunk!.pair, [{ kind: 'zero', value: 0 }, { kind: 'zero', value: 0 }]);
+  assert.deepEqual(escortedRow!.cells.country!.value, { kind: 'known', value: 'Attackers: No countries on this side · Defenders: No countries on this side' });
   assert.equal(depletedRow!.cells.shipsSunk!.value.kind, 'notRecorded');
   assert.equal(depletedShipLossRow!.cells.shipsSunk!.value.kind, 'notRecorded');
 
@@ -216,7 +220,7 @@ test('convoy-only sides show convoy counts and live zero sinkings stay qualified
   const mixedTip = deriveRowTooltip(mixedFound, mixedModel.columns).rows;
   assert.deepEqual(mixedTip.find(line => line.label === 'Attackers')?.rawValue, { kind: 'pending', reason: 'Name is loading; Country name unavailable' });
   assert.equal(JSON.stringify(mixedTip).includes('\u0000'), false);
-  assert.deepEqual(pendingAbsentRow!.cells.country!.value, { kind: 'pending', reason: 'Name is loading; Country name unavailable' });
+  assert.deepEqual(pendingAbsentRow!.cells.country!.value, { kind: 'pending', reason: 'Attackers: Name is loading; Defenders: Country name unavailable' });
   const pendingAbsentMirror = deriveTableMirror([{ kind: 'data', key: pendingAbsentRow!.key, name: pendingAbsentRow!.name, row: pendingAbsentRow!, rank: 1, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 }], mixedModel.columns, false);
-  assert.equal(pendingAbsentMirror.rows[0]!.cells.find(cell => cell.column === 'country')?.spoken, 'Loading: Name is loading; Country name unavailable');
+  assert.equal(pendingAbsentMirror.rows[0]!.cells.find(cell => cell.column === 'country')?.spoken, 'Loading: Attackers: Name is loading; Defenders: Country name unavailable');
 });

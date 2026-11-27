@@ -14,6 +14,7 @@ import type { NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/d
 import { NAVAL_BATTLES_COLUMNS } from './definition.ts';
 
 const LEAST_SHARE = 0.03;
+const SIDE_LABELS = ['Attackers', 'Defenders'] as const;
 export const NO_COUNTRIES = 'No countries on this side';
 
 export interface NavalBattleSubject {
@@ -131,13 +132,21 @@ function sideNames(side: readonly ReturnType<typeof resolveIdentity>[], missing:
   return reasons.length ? partialValue(text, reasons.join('; ')) : knownValue(text);
 }
 
+function countrySummary(sides: readonly Value<string>[]): Value<string> {
+  const text = sides.flatMap((value, i) => 'value' in value ? [`${SIDE_LABELS[i]}: ${value.value}`] : []).join(' · ');
+  const reason = sides.flatMap((value, i) => 'reason' in value ? [`${SIDE_LABELS[i]}: ${value.reason}`] : []).join('; ');
+  if (text) return reason ? partialValue(text, reason) : knownValue(text);
+  return sides.some(value => value.kind === 'pending') ? pendingValue(reason) : notRecorded(reason);
+}
+
 function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: IdentityBoundary, options: Options): TableRow {
   const name = resolveName(view, 'battle', row.key, { boundary }).value;
   const sides = row.countries.map((slots, i) => slots.map(slot => resolveIdentity(view, 'country', countryKey(slot), { atHour: row.countriesHour[i], boundary })));
   const flags = row.countries.flatMap((slots, i) => {
     const reason = row.countriesMissing[i] ?? undefined;
-    return slots.length || reason ? [{ tag: slots.length ? countryKey(slots[0]!) : null, atHour: row.countriesHour[i], missingLabel: reason, partialReason: reason }] : [];
+    return slots.length || reason ? [{ tag: slots.length ? countryKey(slots[0]!) : null, atHour: row.countriesHour[i], missingLabel: reason }] : [];
   });
+  const sideValues = sides.map((side, i) => sideNames(side, row.countriesMissing[i]!));
   const title = battleTitleText(name);
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
@@ -151,13 +160,12 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
   return {
     key: row.key, name: title, rowHour: row.hour, live, meta: { row } satisfies NavalBattleSubject,
     ...(row.result === 'unknown' ? { tooltipNote: 'The game keeps a winner only for battles a player takes part in' } : {}),
-    tooltipExtra: () => sides.flatMap((side, i): TooltipExtraRow[] => {
+    tooltipExtra: () => sideValues.flatMap((value, i): TooltipExtraRow[] => {
       const convoyCount = row.convoys[i];
       const convoySunkCount = row.convoysSunk[i];
       const showConvoys = convoyCount !== 0 || convoySunkCount !== 0;
       const rows: TooltipExtraRow[] = [
-        { label: i === 0 ? 'Attackers' : 'Defenders', divider: true,
-          value: sideNames(side, row.countriesMissing[i]!) },
+        { label: SIDE_LABELS[i]!, divider: true, value },
         { label: 'Ships', value: countValue(row.ships[i], 'Ships'), indent: true },
       ];
       if (showConvoys) rows.push({ label: 'Convoys', value: countValue(convoyCount, 'Convoys'), indent: true });
@@ -170,7 +178,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
     cells: {
       date: logDateCell(row.hour),
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_naval_combat_icon', frame: 0 }, 'square', 'Naval battle', 'Battle artwork unavailable'),
-      country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
+      country: { ...logCountryCell(view, flags, row.hour, boundary), value: countrySummary(sideValues) }, item: { value: name },
       shipsSunk: { ...shipsSunk, tooltipRows: [] }, icLost: { ...icLost, tooltipRows: [] }, ships: { ...ships, tooltipRows: [] }, status,
       action: logWatchCell(),
     },
