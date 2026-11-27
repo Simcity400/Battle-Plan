@@ -128,7 +128,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     ];
   const identityAudit = (...ends: readonly Pick<FlowNode, 'label' | 'placeholder' | 'unknown'>[]) =>
     ends.flatMap(end => (end.unknown ? [` · ${barsLabelText(end.label, 'Name', end.placeholder)}: ${end.unknown}`] : [])).join('');
-  const named = (end: Pick<FlowNode, 'label' | 'tag'>) => `${barsLabelSpoken(end.label)}${end.tag ? ` [${end.tag}]` : ''}`;
+  const named = (end: Pick<FlowNode, 'label' | 'placeholder' | 'tag'>) => `${end.placeholder ?? barsLabelSpoken(end.label)}${end.tag ? ` [${end.tag}]` : ''}`;
   const bands = (link: FlowLink): FlowBand[] => link.amounts.filter(amount => amount.amount !== null).map(amount => ({ part: amount.part, numeric: scaledAmount(amount.amount!, decimals) }));
   const endpoints = reply.endpoints.map(endpoint => presentFlowEndpoint(readView, endpoint));
   const keyOf = (index: number | null, side: FlowSide) => `${side}:${index === null ? 'others' : endpoints[index]!.key}`;
@@ -168,7 +168,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       ...(shown.unknown ? { unknown: shown.unknown } : {}),
       numeric: value(amount),
       figure: figure(amount),
-      spoken: `${barsLabelSpoken(shown.label)}: ${detail(link)}${missingReason && link.missing === null ? ` (${missingReason})` : ''}`,
+      spoken: `${shown.placeholder ?? barsLabelSpoken(shown.label)}: ${detail(link)}${missingReason && link.missing === null && (shown.placeholder || shown.label.kind !== 'notRecorded' || shown.label.reason !== missingReason) ? ` (${missingReason})` : ''}`,
       audit: `${named(shown)} · ${detail(link)}${identityAudit(shown)}`,
       ...(shown.subject ? { subject: shown.subject } : {}),
       tooltip: { title: barsLabelText(shown.label, 'Name', shown.placeholder ?? shown.tag), hour, items: [...items(link), ...identity(shown).filter(item => !missingReason || item.missingReason !== missingReason)], ...(missingReason ? { missingReason } : {}) },

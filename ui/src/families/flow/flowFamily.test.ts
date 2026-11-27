@@ -176,6 +176,14 @@ test('licences from distinct unlinked givers stay distinct partners, a combined 
   assert.equal(deriveFlowAudit(model).find(row => row.key === 'node:left:r77:label')?.value, JSON.stringify(['notRecorded', reason]));
   assert.equal(model.left[1]!.subject, undefined, 'an unknown partner is no country to open');
   assert.equal(model.left[4]!.unknown, unnamed, 'a recorded slot that cannot be named keeps its reason');
+  assert.match(model.left[1]!.spoken, /^Unknown country:/);
+  assert.match(model.left[3]!.spoken, /^Unknown countries, combined:/);
+  assert.match(model.left[3]!.audit, /^Unknown countries, combined ·/);
+  assert.equal(model.left[3]!.spoken.split(combined).length - 1, 1);
+  const pending = view(reply);
+  const absent = projectCountryFlow(createBoundedReadView({ hour: HOUR, panels: new Map([['main', reply]]),
+    identity: { resolve: (kind, key, hour) => ({ ...pending.who(kind, key, hour), name: { status: 'absent', reason: unnamed } }) } }), TEXT);
+  assert.equal(absent.left[4]!.spoken.split(unnamed).length - 1, 1);
   const ribbon = model.ribbons.find(item => item.from === 'left:collective')!;
   assert.ok(ribbon.tooltip?.items?.some(item => item.label === 'Unknown countries, combined' && item.missingReason === combined), 'the ribbon says why its partner is unknown');
   assert.ok(ribbon.audit.endsWith(`Unknown countries, combined: ${combined}`));
