@@ -332,6 +332,7 @@ fn builder(
 ) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("recorder.html".into()))
         .title(app_update::recorder_name())
+        .background_color(tauri::webview::Color(10, 10, 10, 255))
         .inner_size(WIDTH, OPENING_HEIGHT)
         .resizable(false)
         .maximizable(false)

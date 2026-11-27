@@ -8,7 +8,7 @@ import '@fontsource-variable/source-serif-4';
 import '@fontsource-variable/cascadia-code';
 import './styles.css';
 import App from './shell/App';
-import ExportPresentationApp from './export/ExportPresentationApp';
+import { loadable } from './components/loadable';
 import Tooltip from './components/Tooltip';
 import TooltipLayer from './charts/TooltipLayer';
 import { applySavedAppearance } from './shell/appearance/useAppearance';
@@ -21,6 +21,7 @@ import IndustrialOrganisationWindow from './dashboard/IndustrialOrganisationWind
 import IntelligenceAgencyWindow from './dashboard/IntelligenceAgencyWindow';
 
 const isExportPresentation = new URLSearchParams(window.location.search).get('export') === '1';
+const ExportPresentationApp = loadable(() => import('./export/ExportPresentationApp').then(module => module.default));
 if (!isExportPresentation) {
   registerGameWindow('equipmentDesigner', EquipmentDesignerWindow);
   registerGameWindow('industrialOrganisation', IndustrialOrganisationWindow);
