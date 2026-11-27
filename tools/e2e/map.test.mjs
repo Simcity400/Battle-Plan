@@ -895,27 +895,44 @@ test('hover bounds its scan to a deterministic point set, handles paused-viewer 
   assert.equal(missingDivision.recorded.find(e => e.item === 'hover presence: province tooltip')?.pass, true);
 
   let suppressedClock = 0;
-  let suppressedMove2At = null;
+  let suppressedMove2PostedAt = null;
   let suppressedMove2Posted = null;
   let suppressedEmitted = false;
   const suppressedTooltip = await runBoundedHover({
     stateForMove: (px, py, move, posted) => {
       if (move === 1) return { hover: null, tooltip: null, tooltipDelayMs: 250 };
-      if (move === 2) { suppressedMove2At = suppressedClock; suppressedMove2Posted = posted; return null; }
+      if (move === 2) {
+        suppressedClock += 300;
+        suppressedMove2PostedAt = suppressedClock;
+        suppressedMove2Posted = posted;
+        return null;
+      }
       if (move === 3) return { hover: 'division:9', tooltip: null, tooltipDelayMs: 250 };
       return { hover: 'button:find-view', tooltip: null, tooltipDelayMs: 250 };
     },
     onEvaluate: mapStates => {
-      if (!suppressedEmitted && suppressedMove2At !== null && suppressedClock - suppressedMove2At >= 250) {
+      if (!suppressedEmitted && suppressedMove2PostedAt !== null && suppressedClock - suppressedMove2PostedAt >= 250) {
         suppressedEmitted = true;
         mapStates.push({ id: 'overview-map', hover: null, tooltip: 'province:500', tooltipDelayMs: 250, drawnAt: suppressedMove2Posted + 250 });
       }
     },
-    options: { scanTimeoutMs: 150, neutralPauseMs: 50, scanBudgetMs: 10_000, now: () => (suppressedClock += 25) },
+    options: { scanTimeoutMs: 150, neutralPauseMs: 200, scanBudgetMs: 10_000, now: () => (suppressedClock += 25) },
   });
   const suppressedPresence = suppressedTooltip.recorded.find(e => e.item === 'hover presence: province tooltip');
   assert.equal(suppressedPresence?.pass, true);
   assert.equal(suppressedPresence?.label, 'province:500');
+
+  let postDelayClock = 0;
+  let postDelayPolls = 0;
+  const budgetAfterPost = await runBoundedHover({
+    stateForMove: (px, py, move) => { if (move === 1) postDelayClock += 50; return null; },
+    onEvaluate: () => { postDelayPolls++; },
+    options: { scanTimeoutMs: 150, neutralPauseMs: 200, scanBudgetMs: 60, now: () => (postDelayClock += 5) },
+  });
+  assert.equal(budgetAfterPost.moves, 2);
+  assert.ok(postDelayClock <= 75, `expected post delay + poll to stop within 60 ms budget, clock reached ${postDelayClock}`);
+  assert.ok(postDelayPolls <= 4, `expected no full scanTimeoutMs poll after post consumed budget, got ${postDelayPolls} evaluations`);
+  assert.match(budgetAfterPost.recorded.find(e => e.item === 'hover presence: division counter')?.reasons.join('; ') ?? '', /search cut short after 1 of \d+ points/);
 
   let hugeDelayClock = 0;
   const budgetWithinProbe = await runBoundedHover({
@@ -931,4 +948,39 @@ test('hover bounds its scan to a deterministic point set, handles paused-viewer 
   assert.doesNotMatch(timedOutPresence?.reasons.join('; ') ?? '', /no division counter/);
   assert.equal(timedOutTiming?.pass, false);
   assert.match(timedOutTiming?.reasons.join('; ') ?? '', /cut short/i);
+
+  let lastPointKey = null;
+  const neutralLastTargets = new Map();
+  const neutralLast = await runBoundedHover({
+    stateForMove: (px, py, move) => {
+      const key = `${px},${py}`;
+      if (move === 1) neutralLastTargets.set(key, { hover: 'division:5', tooltip: 'province:11' });
+      else if (move === 2) neutralLastTargets.set(key, { hover: 'button:find-view', tooltip: null });
+      else if (move === 3) neutralLastTargets.set(key, { hover: null, tooltip: null });
+      const state = neutralLastTargets.get(key) ?? { hover: null, tooltip: null };
+      if (key === lastPointKey) return null;
+      lastPointKey = key;
+      return state;
+    },
+  });
+  for (const id of ['division counter', 'province tooltip', 'map GUI button']) {
+    assert.equal(neutralLast.recorded.find(e => e.item === `hover presence: ${id}`)?.pass, true, `${id} presence should pass`);
+    assert.equal(neutralLast.recorded.find(e => e.item === `hover: ${id}`)?.pass, true, `${id} timing should pass when neutral was discovered last`);
+  }
+
+  let barDivPoint = null;
+  const neutralOnBar = await runBoundedHover({
+    stateForMove: (px, py, move) => {
+      if (px >= 780 && py >= 380) return { hover: null, tooltip: null };
+      if (move === 1 || (barDivPoint && px === barDivPoint[0] && py === barDivPoint[1])) {
+        barDivPoint ??= [px, py];
+        return { hover: 'division:6', tooltip: 'province:12' };
+      }
+      return { hover: 'button:states', tooltip: 'province:12' };
+    },
+  });
+  for (const id of ['division counter', 'province tooltip', 'map GUI button']) {
+    assert.equal(neutralOnBar.recorded.find(e => e.item === `hover presence: ${id}`)?.pass, true, `${id} presence should pass`);
+    assert.equal(neutralOnBar.recorded.find(e => e.item === `hover: ${id}`)?.pass, true, `${id} timing should pass when neutral is on toolbar`);
+  }
 });

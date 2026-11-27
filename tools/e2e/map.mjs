@@ -300,11 +300,17 @@ export async function hover(s, input, dpr, { scanTimeoutMs = 150, timeoutMs = 40
   const seen = new Map();
   const initialState = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
   let knownTooltipDelayMs = Number.isFinite(initialState?.tooltipDelayMs) ? initialState.tooltipDelayMs : 0;
-  const at = async (x, y, waitCap = scanTimeoutMs) => {
+  let pointerAtNeutral = false;
+  const at = async (x, y, deadline = null) => {
+    pointerAtNeutral = false;
     const [px, py] = area.px(x, y);
     const [posted] = (await input.ask({ op: 'move', points: [[px, py]], interval_ms: 0 })).posted;
-    const state = await drawnState(s, area.view, posted, 'x => true', Math.min(scanTimeoutMs, waitCap), now);
-    return { posted, state, point: [px, py] };
+    const postedAt = now();
+    const cap = deadline === null ? scanTimeoutMs : Math.min(scanTimeoutMs, Math.max(0, deadline - postedAt));
+    const state = deadline !== null && postedAt >= deadline
+      ? null
+      : await drawnState(s, area.view, posted, 'x => true', cap, now);
+    return { posted, postedAt, state, point: [px, py] };
   };
   const recordSeen = (candidate, x, y, point) => {
     if (!candidate) return;
@@ -318,8 +324,7 @@ export async function hover(s, input, dpr, { scanTimeoutMs = 150, timeoutMs = 40
   let cutShort = null;
   const probe = async (x, y) => {
     scanned++;
-    const moveStarted = now();
-    const { posted, state, point } = await at(x, y, remainingMs());
+    const { posted, postedAt, state, point } = await at(x, y, scanDeadline);
     recordSeen(state, x, y, point);
     if (budgetExhausted()) return false;
     const waitMs = (state?.tooltipDelayMs ?? knownTooltipDelayMs) + neutralPauseMs;
@@ -327,14 +332,14 @@ export async function hover(s, input, dpr, { scanTimeoutMs = 150, timeoutMs = 40
     let end = null;
     let settledNeutral = false;
     if ((!state || (!state.hover && !state.tooltip)) && !neutral) {
-      end = moveStarted + waitMs;
+      end = postedAt + waitMs;
       const appeared = await drawnState(s, area.view, posted, 'x => Boolean(x.hover || x.tooltip)', Math.min(Math.max(0, end - now()), remainingMs()), now);
       if (appeared) { recordSeen(appeared, x, y, point); after = appeared.drawnAt ?? after; }
       else if (budgetExhausted()) return false;
       else {
         const latest = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
         recordSeen(latest, x, y, point);
-        if (latest && !latest.hover && !latest.tooltip) neutral = [x, y];
+        if (latest && !latest.hover && !latest.tooltip) { neutral = [x, y]; pointerAtNeutral = true; }
         settledNeutral = true;
       }
     }
@@ -346,7 +351,7 @@ export async function hover(s, input, dpr, { scanTimeoutMs = 150, timeoutMs = 40
         if (!state && !needTooltip) break;
         if (budgetExhausted()) return false;
         const wait = needTooltip ? waitMs : hoverSettleMs;
-        end ??= moveStarted + wait;
+        end ??= postedAt + wait;
         const predicate = `x => ${unseen.map(hoverCase => `(${hoverCase.match.toString()})(x.${hoverCase.field} ?? null)`).join(' || ')}`;
         const next = await drawnState(s, area.view, after, predicate, Math.min(Math.max(0, end - now()), remainingMs()), now);
         if (!next) return !budgetExhausted();
@@ -357,20 +362,21 @@ export async function hover(s, input, dpr, { scanTimeoutMs = 150, timeoutMs = 40
     return true;
   };
   const gridCases = HOVER_CASES.filter(hoverCase => hoverCase.id !== 'map GUI button');
+  const needBar = () => !seen.has('map GUI button') || !neutral;
   for (const [x, y] of grid) {
     if (gridCases.every(hoverCase => seen.has(hoverCase.id)) && neutral) break;
-    if (budgetExhausted()) { cutShort = { scanned, total: grid.length + (seen.has('map GUI button') ? 0 : bar.length) }; break; }
+    if (budgetExhausted()) { cutShort = { scanned, total: grid.length + (needBar() ? bar.length : 0) }; break; }
     if (!(await probe(x, y)) && !(gridCases.every(hoverCase => seen.has(hoverCase.id)) && neutral)) {
-      cutShort = { scanned, total: grid.length + (seen.has('map GUI button') ? 0 : bar.length) };
+      cutShort = { scanned, total: grid.length + (needBar() ? bar.length : 0) };
       break;
     }
   }
   const gridDone = scanned;
-  if (!cutShort && !seen.has('map GUI button')) {
+  if (!cutShort && needBar()) {
     for (const [x, y] of bar) {
-      if (seen.has('map GUI button')) break;
+      if (!needBar()) break;
       if (budgetExhausted()) { cutShort = { scanned, total: gridDone + bar.length }; break; }
-      if (!(await probe(x, y)) && !seen.has('map GUI button')) {
+      if (!(await probe(x, y)) && needBar()) {
         cutShort = { scanned, total: gridDone + bar.length };
         break;
       }
@@ -396,12 +402,22 @@ export async function hover(s, input, dpr, { scanTimeoutMs = 150, timeoutMs = 40
       await s.fail('map', `hover: ${hoverCase.id}`, target.hovered, why);
       continue;
     }
-    const cleared = await at(...neutral);
-    if (!cleared.state || cleared.state.hover || cleared.state.tooltip) {
-      const gone = await drawnState(s, area.view, cleared.posted, 'x => !x.hover && !x.tooltip', timeoutMs);
-      if (!gone) { await s.fail('map', `hover: ${hoverCase.id}`, target.hovered, 'its highlight or tooltip never cleared away from it, so its appearance cannot be timed'); continue; }
+    if (!pointerAtNeutral) {
+      const cleared = await at(...neutral);
+      if (!cleared.state || cleared.state.hover || cleared.state.tooltip) {
+        const gone = await drawnState(s, area.view, cleared.posted, 'x => !x.hover && !x.tooltip', timeoutMs);
+        if (!gone) {
+          const latest = cleared.state ? null : await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
+          if (!latest || latest.hover || latest.tooltip) {
+            await s.fail('map', `hover: ${hoverCase.id}`, target.hovered, 'its highlight or tooltip never cleared away from it, so its appearance cannot be timed');
+            continue;
+          }
+        }
+      }
+      pointerAtNeutral = true;
     }
     const [px, py] = target.point;
+    pointerAtNeutral = false;
     await s.watch();
     const [posted] = (await input.ask({ op: 'move', points: [[px, py]], interval_ms: 0 })).posted;
     const state = await drawnState(s, area.view, posted, `x => x.${hoverCase.field} === ${JSON.stringify(target.hovered)}`, timeoutMs);
