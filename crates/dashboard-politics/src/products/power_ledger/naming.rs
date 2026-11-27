@@ -176,6 +176,18 @@ fn readable(frame: io::Result<DecodedFrame>) -> io::Result<Option<DecodedFrame>>
     }
 }
 
+fn naming_columns(table: TableId) -> Option<Vec<usize>> {
+    let fields = match table {
+        TableId::Countries => COUNTRY,
+        TableId::CountryLinks => LINK,
+        TableId::CountryAppearance => dashboard_text::identity::LOOK,
+        TableId::LexicalTokens => LITERAL,
+        table if WHOLE.contains(&table) => 0,
+        _ => return None,
+    } | content_reader_country_names::country_names::fields(table);
+    Some((0..u64::BITS as usize).filter(|column| fields >> column & 1 == 1).collect())
+}
+
 fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow], scripted: bool) -> io::Result<DecodedFrame> {
     let mut whole: BTreeSet<TableId> = WHOLE.iter().copied().collect();
     if scripted {
@@ -216,7 +228,10 @@ fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow
         }
         reads.push(at_hour::Read::these(table, keys));
     }
-    frames.frame(hour, &reads, "Politics spending item")
+    if scripted || rows.iter().any(|row| row.object_kind == PowerObjectKind::Organisation) {
+        return frames.frame(hour, &reads, "Politics spending item");
+    }
+    frames.frame_with(hour, &reads, naming_columns, "Politics spending item")
 }
 
 fn complete<'f, T: TableSchema>(frame: &'f DecodedFrame, mask: u64) -> Option<Rowset<'f, T::Row>> {

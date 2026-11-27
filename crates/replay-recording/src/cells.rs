@@ -23,6 +23,7 @@ pub struct TableReadStats {
     pub backward_seeks: u64,
     pub visited_ordinals: u64,
     pub pinned: u64,
+    pub columns: u64,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -249,6 +250,8 @@ impl TableReader {
         let kinds = crate::schema::schema()?.swap_remove(index);
         let recorded = recording.columns()[index].min(kinds.len());
         let columns = read_columns(recording, recorded, index, columns);
+        #[cfg(any(test, feature = "test-support"))]
+        note_read(table, |stats| stats.columns += columns.len() as u64);
         let log = !absent && held.ordinals > 0 && unit::reader::class_of(&recording.table_pages(run, index, 0, 1)?, index)?;
         Ok(Self {
             table: index,
