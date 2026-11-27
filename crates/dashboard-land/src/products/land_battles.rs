@@ -421,10 +421,10 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
     let asks: Vec<(i32, u128)> = written_ends(&ended).map(|(_, key, hour, _)| (hour, key)).collect();
     if !asks.is_empty() {
         let lists = [15, 16, 24, 25, 27, 28];
-        let read_lists = |out: &mut BTreeMap<Key, Battle>, with_pools: bool| {
+        let read_lists = |out: &mut BTreeMap<Key, Battle>, asks: &[(i32, u128)], with_pools: bool| {
             let selected = if with_pools { &lists[..] } else { &lists[..4] };
             dashboard_query::cost::storage(|| {
-                lanes::at_each(recording, run, TableId::LandBattleEnds, Some(selected), &asks, &mut |hour, key, row| {
+                lanes::at_each(recording, run, TableId::LandBattleEnds, Some(selected), asks, &mut |hour, key, row| {
                     let Some((view, slot)) = row else { return Ok(()) };
                     let read = |column: usize| view.list(column, slot).and_then(u32s);
                     if let Some(end) = end_written(out, key, hour) {
@@ -439,11 +439,21 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
                 })
             })
         };
-        if read_lists(out, true).is_err() {
-            for end in out.values_mut().filter_map(|battle| battle.end.as_mut()) {
-                end.terminal_equipment = [None, None];
+        if read_lists(out, &asks, true).is_err() {
+            read_lists(out, &asks, false)?;
+            let mut asks = asks;
+            asks.sort_unstable();
+            let start = recording.run(run)?.first_hour;
+            let block = |hour: i32| (i64::from(hour) - i64::from(start)) / i64::from(replay_columnar::unit::BLOCK);
+            for asks in asks.chunk_by(|a, b| block(a.0) == block(b.0)) {
+                if combat.is_some() || read_lists(out, asks, true).is_err() {
+                    for &(hour, key) in asks {
+                        if let Some(end) = end_written(out, key, hour) {
+                            end.terminal_equipment = [None, None];
+                        }
+                    }
+                }
             }
-            read_lists(out, false)?;
         }
     }
     Ok(())
