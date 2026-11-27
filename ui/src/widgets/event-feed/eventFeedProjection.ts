@@ -1,6 +1,7 @@
 import { unavailableArt } from '../../families/art/types.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
+import { contentSet } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
@@ -14,17 +15,17 @@ import {
   projectPagedSlots,
   urlArtHandle,
 } from '../../families/table/logHelpers.ts';
-import type { TableCell, TableModel, TableModelSlot, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
+import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, validateRowTailReply, type DatedLogRow, type TailReply } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
-import type { EventFeedItem, EventFeedPageRow, EventFeedRow, ScriptEdge, ScriptStatus } from '../../generated/dashboard';
+import type { EventFeedFoldRow, EventFeedItem, EventFeedLine, EventFeedMoreRow, EventFeedPageRow, EventFeedRow, ScriptEdge, ScriptStatus } from '../../generated/dashboard';
 import { choiceNotRecordedText, optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
-import { effectiveEventItem, validateFeedRow } from './eventFeedData.ts';
+import { effectiveEventItem, feedKindLabel, validateFeedRow } from './eventFeedData.ts';
 import { descriptionRows, gapRows, hasTooltipGaps, hoverTextOf, optionLines, optionRows, type TooltipTexts } from './hoverText.ts';
 import { gapsForField, plainScripted, reasonsOf, scriptedValue } from './scriptedGaps.ts';
 import { validateScriptEdge } from './scriptOccurrences.ts';
@@ -33,10 +34,11 @@ export interface EventFeedProjectionOptions {
   readonly categories: readonly string[];
   readonly artwork: boolean;
   readonly hover?: TooltipTexts;
+  readonly expanded?: readonly string[];
 }
 
 const HEAD_LIMIT = 256;
-const FOLD_MIN_RUN = 5;
+const GROUP = 'group:';
 
 const LOSER_SECOND_KINDS = new Set(['annexed', 'warDeclared', 'warStarted']);
 const ONE_COUNTRY_KINDS = new Set(['ceasedToExist', 'projectFinished']);
@@ -250,87 +252,6 @@ function eventItemAndSubtext(
   }
 }
 
-interface FoldMeta {
-  readonly day: number;
-  readonly country: string;
-  readonly group: string;
-}
-
-function foldGroupOf(kind: EventFeedRow['kind']): string {
-  if (kind === 'scriptEventFired' || kind === 'newsEventFired' || kind === 'eventOptionSelected') return 'script-event';
-  if (kind.startsWith('decision')) return 'decision';
-  return kind;
-}
-
-function foldConsecutiveSlots(
-  slots: readonly TableModelSlot[],
-  foldByKey: ReadonlyMap<string, FoldMeta>,
-): { readonly slots: TableModelSlot[]; readonly rows: TableRow[] } {
-  const outSlots: TableModelSlot[] = [];
-  const outRows: TableRow[] = [];
-  let i = 0;
-  while (i < slots.length) {
-    const slot = slots[i]!;
-    if (slot.kind !== 'data') {
-      outSlots.push(slot);
-      i++;
-      continue;
-    }
-    const meta = foldByKey.get(slot.row.key);
-    if (!meta || !meta.country) {
-      outSlots.push(slot);
-      outRows.push(slot.row);
-      i++;
-      continue;
-    }
-    let end = i + 1;
-    while (end < slots.length) {
-      const next = slots[end]!;
-      if (next.kind !== 'data') break;
-      const nextMeta = foldByKey.get(next.row.key);
-      if (!nextMeta || nextMeta.day !== meta.day || nextMeta.country !== meta.country || nextMeta.group !== meta.group) break;
-      end++;
-    }
-    const runLen = end - i;
-    if (runLen >= FOLD_MIN_RUN) {
-      const children: TableRow[] = [];
-      for (let j = i; j < end; j++) {
-        const entry = slots[j]!;
-        if (entry.kind === 'data') children.push(entry.row);
-      }
-      const first = children[0]!;
-      const label = `${formatScalar(runLen, 'integer')} events`;
-      const parent: TableRow = {
-        key: `fold:${first.key}`,
-        name: label,
-        rowHour: first.rowHour,
-        initiallyOpen: false,
-        children,
-        cells: {
-          date: first.cells.date!,
-          kind: first.cells.kind!,
-          country: first.cells.country!,
-          item: { value: knownValue(label) },
-          detail: { value: notApplicable('Collapsed group'), blank: true },
-          action: { value: notApplicable('Expand group'), blank: true },
-        },
-        tooltipTitle: label,
-        tooltipAction: 'Click to expand',
-      };
-      outSlots.push({ kind: 'data', row: parent });
-      outRows.push(parent);
-    } else {
-      for (let j = i; j < end; j++) {
-        const entry = slots[j]!;
-        outSlots.push(entry);
-        if (entry.kind === 'data') outRows.push(entry.row);
-      }
-    }
-    i = end;
-  }
-  return { slots: outSlots, rows: outRows };
-}
-
 function buildFeedTableRow(
   readView: BoundedReadView,
   event: EventFeedRow,
@@ -340,7 +261,8 @@ function buildFeedTableRow(
   displayedHour: number,
   boundary: ReturnType<typeof newIdentityBoundary>,
   hover: TooltipTexts,
-): { readonly row: TableRow; readonly fold: FoldMeta } {
+  parent?: string,
+): TableRow {
   const item = effectiveEventItem(event, page.choice);
   const { primary, secondary, detail, missingReason } = eventItemAndSubtext(event, page, readView);
   const reasons = reasonsOf(item);
@@ -442,57 +364,147 @@ function buildFeedTableRow(
     return out;
   };
 
-  const primaryTag = countryEntries[0]?.tag ?? '';
   return {
-    fold: {
-      day: Math.floor(event.hour / 24),
-      country: primaryTag,
-      group: foldGroupOf(event.kind),
+    key,
+    name: titleLabel,
+    rowHour: event.hour,
+    ...(parent ? { pageParent: `${GROUP}${parent}` } : {}),
+    cells: {
+      date: logDateCell(event.hour),
+      kind: artwork
+        ? {
+            value: knownValue(titleLabel),
+            art,
+            iconSlot: true,
+            artShape: viewable ? 'wide' : 'square',
+            artName: titleLabel,
+          }
+        : { value: notApplicable('Game artwork hidden'), blank: true },
+      country: logCountryCell(readView, countryEntries, event.nameHour, boundary),
+      item: primary !== null
+        ? { value: scriptedValue(primary, titleGaps), ...(secondary ? { inlineSubtext: secondary } : {}) }
+        : { value: notRecorded(missingReason ?? 'Not recorded') },
+      detail: detail ?? { value: notApplicable('No extra detail'), blank: true },
+      action: viewable ? { value: knownValue('View'), actionLabel: 'View' } : { value: notApplicable('No event window for this entry'), blank: true },
     },
-    row: {
-      key,
-      name: titleLabel,
-      rowHour: event.hour,
-      cells: {
-        date: logDateCell(event.hour),
-        kind: artwork
-          ? {
-              value: knownValue(titleLabel),
-              art,
-              iconSlot: true,
-              artShape: viewable ? 'wide' : 'square',
-              artName: titleLabel,
-            }
-          : { value: notApplicable('Game artwork hidden'), blank: true },
-        country: logCountryCell(readView, countryEntries, event.nameHour, boundary),
-        item: primary !== null
-          ? { value: scriptedValue(primary, titleGaps), ...(secondary ? { inlineSubtext: secondary } : {}) }
-          : { value: notRecorded(missingReason ?? 'Not recorded') },
-        detail: detail ?? { value: notApplicable('No extra detail'), blank: true },
-        action: viewable ? { value: knownValue('View'), actionLabel: 'View' } : { value: notApplicable('No event window for this entry'), blank: true },
-      },
-      tooltipTitle: titleLabel,
-      tooltipExtra,
-      ...(hasTooltipGaps(hover, key, item?.gaps) ? { tooltipScrollId: key } : {}),
-      ...(viewable ? { tooltipAction: 'Click to view event', meta: detailSubject } : {}),
-    },
+    tooltipTitle: titleLabel,
+    tooltipExtra,
+    ...(hasTooltipGaps(hover, key, item?.gaps) ? { tooltipScrollId: key } : {}),
+    ...(viewable ? { tooltipAction: 'Click to view event', meta: detailSubject } : {}),
   };
 }
 
-type ValidatedEventFeedPageRow = Omit<EventFeedPageRow, 'row'> & { readonly row: EventFeedRow } & DatedLogRow;
+type ValidatedEventFeedEvent = Omit<EventFeedPageRow, 'row'> & { readonly line: 'event'; readonly row: EventFeedRow } & DatedLogRow;
+type ValidatedEventFeedFold = Omit<EventFeedFoldRow, 'firstRow'> & { readonly line: 'fold'; readonly firstRow: EventFeedRow } & DatedLogRow;
+type ValidatedEventFeedMore = EventFeedMoreRow & { readonly line: 'more' } & DatedLogRow;
+type ValidatedEventFeedLine = ValidatedEventFeedEvent | ValidatedEventFeedFold | ValidatedEventFeedMore;
 
-function validateEventFeedTail(raw: unknown, readAt?: number): TailReply<ValidatedEventFeedPageRow> {
-  return validateRowTailReply(raw, (row, _columns, at): ValidatedEventFeedPageRow => {
-    if (row.row === null) throw new Error('Event was not recorded.');
-    if (row.notRecordedReason !== undefined && typeof row.notRecordedReason !== 'string') {
-      throw new Error('The event feed row is malformed.');
+function buildFoldRow(
+  readView: BoundedReadView,
+  fold: ValidatedEventFeedFold,
+  artwork: boolean,
+  boundary: ReturnType<typeof newIdentityBoundary>,
+  expanded: readonly string[],
+): TableRow {
+  const count = Number(fold.count);
+  const label = `${formatScalar(count, 'integer')} events`;
+  const kindLabel = feedKindLabel(fold.kind);
+  const groupKey = `${GROUP}${fold.key}`;
+  const open = expanded.includes(groupKey);
+  const first = fold.firstRow;
+  const spriteKey = !first.item?.icon ? KIND_SPRITES[fold.kind] : undefined;
+  const artHandle = artwork
+    ? (urlArtHandle(first.item?.icon ?? null) ?? (spriteKey ? { kind: 'sprite' as const, key: spriteKey, frame: 0 } : null))
+    : null;
+  const art = artHandle ? readView.art(artHandle) : unavailableArt('The product drew no icon for this item');
+  return {
+    key: groupKey,
+    name: label,
+    rowHour: fold.hour,
+    pageGroup: { members: count, open },
+    cells: {
+      date: logDateCell(fold.hour),
+      kind: artwork
+        ? {
+            value: knownValue(kindLabel),
+            art,
+            iconSlot: true,
+            artShape: VIEWABLE_KINDS.has(fold.kind) ? 'wide' : 'square',
+            artName: kindLabel,
+          }
+        : { value: knownValue(kindLabel), blank: true },
+      country: logCountryCell(readView, [{ tag: fold.country }], first.nameHour, boundary),
+      item: { value: knownValue(label) },
+      detail: { value: notApplicable('Collapsed group'), blank: true },
+      action: { value: notApplicable('Expand group'), blank: true },
+    },
+    tooltipTitle: label,
+    tooltipAction: open ? 'Click to collapse' : 'Click to expand',
+  };
+}
+
+function buildMoreRow(more: ValidatedEventFeedMore): TableRow {
+  const blank: TableCell = { value: notApplicable('Not applicable to this fold line'), blank: true };
+  const remaining = Number(more.remaining);
+  const name = remaining > 0
+    ? `Show all ${formatScalar(Number(more.total), 'integer')} events \u00b7 ${formatScalar(remaining, 'integer')} more`
+    : 'Show fewer events';
+  return {
+    key: `all:${GROUP}${more.parent}`,
+    name,
+    rowHour: more.hour,
+    muted: true,
+    pageParent: `${GROUP}${more.parent}`,
+    cells: { date: blank, kind: blank, country: blank, item: { value: knownValue(name) }, detail: blank, action: blank },
+  };
+}
+
+function validateEventFeedTail(raw: unknown, readAt?: number): TailReply<ValidatedEventFeedLine> {
+  return validateRowTailReply(raw, (row, _columns, at): ValidatedEventFeedLine => {
+    if (row.line === 'event') {
+      if (row.row === null) throw new Error('Event was not recorded.');
+      if (row.notRecordedReason !== undefined && typeof row.notRecordedReason !== 'string') {
+        throw new Error('The event feed row is malformed.');
+      }
+      if (row.parent !== undefined && typeof row.parent !== 'string') {
+        throw new Error('The event feed row is malformed.');
+      }
+      const valid = validateFeedRow(row.row);
+      if (at !== undefined && valid.readHour > at) {
+        throw new Error(`Event ${valid.id} was read at hour ${valid.readHour} after displayed hour ${at}.`);
+      }
+      const choice = row.choice == null ? null : validateScriptEdge(row.choice, at);
+      return { ...(row as unknown as Extract<EventFeedLine, { line: 'event' }> & DatedLogRow), line: 'event', row: valid, choice };
     }
-    const valid = validateFeedRow(row.row);
-    if (at !== undefined && valid.readHour > at) {
-      throw new Error(`Event ${valid.id} was read at hour ${valid.readHour} after displayed hour ${at}.`);
+    if (row.line === 'fold') {
+      if (row.firstRow === null) throw new Error('Event was not recorded.');
+      if (
+        typeof row.count !== 'string' || !/^\d+$/.test(row.count) || Number(row.count) < 5
+        || typeof row.country !== 'string' || !row.country.length || row.country.includes('\0')
+        || typeof row.kind !== 'string'
+      ) {
+        throw new Error('The event feed row is malformed.');
+      }
+      const firstRow = validateFeedRow(row.firstRow);
+      if (row.kind !== firstRow.kind) {
+        throw new Error('The event feed row is malformed.');
+      }
+      if (at !== undefined && firstRow.readHour > at) {
+        throw new Error(`Event ${firstRow.id} was read at hour ${firstRow.readHour} after displayed hour ${at}.`);
+      }
+      return { ...(row as unknown as Extract<EventFeedLine, { line: 'fold' }> & DatedLogRow), line: 'fold', firstRow };
     }
-    const choice = row.choice == null ? null : validateScriptEdge(row.choice, at);
-    return { ...(row as unknown as EventFeedPageRow & DatedLogRow), row: valid, choice };
+    if (row.line === 'more') {
+      if (
+        typeof row.parent !== 'string' || !row.parent.length
+        || typeof row.total !== 'string' || !/^\d+$/.test(row.total)
+        || typeof row.remaining !== 'string' || !/^\d+$/.test(row.remaining)
+      ) {
+        throw new Error('The event feed row is malformed.');
+      }
+      return { ...(row as unknown as Extract<EventFeedLine, { line: 'more' }> & DatedLogRow), line: 'more' };
+    }
+    throw new Error('The event feed row is malformed.');
   }, readAt);
 }
 
@@ -506,42 +518,41 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
     if (!options.categories.length) return { ...empty, empty: 'No recorded events match these settings.' };
     const refused = readView.refused('main');
     if (refused !== undefined) return { ...empty, refused };
-    const source = readView.rows<ValidatedEventFeedPageRow>('main');
+    const source = readView.rows<ValidatedEventFeedLine>('main');
     if (!source) return empty;
     if (source.refused) return { ...empty, refused: source.refused };
 
     const boundary = newIdentityBoundary();
-    const foldByKey = new Map<string, FoldMeta>();
+    const expanded = options.expanded ?? [];
     const paged = projectPagedSlots(
       source,
       hour,
       readView.rowWindow,
-      rawRow => {
+      rawLine => {
+        if (rawLine.line === 'fold') return buildFoldRow(readView, rawLine, options.artwork, boundary, expanded);
+        if (rawLine.line === 'more') return buildMoreRow(rawLine);
         const page: FeedPageInfo = {
-          choice: rawRow.choice ?? null,
-          status: rawRow.status,
-          ...(rawRow.notRecordedReason !== undefined ? { notRecordedReason: rawRow.notRecordedReason } : {}),
-          live: rawRow.live === true,
+          choice: rawLine.choice ?? null,
+          status: rawLine.status,
+          ...(rawLine.notRecordedReason !== undefined ? { notRecordedReason: rawLine.notRecordedReason } : {}),
+          live: rawLine.live === true,
         };
-        const built = buildFeedTableRow(readView, rawRow.row, page, rawRow.key, options.artwork, source.at ?? hour, boundary, options.hover ?? []);
-        foldByKey.set(built.row.key, built.fold);
-        return built.row;
+        return buildFeedTableRow(readView, rawLine.row, page, rawLine.key, options.artwork, source.at ?? hour, boundary, options.hover ?? [], rawLine.parent);
       },
     );
     const rawHead = source.rawHead as { readonly warnings?: readonly string[]; readonly unavailable?: readonly { readonly label: string; readonly reason: string }[] } | undefined;
     const warnings = [...(rawHead?.warnings ?? []), ...(rawHead?.unavailable ?? []).map(u => `${u.label}: ${u.reason}`)];
-    const folded = foldConsecutiveSlots(paged.slots, foldByKey);
     return {
       ...empty,
-      rows: folded.rows,
-      slots: folded.slots,
+      rows: paged.rows,
+      slots: paged.slots,
       windowOffset: paged.windowOffset,
       totalRows: paged.totalRows,
       ...(paged.gapBefore?.length ? { gapBefore: paged.gapBefore } : {}),
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
       ...(warnings.length ? { warnings: [...new Set(warnings)] } : {}),
-      ...(folded.slots.length === 0 ? { empty: 'No recorded events match these settings.' } : {}),
+      ...(paged.slots.length === 0 ? { empty: 'No recorded events match these settings.' } : {}),
     };
   },
 });
@@ -571,8 +582,11 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
     const rawFrom = ctx.widget.time.mode === 'range' && win ? Math.max(Math.floor(win.firstHour), ctx.branch.firstHour) : null;
     const boundFrom = rawFrom !== null ? ctx.gateSpan(rawFrom, ctx.branch.lastHour)?.firstHour ?? null : null;
     const selection = occurrenceSelection(ctx);
+    const opened = contentSet(ctx.options.expanded).filter(key => key.startsWith(GROUP));
+    const expanded = opened.map(key => key.slice(GROUP.length));
+    const full = contentSet(ctx.options.full).filter(key => opened.includes(key)).map(key => key.slice(GROUP.length));
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:event-feed:${categories.join(',')}:${excludedKinds.join(',')}:${selection ? JSON.stringify(selection) : 'all'}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:event-feed:${categories.join(',')}:${excludedKinds.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}:${full.join(',')}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -584,7 +598,13 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
             branchId: ctx.branch.id,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ask: { categories, ...(excludedKinds.length ? { exclude: excludedKinds } : {}), ...selection },
+            ask: {
+              categories,
+              ...(excludedKinds.length ? { exclude: excludedKinds } : {}),
+              ...selection,
+              ...(expanded.length ? { expanded } : {}),
+              ...(full.length ? { full } : {}),
+            },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
@@ -596,6 +616,6 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
   projection: eventFeedProjection,
   projectionOptions(ctx): EventFeedProjectionOptions {
     const categories = CATEGORIES.filter(c => ctx.options[c.value] === true).map(c => c.value);
-    return { categories, artwork: ctx.options.artwork !== false, hover: hoverTextOf(ctx.options) };
+    return { categories, artwork: ctx.options.artwork !== false, hover: hoverTextOf(ctx.options), expanded: contentSet(ctx.options.expanded) };
   },
 };

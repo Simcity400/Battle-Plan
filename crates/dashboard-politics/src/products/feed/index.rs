@@ -3,6 +3,7 @@ use super::{
     EventFeedCategory, EventFeedKind, EventFeedRow, LOG, Notices, invalid,
     decision_state::{self, DecisionLifecycleState},
     families,
+    fold::{FoldMeta, group_of},
     row::{Columns, FeedEvent, Slot},
 };
 use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals}, products::LoadContext, queries::country_ids::Names};
@@ -80,7 +81,7 @@ pub(crate) struct Locator {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Item {
-    Log { head: Locator, edges: Box<[Locator]> },
+    Log { head: Locator, edges: Box<[Locator]>, valid_clock: bool },
     Family(Box<EventFeedRow>),
 }
 
@@ -259,12 +260,22 @@ pub(crate) struct Feed {
     pub warnings: families::DatedNotes,
     pub unattributed: Vec<i32>,
     pub unrecorded: Vec<families::Unrecorded>,
+    countries: Vec<String>,
+    fold_meta: Vec<Option<FoldMeta>>,
     unsettled: bool,
 }
 
 impl Feed {
     pub(crate) fn unsettled(&self) -> bool {
         self.unsettled
+    }
+
+    pub(crate) fn fold_meta(&self, at: u32) -> Option<FoldMeta> {
+        self.fold_meta[at as usize]
+    }
+
+    pub(crate) fn country(&self, index: u32) -> &str {
+        &self.countries[index as usize]
     }
 }
 
@@ -313,23 +324,29 @@ fn text_of(token: Option<&str>, tags: impl Iterator<Item = String>) -> Box<str> 
 
 fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &Names) -> Occurrence<Item> {
     let tags = |roles: &[Role]| roles.iter().filter_map(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)).map(str::to_owned)).collect::<Vec<_>>();
-    let (date, roles): (i32, Vec<Role>) = if !event.derived() {
+    let (date, roles, valid_clock): (i32, Vec<Role>, bool) = if !event.derived() {
         let ally = event.cause.and_then(|cause| cause.ally).and_then(|ally| slot_of(ally.slot));
         let date = event.hour.min(at.hour);
-        (date, [slot_of(event.actor.slot), slot_of(event.target.slot), ally].into_iter().map(|slot| Role::dated(slot, date, at.hour)).collect())
+        (date, [slot_of(event.actor.slot), slot_of(event.target.slot), ally].into_iter().map(|slot| Role::dated(slot, date, at.hour)).collect(), event.hour <= event.read_hour)
     } else if kind == EventFeedKind::CeasedToExist {
-        let eff = event.dated.unwrap_or(event.read_hour).min(at.hour);
-        (event.read_hour.min(at.hour), vec![Role::dated(slot_of(event.actor.slot), eff, at.hour)])
+        let named = event.dated.unwrap_or(event.read_hour);
+        let eff = named.min(at.hour);
+        (event.read_hour.min(at.hour), vec![Role::dated(slot_of(event.actor.slot), eff, at.hour)], named <= event.read_hour)
+    } else if kind == EventFeedKind::EventWindowPresented {
+        let date = event.hour.min(at.hour);
+        let valid = event.presentation.as_ref().is_some_and(|p| p.native_hour.is_some()) && event.hour <= event.read_hour;
+        (date, vec![Role::dated(slot_of(event.actor.slot), date, at.hour)], valid)
     } else {
         let (actor, target) = (slot_of(event.actor.slot), slot_of(event.target.slot));
         let start = event.dated.unwrap_or(event.read_hour);
         let exact = [actor, target].iter().all(|slot| slot.is_some_and(|slot| names.slot_tag(slot, start).is_some() && names.slot_tag(slot, start) == names.slot_tag(slot, event.read_hour)));
-        let date = (if exact { start } else { event.read_hour }).min(at.hour);
-        (date, vec![Role::dated(actor, date, at.hour), Role::dated(target, date, at.hour)])
+        let shown = if exact { start } else { event.read_hour };
+        let date = shown.min(at.hour);
+        (date, vec![Role::dated(actor, date, at.hour), Role::dated(target, date, at.hour)], shown <= event.read_hour)
     };
     let token = event.token.as_deref().and_then(|bytes| std::str::from_utf8(bytes).ok());
     let text = SearchText::from(text_of(token, tags(&roles).into_iter()));
-    Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text, payload: Item::Log { head: at, edges: Box::new([]) } }
+    Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text, payload: Item::Log { head: at, edges: Box::new([]), valid_clock } }
 }
 
 fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool) -> io::Result<Scanned> {
@@ -601,7 +618,7 @@ fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i
         states,
         sort_keys: Box::new([]),
         text,
-        payload: Item::Log { head: head.at, edges: card.edges.iter().map(|edge| edge.at).collect() },
+        payload: Item::Log { head: head.at, edges: card.edges.iter().map(|edge| edge.at).collect(), valid_clock: true },
     }
 }
 
@@ -802,7 +819,38 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     warnings.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
     warnings.dedup_by(|later, earlier| later.1 == earlier.1);
     warnings.sort();
-    Ok(Feed { index: Arc::new(Index::new(occurrences, scanned.gaps.clone(), &LIVE)?), notices: refused, warnings, unattributed, unrecorded, unsettled })
+    let index = Arc::new(Index::new(occurrences, scanned.gaps.clone(), &LIVE)?);
+    let names = Names::new(&query.holders);
+    let mut countries: Vec<String> = Vec::new();
+    let mut by_tag: HashMap<String, u32> = HashMap::new();
+    let mut fold_meta = Vec::with_capacity(index.len());
+    for at in 0..index.len() {
+        let occ = index.get(at as u32);
+        let primary = match &occ.payload {
+            Item::Log { valid_clock: true, .. } => occ.roles.first().and_then(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at))),
+            Item::Log { valid_clock: false, .. } => None,
+            Item::Family(row) if row.hour <= row.read_hour && row.name_hour <= row.read_hour => match &row.participants {
+                Some([first, _]) => first.as_deref(),
+                None => row.tags.first().map(String::as_str),
+            },
+            Item::Family(_) => None,
+        };
+        let meta = primary.and_then(|tag| {
+            let kind = EventFeedKind::of_index(occ.kind)?;
+            let country = match by_tag.get(tag) {
+                Some(&id) => id,
+                None => {
+                    let id = countries.len() as u32;
+                    countries.push(tag.to_owned());
+                    by_tag.insert(tag.to_owned(), id);
+                    id
+                }
+            };
+            Some(FoldMeta { day: occ.date.div_euclid(24), country, group: group_of(kind) })
+        });
+        fold_meta.push(meta);
+    }
+    Ok(Feed { index, notices: refused, warnings, unattributed, unrecorded, countries, fold_meta, unsettled })
 }
 
 fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, cancelled: &AtomicBool) -> io::Result<Arc<Scanned>> {

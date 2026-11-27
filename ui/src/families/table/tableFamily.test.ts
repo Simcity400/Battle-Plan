@@ -16,7 +16,7 @@ import { resolveHeadSpan } from '../broker.ts';
 import { tableHostAdapter, type TableChromeState } from './hostAdapter.ts';
 import { tableLane } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
-import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, EventFeedPageRow, MarketLedgerTailReply, ScoreboardColumn, ScoreboardReply, ScriptPageRow } from '../../generated/dashboard';
+import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, MarketLedgerTailReply, ScoreboardColumn, ScoreboardReply, ScriptPageRow } from '../../generated/dashboard';
 import { pictureError } from '../../shell/perf.ts';
 import { CLOCK_COLUMNS, CLOCK_TABLE_BASE, campaignClockProjection } from '../../widgets/campaign-clock/clockProjection.ts';
 import { decisionsProjection } from '../../widgets/decisions/decisionsProjection.ts';
@@ -3127,8 +3127,9 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   assert.equal(choiceModel.rows[1]!.cells.choice.inlinePrefix, 'A');
   assert.ok(choiceModel.rows[1]!.meta, 'chosen event carries detail window subject');
 
-  const feedRows: EventFeedPageRow[] = [
+  const feedRows = [
     {
+      line: 'event' as const,
       key: 'f-1',
       hour: 106,
       observed: 106,
@@ -3141,8 +3142,8 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
         readHour: 106,
         nameHour: 106,
         exact: false,
-        category: 'diplomacy',
-        kind: 'factionJoined',
+        category: 'diplomacy' as const,
+        kind: 'factionJoined' as const,
         tags: ['GER'],
         item: { token: 'faction:1', name: null, nameMissing: 'Faction name not recorded at this hour', description: null, icon: null },
         amount: null,

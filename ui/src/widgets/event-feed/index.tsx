@@ -4,6 +4,7 @@ import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/defini
 import { resolveWindow } from '../../dashboard/model.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
+import { useExpandedGroups } from '../../families/table/ExpandableLogView.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import type { EventFeedKindInfo } from '../../generated/dashboard';
 import EventDetailWindow, { type EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
@@ -14,12 +15,13 @@ import EventFeedActivityStrip from './EventFeedActivityStrip.tsx';
 import { feedKindLabel, kindsRequest, validateKinds } from './eventFeedData.ts';
 
 const CATEGORY_LABEL = new Map<string, string>(CATEGORIES.map(cat => [cat.value, cat.label]));
-const isEventRow = (key: string): boolean => readableRow(key) && !key.startsWith('fold:');
+const isEventRow = (key: string): boolean => readableRow(key) && !key.startsWith('group:') && !key.startsWith('all:') && !key.startsWith('loading:');
 
 function EventFeedView(props: FamilyViewProps) {
   const anchor = useRef<HTMLDivElement>(null);
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const scope = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
+  const groups = useExpandedGroups(scope);
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: EventDetailSubject } | null>(null);
   const [kinds, setKinds] = useState<{ readonly scope: string; readonly list: readonly EventFeedKindInfo[] } | null>(null);
   const [frozenState, setFrozenState] = useState<{ readonly scope: string; readonly hour: number | null }>({ scope: '', hour: null });
@@ -47,7 +49,10 @@ function EventFeedView(props: FamilyViewProps) {
   }, [track, props.active, props.runtime.client, scope, kinds?.scope]);
 
   const { options } = props;
-  const familyOptions = useMemo(() => withHoverText(options, hover.texts), [options, hover.texts]);
+  const familyOptions = useMemo(
+    () => ({ ...withHoverText(options, hover.texts), expanded: groups.expanded, full: groups.full }),
+    [options, hover.texts, groups.expanded, groups.full],
+  );
   const recordingKinds = kinds?.scope === scope ? kinds.list : null;
   const categories = useMemo(
     () => CATEGORIES.filter(cat => options[cat.value] !== false).map(cat => cat.value),
@@ -111,10 +116,14 @@ function EventFeedView(props: FamilyViewProps) {
   }, [props.setOption, props.setOptions]);
 
   const onActivate = useCallback((action: InstalledAction) => {
+    if (action.subject.startsWith('group:') || action.subject.startsWith('all:group:')) {
+      groups.toggle(action);
+      return;
+    }
     const meta = action.meta as EventDetailSubject | null | undefined;
     if (!meta || typeof meta !== 'object' || typeof meta.key !== 'string') return;
     setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: meta.asOfHour ?? action.hour } });
-  }, [scope]);
+  }, [scope, groups.toggle]);
 
   const showStrip = options.activityStrip !== false;
   const following = props.widget.time.mode === 'follow';
@@ -159,6 +168,7 @@ function EventFeedView(props: FamilyViewProps) {
         family={props.manifestDeclaration.family}
         declaration={props.manifestDeclaration}
         selectedKey={shown?.key ?? null}
+        onToggle={groups.toggle}
         onActivate={onActivate}
       /> : null}
       <EventDetailWindow subject={shown} detail={detail} anchor={anchor} onClose={() => setOpened(null)} />

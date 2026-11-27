@@ -2,6 +2,7 @@
 use super::{
     EventFeedCategory, EventFeedKind, EventFeedRow, EventFeedUnavailable, Names, Notices, Presenter, branch, content_from, content_refusals, families, invalid,
     cards::{List, ScriptEdge, ScriptOccurrence, edge},
+    fold::{self, PlannedLine},
     index::{self, Feed, Item, Locator, ScriptStatus, Scanned, kind_code},
     present_all,
     row::FeedEvent,
@@ -19,7 +20,7 @@ use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
     identity::{Country, Holders},
-    log::occurrence::{Answer, Ask, Chip, Index, PlacedGap, Selection, Shown},
+    log::occurrence::{Answer, Ask, Chip, Index, Order, PlacedGap, Selection, Shown},
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
@@ -75,6 +76,14 @@ pub struct EventFeedTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub exclude: Option<Vec<String>>,
+    #[doc = " The folds, by key, whose newest 32 events are listed as lines after them; the others list none."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub expanded: Option<Vec<String>>,
+    #[doc = " The expanded folds, by key, that list every event, paged with the other lines."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub full: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -219,7 +228,7 @@ impl ScriptEventKind {
 }
 
 const FEED_FIELDS: dashboard_base::products::Fields =
-    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, categories, exclude, "exclude[]", row];
+    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, categories, exclude, "exclude[]", expanded, "expanded[]", full, "full[]", row];
 
 const CARD_FIELDS: dashboard_base::products::Fields =
     dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, events, statuses, row];
@@ -245,6 +254,45 @@ pub struct EventFeedPageRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub not_recorded_reason: Option<String>,
+    #[doc = " The fold this event was expanded under; absent for standalone events."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub parent: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedFoldRow {
+    pub key: String,
+    pub hour: i32,
+    pub observed: i32,
+    pub ordinal: String,
+    pub count: String,
+    pub kind: EventFeedKind,
+    pub country: String,
+    pub first_row: Option<EventFeedRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedMoreRow {
+    pub key: String,
+    pub parent: String,
+    pub hour: i32,
+    pub ordinal: String,
+    pub total: String,
+    pub remaining: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(tag = "line", rename_all = "camelCase")]
+pub enum EventFeedLine {
+    Event(Box<EventFeedPageRow>),
+    Fold(Box<EventFeedFoldRow>),
+    More(EventFeedMoreRow),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -256,7 +304,7 @@ pub struct EventFeedTailReply {
     pub offset: String,
     pub live: String,
     pub counts: Vec<OccurrenceCount>,
-    pub rows: Vec<EventFeedPageRow>,
+    pub rows: Vec<EventFeedLine>,
     pub missing: Vec<PlacedGap>,
     pub next_change: Option<i32>,
     pub unavailable: Vec<EventFeedUnavailable>,
@@ -391,7 +439,7 @@ fn answer(index: &Index<Item>, query: &Query<'_>, window: &Window<'_>, hour: i32
 fn locators(index: &Index<Item>, answer: &Answer, hour: i32) -> Vec<Locator> {
     let mut out = Vec::new();
     for shown in &answer.rows {
-        if let Item::Log { head, edges } = &index.get(shown.at).payload {
+        if let Item::Log { head, edges, .. } = &index.get(shown.at).payload {
             out.push(*head);
             out.extend(edges.iter().copied().filter(|edge| edge.hour <= hour));
         }
@@ -399,11 +447,26 @@ fn locators(index: &Index<Item>, answer: &Answer, hour: i32) -> Vec<Locator> {
     out
 }
 
-fn next_change(prepared: &Prepared, answer: &Answer, windows: bool, hour: i32) -> Option<i32> {
+fn planned_locators(index: &Index<Item>, planned: &[PlannedLine], hour: i32) -> Vec<Locator> {
+    let mut out = Vec::new();
+    for line in planned {
+        match line {
+            PlannedLine::Event { at, .. } => if let Item::Log { head, edges, .. } = &index.get(*at).payload {
+                out.push(*head);
+                out.extend(edges.iter().copied().filter(|edge| edge.hour <= hour));
+            },
+            PlannedLine::Fold { first_at, .. } => if let Item::Log { head, .. } = &index.get(*first_at).payload { out.push(*head); },
+            PlannedLine::More { .. } => {}
+        }
+    }
+    out
+}
+
+fn next_change(prepared: &Prepared, answer_next: Option<i32>, windows: bool, hour: i32) -> Option<i32> {
     let incomplete = &prepared.scanned.incomplete;
     let read = incomplete.get(incomplete.partition_point(|(at, ..)| *at <= hour)).map(|(at, ..)| *at);
     let reason = windows.then(|| prepared.scanned.windows_unrecorded.iter().map(|(first, ..)| *first).filter(|first| *first > hour).min()).flatten();
-    [answer.next_change, read, reason].into_iter().flatten().min()
+    [answer_next, read, reason].into_iter().flatten().min()
 }
 
 fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], (from, to): (i32, i32), hour: i32) -> Option<i32> {
@@ -421,17 +484,17 @@ fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], (from, to): (
     [warning, left_out, unrecorded].into_iter().flatten().min()
 }
 
-fn notices_for(prepared: &Prepared, answer: &Answer, windows: bool, from: i32, hour: i32, notices: &mut Notices) {
+fn notices_for(prepared: &Prepared, unattributed: u64, windows: bool, from: i32, hour: i32, notices: &mut Notices) {
     families::incomplete_notices(&prepared.scanned.incomplete, &prepared.losses, from, hour, notices);
     if windows {
         families::window_notices(&prepared.scanned.windows_unrecorded, from, hour, notices);
     }
-    if answer.unattributed > 0 {
+    if unattributed > 0 {
         notices.unavailable(
             "unattributed",
             "Country not identified",
             "These events name no country the recording identifies at their date, so the country selection cannot place them.",
-            Some(u32::try_from(answer.unattributed).unwrap_or(u32::MAX)),
+            Some(u32::try_from(unattributed).unwrap_or(u32::MAX)),
         );
     }
 }
@@ -440,81 +503,186 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
     dashboard_text::metadata::check_cancel(cancelled)?;
     let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
     let kinds = feed_kinds(&params.categories, params.exclude.as_deref())?;
-    let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
-    let mut answer = answer(&feed.index, query, &window, hour, Some(&kinds), None, false, &[])?;
-    let opened = only_row(&prepared.scanned, &feed.index, params.row.as_deref(), &mut answer, hour);
-    let read = index::read_events(query, &locators(&feed.index, &answer, hour))?;
+    let (order, _newest) = occurrences::order(params.sort.as_ref(), &[])?;
+    let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
+    let opened = params.row.is_some();
+    let (total, reply_offset, live_total, unattributed, gaps, base_next, planned) = if let Some(row_key) = params.row.as_deref() {
+        let located = prepared.scanned.locate(row_key).and_then(|key| feed.index.find(key)).or_else(|| index::family_at(&feed.index, row_key));
+        match located {
+            Some(at) => {
+                let occ = feed.index.get(at);
+                if occ.observed > hour {
+                    (0, 0, 0, 0, Vec::new(), Some(occ.observed), Vec::new())
+                } else {
+                    let live = u64::from(occ.state_at(hour).is_some_and(|state| index::LIVE.contains(&state)));
+                    let next = occ.states.get(occ.states.partition_point(|&(h, _)| h <= hour)).map(|step| step.0);
+                    (1, 0, live, 0, Vec::new(), next, vec![PlannedLine::Event { at, ordinal: 0, parent: None }])
+                }
+            }
+            None => (0, 0, 0, 0, Vec::new(), None, Vec::new()),
+        }
+    } else {
+        let Order::Date(direction) = order else {
+            return Err(invalid("The event feed only supports date order"));
+        };
+        let ask = Ask {
+            hour,
+            from: params.from,
+            to: params.to,
+            gap_end: None,
+            selection: prepared.selection.as_ref(),
+            subject: None,
+            kinds: Some(&kinds),
+            states: None,
+            search: params.search.as_deref(),
+            order,
+            live_first: false,
+            offset,
+            limit,
+            chips: &[],
+        };
+        let (folded, live, unattributed, mut next) = feed.index.with_dated(&query.holders, &ask, |dated| {
+            let (live, unattributed, until) = (dated.live, dated.unattributed, dated.until);
+            let folded = fold::page(feed, dated, direction, offset, limit, params.expanded.as_deref(), params.full.as_deref());
+            (folded, live, unattributed, until)
+        })?;
+        for line in &folded.lines {
+            if let PlannedLine::Event { at, .. } = line {
+                let entry = feed.index.get(*at);
+                let after = entry.states.partition_point(|&(h, _)| h <= hour);
+                next = next.into_iter().chain(entry.states.get(after).map(|step| step.0)).min();
+            }
+        }
+        (folded.total, folded.offset, live, unattributed, folded.gaps, next, folded.lines)
+    };
+    let read = index::read_events(query, &planned_locators(&feed.index, &planned, hour))?;
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
     let presenter = Presenter::new(query, content_from(&prepared.content, &mut notices), Arc::clone(&prepared.kept));
     let presenter = if opened { presenter } else { presenter.without_effects() };
     let mut events: Vec<&FeedEvent> = Vec::new();
-    let mut shapes: Vec<(usize, Option<usize>)> = Vec::new();
-    for shown in &answer.rows {
-        let Item::Log { head, edges } = &feed.index.get(shown.at).payload else {
-            shapes.push((usize::MAX, None));
+    let mut seen: std::collections::HashMap<u128, usize> = std::collections::HashMap::new();
+    let mut shapes: Vec<Option<(usize, Option<usize>)>> = Vec::with_capacity(planned.len());
+    for line in &planned {
+        let (at, with_choice) = match line {
+            PlannedLine::Event { at, .. } => (*at, true),
+            PlannedLine::Fold { first_at, .. } => (*first_at, false),
+            PlannedLine::More { .. } => {
+                shapes.push(None);
+                continue;
+            }
+        };
+        let Item::Log { head, edges, .. } = &feed.index.get(at).payload else {
+            shapes.push(None);
             continue;
         };
-        let head_at = events.len();
-        events.push(read.get(&head.key).ok_or_else(|| invalid("An event in the window was not read back"))?);
-        let choice = edges.iter().filter(|edge| edge.hour <= hour).filter_map(|edge| read.get(&edge.key)).rfind(|event| event.option.is_none_or(|option| option >= 0)).map(|event| {
-            events.push(event);
-            events.len() - 1
-        });
-        shapes.push((head_at, choice));
+        let head_at = match seen.get(&head.key) {
+            Some(&pos) => pos,
+            None => {
+                let pos = events.len();
+                events.push(read.get(&head.key).ok_or_else(|| invalid("An event in the window was not read back"))?);
+                seen.insert(head.key, pos);
+                pos
+            }
+        };
+        let choice = with_choice
+            .then(|| {
+                edges.iter().filter(|edge| edge.hour <= hour).filter_map(|edge| read.get(&edge.key)).rfind(|event| event.option.is_none_or(|option| option >= 0)).map(|event| {
+                    events.push(event);
+                    events.len() - 1
+                })
+            })
+            .flatten();
+        shapes.push(Some((head_at, choice)));
     }
     let mut presented = present_all(query, &prepared.scanned, &events, &names, &presenter, &mut notices, cancelled)?;
     if !opened {
         listed(&mut presented, false, true);
     }
-    let rows = answer
-        .rows
-        .iter()
+    let rows = planned
+        .into_iter()
         .zip(shapes)
-        .map(|(shown, (head_at, choice))| {
-            let occurrence = feed.index.get(shown.at);
-            let (key, mut row, mut choice) = match &occurrence.payload {
-                Item::Family(row) => (row.id.clone(), Some(row.as_ref().clone()), None),
-                Item::Log { .. } => {
-                    let row = presented[head_at].take();
-                    let choice = choice.and_then(|at| presented[at].take().map(|row| edge(events[at], row, prepared.scanned.partial_read(events[at].read_hour))));
-                    (events[head_at].id(), row, choice)
-                }
-            };
-            if !opened {
-                let chosen = choice.as_ref().and_then(|choice| choice.option).or_else(|| row.as_ref().and_then(|row| row.cause.as_ref()).and_then(|cause| cause.selected_option));
-                if let Some(item) = row.as_mut().and_then(|row| row.item.as_mut()) {
-                    chosen_names(item, chosen);
-                }
-                let listed_options = row.as_ref().and_then(|row| row.item.as_ref()).is_some_and(|item| item.options.as_ref().is_some_and(|options| !options.is_empty()));
-                if let Some(choice) = choice.as_mut() {
-                    choice.row.cause = None;
-                    choice.row.window = None;
-                    if listed_options {
-                        choice.row.item = None;
+        .map(|(line, shape)| match line {
+            PlannedLine::Event { at, ordinal, parent } => {
+                let occurrence = feed.index.get(at);
+                let (key, mut row, mut choice) = match (&occurrence.payload, shape) {
+                    (Item::Family(row), _) => (row.id.clone(), Some(row.as_ref().clone()), None),
+                    (Item::Log { .. }, Some((head_at, choice))) => {
+                        let row = presented[head_at].take();
+                        let choice = choice.and_then(|at| presented[at].take().map(|row| edge(events[at], row, prepared.scanned.partial_read(events[at].read_hour))));
+                        (events[head_at].id(), row, choice)
+                    }
+                    _ => unreachable!(),
+                };
+                if !opened {
+                    let chosen = choice.as_ref().and_then(|choice| choice.option).or_else(|| row.as_ref().and_then(|row| row.cause.as_ref()).and_then(|cause| cause.selected_option));
+                    if let Some(item) = row.as_mut().and_then(|row| row.item.as_mut()) {
+                        chosen_names(item, chosen);
+                    }
+                    let listed_options = row.as_ref().and_then(|row| row.item.as_ref()).is_some_and(|item| item.options.as_ref().is_some_and(|options| !options.is_empty()));
+                    if let Some(choice) = choice.as_mut() {
+                        choice.row.cause = None;
+                        choice.row.window = None;
+                        if listed_options {
+                            choice.row.item = None;
+                        }
                     }
                 }
+                let state = occurrence.state_at(hour);
+                let live = state.is_some_and(|state| index::LIVE.contains(&state));
+                let status = state.and_then(ScriptStatus::of_code);
+                let not_recorded_reason = (status == Some(ScriptStatus::NotRecorded))
+                    .then(|| prepared.scanned.choice_break(occurrence.observed, hour).map(|(_, reason)| reason.to_owned()))
+                    .flatten();
+                EventFeedLine::Event(Box::new(EventFeedPageRow {
+                    key,
+                    hour: occurrence.date,
+                    observed: occurrence.observed,
+                    ordinal: ordinal.to_string(),
+                    live,
+                    row,
+                    choice,
+                    status,
+                    not_recorded_reason,
+                    parent,
+                }))
             }
-            let status = shown.state.and_then(ScriptStatus::of_code);
-            let not_recorded_reason = (status == Some(ScriptStatus::NotRecorded))
-                .then(|| prepared.scanned.choice_break(occurrence.observed, hour).map(|(_, reason)| reason.to_owned()))
-                .flatten();
-            EventFeedPageRow {
+            PlannedLine::Fold { key, first_at, observed, ordinal, count, kind, country } => {
+                let occurrence = feed.index.get(first_at);
+                let mut first_row = match (&occurrence.payload, shape) {
+                    (Item::Family(row), _) => Some(row.as_ref().clone()),
+                    (Item::Log { .. }, Some((head_at, _))) => presented[head_at].clone(),
+                    _ => unreachable!(),
+                };
+                if !opened
+                    && let Some(item) = first_row.as_mut().and_then(|row| row.item.as_mut())
+                {
+                    chosen_names(item, None);
+                }
+                EventFeedLine::Fold(Box::new(EventFeedFoldRow {
+                    key,
+                    hour: occurrence.date,
+                    observed,
+                    ordinal: ordinal.to_string(),
+                    count: count.to_string(),
+                    kind,
+                    country,
+                    first_row,
+                }))
+            }
+            PlannedLine::More { key, parent, hour, ordinal, total, remaining } => EventFeedLine::More(EventFeedMoreRow {
                 key,
-                hour: occurrence.date,
-                observed: occurrence.observed,
-                ordinal: shown.ordinal.to_string(),
-                live: shown.live,
-                row,
-                choice,
-                status,
-                not_recorded_reason,
-            }
+                parent,
+                hour,
+                ordinal: ordinal.to_string(),
+                total: total.to_string(),
+                remaining: remaining.to_string(),
+            }),
         })
         .collect();
     content_refusals(&presenter, &mut notices)?;
     let from = params.from.unwrap_or(query.timeline.first);
-    notices_for(prepared, &answer, true, from, hour, &mut notices);
+    notices_for(prepared, unattributed, true, from, hour, &mut notices);
     families::unread(&params.categories, &mut notices);
     for (categories, kind, label, reason, count) in &feed.notices {
         if categories.iter().any(|category| params.categories.contains(category)) {
@@ -541,13 +709,13 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
     }
     let reply = EventFeedTailReply {
         branch_id: params.branch_id.clone(),
-        total: answer.total.to_string(),
-        offset: answer.offset.to_string(),
-        live: answer.live.to_string(),
+        total: total.to_string(),
+        offset: reply_offset.to_string(),
+        live: live_total.to_string(),
         counts: Vec::new(),
         rows,
-        next_change: [next_change(prepared, &answer, true, hour), feed_next_change(feed, &params.categories, (from, params.to.unwrap_or(query.timeline.last).min(query.timeline.last)), hour), feed.unsettled().then(|| hour.saturating_add(1))].into_iter().flatten().min(),
-        missing: answer.gaps,
+        next_change: [next_change(prepared, base_next, true, hour), feed_next_change(feed, &params.categories, (from, params.to.unwrap_or(query.timeline.last).min(query.timeline.last)), hour), feed.unsettled().then(|| hour.saturating_add(1))].into_iter().flatten().min(),
+        missing: gaps,
         unavailable: notices.into_list(),
         warnings: feed.warnings.iter().filter(|(at, _)| *at <= hour).map(|(_, text)| text.clone()).collect(),
     };
@@ -658,7 +826,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
     let mut spans: Vec<(usize, usize, bool)> = Vec::new();
     for shown in &answer.rows {
         let occurrence = prepared.index.get(shown.at);
-        let Item::Log { head, edges } = &occurrence.payload else { return Err(invalid("A card holds no feed rows")) };
+        let Item::Log { head, edges, .. } = &occurrence.payload else { return Err(invalid("A card holds no feed rows")) };
         let first = events.len();
         for at in edges.iter().filter(|edge| edge.hour <= hour) {
             events.push(read.get(&at.key).ok_or_else(|| invalid("A card's edge was not read back"))?);
@@ -710,7 +878,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         });
     }
     content_refusals(&presenter, &mut notices)?;
-    notices_for(prepared, &answer, list == List::EventChoices, params.from.unwrap_or(query.timeline.first), hour, &mut notices);
+    notices_for(prepared, answer.unattributed, list == List::EventChoices, params.from.unwrap_or(query.timeline.first), hour, &mut notices);
     let reply = ScriptOccurrenceTailReply {
         branch_id: params.branch_id.clone(),
         total: answer.total.to_string(),
@@ -718,7 +886,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         live: answer.live.to_string(),
         counts: occurrences::counts(&answer, keys),
         rows,
-        next_change: next_change(prepared, &answer, list == List::EventChoices, hour),
+        next_change: next_change(prepared, answer.next_change, list == List::EventChoices, hour),
         missing: answer.gaps,
         unavailable: notices.into_list(),
         warnings: Vec::new(),
@@ -768,6 +936,9 @@ impl Product for EventFeedTail {
             super::EventFeedStrike::decl(),
             EventFeedUnavailable::decl(),
             EventFeedPageRow::decl(),
+            EventFeedFoldRow::decl(),
+            EventFeedMoreRow::decl(),
+            EventFeedLine::decl(),
             EventFeedTailReply::decl(),
         ]
     }
