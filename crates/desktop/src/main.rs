@@ -586,7 +586,18 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let showed_main = std::sync::atomic::AtomicBool::new(false);
     let app = tauri::Builder::default()
+        .on_page_load(move |webview, page| {
+            if webview.label() == "main"
+                && page.event() == tauri::webview::PageLoadEvent::Finished
+                && page.url().as_str() != "about:blank"
+                && !showed_main.swap(true, std::sync::atomic::Ordering::Relaxed)
+                && let Err(error) = webview.window().show()
+            {
+                eprintln!("BattlePlan couldn’t show its main window: {error}");
+            }
+        })
         .invoke_system(include_str!("ipc.js"))
         .register_asynchronous_uri_scheme_protocol("push", move |context, request, responder| {
             use tauri::http::{StatusCode, header};

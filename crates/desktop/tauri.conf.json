@@ -12,6 +12,8 @@
     "windows": [{
       "label": "main",
       "title": "BattlePlan",
+      "backgroundColor": "#0a0a0a",
+      "visible": false,
       "width": 1500,
       "height": 950,
       "minWidth": 1000,
