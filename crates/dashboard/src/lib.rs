@@ -12,6 +12,7 @@ pub mod service;
 mod strip;
 
 pub use service::Service;
+pub use strip::patch;
 
 #[cfg(any(test, feature = "export-types"))]
 mod contract;

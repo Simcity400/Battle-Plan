@@ -1,4 +1,6 @@
 
+#[path = "native-bench/heaviest.rs"]
+mod heaviest;
 #[path = "native-bench/widgets.rs"]
 mod widgets;
 
@@ -131,12 +133,40 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
     let [recording, game, user, cache, tag, flags @ ..] = &args[..] else {
-        return Err(io::Error::other("native-bench RECORDING GAME_DIR USER_DIR CACHE_DIR TAG [--audit|--capacity|--hourly-check]"));
+        return Err(io::Error::other("native-bench RECORDING GAME_DIR USER_DIR CACHE_DIR TAG [--audit|--capacity|--hourly-check|--heaviest30 [--quantum N] [--steps N] [--product NAME]]"));
     };
-    let audit = flags == ["--audit"];
-    let capacity = flags == ["--capacity"];
-    let hourly = flags == ["--hourly-check"];
-    if !flags.is_empty() && !hourly && !audit && !capacity { return Err(io::Error::other("unknown option")); }
+    let mut heaviest30 = false;
+    let mut custom_quantum = QUANTUM;
+    let mut custom_steps = 150i32;
+    let mut only_product: Option<String> = None;
+    if flags.first().map(String::as_str) == Some("--heaviest30") {
+        heaviest30 = true;
+        let mut flag_i = 1;
+        while flag_i < flags.len() {
+            match flags[flag_i].as_str() {
+                "--quantum" => {
+                    flag_i += 1;
+                    custom_quantum = flags.get(flag_i).ok_or_else(|| io::Error::other("missing --quantum value"))?.parse().map_err(io::Error::other)?;
+                    if custom_quantum < 1 { return Err(io::Error::other("--quantum must be >= 1")); }
+                }
+                "--steps" => {
+                    flag_i += 1;
+                    custom_steps = flags.get(flag_i).ok_or_else(|| io::Error::other("missing --steps value"))?.parse().map_err(io::Error::other)?;
+                    if custom_steps < 1 { return Err(io::Error::other("--steps must be >= 1")); }
+                }
+                "--product" => {
+                    flag_i += 1;
+                    only_product = Some(flags.get(flag_i).ok_or_else(|| io::Error::other("missing --product value"))?.clone());
+                }
+                _ => return Err(io::Error::other("unknown option")),
+            }
+            flag_i += 1;
+        }
+    }
+    let audit = !heaviest30 && flags == ["--audit"];
+    let capacity = !heaviest30 && flags == ["--capacity"];
+    let hourly = !heaviest30 && flags == ["--hourly-check"];
+    if !heaviest30 && !flags.is_empty() && !hourly && !audit && !capacity { return Err(io::Error::other("unknown option")); }
     let path = PathBuf::from(recording);
     let source = std::sync::Arc::new(Source::open(SourceKey { source_id: "native-bench".into(), revision: dashboard_core::protocol::replay_revision(&path)? }, path.clone(), &false.into())?);
     engine_executable::executable_tables::enter(source.tables());
@@ -150,10 +180,29 @@ fn main() -> io::Result<()> {
     let opened = q.timeline.stretches.iter().map(|s| s.first).min().ok_or_else(|| io::Error::other("the branch holds no recording"))?;
     let closed = q.timeline.stretches.iter().map(|s| s.last).max().unwrap_or(opened);
     let start = opened + (closed - opened) * 3 / 10;
-    let span = q.timeline.stretches.iter().find(|s| s.first <= start && start + 3600 + QUANTUM <= s.last)
-        .ok_or_else(|| io::Error::other("no continuous recording for 3,600 hours from where the acceptance suite plays"))?;
+    let span = q.timeline.stretches.iter().find(|s| {
+        if s.first > start || start > s.last { return false; }
+        if heaviest30 {
+            i64::from(custom_quantum).checked_mul(i64::from(custom_steps))
+                .and_then(|dur| i64::from(start).checked_add(dur))
+                .is_some_and(|end| end <= i64::from(s.last))
+        } else {
+            i64::from(start) + 3600 + i64::from(QUANTUM) <= i64::from(s.last)
+        }
+    }).ok_or_else(|| io::Error::other("no continuous recording covering the requested window from where the acceptance suite plays"))?;
     let pages = Arc::new(WorldPages::open(&path, Span::Run(span.run as usize))?);
-    let first = start + (pages.pieces()[0].first - 1 - start).rem_euclid(QUANTUM);
+    let align_q = if heaviest30 { custom_quantum } else { QUANTUM };
+    let first = i64::from(start) + i64::from((pages.pieces()[0].first - 1 - start).rem_euclid(align_q));
+    let first = i32::try_from(first).map_err(|_| io::Error::other("aligned start hour overflows i32"))?;
+    if heaviest30 {
+        let last_h = i64::from(custom_quantum)
+            .checked_mul(i64::from(custom_steps))
+            .and_then(|dur| i64::from(first).checked_add(dur))
+            .ok_or_else(|| io::Error::other("requested heaviest30 window overflows i64"))?;
+        if last_h > i64::from(span.last) || last_h > i64::from(i32::MAX) {
+            return Err(io::Error::other("aligned heaviest30 window extends past the continuous stretch"));
+        }
+    }
     let end = first + 3600;
     let last = if hourly { first + QUANTUM } else { end };
     let reads = [TableId::Countries, TableId::Projects, TableId::ProjectHistory, TableId::ProductionLines].map(at_hour::Read::all);
@@ -176,6 +225,9 @@ fn main() -> io::Result<()> {
         }).max().ok_or_else(|| io::Error::other("no held tag with recorded activity; supply a tag"))?.1
     } else { tag };
     let identity = Identity { timeline: q.timeline.clone(), holders: q.holders.clone() };
+    if heaviest30 {
+        return heaviest::run(recording, &source, &load, &branch.id.to_string(), tag, opened, pages, &identity, first, custom_quantum, custom_steps, only_product.as_deref());
+    }
     let mut products = source.in_scope(|| widgets::page(&source, &load, &identity, tag))?;
     let names: Vec<_> = products.iter().map(|w| w.name).collect();
     let mut declared = std::collections::BTreeMap::<usize, playhead::Declared>::new();
