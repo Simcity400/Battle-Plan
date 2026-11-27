@@ -472,5 +472,38 @@ fn a_party_is_named_at_the_contracts_date_and_a_buyer_first_recorded_later_only_
     assert_eq!((known.total.as_str(), contracts(&known)[0].buyer.as_deref()), ("1", Some("MOD")));
     assert_eq!(contracts(&load(&src, &ask(103)))[0].buyer, None, "the buyer is missing until it is recorded");
     assert_eq!(load(&src, &MarketLedgerTailParams { search: Some("GER".into()), ..ask(103) }).total, "1", "the seller known at the opening is searchable");
-    assert_eq!(load(&src, &MarketLedgerTailParams { search: Some("MOD".into()), ..ask(106) }).total, "0", "a buyer recorded later never matches a search, which cannot tell when it was recorded");
+    let before_search = load(&src, &MarketLedgerTailParams { search: Some("MOD".into()), ..ask(103) });
+    assert_eq!((before_search.total.as_str(), before_search.next_change), ("0", Some(104)), "a buyer recorded later is not searchable before it is observed");
+    assert_eq!(load(&src, &MarketLedgerTailParams { search: Some("MOD".into()), ..ask(104) }).total, "1");
+    assert_eq!(load(&src, &MarketLedgerTailParams { search: Some("MOD".into()), ..ask(106) }).total, "1", "a buyer recorded later becomes searchable from its observation");
+
+    let relinked_buyer: Vec<_> = (100..=106)
+        .map(|hour| {
+            let mut frame = ownership_frame(1, hour, 9001);
+            if hour > 103
+                && let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *frame.tables[TableId::CountryLinks.index()]
+            {
+                rows.iter_mut().filter(|row| row.id == 66).for_each(|row| row.canonical_slot = 9);
+            }
+            let events = match hour {
+                100 => vec![MarketEventRow { receiver: 0, ..event(1, 100, 11, MarketEventRow::default()) }],
+                105 => vec![MarketEventRow { receiver: 66, ..event(2, 103, 21, MarketEventRow { amount_raw: 1_000, ..Default::default() }) }],
+                _ => Vec::new(),
+            };
+            *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
+            frame
+        })
+        .collect();
+    let delayed = opened("mkt-buyer-relinked", relinked_buyer);
+    let pick_at = |tag: &str, hour: i32| load(&delayed, &MarketLedgerTailParams { countries: Some(vec![Country::Tag(tag.into())]), ..ask(hour) });
+    let find_at = |text: &str, hour: i32| load(&delayed, &MarketLedgerTailParams { search: Some(text.into()), ..ask(hour) });
+    assert_eq!(contracts(&load(&delayed, &ask(104)))[0].buyer, None, "buyer from event dated 103 read at 105 is absent at 104");
+    assert_eq!((pick_at("MOD", 104).total.as_str(), pick_at("MOD", 104).next_change), ("0", Some(105)));
+    assert_eq!((find_at("MOD", 104).total.as_str(), find_at("MOD", 104).next_change), ("0", Some(105)));
+    assert_eq!(contracts(&load(&delayed, &ask(105)))[0].buyer.as_deref(), Some("MOD"), "buyer tag resolves at the event's effective hour 103, not read hour 105");
+    assert_eq!(
+        (pick_at("MOD", 105).total.as_str(), pick_at("CTL", 105).total.as_str(), find_at("MOD", 105).total.as_str(), find_at("CTL", 105).total.as_str()),
+        ("1", "0", "1", "0"),
+        "later buyer membership and search use effective hour 103 and admit from observation hour 105"
+    );
 }

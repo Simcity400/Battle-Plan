@@ -228,7 +228,7 @@ fn occurrence(id: u32, subject: u128, date: i32, states: Box<[(i32, u8)]>, kind:
         subjects: Box::new([subject]),
         states,
         sort_keys: Box::new([]),
-        text: Box::default(),
+        text: Default::default(),
         payload,
     }
 }
