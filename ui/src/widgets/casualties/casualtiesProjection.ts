@@ -13,7 +13,6 @@ export const FAMILY = 'casualty-totals';
 const RANK = 'dealtAndTaken';
 const MEASURES = ['dealt', 'taken', 'unknown', 'partial'] as const;
 type Measure = typeof MEASURES[number];
-const MOST = 1500;
 const PARTIAL = 'Some casualties were recorded without their full detail.';
 
 export interface CasualtiesOptions {
@@ -34,7 +33,7 @@ function casualtySources(ctx: FamilyPlanContext, view: 'butterfly' | 'race'): So
     : ctx.countries.all || group ? { mode: 'population', form: 'all' } : { mode: 'keyed', keys: ctx.countries.tags };
   return {
     owner: `casualties:${view}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
-    entries: rankSource(ctx, 'rank', { kind: FAMILY, measure: view === 'race' ? 'taken' : RANK }, coverage, ctx.countries.tags, keyed ? null : top ?? MOST, group, viewMeasures(view)),
+    entries: rankSource(ctx, 'rank', { kind: FAMILY, measure: view === 'race' ? 'taken' : RANK }, coverage, ctx.countries.tags, top, group, viewMeasures(view)),
   };
 }
 

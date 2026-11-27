@@ -396,24 +396,24 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
     let branch_id = query.timeline.id.to_string();
 
     let (keys, ranking) = match ask.top {
-        None => {
+        None if !ask.countries.is_empty() || ask.hour.is_none() => {
             ask.countries.iter().try_for_each(validate_country).map_err(invalid)?;
             let mut seen = BTreeSet::new();
             let deduped = ask.countries.into_iter().filter(|country| seen.insert(country.clone())).collect();
             (deduped, None)
         }
-        Some(n) => {
+        top => {
             if !ask.countries.is_empty() {
                 return Err(invalid("A top of equipment produced tiles names no country: the ranking names them"));
             }
-            let n = u32::try_from(n).ok().filter(|n| *n >= 1).ok_or_else(|| invalid("A top names one country or more"))?;
+            if top == Some(0) { return Err(invalid("A top names one country or more")); }
             let hour = dashboard_query::series::hour_of(ask.hour, "hour")?;
             let at_params = EquipmentProducedRaceParams {
                 branch_id: branch_id.clone(),
                 hour,
                 countries: Vec::new(),
                 group: None,
-                top: Some(n),
+                top,
                 count: family.count,
                 measure: family.measure,
                 types: family.types.clone(),

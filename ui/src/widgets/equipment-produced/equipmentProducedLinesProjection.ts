@@ -28,7 +28,7 @@ import {
   memberAt,
   missingSpansOf,
   withinMapOf,
-  chartTagsOf,
+  chartTopOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -61,7 +61,7 @@ const COLOURED = 8;
 
 export interface EquipmentProducedLinesOptions {
   readonly tags: readonly string[];
-  readonly top: number | null;
+  readonly top: ReturnType<typeof chartTopOf>;
   readonly count: ProducedCount;
   readonly measure: ProducedMeasure;
   readonly equipmentLabel: string;
@@ -376,10 +376,10 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
   },
   sources(ctx: FamilyPlanContext<ProducedTypesReply>): SourcePlan {
     const { count, measure, refits, shownTypes, noDataMessage } = resolvedEquipment(ctx);
-    const top = ctx.countries.top;
+    const top = chartTopOf(ctx.countries);
     const all = ctx.countries.all;
     const group = top === null && !all ? groupSelection(ctx.widget.countries) : null;
-    const tags = top === null ? chartTagsOf(ctx.countries) : [];
+    const tags = top === null ? ctx.countries.tags : [];
     const fromHour = measure === 'total' && ctx.widget.time.mode === 'range' && ctx.staticSpan ? ctx.staticSpan[0] : undefined;
     const waitingForDefault = count === 'units' && !shownTypes.length && !noDataMessage;
     const emptySelection = top === null && !all && !group && tags.length === 0;
@@ -399,7 +399,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
       ...(fromHour !== undefined ? { fromHour } : {}),
     };
     const headCoverage: SourceCoverage = top !== null
-      ? { mode: 'population', form: 'top', limit: top }
+      ? top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }
       : group
         ? { mode: 'population', form: 'all' }
         : { mode: 'keyed', keys: tags };
@@ -430,7 +430,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
       read: {
         shape: 'pixel-binned',
         coverage: top !== null
-          ? { mode: 'population', form: 'top', limit: top }
+          ? top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }
           : { mode: 'keyed', keys: tags },
         family: tileFamily as unknown as Readonly<Record<string, unknown>>,
         tags,
@@ -474,10 +474,10 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
   projection: equipmentProducedLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
     const { count, measure, equipmentLabel, noDataMessage } = resolvedEquipment(ctx);
-    const top = ctx.countries.top;
+    const top = chartTopOf(ctx.countries);
     const fromHour = measure === 'total' && ctx.widget.time.mode === 'range' && ctx.staticSpan ? ctx.staticSpan[0] : null;
     return {
-      tags: top === null ? chartTagsOf(ctx.countries) : [],
+      tags: top === null ? ctx.countries.tags : [],
       top,
       count,
       measure,

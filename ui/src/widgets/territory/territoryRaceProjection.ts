@@ -17,7 +17,6 @@ import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import { chartTagsOf } from '../../families/time-chart/seriesHelpers.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { valueFromRawBigInt, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
@@ -128,13 +127,13 @@ function territoryRaceSources(ctx: FamilyPlanContext): SourcePlan {
   }
   const top = ctx.countries.top;
   const group = top == null ? groupSelection(ctx.widget.countries) : null;
-  const tags = top == null && !group ? chartTagsOf(ctx.countries) : [];
+  const tags = top == null && !group ? ctx.countries.tags : [];
   const coverage: SourceCoverage = ctx.countries.top != null
     ? { mode: 'population', form: 'top', limit: ctx.countries.top }
     : ctx.countries.all || group
       ? { mode: 'population', form: 'all' }
       : { mode: 'keyed', keys: tags };
-  const emptyExplicit = top == null && !group && !tags.length;
+  const emptyExplicit = !ctx.countries.all && top == null && !group && !tags.length;
   return {
     owner: `territory:race:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${seriesMeasure}`,
     entries: rankSource(ctx, 'main', { kind: 'territory', measure: seriesMeasure }, coverage, tags, top, group),

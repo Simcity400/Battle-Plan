@@ -162,14 +162,14 @@ pub fn closure(first: i32, last: i32, timeline_last: i32) -> (bool, Option<i32>)
 pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value, check_cancel: &dyn Fn() -> io::Result<()>) -> io::Result<SeriesTileReply> {
     check_cancel()?;
     let params: Params = crate::named::named(params).map_err(|error| invalid(format!("Invalid tile request: {error}")))?;
-    let Some(top) = params.top else {
+    if params.top.is_none() && (!params.countries.is_empty() || !params.lines.is_empty() || params.hour.is_none()) {
         let asks = line.asks(&params.countries, &params.lines)?;
         return tile(line, branch_id, &asks, params.within.as_deref(), params.bin_hours, params.index, params.with_marks);
-    };
+    }
     if !params.countries.is_empty() || !params.lines.is_empty() {
         return Err(invalid("A top of tiles names no country: the ranking names them"));
     }
-    let n = usize::try_from(top).ok().filter(|n| *n >= 1).ok_or_else(|| invalid("A top names one country or more"))?;
+    let n = params.top.map(|top| usize::try_from(top).ok().filter(|n| *n >= 1).ok_or_else(|| invalid("A top names one country or more"))).transpose()?;
     let hour = crate::series::hour_of(params.hour, "hour")?;
     let by = match params.rank_by.as_deref() {
         None => None,
@@ -181,7 +181,7 @@ pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value, c
     let ranker = by.as_ref().unwrap_or(line);
     let holders = &line.query().holders;
     let named_slot = |country: &Country, at| holders.tag_at(country, at).and_then(|_| holders.slot_at(country, at));
-    let slots = ranker.rank_at(hour, n, params.least)?.and_then(|ranked| {
+    let slots = ranker.population_at(hour, n, params.least)?.and_then(|ranked| {
         ranked.iter().map(|country| named_slot(country, hour).ok_or_else(|| format!("{}, so its line cannot be drawn", holders.unnamed(country, hour)))).collect::<Result<Vec<_>, _>>()
     });
     let (asks, ranking) = match slots {

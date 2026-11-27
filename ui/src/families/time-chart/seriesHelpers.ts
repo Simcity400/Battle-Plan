@@ -71,8 +71,8 @@ function scaledReading(rawInt: bigint, decimals: number, scale: number | Rationa
   return Number.isFinite(value) ? { value } : null;
 }
 
-export function chartTagsOf(countries: FamilyPlanContext['countries']): readonly string[] {
-  return countries.all ? countries.every : countries.tags;
+export function chartTopOf(countries: FamilyPlanContext['countries']): number | 'all' | null {
+  return countries.top ?? (countries.all ? 'all' : null);
 }
 
 export function rowsBySelectedKey<R extends { readonly tag: string | null }>(rows: readonly R[], slotKey: (row: R) => string): (key: string) => R | undefined {

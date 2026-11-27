@@ -298,12 +298,12 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, load: &LoadConte
     let branch_id = query.timeline.id.to_string();
 
     let (keys, ranking) = match ask.top {
-        None => (ask.countries, None),
-        Some(n) => {
+        None if !ask.countries.is_empty() || ask.hour.is_none() => (ask.countries, None),
+        top => {
             if !ask.countries.is_empty() {
                 return Err(invalid("A top of air loss tiles names no country: the ranking names them"));
             }
-            let n = u32::try_from(n).ok().filter(|n| *n >= 1).ok_or_else(|| invalid("A top names one country or more"))?;
+            if top == Some(0) { return Err(invalid("A top names one country or more")); }
             let hour = dashboard_query::series::hour_of(ask.hour, "hour")?;
             let at_params = MilitaryAirAtParams {
                 branch_id: branch_id.clone(),
@@ -313,7 +313,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, load: &LoadConte
                 from_hour: family.from_hour,
                 hour,
                 metric: family.rank_metric.unwrap_or(MilitaryAirMetric::Taken),
-                top: Some(n),
+                top,
                 countries: None,
                 group: None,
             };

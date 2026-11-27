@@ -1989,6 +1989,8 @@ fn a_recorded_row_whose_holder_is_not_resolved_is_ranked_by_its_value_and_marked
     let reply = ranked::rank(&line, &[], "1", ranked::Ask { hour: Some(f64::from(hour)), top: Some(2), least: false, countries: &[], group: None }).unwrap();
     assert_eq!(reply.refused, None, "a row whose value is recorded never refuses the rank");
     assert_eq!(reply.rows.iter().map(|row| row.country.clone()).collect::<Vec<_>>(), vec![Country::Slot(9002), Country::from("GER")]);
+    let all = ranked::rank(&line, &[], "1", ranked::Ask { hour: Some(f64::from(hour)), top: None, least: false, countries: &[], group: None }).unwrap();
+    assert_eq!(all.rows, reply.rows);
     let unnamed = &reply.rows[0];
     assert_eq!(unnamed.slot, Some(9002));
     assert!(unnamed.unnamed.is_some(), "the row says why its country is not named");
@@ -2009,6 +2011,9 @@ fn territory_ranking_skips_world_summary_row() {
     let (first, last) = (overtake - 54, overtake + 12);
     let fixture = Fixture::new(Data::Faction, first..=last);
     let query = fixture.query();
+    let mut tags = query.holders.tags.clone();
+    tags.insert("OLD".to_owned(), vec![crate::identity::HolderRun { first: first - 20, last: first - 1, holder: Holder::Found { slot: 9001, id: 9001 }, starts_segment: true }]);
+    let query = crate::Query { holders: Arc::new(crate::identity::Holders::new(tags, Vec::new())), ..query };
     let hour = overtake - 1;
     let series = dashboard_declare::series("territory").unwrap();
     let measure = series.measure("controlledStates").unwrap();
@@ -2016,6 +2021,15 @@ fn territory_ranking_skips_world_summary_row() {
     let ranked = line.rank_at(hour, 10, false).unwrap().unwrap();
     assert!(!ranked.contains(&Country::Slot(replay_data::rows::TerritoryTotalRow::WORLD)));
     assert_eq!(ranked, vec![Country::from("GER"), Country::from("ITA")]);
+    let all = ranked::rank(&line, &[], "1", ranked::Ask { hour: Some(f64::from(hour)), top: None, least: false, countries: &[], group: None }).unwrap();
+    let one = ranked::rank(&line, &[], "1", ranked::Ask { hour: Some(f64::from(hour)), top: Some(1), least: false, countries: &[], group: None }).unwrap();
+    assert_eq!(all.rows.len(), 2);
+    assert_eq!(all.refused, None);
+    assert_eq!(one.rows.len(), 1);
+    let all_tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "hour": hour }), &|| Ok(())).unwrap();
+    assert_eq!(all_tiles.lines.len(), 2);
+    assert_eq!(all_tiles.ranking.unwrap().refused, None);
+
     let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 10, "hour": hour }), &|| Ok(())).unwrap();
     let ranking = tiles.ranking.unwrap();
     assert_eq!(ranking.refused, None);

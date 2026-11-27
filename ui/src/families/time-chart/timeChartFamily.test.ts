@@ -1,3 +1,5 @@
+import { TIME_CHART_VIEWS } from '../../widgets/manifest/time-chart.ts';
+import { BARS_VIEWS } from '../../widgets/manifest/bars.ts';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ChartBucket } from '../../charts/chartSummary.ts';
@@ -1657,7 +1659,7 @@ describe('several countries, one measure', () => {
     assert.ok(!plan.entries.some(entry => entry.name === 'rank'), 'a ranked top takes its order from its own ranked read, not a second rank request');
     const fresh = occupationLinesDeclaration.sources({ ...ctx, countries: { tags: [], membership: null, top: null, all: true, every: [] } } as unknown as Parameters<typeof occupationLinesDeclaration.sources>[0],
       { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]);
-    assert.deepEqual(fresh.entries, [], 'All countries waits for the witnessed catalogue, with no numeric stand-in');
+    assert.deepEqual((fresh.entries[0]!.read as { top: { n: unknown } }).top, { n: 'all' }, 'All requests the population before a catalogue loads');
     const keyed = occupationLinesDeclaration.sources({ ...ctx, countries: { tags: ['A07', 'A01'], membership: null, top: null, all: false, every: [] } } as unknown as Parameters<typeof occupationLinesDeclaration.sources>[0],
       { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]);
     assert.deepEqual(keyed.entries.filter(entry => entry.read.shape === 'pixel-binned').map(entry => (entry.read as { headQuery: { coverage?: string } }).headQuery.coverage), ['row', 'row'], 'keyed heads ask row coverage');
@@ -3649,4 +3651,35 @@ describe('time-chart selectedHour pinned day marker', () => {
     const monthAction = timeChartHostAdapter.resolveHitAction!(monthHit, installed, {})!;
     assert.deepEqual(monthAction.target, { kind: 'chart-month', index: 3, hour: displayedHour(500) });
   });
+});
+
+
+it('All requests the server population without numeric limits across every former ceiling, while Top N stays chosen', async () => {
+  const lineKinds = ['air-force-size', 'army-size', 'factories', 'game-score', 'occupation-trend', 'nuclear-arsenal', 'navy-size', 'air-kills-losses', 'equipment-produced', 'naval-losses', 'raid-tally'];
+  const raceKinds = ['air-force-size', 'army-size', 'navy-size', 'game-score', 'occupation-trend', 'world-tension', 'territory', 'casualties'];
+  const entries = [...TIME_CHART_VIEWS.filter(entry => entry.view === 'lines' && lineKinds.includes(entry.kind)), ...BARS_VIEWS.filter(entry => raceKinds.includes(entry.kind) && (entry.view === 'race' || entry.kind === 'casualties'))];
+  assert.equal(entries.length, 20);
+  for (const entry of entries) {
+    const { declaration } = await entry.loadSpec();
+    for (const top of [null, 2]) {
+      const ctx = {
+        track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: '1' },
+        countries: { all: top === null, top, tags: [], every: [], membership: null },
+        widget: { countries: top === null ? { kind: 'all' } : { kind: 'group', group: { type: 'top', count: top }, membership: 'hour' }, time: { mode: 'follow' } },
+        options: { count: 'ic' }, aux: entry.kind === 'army-size' ? { measures: ['manpower'] } : undefined,
+      };
+      const plan = declaration.sources(ctx, { following: true, staticSpan: null });
+      const read = plan.entries[0]?.read;
+      assert.ok(read, entry.kind);
+      assert.deepEqual(read.coverage, top === null ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }, entry.kind);
+      if (read.shape === 'pixel-binned') {
+        assert.deepEqual(read.tags, [], entry.kind);
+        assert.deepEqual(read.top, { n: top ?? 'all' }, entry.kind);
+        if (read.params) assert.equal(read.params.top, top ?? undefined, entry.kind);
+      } else {
+        assert.equal(read.params.top ?? null, top, entry.kind);
+        assert.deepEqual(read.params.countries ?? [], [], entry.kind);
+      }
+    }
+  }
 });

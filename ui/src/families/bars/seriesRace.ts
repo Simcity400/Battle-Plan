@@ -10,8 +10,6 @@ import { knownValue, notRecorded, valueFromRawBigInt, zeroValue, type Value } fr
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
 import { barsLabelText, countryRowPresentation, type BarsDataRow, type CountryRowPresentation, type BarsModel, type BarsSegment } from './model.ts';
 
-const ALL_POPULATION_TOP = 10_000;
-
 export interface SeriesRaceBaseOptions {
   readonly top: number | null;
   readonly all?: boolean;
@@ -50,7 +48,7 @@ export function seriesRaceSelection(ctx: FamilyPlanContext, extra: DeclaredProje
 }
 
 export function seriesRaceSources(ctx: FamilyPlanContext, config: SeriesRaceConfig): SourcePlan {
-  const top = ctx.countries.top ?? (ctx.countries.all ? Math.max(ALL_POPULATION_TOP, ctx.countries.every.length) : null);
+  const top = ctx.countries.top;
   const group = top == null ? groupSelection(ctx.widget.countries) : null;
   const coverage: SourceCoverage = ctx.countries.top != null
     ? { mode: 'population', form: 'top', limit: ctx.countries.top }

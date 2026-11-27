@@ -31,7 +31,7 @@ import {
   partialSpansOf,
   rowsBySelectedKey,
   withinMapOf,
-  chartTagsOf,
+  chartTopOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -62,7 +62,7 @@ const AIR_LEDGER_NOTE = 'Loss totals include corrections.';
 
 export interface AirKillsLossesLinesOptions {
   readonly tags: readonly string[];
-  readonly top: number | null;
+  readonly top: ReturnType<typeof chartTopOf>;
   readonly rankMetric: MilitaryAirMetric;
   readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership: Readonly<Record<string, HourRanges>> | null;
@@ -441,8 +441,8 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
   icon: 'target',
   countries: { mode: 'multi', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
-    const top = ctx.countries.top;
-    const tags = top === null ? chartTagsOf(ctx.countries) : [];
+    const top = chartTopOf(ctx.countries);
+    const tags = top === null ? ctx.countries.tags : [];
     const rankMetric = rankMetricOf(ctx.options.measure);
     const filters = filtersOf(ctx);
     const fromHour = ctx.staticSpan && ctx.widget.time.mode === 'range' ? ctx.staticSpan[0] : undefined;
@@ -477,7 +477,7 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
       read: {
         shape: 'pixel-binned',
         coverage: top !== null
-          ? { mode: 'population', form: 'top', limit: top }
+          ? top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }
           : { mode: 'keyed', keys: tags },
         family: tileFamily(name) as unknown as Readonly<Record<string, unknown>>,
         tags,
@@ -487,7 +487,7 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
       },
     });
     const headCoverage = top !== null
-      ? { mode: 'population' as const, form: 'top' as const, limit: top }
+      ? top === 'all' ? { mode: 'population' as const, form: 'all' as const } : { mode: 'population' as const, form: 'top' as const, limit: top }
       : group
         ? { mode: 'population' as const, form: 'all' as const }
         : { mode: 'keyed' as const, keys: tags };
@@ -531,9 +531,9 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
   },
   projection: airKillsLossesLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
-    const top = ctx.countries.top;
+    const top = chartTopOf(ctx.countries);
     return {
-      tags: top === null ? chartTagsOf(ctx.countries) : [],
+      tags: top === null ? ctx.countries.tags : [],
       top,
       rankMetric: rankMetricOf(ctx.options.measure),
       holders: ctx.countries.holders,

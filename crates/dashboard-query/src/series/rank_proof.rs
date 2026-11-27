@@ -16,13 +16,13 @@ struct Bounds {
 }
 
 impl Bounds {
-    fn proves(&self, winners: usize, n: usize, least: bool) -> bool {
+    fn proves(&self, winners: usize, n: Option<usize>, least: bool) -> bool {
         if self.uncertain || self.winners != winners {
             return false;
         }
         match (self.weakest, self.challenger) {
             (_, None) => true,
-            (Some(winner), Some(challenger)) if winners == n => {
+            (Some(winner), Some(challenger)) if Some(winners) == n => {
                 if least {
                     winner < challenger
                 } else {
@@ -36,7 +36,7 @@ impl Bounds {
 
 struct WinnerSet<'a> {
     slots: &'a [u32],
-    n: usize,
+    n: Option<usize>,
     least: bool,
 }
 
@@ -45,7 +45,7 @@ impl Line<'_, '_> {
         &self,
         at: i32,
         limit: i32,
-        n: usize,
+        n: Option<usize>,
         least: bool,
         winners: &[u32],
         check_cancel: &dyn Fn() -> io::Result<()>,

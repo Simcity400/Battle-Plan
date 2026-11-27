@@ -24,7 +24,7 @@ import {
   branchGapsOf,
   countrySeriesLooks,
   memberAt,
-  chartTagsOf,
+  chartTopOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -49,7 +49,7 @@ const SUCCESS_NOTE = 'Success includes critical success and excludes limited suc
 
 export interface RaidTallyLinesOptions {
   readonly tags: readonly string[];
-  readonly top: number | null;
+  readonly top: ReturnType<typeof chartTopOf>;
   readonly metric: RaidTallyMetric;
   readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership: Readonly<Record<string, HourRanges>> | null;
@@ -570,8 +570,8 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
   icon: 'target',
   countries: { mode: 'multi', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
-    const top = ctx.countries.top;
-    const tags = top === null ? chartTagsOf(ctx.countries) : [];
+    const top = chartTopOf(ctx.countries);
+    const tags = top === null ? ctx.countries.tags : [];
     const metric = raidTallyMetric(ctx.options.metric);
     const owner = `raid-tally:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${metric}`;
     if (top === null && tags.length === 0) {
@@ -588,11 +588,11 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
           read: {
             shape: 'branch-to-hour',
             coverage: top !== null
-              ? { mode: 'population', form: 'top', limit: top }
+              ? top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }
               : { mode: 'keyed', keys: tags },
             product: 'raid-tally',
             followQuery: null,
-            params: { branchId: ctx.branch.id, countries, top, metric },
+            params: { branchId: ctx.branch.id, countries, ...(top === 'all' ? {} : { top }), metric },
             buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
             provenInterval: raidTallyProof,
             dynamicKeys: ['hour'],
@@ -605,7 +605,7 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
           read: {
             shape: 'exact-hover',
             product: 'raid-tally-at',
-            params: { branchId: ctx.branch.id, countries, ...(top !== null ? { top } : {}), metric },
+            params: { branchId: ctx.branch.id, countries, ...(typeof top === 'number' ? { top } : {}), metric },
             validate: validateRaidTallyAt,
           },
         },
@@ -614,9 +614,9 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
   },
   projection: raidTallyLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
-    const top = ctx.countries.top;
+    const top = chartTopOf(ctx.countries);
     return {
-      tags: top === null ? chartTagsOf(ctx.countries) : [],
+      tags: top === null ? ctx.countries.tags : [],
       top,
       metric: raidTallyMetric(ctx.options.metric),
       holders: ctx.countries.holders,

@@ -15,7 +15,7 @@ import type { ChartGap, ChartHoverDetail, ChartLegendEntry, ChartValueFormat, Ti
 import { seriesLookAt } from './model.ts';
 import {
   branchGapsOf,
-  chartTagsOf,
+  chartTopOf,
   countrySeriesLooks,
   auditReading,
   exactHoverByCountry,
@@ -58,7 +58,7 @@ export interface CountryLine {
 
 export interface CountryLinesOptions {
   readonly tags: readonly string[];
-  readonly top: number | null;
+  readonly top: ReturnType<typeof chartTopOf>;
   readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership?: Readonly<Record<string, HourRanges>> | null;
   readonly decimals: number;
@@ -348,8 +348,8 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
     countries: { mode: 'multi', allowSlots: true },
     ...(spec.aux ? { aux: spec.aux } : {}),
     sources(ctx: FamilyPlanContext<TAux>): SourcePlan {
-      const top = ctx.countries.top;
-      const tags = top === null ? chartTagsOf(ctx.countries) : [];
+      const top = chartTopOf(ctx.countries);
+      const tags = top === null ? ctx.countries.tags : [];
       const measure = measureOf(spec.measure(ctx.options, ctx.aux));
       const second = spec.second?.(ctx.options) ?? null;
       const owner = `${spec.kind}:${spec.view}:${ctx.track.source.id}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${measure?.measure ?? ''}:${second?.measure ?? ''}`;
@@ -378,14 +378,14 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         }];
       };
       if (top !== null) {
-        const params = { branchId: ctx.branch.id, family, top };
+        const params = { branchId: ctx.branch.id, family, ...(top === 'all' ? {} : { top }) };
         const ranked: SourceEntry[] = [
           {
             name: 'main',
             ...common,
             read: {
               shape: 'pixel-binned',
-              coverage: { mode: 'population', form: 'top', limit: top },
+              coverage: top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top },
               family,
               tags: [],
               top: { n: top },
@@ -400,7 +400,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
                 ...common,
                 read: {
                   shape: 'pixel-binned' as const,
-                  coverage: { mode: 'population' as const, form: 'top' as const, limit: top },
+                  coverage: top === 'all' ? { mode: 'population' as const, form: 'all' as const } : { mode: 'population' as const, form: 'top' as const, limit: top },
                   family: secondFamily,
                   tags: [],
                   top: { n: top, by: measure.measure },
@@ -466,10 +466,10 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
     },
     projectionOptions(ctx, { extent, surface }) {
       return {
-        tags: ctx.countries.top === null ? chartTagsOf(ctx.countries) : [],
-        top: ctx.countries.top,
+        tags: chartTopOf(ctx.countries) === null ? ctx.countries.tags : [],
+        top: chartTopOf(ctx.countries),
         holders: ctx.countries.holders,
-        membership: ctx.countries.top === null ? ctx.countries.membership : null,
+        membership: chartTopOf(ctx.countries) === null ? ctx.countries.membership : null,
         decimals: measureOf(spec.measure(ctx.options, ctx.aux))?.decimals ?? 0,
         unavailable: (() => {
           const chosen = spec.measure(ctx.options, ctx.aux);

@@ -704,6 +704,10 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub fn rank_at(&self, hour: i32, n: usize, least: bool) -> io::Result<Result<Vec<Country>, String>> {
+        self.population_at(hour, Some(n), least)
+    }
+
+    pub fn population_at(&self, hour: i32, n: Option<usize>, least: bool) -> io::Result<Result<Vec<Country>, String>> {
         self.owners_only("a rank at an hour")?;
         let Some(stretch) = self.query.timeline.at(hour).copied() else {
             return Ok(Err(self.query.timeline.reason(hour)));
@@ -739,7 +743,7 @@ impl<'q, 'a> Line<'q, 'a> {
         owners
     }
 
-    fn rank_rows(&self, view: &replay_columnar::store::TableView<'_>, hour: i32, n: usize, least: bool, ordered: bool, ranked: &mut RankRows<'_>) -> Result<(), String> {
+    fn rank_rows(&self, view: &replay_columnar::store::TableView<'_>, hour: i32, n: Option<usize>, least: bool, ordered: bool, ranked: &mut RankRows<'_>) -> Result<(), String> {
         let drop_zero = !least && self.measure.drops_zeros_in_top();
         let include_absent = self.series.absent_none && !drop_zero;
         ranked.values.clear();
@@ -768,7 +772,7 @@ impl<'q, 'a> Line<'q, 'a> {
         let order = |a: &(i64, RankOwner<'_>), b: &(i64, RankOwner<'_>)| {
             (if least { a.0.cmp(&b.0) } else { b.0.cmp(&a.0) }).then_with(|| a.1.cmp(&b.1))
         };
-        if ranked.values.len() > n {
+        if let Some(n) = n && ranked.values.len() > n {
             ranked.values.select_nth_unstable_by(n, order);
             ranked.values.truncate(n);
         }
@@ -821,7 +825,7 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect())
     }
 
-    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), proof: RankProof<'_>, check_cancel: &dyn Fn() -> io::Result<()>) -> io::Result<(i32, i32)> {
+    pub(crate) fn rank_holds(&self, hour: i32, n: Option<usize>, least: bool, within: (i32, i32), proof: RankProof<'_>, check_cancel: &dyn Fn() -> io::Result<()>) -> io::Result<(i32, i32)> {
         let timeline = &self.query.timeline;
         let lo = within.0.max(timeline.first);
         let hi = within.1.min(timeline.last);

@@ -298,7 +298,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
 
   const needsGroups = isFilter
-    || (isMulti && (widget.countries.kind === 'all' || (policy.requireGroupsWhen ? policy.requireGroupsWhen(widget, options) : widget.countries.kind === 'group')));
+    || (isMulti && (policy.requireGroupsWhen ? policy.requireGroupsWhen(widget, options) : widget.countries.kind === 'group'));
   const fetchGroups = isFilter || (isMulti && (needsGroups || policy.factions || policy.everyOnTop));
   const groups = useCountryGroups(runtime, track, active && fetchGroups);
 
@@ -698,7 +698,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 sourceId: entry.source.id,
                 revision: entry.source.revision,
                 product: 'series-tiles',
-                params: { branchId: entry.branch, family: read.family, binHours, index, ...(readTop ? { top: readTop.n, ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}) } : {}), hour: gated },
+                params: { branchId: entry.branch, family: read.family, binHours, index, ...(readTop ? { ...(readTop.n === 'all' ? {} : { top: readTop.n }), ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}) } : {}), hour: gated },
               });
               return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
             },

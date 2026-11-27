@@ -7,7 +7,6 @@ import { compileFollowPlan, readPlanExact } from '../../families/broker.ts';
 import type { BoundedSeries, FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import { ReadTarget, unitEntries } from '../../families/readUnits.ts';
 import type { AutonomyLevelsReply, AutonomySubject } from '../../generated/dashboard';
-import { territoryRaceDeclaration } from '../territory/territoryRaceProjection.ts';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
 import {
   autonomyLinesDeclaration,
@@ -369,37 +368,5 @@ test('All subjects and selected overlords request the full historical population
       assert.equal('top' in read, false);
       assert.deepEqual('coverage' in read && read.coverage, { mode: 'population', form: 'all' });
     }
-  }
-});
-
-
-test('every former All ceiling requests the entire witnessed catalogue and preserves the chosen Top N', async () => {
-  const kinds = ['air-force-size', 'army-size', 'factories', 'game-score', 'occupation-trend', 'nuclear-arsenal', 'navy-size', 'air-kills-losses', 'equipment-produced', 'naval-losses', 'raid-tally'];
-  const base = makeCtx({ count: 'ic' });
-  const every = ['AAA', 'BBB', 'CCC'];
-  const ctx: FamilyPlanContext = { ...base, countries: { ...base.countries, every } };
-  for (const kind of kinds) {
-    const entry = TIME_CHART_VIEWS.find(view => view.kind === kind && view.view === 'lines')!;
-    const { declaration } = await entry.loadSpec();
-    const context = { ...ctx, widget: { ...ctx.widget, kind }, aux: kind === 'army-size' ? { measures: ['manpower'] } : undefined };
-    for (const top of [null, 2]) {
-      const plan = declaration.sources({ ...context, countries: { ...context.countries, all: top === null, top } }, { following: true, staticSpan: null });
-      const read = plan.entries[0]?.read;
-      assert.ok(read, kind);
-      if (read.shape === 'pixel-binned') {
-        assert.deepEqual(read.tags, top === null ? every : [], kind);
-        assert.deepEqual(read.top, top === null ? undefined : { n: top }, kind);
-      } else {
-        assert.equal(read.shape, 'branch-to-hour', kind);
-        assert.deepEqual(read.params.countries, top === null ? every : [], kind);
-        assert.equal(read.params.top ?? null, top, kind);
-      }
-    }
-  }
-  const race = territoryRaceDeclaration.sources(ctx, { following: true, staticSpan: null }).entries[0]!.read;
-  assert.equal(race.shape, 'point');
-  if (race.shape === 'point') {
-    assert.deepEqual(race.params?.countries, every);
-    assert.equal('top' in race.params!, false);
   }
 });

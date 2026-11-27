@@ -29,7 +29,7 @@ import {
   missingSpansOf,
   partialSpansOf,
   withinMapOf,
-  chartTagsOf,
+  chartTopOf,
   rowsBySelectedKey,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
@@ -54,7 +54,7 @@ const COLOURED = 8;
 
 export interface NavalLossesLinesOptions {
   readonly tags: readonly string[];
-  readonly top: number | null;
+  readonly top: ReturnType<typeof chartTopOf>;
   readonly kind: NavalKind;
   readonly attribution: NavalAttribution;
   readonly period: NavalPeriod;
@@ -364,8 +364,8 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
     const kind = navalKind(ctx.options);
     const attribution = navalAttribution(ctx.options);
     const period = navalPeriod(ctx.options);
-    const top = ctx.countries.top;
-    const tags = top === null ? chartTagsOf(ctx.countries) : [];
+    const top = chartTopOf(ctx.countries);
+    const tags = top === null ? ctx.countries.tags : [];
     const selection = forceSelection(ctx);
     const owner = `naval-losses:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${kind}:${attribution}:${period}`;
     if (selection.none || (top === null && tags.length === 0)) {
@@ -400,7 +400,7 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
         read: {
           shape: 'pixel-binned',
           coverage: top !== null
-            ? { mode: 'population', form: 'top', limit: top }
+            ? top === 'all' ? { mode: 'population', form: 'all' } : { mode: 'population', form: 'top', limit: top }
             : { mode: 'keyed', keys: tags },
           family: tileFamily as unknown as Readonly<Record<string, unknown>>,
           tags,
@@ -446,9 +446,9 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
     const kind = navalKind(ctx.options);
     const attribution = navalAttribution(ctx.options);
     const period = navalPeriod(ctx.options);
-    const top = ctx.countries.top;
+    const top = chartTopOf(ctx.countries);
     return {
-      tags: top === null ? chartTagsOf(ctx.countries) : [],
+      tags: top === null ? ctx.countries.tags : [],
       top,
       kind,
       attribution,
