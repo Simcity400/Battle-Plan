@@ -41,3 +41,7 @@ When playback is paused and a surface is a **dashboard map widget** (`Viewer.das
 
 - A paused, untouched dashboard page draws zero map frames once loading and finite transitions settle.
 - On a paused dashboard map widget, water, rivers, trains, convoys and animated models stand still as a deliberate visual departure from the game until the user plays again; the full map page keeps them moving.
+
+## Picture comparisons
+
+Two exports of the same settled, paused map frame on one device differed by one red level at one pixel. The submitted buffer hashes and ordered draw lists matched, including pipelines, bound resources and instance ranges. The [acceptance picture comparator](../../ui/e2e/compare.mjs) therefore accepts a difference of at most one level per RGBA channel in a native map export when every neighbouring pixel, including diagonals, matches. It reports how many pixels it tolerated. Larger changes and connected regions fail the comparison.

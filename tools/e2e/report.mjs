@@ -518,8 +518,9 @@ if (sweep) {
     visualRows.push({ pass: false, cells: ['–', '–', verdict(false), `the accepted baseline is of another fixture (${accepted.fixture?.name ?? 'unknown'}), not ${run.fixture?.name}: review visual/ and accept a new one`, ''] });
   else if (!accepted) visualRows.push({ pass: false, cells: ['–', '–', verdict(false), `no accepted baseline: review visual/ and accept it with \`python tools/e2e/suite.py accept --run "${files.out}"${files.baseline ? ` --state "${path.dirname(files.baseline)}"` : ''} --reason "…"\``, ''] });
   else {
-    const comparison = await compareCaptures(files.baseline, head, { diffDirectory: path.join(head, 'diff') });
-    visualNote = `Baseline accepted ${accepted.acceptedAt} from main ${String(accepted.commit ?? '?').slice(0, 10)} (${accepted.run}): ${accepted.reason}. ${comparison.counts.PASS} same, ${comparison.counts.DIFF} different, ${comparison.counts.ERROR} errors.`;
+    const comparison = await compareCaptures(files.baseline, head, { diffDirectory: path.join(head, 'diff'), tolerateMapPictures: true });
+    const toleratedPixels = comparison.results.reduce((total, result) => total + (result.toleratedPixels ?? 0), 0);
+    visualNote = `Baseline accepted ${accepted.acceptedAt} from main ${String(accepted.commit ?? '?').slice(0, 10)} (${accepted.run}): ${accepted.reason}. ${comparison.counts.PASS} passed, ${comparison.counts.DIFF} different, ${comparison.counts.ERROR} errors. ${toleratedPixels} isolated map pixel${toleratedPixels === 1 ? '' : 's'} tolerated.`;
     for (const result of comparison.results.filter(result => result.status !== 'PASS'))
       visualRows.push({ pass: false, cells: [result.caseId ?? result.kind, result.kind, verdict(false), why([result.reason ?? result.status]), result.diff ? `[diff](visual/diff/${result.diff})` : ''] });
   }

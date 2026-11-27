@@ -36,11 +36,38 @@ function canonicalLists(lists) {
   });
 }
 
-export function diffImage(base, head) {
+function mapPictureTolerance(base, head) {
+  const { width, height } = head;
+  const differences = new Uint8Array(width * height);
+  let changed = 0, toleratedPixels = 0;
+  for (let pixel = 0; pixel < differences.length; pixel++) {
+    const index = pixel * 4;
+    for (let channel = index; channel < index + 4; channel++)
+      differences[pixel] = Math.max(differences[pixel], Math.abs(base.data[channel] - head.data[channel]));
+    if (differences[pixel]) changed++;
+  }
+  for (let pixel = 0; pixel < differences.length; pixel++) {
+    if (differences[pixel] !== 1) continue;
+    const x = pixel % width, y = Math.floor(pixel / width);
+    let isolated = true;
+    for (let row = Math.max(0, y - 1); row <= Math.min(height - 1, y + 1); row++) {
+      for (let col = Math.max(0, x - 1); col <= Math.min(width - 1, x + 1); col++) {
+        const neighbour = row * width + col;
+        if (neighbour !== pixel && differences[neighbour]) isolated = false;
+      }
+    }
+    if (!isolated) continue;
+    differences[pixel] = 0;
+    toleratedPixels++;
+  }
+  return { differences, changed: changed - toleratedPixels, toleratedPixels };
+}
+
+export function diffImage(base, head, differences = null) {
   const out = new PNG({ width: head.width, height: head.height });
   let changed = 0;
   for (let index = 0; index < head.data.length; index += 4) {
-    const same = base.data[index] === head.data[index] && base.data[index + 1] === head.data[index + 1]
+    const same = differences ? differences[index / 4] === 0 : base.data[index] === head.data[index] && base.data[index + 1] === head.data[index + 1]
       && base.data[index + 2] === head.data[index + 2] && base.data[index + 3] === head.data[index + 3];
     if (!same) changed++;
     out.data[index] = same ? head.data[index] >> 2 : 255;
@@ -51,7 +78,7 @@ export function diffImage(base, head) {
   return { png: PNG.sync.write(out), changed };
 }
 
-export async function compareCaptures(baseDirectory, headDirectory, { diffDirectory = null } = {}) {
+export async function compareCaptures(baseDirectory, headDirectory, { diffDirectory = null, tolerateMapPictures = false } = {}) {
   const base = await readJSON(path.join(baseDirectory, 'manifest.json'));
   const head = await readJSON(path.join(headDirectory, 'manifest.json'));
   const identity = item => item.caseId ?? item.kind;
@@ -60,7 +87,7 @@ export async function compareCaptures(baseDirectory, headDirectory, { diffDirect
   const kinds = new Set([...base.items.map(identity), ...head.items.map(identity)]);
   const results = [];
   for (const key of kinds) {
-    let status = 'ERROR', reason, diff;
+    let status = 'ERROR', reason, diff, toleratedPixels;
     const a = base.items.find(item => identity(item) === key), b = head.items.find(item => identity(item) === key);
     const kind = a?.kind ?? b?.kind;
     try {
@@ -73,22 +100,26 @@ export async function compareCaptures(baseDirectory, headDirectory, { diffDirect
       }
       const pixels = await Promise.all([baseDirectory, headDirectory].map(async (dir, index) =>
         PNG.sync.read(await readFile(path.join(dir, [a, b][index].screenshot)))));
-      const samePixels = pixels[0].width === pixels[1].width && pixels[0].height === pixels[1].height && pixels[0].data.equals(pixels[1].data);
+      const sameSize = pixels[0].width === pixels[1].width && pixels[0].height === pixels[1].height;
+      const exact = sameSize && pixels[0].data.equals(pixels[1].data);
+      const tolerance = tolerateMapPictures && sameSize && !exact && kind === 'map' ? mapPictureTolerance(...pixels) : null;
+      if (tolerateMapPictures && sameSize && kind === 'map') toleratedPixels = tolerance?.toleratedPixels ?? 0;
+      const samePixels = exact || tolerance?.changed === 0;
       const models = [a, b].map(capture => ({ ...capture.model, lists: canonicalLists(capture.model.lists) }));
       const sameModel = JSON.stringify(models[0]) === JSON.stringify(models[1]);
       status = samePixels && sameModel ? 'PASS' : 'DIFF';
       if (status === 'DIFF') reason = `view-model=${sameModel ? 'same' : 'different'}, pixels=${samePixels ? 'same' : 'different'}`;
-      const sameSize = pixels[0].width === pixels[1].width && pixels[0].height === pixels[1].height;
       if (status === 'DIFF' && !samePixels && !sameSize) reason += `, size ${pixels[0].width}x${pixels[0].height} became ${pixels[1].width}x${pixels[1].height}`;
       if (diffDirectory && !samePixels && sameSize) {
-        const { png, changed } = diffImage(pixels[0], pixels[1]);
+        const { png, changed } = diffImage(...pixels, tolerance?.differences);
         diff = `${String(key).replace(/[^\w.-]+/g, '_')}.diff.png`;
         await mkdir(diffDirectory, { recursive: true });
         await writeFile(path.join(diffDirectory, diff), png);
         reason += `, ${changed} pixels differ`;
       }
+      if (toleratedPixels) reason = [reason, `${toleratedPixels} isolated map pixel${toleratedPixels === 1 ? '' : 's'} tolerated`].filter(Boolean).join(', ');
     } catch (error) { reason = String(error); }
-    results.push({ kind, ...(a?.caseId || b?.caseId ? { caseId: key } : {}), status, ...(reason ? { reason } : {}), ...(diff ? { diff } : {}) });
+    results.push({ kind, ...(a?.caseId || b?.caseId ? { caseId: key } : {}), status, ...(reason ? { reason } : {}), ...(diff ? { diff } : {}), ...(toleratedPixels === undefined ? {} : { toleratedPixels }) });
   }
   const counts = Object.fromEntries(['PASS', 'DIFF', 'ERROR'].map(status => [status, results.filter(result => result.status === status).length]));
   return { pass: base.complete && head.complete && kinds.size > 0 && counts.PASS === kinds.size, counts, results };
