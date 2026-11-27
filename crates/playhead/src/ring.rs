@@ -1,5 +1,5 @@
 
-use crate::{changes::Changes, playhead::Reader, step::Step};
+use crate::{changes::Changes, playhead::Reader, step::{Rebuilt, Step}};
 use replay_data::Hour;
 use std::{collections::VecDeque, sync::Arc};
 
@@ -260,10 +260,16 @@ impl Ring {
         self.trim();
     }
 
-    pub(crate) fn forget(&mut self, reader: Reader) {
-        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.orphans).into_iter().partition(|(held, _, _)| *held == reader);
+    pub(crate) fn forget(&mut self, readers: &[Reader]) -> Vec<Rebuilt> {
+        let mut states = Vec::new();
+        for step in self.steps() {
+            let mut held = step.states.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            states.extend(held.extract_if(.., |state| readers.contains(&state.reader)));
+        }
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.orphans).into_iter().partition(|(held, _, _)| readers.contains(held));
         self.orphans = kept;
         retire(&mut self.lent, self.budget.is_none(), gone.into_iter().map(|(_, _, step)| step));
+        states
     }
 
     pub(crate) fn lands_itself(&mut self, id: usize) {

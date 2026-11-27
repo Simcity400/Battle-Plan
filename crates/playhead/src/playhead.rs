@@ -536,6 +536,7 @@ struct Control {
     seek: Option<(Hour, u64)>,
     asked: Option<Instant>,
     readers: BTreeMap<Reader, Declaration>,
+    retired_readers: Vec<Reader>,
     next_reader: u64,
     selection: u64,
     hook_requested: bool,
@@ -1203,6 +1204,7 @@ impl Playhead {
                 hook_requested: false,
                 seed_paused: false,
                 lands: Vec::new(),
+                retired_readers: Vec::new(),
                 done: Vec::new(),
                 newest: None,
                 published_steps: 0,
@@ -1349,9 +1351,9 @@ impl Playhead {
     }
 
     pub fn retire(&self, reader: Reader) {
-        lock(&self.shared.ring).forget(reader);
         self.shared.nudge(|control| {
             if control.readers.remove(&reader).is_some() {
+                control.retired_readers.push(reader);
                 control.selection += 1;
                 control.caught_up_at = None;
             }
@@ -2096,7 +2098,7 @@ impl Stepper {
         let mut seen = u64::MAX;
         let mut idle = false;
         loop {
-            let (seek, done, readers, lands) = {
+            let (seek, done, readers, lands, retired) = {
                 let mut control = lock(&self.shared.control);
                 if idle {
                     let started = Instant::now();
@@ -2120,8 +2122,14 @@ impl Stepper {
                     control.readers.iter().map(|(&reader, declaration)| (reader, declaration.clone())).collect::<Vec<_>>()
                 });
                 let seek = control.seek.take().map(|(hour, epoch)| (hour, epoch, control.asked.take().unwrap_or_else(Instant::now)));
-                (seek, std::mem::take(&mut control.done), readers, std::mem::take(&mut control.lands))
+                (seek, std::mem::take(&mut control.done), readers, std::mem::take(&mut control.lands), std::mem::take(&mut control.retired_readers))
             };
+            if !retired.is_empty() {
+                let states = lock(&self.shared.ring).forget(&retired);
+                if !states.is_empty() {
+                    self.shared.free(states);
+                }
+            }
             if self.failed {
                 if seek.is_none() {
                     if let Some(readers) = readers {

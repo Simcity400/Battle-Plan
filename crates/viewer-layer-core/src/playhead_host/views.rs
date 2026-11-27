@@ -799,7 +799,6 @@ struct Record {
 pub struct Store {
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
-    order: Vec<(u128, u32)>,
     record: Record,
 }
 
@@ -827,7 +826,7 @@ impl Store {
             #[cfg(test)]
             chosen: Mutex::default(),
         };
-        Self { shared: Arc::new(shared), threads: Vec::new(), order: Vec::new(), record: Record::default() }
+        Self { shared: Arc::new(shared), threads: Vec::new(), record: Record::default() }
     }
 
     pub fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
@@ -977,8 +976,9 @@ impl Store {
     }
 
     fn wait_made(&mut self, release: bool) {
+        let mut order = Vec::new();
         loop {
-            if make_next(&self.shared, &mut self.order) {
+            if make_next(&self.shared, &mut order) {
                 continue;
             }
             let mut jobs = lock(&self.shared.jobs);
@@ -1422,9 +1422,11 @@ fn make_next(shared: &Shared, order: &mut Vec<(u128, u32)>) -> bool {
 }
 
 fn make_views(shared: &Shared) {
-    let mut order: Vec<(u128, u32)> = Vec::new();
     loop {
-        while make_next(shared, &mut order) {}
+        {
+            let mut order = Vec::new();
+            while make_next(shared, &mut order) {}
+        }
         let mut jobs = lock(&shared.jobs);
         while !jobs.stop && jobs.next == jobs.queue.len() {
             jobs = shared.work.wait(jobs).unwrap_or_else(std::sync::PoisonError::into_inner);
