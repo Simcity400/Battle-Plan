@@ -79,7 +79,7 @@ mod entity_links;
 pub use entity_links::{EntityKind, Span, spans};
 pub(crate) const DEPENDENT_OPTION_TOOLTIP_TOKEN: u32 = 0x3FF4;
 mod events;
-pub use events::decision_name_key_at;
+pub use events::{DecisionNameKeys, decision_name_key_at};
 mod lists;
 mod modifiers;
 mod numeric;

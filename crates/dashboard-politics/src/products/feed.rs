@@ -468,9 +468,9 @@ pub(crate) fn resolve_content(source: &Source, context: &LoadContext) -> Result<
     context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|reason| reason.to_string())
 }
 
-pub(crate) fn content_from(resolved: &Result<Arc<Catalogue>, String>, notices: &mut Notices) -> Option<Arc<Catalogue>> {
+pub(crate) fn content_from<'a>(resolved: &'a Result<Arc<Catalogue>, String>, notices: &mut Notices) -> Option<&'a Arc<Catalogue>> {
     match resolved {
-        Ok(catalogue) => Some(Arc::clone(catalogue)),
+        Ok(catalogue) => Some(catalogue),
         Err(reason) => {
             notices.unavailable("contentStack", "Recorded content stack", reason.clone(), Some(1));
             None

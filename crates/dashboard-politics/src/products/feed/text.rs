@@ -1,17 +1,20 @@
 
 use super::{EventFeedGap, EventFeedGapField, EventFeedItem, EventFeedKind, EventFeedOption, EventFeedUnavailable, row::FeedEvent, row::Slot};
 use dashboard_base::{catalogue::{self, Catalogue}, products::artwork};
-use dashboard_effects::{ScriptedEffects, effect_description};
-use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ExpandedText, Link, SCRIPTED_GAP, ScopeName, ScriptedText, expand_dates_in};
+use dashboard_effects::{ScriptedEffects, effect_description::{self, DecisionNameKeys}};
+use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ExpandedText, Link, SCRIPTED_GAP, ScopeName, ScriptedContent, ScriptedText, expand_dates_in};
+use content_reader_events::events::Event;
 use content_reader_layers::content::diagnostics::Diagnostics;
+use content_reader_politics::decisions::Decision;
 use dashboard_query::Query;
 use replay_lanes::{at::Read, dated::Dated, lanes::Keys};
 use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{CountryAppearanceRow, CountryRow, PoliticalPartyRow, PoliticsRow, ReservedCountryNamingRow, StateRow, TableId, mask, tables};
-use replay_frame::frame::{DecodedFrame, HourFrame, Metrics, SharedView, TableView, discovering_fields, not_selected};
+use replay_frame::frame::{DecodedFrame, Discovery, HourFrame, Metrics, SharedView, TableView, discovering_fields, not_selected};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap},
+    hash::Hash,
     io,
     rc::Rc,
     sync::{Arc, Mutex, PoisonError},
@@ -31,17 +34,24 @@ pub(super) const NAMING: [TableId; 9] = [
 
 #[derive(Clone, Default)]
 pub(crate) struct Notices {
+    discard: bool,
     list: Vec<EventFeedUnavailable>,
     keys: HashMap<(String, String, Option<String>, bool), (usize, Vec<String>)>,
 }
 
 impl Notices {
+    pub(super) fn discarded() -> Self {
+        Self { discard: true, ..Self::default() }
+    }
+
     pub fn unavailable(&mut self, kind: &str, label: &str, reason: impl Into<String>, count: Option<u32>) {
+        if self.discard { return; }
         let reason = reason.into();
         self.merge((kind.to_owned(), label.to_owned(), Some(reason.clone()), count.is_some()), reason, count, Vec::new());
     }
 
     pub fn sampled(&mut self, kind: &str, label: &str, reason: impl Into<String>, count: u32) {
+        if self.discard { return; }
         let reason: String = reason.into().chars().take(240).collect();
         self.merge((kind.to_owned(), label.to_owned(), None, true), reason.clone(), Some(count), vec![reason]);
     }
@@ -116,12 +126,14 @@ impl<'f> Links<'f> {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct DecisionTarget {
     country: Option<u32>,
     numeric: Option<i32>,
     slot: Option<u32>,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct ScopeInput {
     reference: u32,
     attempted: bool,
@@ -399,11 +411,36 @@ fn presents_event(kind: EventFeedKind) -> bool {
 
 pub(crate) struct Presenter<'q> {
     query: &'q Query<'q>,
-    catalogue: Option<Arc<Catalogue>>,
+    catalogue: Option<&'q Arc<Catalogue>>,
     frames: RefCell<Frames>,
     kept: Arc<Mutex<KeptNaming>>,
     effects: bool,
-    artwork: bool,
+    index: Option<IndexNames<'q>>,
+}
+
+type Held<K, V> = RefCell<HashMap<K, V>>;
+type DecisionDefinition<'a> = (&'a ScriptedContent, &'a Decision);
+type EventDefinition = (Arc<Event>, Result<Option<Arc<[u8]>>, String>);
+type HeldExpansion = (Result<ExpandedText, String>, Vec<(TableId, Option<u64>)>);
+type ScopedName = (String, String, i32, Option<u32>, Box<[TableId]>, NamingScope);
+
+#[derive(PartialEq, Eq, Hash)]
+enum NamingScope {
+    Decision(Option<DecisionTarget>),
+    Event(bool, Vec<ScopeInput>),
+}
+
+#[derive(Default)]
+struct IndexNames<'a> {
+    decisions: Held<String, Result<DecisionDefinition<'a>, String>>,
+    events: Held<String, Result<EventDefinition, String>>,
+    decision_keys: Held<String, DecisionNameKeys>,
+    localisation: Held<(String, String), Option<Arc<str>>>,
+    scoped: Held<ScopedName, HeldExpansion>,
+}
+
+fn remember<K: Eq + Hash, V: Clone>(held: &Held<K, V>, key: K, load: impl FnOnce() -> V) -> V {
+    held.borrow_mut().entry(key).or_insert_with(load).clone()
 }
 
 const HELD: [(TableId, u64); 8] = [
@@ -494,14 +531,29 @@ pub(crate) struct KeptNaming {
     drawn: Option<(Arc<Catalogue>, HashMap<(String, String), Arc<std::sync::OnceLock<(catalogue::Drawn<Result<String, String>>, Diagnostics)>>>)>,
 }
 
-pub(super) struct Art<'a> {
-    catalogue: &'a Arc<Catalogue>,
+struct Art<'a, 'q> {
+    catalogue: &'q Arc<Catalogue>,
     kept: &'a Mutex<KeptNaming>,
     effects: bool,
-    artwork: bool,
+    index: Option<&'a IndexNames<'q>>,
+    exact: &'a [TableId],
 }
 
-impl Art<'_> {
+impl Art<'_, '_> {
+    fn localised(&self, token: &str, key: &str) -> Option<String> {
+        let load = || self.catalogue.localised(key, catalogue::View::Plain);
+        self.index.map_or_else(load, |index| remember(&index.localisation, (token.to_owned(), key.to_owned()), || load().map(Arc::from)).map(|text| text.to_string()))
+    }
+
+    fn expand(&self, token: &str, key: &str, inputs: &Inputs, decision: bool, expand: impl FnOnce() -> Result<ExpandedText, String>) -> Result<ExpandedText, String> {
+        let Some(index) = self.index else { return expand() };
+        let scope = if decision { NamingScope::Decision(inputs.target.clone()) } else { NamingScope::Event(inputs.missing, inputs.scopes.clone()) };
+        let key = (token.to_owned(), key.to_owned(), inputs.hour, inputs.actor_slot, self.exact.into(), scope);
+        let (expanded, missed) = remember(&index.scoped, key, || Discovery::current().run(expand));
+        Discovery::credit(missed);
+        expanded
+    }
+
     fn drawn(&self, key: (&str, &str), draw: impl FnOnce() -> catalogue::Drawn<Result<String, String>>) -> Result<String, String> {
         let once = {
             let mut held = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
@@ -544,24 +596,24 @@ struct Frames {
 }
 
 impl<'q> Presenter<'q> {
-    pub fn new(query: &'q Query<'q>, catalogue: Option<Arc<Catalogue>>, kept: Arc<Mutex<KeptNaming>>) -> Self {
-        Self { query, catalogue, frames: RefCell::default(), kept, effects: true, artwork: true }
+    pub fn new(query: &'q Query<'q>, catalogue: Option<&'q Arc<Catalogue>>, kept: Arc<Mutex<KeptNaming>>) -> Self {
+        Self { query, catalogue, frames: RefCell::default(), kept, effects: true, index: None }
     }
 
     pub fn without_effects(self) -> Self {
         Self { effects: false, ..self }
     }
 
-    pub(super) fn without_artwork(self) -> Self {
-        Self { artwork: false, ..self }
+    pub(super) fn for_index(self) -> Self {
+        Self { effects: false, index: Some(IndexNames::default()), ..self }
     }
 
     pub fn catalogue(&self) -> Option<&Catalogue> {
-        self.catalogue.as_deref()
+        self.catalogue.map(Arc::as_ref)
     }
 
     pub fn content(&self) -> Option<&Arc<Catalogue>> {
-        self.catalogue.as_ref()
+        self.catalogue
     }
 
     pub fn effects(&self) -> bool {
@@ -623,27 +675,27 @@ impl<'q> Presenter<'q> {
     }
 
     pub fn picture(&self, token: &str, key: &str, notices: &mut Notices) -> Option<String> {
-        draw_picture(notices, &Art { catalogue: self.catalogue.as_ref()?, kept: &self.kept, effects: self.effects, artwork: self.artwork }, token, key)
+        draw_picture(notices, &Art { catalogue: self.catalogue?, kept: &self.kept, effects: self.effects, index: self.index.as_ref(), exact: &[] }, token, key)
     }
 
     pub fn item(&self, event: &FeedEvent, kind: EventFeedKind, token: Option<String>, notices: &mut Notices) -> io::Result<EventFeedItem> {
         let mut item = EventFeedItem { token, ..Default::default() };
-        let Some(shown) = self.catalogue.as_ref() else {
+        let Some(shown) = self.catalogue else {
             item.name_missing = Some("the recorded content stack could not be read".into());
             return Ok(item);
         };
-        let present = |frame: Result<&DecodedFrame, String>, notices: &mut Notices| -> io::Result<EventFeedItem> {
+        let present = |frame: Result<&DecodedFrame, String>, notices: &mut Notices, exact: &[TableId]| -> io::Result<EventFeedItem> {
             let mut item = item.clone();
             let inputs = Inputs::of(event, frame.as_ref().ok().copied());
-            presentation(notices, &Art { catalogue: shown, kept: &self.kept, effects: self.effects, artwork: self.artwork }, kind, &mut item, &inputs, frame.map(HourFrame::from))?;
+            presentation(notices, &Art { catalogue: shown, kept: &self.kept, effects: self.effects, index: self.index.as_ref(), exact }, kind, &mut item, &inputs, frame.map(HourFrame::from))?;
             Ok(item)
         };
         let dated = match self.frame(event.hour)? {
             Ok(dated) => dated,
-            Err(why) => return present(Err(why), notices),
+            Err(why) => return present(Err(why), notices, &[]),
         };
         let before = notices.clone();
-        let (presented, missed) = discovering_fields(|| present(Ok(&dated), notices));
+        let (presented, missed) = discovering_fields(|| present(Ok(&dated), notices, &[]));
         let mut missed: Vec<TableId> = missed.into_iter().map(|(table, _)| table).filter(|table| NAMING.contains(table)).collect();
         missed.sort_unstable();
         missed.dedup();
@@ -651,16 +703,17 @@ impl<'q> Presenter<'q> {
             return presented;
         }
         *notices = before;
-        present(Ok(&self.exact(&dated, &missed)?), notices)
+        present(Ok(&self.exact(&dated, &missed)?), notices, &missed)
     }
 }
 
-fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item: &mut EventFeedItem, inputs: &Inputs, frame: Result<HourFrame<'_>, String>) -> io::Result<()> {
+fn presentation(notices: &mut Notices, art: &Art<'_, '_>, kind: EventFeedKind, item: &mut EventFeedItem, inputs: &Inputs, frame: Result<HourFrame<'_>, String>) -> io::Result<()> {
     let catalogue: &Catalogue = art.catalogue;
+    let indexing = art.index.is_some();
     if !presents_event(kind) {
         if names_decision(kind) {
             let token = item.token.clone().unwrap_or_else(|| "unidentified decision".to_owned());
-            match frame.clone().and_then(|frame| decision_title(catalogue, inputs, frame, &token)) {
+            match frame.clone().and_then(|frame| decision_title(art, inputs, frame, &token)) {
                 Ok(expanded) => {
                     item.name = Some(expanded.text);
                     for gap in expanded.gaps {
@@ -673,7 +726,7 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
                     item.name_missing = Some(reason);
                 }
             }
-            if art.artwork {
+            if !indexing {
                 let icon = art.drawn(("decision", &token), || catalogue::draw(|| format!("decision {token} icon"), catalogue, |catalogue| decision_icon(catalogue, &token)));
                 match icon {
                     Ok(url) => item.icon = Some(url),
@@ -687,10 +740,14 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
         item.name_missing = Some("the event's identity was not recorded".into());
         return Ok(());
     };
-    let events = script_events(catalogue);
-    let event = match events.get(token.as_bytes()) {
-        Ok(event) if event.refused.is_none() => event,
-        Ok(event) => {
+    let lookup = || {
+        let event = script_events(catalogue).get(token.as_bytes())?;
+        let title = if event.refused.is_none() { event.sole_title_key().map(|key| key.map(Arc::from)) } else { Ok(None) };
+        Ok((event, title))
+    };
+    let (event, title) = match art.index.map_or_else(lookup, |index| remember(&index.events, token.clone(), lookup)) {
+        Ok((event, title)) if event.refused.is_none() => (event, title),
+        Ok((event, _)) => {
             let reason = event.refused.clone().unwrap_or_default();
             item.name_missing = Some(reason.clone());
             notices.unavailable("scriptEventContent", "Event content", reason, Some(1));
@@ -704,11 +761,11 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
     };
     let localise = |key: &[u8]| -> Result<(String, ExpandedText), String> {
         let key = std::str::from_utf8(key).map_err(|_| format!("Event {token} localisation key is not UTF-8"))?;
-        let text = catalogue.localised(key, catalogue::View::Plain).ok_or_else(|| format!("Event {token}: {key} needs unavailable historical localisation operands"))?;
+        let text = art.localised(&token, key).ok_or_else(|| format!("Event {token}: {key} needs unavailable historical localisation operands"))?;
         if !text.contains('[') {
             return Ok((key.to_owned(), ExpandedText { text, gaps: Vec::new() }));
         }
-        let expanded = scoped_text(catalogue, inputs, frame.clone(), key)?;
+        let expanded = art.expand(&token, key, inputs, false, || scoped_text(catalogue, inputs, frame.clone(), key))?;
         Ok((key.to_owned(), expanded))
     };
     let record_gaps = |notices: &mut Notices, item: &mut EventFeedItem, key: &str, field: EventFeedGapField, ordinal: Option<u32>, gaps: Vec<dashboard_text::scripted_text::ScriptedGap>| {
@@ -717,10 +774,9 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
             item.gaps.push(EventFeedGap { field, ordinal, key: gap.key, reason: gap.reason });
         }
     };
-    for (field, gap_field, keys) in [
-        ("title", EventFeedGapField::Title, event.sole_title_key()),
-        ("body", EventFeedGapField::Description, event.sole_description_key()),
-    ] {
+    let title = ("title", EventFeedGapField::Title, title.as_ref().map(|key| key.as_deref()).map_err(Clone::clone));
+    let description = (!indexing).then(|| ("body", EventFeedGapField::Description, event.sole_description_key()));
+    for (field, gap_field, keys) in std::iter::once(title).chain(description) {
         match keys.and_then(|key| key.map(&localise).transpose()) {
             Ok(Some((key, expanded))) if field == "title" => {
                 item.name = Some(expanded.text);
@@ -740,16 +796,18 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
             }
         }
     }
-    if event.picture.is_empty() {
+    if !indexing && event.picture.is_empty() {
         notices.unavailable("scriptEventPicture", "Event picture", format!("Event {token}: default picture selection has no recorded presentation result"), Some(1));
-    } else if let Ok(picture) = std::str::from_utf8(&event.picture) {
+    } else if !indexing && let Ok(picture) = std::str::from_utf8(&event.picture) {
         item.icon = draw_picture(notices, art, &token, picture);
-    } else {
+    } else if !indexing {
         notices.unavailable("scriptEventPicture", "Event picture", format!("Event {token}: picture key is not UTF-8"), Some(1));
     }
     let mut options = Vec::new();
     let mut authored = Vec::new();
-    for (ordinal, name) in event.option_names.iter().enumerate() {
+    let selected = inputs.option.and_then(|ordinal| usize::try_from(ordinal).ok());
+    let (skip, take) = if indexing { (selected.unwrap_or(event.option_names.len()), 1) } else { (0, event.option_names.len()) };
+    for (ordinal, name) in event.option_names.iter().enumerate().skip(skip).take(take) {
         let ordinal_u32 = u32::try_from(ordinal).map_err(|_| io::Error::other("Too many authored event options"))?;
         let resolved = localise(name);
         let display = match resolved {
@@ -765,6 +823,7 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
                 String::from_utf8_lossy(name).into_owned()
             }
         };
+        if indexing { continue; }
         options.push(format!("{ordinal}: {display}"));
         for trigger in event.option_triggers.get(ordinal).into_iter().flatten() {
             let key = trigger.key.as_deref().map(String::from_utf8_lossy).unwrap_or_default();
@@ -792,8 +851,8 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
     if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) }
 }
 
-fn draw_picture(notices: &mut Notices, art: &Art<'_>, token: &str, picture: &str) -> Option<String> {
-    if !art.artwork {
+fn draw_picture(notices: &mut Notices, art: &Art<'_, '_>, token: &str, picture: &str) -> Option<String> {
+    if art.index.is_some() {
         return None;
     }
     let catalogue: &Catalogue = art.catalogue;
@@ -832,21 +891,34 @@ fn scoped_text(catalogue: &Catalogue, inputs: &Inputs, frame: Result<HourFrame<'
     Ok(ExpandedText { text, gaps: expanded.gaps })
 }
 
-fn decision_title(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, token: &str) -> Result<ExpandedText, String> {
+fn decision_definition<'a>(catalogue: &'a Catalogue, token: &str) -> Result<DecisionDefinition<'a>, String> {
     let content = catalogue.scripted_content()?;
     let effects = content.effects()?;
     let decisions = effects.view(None).decisions.ok_or("decision database is unavailable from the recorded content stack")?;
     let definition = decisions.decision(token.as_bytes())?.ok_or_else(|| format!("decision {token} is absent from recorded content"))?;
+    Ok((content, definition))
+}
+
+fn decision_title(art: &Art<'_, '_>, inputs: &Inputs, frame: HourFrame<'_>, token: &str) -> Result<ExpandedText, String> {
+    let catalogue = art.catalogue;
+    let lookup = || decision_definition(catalogue, token);
+    let (content, definition) = art.index.map_or_else(lookup, |index| remember(&index.decisions, token.to_owned(), lookup))?;
     if let Some(reason) = &definition.refused {
         return Err(reason.clone());
     }
     let owner = inputs.actor_slot.ok_or("decision owner has no exact occurrence-hour canonical slot")?;
     let text = ScriptedText::new_in(frame, &catalogue.localisation, content, owner);
-    let key = effect_description::decision_name_key_at(frame, text.recorded(), &catalogue.localisation, definition, owner, text.country_tag(owner)?)?;
-    let name = catalogue.localised(&key, catalogue::View::Plain).ok_or_else(|| format!("decision title {key} is absent from recorded content"))?;
+    let mut keys = art.index.map(|index| index.decision_keys.borrow_mut());
+    let held = keys.as_mut().map(|keys| keys.entry(token.to_owned()).or_default());
+    let key = effect_description::decision_name_key_at(frame, text.recorded(), &catalogue.localisation, definition, owner, text.country_tag(owner)?, held)?;
+    let name = art.localised(token, &key).ok_or_else(|| format!("decision title {key} is absent from recorded content"))?;
     if !name.contains('[') {
         return Ok(ExpandedText { text: name, gaps: Vec::new() });
     }
+    art.expand(token, &key, inputs, true, || expand_decision_title(catalogue, inputs, &text, definition, owner, &key))
+}
+
+fn expand_decision_title(catalogue: &Catalogue, inputs: &Inputs, text: &ScriptedText<'_>, definition: &Decision, owner: u32, key: &str) -> Result<ExpandedText, String> {
     let raw = catalogue.localisation.localise(key.as_bytes()).map_err(|why| why.to_string())?;
     let state_selection_reason = match definition.name_selects_state(|body| text.trigger_world()?.has_children(body)) {
         Ok(true) => Some("it names a highlighted state the recording does not hold".to_owned()),
