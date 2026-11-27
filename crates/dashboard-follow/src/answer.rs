@@ -408,7 +408,13 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     }
     let mut out = Vec::with_capacity(older.len() + newer.len());
     begin(&mut out, new.route, new.stamp.1, new.hour, new.stamp.0, old.reset || new.reset);
-    for &(id, through) in &new.limited { push(&mut out, id, through, &[]); }
+    for &(id, mut through) in &new.limited {
+        if !new.reset && !new.answers.iter().any(|&(answered, ..)| answered == id) {
+            let earlier = old.limited.iter().rev().find(|&&(limited, _)| limited == id).map_or(old.hour, |&(_, hour)| hour);
+            through = through.max(earlier);
+        }
+        push(&mut out, id, through, &[]);
+    }
     let mut superseded = 0;
     let is_log = |body: &[u8]| body.first() == Some(&LOG);
     let laid = |earlier: &[u8], later: &[u8]| later.first() == Some(&CHANGED) && matches!(earlier.first(), Some(&ROWS | &CHANGED));

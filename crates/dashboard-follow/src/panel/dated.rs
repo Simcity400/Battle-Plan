@@ -236,7 +236,15 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     for r in records(older)?.into_iter().chain(records(newer)?) {
         count += 1;
         match r.kind {
-            DATA | REFUSED | STOPPED | STANDS | WAITING | AGAIN => panels.entry(r.id).or_default().push(r),
+            DATA | REFUSED | STOPPED | STANDS | WAITING | AGAIN => {
+                let panel = panels.entry(r.id).or_default();
+                if r.kind == WAITING && (panel.tail.is_some_and(|tail| tail.kind == STANDS)
+                    || completed.is_some_and(|c| panel.iter().last().is_none_or(|last| last.kind != WAITING && last.hour < c.hour)))
+                {
+                    return Err(crate::invalid("A waiting panel must keep its earlier confirmation"));
+                }
+                panel.push(r);
+            }
             COMPLETED => {
                 if completed.is_none_or(|c| r.hour >= c.hour) {
                     completed = Some(r);
