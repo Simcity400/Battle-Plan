@@ -403,7 +403,6 @@ impl AtHour for OperativesRoster {
     const KEY: &'static str = "operatives-roster";
     const TITLE: &'static str = "Operatives roster";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = OperativesRosterParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
     type Reply = OperativesRosterReply;

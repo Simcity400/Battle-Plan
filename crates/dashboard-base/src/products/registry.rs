@@ -1,4 +1,4 @@
-use super::{Envelope, LoadContext, Product, ReplyWarnings};
+use super::{Envelope, Finish, LoadContext, Product, ReplyWarnings};
 use crate::Source;
 use dashboard_core::transport::{MAX_REPLY_BYTES, bounded_json};
 use std::sync::atomic::AtomicBool;
@@ -8,12 +8,12 @@ macro_rules! register_products {
     (
         $($name:ident => $product:ty $(; $kind:ident($($args:tt)*))?,)*
         @hourly
-        $($hour_name:ident => $reader:ident<$hour_product:ty> $(($custom:expr))?,)*
+        $($hour_name:ident => exact<$hour_product:ty>,)*
     ) => {
         $($crate::register_products!(@declare $name, $product, $crate::products::register, $crate::products::register_for_export
             $(, $crate::register_products!(@ $kind $product, $($args)*))?);)*
         $($crate::register_products!(@declare $hour_name, $hour_product, $crate::products::at_hour::entry, $crate::products::at_hour::entry_for_export,
-            $crate::register_products!(@hour $reader $hour_product $(, $custom)?));)*
+            $crate::products::at_hour::exact::<$hour_product>());)*
         pub const PRODUCTS: &[$crate::products::Registered] = &[$($name,)* $($hour_name,)*];
     };
     (@declare $name:ident, $product:ty, $register:path, $export:path $(, $panel:expr)?) => {
@@ -36,44 +36,23 @@ macro_rules! register_products {
             $crate::products::Registered { load, $(panel: Some($panel),)? ..registration::<$product>() }
         };
     };
-    (@hour exact $product:ty, $conditions:expr) => {
-        $crate::products::PanelReader {
-            kind: $crate::products::PanelKind::ExactHourlyWhen($conditions),
-            ..$crate::products::at_hour::exact::<$product>()
-        }
-    };
-    (@hour $reader:ident $product:ty) => { $crate::products::at_hour::$reader::<$product>() };
     (@ interval $product:ty, $date:expr, $through:expr) => {
         $crate::products::PanelReader {
-            kind: $crate::products::PanelKind::Interval,
             open: |source, load, asked| $crate::products::at_hour::product_interval_panel::<$product>(source, load, asked, $date, $through),
         }
     };
-    (@ day $product:ty, $kind:ident, $start:literal, $end:literal, $through:expr) => {
+    (@ day $product:ty, $start:literal, $end:literal, $through:expr) => {
         $crate::products::PanelReader {
-            kind: $crate::products::PanelKind::$kind,
             open: |source, load, asked| $crate::products::at_hour::day_panel::<$product>(source, load, asked, $start, $end, $through),
         }
     };
-    (@ $kind:ident $product:ty, $reader:path) => {
-        $crate::products::PanelReader { kind: $crate::products::PanelKind::$kind, open: |source, load, asked| $reader(source, load, asked) }
+    (@ panel $product:ty, $reader:path) => {
+        $crate::products::PanelReader { open: |source, load, asked| $reader(source, load, asked) }
     };
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PanelKind {
-    Exact,
-    ExactHourly,
-    ExactHourlyWhen(&'static [&'static str]),
-    Interval,
-    DayThroughHour,
-    LogTail,
-    WholeFrame,
 }
 
 #[derive(Clone, Copy)]
 pub struct PanelReader {
-    pub kind: PanelKind,
     pub open: fn(&std::sync::Arc<Source>, &LoadContext, &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String>,
 }
 
@@ -156,29 +135,23 @@ pub fn reply_json<R: serde::Serialize + ReplyWarnings>(
     load: impl FnOnce() -> std::io::Result<R>,
 ) -> Result<String, dashboard_core::QueryError> {
     let mut reply = JsonReply::new(source, lease_id, key, content_dependent, context, cancelled)?;
-    let mut own = crate::catalogue::OwnRefusals::default();
-    let mut data =
-        crate::catalogue::own_refusals(&mut own, load).map_err(dashboard_core::QueryError::from)?;
-    reply.append_warnings(data.warnings_mut(), &own);
+    let data = Finish::new(source, context, content_dependent).reply(load)?;
     reply.finish(bounded_json(&data, cancelled)?)
 }
 
-struct JsonReply<'a> {
-    source: &'a Source,
-    context: &'a LoadContext,
-    content_dependent: bool,
+struct JsonReply {
     prefix: String,
     _content: Option<std::sync::Arc<content_reader_layers::content::ResolvedContent>>,
 }
 
-impl<'a> JsonReply<'a> {
+impl JsonReply {
     #[inline(never)]
     fn new(
-        source: &'a Source,
+        source: &Source,
         lease_id: &str,
         key: &'static str,
         content_dependent: bool,
-        context: &'a LoadContext,
+        context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> Result<Self, dashboard_core::QueryError> {
         crate::metadata::check_cancel(cancelled).map_err(dashboard_core::QueryError::from)?;
@@ -197,25 +170,7 @@ impl<'a> JsonReply<'a> {
             cancelled,
         )?;
         prefix.truncate(prefix.len() - "null}".len());
-        Ok(Self {
-            source,
-            context,
-            content_dependent,
-            prefix,
-            _content: content,
-        })
-    }
-
-    #[inline(never)]
-    fn append_warnings(&self, warnings: &mut Vec<String>, own: &crate::catalogue::OwnRefusals) {
-        own.diagnostics().append_to(warnings);
-        if self.content_dependent {
-            self.source
-                .append_changed_warnings(warnings, self.context.content.as_ref());
-        }
-        self.source
-            .append_presentation_warnings(warnings, self.context.content.as_ref());
-        warnings.extend(own.fallback_line());
+        Ok(Self { prefix, _content: content })
     }
 
     #[inline(never)]

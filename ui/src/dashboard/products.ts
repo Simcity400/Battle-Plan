@@ -18,7 +18,7 @@ import { inFrame } from './frameUpdates.ts';
 import { perfLog } from '../shell/perf.ts';
 import { countRead, countWork, measuredWidget } from './widgetPerf.ts';
 import { keepDigest } from './replyDigest.ts';
-import { askedByPage, baseClient, noteRead } from './prepare.ts';
+import { askedByPage, baseClient, noteRead, prepareGate, preparing } from './prepare.ts';
 import { productRequest } from './request.ts';
 
 export const replyLengths = new WeakMap<object, number>();
@@ -99,7 +99,9 @@ async function loadPage<T>(client: DashboardClient, request: ProductRequest, sig
     askedByPage(client, request);
   }
   const accepted = (reply: ProductReply<unknown>) => { try { told(reply.data); return true; } catch { return false; } };
-  return holder.get(key, async shared => validateProductReply(await client.product<unknown>(request, shared), request), signal, accepted).then(reply => {
+  const gate = preparing(client) ? prepareGate(client) : null;
+  const asked = holder.get(key, async shared => validateProductReply(await client.product<unknown>(request, shared), request), gate ? gate.hold(request, signal) : signal, accepted);
+  return (gate ? untilAborted(asked, signal) : asked).then(reply => {
     const data = told(reply.data);
     publish?.(data);
     return data;

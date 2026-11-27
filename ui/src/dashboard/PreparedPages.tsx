@@ -69,10 +69,7 @@ export default function PreparedPages({ pages, clock, client, viewport, enabled,
       setRound(current => current && current.index === index ? { ...current, index: index + 1 } : current);
     };
     frame = requestAnimationFrame(check);
-    return () => {
-      cancelAnimationFrame(frame);
-      setTimeout(() => gate.release(), 0);
-    };
+    return () => cancelAnimationFrame(frame);
   }, [page, round?.token, index]);
 
   useEffect(() => {

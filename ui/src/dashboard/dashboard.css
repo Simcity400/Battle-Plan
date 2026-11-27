@@ -381,6 +381,7 @@ button.dash-time-chip:hover, button.dash-time-chip[aria-expanded='true'] { backg
 .widget-card-text strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 0.75rem; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
 .widget-card-text small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 0.6875rem; line-height: 1.3; }
 .widget-card-text .widget-card-placed { color: var(--positive); font-weight: 500; }
+.widget-card-text .widget-card-error { color: var(--error-ink); }
 .widget-card-add { position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; color: var(--muted); opacity: 0; transition: opacity var(--t-fast) var(--ease); }
 .widget-card:hover .widget-card-add, .widget-card[data-selected] .widget-card-add, .widget-card-add:focus-visible { opacity: 1; }
 .widget-card-add svg { width: 13px; height: 13px; }
@@ -397,6 +398,7 @@ button.dash-time-chip:hover, button.dash-time-chip[aria-expanded='true'] { backg
 .widget-details-tags > span { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 999px; background: var(--hover); color: var(--muted); font-size: 0.6875rem; }
 .widget-details-tags i { width: 7px; height: 7px; border-radius: 2px; background: var(--group-colour); }
 .widget-details-reason { margin: 0; color: var(--warning); font-size: 0.75rem; }
+.widget-details-reason.is-error { color: var(--error-ink); }
 .widget-details-add { align-self: stretch; height: 36px; margin-top: auto; justify-content: center; }
 .widget-added { display: inline-flex; align-items: center; gap: 4px; flex: none; color: var(--positive); font-size: 0.75rem; font-weight: 500; }
 .widget-added svg { width: 14px; height: 14px; }

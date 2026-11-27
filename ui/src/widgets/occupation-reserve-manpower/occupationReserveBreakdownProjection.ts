@@ -605,6 +605,7 @@ export const occupationReserveBreakdownDeclaration: TimeChartWidgetDeclaration<O
   countries: { mode: 'multi', allowSlots: true },
   aux: {
     product: 'country-identities',
+    label: 'the countries',
     params: track => ({ branchId: track.branch.id }),
     validate: validateIdentitiesAux,
   },

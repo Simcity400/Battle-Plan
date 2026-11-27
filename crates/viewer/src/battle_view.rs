@@ -292,6 +292,7 @@ impl BattleView {
             return state;
         };
         state.close_requests = (held.close_requests > 0).then_some(held.close_requests);
+        if held.window.loading_art() { return state; }
         let hour = match (&held.refused, held.shown) {
             (Some((hour, _)), _) => Some(*hour),
             (None, Some(shown)) => {
@@ -469,10 +470,13 @@ impl Held {
                 self.answered_sequence = self.at_sequence;
                 self.refused = None;
                 self.notes = self.window.warnings(&self.document.icons.combat.warnings);
+                self.notes.extend(self.document.icons.combat.gui.window_warnings());
                 self.notes.extend(self.pass.native_refusals.iter().map(|(reason, count)| format!("{reason} ({count} times)")));
                 if let Some(at) = self.at.filter(|_| crate::perf_log::enabled()) {
                     crate::perf_log::mark("battle_drawn", serde_json::json!({"hour": at.hour, "step_ms": self.read_ms[0], "read_ms": self.read_ms[1], "draw_ms": started.elapsed().as_secs_f64() * 1e3, "tables": self.tables.len(), "art_bytes": self.document.icons.lazy.resident_bytes(), "why": why}));
                 }
+            } else if self.window.loading_art() {
+                self.refused = None;
             } else if let Some(at) = self.at {
                 let why = match missing {
                     Some(why) => format!("The battle window drew nothing: {why}"),
@@ -488,6 +492,9 @@ impl Held {
             pool.dropper().drop_later(retired);
         }
         self.settle_art(ctx, pool);
+        if self.window.loading_art() {
+            return Ok(Some("Loading battle window art...".into()));
+        }
         if let Some((_, why)) = &self.refused {
             return Ok(Some(why.clone()));
         }

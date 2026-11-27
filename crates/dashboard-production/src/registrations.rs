@@ -4,7 +4,7 @@ dashboard_base::register_products! {
     PRODUCTION_PRODUCTIONLINEBREAKDOWN => crate::products::production::ProductionLineBreakdown,
     PRODUCTION_SPENDING_PRODUCTIONSPENDING => crate::products::production_spending::ProductionSpending; interval(at_hour, |r| r.through),
     PRODUCTION_SPENDING_MONTHS_PRODUCTIONSPENDINGMONTHS => crate::products::production_spending_months::ProductionSpendingMonths,
-    CONSTRUCTION_TAIL_CONSTRUCTIONLOGTAIL => crate::products::construction::tail::ConstructionLogTail; LogTail(crate::products::construction::tail::dated_panel),
+    CONSTRUCTION_TAIL_CONSTRUCTIONLOGTAIL => crate::products::construction::tail::ConstructionLogTail; panel(crate::products::construction::tail::dated_panel),
     CONSTRUCTION_BREAKDOWN_CONSTRUCTIONBREAKDOWN => crate::products::construction::breakdown::ConstructionBreakdown; interval(at_hour, |r| r.through),
     STOCKPILE_EQUIPMENTSTOCKPILETYPES => crate::products::stockpile::EquipmentStockpileTypes,
     STOCKPILE_EQUIPMENTSTOCKPILELINES => crate::products::stockpile::EquipmentStockpileLines,

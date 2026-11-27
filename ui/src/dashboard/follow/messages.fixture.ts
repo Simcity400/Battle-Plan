@@ -1,4 +1,5 @@
 import { encode } from '@msgpack/msgpack';
+import { DATED_PANEL_VERSION } from './message.ts';
 
 export type Spec =
   | { notRecorded: string }
@@ -74,7 +75,7 @@ export function message(hour: number, answers: { id: number; hour?: number; answ
 export function datedPanel(id: number, hour: number, data?: unknown, seek = 1, route = 9) {
   const body = data === undefined ? new Uint8Array() : encode(data);
   const out = new Uint8Array((40 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);
-  words.set([0x324c4e50, 6, 1, 0, route, seek, id, hour, data === undefined ? 3 : 1, body.length]);
+  words.set([0x324c4e50, DATED_PANEL_VERSION, 1, 0, route, seek, id, hour, data === undefined ? 3 : 1, body.length]);
   out.set(body, 40);
   return out;
 }

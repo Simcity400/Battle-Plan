@@ -95,7 +95,6 @@ impl AtHour for VolunteerFlow {
     const KEY: &'static str = "volunteer-flow";
     const TITLE: &'static str = "Volunteers & expeditionaries";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = VolunteerFlowParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top];
     type Reply = CountryFlowReply;

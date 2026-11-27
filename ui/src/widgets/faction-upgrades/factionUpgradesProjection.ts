@@ -196,6 +196,7 @@ export const factionUpgradesDeclaration: CardWidgetDeclaration<FactionUpgradesOp
   keyByBranch: true,
   aux: {
     product: 'country-groups',
+    label: 'the factions',
     params: track => ({ branchId: track.branch.id }),
     validate: validateCountryGroupReply,
   },

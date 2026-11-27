@@ -143,7 +143,6 @@ mod reply {
         for table in states::TABLES {
             assert_eq!(projected(table, &world), projected(table, &[]), "{table:?}: a world whose triggers read nothing of it");
         }
-        assert!(!states::OccupiedStates::clock_dependent(&world, &learning), "occupied states holds to dated boundaries");
         let level = dashboard_declare::field(TableId::StateResistance, "level").unwrap();
         learning.world.lock().unwrap().fields.insert(TableId::StateResistance, 1 << level);
         assert!(projected(TableId::StateResistance, &world).unwrap().contains(&level), "a field the triggers read");

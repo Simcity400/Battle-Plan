@@ -358,7 +358,6 @@ impl AtHour for AirMissionsAt {
     const KEY: &'static str = "air-missions";
     const TITLE: &'static str = "Air missions";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = AirMissionsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = AirMissionsReply;

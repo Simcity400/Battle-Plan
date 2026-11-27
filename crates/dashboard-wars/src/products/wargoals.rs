@@ -1,4 +1,4 @@
-use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Clock, Edits, Held, Keys, Owner, Read, ReadsAt, field_columns, field_mask}};
+use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Edits, Held, Keys, Owner, Read, ReadsAt, field_columns, field_mask}};
 use dashboard_base::Source;
 use super::wargoal_dates::{self, Incarnation, Incarnations};
 use dashboard_follow::live::Source as Cell;
@@ -274,7 +274,6 @@ impl AtHour for Wargoals {
     const KEY: &'static str = "wargoals";
     const TITLE: &'static str = "War goals";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: Clock = Clock::Boundaries;
     type Params = WargoalsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = WargoalsReply;

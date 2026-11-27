@@ -417,6 +417,7 @@ export type CountryPolicy =
 
 export interface AuxProductSpec<TAux = unknown> {
   readonly product: DeclaredProduct;
+  readonly label: string;
   readonly params: (
     track: BoundTrack,
     options: Readonly<Record<string, OptionValue>>,

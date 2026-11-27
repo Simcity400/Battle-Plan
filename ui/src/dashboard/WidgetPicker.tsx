@@ -8,7 +8,7 @@ import { widgetDefinitions } from './definitions';
 import type { WidgetDefinition, WidgetPresets, WidgetRuntime } from './definitions';
 import type { BoundTrack, WidgetSpec } from './model';
 import { useProduct } from './products';
-import { availabilityReason, availabilityRequest, scopeReason, validateWidgetAvailability } from './widgetAvailability';
+import { availabilityRequest, availabilityState, scopeReason, validateWidgetAvailability, type AvailabilityState } from './widgetAvailability';
 import WidgetPreview from './WidgetPreview';
 import { catalogueEntries, matchesWidget, placedCount, widgetGroups } from './widgetCategories';
 import { presetWidget, widgetViewOptions, type PresetWidget } from '../widgets/manifest';
@@ -29,36 +29,48 @@ function useAdded(): [boolean, () => void] {
   return [added > 0, () => setAdded(count => count + 1)];
 }
 
-function useUnavailable(definition: WidgetDefinition, { runtime, track, active }: Shared) {
+function useAvailability(definition: WidgetDefinition, { runtime, track, active }: Shared): AvailabilityState {
   const scoped = scopeReason(definition, track?.source.metadata.captureMode);
   const { data, error } = useProduct(runtime.client, scoped ? null : availabilityRequest(definition, track), active, validateWidgetAvailability, track?.source);
-  return { reason: scoped ?? availabilityReason(!!definition.availability, !!track, data, error), detail: error?.message };
+  if (scoped) return { kind: 'unavailable', reason: scoped };
+  return availabilityState(!!definition.availability, !!track, data, error);
+}
+
+function availabilityNotice(state: AvailabilityState): { text: string; detail?: string; error: boolean } | null {
+  switch (state.kind) {
+    case 'available': return null;
+    case 'pending': return { text: state.text, error: false };
+    case 'unavailable': return { text: state.reason, detail: state.detail, error: false };
+    case 'error': return { text: state.message, detail: state.detail, error: true };
+  }
 }
 
 const groupColour = (group: WidgetGroup<unknown>) => ({ '--group-colour': group.page ? `var(--sidebar-icon-${group.page})` : 'var(--muted)' }) as CSSProperties;
 
 function Card({ entry, placed, selected, onSelect, ...shared }: Shared & { entry: Entry; placed: number; selected: boolean; onSelect: () => void }) {
   const { definition } = entry;
-  const { reason, detail } = useUnavailable(definition, shared);
+  const notice = availabilityNotice(useAvailability(definition, shared));
   const [added, markAdded] = useAdded();
   const icon = useContext(WidgetIconsContext).style(definition.kind);
   const add = () => { shared.onAdd(definition.kind, initialOf(entry)); markAdded(); };
   return <div role="listitem" className="widget-card" data-selected={selected || undefined} data-variant={entry.variant || undefined} style={groupColour(entry.group)}>
     <button type="button" className="widget-card-main" aria-pressed={selected} data-tooltip={entry.title} onClick={onSelect}
-      onDoubleClick={() => { if (!shared.disabled && reason === null) add(); }}>
+      onDoubleClick={() => { if (!shared.disabled && !notice) add(); }}>
       <span className="widget-card-icon" aria-hidden="true"><StyledIcon icon={icon.icon} fallback={definition.icon} colour={icon.colour} /></span>
       { }
       <span className="widget-card-text"><strong>{entry.title}</strong>
-        {reason ? <small data-detail={detail}>{reason}</small> : placed > 0 && <small className="widget-card-placed">{placed > 1 ? `On page ×${placed}` : 'On page'}</small>}</span>
+        {notice ? <small className={notice.error ? 'widget-card-error' : undefined} data-detail={notice.detail}>{notice.text}</small>
+          : placed > 0 && <small className="widget-card-placed">{placed > 1 ? `On page ×${placed}` : 'On page'}</small>}</span>
     </button>
-    <button type="button" className="icon-button widget-card-add" aria-label={`Add ${entry.title}`} data-tooltip={reason ?? 'Add to page'}
-      disabled={shared.disabled || reason !== null} onClick={add}>{added ? <Icon name="check" /> : <Icon name="plus" />}</button>
+    <button type="button" className="icon-button widget-card-add" aria-label={`Add ${entry.title}`} data-tooltip={notice?.text ?? 'Add to page'}
+      disabled={shared.disabled || notice !== null} onClick={add}>{added ? <Icon name="check" /> : <Icon name="plus" />}</button>
   </div>;
 }
 
 function Details({ entry, ...shared }: Shared & { entry: Entry }) {
   const { definition } = entry;
-  const { reason, detail } = useUnavailable(definition, shared);
+  const blocked = availabilityNotice(useAvailability(definition, shared));
+  const notice = blocked ?? (entry.note ? { text: entry.note, detail: entry.detail, error: false } : null);
   const [added, markAdded] = useAdded();
   const countries = !definition.data ? null : definition.countrySelection === false ? 'Whole world'
     : (definition.countries?.max ?? 1) > 1 ? 'Several countries' : 'One country';
@@ -74,8 +86,8 @@ function Details({ entry, ...shared }: Shared & { entry: Entry }) {
         {entry.variant && <span>View of {definition.title}</span>}
       </div>
     </div>
-    {(reason ?? entry.note) && <p className="widget-details-reason" role="status" data-detail={detail ?? entry.detail}>{reason ?? entry.note}</p>}
-    <button type="button" className="button primary widget-details-add" disabled={shared.disabled || reason !== null}
+    {notice && <p className={`widget-details-reason${notice.error ? ' is-error' : ''}`} role={notice.error ? 'alert' : 'status'} data-detail={notice.detail}>{notice.text}</p>}
+    <button type="button" className="button primary widget-details-add" disabled={shared.disabled || blocked !== null}
       onClick={() => { shared.onAdd(definition.kind, initialOf(entry)); markAdded(); }}>
       {added ? <><Icon name="check" />Added</> : <><Icon name="plus" />Add to page</>}</button>
   </aside>;

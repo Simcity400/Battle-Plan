@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { buildWidgetClassifierExpr, createOutcomeWatcher, measureIdleCost, runThrottled } from './sweepHelpers.mjs';
+import {
+  QUICK_CATALOGUE_DEFAULT_COUNT,
+  buildWidgetClassifierExpr,
+  catalogueItemKey,
+  createOutcomeWatcher,
+  describeUncleanCataloguePage,
+  finishCatalogueCard,
+  measureIdleCost,
+  runThrottled,
+  selectQuickCatalogueCards,
+} from './sweepHelpers.mjs';
 import { classifyWidgetSnapshot } from './verdicts.mjs';
 
 const source = readFileSync(new URL('./sweep.mjs', import.meta.url), 'utf8');
@@ -206,4 +216,137 @@ test('browser widget classifier expression delegates directly to classifyWidgetS
     classify(makeNode({}, { state: 'loading', drawing: false })),
     { outcome: 'error', detail: 'still loading' },
   );
+});
+
+test('playback unsettled probe ignores hidden screen-reader aria-busy mirrors while flagging visible loading widgets', () => {
+  const start = source.indexOf('const unsettled = `(() => {');
+  const end = source.indexOf('})()`;', start);
+  const expr = source.slice(start + 'const unsettled = `'.length, end + '})()'.length).replace(/\\\\/g, '\\');
+  const makeNode = ({ tag = 'div', classes = [], attrs = {}, rect = { top: 10, bottom: 50, left: 10, right: 110, width: 100 }, style = { overflowY: 'visible' }, children = [] } = {}) => {
+    const matchOne = p => (p === '[data-state="loading"]' ? attrs['data-state'] === 'loading'
+      : p === '[aria-busy="true"]' ? attrs['aria-busy'] === 'true'
+      : p === '[data-placement]' ? Object.hasOwn(attrs, 'data-placement')
+      : p === 'article.dash-widget' ? tag === 'article' && classes.includes('dash-widget')
+      : p.startsWith('.') ? classes.includes(p.slice(1)) : false);
+    const node = {
+      classList: { contains: name => classes.includes(name) }, textContent: '', dataset: { widget: attrs['data-widget'] ?? '' },
+      parentElement: null, __style: style, __children: [], children: [],
+      checkVisibility: () => true, getBoundingClientRect: () => rect,
+      getAttribute: name => (Object.hasOwn(attrs, name) ? attrs[name] : null),
+      matches: sel => sel.split(',').some(p => matchOne(p.trim())),
+      closest(sel) { for (let c = this; c; c = c.parentElement) if (c.matches(sel)) return c; return null; },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] ?? null; },
+      querySelectorAll(sel) { const o = []; const w = e => { for (const c of e.__children) { if (c.matches(sel)) o.push(c); w(c); } }; w(this); return o; },
+    };
+    for (const c of children) { c.parentElement = node; node.__children.push(c); node.children.push(c); }
+    return node;
+  };
+  const srMirror = makeNode({
+    tag: 'table', classes: ['fh-sr-only'], attrs: { 'aria-busy': 'true' },
+    rect: { top: 10, bottom: 11, left: 10, right: 11, width: 1 },
+    style: { position: 'absolute', overflowY: 'hidden', clip: 'rect(0px, 0px, 0px, 0px)', clipPath: 'inset(50%)' },
+  });
+  const hiddenAncestor = makeNode({
+    classes: ['sr-only'], rect: { top: 10, bottom: 11, left: 10, right: 11, width: 1 },
+    style: { position: 'absolute', overflowY: 'hidden', clip: 'rect(0px, 0px, 0px, 0px)' },
+    children: [makeNode({ tag: 'span', attrs: { 'aria-busy': 'true' } })],
+  });
+  const okWidget = makeNode({ tag: 'article', classes: ['dash-widget'], attrs: { 'aria-label': 'Occupied states', 'data-widget': 'w1' }, children: [makeNode({ tag: 'canvas', attrs: { 'data-placement': '1' } }), srMirror, hiddenAncestor] });
+  const stuckWidget = makeNode({ tag: 'article', classes: ['dash-widget'], attrs: { 'aria-label': 'Fuel', 'data-widget': 'w2' }, children: [makeNode({ tag: 'canvas', attrs: { 'data-placement': '2' } }), makeNode({ attrs: { 'data-state': 'loading' } })] });
+  const grid = makeNode({ classes: ['dash-grid-scroll'], rect: { top: 0, bottom: 720, left: 0, right: 1280, width: 1280 }, children: [okWidget, stuckWidget] });
+  const runUnsettled = new Function('document', 'getComputedStyle', '__e2e', `return (${expr});`);
+  const probeStub = { visuallyHidden: el => el.classList.contains('fh-sr-only') || el.classList.contains('sr-only') };
+  assert.deepEqual(
+    runUnsettled({ querySelector: sel => (sel === '.dash-grid-scroll' ? grid : null) }, el => el?.__style ?? { overflowY: 'visible' }, probeStub),
+    [{ widget: 'Fuel', reason: 'loading' }],
+  );
+});
+
+test('selectQuickCatalogueCards uses matching history slowest cards and falls back to bounded indices on fresh state', () => {
+  const cards = [
+    { title: 'Campaign map', view: false, unavailable: null },
+    { title: 'Scoreboard', view: false, unavailable: null },
+    { title: 'Construction log', view: false, unavailable: 'Availability unavailable.' },
+    { title: 'Game score', view: false, unavailable: null },
+    { title: 'Game score race', view: true, unavailable: null },
+    { title: 'Event feed', view: false, unavailable: null },
+    { title: 'Duplicate mod idea', view: false, unavailable: null },
+    { title: 'Duplicate mod idea', view: false, unavailable: null },
+    { title: 'Political power', view: false, unavailable: null },
+  ];
+
+  const fromFresh = selectQuickCatalogueCards(cards, null);
+  assert.equal(fromFresh.source, 'default');
+  assert.equal(fromFresh.indices.size, QUICK_CATALOGUE_DEFAULT_COUNT);
+  assert.equal(fromFresh.indices.has(0), true);
+  assert.equal(fromFresh.indices.has(8), true);
+  assert.equal(fromFresh.indices.has(2), false, 'unavailable cards skipped when available cards exist');
+
+  const fromEmptyHistory = selectQuickCatalogueCards(cards, { format: 2, failed: {}, slowest: [] });
+  assert.deepEqual([...fromEmptyHistory.indices], [...fromFresh.indices]);
+  assert.equal(fromEmptyHistory.source, 'default');
+
+  const fromStaleHistory = selectQuickCatalogueCards(cards, { format: 2, failed: {}, slowest: ['widget/Removed card'] });
+  assert.deepEqual([...fromStaleHistory.indices], [...fromFresh.indices]);
+  assert.equal(fromStaleHistory.source, 'default');
+
+  const fromHistory = selectQuickCatalogueCards(cards, {
+    format: 2,
+    failed: {},
+    slowest: ['view/Game score race', 'widget/Removed card', 'widget/Event feed'],
+  });
+  assert.equal(fromHistory.source, 'history');
+  assert.deepEqual([...fromHistory.indices].map(i => catalogueItemKey(cards[i])), ['view/Game score race', 'widget/Event feed']);
+
+  const allUnavailable = cards.slice(0, 3).map(card => ({ ...card, unavailable: 'not recorded' }));
+  const fallbackUnavailable = selectQuickCatalogueCards(allUnavailable, null, 2);
+  assert.equal(fallbackUnavailable.source, 'default');
+  assert.deepEqual([...fallbackUnavailable.indices], [0, 2]);
+});
+
+test('describeUncleanCataloguePage names leftover widgets, dirty layouts, and open popovers', () => {
+  assert.equal(describeUncleanCataloguePage({ widgets: 0, dirty: false, popovers: [] }), null);
+  assert.match(describeUncleanCataloguePage({ widgets: 1, dirty: false, popovers: [] }), /1 widget left on page/);
+  assert.match(describeUncleanCataloguePage({ widgets: 2, dirty: true, popovers: ['layout-save-menu'] }), /2 widgets left on page; layout still has unsaved changes; popover stayed open \(layout-save-menu\)/);
+});
+
+test('finishCatalogueCard fails the card by name when cleanup throws, recovers if unclean, and lets the next card run', async () => {
+  const failures = [];
+  const ran = [];
+  let state = { widgets: 0, dirty: false, popovers: [] };
+  let recoveries = 0;
+
+  await finishCatalogueCard('widget/Broken add', {
+    cleanup: async () => { throw new Error('the Delete widget button did not become visible within 3 s'); },
+    readState: async () => state,
+    recover: async () => { recoveries++; },
+    fail: async (item, label, reason) => { failures.push({ item, label, reason }); },
+  });
+  assert.deepEqual(failures, [{ item: 'widget/Broken add', label: 'cleanup', reason: 'the Delete widget button did not become visible within 3 s' }]);
+  assert.equal(recoveries, 0, 'clean page after thrown cleanup needs no recovery');
+
+  state = { widgets: 1, dirty: true, popovers: ['layout-save-menu'] };
+  await finishCatalogueCard('widget/Campaign map', {
+    cleanup: async () => { throw new Error('the Save layout confirm button did not become visible within 3 s'); },
+    readState: async () => state,
+    recover: async () => { recoveries++; state = { widgets: 0, dirty: false, popovers: [] }; },
+    fail: async (item, label, reason) => { failures.push({ item, label, reason }); },
+  });
+  await finishCatalogueCard('widget/Next card', {
+    cleanup: async () => { ran.push('widget/Next card'); },
+    readState: async () => state,
+    recover: async () => { recoveries++; },
+    fail: async (item, label, reason) => { failures.push({ item, label, reason }); },
+  });
+  assert.equal(recoveries, 1);
+  assert.deepEqual(ran, ['widget/Next card'], 'second card runs after first card cleanup threw and recovered');
+  assert.equal(failures.length, 2);
+
+  state = { widgets: 1, dirty: false, popovers: [] };
+  await assert.rejects(() => finishCatalogueCard('widget/Stuck', {
+    cleanup: async () => {},
+    readState: async () => state,
+    recover: async () => {},
+    fail: async (item, label, reason) => { failures.push({ item, label, reason }); },
+  }), /cannot continue catalogue after widget\/Stuck: page not clean after card: 1 widget left on page/);
 });

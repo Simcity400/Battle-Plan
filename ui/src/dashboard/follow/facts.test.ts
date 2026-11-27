@@ -9,6 +9,7 @@ const data = (id: number, hour: number, extra: Partial<Extract<PanelRecord<V>, {
   ({ kind: 'data', id, hour, value: `${id}@${hour}`, ...extra });
 const stands = (id: number, hour: number, stepped = false): PanelRecord<V> => ({ kind: 'stands', id, hour, stepped });
 const waiting = (id: number, hour: number): PanelRecord<V> => ({ kind: 'waiting', id, hour });
+const again = (id: number, hour: number, stepped = false): PanelRecord<V> => ({ kind: 'again', id, hour, stepped });
 const msg = (hour: number, answers: FollowMessage<V>['answers'] = [], extra: Partial<FollowMessage<V>> = {}): FollowMessage<V> => ({ hour, answers, ...extra });
 const hc = (p: Picture<V> | null) => p && [p.h, p.c];
 const facts = (...subs: [number, 'panel' | 'followed'][]) => { const f = new Facts<V>(); for (const [id, channel] of subs) f.follow(id, R, channel); return f; };
@@ -101,13 +102,22 @@ test('review 2: an unstepped seed joined to the stepped delivery by STANDS is co
   assert.deepEqual(hc(f.select(1, 60)), [10, 58]);
 });
 
-test('review 2: WAITING stands the product through the hour before it waited, and later steps never cross it', () => {
+test('WAITING closes a product at the hours it was proven through, and later steps never cross it', () => {
   const f = facts([1, 'panel']);
   f.panels(R, 0, [data(1, 10, { stepped: true })]);
   f.panels(R, 0, [], 22);
   f.panels(R, 0, [waiting(1, 34)], 34);
   f.panels(R, 0, [], 58);
-  assert.deepEqual(hc(f.select(1, 58)), [10, 33]);
+  assert.deepEqual(hc(f.select(1, 58)), [10, 22]);
+});
+
+test('AGAIN restarts the same value at a later proven hour and leaves the unproven hours between uncovered', () => {
+  const f = facts([1, 'panel']);
+  f.panels(R, 0, [data(1, 10, { stepped: true, value: 'empty' })], 22);
+  f.panels(R, 0, [again(1, 40, true)], 46);
+  assert.deepEqual(hc(f.select(1, 30)), [10, 22], 'hours 23-39 were never proven');
+  assert.deepEqual(hc(f.select(1, 44)), [40, 46]);
+  assert.equal(f.select(1, 44)!.value, 'empty');
 });
 
 test('review 2: the join is a search, not greedy: a later fact of cell A does not hide the complete join 10-18', () => {
@@ -198,7 +208,7 @@ test('a product waiting for its table is covered only through the hour before it
   f.panels(R, 0, [waiting(1, 34)]);
   f.panels(R, 0, [], 34); f.panels(R, 0, [], 58);
   f.panels(R, 0, [data(1, 82, { value: 'changed' })]);
-  assert.deepEqual(hc(f.select(1, 58)), [10, 33]);
+  assert.deepEqual(hc(f.select(1, 58)), [10, 22]);
   assert.deepEqual(hc(f.select(1, 82)), [82, 82]);
 });
 
@@ -206,12 +216,12 @@ test('a native reset keeps an old panel to the hours it was confirmed through un
   const f = facts([1, 'panel']);
   f.panels(R, 0, [data(1, 10, { stepped: true, value: 'held' })]);
   f.panels(R, 0, [waiting(1, 34)], 34);
-  assert.deepEqual(hc(f.select(1, 58)), [10, 33]);
+  assert.deepEqual(hc(f.select(1, 58)), [10, 10]);
   f.followed(R, 0, msg(58, [], { reset: true }));
   f.panels(R, 0, [waiting(1, 58)], 58);
   f.panels(R, 0, [data(1, 58, { stepped: true, cells: [{ id: A, seedHour: 99, values: [12] }] })], 58);
   const p = f.select(1, 58);
-  assert.ok(p === null || p.c <= 33, JSON.stringify(hc(p)));
+  assert.ok(p === null || p.c <= 10, JSON.stringify(hc(p)));
 });
 
 test('a reading answered again after a native reset advances with its lane', () => {
@@ -481,8 +491,6 @@ function oracleSelect(statements: readonly Statement[], target: number): number 
       if (s.stepped) stepped = true;
       if (last) { last.c = Math.max(last.c, s.hour); open = true; }
     } else if (s.kind === 'waiting') {
-      const last = panel[panel.length - 1];
-      if (last && open) last.c = Math.max(last.c, s.hour - 1);
       open = false;
     } else if (s.kind === 'completed') {
       const last = panel[panel.length - 1];

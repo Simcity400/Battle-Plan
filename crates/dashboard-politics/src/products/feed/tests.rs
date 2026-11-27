@@ -1819,3 +1819,84 @@ fn a_kept_row_says_again_which_mod_its_art_came_from() {
     assert!(!cold.is_empty(), "the first read says which mod the icon came from");
     assert_eq!(read(), (pixel, cold), "a read built from kept rows says it too");
 }
+
+#[test]
+fn a_followed_decisions_tail_carries_the_warnings_the_exact_read_gives_at_each_hour() {
+    use super::decisions_dated_panel;
+    use dashboard_base::{
+        products::LoadContext,
+        test_fixtures::{
+            source,
+            visual_mods::{BLUE, Machine, RED, png, select},
+        },
+    };
+    use replay_data::{
+        event_feed_rows::{EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript},
+        rows::{Recorded, TableRows},
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::atomic::AtomicBool;
+
+    let machine = Machine::new("feed_followed_warnings");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}");
+    machine.write("common/decisions/categories/fixture.txt", b"FIXTURE_CATEGORY={}");
+    machine.write("common/decisions/fixture.txt", b"FIXTURE_CATEGORY={fixture_decision={allowed={always=yes}}}");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_decision_fixture_decision textureFile=gfx/fixture_decision.png}}");
+    machine.write("gfx/fixture_decision.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_decision.png", &png(BLUE));
+    let token = b"fixture_decision";
+    let event = EventFeedEvent {
+        sequence: 1,
+        generation: 1,
+        hour: 100,
+        source: EventFeedSource::DecisionSelected,
+        actor: EventFeedCountry { reference: 9001, id: 9001, instance: 1 },
+        target: EventFeedCountry::default(),
+        cause: Recorded::NotRecorded,
+        script: Some(EventFeedScript { token_start: 0, token_len: token.len() as u32, ..EventFeedScript::default() }),
+    };
+    let frames = (99..=101)
+        .map(|hour| {
+            let events = if hour == 100 { vec![event.clone()] } else { Vec::new() };
+            let count = events.len() as u64;
+            let mut frame = source(1, hour, Some(1));
+            frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+            *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+                generation: 1,
+                read_hour: hour,
+                coverage: EventFeedCoverage::Complete,
+                counts: Some(EventFeedCounts { acquired: count, settled: count, failed: 0, rejected: 0 }),
+                outstanding: 0,
+                failure: None,
+                script_refusals: 0,
+                events,
+                script_tokens: token.to_vec(),
+                script_scopes: Vec::new(),
+                windows: Default::default(),
+            }]));
+            frame
+        })
+        .collect();
+    let (source, mut options) = machine.open_frames(frames);
+    select(&source, &mut options, &["fixture_art"]);
+    let context = LoadContext { content: Some(options) };
+    let cancelled = AtomicBool::new(false);
+    let warnings = |reply: &serde_json::Value| -> Vec<String> {
+        reply["warnings"].as_array().expect("a reply carries its warnings").iter().map(|line| line.as_str().unwrap().to_owned()).collect()
+    };
+    let exact = |hour: i32| {
+        let asked = serde_json::json!({ "branchId": "1", "hour": hour, "limit": 64 });
+        warnings(&crate::registrations::FEED_DECISIONSTAIL.answer(&source, asked, &context, &cancelled).unwrap())
+    };
+    let panel = decisions_dated_panel(&source, &context, &serde_json::json!({ "panel": "decisions-tail", "branchId": "1", "limit": 64 })).unwrap();
+    let followed = panel.exact().unwrap();
+    let art = |lines: &[String]| lines.iter().any(|line| line.starts_with("Artwork from visual mods"));
+    for hour in 99..=101 {
+        let read = (followed.advance)(hour, hour == 99, &cancelled, None);
+        let held = warnings(read.value.as_ref().as_ref().unwrap());
+        assert_eq!(held, exact(hour), "the followed reply at {hour} warns as the exact read of the same hour does");
+        assert_eq!(warnings(&(followed.cold)(hour, &cancelled).unwrap()), held, "and so does its cold read");
+        assert_eq!(art(&held), hour >= 100, "the decision's mod art is named from the hour it is listed, at {hour}");
+        assert_eq!(read.fresh, hour != 101, "hour 101 holds the reply read at 100, with its warnings");
+    }
+}

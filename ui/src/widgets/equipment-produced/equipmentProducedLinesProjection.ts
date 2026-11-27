@@ -370,6 +370,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
   },
   aux: {
     product: 'equipment-produced-types',
+    label: 'the equipment types',
     params: (track, options) => ({ branchId: track.branch.id, refits: options.refits === true }),
     validate: validateEquipmentProducedTypes,
   },

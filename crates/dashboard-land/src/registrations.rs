@@ -6,10 +6,10 @@ dashboard_base::register_products! {
     LEADER_NAME_RUNS_LEADERNAMERUNS => crate::products::leader_name_runs::LeaderNameRuns,
     LEADERS_CAREER_LEADERCAREER => crate::products::leaders::career::LeaderCareer,
     LEADERS_CAREER_LEADERCHOICES => crate::products::leaders::career::LeaderChoices,
-    DIVISION_LOG_TAIL => crate::products::division_log::DivisionLogTail; LogTail(crate::products::division_log::dated_panel),
-    DIVISION_SERVICE_RECORD_TAIL => crate::products::divisions::careers::service_record::DivisionServiceRecordTail; LogTail(crate::products::divisions::careers::service_record::dated_panel),
+    DIVISION_LOG_TAIL => crate::products::division_log::DivisionLogTail; panel(crate::products::division_log::dated_panel),
+    DIVISION_SERVICE_RECORD_TAIL => crate::products::divisions::careers::service_record::DivisionServiceRecordTail; panel(crate::products::divisions::careers::service_record::dated_panel),
     DIVISION_SERVICE_RECORD_CHOICES => crate::products::divisions::careers::service_record::DivisionServiceRecordChoices,
-    LAND_BATTLES_TAIL => crate::products::land_battles::tail::LandBattlesTail; LogTail(crate::products::land_battles::tail::dated_panel),
+    LAND_BATTLES_TAIL => crate::products::land_battles::tail::LandBattlesTail; panel(crate::products::land_battles::tail::dated_panel),
     LAND_BATTLES_LANDBATTLECOURSES => crate::products::land_battles::LandBattleCourses,
     LAND_TERRAIN_LANDBATTLETERRAINS => crate::products::land_terrain::LandBattleTerrains,
 

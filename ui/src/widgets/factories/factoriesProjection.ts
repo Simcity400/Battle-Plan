@@ -281,6 +281,7 @@ export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOpti
   },
   aux: {
     product: 'factory-groups',
+    label: 'the factory groups',
     params: track => ({ branchId: track.branch.id }),
     validate: validateFactoryGroups,
   },

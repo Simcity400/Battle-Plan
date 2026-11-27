@@ -193,7 +193,6 @@ pub struct NuclearContext {
 
 impl AtHour for NuclearArsenal {
     const KEY: &'static str = "nuclear-arsenal";
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     const TITLE: &'static str = "Nuclear arsenal";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NuclearArsenalParams;

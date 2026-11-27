@@ -4,7 +4,7 @@ use dashboard_base::{
     Source,
     products::{
         Country, LoadContext,
-        at_hour::{At, AtHour, Clock, Owner, Read, ReadsAt},
+        at_hour::{At, AtHour, Owner, Read, ReadsAt},
         validate_country,
     },
 };
@@ -299,7 +299,6 @@ impl AtHour for FactoryMix {
     const KEY: &'static str = "factory-mix";
     const TITLE: &'static str = "Factory mix";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: Clock = Clock::Boundaries;
     type Params = FactoryMixParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, group, top, mode, types, "countries[]"];
     type Reply = FactoryMixReply;

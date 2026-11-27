@@ -576,7 +576,6 @@ impl AtHour for AirForceAt {
     const KEY: &'static str = "air-force-at";
     const TITLE: &'static str = "Air force size";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = AirForceAtParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, group, measure, ownership, "countries[]"];
     type Reply = ForceAtReply;
@@ -751,7 +750,6 @@ impl AtHour for NavyAt {
     const KEY: &'static str = "navy-at";
     const TITLE: &'static str = "Navy size";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = NavyAtParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, group, ownership, grouping, measure, "countries[]"];
     type Reply = ForceAtReply;
