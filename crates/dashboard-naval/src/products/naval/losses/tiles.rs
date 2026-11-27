@@ -366,7 +366,7 @@ mod tests {
         let refused = tile(&unlinked, &unlinked_query, &all_params, &load, &cancel).unwrap();
         assert!(refused.lines.is_empty());
         assert!(refused.ranking.unwrap().refused.is_some());
-        let mut unknown = all_params.clone();
+        let mut unknown = all_params;
         unknown["family"]["countKind"] = serde_json::json!("both");
         let missing = tile(&src, &query, &unknown, &load, &cancel).unwrap();
         assert!(missing.lines.is_empty());
