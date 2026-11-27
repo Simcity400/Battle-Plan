@@ -2216,7 +2216,7 @@ fn overflowing_route_drops_and_fails_with_stopped_while_sibling_route_keeps_play
         if a.playing { p.play(a.speed); }
     };
     let host_a = PlayheadHost::new_with_budget(Arc::clone(&playhead), |p| p, anchored, follow_a, held.clone(), budget.clone()).unwrap();
-    let host_b = PlayheadHost::new_with_budget(Arc::clone(&playhead), |p| p, anchored, follow_b, held, budget.clone()).unwrap();
+    let host_b = PlayheadHost::new_with_budget(Arc::clone(&playhead), |p| p, anchored, follow_b, held, budget).unwrap();
     host_a.show_panels(Arc::new(IdleRows), Arc::clone(&push));
     host_b.show_panels(Arc::new(IdleRows), Arc::clone(&push));
     host_a.serve(session);
@@ -2359,8 +2359,8 @@ fn overflowing_route_drops_and_fails_with_stopped_while_sibling_route_keeps_play
     host_a.serve(new_session);
     host_b.serve(new_session);
     host_a.anchor(Anchor { seek: 3, frame_rate: 60.0, hour: retry_hour, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
-    host_a.follow().follow(1, live_query.clone()).unwrap();
-    host_a.follow().follow(2, all_query.clone()).unwrap();
+    host_a.follow().follow(1, live_query).unwrap();
+    host_a.follow().follow(2, all_query).unwrap();
     host_a.prepare_panel(counter_panel()).unwrap()(10, 1).unwrap();
 
     let mut retry_follow: std::collections::HashMap<u32, (Hour, Vec<u8>)> = std::collections::HashMap::new();
