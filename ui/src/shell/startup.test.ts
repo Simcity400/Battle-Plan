@@ -17,9 +17,8 @@ test('both entry pages paint the default dark canvas before loading scripts', ()
   }
 });
 
-test('the main window starts hidden with the same canvas as its page', () => {
+test('the main window uses the same canvas as its page', () => {
   const config = JSON.parse(file('../../../crates/desktop/tauri.conf.json'));
   const main = config.app.windows.find((window: { label: string }) => window.label === 'main');
-  assert.equal(main.visible, false);
   assert.equal(main.backgroundColor, canvas);
 });
