@@ -6,7 +6,7 @@ import readline from 'node:readline';
 import path from 'node:path';
 import { compareCaptures } from '../../ui/e2e/compare.mjs';
 import { mergeHistory, readHistory, slowestCards } from './coverage.mjs';
-import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, classifyPerfFile, costSessionConfinement, machineLine, profileLines, sessionConfinement, framesLate, handledAt, freshnessByKind, presentedHours, losses, mapFrames, phaseSeconds, presentedAt, playbackPace, windowLosses } from './verdicts.mjs';
+import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, classifyPerfFile, costSessionConfinement, machineLine, profileLines, sessionConfinement, framesLate, handledAt, freshnessByKind, presentedHours, firstPopoutFrame, losses, mapFrames, phaseSeconds, presentedAt, playbackPace, windowLosses } from './verdicts.mjs';
 import { BUDGET_MS, FRAME_BUDGET_MS, MAX_PLAYBACK_AGE_HOURS, SUSTAINED_DROPS, consoleFailures, failedReplies, firstContent, frameTimes, groupBy, item as summarizeItem, mapAcks, mapSeek, quantiles } from './verdicts.mjs';
 import { FAIL, PARTIAL, dashboardRows } from './playbackVerdicts.mjs';
 import { perFrame } from './trace.mjs';
@@ -55,7 +55,7 @@ async function perfRecords(folder, { keepQueries = false } = {}) {
   }
   for (const { name, info: { session } } of viewers) {
     await read(name, line => {
-      if (/^\{"t":"map(_open)?"/.test(line)) mapRecords.push({ ...JSON.parse(line), session });
+      if (/^\{"t":"map(_open|_present)?"/.test(line)) mapRecords.push({ ...JSON.parse(line), session });
       else if (lost(line)) records.push({ ...JSON.parse(line), session });
     });
   }
@@ -109,8 +109,9 @@ for (const result of results.filter(result => result.drawnAt != null)) {
 }
 for (const result of results.filter(result => result.item === 'pop-out' && result.label === 'open pop-out' && result.input != null)) {
   const reasons = result.reasons.filter(reason => !reason.includes(' ms, over '));
-  reasons.push('the pop-out viewer reports no drawn time for its hour, so its first frame is unobservable');
-  Object.assign(result, { ms: null, reasons, presentedAt: null, pass: false });
+  const { ms, presentedAt: at, reason } = firstPopoutFrame(mapRecords, result);
+  if (reason) reasons.push(reason);
+  Object.assign(result, { ms, reasons, presentedAt: at, pass: reasons.length === 0 });
 }
 if (!sweep) section('Sweep', ['Area', 'Result'], [{ cells: ['Sweep', `**FAIL**: not run: ${run.sweepNotRun ?? 'it did not run'}`], pass: false }]);
 const area = name => results.filter(result => result.area === name);

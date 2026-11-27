@@ -263,12 +263,19 @@ struct ReportedState {
 }
 
 impl ReportedState {
+    fn same_status(&self, other: &Self) -> bool {
+        self.open_id == other.open_id && self.error == other.error
+            && self.viewer.path == other.viewer.path && self.viewer.revision == other.viewer.revision
+            && self.viewer.branch == other.viewer.branch && self.viewer.hour == other.viewer.hour
+    }
+
     fn into_event(self) -> NativeEvent {
         NativeEvent::State {
             path: self.viewer.path,
             branch: self.viewer.branch,
             hour: self.viewer.hour,
             revision: self.viewer.revision,
+            drawn: self.viewer.drawn,
             open_id: self.open_id,
             error: self.error,
         }
@@ -958,7 +965,7 @@ impl Controller {
             open_id,
             error: error.map(str::to_owned),
         };
-        if self.last_state.as_ref() == Some(&state) {
+        if self.last_state.as_ref().is_some_and(|last| last.same_status(&state)) {
             return;
         }
         if let Some(last) = self.last_report
@@ -1686,27 +1693,32 @@ mod tests {
     }
 
     #[test]
-    fn error_only_changes_are_part_of_the_same_revision_state() {
+    fn draw_stamp_alone_keeps_the_same_status_but_an_error_changes_it() {
         let mut reported = ReportedState {
             viewer: ViewerState {
                 path: Some("session.battleplan".into()),
                 branch: Some(u64::MAX.to_string()),
                 hour: Some(12),
                 revision: Some("100:20:0".into()),
+                drawn: None,
             },
             open_id: None,
             error: None,
         };
         let previous = reported.clone();
+        let stamp = dashboard_core::protocol::DrawnMapFrame { branch: u64::MAX.to_string(), hour: 12, drawn_at: 42.0, frame: 1 };
+        reported.viewer.drawn = Some(stamp.clone());
+        assert!(previous.same_status(&reported));
         reported.error = Some("Requested hour is outside the branch".into());
-        assert_ne!(previous, reported);
+        assert!(!previous.same_status(&reported));
         let NativeEvent::State {
-            revision, error, ..
+            revision, drawn, error, ..
         } = reported.into_event()
         else {
             panic!("wrong event");
         };
         assert_eq!(revision.as_deref(), Some("100:20:0"));
+        assert_eq!(drawn, Some(stamp));
         assert_eq!(
             error.as_deref(),
             Some("Requested hour is outside the branch")

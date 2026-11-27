@@ -446,15 +446,19 @@ thread_local! {
     static PAINTED: Cell<Option<(f64, f64, f64)>> = const { Cell::new(None) };
 }
 
-pub fn frame_painted(elapsed: Duration, acquire_secs: f32) {
-    if log().is_some() {
+pub fn frame_painted(elapsed: Duration, acquire_secs: f32, presented: bool) {
+    if let Some(log) = log() {
+        let at = epoch_ms();
         PAINTED.with(|painted| {
             painted.set(Some((
                 elapsed.as_secs_f64() * 1000.0,
                 f64::from(acquire_secs) * 1000.0,
-                epoch_ms(),
+                at,
             )));
         });
+        if presented && let Some(frame) = frame_number().checked_sub(1) {
+            log.send(format!(r#"{{"t":"map_present","at":{at:.3},"map":{},"frame":{frame}}}"#, log.map), at);
+        }
     }
 }
 
@@ -477,6 +481,10 @@ pub fn frame_ui() {
 pub fn frame_id() -> Option<u64> {
     log()?;
     STARTED.with(Cell::get).map(|_| FRAME.with(Cell::get))
+}
+
+pub fn frame_number() -> u64 {
+    FRAME.with(Cell::get)
 }
 
 pub fn profile_frame(line: &str) {
@@ -515,7 +523,8 @@ pub fn gpu_times(times: Vec<(u64, Result<f64, String>)>) {
     }
 }
 
-pub fn frame_end() {
+pub fn frame_end(drawn: Option<(replay_data::BranchId, replay_data::Hour, f64)>) {
+    let frame = FRAME.with(|frame| frame.replace(frame.get() + 1));
     let Some(log) = log() else {
         return;
     };
@@ -544,7 +553,6 @@ pub fn frame_end() {
             )
         },
     );
-    let frame = FRAME.with(|frame| frame.replace(frame.get() + 1));
     let (gpu_frame, gpu_ms, gpu_error) = match GPU.with(|gpu| gpu.borrow_mut().pop_front()) {
         None => ("null".to_owned(), "null".to_owned(), "null".to_owned()),
         Some((frame, Ok(ms))) => (frame.to_string(), format!("{ms:.3}"), "null".to_owned()),
@@ -552,9 +560,10 @@ pub fn frame_end() {
     };
     let at = epoch_ms();
     let map = log.map;
+    let drawn = drawn.map_or_else(String::new, |(branch, hour, at)| format!(r#","branch":"{branch}","hour":{hour},"drawn_at":{at:.3}"#));
     log.send(
         format!(
-            r#"{{"t":"map","at":{at:.3},"map":{map},"frame":{frame},"work_ms":{work:.3},"dt":{interval},"paint_ms":{paint},"acquire_ms":{acquire},"gpu_frame":{gpu_frame},"gpu_ms":{gpu_ms},"gpu_error":{gpu_error},"painted_at":{painted}}}"#
+            r#"{{"t":"map","at":{at:.3},"map":{map},"frame":{frame},"work_ms":{work:.3},"dt":{interval},"paint_ms":{paint},"acquire_ms":{acquire},"gpu_frame":{gpu_frame},"gpu_ms":{gpu_ms},"gpu_error":{gpu_error},"painted_at":{painted}{drawn}}}"#
         ),
         at,
     );

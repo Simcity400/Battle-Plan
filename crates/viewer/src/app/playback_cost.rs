@@ -892,7 +892,7 @@ pub(crate) fn measure(
                     .unwrap()
                     .gpu_frame_times(&state.device),
             );
-            crate::perf_log::frame_end();
+            crate::perf_log::frame_end(None);
             let wall_us = drained.duration_since(frame_start).as_secs_f64() * 1e6;
             frame_wall.push(wall_us);
             frame_cpu.extend(cycles_us(process_before, cycle_hz));
@@ -1081,7 +1081,7 @@ pub(crate) fn measure(
                 .unwrap()
                 .gpu_frame_times(&state.device),
         );
-        crate::perf_log::frame_end();
+        crate::perf_log::frame_end(None);
         frame_wall.push(frame_start.elapsed().as_secs_f64() * 1e6);
         frame_cpu.extend(cycles_us(process_before, cycle_hz));
         frame_thread_cpu.extend(thread_us(thread_before));

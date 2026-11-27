@@ -255,7 +255,34 @@ export function presentedAt(mapRecords, drawnAt, session) {
   return null;
 }
 
-export function presentedHours(records, mapRecords, { view, from, to, session }) {
+export function presentedMapFrames(mapRecords, { session, from, to }, role) {
+  const own = mapRecords.filter(record => record.session === session);
+  const maps = new Set(own.filter(record => record.t === 'map_open' && record.role === role).map(record => record.map));
+  const drawn = new Map(own.filter(record => record.t === 'map' && maps.has(record.map) && Number.isInteger(record.frame)
+    && typeof record.branch === 'string' && Number.isInteger(record.hour) && Number.isFinite(record.drawn_at))
+    .map(record => [`${record.map}:${record.frame}`, record]));
+  return own.filter(record => record.t === 'map_present' && record.at >= from && record.at <= to)
+    .flatMap(record => {
+      const frame = drawn.get(`${record.map}:${record.frame}`);
+      return frame ? [{ at: record.at, branch: frame.branch, hour: frame.hour }] : [];
+    }).sort((a, b) => a.at - b.at);
+}
+
+export function firstPopoutFrame(mapRecords, { session, input, at, popoutTarget }) {
+  const first = presentedMapFrames(mapRecords, { session, from: input, to: at }, 'popout')[0];
+  let reason = null;
+  if (!first) reason = 'the pop-out viewer reports no presented draw, so its first frame is unobservable';
+  else if (!popoutTarget?.branch || !Number.isInteger(popoutTarget.hour)) reason = 'the pop-out seek target was not captured';
+  else if (first.branch !== popoutTarget.branch || first.hour !== popoutTarget.hour)
+    reason = `the first pop-out frame drew branch ${first.branch} hour ${first.hour}, expected branch ${popoutTarget.branch} hour ${popoutTarget.hour}`;
+  return { ms: first ? first.at - input : null, presentedAt: first?.at ?? null, reason };
+}
+
+export function presentedHours(records, mapRecords, { view, from, to, session, branch }) {
+  if (view === null) {
+    const presented = presentedMapFrames(mapRecords, { session, from, to }, 'main').filter(frame => frame.branch === branch);
+    return presented.length ? new Set(presented.map(frame => frame.hour)).size : null;
+  }
   const drawn = records.filter(record => record.t === 'map_state' && record.session === session && record.view === view
     && !record.blank && Number.isFinite(record.hour) && Number.isFinite(record.drawn_at)
     && record.at >= from && record.at <= to);

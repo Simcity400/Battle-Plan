@@ -689,7 +689,7 @@ impl Viewer {
     }
 
     pub(super) fn report_embedded(&mut self, ctx: &egui::Context) {
-        let shown = self.rendered.map(|head| (head.branch, head.hour)).or_else(|| self.layers_on_screen());
+        let shown = self.drawn_stamp();
         let Some(embedded) = self.embedded.as_mut() else {
             return;
         };
@@ -699,9 +699,12 @@ impl Viewer {
                     .document
                     .as_ref()
                     .map(|document| document.source_path.to_string_lossy().into_owned()),
-                branch: shown.map(|(branch, _)| branch.to_string()),
-                hour: shown.map(|(_, hour)| hour),
+                branch: shown.map(|(branch, _, _)| branch.to_string()),
+                hour: shown.map(|(_, hour, _)| hour),
                 revision: self.document.as_ref().and(self.revision.clone()),
+                drawn: shown.map(|(branch, hour, drawn_at)| dashboard_core::protocol::DrawnMapFrame {
+                    branch: branch.to_string(), hour, drawn_at, frame: self.drawn_frame,
+                }),
             },
             self.installed_open_id,
             self.error

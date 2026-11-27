@@ -671,6 +671,7 @@ pub struct Viewer {
     rendered: Option<Playhead>,
     rendered_sequence: u64,
     drawn_at: Option<f64>,
+    drawn_frame: u64,
     applying_options: Option<dashboard_core::protocol::MapOptions>,
     drawn_options: Option<dashboard_core::protocol::MapOptions>,
     hover: Option<String>,
@@ -1272,6 +1273,7 @@ impl Viewer {
             rendered: None,
             rendered_sequence: 0,
             drawn_at: None,
+            drawn_frame: 0,
             applying_options: None,
             drawn_options: None,
             hover: None,
@@ -7200,6 +7202,7 @@ impl Viewer {
             }
         }
         self.drawn_at = Some(crate::perf_log::epoch_ms());
+        self.drawn_frame = crate::perf_log::frame_number();
         self.drawn_options.clone_from(&self.applying_options);
         self.map_hits.borrow_mut().end_frame();
         let (branch, layers_hour) = self.hour_on_screen(document);
@@ -7616,7 +7619,7 @@ impl eframe::App for Viewer {
         engine_executable::executable_tables::scope(tables, || self.campaign_ui(ui, frame));
         drop(pass);
         self.trace_switch_frame();
-        crate::perf_log::frame_end();
+        crate::perf_log::frame_end(self.drawn_stamp().filter(|_| self.drawn_frame == crate::perf_log::frame_number()));
     }
 }
 
@@ -7864,6 +7867,11 @@ impl Viewer {
         }
         mark_frame_end();
         drawn
+    }
+
+    fn drawn_stamp(&self) -> Option<(replay_data::BranchId, replay_data::Hour, f64)> {
+        let head = self.rendered.filter(|_| self.shown_whole)?;
+        Some((head.branch, head.hour, self.drawn_at?))
     }
 }
 
