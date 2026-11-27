@@ -1,5 +1,5 @@
 
-use super::{EventFeedGap, EventFeedGapField, EventFeedItem, EventFeedKind, EventFeedOption, EventFeedUnavailable, row::FeedEvent, row::Slot};
+use super::{EventFeedGap, EventFeedGapField, EventFeedItem, EventFeedKind, EventFeedOption, EventFeedUnavailable, index::TitleKeys, row::FeedEvent, row::Slot};
 use dashboard_base::{catalogue::{self, Catalogue}, products::artwork};
 use dashboard_effects::{ScriptedEffects, effect_description::{self, DecisionNameKeys}};
 use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ExpandedText, Link, SCRIPTED_GAP, ScopeName, ScriptedContent, ScriptedText, expand_dates_in};
@@ -439,6 +439,7 @@ enum NamingScope {
 
 #[derive(Default)]
 struct IndexNames<'a> {
+    keys: TitleKeys,
     decisions: Held<String, Result<DecisionDefinition<'a>, String>>,
     events: Held<String, Result<EventDefinition, String>>,
     decision_keys: Held<String, DecisionNameKeys>,
@@ -611,8 +612,8 @@ impl<'q> Presenter<'q> {
         Self { effects: false, ..self }
     }
 
-    pub(super) fn for_index(self) -> Self {
-        Self { effects: false, index: Some(IndexNames::default()), ..self }
+    pub(super) fn for_index(self, keys: TitleKeys) -> Self {
+        Self { effects: false, index: Some(IndexNames { keys, ..IndexNames::default() }), ..self }
     }
 
     pub fn catalogue(&self) -> Option<&Catalogue> {
@@ -717,6 +718,7 @@ impl<'q> Presenter<'q> {
 fn presentation(notices: &mut Notices, art: &Art<'_, '_>, kind: EventFeedKind, item: &mut EventFeedItem, inputs: &Inputs, frame: Result<HourFrame<'_>, String>) -> io::Result<()> {
     let catalogue: &Catalogue = art.catalogue;
     let indexing = art.index.is_some();
+    let keys = art.index.map(|index| index.keys);
     if !presents_event(kind) {
         if names_decision(kind) {
             let token = item.token.clone().unwrap_or_else(|| "unidentified decision".to_owned());
@@ -749,7 +751,7 @@ fn presentation(notices: &mut Notices, art: &Art<'_, '_>, kind: EventFeedKind, i
     };
     let lookup = || {
         let event = catalogue.event_index().get(token.as_bytes())?;
-        let title = if event.refused.is_none() { event.sole_title_key().map(|key| key.map(Arc::from)) } else { Ok(None) };
+        let title = if event.refused.is_none() && keys != Some(TitleKeys::Choice) { event.sole_title_key().map(|key| key.map(Arc::from)) } else { Ok(None) };
         Ok((event, title))
     };
     let (event, title) = match art.index.map_or_else(lookup, |index| remember(&index.events, token.clone(), lookup)) {
@@ -781,9 +783,9 @@ fn presentation(notices: &mut Notices, art: &Art<'_, '_>, kind: EventFeedKind, i
             item.gaps.push(EventFeedGap { field, ordinal, key: gap.key, reason: gap.reason });
         }
     };
-    let title = ("title", EventFeedGapField::Title, title.as_ref().map(|key| key.as_deref()).map_err(Clone::clone));
+    let title = (keys != Some(TitleKeys::Choice)).then(|| ("title", EventFeedGapField::Title, title.as_ref().map(|key| key.as_deref()).map_err(Clone::clone)));
     let description = (!indexing).then(|| ("body", EventFeedGapField::Description, event.sole_description_key()));
-    for (field, gap_field, keys) in std::iter::once(title).chain(description) {
+    for (field, gap_field, keys) in title.into_iter().chain(description) {
         match keys.and_then(|key| key.map(&localise).transpose()) {
             Ok(Some((key, expanded))) if field == "title" => {
                 item.name = Some(expanded.text);
@@ -813,7 +815,11 @@ fn presentation(notices: &mut Notices, art: &Art<'_, '_>, kind: EventFeedKind, i
     let mut options = Vec::new();
     let mut authored = Vec::new();
     let selected = inputs.option.and_then(|ordinal| usize::try_from(ordinal).ok());
-    let (skip, take) = if indexing { (selected.unwrap_or(event.option_names.len()), 1) } else { (0, event.option_names.len()) };
+    let (skip, take) = match keys {
+        Some(TitleKeys::Item) => (0, 0),
+        Some(_) => (selected.unwrap_or(event.option_names.len()), 1),
+        None => (0, event.option_names.len()),
+    };
     for (ordinal, name) in event.option_names.iter().enumerate().skip(skip).take(take) {
         let ordinal_u32 = u32::try_from(ordinal).map_err(|_| io::Error::other("Too many authored event options"))?;
         let resolved = localise(name);

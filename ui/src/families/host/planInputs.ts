@@ -2,7 +2,7 @@ import type { Failure } from '../../dashboard/queryError.ts';
 import type { FamilyBodyStatus } from '../plan.ts';
 
 export type PlanInput =
-  | { readonly name: string; readonly state: 'ready' | 'pending' }
+  | { readonly name: string; readonly state: 'ready' | 'pending'; readonly loadingLabel?: string }
   | { readonly name: string; readonly state: 'failed'; readonly failure: Failure; readonly retry: () => void };
 
 interface InputState<T> { readonly data?: T; readonly error?: Failure; readonly retry: () => void }
@@ -18,7 +18,7 @@ function inputsStatus(inputs: readonly PlanInput[]): FamilyBodyStatus | null {
   const failed = inputs.find(input => input.state === 'failed');
   if (failed?.state === 'failed') return { kind: 'failed', failure: failed.failure, origin: 'local', onRetry: failed.retry };
   const pending = inputs.find(input => input.state === 'pending');
-  return pending ? { kind: 'loading', label: `Reading ${pending.name}…` } : null;
+  return pending?.state === 'pending' ? { kind: 'loading', label: pending.loadingLabel ?? `Reading ${pending.name}…` } : null;
 }
 
 export interface BodyFacts {

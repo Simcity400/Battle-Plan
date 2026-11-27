@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum List {
     EventChoices,
     Decisions,

@@ -24,6 +24,12 @@ fn content_bound_read_ahead_keeps_all_three_first_log_reads_warm() {
         assert_eq!(!dashboard_base::catalogue::reads_recorded(context.content.as_ref().unwrap()), visual_mods);
         let catalogue = super::super::resolve_content(&source, &context).unwrap();
         let cancelled = AtomicBool::new(false);
+        assert!(scanned.titles.lock().unwrap().is_empty());
+        let title_index = || {
+            let presenter = super::super::text::Presenter::new(&query, Some(&catalogue), super::super::text::kept_naming(&source));
+            scanned.title_index(&query, &feed.index, None, TitleKeys::Item, presenter, &cancelled).unwrap()
+        };
+        assert!(Arc::ptr_eq(&title_index(), &title_index()), "pages share the title index for their base");
         super::super::EventFeedKinds::load(&source, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &cancelled).unwrap();
         let reused = [
             Arc::ptr_eq(&decisions, &decisions_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
@@ -52,8 +58,6 @@ fn brief(sequence: u64, kind: EventFeedKind, hour: i32, opener: Option<u64>, day
         days,
         token: Some("mission_a".into()),
         costs: [None, None],
-        name: None,
-        choice: None,
     }
 }
 
@@ -114,7 +118,7 @@ fn a_break_in_the_read_that_brought_an_edge_leaves_its_card_unwitnessed_from_tha
 #[test]
 fn a_history_that_cannot_be_read_is_one_missing_span_and_no_card_is_open_through_it() {
     let scanned = Scanned::refused(100, 200, "damaged");
-    let index = decisions(&scanned, &Names { slots: HashMap::new() }).unwrap();
+    let index = decisions(&scanned, &Names { slots: HashMap::new() }, &HashMap::new()).unwrap();
     let gaps: Vec<_> = index.gaps().iter().map(|gap| (gap.first_hour, gap.last_hour, gap.reason.as_str())).collect();
     assert_eq!(gaps, [(100, 200, "The event history could not be read: damaged")]);
     assert_eq!(scanned.decision_breaks, [(100, 200)]);
@@ -153,8 +157,7 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
     };
     let held = |slot: u32| vec![HolderRun { first: 0, last: 1_000, holder: Holder::Found { slot, id: slot }, starts_segment: true }];
     let holders = Holders::new([("GER".to_owned(), held(7)), ("POL".to_owned(), held(8))].into_iter().collect(), Vec::new());
-    let mut opener = brief(1, EventFeedKind::DecisionSelected, 100, None, Some(30));
-    opener.name = Some("Opening name".into());
+    let opener = brief(1, EventFeedKind::DecisionSelected, 100, None, Some(30));
     let later = Brief {
         at: Locator { run: 1, hour: 110, key: (1u128 << 64) | 2 },
         kind: EventFeedKind::DecisionDurationChanged,
@@ -167,25 +170,30 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
         days: Some(40),
         token: Some("mission_b".into()),
         costs: [None, None],
-        name: Some("Later name".into()),
-        choice: None,
     };
+    let labels = Labels::from([
+        (opener.at.key, (Some("Opening name".into()), None)),
+        (later.at.key, (Some("Later name".into()), None)),
+    ]);
     let scanned = Scanned {
         briefs: vec![opener, later],
         native: Vec::new(),
         war_ends: Vec::new(),
         incomplete: Vec::new(),
         windows_unrecorded: Vec::new(),
-        states: HashMap::new(),
+        lifecycles: Vec::new(),
         resolved: Mutex::default(),
         presented: Mutex::default(),
+        titles: Mutex::default(),
         breaks: Vec::new(),
         choice_breaks: Vec::new(),
         decision_breaks: Vec::new(),
         partial_reads: Vec::new(),
         gaps: Vec::new(),
     };
-    let index = decisions(&scanned, &Names::new(&holders)).unwrap();
+    let names = Names::new(&holders);
+    let index = decisions(&scanned, &names, &HashMap::new()).unwrap();
+    let index = scanned.labelled(&index, true, TitleKeys::Search, &names, &labels).unwrap();
     let ask_at = |hour: i32| Ask { hour, from: None, to: None, gap_end: None, selection: None, subject: None, kinds: None, states: None, search: None, order: Order::Date(Direction::Descending), live_first: false, offset: 0, limit: 10, chips: &[] };
     let poland = |first_hour: i32, last_hour: i32| Selection {
         membership: vec![CountrySpan { country: Country::Tag("POL".into()), first_hour, last_hour }],
@@ -211,7 +219,8 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
     let mut swapped = brief(3, EventFeedKind::DecisionSelected, 100, None, None);
     swapped.slots = [Some(8), Some(7), None];
     let swapped_scanned = Scanned { briefs: vec![swapped], ..scanned };
-    let swapped_index = decisions(&swapped_scanned, &Names::new(&holders)).unwrap();
+    let swapped_index = decisions(&swapped_scanned, &names, &HashMap::new()).unwrap();
+    let swapped_index = swapped_scanned.labelled(&swapped_index, true, TitleKeys::Search, &names, &Labels::new()).unwrap();
     assert_eq!(swapped_index.ask(&holders, &Ask { search: Some("GER POL"), ..ask_at(100) }).unwrap().total, 1, "tags observed together keep sorted order in search text");
 }
 
@@ -223,7 +232,7 @@ fn decision_cost_sort_keeps_unrecorded_after_recorded_in_both_directions() {
     briefs[1].costs = [Some(Some(-10)), Some(None)];
     briefs[2].costs = [Some(Some(0)), Some(Some(-15))];
     let scanned = Scanned { briefs, gaps: Vec::new(), ..Scanned::refused(0, 0, "fixture") };
-    let index = decisions(&scanned, &Names { slots: HashMap::new() }).unwrap();
+    let index = decisions(&scanned, &Names { slots: HashMap::new() }, &HashMap::new()).unwrap();
     for (direction, expected) in [(Direction::Ascending, [101, 102, 100, 103]), (Direction::Descending, [100, 102, 101, 103])] {
         let answer = index.ask(&Holders::new(BTreeMap::new(), Vec::new()), &Ask { hour: 110, from: None, to: None, gap_end: None, selection: None, subject: None, kinds: None, states: None, search: None, order: Order::Key(2, direction), live_first: false, offset: 0, limit: 4, chips: &[] }).unwrap();
         assert_eq!(answer.rows.iter().map(|shown| index.get(shown.at).date).collect::<Vec<_>>(), expected);

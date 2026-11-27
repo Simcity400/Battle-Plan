@@ -319,6 +319,7 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
     const selection = occurrenceSelection(ctx);
     return {
       owner: `${ctx.track.source.id}:${ctx.branch.id}:event-choices:${events.join(',')}:${awaiting}:${selection ? JSON.stringify(selection) : 'all'}:${JSON.stringify([search, sort])}`,
+      loadingLabel: search.trim() || sort.column === 'item' || sort.column === 'choice' ? 'Preparing titles…' : undefined,
       entries: [
         pagedTailEntry(
           'main',

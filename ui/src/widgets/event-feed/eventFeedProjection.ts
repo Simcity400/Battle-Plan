@@ -579,6 +579,7 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
     const full = contentSet(ctx.options.full).filter(key => opened.includes(key)).map(key => key.slice(GROUP.length));
     return {
       owner: `${ctx.track.source.id}:${ctx.branch.id}:event-feed:${categories.join(',')}:${excludedKinds.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}:${full.join(',')}:${JSON.stringify([search, sort])}`,
+      loadingLabel: search.trim() || sort.column === 'item' ? 'Preparing titles…' : undefined,
       entries: [
         pagedTailEntry(
           'main',
