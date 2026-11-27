@@ -1,5 +1,5 @@
 
-use dashboard_base::products::{Country, LoadContext, Product, breakdown::Breakdown, validate_country};
+use dashboard_base::products::{Country, LoadContext, Product, at_hour, breakdown::Breakdown, validate_country};
 use dashboard_base::Source;
 use dashboard_base::catalogue::{self, Catalogue};
 use dashboard_query::{Query, cost, identity::Holder};
@@ -636,6 +636,7 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
         }
     }
     let mut dated_names: HashMap<(u64, usize), StockVariantName> = HashMap::new();
+    let mut frames = at_hour::Frames::new(query)?;
     for (hour, asked) in by_hour {
         let resolve = |row: &VariantDefinitionRow, shown: &Tags, lexical: &[LexicalTokenRow]| {
             let mut raw = variant_names::raw_variant(row, hour, shown, lexical);
@@ -663,14 +664,13 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
             }
             continue;
         }
-        let wanted: Vec<u128> = asked.iter().map(|&(variant, at)| u128::from(fields_of(variant, at).equipment_token)).filter(|&token| token > 0).collect::<BTreeSet<_>>().into_iter().collect();
         let read = [
-            replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: Keys::These(&wanted) },
-            replay_lanes::at::Read { table: TableId::Countries, columns: None, keys: Keys::All },
-            replay_lanes::at::Read { table: TableId::CountryLinks, columns: None, keys: Keys::All },
-            replay_lanes::at::Read { table: TableId::CountryAppearance, columns: None, keys: Keys::All },
+            at_hour::Read::these(TableId::LexicalTokens, asked.iter().map(|&(variant, at)| u128::from(fields_of(variant, at).equipment_token)).filter(|&token| token > 0)),
+            at_hour::Read::all(TableId::Countries),
+            at_hour::Read::all(TableId::CountryLinks),
+            at_hour::Read::all(TableId::CountryAppearance),
         ];
-        let then = cost::storage(|| replay_lanes::at::frame(recording, span.run, hour, &read)).ok();
+        let then = frames.frame(hour, &read, "Production spending").ok();
         let then_tags = then.as_ref().map(|frame| Tags::from_tables(HourFrame::from(frame), true).or_else(|_| Tags::from_tables(HourFrame::from(frame), false)));
         let then_lexical = then.as_ref().and_then(|frame| frame.complete::<tables::LexicalTokens>().ok()).unwrap_or(&[]);
         for (variant, at) in asked {
