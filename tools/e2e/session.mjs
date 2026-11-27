@@ -52,9 +52,8 @@ export class Session {
 
   async step(area, item, label, action, { done = null, changes = null, drew = null, from = 'first', timeout = 6000, quiet = 200, widget = null, awaits = true, budget = BUDGET_MS, check = true, control = label, unobservable = null, shot = false, extra = {} } = {}) {
     this.app.setCase(`${area}/${item}/${label}`);
-    const family = familyOf(area, item, label), playing = item === 'header/play-pause' && label === 'play';
-    const context = family || playing ? await this.app.evaluate('__e2e.perfContext()') : null;
-    if (playing) this.playOrigin = context;
+    const family = familyOf(area, item, label);
+    const context = family ? await this.app.evaluate('__e2e.perfContext()') : null;
     let changed = null, sentBefore = null, settingsBefore = null, drawnSame = null;
     const article = key => `document.querySelector(${JSON.stringify(`article.dash-widget[data-widget="${key}"]`)})`;
     const settingsOf = key => `${article(key)}?.dataset.settings ?? null`;
@@ -124,7 +123,7 @@ export class Session {
       loafs: probe.loafs, placeholderMs: probe.placeholderMs, placeholderAt: probe.placeholderAt, ...(acted && typeof acted === 'object' ? acted : {}), ...extra });
     if (family) {
       const page = area === 'seeks' ? item : ['pages', 'pages-at'].includes(area) ? item.slice(item.indexOf('/') + 1) : context.page;
-      const scenario = scopeScenario(this.recipe, { ...context, page, ...(family === 'pause' && this.playOrigin ? { hour: this.playOrigin.hour } : {}) }, /warm/.test(`${item}/${label}`) || !check ? 'warm' : 'cold');
+      const scenario = scopeScenario(this.recipe, { ...context, page }, /warm/.test(`${item}/${label}`) || !check ? 'warm' : 'cold');
       result.perf = { family, context, recipe: this.recipe, page, scenario: scenarioId(scenario), start: this.epoch + probe.t0,
         settled: this.epoch + probe.now, complete: context.enabled && probe.busySignal && !probe.timedOut && start !== null };
     }

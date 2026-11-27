@@ -77,7 +77,7 @@ test('unwatch preserves a still-visible placeholder as a fatal named reason', as
   assert.match(reasons[0], /123 ms/);
   assert.deepEqual(functionalReasons(reasons), ['Example: still showing a loading placeholder at settlement']);
 });
-test('eight families gate actual work; timed play gates only the proven zero-head-read invariant', () => {
+test('seven families gate actual work; pause stays unmeasured without a deterministic clock', () => {
   const families = [['startup', 'open', 'open'], ['pages', 'cold/Example', 'switch'], ['pages', 'cold/Example', 'scroll 1'],
     ['seeks', 'Example', 'early'], ['controls', 'header/play-pause', 'pause'], ['controls', 'widget/settings', 'choose'], ['catalogue', 'view/Example', 'add']]
     .map(([area, item, label]) => familyOf(area, item, label));
@@ -88,7 +88,8 @@ test('eight families gate actual work; timed play gates only the proven zero-hea
   const measured = measureCounts(run, [result], records)[0];
   assert.equal(measured.complete, true);
   assert.deepEqual(measured.counts, { 'requests:head': 0 });
-  assert.equal(new Set([...families, measured.family]).size, 8);
+  assert.equal(familyOf('controls', 'header/play-pause', 'pause'), null);
+  assert.equal(new Set([...families, measured.family].filter(Boolean)).size, 7);
 });
 test('the report makes transient placeholders informational, keeps their duration, and rejects missing content', async t => {
   const folder = await mkdtemp(path.join(tmpdir(), 'bp-count-report-'));
@@ -109,6 +110,7 @@ test('the report makes transient placeholders informational, keeps their duratio
   const counts = JSON.parse(await readFile(path.join(out, 'counts.json'), 'utf8'));
   assert.equal(counts.entries[0].complete, true);
   assert.match(await readFile(path.join(out, 'e2e.md'), 'utf8'), /unaccepted/);
+  assert.match(await readFile(path.join(out, 'e2e.md'), 'utf8'), /7 available.*Pause is unmeasured:.*deterministic playback clock/);
   assert.equal(JSON.parse((await readFile(path.join(folder, 'perf-history.jsonl'), 'utf8')).trim()).interactions[0].placeholderMs, 123);
   await writeFile(path.join(folder, 'perf-baseline.json'), JSON.stringify({ version: 1, entries: counts.entries.map(e => ({ ...e, counts: Object.fromEntries(Object.keys(e.counts).map(name => [name, { accepted: 0 }])), reason: 'reviewed' })) }));
   assert.equal(report().status, 0);

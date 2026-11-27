@@ -14,7 +14,7 @@ export function familyOf(area, item, label) {
   if (area === 'startup') return 'open recording';
   if (['pages', 'pages-at'].includes(area)) return label === 'switch' ? 'open page' : 'scroll';
   if (area === 'seeks') return 'seek';
-  if (area === 'controls') return item.startsWith('tooltips/') ? null : item === 'header/play-pause' ? (label === 'pause' ? 'pause' : null)
+  if (area === 'controls') return item.startsWith('tooltips/') || item === 'header/play-pause' ? null
     : item === 'timeline/drag' || item === 'header/previous-next-hour' ? 'seek' : 'change setting';
   if (area === 'catalogue') return label === 'add' || ['delete', 'discard'].includes(label) ? 'add/remove widget' : 'change setting';
   return null;

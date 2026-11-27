@@ -554,12 +554,10 @@ if (sweep) {
 
 if (files['perf-baseline']) {
   const entries = measureCounts(run, results, records).map(entry => ({ ...entry, key: countKey(entry) }));
-  const selected = entry => entry.recording === run.fixture?.sha256 && (entry.phase === 'startup' || run.requested?.includes(entry.phase))
+  const selected = entry => entry.recording === run.fixture?.sha256
     && (run.sessions ?? []).some(s => s.name.replaceAll(' ', '-') === entry.session)
     && (sweep?.meta.sessions ?? []).some(s => JSON.stringify(s.recipe) === JSON.stringify(entry.recipe))
-    && !entries.some(e => e.interaction === entry.interaction && e.scenario !== entry.scenario)
-    && (entry.phase === 'startup' || !run.selection?.pages || !entry.page || run.selection.pages.split(',').includes(entry.page))
-    && (entry.phase === 'startup' || !run.selection?.cases || entry.phase !== 'controls' || run.selection.cases.split(',').some(id => entry.interaction.includes(`|${id}|`)));
+    && !entries.some(e => e.interaction === entry.interaction && e.scenario !== entry.scenario);
   const compared = compareCounts(entries, await readJSON(files['perf-baseline']), selected);
   await writeFile(path.join(files.out, 'counts.json'), JSON.stringify({ run, entries }, null, 1));
   under();
@@ -567,7 +565,7 @@ if (files['perf-baseline']) {
   section('Accepted request counts', ['Result', 'Count'], compared.length ? compared.map(row => ({ pass: row.pass,
     cells: [verdict(row.pass), countRow(row, run, path.join(files.out, 'counts.json')).replaceAll('|', '\\|')] }))
     : [{ pass: false, cells: [verdict(false), 'unmeasured: no scoped count interactions'] }],
-  `${families.size} of 12 driven families have accepted gated counts in this run (8 available). Gaps: ${GAPS.join(', ')}. Timings, pictures, commits, layout figures and session peak memory are trends, never timing gates.`);
+  `${families.size} of 12 driven families have accepted gated counts in this run (7 available). Native viewer gaps: ${GAPS.join(', ')}. Pause is unmeasured: its starting hour follows free-running playback and it can send nonzero work; a deterministic playback clock in the suite is required. Timings, pictures, commits, layout figures and session peak memory are trends, never timing gates.`);
   await appendFile(path.join(path.dirname(files['perf-baseline']), 'perf-history.jsonl'), JSON.stringify(trend(run, results, records, entries)) + '\n');
 }
 const judged = sections.filter(entry => !entry.phases || entry.phases.some(phase => asked(run, phase)));

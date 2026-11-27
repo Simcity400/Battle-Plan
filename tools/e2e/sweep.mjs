@@ -11,7 +11,7 @@ import { PINS, readHistory } from './coverage.mjs';
 import { Visual } from './visual.mjs';
 import { NativeInput, hover, interactions, mapModes, mapPictures, zoomedMapPicture } from './map.mjs';
 import { classifyWidgetSnapshot, pageShown } from './verdicts.mjs';
-import { buildWidgetClassifierExpr, catalogueItemKey, createOutcomeWatcher, describeUncleanCataloguePage, finishCatalogueCard, measureIdleCost, mergeWidgetOutcomes, runThrottled, selectQuickCatalogueCards } from './sweepHelpers.mjs';
+import { buildWidgetClassifierExpr, catalogueItemKey, createOutcomeWatcher, describeUncleanCataloguePage, finishCatalogueCard, measureIdleCost, mergeWidgetOutcomes, restoreCountHour, runThrottled, selectQuickCatalogueCards } from './sweepHelpers.mjs';
 import { TRACE_MARKS, describeNodes, startTrace, summariseTrace, summaryNodes } from './trace.mjs';
 import { ReplyRecorder } from './replies.mjs';
 import { allWidgetPages, costPages, HEAVIEST, HEAVIEST_COUNT, SCREEN, SHELL_HEADER_HEIGHT, VIEWS, screenMetrics, tallViewportHeight } from './allWidgets.mjs';
@@ -985,11 +985,12 @@ await phase('widget-costs', async () => {
 });
 
 await phase('catalogue', async () => {
+  await pausePlayback();
+  await seekTo(PICTURE_SEEK[1]);
   await s.step('catalogue', 'setup', 'add a page', () => s.click('button[aria-label="Add a page"]'), { done: `document.querySelector('.sidebar-page-list input')` });
   await s.key('Enter');
   await s.until(`!document.querySelector('.sidebar-page-list input')`, 3000);
   if (await app.evaluate(`document.querySelectorAll('article.dash-widget').length`)) throw new Error('a new page is not empty');
-  await seekTo(PICTURE_SEEK[1]);
   const editing = `document.querySelector('button[aria-label="Done editing"]')`;
   const notEditing = `document.querySelector('button[aria-label="Edit layout"]')`;
   const catalogueOpen = `document.querySelector('.widget-catalogue:popover-open')`;
@@ -1121,12 +1122,15 @@ async function controls() {
     if (quick && control.id !== 'widget/settings') continue;
     const pages = control.page === '*' ? meta.pages : control.page === null ? [await s.currentPage()] : [control.page];
     for (const page of pages.filter(name => onlyPages === null || onlyPages.includes(name))) {
+      let fixedHour = null;
       try {
         await s.openPage(page);
+        if (control.id === 'header/play-pause') fixedHour = (await s.timeline()).value;
         await control.run(s, page);
       } catch (error) {
         await s.fail('controls', control.id, page, error.message);
       }
+      if (fixedHour !== null) { await pausePlayback(); await restoreCountHour(fixedHour, s, seekTo); }
       await s.escape();
       await s.escape();
       if (await s.holds(`document.querySelector('button[aria-label="Done editing"]')`)) await discardLayout().catch(() => {});
