@@ -31,7 +31,7 @@
 .header-playback { grid-area: playback; display: flex; align-items: center; gap: 8px; }
 .header-date { display: flex; align-items: center; }
 .header-date .field { gap: 0; }
-.header-date .date-time-trigger { width: var(--header-date-width); }
+.header-date .date-time-trigger { width: var(--header-date-width); contain: strict; }
 .header-date .date-time-trigger > svg:first-child { color: var(--muted); }
 .header-date.has-date-draft .date-time-trigger { border-color: var(--accent-line); }
 .header-transport { display: flex; align-items: center; gap: 4px; }
@@ -211,11 +211,12 @@
 .dash-grid-scroll.is-editing { background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--text) 13%, transparent) 1px, transparent 0); background-size: 22px 22px; background-attachment: local; }
 .dash-grid { min-width: 0; }
 .dash-grid .react-grid-item { transition: none; }
-.dash-grid-cell { contain: size layout; will-change: transform; }
+.dash-grid-cell { contain: strict; will-change: transform; }
 .dash-grid .react-grid-item.react-grid-placeholder { background: var(--accent-soft); opacity: 1; border: 1.5px dashed var(--accent-line); border-radius: var(--r-lg); transition-duration: 120ms; }
 .dash-grid .react-grid-item > .react-resizable-handle { width: 22px; height: 22px; background-image: none; padding: 0; }
 .dash-grid .react-grid-item > .react-resizable-handle::after { right: 7px; bottom: 7px; width: 9px; height: 9px; border-right: 2px solid var(--accent); border-bottom: 2px solid var(--accent); border-bottom-right-radius: 4px; opacity: .8; }
 .dash-grid .react-grid-item.react-draggable-dragging, .dash-grid .react-grid-item.resizing { z-index: 5; }
+.dash-grid .react-grid-item.react-draggable-dragging { contain: size layout style; }
 .dash-grid .react-grid-item.react-draggable-dragging .dash-widget { box-shadow: 0 0 0 1.5px var(--accent), var(--shadow-lg); }
 
 .dash-prepare { position: fixed; top: 0; left: 0; display: flex; flex-direction: column; transform: translateX(-200vw); visibility: hidden; pointer-events: none; contain: strict; }
