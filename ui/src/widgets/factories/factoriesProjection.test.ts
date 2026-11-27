@@ -195,3 +195,33 @@ test('a faction is sent as the group, and a known empty group says so', () => {
   const model = factoriesProjection.project(partsView(500, panelOf(500, [])), { ...BASE_OPTS, top: null, group: true });
   assert.deepEqual([model.emptyKind, model.empty], ['empty', 'No country of this group at this date.']);
 });
+
+test('factoriesDeclaration names split parts from recorded factory groups and marks unrecorded ones as Name not recorded', () => {
+  const ctx = {
+    track: { source: { id: 's', revision: 1 }, axisOffset: 0 },
+    branch: { id: '1' },
+    options: { split: true, count: 'built', types: '' },
+    aux: {
+      missing: null,
+      warnings: [],
+      groups: [
+        { key: 'military', flag: 'military_production', buildings: [{ token: 'ordnance_works', name: 'Ordnance Works' }] },
+        { key: 'naval', flag: 'naval_production', buildings: [] },
+      ],
+    },
+    countries: { top: 5, all: false, every: [], tags: [], membership: null, holders: null, unobserved: [] },
+    widget: { countries: { kind: 'group', group: { type: 'top', count: 5 }, membership: 'hour', aggregate: false } },
+  } as unknown as Parameters<typeof factoriesDeclaration.projectionOptions>[0];
+  const opts = factoriesDeclaration.projectionOptions(ctx, { extent: [0, 0], surface: '#1e1e1e' });
+  assert.deepEqual(opts.parts.map(p => [p.id, p.label]), [
+    ['military', 'Ordnance Works'],
+    ['naval', 'Name not recorded'],
+    ['civilian', 'Name not recorded'],
+  ]);
+  const model = factoriesProjection.project(
+    partsView(300, panelOf(300, [['GER', 20, 10, 10, 0, 2, 3, 0]], ['built7', 'built1', 'built2', 'built4', 'damaged1', 'damaged2', 'damaged4'])),
+    opts,
+  );
+  const row = model.rows[0] as BarsDataRow;
+  assert.deepEqual(row.segments?.map(s => s.label), ['Ordnance Works', 'Damaged Ordnance Works', 'Name not recorded', 'Damaged (Name not recorded)']);
+});
