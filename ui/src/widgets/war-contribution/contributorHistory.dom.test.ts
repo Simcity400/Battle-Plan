@@ -44,6 +44,8 @@ test('installed War contribution rows open a cancellable history and keep its re
       await page.press('End');
       await page.press('ArrowLeft');
       assert.ok(await act<{ caption: string }>('read()').then(reply => reply.caption.includes(formatDateHover(lastHour - 1))));
+      assert.match(await act<string>('tooltip()'), /BBB.*partial.*not attributed/);
+      assert.match(await act<{ spoken: string }>('read()').then(reply => reply.spoken), /EEE.*partial.*not attributed/);
       await mouse('.war-history-chart', 0.53, 66, false);
       assert.match(await act<string>('tooltip()'), /Recording paused in the fixture|partial.*not attributed/);
       await page.press('Escape');

@@ -8,7 +8,7 @@ import cases from './permyriad.test.json' with { type: 'json' };
 
 const person: WarHistoryContributor = {
   slot: 1, id: 1, membership: [[103, 106, 0, 'ONE']],
-  amounts: [[[103, '37000']], [[103, '19']], [], [], [], [[103, '137']], [], [], [], []],
+  amounts: [[[103, '37000']], [[103, '19']], [[103, '0']], [], [], [[103, '137']], [], [], [], []],
   partialCasualties: [{ firstHour: 103, lastHour: 104 }],
 };
 
@@ -22,10 +22,10 @@ const history = {
   measureKeys: ['participation', 'equipmentDamage', 'occupation', 'airDamage', 'shipDamage', 'casualties', 'strategicBombing', 'convoyDamage', 'lendLeaseSent', 'lendLeaseReceived'],
   contributors: [person],
   sides: [{
-    totals: [[[103, '100000']], [[103, '39']], [], [], [], [[103, '279']], [], [], [], []],
+    totals: [[[103, '100000']], [[103, '39']], [[103, '0']], [], [], [[103, '279']], [], [], [], []],
     missing: [],
   }, {
-    totals: [[], [[103, '41']], [], [], [], [[103, '111']], [], [], [], []],
+    totals: [[], [[103, '41']], [[103, '0']], [], [], [[103, '111']], [], [], [], []],
     missing: [{ firstHour: 104, lastHour: 104, reason: 'Fixture opposing ledger unread' }],
   }],
   gaps: [{ firstHour: 102, lastHour: 102, reason: 'Fixture pause' }, { firstHour: 108, lastHour: 109, reason: 'Fixture ending pause' }],
@@ -51,6 +51,9 @@ test('held history distinguishes absence, partial casualties, a missing side and
   assert.equal(read(104)[1]!.kind, 'partial');
   assert.equal(read(105)[0]!.kind, 'known');
   assert.equal(read(107)[0]!.kind, 'notApplicable');
+  const zeroShares = readContribution(history, person, 2, 103);
+  assert.deepEqual(zeroShares.map(value => value.kind), ['zero', 'notApplicable', 'notApplicable']);
+  assert.match(readingText(zeroShares[1]!, 1), /recorded total is zero/i);
   const chart = historyChart(history, [person], 'casualties', 2, 'white');
   assert.equal(chart.hour, 109);
   assert.equal(chart.series[0]?.points?.find(point => point.hour === 100)?.value, null);
