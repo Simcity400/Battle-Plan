@@ -781,7 +781,7 @@ pub(super) fn listed(rows: &mut [Option<EventFeedRow>], description: bool, windo
             cause.notes.clear();
         }
         if row.cause.as_ref().is_some_and(|cause| {
-            cause.how.is_none() && cause.within.is_none() && cause.conference.is_none() && cause.state.is_none() && cause.ally.is_none() && cause.reason.is_none() && cause.selected_option.is_none() && !cause.target_recorded
+            cause.how.is_none() && cause.within.is_none() && cause.conference.is_none() && cause.state.is_none() && cause.ally.is_none() && cause.reason.is_none() && cause.selected_option.is_none() && cause.target.is_none()
         }) {
             row.cause = None;
         }
@@ -925,6 +925,7 @@ impl Product for EventFeedTail {
             super::EventFeedGapField::decl(),
             super::EventFeedGap::decl(),
             super::EventFeedItem::decl(),
+            super::EventFeedScriptTarget::decl(),
             super::EventFeedCause::decl(),
             super::DecisionLifecycleState::decl(),
             super::EventWindowDecision::decl(),

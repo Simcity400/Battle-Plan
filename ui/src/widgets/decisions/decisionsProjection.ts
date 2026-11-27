@@ -182,22 +182,24 @@ function buildDecisionRow(
   const titleGaps = gapsForField(card.item?.gaps, 'title');
   const safeName = plainScripted(rawName ?? decisionName(card), titleGaps) || 'Decision name not recorded';
   const participants = firstRow.participants ?? [card.country, card.target];
+  const target = at.edges.find(e => e.row.cause?.target !== undefined)?.row.cause?.target;
   const countryEntries: { readonly tag: string | null; readonly missingLabel?: string }[] = [
     { tag: card.country, missingLabel: 'Country not identified' },
   ];
   if (card.target) {
     countryEntries.push({ tag: card.target });
-  } else if (participants[1] === null && card.occurrence.edges.some(e => e.row.cause?.targetRecorded === true)) {
+  } else if (participants[1] === null && target?.kind === 'country') {
     countryEntries.push({ tag: null, missingLabel: 'Target country not recorded' });
   }
 
-  const stateId = at.edges.find(e => e.row.cause?.state != null)?.row.cause?.state ?? null;
   let placeCell: TableCell = { value: notApplicable('No target state'), blank: true };
   let placeLabel: string | null = null;
-  if (stateId !== null) {
-    const stateRes = resolveName(readView, 'state', String(stateId), { atHour: firstRow.hour, boundary });
-    placeCell = { value: stateRes.value };
-    placeLabel = stateRes.value.kind === 'known' ? stateRes.value.value : stateRes.value.kind === 'pending' ? LOADING_NAME : null;
+  if (target?.kind === 'state') {
+    const value = target.id === null
+      ? notRecorded('Target state not recorded')
+      : resolveName(readView, 'state', String(target.id), { atHour: firstRow.hour, boundary }).value;
+    placeCell = { value };
+    placeLabel = value.kind === 'known' ? value.value : value.kind === 'pending' ? LOADING_NAME : value.kind === 'notRecorded' ? value.reason : null;
   }
 
   const timer = decisionTimerCell(at);

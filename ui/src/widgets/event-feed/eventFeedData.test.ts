@@ -71,7 +71,7 @@ test('R3-S5: event feed tooltip quantities retain their recorded numbers behind 
 });
 
 test('a feed row is validated, an icon the dashboard cannot draw dropped, and malformed rows refused', () => {
-  const event = row('warDeclared', 100, ['GER', 'POL'], { readHour: 101, cause: { how: 'a diplomatic action', notes: [], targetRecorded: false } });
+  const event = row('warDeclared', 100, ['GER', 'POL'], { readHour: 101, cause: { how: 'a diplomatic action', notes: [] } });
   assert.deepEqual(validateFeedRow(event), event);
   const scripted = row('scriptEventFired', 100, ['GER', 'GER'], { category: 'politics',
     item: { token: 'news.1', name: 'News', icon: 'javascript:bad', description: null, options: [{ ordinal: 0, name: 'Fine' }] } });
@@ -114,7 +114,7 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   const chosenRow = row('eventOptionSelected', 100, ['GER'], {
     category: 'politics',
     participants: ['GER', null],
-    cause: { notes: [], selectedOption: 1, targetRecorded: false },
+    cause: { notes: [], selectedOption: 1 },
     item: { token: 'ev.1', name: 'Cabinet Crisis', icon: null, description: 'Body', options: [{ ordinal: 0, name: 'Stay' }, { ordinal: 1, name: 'Resign' }] },
   });
   const unknownRecipient = row('scriptEventFired', 100, ['GER'], {
@@ -424,9 +424,11 @@ test('witnessed participant roles keep unidentified countries without adding an 
     'a one-country row has no second role');
   const roleCases: { event: EventFeedRow; flags: string[] }[] = [
     { event: row('decisionRemoved', 100, [], { category: 'politics' }), flags: ['?'] },
-    { event: row('decisionSelected', 100, [], { category: 'politics', cause: { notes: [], targetRecorded: false } }), flags: ['?'] },
-    { event: row('decisionRemoved', 100, [], { category: 'politics', cause: { notes: [], targetRecorded: true } }), flags: ['?', '?'] },
-    { event: row('decisionRemoved', 100, ['AAA'], { category: 'politics', cause: { state: 77, notes: [], targetRecorded: true } }), flags: ['AAA'] },
+    { event: row('decisionSelected', 100, [], { category: 'politics', cause: { notes: [] } }), flags: ['?'] },
+    { event: row('decisionRemoved', 100, [], { category: 'politics', cause: { notes: [], target: { kind: 'country' } } }), flags: ['?', '?'] },
+    { event: row('decisionRemoved', 100, ['AAA'], { category: 'politics', cause: { notes: [], target: { kind: 'state', id: 77 } } }), flags: ['AAA'] },
+    { event: row('decisionRemoved', 100, [], { category: 'politics', cause: { notes: [], target: { kind: 'state', id: 77 } } }), flags: ['?'] },
+    { event: row('decisionRemoved', 100, ['AAA'], { category: 'politics', cause: { notes: [], target: { kind: 'country' } } }), flags: ['AAA', '?'] },
     { event: row('warDeclared', 100, []), flags: ['?', '?'] },
     { event: row('stateTransferred', 100, []), flags: ['?', '?'] },
   ];
@@ -448,9 +450,10 @@ test('witnessed participant roles keep unidentified countries without adding an 
   assert.deepEqual(country('k0').flags?.map(flag => flag.tag), ['?']);
   assert.deepEqual(country('k1').value, { kind: 'partial', value: 'Norway', reason: 'Country not identified' }, 'the guaranteed country is missing beside the guarantor');
   assert.deepEqual(country('k1').flags?.map(flag => flag.tag), ['NOR', '?']);
+  const actualFlags = roleCases.map((_, i) => country(`k${i + 2}`).flags?.map(flag => flag.tag));
+  assert.deepEqual(actualFlags, roleCases.map(({ flags }) => flags));
   for (const [i, { flags }] of roleCases.entries()) {
     const cell = country(`k${i + 2}`);
-    assert.deepEqual(cell.flags?.map(flag => flag.tag), flags, `case ${i}`);
     if (flags.every(tag => tag === '?')) assert.deepEqual(cell.value, { kind: 'notRecorded', reason: 'Country not identified' });
   }
   const tip = (key: string) => {

@@ -188,6 +188,7 @@ fn a_cause_reads_in_words_with_its_flags_and_a_scripts_operands_follow_it() {
     choice.scopes = Some(vec![EventFeedScope { country: 3, references: [0, 0, 5, 0, 0, 0, 0, 0, 0], ..EventFeedScope::default() }]);
     let words = cause::words(&choice, None).unwrap();
     assert_eq!(words.how, None);
+    assert_eq!(words.target, None);
     assert_eq!(
         words.notes,
         [
@@ -200,6 +201,19 @@ fn a_cause_reads_in_words_with_its_flags_and_a_scripts_operands_follow_it() {
     let mut annex = event(EventFeedSource::Annex as u8, 10, Slot::Of(7), Slot::Of(8));
     annex.cause = Some(super::row::Cause { route: EventFeedRoute::AnnexEffect as u8, within: EventFeedRoute::CivilWarAnnex as u8, conference: None, state: None, ally: None, reason: None, flags: 0 });
     assert!(cause::civil_war(&annex), "an annexation inside a civil war's resolution");
+
+    use super::EventFeedScriptTarget::{Country, State};
+    let mut decision = event(EventFeedSource::DecisionSelected as u8, 10, Slot::Of(7), Slot::None);
+    for (country, numeric, expected) in [
+        (Some(8), Some(77), Country),
+        (Some(u32::MAX), Some(77), State { id: Some(77) }),
+        (None, Some(77), State { id: Some(77) }),
+        (Some(0), Some(-1), State { id: None }),
+    ] {
+        decision.country_target = country;
+        decision.numeric_target = numeric;
+        assert_eq!(cause::words(&decision, None).unwrap().target, Some(expected));
+    }
 }
 
 #[test]
@@ -931,8 +945,8 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     assert_eq!(notes(&cards_b1), 0, "list rows leave the notes to the opened row");
     let reopened: usize = cards_b1.rows.iter().map(|row| notes(&DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some(row.key.clone()), ..cards_at(101) }, &context, &cancel).unwrap())).sum();
     assert!(reopened > 0, "opened rows carry them");
-    let cause = |reply: &super::ScriptOccurrenceTailReply| reply.rows[0].occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.clone()).map_or((None, false), |cause| (cause.selected_option, cause.target_recorded));
-    assert_eq!(cause(&opened), cards_b1.rows.iter().find(|row| row.key == key).and_then(|row| row.occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.clone())).map_or((None, false), |cause| (cause.selected_option, cause.target_recorded)), "a list row keeps the facts its notes carried");
+    let cause = |reply: &super::ScriptOccurrenceTailReply| reply.rows[0].occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.as_ref()).map_or((None, None), |cause| (cause.selected_option, cause.target));
+    assert_eq!(cause(&opened), cards_b1.rows.iter().find(|row| row.key == key).and_then(|row| row.occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.as_ref())).map_or((None, None), |cause| (cause.selected_option, cause.target)), "a list row keeps the facts its notes carried");
     assert!(DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some("native:9:9".into()), ..cards_at(101) }, &context, &cancel).unwrap().rows.is_empty(), "a row not in the log at the hour is no row");
     assert_eq!(card_end_state(&cards_b1, "native:1:1"), Some(DecisionLifecycleState::Completed));
     assert_eq!(card_end_state(&cards_b1, "native:1:2"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
