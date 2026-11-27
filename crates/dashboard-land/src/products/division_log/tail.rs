@@ -28,6 +28,8 @@ use std::{
     io,
     sync::{Arc, Mutex, OnceLock, PoisonError, atomic::AtomicBool},
 };
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -289,7 +291,7 @@ impl Event {
         })
     }
 }
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 struct Filters {
     templates: Option<BTreeSet<u32>>,
     expanded: BTreeSet<String>,
@@ -310,6 +312,8 @@ impl Line {
     }
 }
 
+pub(super) const HELD_VIEWS: usize = 8;
+
 struct Tail {
     art: Content,
     first_read: Option<i32>,
@@ -319,7 +323,9 @@ struct Tail {
     gaps: Vec<MissingSpan>,
     removal_gaps: Vec<MissingSpan>,
     warnings: Vec<String>,
-    view: Mutex<Option<(Filters, Arc<Index<Line>>)>>,
+    views: Mutex<Vec<(Filters, Arc<Index<Line>>)>>,
+    #[cfg(test)]
+    view_builds: AtomicUsize,
 }
 
 const REMOVAL_GAP: &str = "Division equipment deletions incomplete";
@@ -377,7 +383,19 @@ fn scan(source: &Source, query: &Query<'_>, art: Content, cancelled: &AtomicBool
     };
     let has_vanished = events.iter().any(|event| event.kind == DivisionEventRow::VANISHED);
     let first_read = first_read.into_iter().chain(events.iter().map(|event| event.observed)).min();
-    Ok(Tail { art, first_read, has_vanished, events, chips, gaps, removal_gaps, warnings, view: Mutex::default() })
+    Ok(Tail {
+        art,
+        first_read,
+        has_vanished,
+        events,
+        chips,
+        gaps,
+        removal_gaps,
+        warnings,
+        views: Mutex::default(),
+        #[cfg(test)]
+        view_builds: AtomicUsize::new(0),
+    })
 }
 
 const SINGLE: u8 = 0;
@@ -388,12 +406,17 @@ const VANISHED: u8 = 4;
 
 impl Tail {
     fn index(&self, filters: Filters, cancelled: &AtomicBool) -> io::Result<Arc<Index<Line>>> {
-        let mut kept = self.view.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((held, index)) = kept.as_ref()
-            && held == &filters
         {
-            return Ok(Arc::clone(index));
+            let mut kept = self.views.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(at) = kept.iter().position(|(held, _)| *held == filters) {
+                let entry = kept.remove(at);
+                let found = Arc::clone(&entry.1);
+                kept.push(entry);
+                return Ok(found);
+            }
         }
+        #[cfg(test)]
+        self.view_builds.fetch_add(1, Ordering::Relaxed);
         let mut groups: BTreeMap<(i32, i32, u32), Vec<usize>> = BTreeMap::new();
         let mut lines = Vec::new();
         let mut push = |line: Line, state| {
@@ -446,7 +469,17 @@ impl Tail {
             gaps.extend_from_slice(&self.removal_gaps);
         }
         let index = Arc::new(Index::new(lines, gaps, &[])?);
-        *kept = Some((filters, Arc::clone(&index)));
+        let mut kept = self.views.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(at) = kept.iter().position(|(held, _)| *held == filters) {
+            let entry = kept.remove(at);
+            let found = Arc::clone(&entry.1);
+            kept.push(entry);
+            return Ok(found);
+        }
+        if kept.len() >= HELD_VIEWS {
+            kept.remove(0);
+        }
+        kept.push((filters, Arc::clone(&index)));
         Ok(index)
     }
 }
@@ -458,6 +491,17 @@ struct Kept(HashMap<u64, (Binding, Arc<Tail>)>);
 
 pub(crate) fn forget(source: &Source) {
     source.state::<Kept>().lock().unwrap_or_else(PoisonError::into_inner).0.clear();
+}
+
+#[cfg(test)]
+pub(super) fn view_builds(source: &Source, branch: u64) -> usize {
+    source
+        .state::<Kept>()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .0
+        .get(&branch)
+        .map_or(0, |(_, tail)| tail.view_builds.load(Ordering::Relaxed))
 }
 
 #[cfg(feature = "test-support")]
