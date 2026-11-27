@@ -60,7 +60,7 @@ function rowsOf(readView: BoundedReadView, group: WarContributionGroup, measure:
   const right = membersOf(sides[1]);
   return Array.from({ length: Math.max(left.length, right.length) }, (_, index) => ({
     kind: 'data',
-    ...(left[index] !== undefined ? half(sides[0], left[index]!) : { key: `${sides[0]}:none:${index}`, label: '' }),
+    ...(left[index] !== undefined ? half(sides[0], left[index]!) : { key: `${sides[0]}:none:${index}` }),
     ...(right[index] !== undefined ? { rightSide: half(sides[1], right[index]!) } : {}),
   }));
 }

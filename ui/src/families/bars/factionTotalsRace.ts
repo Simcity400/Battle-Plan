@@ -5,10 +5,10 @@ import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } f
 import { groupSelection } from '../groupSelection.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { resolveName } from '../table/identityCell.ts';
-import { knownValue, notRecorded, zeroValue } from '../value.ts';
+import { knownValue, notRecorded, zeroValue, type Value } from '../value.ts';
 import { formatScalar } from '../valueFormat.ts';
 import type { FactionTotalRow, FactionTotalsAtReply } from '../../generated/dashboard';
-import { barsLabelText, type BarsDataRow, type BarsModel, type BarsRowLabel } from './model.ts';
+import { barsLabelText, type BarsDataRow, type BarsModel } from './model.ts';
 
 export type FactionTotalsKind = 'territory' | 'country-factories';
 
@@ -169,11 +169,11 @@ export function factionTotalsSources(
 }
 
 function factionPresentation(readView: BoundedReadView, id: string, aggregated: boolean, groupLabel: string, surface: string, ordinal: number): {
-  readonly label: BarsRowLabel;
+  readonly label: Value<string>;
   readonly color: string;
 } {
   if (aggregated) {
-    return { label: groupLabel, color: colour(surface, 0) };
+    return { label: knownValue(groupLabel), color: colour(surface, 0) };
   }
   const { value, who: identity } = resolveName(readView, 'faction', id);
   const color = identity.colour?.status === 'ready' ? identity.colour.value : colour(surface, ordinal);

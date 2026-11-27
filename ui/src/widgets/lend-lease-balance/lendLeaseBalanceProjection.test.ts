@@ -78,7 +78,7 @@ test('a chosen country the reply does not hold is not recorded and comes last; a
     { slot: 3, tag: 'SOV', values: ['0', '0', '0', '0'] },
   ])), { ...TOP, chosen: ['SOV', 'MOD', '\u00004'] });
   const rows = model.rows as BarsDataRow[];
-  assert.deepEqual(rows.map(row => [row.key, typeof row.label !== 'string' && row.label.kind === 'notRecorded']), [['\u00004', true], ['\u00003', false], ['MOD', false]]);
+  assert.deepEqual(rows.map(row => [row.key, row.label?.kind === 'notRecorded']), [['\u00004', true], ['\u00003', false], ['MOD', false]]);
   assert.equal(rows[2]!.left?.value.value.kind, 'notRecorded');
   assert.equal(rows[2]!.left?.numeric, null);
   assert.deepEqual(sides(rows[1]!), [{ kind: 'zero', value: 0n }, { kind: 'zero', value: 0n }]);

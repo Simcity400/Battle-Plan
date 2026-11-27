@@ -4,7 +4,7 @@ import { contentKey } from '../../dashboard/options.ts';
 import { artTooltipItem } from '../../families/art/adapters.ts';
 import { unavailableArt } from '../../families/art/types.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsRowLabel, type BarsRowMedia, type CountryRowPresentation } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsRowMedia, type CountryRowPresentation } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -151,7 +151,7 @@ function projectResources(readView: BoundedReadView, reply: FactionPoolsReply, s
     const value = fixedValue(entry.amount, entry.missing);
     const numeric = entry.amount === null ? null : Number(BigInt(entry.amount)) / scale;
     const media = resourceMedia(readView, entry);
-    const label: BarsRowLabel = entry.name !== null ? entry.name : notRecorded(entry.nameReason ?? 'Resource name not recorded');
+    const label: Value<string> = entry.name !== null ? knownValue(entry.name) : notRecorded(entry.nameReason ?? 'Resource name not recorded');
     const formatted = value.kind === 'known' || value.kind === 'zero' ? formatValueState(value, format) : null;
     const exactFormatted = value.kind === 'known' || value.kind === 'zero' ? formatValueState(value, exactFormat) : null;
     const items: TooltipListItem[] = [
@@ -250,7 +250,7 @@ function projectResearch(readView: BoundedReadView, reply: FactionPoolsReply): B
     {
       kind: 'data',
       key: 'research:base',
-      label: 'Scientist base',
+      label: knownValue('Scientist base'),
       value: { value: baseVal, format, label: 'Scientist base' },
       numeric: null,
       ...(formatted && 'text' in formatted ? { readout: { primary: formatted.text } } : {}),
@@ -298,7 +298,7 @@ function projectDoctrines(readView: BoundedReadView, reply: FactionPoolsReply): 
     return { ...base, rows: [], summaryText, empty: 'This faction shares no doctrines yet.', emptyKind: 'empty', warnings: reply.warnings };
   }
   const rows: BarsDataRow[] = reply.doctrines.map(folder => {
-    const label: BarsRowLabel = folder.name !== null ? folder.name : notRecorded(folder.reason ?? 'Doctrine name not recorded');
+    const label: Value<string> = folder.name !== null ? knownValue(folder.name) : notRecorded(folder.reason ?? 'Doctrine name not recorded');
     const items: TooltipListItem[] = [{ label: 'Doctrine', value: 'Shared with the faction' }];
     if (folder.reason) items.push({ label: 'Name', missingReason: folder.reason });
     return {

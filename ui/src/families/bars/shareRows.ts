@@ -3,12 +3,12 @@ import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import { REGION_ADD_KEY, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import type { Value } from '../value.ts';
 import type { ValueFormat } from '../valueFormat.ts';
-import { barsLabelText, type BarsDataRow, type BarsLegendItem, type BarsModel, type BarsReadout, type BarsRow, type BarsRowLabel, type BarsRowMedia, type BarsSegment } from './model.ts';
+import { barsLabelText, type BarsDataRow, type BarsLegendItem, type BarsModel, type BarsReadout, type BarsRow, type BarsRowMedia, type BarsSegment } from './model.ts';
 
 export interface ShareRowEntry {
   readonly key: string;
   readonly subject?: string;
-  readonly label: BarsRowLabel;
+  readonly label: Value<string>;
   readonly media?: BarsRowMedia;
   readonly group?: 'picked' | 'auto';
   readonly region?: number;

@@ -230,7 +230,7 @@ const barsHour = H(1941, 9, 15);
 const barsModel = {
   form: 'ordered', hour: barsHour, scaleMax: 300,
   rows: [['GER', 'German Reich', 293, '#5f6b7a'], ['USA', 'United States', 254, '#3b6fd6'], ['SOV', 'Soviet Union', 219, '#b8453a'], ['ENG', 'United Kingdom', 141, '#c96b5a'], ['JAP', 'Japan', 97, '#d9d0b8'], ['ITA', 'Italy', 64, '#3f8f4f']]
-    .map(([key, label, value, color]) => ({ kind: 'data', key, label, color, value: { value: knownValue(value as number), format: 'integer' }, numeric: value })),
+    .map(([key, label, value, color]) => ({ kind: 'data', key, label: knownValue(label as string), color, value: { value: knownValue(value as number), format: 'integer' }, numeric: value })),
 };
 const tableHour = 1000;
 const tableProjection = declareTableProjection<{ rows: { id: string; name: string; factories: number; divisions: number }[] }, { id: string; name: string; factories: number; divisions: number }, Record<string, never>>({

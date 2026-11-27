@@ -74,7 +74,7 @@ test('the resource icon comes from the reply; a missing name or icon is said, ne
   const icon = rows[0]!.media?.art;
   assert.equal(icon?.status === 'ready' ? icon.url : null, ICON);
   assert.equal(rows[2]!.media?.art.status, 'unavailable');
-  assert.equal(typeof rows[1]!.label !== 'string' && rows[1]!.label.kind, 'notRecorded');
+  assert.equal(rows[1]!.label?.kind, 'notRecorded');
   assert.notEqual(rows[0]!.color, rows[1]!.color, 'colours follow the recorded resource order');
 });
 

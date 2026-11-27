@@ -77,7 +77,7 @@ function branchRow(
     kind: 'data',
     key: String(consumer.index),
     subject: String(consumer.index),
-    label: rawName === null ? notRecorded('Branch name not recorded') : label,
+    label: rawName === null ? notRecorded('Branch name not recorded') : knownValue(label),
     media,
     color: colour(surface, consumer.index),
     value: {

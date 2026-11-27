@@ -124,7 +124,7 @@ test('guards reject future hours, bare nulls, and missing values carrying bar ma
       rows: [{
         kind: 'data',
         key: 'GER',
-        label: 'German Reich',
+        label: knownValue('German Reich'),
         value: { value: notRecorded('Factories table absent') },
         numeric: 293,
       }],
@@ -138,12 +138,40 @@ test('guards reject future hours, bare nulls, and missing values carrying bar ma
       rows: [{
         kind: 'data',
         key: 'GER',
-        label: 'German Reich',
+        label: knownValue('German Reich'),
         value: { value: null as never },
         numeric: 10,
       }],
     }, h),
   );
+  assert.throws(
+    () => assertBarsModelValid({
+      form: 'ordered',
+      hour: h,
+      rows: [{
+        kind: 'data',
+        key: 'GER',
+        value: { value: knownValue(10) },
+        numeric: 10,
+      }],
+    }, h),
+    InvalidBarsModelError,
+  );
+  assertBarsModelValid({
+    form: 'two-sided',
+    twoSidedLayout: 'split-sides',
+    hour: h,
+    rows: [{
+      kind: 'data',
+      key: 'left:none:0',
+      rightSide: {
+        key: 'right:GER',
+        label: knownValue('German Reich'),
+        value: { value: knownValue(10) },
+        numeric: 10,
+      },
+    }],
+  }, h);
   const idx = new IdentityIndex({ sourceId: 's', revision: '1', branchId: '1', content: 1 });
   idx.ingestStylesReply({
     branchId: '1',
@@ -181,10 +209,10 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
     scaleUnit: 'Factories',
     showAxis: true,
     rows: [
-      { kind: 'data', key: 'GER', label: 'German Reich', media: { kind: 'flag', art: missingArt('Flag missing'), tag: 'GER' }, color: '#999999', value: { value: knownValue(293), format: 'integer' }, numeric: 293 },
-      { kind: 'data', key: 'USA', label: 'United States of America Long Name', media: { kind: 'flag', art: PENDING_ART, tag: 'USA' }, color: '#4f86f7', value: { value: partialValue(292, '1 state unread'), format: 'integer' }, numeric: 292 },
-      { kind: 'data', key: 'LUX', label: 'Luxembourg', media: { kind: 'flag', art: missingArt('Flag missing'), tag: 'LUX' }, color: '#3fb950', value: { value: zeroValue(0), format: 'integer' }, numeric: 0 },
-      { kind: 'data', key: 'TIB', label: 'Tibet', media: { kind: 'flag', art: missingArt('Flag missing'), tag: 'TIB' }, color: '#d29922', value: { value: notRecorded('Country unread') }, numeric: null },
+      { kind: 'data', key: 'GER', label: knownValue('German Reich'), media: { kind: 'flag', art: missingArt('Flag missing'), tag: 'GER' }, color: '#999999', value: { value: knownValue(293), format: 'integer' }, numeric: 293 },
+      { kind: 'data', key: 'USA', label: knownValue('United States of America Long Name'), media: { kind: 'flag', art: PENDING_ART, tag: 'USA' }, color: '#4f86f7', value: { value: partialValue(292, '1 state unread'), format: 'integer' }, numeric: 292 },
+      { kind: 'data', key: 'LUX', label: knownValue('Luxembourg'), media: { kind: 'flag', art: missingArt('Flag missing'), tag: 'LUX' }, color: '#3fb950', value: { value: zeroValue(0), format: 'integer' }, numeric: 0 },
+      { kind: 'data', key: 'TIB', label: knownValue('Tibet'), media: { kind: 'flag', art: missingArt('Flag missing'), tag: 'TIB' }, color: '#d29922', value: { value: notRecorded('Country unread') }, numeric: null },
     ],
   };
   assertBarsModelValid(raceModel, h);
@@ -211,7 +239,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
       {
         kind: 'data',
         key: 'navy',
-        label: 'Navy',
+        label: knownValue('Navy'),
         color: '#9085e9',
         value: { value: knownValue(31), format: 'integer' },
         numeric: 31,
@@ -236,7 +264,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
       {
         kind: 'data',
         key: 'ETH',
-        label: 'Ethiopia',
+        label: knownValue('Ethiopia'),
         color: '#9085e9',
         left: { value: { value: knownValue(6781.5), format: 'decimal1' }, numeric: 6781.5 },
         right: { value: { value: zeroValue(0), format: 'decimal1' }, numeric: 0 },
@@ -258,7 +286,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
     picked: [
       {
         key: 'reg:poland',
-        label: 'Eastern Poland',
+        label: knownValue('Eastern Poland'),
         region: 40,
         segments: [
           { key: 'axis', label: 'Axis', share: 0.59, value: knownValue(59), color: '#ccb2a7' },
@@ -270,7 +298,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
     automatic: [
       {
         key: 'reg:atlantic',
-        label: 'North Atlantic Ridge',
+        label: knownValue('North Atlantic Ridge'),
         segments: [],
         missing: notRecorded('Air region unread'),
       },
@@ -347,7 +375,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
       {
         kind: 'data',
         key: 'oil',
-        label: 'Oil',
+        label: knownValue('Oil'),
         color: '#c98500',
         value: { value: knownValue(-13), format: { decimals: 0, signed: true }, tone: 'shortage', caption: 'Short a day' },
         numeric: -13,
@@ -356,7 +384,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
       {
         kind: 'data',
         key: 'coal',
-        label: 'Coal',
+        label: knownValue('Coal'),
         color: '#a97b50',
         value: { value: knownValue(4), format: { decimals: 0, signed: true }, caption: 'Surplus a day' },
         numeric: 4,
@@ -365,7 +393,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
       {
         kind: 'data',
         key: 'tungsten',
-        label: 'Tungsten',
+        label: knownValue('Tungsten'),
         color: '#9085e9',
         value: { value: notApplicable('Mod has no tungsten') },
         numeric: null,
@@ -392,7 +420,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
       {
         kind: 'data',
         key: 'supply',
-        label: 'Supply',
+        label: knownValue('Supply'),
         segments: [
           { key: 'full', label: 'Supplied', share: 0.72, value: knownValue(72), color: '#3fb950' },
           { key: 'low', label: 'Low', share: 0.2, value: knownValue(20), color: '#d29922' },
@@ -416,7 +444,7 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
   const rows1500 = Array.from({ length: 1500 }, (_, i) => ({
     kind: 'data' as const,
     key: `C${String(i).padStart(4, '0')}`,
-    label: `Country ${i}`,
+    label: knownValue(`Country ${i}`),
     color: '#4f86f7',
     value: { value: knownValue(1500 - i), format: 'integer' as const },
     numeric: 1500 - i,
@@ -516,19 +544,19 @@ test('an ordered scale with an axis ends on the next round tick, so the largest 
   assert.equal(axisCeiling(1061), 1500);
   assert.equal(axisCeiling(0), 0);
   const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
-  const layout = layoutFamilyBars({ form: 'ordered', hour: h, showAxis: true, rows: [{ kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(293) }, numeric: 293 }] }, 600, 300);
+  const layout = layoutFamilyBars({ form: 'ordered', hour: h, showAxis: true, rows: [{ kind: 'data', key: 'GER', label: knownValue('German Reich'), value: { value: knownValue(293) }, numeric: 293 }] }, 600, 300);
   assert.equal(layout.scaleMax, 300);
 });
 
 test('audit rows keep one key per row and cell, so two bars never collapse in the verifier', () => {
   const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
   const rows = deriveBarsAudit({ form: 'ordered', hour: h, rows: [
-    { kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(293) }, numeric: 293 },
-    { kind: 'data', key: 'USA', label: 'United States', value: { value: knownValue(292) }, numeric: 292 },
+    { kind: 'data', key: 'GER', label: knownValue('German Reich'), value: { value: knownValue(293) }, numeric: 293 },
+    { kind: 'data', key: 'USA', label: knownValue('United States'), value: { value: knownValue(292) }, numeric: 292 },
   ] });
   assert.equal(new Map(rows.map(row => [row.key, row.value])).size, rows.length);
   const counted = (primary: string) => new Map(deriveBarsAudit({ form: 'share', hour: h, rows: [
-    { kind: 'data', key: '11', label: 'English Channel', segments: [], readout: { primary } },
+    { kind: 'data', key: '11', label: knownValue('English Channel'), segments: [], readout: { primary } },
   ] }).map(row => [row.key, row.value]));
   assert.notDeepEqual(counted('90 air wings'), counted('91 air wings'), 'a painted readout is compared');
 });
@@ -538,7 +566,7 @@ test('a backward seek drops a cached model from a later hour', () => {
     kind: 'test-bars-seek-back',
     family: 'bars',
     project(readView) {
-      return { form: 'ordered', hour: readView.hour, rows: [{ kind: 'data', key: 'A', label: readView.hour >= 10 ? 'After' : 'Before', value: { value: knownValue(1) }, numeric: 1 }] };
+      return { form: 'ordered', hour: readView.hour, rows: [{ kind: 'data', key: 'A', label: knownValue(readView.hour >= 10 ? 'After' : 'Before'), value: { value: knownValue(1) }, numeric: 1 }] };
     },
     nextChange(readView) {
       return readView.hour < 10 ? 10 : Infinity;
@@ -585,8 +613,8 @@ test('a backward seek drops a cached model from a later hour', () => {
     kind: 'test-bars-seek-swap',
     family: 'bars',
     project(readView) {
-      const a = { kind: 'data' as const, key: 'A', label: 'A', value: { value: knownValue(readView.hour >= 10 ? 1 : 2) }, numeric: readView.hour >= 10 ? 1 : 2 };
-      const b = { kind: 'data' as const, key: 'B', label: 'B', value: { value: knownValue(readView.hour >= 10 ? 2 : 1) }, numeric: readView.hour >= 10 ? 2 : 1 };
+      const a = { kind: 'data' as const, key: 'A', label: knownValue('A'), value: { value: knownValue(readView.hour >= 10 ? 1 : 2) }, numeric: readView.hour >= 10 ? 1 : 2 };
+      const b = { kind: 'data' as const, key: 'B', label: knownValue('B'), value: { value: knownValue(readView.hour >= 10 ? 2 : 1) }, numeric: readView.hour >= 10 ? 2 : 1 };
       return { form: 'ordered', hour: readView.hour, animateOrder: true, rows: readView.hour >= 10 ? [b, a] : [a, b] };
     },
     nextChange: readView => (readView.hour < 10 ? 10 : Infinity),
@@ -607,8 +635,8 @@ test('a backward seek drops a cached model from a later hour', () => {
 test('the top painted gliding row takes the hit where two rows overlap', () => {
   const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
   const model: BarsModel = { form: 'ordered', hour: h, rows: [
-    { kind: 'data', key: 'A', label: 'A', value: { value: knownValue(2) }, numeric: 2 },
-    { kind: 'data', key: 'B', label: 'B', value: { value: knownValue(1) }, numeric: 1 },
+    { kind: 'data', key: 'A', label: knownValue('A'), value: { value: knownValue(2) }, numeric: 2 },
+    { kind: 'data', key: 'B', label: knownValue('B'), value: { value: knownValue(1) }, numeric: 1 },
   ] };
   const layout = layoutFamilyBars(model, 480, 240);
   const glide = new Map([['B', { fromY: layout.bodyTop + layout.rowTops[0]!, startedAt: 0 }]]);
@@ -619,7 +647,7 @@ test('the top painted gliding row takes the hit where two rows overlap', () => {
 
 test('a known 40 percent share beside an unavailable part fills 40 percent and marks the rest unavailable', () => {
   const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
-  const model: BarsModel = { form: 'share', hour: h, rows: [{ kind: 'data', key: 'R', label: 'Region', segments: [
+  const model: BarsModel = { form: 'share', hour: h, rows: [{ kind: 'data', key: 'R', label: knownValue('Region'), segments: [
     { key: 'AX', label: 'Axis', share: 0.4, value: knownValue(4), color: '#aa3344' },
     { key: 'UN', label: 'Unrecorded side', share: 0, value: notRecorded('Score unknown'), color: '#777777', hatched: true },
   ] }] };
@@ -632,7 +660,7 @@ test('a known 40 percent share beside an unavailable part fills 40 percent and m
 });
 
 test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mirror holds only visible rows', () => {
-  const rows = Array.from({ length: 1500 }, (_, i) => ({ kind: 'data' as const, key: `K${i}`, label: `Country ${i}`, value: { value: knownValue(1500 - i) }, numeric: 1500 - i }));
+  const rows = Array.from({ length: 1500 }, (_, i) => ({ kind: 'data' as const, key: `K${i}`, label: knownValue(`Country ${i}`), value: { value: knownValue(1500 - i) }, numeric: 1500 - i }));
   registerFamilyProjection<BarsProjection<Record<string, never>>>({
     kind: 'test-bars-hover',
     family: 'bars',
@@ -673,7 +701,7 @@ test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mi
 test('bar fills are the identity colour raised to 3:1 against the surface, at full opacity', () => {
   const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
   const dark = '#2a2a2a';
-  const model: BarsModel = { form: 'ordered', hour: h, rows: [{ kind: 'data', key: 'GER', label: 'German Reich', color: dark, value: { value: knownValue(5) }, numeric: 5 }] };
+  const model: BarsModel = { form: 'ordered', hour: h, rows: [{ kind: 'data', key: 'GER', label: knownValue('German Reich'), color: dark, value: { value: knownValue(5) }, numeric: 5 }] };
   const layout = layoutFamilyBars(model, 480, 200);
   const { ctx, ops } = makeFakeCtx();
   drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
@@ -685,7 +713,7 @@ test('bar fills are the identity colour raised to 3:1 against the surface, at fu
 test('a two-sided row can carry a ratio column with its own header', () => {
   const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
   const model: BarsModel = { form: 'two-sided', hour: h, leftHeader: 'Own losses', rightHeader: 'Enemy aircraft destroyed', readoutHeader: 'Ratio', rows: [
-    { kind: 'data', key: 'GER', label: 'German Reich', color: '#888888', left: { value: { value: knownValue(2474) }, numeric: 2474 }, right: { value: { value: knownValue(4453) }, numeric: 4453 }, readout: { primary: '1.80 : 1' } },
+    { kind: 'data', key: 'GER', label: knownValue('German Reich'), color: '#888888', left: { value: { value: knownValue(2474) }, numeric: 2474 }, right: { value: { value: knownValue(4453) }, numeric: 4453 }, readout: { primary: '1.80 : 1' } },
   ] };
   const layout = layoutFamilyBars(model, 840, 300);
   assert.ok(layout.showReadout && layout.plotRight < layout.readoutX);
@@ -707,7 +735,7 @@ test('a measure list sits left of the butterfly: the body moves right, a list ro
   };
   const model = {
     form: 'two-sided' as const, twoSidedLayout: 'split-sides' as const, hour: 10, pickList,
-    rows: [{ kind: 'data' as const, key: 'a', label: 'Country A', value: { value: knownValue(0.5), format: 'share' as const }, numeric: 0.5 }],
+    rows: [{ kind: 'data' as const, key: 'a', label: knownValue('Country A'), value: { value: knownValue(0.5), format: 'share' as const }, numeric: 0.5 }],
   };
   const wide = layoutFamilyBars(model, 1600, 320);
   assert.equal(wide.pickWidth, 330);
@@ -754,7 +782,7 @@ test('a measure list sits left of the butterfly: the body moves right, a list ro
 });
 
 test('at the deepest scroll the extent allows, the last row sits above the axis, not under it', () => {
-  const rows = Array.from({ length: 40 }, (_, at) => ({ kind: 'data' as const, key: `C${at}`, label: `C${at}`, value: { value: knownValue(100 - at) }, numeric: 100 - at }));
+  const rows = Array.from({ length: 40 }, (_, at) => ({ kind: 'data' as const, key: `C${at}`, label: knownValue(`C${at}`), value: { value: knownValue(100 - at) }, numeric: 100 - at }));
   const layout = layoutFamilyBars({ form: 'ordered', hour: 0, rows, showAxis: true }, 480, 240);
   assert.ok(layout.axisHeight > 0);
   const deepest = barsScrollHeight(layout) - layout.height;
@@ -781,7 +809,7 @@ test('share rows draw the category legend strip, wrap long category lists cleanl
       {
         kind: 'data',
         key: 'GER',
-        label: 'German Reich',
+        label: knownValue('German Reich'),
         segments: [
           { key: 'infantry', label: 'Infantry Battalions', share: 0.7, value: knownValue(280), color: '#16a34a' },
           { key: 'support', label: 'Support Companies', share: 0.3, value: knownValue(120), color: '#7c3aed' },
@@ -808,8 +836,8 @@ test('#833-7: all-zero integer Race axis emits whole ticks [0, 1] instead of rep
     showAxis: true,
     scaleFormat: { decimals: 0 },
     rows: [
-      { kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(0) }, numeric: 0 },
-      { kind: 'data', key: 'FRA', label: 'France', value: { value: knownValue(0) }, numeric: 0 },
+      { kind: 'data', key: 'GER', label: knownValue('German Reich'), value: { value: knownValue(0) }, numeric: 0 },
+      { kind: 'data', key: 'FRA', label: knownValue('France'), value: { value: knownValue(0) }, numeric: 0 },
     ],
   };
   const layout = layoutFamilyBars(model, 600, 300);
@@ -826,7 +854,7 @@ test('#833-7: all-zero integer Race axis emits whole ticks [0, 1] instead of rep
     scaleMax: 100,
     scaleFormat: { decimals: 2, maxDecimals: 0, unit: 'HP' },
     rows: [
-      { kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(100) }, numeric: 100 },
+      { kind: 'data', key: 'GER', label: knownValue('German Reich'), value: { value: knownValue(100) }, numeric: 100 },
     ],
   };
   const scaledLayout = layoutFamilyBars(scaledModel, 600, 300);
@@ -843,7 +871,7 @@ test('#833-7: all-zero integer Race axis emits whole ticks [0, 1] instead of rep
     scaleMax: 100_000,
     scaleFormat: 'fixed5Percent',
     rows: [
-      { kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(100_000) }, numeric: 100_000 },
+      { kind: 'data', key: 'GER', label: knownValue('German Reich'), value: { value: knownValue(100_000) }, numeric: 100_000 },
     ],
   };
   const fixedPctLayout = layoutFamilyBars(fixedPctModel, 600, 300);
@@ -857,7 +885,7 @@ test('#833-7: all-zero integer Race axis emits whole ticks [0, 1] instead of rep
 test('C1.7: offscreen rank swaps and scrolling unchanged ranks in a 1,500-country Race trigger no glide motion', () => {
   const h = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
   const probeRows = Array.from({ length: 1500 }, (_, idx) => ({
-    kind: 'data' as const, key: `C${idx}`, label: `Country ${idx}`, value: { value: knownValue(1500 - idx) }, numeric: 1500 - idx,
+    kind: 'data' as const, key: `C${idx}`, label: knownValue(`Country ${idx}`), value: { value: knownValue(1500 - idx) }, numeric: 1500 - idx,
   }));
   const offscreenStart = visibleBarsRange(layoutFamilyBars({ form: 'ordered', hour: h, rows: probeRows }, 480, 240), 0, 0).last;
   registerFamilyProjection<BarsProjection<Record<string, never>>>({
@@ -874,7 +902,7 @@ test('C1.7: offscreen rank swaps and scrolling unchanged ranks in a 1,500-countr
           if (idx === 2) keyIdx = 3;
           else if (idx === 3) keyIdx = 2;
         }
-        return { kind: 'data' as const, key: `C${keyIdx}`, label: `Country ${keyIdx}`, value: { value: knownValue(1500 - idx) }, numeric: 1500 - idx };
+        return { kind: 'data' as const, key: `C${keyIdx}`, label: knownValue(`Country ${keyIdx}`), value: { value: knownValue(1500 - idx) }, numeric: 1500 - idx };
       });
       return { form: 'ordered', hour: readView.hour, animateOrder: true, nextChangeAt: readView.hour + 1, rows };
     },

@@ -334,7 +334,7 @@ export function projectOperativePairs(readView: BoundedReadView, options?: Opera
         kind: 'data',
         key: `${spy}:unknown-target`,
         subject: spy,
-        label: `${ownerLabel} → Target not recorded`,
+        label: knownValue(`${ownerLabel} → Target not recorded`),
         muted: true,
         media: shownSpy.media,
         ...(shownSpy.color ? { color: shownSpy.color } : {}),

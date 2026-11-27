@@ -7,44 +7,36 @@ import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
 import { resolveName } from '../table/identityCell.ts';
-import { assertValue, hasMeasuredValue, knownValue, type Value } from '../value.ts';
+import { assertValue, hasMeasuredValue, type Value } from '../value.ts';
 import { formatShare, formatValueState, notRecordedLabel, type ValueFormat } from '../valueFormat.ts';
 
 export type BarsForm = 'ordered' | 'two-sided' | 'share' | 'net' | 'stacked';
 
 export type BarsTwoSidedLayout = 'paired' | 'split-sides' | 'stacked-pair';
 
-export type BarsRowLabel = string | Value<string>;
-
-export function barsLabelValue(label: BarsRowLabel): Value<string> | null {
-  if (typeof label !== 'string') return label;
-  return label.trim() ? knownValue(label) : null;
+export function barsLabelMissing(label: Value<string> | undefined): boolean {
+  return label !== undefined && label.kind === 'notRecorded';
 }
 
-export function barsLabelMissing(label: BarsRowLabel): boolean {
-  return typeof label !== 'string' && label.kind === 'notRecorded';
+export function barsLabelMuted(label: Value<string> | undefined): boolean {
+  return label !== undefined && (label.kind === 'notRecorded' || label.kind === 'notApplicable' || label.kind === 'pending');
 }
 
-export function barsLabelMuted(label: BarsRowLabel): boolean {
-  return typeof label !== 'string' && (label.kind === 'notRecorded' || label.kind === 'notApplicable' || label.kind === 'pending');
-}
-
-export function barsLabelText(label: BarsRowLabel, figure = 'Name'): string {
-  if (typeof label === 'string') return label;
+export function barsLabelText(label: Value<string> | undefined, figure = 'Name'): string {
+  if (label === undefined) return '';
   const formatted = formatValueState(label, undefined, { figure });
   if (formatted.kind === 'notRecorded') return notRecordedLabel(figure);
   if (formatted.kind === 'notApplicable' || formatted.kind === 'pending') return formatted.label;
   return formatted.text;
 }
 
-export function barsLabelSpoken(label: BarsRowLabel, figure = 'Name'): string {
-  if (typeof label === 'string') return label;
+export function barsLabelSpoken(label: Value<string> | undefined, figure = 'Name'): string {
+  if (label === undefined) return '';
   return formatValueState(label, undefined, { figure }).spoken;
 }
 
-export function barsLabelAudit(label: BarsRowLabel): string {
-  const value = barsLabelValue(label);
-  return value === null ? '' : canonicalAuditValue(value);
+export function barsLabelAudit(label: Value<string> | undefined): string {
+  return label === undefined ? '' : canonicalAuditValue(label);
 }
 
 export interface BarsRowMedia {
@@ -121,7 +113,7 @@ export interface BarsSideMeasure {
 export interface BarsOppositeRow {
   readonly key: string;
   readonly subject?: string;
-  readonly label: BarsRowLabel;
+  readonly label: Value<string>;
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly value: BarsValueField;
@@ -151,7 +143,7 @@ export interface BarsDataRow {
   readonly kind: 'data';
   readonly key: string;
   readonly subject?: string;
-  readonly label: BarsRowLabel;
+  readonly label?: Value<string>;
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly muted?: boolean;
@@ -302,12 +294,26 @@ export function assertBarsModelValid(model: BarsModel, displayedHour: number): v
     const row = model.rows[i]!;
     if (row.kind !== 'data') continue;
     const prefix = `bars[${row.key}]`;
-    if (typeof row.label !== 'string') assertValue(row.label, `${prefix}.label`);
+    if (row.label !== undefined) {
+      assertValue(row.label, `${prefix}.label`);
+    } else if (
+      model.form !== 'two-sided'
+      || model.twoSidedLayout !== 'split-sides'
+      || !row.rightSide
+      || row.value
+      || row.left
+      || row.right
+      || row.pair
+      || row.segments?.length
+      || row.readout
+    ) {
+      throw new InvalidBarsModelError(`${prefix}.label: data row without label must be an empty split-side placeholder`);
+    }
     if (row.value) validateValueAndNumeric(row.value, row.numeric, `${prefix}.value`);
     if (row.left) validateValueAndNumeric(row.left.value, row.left.numeric, `${prefix}.left`);
     if (row.right) validateValueAndNumeric(row.right.value, row.right.numeric, `${prefix}.right`);
     if (row.rightSide) {
-      if (typeof row.rightSide.label !== 'string') assertValue(row.rightSide.label, `${prefix}.rightSide.label`);
+      assertValue(row.rightSide.label, `${prefix}.rightSide.label`);
       validateValueAndNumeric(row.rightSide.value, row.rightSide.numeric, `${prefix}.rightSide`);
     }
     if (row.target) {
@@ -370,8 +376,8 @@ export function barsRowIndex(model: BarsModel, key: string): number {
   return index.get(key) ?? -1;
 }
 
-function withPendingLabelItem(label: BarsRowLabel, tooltip: FamilyTooltipPayload): FamilyTooltipPayload {
-  if (typeof label === 'string' || label.kind !== 'pending') return tooltip;
+function withPendingLabelItem(label: Value<string> | undefined, tooltip: FamilyTooltipPayload): FamilyTooltipPayload {
+  if (label?.kind !== 'pending') return tooltip;
   const items = tooltip.items ?? [];
   if (items.some(item => item.label === 'Name' && item.pendingReason !== undefined)) return tooltip;
   return {
@@ -391,7 +397,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
     }
     const formatted = formatBarsValueField(row.rightSide.value);
     const items: TooltipListItem[] = [];
-    if (typeof row.rightSide.label !== 'string' && row.rightSide.label.kind === 'pending') {
+    if (row.rightSide.label.kind === 'pending') {
       items.push({ label: 'Name', pendingReason: row.rightSide.label.reason });
     }
     if (!formatted.missingReason) items.push({ label: model.rightHeader ?? 'Value', value: formatted.exact });
@@ -406,7 +412,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
     const tip = row.tooltip.hour !== undefined ? row.tooltip : { ...row.tooltip, hour: tipHour };
     return withPendingLabelItem(row.label, tip);
   }
-  if (typeof row.label === 'string' && !row.label && !row.value && !row.left && !row.right && !row.pair && !row.segments?.length && !row.readout) {
+  if (row.label === undefined && !row.value && !row.left && !row.right && !row.pair && !row.segments?.length && !row.readout) {
     return null;
   }
   const title = barsLabelText(row.label);
@@ -476,7 +482,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
   if (row.readout?.primary && !items.length && !missingReason) {
     items.push({ label: row.readout.secondary ?? 'Count', value: row.readout.primary });
   }
-  if (typeof row.label !== 'string' && row.label.kind === 'pending') {
+  if (row.label?.kind === 'pending') {
     items.unshift({ label: 'Name', pendingReason: row.label.reason });
   }
   const art = artTooltipItem(row.media?.kind === 'flag' ? 'Flag' : 'Art', row.media?.art);

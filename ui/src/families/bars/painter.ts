@@ -340,7 +340,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     const singleWidths: number[] = [];
     for (let i = first; i < last; i++) {
       const item = model.rows[i]!;
-      if (item.kind !== 'data' || barsLabelMuted(item.label)) continue;
+      if (item.kind !== 'data' || item.label === undefined || barsLabelMuted(item.label)) continue;
       if (labelFitsTwoLines(layout.rowHeights[i]!, nameLineH)) continue;
       const isHovered = inspectedKey === item.key || (item.rightSide && inspectedKey === item.rightSide.key);
       const isFocused = focusedKey === item.key || (item.rightSide && focusedKey === item.rightSide.key);
@@ -428,7 +428,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
 
     drawMediaSlot(ctx, layout.bodyLeft + BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { artCache, radius: 2 });
 
-    if (layout.nameWidth > 0) {
+    if (layout.nameWidth > 0 && row.label !== undefined) {
       const regionTools = row.region !== undefined && (isHovered || isFocused);
       const reserveRemove = regionTools ? ROW_REMOVE_SIZE + 4 : 0;
       const labelMuted = barsLabelMuted(row.label);
