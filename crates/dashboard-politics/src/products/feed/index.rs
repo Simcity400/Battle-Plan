@@ -387,7 +387,9 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let columns = Columns::new()?;
-    let presenter = super::text::Presenter::new(query, catalogue.cloned(), super::text::kept_naming(source)).without_effects();
+    let presenter = super::text::Presenter::new(query, catalogue.cloned(), super::text::kept_naming(source))
+        .without_effects()
+        .without_artwork();
     let names = Names::new(&query.holders);
     let mut runs: Vec<u32> = query.timeline.stretches.iter().map(|stretch| stretch.run).collect();
     runs.sort_unstable();

@@ -590,28 +590,42 @@ impl NamingSession<'_> {
     }
 
     pub fn name_variants(&mut self, recording: &Recording, hour: i32, variants: &[u64], context: &Context, named: &mut Named) -> io::Result<()> {
-        let naming = self.naming;
         let (wanted_variants, _) = wanted(variants, &[], named);
-        if wanted_variants.is_empty() {
+        self.visit_variant_frames(recording, hour, &wanted_variants, |session, frame, group| {
+            let icons = match context {
+                Ok(content @ Content { icons: Ok(_), .. }) => session.icon_hour(frame, content),
+                _ => Arc::new(icon_hour(frame, context)),
+            };
+            name_in(frame, (group, &[]), context, icons.as_ref().as_ref().map_err(Clone::clone), Some(hour), named);
+        })
+    }
+
+    pub fn plain_variant_names(&mut self, recording: &Recording, hour: i32, variants: &[u64], context: &Context) -> io::Result<BTreeMap<u64, Option<String>>> {
+        let mut names = BTreeMap::new();
+        self.visit_variant_frames(recording, hour, variants, |_, frame, group| {
+            names.extend(plain_names(frame, group, context));
+        })?;
+        Ok(names)
+    }
+
+    fn visit_variant_frames(&mut self, recording: &Recording, hour: i32, variants: &[u64], mut visit: impl FnMut(&mut Self, &DecodedFrame, &[u64])) -> io::Result<()> {
+        let naming = self.naming;
+        if variants.is_empty() {
             return Ok(());
         }
-        let keys: Vec<u128> = wanted_variants.iter().map(|&id| u128::from(id)).collect();
+        let keys: Vec<u128> = variants.iter().map(|&id| u128::from(id)).collect();
         let tokens: BTreeMap<u64, u32> = match naming.variants.view_of(recording, hour, &keys)?.held() {
             TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.rows::<tables::VariantDefinitions>().into_iter().flatten().map(|row| (row.id, row.equipment_token)).collect(),
             _ => BTreeMap::new(),
         };
         let spelled = naming.spelled_last(recording, &tokens.values().copied().collect())?;
-        let (late, unspelled): (Vec<u64>, Vec<u64>) = wanted_variants.iter().partition(|id| tokens.get(id).is_none_or(|token| spelled.contains(token)));
+        let (late, unspelled): (Vec<u64>, Vec<u64>) = variants.iter().partition(|id| tokens.get(id).is_none_or(|token| spelled.contains(token)));
         for group in [late, unspelled] {
             if group.is_empty() {
                 continue;
             }
             let frame = self.frame(recording, hour, &group)?;
-            let icons = match context {
-                Ok(content @ Content { icons: Ok(_), .. }) => self.icon_hour(&frame, content),
-                _ => Arc::new(icon_hour(&frame, context)),
-            };
-            name_in(&frame, (&group, &[]), context, icons.as_ref().as_ref().map_err(Clone::clone), Some(hour), named);
+            visit(self, &frame, &group);
         }
         Ok(())
     }
