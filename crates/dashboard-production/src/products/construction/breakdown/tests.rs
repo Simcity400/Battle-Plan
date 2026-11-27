@@ -70,9 +70,10 @@ fn an_empty_queue_read_in_full_certifies_only_itself() {
 
 #[test]
 fn an_output_gap_is_dated_at_the_read_that_shows_it_and_stays() {
+    use super::super::spending::GapKind;
     let mut held = facts();
-    held.lines.push(LineFacts { leaf: (false, 7, 1, NONE), building: Some(7), new_from: Some(5), repair_from: None, gaps: vec![(12, i32::MAX, SpendingGap::InexactOutput), (40, i32::MAX, SpendingGap::FinalOutputMissing)], before_first_read: Some(5) });
-    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), gaps: vec![(61, 69, SpendingGap::LinkedOutput), (80, i32::MAX, SpendingGap::InexactOutput)], before_first_read: None });
+    held.lines.push(LineFacts { leaf: (false, 7, 1, NONE), building: Some(7), gaps: vec![(12, i32::MAX, SpendingGap::InexactOutput, GapKind::NEW), (40, i32::MAX, SpendingGap::FinalOutputMissing, GapKind::NEW)], before_first_read: Some(5) });
+    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), gaps: vec![(61, 69, SpendingGap::LinkedOutput, GapKind::NEW), (80, i32::MAX, SpendingGap::InexactOutput, GapKind::REPAIR)], before_first_read: None });
     held.unattributed.push(35);
     let index = index(&held);
     let state_of = |hour: i32| index.at(hour).breakdown.parts[0].children.iter().find(|part| part.name == "Workshop").map(|part| part.state);
@@ -202,7 +203,7 @@ fn repeated_breakdown_answers_reuse_the_held_index_without_rereading_storage() {
 
 #[test]
 fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
-    use super::super::spending::gap_assignment;
+    use super::super::spending::GapKind;
     use super::{ConstructionBreakdown, ConstructionBreakdownParams};
     use dashboard_base::{
         Source, SourceKey,
@@ -214,13 +215,6 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
-    assert_eq!(gap_assignment(Some(120), Some(115), 105, i32::MAX), Some((true, 115)));
-    assert_eq!(gap_assignment(Some(120), Some(100), 122, i32::MAX), Some((false, 122)));
-    assert_eq!(gap_assignment(Some(60), Some(70), 61, 69), Some((false, 61)));
-    assert_eq!(gap_assignment(Some(60), Some(70), 80, i32::MAX), Some((true, 80)));
-    assert_eq!(gap_assignment(Some(100), Some(100), 105, i32::MAX), None);
-    assert_eq!(gap_assignment(Some(120), None, 105, 109), None, "a closed gap does not qualify work first witnessed after it ended");
-
     let deferred = Facts {
         from: 100,
         to: 125,
@@ -229,25 +223,19 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
             LineFacts {
                 leaf: (false, 7, 12, NONE),
                 building: Some(7),
-                new_from: Some(120),
-                repair_from: Some(115),
-                gaps: vec![(105, i32::MAX, SpendingGap::LinkedOutput)],
+                gaps: vec![(105, 114, SpendingGap::LinkedOutput, GapKind::NEITHER), (115, i32::MAX, SpendingGap::LinkedOutput, GapKind::REPAIR)],
                 before_first_read: None,
             },
             LineFacts {
                 leaf: (false, 8, 13, NONE),
                 building: Some(8),
-                new_from: None,
-                repair_from: None,
-                gaps: vec![(118, i32::MAX, SpendingGap::InexactOutput)],
+                gaps: vec![(118, i32::MAX, SpendingGap::InexactOutput, GapKind::NEITHER)],
                 before_first_read: None,
             },
             LineFacts {
                 leaf: (false, 9, 14, NONE),
                 building: Some(9),
-                new_from: Some(120),
-                repair_from: None,
-                gaps: vec![(105, 109, SpendingGap::InexactOutput)],
+                gaps: vec![(105, 109, SpendingGap::InexactOutput, GapKind::NEITHER)],
                 before_first_read: None,
             },
         ],
