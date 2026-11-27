@@ -29,6 +29,7 @@ test('two event feeds share one kinds read through page preparation, playback an
     for (const state of ['pending', 'failed', 'missing', 'ready']) {
       const shown = await page.evaluate<{ chip: string; status: string | null; choices: string[] }>(`window.prepareLane.eventFeedKindsState('${state}')`);
       if (state === 'ready') {
+        assert.equal(shown.chip, 'Filtered kinds');
         assert.equal(shown.status, null);
         assert.deepEqual(shown.choices, ['War declared']);
       } else {

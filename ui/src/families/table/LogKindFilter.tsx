@@ -192,7 +192,7 @@ export default function LogKindFilter(props: LogKindFilterProps) {
   const selectable = items.filter(item => !item.unavailable);
   const selectedCount = selectable.filter(item => item.checked).length;
   const allSelected = selectable.length > 0 && selectedCount === selectable.length;
-  const label = single?.label ?? (selectable.length === 0 && props.filtered ? `Filtered ${noun}` : allSelected || selectable.length === 0
+  const label = single?.label ?? (props.filtered && (allSelected || selectable.length === 0) ? `Filtered ${noun}` : allSelected || selectable.length === 0
     ? allLabel
     : selectedCount === 0
       ? `No ${noun}`
