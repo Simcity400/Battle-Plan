@@ -217,3 +217,103 @@ fn hours_not_read_are_the_stretch_less_its_read_runs() {
     assert_eq!(unread(&[(0, 50)], 5, 40), Vec::<(i32, i32)>::new());
     assert_eq!(unread(&[], 5, 6), vec![(5, 6)]);
 }
+
+#[test]
+fn alternating_filtered_views_reuse_cached_indices_with_lru_eviction() {
+    let division = |id: u64, template: u64| DivisionRow {
+        id: id << 32 | 9,
+        roster_owner: 9001,
+        logical_owner: 9001,
+        template: template << 32 | 3,
+        hit_points: 100_000,
+        ..Default::default()
+    };
+    let frames = (100..=103)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let mut divisions = vec![division(1, 1)];
+            if hour >= 101 {
+                divisions.push(division(2, 2));
+                divisions.push(division(3, 2));
+            }
+            if hour >= 102 {
+                for id in 3..=(tail::HELD_VIEWS as u64 + 1) {
+                    divisions.push(division(id + 10, id));
+                }
+            }
+            let deletions = if hour == 103 {
+                vec![DivisionEquipmentDeletionRow {
+                    division_handle: 1 << 32 | 9,
+                    country: 9001,
+                    disposition: Disposition::Merged,
+                    cause: None,
+                    ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            for (id, rows) in [
+                (TableId::Divisions, TableRows::Divisions(divisions)),
+                (TableId::DivisionEquipmentDeletions, TableRows::DivisionEquipmentDeletions(deletions)),
+            ] {
+                frame.metrics.table_ns[id.index()] = 1;
+                *frame.tables[id.index()] = TableView::Complete(rows);
+            }
+            frame
+        })
+        .collect();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let loaded = Source::from_replay(
+        SourceKey { source_id: "divisions-view-cache".into(), revision: "1".into() },
+        "fixture.battleplan".into(),
+        Arc::new(replay),
+        &cancel,
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let ask = |hour, options: serde_json::Value| {
+        let mut params = json!({ "branchId": "1", "hour": hour, "limit": 10 });
+        params.as_object_mut().unwrap().extend(options.as_object().unwrap().clone());
+        DivisionLogTail::load(&loaded, &serde_json::from_value(params).unwrap(), &load, &cancel).unwrap()
+    };
+
+    let created = ask(103, json!({"events": "created"}));
+    let lost = ask(103, json!({"events": "lost"}));
+    assert_eq!(tail::view_builds(&loaded, 1), 2);
+    for _ in 0..3 {
+        assert_eq!(ask(103, json!({"events": "created"})), created);
+        assert_eq!(ask(103, json!({"events": "lost"})), lost);
+    }
+    assert_eq!(tail::view_builds(&loaded, 1), 2, "alternating event filters must reuse cached indices");
+
+    let collapsed = ask(101, json!({}));
+    let group_key = collapsed.rows[0].key.clone();
+    assert!(!collapsed.rows[0].open);
+    let expanded = ask(101, json!({"expanded": [&group_key]}));
+    assert!(expanded.rows[0].open);
+    assert_eq!(tail::view_builds(&loaded, 1), 4);
+    for _ in 0..2 {
+        assert_eq!(ask(101, json!({})), collapsed);
+        assert_eq!(ask(101, json!({"expanded": [&group_key]})), expanded);
+    }
+    assert_eq!(tail::view_builds(&loaded, 1), 4, "alternating open groups must reuse cached indices");
+
+    forget(&loaded);
+    for template in 1..=(tail::HELD_VIEWS as u32) {
+        let reply = ask(103, json!({"templates": [template]}));
+        assert!(!reply.rows.is_empty());
+    }
+    assert_eq!(tail::view_builds(&loaded, 1), tail::HELD_VIEWS);
+    let _ = ask(103, json!({"templates": [1]}));
+    assert_eq!(tail::view_builds(&loaded, 1), tail::HELD_VIEWS, "touching oldest entry promotes it before eviction");
+    let _ = ask(103, json!({"templates": [tail::HELD_VIEWS as u32 + 1]}));
+    assert_eq!(tail::view_builds(&loaded, 1), tail::HELD_VIEWS + 1);
+    let _ = ask(103, json!({"templates": [1]}));
+    assert_eq!(tail::view_builds(&loaded, 1), tail::HELD_VIEWS + 1, "recently used filter stays cached after cap overflow");
+    let _ = ask(103, json!({"templates": [2]}));
+    assert_eq!(tail::view_builds(&loaded, 1), tail::HELD_VIEWS + 2, "least recently used filter is evicted when cap is exceeded");
+}
