@@ -1,22 +1,25 @@
 import { invoke } from '@tauri-apps/api/core';
 
 export function afterShellPaint(run: () => void): () => void {
-  let frame: number;
+  let frame = 0;
+  let pending = true;
   const cancel = () => {
+    pending = false;
     cancelAnimationFrame(frame);
     document.removeEventListener('visibilitychange', visibility);
   };
   const ready = () => {
+    if (!pending) return;
     cancel();
     run();
   };
   const visibility = () => { if (document.hidden) ready(); };
   if (document.hidden) {
-    run();
-    return () => {};
+    queueMicrotask(ready);
+  } else {
+    frame = requestAnimationFrame(() => { frame = requestAnimationFrame(ready); });
+    document.addEventListener('visibilitychange', visibility);
   }
-  frame = requestAnimationFrame(() => { frame = requestAnimationFrame(ready); });
-  document.addEventListener('visibilitychange', visibility);
   return cancel;
 }
 

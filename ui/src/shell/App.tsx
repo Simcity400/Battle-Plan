@@ -247,7 +247,7 @@ export default function App() {
   const lastView = useRef<Tab>(desktopAvailable ? 'map' : 'analytics');
   const clearSettingsTarget = useCallback(() => setSettingsTarget(null), []);
   const client = browserRecordings ? browserDashboardClient : nativeDashboardClient;
-  const replayLibrary = useReplayLibrary(client);
+  const replayLibrary = useReplayLibrary(client, shellReady);
   const defaultChosen = useRef(false);
   const [tab, setTab] = useState<Tab>(desktopAvailable ? 'map' : 'analytics');
   const [pages, setPages] = useState(loadPages);

@@ -32,6 +32,7 @@ export interface WidgetRuntime {
   nativeHidden: boolean;
   campaigns: Campaign[];
   recordings: ReplayFile[];
+  recordingsLoading: boolean;
   assignCampaign: (widgetId: string, chosen: string | null) => Promise<void>;
   requestSeek: (trackId: string, rawHour: number) => boolean;
   addWidgetBelow: (sourceId: string, widget: PinnedSpec) => void;
