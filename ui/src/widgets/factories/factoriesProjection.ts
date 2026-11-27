@@ -13,7 +13,7 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, valueFromRawBigInt, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { FactoryGroupsReply, SeriesRankReply, SeriesState } from '../../generated/dashboard';
-import { COUNT_MODES, FACTORY_GROUPS, chosenGroups, countMode, damagedMeasure, factoryMeasure, groupName, validateFactoryGroups, type CountMode } from './factoriesData.ts';
+import { COUNT_MODES, chosenGroups, countMode, damagedGroupLabel, damagedMeasure, factoryGroupPresentation, factoryMeasure, validateFactoryGroups, type CountMode } from './factoriesData.ts';
 
 export interface FactoryPartSpec {
   readonly id: string;
@@ -41,13 +41,16 @@ export interface FactoriesRowMeta {
 }
 
 function partSpecs(mode: CountMode, types: readonly string[], groups: FactoryGroupsReply | undefined, surface: string): FactoryPartSpec[] {
-  return chosenGroups(types).map(group => ({
-    id: group.value,
-    label: groupName(group.value, groups),
-    source: `${mode}${group.bit}`,
-    ...(mode === 'built' ? { damagedSource: `damaged${group.bit}` } : {}),
-    color: colour(surface, FACTORY_GROUPS.indexOf(group)),
-  }));
+  return chosenGroups(types).map(group => {
+    const presentation = factoryGroupPresentation(group.value, groups);
+    return {
+      id: presentation.key,
+      label: presentation.label,
+      source: `${mode}${group.bit}`,
+      ...(mode === 'built' ? { damagedSource: `damaged${group.bit}` } : {}),
+      color: colour(surface, presentation.colorIndex),
+    };
+  });
 }
 
 const PART_NOT_READ = 'Not recorded at this hour';
@@ -144,12 +147,13 @@ function buildPartSegments(
     if (whole <= 0) continue;
     const damagedValue = spec.damagedSource ? partValue(index, spec.damagedSource, wireName) : null;
     const damaged = damagedValue === null ? null : numericOf(damagedValue);
+    const damagedLabel = damagedGroupLabel({ label: spec.label });
     if (damagedValue !== null && damaged === null) {
-      tooltipItems.push({ label: `Damaged ${spec.label}`, swatch: spec.color, missingReason: reasonOf(damagedValue) });
+      tooltipItems.push({ label: damagedLabel, swatch: spec.color, missingReason: reasonOf(damagedValue) });
     }
     const hurt = damaged === null ? 0 : Math.min(whole, Math.max(0, damaged));
     if (whole > hurt) segments.push(segment(spec.id, spec.label, whole - hurt, total, spec.color));
-    if (hurt > 0) segments.push(segment(`damaged:${spec.id}`, `Damaged ${spec.label}`, hurt, total, spec.color, true));
+    if (hurt > 0) segments.push(segment(`damaged:${spec.id}`, damagedLabel, hurt, total, spec.color, true));
   }
   if (unknownReason !== null && total > known) {
     segments.push({ key: 'unrecorded', label: 'Not recorded', share: (total - known) / total, value: notRecorded(unknownReason), color: options.surface, hatched: true });

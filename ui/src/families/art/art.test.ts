@@ -6,7 +6,7 @@ import { flagChoiceKey, parseFlagChoiceKey } from '../identity/types.ts';
 import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache, LaneArtPool } from './laneCache.ts';
 import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt } from './adapters.ts';
-import { artUrlForHandle, collectArtUrls, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
+import { artUrlForHandle, collectArtUrls, createExactArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
 import { DEFAULT_FAMILY_THEME } from '../theme.fixture.ts';
 import { SpriteCaches, artCacheScope, artCalls, settleCall, spriteResolutions } from './transport.ts';
 import type { ArtHandle } from '../plan.ts';
@@ -345,17 +345,24 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
   const repainted = resolveCachedArt(ready, laneCache as unknown as LaneArtCache<ImageBitmap>);
   assert.ok(repainted.status === 'ready' && repainted.bitmap === undefined, 'a cached model painted again after the eviction draws its art as loading, never the closed bitmap');
 
-  const domCache = new DomArtCache<DomArtImage>({
-    createImage: () => ({ complete: true, naturalWidth: 41, naturalHeight: 26, src: '', onload: null, onerror: null }),
-  });
-  const domView = createBoundedReadView({
+  const resolvedSprite = { kind: 'sprite' as const, key: 'GFX_test_ready', frame: 0 };
+  const pendingSprite = { kind: 'sprite' as const, key: 'GFX_test_pending', frame: 0 };
+  const spriteReady = readyArt('https://art.test/sprite.png', { assetId: 'sprite:test-ready' });
+  const exactView = createBoundedReadView({
     hour: 100,
-    art: createDomArtProvider(domCache as unknown as DomArtCache<HTMLImageElement>),
+    art: createExactArtProvider({
+      resolutions: {
+        [artHandleKey(resolvedSprite)]: spriteReady,
+        [artHandleKey(pendingSprite)]: PENDING_ART,
+      },
+    }),
   });
-  const domReady = domView.art({ kind: 'url', url: 'https://art.test/icon.png' });
-  assert.equal(domReady.status, 'ready');
-  assert.equal(domReady.url, 'https://art.test/icon.png');
-  assert.equal(domReady.provenance.label, 'Current installation');
+  const directReady = exactView.art({ kind: 'url', url: 'https://art.test/icon.png' });
+  assert.equal(directReady.status, 'ready');
+  assert.equal(directReady.url, 'https://art.test/icon.png');
+  assert.equal(directReady.provenance.label, 'Current installation');
+  assert.deepEqual(exactView.art(resolvedSprite), spriteReady, 'an indirect handle resolved in the installed frame is ready in the exact provider too');
+  assert.equal(exactView.art(pendingSprite).status, 'pending', 'an indirect handle pending in the installed frame stays pending in the exact provider');
 
   laneCache.dispose();
 });

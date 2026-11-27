@@ -157,8 +157,8 @@ class Harness(unittest.TestCase):
 
 class Rank(unittest.TestCase):
     def test_running_before_stopped_then_lane_then_size(self):
-        states = {vmid: vm(vmid, state, type) for vmid, state, type in [("a", "stopped", "large"), ("b", "idle", "default"), ("c", "idle", "large"), ("d", "idle", "large")]}
-        self.assertEqual(bt.rank(sorted(states), states, "d", "default", lambda _: False), ["d", "b", "c", "a"])
+        states = {vmid: vm(vmid, state, type) for vmid, state, type in [("a", "stopped", "default"), ("b", "stopped", "large"), ("c", "idle", "large"), ("d", "idle", "large")]}
+        self.assertEqual(bt.rank(sorted(states), states, "d", "large", lambda _: False), ["d", "c", "b", "a"])
 
     def test_takes_the_vm_another_lane_left_longest_ago(self):
         states = {vmid: vm(vmid) for vmid in "abc"}
@@ -180,6 +180,15 @@ class Rank(unittest.TestCase):
     def test_large_work_skips_running_default_vms_but_can_grow_stopped_ones(self):
         states = {"a": vm("a", "idle", "default"), "b": vm("b", "stopped", "default")}
         self.assertEqual(bt.rank(["a", "b"], states, None, "large", lambda _: False), ["b"])
+
+    def test_default_work_skips_large_vms_unless_cloned_as_a_default_fallback(self):
+        states = {"a": vm("a", "stopped", "default"), "b": vm("b", "idle", "large"), "c": vm("c", "stopped", "large")}
+        self.assertEqual(bt.rank(["a", "b", "c"], states, "b", "default", lambda _: False), ["a"])
+        large_only = {"b": vm("b", "idle", "large"), "c": vm("c", "stopped", "large")}
+        self.assertEqual(bt.rank(["b", "c"], large_only, "b", "default", lambda _: False), [])
+        self.assertEqual(bt.rank(["b", "c"], large_only, None, "default", lambda _: False, cloned_for={"b": "default"}.get), ["b"])
+        both = {"a": vm("a", "idle", "default"), "b": vm("b", "idle", "large")}
+        self.assertEqual(bt.rank(["a", "b"], both, None, "default", lambda _: False, cloned_for={"b": "default"}.get), ["a", "b"])
 
     def test_the_running_vm_with_the_least_to_compile_again_comes_first(self):
         states = {vmid: vm(vmid, state) for vmid, state in [("a", "stopped"), ("b", "idle"), ("c", "idle"), ("d", "idle")]}
@@ -306,6 +315,20 @@ class Parse(unittest.TestCase):
         for args, reason in ((["test"], "-p"), (["test", "name"], "-p"), (["test", "--workspace"], "suite"), (["test", "-p", "x", "--doc"], "rustdoc"), (["test", "-p", "x", "--no-run"], "check"), (["test", "-p", "x", "--out"], "directory")):
             with self.subTest(args=args), self.assertRaisesRegex(bt.Refused, reason):
                 bt.parse(args)
+
+    def test_machine_size_is_large_only_for_build_unless_overridden(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("BOAT_MACHINE_TYPE", None)
+            self.assertEqual(bt.machine_size("build"), "large")
+            for mode in ("check", "clippy", "test", "ui", "snapshot"):
+                self.assertEqual(bt.machine_size(mode), "default", mode)
+        with mock.patch.dict(os.environ, {"BOAT_MACHINE_TYPE": "large"}):
+            for mode in ("check", "clippy", "test", "ui", "snapshot", "build"):
+                self.assertEqual(bt.machine_size(mode), "large", mode)
+        with mock.patch.dict(os.environ, {"BOAT_MACHINE_TYPE": "default"}):
+            self.assertEqual(bt.machine_size("build"), "default")
+        with mock.patch.dict(os.environ, {"BOAT_MACHINE_TYPE": "huge"}), self.assertRaises(bt.Failure):
+            bt.machine_size("check")
 
 def remote_function(name):
     """A function of the VM's runner, whose module runs on import and only on Linux."""
@@ -610,10 +633,29 @@ class Acquire(Harness):
             lease.end()
             lock.close()
             self.assertEqual((vmid, record["vm_type"], record["created"]), ("n", "large", True))
+            self.assertEqual(self.state.entry("n")["cloned_for"], "default")
             self.assertEqual([call[call.index("--type") + 1] for call in fake.calls if call[0] == "new"], ["default", "large"])
             self.assertEqual(held, [True, True])
             self.assertEqual(len(sleep.call_args_list), 1)
             self.assertAlmostEqual(sleep.call_args.args[0], bt.CREATE_SPACING_SECONDS, places=6)
+            said, reuse = [], {}
+            fake.vms["b"] = vm("b", "ready", "large")
+            bt.atomic_json(self.state.pool / "b.json", {"id": "b", "snapshot": bt.SNAPSHOT, "cloned_for": "default", "used": 0})
+            self.state.update("n", used=1)
+            fake.acquire_status["b"] = bt.REMOTE_CLAIMED
+            fake.acquire_output["b"] = "busy\n"
+            with mock.patch.object(bt, "say", side_effect=said.append):
+                vmid2, lock2, lease2, _ = bt.acquire(self.state, "lane", "default", "t2", reuse)
+            lease2.end()
+            lock2.close()
+            self.assertEqual((vmid2, reuse["vm_type"], reuse["created"]), ("n", "large", False))
+            self.assertEqual(sum(call[0] == "new" for call in fake.calls), 2)
+            notices = [line for line in said if "does not fit a default VM" in line]
+            self.assertEqual(len(notices), 1, said)
+            self.assertIn("large VM n", notices[0])
+            del fake.vms["b"]
+            self.assertEqual(bt.wake(self.state, "lane", "default"), ("n", "ready"))
+            self.assertEqual(sum(call[0] == "new" for call in fake.calls), 2)
             fake = self.use(FakeBoat([]))
             fake.too_small = {"default", "large"}
             with self.assertRaisesRegex(bt.Failure, "as a large VM .*does not fit any available 'large' machine"):
@@ -621,12 +663,20 @@ class Acquire(Harness):
 
     def test_resume_never_shrinks_a_large_vm(self):
         fake = self.use(FakeBoat([vm("a", "stopped", "large")]))
+        self.state.update("a", cloned_for="default")
         vmid, lock, lease, _ = bt.acquire(self.state, "lane", "default", "t", {})
         lease.end()
         lock.close()
+        self.assertEqual(vmid, "a")
         resume = next(call for call in fake.calls if call[0] == "resume")
         self.assertNotIn("--type", resume)
         self.assertEqual(fake.vms["a"]["type"], "large")
+        fake = self.use(FakeBoat([vm("b", "stopped", "large")]))
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "default", "t2", {})
+        lease.end()
+        lock.close()
+        self.assertEqual((vmid, fake.vms["n"]["type"]), ("n", "default"))
+        self.assertNotIn("resume", [call[0] for call in fake.calls])
 
     def test_a_vm_holding_another_claim_is_quarantined_and_released(self):
         fake = self.use(FakeBoat([vm("a"), vm("b")]))
@@ -844,7 +894,7 @@ class Wake(Harness):
             self.assertEqual(fake.ttl_calls("a"), [bt.LEASE_SECONDS])
 
     def test_the_command_takes_the_arguments_of_the_run_that_follows(self):
-        fake = self.use(FakeBoat([vm("a", "stopped")]))
+        fake = self.use(FakeBoat([vm("a", "stopped", "default")]))
         repo = self.root / "repo"
         (repo / "crates" / "x").mkdir(parents=True)
         (repo / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/*"]\n')
@@ -958,7 +1008,7 @@ class Run(Harness):
         return json.loads((self.state.logs / "timings.jsonl").read_text().splitlines()[-1])
 
     def test_compile_errors_pass_through_and_leave_the_vm_idle(self):
-        fake = self.use(FakeBoat([vm("a")]))
+        fake = self.use(FakeBoat([vm("a", type="default")]))
         fake.cargo_exit = 101
         (self.repo / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.96.0"\n')
         self.assertEqual(bt.main(["check", "-p", "x", "-p", "y"]), 101)
@@ -974,7 +1024,7 @@ class Run(Harness):
         self.assertEqual([len(call) for call in fake.remote_calls if call[1] == "acquire"], [3])
 
     def test_a_failed_sync_is_a_boat_failure_whose_job_released_the_claim(self):
-        fake = self.use(FakeBoat([vm("a")]))
+        fake = self.use(FakeBoat([vm("a", type="default")]))
         fake.sync_status = bt.SYNC_FAILED
         self.assertEqual(bt.main(["check", "-p", "x"]), bt.UNAVAILABLE)
         record = self.last_record()
@@ -984,7 +1034,7 @@ class Run(Harness):
         self.assertGreater(self.state.entry("a")["used"], 0)
 
     def test_an_untracked_asset_is_refused_before_a_vm_is_claimed(self):
-        fake = self.use(FakeBoat([vm("a")]))
+        fake = self.use(FakeBoat([vm("a", type="default")]))
         (self.repo / "copied.dds").write_bytes(b"DDS " + bytes(range(256)))
         (self.repo / "second.ogg").write_bytes(b"trial")
         with mock.patch.object(bt, "say") as output:
@@ -1002,7 +1052,7 @@ class Run(Harness):
         self.assertEqual(bt.main(["check", "-p", "x"]), 0)
 
     def test_a_small_source_goes_up_in_commands_and_a_large_one_in_one_push(self):
-        fake = self.use(FakeBoat([vm("a")]))
+        fake = self.use(FakeBoat([vm("a", type="default")]))
         self.assertEqual(bt.main(["check", "-p", "x"]), 0)
         self.assertTrue(fake.synced[-1].startswith("parts:"))
         self.assertNotIn("push", [call[0] for call in fake.calls])
@@ -1021,7 +1071,7 @@ class Run(Harness):
         self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
 
     def test_a_test_run_lets_the_vm_go_then_runs_what_it_delivered_with_the_runner_told_what_to_send(self):
-        fake = self.use(FakeBoat([vm("a")]))
+        fake = self.use(FakeBoat([vm("a", type="default")]))
         (self.repo / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/*"]\n')
         (self.repo / "crates" / "app" / "tests").mkdir(parents=True)
         (self.repo / "crates" / "app" / "Cargo.toml").write_text('[package]\nname = "app"\n')

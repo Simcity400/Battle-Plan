@@ -1,5 +1,5 @@
 import type { TooltipRow } from '../../charts/tooltip';
-import type { FactoryGroupsReply, FactoryPartValue, FactoryPartsReply } from '../../generated/dashboard';
+import type { FactoryGroupsReply, FactoryMixPart, FactoryPartValue, FactoryPartsReply } from '../../generated/dashboard';
 
 export const COUNT_MODES = [
   { value: 'free', label: 'Available', hint: 'Built less damaged, consumer goods, trade, national projects, licences, market contracts and factories given away' },
@@ -8,11 +8,17 @@ export const COUNT_MODES = [
 ] as const;
 export type CountMode = typeof COUNT_MODES[number]['value'];
 
-export const FACTORY_GROUPS = [
-  { value: 'military', label: 'Military factories', bit: 1 },
-  { value: 'naval', label: 'Naval dockyards', bit: 2 },
-  { value: 'civilian', label: 'Civilian factories', bit: 4 },
+const FACTORY_GROUPS = [
+  { value: 'military', bit: 1 },
+  { value: 'naval', bit: 2 },
+  { value: 'civilian', bit: 4 },
 ] as const;
+
+const GROUP_NAME_NOT_RECORDED = 'Name not recorded';
+
+export interface FactoryGroupPresentation {
+  readonly key: string; readonly label: string; readonly missing: string | null; readonly colorIndex: number;
+}
 
 export const countMode = (value: unknown): CountMode => COUNT_MODES.find(mode => mode.value === value)?.value ?? 'free';
 
@@ -28,13 +34,37 @@ export function damagedMeasure(groups: readonly string[]): string {
   return `damaged${groupMask(groups)}`;
 }
 
-export function groupName(key: string, names: FactoryGroupsReply | undefined): string {
-  const group = names?.groups.find(held => held.key === key);
-  if (group?.buildings.length) return group.buildings.map(building => building.name ?? 'Building name unavailable').join(' · ');
-  return FACTORY_GROUPS.find(held => held.value === key)?.label ?? key;
+function factoryGroupIndex(key: string): number {
+  const index = FACTORY_GROUPS.findIndex(held => held.value === key);
+  return index >= 0 ? index : 0;
 }
 
-export const typeChoices = (names?: FactoryGroupsReply) => FACTORY_GROUPS.map(group => ({ value: group.value, label: groupName(group.value, names) }));
+export function factoryGroupPresentation(key: string, names: FactoryGroupsReply | undefined): FactoryGroupPresentation {
+  const colorIndex = factoryGroupIndex(key);
+  const group = names?.groups.find(held => held.key === key);
+  if (group?.buildings.length) {
+    const missing = group.buildings.some(building => Boolean(building.name)) ? null : 'Building name not recorded';
+    return { key, label: group.buildings.map(building => building.name || 'Building name unavailable').join(' · '), missing, colorIndex };
+  }
+  const missing = names?.missing ?? (group ? `No building in the recorded content has ${group.flag}` : 'Factory group name not recorded');
+  return { key, label: GROUP_NAME_NOT_RECORDED, missing, colorIndex };
+}
+
+export function damagedGroupLabel(presentation: Pick<FactoryGroupPresentation, 'label'>): string {
+  return presentation.label === GROUP_NAME_NOT_RECORDED ? `Damaged (${presentation.label})` : `Damaged ${presentation.label}`;
+}
+
+export function mixPartPresentation(part: Pick<FactoryMixPart, 'group' | 'name' | 'damaged'>): FactoryGroupPresentation {
+  const colorIndex = factoryGroupIndex(part.group);
+  if (part.name) return { key: part.group, label: part.name, missing: null, colorIndex };
+  const missing = 'Factory group name not recorded';
+  return { key: part.group, label: part.damaged ? damagedGroupLabel({ label: GROUP_NAME_NOT_RECORDED }) : GROUP_NAME_NOT_RECORDED, missing, colorIndex };
+}
+
+export const typeChoices = (names?: FactoryGroupsReply) => FACTORY_GROUPS.map(group => {
+  const { label, missing } = factoryGroupPresentation(group.value, names);
+  return { value: group.value, label, ...(missing !== null ? { hint: missing } : {}) };
+});
 
 export const chosenGroups = (groups: readonly string[]) => FACTORY_GROUPS.filter(group => !groups.length || groups.includes(group.value));
 
@@ -77,12 +107,12 @@ export function groupCount(parts: readonly FactoryPartValue[], group: string, mo
   return ['consumerGoods', 'contractPayments', 'specialProjects', 'licenseImports', 'tradeImports'].reduce((left, part) => left - (get(part) ?? 0), shown);
 }
 
-export function partRows(reply: FactoryPartsReply, groups: readonly string[], mode: CountMode): TooltipRow[] {
+export function partRows(reply: FactoryPartsReply, groups: readonly string[], mode: CountMode, names: FactoryGroupsReply | undefined): TooltipRow[] {
   if (reply.missing !== null) return [{ label: 'Not recorded', value: reply.missing, tone: 'muted' }];
-  const shown = FACTORY_GROUPS.filter(group => !groups.length || groups.includes(group.value));
-  return shown.flatMap(group => {
+  return chosenGroups(groups).flatMap(group => {
+    const { label, missing } = factoryGroupPresentation(group.value, names);
     const count = groupCount(reply.parts, group.value, mode);
-    return [{ label: group.label, value: count === null ? 'Not recorded' : count.toLocaleString('en-US'), strong: true, divider: true } satisfies TooltipRow,
+    return [{ label, value: count === null ? 'Not recorded' : count.toLocaleString('en-US'), ...(missing !== null ? { detail: missing } : {}), strong: true, divider: true } satisfies TooltipRow,
       ...reply.parts.filter(part => part.group === group.value && part.value !== 0)
         .map(part => ({ label: PART_LABELS[part.part] ?? part.part, value: part.value.toLocaleString('en-US') })),
       ...(reply.unexplained.includes(group.value) ? [{ label: 'Unavailable', value: 'The game withholds more than these parts explain', tone: 'muted' as const }] : [])];

@@ -12,8 +12,8 @@ import { FamilyWidget } from '../../families/host/registry.tsx';
 import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
-import type { FactoryPartsReply } from '../../generated/dashboard';
-import { countMode, partRows, validateFactoryParts } from './factoriesData.ts';
+import type { FactoryGroupsReply, FactoryPartsReply } from '../../generated/dashboard';
+import { countMode, partRows, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
 import type { FactoriesRowMeta } from './factoriesProjection.ts';
 
 function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
@@ -26,16 +26,20 @@ function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pic
     product: 'factory-parts',
     params: { branchId: track.branch.id, country: countryFromKey(tag), hour },
   }) : null;
+  const groupsRequest = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'factory-groups', params: { branchId: track.branch.id } }) : null;
   const parts = useProduct<FactoryPartsReply>(runtime.client, request, active, validateFactoryParts, track?.source);
+  const groups = useProduct<FactoryGroupsReply>(runtime.client, groupsRequest, active, validateFactoryGroups, track?.source);
   if (parts.error) return <WidgetState kind="error" failure={parts.error} onRetry={parts.retry} />;
-  if (!parts.data) return <WidgetState kind="loading" label="Loading factory breakdown…" />;
-  const rows = partRows(parts.data, types, mode);
+  if (!parts.data || (!groups.data && !groups.error)) return <WidgetState kind="loading" label="Loading factory breakdown…" />;
+  const groupNames = groups.data ?? { groups: [], missing: groups.error!.message, warnings: [] };
+  const rows = partRows(parts.data, types, mode, groupNames);
   return (
     <div className="detail-list">
       <p>{tag}, {formatDateOnly(hour)}</p>
+      {groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
       {rows.map((row, index) => (
         <div key={`${row.label}:${index}`} className="detail-row">
-          <span>{row.strong ? <strong>{row.label}</strong> : row.label}</span>
+          <span title={row.detail}>{row.strong ? <strong>{row.label}</strong> : row.label}</span>
           <span>{row.strong ? <strong>{row.value ?? ''}</strong> : (row.value ?? '')}</span>
         </div>
       ))}

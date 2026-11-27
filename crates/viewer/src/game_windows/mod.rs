@@ -1010,37 +1010,13 @@ impl ComposedPlan {
         placed
     }
 
-    pub fn list_rows(
+    fn register_list_scrollbar(
         &mut self,
         list: &Element,
         holder: &native_gui::Holder,
-        sizes: &[[i32; 2]],
-        resources: &dyn Resources,
-    ) -> Result<Vec<Option<[i32; 2]>>, GameWindowError> {
-        let native::Fields::ListBox(fields) = &list.fields else {
-            return Err(GameWindowError::failed(format!("{} is not a list box", list.path)));
-        };
-        let mut bindings = native_gui::Bindings::default();
-        bindings.viewport = Some(DEFAULT_VIEWPORT.map(|value| value as i32));
-        bindings.regions = true;
-        let smooth = list.kind == native::Kind::SmoothListBox;
-        let vertical = !(smooth && fields.horizontal != 0);
-        let range = list_overflow(smooth, vertical, fields, sizes) as f32;
-        let position = self
-            .scroll
-            .get(&list.path)
-            .copied()
-            .filter(|position| position.is_finite())
-            .unwrap_or(0.0)
-            .clamp(0.0, range);
-        let mut rows = native_gui::widgets::list_box_rows(
-            list,
-            sizes,
-            (position > 0.0).then_some(position),
-            resources,
-            &bindings,
-        )
-        .map_err(|refusals| GameWindowError::failed(format_refusals(&refusals)))?;
+        rows: &mut native_gui::widgets::ListBoxRows,
+        meta: ListScrollMeta,
+    ) -> [i32; 4] {
         let [x, y, width, height] = rows.rect;
         let own = [
             holder.logical[0] + x,
@@ -1048,7 +1024,7 @@ impl ComposedPlan {
             holder.logical[0] + x + width,
             holder.logical[1] + y + height,
         ];
-        let [left, top, right, bottom] = match holder.clip {
+        let bounds @ [left, top, right, bottom] = match holder.clip {
             Some(clip) => [
                 own[0].max(clip[0]),
                 own[1].max(clip[1]),
@@ -1061,10 +1037,10 @@ impl ComposedPlan {
             let scroll = |control| {
                 Some(GameWindowScroll {
                     list: list.path.clone(),
-                    vertical,
-                    position,
-                    range,
-                    step: list_row_step(smooth, vertical, sizes),
+                    vertical: meta.vertical,
+                    position: meta.position,
+                    range: meta.range,
+                    step: meta.step,
                     page: rows.page.max(1) as f32,
                     control,
                 })
@@ -1120,7 +1096,7 @@ impl ComposedPlan {
             }
             self.scrollbars.push(ComposedSubWindow {
                 before_part: holder.before,
-                parts: holder.place_scrollbar(&rows),
+                parts: holder.place_scrollbar(rows),
                 regions: Vec::new(),
                 diagnostics: std::mem::take(&mut rows.diagnostics),
                 root_window: list.path.clone(),
@@ -1129,6 +1105,119 @@ impl ComposedPlan {
                 tooltip_overrides: BTreeMap::new(),
             });
         }
+        bounds
+    }
+
+    pub fn list_uniform_rows(
+        &mut self,
+        list: &Element,
+        holder: &native_gui::Holder,
+        item_size: [i32; 2],
+        count: usize,
+        visible: std::ops::Range<usize>,
+        resources: &dyn Resources,
+    ) -> Result<Vec<(usize, [i32; 2])>, GameWindowError> {
+        let native::Fields::ListBox(fields) = &list.fields else {
+            return Err(GameWindowError::failed(format!("{} is not a list box", list.path)));
+        };
+        let mut bindings = native_gui::Bindings::default();
+        bindings.viewport = Some(DEFAULT_VIEWPORT.map(|value| value as i32));
+        bindings.regions = true;
+        let smooth = list.kind == native::Kind::SmoothListBox;
+        let vertical = !(smooth && fields.horizontal != 0);
+        let range = uniform_list_overflow(smooth, vertical, fields, item_size, count) as f32;
+        let position = self
+            .scroll
+            .get(&list.path)
+            .copied()
+            .filter(|position| position.is_finite())
+            .unwrap_or(0.0)
+            .clamp(0.0, range);
+        let start = visible.start.min(count);
+        let end = visible.end.min(count).max(start);
+        let mut rows = native_gui::widgets::list_box_uniform_rows(
+            list,
+            item_size,
+            count,
+            start..end,
+            (position > 0.0).then_some(position),
+            resources,
+            &bindings,
+        )
+        .map_err(|refusals| GameWindowError::failed(format_refusals(&refusals)))?;
+        let step = if smooth {
+            item_size[usize::from(vertical)].max(1) as f32
+        } else {
+            1.0
+        };
+        let [left, top, right, bottom] = self.register_list_scrollbar(
+            list,
+            holder,
+            &mut rows,
+            ListScrollMeta {
+                vertical,
+                position,
+                range,
+                step,
+            },
+        );
+        let [width, height] = item_size;
+        Ok((start..end)
+            .zip(rows.places)
+            .filter_map(|(index, place)| {
+                place
+                    .filter(|&[x, y]| {
+                        let x = holder.logical[0] + x;
+                        let y = holder.logical[1] + y;
+                        x < right && x + width > left && y < bottom && y + height > top
+                    })
+                    .map(|place| (index, place))
+            })
+            .collect())
+    }
+
+    pub fn list_rows(
+        &mut self,
+        list: &Element,
+        holder: &native_gui::Holder,
+        sizes: &[[i32; 2]],
+        resources: &dyn Resources,
+    ) -> Result<Vec<Option<[i32; 2]>>, GameWindowError> {
+        let native::Fields::ListBox(fields) = &list.fields else {
+            return Err(GameWindowError::failed(format!("{} is not a list box", list.path)));
+        };
+        let mut bindings = native_gui::Bindings::default();
+        bindings.viewport = Some(DEFAULT_VIEWPORT.map(|value| value as i32));
+        bindings.regions = true;
+        let smooth = list.kind == native::Kind::SmoothListBox;
+        let vertical = !(smooth && fields.horizontal != 0);
+        let range = list_overflow(smooth, vertical, fields, sizes) as f32;
+        let position = self
+            .scroll
+            .get(&list.path)
+            .copied()
+            .filter(|position| position.is_finite())
+            .unwrap_or(0.0)
+            .clamp(0.0, range);
+        let mut rows = native_gui::widgets::list_box_rows(
+            list,
+            sizes,
+            (position > 0.0).then_some(position),
+            resources,
+            &bindings,
+        )
+        .map_err(|refusals| GameWindowError::failed(format_refusals(&refusals)))?;
+        let [left, top, right, bottom] = self.register_list_scrollbar(
+            list,
+            holder,
+            &mut rows,
+            ListScrollMeta {
+                vertical,
+                position,
+                range,
+                step: list_row_step(smooth, vertical, sizes),
+            },
+        );
         Ok(rows
             .places
             .iter()
@@ -1141,6 +1230,37 @@ impl ComposedPlan {
                 })
             })
             .collect())
+    }
+}
+
+struct ListScrollMeta {
+    vertical: bool,
+    position: f32,
+    range: f32,
+    step: f32,
+}
+
+fn uniform_list_overflow(
+    smooth: bool,
+    vertical: bool,
+    fields: &native::ListBox,
+    item_size: [i32; 2],
+    count: usize,
+) -> i32 {
+    if count == 0 {
+        return 0;
+    }
+    if smooth {
+        let axis = usize::from(vertical);
+        let run = i64::from(item_size[axis]) * count as i64;
+        (run - i64::from(fields.size[axis])).clamp(0, i64::from(i32::MAX)) as i32
+    } else {
+        let fit = if item_size[1] > 0 {
+            fields.size[1] / item_size[1]
+        } else {
+            0
+        };
+        (count as i32).saturating_sub(fit).max(0)
     }
 }
 

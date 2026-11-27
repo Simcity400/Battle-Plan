@@ -5,7 +5,6 @@ import type { IdentityIndex } from '../identity/index.ts';
 import { parseFlagChoiceKey, type DrawnFlagEntry, type IdentityScope } from '../identity/types.ts';
 import type { ArtFlagSize, ArtHandle, ArtProvider, ArtResult, FieldStatus } from '../plan.ts';
 import { flagEntryToArt } from './adapters.ts';
-import type { DomArtCache } from './domCache.ts';
 import type { LaneArtCache } from './laneCache.ts';
 import {
   CURRENT_INSTALL_PROVENANCE,
@@ -228,16 +227,15 @@ export function createLaneArtProvider(
   };
 }
 
-export interface DomArtProviderOptions {
+export interface ExactArtProviderOptions {
   readonly broker?: IdentityBroker;
   readonly scope?: IdentityScope | null;
   readonly recording?: DashboardSource;
   readonly resolutions?: ArtResolutions;
 }
 
-export function createDomArtProvider(
-  cache: DomArtCache,
-  options: DomArtProviderOptions = {},
+export function createExactArtProvider(
+  options: ExactArtProviderOptions = {},
 ): ArtProvider {
   const lookupFlag = (choiceKey: string, size: ArtFlagSize): DrawnFlagEntry | undefined => {
     if (!options.broker || !options.scope) return undefined;
@@ -254,7 +252,7 @@ export function createDomArtProvider(
   return {
     demandOwner: 'view',
     resolve(handle: ArtHandle): ArtResult {
-      return cache.resolveAddress(resolutionFromHandle(handle, lookupFlag, options.resolutions));
+      return resolutionFromHandle(handle, lookupFlag, options.resolutions);
     },
   };
 }

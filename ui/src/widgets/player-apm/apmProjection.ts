@@ -15,7 +15,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, wireFloat, wireWhole, zeroValue, type NullableMeaning, type Value } from '../../families/value.ts';
 import type { ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
-import { formatApmRate, formatUnpausedMinutesText, GAPS_NOTE, parseUnsignedInt, playerNames, validateApm, valueNote } from './apmData.ts';
+import { APM_EMPTY, APM_NOT_RECORDED, formatApmRate, formatUnpausedMinutesText, GAPS_NOTE, parseUnsignedInt, playerNames, validateApm, valueNote } from './apmData.ts';
 import { apmHeadQuery } from './apmHead.ts';
 import { TABLE_BASE } from './definition.ts';
 
@@ -140,7 +140,7 @@ function parseReply(raw: unknown): ParsedApm {
   const reply: ApmReply = validateApm(raw);
   return reply.available
     ? { rows: withDisplayNames(reply.series), warnings: reply.warnings }
-    : { rows: [], refusal: 'Player orders were not recorded in this campaign.', warnings: reply.warnings };
+    : { rows: [], refusal: APM_NOT_RECORDED, warnings: reply.warnings };
 }
 
 function formatPlayedHm(summary: ApmValue): string | null {
@@ -268,7 +268,7 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
           return { rows: [], empty: 'Country group membership was not recorded throughout this period.', emptyKind: 'unavailable', warnings: parsed.warnings };
         }
       }
-      if (!parsed.rows.length) return { rows: [], empty: 'No eAPM is available for these countries, players and dates.', emptyKind: 'empty', warnings: parsed.warnings };
+      if (!parsed.rows.length) return { rows: [], empty: APM_EMPTY, emptyKind: 'empty', warnings: parsed.warnings };
       return { rows: parsed.rows, warnings: parsed.warnings };
     },
     rowKey: row => row.id,

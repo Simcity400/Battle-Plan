@@ -31,8 +31,7 @@ import { useRegion, useRegionCoverage, watchBoundary } from '../../dashboard/wid
 import type { HourSpan } from '../../generated/dashboard';
 import { perfLog } from '../../shell/perf.ts';
 import type { FamilyStaticProof } from './adapter.ts';
-import { sharedDomArtCache } from '../art/domCache.ts';
-import { createDomArtProvider } from '../art/provider.ts';
+import { createExactArtProvider, type ArtResolutions } from '../art/provider.ts';
 import {
   buildTailPageRequest,
   compileFollowPlan,
@@ -58,7 +57,6 @@ import {
   type IdentitySnapshot,
 } from '../identity/react.ts';
 import type {
-  ArtProvider,
   AuxProductSpec,
   BoundedReadView,
   CompiledFollowSubscription,
@@ -198,7 +196,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly retryTiles: () => void;
   readonly onHoverHour: (hour: number | null, keys?: DrawnKeys) => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null>) | undefined;
+  readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null>) | undefined;
   readonly bodyStatus: FamilyBodyStatus;
   readonly bannerFailure: BannerFailureInfo | null;
   readonly nameFailureDetail: string | undefined;
@@ -210,7 +208,6 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly loadingLabel: string;
   readonly identitySnapshot: IdentitySnapshot | null;
   readonly identityProvider: IdentityProvider | undefined;
-  readonly artProvider: ArtProvider;
   readonly onIdentityDemands: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
   readonly measureViewport: (width: number, height?: number) => void;
 }
@@ -446,10 +443,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (identityScope) broker.setDemand(providerOwner, identityScope, null);
   }, [broker, identityScope, providerOwner]);
 
-  const artProvider = useMemo<ArtProvider>(
-    () => createDomArtProvider(sharedDomArtCache, { broker, scope: identityScope, recording: track?.source }),
-    [broker, identityScope, track?.source],
-  );
   const snapshots = useMemo(
     () => identitySnapshots(broker, identityScope, track?.source, branchBounds),
     [broker, identityScope, track?.source, branchBounds],
@@ -1063,9 +1056,14 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       gate: displayedGate,
       exactOnce: (key, load) => perfLog!.exactOnce(key, load),
       identity: identityProvider,
-      art: artProvider,
+      art: resolutions => createExactArtProvider({
+        broker,
+        scope: identityScope,
+        recording: track?.source,
+        ...(resolutions ? { resolutions } : {}),
+      }),
     });
-  }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window, pagedSnapshot, identityProvider, artProvider]);
+  }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window, pagedSnapshot, identityProvider, broker, identityScope, track?.source]);
 
   const loadingLabel = `Loading ${subject}…`;
   const hasStaticBundle = staticBundle !== null;
@@ -1312,7 +1310,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     loadingLabel,
     identitySnapshot,
     identityProvider,
-    artProvider,
     onIdentityDemands,
     measureViewport,
   };

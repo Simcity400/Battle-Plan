@@ -12,6 +12,7 @@ import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { useExportSurface } from '../../export/exportMotion.ts';
 import { perfLog } from '../../shell/perf.ts';
+import type { ArtResolutions } from '../art/provider.ts';
 import type { LaneArtResolutions } from '../art/react.ts';
 import { auditIdOf } from '../audit.ts';
 import { displayedHour } from '../boundedView.ts';
@@ -241,7 +242,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly laneArt?: LaneArtResolutions;
   readonly extent?: readonly [number, number] | null;
   readonly plan?: SourcePlan | null;
-  readonly exactReadView?: (hour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null>;
+  readonly exactReadView?: (hour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null>;
   readonly offset: number;
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
@@ -810,9 +811,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const held = requestedWindowRef.current;
     const rowWindow = sameRowWindow(held, asked) ? held : asked;
 
+    const artResolutions = cur.laneArt?.resolutions;
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView && curAdapter.deriveAuditRows) {
-      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, rowWindow?.first, rowWindow?.count, rowWindow?.dataFirst, rowWindow?.dataCount, cur.settings, expansionRef.current, cur.theme];
+      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, rowWindow?.first, rowWindow?.count, rowWindow?.dataFirst, rowWindow?.dataCount, cur.settings, expansionRef.current, cur.theme, artResolutions];
       const prev = lastAuditRef.current;
       if (prev && prev.key.length === key.length && prev.key.every((part, i) => part === key[i])) {
         auditId = prev.id;
@@ -823,7 +825,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         const snapshot: PlanAuditSnapshot<TModel, TOptions> = {
           projection: cur.declaration,
           options: cur.options,
-          exactReadView: hour => readExact(hour, rowWindow),
+          exactReadView: hour => readExact(hour, rowWindow, artResolutions),
           deriveRows: (model, hour, fields) => deriveRows(model, hour, { ...context, fields: fields ?? EMPTY_FIELDS }),
           ...(curAdapter.auditOrdered !== undefined ? { ordered: curAdapter.auditOrdered } : {}),
         };
@@ -840,7 +842,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       auditId: auditId ?? null,
       ...curAdapter.buildView?.({ viewport }),
     };
-    return { cur, curAdapter, w, h, dpr, hidden, viewport, rowWindow, auditId, view };
+    return { cur, curAdapter, w, h, dpr, hidden, viewport, rowWindow, auditId, view, artResolutions };
   }, [audit.capture, sourceIdsRef]);
 
   const supplyDataFields = (cur: typeof latestRef.current) => ({
@@ -854,16 +856,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const showView = useCallback(() => {
     if (!surfaceRef.current || !pipeline || pipe === null) return;
-    const { cur, rowWindow, view } = frame();
+    const { cur, rowWindow, view, artResolutions } = frame();
     requestedWindowRef.current = rowWindow;
     reportWindow();
-    supply?.update({ view, data: supplyDataFields(cur), art: supplyArtFields(cur) });
+    supply?.update({ view, data: supplyDataFields(cur), art: { artResolutions } });
   }, [frame, pipeline, pipe, reportWindow, supply]);
 
   const bind = useCallback(() => {
     const mounted = surfaceRef.current;
     if (!mounted || !pipeline || pipe === null) return;
-    const { cur, curAdapter, w, h, dpr, hidden, viewport, rowWindow, auditId, view } = frame();
+    const { cur, curAdapter, w, h, dpr, hidden, viewport, rowWindow, auditId, view, artResolutions } = frame();
     const binding = familyBinding(curAdapter, {
       kind: cur.declaration.kind,
       view: cur.view,
@@ -914,7 +916,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         pendingArt: Array.isArray(boundView?.fields?.artDemands) && (boundView.fields.artDemands as unknown[]).length > 0,
       });
     }
-    supply?.update({ view, data: supplyDataFields(cur), art: supplyArtFields(cur) });
+    supply?.update({ view, data: supplyDataFields(cur), art: { artResolutions } });
     supplyDated();
   }, [frame, pipeline, pipe, supply, supplyDated, reportWindow, widget.id, instanceId]);
   const showViewRef = useRef(showView);
@@ -1670,7 +1672,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     supply?.data(supplyDataFields(latestRef.current));
   }, [supply]);
   const supplyArt = useCallback(() => {
-    supply?.data(supplyArtFields(latestRef.current), 'art');
+    if (perfLog && latestRef.current.captureActive) showViewRef.current();
+    else supply?.data(supplyArtFields(latestRef.current), 'art');
   }, [supply]);
   useLayoutEffect(() => {
     supplyData();

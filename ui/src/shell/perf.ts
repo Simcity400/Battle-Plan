@@ -92,22 +92,50 @@ export type AuditSnapshotPin = (auditId: number) => (() => void) | undefined;
 interface ReaderRegistration { readonly exact: ExactPicture; readonly pin?: AuditSnapshotPin }
 type ShownRow = NonNullable<PictureSample['rows']>[number];
 
-export function pictureError(surface: string, rows: readonly ShownRow[], exact: ExactRead | null | undefined): string | null {
-  if (!exact || (!rows.length && exact.values.size)) return 'Displayed rows or exact read missing';
-  if (exact.ranked && JSON.stringify(rows.map(r => r.row + ':' + r.key)) !== JSON.stringify([...exact.values.keys()])) return 'Ranked row identities differ';
-  if (exact.ordered && JSON.stringify(rows.map(r => r.key)) !== JSON.stringify([...exact.values.keys()])) return 'Displayed rows are not in the exact read\'s order';
+function keyDiff(label: string, at: number, shown: readonly string[], exact: readonly string[], detail?: string): string {
+  const head = detail ? `${label} (${detail}), first diff at row ${at}` : `${label} at row ${at}`;
+  return `${head} (shown ${shown.length}, exact ${exact.length}): displayed ${shown[at] ?? 'none'}, expected ${exact[at] ?? 'none'}`;
+}
+
+export function pictureError(_surface: string, rows: readonly ShownRow[], exact: ExactRead | null | undefined): string | null {
+  if (exact === undefined) return 'Exact reader absent';
+  if (exact === null) return 'Exact read absent';
+  const exactKeys = [...exact.values.keys()];
+  if (!rows.length && exactKeys.length) return `Displayed 0 of ${exactKeys.length} rows (row 0: displayed none, expected ${exactKeys[0]})`;
+  const ordered = exact.ordered || exact.ranked;
   const shown = new Set<string>();
-  for (const row of rows) {
-    const key = exact.ranked ? row.row + ':' + row.key : row.key;
-    if (shown.has(key)) return key + ' is shown twice';
-    shown.add(key);
-    if (row.overflow) return key + ' exceeds its slot by ' + row.overflow.toFixed(1) + ' px';
-    if (!exact.ranked && row.row !== key && !key.startsWith(row.row + ':')) return 'Wrong row identity for ' + key;
-    if (!exact.values.has(key) || exact.values.get(key) !== row.value) return key + ': displayed ' + row.value + ', expected ' + exact.values.get(key);
+  const shownKeys = rows.map(row => (exact.ranked ? `${row.row}:${row.key}` : row.key));
+  let firstDiff = -1;
+  if (ordered) {
+    const max = Math.max(shownKeys.length, exactKeys.length);
+    for (let i = 0; i < max; i++) if (shownKeys[i] !== exactKeys[i]) { firstDiff = i; break; }
   }
-  for (const key of exact.values.keys()) if (!shown.has(key)) return key + ': in the exact read, not shown';
-  if (surface === 'table' && shown.size !== exact.values.size)
-    return 'Displayed ' + rows.length + ' rows of the ' + exact.values.size + ' the exact read holds';
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!, key = shownKeys[i]!;
+    if (shown.has(key)) {
+      const at = ordered && firstDiff >= 0 && firstDiff < i ? firstDiff : i;
+      return keyDiff(`${key} is shown twice`, at, shownKeys, exactKeys, at !== i ? `row ${i}` : undefined);
+    }
+    shown.add(key);
+    if (row.overflow) return `${key} exceeds its slot by ${row.overflow.toFixed(1)} px`;
+    if (!exact.ranked && row.row !== key && !key.startsWith(`${row.row}:`)) return `Wrong row identity for ${key}`;
+  }
+  const extraAt = shownKeys.findIndex(key => !exact.values.has(key));
+  const missingAt = exactKeys.findIndex(key => !shown.has(key));
+  const atOf = (at: number) => (ordered && firstDiff >= 0 ? firstDiff : at);
+  if (extraAt >= 0 && (missingAt < 0 || extraAt <= missingAt)) {
+    const at = atOf(extraAt);
+    return keyDiff('Extra key', at, shownKeys, exactKeys, at !== extraAt ? shownKeys[extraAt] : undefined);
+  }
+  if (missingAt >= 0) {
+    const at = atOf(missingAt);
+    return keyDiff('Key not shown', at, shownKeys, exactKeys, at !== missingAt ? exactKeys[missingAt] : undefined);
+  }
+  if (ordered && firstDiff >= 0) return keyDiff('Row order differs', firstDiff, shownKeys, exactKeys);
+  for (let i = 0; i < rows.length; i++) {
+    const key = shownKeys[i]!, expected = exact.values.get(key);
+    if (expected !== rows[i]!.value) return `${key}: displayed ${rows[i]!.value}, expected ${expected}`;
+  }
   return null;
 }
 export interface StructureRead { hour: number; rows: () => readonly string[]; exact: () => Promise<readonly string[]> }
