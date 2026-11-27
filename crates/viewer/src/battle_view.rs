@@ -2,7 +2,7 @@ use crate::document::{Content, Document};
 use dashboard_base::Source;
 use dashboard_core::protocol::{BattleKind, BattleWindow, DashboardMapState, DashboardMapView};
 use eframe::{egui, wgpu};
-use replay::campaign::{HourCursor, SeekResult};
+use replay::campaign::SeekResult;
 use replay_data::{BranchId, Hour, rows::TableId};
 use std::{
     collections::VecDeque,
@@ -17,6 +17,7 @@ use viewer_engagements::combat_selection::Selection;
 use viewer_foundation::perspective::{Choice, Country, VISION_TABLES};
 use viewer_gpu::gpu_contract::OUTPUT_FORMAT;
 use viewer_native_gui::sprites::{IconTextures, SpritePass};
+use viewer_playback::engaged_index::cursor::Cursor;
 use viewer_playback::worker_pool::WorkerPool;
 use viewer_runtime::reads::Reads;
 
@@ -99,7 +100,7 @@ struct Held {
     arena: shader_pipeline::gpu::Arena,
     _icons: Arc<IconTextures>,
     reads: Reads<Key, (Hours, [f64; 2])>,
-    cursor: Arc<Mutex<HourCursor>>,
+    cursor: Arc<Mutex<Cursor>>,
     replay: Arc<replay::campaign::Replay>,
     tables: Vec<TableId>,
     generation: u64,
@@ -353,7 +354,7 @@ impl Held {
         let layout = content.combat.window_cache.at(EXTENT.map(|side| side as u32)).map_err(|error| format!("Could not lay out the battle window: {error}"))?;
         let tables = VISION_TABLES.to_vec();
         let replay = source.replay();
-        let cursor = Arc::new(Mutex::new(HourCursor::new(Arc::clone(&replay), &tables, false)));
+        let cursor = Arc::new(Mutex::new(Cursor::new(Arc::clone(&replay), &tables)));
         Ok(Self {
             document,
             battle,
@@ -512,7 +513,6 @@ impl Held {
         self.tables.extend(missed);
         self.tables.sort_unstable_by_key(|table| table.index());
         self.tables.dedup();
-        self.cursor = Arc::new(Mutex::new(HourCursor::new(Arc::clone(&self.replay), &self.tables, false)));
         self.generation += 1;
         if let Some(asked) = self.asked.take() {
             self.next = Some(asked.hour);
@@ -628,6 +628,12 @@ impl Held {
         let cursor = Arc::clone(&self.cursor);
         let declared = self.tables.clone();
         let live = target.battle.as_ref().filter(|_| !matches!(self.selection, Selection::NavalResult(_))).map(|battle| battle.live.clone()).unwrap_or_default();
+        let first = if matches!(self.selection, Selection::NavalResult(_)) {
+            None
+        } else {
+            live.iter().map(|[first, _]| *first).min().or_else(|| self.replay.pieces(branch).first().map(|piece| piece.first_hour))
+        };
+        let country = perspective.country.clone();
         let executable = self.document.content.tables;
         let seek = key.epoch;
         let wake = ctx.clone();
@@ -636,18 +642,7 @@ impl Held {
             move || engine_executable::executable_tables::scope(executable, || {
                 let mut stepping = Instant::now();
                 let mut cursor = cursor.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some((held, at)) = cursor.last()
-                    && held == branch
-                    && hour > at
-                    && hour - at <= STEPS_BEFORE_SEEK
-                    && cursor.continues(branch, hour)
-                {
-                    for between in at + 1..hour {
-                        if !matches!(cursor.seek(branch, between), Ok(SeekResult::Frame(_))) {
-                            break;
-                        }
-                    }
-                }
+                cursor.declare(&declared);
                 let mut made = Vec::new();
                 let mut spent = [0.0; 2];
                 for hour in hour..=through {
@@ -655,9 +650,9 @@ impl Held {
                         made.push((hour, Err("The recording does not cover this hour of the battle.".to_owned())));
                         continue;
                     }
-                    let frame = match cursor.seek(branch, hour) {
-                        Ok(SeekResult::Frame(frame)) => frame,
-                        Ok(SeekResult::Gap { reason, .. }) => {
+                    let (frame, engaged) = match cursor.read(branch, hour, seek, &country, first) {
+                        Ok((SeekResult::Frame(frame), engaged)) => (frame, engaged),
+                        Ok((SeekResult::Gap { reason, .. }, _)) => {
                             made.push((hour, Err(format!("This hour of the battle is not recorded: {reason}"))));
                             break;
                         }
@@ -672,7 +667,7 @@ impl Held {
                     for table in TableId::ALL.into_iter().filter(|table| !declared.contains(table)) {
                         frame.tables[table.index()] = replay_frame::frame::not_declared(table);
                     }
-                    made.push((hour, Ok(asking.read(branch, hour, seek, Arc::new(frame), None))));
+                    made.push((hour, Ok(asking.read(branch, hour, seek, Arc::new(frame), engaged))));
                     spent[1] = reading.elapsed().as_secs_f64() * 1e3;
                     stepping = Instant::now();
                 }

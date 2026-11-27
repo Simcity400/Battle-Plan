@@ -337,6 +337,17 @@ fn update(selection: Selection, flags: &CombatFlags) -> Update {
     }
 }
 
+fn land_engagement_warning(selection: Selection, hour: replay_data::Hour, flags: &CombatFlags) -> Option<String> {
+    use viewer_engagements::engaged::Engaged;
+    let Selection::Land(combat) = selection else { return None };
+    let reason = match flags.land.get(&combat)? {
+        Engaged::Unknown => "its engaged flag is unknown",
+        Engaged::Ambiguous(cause) => cause.reason(),
+        Engaged::Yes | Engaged::No => return None,
+    };
+    Some(format!("Land combat {combat}: at hour {hour} {reason}."))
+}
+
 fn hold(
     previous: Option<Contents>,
     now: &Scope,
@@ -1173,6 +1184,7 @@ fn read_window(request: &Request) -> io::Result<Fresh> {
                 let sources = navy_sources(*selection, navy_sources_of.as_ref(), frame, vision.ours());
                 Bindings::read(document, frame, *selection, &vision, &flags, !*playing, *nato, &sources, rule_relations.as_ref())?
             };
+            bindings.warnings.extend(land_engagement_warning(*selection, *hour, &flags));
             if matches!(selection, Selection::NavalResult(_)) {
                 naval_results::show_details(&mut bindings.values, *details);
             }
@@ -1474,6 +1486,21 @@ mod tests {
             update(Selection::NavalResult(4), &flags(Engaged::No)),
             Update::Refresh(true)
         );
+    }
+
+    #[test]
+    fn land_windows_name_unknown_and_ambiguous_engagement_without_warning_for_known_flags() {
+        use viewer_engagements::engaged::Engaged;
+        let flags = |flag| CombatFlags { land: BTreeMap::from([(73, flag)]), ..Default::default() };
+        let warning = |selection, flag| land_engagement_warning(selection, 42, &flags(flag));
+        assert_eq!(warning(Selection::Land(73), Engaged::Unknown).as_deref(), Some("Land combat 73: at hour 42 its engaged flag is unknown."));
+        for cause in [Ambiguity::Scope, Ambiguity::Order] {
+            assert_eq!(warning(Selection::Land(73), Engaged::Ambiguous(cause)), Some(format!("Land combat 73: at hour 42 {}.", cause.reason())));
+        }
+        for flag in [Engaged::Yes, Engaged::No] {
+            assert_eq!(warning(Selection::Land(73), flag), None);
+        }
+        assert_eq!(warning(Selection::Naval(73), Engaged::Unknown), None);
     }
 
     #[test]
