@@ -776,8 +776,9 @@ fn groups_shared_failure_still_emits_proven_raw_transitions() {
         .collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     let entry = replay.recording().table_entry(0, 0, TableId::GroupNames.index()).unwrap();
+    let meta = entry.unit.first.as_ref().unwrap().streams.iter().find(|(id, _)| *id == replay_columnar::unit::restore::META).unwrap().1[0].frame.offset;
     let mut bytes = replay.bytes().to_vec();
-    bytes[entry.unit.parts[0].frames[0].offset as usize] ^= 0xff;
+    bytes[meta as usize] ^= 0xff;
     let damaged = Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
     let src = Arc::new(Source::from_replay(SourceKey { source_id: "damaged-war-events".into(), revision: "1".into() }, "damaged-war-events.battleplan".into(), Arc::new(damaged), &AtomicBool::new(false)).unwrap());
     let load = LoadContext { content: None };
