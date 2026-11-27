@@ -180,6 +180,11 @@ test('only checked hours leave for the native side: each field’s role comes fr
   const narrow: { branchId: string } = wide;
   assert.match(opened.refusal({ sourceId: 's', product: 'country-fuel', params: narrow }) ?? '', /country-fuel: params\.hour names hour 95/);
   assert.equal(opened.refusal({ sourceId: 's', product: 'country-groups', params: { branchId: '1' } }), null);
+  const strip = (hours: number[]) => opened.refusal({ sourceId: 's', product: 'strip', params: {
+    product: 'country-fuel', whole: true, asks: hours.map(hour => ({ branchId: '1', hour })),
+  } });
+  assert.equal(strip([100, 104]), null);
+  assert.match(strip([104, 105]) ?? '', /country-fuel: params\.hour names hour 105, which was not recorded/);
   const follow = (hour?: number) => ({ id: 1, branchId: '1', clock: 0, query: { product: 'series-state', params: { branchId: '1', reads: [{ country: 'GER', ...hour === undefined ? {} : { hour } }] } } });
   assert.equal(opened.refusal({ sourceId: 's', product: 'follow', params: follow() }), null);
   assert.match(opened.refusal({ sourceId: 's', product: 'follow', params: follow(104) }) ?? '', /names no hour/, 'a followed read names no hour, even a recorded one');

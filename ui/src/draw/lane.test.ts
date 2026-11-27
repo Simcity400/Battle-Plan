@@ -93,6 +93,7 @@ test('a panel installs its model and live values whole, dated from the actual ta
   lane.bindRoute(3, ROUTE, NATIVE);
   lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: { shape: 'A', n: 1 } }, { id: 0, hour: 20, kind: 'completed' }]));
   await step(15, { playing: false });
+  assert.equal(lane.strips, undefined, 'the ordinary lane keeps no strip store before a strip message');
   const view = page.view(1);
   assert.deepEqual([view.mode, view.h, view.through, (view.fields?.['model:3'] as { structure?: string }).structure], ['picture', 10, 15, 'A']);
   lane.receive('panels', panels([{ id: 3, hour: 16, kind: 'data', stepped: true, data: { shape: 'A', n: 2 } }, { id: 0, hour: 20, kind: 'completed' }]));

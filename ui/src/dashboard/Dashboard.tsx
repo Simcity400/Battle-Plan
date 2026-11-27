@@ -935,7 +935,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       <DismissButton onDismiss={() => { setActionError(null); setWarning(null); }} /></div>}
     {saved && savedVisible && <div className="layout-saved" role="status"><Icon name="check" />{saved}</div>}
     <div className={`dash-grid-scroll${editing ? ' is-editing' : ''}`} ref={viewport}>
-      {(active || analyticsOpened) && <DashboardPages active={active} viewport={viewportBox} template={template} runtime={runtime}
+      {(active || analyticsOpened) && <DashboardPages active={active} viewport={viewportBox} stripPageId={shownPage} template={template} runtime={runtime}
         editing={editing} preparing={!editing && !saving && client.available && campaigns.some(campaign => !campaign.loading)}
         preparePages={preparePages} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget}
         empty={<div className="dash-empty-dashboard"><EmptyState icon="grid" title="This page has no widgets yet">

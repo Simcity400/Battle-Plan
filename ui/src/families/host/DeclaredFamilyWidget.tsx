@@ -398,6 +398,7 @@ export default function DeclaredFamilyWidget<
       extent={extent}
       plan={plan.plan}
       exactReadView={displayedCtx && perfLog && !blockedState ? plan.exactReadView : undefined}
+      stripPlan={plan.stripPlan}
       offset={plan.offset}
       pin={plan.pin}
       bounds={plan.bounds}

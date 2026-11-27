@@ -17,7 +17,8 @@ import { allReady, familyBodyStatus, inputOf } from './planInputs.ts';
 import type { FamilyBodyStatus } from '../plan.ts';
 import { BoundSelections, displayedHoverKeys, focusedSubject, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
-import { hoverAsks, readPlanExact } from '../broker.ts';
+import { buildExactRequests, hoverAsks, readPlanExact } from '../broker.ts';
+import { gatedHour } from '../../test-support/gated.ts';
 import type { SourcePlan } from '../contract.ts';
 import type { FrozenGate } from '../sources.ts';
 import { parseTableHit, tableHostAdapter } from '../table/hostAdapter.ts';
@@ -2221,10 +2222,15 @@ test('audit exact reads keep the snapshot page states captured with the installe
   const auditedPending = await pendingExact(100, deep);
   assert.equal(auditedPending?.rows('main')?.sliceAt(100, 600, 1)[0]?.kind, 'loading', 'a pending page 512 past the live head stays loading in the audit');
   assert.deepEqual(requested, [{ hour: 100, offset: '0' }], 'pending pages reconstruct only the live head, never fetching offset 512');
+  const pendingAsks = buildExactRequests(entry, gatedHour(100), { ...exactOpts, rowWindow: deep, pagedSnapshot: name => pendingSnap[name] ?? null });
+  assert.equal(JSON.stringify(pendingAsks?.asks[0]?.request), JSON.stringify({ sourceId: 'log-src', revision: 'r1', product: 'event-feed-tail',
+    params: { branchId: '1', facets: [], from: null, hour: 100, offset: '0', limit: 64 } }));
 
   requested.length = 0;
   deepStep.pager.answer(deepAsk, fakeTail(deepAsk.offset, deepAsk.hour), { total: '800', offset: '512', rows: [rowAt(100, 512)] });
   const deepSnap = pagedSnapshots({ main: deepStep.pager.pages() });
+  const deepAsks = buildExactRequests(entry, gatedHour(150), { ...exactOpts, rowWindow: deep, pagedSnapshot: name => deepSnap[name] ?? null });
+  assert.deepEqual(deepAsks?.asks.map(ask => [ask.slot, ask.request.params.hour, ask.request.params.limit]), [['page:512', 100, 256]]);
   const deepExact = createExactReadView({ owner: 'o', entries: [entry] }, deepSnap, exactOpts);
   const auditedSeekBack = await deepExact(99, deep);
   assert.equal(auditedSeekBack?.rows('main')?.sliceAt(99, 600, 1)[0]?.kind, 'loading', 'seeking before the captured page hour 100 falls back to live head at 99 with row 600 loading');

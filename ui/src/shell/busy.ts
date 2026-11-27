@@ -4,6 +4,12 @@ const counts: Record<BusyKind, number> = { requests: 0, updates: 0, commits: 0, 
 let total = 0;
 let preparing = 0;
 let background = false;
+const foregroundRequests = new Set<() => void>();
+
+export function onForegroundRequest(listener: () => void): () => void {
+  foregroundRequests.add(listener);
+  return () => { foregroundRequests.delete(listener); };
+}
 
 export function inBackground<T>(run: () => T): T {
   const before = background;
@@ -13,7 +19,11 @@ export function inBackground<T>(run: () => T): T {
 
 export function busy(kind: BusyKind): () => void {
   const prepared = kind === 'requests' && background;
-  if (prepared) preparing++; else { counts[kind]++; total++; }
+  if (prepared) preparing++;
+  else {
+    counts[kind]++; total++;
+    if (kind === 'requests') for (const listener of foregroundRequests) listener();
+  }
   let ended = false;
   return () => {
     if (ended) return;

@@ -17,6 +17,7 @@ import { pageClock } from './widgetClock.ts';
 interface Props {
   active: boolean;
   viewport: HTMLElement | null;
+  stripPageId?: string;
   template: DashboardTemplate;
   runtime: WidgetRuntime;
   editing: boolean;
@@ -32,7 +33,7 @@ const noop = () => {};
 const drawPrepared = (page: PreparedPage) =>
   <DashboardGrid prepared template={page.template} runtime={page.runtime} editing={false} onLayouts={noop} onApply={noop} onRemove={noop} />;
 
-export default function DashboardPages({ active, viewport, runtime, template, editing, preparing, preparePages, empty, ...actions }: Props) {
+export default function DashboardPages({ active, viewport, stripPageId, runtime, template, editing, preparing, preparePages, empty, ...actions }: Props) {
   const [drawn, setDrawn] = useState(false);
   useEffect(() => {
     if (!active || !viewport || drawn) return;
@@ -71,7 +72,7 @@ export default function DashboardPages({ active, viewport, runtime, template, ed
 
   return <>
     {active && (template.widgets.length
-      ? <LiveMotion.Provider value={clock.getMotion}><DashboardGrid template={template} runtime={runtime} editing={editing} {...actions} /></LiveMotion.Provider>
+      ? <LiveMotion.Provider value={clock.getMotion}><DashboardGrid stripPageId={stripPageId} template={template} runtime={runtime} editing={editing} {...actions} /></LiveMotion.Provider>
       : empty)}
     <PreparedPages pages={pages} clock={clock} client={client} viewport={viewport}
       enabled={active && drawn && preparing} draw={drawPrepared} mounting={bodiesWaiting} />

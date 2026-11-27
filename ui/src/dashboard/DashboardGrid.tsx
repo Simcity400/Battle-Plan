@@ -27,7 +27,9 @@ import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
 import { FollowedCard, FollowedWidgetKey, FollowedWidgetKind } from './follow/store.ts';
 import { usePipelineGeneration } from './follow/useFollowed.ts';
-import { WidgetFrames } from './widgetClock';
+import { pageClock, WidgetFrames } from './widgetClock';
+import { configuredStripPage, StripPage, StripPageContext } from './strip/driver.ts';
+import { stripLattice } from './strip/lattice.ts';
 import { perfLog } from '../shell/perf';
 import { DASHBOARD_SCROLL, NEAR_SCREEN } from './follow/useFollow.ts';
 import { preloadPageRenderers } from '../widgets/rendererLoaders';
@@ -42,6 +44,7 @@ const READING_BADGE_DELAY_MS = 400;
 
 interface Props {
   prepared?: boolean;
+  stripPageId?: string;
   template: DashboardTemplate;
   runtime: WidgetRuntime;
   editing: boolean;
@@ -50,8 +53,15 @@ interface Props {
   onRemove: (id: string) => void;
 }
 
-function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
+function DashboardGrid({ prepared = false, stripPageId, template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
   const { width, containerRef, mounted } = useContainerWidth({ initialWidth: 1200 });
+  const reference = runtime.tracks.find(track => track.roleId === runtime.defaultRoleId);
+  const stripKey = !prepared && runtime.client.available && reference && !template.widgets.some(widget => widget.kind === 'map')
+    ? JSON.stringify([stripPageId, reference.id, reference.source.id, reference.source.revision, reference.branch.id, reference.axisOffset]) : null;
+  const strips = useMemo(() => stripKey && reference
+    ? configuredStripPage(() => new StripPage(stripLattice(reference.branch, reference.axisOffset), pageClock(runtime.clock), runtime.client, { name: stripPageId })) : null,
+  [stripKey, runtime.clock, runtime.client]);
+  useEffect(() => strips?.start(), [strips]);
   const placement = useGridPlacement(containerRef);
   useEffect(() => { preloadPageRenderers(template.widgets); }, [template.widgets]);
   const changed = useCallback((_layout: Layout, layouts: ResponsiveLayouts<Breakpoint>) => {
@@ -63,7 +73,7 @@ function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts
     }
     onLayouts(next);
   }, [onLayouts, runtime.maps]);
-  return <div className={`dash-grid${editing ? ' is-editing' : ''}`} ref={containerRef}>
+  return <StripPageContext.Provider value={strips}><div className={`dash-grid${editing ? ' is-editing' : ''}`} ref={containerRef}>
     {mounted && <Responsive<Breakpoint> width={width} layouts={template.layouts}
       breakpoints={{ lg: 1280, md: 850, sm: 520, xs: 0 }} cols={GRID_COLUMNS} rowHeight={26} margin={[6, 6]} containerPadding={[0, 0]} positionStrategy={placement}
       dragConfig={{ enabled: editing, handle: '.dash-drag-grip', cancel: 'input,select,textarea,a' }}
@@ -73,7 +83,7 @@ function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts
         <WidgetFrame prepared={prepared} widget={widget} template={template} runtime={runtime} editing={editing} onApply={onApply} onRemove={onRemove} />
       </div>)}
     </Responsive>}
-  </div>;
+  </div></StripPageContext.Provider>;
 }
 
 const MOUNT_BUDGET = 4;
