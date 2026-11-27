@@ -930,6 +930,46 @@ fn log_recording() -> Arc<Runs> {
     Arc::new(Runs { extents: vec![gated(bytes)], runs: vec![run], kinds: vec![LOG.to_vec()] })
 }
 
+#[test]
+fn paused_a_listed_read_holds_read_ahead_past_its_hour_until_its_rows_are_taken() {
+    const ASKED: i32 = 300;
+    let pages = log_recording();
+    let logs = Arc::new(std::sync::OnceLock::<super::LogReads>::new());
+    let asked = Arc::new(Mutex::new(None::<super::Asked>));
+    let ready = Arc::new((Mutex::new(false), Condvar::new()));
+    let hook: super::Hook = Box::new({
+        let (logs, asked, ready) = (Arc::clone(&logs), Arc::clone(&asked), Arc::clone(&ready));
+        move |step, _| {
+            let mut asked = asked.lock().unwrap();
+            if step.reset() && step.last() == ASKED && asked.is_none() {
+                let ready = Arc::clone(&ready);
+                let done: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                    *ready.0.lock().unwrap() = true;
+                    ready.1.notify_all();
+                });
+                *asked = logs.get().map(|logs| logs.rows_notifying(Wanted { run: 0, table: 0, ordinals: Vec::new(), columns: vec![0] }, done));
+            }
+        }
+    });
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), whole_ahead(), Some(hook)).unwrap();
+    assert!(logs.set(playhead.log_reads()).is_ok());
+    let reader = playhead.declare(log_declared(false), None).unwrap();
+    let _consumer = playhead.consumer(reader);
+    playhead.seek(ASKED);
+    advance(&playhead, ASKED);
+    let mut read = ready.0.lock().unwrap();
+    while !*read {
+        read = ready.1.wait(read).unwrap();
+    }
+    drop(read);
+    playhead.wait_until(|| playhead.holding_reads() || playhead.newest().is_some_and(|newest| newest > ASKED));
+    assert_eq!(playhead.newest(), Some(ASKED), "paused, nothing past the hour a listed read was asked at is built until its rows are taken: each such hour would be left unanswered");
+    let rows = asked.lock().unwrap().take().expect("the read asked at the reset").wait();
+    assert!(rows.is_ok(), "{:?}", rows.err());
+    playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest > ASKED));
+    assert!(!playhead.holding_reads(), "once the rows are taken, read-ahead goes on");
+}
+
 fn log_declared(passing: bool) -> Vec<Declared> {
     vec![Declared { table: 0, columns: (0..LOG.len()).collect(), keyed: true, passing, hourly: false }]
 }

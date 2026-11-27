@@ -801,6 +801,7 @@ impl Engine {
             followed.has_pending = false;
             followed.has_sent = false;
             followed.late = None;
+            followed.reading = None;
             followed.log.clear(followed.declared.len(), true);
             followed.live.resend();
             if let Some(mut body) = refusal {
