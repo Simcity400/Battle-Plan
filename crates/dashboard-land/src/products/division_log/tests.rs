@@ -105,6 +105,113 @@ fn sightings_and_removals_follow_the_observation_hour_with_separate_coverage() {
 }
 
 #[test]
+fn unresolved_owner_and_undated_removal_keep_honest_identity_and_last_sighting() {
+    let frames = (100..=105)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let mut divisions = Vec::new();
+            if hour <= 103 {
+                divisions.push(DivisionRow {
+                    id: 1 << 32 | 9,
+                    roster_owner: 9001,
+                    logical_owner: 9001,
+                    province: if hour < 103 { 55 } else { 77 },
+                    template: 1 << 32 | 3,
+                    hit_points: 100_000,
+                    ..Default::default()
+                });
+            }
+            if hour >= 102 {
+                divisions.push(DivisionRow {
+                    id: 2 << 32 | 9,
+                    roster_owner: 9999,
+                    logical_owner: 9999,
+                    province: 88,
+                    template: 2 << 32 | 3,
+                    hit_points: 100_000,
+                    ..Default::default()
+                });
+            }
+            let deletions = if hour == 104 {
+                vec![DivisionEquipmentDeletionRow {
+                    division_handle: 1 << 32 | 9,
+                    country: 9001,
+                    disposition: Disposition::Loss,
+                    cause: Some(Cause::DivisionDestroyed),
+                    ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            for (id, rows) in [
+                (TableId::Divisions, TableRows::Divisions(divisions)),
+                (TableId::DivisionEquipmentDeletions, TableRows::DivisionEquipmentDeletions(deletions)),
+            ] {
+                frame.metrics.table_ns[id.index()] = 1;
+                *frame.tables[id.index()] = TableView::Complete(rows);
+            }
+            frame
+        })
+        .collect();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let source = Source::from_replay(
+        SourceKey { source_id: "divisions-honesty".into(), revision: "1".into() },
+        "fixture.battleplan".into(),
+        Arc::new(replay),
+        &cancel,
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let ask = |hour, options: serde_json::Value| {
+        let mut params = json!({ "branchId": "1", "hour": hour, "limit": 10 });
+        params.as_object_mut().unwrap().extend(options.as_object().unwrap().clone());
+        DivisionLogTail::load(&source, &serde_json::from_value(params).unwrap(), &load, &cancel).unwrap()
+    };
+
+    let created = ask(103, json!({"events": "created"}));
+    assert_eq!(created.rows.len(), 1);
+    let sighting = &created.rows[0];
+    assert_eq!((sighting.slot, sighting.tag.as_deref()), (None, None), "an unresolved owner names no country, never a guess");
+    assert_eq!((sighting.hour, sighting.observed), (102, 102));
+    let sighting_detail = sighting.event.as_ref().unwrap();
+    assert_eq!(sighting_detail.division, (2u64 << 32 | 9).to_string());
+    assert_eq!(sighting_detail.status, "first_observed");
+    assert!(!sighting_detail.exact);
+    assert_eq!(sighting_detail.after_hour, Some(101));
+    assert_eq!((sighting_detail.province, sighting_detail.place_hour), (Some(88), Some(102)));
+
+    let filtered = ask(103, json!({"events": "created", "countries": [7]}));
+    assert!(filtered.rows.is_empty(), "an unresolved owner never matches a country filter");
+    assert!(
+        filtered.warnings.iter().any(|reason| reason.contains("no recorded owner for the country filter")),
+        "filtering by country warns about divisions with no recorded owner: {:?}",
+        filtered.warnings
+    );
+
+    let lost = ask(105, json!({"events": "lost"}));
+    assert_eq!(lost.rows.len(), 1);
+    let removal = &lost.rows[0];
+    assert_eq!((removal.hour, removal.observed), (104, 104));
+    assert_eq!(removal.slot, Some(7));
+    assert!(removal.tag.is_some());
+    let removal_detail = removal.event.as_ref().unwrap();
+    assert_eq!(removal_detail.division, (1u64 << 32 | 9).to_string());
+    assert_eq!(removal_detail.status, "division_destroyed");
+    assert!(!removal_detail.exact);
+    assert_eq!(
+        (removal_detail.province, removal_detail.place_hour),
+        (Some(77), Some(103)),
+        "a death not dated is placed where the division was last seen"
+    );
+    assert_eq!((removal_detail.killer_slot, removal_detail.killer_tag.as_deref(), removal_detail.killer_division.as_deref()), (None, None, None));
+    assert_eq!(removal_detail.matched_deaths, Some(0));
+}
+
+#[test]
 fn hours_not_read_are_the_stretch_less_its_read_runs() {
     assert_eq!(unread(&[(10, 19), (25, 30)], 5, 40), vec![(5, 9), (20, 24), (31, 40)]);
     assert_eq!(unread(&[(0, 50)], 5, 40), Vec::<(i32, i32)>::new());

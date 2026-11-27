@@ -1,5 +1,5 @@
 import { decode } from '@msgpack/msgpack';
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { FollowedWidgetKind } from './store.ts';
 import type { DashboardClient, DashboardSource } from '../client';
 import type { FollowRequest } from '../regionTime';
@@ -15,7 +15,6 @@ import type { WidgetView } from './page';
 import type { FromLane } from '../../draw/laneMessages';
 import type { ModelField, LiveMap } from '../../draw/views/fields';
 import type { Live, LiveValues } from '../../charts/live';
-import { observeOnScreen, type OnScreen } from './onScreen.ts';
 
 export const laneCount = () => Math.max(1, Math.min(4, (globalThis.navigator?.hardwareConcurrency || 2) - 2));
 
@@ -126,15 +125,6 @@ export function useElement(target: { readonly current: Element | null }): Elemen
   return element;
 }
 
-export function useOnScreen(target: Element | null, onScreen: OnScreen = observeOnScreen): boolean {
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    if (!target?.isConnected) { setVisible(false); return; }
-    return onScreen(target, setVisible);
-  }, [target, onScreen]);
-  return visible;
-}
-
 export function useFollowedSub(pipeline: Pipeline | null, widget: number | null, follow: { source: DashboardSource; branch: string; offset: number } | null,
   query: FollowRequest | null, channel: Channel, product?: string): number | undefined {
   const [sub, setSub] = useState<number | undefined>(undefined);
@@ -154,33 +144,6 @@ export function useFollowedSub(pipeline: Pipeline | null, widget: number | null,
 const viewKey = (view: WidgetView | null) => view
   ? `${view.mode}|${view.reason ?? ''}|${view.structure ?? ''}|${view.dim}|${String(view.tooltip ?? '')}`
   : 'none';
-
-export type Reading =
-  | { state: 'pending' }
-  | { state: 'outside' }
-  | { state: 'refused'; reason: string }
-  | { state: 'covered'; hour: number; dim: boolean };
-
-export function readingOf(view: WidgetView | null | undefined): Reading {
-  if (!view || view.mode === 'reading') return { state: 'pending' };
-  if (view.mode === 'outside') return { state: 'outside' };
-  if (view.mode === 'failed' || view.mode === 'refused') return { state: 'refused', reason: view.reason ?? 'The followed reading stopped without a reason' };
-  return { state: 'covered', hour: view.painted ?? view.h!, dim: view.dim };
-}
-
-export function datedReading(reading: Reading, dated: { read(): number | null }): Reading {
-  return reading.state !== 'covered' ? reading : { state: 'covered', dim: reading.dim, get hour() { return dated.read() ?? reading.hour; } };
-}
-
-export function componentReading(view: WidgetView | null | undefined, sub: number | undefined): Reading {
-  const refused = sub === undefined || view?.mode !== 'picture' ? undefined : view.fields?.[`refused:${sub}`];
-  return typeof refused === 'string' ? { state: 'refused', reason: refused } : readingOf(view);
-}
-
-export const branchBounds = (source: DashboardSource, branch: unknown): readonly [number, number] | undefined => {
-  const held = source.metadata.branches?.find(each => String(each.id) === String(branch));
-  return held ? [held.firstHour, held.lastHour] : undefined;
-};
 
 export function useInstalled(pipeline: Pipeline | null, widget: number | null): WidgetView | null {
   const subscribe = useMemo(() => (changed: () => void) => widget === null || !pipeline ? () => {} : pipeline.onInstall(widget, changed), [pipeline, widget]);
@@ -206,12 +169,6 @@ export function datedStore(pipeline: Pipeline | null, widget: number | null) {
       return view?.mode === 'picture' ? view.painted ?? view.h ?? null : null;
     },
   };
-}
-
-export function onInstalled(pipeline: Pipeline, widget: number, paint: () => void): () => void {
-  const run = () => { if (pipeline.view(widget)?.mode === 'picture') paint(); };
-  run();
-  return pipeline.onInstall(widget, run);
 }
 
 export const heldFor = (held: { key: string; id: number } | null, key: string | null) => held !== null && held.key === key ? held.id : null;
@@ -262,6 +219,3 @@ export function installedLive(pipeline: Pipeline, widget: number, sub: number): 
 
 export const installedModel = (view: WidgetView | null, sub: number | undefined) =>
   sub === undefined ? undefined : view?.fields?.[`model:${sub}`] as ModelField | undefined;
-
-export const installedAnswer = (view: WidgetView | null, sub: number | undefined) =>
-  sub === undefined ? undefined : view?.fields?.[`answer:${sub}`] as Uint8Array | undefined;

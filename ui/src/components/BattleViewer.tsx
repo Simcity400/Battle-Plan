@@ -120,12 +120,13 @@ function rgbOf(value: string): Rgb | null {
 
 export interface BattleLead { readonly slot: number; readonly tag: string }
 
-export function BattleGameWindow({ runtime, track, clock, kind = 'land', combat, lead, live, until, ended }: {
+export function BattleGameWindow({ runtime, track, clock, kind = 'land', combat, result = null, lead, live, until, ended }: {
   readonly runtime: ViewerRuntime;
   readonly track: BoundTrack;
   readonly clock: BattleClock;
   readonly kind?: 'land' | 'naval';
-  readonly combat: string;
+  readonly combat: string | null;
+  readonly result?: { readonly handle: string; readonly from: number } | null;
   readonly lead: BattleLead;
   readonly live: readonly (readonly [number, number])[];
   readonly until: number | null;
@@ -157,9 +158,9 @@ export function BattleGameWindow({ runtime, track, clock, kind = 'land', combat,
       options: { fog: true, country: track.selectedTag ?? null, countrySlot: track.selectedSlot ?? null, countryPinned: false, observed: null, pickerHidden: true },
       sourceId: track.source.id, path: track.source.path, revision: track.source.revision, branchId: track.branch.id,
       seekSequence: clock.jumpSequence, playing: clock.playing, hoursPerSecond: clock.rate, hour, fraction: 0, sequence: clock.sequence,
-      battle: { kind, combat, country: leading.current.tag, countrySlot: leading.current.slot, playedFrom: clock.resumeFrom, live: live.map(([first, last]) => [first, last]), canvas, text },
+      battle: { kind, ...(combat === null ? {} : { combat }), ...(result ? { result: { handle: result.handle, from: result.from } } : {}), country: leading.current.tag, countrySlot: leading.current.slot, playedFrom: clock.resumeFrom, live: live.map(([first, last]) => [first, last]), canvas, text },
     };
-  }, [track, clock, kind, combat, until, live]);
+  }, [track, clock, kind, combat, result, until, live]);
   useLayoutEffect(() => placed && body.current ? runtime.maps.register(id, body.current, target, false) : undefined, [placed, runtime.maps, id, target]);
   useEffect(() => clock.subscribe(() => runtime.maps.retarget()), [clock, runtime.maps]);
   useEffect(() => { runtime.maps.retarget(); }, [past, runtime.maps]);

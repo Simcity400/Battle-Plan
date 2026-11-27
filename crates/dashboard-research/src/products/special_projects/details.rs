@@ -1237,7 +1237,7 @@ fn projects(
                 unavailable.push(why.clone());
             }
             let authored = namer.content().zip(token.as_ref().ok()).and_then(|(content, token)| definition(content, token).map(|found| (content, found, token)));
-            let name = authored.and_then(|(content, found, token)| namer.name(&country_key(content, tag, project_name_key(found, token))));
+            let name = authored.and_then(|(content, found, token)| namer.name(&country_key(content, Some(tag), project_name_key(found, token))));
             let runtime = match &project.runtime {
                 Recorded::Value(runtime) => Some(runtime),
                 _ => None,

@@ -7,13 +7,3 @@ export function useChartTokens(): ChartTokens {
   useEffect(() => subscribeTokens(setTokens), []);
   return tokens;
 }
-
-export function useViewportHeight(): number {
-  const [height, setHeight] = useState(() => globalThis.innerHeight);
-  useEffect(() => {
-    const update = () => setHeight(globalThis.innerHeight);
-    globalThis.addEventListener('resize', update);
-    return () => globalThis.removeEventListener('resize', update);
-  }, []);
-  return height;
-}

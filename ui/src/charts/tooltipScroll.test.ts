@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { hideTooltip, measureTooltipScroll, scrollTooltip, showTooltip, tooltipStore, tooltipText } from './tooltip.ts';
+import { handleActiveTooltipKey, handleActiveTooltipWheel, hideTooltip, measureTooltipScroll, scrollTooltip, showTooltip, tooltipStore, tooltipText } from './tooltip.ts';
 import { tooltipRowOffsets, tooltipRowWindow, tooltipScrollTop } from './tooltipScroll.ts';
 
 test('a measured scroll viewport can reach every tooltip row without a fixed count', () => {
@@ -34,7 +34,29 @@ test('wheel and page scrolling retain complete content, respect ownership and pr
   assert.equal(tooltipStore.get()!.scrollTop, 0);
   showTooltip('scroll-test', { title: 'Existing non-scrolling tooltip', rows: [] }, 10, 10, 'default');
   assert.equal(scrollTooltip('scroll-test', 100), false);
+  assert.equal(handleActiveTooltipWheel('scroll-test', 40, 200), false);
+  assert.equal(handleActiveTooltipKey('scroll-test', 'PageDown', false, 200), false);
   hideTooltip('scroll-test');
+});
+
+test('active wheel and keyboard helpers scroll an overflowing tooltip to its tail without stealing edge or other-widget events', () => {
+  const rows = Array.from({ length: 16 }, (_, index) => ({ label: `Gap ${index}`, value: `key_${index}: reason` }));
+  showTooltip('scroll-input', { title: 'Gaps', scrollable: true, scrollId: 'gaps', rows }, 10, 10, 'gaps');
+  measureTooltipScroll('scroll-input', 120);
+  const offsets = tooltipRowOffsets(rows);
+  const maxScroll = offsets[offsets.length - 1]! - 120;
+  assert.equal(handleActiveTooltipWheel('other-widget', 40, maxScroll), false, 'wheel over another widget is never consumed');
+  assert.equal(handleActiveTooltipWheel(null, 40, maxScroll), false, 'wheel outside any owning widget is never consumed');
+  assert.equal(handleActiveTooltipKey('other-widget', 'PageDown', false, maxScroll), false, 'PageDown in another widget is never consumed');
+  assert.equal(handleActiveTooltipWheel('scroll-input', -40, maxScroll), false, 'at the top, upward wheel passes through');
+  assert.equal(handleActiveTooltipKey('scroll-input', 'PageDown', false, maxScroll), true);
+  assert.equal(tooltipStore.get()!.scrollTop, 120);
+  assert.equal(handleActiveTooltipWheel('scroll-input', maxScroll, maxScroll), true);
+  assert.equal(tooltipStore.get()!.scrollTop, maxScroll);
+  assert.equal(handleActiveTooltipWheel('scroll-input', 40, maxScroll), false, 'at the bottom, downward wheel passes through');
+  const win = tooltipRowWindow(offsets, tooltipStore.get()!.scrollTop!, 120);
+  assert.equal(win.last, 16, 'scrolling reaches the final row');
+  hideTooltip('scroll-input');
 });
 
 test('long native header and trailing text share the viewport without hiding the complete row list', () => {

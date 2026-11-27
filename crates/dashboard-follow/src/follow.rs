@@ -160,7 +160,10 @@ impl Follow {
         Box::new(move |step: &Step, lanes: &Lanes<'_>| {
             engine.step(step, lanes);
             let products = lock(&engine.shared.products).clone();
-            if let Some(products) = products { products(step, lanes); }
+            if let Some(products) = products {
+                products(step, lanes);
+                engine.step_added(step, lanes);
+            }
         })
     }
 
@@ -180,16 +183,60 @@ impl Follow {
         rehooker_for(&self.shared)
     }
 
-    pub(crate) fn product_lanes(&self, id: u32, lanes: Vec<Declared>) -> io::Result<()> {
-        let result = {
+    pub(crate) fn retain_product_lanes(&self, id: u32, read: &[Declared]) -> io::Result<()> {
+        if read.is_empty() {
+            return Ok(());
+        }
+        let changed = {
             let mut control = lock(&self.shared.control);
-            if lanes.is_empty() { control.products.remove(&id); } else { control.products.insert(id, lanes); }
-            redeclare(&mut control, false)
+            let mut next = control.products.get(&id).cloned().unwrap_or_default();
+            for wanted in read {
+                match next.iter_mut().find(|lane| lane.table == wanted.table) {
+                    Some(lane) => {
+                        lane.columns.extend(&wanted.columns);
+                        lane.columns.sort_unstable();
+                        lane.columns.dedup();
+                        lane.keyed |= wanted.keyed;
+                        lane.passing |= wanted.passing;
+                        lane.hourly |= wanted.hourly;
+                    }
+                    None => {
+                        let mut lane = wanted.clone();
+                        lane.columns.sort_unstable();
+                        lane.columns.dedup();
+                        next.push(lane);
+                    }
+                }
+            }
+            next.sort_by_key(|lane| lane.table);
+            if control.products.get(&id).is_some_and(|held| *held == next) {
+                false
+            } else {
+                control.products.insert(id, next);
+                redeclare(&mut control, false)?;
+                true
+            }
         };
-        if result.is_ok() {
+        if changed {
             self.shared.notify_wake();
         }
-        result
+        Ok(())
+    }
+
+    pub(crate) fn clear_product_lanes(&self, id: u32) -> io::Result<()> {
+        let changed = {
+            let mut control = lock(&self.shared.control);
+            if control.products.remove(&id).is_some() {
+                redeclare(&mut control, false)?;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.shared.notify_wake();
+        }
+        Ok(())
     }
 
     pub fn bind(&self, declare: impl Fn(Vec<Declared>, bool) -> io::Result<()> + Send + Sync + 'static, logs: LogReads) -> io::Result<()> {
@@ -202,12 +249,16 @@ impl Follow {
     }
 
     pub fn follow(&self, id: u32, query: Query) -> io::Result<()> {
+        self.follow_cells(id, query, true)
+    }
+
+    pub(crate) fn follow_cells(&self, id: u32, query: Query, seed_paused: bool) -> io::Result<()> {
         query.check()?;
         let result = {
             let mut control = lock(&self.shared.control);
             control.followed.insert(id, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() });
             control.ops.push(Op::Follow(id, Box::new(query)));
-            redeclare(&mut control, true)
+            redeclare(&mut control, seed_paused)
         };
         if result.is_ok() {
             self.shared.notify_wake();
@@ -630,7 +681,7 @@ impl Engine {
             self.evaluate(step, lanes, &mut stats);
         }
         self.answer_heads(step, &mut stats);
-        let message = self.send(step, lanes, &mut stats);
+        let message = self.send(step, lanes, step.reset(), &mut stats);
         let held = (changed || step.reset() || self.counters.steps.is_multiple_of(HELD_EVERY)).then(|| self.held());
         stats.ns = start.elapsed().as_nanos() as u64;
         let counters = &mut self.counters;
@@ -648,6 +699,46 @@ impl Engine {
         if let Some(held) = held {
             report.1 = held;
         }
+        drop(report);
+        (self.sink)(&stats, message);
+    }
+
+    fn step_added(&mut self, step: &Step, lanes: &Lanes<'_>) {
+        if lock(&self.shared.control).ops.is_empty() {
+            return;
+        }
+        let start = Instant::now();
+        let mut stats = StepStats { epoch: step.epoch(), first: step.first(), last: step.last(), reset: false, gap: step.gap(), ..StepStats::default() };
+        let (changed, session) = self.apply_ops();
+        stats.session = session;
+        if !changed || step.gap() {
+            return;
+        }
+        self.activate(lanes, &mut stats);
+        self.fill();
+        stats.touched += self.marked.len() as u32;
+        self.evaluate(step, lanes, &mut stats);
+        if self.queue.is_empty() {
+            return;
+        }
+        let message = self.send(step, lanes, false, &mut stats);
+        if message.is_none() {
+            return;
+        }
+        let held = self.held();
+        stats.ns = start.elapsed().as_nanos() as u64;
+        let counters = &mut self.counters;
+        counters.touched += u64::from(stats.touched);
+        counters.evaluated += u64::from(stats.evaluated);
+        counters.changed += u64::from(stats.changed);
+        counters.sent += u64::from(stats.sent);
+        counters.messages += u64::from(stats.messages);
+        counters.bytes += u64::from(stats.bytes);
+        counters.ns += stats.ns;
+        counters.most_ns = counters.most_ns.max(stats.ns);
+        let mut report = lock(&self.shared.report);
+        report.0 = self.counters;
+        report.1 = held;
         drop(report);
         (self.sink)(&stats, message);
     }
@@ -1192,10 +1283,10 @@ impl Engine {
         }
     }
 
-    fn send(&mut self, step: &Step, lanes: &Lanes<'_>, stats: &mut StepStats) -> Option<Message> {
+    fn send(&mut self, step: &Step, lanes: &Lanes<'_>, reset: bool, stats: &mut StepStats) -> Option<Message> {
         let (first_epoch, seek) = *lock(&self.shared.page_seek);
         if step.epoch() < first_epoch { return None; }
-        answer::begin(&mut self.message, self.shared.route, self.shared.clock, step.last(), seek, step.reset());
+        answer::begin(&mut self.message, self.shared.route, self.shared.clock, step.last(), seek, reset);
         if !step.gap() {
             for (&table, index) in &self.tables {
                 let head = lanes.get(table).and_then(Lane::head).unwrap_or(Hour::MIN);
@@ -1238,12 +1329,12 @@ impl Engine {
                 }
             }
         }
-        if stats.sent == 0 && !step.reset() && self.ids.is_empty() {
+        if stats.sent == 0 && !reset && self.ids.is_empty() {
             return None;
         }
         stats.messages = 1;
         stats.bytes = self.message.len() as u32;
-        Some(Message { hour: step.last(), reset: step.reset(), answers: stats.sent, bytes: mem::take(&mut self.message) })
+        Some(Message { hour: step.last(), reset, answers: stats.sent, bytes: mem::take(&mut self.message) })
     }
 
     fn held(&self) -> Held {

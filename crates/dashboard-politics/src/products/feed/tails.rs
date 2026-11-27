@@ -583,6 +583,10 @@ fn chosen_names(item: &mut super::EventFeedItem, chosen: Option<i32>) {
             option.name = None;
         }
     }
+    item.gaps.retain(|gap| {
+        gap.field != super::EventFeedGapField::Option
+            || chosen.is_some_and(|chosen| gap.ordinal.is_some_and(|ordinal| i64::from(chosen) == i64::from(ordinal)))
+    });
 }
 
 pub(super) fn listed(rows: &mut [Option<EventFeedRow>], description: bool, window: bool) {
@@ -595,11 +599,9 @@ pub(super) fn listed(rows: &mut [Option<EventFeedRow>], description: bool, windo
         }) {
             row.cause = None;
         }
-        if let Some(item) = row.item.as_mut() {
-            item.gaps = None;
-            if !description {
-                item.description = None;
-            }
+        if !description && let Some(item) = row.item.as_mut() {
+            item.description = None;
+            item.gaps.retain(|gap| gap.field != super::EventFeedGapField::Description);
         }
         if !window {
             row.window = None;
@@ -732,6 +734,8 @@ impl Product for EventFeedTail {
             super::EventFeedCategory::decl(),
             EventFeedKind::decl(),
             super::EventFeedOption::decl(),
+            super::EventFeedGapField::decl(),
+            super::EventFeedGap::decl(),
             super::EventFeedItem::decl(),
             super::EventFeedCause::decl(),
             super::DecisionLifecycleState::decl(),

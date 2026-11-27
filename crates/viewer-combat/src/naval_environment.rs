@@ -2398,7 +2398,7 @@ pub(super) fn bind(
                     && static_content.assets.convoy_weapon_bound.is_ok()
                 {
                     out.warnings.push(format!(
-                        "Naval weapon totals with live convoys stay dash: {reason}."
+                        "Weapon totals stay a dash while convoys are in a battle: {reason}."
                     ));
                 }
                 frame_convoy_bound = Some(bound);

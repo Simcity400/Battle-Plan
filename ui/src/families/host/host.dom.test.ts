@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../../tools/native-page.ts';
 
-test('shared family host handles F1 campaign switch pin clear, F2 leave-then-deactivate hover cleanup, F3/F4 theme & reduced motion, F5 press across frame update, F12 dual placement isolation + typeahead, and the generic FamilyHost doing no React render, bind or paint on quiet, steady and paused frames', async () => {
+test('shared family host handles F1 campaign switch pin clear, F2 leave-then-deactivate hover cleanup, F3/F4 theme & reduced motion, F5 press across frame update, F12 dual placement isolation + typeahead, points keyboard focus cancelling delayed pointer hover replies, and the generic FamilyHost doing no React render, bind or paint on quiet, steady and paused frames', async t => {
   await withNativePage('family-host', '/ui/src/families/host/host.dom.fixture.tsx', page => page.stage('family-host', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.hostDom.${expression}`);
     const { cdpSession } = await import(new URL('../../../../tools/e2e/cdp.mjs', import.meta.url).href) as {
@@ -52,6 +52,121 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       assert.deepEqual([focus.playing.calls, focus.playing.commits], [0, 0], `while playback runs under a resting focus: no report and no React render (${focus.playing.hoursAdvanced} hours)`);
       assert.deepEqual(focus.outside, [null], 'a seek that takes the picture away clears the focused row with it');
       assert.deepEqual(focus.left, [null], 'focus leaving the rows clears the focused row');
+
+      type VisibleTip = { open: boolean; title: string | null; subtitle: string | null; rows: Array<[string, string]> };
+      type PointsMount = {
+        pipeId: number;
+        hour12Point: { x: number; y: number };
+        navKeys: string[];
+        initialTooltip: VisibleTip;
+        date0: string;
+        date3: string;
+        date6: string;
+      };
+      type DeliveredState = {
+        visibleTooltip: VisibleTip;
+        inspecting: string | null;
+        hoverHours: Array<number | null>;
+        navRequests: Array<{ key: string; currentHour: number | null }>;
+      };
+
+      const pressPinKey = async () => {
+        await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'p', code: 'KeyP', text: 'p', unmodifiedText: 'p', windowsVirtualKeyCode: 80 });
+        await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'p', code: 'KeyP', windowsVirtualKeyCode: 80 });
+      };
+
+      const queueHour12Hover = async (x: number, y: number, label: string) => {
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+        const held = await act<{ count: number; key: string | null }>('waitHeldPointsHit()');
+        assert.equal(held.count, 1, `${label}: pointer hover hit reply is held pending`);
+        assert.match(held.key ?? '', /^(plot:12|line:metric@12)$/, `${label}: pending pointer hover hit targets hour 12`);
+      };
+
+      const verifyPointsKeyboardCancelsPendingHover = async (mode: 'focusKey' | 'pointsNavigate') => {
+        const mountedPoints = await act<PointsMount>(`mountPointsHost(${JSON.stringify(mode)})`);
+        try {
+          assert.ok(mountedPoints.pipeId > 0, `${mode}: mounted points FamilyHost`);
+          assert.deepEqual(mountedPoints.navKeys.slice(0, 3), ['plot:0', 'plot:3', 'plot:6'], `${mode}: chart exposes expected nav stops`);
+          if (mode === 'focusKey') {
+            assert.equal(mountedPoints.initialTooltip.open, true, 'onFocusKey: initial focus opens tooltip');
+            assert.equal(mountedPoints.initialTooltip.subtitle, mountedPoints.date0, 'onFocusKey: initial focus tooltip shows hour 0');
+            assert.deepEqual(mountedPoints.initialTooltip.rows, [['Metric', '10']], 'onFocusKey: initial focus tooltip shows hour 0 value');
+          }
+
+          if (mode === 'pointsNavigate') {
+            await page.press('ArrowRight');
+            await queueHour12Hover(mountedPoints.hour12Point.x, mountedPoints.hour12Point.y, 'pointsNavigate');
+            await act('resolvePointsNavigate(3)');
+          } else {
+            await queueHour12Hover(mountedPoints.hour12Point.x, mountedPoints.hour12Point.y, 'focusKey');
+            await page.press('ArrowRight');
+          }
+          const focusedTip = await act<VisibleTip>('waitPointsTooltipHour(3)');
+          assert.equal(focusedTip.open, true, `${mode}: keyboard move renders visible tooltip`);
+          assert.equal(focusedTip.subtitle, mountedPoints.date3, `${mode}: visible tooltip shows keyboard-selected hour 3`);
+          assert.deepEqual(focusedTip.rows, [['Metric', '30']], `${mode}: visible tooltip shows hour 3 value`);
+
+          const afterUnpinnedReply = await act<DeliveredState>(`deliverHeldPointsHit(${mountedPoints.pipeId})`);
+          assert.equal(afterUnpinnedReply.visibleTooltip.open, true, `${mode}: visible tooltip stays open after delayed pointer reply`);
+          assert.equal(afterUnpinnedReply.visibleTooltip.subtitle, mountedPoints.date3, `${mode}: delayed hour-12 pointer reply does not overwrite visible hour-3 tooltip`);
+          assert.deepEqual(afterUnpinnedReply.visibleTooltip.rows, [['Metric', '30']], `${mode}: visible tooltip value remains hour 3`);
+          assert.equal(afterUnpinnedReply.inspecting, null, `${mode}: delayed pointer reply does not re-inspect the chart`);
+          assert.equal(afterUnpinnedReply.hoverHours.at(-1), 3, `${mode}: reported hover hour stays at keyboard-selected hour 3`);
+          assert.equal(afterUnpinnedReply.hoverHours.includes(12), false, `${mode}: delayed pointer reply never reports hour 12`);
+          if (mode === 'pointsNavigate') {
+            assert.deepEqual(afterUnpinnedReply.navRequests, [{ key: 'ArrowRight', currentHour: null }], 'pointsNavigate: ArrowRight routed through onPointsNavigate');
+          }
+
+          await pressPinKey();
+          const pinnedTip = await act<VisibleTip>('waitPinnedPointsTooltip(3)');
+          assert.equal(pinnedTip.open, true, `${mode}: pressing P pins the keyboard-focused hour-3 tooltip`);
+          assert.equal(pinnedTip.subtitle, `Pinned at ${mountedPoints.date3}`, `${mode}: pinned tooltip locks onto hour 3`);
+          assert.deepEqual(pinnedTip.rows, [['Metric', '30']], `${mode}: pinned tooltip shows hour 3 value`);
+
+          await act(`holdPointsHits(${mountedPoints.pipeId})`);
+          if (mode === 'pointsNavigate') {
+            await page.press('ArrowRight');
+            await queueHour12Hover(mountedPoints.hour12Point.x + 2, mountedPoints.hour12Point.y, 'pointsNavigate pinned');
+            await act('resolvePointsNavigate(6)');
+          } else {
+            await queueHour12Hover(mountedPoints.hour12Point.x + 2, mountedPoints.hour12Point.y, 'focusKey pinned');
+            await page.press('ArrowRight');
+          }
+          await act(`waitPointsFocusInstalled(${mountedPoints.pipeId}, 6)`);
+
+          const afterPinnedReply = await act<DeliveredState>(`deliverHeldPointsHit(${mountedPoints.pipeId})`);
+          assert.equal(afterPinnedReply.visibleTooltip.open, true, `${mode}: pinned tooltip remains visible after keyboard move and delayed pointer reply`);
+          assert.equal(afterPinnedReply.visibleTooltip.subtitle, `Pinned at ${mountedPoints.date3}`, `${mode}: pinned tooltip at hour 3 is preserved`);
+          assert.deepEqual(afterPinnedReply.visibleTooltip.rows, [['Metric', '30']], `${mode}: pinned tooltip content stays at hour 3`);
+          assert.equal(afterPinnedReply.inspecting, null, `${mode}: delayed pointer reply while pinned does not re-inspect hour 12`);
+          assert.equal(afterPinnedReply.hoverHours.at(-1), 6, `${mode}: keyboard focus moved hover hour to 6 while preserving the pinned tooltip`);
+          assert.equal(afterPinnedReply.hoverHours.includes(12), false, `${mode}: delayed pointer reply while pinned never reports hour 12`);
+          if (mode === 'pointsNavigate') {
+            assert.deepEqual(
+              afterPinnedReply.navRequests,
+              [{ key: 'ArrowRight', currentHour: null }, { key: 'ArrowRight', currentHour: 3 }],
+              'pointsNavigate: second ArrowRight observed keyboard focus preserved at hour 3',
+            );
+          }
+
+          await page.press('Escape');
+          await pressPinKey();
+          const repinnedTip = await act<VisibleTip>('waitPinnedPointsTooltip(6)');
+          assert.equal(repinnedTip.open, true, `${mode}: unpinning and pinning again locks onto the preserved keyboard-focused hour 6`);
+          assert.equal(repinnedTip.subtitle, `Pinned at ${mountedPoints.date6}`, `${mode}: re-pinned tooltip shows hour 6`);
+          assert.deepEqual(repinnedTip.rows, [['Metric', '60']], `${mode}: re-pinned tooltip shows hour 6 value`);
+        } finally {
+          await act('unmountPointsHost()');
+        }
+      };
+
+      await t.test('points keyboard onFocusKey cancels a pending pointer hover reply and preserves focus and pinned tooltip', async () => {
+        await verifyPointsKeyboardCancelsPendingHover('focusKey');
+      });
+
+      await t.test('points keyboard onPointsNavigate focusHour cancels a pending pointer hover reply and preserves focus and pinned tooltip', async () => {
+        await verifyPointsKeyboardCancelsPendingHover('pointsNavigate');
+      });
     } finally {
       cdp.close();
     }

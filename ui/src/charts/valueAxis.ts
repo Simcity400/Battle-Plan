@@ -103,16 +103,3 @@ function trimDecimal(units: bigint, scale: number): { units: bigint; scale: numb
   while (scale > 0 && units % 10n === 0n) { units /= 10n; scale--; }
   return { units, scale };
 }
-
-export function formatAxisValue(value: number, ticks: readonly number[] = [value]): string {
-  const all = ticks.length ? ticks : [value];
-  let digits = 15;
-  let decimals = all.map(tick => exactDecimal(tick, digits));
-  const key = (decimal: { units: bigint; scale: number }) => `${decimal.units}e-${decimal.scale}`;
-  if (new Set(decimals.map(key)).size < new Set(all).size) { digits = 17; decimals = all.map(tick => exactDecimal(tick, digits)); }
-  const own = exactDecimal(value, digits);
-  const places = Math.min(20, Math.max(0, ...decimals.map(decimal => decimal.scale)));
-  const kPlaces = Math.max(0, ...decimals.map(decimal => trimDecimal(decimal.units, decimal.scale + 3).scale));
-  if (Math.abs(value) >= 1000 && kPlaces <= 1) return `${formatFixed(own.units, own.scale + 3, kPlaces)}k`;
-  return formatFixed(own.units, own.scale, places);
-}

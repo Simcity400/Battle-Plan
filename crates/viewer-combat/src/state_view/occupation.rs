@@ -74,6 +74,7 @@ pub(super) fn bind(
     };
     match law.and_then(|picked| icon_frame(picked.law).map(|frame| (picked.law, frame))) {
         Ok((law, frame_index)) => {
+            content.assets.acquire_sprite(&law.sprite);
             for path in paths_named(root, LAW_AND_TEMPLATE[0]) {
                 let widget = out.values.entry(path).or_default();
                 widget.hidden = false;

@@ -691,7 +691,6 @@ test('differential: M2 future-seek panel replay preserves exact panel coverage a
 
 test('differential: Round 5 ordering hazards (same-packet valid+corrupt, reused cell answer-before-panel, unbound overflow, unbound superseded seek, stale refusal after switch, late registration after sub-failed, shared widget tokens, and credit invariant)', async () => {
   const { managedInProcess, NATIVE: IN_PROC_NATIVE } = await import('./inProcess.fixture.ts');
-  const { installedEntry } = await import('./store.ts');
   const { message: followMsg } = await import('./messages.fixture.ts');
   const CELL_BASE = 0x8000_0400;
   const followCharge = (bytes: Uint8Array) => {
@@ -884,7 +883,7 @@ test('differential: Round 5 ordering hazards (same-packet valid+corrupt, reused 
     releaseFollow();
     await unfollowed;
     assert.equal(p.status(sLate).status, 'failed');
-    assert.ok(installedEntry(p, wLate, sLate).retry);
+    assert.equal(p.view(wLate)?.mode, 'failed');
 
     const wShared = p.acquire('diff-shared|0', { offset: 0, pin: null });
     const tok1 = {}, tok2 = {};
@@ -898,8 +897,8 @@ test('differential: Round 5 ordering hazards (same-packet valid+corrupt, reused 
     await env.waitView(p, wShared, v => v?.mode === 'picture');
     env.send(followMsg(12, [{ id: sShared, answer: { keys: [99n], columns: 1, values: [99n], changed: true } }], false, IN_PROC_NATIVE, env.clock.getSnapshot().seekSequence));
     await env.waitView(p, wShared, v => v?.mode === 'failed');
-    assert.equal(installedEntry(p, wShared, sShared).status, 'failed');
-    assert.ok(installedEntry(p, wShared, sShared).error);
+    assert.equal(p.status(sShared).status, 'failed');
+    assert.ok(p.status(sShared).error ?? p.widgetError(wShared));
   } finally {
     env.close();
   }

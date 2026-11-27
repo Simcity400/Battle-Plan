@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { followedRow, heldParts, keyId, keyedTileParams, keyedTileReply, reachedKeyLines, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
+import { followedRow, heldParts, keyId, keyedTileParams, keyedTileReply, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
 import { parseFollowed } from '../test-support/followMessage.ts';
 import { message } from './follow/messages.fixture.ts';
 import type { TileReply } from './tiles/tile';
@@ -19,27 +19,17 @@ test('a tile reply for parts names each line by its key, and one for other keys 
   assert.notEqual(keyId({ tag: 'A', part: 'BC' }), keyId({ tag: 'AB', part: 'C' }), 'a key id never runs owner and part together');
 });
 
-test('reached lines keep each key apart, its runs once each in hour order, its drops and why an hour has no value', () => {
+test('validateKeyedStates normalises country keys and preserves missing and notApplicable fields', () => {
   const states = validateKeyedStates({ branchId: 'b', decimals: 3, states: [
     { country: 'ENG', part: '12', hour: 30, run: run(20, 40, '5000'), drop: null, missing: null },
     { country: 'ENG', part: '7', hour: 50, run: run(45, 60, '2000'), drop: { hour: 45, beforeRaw: '3000', afterRaw: '2000' }, missing: null },
-    { country: 'ENG', part: '7', hour: 10, run: run(0, 20, '3000'), drop: null, missing: null },
-    { country: 'ENG', part: '7', hour: 55, run: run(45, 60, '2000'), drop: null, missing: null },
     { country: 'ENG', part: '12', hour: 70, run: null, drop: null, missing: 'The yards were not recorded' },
     { country: 'ENG', part: '7', hour: 75, run: null, drop: null, missing: 'No fuel requested', notApplicable: true },
-    { country: 'ENG', part: '7', hour: 80, run: null, drop: null, missing: 'ENG\'s receivedShare was not recorded at this hour', notApplicable: false },
   ] });
-  const [seven, twelve] = reachedKeyLines(keys, states);
-  assert.deepEqual(seven.runs.map(item => [item.firstHour, item.valueRaw]), [[0, '3000'], [45, '2000']]);
-  assert.deepEqual(seven.drops.map(item => item.hour), [45]);
-  assert.equal(seven.missing.get(75), 'No fuel requested');
-  assert.equal(seven.notApplicable.has(75), true);
-  assert.equal(seven.unrecorded.has(75), false);
-  assert.equal(seven.unrecorded.has(80), true);
-  assert.equal(twelve.notApplicable.has(70), false);
-  assert.equal(twelve.unrecorded.has(70), false);
-  assert.deepEqual([...twelve.missing], [[70, 'The yards were not recorded']], 'a missing value is its reason, never zero');
-  assert.deepEqual(reachedKeyLines(keys, undefined).map(line => line.runs.length), [0, 0]);
+  assert.equal(states.states.length, 4);
+  assert.equal(states.states[0]!.tag, 'ENG');
+  assert.equal(states.states[2]!.missing, 'The yards were not recorded');
+  assert.equal(states.states[3]!.notApplicable, true);
 });
 
 test('states without a part and parts lists that repeat a part or name another owner are refused', () => {

@@ -506,6 +506,7 @@ export function boundTiledSeries(
   let closedBuckets = 0;
   let straddlingBucket: ChartBucket | undefined;
   let straddling: BoundedSeries['straddling'] = 'none';
+  let straddlingFrom: number | undefined;
   let straddlingRuns: readonly Run[] | undefined;
   let bucketValidLo = -Infinity;
   let bucketValidHi = Infinity;
@@ -538,6 +539,7 @@ export function boundTiledSeries(
         bucketValidHi = binEnd;
       } else {
         closedBuckets = binIdx;
+        straddlingFrom = candidate.firstHour;
         const cut = cutStraddlingBucket(
           candidate,
           hour,
@@ -600,6 +602,7 @@ export function boundTiledSeries(
     buckets: bucketsSlice,
     ...(runsResult ? { runs: runsResult.slice } : {}),
     straddling,
+    ...(straddlingFrom !== undefined ? { straddlingFrom } : {}),
     ...(straddlingRuns ? { straddlingRuns } : {}),
     ...(options?.headValue ? { headValue: options.headValue } : {}),
     missing: missingResult.slice,

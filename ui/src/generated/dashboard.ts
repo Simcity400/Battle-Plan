@@ -2576,6 +2576,8 @@ export type EventFeedOption = { ordinal: number,
  * In a list row only the chosen option's name; the opened row holds every option's.
  */
 name: string | null, };
+export type EventFeedGapField = "title" | "description" | "option";
+export type EventFeedGap = { field: EventFeedGapField, ordinal?: number, key: string, reason: string, };
 export type EventFeedItem = { token: string | null, name: string | null, icon: string | null, description?: string | null,
 /**
  * A scripted event's authored options in the game's order; absent for other kinds and when
@@ -2587,10 +2589,10 @@ options?: Array<EventFeedOption>,
  */
 nameMissing?: string,
 /**
- * Why the name, description or options hold U+FFFC where scripted text could not be
- * expanded: the UI shows each as a "not recorded" token.
+ * Unresolved scripted-text placeholders in the name, description or options, in order per
+ * field, each with its original key and reason.
  */
-gaps?: string, };
+gaps?: Array<EventFeedGap>, };
 export type EventFeedCause = {
 /**
  * The native operation the event happened in.
@@ -2696,7 +2698,7 @@ nameHour: number, exact: boolean, category: EventFeedCategory, kind: EventFeedKi
  * Native action roles, actor then target. Null keeps a role that names no country or that
  * no link and holder witnessed.
  */
-participants?: [string | null, string | null], item: EventFeedItem | null, amount?: number | null,
+participants?: [string | null, string | null], ownerMissing?: string, item: EventFeedItem | null, amount?: number | null,
 /**
  * A native event's recorded cause; absent when the recording holds none.
  */
@@ -3770,7 +3772,7 @@ export type NavalBattleDetail = { id: string, hour: number,
 rosterHour: number | null, fleets: [NavalBattleFleetNames, NavalBattleFleetNames], namedShips: Array<NavalBattleNamedShip>, shipRead: number | null, unavailable: string | null, };
 export type NavalBattlesTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, offset?: string, sort?: OccurrenceSort, limit: number, };
 export type NavalBattlesTailReply = { branchId: string, total: string, offset: string, rows: Array<NavalBattleLogRow>, missing: Array<OccurrenceGap>, nextChange: number | null, warnings: Array<string>, };
-export type NavalBattleLogRow = { key: string, hour: number, detailId: string, detailHour: number | null, lastLiveHour: number | null, endSeen: boolean, province: number | null, countries: [Array<number>, Array<number>], countriesHour: [number, number], readHour: number, shipsSunk: [number | null, number | null], convoysSunk: [number | null, number | null], icLost: [number | null, number | null], ships: [number | null, number | null], convoys: [number | null, number | null], result: NavalBattleStatus, };
+export type NavalBattleLogRow = { key: string, hour: number, detailId: string, detailHour: number | null, resultHour: number | null, lastLiveHour: number | null, endSeen: boolean, province: number | null, countries: [Array<number>, Array<number>], countriesHour: [number, number], readHour: number, shipsSunk: [number | null, number | null], convoysSunk: [number | null, number | null], icLost: [number | null, number | null], ships: [number | null, number | null], convoys: [number | null, number | null], result: NavalBattleStatus, };
 export type NavalBattleStatus = "ongoing" | "attackerWon" | "defenderWon" | "unknown";
 export type NavalLossesAtParams = { branchId: string, hour: number, countries: Array<CountryRef>, top?: number,
 /**

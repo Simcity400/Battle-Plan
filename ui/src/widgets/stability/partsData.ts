@@ -1,12 +1,8 @@
-import { divergingStack, runAt } from '../../charts/series.ts';
-import type { Band } from '../../charts/series';
 import type { HourSpan } from '../../generated/dashboard';
-import type { ChartSummary } from '../../charts/chartSummary';
 import type { HeldPart, KeyedState } from '../../dashboard/keyedSeriesData';
-import type { FixedRun, MeasureParts, StabilityPart, StabilityPartName, StabilityPartNamesReply } from './types';
-import { lineName, rawAt, termLabel } from './stabilityData.ts';
+import type { MeasureParts, StabilityPart, StabilityPartName, StabilityPartNamesReply } from './types';
+import { lineName, termLabel } from './stabilityData.ts';
 import type { Measure } from './stabilityData';
-
 
 export const REMAINDER_LABEL = 'Other';
 export const SMALLER_LABEL = 'Smaller parts';
@@ -20,18 +16,6 @@ export function partName(part: StabilityPart, measure: Measure): { name: string;
   if (part.term) return { name: termLabel(measure, part.term), recorded: false };
   if (part.id === 'clamp') return { name: 'Limited to the allowed range', recorded: false };
   return { name: REMAINDER_LABEL, recorded: false };
-}
-
-export function knownAt(parts: MeasureParts, hour: number): boolean {
-  return runAt(parts.observed, hour) != null;
-}
-
-export function partsAt(parts: MeasureParts, hour: number): { part: StabilityPart; raw: string }[] | null {
-  if (!knownAt(parts, hour)) return null;
-  return parts.parts.flatMap(part => {
-    const raw = rawAt(part.runs, hour);
-    return raw == null || raw === '0' ? [] : [{ part, raw }];
-  });
 }
 
 export function partsWithin(parts: MeasureParts, spans: readonly HourSpan[] | null): MeasureParts {
@@ -48,40 +32,6 @@ export function partsWithin(parts: MeasureParts, spans: readonly HourSpan[] | nu
     if (known[i].lastHour < shown[j].lastHour) i++; else j++;
   }
   return { ...parts, observed };
-}
-
-function visibleRange(hours: readonly number[], from: number, to: number): [number, number] | null {
-  if (from > to || !hours.length || hours[hours.length - 1] < from || hours[0] > to) return null;
-  let low = 0;
-  let high = hours.length - 1;
-  while (low < high) { const middle = (low + high + 1) >> 1; if (hours[middle] <= from) low = middle; else high = middle - 1; }
-  const first = low;
-  low = first;
-  high = hours.length - 1;
-  while (low < high) { const middle = (low + high) >> 1; if (hours[middle] >= to) high = middle; else low = middle + 1; }
-  return [first, low];
-}
-
-export function visibleSegment(segment: PartsSegment, from: number, to: number): PartsSegment | null {
-  const range = visibleRange(segment.hours, from, to);
-  if (!range) return null;
-  const [first, last] = range;
-  return { hours: segment.hours.slice(first, last + 1), layers: segment.layers,
-    bands: segment.bands.map(band => ({ low: band.low.slice(first, last + 1), high: band.high.slice(first, last + 1) })) };
-}
-
-export function stackRange(segments: readonly PartsSegment[], from: number, to: number): [number, number] | null {
-  let low = Infinity;
-  let high = -Infinity;
-  for (const segment of segments) {
-    const range = visibleRange(segment.hours, from, to);
-    if (!range) continue;
-    const [first, last] = range;
-    for (let index = first; index <= last; index++) {
-      for (const band of segment.bands) { low = Math.min(low, band.low[index]); high = Math.max(high, band.high[index]); }
-    }
-  }
-  return low <= high ? [low, high] : null;
 }
 
 export interface PartLayer { id: string; name: string; color: string; members: readonly string[] }
@@ -110,104 +60,16 @@ export function partLayers(parts: MeasureParts, measure: Measure, palette: reado
   return layers;
 }
 
-export interface PartsSegment { hours: number[]; bands: Band[]; layers: number[] }
-
-export function partsStack(parts: MeasureParts, layers: readonly PartLayer[], decimals: number, from: number, to: number): PartsSegment[] {
-  const layerOf = new Map(layers.flatMap((layer, index) => layer.members.map(id => [id, index] as const)));
-  const all = parts.parts.flatMap(part => {
-    const layer = layerOf.get(part.id);
-    if (layer == null) return [];
-    return part.runs.flatMap(run => {
-      const raw = Number(run.valueRaw);
-      return raw === 0 ? [] : [{ first: run.firstHour, last: run.lastHour, raw, row: layer * 2 + (raw > 0 ? 0 : 1) }];
-    });
-  }).sort((a, b) => a.first - b.first);
-  let next = 0;
-  let active: typeof all = [];
-  const segments: PartsSegment[] = [];
-  for (const span of parts.observed) {
-    const first = Math.max(span.firstHour, Math.floor(from));
-    const last = Math.min(span.lastHour, Math.ceil(to));
-    if (first > last) continue;
-    while (next < all.length && all[next].first <= last) active.push(all[next++]);
-    active = active.filter(run => run.last >= first);
-    const cuts = new Set([first, last]);
-    for (const run of active) {
-      if (run.first >= first) { cuts.add(run.first); if (run.first > first) cuts.add(run.first - 1); }
-      if (run.last <= last) { cuts.add(run.last); if (run.last < last) cuts.add(run.last + 1); }
-    }
-    const hours = [...cuts].sort((a, b) => a - b);
-    const changes = active.flatMap(run => [{ hour: Math.max(first, run.first), row: run.row, raw: run.raw }, { hour: run.last + 1, row: run.row, raw: -run.raw }])
-      .sort((a, b) => a.hour - b.hour);
-    const totals = new Array<number>(layers.length * 2).fill(0);
-    const sums = totals.map(() => hours.map(() => 0));
-    let change = 0;
-    hours.forEach((hour, index) => {
-      while (change < changes.length && changes[change].hour <= hour) { totals[changes[change].row] += changes[change].raw; change++; }
-      totals.forEach((total, row) => { sums[row][index] = total / 10 ** decimals * 100; });
-    });
-    const rows = sums.map((values, row) => [row >> 1, values] as const)
-      .filter(([, values]) => values.some(value => value !== 0));
-    segments.push({ hours, bands: divergingStack(rows.map(([, values]) => values)), layers: rows.map(([layer]) => layer) });
-  }
-  return segments;
-}
-
 export function measureOf(part: string): Measure {
   return BigInt(part) >> 32n === 1n ? 'warSupport' : 'stability';
 }
 
-const DECIMALS = 5;
-const rawOf = (value: number) => String(Math.round(value * 10 ** DECIMALS));
 const nameOf = (part: string, names: ReadonlyMap<string, StabilityPartName>) => names.get(part);
 const partOf = (part: string, names: ReadonlyMap<string, StabilityPartName>): StabilityPart => {
   const name = nameOf(part, names);
   return { id: name?.id ?? `part:${part}`, term: name?.term ?? null, line: name?.line ?? null, runs: [] };
 };
 const isTotal = (part: string, names: ReadonlyMap<string, StabilityPartName>) => nameOf(part, names)?.kind === 'total';
-
-function addRun(runs: FixedRun[], run: FixedRun) {
-  const previous = runs.at(-1);
-  if (previous && !run.startsSegment && previous.lastHour + 1 === run.firstHour && previous.valueRaw === run.valueRaw) previous.lastHour = run.lastHour;
-  else runs.push(run);
-}
-
-export function partsFromLines(parts: readonly string[], lines: ReadonlyMap<string, ChartSummary | undefined>,
-  names: ReadonlyMap<string, StabilityPartName>, head: number | null = null): MeasureParts {
-  const observed: HourSpan[] = [];
-  const byId = new Map<string, StabilityPart>();
-  const runsOf = (line: ChartSummary): FixedRun[] => {
-    const cut = head !== null && line.tiles ? Math.floor(head / line.tiles.binHours) * line.tiles.binHours : Infinity;
-    const runs: FixedRun[] = [];
-    for (const bucket of line.buckets) {
-      if (bucket && bucket.firstHour < cut) runs.push({ firstHour: bucket.firstHour, lastHour: Math.min(bucket.lastHour, cut - 1), valueRaw: rawOf(bucket.firstValue), startsSegment: bucket.firstBreak });
-    }
-    const value = cut === Infinity || head === null ? null : line.tiles!.valueAt(head);
-    if (value !== null && Number.isFinite(value) && cut <= head!) {
-      const before = runs.at(-1);
-      runs.push({ firstHour: cut, lastHour: Math.floor(head!), valueRaw: rawOf(value), startsSegment: !before || before.lastHour + 1 !== cut });
-    }
-    return runs;
-  };
-  for (const part of parts) {
-    const line = lines.get(part);
-    if (!line) continue;
-    if (isTotal(part, names)) {
-      for (const run of runsOf(line)) {
-        const last = observed.at(-1);
-        if (last && !run.startsSegment && last.lastHour + 1 === run.firstHour) last.lastHour = run.lastHour;
-        else observed.push({ firstHour: run.firstHour, lastHour: run.lastHour });
-      }
-      continue;
-    }
-    const made = partOf(part, names);
-    const held = byId.get(made.id) ?? made;
-    byId.set(made.id, held);
-    for (const run of runsOf(line)) addRun(held.runs, run);
-  }
-  for (const part of byId.values()) part.runs.sort((a, b) => a.firstHour - b.firstHour);
-  return { parts: [...byId.values()], observed: observed.sort((a, b) => a.firstHour - b.firstHour) };
-}
 
 export function partsAtStates(parts: readonly string[], states: readonly KeyedState[], hour: number,
   names: ReadonlyMap<string, StabilityPartName>): MeasureParts {

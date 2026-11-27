@@ -217,6 +217,90 @@ pub struct EventScopes {
     pub global_tooltip_targets: Vec<(Vec<u8>, EventObject)>,
 }
 
+pub const SCRIPTED_GAP: char = '\u{FFFC}';
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptedGap {
+    pub key: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpandedText {
+    pub text: String,
+    pub gaps: Vec<ScriptedGap>,
+}
+
+fn expand_brackets(
+    text: &str,
+    out: &mut String,
+    gaps: &mut Vec<ScriptedGap>,
+    mut resolve: impl FnMut(&str, &mut String, &mut Vec<ScriptedGap>) -> Result<(), String>,
+) {
+    let mut rest = text;
+    loop {
+        let Some(open) = rest.find('[') else {
+            out.push_str(rest);
+            return;
+        };
+        let Some(length) = rest[open + 1..].find(']') else {
+            out.push_str(rest);
+            return;
+        };
+        let inner = &rest[open + 1..open + 1 + length];
+        out.push_str(&rest[..open]);
+        if let Err(reason) = resolve(inner, out, gaps) {
+            out.push(SCRIPTED_GAP);
+            gaps.push(ScriptedGap {
+                key: inner.to_owned(),
+                reason,
+            });
+        }
+        rest = &rest[open + 1 + length + 1..];
+    }
+}
+
+const MAX_DATE_EXPANSION_DEPTH: usize = 4;
+
+fn expand_dates_at(
+    text: &str,
+    hour: i32,
+    localisation: &Localisation,
+    unavailable: &str,
+    depth: usize,
+    out: &mut String,
+    gaps: &mut Vec<ScriptedGap>,
+) {
+    expand_brackets(text, out, gaps, |inner, out, gaps| {
+        if depth >= MAX_DATE_EXPANSION_DEPTH {
+            return Err("date expansion exceeded maximum nesting depth".to_owned());
+        }
+        if DATES.iter().any(|date| named(inner, date)) {
+            let value = properties::date_property_at(hour, inner, |key| {
+                localisation
+                    .localise(key.as_bytes())
+                    .map_err(|refusal| refusal.to_string())
+            })?
+            .ok_or_else(|| unavailable.to_owned())?;
+            expand_dates_at(&value, hour, localisation, unavailable, depth + 1, out, gaps);
+            return Ok(());
+        }
+        Err(unavailable.to_owned())
+    });
+}
+
+pub fn expand_dates_in(
+    text: &str,
+    hour: i32,
+    localisation: &Localisation,
+    unavailable: &str,
+) -> ExpandedText {
+    let mut out = String::new();
+    let mut gaps = Vec::new();
+    expand_dates_at(text, hour, localisation, unavailable, 0, &mut out, &mut gaps);
+    ExpandedText { text: out, gaps }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScopeName {
     Hour,
@@ -997,11 +1081,18 @@ impl<'a> ScriptedText<'a> {
         text: &str,
         scopes: &EventScopes,
         names: &[ScopeName],
-    ) -> Result<String, String> {
-        if scopes.scopes.is_empty() {
-            return Err("scripted text needs an event scope".into());
-        }
-        self.names_only(text, 0, &ExpansionScopes::new(scopes), names)
+    ) -> ExpandedText {
+        let mut out = String::new();
+        let mut gaps = Vec::new();
+        self.names_only(
+            text,
+            0,
+            &ExpansionScopes::new(scopes),
+            names,
+            &mut out,
+            &mut gaps,
+        );
+        ExpandedText { text: out, gaps }
     }
 
     fn names_only(
@@ -1010,56 +1101,64 @@ impl<'a> ScriptedText<'a> {
         depth: i32,
         scopes: &ExpansionScopes<'_, 'a>,
         names: &[ScopeName],
-    ) -> Result<String, String> {
+        out: &mut String,
+        gaps: &mut Vec<ScriptedGap>,
+    ) {
         if depth >= self.content.recursion {
-            return Ok(text.to_owned());
+            out.push_str(text);
+            return;
         }
-        let mut out = String::new();
-        let mut rest = text;
-        loop {
-            let Some(open) = rest.find('[') else {
-                out.push_str(rest);
-                return Ok(out);
-            };
-            let Some(length) = rest[open + 1..].find(']') else {
-                return Ok(out);
-            };
-            let inner = &rest[open + 1..open + 1 + length];
-            out.push_str(&rest[..open]);
-            let refused = || format!("[{inner}] reads more than an event scope's country name");
-            let segments: Vec<&str> = inner.split('.').collect();
-            let (property, links) = segments.split_last().unwrap_or((&"", &[]));
-            if links.is_empty()
-                || !links
-                    .iter()
-                    .all(|segment| SCOPE_LINKS.iter().any(|link| named(segment, link)))
-                || !COUNTRY_NAMES.iter().any(|name| named(property, name))
-            {
-                return Err(refused());
-            }
-            let (mut object, mut active, mut event_active) = (Object::Event, 0, true);
-            for segment in links {
-                object = self
-                    .promote(object, segment, scopes, &mut active, &mut event_active)
-                    .map_err(|reason| format!("[{inner}]: {reason}"))?;
-            }
-            if let Some(ScopeName::Unproven(reason)) = names.get(active) {
-                return Err(format!("[{inner}]: event scope {active}: {reason}"));
-            }
-            let Object::Country(slot) = object else {
-                return Err(refused());
-            };
-            let name = match names.get(active) {
-                Some(ScopeName::Recorded(recorded)) => {
-                    self.recorded_country_property(slot, property, recorded)
-                }
-                _ => self.country_property(slot, property, scopes),
-            }
-            .map_err(|reason| format!("[{inner}]: {reason}"))?
-            .ok_or_else(refused)?;
-            out.push_str(&self.names_only(&name, depth + 1, scopes, names)?);
-            rest = &rest[open + 1 + length + 1..];
+        expand_brackets(text, out, gaps, |inner, out, gaps| {
+            let value = self.expand_name_bracket(inner, scopes, names)?;
+            self.names_only(&value, depth + 1, scopes, names, out, gaps);
+            Ok(())
+        });
+    }
+
+    fn expand_name_bracket(
+        &self,
+        inner: &str,
+        scopes: &ExpansionScopes<'_, 'a>,
+        names: &[ScopeName],
+    ) -> Result<String, String> {
+        let refused = || "reads more than an event scope's country name or occurrence date".to_owned();
+        let (links, property) = match inner.rsplit_once('.') {
+            Some((links, property)) => (Some(links), property),
+            None => (None, inner),
+        };
+        if links.is_none() && DATES.iter().any(|date| named(property, date)) {
+            return self.date_property(property)?.ok_or_else(refused);
         }
+        let Some(links) = links else {
+            return Err(refused());
+        };
+        if !links
+            .split('.')
+            .all(|segment| SCOPE_LINKS.iter().any(|link| named(segment, link)))
+            || !COUNTRY_NAMES.iter().any(|name| named(property, name))
+        {
+            return Err(refused());
+        }
+        if scopes.scopes.borrow().is_empty() {
+            return Err("scripted text needs an event scope".to_owned());
+        }
+        let (mut object, mut active, mut event_active) = (Object::Event, 0, true);
+        for segment in links.split('.') {
+            object = self.promote(object, segment, scopes, &mut active, &mut event_active)?;
+        }
+        if let Some(ScopeName::Unproven(reason)) = names.get(active) {
+            return Err(format!("event scope {active}: {reason}"));
+        }
+        let Object::Country(slot) = object else {
+            return Err(refused());
+        };
+        match names.get(active) {
+            Some(ScopeName::Recorded(recorded)) => {
+                self.recorded_country_property(slot, property, recorded)
+            }
+            _ => self.country_property(slot, property, scopes),
+        }?
+        .ok_or_else(refused)
     }
 
     fn recorded_country_property(

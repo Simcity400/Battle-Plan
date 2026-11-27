@@ -5,7 +5,7 @@ import type { PlaybackController } from '../../dashboard/playback.ts';
 import { useProduct } from '../../dashboard/products.ts';
 import { classifyFailure } from '../../dashboard/queryError.ts';
 import { rowRequest, rowSource } from '../../families/table/rowSelection.ts';
-import type { EventFeedCategory, EventFeedItem, ScriptEdge } from '../../generated/dashboard';
+import type { EventFeedCategory, EventFeedGap, EventFeedItem, ScriptEdge } from '../../generated/dashboard';
 import { effectiveEventItem, validateFeedRow } from '../event-feed/eventFeedData.ts';
 import type { HoverText, TooltipTexts } from '../event-feed/hoverText.ts';
 import type { TooltipRowSource } from '../../families/host/hoverRow.ts';
@@ -80,13 +80,19 @@ function useRowText(runtime: FamilyViewProps['runtime'], trackId: string | undef
   const answered = shown && detail && !detail.pending ? detail : null;
   const key = answered ? shown!.key : null;
   const description = answered?.item?.description ?? null;
-  const gaps = answered?.item?.gaps ?? null;
+  const gapsJson = answered?.item?.gaps?.length ? JSON.stringify(answered.item.gaps) : null;
   const offered = answered && answered.own !== undefined ? answered.own?.options : answered?.item?.options;
   const named = offered ? JSON.stringify(offered.map(option => option.name)) : null;
   const missing = answered?.missing ?? null;
   return useMemo<HoverText | null>(
-    () => (key === null ? null : { key, description, gaps, options: named === null ? null : JSON.parse(named) as (string | null)[], missing }),
-    [key, description, gaps, named, missing],
+    () => (key === null ? null : {
+      key,
+      description,
+      gaps: gapsJson === null ? null : JSON.parse(gapsJson) as EventFeedGap[],
+      options: named === null ? null : JSON.parse(named) as (string | null)[],
+      missing,
+    }),
+    [key, description, gapsJson, named, missing],
   );
 }
 

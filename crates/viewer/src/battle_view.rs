@@ -62,16 +62,37 @@ struct Picture {
     rect: [f32; 2],
 }
 
-fn selection(battle: &BattleWindow) -> Option<Selection> {
-    let combat = battle.handle()?;
-    Some(match battle.kind {
-        BattleKind::Land => Selection::Land(combat),
-        BattleKind::Naval => Selection::Naval(combat),
-    })
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Battle {
+    first: Selection,
+    result: Option<(u64, Hour)>,
+}
+
+impl Battle {
+    fn of(window: &BattleWindow) -> Option<Self> {
+        let result = window.result();
+        let first = match (window.handle(), result) {
+            (Some(combat), _) => match window.kind {
+                BattleKind::Land => Selection::Land(combat),
+                BattleKind::Naval => Selection::Naval(combat),
+            },
+            (None, Some((id, _))) => Selection::NavalResult(id),
+            (None, None) => return None,
+        };
+        Some(Self { first, result })
+    }
+
+    fn at(self, hour: Hour) -> Selection {
+        match self.result {
+            Some((id, from)) if hour >= from => Selection::NavalResult(id),
+            _ => self.first,
+        }
+    }
 }
 
 struct Held {
     document: Document,
+    battle: Battle,
     selection: Selection,
     window: Window,
     pass: SpritePass,
@@ -87,7 +108,7 @@ struct Held {
     next: Option<Hour>,
     asked: Option<Key>,
     family: Option<ReadKey>,
-    seen: Option<(Option<u64>, BranchId)>,
+    seen: Option<(Option<u64>, BranchId, Selection)>,
     epoch_sequence: u64,
     at_sequence: u64,
     answered_sequence: u64,
@@ -182,7 +203,7 @@ impl BattleView {
         let canvas = egui::Color32::from_rgb(battle.canvas[0], battle.canvas[1], battle.canvas[2]);
         let ink = egui::Color32::from_rgb(battle.text[0], battle.text[1], battle.text[2]);
         ui.painter().rect_filled(body, 0.0, canvas);
-        if self.held.as_ref().is_some_and(|held| !Arc::ptr_eq(&held.document.content, content) || Some(held.selection) != selection(battle)) {
+        if self.held.as_ref().is_some_and(|held| !Arc::ptr_eq(&held.document.content, content) || Some(held.battle) != Battle::of(battle)) {
             self.retire(frame);
         }
         if self.held.is_none() && self.error.is_none() {
@@ -310,7 +331,8 @@ fn note(ui: &mut egui::Ui, body: egui::Rect, ink: egui::Color32, text: &str) {
 impl Held {
     fn open(source: &Source, content: &Arc<Content>, battle: &BattleWindow, gpu: &(wgpu::Device, wgpu::Queue), icons: Arc<IconTextures>) -> Result<Self, String> {
         let (device, queue) = gpu;
-        let selection = selection(battle).ok_or("The battle's combat handle is not a full number.")?;
+        let battle = Battle::of(battle).ok_or("The battle's combat handle is not a full number.")?;
+        let selection = battle.first;
         let mut document = Document::from_content(Arc::clone(content), source.replay())
             .map_err(|error| format!("The battle window could not open the recording: {error}"))?;
         document.bind_source(source);
@@ -333,6 +355,7 @@ impl Held {
         let cursor = Arc::new(Mutex::new(HourCursor::new(Arc::clone(&replay), &tables, false)));
         Ok(Self {
             document,
+            battle,
             selection,
             window,
             pass,
@@ -490,11 +513,17 @@ impl Held {
     }
 
     fn restart(&mut self, branch: BranchId, target: &DashboardMapView, played_from: Option<Hour>) {
-        let seen = (target.seek_sequence, branch);
+        let selection = self.battle.at(target.hour);
+        let seen = (target.seek_sequence, branch, selection);
         if self.seen == Some(seen) {
             return;
         }
         self.seen = Some(seen);
+        if selection != self.selection {
+            self.selection = selection;
+            self.family = None;
+            self.window.open(selection);
+        }
         self.epoch += 1;
         self.epoch_sequence = target.sequence;
         self.queue.clear();
@@ -502,7 +531,11 @@ impl Held {
         self.refused = None;
         self.at = None;
         self.closed = None;
-        self.start = played_from.filter(|from| *from <= target.hour).unwrap_or(target.hour);
+        let opens = match (selection, self.battle.result) {
+            (Selection::NavalResult(_), Some((_, from))) => from,
+            _ => Hour::MIN,
+        };
+        self.start = played_from.filter(|from| *from <= target.hour).unwrap_or(target.hour).max(opens);
         self.next = Some(self.start);
     }
 
@@ -587,7 +620,7 @@ impl Held {
         self.asked = Some(key.clone());
         let cursor = Arc::clone(&self.cursor);
         let declared = self.tables.clone();
-        let live = target.battle.as_ref().map(|battle| battle.live.clone()).unwrap_or_default();
+        let live = target.battle.as_ref().filter(|_| !matches!(self.selection, Selection::NavalResult(_))).map(|battle| battle.live.clone()).unwrap_or_default();
         let executable = self.document.content.tables;
         let seek = key.epoch;
         let wake = ctx.clone();
@@ -686,7 +719,7 @@ impl Held {
         let mut clicked = false;
         if let Some(pressed) = drawn.as_ref().filter(|drawn| !drawn.clicks.is_empty()) {
             self.window.set_modifiers(modifiers.shift, modifiers.ctrl);
-            for (path, hit, _) in pressed.clicks.iter().filter(|(_, hit, _)| pressed.close != Some(*hit)) {
+            for (path, hit, _) in pressed.clicks.iter().filter(|(_, hit, _)| ![pressed.close, pressed.dismiss].contains(&Some(*hit))) {
                 self.window.click(pressed, path, *hit);
             }
             clicked = true;
@@ -821,7 +854,7 @@ impl Held {
         };
         let at = (pointer - rect.min) / picture.fit;
         let inside = |hit: [f32; 4]| at.x >= hit[0] && at.y >= hit[1] && at.x < hit[0] + hit[2] && at.y < hit[1] + hit[3];
-        if response.clicked() && drawn.close.is_some_and(inside) {
+        if response.clicked() && drawn.closes([at.x, at.y]) {
             self.close_requests += 1;
         }
         let wheel = ui.input(|input| input.raw.events.iter().filter_map(|event| match event {

@@ -1,137 +1,292 @@
-import type { Gate } from '../../dashboard/regionGate';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Segmented } from '../../components/Segmented';
-import DrillParts from '../../charts/drill/DrillParts';
-import type { DrillPart, LiveDrillParts } from '../../charts/drill/DrillParts';
-import { dayLabel, drawBands, drawPlayhead } from '../../charts/draw';
-import { shownUntil } from '../../charts/view';
-import type { PlaybackMode } from '../../charts/view';
-import type { Live } from '../../charts/live';
-import TimeChart from '../../charts/TimeChart';
-import type { ChartData, ChartLayer, ChartPick } from '../../charts/TimeChart';
-import type { ChartTokens } from '../../charts/tokens';
-import { fitTooltip } from '../../charts/tooltip';
-import { useViewportHeight } from '../../charts/useChartTokens';
-import type { TooltipRow } from '../../charts/tooltip';
-import { fixedNumber } from '../../charts/valueAxis';
-import type { DashboardClient, DashboardSource } from '../../dashboard/client';
-import type { PlaybackController } from '../../dashboard/playback';
 import WidgetState from '../../components/WidgetState';
-import { engineSum, partLayers, partName, partsAt, partsStack, partsWithin, REMAINDER_LABEL, stackRange, visibleSegment } from './partsData';
-import { formatPercent } from './stabilityData';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import type { FamilyViewProps } from '../../dashboard/definitions';
+import { heldParts, validateSeriesParts, type HeldParts, type SeriesParts } from '../../dashboard/keyedSeriesData.ts';
+import type { BoundTrack, WidgetBase, WidgetTime } from '../../dashboard/model';
+import { loadTransientProduct, useProducts } from '../../dashboard/products';
+import { asFailure, type Failure } from '../../dashboard/queryError.ts';
+import type { Gate } from '../../dashboard/regionGate';
+import type { Region } from '../../dashboard/regionTime';
+import { productRequest } from '../../dashboard/request.ts';
+import { TimeRegion } from '../../dashboard/widgetTime.ts';
+import type { InstalledAction } from '../../families/contract.ts';
+import type { PointsNavigateRequest } from '../../families/host/FamilyHost.tsx';
+import { FamilyWidget } from '../../families/host/registry.tsx';
+import { measureOf, namesAt, validateStabilityPartNames } from './partsData.ts';
 import type { Measure } from './stabilityData';
-import { useStabilityParts } from './stabilityParts';
-import type { CoveredBranch } from '../../dashboard/regionTime';
-import type { SeriesOwner } from '../../dashboard/keyedSeries';
-import type { MeasureParts, StabilityPart } from './types';
+import {
+  buildStabilityNextChangeParams,
+  MEASURE_NAMES,
+  PARTS_FAMILY,
+  STABILITY_PARTS_CHART_KIND,
+  STABILITY_PARTS_TABLE_KIND,
+  stabilityPartsChartDeclaration,
+  stabilityPartsTableDeclaration,
+  type StabilityDetailOptions,
+  type StabilitySeriesOwner,
+} from './stabilityDetailProjection.ts';
+import type { StabilityPartNamesReply } from './types';
 
-export const MEASURE_NAMES: Record<Measure, string> = { stability: 'Stability', warSupport: 'War support' };
+const EMPTY_MAP_OPTIONS: FamilyViewProps['mapOptions'] = { country: null, fog: false };
+const NOOP = () => {};
 
-export default function StabilityDrill({ client, clock, gate, source, branch, lastHour, owner, measure, onMeasure, hour, following, liveHead, onPick,
-  onContextMenu, extent, playback, branchStart, hoursPerSecond, active, tokens, onDiagnostics }: {
-  client: DashboardClient; clock: PlaybackController; gate: Gate; source: DashboardSource; branch: CoveredBranch & { id: string }; lastHour: number;
-  owner: SeriesOwner | null;
-  playback: { playhead: number | null; mode: PlaybackMode; afterPlayhead: boolean; windowHours: number };
-  onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
-  measure: Measure; onMeasure?: (measure: Measure) => void;
-  hour: number | null; onPick?: (hour: number) => void;
-  following: boolean; liveHead?: Live<number>;
-  extent: readonly [number, number]; branchStart: number; hoursPerSecond: number | undefined; active: boolean; tokens: ChartTokens;
-  onDiagnostics?: (notes: readonly string[]) => void;
+function pinnedTime(track: BoundTrack, hour: number): WidgetTime {
+  const offset = Math.floor(hour) - track.branch.firstHour;
+  return { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } };
+}
+
+function rangeTime(track: BoundTrack, firstHour: number, lastHour: number): WidgetTime {
+  const firstOffset = Math.floor(firstHour) - track.branch.firstHour;
+  const lastOffset = Math.max(firstOffset, Math.floor(lastHour) - track.branch.firstHour);
+  return { mode: 'range', firstOffset, lastOffset };
+}
+
+export default function StabilityDrill({
+  widget,
+  runtime,
+  active,
+  gate,
+  region,
+  track,
+  owner,
+  measure,
+  onMeasure,
+  hour,
+  following,
+  playhead,
+  extent,
+  windowHours,
+  onPick,
+  onDiagnostics,
+}: FamilyViewProps & {
+  readonly gate: Gate;
+  readonly region: Region;
+  readonly track: BoundTrack;
+  readonly owner: StabilitySeriesOwner | null;
+  readonly measure: Measure;
+  readonly onMeasure?: (measure: Measure) => void;
+  readonly hour: number | null;
+  readonly following: boolean;
+  readonly playhead: number | null;
+  readonly extent: readonly [number, number];
+  readonly windowHours?: number | null;
+  readonly onPick?: (hour: number) => void;
 }) {
-  const viewport = useViewportHeight();
-  const root = useRef<HTMLDivElement>(null);
-  const [hover, setHover] = useState<number | null>(null);
-  const parts = useStabilityParts(client, clock, gate, source, branch, owner, extent, lastHour, measure, hour, hover, following, active, root);
-  const within = owner?.spans ?? null, tag = owner?.key ?? null;
-  const shownParts = useMemo<MeasureParts>(() => partsWithin(partsWithin(parts.geometry, [{ firstHour: extent[0], lastHour: extent[1] }]), within),
-    [parts.geometry, within, extent[0], extent[1]]);
-  const named = (part: StabilityPart) => parts.ready ? partName(part, measure)
-    : part.term || part.id === 'remainder' || part.id === 'clamp' ? partName(part, measure) : { name: 'Not identified', recorded: false };
-  const chartOwner = useMemo(() => ({ client, tag, measure, membership: JSON.stringify(within), geometry: shownParts }), [client, tag, measure, within, shownParts]);
-  const until = shownUntil(playback.playhead, playback.mode, playback.afterPlayhead);
-  const decimals = 5;
-  const layers = useMemo(() => partLayers(shownParts, measure, tokens.categories, tokens.muted), [shownParts, measure, tokens.categories, tokens.muted]);
-  const colorOf = useMemo(() => new Map(layers.flatMap(layer => layer.members.map(id => [id, layer.color] as const))), [layers]);
-  const segments = useMemo(() => partsStack(shownParts, layers, decimals, extent[0], extent[1]), [shownParts, layers, extent[0], extent[1]]);
-  const newest = useRef<{ geometry: MeasureParts; segments: ReturnType<typeof partsStack> } | null>(null);
-  const segmentsAt = (head: number | null) => {
-    if (!following) return segments;
-    const geometry = parts.geometryAt(head);
-    if (newest.current?.geometry !== geometry) {
-      const shown = partsWithin(partsWithin(geometry, [{ firstHour: extent[0], lastHour: extent[1] }]), within);
-      newest.current = { geometry, segments: partsStack(shown, layers, decimals, extent[0], extent[1]) };
-    }
-    return newest.current.segments;
-  };
-  const latest = useRef(segmentsAt); latest.current = segmentsAt;
-  const chartData = useMemo<ChartData>(() => ({ revision: () => [parts.revision()], subscribe: parts.subscribe }), [parts.revision, parts.subscribe]);
-  const chartLayers = useMemo<ChartLayer[]>(() => [{
-    draw: (ctx, frame, chartTokens, state) => {
-      const colors = layers.map(layer => layer.color);
-      const end = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
-      const segments = latest.current(state.playhead === null ? null : end);
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(frame.plotLeft, frame.plotTop, Math.max(0, frame.toX(end) - frame.plotLeft), frame.plotHeight);
-      ctx.clip();
-      for (const segment of segments) {
-        const shown = visibleSegment(segment, frame.x[0], end);
-        if (shown) drawBands(ctx, frame, chartTokens, shown.hours, shown.bands, shown.layers.map(layer => colors[layer]));
-      }
-      ctx.restore();
-    },
-    extent: x => stackRange(latest.current(null), x[0], Math.min(x[1], until ?? x[1])),
-  }], [segments, layers, until]);
-  const percent = (raw: string) => fixedNumber(raw, decimals) * 100;
-  const drillRows = (values: MeasureParts, day: number) => {
-    const known = partsAt(values, day);
-    if (!known) return null;
-    const sum = engineSum(known.map(item => item.raw));
-    const rows: DrillPart[] = known.filter(item => item.part.id !== 'remainder').map(item => {
-      const label = named(item.part);
-      return { id: item.part.id, label: label.name, muted: label.recorded, value: percent(item.raw), text: formatPercent(item.raw, decimals, true), color: colorOf.get(item.part.id) };
-    });
-    const remainder = known.find(item => item.part.id === 'remainder');
-    return { parts: rows, total: percent(sum.toString()), totalText: formatPercent(sum.toString(), decimals),
-      unattributed: remainder ? { label: REMAINDER_LABEL, value: percent(remainder.raw), text: formatPercent(remainder.raw, decimals, true), color: colorOf.get('remainder') } : undefined };
-  };
-  const live: LiveDrillParts | undefined = useMemo(() => following && parts.live ? parts.live(values => drillRows(values, 0)
-    ?? { parts: [], total: null, totalText: 'Not recorded at this hour' }) : undefined, [following, parts.live, layers, parts.ready]);
-  const day = hour == null ? null : Math.floor(hour);
-  const values = day == null || live ? null : drillRows(parts.at(day), day);
-  const notes = useMemo(() => [...(parts.named.data?.warnings ?? []), ...(parts.error ? [parts.error.message] : [])], [parts.named.data, parts.error]);
-  useEffect(() => { onDiagnostics?.(notes); return () => onDiagnostics?.([]); }, [notes, onDiagnostics]);
+  const ownerKey = owner?.key ?? null;
+  const span = useMemo(() => gate.span(extent[0], extent[1]), [extent[0], extent[1], gate.span]);
+  const windows = useMemo(() => {
+    if (!owner || !span) return [];
+    if (owner.spans === null) return [span];
+    return owner.spans.flatMap(held => gate.span(Math.max(held.firstHour, span.firstHour), Math.min(held.lastHour, span.lastHour)) ?? []);
+  }, [owner, span?.firstHour, span?.lastHour, gate.span]);
+  const partsRequests = useMemo(() => (
+    ownerKey
+      ? windows.map(window => productRequest({
+          sourceId: track.source.id,
+          revision: track.source.revision,
+          product: 'series-parts',
+          params: { branchId: track.branch.id, family: PARTS_FAMILY, countries: [countryFromKey(ownerKey)], from: window.firstHour, to: window.lastHour },
+        }))
+      : []
+  ), [track.source.id, track.source.revision, track.branch.id, ownerKey, windows]);
+  const validateParts = useCallback((value: unknown) => validateSeriesParts(value, ownerKey ?? ''), [ownerKey]);
+  const listedRead = useProducts<SeriesParts>(runtime.client, partsRequests, active && partsRequests.length > 0, validateParts, track.source);
+  const listed = useMemo<HeldParts | undefined>(() => {
+    if (ownerKey === null || !owner || !span) return undefined;
+    if (!partsRequests.length) return { tag: ownerKey, parts: [], missing: [], partBits: 1 };
+    if (!listedRead.data) return undefined;
+    return {
+      tag: ownerKey,
+      partBits: listedRead.data[0]?.partBits ?? 1,
+      parts: heldParts(listedRead.data.flatMap((reply, at) => reply.parts.flatMap(part => {
+        const first = Math.max(part.firstHour, windows[at]!.firstHour);
+        const last = Math.min(part.lastHour, windows[at]!.lastHour);
+        return first <= last ? [{ ...part, firstHour: first, lastHour: last }] : [];
+      }))),
+      missing: listedRead.data.flatMap(reply => reply.missing),
+    };
+  }, [ownerKey, owner, span, partsRequests.length, listedRead.data, windows]);
 
-  return <div className="stability-drill" ref={root}>
+  const allParts = useMemo(() => (listed?.parts ?? []).map(part => part.part), [listed]);
+  const namesRequests = useMemo(() => (
+    ownerKey && span && listed
+      ? namesAt(listed.parts, span.lastHour).flatMap(([at, parts]) => {
+          const recorded = gate.recorded(at);
+          return recorded === null ? [] : [productRequest({
+            sourceId: track.source.id,
+            revision: track.source.revision,
+            product: 'stability-part-names',
+            params: { branchId: track.branch.id, country: countryFromKey(ownerKey), parts, hour: recorded },
+          })];
+        })
+      : []
+  ), [track.source.id, track.source.revision, track.branch.id, ownerKey, listed, span, gate.recorded]);
+  const namedRead = useProducts<StabilityPartNamesReply>(runtime.client, namesRequests, active && namesRequests.length > 0, validateStabilityPartNames, track.source);
+  const names = useMemo(() => namedRead.data?.flatMap(reply => reply.parts) ?? [], [namedRead.data]);
+  const warnings = useMemo(() => [...new Set(namedRead.data?.flatMap(reply => reply.warnings) ?? [])], [namedRead.data]);
+  const parts = useMemo(() => allParts.filter(part => measureOf(part) === measure), [allParts, measure]);
+  const namesReady = !listed || namesRequests.length === 0 || namedRead.data !== undefined;
+  const partSpans = useMemo(() => {
+    if (!listed) return undefined;
+    const out: Record<string, readonly { firstHour: number; lastHour: number }[]> = {};
+    for (const part of listed.parts) {
+      if (measureOf(part.part) === measure) out[part.part] = part.spans;
+    }
+    return out;
+  }, [listed, measure]);
+
+  const day = hour == null ? null : Math.floor(hour);
+  const navScope = JSON.stringify([track.source.id, track.source.revision, track.branch.id, ownerKey, measure, parts]);
+  const navScopeRef = useRef(navScope);
+  navScopeRef.current = navScope;
+  const navAbortRef = useRef<AbortController | null>(null);
+  const navGenRef = useRef(0);
+  const [navError, setNavError] = useState<{ readonly scope: string; readonly failure: Failure } | null>(null);
+  const cancelPendingNav = useCallback(() => {
+    navGenRef.current++;
+    navAbortRef.current?.abort();
+    navAbortRef.current = null;
+  }, []);
+  useEffect(() => {
+    cancelPendingNav();
+    return cancelPendingNav;
+  }, [navScope, active, day, following, extent[0], extent[1], cancelPendingNav]);
+
+  const handleViewportChange = useCallback(() => {
+    cancelPendingNav();
+  }, [cancelPendingNav]);
+
+  const handleChartActivate = useCallback((action: InstalledAction) => {
+    cancelPendingNav();
+    onPick?.(Math.floor(action.hour));
+  }, [cancelPendingNav, onPick]);
+
+  const handlePointsNavigate = useCallback((req: PointsNavigateRequest): boolean => {
+    if (!active || !owner || !parts.length) return false;
+    const livePlayhead = following ? Math.floor(runtime.clock.getHour()) + track.axisOffset : playhead;
+    const visible: readonly [number, number] = req.zoomWindow
+      ?? (following && windowHours != null && livePlayhead !== null
+        ? [Math.max(extent[0], livePlayhead - windowHours), Math.min(extent[1], livePlayhead)]
+        : extent);
+    const params = buildStabilityNextChangeParams({
+      branchId: track.branch.id,
+      owner,
+      parts,
+      key: req.key,
+      fromHour: req.currentHour ?? (following ? livePlayhead : day),
+      visible,
+      playhead: livePlayhead,
+      gate,
+    });
+    if (!params) return false;
+    cancelPendingNav();
+    const gen = navGenRef.current;
+    const controller = new AbortController();
+    navAbortRef.current = controller;
+    const scope = navScopeRef.current;
+    const request = productRequest({
+      sourceId: track.source.id,
+      revision: track.source.revision,
+      product: 'series-next-change',
+      params,
+    });
+    void loadTransientProduct<{ hour: unknown }>(runtime.client, request, controller.signal).then(reply => {
+      if (controller.signal.aborted || navGenRef.current !== gen || navScopeRef.current !== scope) return;
+      if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) {
+        throw new Error('The keyboard reply is malformed.');
+      }
+      setNavError(null);
+      if (typeof reply.hour === 'number') req.focusHour(reply.hour);
+    }).catch(err => {
+      if (!controller.signal.aborted && navGenRef.current === gen && navScopeRef.current === scope) {
+        setNavError({ scope, failure: asFailure(err) });
+      }
+    });
+    return true;
+  }, [active, owner, parts, track.source.id, track.source.revision, track.branch.id, track.axisOffset, following, playhead, day, extent, windowHours, gate, runtime.clock, runtime.client, cancelPendingNav]);
+
+  const tableWidget = useMemo<WidgetBase>(() => ({
+    ...widget,
+    id: `${widget.id}:stability-parts-table`,
+    kind: STABILITY_PARTS_TABLE_KIND,
+    time: following ? { mode: 'follow' } : pinnedTime(track, day ?? extent[1]),
+  }), [widget, track, following, day, extent[1]]);
+  const chartWidget = useMemo<WidgetBase>(() => ({
+    ...widget,
+    id: `${widget.id}:stability-parts-chart`,
+    kind: STABILITY_PARTS_CHART_KIND,
+    time: following ? { mode: 'follow' } : rangeTime(track, extent[0], Math.min(extent[1], Math.floor(playhead ?? extent[1]))),
+  }), [widget, track, following, extent[0], extent[1], playhead]);
+
+  const sharedOptions = useMemo<StabilityDetailOptions>(() => ({
+    ownerKey,
+    spans: owner?.spans ?? null,
+    parts,
+    ...(partSpans ? { partSpans } : {}),
+    partBits: listed?.partBits ?? 1,
+    names,
+    namesReady,
+    warnings,
+    ...(listed?.missing.length ? { missingSpans: listed.missing } : {}),
+    measure,
+    extent,
+    selectedHour: following ? null : day,
+    ...(windowHours != null ? { windowHours } : {}),
+    surface: '',
+  }), [ownerKey, owner?.spans, parts, partSpans, listed?.partBits, listed?.missing, names, namesReady, warnings, measure, extent, following, day, windowHours]);
+
+  const activeNavError = navError?.scope === navScope ? navError.failure : null;
+  const error = listedRead.error ?? namedRead.error ?? activeNavError;
+  const retry = () => {
+    setNavError(null);
+    listedRead.retry();
+    namedRead.retry();
+  };
+
+  return <div className="stability-drill">
     {onMeasure && <Segmented label="Breakdown of" value={measure} onChange={onMeasure}
       options={(['stability', 'warSupport'] as const).map(value => ({ value, label: MEASURE_NAMES[value] }))} />}
-    {live ? <DrillParts parts={[]} live={live} format={value => `${value > 0 ? '+' : ''}${value.toFixed(1)}%`} totalRow={{ label: 'Total', value: '' }} />
-      : day == null ? <p className="drill-empty">Choose a day.</p>
-      : !parts.loadedAt(day) ? <p className="drill-empty">{parts.error ? `The breakdown couldn’t be read: ${parts.error.message}` : 'Loading the breakdown…'}</p>
-      : values == null ? <p className="drill-empty">No breakdown was recorded for {dayLabel(day)}.</p>
-        : <DrillParts parts={values.parts} format={value => `${value > 0 ? '+' : ''}${value.toFixed(1)}%`} total={values.total}
-          unattributed={values.unattributed} totalRow={{ label: 'Total', value: values.totalText }} />}
-    {!parts.ready && <p className="drill-empty">Loading names…</p>}
-    <div className="stability-drill-chart">
-      <TimeChart label={`${MEASURE_NAMES[measure]} parts over time`} extent={[extent[0], extent[1]]} playhead={playback.playhead} playback={playback.mode}
-        afterPlayhead={playback.afterPlayhead} windowHours={playback.windowHours} liveHead={liveHead}
-        hoursPerSecond={hoursPerSecond} branchStart={branchStart} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
-        overlay={live ? undefined : (ctx, frame, chartTokens) => { if (day != null && day >= frame.x[0] && day <= frame.x[1]) drawPlayhead(ctx, frame, chartTokens, day); }}
-        onSummaryView={parts.onSummaryView} onHover={setHover}
-        onNavigateHour={parts.onNavigateHour} keyboardHour={parts.keyboardHour} keyboardRevision={parts.keyboardRevision}
-        layers={chartLayers} data={chartData} active={active} notRecorded={parts.unrecorded} pickOwner={chartOwner} revision={[measure, day, segments, parts.ready]}
-        formatValue={value => `${Number.isInteger(value) ? value : value.toFixed(1)}%`}
-        tooltip={at => {
-          const known = partsAt(parts.at(at), at);
-          if (!known) return fitTooltip([{ title: dayLabel(at), rows: [{ label: MEASURE_NAMES[measure], value: gate.recorded(at, within) === null || parts.loadedAt(at) ? 'Not recorded' : 'Loading…', tone: 'muted' }] }], viewport);
-          const rows: TooltipRow[] = [...known].sort((a, b) => Math.abs(percent(b.raw)) - Math.abs(percent(a.raw)))
-            .map(item => ({ label: named(item.part).name, swatch: colorOf.get(item.part.id), value: formatPercent(item.raw, decimals, true), short: true }));
-          rows.push({ label: 'Total', value: formatPercent(engineSum(known.map(item => item.raw)).toString(), decimals), strong: true });
-          return fitTooltip([{ title: dayLabel(at), rows }], viewport, { keep: 1 });
-        }}
-        onPick={onPick ? (picked, context?: ChartPick) => { if (context?.frame) onPick(picked); } : undefined} onContextMenu={onContextMenu} />
-    </div>
-    {parts.error && <WidgetState kind="error" failure={parts.error} onRetry={parts.retry} />}
+    {error && <WidgetState kind="error" failure={error} onRetry={retry} />}
+    {!owner ? (
+      <WidgetState kind="unavailable" message="Selected country unavailable." />
+    ) : !listed || !namesReady ? (
+      error ? null : <WidgetState kind="loading" label="Loading the breakdown…" />
+    ) : (
+      <>
+        <TimeRegion runtime={runtime} region={region}>
+          <div className="stability-drill-table fh-frame">
+            <FamilyWidget
+              widget={tableWidget}
+              options={sharedOptions as unknown as FamilyViewProps['options']}
+              mapOptions={EMPTY_MAP_OPTIONS}
+              headerSlot={null}
+              runtime={runtime}
+              active={active}
+              onDiagnostics={onDiagnostics}
+              family="table"
+              declaration={stabilityPartsTableDeclaration}
+            />
+          </div>
+        </TimeRegion>
+        <div className="stability-drill-chart fh-frame">
+          <FamilyWidget
+            widget={chartWidget}
+            options={sharedOptions as unknown as FamilyViewProps['options']}
+            mapOptions={EMPTY_MAP_OPTIONS}
+            headerSlot={null}
+            onDiagnostics={NOOP}
+            runtime={runtime}
+            active={active}
+            family="time-chart"
+            declaration={stabilityPartsChartDeclaration}
+            onViewportChange={handleViewportChange}
+            onPointsNavigate={handlePointsNavigate}
+            onActivate={onPick ? handleChartActivate : undefined}
+          />
+        </div>
+      </>
+    )}
   </div>;
 }

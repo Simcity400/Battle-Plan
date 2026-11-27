@@ -21,10 +21,10 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptEventKind, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
-import { gapRows, hoverTextOf, unreadRows, type TooltipTexts } from '../event-feed/hoverText.ts';
-import { reasonsOf } from '../event-feed/scriptedGaps.ts';
+import { gapRows, hasTooltipGaps, hoverTextOf, unreadRows, type TooltipTexts } from '../event-feed/hoverText.ts';
+import { gapsForField, reasonsOf, scriptedValue } from '../event-feed/scriptedGaps.ts';
 import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
-import {
+  import {
   awaitingText,
   choiceAt,
   choiceCard,
@@ -32,6 +32,7 @@ import {
   choiceText,
   isOpen,
   noChoiceText,
+  optionLetter,
   optionLines,
   type ChoiceAt,
 } from './eventChoicesData.ts';
@@ -85,8 +86,9 @@ function buildChoiceRow(
   } else if (at.choice) {
     const chosenText = chosenLine && !chosenLine.missing ? nonBlank(chosenLine.text) : null;
     if (chosenText !== null) {
+      const optionGaps = chosenLine?.ordinal != null ? gapsForField(card.item?.gaps, 'option', chosenLine.ordinal) : [];
       choiceCell = {
-        value: knownValue(chosenText),
+        value: scriptedValue(chosenText, optionGaps),
         ...(chosenLine?.letter ? { inlinePrefix: chosenLine.letter } : {}),
       };
     } else if (chosenLine?.letter) {
@@ -105,6 +107,7 @@ function buildChoiceRow(
   }
 
   const rawTitle = nonBlank(card.item?.name);
+  const titleGaps = gapsForField(card.item?.gaps, 'title');
   const safeChoiceText = nonBlank(choiceText(card)) ?? 'Title not recorded';
   const countryFlag = card.country ? identityFlags(readView, 'country', [card.country], { atHour: nameHour, boundary })[0] : undefined;
   const countryName = card.country ? identityName(readView, 'country', card.country, nameHour) : null;
@@ -133,7 +136,7 @@ function buildChoiceRow(
     if (at.choice) out.push({ label: 'Chosen', value: knownValue(formatDateTime(at.choice.row.hour)) });
     if (card.item?.token) out.push({ label: 'Content identity', value: knownValue(card.item.token) });
     if (reasons.nameMissing) out.push({ label: 'Title not recorded', value: notRecorded(reasons.nameMissing) });
-    out.push(...gapRows(hover, card.occurrence.id), ...unreadRows(hover, card.occurrence.id));
+    out.push(...gapRows(hover, card.occurrence.id, card.item?.gaps, optionLetter), ...unreadRows(hover, card.occurrence.id));
     return out;
   };
 
@@ -155,13 +158,14 @@ function buildChoiceRow(
         : { value: notApplicable('Game artwork hidden'), blank: true },
       country: logCountryCell(readView, countryEntries, nameHour, boundary),
       item: rawTitle !== null
-        ? { value: knownValue(rawTitle) }
+        ? { value: scriptedValue(rawTitle, titleGaps) }
         : { value: notRecorded(reasons.nameMissing ?? 'Event presentation was not recorded') },
       choice: choiceCell,
       action: { value: knownValue('View'), actionLabel: 'View' },
     },
     tooltipTitle: safeChoiceText,
     tooltipExtra,
+    ...(hasTooltipGaps(hover, card.occurrence.id, card.item?.gaps) ? { tooltipScrollId: card.occurrence.id } : {}),
     tooltipAction: 'Click to view event',
     meta: detailSubject,
   };

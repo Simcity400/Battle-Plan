@@ -34,7 +34,7 @@ import { DEFAULT_VIEW } from '../manifest.ts';
 import { renderFamilyStatus } from './FamilyBodyState.tsx';
 import type { TooltipRowSource } from './hoverRow.ts';
 import { keepEqual } from './stableValue.ts';
-import FamilyHost, { type FamilyChromeProps } from './FamilyHost.tsx';
+import FamilyHost, { type FamilyChromeProps, type PointsNavigateRequest } from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
 import { useFamilyPlan } from './useFamilyPlan.ts';
 import type { DrawnKeys } from './installed.ts';
@@ -89,6 +89,7 @@ export interface DeclaredFamilyWidgetProps<
   readonly view?: string;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction, countryHolder?: Holder | null) => void;
+  readonly onPointsNavigate?: (request: PointsNavigateRequest) => boolean;
   readonly onCountryHolder?: (holder: Holder | null) => void;
   readonly onToggle?: (action: InstalledAction) => void;
   readonly contextMenuItems?: (hit: FamilyContextHit) => MenuItem[];
@@ -122,6 +123,7 @@ export default function DeclaredFamilyWidget<
   filterSlot,
   selectedKey = null,
   onActivate,
+  onPointsNavigate,
   onCountryHolder,
   onToggle,
   contextMenuItems: customContextMenuItems,
@@ -405,6 +407,7 @@ export default function DeclaredFamilyWidget<
       onInstalledHour={onInstalledHour}
       selectedKey={selectedKey}
       onActivate={handleActivate}
+      onPointsNavigate={onPointsNavigate}
       onToggle={onToggle}
       {...(regionsEditable ? { onRegions, emptyAction } : {})}
       contextMenuItems={resolvedContextMenuItems}

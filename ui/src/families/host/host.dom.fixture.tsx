@@ -25,7 +25,12 @@ import type { TableColumnSpec, TableModel, TableModelSlot, TableRow } from '../t
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from '../table/tableFamilyDom.fixture.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
 import TableChrome from '../table/TableChrome.tsx';
-import FamilyHost from './FamilyHost.tsx';
+import { timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
+import { timeChartLane } from '../time-chart/laneView.ts';
+import type { TimeChartModel } from '../time-chart/model.ts';
+import { readFamilyTheme } from '../theme.ts';
+import { formatDateHover } from '../valueFormat.ts';
+import FamilyHost, { type PointsNavigateRequest } from './FamilyHost.tsx';
 import DeclaredFamilyWidget, { type DeclaredFamilyWidgetProps } from './DeclaredFamilyWidget.tsx';
 import type { FamilyPlanContext, SourcePlan } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
@@ -98,6 +103,9 @@ let hoverRanking: readonly string[] | null = null;
 let mirrorMetaOverride: { readonly summaryText: string; readonly summaryPartial: string | null } | null = null;
 let dropNextPopulatedMirror = false;
 const hoverReports: Array<readonly [number | null, readonly string[] | undefined]> = [];
+let holdHitsForPipe: number | null = null;
+const heldHits: Array<{ readonly key: string | null; readonly deliver: () => void }> = [];
+const hitWaiters = new Set<() => void>();
 
 type PaintedField = { readonly value: unknown; readonly content: string };
 function asPayloadTip(field: unknown): unknown {
@@ -118,10 +126,24 @@ function createLane(): LaneWorker {
   };
   const dispatch = laneDispatch(
     (message: FromLane) => {
+      if (message.type === 'hit' && holdHitsForPipe === message.widget) {
+        heldHits.push({
+          key: message.key,
+          deliver: () => {
+            queueMicrotask(() => worker.onmessage?.({ data: message } as MessageEvent<FromLane>));
+          },
+        });
+        for (const wake of [...hitWaiters]) {
+          hitWaiters.delete(wake);
+          wake();
+        }
+        return;
+      }
       queueMicrotask(() => worker.onmessage?.({ data: message } as MessageEvent<FromLane>));
     },
     {
-      views: (_kind, wake) => {
+      views: (kind, wake) => {
+        if (kind === 'time-chart') return createLaneView(timeChartLane, wake);
         const view = createLaneView(tableLane, wake);
         const paint = view.paint.bind(view);
         view.paint = (input, state, content) => {
@@ -253,6 +275,90 @@ const emptyToRowsProjection = registerFamilyProjection({
   },
 });
 
+const POINTS_EXTENT: readonly [number, number] = [0, 24];
+const POINTS_OPTIONS = {};
+const POINTS_STATICS: FamilyStaticSources = { stamp: {}, proof: null, panels: {}, hour: 24 };
+const pointsChartProjection = registerFamilyProjection({
+  family: 'time-chart',
+  kind: 'host-points-hover',
+  project(): TimeChartModel {
+    return {
+      kind: 'host-points-hover',
+      measureTitle: 'Stability',
+      mode: 'lines',
+      hour: 24,
+      extent: POINTS_EXTENT,
+      yAxis: { format: 'number', min: 0, max: 300 },
+      series: [{
+        id: 'metric',
+        key: 'METRIC',
+        name: 'Metric',
+        color: readFamilyTheme()?.blue ?? 'CanvasText',
+        role: 'primary',
+        step: true,
+        points: [
+          { hour: 0, value: 10 },
+          { hour: 3, value: 30 },
+          { hour: 6, value: 60 },
+          { hour: 12, value: 120 },
+          { hour: 24, value: 240 },
+        ],
+        headValue: 240,
+        headHour: 24,
+        absentReason: null,
+      }],
+    };
+  },
+});
+const pointsHoverHours: Array<number | null> = [];
+const pointsNavRequests: PointsNavigateRequest[] = [];
+let pendingPointsFocusHour: ((hour: number) => void) | null = null;
+
+async function waitAnimationFrames(count: number) {
+  for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+}
+
+function waitForPipeInstall(pipeId: number, check: () => boolean) {
+  return check()
+    ? Promise.resolve()
+    : new Promise<void>(resolve => {
+        const stop = pipeline.onInstall(pipeId, () => {
+          if (!check()) return;
+          stop();
+          resolve();
+        });
+      });
+}
+
+async function waitForTooltipSubtitle(expectedSubtitle: string) {
+  if (tooltipStore.get()?.content.subtitle !== expectedSubtitle) {
+    await new Promise<void>(resolve => {
+      const stop = tooltipStore.subscribe(() => {
+        if (tooltipStore.get()?.content.subtitle !== expectedSubtitle) return;
+        stop();
+        resolve();
+      });
+    });
+  }
+  await waitAnimationFrames(1);
+}
+
+function readVisibleTooltip() {
+  const el = document.querySelector<HTMLElement>('[role="tooltip"]');
+  const open = !!el && el.matches(':popover-open');
+  return {
+    open,
+    title: open ? (el.querySelector('strong')?.textContent ?? null) : null,
+    subtitle: open ? (el.querySelector('.chart-tooltip-head small')?.textContent ?? null) : null,
+    rows: open
+      ? [...el.querySelectorAll<HTMLElement>('.chart-tooltip-row')].map(row => [
+          row.querySelector('span')?.textContent ?? '',
+          row.querySelector('b')?.textContent ?? '',
+        ] as const)
+      : [],
+  };
+}
+
 let root: Root | null = null;
 let genericCommits = 0;
 let genericActivated: InstalledAction[] = [];
@@ -293,6 +399,7 @@ let currentState = {
   spanMounted: false,
   deepLogMounted: false,
   deepLogPaged: undefined as PagedRows | undefined,
+  pointsMode: null as null | 'focusKey' | 'pointsNavigate',
   owner: undefined as string | undefined,
 };
 const hoverRows: (string | null)[] = [];
@@ -612,6 +719,38 @@ function renderApp() {
                 />
               </div>
             </Profiler>
+          )}
+          {currentState.pointsMode && (
+            <div data-slot="points" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
+              <FamilyHost
+                adapter={timeChartHostAdapter}
+                declaration={pointsChartProjection}
+                view="default"
+                options={POINTS_OPTIONS}
+                label="Points Chart"
+                subject="points"
+                widget={widget}
+                runtime={rt}
+                active
+                subscriptions={NO_SUBSCRIPTIONS}
+                staticSources={POINTS_STATICS}
+                extent={POINTS_EXTENT}
+                identitySnapshot={identity}
+                offset={0}
+                pin={null}
+                bounds={BOUNDS}
+                onHoverHour={hour => { pointsHoverHours.push(hour); }}
+                {...(currentState.pointsMode === 'pointsNavigate'
+                  ? {
+                      onPointsNavigate: (req: PointsNavigateRequest) => {
+                        pointsNavRequests.push(req);
+                        pendingPointsFocusHour = req.focusHour;
+                        return true;
+                      },
+                    }
+                  : {})}
+              />
+            </div>
           )}
           <Profiler id="tooltip-layer" onRender={() => { genericCommits++; }}>
             <TooltipLayer />
@@ -1838,5 +1977,126 @@ window.hostDom = {
     renderApp();
     await frames(2);
     return { pre, played, focusedNow, whileFocused, afterSeek, afterSeekPlayed, afterOwnerClear, afterOwnerRecover, paused, listboxSameHour, coalescedEmpty, coalescedAfter, pausedOmitted, coalescedSeek };
+  },
+
+  async mountPointsHost(mode: 'focusKey' | 'pointsNavigate') {
+    holdHitsForPipe = null;
+    heldHits.length = 0;
+    pointsHoverHours.length = 0;
+    pointsNavRequests.length = 0;
+    pendingPointsFocusHour = null;
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    currentState = { ...currentState, pointsMode: mode };
+    renderApp();
+    const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="points"] canvas.fh-canvas')!;
+    const pipeId = Number(canvas.dataset.placement);
+    await waitForPipeInstall(pipeId, () => {
+      const view = pipeline.view(pipeId);
+      const meta = view?.fields?.meta as { readonly plotRect?: unknown; readonly transform?: unknown } | undefined;
+      return view?.mode === 'picture' && !view.dim && !!meta?.plotRect && !!meta?.transform;
+    });
+    await waitAnimationFrames(1);
+
+    const view = pipeline.view(pipeId)!;
+    const meta = view.fields!.meta as {
+      readonly plotRect: { readonly left: number; readonly top: number; readonly width: number; readonly height: number };
+      readonly transform: { readonly xFrom: number; readonly xTo: number };
+    };
+    const rect = canvas.getBoundingClientRect();
+    const vp = view.viewport!;
+    const localX = meta.plotRect.left + ((12 - meta.transform.xFrom) / (meta.transform.xTo - meta.transform.xFrom)) * meta.plotRect.width;
+    const localY = meta.plotRect.top + Math.min(12, meta.plotRect.height / 4);
+    const hour12Point = {
+      x: Math.round(rect.left + localX * (rect.width / vp.width)),
+      y: Math.round(rect.top + localY * (rect.height / vp.height)),
+    };
+    const navKeys = ((view.fields?.nav as readonly (readonly [string, ...unknown[]])[] | undefined) ?? []).map(entry => entry[0]);
+
+    const body = container!.querySelector<HTMLElement>('[data-slot="points"] .fh-body')!;
+    body.focus();
+    if (mode === 'focusKey') {
+      await waitForTooltipSubtitle(formatDateHover(0));
+    } else {
+      await waitAnimationFrames(2);
+    }
+
+    pointsHoverHours.length = 0;
+    pointsNavRequests.length = 0;
+    holdHitsForPipe = pipeId;
+    return {
+      pipeId,
+      hour12Point,
+      navKeys,
+      initialTooltip: readVisibleTooltip(),
+      date0: formatDateHover(0),
+      date3: formatDateHover(3),
+      date6: formatDateHover(6),
+    };
+  },
+
+  async waitHeldPointsHit() {
+    if (heldHits.length === 0) {
+      await new Promise<void>(resolve => { hitWaiters.add(resolve); });
+    }
+    return {
+      count: heldHits.length,
+      key: heldHits[0]?.key ?? null,
+    };
+  },
+
+  resolvePointsNavigate(hour: number) {
+    const focus = pendingPointsFocusHour;
+    if (!focus) throw new Error('Expected a pending onPointsNavigate request');
+    pendingPointsFocusHour = null;
+    focus(hour);
+  },
+
+  holdPointsHits(pipeId: number) {
+    heldHits.length = 0;
+    holdHitsForPipe = pipeId;
+  },
+
+  async waitPointsTooltipHour(expectedHour: number) {
+    await waitForTooltipSubtitle(formatDateHover(expectedHour));
+    return readVisibleTooltip();
+  },
+
+  async waitPinnedPointsTooltip(expectedHour: number) {
+    await waitForTooltipSubtitle(`Pinned at ${formatDateHover(expectedHour)}`);
+    return readVisibleTooltip();
+  },
+
+  async waitPointsFocusInstalled(pipeId: number, expectedHour: number) {
+    const expectedKey = `plot:${expectedHour}`;
+    await waitForPipeInstall(
+      pipeId,
+      () => (pipeline.view(pipeId)?.fields?.focusTooltip as { readonly text?: { readonly rowKey?: string } | null } | undefined)?.text?.rowKey === expectedKey,
+    );
+    await waitAnimationFrames(1);
+  },
+
+  async deliverHeldPointsHit(pipeId: number) {
+    const pending = heldHits.shift();
+    if (!pending) throw new Error('Expected a held pointer hit reply');
+    holdHitsForPipe = null;
+    pending.deliver();
+    await waitAnimationFrames(4);
+    return {
+      visibleTooltip: readVisibleTooltip(),
+      inspecting: pipeline.inspecting(pipeId),
+      hoverHours: [...pointsHoverHours],
+      navRequests: pointsNavRequests.map(req => ({ key: req.key, currentHour: req.currentHour })),
+    };
+  },
+
+  async unmountPointsHost() {
+    holdHitsForPipe = null;
+    heldHits.length = 0;
+    pendingPointsFocusHour = null;
+    (document.activeElement as HTMLElement | null)?.blur();
+    currentState = { ...currentState, pointsMode: null };
+    renderApp();
+    await waitAnimationFrames(2);
   },
 };
