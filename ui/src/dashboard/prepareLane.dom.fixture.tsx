@@ -151,7 +151,7 @@ const fixture = {
     view.render(<EventFeed.render {...{
       widget: { id: 'state', trackIds: ['main'], time: { mode: 'follow' }, countries: { kind: 'all' } },
       runtime: { client: reading, tracks: [{ id: 'main', source: { id: 'state', revision: '1' }, axisOffset: 0, branch: { id: 'branch' } }], clock },
-      active: true, options: { activityStrip: false }, filterSlot: slot,
+      active: true, options: { activityStrip: false, politics: false }, filterSlot: slot,
     } as unknown as FamilyViewProps} />);
     for (let at = 0; at < 300 && !slot.querySelector('button'); at++) await frame();
     slot.querySelector('button')?.click();
@@ -162,7 +162,7 @@ const fixture = {
     const expected = state === 'pending' ? '[role="status"]' : state === 'ready' ? '[role="option"]' : '[role="alert"]';
     for (let at = 0; at < 300 && !panel()?.querySelector(expected); at++) await frame();
     if (!panel()?.querySelector(expected)) throw new Error(`The kinds picker did not reach ${state}`);
-    const result = { status: panel()?.querySelector('[role="status"], [role="alert"]')?.textContent ?? null,
+    const result = { chip: slot.querySelector('button')?.textContent?.trim(), status: panel()?.querySelector('[role="status"], [role="alert"]')?.textContent ?? null,
       choices: [...(panel()?.querySelectorAll('[role="option"]') ?? [])].map(item => item.textContent) };
     view.unmount(); slot.remove(); container.remove();
     return result;
@@ -205,6 +205,7 @@ const fixture = {
     for (let at = 0; at < 300 && !slot.querySelector('button'); at++) await frame();
     await open();
     const before = snapshot();
+    const resetBefore = !!panel()?.querySelector('.tf-picker-reset');
     const beforeRequests = requests;
     options().find(item => item.textContent?.includes('Law changed'))!.click();
     await close();
@@ -221,7 +222,7 @@ const fixture = {
     options().find(item => item.textContent?.includes('News events'))!.click();
     const afterRequests = requests;
     view.unmount(); slot.remove(); container.remove();
-    return { before, later, soughtBack, changes, beforeRequests, afterRequests };
+    return { before, later, soughtBack, changes, beforeRequests, afterRequests, resetBefore };
   },
   async mount(lane: boolean) {
     root?.unmount(); host?.remove();

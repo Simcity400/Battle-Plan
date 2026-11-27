@@ -11,7 +11,7 @@ test('two event feeds share one kinds read through page preparation, playback an
     t.diagnostic(`event-feed-kinds requests before playback: ${count.before}, after: ${count.after}`);
     assert.deepEqual(count, { before: 1, after: 1 });
     type Choice = { label: string; disabled: boolean; checked: boolean; reason: string | null };
-    const availability = await page.evaluate<{ before: Choice[]; later: Choice[]; soughtBack: Choice[]; changes: string[]; beforeRequests: number; afterRequests: number }>(
+    const availability = await page.evaluate<{ before: Choice[]; later: Choice[]; soughtBack: Choice[]; changes: string[]; beforeRequests: number; afterRequests: number; resetBefore: boolean }>(
       'window.prepareLane.eventFeedKindsAvailability()');
     assert.deepEqual(availability.before.map(item => item.label), ['War declared', 'Law changed']);
     const absent = availability.before.find(item => item.label === 'Law changed')!;
@@ -25,12 +25,14 @@ test('two event feeds share one kinds read through page preparation, playback an
     assert.deepEqual(availability.changes, [''], 'absent and not-yet-reached kinds cannot be toggled');
     assert.equal(availability.beforeRequests, 1);
     assert.equal(availability.afterRequests, 1);
+    assert.equal(availability.resetBefore, true, 'reset remains available when the excluded kind has not yet been reached');
     for (const state of ['pending', 'failed', 'missing', 'ready']) {
-      const shown = await page.evaluate<{ status: string | null; choices: string[] }>(`window.prepareLane.eventFeedKindsState('${state}')`);
+      const shown = await page.evaluate<{ chip: string; status: string | null; choices: string[] }>(`window.prepareLane.eventFeedKindsState('${state}')`);
       if (state === 'ready') {
         assert.equal(shown.status, null);
         assert.deepEqual(shown.choices, ['War declared']);
       } else {
+        assert.equal(shown.chip, 'Filtered kinds');
         assert.match(shown.status ?? '', state === 'pending' ? /Loading kinds/ : /Event kinds could not be loaded/);
         assert.deepEqual(shown.choices, [], `${state} kinds do not become an empty recorded list or guessed choices`);
       }

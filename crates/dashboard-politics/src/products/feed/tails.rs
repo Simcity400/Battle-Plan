@@ -1105,10 +1105,7 @@ impl Product for EventFeedKinds {
         let scanned = index::scanned_for(source, &query, branch, cancelled)?;
         let content = super::resolve_content(source, context);
         let feed = index::feed_for(source, &query, branch, context, content.as_ref().ok(), cancelled)?;
-        let mut first = [None::<i32>; EventFeedKind::ALL.len()];
-        for (kind, hour) in scanned.observed_kinds() {
-            first[kind as usize] = Some(hour);
-        }
+        let mut first = scanned.observed_kinds();
         for at in 0..feed.index.len() {
             let row = feed.index.get(at as u32);
             let hour = &mut first[usize::from(row.kind)];
@@ -1138,6 +1135,9 @@ impl Product for EventFeedKinds {
                 if let Some((_, _, _, reason, _)) = feed.notices.iter().find(|(_, name, ..)| name == key) {
                     return reason.clone();
                 }
+                if let Some(family) = feed.unrecorded.iter().find(|family| family.kind == key && !family.spans.is_empty()) {
+                    return format!("Events of this kind {}.", family.why);
+                }
                 let table = match key {
                     "feed-events" => Some(replay_data::rows::TableId::FeedEvents),
                     "nuclearStrike" => Some(replay_data::rows::TableId::NuclearStrikes),
@@ -1146,7 +1146,10 @@ impl Product for EventFeedKinds {
                 if let Some(reason) = table.and_then(|table| query.replay.recording().predates(table.index())) {
                     return reason.to_owned();
                 }
-                if key == "feed-events" && let Some(gap) = scanned.gaps.iter().find(|gap| gap.first_hour <= query.timeline.first && gap.last_hour >= query.timeline.last) {
+                if key == "feed-events" && let Some(gap) = scanned.gaps.first() {
+                    return gap.reason.clone();
+                }
+                if let Some(gap) = query.timeline.unheld.first() {
                     return gap.reason.clone();
                 }
                 "No events of this kind were recorded in this branch.".to_owned()

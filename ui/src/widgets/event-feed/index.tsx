@@ -112,6 +112,7 @@ function EventFeedView(props: FamilyViewProps) {
         allLabel="All kinds"
         noun="kinds"
         items={filterItems}
+        filtered={categories.length !== CATEGORIES.length || excludedKinds.length > 0}
         onToggle={onToggleFilter}
         onSelectAll={onSelectAll}
       /></PickerContext.Provider>

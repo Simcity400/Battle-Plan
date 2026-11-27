@@ -23,6 +23,7 @@ export interface LogKindFilterProps {
   readonly allLabel: string;
   readonly noun: string;
   readonly items: readonly LogKindFilterItem[];
+  readonly filtered?: boolean;
   readonly searchThreshold?: number;
   readonly onToggle: (value: string, nextChecked: boolean) => void;
   readonly onSelectAll: () => void;
@@ -74,7 +75,7 @@ function Facets({ choices, country, kind, filters, setFilters }: {
   </div>;
 }
 
-function FilterList({ items, status, single, noun, allLabel, searchThreshold = 8, onToggle, onSelectAll, close, filters, setFilters }:
+function FilterList({ items, status, single, noun, allLabel, filtered: appliedFilter, searchThreshold = 8, onToggle, onSelectAll, close, filters, setFilters }:
   LogKindFilterProps & { status: PickerStatus; close: () => void; filters: Filters; setFilters: (filters: Filters) => void }) {
   const id = useId();
   const mode = single ? 'single' : 'multi';
@@ -175,7 +176,7 @@ function FilterList({ items, status, single, noun, allLabel, searchThreshold = 8
       {empty}
     </div>
     {status.kind === 'ready' && status.notice ? <p className="tf-picker-notice"><span className="val-hatch" aria-hidden="true" />{status.notice}</p> : null}
-    {(single ? single.pinned : selectable.length > 0 && !allSelected) ? <button type="button" className="tf-picker-reset" onClick={() => {
+    {(single ? single.pinned : appliedFilter ?? (selectable.length > 0 && !allSelected)) ? <button type="button" className="tf-picker-reset" onClick={() => {
       onSelectAll(); setQuery({ ...filters, query: '' }); if (single) close();
     }}>{allLabel}</button> : null}
   </>;
@@ -191,7 +192,7 @@ export default function LogKindFilter(props: LogKindFilterProps) {
   const selectable = items.filter(item => !item.unavailable);
   const selectedCount = selectable.filter(item => item.checked).length;
   const allSelected = selectable.length > 0 && selectedCount === selectable.length;
-  const label = single?.label ?? (allSelected || selectable.length === 0
+  const label = single?.label ?? (selectable.length === 0 && props.filtered ? `Filtered ${noun}` : allSelected || selectable.length === 0
     ? allLabel
     : selectedCount === 0
       ? `No ${noun}`
