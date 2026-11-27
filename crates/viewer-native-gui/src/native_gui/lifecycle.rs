@@ -884,6 +884,7 @@ impl Instance {
             viewport: Some(viewport),
             ..Bindings::default()
         };
+        let art_misses = crate::native_resources::window_art_misses();
         let objects = graph(root, resources, &empty);
         let authored_elements = elements(root);
         let authored = authored_elements.len();
@@ -893,6 +894,15 @@ impl Instance {
         let mut frames: Vec<Option<Frame>> = Vec::with_capacity(objects.len());
         for (index, object) in objects.iter().enumerate() {
             let element = object.element;
+            let font = match &element.fields {
+                Fields::TextBox(text) => Some(&text.font),
+                Fields::Button(button) => Some(&button.font),
+                Fields::EditBox(edit) => Some(&edit.font),
+                _ => None,
+            };
+            if let Some(name) = font.filter(|name| !name.is_empty()) {
+                let _ = resources.font(name);
+            }
             let (window, frame) = match element.container() {
                 Some(container) if object.built.is_none() => {
                     let outer = match object.parent {
@@ -1198,6 +1208,9 @@ impl Instance {
             {
                 instance.write_opacity(index, 0.0, true);
             }
+        }
+        if art_misses != crate::native_resources::window_art_misses() {
+            return Err(format!("{} is loading window art", root.path));
         }
         Ok(instance)
     }

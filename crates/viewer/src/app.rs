@@ -4287,6 +4287,7 @@ impl Viewer {
     ) -> Result<(), String> {
         let _other_cost = replay_frame::cpu::scope("frame.refresh", Some("other"));
         let whole = self.options.window_dump || self.capture.as_ref().is_some_and(|capture| !capture.paced);
+        let _art = whole.then(viewer_native_gui::native_resources::SynchronousWindowArt::enter);
         let _budget = viewer_runtime::frame_budget::begin(!whole);
         let map_timer = Instant::now();
         self.drew_frame = false;

@@ -11,6 +11,10 @@ thread_local! {
     static SYNCHRONOUS: Cell<bool> = const { Cell::new(false) };
 }
 
+pub(crate) fn window_art_misses() -> u64 {
+    MISSES.get()
+}
+
 #[must_use]
 pub struct SynchronousWindowArt(bool, std::marker::PhantomData<std::rc::Rc<()>>);
 
@@ -99,10 +103,6 @@ impl WindowArt {
             .iter()
             .cloned()
             .collect()
-    }
-
-    pub(super) fn misses(&self) -> u64 {
-        MISSES.get()
     }
 
     fn get(&self, kind: Kind, name: &[u8], request: bool) -> Option<&Item> {

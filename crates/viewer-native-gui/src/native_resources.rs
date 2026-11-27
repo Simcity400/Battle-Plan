@@ -98,6 +98,7 @@ fn plain_info(
 
 mod window_art;
 pub use window_art::SynchronousWindowArt;
+pub(crate) use window_art::window_art_misses;
 use window_art::WindowArt;
 use crate::lazy_icons::LazyTextures;
 
@@ -199,7 +200,7 @@ impl GuiResources {
     }
 
     pub fn window_art_misses(&self) -> u64 {
-        self.window.as_ref().map_or(0, |art| art.misses())
+        self.window.as_ref().map_or(0, |_| window_art_misses())
     }
 
     pub fn loaded_sheet(&self, name: &[u8]) -> Option<&SpriteSheet> {

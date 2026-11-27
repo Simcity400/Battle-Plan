@@ -889,11 +889,12 @@ impl Window {
             advance,
             self.settled,
             input,
-        )?;
+        );
         if art_misses != assets.gui.window_art_misses() {
             self.loading_art = true;
             return Ok(None);
         }
+        let drawn = drawn?;
         self.refused.clone_from(&drawn.refused);
         Ok(Some(drawn))
     }

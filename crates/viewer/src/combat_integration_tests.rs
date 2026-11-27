@@ -57,7 +57,11 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         ));
     }
     declaration.push_str(
-        r#"textBoxType = { name = "ToolTip" font = "fixture_font"
+        r#"containerWindowType = { name = "victory_point_mapicon" size = { width = 20 height = 10 }
+            iconType = { name = icon spriteType = GFX_fixture_late }
+            instantTextBoxType = { name = text font = fixture_font maxWidth = 18 text = A }
+        }
+        textBoxType = { name = "ToolTip" font = "fixture_font"
             maxWidth = 200 borderSize = { x = 1 y = 1 } } }"#,
     );
     for (path, bytes) in [
@@ -174,6 +178,32 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
     map_gui.load(&shared, &native_gui::Assets::default(), &mut images).unwrap();
     map_gui.defer_window_art(&shared, &map_assets, &lazy);
     assert!(map_gui.loaded_sheet(b"GFX_ESCAPE").is_none());
+    let map_resources = GuiAssets {
+        gui: &map_gui,
+        windows: &windows,
+        localisation: &localisation,
+        flags: None,
+        physical_viewport: None,
+        portrait_textures: None,
+    };
+    let label = windows.gui_type(b"victory_point_mapicon").unwrap();
+    let make_label =
+        || native_gui::lifecycle::Instance::construct(label, [640, 480], &map_resources);
+    assert!(
+        matches!(make_label(), Err(why) if why.contains("loading")),
+        "a pending label sprite or font must not be retained as a failed control"
+    );
+    assert!(lazy.settle());
+    assert!(map_gui.loaded_sheet(b"GFX_fixture_late").is_some());
+    assert!(
+        map_gui.loaded_font(b"fixture_font").is_some(),
+        "the label's font should be ready after its request: {:?}",
+        map_gui.window_warnings()
+    );
+    let mut instance = make_label().unwrap();
+    instance.gui_show(label, label).unwrap();
+    let label_layout = instance.layout(label, &map_resources, None).unwrap().unwrap();
+    assert!(!label_layout.parts.is_empty());
     let _art = viewer_native_gui::native_resources::SynchronousWindowArt::enter();
     let inventory = CombatGuiAssets::new(&combat, &Bindings::default());
     let resources =
@@ -272,14 +302,6 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         )
         .expect("the close button shows its shortcut after the normal delay");
     assert_eq!(text, "Shortcut: \u{13}ESCAPE");
-    let map_resources = GuiAssets {
-        gui: &map_gui,
-        windows: &windows,
-        localisation: &localisation,
-        flags: None,
-        physical_viewport: None,
-        portrait_textures: None,
-    };
     let mut batch = Batch::default();
     let refused = tooltip_painter::draw(
         &map_resources,
