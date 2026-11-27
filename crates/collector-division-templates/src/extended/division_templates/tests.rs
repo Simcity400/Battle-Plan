@@ -1927,6 +1927,7 @@ fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() 
 
     let mut publish_refusals = 0_usize;
     for ordinal in 1.. {
+        clean.refill_fallback_reasons();
         let guard = collector_test_support::NullGuard::new(ordinal);
         let [dictionary, icons, _] = fast.projected_inputs(None);
         let denied = collector_test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed);
@@ -1943,11 +1944,14 @@ fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() 
             assert!(matches!(icons, TableInput::Sampled(TableView::Complete(_))));
             break;
         }
-        assert!(
-            matches!(dictionary, TableInput::Sampled(TableView::Unavailable { .. }))
-                || matches!(icons, TableInput::Sampled(TableView::Unavailable { .. })),
-            "publish ordinal {ordinal}"
-        );
+        let mut saw_unavailable = false;
+        for input in [&dictionary, &icons] {
+            if let TableInput::Sampled(TableView::Unavailable { reason }) = input {
+                assert_eq!(reason, CLEAN_ALLOC_FAILURE, "publish ordinal {ordinal}");
+                saw_unavailable = true;
+            }
+        }
+        assert!(saw_unavailable, "publish ordinal {ordinal}");
         publish_refusals += 1;
     }
     assert!(publish_refusals >= 2);

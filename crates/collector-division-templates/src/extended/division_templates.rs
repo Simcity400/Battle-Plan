@@ -189,10 +189,14 @@ impl RawClean {
     }
 }
 
+const CLEAN_ALLOC_FAILURE: &str = "template clean snapshot allocation failed";
+
 struct LazyClean {
     raw: RawClean,
     country: std::sync::Arc<replay_data::rows::TableRows>,
     tables: std::sync::OnceLock<[replay_data::rows::TableRows; 2]>,
+    fallback_reasons: [std::sync::Mutex<Option<String>>; 2],
+    fallback_spent: [std::sync::atomic::AtomicBool; 2],
 }
 
 impl LazyClean {
@@ -205,6 +209,29 @@ impl LazyClean {
         self.tables.get()
     }
 
+    fn refill_fallback_reason(&self, index: usize) {
+        if !self.fallback_spent[index].load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let Some(reason) =
+            engine_allocation::advisory(|| engine_allocation::string(CLEAN_ALLOC_FAILURE).ok())
+        else {
+            return;
+        };
+        let mut slot = self.fallback_reasons[index]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_none() {
+            *slot = Some(reason);
+        }
+        self.fallback_spent[index].store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    fn refill_fallback_reasons(&self) {
+        self.refill_fallback_reason(0);
+        self.refill_fallback_reason(1);
+    }
+
     fn table_input(&self, index: usize) -> TableInput {
         let (cloned, refused) = engine_allocation::contained(|| {
             self.tables()
@@ -213,12 +240,29 @@ impl LazyClean {
         if !refused
             && let Some(rows) = cloned
         {
+            self.refill_fallback_reason(index);
             return TableInput::Sampled(TableView::Complete(rows));
         }
-        engine_allocation::contained(|| {
-            unavailable("template clean snapshot allocation failed").into()
-        })
-        .0
+        let (reason, reason_refused) =
+            engine_allocation::contained(|| engine_allocation::string(CLEAN_ALLOC_FAILURE).ok());
+        if !reason_refused
+            && let Some(reason) = reason
+        {
+            return TableView::Unavailable { reason }.into();
+        }
+        let mut slot = self.fallback_reasons[index]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(reason) = slot.take() {
+            self.fallback_spent[index].store(true, std::sync::atomic::Ordering::Release);
+            return TableView::Unavailable { reason }.into();
+        }
+        drop(slot);
+        let _ = engine_allocation::oom();
+        TableView::Unavailable {
+            reason: String::new(),
+        }
+        .into()
     }
 }
 
@@ -736,6 +780,7 @@ impl Captured {
                 self.locals.required = clean.required[7];
                 self.witness = Some(clean.witness);
                 self.generation = clean.generation;
+                clean.clean.refill_fallback_reasons();
                 self.fast_clean = prev_clean;
                 self.pending_owned = true;
                 crate::template_changes::record_countries(country_count);
@@ -1058,6 +1103,7 @@ impl Captured {
             self.locals.required = clean.required[7];
             self.witness = Some(clean.witness);
             self.generation = clean.generation;
+            next.clean.refill_fallback_reasons();
             self.fast_clean = Some(next);
             self.pending_owned = true;
             crate::template_changes::record_countries(country_count);
@@ -1664,11 +1710,24 @@ impl Captured {
                         speed_spans: copy_vec(&self.speed_spans).ok()?,
                         country_rows,
                     };
+                    let fallback_reasons = [
+                        std::sync::Mutex::new(Some(
+                            engine_allocation::string(CLEAN_ALLOC_FAILURE).ok()?,
+                        )),
+                        std::sync::Mutex::new(Some(
+                            engine_allocation::string(CLEAN_ALLOC_FAILURE).ok()?,
+                        )),
+                    ];
                     Some((
                         engine_allocation::shared(LazyClean {
                             raw,
                             country,
                             tables: std::sync::OnceLock::new(),
+                            fallback_reasons,
+                            fallback_spent: [
+                                std::sync::atomic::AtomicBool::new(false),
+                                std::sync::atomic::AtomicBool::new(false),
+                            ],
                         })
                         .ok()?,
                         country_slots,
