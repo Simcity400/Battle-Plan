@@ -94,11 +94,12 @@ pub const SPARE_BYTES: usize = 32 << 20;
 
 static SPARE_CAP: AtomicUsize = AtomicUsize::new(SPARE_BYTES);
 
-static SPARE: Mutex<Spare> = Mutex::new(Spare { frames: Vec::new(), bytes: 0 });
+static SPARE: Mutex<Spare> = Mutex::new(Spare { frames: Vec::new(), bytes: 0, users: 0 });
 
 struct Spare {
     frames: Vec<Vec<u8>>,
     bytes: usize,
+    users: usize,
 }
 
 impl Spare {
@@ -127,7 +128,7 @@ pub fn spare_cap(bytes: usize) {
 pub fn release_spare() -> usize {
     let mut held = spare();
     let bytes = held.bytes;
-    *held = Spare { frames: Vec::new(), bytes: 0 };
+    *held = Spare { frames: Vec::new(), bytes: 0, users: held.users };
     bytes
 }
 
@@ -135,8 +136,29 @@ pub fn spare_bytes() -> usize {
     spare().bytes
 }
 
+#[derive(Debug)]
+pub struct SpareUser(());
+
+impl SpareUser {
+    pub fn acquire() -> Arc<Self> {
+        spare().users += 1;
+        Arc::new(Self(()))
+    }
+}
+
+impl Drop for SpareUser {
+    fn drop(&mut self) {
+        let mut held = spare();
+        held.users -= 1;
+        if held.users == 0 {
+            *held = Spare { frames: Vec::new(), bytes: 0, users: 0 };
+        }
+    }
+}
+
 pub trait Extents: Sync {
     fn read_at(&self, offset: u64, length: usize, out: &mut Vec<u8>) -> io::Result<()>;
+    fn spare_user(&self) -> Arc<SpareUser> { SpareUser::acquire() }
 }
 
 impl Extents for std::fs::File {
@@ -221,10 +243,11 @@ struct Span {
     end: u32,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Frames {
     frames: Vec<Vec<u8>>,
     streams: Vec<(u32, Span)>,
+    _spare: Arc<SpareUser>,
 }
 
 impl Frames {
@@ -511,7 +534,7 @@ fn fetch_streams(source: &dyn Extents, entry: &PartEntry, last: u16, columns: &[
     if !names_only { wanted.extend([LIFETIMES, READ, TOUCHED]); }
     wanted.sort_unstable();
     let wants = |id: u32| wanted.binary_search(&id).is_ok();
-    let mut held = Frames::default();
+    let mut held = Frames { frames: Vec::new(), streams: Vec::new(), _spare: source.spare_user() };
     let (mut stored_total, mut decompressed, mut reads) = (0, 0, 0);
     let (mut read_ns, mut verify_ns, mut decompress_ns) = (0_u64, 0_u64, 0_u64);
     let frames: Vec<&FrameEntry> = entry.frames.iter().filter(|frame| frame.streams.iter().any(|&stream| wants(stream))).collect();
