@@ -4357,9 +4357,9 @@ partyNameRuns: Array<PartyNameRun>,
  */
 partyNames: Array<string | null>,
 /**
- * Each character on `leaders`, named and pictured.
+ * Each character on `leaders`, named.
  */
-people: Array<LeaderArtwork>,
+people: Array<LeaderPerson>,
 /**
  * The leaders' sub-ideologies, named.
  */
@@ -4439,19 +4439,11 @@ export type PartyNameRun = {
  */
 name: number, firstHour: number, lastHour: number, };
 export type IdeologyTypeInfo = { token: string, name: string | null, };
-export type LeaderArtwork = { character: IdeaCharacter,
+export type LeaderPerson = { character: IdeaCharacter,
 /**
  * Null when the saved name needs runtime scope or nothing names the character.
  */
-name: string | null,
-/**
- * An artwork URL; null when the portrait is not known.
- */
-portrait: string | null,
-/**
- * Why `portrait` is null.
- */
-portraitMissing: string | null, };
+name: string | null, };
 export type IdeologyInfo = { token: string, name: string | null,
 /**
  * sRGB bytes; null when the content's colour is refused (the warnings name why).

@@ -176,15 +176,15 @@ export function partyNameAt(reply: PartyHistoryReply, hour: number): string | nu
   return undefined;
 }
 
-export interface LeaderShown { name: string; known: boolean; portrait: string | null; portraitMissing: string | null; ideology: string | null }
+export interface LeaderShown { name: string; known: boolean; ideology: string | null }
 
 export function leaderShown(reply: PartyHistoryReply, run: LeaderRun | null): LeaderShown {
-  const none = (name: string, ideology: string | null = null): LeaderShown => ({ name, known: false, portrait: null, portraitMissing: null, ideology });
+  const none = (name: string, ideology: string | null = null): LeaderShown => ({ name, known: false, ideology });
   if (!run) return none('Leader not recorded');
   if (!run.ideology) return none('No leader');
   const ideology = contentTitle(reply.ideologyTypes.find(item => item.token === run.ideology)?.name,
     run.ideology, 'Ideology name unavailable');
   const person = run.person == null ? undefined : reply.people[run.person];
   if (!person) return none('Leader not identified', ideology);
-  return { name: person.name ?? 'Leader’s name not known', known: person.name != null, portrait: person.portrait, portraitMissing: person.portraitMissing, ideology };
+  return { name: person.name ?? 'Leader’s name not known', known: person.name != null, ideology };
 }
