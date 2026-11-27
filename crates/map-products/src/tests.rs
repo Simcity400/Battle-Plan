@@ -1434,6 +1434,35 @@ fn snow_product_is_owned_deduplicates_equal_outputs_and_keeps_refresh_identity()
 }
 
 #[test]
+fn hiding_releases_snow_cells_and_rebuilds_the_witnessed_inputs() {
+    let stack = fixture("products_snow_return");
+    let permanent: Vec<_> = (0..72).map(|pixel| pixel % 3 == 0).collect();
+    let winter = map_snow::winter::Winter {
+        defines: map_snow::winter::SnowDefines {
+            per_province: [0.0, 1.0],
+            total: [0.0, 1.0],
+        },
+        records: Vec::new(),
+    };
+    let content = content(&stack);
+    let initial = display::SnowContent::new(&content.map, &permanent, winter);
+    let content = content.with_snow(initial, &permanent);
+    content.seal_bindings().unwrap();
+    let snow = content.snow_content().unwrap();
+    let mut before = Vec::new();
+    snow.cells.write_identity(&mut before).unwrap();
+    let held = Arc::downgrade(&snow);
+    drop(snow);
+
+    drop(content.release_display().expect("snow cells were resident"));
+    assert!(held.upgrade().is_none());
+    assert!(content.release_display().is_none());
+    let mut after = Vec::new();
+    content.snow_content().unwrap().cells.write_identity(&mut after).unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
 fn snow_wire_and_status_match_the_frozen_scalar_for_gaps_edges_and_refresh() {
     let stack = fixture("products_snow_oracle");
     let content = content(&stack);

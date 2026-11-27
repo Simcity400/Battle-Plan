@@ -17,7 +17,7 @@ use std::{
     cell::{OnceCell, RefCell},
     collections::BTreeMap,
     io,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex},
 };
 use viewer_counter_products::map::orders;
 use viewer_foundation::{
@@ -51,8 +51,8 @@ pub struct ProductContent {
     intel_cells: Arc<textures::IntelCellsCache>,
     visions: visions::Visions,
     weather: std::sync::Mutex<display::WeatherMemo>,
-    snow: OnceLock<Result<display::SnowContent, (io::ErrorKind, String)>>,
-    snow_building: std::sync::Mutex<()>,
+    snow: Mutex<Option<Result<Arc<display::SnowContent>, (io::ErrorKind, String)>>>,
+    snow_source: Option<display::SnowSource>,
     snow_loader: Option<loader::Loader>,
     landscape: landscape::Projections,
     display_binding: Result<[u8; 32], String>,
@@ -86,8 +86,8 @@ impl ProductContent {
             intel_cells,
             visions: Default::default(),
             weather: Default::default(),
-            snow: OnceLock::new(),
-            snow_building: Default::default(),
+            snow: Default::default(),
+            snow_source: None,
             snow_loader: None,
             landscape: Default::default(),
         }
@@ -108,6 +108,13 @@ impl ProductContent {
         self.intel_cells.get_or_init()?;
         let _ = self.snow_content();
         Ok(())
+    }
+
+    pub fn release_display(&self) -> Option<impl Send + use<>> {
+        let vision = self.visions.take();
+        let mut snow = self.snow.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cells = self.snow_source.as_ref().and_then(|_| snow.take_if(|value| value.is_ok()));
+        (vision.is_some() || cells.is_some()).then_some((vision, cells))
     }
 
     pub fn intel_map_from_visibility(

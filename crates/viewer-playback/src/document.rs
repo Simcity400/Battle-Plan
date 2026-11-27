@@ -3033,7 +3033,6 @@ impl Document {
                 &perm_snow,
                 assets.post.volumes.winter(),
             );
-            drop(perm_snow);
             let products = map_products::ProductContent::from_inputs(
                 product_loader.reads.clone(),
                 map_products::ProductInputs {
@@ -3050,7 +3049,7 @@ impl Document {
                     triggers: Arc::new(icons.raids.trigger_content.clone()),
                 },
             )
-            .with_snow(snow_content);
+            .with_snow(snow_content, &perm_snow);
             products.seal_bindings()?;
             {
                 let _validation = crate::perf_log::StartupSpan::new("generation_validation");
@@ -5106,11 +5105,7 @@ impl<'a> Hour<'a> {
     }
 
     pub fn snow_mud(&self) -> io::Result<SnowMud> {
-        self.product_hour.snow_grid(self.snow_cells()?)
-    }
-
-    pub fn snow_cells(&self) -> io::Result<&map_snow::SnowCells> {
-        Ok(&self.products.snow_content()?.cells)
+        self.product_hour.snow_grid(&self.products.snow_content()?.cells)
     }
 
     pub fn intel_map(&self, perspective: &perspective::Choice) -> io::Result<IntelMap> {

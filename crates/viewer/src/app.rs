@@ -4440,11 +4440,8 @@ impl Viewer {
         {
             self.playhead_opened = true;
             let at = crate::playhead_host::At { branch: clock.branch, hour: clock.hour, playing: self.playing, speed: self.speed };
-            let opened = if self.private_playhead {
-                viewer_playback::map_open::open_document_private(document, Some(at))
-            } else {
-                viewer_playback::map_open::open_document(document, Some(at))
-            };
+            let ctx = ui.ctx().clone();
+            let opened = crate::playhead_host::open_document(document, Some(at), self.private_playhead, move || ctx.request_repaint());
             match opened {
                 Ok(opening) => self.playhead_opening = Some(opening),
                 Err(error) => self.playhead_refused = Some(refusal(&error)),
