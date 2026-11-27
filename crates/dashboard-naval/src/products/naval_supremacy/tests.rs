@@ -206,7 +206,8 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
     let Record::SessionStart(session) = &mut input[0] else { unreachable!() };
     session.identity = identity.clone();
     let replay = with_facts(&options, &identity, input).into_timelines(&Default::default()).unwrap();
-    let src = Source::from_replay(dashboard_base::SourceKey { source_id: "naval-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let src = Arc::new(Source::from_replay(dashboard_base::SourceKey { source_id: "naval-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap());
+    let load = LoadContext { content: Some(options) };
     let reply = NavalSupremacy::load(
         &src,
         &NavalSupremacyParams {
@@ -220,15 +221,21 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
             hidden_regions: None,
             top: None,
         },
-        &LoadContext { content: Some(options) },
+        &load,
         &AtomicBool::new(false),
     )
     .unwrap();
-    let _ = std::fs::remove_dir_all(&root);
     let region = reply.regions.iter().find(|r| r.id == "7").unwrap();
     assert_eq!(region.own_ships, MissionShips::Counted { ships: 2 });
     assert_eq!(region.enemy_ships, MissionShips::Counted { ships: 1 });
     assert_ne!(reply.viewer_name_missing.as_deref(), Some("The recording holds no hour here"), "the viewer is named at the readout's hour, not inside the gap");
+
+    let panel = playback::panel(&src, &load, &serde_json::json!({ "branchId": "1", "country": "GER", "regions": [7] })).unwrap();
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let seed = (exact.advance)(0, true, &cancelled, None);
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(seed.lanes.iter().any(|lane| lane.table == TableId::Ships.index()), "playback declares the ships it reads");
 }
 
 #[test]
