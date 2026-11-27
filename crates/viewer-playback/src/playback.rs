@@ -706,13 +706,25 @@ pub mod tests {
 
     #[test]
     fn releasing_the_source_keeps_the_presented_hour_and_later_seeks_read_again() {
+        for bootstrap_only in [false, true] {
+            check_release(bootstrap_only);
+        }
+    }
+
+    #[cfg(test)]
+    fn check_release(bootstrap_only: bool) {
         let mut playback = Playback::new(fixture()).unwrap();
         playback.seek(1, 105).unwrap();
         let Current::Frame(shown) = playback.current().clone() else {
             panic!("hour 105 is recorded");
         };
         assert!(playback.holds_source());
-        assert!(playback.release_source().is_some());
+        if bootstrap_only {
+            assert!(playback.release_bootstrap_cursor().is_some());
+            assert!(playback.release_bootstrap_cursor().is_none());
+        } else {
+            assert!(playback.release_source().is_some());
+        }
         assert!(!playback.holds_source());
         assert!(
             playback.release_source().is_none(),

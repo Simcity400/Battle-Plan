@@ -1318,6 +1318,18 @@ mod tests {
     }
 
     #[test]
+    fn a_popout_close_wakes_the_viewer_and_replaces_a_pending_open() {
+        let mut pending = Pending::default();
+        assert!(pending.is_empty());
+        pending.push(crate::host::Command::PopoutOpen(true)).unwrap();
+        assert!(!pending.is_empty());
+        pending.push(crate::host::Command::PopoutOpen(false)).unwrap();
+        assert!(!pending.is_empty());
+        assert_eq!(std::mem::take(&mut pending).popout_open, Some(false));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
     fn two_diagnostics_presses_before_a_send_cancel_out() {
         let mut outgoing = Outgoing::default();
         assert!(outgoing.is_empty());
