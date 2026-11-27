@@ -7,12 +7,12 @@ use dashboard_query::coverage::witnessed;
 use dashboard_text::division_history;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{CountryLinkRow, CountryRow, DivisionHistoryRow, DivisionKillsRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, mask, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, ViewIdentity};
 use serde::{Deserialize, Serialize};
 use content_reader_military::unit_medals::{Medal, Medals};
 use dashboard_base::products::artwork::sprites::SpriteFrame;
 use dashboard_world::products::styles::BranchLooks;
-use std::{cmp::Ordering, collections::{BTreeMap, HashSet}, io};
+use std::{cmp::Ordering, collections::{BTreeMap, HashSet}, io, sync::{Mutex, PoisonError}};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -141,6 +141,7 @@ impl DecoratedRank {
 pub struct DecoratedContext {
     content: Content,
     looks: Result<BranchLooks, String>,
+    ranking: Mutex<Option<PreparedRanking>>,
 }
 
 const RANKS: [DecoratedRank; 3] = [DecoratedRank::Medals, DecoratedRank::Experience, DecoratedRank::CasualtiesTaken];
@@ -165,6 +166,31 @@ pub struct DecoratedDivisionsParams {
     pub descending: bool,
     #[doc = " How many divisions to return, from the first in order."]
     pub count: u32,
+}
+
+const RANKING_TABLES: [TableId; 5] = [TableId::Divisions, TableId::CountryLinks, TableId::DivisionStatus, TableId::DivisionLandInputs, TableId::DivisionHistory];
+
+struct Placement {
+    winners: Vec<Measures>,
+    partial: Option<String>,
+    missing: Option<String>,
+}
+
+struct PreparedRanking {
+    hour: i32,
+    params: DecoratedDivisionsParams,
+    rows: [ViewIdentity; RANKING_TABLES.len()],
+    kills: Option<ViewIdentity>,
+    placement: Placement,
+    refusals: catalogue::OwnRefusals,
+}
+
+impl PreparedRanking {
+    fn matches(&self, frame: &DecodedFrame, params: &DecoratedDivisionsParams) -> bool {
+        self.hour == frame.hour && &self.params == params
+            && self.rows.iter().zip(RANKING_TABLES).all(|(identity, table)| identity.is(&frame.tables[table.index()]))
+            && self.kills.as_ref().is_none_or(|identity| identity.is(&frame.tables[TableId::DivisionKills.index()]))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -248,7 +274,9 @@ impl AtHour for DecoratedDivisions {
             2 => {
                 let divisions = frame.complete::<tables::Divisions>().unwrap_or(&[]);
                 let countries = Countries::witnessed(frame).0.named(at.holders, at.hour);
-                let (first, _, _) = place(frame, params, at.context, &countries, divisions, None).expect("planning does not cancel");
+                let (placement, refusals) = catalogue::capture(|| place(frame, params, at.context, &countries, divisions, None));
+                let placement = placement.expect("planning does not cancel");
+                let first = &placement.winners;
                 let templates = first.iter().filter_map(|rank| find(Some(divisions), rank.id, |row| row.id)).map(|row| u128::from(row.template));
                 let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
                 let medals = first.iter().map(|rank| history_of(history, rank.id))
@@ -264,6 +292,15 @@ impl AtHour for DecoratedDivisions {
                 if params.by != DecoratedRank::EnemyKilled {
                     reads.push(Read::these(TableId::DivisionKills, first.iter().map(|rank| u128::from(rank.id))));
                 }
+                let prepared = PreparedRanking {
+                    hour: frame.hour,
+                    params: params.clone(),
+                    rows: RANKING_TABLES.map(|table| frame.tables[table.index()].identity()),
+                    kills: (params.by == DecoratedRank::EnemyKilled).then(|| frame.tables[TableId::DivisionKills.index()].identity()),
+                    placement,
+                    refusals,
+                };
+                *at.context.ranking.lock().unwrap_or_else(PoisonError::into_inner) = Some(prepared);
                 reads
             }
             _ => Vec::new(),
@@ -317,7 +354,7 @@ impl AtHour for DecoratedDivisions {
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(DecoratedContext { content: Content::load(source, load), looks: Err("Country names need the campaign's branch".into()) })
+        Ok(DecoratedContext { content: Content::load(source, load), looks: Err("Country names need the campaign's branch".into()), ranking: Mutex::default() })
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
@@ -329,7 +366,7 @@ impl AtHour for DecoratedDivisions {
         } else {
             Err("Country names are read only to rank by them".into())
         };
-        Ok(DecoratedContext { content: Content::load(source, load), looks })
+        Ok(DecoratedContext { content: Content::load(source, load), looks, ranking: Mutex::default() })
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -629,7 +666,7 @@ fn selected_tags(params: &DecoratedDivisionsParams, hour: i32) -> Option<HashSet
 fn place(
     frame: &DecodedFrame, params: &DecoratedDivisionsParams, context: &DecoratedContext,
     countries: &Countries<'_>, divisions: &[DivisionRow], cancelled: Option<&std::sync::atomic::AtomicBool>,
-) -> io::Result<(Vec<Measures>, Option<String>, Option<String>)> {
+) -> io::Result<Placement> {
     let passing = selected_tags(params, frame.hour);
     let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
     let mut measured = Vec::new();
@@ -662,7 +699,7 @@ fn place(
         measured.push(measures);
     }
     if passing.is_some() && measured.is_empty() && unplaced > 0 {
-        return Ok((Vec::new(), None, Some(format!("{unplaced} divisions' countries were not recorded at this hour, so which belong to the chosen countries is not known"))));
+        return Ok(Placement { winners: Vec::new(), partial: None, missing: Some(format!("{unplaced} divisions' countries were not recorded at this hour, so which belong to the chosen countries is not known")) });
     }
     let mut partial = Vec::new();
     if unmeasured > 0 {
@@ -675,7 +712,7 @@ fn place(
     if unproven {
         partial.push(format!("Divisions with equal {} are ordered by a measure not read for some of them", rank_word(params.by)));
     }
-    Ok((first, (!partial.is_empty()).then(|| partial.join(". ")), None))
+    Ok(Placement { winners: first, partial: (!partial.is_empty()).then(|| partial.join(". ")), missing: None })
 }
 
 fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_, DecoratedContext>, refusals: &mut Refusals) -> io::Result<DecoratedDivisionsReply> {
@@ -694,7 +731,18 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
     if let Some(why) = links_missing {
         refusals.note(format!("Division countries unavailable: {why}"));
     }
-    let (first, partial, missing) = place(frame, params, at.context, &countries, divisions, Some(at.cancelled))?;
+    let prepared = {
+        let mut ranking = at.context.ranking.lock().unwrap_or_else(PoisonError::into_inner);
+        if ranking.as_ref().is_some_and(|rank| rank.matches(frame, params)) { ranking.take() } else { None }
+    };
+    let Placement { winners, partial, missing } = match prepared {
+        Some(rank) => {
+            dashboard_text::metadata::check_cancel(at.cancelled)?;
+            catalogue::credit(&rank.refusals);
+            rank.placement
+        }
+        None => place(frame, params, at.context, &countries, divisions, Some(at.cancelled))?,
+    };
     reply.partial = partial;
     reply.missing = missing;
     if reply.missing.is_some() {
@@ -704,7 +752,7 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
     let mut facts = Facts { frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
     content.group_notes(refusals);
     let mut templates = BTreeMap::<u64, ()>::new();
-    for measures in first {
+    for measures in winners {
         let Some(division) = find(Some(divisions), measures.id, |row| row.id) else { continue };
         let status = status_of(frame, division.id);
         let (name, name_missing) = refusals.keep(content.division_name(status));

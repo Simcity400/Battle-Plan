@@ -151,11 +151,19 @@ fn a_quiet_hour_of_decorated_divisions_visits_no_row_while_a_division_moves_and_
     use std::sync::Arc;
     const FIRST: i32 = 1_000;
     const LAST: i32 = 1_020;
+    const HIDDEN: i32 = 1_011;
+    const UNREAD_TIE: i32 = 1_012;
     const VETERAN: i32 = 1_015;
     let source = Arc::new(decorated_source((FIRST..=LAST).map(|hour| {
         let mut frame = decorated_world(hour, |id| if id == 1 && hour >= VETERAN { 300 } else { 30 * id as i64 });
         if let TableView::Complete(TableRows::Divisions(rows)) = &mut *frame.tables[TableId::Divisions.index()] {
             rows[0].template = 2;
+            rows[2].reveal_skip = u8::from(hour == HIDDEN);
+        }
+        if hour == UNREAD_TIE
+            && let TableView::Complete(TableRows::DivisionStatus(rows)) = &mut *frame.tables[TableId::DivisionStatus.index()]
+        {
+            rows[0].experience = Recorded::Value(None);
         }
         *frame.tables[TableId::DivisionTemplateIcons.index()] = TableView::Complete(TableRows::DivisionTemplateIcons(vec![
             DivisionTemplateIconRow { template: 2, custom_icon: i32::from(hour >= FIRST + 5), ..Default::default() },
@@ -178,21 +186,49 @@ fn a_quiet_hour_of_decorated_divisions_visits_no_row_while_a_division_moves_and_
     let at = |hour: i32| reads.iter().position(|read| read.hour == hour).unwrap();
     assert_eq!(ranked(&reads[1].value), ["3", "2"], "experience breaks the medal tie");
     assert_eq!(reads[at(FIRST + 5)].product_calls, 0, "a template used only outside the cut cannot affect the reply");
+    assert_eq!(ranked(&reads[at(HIDDEN)].value), ["2", "1"], "the cut follows the eligible divisions");
+    assert_eq!(ranked(&reads[at(UNREAD_TIE)].value), ["3", "2"]);
+    assert!(reads[at(UNREAD_TIE)].value.as_ref().as_ref().unwrap()["partial"].as_str().unwrap().contains("ordered by a measure not read"));
     assert_eq!(ranked(&reads[at(VETERAN)].value), ["1", "3"], "a candidate outside the cut can win the experience tiebreak");
+    let changed = |hour| hour == VETERAN || (FIRST + 8..=UNREAD_TIE + 1).contains(&hour);
     for read in &reads {
         let expected = materialized_frame(&mut *original, source.replay_ref(), 1, read.hour);
         assert_eq!(*read.value, expected, "played reply at {}", read.hour);
+        let cold = (panel.exact().unwrap().cold)(read.hour, &false.into());
+        assert_eq!(serde_json::to_vec(&*read.value).unwrap(), serde_json::to_vec(&cold).unwrap(), "exact reply at {}", read.hour);
         if read.hour > FIRST {
-            assert_eq!(read.product_calls, u64::from(read.hour == VETERAN || (FIRST + 8..=FIRST + 10).contains(&read.hour)), "product calls at {}", read.hour);
+            assert_eq!(read.product_calls, u64::from(changed(read.hour)), "product calls at {}", read.hour);
         }
     }
     for hour in [VETERAN, FIRST, FIRST + 9] {
         assert_eq!(*(panel.exact().unwrap().advance)(hour, true, &false.into(), None).value, materialized_frame(&mut *original, source.replay_ref(), 1, hour));
     }
-    for (place, read) in reads.iter().enumerate().skip(2).filter(|(_, read)| read.hour != VETERAN && !(FIRST + 8..=FIRST + 10).contains(&read.hour)) {
+    for (place, read) in reads.iter().enumerate().skip(2).filter(|(_, read)| !changed(read.hour)) {
         assert_eq!((read.rows, read.visited), (0, 0), "hour {}: a move and a dug-in change are not ranked or shown, and unread tokens stay unread", read.hour);
         assert!(Arc::ptr_eq(&read.value, &reads[place - 1].value), "hour {} keeps the held reply", read.hour);
     }
+}
+
+#[test]
+fn decorated_divisions_use_the_ranking_for_their_own_frame_at_the_same_hour() {
+    use super::careers::{DecoratedDivisions, DecoratedDivisionsParams, DecoratedRank};
+    use dashboard_base::{products::{LoadContext, at_hour::{At, AtHour, ReadsAt}}, queries::query};
+
+    let hour = 1_000;
+    let first = decorated_world(hour, |id| 30 * id as i64);
+    let second = decorated_world(hour, |id| 30 * (4 - id as i64));
+    let source = decorated_source(vec![first.clone()]);
+    let query = query(&source, 1).unwrap();
+    let params = DecoratedDivisionsParams { branch_id: "1".into(), countries: None, by: DecoratedRank::Medals, descending: true, count: 1 };
+    let context = DecoratedDivisions::context_for(&source, &LoadContext { content: None }, &params).unwrap();
+    let reads_at = ReadsAt { holders: &query.holders, context: &context, run: query.timeline.at(hour).unwrap().run, hour, since: None };
+    let at = At { owner: None, holders: &query.holders, hour, context: &context, cancelled: &false.into(), live: &Default::default() };
+
+    let _ = DecoratedDivisions::reads_in(&params, None, 2, &first, &reads_at);
+    let _ = DecoratedDivisions::reads_in(&params, None, 2, &second, &reads_at);
+    let reply = |frame| DecoratedDivisions::reply(frame, &params, &at).unwrap();
+    assert_eq!(reply(&first).divisions[0].division, "3");
+    assert_eq!(reply(&second).divisions[0].division, "1");
 }
 
 #[test]
