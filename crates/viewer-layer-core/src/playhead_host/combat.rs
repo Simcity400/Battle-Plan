@@ -72,15 +72,18 @@ pub struct Combat<A: Asking> {
     handed: Option<Key<A::Key>>,
     made: Option<A::Made>,
     loading: Vec<String>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl<A: Asking> Default for Combat<A> {
     fn default() -> Self {
-        Self { asking: None, maker: None, learned: Vec::new(), generation: 0, asked: None, handed: None, made: None, loading: Vec::new() }
+        Self { asking: None, maker: None, learned: Vec::new(), generation: 0, asked: None, handed: None, made: None, loading: Vec::new(), wake: None }
     }
 }
 
 impl<A: Asking> Combat<A> {
+    pub fn set_wake(&mut self, wake: Option<Arc<dyn Fn() + Send + Sync>>) { self.wake = wake; }
+    pub fn ready(&self) -> bool { self.made.is_some() }
     pub fn ask(&mut self, asking: Option<A>) {
         if asking.is_none() {
             (self.maker, self.asked, self.handed, self.made) = (None, None, None, None);
@@ -109,7 +112,7 @@ impl<A: Asking> Combat<A> {
             maker.last = Some(key.clone());
             maker.newest.fetch_add(1, Ordering::AcqRel);
         }
-        let (rows, newest, took) = (Arc::clone(&maker.rows), Arc::clone(&maker.newest), Arc::clone(&maker.took));
+        let (rows, newest, took, wake) = (Arc::clone(&maker.rows), Arc::clone(&maker.newest), Arc::clone(&maker.took), self.wake.clone());
         let stamp = newest.load(Ordering::Acquire);
         maker.reads.ask(
             key.clone(),
@@ -119,7 +122,7 @@ impl<A: Asking> Combat<A> {
                 took.store(started.elapsed().as_nanos() as u64, Ordering::Release);
                 made
             },
-            || {},
+            move || if let Some(wake) = &wake { wake(); },
         );
         self.asked = Some(key);
         true

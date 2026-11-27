@@ -125,89 +125,123 @@ fn a_stepped_frames_window_is_the_picture_of_exactly_its_hour() {
     assert_eq!(side.view().camera_height, 4.0, "the picture stands at the view asked");
 }
 
+struct GatedOverlay {
+    wake: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    ready: Arc<AtomicBool>,
+    refused: Arc<AtomicBool>,
+    hour: Arc<std::sync::atomic::AtomicI32>,
+}
+
+impl GatedOverlay {
+    fn new(hour: i32) -> (Self, Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>, Arc<AtomicBool>, Arc<AtomicBool>, Arc<std::sync::atomic::AtomicI32>) {
+        let wake = Arc::new(Mutex::new(None));
+        let ready = Arc::new(AtomicBool::new(false));
+        let refused = Arc::new(AtomicBool::new(false));
+        let hour = Arc::new(std::sync::atomic::AtomicI32::new(hour));
+        (Self { wake: Arc::clone(&wake), ready: Arc::clone(&ready), refused: Arc::clone(&refused), hour: Arc::clone(&hour) }, wake, ready, refused, hour)
+    }
+}
+
+impl viewer_layer_core::playhead_host::Overlaying<crate::map_open::Products> for GatedOverlay {
+    fn ask(&mut self, _: crate::overlay::Ask) {}
+    fn ask_step(&mut self, _: viewer_layer_core::playhead_host::OverlayStep<'_>, _: bool, _: bool, _: Arc<viewer_unit_reads::counter_move::MovedHours>) -> bool { false }
+    fn join(&mut self, _: &[Box<dyn Layer>], _: &viewer_foundation::perspective::Choice, _: Option<replay_data::BranchId>, _: viewer_layer_core::layers::Settling) -> bool { true }
+    fn stepped(&mut self) {}
+    fn stands_at(&self, hour: replay_data::Hour) -> bool { self.hour.load(Ordering::Acquire) >= hour }
+    fn take(&mut self) -> Option<crate::overlay::Made> { self.ready.store(false, Ordering::Release); None }
+    fn reset(&mut self) {}
+    fn generation(&self) -> u64 { 0 }
+    fn hour(&self) -> Option<replay_data::Hour> { Some(self.hour.load(Ordering::Acquire)) }
+    fn loading(&self) -> &[String] { &[] }
+    fn missed(&self) -> &[replay_data::rows::TableId] { &[] }
+    fn ready(&self) -> bool { self.ready.load(Ordering::Acquire) }
+    fn refused(&self) -> bool { self.refused.load(Ordering::Acquire) }
+    fn set_wake(&mut self, wake: Option<Arc<dyn Fn() + Send + Sync>>) { *self.wake.lock().unwrap() = wake; }
+}
+
 #[test]
-fn should_wake_fires_for_pending_work_and_stays_quiet_when_settled() {
-    use super::{Ask, Progress, Turn, should_wake};
+fn has_unconsumed_fires_only_when_the_side_holds_an_unconsumed_result() {
+    use super::{Turn, consumed_of, has_unconsumed};
     use viewer_map_modes::map_mode::{MapMode, Stock};
     let composes = Arc::new(Mutex::new(0));
     let (recording, _) = record(1, 8, busy);
     let entry = open(units(recording, "side wake decision"), quick()).unwrap();
+    let (overlay, _, ready, refused, _) = GatedOverlay::new(2);
     let mut map_side = MapSide::with_products(entry, vec![Box::new(Sum::new(&composes))], View::default()).unwrap();
+    map_side.set_overlay(Box::new(overlay));
     map_side.entry().anchor(2, false, 1.0, true);
     viewer_layer_core::test_support::recorded::frames_at(&mut map_side, 2, "settled at hour 2", |side, _| {
         side.applied() == Some(2) && side.mode_on_screen() == Some(&MapMode::default()) && side.on_screen().is_some_and(|on| on.drawn == Some(2) && on.settled)
     });
-    let mut turn = Turn {
-        side: map_side,
-        framed: false,
-        ready: None,
-        published: None,
-        reached: None,
-        looks: 0,
-        stop: false,
-        refused: None,
-        overlay: None,
-        overlay_withdrawn: false,
-    };
-    let default_ask = Ask { view: View::default(), at: Head::Paced(2), overlay: None, combat: None, serial: 0 };
-    let before = Progress::of(&turn.side);
+    let consumed = consumed_of(&map_side);
+    let mut turn = Turn { side: map_side, framed: true, ready: None, published: None, reached: None, looks: 0, stop: false, refused: None, consumed, last_serial: None };
     turn.side.frame_still(2).unwrap();
-    assert!(!should_wake(&before, &turn, &default_ask), "settled idle turn requests no repaint");
+    assert!(!has_unconsumed(&turn), "settled idle turn holds nothing unconsumed");
+    ready.store(true, Ordering::Release);
+    assert!(has_unconsumed(&turn), "an untaken overlay result wakes the window");
+    ready.store(false, Ordering::Release);
+    assert!(!has_unconsumed(&turn));
+    refused.store(true, Ordering::Release);
+    assert!(has_unconsumed(&turn), "a new refusal wakes the window once");
+    turn.consumed = consumed_of(&turn.side);
+    assert!(!has_unconsumed(&turn), "a consumed refusal asks for nothing more");
     let factions = MapMode::Stock(Stock::Factions);
-    let factions_ask = Ask { view: View { map_mode: factions.clone(), ..View::default() }, at: Head::Paced(2), overlay: None, combat: None, serial: 1 };
-    assert!(should_wake(&before, &turn, &factions_ask), "outstanding mode mismatch wakes even without turn progress");
-    turn.overlay_withdrawn = true;
-    assert!(should_wake(&before, &turn, &default_ask), "overlay withdrawal wakes the window");
-    turn.overlay_withdrawn = false;
-    turn.side.set_view(factions_ask.view.clone()).unwrap();
+    turn.side.set_view(View { map_mode: factions, ..View::default() }).unwrap();
     turn.side.frame_still(2).unwrap();
-    assert!(should_wake(&before, &turn, &factions_ask), "mode change wakes the window");
-    viewer_layer_core::test_support::recorded::frames_at(&mut turn.side, 2, "settled in factions", |side, _| {
-        side.mode_on_screen() == Some(&factions) && side.on_screen().is_some_and(|on| on.drawn == Some(2) && on.settled)
-    });
-    let before_quiet = Progress::of(&turn.side);
-    turn.side.frame_still(2).unwrap();
-    assert!(!should_wake(&before_quiet, &turn, &factions_ask), "settled idle turn after mode switch stays quiet");
+    assert!(has_unconsumed(&turn), "a mode change holds an unconsumed picture");
+    turn.consumed = consumed_of(&turn.side);
+    assert!(!has_unconsumed(&turn), "settled idle turn after mode switch stays quiet");
 }
 
 #[test]
-fn a_paused_mode_change_wakes_the_window_once_and_idle_turns_stay_quiet() {
+fn a_paused_mode_change_and_late_async_result_wake_the_window_once() {
     use viewer_map_modes::map_mode::{MapMode, Stock};
     let composes = Arc::new(Mutex::new(0));
     let (recording, _) = record(1, 8, busy);
     let entry = open(units(recording, "side wake mode"), quick()).unwrap();
+    let (overlay, overlay_wake, ready, refused, overlay_hour) = GatedOverlay::new(2);
+    let mut map_side = MapSide::with_products(entry, vec![Box::new(Sum::new(&composes))], View::default()).unwrap();
+    map_side.set_overlay(Box::new(overlay));
     let (tx, rx) = std::sync::mpsc::channel();
-    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-        let _ = tx.send(());
-    });
-    let mut side = SideThread::with_wake(
-        MapSide::with_products(entry, vec![Box::new(Sum::new(&composes))], View::default()).unwrap(),
-        Some(wake),
-    )
-    .unwrap();
+    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || { let _ = tx.send(()); });
+    let mut side = SideThread::with_wake(map_side, Some(wake)).unwrap();
     side.anchor(2, false, 1.0, true);
     side.ask(View::default(), Head::Paced(2), None, None);
-    side.wait_window(|side| side.applied() == Some(2) && side.mode_on_screen() == Some(&MapMode::default()))
-        .unwrap();
-    let settled = side.last_frame().made;
-    side.wait_window(|side| side.last_frame().made > settled).unwrap();
-    let mut initial_wakes = 0usize;
-    while rx.try_recv().is_ok() {
-        initial_wakes += 1;
-    }
-    assert!(initial_wakes >= 1, "initial settle wakes the window at least once");
-    let before_idle = side.last_frame().made;
-    side.wait_window(|side| side.last_frame().made > before_idle).unwrap();
-    assert!(rx.try_recv().is_err(), "settled idle turn requests no repaint");
+    side.wait_window(|side| side.applied() == Some(2) && side.mode_on_screen() == Some(&MapMode::default())).unwrap();
+    let after_init = side.last_frame().made;
+    side.ask(View::default(), Head::Paced(2), None, None);
+    let quiet_init = side.wait_turn(after_init);
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).count() >= 1, "initial settle wakes the window");
+    side.ask(View::default(), Head::Paced(2), None, None);
+    let _ = side.wait_turn(quiet_init);
+    assert!(rx.try_recv().is_err(), "identical paused ask with new serial requests no repaint");
     let factions = MapMode::Stock(Stock::Factions);
-    side.ask(View { map_mode: factions.clone(), ..View::default() }, Head::Paced(2), None, None);
-    drop(side.window());
-    rx.recv().expect("a paused map mode change wakes the window without any other input");
+    let factions_view = View { map_mode: factions.clone(), ..View::default() };
+    side.ask(factions_view.clone(), Head::Paced(2), None, None);
     side.wait_window(|side| side.mode_on_screen() == Some(&factions)).unwrap();
-    let settled_factions = side.last_frame().made;
-    side.wait_window(|side| side.last_frame().made > settled_factions).unwrap();
-    while rx.try_recv().is_ok() {}
     let after_mode = side.last_frame().made;
-    side.wait_window(|side| side.last_frame().made > after_mode).unwrap();
-    assert!(rx.try_recv().is_err(), "idle turn after the new mode settles requests no repaint");
+    side.ask(factions_view.clone(), Head::Paced(2), None, None);
+    let quiet_mode = side.wait_turn(after_mode);
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).count() >= 1, "paused mode change wakes the window");
+    side.ask(factions_view.clone(), Head::Paced(2), None, None);
+    let _ = side.wait_turn(quiet_mode);
+    assert!(rx.try_recv().is_err(), "idle turn after mode switch stays quiet");
+    overlay_hour.store(3, Ordering::Release);
+    ready.store(true, Ordering::Release);
+    overlay_wake.lock().unwrap().as_ref().expect("overlay wake wired")();
+    side.wait_window(|side| side.products().overlay_hour == Some(3)).unwrap();
+    let after_late = side.last_frame().made;
+    side.ask(factions_view.clone(), Head::Paced(2), None, None);
+    let quiet_late = side.wait_turn(after_late);
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).count() >= 1, "late overlay publication wakes the window");
+    refused.store(true, Ordering::Release);
+    overlay_wake.lock().unwrap().as_ref().expect("overlay wake wired")();
+    side.wait_window(|side| side.products().overlay_refused).unwrap();
+    let after_refused = side.last_frame().made;
+    side.ask(factions_view.clone(), Head::Paced(2), None, None);
+    let quiet_refused = side.wait_turn(after_refused);
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).count() >= 1, "refused overlay wakes the window once");
+    side.ask(factions_view, Head::Paced(2), None, None);
+    let _ = side.wait_turn(quiet_refused.max(quiet_late));
+    assert!(rx.try_recv().is_err(), "consumed refusal requests no further repaints");
 }

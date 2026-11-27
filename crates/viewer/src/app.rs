@@ -2607,21 +2607,16 @@ impl Viewer {
 
     fn picture_whole(&self, target: Playhead, playing: bool) -> bool {
         self.playhead_map.as_ref().is_some_and(|side| {
-            side.mode_on_screen() == Some(&self.map_mode)
-                && side.on_screen().is_some_and(|on| {
-                    if !side.products().overlay_coming() {
-                        return layers_show(&on, target.hour, playing);
-                    }
-                    self.overlay_view.as_ref().is_none_or(|view| view.matches_mode(&self.map_mode))
-                        && whole_picture(&on, self.overlay_hour(), target.hour, playing)
-                })
-        })
-    }
-
-    fn side_needs_repaint(&self, head: Playhead) -> bool {
-        self.playhead_map.as_ref().is_some_and(|side| {
-            side.products().missed.is_some()
-                || (side.on_screen().is_some() && !self.picture_whole(head, self.playing))
+            if side.mode_on_screen() != Some(&self.map_mode) {
+                return false;
+            }
+            side.on_screen().is_some_and(|on| {
+                if !side.products().overlay_coming() {
+                    return layers_show(&on, target.hour, playing);
+                }
+                self.overlay_view.as_ref().is_none_or(|view| view.matches_mode(&self.map_mode))
+                    && whole_picture(&on, self.overlay_hour(), target.hour, playing)
+            })
         })
     }
 
@@ -4355,10 +4350,8 @@ impl Viewer {
         }
         if let Some(made) = self.playhead_opening.as_ref().and_then(crate::playhead_host::Opening::poll) {
             self.playhead_opening = None;
-            let wake: Arc<dyn Fn() + Send + Sync> = {
-                let ctx = ui.ctx().clone();
-                Arc::new(viewer_runtime::worker_priority::waking(move || ctx.request_repaint()))
-            };
+            let ctx = ui.ctx().clone();
+            let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(viewer_runtime::worker_priority::waking(move || ctx.request_repaint()));
             match made.and_then(|side| viewer_playback::side::SideThread::with_wake(side, Some(wake))) {
                 Ok(side) if self.playhead.is_some_and(|clock| side.branch().is_some_and(|branch| branch != clock.branch)) => {
                     self.drop_later(side);
@@ -4382,6 +4375,7 @@ impl Viewer {
         }
         self.hover_rows.playing = self.playing && !self.saves_a_frame();
         let asked_mode = self.map_mode.clone();
+        let before_shown = self.shown_mode().clone();
         if self.playhead_map.is_some() {
             let drawing = self.last_view.is_some() && self.picture_ready();
             let at = head_wanted(
@@ -4583,8 +4577,12 @@ impl Viewer {
             });
             return Ok(());
         }
-        if self.playhead.is_some_and(|head| self.side_needs_repaint(head)) {
+        if self.playhead_map.as_ref().is_some_and(|side| side.products().missed.is_some()) {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
+        } else if *self.shown_mode() != before_shown
+            && self.overlay_view.as_ref().is_some_and(|view| !view.matches_mode(&self.map_mode))
+        {
+            ui.ctx().request_repaint();
         }
         if !self.picture_ready() {
             if profiling() {
@@ -5552,7 +5550,7 @@ impl Viewer {
         let held = self.overlay_frame.clone().zip(self.overlay_tables.clone());
         if held.is_none() {
             self.rendered = None;
-            if live_of(&self.playhead_map).is_none_or(|side| side.products().overlay_coming()) {
+            if live_of(&self.playhead_map).is_none_or(|side| side.products().overlay_coming() && !side.products().overlay_refused) {
                 if let Some(texture) = self.scene_target.kept(self.scene.as_ref().map(|scene| scene.generation())) {
                     ui.painter().image(texture, rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
                 }

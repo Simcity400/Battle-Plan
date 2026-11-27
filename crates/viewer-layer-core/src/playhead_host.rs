@@ -651,6 +651,9 @@ pub trait Overlaying<P: PlaybackProducts>: Send {
     fn hour(&self) -> Option<Hour>;
     fn loading(&self) -> &[String];
     fn missed(&self) -> &[TableId];
+    fn ready(&self) -> bool { false }
+    fn refused(&self) -> bool { false }
+    fn set_wake(&mut self, _wake: Option<Arc<dyn Fn() + Send + Sync>>) {}
 }
 
 #[derive(Clone, Copy)]
@@ -969,6 +972,18 @@ impl<P: PlaybackProducts> MapSide<P> {
 
     pub fn set_overlay(&mut self, overlay: Box<dyn Overlaying<P>>) {
         self.overlay = Some(overlay);
+    }
+
+    pub fn set_wake(&mut self, wake: Option<Arc<dyn Fn() + Send + Sync>>) {
+        if let Some(overlay) = self.overlay.as_deref_mut() { overlay.set_wake(wake.clone()); }
+        self.combat.set_wake(wake);
+    }
+
+    pub fn has_untaken(&self) -> bool {
+        (self.vision_refused().is_none() && self.overlay.as_deref().is_some_and(Overlaying::ready))
+            || self.combat.ready()
+            || self.overlay_withdrawn()
+            || self.parts().is_some_and(|(_, layers)| layers.iter().any(|layer| self.draws(layer.name()) && !layer.uploaded()))
     }
 
     pub fn overlay(&self) -> Option<&dyn Overlaying<P>> {
@@ -1845,13 +1860,17 @@ impl<P: PlaybackProducts> MapSide<P> {
         self.vision_layer()?.ours()
     }
 
-    pub fn take_overlay_withdrawal(&mut self) -> bool {
+    fn overlay_withdrawn(&self) -> bool {
         if self.composing || self.superseded {
             return false;
         }
         let viewer = self.viewer();
         let refused = self.vision_refused().is_some();
-        let other = self.handed_viewer.as_ref().is_some_and(|(choice, ours)| refused || *choice != self.view_shown.perspective || viewer.is_some_and(|viewer| viewer != *ours));
+        self.handed_viewer.as_ref().is_some_and(|(choice, ours)| refused || *choice != self.view_shown.perspective || viewer.is_some_and(|viewer| viewer != *ours))
+    }
+
+    pub fn take_overlay_withdrawal(&mut self) -> bool {
+        let other = self.overlay_withdrawn();
         if other {
             self.handed_viewer = None;
         }

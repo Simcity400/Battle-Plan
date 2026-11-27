@@ -308,28 +308,23 @@ pub struct CounterView {
     pub raid_hovered: Option<u32>,
 }
 
-fn mode_fields(
-    mode: &viewer_map_modes::map_mode::MapMode,
-) -> (viewer_foundation::mode_visibility::Visibility, bool, Option<viewer_map_icons::occupation_icons::Mode>) {
-    use viewer_map_icons::occupation_icons::Mode;
-    use viewer_map_modes::map_mode::{MapMode, Stock};
-    let visibility = viewer_map_modes::map_mode::visibility::of(mode);
-    let operatives = matches!(mode, MapMode::Stock(Stock::Operatives));
-    let occupation = match mode {
-        MapMode::Stock(Stock::Resistance) => Some(Mode::Resistance),
-        MapMode::Stock(Stock::Compliance) => Some(Mode::Compliance),
-        _ => None,
-    };
-    (visibility, operatives, occupation)
-}
-
 impl CounterView {
     pub fn set_mode(&mut self, mode: &viewer_map_modes::map_mode::MapMode) {
-        (self.visibility, self.operatives, self.occupation) = mode_fields(mode);
+        use viewer_map_modes::map_mode::{MapMode, Stock};
+        use viewer_map_icons::occupation_icons::Mode;
+        self.visibility = viewer_map_modes::map_mode::visibility::of(mode);
+        self.operatives = matches!(mode, MapMode::Stock(Stock::Operatives));
+        self.occupation = match mode {
+            MapMode::Stock(Stock::Resistance) => Some(Mode::Resistance),
+            MapMode::Stock(Stock::Compliance) => Some(Mode::Compliance),
+            _ => None,
+        };
     }
 
     pub fn matches_mode(&self, mode: &viewer_map_modes::map_mode::MapMode) -> bool {
-        (self.visibility, self.operatives, self.occupation) == mode_fields(mode)
+        let mut expected = self.clone();
+        expected.set_mode(mode);
+        (self.visibility, self.operatives, self.occupation) == (expected.visibility, expected.operatives, expected.occupation)
     }
 
     pub fn new(settings: CounterSettings) -> Self {

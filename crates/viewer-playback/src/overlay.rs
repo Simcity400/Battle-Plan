@@ -428,6 +428,7 @@ struct Held {
 struct Shared {
     held: Mutex<Held>,
     signal: Condvar,
+    wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 pub struct Lend<'a> {
@@ -465,6 +466,7 @@ pub struct Overlay {
     hour: Option<Hour>,
     loading: Vec<String>,
     missed: Vec<TableId>,
+    last_step: Option<(Option<Hour>, Choice)>,
     maker: timeline::Maker,
 }
 
@@ -473,7 +475,7 @@ impl Overlay {
         Self {
             content,
             ask: None,
-            shared: Arc::new(Shared { held: Mutex::new(Held::default()), signal: Condvar::new() }),
+            shared: Arc::new(Shared { held: Mutex::new(Held::default()), signal: Condvar::new(), wake: Mutex::new(None) }),
             worker: None,
             generation: 0,
             stamp: 0,
@@ -487,11 +489,15 @@ impl Overlay {
             hour: None,
             loading: Vec::new(),
             missed: Vec::new(),
+            last_step: None,
             maker: timeline::maker("overlay"),
         }
     }
 
     pub fn ask(&mut self, ask: Ask) {
+        if !self.ask.as_ref().is_some_and(|prev| (prev.camera, prev.target, prev.pixels, prev.ui_scale.to_bits()) == (ask.camera, ask.target, ask.pixels, ask.ui_scale.to_bits()) && prev.view == ask.view) {
+            self.stamp += 1;
+        }
         self.ask = Some(ask);
     }
 
@@ -504,7 +510,8 @@ impl Overlay {
         drop(held);
         self.shared.signal.notify_all();
         (self.tables, self.tables_for, self.stands, self.asked, self.lay_owed) = (None, None, None, None, Owed::default());
-        (self.made, self.hour) = (None, None);
+        (self.made, self.hour, self.last_step) = (None, None, None);
+        self.stamp += 1;
     }
 
     pub fn take(&mut self) -> Option<Made> {
@@ -554,6 +561,16 @@ impl Overlay {
 
     pub fn ask_step(&mut self, lend: Lend<'_>) -> bool {
         let Lend { views, applied, branch, perspective, vision, engaged, draws_labels, lay_ins, keys, published, draws, left, moved, whole, lay } = lend;
+        if self.last_step.as_ref().is_none_or(|(h, p)| *h != applied || p != perspective) {
+            (self.last_step, self.stamp) = (Some((applied, perspective.clone())), self.stamp + 1);
+        }
+        if !whole && self.stamp > 0 {
+            let held = lock(&self.shared.held);
+            if held.answered >= self.stamp && held.failed && held.missed.is_empty() {
+                self.loading.clone_from(&held.loading);
+                return false;
+            }
+        }
         self.loading.clear();
         let built = lock(&self.shared.held).built.take();
         if let Some(built) = built {
@@ -1079,6 +1096,7 @@ impl Maker {
         (held.answered, held.failed) = (want.stamp, failed);
         drop(held);
         self.shared.signal.notify_all();
+        if let Some(wake) = lock(&self.shared.wake).clone() { wake(); }
     }
 }
 
@@ -1140,6 +1158,13 @@ impl Overlaying<Products> for Overlay {
     fn missed(&self) -> &[TableId] {
         Overlay::missed(self)
     }
+
+    fn ready(&self) -> bool { self.made.is_some() || lock(&self.shared.held).laid_out.as_ref().is_some_and(|laid| laid.made.is_some()) }
+    fn refused(&self) -> bool {
+        let held = lock(&self.shared.held);
+        (self.stamp > 0 && held.answered >= self.stamp && held.failed && held.missed.is_empty()) || (self.worker.is_none() && !self.loading.is_empty() && self.missed.is_empty())
+    }
+    fn set_wake(&mut self, wake: Option<Arc<dyn Fn() + Send + Sync>>) { *lock(&self.shared.wake) = wake; }
 }
 
 #[cfg(test)]
