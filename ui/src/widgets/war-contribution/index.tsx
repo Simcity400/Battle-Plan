@@ -1,17 +1,23 @@
-import { useCallback, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { dayLabel } from '../../charts/draw';
 import { CountryFlag } from '../../components/CountryFlag';
 import type { FamilyViewCountryChipProps, FamilyViewProps, FamilyViewRenderer, FamilyViewSubjectMenuProps, ResolvedViewOptions } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveWidgetCampaign } from '../../dashboard/campaigns';
 import { setToken } from '../../dashboard/options';
+import { useProduct } from '../../dashboard/products.ts';
 import { failureText } from '../../dashboard/queryError.ts';
+import { entryAt } from '../../dashboard/reads.ts';
+import { useGate } from '../../dashboard/regionGate.ts';
+import { productRequest } from '../../dashboard/request.ts';
 import { watchBoundary } from '../../dashboard/widgetTime';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry';
 import { countryTagKey, useIdentityAtHead, useIdentityScope, type CountryIdentityResult } from '../../families/identity/react.ts';
-import { MEASURE_VIEW } from './measureProjection.ts';
-import { WAR_NOT_STARTED, WAR_UNAVAILABLE, createWarChipTracker, warChipLeaderHour } from './warContributionData.ts';
+import { observationAt, validateWarsReply } from '../wars/warsData.ts';
+import ContributorWindow, { type OpenedContributor } from './ContributorWindow.tsx';
+import { DEFAULT_MEASURE, MEASURE_LIST } from './definition.ts';
+import { WAR_NOT_STARTED, WAR_UNAVAILABLE, chosenWar, createWarChipTracker, readHourFor, warChipLeaderHour } from './warContributionData.ts';
 import { attackersFirst, savedWar } from './warContributionPlan.ts';
 
 const storedWar = (options: ResolvedViewOptions) => savedWar({ war: options.war });
@@ -20,13 +26,42 @@ import { useWarChoices, useWarMenu, useWars } from './useWarChoices';
 import './warContribution.css';
 
 function WarContributionView(props: FamilyViewProps) {
-  const { setOption, manifestDeclaration } = props;
-  const onActivate = useCallback((action: InstalledAction) => {
+  const { setOption, manifestDeclaration, widget, runtime, active, options } = props;
+  const { track, within, country } = useGate(runtime, widget, undefined, active, { country: { stored: options.country } });
+  const viewpoint = country?.tag ?? null;
+  const wars = useProduct(runtime.client, track && viewpoint ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'wars', params: { branchId: track.branch.id, viewpoint } }) : null, active, validateWarsReply, track?.source).data;
+  const saved = storedWar(options);
+  const scope = JSON.stringify([track?.id, track?.source.id, track?.source.revision, track?.branch.id, country?.chosen, options.country, saved]);
+  const anchor = useRef<HTMLDivElement>(null);
+  const [opened, setOpened] = useState<(OpenedContributor & { scope: string }) | null>(null);
+  const shown = active && opened?.scope === scope ? opened : null;
+  useEffect(() => { setOpened(null); }, [scope, active]);
+  const onActivate = (action: InstalledAction) => {
     const pick = (action.meta as { readonly pick?: string } | undefined)?.pick;
-    if (pick) setOption?.('measure', pick);
-  }, [setOption]);
+    if (pick) { setOption?.('measure', pick); return; }
+    if (!wars || !viewpoint || action.target.kind !== 'row') return;
+    const hit = /^(?:(viewpoint|opposing):([^:]+)|total:(viewpoint|opposing))$/.exec(action.target.key);
+    const war = hit && chosenWar(wars, saved, action.hour);
+    if (!hit || !war) return;
+    const at = readHourFor(war, action.hour);
+    const observation = observationAt(war, at);
+    const side = (hit[1] ?? hit[3]) === 'viewpoint' ? 0 : 1;
+    const tag = hit[2] ?? null;
+    if (!observation || tag !== null && !(side === 0 ? observation.viewpointSide : observation.opposingSide).includes(tag)) return;
+    const tail = entryAt(wars.unobserved, war.lastHour + 1);
+    const through = within(war.endedBy && tail?.firstHour === war.lastHour + 1 ? Math.max(at, Math.min(action.hour, tail.lastHour)) : at);
+    if (through === null) return;
+    const measure = MEASURE_LIST.find(item => item.key === options.measure)?.key ?? DEFAULT_MEASURE;
+    const { name } = observation;
+    setOpened({ scope, viewpoint, warId: war.id, warName: name.known ? name.text : name.reason ?? 'War name not recorded', through, at, side, tag, measure });
+  };
   if (!manifestDeclaration) return null;
-  return <FamilyWidget {...props} family={manifestDeclaration.family} declaration={manifestDeclaration} {...(props.view === MEASURE_VIEW ? { onActivate } : {})} />;
+  return <div ref={anchor} className="fh-detail-anchor">
+    <FamilyWidget {...props} family={manifestDeclaration.family} declaration={manifestDeclaration} onActivate={onActivate} />
+    {shown && track && <ContributorWindow key={`${scope}:${shown.viewpoint}:${shown.warId}:${shown.through}`} opened={shown}
+      track={track} runtime={runtime} anchor={anchor} onClose={() => setOpened(null)} />}
+  </div>;
 }
 
 function useChosenWar(props: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active' | 'options'>) {
