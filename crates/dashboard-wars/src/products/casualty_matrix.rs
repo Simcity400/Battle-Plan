@@ -1,9 +1,9 @@
 use super::casualties::{EndedCounters, Lifetime, cached_casualty_ends};
 use dashboard_base::{Source, products::{Country, LoadContext, at_hour::{At, AtHour, Clock, Edits, ReadsAt, before, field_columns}, validate_country}};
-use dashboard_query::{identity::Holder, timeline::Timeline};
+use dashboard_query::{identity::{Holder, Holders, TAG_UNLINKED}, timeline::Timeline};
 use dashboard_world::products::{
     groups::{FactionAt, FactionGroup, factions_at, factions_valid_through},
-    holder_tags::{HolderTags, Identity},
+    holder_tags::Identity,
 };
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -50,6 +50,8 @@ pub struct CasualtyMatrixCountry {
     pub tag: String,
     pub slot: u32,
     pub country_id: u32,
+    #[doc = " When this holder no longer holds `tag` at the query hour, its latest witnessed hour for reading its name and flag; null while it still holds `tag`."]
+    pub shown_hour: Option<i32>,
     pub faction_id: Option<String>,
     pub faction_name: Option<String>,
     pub faction_name_missing: Option<String>,
@@ -159,6 +161,7 @@ pub fn fold(counters: &[Counter], known: impl Fn(Identity) -> bool, partial: imp
 
 pub struct Shape<'a> {
     pub tags: &'a HashMap<Identity, String>,
+    pub shown_hours: &'a HashMap<Identity, i32>,
     pub chosen: Option<&'a HashSet<Identity>>,
     pub between: bool,
     pub top: Option<u32>,
@@ -199,6 +202,7 @@ pub fn build(pairs: &Pairs, shape: &Shape<'_>) -> CasualtyMatrixReply {
             tag: tag_of(identity).to_owned(),
             slot: identity.0,
             country_id: identity.1,
+            shown_hour: shape.shown_hours.get(&identity).copied(),
             faction_id: faction.map(|faction| faction.id.clone()),
             faction_name: faction.and_then(|faction| faction.name.clone()),
             faction_name_missing: faction.and_then(|faction| faction.name_missing.clone()),
@@ -347,6 +351,47 @@ fn empty(missing: Option<String>, warnings: Vec<String>) -> CasualtyMatrixReply 
     }
 }
 
+fn resolve_selected(holders: &Holders, country: &Country, hour: i32) -> Result<Option<Identity>, String> {
+    match holders.at(country, hour).map(|run| run.holder) {
+        Some(Holder::Found { slot, id }) => Ok(Some((slot, id))),
+        Some(Holder::Unresolved) => Err(holders.not_known(country, hour).unwrap_or_else(|| format!("Who holds {} is not known: {TAG_UNLINKED}", holders.name(country, hour)))),
+        None => {
+            if matches!(country, Country::Slot(_)) {
+                let unlinked = holders.unlinked();
+                if unlinked.get(unlinked.partition_point(|&(_, last)| last < hour)).is_some_and(|&(first, _)| first <= hour) {
+                    return Err(holders.unnamed(country, hour));
+                }
+                return Ok(None);
+            }
+            let runs = holders.runs(country);
+            let before_hour = runs.partition_point(|run| run.first <= hour);
+            match runs[..before_hour].last().map(|run| run.holder) {
+                Some(Holder::Found { slot, id }) => Ok(Some((slot, id))),
+                Some(Holder::Unresolved) => Err(format!("Who holds {} is not known: {TAG_UNLINKED}", holders.name(country, hour))),
+                None => Ok(None),
+            }
+        }
+    }
+}
+
+fn latest_holders(holders: &Holders, hour: i32) -> HashMap<Identity, (&str, i32, i32)> {
+    let mut latest: HashMap<Identity, (&str, i32, i32)> = HashMap::new();
+    for (tag, runs) in &holders.tags {
+        for run in runs {
+            if run.first > hour {
+                continue;
+            }
+            if let Holder::Found { slot, id } = run.holder {
+                let entry = latest.entry((slot, id)).or_insert((tag.as_str(), run.first, run.last));
+                if run.first > entry.1 || (run.first == entry.1 && run.last > entry.2) {
+                    *entry = (tag.as_str(), run.first, run.last);
+                }
+            }
+        }
+    }
+    latest
+}
+
 impl AtHour for CasualtyMatrix {
     const KEY: &'static str = "casualty-matrix";
     const TITLE: &'static str = "Casualties between countries";
@@ -444,9 +489,24 @@ impl AtHour for CasualtyMatrix {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let warnings = at.context.warnings.clone();
-        if let Some(reason) = params.countries.iter().chain(&params.subject).find(|country| at.holders.tag_at(country, at.hour).is_none()).and_then(|country| at.holders.not_known(country, at.hour)) {
-            return Ok(empty(Some(reason), warnings));
+        let mut chosen: Option<HashSet<Identity>> = (!params.countries.is_empty()).then(HashSet::new);
+        for country in &params.countries {
+            match resolve_selected(at.holders, country, at.hour) {
+                Ok(Some(id)) => {
+                    chosen.as_mut().expect("non-empty countries").insert(id);
+                }
+                Ok(None) => {}
+                Err(reason) => return Ok(empty(Some(reason), warnings)),
+            }
         }
+        let subject = match &params.subject {
+            Some(country) => match resolve_selected(at.holders, country, at.hour) {
+                Ok(Some(id)) => Some(id),
+                Ok(None) => return Ok(empty(Some("The chosen country holds no tag at this hour".to_owned()), warnings)),
+                Err(reason) => return Ok(empty(Some(reason), warnings)),
+            },
+            None => None,
+        };
         if let Some(reason) = dashboard_text::scope::unread(TableId::CasualtyLifetimes, &frame.tables[TableId::CasualtyLifetimes.index()]) {
             return Ok(empty(Some(reason), warnings));
         }
@@ -461,45 +521,23 @@ impl AtHour for CasualtyMatrix {
             .complete::<tables::CasualtyTotals>()
             .map(|rows| rows.iter().filter(|row| row.partial != 0).map(|row| (row.slot, row.id)).collect())
             .unwrap_or_default();
-        let tags = HolderTags::from_holders(at.holders);
-        let pairs = fold(&counters, |identity| tags.latest_at(identity, at.hour).is_some(), |identity| partial.contains(&identity));
-        let resolve = |country: &Country| -> Option<Identity> {
-            if let Some(run) = at.holders.at(country, at.hour)
-                && let Holder::Found { slot, id } = run.holder
-            {
-                return Some((slot, id));
-            }
-            if matches!(country, Country::Tag(_)) {
-                let runs = at.holders.runs(country);
-                let before_hour = runs.partition_point(|run| run.first <= at.hour);
-                return runs[..before_hour].iter().rev().find_map(|run| match run.holder {
-                    Holder::Found { slot, id } => Some((slot, id)),
-                    Holder::Unresolved => None,
-                });
-            }
-            None
-        };
-        let chosen: Option<HashSet<Identity>> = (!params.countries.is_empty()).then(|| params.countries.iter().filter_map(resolve).collect());
-        let subject = params.subject.as_ref().and_then(resolve);
-        if params.subject.is_some() && subject.is_none() {
-            return Ok(empty(Some("The chosen country holds no tag at this hour".to_owned()), warnings));
-        }
+        let latest = latest_holders(at.holders, at.hour);
+        let pairs = fold(&counters, |identity| latest.contains_key(&identity), |identity| partial.contains(&identity));
         let mut names: HashMap<Identity, String> = HashMap::new();
-        for identity in pairs.keys().flat_map(|&(a, b)| [a, b]).chain(chosen.iter().flatten().copied()).chain(subject) {
-            if let Some(tag) = tags.latest_at(identity, at.hour) {
-                names.entry(identity).or_insert_with(|| tag.to_owned());
-            }
-        }
+        let mut shown_hours: HashMap<Identity, i32> = HashMap::new();
         let factions_by_tag = factions_at(&at.context.factions, at.hour);
         let mut factions: HashMap<Identity, FactionAt> = HashMap::new();
-        for &identity in names.keys() {
-            if let Some(current) = tags.tag_at(identity, at.hour)
-                && let Some(faction) = factions_by_tag.get(current)
-            {
-                factions.insert(identity, faction.clone());
+        for identity in pairs.keys().flat_map(|&(a, b)| [a, b]).chain(chosen.iter().flatten().copied()).chain(subject) {
+            if let Some(&(tag, _, last)) = latest.get(&identity) {
+                names.entry(identity).or_insert_with(|| tag.to_owned());
+                if last < at.hour {
+                    shown_hours.insert(identity, last);
+                } else if let Some(faction) = factions_by_tag.get(tag) {
+                    factions.insert(identity, faction.clone());
+                }
             }
         }
-        let shape = Shape { tags: &names, chosen: chosen.as_ref(), between: params.between, top: params.top, subject, factions: &factions };
+        let shape = Shape { tags: &names, shown_hours: &shown_hours, chosen: chosen.as_ref(), between: params.between, top: params.top, subject, factions: &factions };
         let mut reply = build(&pairs, &shape);
         reply.warnings = warnings;
         Ok(reply)
@@ -534,6 +572,10 @@ mod tests {
         HashMap::new()
     }
 
+    fn no_shown_hours() -> HashMap<Identity, i32> {
+        HashMap::new()
+    }
+
     #[test]
     fn a_relation_counts_what_each_side_took_as_the_other_side_dealt_and_lifetimes_sum() {
         let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, POL, Some((5, 20)))], known, |_| false);
@@ -545,7 +587,7 @@ mod tests {
     fn an_unrecorded_counter_makes_the_pair_and_its_totals_missing_never_zero() {
         let tags = tags_map();
         let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, FRA, None)], known, |_| false);
-        let reply = build(&pairs, &Shape { tags: &tags, chosen: None, between: false, top: None, subject: None, factions: &no_factions() });
+        let reply = build(&pairs, &Shape { tags: &tags, shown_hours: &no_shown_hours(), chosen: None, between: false, top: None, subject: None, factions: &no_factions() });
         let at = |name: &str| reply.countries.iter().position(|country| country.tag == name).unwrap() as u32;
         let cell = reply.cells.iter().find(|cell| cell.row == reply.order.iter().position(|&i| i == at("GER")).unwrap() as u32
             && cell.column == reply.order.iter().position(|&i| i == at("FRA")).unwrap() as u32).unwrap();
@@ -565,7 +607,7 @@ mod tests {
             .into_iter()
             .map(|(id, fid, name)| (id, FactionAt { id: fid.to_owned(), name: Some(name.to_owned()), name_missing: None }))
             .collect();
-        let reply = build(&pairs, &Shape { tags: &tags, chosen: None, between: false, top: None, subject: None, factions: &factions });
+        let reply = build(&pairs, &Shape { tags: &tags, shown_hours: &no_shown_hours(), chosen: None, between: false, top: None, subject: None, factions: &factions });
         let order: Vec<&str> = reply.order.iter().map(|&at| reply.countries[at as usize].tag.as_str()).collect();
         assert_eq!(order, ["POL", "ENG", "FRA", "GER"]);
         assert_eq!(reply.largest_dealt, "1210");
@@ -577,10 +619,10 @@ mod tests {
         let tags = tags_map();
         let pairs = fold(&[counter(GER, POL, Some((1, 2))), counter(GER, ENG, Some((3, 4)))], known, |_| false);
         let chosen: HashSet<Identity> = [GER, POL].into_iter().collect();
-        let reply = build(&pairs, &Shape { tags: &tags, chosen: Some(&chosen), between: true, top: None, subject: None, factions: &no_factions() });
+        let reply = build(&pairs, &Shape { tags: &tags, shown_hours: &no_shown_hours(), chosen: Some(&chosen), between: true, top: None, subject: None, factions: &no_factions() });
         assert_eq!(reply.order.len(), 2);
         assert_eq!(reply.cells.len(), 2);
-        let touching = build(&pairs, &Shape { tags: &tags, chosen: Some(&chosen), between: false, top: None, subject: None, factions: &no_factions() });
+        let touching = build(&pairs, &Shape { tags: &tags, shown_hours: &no_shown_hours(), chosen: Some(&chosen), between: false, top: None, subject: None, factions: &no_factions() });
         assert_eq!(touching.order.len(), 3);
     }
 
@@ -588,7 +630,7 @@ mod tests {
     fn one_country_lists_opponents_by_casualties_both_ways() {
         let tags = tags_map();
         let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, ENG, Some((2000, 10))), counter(GER, FRA, Some((1, 1)))], known, |identity| identity == FRA);
-        let reply = build(&pairs, &Shape { tags: &tags, chosen: None, between: false, top: None, subject: Some(GER), factions: &no_factions() });
+        let reply = build(&pairs, &Shape { tags: &tags, shown_hours: &no_shown_hours(), chosen: None, between: false, top: None, subject: Some(GER), factions: &no_factions() });
         let names: Vec<(&str, Option<&str>, Option<&str>)> = reply
             .opponents
             .iter()
@@ -610,16 +652,42 @@ mod tests {
             .collect();
         let pairs = fold(&[counter(GER, DEAD_POL, Some((100, 900))), counter(GER, LIVE_POL, Some((25, 40)))], |id| tags.contains_key(&id), |_| false);
         let factions: HashMap<Identity, FactionAt> = [(LIVE_POL, FactionAt { id: "1".to_owned(), name: Some("Allies".to_owned()), name_missing: None })].into_iter().collect();
-        let reply = build(&pairs, &Shape { tags: &tags, chosen: None, between: false, top: None, subject: None, factions: &factions });
+        let shown_hours: HashMap<Identity, i32> = [(DEAD_POL, 104)].into_iter().collect();
+        let reply = build(&pairs, &Shape { tags: &tags, shown_hours: &shown_hours, chosen: None, between: false, top: None, subject: None, factions: &factions });
         assert_eq!(reply.countries.len(), 3);
         let live = reply.countries.iter().find(|country| (country.slot, country.country_id) == LIVE_POL).unwrap();
         let dead = reply.countries.iter().find(|country| (country.slot, country.country_id) == DEAD_POL).unwrap();
-        assert_eq!((live.tag.as_str(), live.dealt.as_deref(), live.taken.as_deref(), live.faction_id.as_deref()), ("POL", Some("25"), Some("40"), Some("1")));
-        assert_eq!((dead.tag.as_str(), dead.dealt.as_deref(), dead.taken.as_deref(), dead.faction_id.as_deref()), ("POL", Some("100"), Some("900"), None));
-        let subject_live = build(&pairs, &Shape { tags: &tags, chosen: None, between: false, top: None, subject: Some(LIVE_POL), factions: &factions });
+        assert_eq!((live.tag.as_str(), live.shown_hour, live.dealt.as_deref(), live.taken.as_deref(), live.faction_id.as_deref()), ("POL", None, Some("25"), Some("40"), Some("1")));
+        assert_eq!((dead.tag.as_str(), dead.shown_hour, dead.dealt.as_deref(), dead.taken.as_deref(), dead.faction_id.as_deref()), ("POL", Some(104), Some("100"), Some("900"), None));
+        let subject_live = build(&pairs, &Shape { tags: &tags, shown_hours: &shown_hours, chosen: None, between: false, top: None, subject: Some(LIVE_POL), factions: &factions });
         assert_eq!(subject_live.opponents.len(), 1);
         assert_eq!(subject_live.opponents[0].dealt.as_deref(), Some("25"));
         assert_eq!(subject_live.opponents[0].taken.as_deref(), Some("40"));
+    }
+
+    #[test]
+    fn unresolved_holder_never_falls_back_to_an_earlier_holder_identity() {
+        use dashboard_query::identity::HolderRun;
+        let mut tags = BTreeMap::new();
+        tags.insert(
+            "D04".to_owned(),
+            vec![
+                HolderRun { first: 100, last: 109, holder: Holder::Found { slot: 3, id: 30 }, starts_segment: true },
+                HolderRun { first: 110, last: 119, holder: Holder::Unresolved, starts_segment: true },
+            ],
+        );
+        tags.insert(
+            "POL".to_owned(),
+            vec![HolderRun { first: 100, last: 109, holder: Holder::Found { slot: 4, id: 40 }, starts_segment: true }],
+        );
+        let holders = Holders::new(tags, vec![(120, 129, "country links unread".to_owned())]);
+        let d04 = Country::Tag("D04".to_owned());
+        let pol = Country::Tag("POL".to_owned());
+        assert_eq!(resolve_selected(&holders, &d04, 105), Ok(Some((3, 30))));
+        assert!(resolve_selected(&holders, &d04, 115).unwrap_err().contains(TAG_UNLINKED), "unresolved current run refuses instead of falling back");
+        assert!(resolve_selected(&holders, &pol, 125).unwrap_err().contains("country links unread"), "recorded unknown span refuses instead of falling back");
+        assert_eq!(resolve_selected(&holders, &pol, 115), Ok(Some((4, 40))), "known absence still resolves the last proven holder");
+        assert!(resolve_selected(&holders, &d04, 130).unwrap_err().contains(TAG_UNLINKED), "known absence after an unresolved run refuses instead of skipping to an older holder");
     }
 
     #[test]
@@ -699,6 +767,10 @@ mod tests {
         let end_countries = steps[8].value.as_ref().as_ref().unwrap()["countries"].as_array().unwrap();
         let pols: Vec<_> = end_countries.iter().filter(|c| c["tag"] == "POL").collect();
         assert_eq!(pols.len(), 2, "reused POL tag preserves both holder identities");
+        let old_pol = pols.iter().find(|c| c["slot"] == 2 && c["countryId"] == 2).unwrap();
+        let new_pol = pols.iter().find(|c| c["slot"] == 4 && c["countryId"] == 4).unwrap();
+        assert_eq!(old_pol["shownHour"], 105, "past holder carries its latest witnessed hour");
+        assert!(new_pol["shownHour"].is_null(), "live holder leaves shownHour null so quiet hours hold");
         assert_eq!((exact.cold)(107, &AtomicBool::new(false)), materialized_frame(&mut *whole, source.replay_ref(), 1, 107));
     }
 }

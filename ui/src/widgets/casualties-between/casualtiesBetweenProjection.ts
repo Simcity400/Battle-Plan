@@ -11,8 +11,8 @@ import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixA
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
-import { formatCompactScalar, formatScalar } from '../../families/valueFormat.ts';
-import type { CasualtyMatrixReply } from '../../generated/dashboard';
+import { formatCompactScalar, formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
+import type { CasualtyMatrixCountry, CasualtyMatrixReply } from '../../generated/dashboard';
 
 export interface CasualtyMatrixOptions extends DatedMembershipOptions {
   readonly between?: boolean;
@@ -26,9 +26,29 @@ const NONE_YET = 'No casualties between these countries yet.';
 const compact = (amount: string) => formatCompactScalar(BigInt(amount)).text;
 const exact = (amount: string) => formatScalar(BigInt(amount), 'integer');
 
+function disambiguateLabels(items: readonly { readonly country: CasualtyMatrixCountry; readonly label: string; readonly loading?: boolean }[]): string[] {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (!item.loading) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
+  }
+  const dated = items.map(item => (
+    !item.loading && (counts.get(item.label) ?? 0) > 1 && item.country.shownHour !== null
+      ? `${item.label} (to ${formatDateOnly(item.country.shownHour)})`
+      : item.label
+  ));
+  const datedCounts = new Map<string, number>();
+  for (let at = 0; at < dated.length; at++) {
+    if (!items[at]!.loading) datedCounts.set(dated[at]!, (datedCounts.get(dated[at]!) ?? 0) + 1);
+  }
+  return dated.map((label, at) => (
+    !items[at]!.loading && (datedCounts.get(label) ?? 0) > 1 ? `${label} (#${items[at]!.country.countryId})` : label
+  ));
+}
+
 function plan(ctx: FamilyPlanContext, subject: string | null): SourcePlan {
   const top = ctx.countries.top;
-  const tags = subject !== null || ctx.countries.all || top !== null ? [] : ctx.countries.tags;
+  const datedGroup = ctx.widget.countries.kind === 'group';
+  const tags = subject !== null || ctx.countries.all || top !== null || datedGroup ? [] : ctx.countries.tags;
   const between = ctx.options.between === 'between';
   const params: Record<string, unknown> = {
     branchId: ctx.branch.id,
@@ -38,7 +58,7 @@ function plan(ctx: FamilyPlanContext, subject: string | null): SourcePlan {
     ...(subject !== null ? { subject: countryFromKey(subject) } : {}),
   };
   return {
-    owner: `casualties-between:${ctx.branch.id}:${subject ?? ''}:${between}:${top ?? (ctx.countries.all ? 'all' : tags.join(','))}`,
+    owner: `casualties-between:${ctx.branch.id}:${subject ?? ''}:${between}:${top ?? (ctx.countries.all || datedGroup ? 'all' : tags.join(','))}`,
     entries: [{
       name: 'main',
       source: ctx.track.source,
@@ -131,13 +151,17 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
     const tag = reply.countries[index]!.tag;
     tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
   }
-  const entities: MatrixAxisEntity[] = activeOrder.map(index => {
+  const resolved = activeOrder.map(index => {
     const country = reply.countries[index]!;
-    const shown = resolveEntityFromReadView(readView, 'country', country.tag, hour, country.tag);
+    const shown = resolveEntityFromReadView(readView, 'country', country.tag, country.shownHour ?? hour, country.tag);
+    return { country, shown, label: shown.label, loading: shown.pending === true };
+  });
+  const labels = disambiguateLabels(resolved);
+  const entities: MatrixAxisEntity[] = resolved.map(({ country, shown }, at) => {
     const id = (tagCounts.get(country.tag) ?? 0) > 1 ? `${country.tag}#${country.slot}:${country.countryId}` : country.tag;
     return {
       id,
-      label: shown.label,
+      label: labels[at]!,
       shortLabel: country.tag,
       tag: country.tag,
       ...(shown.nameMissing ? { nameMissing: shown.nameMissing } : {}),
@@ -266,18 +290,22 @@ export function projectCasualtyOpponents(readView: BoundedReadView): BarsModel {
     const tag = reply.countries[opponent.country]!.tag;
     tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
   }
-  const rows: BarsDataRow[] = reply.opponents.map(opponent => {
+  const resolved = reply.opponents.map(opponent => {
     const country = reply.countries[opponent.country]!;
+    const shown = countryRowPresentation(readView, country.tag, undefined, false, country.shownHour ?? hour);
+    return { opponent, country, shown, label: shown.label, loading: shown.labelLoading };
+  });
+  const labels = disambiguateLabels(resolved);
+  const rows: BarsDataRow[] = resolved.map(({ opponent, country, shown }, at) => {
     const tag = country.tag;
     const key = (tagCounts.get(tag) ?? 0) > 1 ? `${tag}#${country.slot}:${country.countryId}` : tag;
-    const shown = countryRowPresentation(readView, tag);
     const left = side(opponent.taken, opponent.missing, opponent.incomplete);
     const right = side(opponent.dealt, opponent.missing, opponent.incomplete);
     return {
       kind: 'data',
       key,
       subject: tag,
-      label: shown.label,
+      label: labels[at]!,
       labelMissing: shown.labelMissing,
       media: shown.media,
       ...(shown.color ? { color: shown.color } : {}),

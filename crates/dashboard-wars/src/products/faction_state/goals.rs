@@ -243,31 +243,32 @@ pub(super) fn counted(definitions: &[FactionGoalDefinition]) -> Vec<String> {
 }
 
 pub(super) fn scripted(frame: &DecodedFrame, faction: u64, cat: &Catalogue) -> bool {
-    let Ok(definitions) = content_reader_politics::faction_goals::cached(&cat.content.layers) else { return false };
-    let lexical = faction_names::LexicalNames::from_source(frame);
     let spelled = |token: u32| faction_names::template_spelling(frame, Some(token)).ok().flatten();
-    let goals = frame
-        .complete::<tables::FactionGoalStatus>()
-        .ok()
-        .into_iter()
-        .flat_map(|rows| super::owned(rows, faction, |row| row.faction))
-        .filter_map(|row| row.manifest)
-        .chain(
-            frame
-                .complete::<tables::FactionGoalEntries>()
-                .ok()
-                .into_iter()
-                .flat_map(|rows| super::owned(rows, faction, |row| row.faction))
-                .filter(|row| row.kind <= 2)
-                .filter_map(|row| row.token),
-        );
-    for token in goals {
-        let Some(definition) = spelled(token).and_then(|spelling| definitions.get(&spelling).ok().flatten()) else { continue };
-        if [&definition.name, &definition.description].into_iter().any(|bound| {
-            !bound.is_empty()
-                && faction_names::bound_name(bound, &cat.localisation, |name| lexical.token_of(name)).is_ok_and(|text| text.contains('['))
-        }) {
-            return true;
+    if let Ok(definitions) = content_reader_politics::faction_goals::cached(&cat.content.layers) {
+        let lexical = faction_names::LexicalNames::from_source(frame);
+        let goals = frame
+            .complete::<tables::FactionGoalStatus>()
+            .ok()
+            .into_iter()
+            .flat_map(|rows| super::owned(rows, faction, |row| row.faction))
+            .filter_map(|row| row.manifest)
+            .chain(
+                frame
+                    .complete::<tables::FactionGoalEntries>()
+                    .ok()
+                    .into_iter()
+                    .flat_map(|rows| super::owned(rows, faction, |row| row.faction))
+                    .filter(|row| row.kind <= 2)
+                    .filter_map(|row| row.token),
+            );
+        for token in goals {
+            let Some(definition) = spelled(token).and_then(|spelling| definitions.get(&spelling).ok().flatten()) else { continue };
+            if [&definition.name, &definition.description].into_iter().any(|bound| {
+                !bound.is_empty()
+                    && faction_names::bound_name(bound, &cat.localisation, |name| lexical.token_of(name)).is_ok_and(|text| text.contains('['))
+            }) {
+                return true;
+            }
         }
     }
     frame.complete::<tables::FactionDoctrine>().is_ok_and(|rows| {
