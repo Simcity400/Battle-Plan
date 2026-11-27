@@ -21,7 +21,7 @@ test('expanded groups retain their paged children and resolve identities at the 
   const head: DivisionLogTailReply = {
     branchId: '1', available: true, unavailable: null, total: '3', offset: '0', counts: [{ key: 'created', total: '2' }], censusIncomplete: false,
     templates: [{ id: 2, firstHour: 91, name: 'Engineers' }, { id: 3, firstHour: 102, name: 'Reserves' }],
-    rows: [group, child, { ...child, key: '18', event: { ...child.event, division: '18', kind: 1, status: 'division_destroyed' } }], missing: [], nextChange: 102, warnings: [],
+    rows: [group, child, { ...child, key: '18', event: { ...child.event, division: '18', kind: 1, status: 'division_destroyed', name: '', nameMissing: null } }], missing: [], nextChange: 102, warnings: [],
   };
   const source = buildRowSourceFromHead('branch', head, undefined, 100)!;
   const view = createBoundedReadView({ hour: 100, rows: new Map([['main', source]]), identity: {
@@ -37,11 +37,13 @@ test('expanded groups retain their paged children and resolve identities at the 
   assert.deepEqual(model.kindFilter?.items.map(item => item.label), ['Engineers']);
   assert.equal(model.rows[0]!.cells.item!.value.kind, 'known');
   assert.deepEqual(model.rows[1]!.cells.place!.value, { kind: 'known', value: 'province 12 at 89' });
-  assert.equal(model.rows[1]!.cells.item!.value.kind, 'notRecorded');
+  assert.deepEqual(model.rows[1]!.cells.item!.value, { kind: 'notRecorded', reason: 'Division name unavailable' });
   const extra = model.rows[1]!.tooltipExtra;
   const tooltip = typeof extra === 'function' ? extra() : extra;
   assert.deepEqual(tooltip?.find(line => line.label === 'Country')?.value, { kind: 'known', value: 'country ABC at 92' });
   const lost = model.rows[2]!;
+  assert.equal(lost.name, 'Division name not recorded');
+  assert.deepEqual(lost.cells.item!.value, { kind: 'notRecorded', reason: 'Division name not recorded for this event' });
   const lostExtra = typeof lost.tooltipExtra === 'function' ? lost.tooltipExtra() : lost.tooltipExtra;
   assert.equal(lost.cells.place!.tooltipLabel, 'Last seen at', 'a removal the recording only bounds names its place as where the division was last seen');
   assert.equal(lostExtra?.some(line => line.label === 'Last seen at' || line.label === 'Place'), false, 'and states it once');

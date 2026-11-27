@@ -261,7 +261,11 @@ impl Event {
             let kind = self.kind;
             let division = self.key as u64;
             let killer_slot = slot(num(column::KILLER_SLOT));
-            let (name, name_missing) = named(art.division_name_of(division, &opaque(recorded.name.as_deref()), &opaque(recorded.naming.as_deref())));
+            let display_name = art.division_name_of(division, &opaque(recorded.name.as_deref()), &opaque(recorded.naming.as_deref()));
+            let (name, name_missing) = match display_name {
+                Ok(name) if name.trim().is_empty() => (None, Some("Division name not recorded for this event".to_owned())),
+                result => named(result),
+            };
             let icon = match (num(column::ICON_UNIT), num(column::ICON_CUSTOM), recorded.icon_name.as_deref()) {
                 (Some(unit), Some(custom), Some(text)) => art.icon(unit as u32, custom as i32, text),
                 _ => Err("Division template artwork not recorded at this observation".into()),
