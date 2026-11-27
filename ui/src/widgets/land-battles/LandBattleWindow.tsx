@@ -2,7 +2,7 @@ import { useCallback, useId, useMemo, type ReactNode, type RefObject } from 'rea
 import { colour, distance, readableColour } from '../../charts/palette.ts';
 import type { Run } from '../../charts/series';
 import { BattleGameWindow, BattleViewer, type BattleSpan } from '../../components/BattleViewer.tsx';
-import { useBattleTitle } from '../../components/battleTitle.ts';
+import { landBattleTitleKey, useBattleTitle } from '../../components/battleTitle.ts';
 import { ValueState } from '../../components/ValueState.tsx';
 import { barsLabelText } from '../../families/bars/model.ts';
 import type { BattleClock } from '../../components/battleClock.ts';
@@ -265,7 +265,7 @@ export default function LandBattleWindow({ opened, track, runtime, anchor, onClo
   const terrain = useProduct(runtime.client, row.province === null ? null : productRequest({ sourceId: track.source.id, revision: track.source.revision,
     product: 'land-battle-terrain', params: { provinces: [row.province] } }), true, validateLandBattleTerrain);
   const surface = theme!.surface;
-  const title = useBattleTitle(runtime.client, track, row.province, row.hour);
+  const title = useBattleTitle(runtime.client, track, landBattleTitleKey(row.key), row.hour);
   const colours = useMemo(() => sideColours(subject.colors, surface), [subject, surface]);
   const data = course.data;
   const ongoing = row.result === 'ongoing';

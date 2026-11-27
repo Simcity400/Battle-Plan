@@ -10,7 +10,6 @@ use viewer_layer_core::scene_content::{OverlayLayers, SceneContent, links_of};
 use crate::map_icons::MapIcons;
 use crate::map_views::CounterView;
 use crate::map_views::Views;
-use dashboard_text::naval_battle_name::battle_name_candidates;
 use viewer_combat as combat;
 use viewer_gpu::{camera::MapSize, layers::Omissions};
 use viewer_gpu::camera::{MapDefines, motion::CameraLaw};
@@ -1581,7 +1580,7 @@ impl Document {
     ) -> io::Result<Self> {
         let _generation = content_reader_layers::content::Generation::inherit();
         let path = fs::canonicalize(path)?;
-        let source = dashboard_base::Source::from_replay(
+        let source = Arc::new(dashboard_base::Source::from_replay(
             dashboard_base::SourceKey {
                 source_id: format!("native-map:{}", path.display()),
                 revision,
@@ -1589,7 +1588,8 @@ impl Document {
             path.clone(),
             Arc::clone(&replay),
             &std::sync::atomic::AtomicBool::new(false),
-        )?;
+        )?);
+        source.bind(Some((options, allow_unverified)), Default::default());
         let mut document = Self::load_shared(
             &path,
             options,
@@ -1612,7 +1612,7 @@ impl Document {
         Ok(document)
     }
 
-    pub fn bind_source(&mut self, source: &dashboard_base::Source) {
+    pub fn bind_source(&mut self, source: &Arc<dashboard_base::Source>) {
         self.playback
             .bind_map(crate::map_binding::MapBinding::new(source));
     }
@@ -2812,10 +2812,6 @@ impl Document {
             "Map buildings keep the destroyed-mesh hysteresis, and stay drawn above the update distance once created below it, from this viewer's own camera history since the last seek; a seek starts every slot healthy and uncreated, as a freshly loaded game does. A dump has no camera history unless --building-camera supplies it. Popup growth and the shared model creation allowance run on the viewer's frame clock; native capture-time presentation remains unrecorded."
                 .into(),
         );
-            let battle_name_provinces =
-                battle_name_candidates(&regions, states.definitions(), &|province| {
-                    map.definitions.contains_key(&province)
-                });
             let state_name_keys = states
                 .definitions()
                 .iter()
@@ -2842,7 +2838,6 @@ impl Document {
             });
             let map = Arc::new(map);
             let province_geometry = Arc::new(province_geometry);
-            let battle_name_provinces = Arc::new(battle_name_provinces);
             let state_name_keys = Arc::new(state_name_keys);
             let eta_cache = Arc::new(EtaCache::default());
             let vision_memo = Arc::new(Keyed::new(perspective::VISION_TABLES));
@@ -2895,7 +2890,6 @@ impl Document {
                 scripted: Arc::clone(&scripted),
                 map: Arc::clone(&map),
                 strategic_regions: Arc::clone(&regions),
-                battle_name_provinces: Arc::clone(&battle_name_provinces),
                 state_name_keys: Arc::clone(&state_name_keys),
                 province_geometry: Arc::clone(&province_geometry),
                 region_of: Arc::clone(&counters.region_of),

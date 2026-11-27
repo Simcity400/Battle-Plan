@@ -63,7 +63,6 @@ pub struct Assets {
     pub(crate) max_shared_slots: Result<i32, String>,
     pub(super) border_events: content_reader_events::events::LazyEvents,
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
-    pub(crate) naval_name_defines: Result<[i64; 2], String>,
     pub division_names: Arc<content_reader_division_names::division_names::Database>,
     pub(super) commander_tooltips: super::commander_tooltips::Content,
     pub tactics: super::tactics::Content,
@@ -1203,12 +1202,6 @@ impl Assets {
             max_shared_slots: defines.int32("NBuildings", "MAX_SHARED_SLOTS").map_err(|error| error.to_string()),
             border_events: content_reader_events::events::LazyEvents::new(Arc::clone(shared)),
             land_defines: super::defines::LandDefines::read(defines)
-                .map_err(|error| error.to_string()),
-            naval_name_defines: ["BATTLE_NAME_VP_FACTOR", "BATTLE_NAME_VP_CUTOFF"]
-                .map(|name| defines.fixed5("NNavy", name))
-                .into_iter()
-                .collect::<io::Result<Vec<_>>>()
-                .map(|values| [values[0], values[1]])
                 .map_err(|error| error.to_string()),
             division_names: Arc::new(division_names),
             commander_tooltips,

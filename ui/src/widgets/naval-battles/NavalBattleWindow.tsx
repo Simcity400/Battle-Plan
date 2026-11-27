@@ -106,7 +106,7 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, retu
 }) {
   const { subject } = opened;
   const { row } = subject;
-  const title = useBattleTitle(runtime.client, track, row.province, row.hour);
+  const title = useBattleTitle(runtime.client, track, row.key, row.hour);
   const ongoing = row.result === 'ongoing';
   const { liveEnd, live, result, span, noteFrom } = useMemo(() => navalBattleClock(row, opened.hour, track.branch.firstHour, track.branch.lastHour),
     [row, opened.hour, track.branch.firstHour, track.branch.lastHour]);

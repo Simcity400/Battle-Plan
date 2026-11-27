@@ -483,14 +483,34 @@ struct Prepared {
     selection: Option<Selection>,
 }
 
-fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &LandBattlesTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
+fn index(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Arc<Index<Line>>> {
     let state = source.state::<Branches>();
     let mut branches = state.lock().unwrap_or_else(PoisonError::into_inner);
-    let index = match branches.0.entry(query.timeline.id) {
+    Ok(match branches.0.entry(query.timeline.id) {
         std::collections::hash_map::Entry::Occupied(e) => Arc::clone(e.get()),
         std::collections::hash_map::Entry::Vacant(e) => Arc::clone(e.insert(Arc::new(scan(source, query, cancelled)?))),
-    };
-    drop(branches);
+    })
+}
+
+pub struct Battle {
+    pub combat: u64,
+    pub start: i32,
+    pub written: Option<i32>,
+    pub observed: i32,
+    pub province: Option<u32>,
+}
+
+pub fn battles(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Vec<Battle>> {
+    let index = index(source, query, cancelled)?;
+    Ok((0..index.len() as u32).map(|i| {
+        let entry = index.get(i);
+        Battle { combat: (entry.id >> 64) as u64, start: entry.date, written: entry.payload.written,
+            observed: entry.observed, province: entry.payload.place.first().and_then(|(_, (province, _))| *province) }
+    }).collect())
+}
+
+fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &LandBattlesTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
+    let index = index(source, query, cancelled)?;
     let selection =
         dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
     Ok(Prepared { branch: query.timeline.id, index, selection })

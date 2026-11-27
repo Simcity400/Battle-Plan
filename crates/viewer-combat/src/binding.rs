@@ -310,19 +310,7 @@ impl Bindings {
         )
         .map_err(|reason| format!("Naval result {id} dismiss button text is hidden: {reason}."));
         self.bind("dismiss_button", TEXT, label);
-        if let Some(result) = rows::<tables::NavalResults>(frame)?
-            .rows()
-            .iter()
-            .find(|row| row.id == id)
-        {
-            let name = super::battle_name::title(
-                static_content,
-                frame,
-                result.province,
-                result.flag_a != 0,
-            )?
-            .map_err(|reason| format!("Naval result {id} name is hidden: {reason}."));
-            self.bind("name", TEXT, name);
+        if rows::<tables::NavalResults>(frame)?.rows().iter().any(|row| row.id == id) {
             let countries = rows::<tables::NavalResultCountries>(frame)?;
             for (side, prefix) in ["attacker", "defender"].iter().enumerate() {
                 let flag = countries
@@ -541,17 +529,6 @@ impl Bindings {
         flags: &Flags,
     ) -> io::Result<()> {
         let prefix = "header_container";
-        let province = rows::<tables::NavalCombats>(frame)?
-            .rows()
-            .iter()
-            .find(|row| row.id == id)
-            .map(|combat| combat.province);
-        let title = match province {
-            Some(province) => super::battle_name::title(static_content, frame, province, false)?,
-            None => Err(format!("the NavalCombats table has no row for combat {id}")),
-        }
-        .map_err(|reason| format!("Naval combat {id} title is hidden: {reason}."));
-        self.bind(&format!("{prefix}/naval_battle_title"), TEXT, title);
         for key in [
             "progress_defender",
             "carrier_penalty_attacker",

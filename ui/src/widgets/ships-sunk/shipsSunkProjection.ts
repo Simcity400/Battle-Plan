@@ -43,7 +43,7 @@ function sunkBy(cause: ShipSinkingAttribution): readonly TooltipExtraRow[] {
 
 export interface SinkingSubject {
   readonly hour: number;
-  readonly battle: { readonly key: string; readonly title: string } | null;
+  readonly battle: { readonly key: string } | null;
 }
 
 function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInfo | undefined, boundary: ReturnType<typeof newIdentityBoundary>): TableRow {
@@ -59,13 +59,11 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
   let loss: TableCell;
   let battle: SinkingSubject['battle'] = null;
   if (row.battle.kind === 'linked') {
-    const where = row.battleProvince === null ? null : resolveName(view, 'province', String(row.battleProvince), { atHour: row.hour, boundary }).value;
-    const named = where?.kind === 'known' ? `Battle of ${where.value}` : null;
+    const battleValue = resolveName(view, 'battle', row.battle.id, { atHour: row.hour, boundary }).value;
     const killer = killerBeside(cause);
-    const battleValue = named ? knownValue(named) : where?.kind === 'pending' ? where : notRecorded('Naval battle recorded, battle name not recorded');
     const tooltipRows = [{ label: 'Battle', value: battleValue }, ...sunkBy(cause)];
-    loss = { value: knownValue(named ?? 'Battle'), strong: true, narrowText: 'Battle', tooltipRows, ...(killer ? { inlineSubtext: killer } : {}) };
-    battle = { key: row.battle.id, title: named ?? 'Naval battle' };
+    loss = { value: battleValue, strong: true, tooltipRows, ...(killer ? { inlineSubtext: killer } : {}) };
+    battle = { key: row.battle.id };
   } else {
     loss = cause.kind === 'notRecorded' ? { value: notRecorded(cause.reason), missingFigure: 'Cause' }
       : { value: knownValue(cause.kind === 'cause' ? cause.text : cause.kind === 'airWing' ? 'Air attack' : `Sunk by ${cause.name}`) };

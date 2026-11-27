@@ -314,7 +314,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
                     "all" | "-" => TIMED.to_vec(),
                     names => names.split(',').map(|name| TIMED.iter().copied().find(|timed| *timed == name).ok_or_else(|| invalid(format!("No timed combat reader {name}; they are {TIMED:?}")))).collect::<io::Result<_>>()?,
                 };
-                Some(playhead_host::views::combat::Line::open(side.views().handle(), &timed, (!learned.is_empty()).then_some(learned), options.timing, hz)?)
+                Some(playhead_host::views::combat::Line::open(&document, side.views().handle(), &timed, (!learned.is_empty()).then_some(learned), options.timing, hz)?)
             }
         },
         stepper: match &options.combat {

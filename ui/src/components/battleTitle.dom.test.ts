@@ -7,7 +7,7 @@ test('land and naval battle windows opened with a pending name take the arriving
     const act = <T,>(expression: string) => page.evaluate<T>(`window.battleTitle.${expression}`);
     for (const kind of ['land', 'naval']) {
       assert.match(await act<string>(`mount('${kind}')`), /Loading/);
-      assert.deepEqual(await act('resolveName()'), { title: 'Battle of Copper Hollow', sameWindow: true });
+      assert.deepEqual(await act('resolveName()'), { title: 'Second Battle of Copper Hollow', sameWindow: true });
     }
   }));
 });

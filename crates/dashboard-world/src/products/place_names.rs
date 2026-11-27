@@ -178,6 +178,7 @@ impl Content {
     }
 
     pub fn naval_battle_title_text(&self, name: &str, port_strike: bool) -> Result<String, String> {
+        if name.trim().is_empty() { return Err("Battle place name not recorded".into()); }
         let key = if port_strike { "NAVAL_PORT_STRIKE_TITLE" } else { "NAVAL_BATTLE_TITLE" };
         let text = self.cat.localisation.localise_with(key.as_bytes(), &[("NAME", Argument::Text(name))]).map_err(|e| e.to_string())?;
         catalogue::plain_text(&text)

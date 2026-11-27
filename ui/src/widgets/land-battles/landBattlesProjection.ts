@@ -4,7 +4,8 @@ import { artHoverText } from '../../families/art/adapters.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, LOADING_NAME, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { battleTitleText, landBattleTitleKey } from '../../components/battleTitle.ts';
+import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
@@ -61,8 +62,7 @@ function battleSidesValue(sideValues: readonly Value<string>[]): Value<string> {
 }
 
 function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: IdentityBoundary): TableRow {
-  const place = row.province === null ? notRecorded('Province not recorded') : resolveName(view, 'province', String(row.province), { atHour: row.hour, boundary }).value;
-  const name = place.kind === 'known' ? knownValue('Battle of ' + place.value) : place;
+  const name = resolveName(view, 'battle', landBattleTitleKey(row.key), { atHour: row.hour, boundary }).value;
   const sides = row.countries.map((slots, i) => slots.map(slot => resolveIdentity(view, 'country', countryKey(slot), { atHour: row.countriesHour[i], boundary })));
   const flagEntries = row.countries.flatMap<{ readonly tag: string | null; readonly atHour: number }>((slots, i) => (
     slots.length
@@ -83,7 +83,7 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
     ...(coalition && idx === defenderStart ? { separator: true } : {}),
   }));
   const sideValues = sides.map((side, i) => sideParticipants(side, row.countriesUnknown[i]!));
-  const title = name.kind === 'known' ? name.value : name.kind === 'pending' ? LOADING_NAME : 'Battle name not recorded';
+  const title = battleTitleText(name);
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
   const status = live ? logStatusCell('Ongoing', 'running') : row.result === 'unknown' ? { value: notRecorded('Battle result not recorded') }

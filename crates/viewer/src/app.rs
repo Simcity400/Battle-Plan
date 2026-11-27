@@ -4436,6 +4436,7 @@ impl Viewer {
                 }));
                 let content = Arc::clone(&document.content);
                 self.combat.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
+                self.combat.set_battle_title_source(crate::battle_title_source(document));
             }
             let combat_ask = self.combat.asking(&document.combat, &document.playback.roster_sampler(), &self.perspective, self.counter_view.settings.nato);
             self.overlay_asked = overlay_ask.as_ref().map(|ask| ask.shown(&document.content.counters.defines));
@@ -6995,6 +6996,8 @@ impl Viewer {
         }
         let loading_art = if self.combat.loading_art() {
             Some("Loading combat window art...")
+        } else if self.combat.is_loading() {
+            Some("Reading the combat window...")
         } else if document.icons.counters.gui.loading_window_art() {
             Some("Loading map counter art...")
         } else if window_misses != document.icons.combat.gui.window_art_misses() {

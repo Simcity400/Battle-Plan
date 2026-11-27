@@ -6,20 +6,20 @@ use std::{
 };
 
 pub struct MapBinding {
-    replay: Arc<Replay>,
+    pub source: Arc<dashboard_base::Source>,
     natives: Mutex<Option<Arc<Natives>>>,
 }
 
 impl MapBinding {
-    pub fn new(source: &dashboard_base::Source) -> Arc<Self> {
+    pub fn new(source: &Arc<dashboard_base::Source>) -> Arc<Self> {
         Arc::new(Self {
-            replay: source.replay(),
+            source: Arc::clone(source),
             natives: Mutex::new(None),
         })
     }
 
     pub fn replay_handle(&self) -> Arc<Replay> {
-        Arc::clone(&self.replay)
+        self.source.replay()
     }
 
     pub fn natives(&self) -> io::Result<Arc<Natives>> {
@@ -27,7 +27,7 @@ impl MapBinding {
         if let Some(natives) = held.as_ref() {
             return Ok(Arc::clone(natives));
         }
-        let natives = Arc::new(Natives::new(self.replay.recording())?);
+        let natives = Arc::new(Natives::new(self.source.replay_ref().recording())?);
         *held = Some(Arc::clone(&natives));
         Ok(natives)
     }

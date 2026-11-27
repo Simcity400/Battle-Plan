@@ -1,10 +1,9 @@
-use dashboard_text::naval_battle_name::Picker;
-use content_reader_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
-use std::{collections::BTreeMap, io};
+use std::io;
 use viewer_foundation::tooltip_text::state_name;
-use viewer_foundation::tooltip_text::{TextIcons, builtin, token};
+use viewer_foundation::tooltip_text::{TextIcons, token};
 use super::content::Content as StaticContent;
 use dashboard_text::table_access::{Available, rows};
 
@@ -77,84 +76,6 @@ fn province_name(
             None => Ok(id.to_string()),
         },
     }
-}
-
-pub(super) fn title(
-    static_content: &StaticContent,
-    frame: &DecodedFrame,
-    province: u32,
-    port_strike: bool,
-) -> io::Result<Result<String, String>> {
-    let (icons, loc) = (static_content.assets.as_ref(), &static_content.localisation);
-    let Some(region) = static_content.region_of.get(&province).copied() else {
-        return Ok(Err(format!(
-            "province {province} is in no content strategic region"
-        )));
-    };
-    let Some(definition) = static_content.strategic_regions.get(&region) else {
-        return Ok(Err(format!(
-            "strategic region {region} has no content definition"
-        )));
-    };
-    let region_name = match token(icons, loc, definition.name_key.as_bytes()) {
-        Ok(name) => name,
-        Err(reason) => return Ok(Err(format!("strategic region {region}'s name: {reason}"))),
-    };
-    if port_strike {
-        return Ok(builtin(
-            icons,
-            loc,
-            "NAVAL_PORT_STRIKE_TITLE",
-            &[("NAME", Argument::Text(&region_name))],
-        ));
-    }
-    let [factor, cutoff] = match &static_content.assets.naval_name_defines {
-        Ok(defines) => *defines,
-        Err(reason) => {
-            return Ok(Err(format!(
-                "the NNavy battle name defines are unavailable ({reason})"
-            )));
-        }
-    };
-    let provinces = rows::<tables::Provinces>(frame)?;
-    let complete = provinces.is_complete();
-    let provinces: BTreeMap<_, _> = provinces.rows().iter().map(|row| (row.id, row)).collect();
-    let victory_points = |id: u32| {
-        provinces.get(&id).map(|row| row.victory_points).ok_or_else(|| {
-            if complete {
-                format!("province {id} has no Provinces row")
-            } else {
-                format!("the Provinces table is incomplete this hour, so province {id}'s victory points are unknown")
-            }
-        })
-    };
-    let geometry = &static_content.province_geometry;
-    let position = |id: u32| geometry.map_position(id).unwrap_or([0, 0]);
-    let picker = Picker {
-        width: static_content.map.width as i32,
-        factor,
-        cutoff,
-        position: &position,
-        victory_points: &victory_points,
-    };
-    let candidates = static_content
-        .battle_name_provinces
-        .get(&region)
-        .map_or(&[][..], Vec::as_slice);
-    let name = match picker.pick(province, candidates) {
-        Err(reason) => return Ok(Err(reason)),
-        Ok(None) => region_name,
-        Ok(Some(picked)) => match province_display_name(static_content, frame, picked)? {
-            Ok(name) => name,
-            Err(reason) => return Ok(Err(reason)),
-        },
-    };
-    Ok(builtin(
-        icons,
-        loc,
-        "NAVAL_BATTLE_TITLE",
-        &[("NAME", Argument::Text(&name))],
-    ))
 }
 
 pub(super) fn province_display_name(

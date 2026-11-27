@@ -75,6 +75,10 @@ impl Playback {
         &self.replay
     }
 
+    pub fn source(&self) -> Option<&Arc<dashboard_base::Source>> {
+        self.map_binding.as_ref().map(|binding| &binding.source)
+    }
+
     pub fn bind_map(&mut self, binding: Arc<MapBinding>) {
         debug_assert!(Arc::ptr_eq(&binding.replay_handle(), &self.replay));
         self.map_binding = Some(binding);

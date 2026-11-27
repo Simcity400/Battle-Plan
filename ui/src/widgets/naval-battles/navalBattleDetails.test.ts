@@ -56,15 +56,17 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   const model = (following: boolean) => navalBattlesProjection.project(view, { scope: 'test', following, byDate: true });
   const project = (following: boolean) => model(following).rows[0]!;
   const row = project(true);
+  assert.equal(row.cells.item?.value.kind, 'pending');
   assert.equal(row.cells.action?.actionLabel, 'Watch', 'a battle with live hours offers Watch');
   assert.equal((row.meta as NavalBattleSubject).row.key, 'combat:9:10');
   const named = buildRowSourceFromHead('branch', { ...head, rows: head.rows.map(each => ({ ...each, countries: [[1], [2]] as [number[], number[]] })) }, undefined, 18)!;
   const unreadFlags = createBoundedReadView({ hour: 18, rows: new Map([['main', named]]),
-    identity: { resolve: (kind, key, at) => ({ kind, key, holder: { status: 'ready', value: key }, name: { status: 'ready', value: 'Recorded country' },
+    identity: { resolve: (kind, key, at) => ({ kind, key, holder: { status: 'ready', value: key }, name: { status: 'ready', value: kind === 'battle' ? 'Second Battle of Shale Strait' : 'Recorded country' },
       flagChoice: { status: 'ready', value: 'recorded_flag' }, validInterval: [at, at] as const, nextChangeAt: Infinity }) },
     art: { resolve: () => ({ status: 'failed', reason: 'flag file unreadable', retryable: true, retry: () => undefined }) as never } });
   for (const each of navalBattlesProjection.project(unreadFlags, { scope: 'test', following: true, byDate: true }).rows) {
     assert.doesNotThrow(() => structuredClone(each.meta), 'a row’s subject crosses the lane worker boundary, so it carries no art callbacks');
+    assert.deepEqual(each.cells.item?.value, { kind: 'known', value: 'Second Battle of Shale Strait' });
   }
   assert.equal(model(true).rows[2]!.cells.action?.actionLabel, 'Watch', 'a battle held only as a result offers Watch on its result window');
   assert.match(model(true).columns.find(column => column.key === 'shipsSunk')!.partialReason!, /lower bound/);
@@ -75,7 +77,7 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   const endedRow = model(true).rows[1]!;
   const found = { kind: 'data', key: endedRow.key, name: endedRow.name, row: endedRow, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
   const lines = deriveRowTooltip(found, model(true).columns).rows.filter(line => line.lookupKey !== ART_STATUS_ROW);
-  assert.deepEqual(lines.map(line => [line.label, line.rawValue?.kind]), [['Date', 'known'], ['Battle', 'notRecorded'], ['Result', 'known'], ['Winner', 'notRecorded'],
+  assert.deepEqual(lines.map(line => [line.label, line.rawValue?.kind]), [['Date', 'known'], ['Battle', 'pending'], ['Result', 'known'], ['Winner', 'notRecorded'],
     ['Attackers', 'notRecorded'], ['Ships', 'known'], ['Ships sunk', 'partial'], ['IC lost', 'partial'],
     ['Defenders', 'notRecorded'], ['Ships', 'zero'], ['Ships sunk', 'notRecorded'], ['IC lost', 'notRecorded']],
     'the tooltip groups the figures under each side instead of repeating the pair columns');
@@ -149,7 +151,7 @@ test('convoy-only sides show convoy counts and live zero sinkings stay qualified
     raidLines.map(line => [line.label, line.rawValue?.kind, line.rawValue && 'value' in line.rawValue ? line.rawValue.value : null]),
     [
       ['Date', 'known', 'Hour 20'],
-      ['Battle', 'notRecorded', null],
+      ['Battle', 'pending', null],
       ['Result', 'known', 'Ongoing'],
       ['Attackers', 'notRecorded', null],
       ['Ships', 'known', 6],

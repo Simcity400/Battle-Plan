@@ -147,7 +147,8 @@ test('pending land battle identities stay pending through cell, mirror, hover an
       const name = mode === 'pending'
         ? { status: 'pending' as const }
         : mode === 'ready'
-          ? { status: 'ready' as const, value: kind === 'province' ? 'Westford' : kind === 'state' ? 'Highland' : key === countryKey(1) ? 'Alpha' : 'Bravo' }
+          ? { status: 'ready' as const, value: kind === 'battle' ? 'Second Battle of Westford'
+            : kind === 'province' ? 'Westford' : kind === 'state' ? 'Highland' : key === countryKey(1) ? 'Alpha' : 'Bravo' }
           : { status: 'absent' as const, reason: `${kind} name absent` };
       return {
         kind, key,
@@ -190,10 +191,10 @@ test('pending land battle identities stay pending through cell, mirror, hover an
   assert.doesNotMatch(String(pending.audit.find(a => a.key === '1:77:10:item')!.value), /"notRecorded"/);
 
   const ready = project('ready');
-  assert.equal(ready.row.name, 'Battle of Westford');
-  assert.deepEqual(ready.row.cells.item!.value, { kind: 'known', value: 'Battle of Westford' });
+  assert.equal(ready.row.name, 'Second Battle of Westford');
+  assert.deepEqual(ready.row.cells.item!.value, { kind: 'known', value: 'Second Battle of Westford' });
   assert.deepEqual(ready.row.cells.place!.value, { kind: 'known', value: 'Highland' });
-  assert.equal(ready.mirror.cells.find(c => c.column === 'item')!.spoken, 'Battle of Westford');
+  assert.equal(ready.mirror.cells.find(c => c.column === 'item')!.spoken, 'Second Battle of Westford');
 
   const absent = project('absent');
   assert.equal(absent.row.cells.item!.value.kind, 'notRecorded');

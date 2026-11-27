@@ -196,7 +196,7 @@ impl BattleView {
         target: &DashboardMapView,
         battle: &BattleWindow,
         body: egui::Rect,
-        source: &Source,
+        source: &Arc<Source>,
         content: &Arc<Content>,
         gpu: &(wgpu::Device, wgpu::Queue),
         pool: &WorkerPool,
@@ -331,7 +331,7 @@ fn note(ui: &mut egui::Ui, body: egui::Rect, ink: egui::Color32, text: &str) {
 }
 
 impl Held {
-    fn open(source: &Source, content: &Arc<Content>, battle: &BattleWindow, gpu: &(wgpu::Device, wgpu::Queue), icons: Arc<IconTextures>) -> Result<Self, String> {
+    fn open(source: &Arc<Source>, content: &Arc<Content>, battle: &BattleWindow, gpu: &(wgpu::Device, wgpu::Queue), icons: Arc<IconTextures>) -> Result<Self, String> {
         let (device, queue) = gpu;
         let battle = Battle::of(battle).ok_or("The battle's combat handle is not a full number.")?;
         let selection = battle.first;
@@ -342,6 +342,7 @@ impl Held {
             .map_err(|error| format!("Could not prepare the battle window's renderer: {error}"))?;
         pass.set_layer(true);
         let mut window = Window::default();
+        window.set_battle_title_source(crate::battle_title_source(&document));
         window.set_settled(true);
         window.set_strict(true);
         let raids = Arc::clone(&content.icons.raids);

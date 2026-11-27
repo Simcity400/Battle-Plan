@@ -19,10 +19,11 @@ Object.assign(window, { battleTitle: {
     root?.unmount();
     document.body.replaceChildren();
     release = undefined;
-    const client = { available: true, nativeMaps: false, product: (request: { sourceId: string; revision: string; product: string; params: { from: number; to: number } }) => {
-      if (request.product !== 'place-name-runs') return pending;
-      return new Promise(resolve => { release = () => resolve({ ...request, data: { from: request.params.from, to: request.params.to,
-        unknown: [], states: [], provinces: [{ id: 51, runs: [{ firstHour: 100, lastHour: 109, name: 'Copper Hollow', missing: null, presence: 'present' }] }], warnings: [] } }); });
+    const client = { available: true, nativeMaps: false, product: (request: { sourceId: string; revision: string; product: string; params: { battles: string[] } }) => {
+      if (request.product !== 'battle-names') return pending;
+      return new Promise(resolve => { release = () => resolve({ ...request, data: {
+        titles: Object.fromEntries(request.params.battles.map(key => [key, { name: 'Second Battle of Copper Hollow', missing: null }])), warnings: [],
+      } }); });
     } };
     const branch = { id: '1', firstHour: 100, lastHour: 109, gaps: [] };
     const source = { id: kind, revision: '1', path: 'title.battleplan', metadata: { branches: [branch], countries: [] } };
@@ -34,7 +35,7 @@ Object.assign(window, { battleTitle: {
     const element = document.body.appendChild(document.createElement('div'));
     const anchor = createRef<HTMLDivElement>();
     anchor.current = element;
-    const row = { key: 'result:7', hour: 101, province: 51, state: null, countries: [[], []], countriesHour: [101, 101],
+    const row = { key: kind === 'land' ? '1:7:101' : 'result:7', hour: 101, province: 51, state: null, countries: [[], []], countriesHour: [101, 101],
       countriesUnknown: [false, false], result: 'ongoing', readHour: 103, detailId: 'result:7', detailHour: null,
       resultHour: null, lastLiveHour: null, endSeen: false, shipsSunk: [0, 0], convoysSunk: [0, 0], icLost: [0, 0],
       ships: [0, 0], convoys: [0, 0], casualties: [0, 0], divisions: [0, 0] };
@@ -46,7 +47,7 @@ Object.assign(window, { battleTitle: {
     return title();
   },
   async resolveName() {
-    if (!release) throw new Error('The window never requested its province name');
+    if (!release) throw new Error('The window never requested its battle title');
     release();
     await settle();
     return { title: title(), sameWindow: opened !== null && document.querySelector('.detail-window') === opened };

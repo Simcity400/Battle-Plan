@@ -1642,6 +1642,7 @@ test('the host identity snapshot takes a flag drawn after a paused seek although
     loadStyles: never,
     loadRegions: never,
     loadPlaceNameRuns: never,
+    loadBattleNames: never,
     loadLeaderNameRuns: never,
     loadFlags: async (_scope, size, batch) => ({
       size,
