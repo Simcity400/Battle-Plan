@@ -170,10 +170,14 @@ const fixture = {
   async eventFeedKindsAvailability() {
     clock = new Clock();
     let requests = 0;
+    let deliver = () => {};
+    let kindsDelivered = false;
+    const delivered = new Promise<void>(resolve => { deliver = resolve; });
     const changes: string[] = [];
     let excludedKinds = 'newsEventFired';
     const reading = { available: true, product: async (request: ProductRequest) => {
       requests++;
+      await delivered;
       return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { kinds: [
         { kind: 'warDeclared', category: 'warsPeace', firstObserved: START, unavailable: null },
         { kind: 'newsEventFired', category: 'politics', firstObserved: START + 90, unavailable: null },
@@ -196,7 +200,14 @@ const fixture = {
     const options = () => [...(panel()?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])];
     const open = async () => {
       slot.querySelector('button')!.click();
+      if (!kindsDelivered) {
+        for (let at = 0; at < 300 && !panel()?.querySelector('[role="status"]'); at++) await frame();
+        if (!panel()?.querySelector('[role="status"]')) throw new Error('The availability picker did not show its loading state');
+        deliver();
+        kindsDelivered = true;
+      }
       for (let at = 0; at < 300 && !options().length; at++) await frame();
+      if (!options().length) throw new Error('The availability picker did not reach its ready state');
     };
     const close = async () => { slot.querySelector('button')!.click(); await frame(); };
     const snapshot = () => options().map(item => ({ label: item.querySelector('.tf-picker-label')?.textContent,

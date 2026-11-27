@@ -1800,7 +1800,8 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
     let context = LoadContext { content: Some(options) };
     let kinds = super::EventFeedKinds::load(&replay_source, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &AtomicBool::new(false)).unwrap();
     let project = kinds.kinds.iter().find(|item| item.kind == EventFeedKind::ProjectFinished).unwrap();
-    assert!(project.unavailable.as_deref().unwrap().contains("project histories were not recorded"));
+    assert_eq!(project.first_observed, None);
+    assert_eq!(project.unavailable.as_deref(), Some("missing NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU"));
     let ask = |row: Option<&str>| EventFeedTailParams {
         branch_id: "1".into(),
         hour: Some(hour),
@@ -1878,6 +1879,20 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
     assert_eq!(orders_listed.gaps.len(), 1);
     assert_eq!(orders_listed.gaps[0].key, "FROM.GetName");
     assert!(orders_listed.gaps[0].reason.contains("unregistered_trigger_key"), "{:?}", orders_listed.gaps[0]);
+}
+
+#[test]
+fn feed_kinds_name_missing_project_history_after_content_prerequisites_are_met() {
+    use dashboard_base::{products::{BranchParams, LoadContext, Product}, test_fixtures::visual_mods::Machine};
+    use std::sync::atomic::AtomicBool;
+
+    let machine = Machine::new("feed_project_history_gap");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    let (source, options) = machine.open();
+    let kinds = super::EventFeedKinds::load(&source, &BranchParams { branch_id: "1".into() }, &LoadContext { content: Some(options) }, &AtomicBool::new(false)).unwrap();
+    let project = kinds.kinds.iter().find(|item| item.kind == EventFeedKind::ProjectFinished).unwrap();
+    assert_eq!(project.first_observed, None);
+    assert_eq!(project.unavailable.as_deref(), Some("Events of this kind may not be listed: project histories were not recorded then."));
 }
 
 #[test]
