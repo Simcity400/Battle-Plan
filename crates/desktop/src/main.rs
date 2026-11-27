@@ -230,6 +230,20 @@ fn main_page(webview: &tauri::Webview) -> Result<(), String> {
     }
 }
 
+#[derive(Default)]
+struct ShellReady(std::sync::atomic::AtomicBool);
+
+#[tauri::command]
+async fn shell_ready(webview: tauri::Webview) -> Result<(), String> {
+    if webview.label() != "main" {
+        return Err("Only the main window starts BattlePlan’s background services.".into());
+    }
+    if !webview.state::<ShellReady>().0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tauri::async_runtime::spawn_blocking(recorder::start_recorder).await.map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 struct Receipt {
     app: tauri::AppHandle,
     seq: u64,
@@ -635,7 +649,6 @@ fn main() {
                 app_update::Role::Dashboard,
                 Arc::new(updates::Host(app.handle().clone())),
             )?;
-            recorder::start_recorder();
             export_settings::sweep_pending_stages();
             native::start_gamepad(app.handle().clone());
             let push = app.handle().clone();
@@ -668,6 +681,7 @@ fn main() {
         .manage(export_jobs::ExportJobs::default())
         .manage(export_webview::ExportWebviewState::default())
         .manage(Leaving::default())
+        .manage(ShellReady::default())
         .invoke_handler({
             let commands: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
             video::video_settings,
@@ -677,6 +691,7 @@ fn main() {
             video::map_muted,
             video::set_map_muted,
             desktop_state,
+            shell_ready,
             playback_pressure_merges,
             close_watch_document,
             watch_close_requests,

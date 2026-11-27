@@ -70,6 +70,7 @@ import {
 import { keepLatest } from './latest.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
 import { useUpdateState } from '../update/useUpdateState';
+import { afterShellPaint, reportShellReady } from './ready';
 
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
@@ -219,6 +220,12 @@ function MapState({ icon = 'map', title, children, busy = false, alert = false }
 }
 
 export default function App() {
+  useEffect(() => {
+    if (!desktopAvailable) return;
+    return afterShellPaint(() => {
+      void reportShellReady().catch(error => console.error('BattlePlan couldn’t start its background services:', error));
+    });
+  }, []);
   const appearance = useAppearance();
   const iconMenu = useSidebarIconMenu(appearance);
   const widgetIconMenu = useWidgetIconMenu(appearance);
