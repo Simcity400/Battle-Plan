@@ -4536,6 +4536,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "replay-recording",
  "replay-tools",
  "rfd",
  "rmp-serde",

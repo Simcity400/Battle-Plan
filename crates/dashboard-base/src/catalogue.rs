@@ -562,7 +562,7 @@ pub fn catalogue_loads(source: &Source, options: &ContentOptions) -> usize {
     })
 }
 
-pub(crate) mod kept;
+pub mod kept;
 
 #[cfg(test)]
 mod parity_tests;

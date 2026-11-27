@@ -109,10 +109,13 @@ impl DashboardService {
             }
             if saved.is_none() {
                 let app = app.clone();
-                let runtime = dashboard::Service::new(Arc::new(move |event| {
-                    receive_data(&app, event);
-                    true
-                }))
+                let runtime = dashboard::Service::with_strip_cache(
+                    Arc::new(move |event| {
+                        receive_data(&app, event);
+                        true
+                    }),
+                    dashboard_core::config::Config::content_cache_dir().ok().map(|path| path.join("strips")),
+                )
                 .map_err(|error| error.to_string())?;
                 *saved = Some(runtime);
             }
