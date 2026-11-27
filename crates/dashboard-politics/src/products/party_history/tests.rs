@@ -236,6 +236,40 @@ fn a_party_named_for_another_country_follows_that_countrys_naming_and_never_brid
     assert!(hours.contains(&210) && !hours.contains(&208), "only a ruling party's country names it: {hours:?}");
 }
 
+fn sparse_lexicon_frame(hour: i32) -> DecodedFrame {
+    let mut frame = source(1, hour, Some(1_000));
+    set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: 7, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
+    set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: GER, canonical_slot: 7 }]));
+    let character = CharacterRow { id: 701, country: GER, name_token_id: 61, token: b"TEST_LEADER_NAME".to_vec(), ..Default::default() };
+    set(&mut frame, TableId::Characters, TableRows::Characters(vec![character]));
+    let words = TableRows::LexicalTokens(vec![LexicalTokenRow { token: 61, literal: b"TEST_LEADER_SCRIPT".to_vec() }]);
+    if hour % 2 == 0 {
+        set(&mut frame, TableId::LexicalTokens, words);
+    } else {
+        carried(&mut frame, TableId::LexicalTokens, words);
+    }
+    let look = CountryAppearanceRow { country: GER, leader_ideology: b"liberalism".to_vec(), leader_character: Some(701), ..Default::default() };
+    set(&mut frame, TableId::CountryAppearance, TableRows::CountryAppearance(vec![look]));
+    frame
+}
+
+#[test]
+fn a_leaders_portrait_is_read_by_one_reader_however_often_the_lexicon_is_read() {
+    let source = recording((400..=420).map(sparse_lexicon_frame).collect());
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let run = query.timeline.stretches[0].run;
+    let recording = query.replay.recording();
+    assert_eq!(super::complete_reads(recording, run, TableId::LexicalTokens, 400, 420).unwrap().len(), 11, "the lexicon is read every other hour");
+    let (parties, counts) = replay_recording::cells::count_reads(|| read(&query, &"GER".into(), super::PartyRead::Full, &AtomicBool::new(false)).unwrap());
+    assert_eq!(parties.people.len(), 1);
+    assert_eq!(parties.leaders.len(), 1);
+    assert_eq!(
+        counts[&TableId::CharacterPortraits].opened,
+        1,
+        "the leader's portrait is read by one reader moving through the hours it is looked at, not one opened at each read of the lexicon"
+    );
+}
+
 const HELD: u32 = 5501;
 
 fn holder_frame(hour: i32) -> DecodedFrame {

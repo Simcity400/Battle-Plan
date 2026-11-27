@@ -1,5 +1,5 @@
 use dashboard_base::products::Country;
-use dashboard_base::products::{CountryParams, LoadContext, Product, check_reply_budget, character_portraits::{RecordedPortrait, portrait_png, recorded_portrait}, politics_content::{PoliticsContent, politics_content}};
+use dashboard_base::products::{CountryParams, LoadContext, Product, at_hour, check_reply_budget, character_portraits::{RecordedPortrait, portrait_png, recorded_portrait}, politics_content::{PoliticsContent, politics_content}};
 use super::ideas::IdeaCharacter;
 use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
@@ -610,6 +610,7 @@ impl Parties {
         read_bounds_into(&observed.concat(), &mut hours);
         let hours = settled(hours, first, last);
         let mut unread = [0; SOURCES.len()];
+        let mut frames = at_hour::Frames::new(query)?;
         for (index, &hour) in hours.iter().enumerate() {
             check_cancel(cancelled)?;
             let end = hours.get(index + 1).map_or(last, |next| next - 1);
@@ -624,12 +625,12 @@ impl Parties {
                 reads.get(unread[source]).is_some_and(|&(from, _)| from <= hour)
             });
             let changed = [renames.hours.binary_search(&hour).is_ok(), recasts.hours.binary_search(&hour).is_ok()];
-            self.observe(query, run, (hour, end), who, (asked, &renames.reads, &recasts), columns, read, changed, [&held, &looks, &politics])?;
+            self.observe(query, &mut frames, run, (hour, end), who, (asked, &renames.reads, &recasts), columns, read, changed, [&held, &looks, &politics])?;
         }
         Ok(())
     }
 
-    fn observe(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), (asked, naming, characters): (&Country, &NamingReads, &Recasts), columns: &Columns, read: [bool; SOURCES.len()], [renamed, recast]: [bool; 2], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
+    fn observe(&mut self, query: &Query<'_>, frames: &mut at_hour::Frames<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), (asked, naming, characters): (&Country, &NamingReads, &Recasts), columns: &Columns, read: [bool; SOURCES.len()], [renamed, recast]: [bool; 2], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
         let [parties_read, looks_read, politics_read] = read;
         if parties_read {
             self.observe_parties(query, run, (hour, end), who, (asked, naming), columns, renamed, held)?;
@@ -638,7 +639,7 @@ impl Parties {
             self.last = None;
         }
         if looks_read {
-            self.observe_leader(query, run, (hour, end), who, columns, (recast, characters), looks)?;
+            self.observe_leader(frames, (hour, end), who, columns, (recast, characters), looks)?;
         } else {
             self.look_last = None;
         }
@@ -675,7 +676,7 @@ impl Parties {
         Ok(())
     }
 
-    fn observe_leader(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), columns: &Columns, (recast, characters): (bool, &Recasts), looks: &Stepper<'_>) -> io::Result<()> {
+    fn observe_leader(&mut self, frames: &mut at_hour::Frames<'_>, (hour, end): (i32, i32), who: (u32, u32), columns: &Columns, (recast, characters): (bool, &Recasts), looks: &Stepper<'_>) -> io::Result<()> {
         let continues = self.look_last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
         self.look_last = Some((end, who));
         if let (Some(ideology), Some(character), Some(cells)) = (looks.place(columns.look[0]), looks.place(columns.look[1]), looks.shown().next()) {
@@ -686,7 +687,7 @@ impl Parties {
                 _ => {
                     let person = match id {
                         Some(id) => {
-                            let leader = characters.leader_at(query, run, hour, id, columns)?;
+                            let leader = characters.leader_at(frames, hour, id, columns)?;
                             Some(match self.people.iter().position(|held| *held == leader) {
                                 Some(index) => index as u32,
                                 None => {
@@ -773,7 +774,7 @@ fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32),
 }
 
 impl Recasts {
-    fn leader_at(&self, query: &Query<'_>, run: u32, hour: i32, id: u32, columns: &Columns) -> io::Result<Leader> {
+    fn leader_at(&self, frames: &mut at_hour::Frames<'_>, hour: i32, id: u32, columns: &Columns) -> io::Result<Leader> {
         let key = u128::from(id);
         let cells = match self.characters.reading(key, hour) {
             lanes::Reading::Cells(cells) if read_at(&self.reads, hour) => Some(cells),
@@ -783,11 +784,11 @@ impl Recasts {
         let name = cell(columns.character[1]).and_then(|value| self.characters.text(value)).and_then(|text| std::str::from_utf8(text).ok());
         let word = cell(columns.character[0]).and_then(number).and_then(|word| u32::try_from(word).ok());
         let reads = [
-            replay_lanes::at::Read { table: TableId::CharacterPortraits, columns: None, keys: Keys::These(std::slice::from_ref(&key)) },
-            replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: Keys::These(&[0]) },
+            at_hour::Read { table: TableId::CharacterPortraits, keys: at_hour::Keys::These(vec![key]) },
+            at_hour::Read { table: TableId::LexicalTokens, keys: at_hour::Keys::These(vec![0]) },
         ];
         let reads = if word == Some(0) { &reads[..] } else { &reads[..1] };
-        let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, reads))?;
+        let frame = frames.frame(hour, reads, "Party leader")?;
         let token = word.and_then(|word| {
             let literal = if word == 0 {
                 frame.complete::<tables::LexicalTokens>().ok()?.first().map(|row| row.literal.as_slice())
