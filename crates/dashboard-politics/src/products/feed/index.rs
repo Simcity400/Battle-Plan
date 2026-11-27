@@ -1078,10 +1078,8 @@ pub(crate) fn read_events(query: &Query<'_>, locators: &[Locator]) -> io::Result
                 _ => ranges.push((hour, hour)),
             }
         }
-        for row in reader.inserted(run, &ranges)? {
-            if wanted.contains(&row.key) {
-                out.insert(row.key, columns.read(&row)?);
-            }
+        for row in reader.inserted_matching(run, &ranges, |key| wanted.contains(&key))? {
+            out.insert(row.key, columns.read(&row)?);
         }
     }
     Ok(out)

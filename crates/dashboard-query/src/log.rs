@@ -834,12 +834,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok(())
     }
 
-    fn index_buckets(&self, run: u32, ranges: &[(i32, i32)]) -> io::Result<Vec<BucketEntry>> {
-        let mut out = Vec::new();
-        self.visit_bucket_ranges(run, ranges, |entry| out.push(entry))?;
-        Ok(out)
-    }
-
     fn index_walk(&self, run: u32, spans: &[(i64, i64)], mut visit: impl FnMut(BucketEntry) -> io::Result<()>) -> io::Result<()> {
         let six = bucket_hours(0);
         let (run_first, run_last) = self.run_hours(run)?;
@@ -1021,11 +1015,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok(out.into_iter().map(Option::unwrap).collect())
     }
 
-    fn logged(&self, run: u32, ranges: &[(i32, i32)]) -> io::Result<Vec<Row>> {
-        let entries = self.index_buckets(run, ranges)?;
-        self.materialize(run, &entries)
-    }
-
     fn walk(&self, run: u32, spans: &[(i64, i64)], mut visit: impl FnMut(Row) -> io::Result<()>) -> io::Result<()> {
         let six = bucket_hours(0);
         let (run_first, run_last) = self.run_hours(run)?;
@@ -1082,6 +1071,10 @@ impl<'q, 'a> Reader<'q, 'a> {
     }
 
     pub fn inserted(&self, run: u32, ranges: &[(i32, i32)]) -> io::Result<Vec<Row>> {
+        self.inserted_matching(run, ranges, |_| true)
+    }
+
+    pub fn inserted_matching(&self, run: u32, ranges: &[(i32, i32)], mut matches: impl FnMut(u128) -> bool) -> io::Result<Vec<Row>> {
         let (Some(&(from, _)), Some(&(_, to))) = (ranges.first(), ranges.last()) else { return Ok(Vec::new()) };
         let filled = crate::cost::storage(|| replay_lanes::lanes::logged_hours(self.query.replay.recording(), run, self.log.table, from, to))?;
         let mut wanted: Vec<(i32, i32)> = Vec::new();
@@ -1096,7 +1089,13 @@ impl<'q, 'a> Reader<'q, 'a> {
         if wanted.is_empty() {
             return Ok(Vec::new());
         }
-        self.logged(run, &wanted)
+        let mut entries = Vec::new();
+        self.visit_bucket_ranges(run, &wanted, |entry| {
+            if matches(entry.key) {
+                entries.push(entry);
+            }
+        })?;
+        self.materialize(run, &entries)
     }
 
     pub fn rows(&self, run: u32, patterns: &[Pattern], ranges: &[(i32, i32)]) -> io::Result<Vec<(usize, Row)>> {
