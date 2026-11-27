@@ -421,10 +421,10 @@ fn clip_membership_to_segments(spans: &[RaidTallySpan], segments: &[(i32, i32)])
 fn compute_top_membership(
     events: &[TallyEvent],
     segments: &[(i32, i32)],
-    top: usize,
+    top: Option<usize>,
     metric: RaidTallyMetric,
 ) -> (Vec<u32>, BTreeMap<u32, Vec<RaidTallySpan>>) {
-    if top == 0 || segments.is_empty() {
+    if top == Some(0) || segments.is_empty() {
         return (Vec::new(), BTreeMap::new());
     }
     let last_recorded = segments.last().unwrap().1;
@@ -458,7 +458,11 @@ fn compute_top_membership(
                 .cmp(&metric_rank_key(metric, a.1.0, a.1.1))
                 .then_with(|| a.0.cmp(&b.0))
         });
-        let next: Vec<u32> = ranked.into_iter().take(top).map(|(slot, _)| slot).collect();
+        let slots = ranked.into_iter().map(|(slot, _)| slot);
+        let next: Vec<u32> = match top {
+            Some(top) => slots.take(top).collect(),
+            None => slots.collect(),
+        };
         let start = ev_hour.max(first_recorded);
         for &slot in &members {
             if !next.contains(&slot)
@@ -763,7 +767,8 @@ impl Product for RaidTally {
         let (partial_launched, partial_succeeded) =
             metric_partial_spans(params.metric, &segments, &bounded_missing, &index, through);
 
-        let (series, next_change, rank_missing, rank_missing_from) = if let Some(top) = params.top {
+        let (series, next_change, rank_missing, rank_missing_from) = if params.top.is_some() || params.countries.is_empty() {
+            let top = params.top.map(|top| top as usize);
             let first_gap = bounded_missing.first().map(|gap| {
                 (gap.first_hour, format!("Raid history is incomplete up to this date: {}", gap.reason))
             });
@@ -785,7 +790,7 @@ impl Product for RaidTally {
                     let proven_ev_end = index.events.partition_point(|ev| ev.hour <= proven_through);
                     let proven_events = &index.events[..proven_ev_end];
                     let (ordered_slots, membership_map) =
-                        compute_top_membership(proven_events, &proven_segments, top as usize, params.metric);
+                        compute_top_membership(proven_events, &proven_segments, top, params.metric);
                     ordered_slots
                         .into_iter()
                         .map(|slot| RaidTallySlotSeries {
@@ -800,7 +805,7 @@ impl Product for RaidTally {
                 (built, next, Some(reason), Some(uncertain_hour))
             } else {
                 let (ordered_slots, membership_map) =
-                    compute_top_membership(bounded_events, &segments, top as usize, params.metric);
+                    compute_top_membership(bounded_events, &segments, top, params.metric);
                 let built: Vec<RaidTallySlotSeries> = ordered_slots
                     .into_iter()
                     .map(|slot| RaidTallySlotSeries {

@@ -104,12 +104,19 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
             let at_reply = reply_at(query, &at_params, &groups, cancelled)?;
             let from = at_reply.first_hour.min(hour);
             let until = at_reply.last_hour.max(hour);
-            if let Some(reason) = at_reply.missing {
+            let population_missing = if top.is_none() {
+                at_reply.rows.iter().find_map(|row| row.missing.clone()).or_else(|| {
+                    (query.holders.unknown.iter().any(|&(first, last, _)| first <= hour && hour <= last) || unlinked_tag_at(&query.holders, hour))
+                        .then(|| "Naval losses are not known: country holders could not be resolved at this hour.".to_owned())
+                })
+            } else { None };
+            if let Some(reason) = at_reply.missing.or(population_missing) {
                 (Vec::new(), Some(TileRanking { hour, from, until, refused: Some(reason) }))
             } else {
                 let ranked_keys: Vec<Country> = at_reply
                     .rows
                     .iter()
+                    .filter(|row| row.total.is_some_and(|total| total > 0))
                     .map(|row| row.slot.map(Country::Slot).unwrap_or_else(|| row.country.clone()))
                     .collect();
                 (ranked_keys, Some(TileRanking { hour, from, until, refused: None }))
@@ -348,6 +355,22 @@ mod tests {
             &cancel,
         )
         .unwrap();
+        let all_params = serde_json::json!({
+            "branchId": "1", "family": family, "binHours": 1, "index": 1_000 / BINS as i64, "hour": 1_035
+        });
+        let all_reply = tile(&src, &query, &all_params, &load, &cancel).unwrap();
+        assert_eq!(all_reply.lines.len(), 1);
+        assert_eq!(all_reply.lines[0].country, Country::Slot(7));
+        let unlinked = losses_source(false, None, Some((1_033, 1_035)));
+        let unlinked_query = dashboard_base::queries::query(&unlinked, 1).unwrap();
+        let refused = tile(&unlinked, &unlinked_query, &all_params, &load, &cancel).unwrap();
+        assert!(refused.lines.is_empty());
+        assert!(refused.ranking.unwrap().refused.is_some());
+        let mut unknown = all_params.clone();
+        unknown["family"]["countKind"] = serde_json::json!("both");
+        let missing = tile(&src, &query, &unknown, &load, &cancel).unwrap();
+        assert!(missing.lines.is_empty());
+        assert!(missing.ranking.unwrap().refused.is_some());
         assert_eq!(top_reply.lines.len(), 1);
         assert_eq!(top_reply.lines[0].country, Country::Slot(7));
         assert!(top_reply.ranking.as_ref().is_some_and(|rank| rank.refused.is_none() && rank.from <= 1_035 && rank.until >= 1_035));

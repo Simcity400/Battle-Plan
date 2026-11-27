@@ -1004,6 +1004,12 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
         top_after_gap.series[0].membership.as_deref().map(|spans| spans.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>()),
         Some(vec![(10, 10)]),
     );
+    let all_after_gap = RaidTally::load(&gap_source, &RaidTallyParams {
+        branch_id: "1".into(), countries: Vec::new(), top: None, metric: RaidTallyMetric::Both, hour: 14
+    }, &ctx, &cancel).unwrap();
+    assert_eq!(all_after_gap.series.len(), top_after_gap.series.len());
+    assert_eq!(all_after_gap.rank_missing_from, Some(11));
+    assert_eq!(all_after_gap.rank_missing, top_after_gap.rank_missing);
     assert_eq!(top_after_gap.rank_missing_from, Some(11));
     assert!(top_after_gap.rank_missing.as_deref().is_some_and(|reason| reason.contains("raids unread")), "{:?}", top_after_gap.rank_missing);
 
@@ -1078,6 +1084,10 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
     .unwrap();
     assert_eq!(slot7.series[0].runs.last().map(|r| r.launched), Some(1));
     assert_eq!(slot9.series[0].runs.last().map(|r| r.launched), Some(1));
+    let all_reuse = RaidTally::load(&reuse_source, &RaidTallyParams {
+        branch_id: "1".into(), countries: Vec::new(), top: None, metric: RaidTallyMetric::Both, hour: 13
+    }, &ctx, &cancel).unwrap();
+    assert_eq!(all_reuse.series.iter().map(|s| s.slot).collect::<Vec<_>>(), [7, 9]);
     assert_eq!(top_reuse.series.len(), 2, "reused tag keeps slots 7 and 9 separate");
     assert_eq!(top_reuse.series.iter().map(|s| s.slot).collect::<Vec<_>>(), vec![7, 9]);
 
