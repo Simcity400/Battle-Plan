@@ -307,12 +307,10 @@ function buildFeedTableRow(
       ? null
       : chosenHour !== null
         ? 'Chosen option not recorded'
-      : awaiting
-        ? 'No option chosen yet'
-        : page.status === 'notRecorded'
-          ? (page.notRecordedReason !== undefined ? choiceNotRecordedText(page.notRecordedReason) : 'Choice not recorded')
-          : page.choice
-            ? 'Chosen option not recorded'
+        : awaiting
+          ? 'No option chosen yet'
+          : page.status === 'notRecorded'
+            ? (page.notRecordedReason !== undefined ? choiceNotRecordedText(page.notRecordedReason) : 'Choice not recorded')
             : 'Event fired';
     detailSubject = {
       key,

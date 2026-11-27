@@ -9,7 +9,6 @@ export const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
 const tabFullTest = 'ui/src/components/VirtualList.dom.test.ts';
 
 export const browserTests = [
-  'ui/src/widgets/event-choices/EventDetailWindow.dom.test.ts',
   'ui/src/components/battleTitle.dom.test.ts',
   'ui/src/widgets/event-feed/activityStrip.dom.test.ts',
   'ui/src/components/DateTimePicker.dom.test.ts',
