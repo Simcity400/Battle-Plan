@@ -11,7 +11,6 @@ use playhead::{
     changes::Changes,
     pages::WorldPages,
 };
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -21,8 +20,6 @@ use std::{
 };
 
 const SPEED: f64 = 1440.0;
-const MAX_LCS_CELLS: usize = 256 * 1024;
-const MAX_EDITS: usize = 32;
 
 #[cfg(windows)]
 fn thread_cpu_ns() -> u64 {
@@ -50,96 +47,8 @@ fn thread_cycles() -> u64 {
 #[cfg(not(windows))]
 fn thread_cycles() -> u64 { 0 }
 
-#[derive(Clone, Serialize)]
-#[serde(untagged)]
-enum Part { Key(String), Index(usize) }
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-enum Op { Replace(Vec<Part>, Value), Remove(Vec<Part>), Splice(Vec<Part>, usize, usize, Vec<Value>) }
-
-fn diff_value(before: &Value, after: &Value, path: &mut Vec<Part>, out: &mut Vec<Op>) {
-    if before == after { return; }
-    match (before, after) {
-        (Value::Object(a), Value::Object(b)) => {
-            for key in a.keys().filter(|k| !b.contains_key(*k)) {
-                path.push(Part::Key(key.clone()));
-                out.push(Op::Remove(path.clone()));
-                path.pop();
-            }
-            for (key, value) in b {
-                path.push(Part::Key(key.clone()));
-                match a.get(key) {
-                    Some(prev) => diff_value(prev, value, path, out),
-                    None => out.push(Op::Replace(path.clone(), value.clone())),
-                }
-                path.pop();
-            }
-        }
-        (Value::Array(a), Value::Array(b)) => diff_array(a, b, path, out),
-        _ => out.push(Op::Replace(path.clone(), after.clone())),
-    }
-}
-
-fn diff_array(a: &[Value], b: &[Value], path: &mut Vec<Part>, out: &mut Vec<Op>) {
-    let limit = a.len().min(b.len());
-    let mut prefix = 0;
-    while prefix < limit && a[prefix] == b[prefix] { prefix += 1; }
-    let mut suffix = 0;
-    while suffix < limit - prefix && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix] { suffix += 1; }
-    let (am, bm) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
-    if am.is_empty() && bm.is_empty() { return; }
-    if am.len() == bm.len() && am.len() <= MAX_EDITS {
-        let mark = out.len();
-        for (i, (left, right)) in am.iter().zip(bm).enumerate() {
-            path.push(Part::Index(prefix + i));
-            diff_value(left, right, path, out);
-            path.pop();
-        }
-        if out.len() - mark <= MAX_EDITS { return; }
-        out.truncate(mark);
-    }
-    if am.len().saturating_mul(bm.len()) <= MAX_LCS_CELLS && !am.is_empty() && !bm.is_empty() {
-        let cols = bm.len() + 1;
-        let mut dp = vec![0u32; (am.len() + 1) * cols];
-        for i in (0..am.len()).rev() {
-            for j in (0..bm.len()).rev() {
-                dp[i * cols + j] = if am[i] == bm[j] { dp[(i + 1) * cols + j + 1] + 1 } else { dp[(i + 1) * cols + j].max(dp[i * cols + j + 1]) };
-            }
-        }
-        let (mut i, mut j, mut pos, mut ops) = (0, 0, prefix, Vec::new());
-        while i < am.len() || j < bm.len() {
-            if i < am.len() && j < bm.len() && am[i] == bm[j] { i += 1; j += 1; pos += 1; continue; }
-            let (si, sj) = (i, j);
-            while (i < am.len() || j < bm.len()) && !(i < am.len() && j < bm.len() && am[i] == bm[j]) {
-                if i < am.len() && (j == bm.len() || dp[(i + 1) * cols + j] >= dp[i * cols + j + 1]) { i += 1; } else { j += 1; }
-            }
-            let (removed, inserted) = (i - si, j - sj);
-            if removed == inserted && removed <= 8 {
-                for k in 0..removed {
-                    path.push(Part::Index(pos + k));
-                    diff_value(&am[si + k], &bm[sj + k], path, &mut ops);
-                    path.pop();
-                }
-            } else {
-                ops.push(Op::Splice(path.clone(), pos, removed, bm[sj..j].to_vec()));
-            }
-            pos += inserted;
-            if ops.len() > MAX_EDITS {
-                out.push(Op::Splice(path.clone(), prefix, am.len(), bm.to_vec()));
-                return;
-            }
-        }
-        out.extend(ops);
-        return;
-    }
-    out.push(Op::Splice(path.clone(), prefix, am.len(), bm.to_vec()));
-}
-
 fn patch_bytes(before: &Value, after: &Value) -> usize {
-    let mut ops = Vec::new();
-    diff_value(before, after, &mut Vec::new(), &mut ops);
-    rmp_serde::to_vec(&ops).map_or(usize::MAX, |b| b.len())
+    dashboard::patch::encode(&dashboard::patch::diff(before, after)).map_or(usize::MAX, |b| b.len())
 }
 
 fn change_touches(c: &Changes, cols: &BTreeSet<usize>) -> bool {
@@ -401,7 +310,7 @@ fn build_panels(
         ("air-superiority-region", "air-superiority", None, json!({ "branchId": branch, "mode": "sides", "order": "contested" })),
         ("who-spies-on-whom:pairs", "operative-matrix", None, json!({ "branchId": branch, "countries": [], "form": "pairs" })),
         ("political-power-spending-breakdown", "power-spending-breakdown", None, json!({ "branchId": branch, "country": tag, "currency": "Political", "from": opened })),
-        ("industrial-organisations", "industrial-organisations", None, country.clone()),
+        ("industrial-organisations", "industrial-organisations", None, country),
         ("governments-in-exile", "politics-state", None, json!({ "branchId": branch, "view": "exiles" })),
         ("occupied-states", "occupied-states", None, world.clone()),
         ("factories:race", "series-rank", None, json!({ "branchId": branch, "family": { "kind": "country-factories", "measure": "free7" }, "top": 10 })),
