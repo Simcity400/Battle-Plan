@@ -17,32 +17,46 @@ const POOL: (u32, u8, u8, u64) = (0x18, 1, 0, 0);
 fn exact_project_reads_advance_history_shared_with_the_load_path() {
     use dashboard_base::test_fixtures::visual_mods::Machine;
 
+    let (first, previous, requested) = (100, 850, 1020);
     let machine = Machine::new("project_exact_history");
     machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
     machine.write("common/special_projects/projects/fixture.txt", b"fixture_project={}");
-    let frames = (100..=1020).map(|at| {
+    let frames: Vec<_> = (first..=requested).map(|at| {
         let mut frame = frame(at, &hour(at, RUNNING));
         *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 40, literal: b"fixture_project".to_vec() }]));
         frame
     }).collect();
+    let owners = frames[0].complete::<tables::CountryLinks>().unwrap().len() as u64;
     let (source, options) = machine.open_frames(frames);
     let load = LoadContext { content: Some(options) };
     let cancelled = AtomicBool::new(false);
-    crate::registrations::SPECIAL_PROJECTS_SPECIALPROJECTS.answer(
-        &source, serde_json::json!({"branchId":"1", "country":"GER", "hour":850}), &load, &cancelled,
-    ).unwrap();
-    let panel = dated_panel(&source, &load, &serde_json::json!({"panel":"special-projects", "branchId":"1", "country":"GER"})).unwrap();
-    let exact = panel.exact().unwrap();
-    let (reply, counts) = count_reads(|| (exact.cold)(1020, &cancelled).unwrap());
+    let load_at = |country, hour| {
+        crate::registrations::SPECIAL_PROJECTS_SPECIALPROJECTS.answer(
+            &source, serde_json::json!({"branchId":"1", "country":country, "hour":hour}), &load, &cancelled,
+        ).unwrap()
+    };
+    let exact_at_requested = || {
+        let panel = dated_panel(&source, &load, &serde_json::json!({"panel":"special-projects", "branchId":"1", "country":"GER"})).unwrap();
+        count_reads(|| (panel.exact().unwrap().cold)(requested, &cancelled).unwrap())
+    };
+    let (rebuilt, rebuilt_reads) = exact_at_requested();
+    load_at(serde_json::json!("GER"), previous);
+    let (reply, forward_reads) = exact_at_requested();
     assert!(reply["projects"].as_array().is_some_and(|projects| !projects.is_empty()));
-    assert_eq!(counts[&TableId::Projects].stretches, 1);
-    crate::registrations::SPECIAL_PROJECTS_SPECIALPROJECTS.answer(
-        &source, serde_json::json!({"branchId":"1", "country":7, "hour":1020}), &load, &cancelled,
-    ).unwrap();
-    let (_, repeated) = count_reads(|| crate::registrations::SPECIAL_PROJECTS_SPECIALPROJECTS.answer(
-        &source, serde_json::json!({"branchId":"1", "country":"GER", "hour":1020}), &load, &cancelled,
-    ).unwrap());
-    assert!(!repeated.contains_key(&TableId::Projects));
+    assert_eq!(reply, rebuilt);
+    let reach = (previous + 1 - (STAGGER_PERIOD - 1)).max(first);
+    let block = |hour| (hour - first) as u64 / u64::from(replay_columnar::unit::BLOCK);
+    let forward_limit = owners * (block(requested) - block(reach) + 1);
+    load_at(serde_json::json!(7), requested);
+    let (repeated, repeated_reads) = count_reads(|| load_at(serde_json::json!("GER"), requested));
+    assert_eq!(repeated, reply);
+    for table in [TableId::Projects, TableId::ProjectHistory] {
+        let forward = forward_reads[&table].stretches;
+        let rebuilt = rebuilt_reads[&table].stretches;
+        assert!((1..=forward_limit).contains(&forward) && forward < rebuilt,
+            "{table:?} walked {forward} stretches advancing (limit {forward_limit}) and {rebuilt} rebuilding");
+        assert!(repeated_reads.get(&table).is_none_or(|reads| reads.stretches == 0), "{table:?} walked history at the same hour");
+    }
 }
 
 #[test]
