@@ -55,11 +55,12 @@ impl Comparisons {
 pub(super) struct Viewport {
     pub(super) size: Option<[i32; 2]>,
     pub(super) comparisons: Comparisons,
+    pub(super) needed: bool,
 }
 
 impl Viewport {
     pub(super) fn new(size: Option<[i32; 2]>) -> Self {
-        Self { size, comparisons: Comparisons::default() }
+        Self { size, comparisons: Comparisons::default(), needed: false }
     }
 }
 
@@ -505,7 +506,9 @@ fn any_unset(window: &Window, viewport: &mut Viewport) -> Result<bool, String> {
 }
 
 fn size_unset(window: &Window, viewport: &mut Viewport) -> Result<bool, String> {
-    if viewport.size.is_none() && window.size.iter().any(|extent| matches!(extent, WindowExtent::MaxResolution { .. })) {
+    let needs_viewport = window.size.iter().any(|extent| matches!(extent, WindowExtent::MaxResolution { .. }));
+    viewport.needed |= needs_viewport;
+    if needs_viewport && viewport.size.is_none() {
         return Err(
             "was read with no load-time GUI viewport given (read_layers_at, read_at): \
              window post-load pass tests whether size is set (a zero axis is unset) \

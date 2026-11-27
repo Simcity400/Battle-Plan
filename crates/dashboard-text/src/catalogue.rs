@@ -755,7 +755,7 @@ pub struct Catalogue {
     pub sprites: SpriteSet,
     guis: content_reader_layers::content::ByMode<
         Once<(
-            Result<content_reader_gui::gui::native::Guis, String>,
+            Result<Arc<content_reader_gui::gui::native::Guis>, String>,
             BTreeSet<String>,
         )>,
     >,
@@ -794,13 +794,13 @@ impl Catalogue {
             let (guis, fallbacks) = content_reader_layers::content::observe_overlay_refusals(|| {
                 self.content.layers.artwork(
                     "interface windows",
-                    content_reader_gui::gui::native::read_layers,
+                    |layers| content_reader_gui::gui::native::read_shared_layers(layers, None),
                 )
             });
             (guis.map_err(|error| error.to_string()), fallbacks)
         });
         content_reader_layers::content::credit_overlay_refusals(fallbacks);
-        guis.as_ref().map_err(invalid)
+        guis.as_deref().map_err(invalid)
     }
 
     pub fn presentation_localisation(&self) -> io::Result<Arc<Localisation>> {

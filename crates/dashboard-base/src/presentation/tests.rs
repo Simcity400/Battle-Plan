@@ -152,7 +152,12 @@ fn the_gui_registry_is_read_ahead_in_the_mode_shields_read_it() {
     assert!(catalogue.content.layers.presentation().shows_visual_mods());
     crate::products::read_ahead::warm_guis(&catalogue);
     let loads = catalogue.content_loads();
-    let _ = content_reader_layers::content::strict(|| catalogue.guis().is_ok());
+    let layouts = content_reader_gui::gui::native::read_layers_at(
+        catalogue.content.layers.presentation(), [1234, 789],
+    ).unwrap();
+    content_reader_layers::content::strict(|| {
+        assert!(std::ptr::eq(catalogue.guis().unwrap(), layouts.as_ref()));
+    });
     assert_eq!(catalogue.content_loads(), loads);
 }
 
