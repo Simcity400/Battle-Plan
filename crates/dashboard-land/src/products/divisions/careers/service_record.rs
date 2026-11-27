@@ -1,10 +1,7 @@
 mod roster;
 use super::{CareerFacts, CareerMedal, Content, Countries, DecoratedDivisions, Facts, Levels, MedalIndex, Refusals, attributed, describe, enemy_killed, manpower_of, status_of};
 use crate::products::{army::ArmyAttribution, division_log};
-use dashboard_base::queries::{
-    country_ids::{RunLinks, run_links},
-    lexicon::RunLexicon,
-};
+use dashboard_base::queries::country_ids::{RunLinks, run_links};
 use dashboard_base::{
     Source,
     products::{
@@ -27,7 +24,8 @@ use dashboard_query::{
 use dashboard_text::metadata::check_cancel;
 use replay_data::rows::{DivisionEventRow, DivisionHistoryRow, DivisionRow, TableId, TableRows, tables};
 use replay_frame::frame::TableView;
-use replay_lanes::lanes::{self, Cell, Keys as LaneKeys};
+use replay_lanes::{lanes::{self, Cell, Keys as LaneKeys}, points};
+use replay_recording::columnar_frames::Recording;
 use roster::{Roster, Scope};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -357,7 +355,29 @@ fn battle_entries(
         .collect())
 }
 
-fn history_lanes(source: &Source, query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<(lanes::History, Arc<RunLexicon>, Vec<lanes::StatusRun>)> {
+pub(in crate::products::divisions) fn award_token_changes(
+    recording: &Recording,
+    run: u32,
+    tokens: &[u128],
+    first: i32,
+    last: i32,
+) -> io::Result<(Vec<(u32, i32)>, Vec<lanes::StatusRun>)> {
+    if tokens.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let mut changes = Vec::new();
+    let mut statuses = Vec::new();
+    dashboard_query::cost::storage(|| {
+        points::cells(recording, run, TableId::LexicalTokens, &[0], LaneKeys::These(tokens), first, last, Some(&mut statuses), &mut |hour, key, _| {
+            changes.push((key as u32, hour));
+            true
+        })
+    })?;
+    changes.sort_unstable();
+    Ok((changes, statuses))
+}
+
+fn history_lanes(query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<(lanes::History, Vec<(u32, i32)>, Vec<lanes::StatusRun>)> {
     let recording = query.replay.recording();
     let history = lanes::history(
         recording,
@@ -368,8 +388,18 @@ fn history_lanes(source: &Source, query: &Query<'_>, run: u32, first: i32, last:
         first,
         last,
     )?;
-    let statuses = dashboard_query::read::statuses(recording, run, TableId::LexicalTokens, first, last)?;
-    Ok((history, dashboard_base::queries::lexicon(source, run)?, statuses))
+    let mut tokens: Vec<u128> = history
+        .keys
+        .iter()
+        .filter(|(key, _)| ((key >> 32) & 3) as u8 == DivisionHistoryRow::AWARDS)
+        .flat_map(|(_, steps)| steps.iter())
+        .filter_map(|step| step.cells.as_deref().and_then(award_token))
+        .map(u128::from)
+        .collect();
+    tokens.sort_unstable();
+    tokens.dedup();
+    let (changes, statuses) = award_token_changes(recording, run, &tokens, first, last)?;
+    Ok((history, changes, statuses))
 }
 
 fn award_token(cells: &[Cell]) -> Option<u32> {
@@ -379,7 +409,7 @@ fn award_token(cells: &[Cell]) -> Option<u32> {
     }
 }
 
-fn scan(source: &Source, query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Result<Tail> {
+fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Result<Tail> {
     let timeline = &query.timeline;
     let recording = query.replay.recording();
     let mut roster = Roster::default();
@@ -406,9 +436,9 @@ fn scan(source: &Source, query: &Query<'_>, content: Content, cancelled: &Atomic
         let Roster { divisions, templates, .. } = &mut roster;
         let ((joined, inserted), (scanned, lanes)) = rayon::join(
             || rayon::join(|| battle_entries(query, stretch, &links, &mut participated, cancelled), || reader.inserted(run, &[(first, last)])),
-            || rayon::join(|| roster::scan(query, stretch, &links, divisions, templates, &content, cancelled), || history_lanes(source, query, run, first, last)),
+            || rayon::join(|| roster::scan(query, stretch, &links, divisions, templates, &content, cancelled), || history_lanes(query, run, first, last)),
         );
-        let (joined, inserted, (history, lexicon, statuses)) = (joined?, inserted?, lanes?);
+        let (joined, inserted, (history, changes, statuses)) = (joined?, inserted?, lanes?);
         scanned?;
         if recording.predates(TableId::DivisionKills.index()).is_none() {
             let kills = lanes::history(recording, run, TableId::DivisionKills, &[dashboard_declare::field(TableId::DivisionKills, "killed_raw")?, dashboard_declare::field(TableId::DivisionKills, "incomplete_from")?], LaneKeys::All, first, last)?;
@@ -484,10 +514,12 @@ fn scan(source: &Source, query: &Query<'_>, content: Content, cancelled: &Atomic
                         previous = award;
                     }
                     if let Some((Cell::Number(token), _)) = award {
-                        let key = u128::from(token as u32);
+                        let token = token as u32;
+                        let key = u128::from(token);
                         division.tokens.insert(key);
                         let end = steps.get(i + 1).map_or(last, |next| next.hour - 1);
-                        division.facts.extend(lexicon.changes(token as u32, step.hour, end));
+                        let changed = changes.partition_point(|&held| held <= (token, step.hour));
+                        division.facts.extend(changes[changed..].iter().take_while(|&&(held, hour)| held == token && hour <= end).map(|&(_, hour)| hour));
                         let start = statuses.partition_point(|s| s.first <= step.hour);
                         division.facts.extend(statuses[start..].iter().take_while(|s| s.first <= end).map(|s| s.first));
                     }
@@ -597,7 +629,7 @@ fn prepare(
     let tail = if let Some(tail) = cached {
         Arc::clone(tail)
     } else {
-        let tail = Arc::new(scan(source, query, content, cancelled)?);
+        let tail = Arc::new(scan(query, content, cancelled)?);
         records.0.insert(query.timeline.id, Arc::clone(&tail));
         tail
     };

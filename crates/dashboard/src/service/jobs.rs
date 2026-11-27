@@ -671,7 +671,6 @@ impl Inner {
             read_naming_ahead(&source);
             read_feed_scope_ahead(&source);
             read_air_observed_ahead(&source);
-            read_lexicons_ahead(&source);
             source
                 .name_countries(self.content().as_ref())
                 .map_err(|error| error.to_string())?;
@@ -783,16 +782,6 @@ fn read_air_observed_ahead(source: &Arc<Source>) {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
             let _ = source.in_scope(|| dashboard_air::products::air_ledger::warm_observed(&source, branch));
-        })
-    });
-}
-
-fn read_lexicons_ahead(source: &Arc<Source>) {
-    let source = Arc::downgrade(source);
-    let _ = std::thread::Builder::new().name("lexicons ahead".into()).spawn_carried(move || {
-        job_priority::confined(|| {
-            let Some(source) = source.upgrade() else { return };
-            let _ = source.in_scope(|| dashboard_base::queries::warm_lexicons(&source));
         })
     });
 }
