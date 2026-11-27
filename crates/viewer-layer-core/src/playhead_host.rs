@@ -819,17 +819,19 @@ impl MapSide<NoProducts> {
 
 impl<P: PlaybackProducts> MapSide<P> {
     pub fn lay_overlay_again(&mut self) -> Result<viewer_runtime::landed::Landed<P::OverlayMade>, String> {
-        let until = Instant::now() + HANDS_BACK;
+        let mut until = Instant::now() + HANDS_BACK;
         loop {
             if !self.makers_home() && let Some(hour) = self.applied {
                 self.frame_within(hour, Settling::step(), false).map_err(|error| error.to_string())?;
             }
             let asked = self.ask_overlay_step(true, true, Arc::default());
             self.post_makers();
-            if asked && self.makers_home()
-                && (self.join_overlay(Settling::Whole) || self.overlay.as_deref().is_some_and(|overlay| overlay.missed().is_empty()))
-            {
-                break;
+            if asked && self.makers_home() {
+                if self.join_overlay(Settling::Whole) || self.makers_home() {
+                    break;
+                }
+                until = Instant::now() + HANDS_BACK;
+                continue;
             }
             if Instant::now() >= until {
                 let loading = self.overlay.as_deref().map(Overlaying::loading).unwrap_or_default().join("; ");
