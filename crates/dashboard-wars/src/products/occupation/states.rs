@@ -262,6 +262,11 @@ impl<'f> Joins<'f> {
         };
         (inputs, scope)
     }
+
+    fn assigned(&self, key: Key) -> Option<(i32, &[u128])> {
+        (self.assigned_missing.is_none() && !self.unresolved_assigned.contains(&key.2))
+            .then(|| self.assigned.get(&key).map_or((0, &[][..]), |(total, keys)| (*total, keys.as_slice())))
+    }
 }
 
 fn occupied_states<'f>(resistance: &'f [StateResistanceRow], states: &'f [StateRow], links: &[CountryLinkRow]) -> Vec<(&'f StateResistanceRow, Option<&'f StateRow>, Option<Key>)> {
@@ -277,21 +282,57 @@ fn occupied_states<'f>(resistance: &'f [StateResistanceRow], states: &'f [StateR
         .collect()
 }
 
-fn needs_world(frame: &DecodedFrame) -> bool {
-    (|| -> io::Result<bool> {
+fn read_operands(frame: &DecodedFrame, content: &Content, equipment: bool) -> (bool, Option<BTreeSet<u128>>) {
+    let equipment = equipment && content.equipment.get().map_or(content.catalogue.is_ok(), Result::is_ok);
+    (|| -> io::Result<_> {
         let links = frame.complete::<tables::CountryLinks>()?;
         let joins = Joins::read(frame, links, &mut Refusals::default())?;
         let (RecordedRows::Complete(states) | RecordedRows::Truncated { rows: states, .. }) = recorded_rows::<tables::States>(frame)? else {
-            return Ok(false);
+            return Ok(Default::default());
         };
         let (RecordedRows::Complete(resistance) | RecordedRows::Truncated { rows: resistance, .. }) = recorded_rows::<tables::StateResistance>(frame)? else {
-            return Ok(false);
+            return Ok(Default::default());
         };
-        Ok(occupied_states(resistance, states, links)
-            .into_iter()
-            .any(|(_, state, key)| joins.law_inputs(state.and_then(|state| slot(links, state.controller)), key).0.reaches_default()))
+        let mut world = false;
+        let mut tokens = None;
+        let complete_garrisons = frame.complete::<tables::StateGarrisons>().is_ok();
+        for (_, state, key) in occupied_states(resistance, states, links) {
+            if !world {
+                let (inputs, scope) = joins.law_inputs(state.and_then(|state| slot(links, state.controller)), key);
+                if inputs.reaches_default() {
+                    let _ = law::law_for(inputs, |token| {
+                        world = admission_rule(content, links, token, key, scope)?.is_some();
+                        Ok(true)
+                    });
+                }
+            }
+            if !equipment && world { break; }
+            if equipment && let Some(key) = key && let Some(row) = joins.garrisons.get(&key)
+                && joins.strengths.get(&GarrisonStrengthRow::key_of(row.controller, row.state)).is_some_and(|row| row.strength != Recorded::NotRecorded)
+            {
+                let operands = strength_equipment(row, joins.assigned(key).map(|(total, _)| total));
+                if !operands.is_empty() {
+                    let keys = tokens.get_or_insert_with(BTreeSet::new);
+                    if complete_garrisons {
+                        keys.extend(operands.iter().flat_map(|entry| [u128::from(entry.equipment_token), u128::from(entry.archetype_token)]));
+                    }
+                }
+            }
+        }
+        Ok((world, tokens))
     })()
-    .unwrap_or(false)
+    .unwrap_or_default()
+}
+
+fn admission_rule<'c>(content: &'c Content, links: &[CountryLinkRow], token: &str, key: Option<Key>, scope: Option<u32>) -> Result<Option<(&'c Law, u32, u32)>, String> {
+    let laws = content.laws.as_ref().map_err(Clone::clone)?;
+    let definition = laws.find(token)?.ok_or_else(|| format!("Occupation law {token} has no recorded-content declaration"))?;
+    if definition.visible.is_empty() && definition.available.is_empty() {
+        return Ok(None);
+    }
+    let (controller, _, _) = key.expect("a law reaching the default has its key");
+    let occupied = scope.and_then(|raw| slot(links, raw)).ok_or_else(|| "The occupied-country scope is not captured or its link is unresolved".to_owned())?;
+    Ok((!definition.visible.is_empty() || controller != occupied).then_some((definition, controller, occupied)))
 }
 
 struct Admission<'f> {
@@ -316,16 +357,9 @@ impl<'f> Admission<'f> {
     }
 
     fn admit(&mut self, token: &str, key: Option<Key>, scope: Option<u32>) -> Result<bool, String> {
-        let laws = self.content.laws.as_ref().map_err(Clone::clone)?;
-        let definition = laws.find(token)?.ok_or_else(|| format!("Occupation law {token} has no recorded-content declaration"))?;
-        if definition.visible.is_empty() && definition.available.is_empty() {
+        let Some((definition, controller, occupied)) = admission_rule(self.content, self.links, token, key, scope)? else {
             return Ok(true);
-        }
-        let (controller, _, _) = key.expect("a law reaching the default has its key");
-        let occupied = scope.and_then(|raw| slot(self.links, raw)).ok_or_else(|| "The occupied-country scope is not captured or its link is unresolved".to_owned())?;
-        if definition.visible.is_empty() && controller == occupied {
-            return Ok(true);
-        }
+        };
         let Self { frame, content, world, decided, read, through, .. } = self;
         let (frame, content) = (*frame, *content);
         let slot = match decided.entry((token.to_owned(), controller, occupied)) {
@@ -692,16 +726,6 @@ fn world_planned(plan: &[(Vec<Read>, i32)]) -> bool {
     plan.get(1).is_some_and(|(reads, _)| reads.iter().any(|read| read.table != TableId::LexicalTokens))
 }
 
-fn equipment_tokens(held: &DecodedFrame) -> Vec<u128> {
-    let mut tokens = BTreeSet::new();
-    for row in held.complete::<tables::StateGarrisons>().into_iter().flatten() {
-        if let Recorded::Value(inputs) = &row.equipment {
-            for entry in &inputs.rows { tokens.extend([u128::from(entry.equipment_token), u128::from(entry.archetype_token)]); }
-        }
-    }
-    tokens.into_iter().collect()
-}
-
 struct Garrison {
     required: Option<i64>,
     alert: bool,
@@ -735,15 +759,20 @@ fn strength(frame: &DecodedFrame, content: &Content, joins: &Joins<'_>, row: &St
     if derived.strength == Recorded::NotRecorded {
         return Err(not_recorded(row, derived.reason, joins.assigned_missing.as_deref()));
     }
+    for entry in strength_equipment(row, assigned) {
+        defined(frame, content, entry)?;
+    }
+    Ok(key)
+}
+
+fn strength_equipment(row: &StateGarrisonRow, assigned: Option<i32>) -> &[GarrisonEquipment] {
     if let Recorded::Value(inputs) = &row.equipment
         && row.serialized_flag == 0
         && assigned.is_some_and(|total| total != 0)
     {
-        for entry in &inputs.rows {
-            defined(frame, content, entry)?;
-        }
+        return &inputs.rows;
     }
-    Ok(key)
+    &[]
 }
 
 fn defined(frame: &DecodedFrame, content: &Content, entry: &GarrisonEquipment) -> Result<(), String> {
@@ -765,7 +794,7 @@ fn defined(frame: &DecodedFrame, content: &Content, entry: &GarrisonEquipment) -
 
 fn garrison(frame: &DecodedFrame, content: &Content, joins: &Joins<'_>, state: u32, key: Option<Key>, refused: &mut Refusals) -> Garrison {
     let row = key.and_then(|key| joins.garrisons.get(&key).copied());
-    let assigned = key.filter(|_| row.is_some() && joins.assigned_missing.is_none() && !joins.unresolved_assigned.contains(&state)).map(|key| joins.assigned.get(&key).cloned().unwrap_or_default());
+    let assigned = key.filter(|_| row.is_some()).and_then(|key| joins.assigned(key));
     let alert = row.is_some_and(|row| row.serialized_flag != 0);
     let mut missing = if key.is_none() {
         Some("The controller or occupied-country link is unresolved; the garrison key cannot be established".into())
@@ -792,7 +821,7 @@ fn garrison(frame: &DecodedFrame, content: &Content, joins: &Joins<'_>, state: u
         alert,
         row: row.map(|row| u128::from(row.controller) << 32 | u128::from(row.state)),
         strength,
-        assigned: assigned.map(|(_, keys)| keys),
+        assigned: assigned.map(|(_, keys)| keys.to_vec()),
         missing,
     }
 }
@@ -936,20 +965,6 @@ fn moving_only(edits: &Edits) -> bool {
     })
 }
 
-fn garrison_tokens_hold(frame: &DecodedFrame, edits: &Edits) -> bool {
-    if edits.replaced.contains(&TableId::StateGarrisons) { return false; }
-    let Some(changed) = edits.tables.get(&TableId::StateGarrisons) else { return true };
-    let equipment = field_mask(TableId::StateGarrisons, &["equipment"]);
-    if changed.values().all(|&mask| mask & equipment == 0) { return true; }
-    let Some(replay_frame::frame::TableView::Complete(old)) = edits.previous.get(&TableId::StateGarrisons).map(|view| view.held()) else { return false };
-    let (Some(old), Ok(new)) = (old.rows::<tables::StateGarrisons>(), frame.complete::<tables::StateGarrisons>()) else { return false };
-    let key_of = |row: &StateGarrisonRow| u128::from(row.controller) << 32 | u128::from(row.state);
-    changed.iter().filter(|(_, mask)| *mask & equipment != 0).all(|(&key, _)| {
-        let (Some(a), Some(b)) = (find(old, key, key_of), find(new, key, key_of)) else { return false };
-        same_tokens(&a.equipment, &b.equipment)
-    })
-}
-
 fn find<R>(rows: &[R], key: u128, key_of: impl Fn(&R) -> u128) -> Option<&R> {
     rows.binary_search_by_key(&key, &key_of).ok().map(|at| &rows[at]).or_else(|| rows.iter().find(|row| key_of(row) == key))
 }
@@ -1032,32 +1047,50 @@ impl AtHour for OccupiedStates {
 
     fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
         if step == 0 { return TABLES.into_iter().filter(|&table| table != TableId::LexicalTokens).map(Read::all).collect(); }
+        let (needs_world, tokens) = read_operands(held, at.context, step == 1);
         if step > 1 {
-            if needs_world(held) { return world_missing(params, held, at.context, step).into_iter().map(Read::all).collect(); }
+            if needs_world { return world_missing(params, held, at.context, step).into_iter().map(Read::all).collect(); }
             judge_none(held, at.context, step);
             return Vec::new();
         }
         let learned = at.context.world.lock().unwrap_or_else(|error| error.into_inner()).clone();
-        let lexicon = if learned.undeclared || learned.fields.contains_key(&TableId::LexicalTokens) { Read::all(TableId::LexicalTokens) }
-            else { Read { table: TableId::LexicalTokens, keys: Keys::These(equipment_tokens(held)) } };
-        let world: BTreeSet<TableId> = match (learned.undeclared, learned.fields.is_empty()) {
-            (true, _) if needs_world(held) => Self::tables(params).into_iter().collect(),
-            (false, false) => WORLD_CORE.into_iter().chain(learned.fields.keys().copied()).collect(),
-            (false, true) if needs_world(held) => WORLD_CORE.into_iter().collect(),
-            _ => BTreeSet::new(),
+        let full_lexicon = learned.undeclared || learned.fields.contains_key(&TableId::LexicalTokens);
+        let lexicon = if full_lexicon && (needs_world || tokens.as_ref().is_some_and(BTreeSet::is_empty)) {
+            Some(Read::all(TableId::LexicalTokens))
+        } else {
+            tokens.map(|keys| Read::these(TableId::LexicalTokens, keys))
         };
-        world.into_iter().filter(|table| !TABLES.contains(table)).map(Read::all).chain([lexicon]).collect()
+        let world: BTreeSet<TableId> = if !needs_world { BTreeSet::new() }
+            else if learned.undeclared { Self::tables(params).into_iter().collect() }
+            else { WORLD_CORE.into_iter().chain(learned.fields.keys().copied()).collect() };
+        let reads: Vec<_> = world.into_iter().filter(|table| !TABLES.contains(table)).map(Read::all).chain(lexicon).collect();
+        if reads.is_empty() { judge_none(held, at.context, step); }
+        reads
     }
 
     fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
         let reads = Self::reads_in(params, owner, stage, held, at);
-        let through = if stage >= 2 && reads.is_empty() {
+        let through = if stage != 0 && reads.is_empty() {
             let judged = at.context.judged.lock().unwrap_or_else(|error| error.into_inner());
             if judged.at == Some((held.branch, held.hour)) { judged.through } else { held.hour }
         } else {
             i32::MAX
         };
         (reads, through)
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::StateResistance => &["country", "active", "level", "speed", "compliance", "compliance_speed"],
+            TableId::States => &["owner", "controller", "custom_name", "owner_name", "continent", "population", "manpower_available", "best_vp_index"],
+            TableId::Countries => &["canonical_slot", "tag", "manpower_residual"],
+            TableId::Provinces => &["state", "owner", "controller", "victory_points", "controller_area"],
+            TableId::StateGarrisons => &["occupied", "required_manpower", "garrison_required", "serialized_flag", "equipment"],
+            TableId::StateAssignedManpower => &["occupied", "amount"],
+            TableId::OccupationSettings => &["default_law_present", "law", "group_laws", "fallback_law"],
+            _ => return None,
+        };
+        Some(dashboard_base::products::at_hour::field_columns(table, fields))
     }
 
     fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], content: &Self::Context) -> Option<Vec<usize>> {
@@ -1067,7 +1100,7 @@ impl AtHour for OccupiedStates {
             TableId::StateAssignedManpower => &["occupied", "amount"],
             TableId::States => &["owner", "controller", "custom_name", "owner_name"],
             TableId::Countries => &["canonical_slot", "tag"],
-            _ if TABLES.contains(&table) => return None,
+            _ if TABLES.contains(&table) => return Self::columns(table),
             _ => &[],
         };
         let mut fields = dashboard_base::products::at_hour::field_columns(table, reply).into_iter().fold(0u64, |mask, field| mask | 1 << field);
@@ -1087,7 +1120,7 @@ impl AtHour for OccupiedStates {
         let terminal = at.context.judged.lock().unwrap_or_else(|error| error.into_inner()).stage;
         match stage {
             0 => false,
-            1 => terminal > 2 || !(moving_only(edits) && garrison_tokens_hold(held, edits)),
+            1 => terminal > 2 || !structure_holds(held, edits) || (terminal == 1 && !judged_through(at.context, held, at.since, edits)),
             _ if stage < terminal => true,
             _ => !(moving_only(edits) && judged_through(at.context, held, at.since, edits)),
         }
