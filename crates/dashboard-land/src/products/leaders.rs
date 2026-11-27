@@ -962,21 +962,20 @@ impl UnitLeaders {
         vec![Read::these(TableId::Characters, kept.iter().map(|row| u128::from(row.character_id))), Read::all(TableId::LexicalTokens)]
     }
 
-    fn visibility_reads(params: &UnitLeadersParams, frame: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>, cached: bool) -> (Vec<Read>, bool) {
+    fn visibility_needed(params: &UnitLeadersParams, frame: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>) -> (bool, bool) {
         let kept = Self::kept(params, frame, at);
-        if !kept.iter().any(|row| needs_world(row)) { return (Vec::new(), false); }
-        let Ok(world) = world_of(frame, &at.context.content) else { return (Vec::new(), false) };
-        let decided = cached.then(|| at.context.verdicts_at(at.run, at.hour));
+        if !kept.iter().any(|row| needs_world(row)) { return (false, false); }
+        let Ok(world) = world_of(frame, &at.context.content) else { return (false, false) };
+        let decided = at.context.verdicts_at(at.run, at.hour);
         let mut clocked = false;
         for row in kept {
-            let known = decided.as_ref().is_some_and(|known| known.contains_key(&handle(row)));
             if !conditioned(row, &world) { continue; }
-            if !known {
-                return (RECORDED_TABLES.iter().copied().filter(|table| !BASE_TABLES.contains(table)).map(Read::all).collect(), true);
+            if !decided.contains_key(&handle(row)) {
+                return (true, true);
             }
             clocked = true;
         }
-        (Vec::new(), clocked)
+        (false, clocked)
     }
     pub(crate) fn evaluate<'a>(frame: &'a DecodedFrame, params: &UnitLeadersParams, at: &At<'_, LeadersContext>) -> io::Result<EvaluatedLeaders<'a>> {
         Self::evaluate_keys(frame, params, at, None, None)
@@ -1154,16 +1153,16 @@ impl AtHour for UnitLeaders {
         match step {
             0 => BASE_TABLES.into_iter().map(Read::all).collect(),
             1 => career::member_details(params, held, at, false),
-            2 => Self::visibility_reads(params, held, at, true).0,
-            _ => Vec::new(),
+            _ => visibility::exact_reads(params, held, at, step),
         }
     }
 
     fn retained_reads(params: &Self::Params, owner: Option<dashboard_base::products::at_hour::Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
         let reads = match stage {
+            0 => Self::reads_in(params, owner, stage, held, at),
             1 => career::member_details(params, held, at, false),
             2 => return visibility::prepare(params, held, at),
-            _ => Self::reads_in(params, owner, stage, held, at),
+            _ => Vec::new(),
         };
         (reads, at.context.through(at.hour))
     }

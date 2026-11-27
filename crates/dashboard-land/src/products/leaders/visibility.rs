@@ -1,9 +1,9 @@
-use super::{Evaluator, LeaderVisibility, LeadersContext, UnitLeaders, UnitLeadersParams, core_gap, handle, needs_world, world_of};
+use super::{Evaluator, LeaderVisibility, LeadersContext, UnitLeaders, UnitLeadersParams, catalogue, core_gap, handle, needs_world, visible, world_of};
 use dashboard_base::products::at_hour::{Read, ReadsAt};
 use dashboard_text::triggers::{RECORDED_TABLES, inputs::{self, TableRead}};
 use replay::campaign::{HourCursor, SeekResult};
 use replay_data::rows::{TableId, tables};
-use replay_frame::frame::{DecodedFrame, ViewIdentity};
+use replay_frame::frame::{DecodedFrame, ViewIdentity, discovering, not_declared};
 use std::{collections::{BTreeSet, HashMap}, io};
 
 #[derive(Default)]
@@ -33,6 +33,30 @@ impl Dated {
 }
 
 const CORE: [TableId; 4] = [TableId::CountryLinks, TableId::Countries, TableId::Provinces, TableId::States];
+
+pub(super) fn exact_reads(params: &UnitLeadersParams, frame: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>, step: usize) -> Vec<Read> {
+    if step == 2 {
+        if !UnitLeaders::visibility_needed(params, frame, at).0 {
+            return Vec::new();
+        }
+        return [TableId::Provinces, TableId::States, TableId::Characters, TableId::UnitLeaderTraits].into_iter().map(Read::all).collect();
+    }
+    let mut trial = frame.clone();
+    for &table in RECORDED_TABLES {
+        if trial.tables[table.index()].held().is_not_selected() {
+            trial.tables[table.index()] = not_declared(table);
+        }
+    }
+    let rows = UnitLeaders::kept(params, frame, at);
+    let decided = at.context.verdicts_at(at.run, at.hour);
+    let (((), missing), _) = catalogue::capture_isolated(|| discovering(|| {
+        let mut world = None;
+        for row in rows.into_iter().filter(|row| needs_world(row) && !decided.contains_key(&handle(row))) {
+            let _ = visible(row, &trial, &at.context.content, &mut world);
+        }
+    }));
+    missing.into_iter().map(Read::all).collect()
+}
 
 struct Proof {
     run: u32,
