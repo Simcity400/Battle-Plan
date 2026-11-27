@@ -16,6 +16,8 @@ use ts_rs::TS;
 const TABLES: [TableId; 4] = [TableId::OperativeMemberships, TableId::IntelligenceAgencies, IDENTITY[0], IDENTITY[1]];
 const COUNTER_INTELLIGENCE: u32 = 3;
 const TARGET_NOT_RECORDED: &str = "An operative's target country was not recorded at this hour";
+const TARGET_UNRESOLVED: &str = "An operative's target country could not be resolved at this hour";
+const TARGET_UNKNOWN_BOTH: &str = "An operative's target country was not recorded or could not be resolved at this hour";
 
 pub struct OperativeMatrix;
 
@@ -76,6 +78,8 @@ pub struct OperativeMatrixRow {
     pub capacity: AgencyCapacity,
     #[doc = " Why a pair of this spy without operatives is not known to have none."]
     pub missing: Option<String>,
+    #[doc = " Working operatives of this spy whose target country was not recorded or could not be resolved."]
+    pub unknown_target: Vec<Operative>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -93,9 +97,12 @@ pub struct OperativeMatrixCell {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OperativePair {
-    #[doc = " Indexes into `countries`."]
+    #[doc = " Index into `countries`."]
     pub spy: u32,
-    pub target: u32,
+    #[doc = " Index into `countries`; null when the target country was not recorded or could not be resolved."]
+    pub target: Option<u32>,
+    #[doc = " Why `target` is null, when it is."]
+    pub target_missing: Option<String>,
     pub operatives: Vec<Operative>,
 }
 
@@ -130,10 +137,27 @@ pub struct MatrixContext {
     factions: Arc<Vec<FactionGroup>>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnknownTarget {
+    pub operatives: Vec<Operative>,
+    pub unrecorded: bool,
+    pub unresolved: bool,
+}
+
+impl UnknownTarget {
+    pub fn reason(&self) -> &'static str {
+        match (self.unrecorded, self.unresolved) {
+            (true, true) => TARGET_UNKNOWN_BOTH,
+            (false, true) => TARGET_UNRESOLVED,
+            _ => TARGET_NOT_RECORDED,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Census {
     pub pairs: BTreeMap<(String, String), Vec<Operative>>,
-    pub unknown_target: HashSet<String>,
+    pub unknown_target: BTreeMap<String, UnknownTarget>,
     pub capacity: HashMap<String, AgencyCapacity>,
 }
 
@@ -143,15 +167,22 @@ pub fn census(memberships: &[OperativeMembershipRow], agencies: Result<&[Intelli
         let Some(owner) = tags.tag(row.owner_country) else { continue };
         match row.target_country {
             Recorded::Value(Some(target)) => {
-                let Some(target) = tags.tag(target) else { continue };
-                if target == owner && !(row.assignment == MISSION && row.action_variant == Some(COUNTER_INTELLIGENCE)) {
-                    continue;
+                if let Some(target) = tags.tag(target) {
+                    if target == owner && !(row.assignment == MISSION && row.action_variant == Some(COUNTER_INTELLIGENCE)) {
+                        continue;
+                    }
+                    out.pairs.entry((owner, target)).or_default().push(Operative::of(row, content));
+                } else {
+                    let entry = out.unknown_target.entry(owner).or_default();
+                    entry.unresolved = true;
+                    entry.operatives.push(Operative::of(row, content));
                 }
-                out.pairs.entry((owner, target)).or_default().push(Operative::of(row, content));
             }
             Recorded::Value(None) => {}
             Recorded::NotRecorded => {
-                out.unknown_target.insert(owner);
+                let entry = out.unknown_target.entry(owner).or_default();
+                entry.unrecorded = true;
+                entry.operatives.push(Operative::of(row, content));
             }
         }
     }
@@ -164,8 +195,8 @@ pub fn census(memberships: &[OperativeMembershipRow], agencies: Result<&[Intelli
             }
         }
         Err(reason) => {
-            for (owner, _) in out.pairs.keys() {
-                out.capacity.insert(owner.clone(), AgencyCapacity::Missing { reason: reason.clone() });
+            for owner in out.pairs.keys().map(|(owner, _)| owner).chain(out.unknown_target.keys()) {
+                out.capacity.entry(owner.clone()).or_insert_with(|| AgencyCapacity::Missing { reason: reason.clone() });
             }
         }
     }
@@ -188,9 +219,13 @@ pub fn build(census: &Census, shape: &Shape<'_>) -> (Vec<OperativeMatrixCountry>
             *received.entry(target).or_default() += operatives.len();
         }
     }
+    for (owner, unknown) in &census.unknown_target {
+        *sent.entry(owner).or_default() += unknown.operatives.len();
+    }
     let both = |tag: &str| sent.get(tag).copied().unwrap_or(0) + received.get(tag).copied().unwrap_or(0);
     let mut spies: HashSet<&str> = census.capacity.iter().filter(|(_, capacity)| !matches!(capacity, AgencyCapacity::NoAgency)).map(|(tag, _)| tag.as_str()).collect();
     spies.extend(census.pairs.keys().map(|(owner, _)| owner.as_str()));
+    spies.extend(census.unknown_target.keys().map(String::as_str));
     let ranked_top: Option<HashSet<&str>> = shape.top.filter(|_| shape.chosen.is_none()).map(|limit| {
         let mut everyone: Vec<&str> = spies.iter().copied().chain(census.pairs.keys().map(|(_, target)| target.as_str())).collect::<HashSet<_>>().into_iter().collect();
         everyone.sort_by(|a, b| both(b).cmp(&both(a)).then(a.cmp(b)));
@@ -202,8 +237,15 @@ pub fn build(census: &Census, shape: &Shape<'_>) -> (Vec<OperativeMatrixCountry>
         (None, Some(top)) => top.contains(owner) && top.contains(target),
         (None, None) => true,
     };
+    let keep_unknown = |owner: &str| match (shape.chosen, &ranked_top) {
+        (Some(chosen), _) => !chosen.is_empty(),
+        (None, Some(top)) => top.contains(owner),
+        (None, None) => true,
+    };
     let kept: Vec<(&(String, String), &Vec<Operative>)> = census.pairs.iter().filter(|((owner, target), _)| keep(owner, target)).collect();
+    let kept_unknown: Vec<(&String, &UnknownTarget)> = census.unknown_target.iter().filter(|(owner, _)| keep_unknown(owner)).collect();
     let mut row_tags: HashSet<&str> = kept.iter().map(|((owner, _), _)| owner.as_str()).collect();
+    row_tags.extend(kept_unknown.iter().map(|(owner, _)| owner.as_str()));
     let mut column_tags: HashSet<&str> = kept.iter().map(|((_, target), _)| target.as_str()).collect();
     for &spy in &spies {
         let shown = match (shape.chosen, &ranked_top) {
@@ -246,14 +288,33 @@ pub fn build(census: &Census, shape: &Shape<'_>) -> (Vec<OperativeMatrixCountry>
     };
 
     let mut pairs: Vec<OperativePair> = Vec::new();
-    let mut abroad: Vec<&(&(String, String), &Vec<Operative>)> = kept.iter().filter(|((owner, target), _)| owner != target).collect();
-    abroad.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.0.cmp(&b.0.0)).then(a.0.1.cmp(&b.0.1)));
-
     if shape.form == OperativeMatrixForm::Pairs {
-        for ((owner, target), operatives) in abroad {
+        let mut entries: Vec<(&str, Option<&str>, Option<&'static str>, &Vec<Operative>)> = kept
+            .iter()
+            .filter(|((owner, target), _)| owner != target)
+            .map(|((owner, target), operatives)| (owner.as_str(), Some(target.as_str()), None, *operatives))
+            .chain(
+                kept_unknown
+                    .iter()
+                    .map(|(owner, unknown)| (owner.as_str(), None, Some(unknown.reason()), &unknown.operatives)),
+            )
+            .collect();
+        entries.sort_by(|a, b| {
+            b.3.len()
+                .cmp(&a.3.len())
+                .then(a.0.cmp(b.0))
+                .then(a.1.is_none().cmp(&b.1.is_none()))
+                .then(a.1.cmp(&b.1))
+        });
+        for (owner, target, target_missing, operatives) in entries {
             let spy = intern(owner, &mut countries);
-            let target = intern(target, &mut countries);
-            pairs.push(OperativePair { spy, target, operatives: (*operatives).clone() });
+            let target = target.map(|tag| intern(tag, &mut countries));
+            pairs.push(OperativePair {
+                spy,
+                target,
+                target_missing: target_missing.map(str::to_owned),
+                operatives: operatives.clone(),
+            });
         }
         return (countries, Vec::new(), Vec::new(), Vec::new(), 0, 0, pairs);
     }
@@ -268,8 +329,11 @@ pub fn build(census: &Census, shape: &Shape<'_>) -> (Vec<OperativeMatrixCountry>
         if let AgencyCapacity::Known { maximum, .. } = capacity {
             largest_maximum = largest_maximum.max(maximum);
         }
-        let missing = census.unknown_target.contains(*tag).then(|| TARGET_NOT_RECORDED.to_owned());
-        rows.push(OperativeMatrixRow { country, capacity, missing });
+        let (missing, unknown_target) = match census.unknown_target.get(*tag) {
+            Some(unknown) => (Some(unknown.reason().to_owned()), unknown.operatives.clone()),
+            None => (None, Vec::new()),
+        };
+        rows.push(OperativeMatrixRow { country, capacity, missing, unknown_target });
     }
     let columns: Vec<u32> = ordered_columns.iter().map(|tag| intern(tag, &mut countries)).collect();
     let mut cells = Vec::with_capacity(kept.len());
@@ -469,7 +533,7 @@ mod tests {
         Operative { id: id.to_string(), name: Some(format!("Agent {id}")), name_missing: None }
     }
 
-    fn census_of(pairs: &[(&str, &str, usize)], capacity: &[(&str, AgencyCapacity)], unknown: &[&str]) -> Census {
+    fn census_of(pairs: &[(&str, &str, usize)], capacity: &[(&str, AgencyCapacity)], unknown: &[(&str, usize)]) -> Census {
         let mut out = Census::default();
         let mut next = 0;
         for &(owner, target, count) in pairs {
@@ -482,7 +546,15 @@ mod tests {
         for (tag, held) in capacity {
             out.capacity.insert((*tag).to_owned(), held.clone());
         }
-        out.unknown_target = unknown.iter().map(|tag| (*tag).to_owned()).collect();
+        for &(owner, count) in unknown {
+            let list = (0..count).map(|_| {
+                next += 1;
+                operative(next)
+            });
+            let entry = out.unknown_target.entry(owner.to_owned()).or_default();
+            entry.unrecorded = true;
+            entry.operatives.extend(list);
+        }
         out
     }
 
@@ -515,18 +587,23 @@ mod tests {
         let census = census_of(&[("GER", "ENG", 2), ("ENG", "GER", 2), ("CHI", "JAP", 3), ("ENG", "ENG", 4)], &[], &[]);
         let (countries, rows, _, cells, _, _, pairs) = build(&census, &Shape { chosen: None, top: None, factions: &HashMap::new(), form: OperativeMatrixForm::Pairs });
         assert!(rows.is_empty() && cells.is_empty());
-        let named: Vec<(&str, &str, usize)> = pairs.iter().map(|pair| (countries[pair.spy as usize].tag.as_str(), countries[pair.target as usize].tag.as_str(), pair.operatives.len())).collect();
-        assert_eq!(named, [("CHI", "JAP", 3), ("ENG", "GER", 2), ("GER", "ENG", 2)]);
+        let named: Vec<(&str, Option<&str>, usize)> = pairs
+            .iter()
+            .map(|pair| (countries[pair.spy as usize].tag.as_str(), pair.target.map(|at| countries[at as usize].tag.as_str()), pair.operatives.len()))
+            .collect();
+        assert_eq!(named, [("CHI", Some("JAP"), 3), ("ENG", Some("GER"), 2), ("GER", Some("ENG"), 2)]);
     }
 
     #[test]
     fn a_spy_with_an_unrecorded_target_is_not_known_to_have_none_elsewhere() {
-        let census = census_of(&[("GER", "ENG", 1)], &[("ITA", AgencyCapacity::Known { active: 1, maximum: 2 })], &["ITA"]);
+        let census = census_of(&[("GER", "ENG", 1)], &[("ITA", AgencyCapacity::Known { active: 1, maximum: 2 })], &[("ITA", 1)]);
         let (countries, rows, ..) = build(&census, &Shape { chosen: None, top: None, factions: &HashMap::new(), form: OperativeMatrixForm::Matrix });
         let italy = rows.iter().find(|row| countries[row.country as usize].tag == "ITA").unwrap();
         assert_eq!(italy.missing.as_deref(), Some(TARGET_NOT_RECORDED));
+        assert_eq!(italy.unknown_target.len(), 1);
         let germany = rows.iter().find(|row| countries[row.country as usize].tag == "GER").unwrap();
         assert_eq!(germany.missing, None);
+        assert!(germany.unknown_target.is_empty());
     }
 
     #[test]
@@ -549,5 +626,107 @@ mod tests {
         assert_eq!(columns.len(), 2);
         assert_eq!(cells.len(), 2);
         assert!(countries.iter().all(|country| country.tag == "GER" || country.tag == "ENG"));
+    }
+
+    #[test]
+    fn unknown_target_owners_appear_in_rows_and_pairs_across_all_selections() {
+        let census = census_of(&[("AAA", "BBB", 1)], &[], &[("CCC", 2)]);
+        let (countries, rows, columns, cells, ..) = build(&census, &Shape { chosen: None, top: None, factions: &HashMap::new(), form: OperativeMatrixForm::Matrix });
+        let ccc = rows.iter().find(|row| countries[row.country as usize].tag == "CCC").unwrap();
+        assert_eq!(ccc.missing.as_deref(), Some(TARGET_NOT_RECORDED));
+        assert_eq!(ccc.unknown_target.len(), 2);
+        assert_eq!(cells.len(), 1);
+        assert!(columns.iter().any(|&at| countries[at as usize].tag == "CCC"));
+
+        let chosen_owner: HashSet<String> = ["CCC".to_owned()].into_iter().collect();
+        let (countries, rows, columns, cells, ..) = build(&census, &Shape { chosen: Some(&chosen_owner), top: None, factions: &HashMap::new(), form: OperativeMatrixForm::Matrix });
+        assert_eq!(rows.iter().map(|row| countries[row.country as usize].tag.as_str()).collect::<Vec<_>>(), ["CCC"]);
+        assert_eq!(columns.iter().map(|&at| countries[at as usize].tag.as_str()).collect::<Vec<_>>(), ["CCC"]);
+        assert!(cells.is_empty());
+        assert_eq!(rows[0].unknown_target.len(), 2);
+
+        let chosen_other: HashSet<String> = ["AAA".to_owned()].into_iter().collect();
+        let (countries, rows, columns, ..) = build(&census, &Shape { chosen: Some(&chosen_other), top: None, factions: &HashMap::new(), form: OperativeMatrixForm::Matrix });
+        assert_eq!(rows.iter().map(|row| countries[row.country as usize].tag.as_str()).collect::<Vec<_>>(), ["CCC", "AAA"]);
+        let col_tags: Vec<&str> = columns.iter().map(|&at| countries[at as usize].tag.as_str()).collect();
+        assert!(!col_tags.contains(&"CCC"));
+        assert!(col_tags.contains(&"AAA"));
+
+        let (countries, rows, ..) = build(&census, &Shape { chosen: None, top: Some(1), factions: &HashMap::new(), form: OperativeMatrixForm::Matrix });
+        assert_eq!(rows.iter().map(|row| countries[row.country as usize].tag.as_str()).collect::<Vec<_>>(), ["CCC"]);
+        assert_eq!(rows[0].unknown_target.len(), 2);
+
+        for shape in [
+            Shape { chosen: None, top: None, factions: &HashMap::new(), form: OperativeMatrixForm::Pairs },
+            Shape { chosen: Some(&chosen_owner), top: None, factions: &HashMap::new(), form: OperativeMatrixForm::Pairs },
+            Shape { chosen: Some(&chosen_other), top: None, factions: &HashMap::new(), form: OperativeMatrixForm::Pairs },
+            Shape { chosen: None, top: Some(1), factions: &HashMap::new(), form: OperativeMatrixForm::Pairs },
+        ] {
+            let (countries, .., pairs) = build(&census, &shape);
+            let unknown_pair = pairs.iter().find(|pair| countries[pair.spy as usize].tag == "CCC").unwrap();
+            assert_eq!(unknown_pair.target, None);
+            assert_eq!(unknown_pair.target_missing.as_deref(), Some(TARGET_NOT_RECORDED));
+            assert_eq!(unknown_pair.operatives.len(), 2);
+        }
+
+        let busier = census_of(&[("AAA", "BBB", 4), ("BBB", "AAA", 3)], &[], &[("CCC", 1)]);
+        let (countries, rows, ..) = build(&busier, &Shape { chosen: None, top: Some(2), factions: &HashMap::new(), form: OperativeMatrixForm::Matrix });
+        assert!(rows.iter().all(|row| countries[row.country as usize].tag != "CCC"));
+        let (countries, .., pairs) = build(&busier, &Shape { chosen: None, top: Some(2), factions: &HashMap::new(), form: OperativeMatrixForm::Pairs });
+        assert!(pairs.iter().all(|pair| countries[pair.spy as usize].tag != "CCC"));
+
+        let mut frame = dashboard_base::test_fixtures::source(1, 100, None);
+        *frame.tables[TableId::Countries.index()] = replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Countries(vec![
+            replay_data::rows::CountryRow { id: 101, canonical_slot: 1, tag: b"XAA".to_vec(), ..Default::default() },
+            replay_data::rows::CountryRow { id: 102, canonical_slot: 2, tag: b"XBB".to_vec(), ..Default::default() },
+        ]));
+        *frame.tables[TableId::CountryLinks.index()] = replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::CountryLinks(vec![
+            replay_data::rows::CountryLinkRow { id: 101, canonical_slot: 1 },
+            replay_data::rows::CountryLinkRow { id: 102, canonical_slot: 2 },
+        ]));
+        let tags = Tags::read(&frame).unwrap();
+        let content = Content { localisation: Err("unconfigured".into()), defines: Err("unconfigured".into()) };
+        let rows_in = [
+            OperativeMembershipRow {
+                id: 1,
+                owner_country: 101,
+                roster_country: 101,
+                roster_kind: ACTIVE,
+                assignment: MISSION,
+                action_variant: Some(1),
+                target_country: Recorded::Value(Some(9999)),
+                name: Recorded::Value(b"Shadow One".to_vec()),
+                ..Default::default()
+            },
+            OperativeMembershipRow {
+                id: 2,
+                owner_country: 102,
+                roster_country: 102,
+                roster_kind: ACTIVE,
+                assignment: MISSION,
+                action_variant: Some(1),
+                target_country: Recorded::NotRecorded,
+                name: Recorded::Value(b"Shadow Two".to_vec()),
+                ..Default::default()
+            },
+            OperativeMembershipRow {
+                id: 3,
+                owner_country: 102,
+                roster_country: 102,
+                roster_kind: ACTIVE,
+                assignment: MISSION,
+                action_variant: Some(1),
+                target_country: Recorded::Value(None),
+                name: Recorded::Value(b"Idle Target".to_vec()),
+                ..Default::default()
+            },
+        ];
+        let parsed = super::census(&rows_in, Err("Agencies unreadable".into()), &tags, &content);
+        assert_eq!(parsed.unknown_target["XAA"].reason(), TARGET_UNRESOLVED);
+        assert_eq!(parsed.unknown_target["XAA"].operatives.len(), 1);
+        assert_eq!(parsed.unknown_target["XBB"].reason(), TARGET_NOT_RECORDED);
+        assert_eq!(parsed.unknown_target["XBB"].operatives.len(), 1);
+        assert_eq!(parsed.capacity.get("XAA"), Some(&AgencyCapacity::Missing { reason: "Agencies unreadable".into() }));
+        assert_eq!(parsed.capacity.get("XBB"), Some(&AgencyCapacity::Missing { reason: "Agencies unreadable".into() }));
     }
 }

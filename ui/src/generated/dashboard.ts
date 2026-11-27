@@ -4152,7 +4152,11 @@ country: number, capacity: AgencyCapacity,
 /**
  * Why a pair of this spy without operatives is not known to have none.
  */
-missing: string | null, };
+missing: string | null,
+/**
+ * Working operatives of this spy whose target country was not recorded or could not be resolved.
+ */
+unknownTarget: Array<Operative>, };
 export type OperativeMatrixCell = { row: number, column: number,
 /**
  * Counter-intelligence at home: the spy and the target are the same country.
@@ -4160,9 +4164,17 @@ export type OperativeMatrixCell = { row: number, column: number,
 home: boolean, operatives: Array<Operative>, };
 export type OperativePair = {
 /**
- * Indexes into `countries`.
+ * Index into `countries`.
  */
-spy: number, target: number, operatives: Array<Operative>, };
+spy: number,
+/**
+ * Index into `countries`; null when the target country was not recorded or could not be resolved.
+ */
+target: number | null,
+/**
+ * Why `target` is null, when it is.
+ */
+targetMissing: string | null, operatives: Array<Operative>, };
 export type OperativeMatrixReply = {
 /**
  * Every country the matrix or the pairs name.

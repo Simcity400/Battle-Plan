@@ -107,7 +107,7 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
 
   const grid: readonly (readonly MatrixCell[])[] = [
     [{ kind: 'diagonal' }, { kind: 'value', color: '#2eb872', text: '+50', value: 50 }, { kind: 'value', color: '#e55353', text: '-80', value: -80 }],
-    [{ kind: 'empty', label: 'No network' }, { kind: 'missing', reason: 'Opinions not recorded' }, { kind: 'diagonal' }],
+    [{ kind: 'empty', label: 'No network' }, { kind: 'missing', reason: 'Opinions not recorded', text: '2' }, { kind: 'diagonal' }],
   ];
 
   const model: HeatMatrixModel = {
@@ -185,6 +185,7 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
     focusedCell: { row: 1, column: 0 },
   });
   assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === '-80'));
+  assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === '2'));
   assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === 'Allies'));
 
   registerFamilyProjection({ kind: 'test-heat-matrix', family: 'heat-matrix', project: view => view.panel('main') as HeatMatrixModel });

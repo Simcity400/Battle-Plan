@@ -259,6 +259,9 @@ export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void 
         }
       } else if (item.kind === 'missing') {
         drawHatchRect(ctx, cx, cy, innerW, innerH, radius, theme);
+        if (item.text) {
+          drawCellText(ctx, item.text, cx, cy, innerW, innerH, theme.text, theme);
+        }
       } else if (item.kind === 'empty') {
         if (item.mark === 'dot') {
           ctx.fillStyle = theme.muted;

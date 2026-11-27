@@ -56,6 +56,7 @@ export type MatrixCell =
   | {
       readonly kind: 'missing';
       readonly reason: string;
+      readonly text?: string;
       readonly tooltip?: FamilyTooltipPayload;
       readonly audit?: string;
       readonly selectable?: boolean;
