@@ -13,19 +13,25 @@ const client = {
     hours.push(request.hour);
     return new Promise<GameWindowRender>((resolve, reject) => pending.push({ resolve, reject }));
   },
-} as DashboardClient;
+} as unknown as DashboardClient;
 
 const retryButton = () => [...document.querySelectorAll('button')].find(button => button.textContent === 'Retry');
 const state = () => ({
   hours,
+  inFlight: pending.length,
   image: document.querySelector<HTMLImageElement>('.game-window-canvas img')?.alt ?? null,
   error: document.querySelector('.widget-state-title')?.textContent ?? null,
   retry: Boolean(retryButton()),
 });
 
 Object.assign(window, { gameWindow: {
-  async open(hour: number) {
-    await act(() => root.render(<GameWindowView client={client} generation={1} active label="equipment designer"
+  async reset() {
+    await act(() => root.render(null));
+    hours.length = 0;
+    pending.length = 0;
+  },
+  async open(hour: number, generation = 1) {
+    await act(() => root.render(<GameWindowView client={client} generation={generation} active label="equipment designer"
       request={{ sourceId: 'fixture', revision: '1', branchId: '1', hour, kind: 'equipmentDesigner' }} />));
     return state();
   },

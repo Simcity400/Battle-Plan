@@ -169,11 +169,11 @@ test('one native render per window: a new hour, tab or subject waits for the out
   const at = (hour: number, generation = 0) => ({ key: gameWindowRequestKey(baseRequest({ hour }), 2), subject, generation, active: true });
   const flight = { key: at(100).key, subject, generation: 0 };
   assert.equal(planGameWindowRender(at(101), flight, null), 'wait');
-  assert.equal(followGameWindowRender(flight, at(105), null), true, 'the latest hour starts when the outstanding render settles');
-  assert.equal(followGameWindowRender(flight, at(100), null), false);
+  assert.equal(followGameWindowRender(at(105), null), true, 'the latest hour starts when the outstanding render settles');
+  assert.equal(followGameWindowRender(at(100), null), true, 'the still-wanted hour starts again without a frame');
   const other = { key: 'other', subject: 'other', generation: 0, active: true };
   assert.equal(planGameWindowRender(other, flight, null), 'wait', 'another subject or tab also waits: no second native call');
-  assert.equal(followGameWindowRender(flight, other, null), true);
+  assert.equal(followGameWindowRender(other, null), true);
   assert.equal(planGameWindowRender(at(100), null, { key: at(100).key, subject, generation: 0 }), 'reuse');
   assert.equal(planGameWindowRender({ ...at(101), active: false }, flight, null), 'idle');
   assert.equal(planGameWindowRender(at(101), null, null), 'start');
