@@ -115,7 +115,7 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, retu
   const lead = leadSlot !== undefined && leadTag ? { slot: leadSlot, tag: leadTag } : null;
   const combat = row.key.startsWith('combat:') ? row.key.split(':')[1] ?? null : null;
   const course = useProduct(runtime.client, productRequest({ sourceId: track.source.id, revision: track.source.revision,
-    product: 'naval-battle-course', params: { branchId: track.branch.id, key: row.key } }), true, validateNavalBattleCourse);
+    product: 'naval-battle-course', params: { branchId: track.branch.id, key: row.key, hour: opened.hour as GatedHour } }), true, validateNavalBattleCourse);
   const data = course.data;
   const failed = course.error && !data ? { missing: failureText(course.error, COURSE_UNREAD) } : null;
   const gaps = useMemo(() => data && span ? navalCourseGaps(data, span.first, span.last) : [], [data, span]);
@@ -145,7 +145,7 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, retu
   return <BattleViewer subject={row.key} title={subject.title} day={day} closeLabel="Close battle viewer" anchor={anchor}
     returnFocus={returnFocus ?? mirrorRowSelector(row.key)} runtime={runtime} track={track} province={row.province} span={span} unplayable={unplayable}
     gaps={gaps} fallbackHour={first} startHour={opened.start} onClose={onClose}
-    details={() => <Details runtime={runtime} track={track} battle={row.key} hour={opened.hour} />}
+    details={() => <Details runtime={runtime} track={track} battle={row.detailId} hour={row.detailHour ?? row.readHour} />}
     sides={hour => {
       const figures = figuresAt(hour);
       return <div className="bv-sides">

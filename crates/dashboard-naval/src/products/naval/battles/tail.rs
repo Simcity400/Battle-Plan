@@ -794,7 +794,11 @@ dashboard_base::reply_warnings!(NavalBattleCourseReply);
 
 fn entry<'a>(scanned: &'a Scanned, key: &str) -> Option<&'a Occurrence<Line>> {
     let index = &scanned.index;
-    (0..index.len()).map(|at| index.get(at as u32)).find(|entry| entry.payload.key == key)
+    let entries = || (0..index.len()).map(|at| index.get(at as u32));
+    let joined = super::parse_result_id(key).and_then(|id| {
+        entries().find(|entry| entry.payload.key.starts_with("combat:") && entry.payload.reads.iter().any(|(_, read)| read.result_id == Some(id)))
+    });
+    joined.or_else(|| entries().find(|entry| entry.payload.key == key))
 }
 
 fn course(scanned: &Scanned, key: &str, branch_last: i32) -> Option<(Vec<NavalCourseRead>, Vec<MissingSpan>)> {
@@ -956,6 +960,7 @@ mod tests {
                     entry(1, "combat:8:100", vec![(100, read(NavalBattleStatus::Ongoing)), (105, read(NavalBattleStatus::Unknown))]),
                     entry(2, "combat:6:100", vec![(100, read(NavalBattleStatus::Ongoing)), (111, Snapshot { result_id: Some(61), ..read(NavalBattleStatus::AttackerWon) })]),
                     entry(3, "result:62", vec![(111, Snapshot { result_id: Some(62), ..read(NavalBattleStatus::AttackerWon) })]),
+                    entry(4, "result:61", vec![(111, Snapshot { result_id: Some(61), ..read(NavalBattleStatus::AttackerWon) })]),
                 ],
                 Vec::new(),
                 &[NavalBattleStatus::Ongoing as u8],
@@ -972,6 +977,8 @@ mod tests {
         let (reads, only) = course(&scanned, "result:62", 120).unwrap();
         assert_eq!((reads.len(), reads[0].hour, only.len()), (1, 111, 0), "a battle held only as a result has no hours before it for a gap to cover");
         assert!(course(&scanned, "combat:9:100", 120).is_none());
+        assert_eq!(super::entry(&scanned, "result:61").map(|found| found.payload.key.as_str()), Some("combat:6:100"), "a result the table joined to its battle opens as that battle");
+        assert_eq!(super::entry(&scanned, "result:62").map(|found| found.payload.key.as_str()), Some("result:62"));
     }
 
     fn step(hour: i32, cells: Option<&[i64]>) -> Step {

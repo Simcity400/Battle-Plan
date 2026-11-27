@@ -6550,7 +6550,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "military-air-ledger": { "fromHour": "start" },
   "minefields": { "hour": "read" },
   "national-focus": {},
-  "naval-battle-course": {},
+  "naval-battle-course": { "hour": "read" },
   "naval-battle-details": { "battles[].hour": "read" },
   "naval-battles-tail": { "hour": "read", "from": "start", "to": "end" },
   "naval-losses-at": { "hour": "read" },
@@ -6723,7 +6723,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "military-air-ledger": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "family": "leaf", "fromHour": "leaf", "regions": "node", "regions[]": "leaf", "top": "node", "top.count": "leaf", "top.metric": "leaf", "window": "leaf" },
   "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "hour": "leaf", "order": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf" },
   "national-focus": { "branchId": "leaf", "country": "any" },
-  "naval-battle-course": { "branchId": "leaf", "key": "leaf" },
+  "naval-battle-course": { "branchId": "leaf", "hour": "leaf", "key": "leaf" },
   "naval-battle-details": { "battles": "node", "battles[]": "node", "battles[].hour": "leaf", "battles[].id": "leaf", "branchId": "leaf" },
   "naval-battles-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "to": "leaf" },
   "naval-losses-at": { "attribution": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "kind": "leaf", "period": "leaf", "top": "leaf" },
@@ -6896,7 +6896,7 @@ export type RequestParams<E, B> = {
   "military-air-ledger": { readonly [key: string]: unknown; readonly "fromHour"?: B | null };
   "minefields": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "national-focus": {};
-  "naval-battle-course": {};
+  "naval-battle-course": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "naval-battle-details": { readonly [key: string]: unknown; readonly "battles"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null };
   "naval-battles-tail": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "to"?: B | null };
   "naval-losses-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
