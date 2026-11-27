@@ -134,6 +134,35 @@ mod reply {
     }
 
     #[test]
+    fn the_plan_reads_only_equipment_tokens_used_to_check_a_recorded_strength() {
+        use dashboard_base::products::at_hour::{AtHour, Read, ReadsAt};
+        let mut available = content();
+        available.equipment = Ok(std::sync::Arc::new(content_reader_key_names::equipment::Database::default())).into();
+        let params = states::OccupiedStatesParams { branch_id: "1".into() };
+        let holders = dashboard_query::identity::Holders::default();
+        let reads = |frame: &DecodedFrame, content: &Content| states::OccupiedStates::reads_in(&params, None, 1, frame, &ReadsAt {
+            holders: &holders, context: content, run: 0, hour: frame.hour, since: None,
+        });
+        let mut frame = frame();
+        assert!(reads(&frame, &available).is_empty());
+        let TableView::Complete(TableRows::StateGarrisons(rows)) = &mut *frame.tables[TableId::StateGarrisons.index()] else { unreachable!() };
+        rows[0].equipment = Recorded::Value(GarrisonEquipmentInputs {
+            rows: vec![replay_data::rows::GarrisonEquipment { equipment_token: 21, archetype_token: 13, ..Default::default() }],
+            failure: None,
+        });
+        assert_eq!(reads(&frame, &available), [Read::these(TableId::LexicalTokens, [13, 21])]);
+        assert!(reads(&frame, &content()).is_empty(), "an unavailable equipment database needs no tokens");
+        let garrisons = &mut *frame.tables[TableId::StateGarrisons.index()];
+        let TableView::Complete(rows) = garrisons else { unreachable!() };
+        *garrisons = TableView::Truncated { rows: rows.clone(), missing: 1 };
+        available.world.lock().unwrap().fields.insert(TableId::LexicalTokens, 1);
+        assert_eq!(reads(&frame, &available), [Read::all(TableId::LexicalTokens)]);
+        let TableView::Complete(TableRows::GarrisonStrengths(rows)) = &mut *frame.tables[TableId::GarrisonStrengths.index()] else { unreachable!() };
+        rows[0].strength = Recorded::NotRecorded;
+        assert!(reads(&frame, &available).is_empty());
+    }
+
+    #[test]
     fn the_reply_reads_no_field_its_narrow_projection_leaves_out() {
         use dashboard_base::products::at_hour::{AtHour, Read};
         let params = states::OccupiedStatesParams { branch_id: "1".into() };

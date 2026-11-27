@@ -18,9 +18,9 @@ pub struct OccupationLawInfo {
 
 fn icon(cat: &Catalogue, laws: &Laws, token: &str) -> Result<String, String> {
     let law = laws.find(token)?.ok_or_else(|| "Occupation law has no content declaration".to_owned())?;
-    let sprite = cat.sprites.find(&law.sprite)?.ok_or_else(|| "Occupation-law sprite not in the recorded content stack".to_owned())?;
+    cat.sprites.find(&law.sprite)?.ok_or_else(|| "Occupation-law sprite not in the recorded content stack".to_owned())?;
     let frame = u32::try_from(law.frame).ok().and_then(|frame| frame.checked_sub(1)).ok_or_else(|| "Occupation-law icon frame is not positive".to_owned())?;
-    dashboard_base::products::artwork::resolve_sprite_type(cat, sprite, frame, 32)
+    dashboard_base::products::artwork::resolve_sprite(cat, &law.sprite, frame, 32)
         .into_result()?
         .ok_or_else(|| "Occupation-law artwork unavailable".to_owned())
 }
