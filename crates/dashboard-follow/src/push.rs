@@ -132,9 +132,14 @@ fn panels_of(kind: u8, bytes: &[u8]) -> Option<Vec<u32>> {
     Some(ids)
 }
 
+fn registers_cells(kind: u8, bytes: &[u8]) -> bool {
+    kind == PANEL && panel::dated::records(bytes).is_ok_and(|records| records.iter().any(|r| r.kind == panel::dated::DATA && r.body.windows(5).any(|key| key == b"\xA4live")))
+}
+
 struct Queued {
     stream: Stream,
     panels: Option<Vec<u32>>,
+    cells: bool,
     kind: u8,
     bytes: Vec<u8>,
     sequence: u32,
@@ -223,7 +228,7 @@ impl State {
             q.stream.version().is_none_or(|(other, _)| other != route) || match (older.kind, q.kind) {
                 (PANEL, PANEL) => matches!((&older.panels, &q.panels), (Some(ids), Some(others)) if !others.iter().any(|id| ids.contains(id))),
                 (FOLLOW, PANEL) => !answer::resets(&older.bytes),
-                (PANEL, FOLLOW) => !answer::answers_cells(&q.bytes),
+                (PANEL, FOLLOW) => !older.cells && !answer::answers_cells(&q.bytes),
                 _ => true,
             }
         })
@@ -271,6 +276,7 @@ impl State {
                 self.bytes += answer::charge(&bytes);
                 newer.stream = Stream::of(newer.kind, &bytes);
                 newer.panels = panels_of(newer.kind, &bytes);
+                newer.cells = registers_cells(newer.kind, &bytes);
                 newer.bytes = bytes;
                 newer.offered = older.offered;
                 self.counters.superseded += u64::from(superseded);
@@ -347,8 +353,8 @@ impl Push {
         }
         state.bytes += answer::charge(&bytes);
         let session = state.session;
-        let panels = panels_of(kind, &bytes);
-        state.queue.push_back(Queued { stream, panels, kind, bytes, sequence, offered: Instant::now(), kept: false, session });
+        let (panels, cells) = (panels_of(kind, &bytes), registers_cells(kind, &bytes));
+        state.queue.push_back(Queued { stream, panels, cells, kind, bytes, sequence, offered: Instant::now(), kept: false, session });
         state.compact(stream);
         state.counters.most_queued = state.counters.most_queued.max(state.queue.len() as u64);
         drop(state);

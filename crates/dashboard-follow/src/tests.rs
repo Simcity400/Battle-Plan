@@ -2217,6 +2217,16 @@ fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_o
     let kinds: Vec<u8> = std::iter::from_fn(|| push.try_take()).map(|(kind, ..)| kind).collect();
     assert_eq!(kinds, [PANEL, crate::push::FOLLOW, PANEL]);
 
+    let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
+    push.head(3, 0, 20);
+    let registering = rmp_serde::to_vec(&serde_json::json!({ "live": { "groups": [] } })).unwrap();
+    push.offer_kind(PANEL, record(47, 10, dated::DATA, &registering));
+    push.offer(routed(3, 20, 4, 0));
+    push.offer_kind(PANEL, dated::ProductBatch::new((0, 3, 0)).finish(Some(20)));
+    assert_eq!(push.counters().merges, 0, "a panel whose data can register cells never folds past a follow answer of its route");
+    let kinds: Vec<u8> = std::iter::from_fn(|| push.try_take()).map(|(kind, ..)| kind).collect();
+    assert_eq!(kinds, [PANEL, crate::push::FOLLOW, PANEL]);
+
     let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
     push.head(3, 0, 10);
     push.offer_kind(PANEL, record(39, 5, dated::DATA, &[1; 1000]));
