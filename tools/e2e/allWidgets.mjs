@@ -91,18 +91,25 @@ export function selectHeaviestKinds(costs, count = HEAVIEST_COUNT) {
     throw new Error(`Heaviest requested ${limit} kinds, but widget-costs.json has only ${distinctEntries.length} measured kinds with a valid costScoreMs`);
   }
   const selected = distinctEntries.slice(0, limit);
-  const excluded = distinctEntries.slice(limit);
+  const selectedKinds = new Set(selected.map(entry => entry.kind));
   const cutoff = selected.at(-1);
-  const excludedByNoise = excluded.filter(entry => {
+  const noiseByKind = new Map();
+  for (const entry of ranked) {
+    if (selectedKinds.has(entry.kind)) continue;
     const delta = entry.mainDelta?.p95;
-    if (!(Number.isFinite(delta) && delta < 0) && !entry.belowBaselineNoise) return false;
+    if (!(Number.isFinite(delta) && delta < 0) && !entry.belowBaselineNoise) continue;
     const zeroClampedScore = Math.max(0, delta ?? 0) + (entry.worker?.p95 ?? 0);
-    return zeroClampedScore >= cutoff.costScoreMs;
-  });
+    if (zeroClampedScore < cutoff.costScoreMs) continue;
+    const prev = noiseByKind.get(entry.kind);
+    if (!prev || zeroClampedScore > prev.zeroClampedScore) noiseByKind.set(entry.kind, { entry, zeroClampedScore });
+  }
+  const excludedByNoise = [...noiseByKind.values()].map(item => item.entry);
+  const label = entry => (entry.view && entry.view !== 'default' ? `${entry.kind}/${entry.view}` : entry.kind);
   const warning = excludedByNoise.length
-    ? `Heaviest cutoff (${cutoff.kind} at ${cutoff.costScoreMs.toFixed(1)} ms) excluded ${excludedByNoise.length} kind${excludedByNoise.length === 1 ? '' : 's'} below baseline noise: ${excludedByNoise.map(e => `${e.kind} (${e.costScoreMs.toFixed(1)} ms)`).join(', ')}`
+    ? `Heaviest cutoff (${label(cutoff)} at ${cutoff.costScoreMs.toFixed(1)} ms) excluded ${excludedByNoise.length} kind${excludedByNoise.length === 1 ? '' : 's'} below baseline noise: ${excludedByNoise.map(e => `${label(e)} (${e.costScoreMs.toFixed(1)} ms)`).join(', ')}`
     : null;
-  return { kinds: selected.map(entry => entry.kind), excludedByNoise, warning };
+  const entries = selected.map(entry => ({ kind: entry.kind, ...(typeof entry.view === 'string' && entry.view ? { view: entry.view } : {}) }));
+  return { kinds: selected.map(entry => entry.kind), entries, excludedByNoise, warning };
 }
 
 export function heaviestKinds(costs, count = HEAVIEST_COUNT, { allowBelowNoiseCutoff = false } = {}) {
@@ -111,19 +118,61 @@ export function heaviestKinds(costs, count = HEAVIEST_COUNT, { allowBelowNoiseCu
   return kinds;
 }
 
-export async function allWidgetPages({ costs = null, heaviestCount = HEAVIEST_COUNT, allowBelowNoiseCutoff = false } = {}) {
-  const [{ widgetMetas }, model, storage, pageList] = await Promise.all([
-    import(new URL('widgets/definitions.ts', UI)), import(new URL('dashboard/model.ts', UI)),
+function createPlacedWidget(model, placement, id) {
+  const widget = model.createWidget(placement.kind, 'main', id);
+  return placement.options ? { ...widget, options: { ...placement.options } } : widget;
+}
+
+async function loadFixtureModules() {
+  const [{ widgetMetas }, { FAMILY_VIEWS }, families, model, storage, pageList] = await Promise.all([
+    import(new URL('widgets/definitions.ts', UI)), import(new URL('widgets/familyManifest.ts', UI)),
+    import(new URL('families/manifest.ts', UI)), import(new URL('dashboard/model.ts', UI)),
     import(new URL('dashboard/storage.ts', UI)), import(new URL('dashboard/pages.ts', UI))]);
+  return { widgetMetas, FAMILY_VIEWS, families, model, storage, pageList };
+}
+
+export async function enumerateWidgetPlacements({ mode = 'default', kinds = null } = {}) {
+  const { widgetMetas, FAMILY_VIEWS, families } = await loadFixtureModules();
+  const familyViewsByKind = new Map();
+  for (const entry of FAMILY_VIEWS) {
+    let list = familyViewsByKind.get(entry.kind);
+    if (!list) familyViewsByKind.set(entry.kind, list = []);
+    list.push(entry);
+  }
+  const byKind = new Map(widgetMetas.map(meta => [meta.kind, meta]));
+  const selected = kinds === null ? widgetMetas : kinds.map(kind => {
+    const meta = byKind.get(kind);
+    if (!meta) throw new Error(`unknown widget kind: ${kind}`);
+    return meta;
+  });
+  return selected.flatMap(meta => {
+    const entries = familyViewsByKind.get(meta.kind) ?? [];
+    const defaultView = entries.length ? families.resolveActiveView(undefined, meta, entries) : families.DEFAULT_VIEW;
+    const optionKey = entries.length > 1 ? families.resolveViewOptionKey(meta, entries) : null;
+    const choices = entries.length ? families.declaredViewChoices(meta, entries) : [{ value: families.DEFAULT_VIEW, label: families.DEFAULT_VIEW, family: null }];
+    const picked = mode === 'all-views' ? choices : [choices.find(choice => choice.value === defaultView) ?? choices[0]];
+    return picked.map(choice => {
+      const isDefaultView = choice.value === defaultView;
+      const options = !isDefaultView && optionKey ? { [optionKey]: choice.value } : undefined;
+      return { meta, kind: meta.kind, view: choice.value, viewLabel: entries.length > 1 ? choice.label : null, family: choice.family, isDefaultView, ...(options ? { options } : {}) };
+    });
+  });
+}
+
+export async function allWidgetPages({ costs = null, heaviestCount = HEAVIEST_COUNT, allowBelowNoiseCutoff = false, allViews = false } = {}) {
+  const { widgetMetas, model, storage, pageList } = await loadFixtureModules();
   const cols = model.GRID_COLUMNS.lg;
   if (model.GRID_COLUMNS.md !== cols) throw new Error('the wide breakpoints have different columns: the fixture packs one');
+  const mode = allViews ? 'all-views' : 'default';
+  const placements = await enumerateWidgetPlacements({ mode });
   const written = new Map();
   const shim = { getItem: key => written.get(key) ?? null, setItem: (key, value) => written.set(key, value) };
-  const page = (label, size, arrange, metas = widgetMetas) => {
+  const page = (label, size, arrange, entries = placements) => {
     const id = `page-${label.toLowerCase()}`;
-    const sizes = metas.map(meta => ({ kind: meta.kind, copy: meta.copy, ...size(meta), min: meta.minSize }));
+    const sizes = entries.map(entry => ({ ...entry, ...size(entry.meta), min: entry.meta.minSize }));
     const { sorted, places, inView = sorted.length } = arrange(sizes);
-    const widgets = sorted.map(({ kind, copy }) => model.createWidget(kind, 'main', `${id}-${kind}${copy === undefined ? '' : `-${copy}`}`));
+    const widgets = sorted.map(entry => createPlacedWidget(model, entry,
+      `${id}-${entry.kind}${entry.isDefaultView ? '' : `--${entry.view}`}${entry.copy === undefined ? '' : `-${entry.copy}`}`));
     const wide = places.map(({ x, y }, at) => ({ i: widgets[at].id, x, y, w: sorted[at].w, h: sorted[at].h, minW: sorted[at].min.w, minH: sorted[at].min.h }));
     const narrow = width => {
       let y = 0;
@@ -137,21 +186,29 @@ export async function allWidgetPages({ costs = null, heaviestCount = HEAVIEST_CO
     const refused = storage.saveLayouts({ version: 1, activeId: 'default', layouts: [{ id: 'default', template }] }, shim, id);
     if (refused) throw new Error(`the app refuses the ${label} layout: ${refused}`);
     return { id, label, rows: wide.length ? Math.max(...wide.map(item => item.y + item.h)) : 0, inView,
-      widgets: widgets.map(widget => ({ id: widget.id, kind: widget.kind })) };
+      widgets: widgets.map((widget, at) => ({ id: widget.id, kind: widget.kind, view: sorted[at].view })) };
   };
-  const rebuilt = REBUILT_KINDS.map(kind => widgetMetas.find(meta => meta.kind === kind) ?? (() => { throw new Error(`no widget ${kind} to rebuild`); })());
+  const rebuilt = await enumerateWidgetPlacements({ kinds: REBUILT_KINDS });
   const pages = {
     [FIXTURE]: page(FIXTURE, meta => meta.minSize, sizes => tightest(sizes, cols)),
     [LEGIBLE]: page(LEGIBLE, meta => meta.defaultSize, sizes => legible(sizes, cols, LEGIBLE_ROWS)),
     [REBUILT]: page(REBUILT, meta => meta.minSize, sizes => tightest(sizes, cols),
-      widgetMetas.map((_, copy) => ({ ...rebuilt[copy % rebuilt.length], copy }))),
-    [REBUILT_ALONE]: page(REBUILT_ALONE, meta => meta.defaultSize, sizes => tightest(sizes, cols), rebuilt.map((meta, copy) => ({ ...meta, copy }))),
+      Array.from({ length: widgetMetas.length }, (_, copy) => ({ ...rebuilt[copy % rebuilt.length], copy }))),
+    [REBUILT_ALONE]: page(REBUILT_ALONE, meta => meta.defaultSize, sizes => tightest(sizes, cols), rebuilt.map((entry, copy) => ({ ...entry, copy }))),
   };
   if (costs) {
     const selection = selectHeaviestKinds(costs, heaviestCount);
     if (selection.excludedByNoise.length && !allowBelowNoiseCutoff) throw new Error(selection.warning);
-    const selected = selection.kinds.map(kind => widgetMetas.find(meta => meta.kind === kind)
-      ?? (() => { throw new Error(`unknown widget kind ${kind} in widget-costs.json`); })());
+    const pool = await enumerateWidgetPlacements({ kinds: selection.kinds, mode: 'all-views' });
+    const selected = selection.entries.map(({ kind, view }) => {
+      const forKind = pool.filter(entry => entry.kind === kind);
+      if (view) {
+        const matched = forKind.find(entry => entry.view === view);
+        if (!matched) throw new Error(`unknown view ${view} for widget kind ${kind}`);
+        return matched;
+      }
+      return forKind.find(entry => entry.isDefaultView) ?? forKind[0];
+    });
     pages[HEAVIEST] = {
       ...page(HEAVIEST, meta => meta.minSize, sizes => tightest(sizes, cols), selected),
       excludedByNoise: selection.excludedByNoise.map(e => e.kind),
@@ -164,12 +221,9 @@ export async function allWidgetPages({ costs = null, heaviestCount = HEAVIEST_CO
   return { entries: [...written], pages };
 }
 
-export async function costPages(kinds = null) {
-  const [{ widgetMetas }, model, storage, pageList] = await Promise.all([
-    import(new URL('widgets/definitions.ts', UI)), import(new URL('dashboard/model.ts', UI)),
-    import(new URL('dashboard/storage.ts', UI)), import(new URL('dashboard/pages.ts', UI))]);
-  const selected = kinds === null ? [...widgetMetas] : kinds.map(kind => widgetMetas.find(meta => meta.kind === kind)
-    ?? (() => { throw new Error(`unknown widget kind: ${kind}`); })());
+export async function costPages(kinds = null, { allViews = false } = {}) {
+  const { model, storage, pageList } = await loadFixtureModules();
+  const selected = await enumerateWidgetPlacements({ kinds, mode: allViews ? 'all-views' : 'default' });
   const written = new Map();
   const shim = { getItem: key => written.get(key) ?? null, setItem: (key, value) => written.set(key, value) };
   const emptyId = 'page-cost-empty';
@@ -178,16 +232,17 @@ export async function costPages(kinds = null) {
   if (emptyRefused) throw new Error(`the app refuses the ${COST_EMPTY} layout: ${emptyRefused}`);
   const empty = { id: emptyId, label: COST_EMPTY };
   const built = [];
-  for (const meta of selected) {
-    const id = `page-cost-${meta.kind}`;
-    const label = `Cost:${meta.kind}`;
-    const widget = model.createWidget(meta.kind, 'main', `${id}-${meta.kind}`);
+  for (const entry of selected) {
+    const { meta } = entry;
+    const id = entry.isDefaultView ? `page-cost-${entry.kind}` : `page-cost-${entry.kind}--${entry.view}`;
+    const label = entry.isDefaultView ? `Cost:${entry.kind}` : `Cost:${entry.kind}/${entry.view}`;
+    const widget = createPlacedWidget(model, entry, entry.isDefaultView ? `${id}-${entry.kind}` : `${id}-w`);
     const wide = [{ i: widget.id, x: 0, y: 0, w: meta.defaultSize.w, h: meta.defaultSize.h, minW: meta.minSize.w, minH: meta.minSize.h }];
     const narrow = width => [{ i: widget.id, x: 0, y: 0, w: width, h: meta.defaultSize.h, minW: Math.min(width, meta.minSize.w), minH: meta.minSize.h }];
     const template = { ...model.defaultTemplate(id), widgets: [widget], layouts: { lg: wide, md: wide, sm: narrow(model.GRID_COLUMNS.sm), xs: narrow(model.GRID_COLUMNS.xs) } };
     const refused = storage.saveLayouts({ version: 1, activeId: 'default', layouts: [{ id: 'default', template }] }, shim, id);
     if (refused) throw new Error(`the app refuses the ${label} layout: ${refused}`);
-    built.push({ id, label, kind: meta.kind, title: meta.title, widget: widget.id });
+    built.push({ id, label, kind: entry.kind, view: entry.view, isDefaultView: entry.isDefaultView, title: meta.title, widget: widget.id });
   }
   const listed = [empty, ...built.map(({ id, label }) => ({ id, label }))];
   const unlisted = pageList.savePages(listed, shim);

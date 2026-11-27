@@ -880,6 +880,7 @@ def run_locked(args, started, state):
                                               *(["--pages", args.pages] if args.pages else []),
                                               *(["--pages-at", args.pages_at] if args.pages_at is not None else []),
                                               *(["--kinds", args.kinds] if args.kinds else []),
+                                              *(["--all-views"] if args.all_views else []),
                                               *(["--costs", args.costs] if args.costs else []),
                                               *(["--heaviest", args.heaviest] if args.heaviest is not None else []),
                                               *(["--record-replies", session["recordedReplies"]] if args.record_replies else []),
@@ -1506,6 +1507,7 @@ def parse(argv):
     run_command.add_argument("--cpu-throttle", type=float, help="CPU throttle rate (>= 1); forwarded to Chromium and drawing-lane stretch()")
     run_command.add_argument("--cores", help="logical processor count or hex affinity mask applied to the app Job object and page")
     run_command.add_argument("--kinds", help="comma-separated widget kinds for the widget-costs phase (all registered kinds by default)")
+    run_command.add_argument("--all-views", action="store_true", help="enumerate every registered widget view instead of one default placement per kind")
     run_command.add_argument("--costs", help="path to widget-costs.json used to build the Heaviest fixture page")
     run_command.add_argument("--heaviest", type=int, help="number of most expensive widget kinds placed on the Heaviest page (default 30)")
     run_command.add_argument("--window-client", help="window client area in device pixels, WxH")

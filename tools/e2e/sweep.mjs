@@ -38,17 +38,18 @@ if (!PINS.includes(pin)) throw new Error(`--pin takes ${PINS.join(' or ')}, not 
 const only = flag('--cases')?.split(',') ?? null;
 const onlyPages = flag('--pages')?.split(',') ?? null;
 const onlyKinds = flag('--kinds')?.split(',').filter(Boolean) ?? null;
+const allViews = process.argv.includes('--all-views');
 const costsFile = flag('--costs');
 const heaviestCount = flag('--heaviest') === null ? HEAVIEST_COUNT : Number(flag('--heaviest'));
 if (!(heaviestCount >= 1 && Number.isInteger(heaviestCount))) throw new Error(`--heaviest takes a positive integer, not ${flag('--heaviest')}`);
 const coresCount = flag('--cores-count') === null ? null : Number(flag('--cores-count'));
 if (coresCount !== null && !(coresCount >= 1 && Number.isInteger(coresCount))) throw new Error(`--cores-count takes a positive integer, not ${flag('--cores-count')}`);
 const runningCosts = phases.includes('widget-costs');
-const costFixture = runningCosts ? await costPages(onlyKinds) : null;
+const costFixture = runningCosts ? await costPages(onlyKinds, { allViews }) : null;
 const loadedCosts = costsFile ? JSON.parse(await readFile(costsFile, 'utf8')) : null;
 if (onlyPages?.includes(HEAVIEST) && !loadedCosts) throw new Error('--pages Heaviest requires --costs <widget-costs.json>');
 const fixture = !costFixture && onlyPages?.some(name => Object.hasOwn(VIEWS, name))
-  ? await allWidgetPages({ costs: loadedCosts, heaviestCount }) : null;
+  ? await allWidgetPages({ costs: loadedCosts, heaviestCount, allViews }) : null;
 const pageOf = name => fixture && Object.hasOwn(VIEWS, name) ? VIEWS[name].page : name;
 const pagesAt = flag('--pages-at') === null ? null : Number(flag('--pages-at'));
 const recordReplies = flag('--record-replies');
@@ -85,7 +86,7 @@ if (activeFixture) {
   await loaded;
   await applyConfinement();
   if (fixture) for (const entry of Object.values(fixture.pages)) log('fixture', `${entry.label}: ${entry.widgets.length} widgets, ${entry.rows} rows`);
-  if (costFixture) log('fixture', `widget-costs: ${costFixture.kinds.length} widget kinds plus empty baseline`);
+  if (costFixture) log('fixture', `widget-costs: ${costFixture.kinds.length} widget placements plus empty baseline`);
 }
 const replies = recordReplies ? await ReplyRecorder.start(app, recordReplies,
   { pid: appPid, revision: flag('--app-revision'), root: path.resolve(import.meta.dirname, '../..') }) : null;
@@ -902,7 +903,7 @@ await phase('widget-costs', async () => {
     await app.evaluate('window.__perf.flush()', 60_000).catch(() => {});
     return warmupReasons;
   };
-  const measureOne = async ({ kind, title, label, widget, isEmpty, sampleLabel = null, extraReasons = [] }) => {
+  const measureOne = async ({ kind, view = null, isDefaultView = true, title, label, widget, isEmpty, sampleLabel = null, extraReasons = [] }) => {
     let from = null, to = null, seekStart = null, audit = [], outcome = isEmpty ? 'empty' : 'content', detail = null, surfaces = [], playingAtSnap = null;
     const reasons = [...extraReasons];
     try {
@@ -954,15 +955,16 @@ await phase('widget-costs', async () => {
       await throttle(1).catch(() => {});
       await app.evaluate('window.__perf.flush()', 60_000).catch(() => {});
     }
-    await s.record({ area: 'widget-costs', item: sampleLabel ? `${kind}/${sampleLabel}` : kind, label, kind, title, widget, isEmpty, sampleLabel, from, to, seekStart, seconds: COST_SECONDS,
+    const itemName = sampleLabel ? `${kind}/${sampleLabel}` : !isDefaultView && view ? `${kind}/${view}` : kind;
+    await s.record({ area: 'widget-costs', item: itemName, label, kind, ...(view ? { view } : {}), title, widget, isEmpty, sampleLabel, from, to, seekStart, seconds: COST_SECONDS,
       playingAtSnap, outcome, detail, surfaces, audit, complete: reasons.length === 0, pass: reasons.length === 0, reasons, screenshot: false });
   };
   const warmupReasons = await warmEmptyBaseline();
   await measureOne({ kind: '__empty__', title: 'Empty page (start)', label: costFixture.empty.label, widget: null, isEmpty: true, sampleLabel: 'start', extraReasons: warmupReasons });
   for (let index = 0; index < costFixture.kinds.length; index++) {
     const entry = costFixture.kinds[index];
-    log('widget-cost', `${index + 1}/${costFixture.kinds.length}`, entry.kind);
-    await measureOne({ kind: entry.kind, title: entry.title, label: entry.label, widget: entry.widget, isEmpty: false });
+    log('widget-cost', `${index + 1}/${costFixture.kinds.length}`, !entry.isDefaultView && entry.view ? `${entry.kind}/${entry.view}` : entry.kind);
+    await measureOne({ kind: entry.kind, view: entry.view, isDefaultView: entry.isDefaultView, title: entry.title, label: entry.label, widget: entry.widget, isEmpty: false });
     if ((index + 1) % 15 === 0) await save();
   }
   await measureOne({ kind: '__empty__', title: 'Empty page (end)', label: costFixture.empty.label, widget: null, isEmpty: true, sampleLabel: 'end' });
