@@ -34,11 +34,13 @@ function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: stri
   return held;
 }
 
-const viewedRenderers = new WeakMap<ComponentType<WidgetProps>, Map<string, ComponentType<WidgetProps>>>();
+const viewedRenderers = new WeakMap<ComponentType<WidgetProps>, WeakMap<FamilyWidgetDeclaration, Map<string, ComponentType<WidgetProps>>>>();
 
 function rendererForView(render: ComponentType<WidgetProps>, view: string, declaration: FamilyWidgetDeclaration): ComponentType<WidgetProps> {
-  let byView = viewedRenderers.get(render);
-  if (!byView) viewedRenderers.set(render, byView = new Map());
+  let byDeclaration = viewedRenderers.get(render);
+  if (!byDeclaration) viewedRenderers.set(render, byDeclaration = new WeakMap());
+  let byView = byDeclaration.get(declaration);
+  if (!byView) byDeclaration.set(declaration, byView = new Map());
   let held = byView.get(view);
   if (!held) {
     const Render = render;
