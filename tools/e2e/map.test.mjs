@@ -714,10 +714,13 @@ test('hover separates presence from timing and does not require a neutral point 
   assert.equal(delayedButtonTiming?.ms, 6);
 });
 
-test('interactions confirms fly and walk movement from the campaign map camera snapshot and fails when unmoved or stuck in map pose', async () => {
-  const runCampaignCase = async ({ id, snapshots }) => {
+test('interactions confirms fly and walk movement from the campaign map camera snapshot and enforces camera mode and overlay cleanup', async () => {
+  const runCampaignCase = async ({ id, cameraMode = id, snapshots, rejectOverlayOff = false }) => {
     const recorded = [];
     const mapActions = [];
+    const inputOps = [];
+    let cameraOverlays = false;
+    let currentMode = cameraMode;
     let snapshotIndex = 0;
     const s = {
       app: {
@@ -725,13 +728,22 @@ test('interactions confirms fly and walk movement from the campaign map camera s
           if (expression.includes('.map-panel:not([hidden])')) {
             return { left: 100, top: 100, right: 1100, bottom: 700 };
           }
-          if (expression.includes("invoke('map_action'") || expression.includes("invoke('map_export_snapshot'")) {
+          if (expression.includes("invoke('map_action'") || expression.includes("invoke('map_export_snapshot'") || expression.includes("invoke('desktop_state'")) {
             const fakeWindow = {
               __TAURI_INTERNALS__: {
                 async invoke(command, payload) {
-                  if (command === 'map_action') { mapActions.push(payload.action); return null; }
+                  if (command === 'desktop_state') return { cameraMode: currentMode, cameraOverlays };
+                  if (command === 'map_action') {
+                    mapActions.push(payload.action);
+                    if (payload.action.overlays === false && rejectOverlayOff) throw new Error('overlay reset rejected');
+                    currentMode = payload.action.mode;
+                    cameraOverlays = payload.action.overlays;
+                    return null;
+                  }
                   if (command === 'map_export_snapshot') {
-                    const next = snapshots[Math.min(snapshotIndex++, snapshots.length - 1)];
+                    const next = typeof snapshots === 'function'
+                      ? snapshots({ cameraOverlays, index: snapshotIndex++ })
+                      : snapshots[Math.min(snapshotIndex++, snapshots.length - 1)];
                     if (next instanceof Error) throw next;
                     return next;
                   }
@@ -754,15 +766,18 @@ test('interactions confirms fly and walk movement from the campaign map camera s
       async record(entry) { recorded.push(entry); },
       async fail(area, item, label, reason) { recorded.push({ area, item, label, pass: false, reasons: [reason] }); },
     };
-    const input = { async ask() { return { posted: [Date.now()] }; } };
+    const input = { async ask(command) { inputOps.push(command.op); return { posted: [Date.now()] }; } };
     await interactions(s, input, 1, 0, { only: [id], playingModes: [false], settleMs: 0, moveDelayMs: 0 });
-    return { recorded, mapActions };
+    return { recorded, mapActions, inputOps };
   };
 
   const freeAt = (x, z, height) => ({ placement: { center: [x, z], height, pose: { kind: 'free', yaw: 0, pitch: -0.2, roll: 0, fovY: 1, near: 0.1, far: 1000 } } });
   const mapAt = (x, z, height) => ({ placement: { center: [x, z], height, pose: { kind: 'map' } } });
 
-  const movedFly = await runCampaignCase({ id: 'fly', snapshots: [freeAt(100, 200, 40), freeAt(140, 230, 45)] });
+  const movedFly = await runCampaignCase({
+    id: 'fly',
+    snapshots: [freeAt(100, 200, 40), mapAt(100, 200, 500), freeAt(140, 230, 45), mapAt(100, 200, 500)],
+  });
   assert.equal(movedFly.recorded.length, 1);
   assert.equal(movedFly.recorded[0].pass, true);
   assert.deepEqual(movedFly.recorded[0].reasons, []);
@@ -773,12 +788,18 @@ test('interactions confirms fly and walk movement from the campaign map camera s
     { kind: 'cameraMode', mode: 'fly', overlays: false },
   ]);
 
-  const unmovedWalk = await runCampaignCase({ id: 'walk', snapshots: [freeAt(100, 200, 12), freeAt(100, 200, 12)] });
+  const unmovedWalk = await runCampaignCase({
+    id: 'walk',
+    snapshots: [freeAt(100, 200, 12), mapAt(100, 200, 500), freeAt(100, 200, 12), mapAt(100, 200, 500)],
+  });
   assert.equal(unmovedWalk.recorded.length, 1);
   assert.equal(unmovedWalk.recorded[0].pass, false);
   assert.match(unmovedWalk.recorded[0].reasons.join('; '), /did not move/i);
 
-  const stuckMapPose = await runCampaignCase({ id: 'fly', snapshots: [mapAt(100, 200, 500), mapAt(100, 200, 500)] });
+  const stuckMapPose = await runCampaignCase({
+    id: 'fly',
+    snapshots: [mapAt(100, 200, 500), mapAt(100, 200, 500), mapAt(100, 200, 500), mapAt(100, 200, 500)],
+  });
   assert.equal(stuckMapPose.recorded.length, 1);
   assert.equal(stuckMapPose.recorded[0].pass, false);
   assert.match(stuckMapPose.recorded[0].reasons.join('; '), /map pose/i);
@@ -787,10 +808,31 @@ test('interactions confirms fly and walk movement from the campaign map camera s
   assert.equal(snapshotError.recorded.length, 1);
   assert.equal(snapshotError.recorded[0].pass, false);
   assert.match(snapshotError.recorded[0].reasons.join('; '), /The map stopped/);
+
+  const resetRejected = await runCampaignCase({
+    id: 'fly',
+    rejectOverlayOff: true,
+    snapshots: [freeAt(100, 200, 40), freeAt(140, 230, 45)],
+  });
+  assert.equal(resetRejected.recorded.length, 1);
+  assert.equal(resetRejected.recorded[0].pass, false);
+  assert.match(resetRejected.recorded[0].reasons.join('; '), /overlay reset rejected/);
+  assert.deepEqual(resetRejected.inputOps, ['click']);
+
+  const wrongMode = await runCampaignCase({
+    id: 'walk',
+    cameraMode: 'fly',
+    snapshots: [freeAt(100, 200, 40), mapAt(100, 200, 500), freeAt(140, 230, 45), mapAt(100, 200, 500)],
+  });
+  assert.equal(wrongMode.recorded.length, 1);
+  assert.equal(wrongMode.recorded[0].pass, false);
+  assert.match(wrongMode.recorded[0].reasons.join('; '), /expected walk camera mode, but the viewer reported fly/i);
+  assert.deepEqual(wrongMode.mapActions, []);
+  assert.deepEqual(wrongMode.inputOps, ['click']);
 });
 
-test('hover bounds its scan to a deterministic point set and reports a time-cap stop separately from absence', async () => {
-  const runBoundedHover = async ({ stateForMove, width = 800, height = 400, options = {} }) => {
+test('hover bounds its scan to a deterministic point set, handles paused-viewer tooltip delays, and enforces scan budget within a probe', async () => {
+  const runBoundedHover = async ({ stateForMove, width = 800, height = 400, options = {}, onEvaluate = null }) => {
     const mapStates = [];
     const recorded = [];
     let moves = 0;
@@ -798,6 +840,7 @@ test('hover bounds its scan to a deterministic point set and reports a time-cap 
     const s = {
       app: {
         async evaluate(expression) {
+          onEvaluate?.(mapStates);
           if (expression.includes('article.dash-widget.kind-map')) {
             return { view: 'overview-map', left: 0, top: 0, right: width, bottom: height };
           }
@@ -825,7 +868,7 @@ test('hover bounds its scan to a deterministic point set and reports a time-cap 
         moves++;
         const posted = (now += 10);
         const [px, py] = command.points[0];
-        const next = stateForMove(px, py, moves);
+        const next = stateForMove(px, py, moves, posted);
         if (next) mapStates.push({ id: 'overview-map', tooltipDelayMs: 0, drawnAt: posted + 2, ...next });
         return { posted: [posted] };
       },
@@ -851,16 +894,40 @@ test('hover bounds its scan to a deterministic point set and reports a time-cap 
   assert.equal(missingDivision.recorded.find(e => e.item === 'hover presence: map GUI button')?.pass, true);
   assert.equal(missingDivision.recorded.find(e => e.item === 'hover presence: province tooltip')?.pass, true);
 
-  let fakeClock = 0;
-  const budgetBounded = await runBoundedHover({
-    stateForMove: () => ({ hover: null, tooltip: null }),
-    options: { scanBudgetMs: 25, now: () => (fakeClock += 10) },
+  let suppressedClock = 0;
+  let suppressedMove2At = null;
+  let suppressedMove2Posted = null;
+  let suppressedEmitted = false;
+  const suppressedTooltip = await runBoundedHover({
+    stateForMove: (px, py, move, posted) => {
+      if (move === 1) return { hover: null, tooltip: null, tooltipDelayMs: 250 };
+      if (move === 2) { suppressedMove2At = suppressedClock; suppressedMove2Posted = posted; return null; }
+      if (move === 3) return { hover: 'division:9', tooltip: null, tooltipDelayMs: 250 };
+      return { hover: 'button:find-view', tooltip: null, tooltipDelayMs: 250 };
+    },
+    onEvaluate: mapStates => {
+      if (!suppressedEmitted && suppressedMove2At !== null && suppressedClock - suppressedMove2At >= 250) {
+        suppressedEmitted = true;
+        mapStates.push({ id: 'overview-map', hover: null, tooltip: 'province:500', tooltipDelayMs: 250, drawnAt: suppressedMove2Posted + 250 });
+      }
+    },
+    options: { scanTimeoutMs: 150, neutralPauseMs: 50, scanBudgetMs: 10_000, now: () => (suppressedClock += 25) },
   });
-  assert.ok(budgetBounded.moves <= 10, `expected safety-net cap to stop quickly, got ${budgetBounded.moves}`);
-  const timedOutPresence = budgetBounded.recorded.find(e => e.item === 'hover presence: division counter');
-  const timedOutTiming = budgetBounded.recorded.find(e => e.item === 'hover: division counter');
+  const suppressedPresence = suppressedTooltip.recorded.find(e => e.item === 'hover presence: province tooltip');
+  assert.equal(suppressedPresence?.pass, true);
+  assert.equal(suppressedPresence?.label, 'province:500');
+
+  let hugeDelayClock = 0;
+  const budgetWithinProbe = await runBoundedHover({
+    stateForMove: () => ({ hover: null, tooltip: null, tooltipDelayMs: 300_000 }),
+    options: { scanTimeoutMs: 10, neutralPauseMs: 50, scanBudgetMs: 60, now: () => (hugeDelayClock += 20) },
+  });
+  assert.equal(budgetWithinProbe.moves, 2);
+  assert.ok(hugeDelayClock < 1_000, `expected probe to stop within scan budget, fake clock reached ${hugeDelayClock}`);
+  const timedOutPresence = budgetWithinProbe.recorded.find(e => e.item === 'hover presence: division counter');
+  const timedOutTiming = budgetWithinProbe.recorded.find(e => e.item === 'hover: division counter');
   assert.equal(timedOutPresence?.pass, false);
-  assert.match(timedOutPresence?.reasons.join('; ') ?? '', /search cut short after \d+ of \d+ points/);
+  assert.match(timedOutPresence?.reasons.join('; ') ?? '', /search cut short after 1 of \d+ points/);
   assert.doesNotMatch(timedOutPresence?.reasons.join('; ') ?? '', /no division counter/);
   assert.equal(timedOutTiming?.pass, false);
   assert.match(timedOutTiming?.reasons.join('; ') ?? '', /cut short/i);
