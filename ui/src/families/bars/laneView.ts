@@ -240,13 +240,18 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     const target = focus ? { key } : inspected(key);
     if (!target) return null;
     const picked = pickedKey(target.key);
-    const tipHour = frame.model.dataHours?.length === 1 ? frame.model.dataHours[0]! : frame.model.hour;
+    const dataHour = frame.model.dataHours?.length === 1 ? frame.model.dataHours[0]! : undefined;
+    const tipHour = dataHour ?? frame.model.hour;
     if (picked !== null) {
       const tip = frame.model.pickList ? pickTooltip(frame.model.pickList, picked, tipHour) : null;
-      return tip ? { rowKey: target.key, payload: tip, ...(tip.hour !== undefined && tip.hour !== frame.model.hour ? { hour: tip.hour } : {}) } : null;
+      if (!tip) return null;
+      const fixedHour = dataHour ?? (tip.hour !== undefined && tip.hour !== frame.model.hour ? tip.hour : undefined);
+      return { rowKey: target.key, payload: tip, ...(fixedHour !== undefined ? { hour: fixedHour } : {}) };
     }
     const payload = deriveBarsTooltip(frame.model, target.key, target.side);
-    return payload ? { rowKey: target.key, payload, ...(payload.hour !== undefined && payload.hour !== frame.model.hour ? { hour: payload.hour } : {}) } : null;
+    if (!payload) return null;
+    const fixedHour = dataHour ?? (payload.hour !== undefined && payload.hour !== frame.model.hour ? payload.hour : undefined);
+    return { rowKey: target.key, payload, ...(fixedHour !== undefined ? { hour: fixedHour } : {}) };
   },
   structure({ model, layout }) {
     const regions = barsRegionRows(model, layout);

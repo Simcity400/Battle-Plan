@@ -16,6 +16,8 @@ export type OperativeMatrixOptions = DatedMembershipOptions;
 
 const NOT_RECORDED = 'Operatives were not recorded at this date.';
 const NONE_PLACED = 'No operatives in the field at this date.';
+const TARGET_NOT_RECORDED = 'An operative\'s target country was not recorded at this hour';
+const UNKNOWN_TARGET_COLUMN_ID = '__unknown_target__';
 
 function optionsOf(ctx: FamilyPlanContext): OperativeMatrixOptions {
   return {
@@ -106,7 +108,7 @@ export function projectOperativeMatrix(readView: BoundedReadView, options?: Oper
     for (let r = 0; r < reply.rows.length; r++) {
       const row = reply.rows[r]!;
       const owner = reply.countries[row.country]!.tag;
-      if (!active.has(owner) && !keptRowIndices.has(r) && row.missing === null) continue;
+      if (!active.has(owner) && !keptRowIndices.has(r) && row.missing === null && !row.unknownTarget.length) continue;
       rowMap.set(r, keptRows.length);
       keptRows.push(row);
       if (row.capacity.kind === 'known') largestMaximum = Math.max(largestMaximum, row.capacity.maximum);
@@ -121,7 +123,7 @@ export function projectOperativeMatrix(readView: BoundedReadView, options?: Oper
       colMap.set(c, keptColumns.length);
       keptColumns.push(countryIndex);
     }
-    if (!keptColumns.length) return blank(hour, { empty: NONE_PLACED, warnings: reply.warnings });
+    if (!keptColumns.length && !keptRows.some(row => row.unknownTarget.length > 0)) return blank(hour, { empty: NONE_PLACED, warnings: reply.warnings });
     mostRaw = 0;
     activeCells = filteredCells.map(cell => {
       if (!cell.home) mostRaw = Math.max(mostRaw, cell.operatives.length);
@@ -144,13 +146,23 @@ export function projectOperativeMatrix(readView: BoundedReadView, options?: Oper
       ...(shown.flag ? { flag: shown.flag } : {}),
     };
   };
+  const hasUnknownTarget = activeRows.some(row => row.unknownTarget.length > 0);
   const rows = activeRows.map(row => entity(row.country));
   const columns = activeColumns.map(entity);
+  const unknownColIndex = hasUnknownTarget ? columns.length : -1;
+  if (hasUnknownTarget) {
+    columns.push({
+      id: UNKNOWN_TARGET_COLUMN_ID,
+      label: 'Target not recorded',
+      shortLabel: '?',
+      nameMissing: TARGET_NOT_RECORDED,
+    });
+  }
   const width = columns.length;
   const byPair = new Map<number, OperativeMatrixReply['cells'][number]>();
   for (const cell of activeCells) byPair.set(cell.row * width + cell.column, cell);
   const most = Math.max(1, mostRaw);
-  const hasMissing = activeRows.some(row => row.missing !== null || row.capacity.kind === 'missing');
+  const hasMissing = hasUnknownTarget || activeRows.some(row => row.missing !== null || row.capacity.kind === 'missing');
   const readHour = reply.readHour ?? hour;
 
   const present = new Map<number, MatrixCell>();
@@ -162,11 +174,27 @@ export function projectOperativeMatrix(readView: BoundedReadView, options?: Oper
       ? { kind: 'diagonal', outlined: true, text: String(count) }
       : { kind: 'value', intensity: count / most, text: String(count), value: count, selectable: true });
   }
+  if (hasUnknownTarget) {
+    for (let r = 0; r < activeRows.length; r++) {
+      const unknown = activeRows[r]!.unknownTarget;
+      if (!unknown.length) continue;
+      const reason = activeRows[r]!.missing ?? TARGET_NOT_RECORDED;
+      present.set(r * width + unknownColIndex, {
+        kind: 'missing',
+        reason,
+        text: String(unknown.length),
+        selectable: true,
+        audit: `${unknown.length} (Not recorded: ${reason})`,
+      });
+    }
+  }
   const noOperatives: MatrixCell = { kind: 'empty', label: 'No operatives', audit: '0' };
+  const noUnknownTarget: MatrixCell = { kind: 'empty', label: 'No operatives with target not recorded', audit: '0' };
   const home: MatrixCell = { kind: 'diagonal', outlined: true };
   const outsideSelection: MatrixCell = { kind: 'empty', label: 'Outside selected group', audit: 'Outside selection' };
   const activeSet = group.kind === 'filtered' ? group.active : null;
   const absent = (r: number, c?: number): MatrixCell => {
+    if (c === unknownColIndex) return noUnknownTarget;
     if (activeSet && c !== undefined && !activeSet.has(rows[r]!.id) && !activeSet.has(columns[c]!.id)) return outsideSelection;
     const missing = activeRows[r]!.missing;
     return missing ? { kind: 'missing', reason: missing } : noOperatives;
@@ -191,6 +219,7 @@ export function projectOperativeMatrix(readView: BoundedReadView, options?: Oper
 
   return {
     hour,
+    ...(reply.readHour !== null ? { dataHour: reply.readHour } : {}),
     rows,
     columns,
     cells,
@@ -206,6 +235,19 @@ export function projectOperativeMatrix(readView: BoundedReadView, options?: Oper
       ],
     },
     tooltip: (row, column, item, r, c) => {
+      if (c === unknownColIndex) {
+        const unknown = activeRows[r]!.unknownTarget;
+        if (!unknown.length) {
+          return { title: `${row.label} → ${column.label}`, hour: readHour, items: [{ label: 'No operatives with target not recorded', tone: 'muted' }] };
+        }
+        const reason = item.kind === 'missing' ? item.reason : (activeRows[r]!.missing ?? TARGET_NOT_RECORDED);
+        return {
+          title: `${row.label}: ${operativesLabel(unknown.length)} (target not recorded)`,
+          hour: readHour,
+          missingReason: reason,
+          items: operativeItems(unknown),
+        };
+      }
       const found = byPair.get(r * width + c);
       if (item.kind === 'diagonal') {
         if (!found) return { title: row.label, hour: readHour, items: [{ label: 'No operatives on counter-intelligence', tone: 'muted' }] };
@@ -251,18 +293,44 @@ export function projectOperativePairs(readView: BoundedReadView, options?: Opera
   if (group.kind === 'empty') return { form: 'ordered', hour, rows: [], empty: group.reason, warnings: reply.warnings };
   if (reply.missing) return { form: 'ordered', hour, rows: [], empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
   const pairs = group.kind === 'filtered'
-    ? reply.pairs.filter(pair => group.active.has(reply.countries[pair.spy]!.tag) || group.active.has(reply.countries[pair.target]!.tag))
+    ? (group.active.size > 0
+      ? reply.pairs.filter(pair =>
+          pair.target === null
+          || group.active.has(reply.countries[pair.spy]!.tag)
+          || group.active.has(reply.countries[pair.target]!.tag))
+      : [])
     : reply.pairs;
   if (!pairs.length) return { form: 'ordered', hour, rows: [], empty: NONE_PLACED, warnings: reply.warnings };
   const readHour = reply.readHour ?? hour;
   let scaleMax = 0;
   const rows: BarsDataRow[] = pairs.map(pair => {
     const spy = reply.countries[pair.spy]!.tag;
-    const target = reply.countries[pair.target]!.tag;
     const shownSpy = countryRowPresentation(readView, spy);
-    const shownTarget = countryRowPresentation(readView, target);
     const count = pair.operatives.length;
     scaleMax = Math.max(scaleMax, count);
+    if (pair.target === null) {
+      const ownerLabel = shownSpy.labelMissing ? spy : shownSpy.label;
+      const missingReason = pair.targetMissing ?? TARGET_NOT_RECORDED;
+      return {
+        kind: 'data',
+        key: `${spy}:unknown-target`,
+        subject: spy,
+        label: `${ownerLabel} → Target not recorded`,
+        muted: true,
+        media: shownSpy.media,
+        ...(shownSpy.color ? { color: shownSpy.color } : {}),
+        value: { value: knownValue(count), format: 'integer' },
+        numeric: count,
+        tooltip: {
+          title: `${ownerLabel} has ${operativesLabel(count)} (target not recorded)`,
+          hour: readHour,
+          missingReason,
+          items: operativeItems(pair.operatives),
+        },
+      };
+    }
+    const target = reply.countries[pair.target]!.tag;
+    const shownTarget = countryRowPresentation(readView, target);
     const label = `${shownSpy.label} → ${shownTarget.label}`;
     return {
       kind: 'data',
@@ -277,7 +345,15 @@ export function projectOperativePairs(readView: BoundedReadView, options?: Opera
       tooltip: { title: `${shownSpy.label} has ${operativesLabel(count)} in ${shownTarget.label}`, hour: readHour, items: operativeItems(pair.operatives) },
     };
   });
-  return { form: 'ordered', hour, rows, scaleMax, animateOrder: true, warnings: reply.warnings };
+  return {
+    form: 'ordered',
+    hour,
+    rows,
+    scaleMax,
+    animateOrder: true,
+    ...(reply.readHour !== null ? { dataHours: [reply.readHour] } : {}),
+    warnings: reply.warnings,
+  };
 }
 
 export const operativePairsProjection: BarsProjection<OperativeMatrixOptions> = {

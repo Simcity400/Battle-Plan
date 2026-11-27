@@ -56,6 +56,7 @@ export type MatrixCell =
   | {
       readonly kind: 'missing';
       readonly reason: string;
+      readonly text?: string;
       readonly tooltip?: FamilyTooltipPayload;
       readonly audit?: string;
       readonly selectable?: boolean;
@@ -106,6 +107,7 @@ export interface MatrixMargin {
 
 export interface HeatMatrixModel {
   readonly hour: number;
+  readonly dataHour?: number;
   readonly corner?: string;
   readonly summaryText?: string;
   readonly rows: readonly MatrixAxisEntity[];
@@ -183,20 +185,21 @@ export function deriveMatrixTooltip(
   }
   if (cell.tooltip) return cell.tooltip;
   const title = `${row.label} → ${col.label}`;
+  const tipHour = model.dataHour ?? model.hour;
   if (cell.kind === 'diagonal') return null;
   if (cell.kind === 'missing') {
-    return { title, hour: model.hour, missingReason: cell.reason };
+    return { title, hour: tipHour, missingReason: cell.reason };
   }
   if (cell.kind === 'empty') {
     return {
       title,
-      hour: model.hour,
+      hour: tipHour,
       items: [{ label: cell.label ?? 'None', tone: 'muted' }],
     };
   }
   return {
     title,
-    hour: model.hour,
+    hour: tipHour,
     ...(cell.text !== undefined ? { exactValue: cell.text } : {}),
   };
 }

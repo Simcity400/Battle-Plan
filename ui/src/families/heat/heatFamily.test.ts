@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Canvas2D } from '../../charts/textWidth.ts';
 import { computeTimeAxisTicks, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
-import type { FamilyTheme } from '../contract.ts';
+import { displayedHour } from '../boundedView.ts';
+import type { FamilyTheme, InstalledPicture } from '../contract.ts';
 import { marginColour, sequentialRampColour, signedRampColour, splitStripes } from './scale.ts';
 import {
   deriveMatrixAudit,
   deriveMatrixMirror,
   deriveMatrixTooltip,
   matrixGroupSpans,
+  parseMatrixCellKey,
   type HeatMatrixModel,
   type MatrixAxisEntity,
   type MatrixCell,
@@ -20,8 +22,11 @@ import { hitHeatLanes, LanePixels, lanesWindow, layoutHeatLanes, projectLaneRuns
 import { drawHeatLanes } from './lanesPainter.ts';
 import { assertFreshPaint, assertQuietFrames, assertScrollKeepsStructure, driveLane, installRecordingCanvas } from '../laneRuntime.fixture.ts';
 import { navPageSteps, usableRowHeight, type FamilyNavTuple } from '../host/keyboard.ts';
+import { recordInstalled, resolveHostInput } from '../host/installed.ts';
+import type { FamilyTooltipField } from '../host/tooltips.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
+import { heatMatrixHostAdapter } from './hostAdapter.ts';
 import { heatLanesLane } from './lanesLaneView.ts';
 import { heatMatrixLane } from './matrixLaneView.ts';
 
@@ -107,7 +112,7 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
 
   const grid: readonly (readonly MatrixCell[])[] = [
     [{ kind: 'diagonal' }, { kind: 'value', color: '#2eb872', text: '+50', value: 50 }, { kind: 'value', color: '#e55353', text: '-80', value: -80 }],
-    [{ kind: 'empty', label: 'No network' }, { kind: 'missing', reason: 'Opinions not recorded' }, { kind: 'diagonal' }],
+    [{ kind: 'empty', label: 'No network' }, { kind: 'missing', reason: 'Opinions not recorded', text: '2' }, { kind: 'diagonal' }],
   ];
 
   const model: HeatMatrixModel = {
@@ -185,6 +190,7 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
     focusedCell: { row: 1, column: 0 },
   });
   assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === '-80'));
+  assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === '2'));
   assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === 'Allies'));
 
   registerFamilyProjection({ kind: 'test-heat-matrix', family: 'heat-matrix', project: view => view.panel('main') as HeatMatrixModel });
@@ -638,6 +644,116 @@ test('heat matrix publishes its mirror when transitioning from zero rows to its 
     assert.equal((first.fields.mirror?.value as { rows: unknown[] } | undefined)?.rows.length, 1, 'transition from 0 rows to 1 publishes the matrix mirror during playback');
     const second = lane.paint({ label: 'two-rows', binding: makeBinding(2), hour: 3, speed: 24, seek: 1 });
     assert.equal(second.fields.mirror, undefined, 'once populated, subsequent matrix updates defer during unfocused playback');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('heat matrix keeps census dataHour on hover and pinned tooltips as playback advances and draws flagless column shortLabel in compact layout', () => {
+  const rows: MatrixAxisEntity[] = [{ id: 'ITA', label: 'Italy', tag: 'ITA', flag: { status: 'pending' } }];
+  const columns: MatrixAxisEntity[] = [
+    { id: 'ENG', label: 'United Kingdom', tag: 'ENG', flag: { status: 'pending' } },
+    { id: '__unknown_target__', label: 'Target not recorded', shortLabel: '?', nameMissing: 'Not recorded' },
+  ];
+  const compactModel: HeatMatrixModel = {
+    hour: 100,
+    dataHour: 100,
+    shape: 'wide',
+    rows,
+    columns,
+    margin: { header: 'Active / maximum', cell: () => ({ kind: 'value', fraction: 0.5, text: '2 / 4' }) },
+    cells: {
+      present: new Map([[1, { kind: 'missing', reason: 'Target not recorded', text: '2', selectable: true }]]),
+      absent: { kind: 'missing', reason: 'Target not recorded' },
+    },
+  };
+  const compactLayout = layoutHeatMatrix({ width: 320, height: 150, scrollLeft: 0, scrollTop: 0, rows, columns, shape: 'wide' });
+  assert.equal(compactLayout.showFlags, true);
+  assert.equal(compactLayout.columnNames, false);
+  const compactCtx = makeFakeCtx();
+  drawHeatMatrix(compactCtx.ctx, { model: compactModel, layout: compactLayout, theme: THEME, scrollLeft: 0, scrollTop: 0, hoveredCell: null, focusedCell: null });
+  assert.ok(compactCtx.ops.some(op => op.op === 'fillText' && op.args[0] === '?'), 'flagless column draws its shortLabel when column names are hidden');
+
+  registerFamilyProjection({
+    family: 'heat-matrix',
+    kind: 'test-matrix-held-census',
+    project: () => compactModel,
+  });
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(heatMatrixLane, () => {}), recording.canvases, { width: 400, height: 240, dpr: 1 });
+    const binding = {
+      family: 'heat-matrix' as const,
+      kind: 'test-matrix-held-census',
+      options: {},
+      sources: {},
+      staticPanels: {},
+      scrollTop: 0,
+      scrollLeft: 0,
+      theme: THEME,
+      width: 400,
+      height: 240,
+      focusedKey: '0:1',
+    };
+    const atSample = lane.paint({ label: 'at-sample', binding, hour: 100, inspect: 'cell:0:1', speed: 0, seek: 1 });
+    const advanced = lane.paint({ label: 'after-sample', binding, hour: 112, inspect: 'cell:0:1', speed: 24, seek: 1 });
+    const hoverTip = (advanced.fields.tooltip?.value as FamilyTooltipField | undefined)?.text ?? null;
+    const focusTip = (advanced.fields.focusTooltip?.value as FamilyTooltipField | undefined)?.text ?? null;
+    assert.equal(hoverTip?.hour, 100, 'hover tooltip keeps census readHour after playback advances');
+    assert.equal(hoverTip?.payload?.hour, 100);
+    assert.equal(focusTip?.hour, 100, 'focus tooltip keeps census readHour after playback advances');
+    const picture: InstalledPicture = {
+      id: 2,
+      owner: 'who-spies-on-whom',
+      generation: { seek: 1, reset: 0, binding: 1 },
+      factRevisions: {},
+      validInterval: [100, 120],
+      through: 112,
+      hour: displayedHour(112),
+      viewport: { width: 400, height: 240, dpr: 1, scrollLeft: 0, scrollTop: 0 },
+      optionsRevision: '',
+      themeRevision: '',
+      actionKeys: new Map(),
+      accessibleDescription: null,
+    };
+    const installed = recordInstalled(
+      picture,
+      { extent: atSample.fields.extent?.value, focusTooltip: advanced.fields.focusTooltip?.value },
+      null,
+    );
+    const pinned = resolveHostInput(
+      heatMatrixHostAdapter,
+      'pin',
+      { key: '0:1', hit: null, picture },
+      { current: installed, held: false, expired: false },
+      { expansion: {}, takesToggles: false, regions: false, menu: false },
+      parseMatrixCellKey,
+    );
+    assert.equal(pinned?.kind, 'pin');
+    assert.equal(pinned?.kind === 'pin' && pinned.hour, 100, 'pinned matrix tooltip keeps census readHour');
+
+    const marginBinding = { ...binding, focusedKey: '0:2' };
+    const marginAdvanced = lane.paint({ label: 'margin-after-sample', binding: marginBinding, hour: 112, inspect: 'cell:0:2', speed: 24, seek: 1 });
+    const marginHover = (marginAdvanced.fields.tooltip?.value as FamilyTooltipField | undefined)?.text ?? null;
+    const marginFocus = (marginAdvanced.fields.focusTooltip?.value as FamilyTooltipField | undefined)?.text ?? null;
+    assert.equal(marginHover?.hour, 112, 'capacity margin hover tracks displayed hour');
+    assert.equal(marginHover?.payload?.hour, 112);
+    assert.equal(marginFocus?.hour, 112, 'capacity margin focus tracks displayed hour');
+    const marginInstalled = recordInstalled(
+      picture,
+      { extent: atSample.fields.extent?.value, focusTooltip: marginAdvanced.fields.focusTooltip?.value },
+      null,
+    );
+    const marginPinned = resolveHostInput(
+      heatMatrixHostAdapter,
+      'pin',
+      { key: '0:2', hit: null, picture },
+      { current: marginInstalled, held: false, expired: false },
+      { expansion: {}, takesToggles: false, regions: false, menu: false },
+      parseMatrixCellKey,
+    );
+    assert.equal(marginPinned?.kind, 'pin');
+    assert.equal(marginPinned?.kind === 'pin' && marginPinned.hour, 112, 'pinned capacity margin tracks displayed hour');
   } finally {
     recording.restore();
   }

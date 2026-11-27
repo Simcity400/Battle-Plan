@@ -840,6 +840,111 @@ mod exact_playback {
                 assert_eq!(step.product_calls, 0, "chosen matrix must stay quiet at offset {offset}");
             }
         }
+
+        let unknown_frames: Vec<DecodedFrame> = (first..=first + 9)
+            .map(|hour| {
+                let offset = hour - first;
+                let mut frame = base_frame(1, hour, true);
+                if offset >= 5 {
+                    let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] else { unreachable!() };
+                    countries.push(CountryRow { id: 9004, canonical_slot: 10, tag: b"XDD".to_vec(), ..CountryRow::default() });
+                    let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
+                    links.push(CountryLinkRow { id: 9004, canonical_slot: 10 });
+                    links.sort_by_key(|row| row.id);
+                }
+                *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(Vec::new()));
+                *frame.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(Vec::new()));
+                let mut ops = vec![OperativeMembershipRow {
+                    id: 1,
+                    owner_country: 9001,
+                    roster_country: 9001,
+                    roster_kind: 0,
+                    assignment: MISSION,
+                    action_variant: Some(1),
+                    target_country: Recorded::Value(Some(9002)),
+                    operation: Recorded::Value(None),
+                    name: Recorded::Value(b"Known One".to_vec()),
+                    experience_raw: i64::from(offset) * 10,
+                    ..OperativeMembershipRow::default()
+                }];
+                if offset >= 2 {
+                    ops.push(OperativeMembershipRow {
+                        id: 4,
+                        owner_country: 9002,
+                        roster_country: 9002,
+                        roster_kind: 0,
+                        assignment: MISSION,
+                        action_variant: Some(1),
+                        target_country: if offset < 7 {
+                            Recorded::Value(Some(9004))
+                        } else if offset < 9 {
+                            Recorded::Value(Some(9005))
+                        } else {
+                            Recorded::Value(Some(9001))
+                        },
+                        operation: Recorded::Value(None),
+                        name: Recorded::Value(b"Blind Spy".to_vec()),
+                        ..OperativeMembershipRow::default()
+                    });
+                }
+                *frame.tables[TableId::OperativeMemberships.index()] = TableView::Complete(TableRows::OperativeMemberships(ops));
+                *frame.tables[TableId::IntelligenceAgencies.index()] = TableView::Complete(TableRows::IntelligenceAgencies(Vec::new()));
+                frame
+            })
+            .collect();
+        let (unknown_src, unknown_load) = source_with_content(unknown_frames, &machine.root);
+        let unknown_src = Arc::new(unknown_src);
+        for (params, change_offsets, quiet_offsets) in [
+            (json!({"branchId": "1", "countries": ["GER"], "form": "matrix"}), [2, 5, 7, 9].as_slice(), [1, 3, 4, 6, 8].as_slice()),
+            (json!({"branchId": "1", "countries": ["GER"], "form": "pairs"}), [2, 5, 7, 9].as_slice(), [1, 3, 4, 6, 8].as_slice()),
+        ] {
+            let panel = exact_panel::<OperativeMatrix>(&unknown_src, &unknown_load, &params).unwrap();
+            let reader = panel.exact().unwrap();
+            let mut whole = frame_panel::<OperativeMatrix>(&unknown_src, &unknown_load, &params).unwrap();
+            let steps = played(unknown_src.replay_ref(), reader, first, first + 9);
+            for step in &steps {
+                let offset = step.hour - first;
+                let expected = materialized_frame(&mut *whole, unknown_src.replay_ref(), 1, step.hour);
+                assert_eq!(streamed(&step.value, step.fresh), streamed(&expected, step.fresh), "unknown-target {params} mismatch at offset {offset}");
+                if change_offsets.contains(&offset) {
+                    assert_eq!(step.product_calls, 1, "unknown-target {params} must rebuild at offset {offset}");
+                }
+                if quiet_offsets.contains(&offset) {
+                    assert_eq!(step.product_calls, 0, "unknown-target {params} must stay quiet at offset {offset}");
+                }
+            }
+            if params["form"] == "matrix" {
+                let at_2 = steps[2].value.as_ref().as_ref().unwrap();
+                let fra_row = at_2["rows"].as_array().unwrap().iter().find(|row| at_2["countries"][row["country"].as_u64().unwrap() as usize]["tag"] == "FRA").unwrap();
+                assert_eq!(fra_row["unknownTarget"].as_array().unwrap().len(), 1);
+                assert!(fra_row["missing"].as_str().unwrap().contains("could not be resolved"));
+                let at_5 = steps[5].value.as_ref().as_ref().unwrap();
+                assert!(at_5["rows"].as_array().unwrap().iter().all(|row| at_5["countries"][row["country"].as_u64().unwrap() as usize]["tag"] != "FRA"));
+                let at_7 = steps[7].value.as_ref().as_ref().unwrap();
+                let fra_row = at_7["rows"].as_array().unwrap().iter().find(|row| at_7["countries"][row["country"].as_u64().unwrap() as usize]["tag"] == "FRA").unwrap();
+                assert_eq!(fra_row["unknownTarget"].as_array().unwrap().len(), 1);
+                assert!(fra_row["missing"].as_str().unwrap().contains("could not be resolved"));
+                let at_9 = steps[9].value.as_ref().as_ref().unwrap();
+                let fra_row = at_9["rows"].as_array().unwrap().iter().find(|row| at_9["countries"][row["country"].as_u64().unwrap() as usize]["tag"] == "FRA").unwrap();
+                assert!(fra_row["missing"].is_null());
+                assert!(fra_row["unknownTarget"].as_array().unwrap().is_empty());
+            } else {
+                let at_2 = steps[2].value.as_ref().as_ref().unwrap();
+                let fra_pair = at_2["pairs"].as_array().unwrap().iter().find(|pair| at_2["countries"][pair["spy"].as_u64().unwrap() as usize]["tag"] == "FRA").unwrap();
+                assert!(fra_pair["target"].is_null());
+                assert!(fra_pair["targetMissing"].as_str().unwrap().contains("could not be resolved"));
+                let at_5 = steps[5].value.as_ref().as_ref().unwrap();
+                assert!(at_5["pairs"].as_array().unwrap().iter().all(|pair| at_5["countries"][pair["spy"].as_u64().unwrap() as usize]["tag"] != "FRA"));
+                let at_7 = steps[7].value.as_ref().as_ref().unwrap();
+                let fra_pair = at_7["pairs"].as_array().unwrap().iter().find(|pair| at_7["countries"][pair["spy"].as_u64().unwrap() as usize]["tag"] == "FRA").unwrap();
+                assert!(fra_pair["target"].is_null());
+                assert!(fra_pair["targetMissing"].as_str().unwrap().contains("could not be resolved"));
+                let at_9 = steps[9].value.as_ref().as_ref().unwrap();
+                let fra_pair = at_9["pairs"].as_array().unwrap().iter().find(|pair| at_9["countries"][pair["spy"].as_u64().unwrap() as usize]["tag"] == "FRA").unwrap();
+                assert_eq!(at_9["countries"][fra_pair["target"].as_u64().unwrap() as usize]["tag"], json!("GER"));
+                assert!(fra_pair["targetMissing"].is_null());
+            }
+        }
     }
 
     #[test]

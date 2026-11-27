@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { canonicalAuditValue } from '../../families/audit.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip } from '../../families/bars/model.ts';
+import { knownValue } from '../../families/value.ts';
 import { datedIdentity } from '../../families/identity/dated.fixture.ts';
+import { buildTooltipContent } from '../../families/host/tooltips.ts';
 import { deriveMatrixAudit, deriveMatrixMirror, deriveMatrixTooltip, matrixCellAt } from '../../families/heat/matrixModel.ts';
 import type { OperativeMatrixReply } from '../../generated/dashboard';
 import { operativeMatrixProjection, operativePairsProjection, projectOperativeMatrix, projectOperativePairs } from './whoSpiesProjection.ts';
@@ -14,10 +18,10 @@ const agent = (id: number) => ({ id: String(id), name: `Agent ${id}`, nameMissin
 const reply: OperativeMatrixReply = {
   countries: ['ENG', 'GER', 'ITA', 'SOV'].map(tag => ({ tag, factionId: null, factionName: null, factionNameMissing: null })),
   rows: [
-    { country: 0, capacity: { kind: 'known', active: 7, maximum: 7 }, missing: null },
-    { country: 1, capacity: { kind: 'known', active: 8, maximum: 8 }, missing: null },
-    { country: 2, capacity: { kind: 'missing', reason: 'Agencies were not read' }, missing: 'An operative\'s target country was not recorded at this hour' },
-    { country: 3, capacity: { kind: 'noAgency' }, missing: null },
+    { country: 0, capacity: { kind: 'known', active: 7, maximum: 7 }, missing: null, unknownTarget: [] },
+    { country: 1, capacity: { kind: 'known', active: 8, maximum: 8 }, missing: null, unknownTarget: [] },
+    { country: 2, capacity: { kind: 'missing', reason: 'Agencies were not read' }, missing: 'An operative\'s target country was not recorded at this hour', unknownTarget: [agent(7), agent(8)] },
+    { country: 3, capacity: { kind: 'noAgency' }, missing: null, unknownTarget: [] },
   ],
   columns: [0, 1, 2, 3],
   cells: [
@@ -27,7 +31,11 @@ const reply: OperativeMatrixReply = {
   ],
   most: 3,
   largestMaximum: 8,
-  pairs: [{ spy: 0, target: 1, operatives: [agent(3), agent(4), agent(5)] }, { spy: 1, target: 0, operatives: [agent(6)] }],
+  pairs: [
+    { spy: 0, target: 1, targetMissing: null, operatives: [agent(3), agent(4), agent(5)] },
+    { spy: 2, target: null, targetMissing: 'An operative\'s target country was not recorded at this hour', operatives: [agent(7), agent(8)] },
+    { spy: 1, target: 0, targetMissing: null, operatives: [agent(6)] },
+  ],
   readHour: HOUR - 12,
   missing: null,
   warnings: [],
@@ -62,11 +70,30 @@ test('spy matrix: counter-intelligence on the diagonal, unknown pairs hatched ne
   assert.equal(deriveMatrixMirror(model, 0, 1, 0, model.columns.length).rows[0]!.cells.at(-1)!.column, model.margin!.header, 'and spoken in the mirror');
 });
 
-test('spy matrix: a spy with an operative on an unrecorded target does not know its own home cell either', () => {
+test('spy matrix: a spy with an operative on an unrecorded target does not know its own home cell either and counts them in a target-not-recorded column', () => {
   const model = projectOperativeMatrix(view(reply));
   assert.deepEqual(matrixCellAt(model, 2, 2), { kind: 'missing', reason: "An operative's target country was not recorded at this hour" });
   assert.deepEqual(matrixCellAt(model, 1, 1), { kind: 'diagonal', outlined: true }, 'a known spy without counter-intelligence keeps the outlined home cell');
   assert.deepEqual(matrixCellAt(model, 0, 0), { kind: 'diagonal', outlined: true, text: '2' }, 'a witnessed home cell is kept');
+  const unknownCol = model.columns.length - 1;
+  assert.equal(model.columns[unknownCol]!.label, 'Target not recorded');
+  assert.equal(matrixCellAt(model, 0, unknownCol).kind, 'empty');
+  assert.deepEqual(matrixCellAt(model, 2, unknownCol), {
+    kind: 'missing',
+    reason: "An operative's target country was not recorded at this hour",
+    text: '2',
+    selectable: true,
+    audit: "2 (Not recorded: An operative's target country was not recorded at this hour)",
+  });
+  const tip = deriveMatrixTooltip(model, 2, unknownCol)!;
+  assert.equal(tip.title, 'ITA: 2 operatives (target not recorded)');
+  assert.equal(tip.hour, HOUR - 12);
+  assert.equal(tip.missingReason, "An operative's target country was not recorded at this hour");
+  assert.deepEqual(tip.items, [{ label: 'Agent 7' }, { label: 'Agent 8' }]);
+  const pinned = buildTooltipContent(tip);
+  assert.equal(pinned.rows[0]?.label, 'Not recorded');
+  assert.equal(pinned.rows[1]?.label, 'Agent 7');
+  assert.equal(pinned.rows[2]?.label, 'Agent 8');
 });
 
 test('spy matrix: a census not recorded is the not-recorded state, not an empty matrix', () => {
@@ -78,10 +105,38 @@ test('spy matrix: a census not recorded is the not-recorded state, not an empty 
   assert.equal(none.emptyKind, undefined);
 });
 
-test('top pairs keep the product order and scale', () => {
+test('top pairs keep the product order, scale, and unknown-target rows with hover and pinned detail', () => {
   const model = projectOperativePairs(view(reply));
-  assert.deepEqual(model.rows.map(row => row.key), ['ENG>GER', 'GER>ENG']);
+  assert.deepEqual(model.rows.map(row => row.key), ['ENG>GER', 'ITA:unknown-target', 'GER>ENG']);
   assert.equal(model.scaleMax, 3);
+  const unknownRow = model.rows[1]!;
+  assert.equal(unknownRow.kind, 'data');
+  assert.equal(unknownRow.label, 'ITA → Target not recorded');
+  assert.equal(unknownRow.numeric, 2);
+  const tip = deriveBarsTooltip(model, 'ITA:unknown-target')!;
+  assert.equal(tip.title, 'ITA has 2 operatives (target not recorded)');
+  assert.equal(tip.hour, HOUR - 12);
+  assert.equal(tip.missingReason, "An operative's target country was not recorded at this hour");
+  assert.deepEqual(tip.items, [{ label: 'Agent 7' }, { label: 'Agent 8' }]);
+  const pinned = buildTooltipContent(tip);
+  assert.equal(pinned.rows[0]?.label, 'Not recorded');
+  assert.equal(pinned.rows[1]?.label, 'Agent 7');
+  const audit = deriveBarsAudit(model);
+  assert.ok(audit.some(entry => entry.key === 'ITA:unknown-target:label' && entry.value === 'ITA → Target not recorded'));
+  assert.ok(audit.some(entry => entry.key === 'ITA:unknown-target:value' && entry.value === canonicalAuditValue(knownValue(2))));
+  const mirror = deriveBarsMirror(model);
+  assert.equal(mirror.rows[1]?.name, 'ITA → Target not recorded');
+  assert.deepEqual(model.dataHours, [HOUR - 12]);
+
+  const unnamedIdentity = datedIdentity({ ENG: [{ from: 0, name: 'United Kingdom' }], GER: [{ from: 0, name: 'Germany' }], ITA: [{ from: 0, name: null }] });
+  const unnamedModel = projectOperativePairs(createBoundedReadView({ hour: HOUR, identity: unnamedIdentity, panels: new Map([['main', reply]]) }));
+  const unnamedRow = unnamedModel.rows[1]!;
+  assert.equal(unnamedRow.kind, 'data');
+  assert.equal(unnamedRow.label, 'ITA → Target not recorded');
+  assert.equal(unnamedRow.labelMissing, undefined);
+  assert.equal(deriveBarsTooltip(unnamedModel, 'ITA:unknown-target')?.title, 'ITA has 2 operatives (target not recorded)');
+  assert.ok(deriveBarsAudit(unnamedModel).some(entry => entry.key === 'ITA:unknown-target:label' && entry.value === 'ITA → Target not recorded'));
+  assert.equal(deriveBarsMirror(unnamedModel).rows[1]?.name, 'ITA → Target not recorded');
 });
 
 test('group selections filter spies and pairs at the displayed hour and distinguish unrecorded membership', () => {
@@ -89,8 +144,8 @@ test('group selections filter spies and pairs at the displayed hour and distingu
   const groupReply: OperativeMatrixReply = {
     countries: tags.map(tag => ({ tag, factionId: null, factionName: null, factionNameMissing: null })),
     rows: [
-      { country: 0, capacity: { kind: 'known', active: 2, maximum: 4 }, missing: null },
-      { country: 1, capacity: { kind: 'known', active: 6, maximum: 8 }, missing: null },
+      { country: 0, capacity: { kind: 'known', active: 2, maximum: 4 }, missing: null, unknownTarget: [] },
+      { country: 1, capacity: { kind: 'known', active: 6, maximum: 8 }, missing: null, unknownTarget: [] },
     ],
     columns: [0, 1, 2, 3],
     cells: [
@@ -100,8 +155,8 @@ test('group selections filter spies and pairs at the displayed hour and distingu
     most: 3,
     largestMaximum: 8,
     pairs: [
-      { spy: 1, target: 2, operatives: [agent(2), agent(3), agent(4)] },
-      { spy: 0, target: 3, operatives: [agent(1)] },
+      { spy: 1, target: 2, targetMissing: null, operatives: [agent(2), agent(3), agent(4)] },
+      { spy: 0, target: 3, targetMissing: null, operatives: [agent(1)] },
     ],
     readHour: 200,
     missing: null,
@@ -155,8 +210,8 @@ test('group selections filter spies and pairs at the displayed hour and distingu
   const crossReply: OperativeMatrixReply = {
     countries: ['AAA', 'BBB', 'CCC'].map(tag => ({ tag, factionId: null, factionName: null, factionNameMissing: null })),
     rows: [
-      { country: 0, capacity: { kind: 'known', active: 2, maximum: 4 }, missing: null },
-      { country: 1, capacity: { kind: 'known', active: 2, maximum: 4 }, missing: null },
+      { country: 0, capacity: { kind: 'known', active: 2, maximum: 4 }, missing: null, unknownTarget: [] },
+      { country: 1, capacity: { kind: 'known', active: 2, maximum: 4 }, missing: null, unknownTarget: [] },
     ],
     columns: [0, 1, 2],
     cells: [
@@ -190,12 +245,12 @@ test('group selections filter spies and pairs at the displayed hour and distingu
 
   const unreadTargetReply: OperativeMatrixReply = {
     countries: ['AAA', 'BBB'].map(tag => ({ tag, factionId: null, factionName: null, factionNameMissing: null })),
-    rows: [{ country: 1, capacity: { kind: 'known', active: 1, maximum: 2 }, missing: 'Target not recorded' }],
+    rows: [{ country: 1, capacity: { kind: 'known', active: 1, maximum: 2 }, missing: 'Target not recorded', unknownTarget: [agent(9)] }],
     columns: [0, 1],
     cells: [],
     most: 0,
     largestMaximum: 2,
-    pairs: [],
+    pairs: [{ spy: 1, target: null, targetMissing: 'Target not recorded', operatives: [agent(9)] }],
     readHour: 200,
     missing: null,
     warnings: [],
@@ -206,9 +261,18 @@ test('group selections filter spies and pairs at the displayed hour and distingu
   );
   assert.equal(unreadTarget.empty, undefined);
   assert.deepEqual(unreadTarget.rows.map(row => row.id), ['BBB']);
-  assert.deepEqual(unreadTarget.columns.map(col => col.id), ['AAA']);
+  assert.deepEqual(unreadTarget.columns.map(col => col.id), ['AAA', '__unknown_target__']);
   assert.deepEqual(matrixCellAt(unreadTarget, 0, 0), { kind: 'missing', reason: 'Target not recorded' });
+  const unknownCell = matrixCellAt(unreadTarget, 0, 1);
+  assert.equal(unknownCell.kind, 'missing');
+  assert.equal(unknownCell.kind === 'missing' && unknownCell.text, '1');
   assert.ok(unreadTarget.legend?.entries?.some(entry => entry.hatched));
+
+  const unreadPairs = operativePairsProjection.project(
+    createBoundedReadView({ hour: 200, identity: names, panels: new Map([['main', unreadTargetReply]]) }),
+    { membership: { AAA: [[100, 299]] as const }, unobserved: [], membershipMode: 'hour' },
+  );
+  assert.deepEqual(unreadPairs.rows.map(row => row.key), ['BBB:unknown-target']);
 
   const pastEmpty = operativeMatrixProjection.project(
     createBoundedReadView({ hour: 15, identity: names, panels: new Map([['main', unreadTargetReply]]) }),
@@ -216,6 +280,13 @@ test('group selections filter spies and pairs at the displayed hour and distingu
   );
   assert.equal(pastEmpty.rows.length, 0);
   assert.equal(pastEmpty.empty, 'No operatives in the field at this date.');
+
+  const pastEmptyPairs = operativePairsProjection.project(
+    createBoundedReadView({ hour: 15, identity: names, panels: new Map([['main', unreadTargetReply]]) }),
+    { membership: { AAA: [[0, 10]] as const }, unobserved: [], membershipMode: 'ever' },
+  );
+  assert.equal(pastEmptyPairs.rows.length, 0);
+  assert.equal(pastEmptyPairs.empty, 'No operatives in the field at this date.');
 
   const missingCensus: OperativeMatrixReply = { ...unreadTargetReply, rows: [], columns: [], cells: [], pairs: [], missing: 'Operative census not recorded' };
   const emptyBeforeJoin = { membership: { AAA: [[600, 700]] as const }, unobserved: [] as const, membershipMode: 'hour' as const };
