@@ -521,6 +521,7 @@ fn raid_entity(
         .map(|link| (link.id, link.canonical_slot))
         .collect();
     let definitions: BTreeMap<u64, &replay_data::rows::VariantDefinitionRow> = frame
+        .decoded_frame()
         .complete_fields::<tables::VariantDefinitions>(
             replay_data::rows::mask::<replay_data::rows::VariantDefinitionRow>(&["classifier_flags"]),
         )
