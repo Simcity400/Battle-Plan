@@ -300,7 +300,13 @@ mod tests {
     fn state_names_follow_scoped_inputs_and_refuse_unrecorded_operands() {
         use replay_data::rows::{CountryAppearanceRow, CountryRow, PoliticsRow};
         let (_catalogue, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
-            ("common/defines/synth.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=7}}"),
+            ("common/defines/synth.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=7},NBuildings={MAX_BUILDING_LEVELS=13}}"),
+            ("map/default.map", "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp"),
+            ("map/definition.csv", concat!(
+                "0;0;0;0;land;false;unknown;0\n",
+                "1;10;0;0;land;false;plains;1\n2;20;0;0;land;false;plains;1\n",
+                "3;30;0;0;land;false;plains;1\n4;40;0;0;land;false;plains;1\n",
+            )),
             ("history/states/7.txt", "state={id=7 name=SCOPED_REACH provinces={1}}"),
             ("history/states/8.txt", "state={id=8 name=UNREAD_REACH provinces={2}}"),
             ("history/states/9.txt", "state={id=9 name=PLAIN_REACH provinces={3}}"),
@@ -311,6 +317,15 @@ mod tests {
                 " UNREAD_REACH:0 \"[?temp_synth] Reach\"\n PLAIN_REACH:0 \"Plain Reach\"\n",
             )),
         ]);
+        let mut bitmap = [0_u8; 58];
+        bitmap[..2].copy_from_slice(b"BM");
+        for (offset, value) in [(2, 58_u32), (10, 54), (14, 40), (18, 1), (22, 1)] {
+            bitmap[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bitmap[26..28].copy_from_slice(&1_u16.to_le_bytes());
+        bitmap[28..30].copy_from_slice(&24_u16.to_le_bytes());
+        bitmap[56] = 10;
+        std::fs::write(folder.0.join("map/provinces.bmp"), bitmap).unwrap();
         let frames = (100..=104).map(|hour| {
             let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
             for rows in [
@@ -335,7 +350,7 @@ mod tests {
         let executable = dashboard_text::catalogue::tests::script_game::executable().build();
         let reply = engine_executable::executable_tables::scope(Some(executable), || PlaceNameRuns::load(&source, &params, &load, &AtomicBool::new(false))).unwrap();
         let runs = |i: usize| reply.states[i].runs.iter().map(|run| (run.first_hour, run.last_hour, run.name.as_deref())).collect::<Vec<_>>();
-        assert_eq!(runs(0), [(100, 102, Some("Alphan Reach")), (103, 104, Some("Betan Reach"))]);
+        assert_eq!(runs(0), [(100, 102, Some("Alphan Reach")), (103, 104, Some("Betan Reach"))], "{:?}", reply.states[0].runs);
         let unread = &reply.states[1].runs[0];
         assert!(unread.name.is_none());
         assert!(unread.missing.as_deref().is_some_and(|why| why.contains("UNREAD_REACH") && why.contains("temp_synth")), "{:?}", unread.missing);
