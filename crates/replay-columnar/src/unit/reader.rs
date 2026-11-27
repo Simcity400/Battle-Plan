@@ -1540,7 +1540,7 @@ type Restored = (TableState, super::restore::Meta, Vec<super::restore::StringTab
 fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize], keyed: bool, lazy: bool) -> io::Result<Restored> {
     use super::restore::{self as held, META, ROWS, ROWS_CHUNK};
     if entry.log {
-        return logs::log_restore(source, entry, kinds).map(|(table, meta)| (table, meta, Vec::new()));
+        return logs::log_restore(source, entry, kinds, lazy);
     }
     reading(|reading| {
         let mut table = TableState::new(kinds);

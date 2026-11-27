@@ -796,7 +796,7 @@ impl TableReader {
         };
         let source = recording.extents();
         let restoring = label("reader: restored cells");
-        let (state, meta) = unit::reader::restore(source, restore, &self.kinds[..self.held], &[]).map_err(|error| self.damaged(restored, error))?;
+        let (state, meta, tables) = unit::reader::restore_with_string_tables(source, restore, &self.kinds[..self.held], &[], false).map_err(|error| self.damaged(restored, error))?;
         drop(entry);
         self.restores += 1;
         let listed: Vec<u64> = state.listed().ok_or_else(|| self.damaged(restored, invalid("A log's restore holds no live set")))?.ones().collect();
@@ -804,7 +804,7 @@ impl TableReader {
         if self.keyed {
             self.cells.try_index_keys()?;
         }
-        self.strings = Strings::default();
+        self.strings = Strings::restored(tables);
         for (id, text) in meta.strings {
             self.strings.pin(id, &text)?;
         }
