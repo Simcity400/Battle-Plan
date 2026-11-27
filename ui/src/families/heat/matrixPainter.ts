@@ -444,18 +444,20 @@ export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void 
     if (layout.columnNames) {
       drawColumnName(ctx, entity.label, x + cw / 2 - 2, flagBandTop - 2, theme, Boolean(entity.nameMissing));
     }
-    if (layout.showFlags) {
+    const flagState = layout.showFlags ? resolveEntityFlag(entity, artCache) : { kind: 'none' as const };
+    if (flagState.kind !== 'none') {
       const flagHeight = layout.wide ? 10 : FLAG_SLOT_HEIGHT;
       const flagWidth = layout.wide ? 16 : FLAG_SLOT_WIDTH;
       const fx = Math.round(x + (cw - flagWidth) / 2);
       const fy = Math.round(flagBandTop + (flagBandH - flagHeight) / 2) - (entity.color ? 1 : 0);
-      drawFlagSlot(ctx, fx, fy, resolveEntityFlag(entity, artCache), theme, { width: flagWidth, height: flagHeight });
-    } else {
+      drawFlagSlot(ctx, fx, fy, flagState, theme, { width: flagWidth, height: flagHeight });
+    } else if (!layout.showFlags || !layout.columnNames || entity.shortLabel !== undefined) {
       const code = entity.shortLabel ?? entity.tag ?? entity.label;
       drawNameSlot(ctx, code, x + 2, flagBandTop, Math.max(8, cw - 4), flagBandH, theme, {
         fontSize: 10,
         align: 'center',
         maxLines: 1,
+        color: entity.nameMissing ? theme.muted : theme.text,
       });
     }
     if (entity.color) {

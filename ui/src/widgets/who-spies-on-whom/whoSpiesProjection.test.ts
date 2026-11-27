@@ -126,6 +126,17 @@ test('top pairs keep the product order, scale, and unknown-target rows with hove
   assert.ok(audit.some(entry => entry.key === 'ITA:unknown-target:value' && entry.value === canonicalAuditValue(knownValue(2))));
   const mirror = deriveBarsMirror(model);
   assert.equal(mirror.rows[1]?.name, 'ITA → Target not recorded');
+  assert.deepEqual(model.dataHours, [HOUR - 12]);
+
+  const unnamedIdentity = datedIdentity({ ENG: [{ from: 0, name: 'United Kingdom' }], GER: [{ from: 0, name: 'Germany' }], ITA: [{ from: 0, name: null }] });
+  const unnamedModel = projectOperativePairs(createBoundedReadView({ hour: HOUR, identity: unnamedIdentity, panels: new Map([['main', reply]]) }));
+  const unnamedRow = unnamedModel.rows[1]!;
+  assert.equal(unnamedRow.kind, 'data');
+  assert.equal(unnamedRow.label, 'ITA → Target not recorded');
+  assert.equal(unnamedRow.labelMissing, undefined);
+  assert.equal(deriveBarsTooltip(unnamedModel, 'ITA:unknown-target')?.title, 'ITA has 2 operatives (target not recorded)');
+  assert.ok(deriveBarsAudit(unnamedModel).some(entry => entry.key === 'ITA:unknown-target:label' && entry.value === 'ITA → Target not recorded'));
+  assert.equal(deriveBarsMirror(unnamedModel).rows[1]?.name, 'ITA → Target not recorded');
 });
 
 test('group selections filter spies and pairs at the displayed hour and distinguish unrecorded membership', () => {

@@ -116,13 +116,13 @@ pub struct OperativeMatrixReply {
     pub rows: Vec<OperativeMatrixRow>,
     #[doc = " Indexes into `countries`, in the rows' faction order, then by operatives received."]
     pub columns: Vec<u32>,
-    #[doc = " The pairs with operatives, by row then column; every other pair has none."]
+    #[doc = " Pairs with a recorded target country and operatives, by row then column; other pairs have none unless the spy's row sets `missing`."]
     pub cells: Vec<OperativeMatrixCell>,
     #[doc = " The most operatives in one displayed pair abroad, for the colour scale."]
     pub most: u32,
     #[doc = " The largest agency maximum among the rows, for the capacity bars."]
     pub largest_maximum: i32,
-    #[doc = " Pairs abroad, most operatives first; ties by spy tag, then target tag."]
+    #[doc = " Pairs abroad and unknown-target operative groups, most operatives first; ties by spy tag, then known target before unknown target."]
     pub pairs: Vec<OperativePair>,
     #[doc = " The census's read hour the rows hold (it is taken daily)."]
     pub read_hour: Option<i32>,

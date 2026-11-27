@@ -4189,7 +4189,7 @@ rows: Array<OperativeMatrixRow>,
  */
 columns: Array<number>,
 /**
- * The pairs with operatives, by row then column; every other pair has none.
+ * Pairs with a recorded target country and operatives, by row then column; other pairs have none unless the spy's row sets `missing`.
  */
 cells: Array<OperativeMatrixCell>,
 /**
@@ -4201,7 +4201,7 @@ most: number,
  */
 largestMaximum: number,
 /**
- * Pairs abroad, most operatives first; ties by spy tag, then target tag.
+ * Pairs abroad and unknown-target operative groups, most operatives first; ties by spy tag, then known target before unknown target.
  */
 pairs: Array<OperativePair>,
 /**

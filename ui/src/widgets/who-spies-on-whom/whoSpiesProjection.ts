@@ -219,6 +219,7 @@ export function projectOperativeMatrix(readView: BoundedReadView, options?: Oper
 
   return {
     hour,
+    ...(reply.readHour !== null ? { dataHour: reply.readHour } : {}),
     rows,
     columns,
     cells,
@@ -308,20 +309,20 @@ export function projectOperativePairs(readView: BoundedReadView, options?: Opera
     const count = pair.operatives.length;
     scaleMax = Math.max(scaleMax, count);
     if (pair.target === null) {
+      const ownerLabel = shownSpy.labelMissing ? spy : shownSpy.label;
       const missingReason = pair.targetMissing ?? TARGET_NOT_RECORDED;
       return {
         kind: 'data',
         key: `${spy}:unknown-target`,
         subject: spy,
-        label: `${shownSpy.label} → Target not recorded`,
-        labelMissing: shownSpy.labelMissing,
+        label: `${ownerLabel} → Target not recorded`,
         muted: true,
         media: shownSpy.media,
         ...(shownSpy.color ? { color: shownSpy.color } : {}),
         value: { value: knownValue(count), format: 'integer' },
         numeric: count,
         tooltip: {
-          title: `${shownSpy.label} has ${operativesLabel(count)} (target not recorded)`,
+          title: `${ownerLabel} has ${operativesLabel(count)} (target not recorded)`,
           hour: readHour,
           missingReason,
           items: operativeItems(pair.operatives),
@@ -344,7 +345,15 @@ export function projectOperativePairs(readView: BoundedReadView, options?: Opera
       tooltip: { title: `${shownSpy.label} has ${operativesLabel(count)} in ${shownTarget.label}`, hour: readHour, items: operativeItems(pair.operatives) },
     };
   });
-  return { form: 'ordered', hour, rows, scaleMax, animateOrder: true, warnings: reply.warnings };
+  return {
+    form: 'ordered',
+    hour,
+    rows,
+    scaleMax,
+    animateOrder: true,
+    ...(reply.readHour !== null ? { dataHours: [reply.readHour] } : {}),
+    warnings: reply.warnings,
+  };
 }
 
 export const operativePairsProjection: BarsProjection<OperativeMatrixOptions> = {
