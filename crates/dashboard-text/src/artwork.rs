@@ -6,7 +6,7 @@ use std::{
     fmt, fs, io,
     path::{Path, PathBuf},
     sync::{
-        Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard,
+        Arc, LazyLock, OnceLock, PoisonError, RwLock, RwLockReadGuard,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -14,24 +14,42 @@ use std::{
 pub const UNCONFIGURED: &str = "artwork:";
 const NAME_LENGTH: usize = 36;
 
-static SHARED: OnceLock<Table> = OnceLock::new();
+enum Shared {
+    Desktop(LazyLock<Table>),
+    Configured(Table),
+}
+
+static SHARED: OnceLock<Shared> = OnceLock::new();
 
 pub fn configure(base: &str, folder: io::Result<PathBuf>) -> io::Result<()> {
+    let (table, result) = table_in(base, folder);
+    configure_shared(Shared::Configured(table))?;
+    result
+}
+
+fn table_in(base: &str, folder: io::Result<PathBuf>) -> (Table, io::Result<()>) {
     let kept = folder.and_then(|folder| fs::create_dir_all(&folder).map(|()| folder));
     let table = match &kept {
         Ok(folder) => Table::kept_in(base, folder),
         Err(_) => Table::new(base),
     };
-    SHARED
-        .set(table)
-        .map_err(|_| io::Error::other("artwork is already configured"))?;
-    kept.map(drop)
+    (table, kept.map(drop))
+}
+
+fn configure_shared(shared: Shared) -> io::Result<()> {
+    SHARED.set(shared).map_err(|_| io::Error::other("artwork is already configured"))
 }
 
 pub const DESKTOP_BASE: &str = "http://artwork.localhost/";
 
-pub fn configure_desktop() -> io::Result<()> {
-    configure(DESKTOP_BASE, local_folder())
+pub fn prepare_desktop() -> io::Result<()> {
+    configure_shared(Shared::Desktop(LazyLock::new(|| {
+        let (table, result) = table_in(DESKTOP_BASE, local_folder());
+        if let Err(error) = result {
+            eprintln!("{error}");
+        }
+        table
+    })))
 }
 
 pub fn local_folder() -> io::Result<PathBuf> {
@@ -140,7 +158,10 @@ impl Table {
     }
 
     pub fn shared() -> &'static Self {
-        SHARED.get_or_init(|| Self::new(UNCONFIGURED))
+        match SHARED.get_or_init(|| Shared::Configured(Self::new(UNCONFIGURED))) {
+            Shared::Desktop(table) => table,
+            Shared::Configured(table) => table,
+        }
     }
 
     pub fn put(&self, png: Vec<u8>) -> String {

@@ -566,7 +566,7 @@ fn main() {
     if let Some(prefix) = perf::map_prefix() {
         viewer::host::log_map_frames(prefix);
     }
-    if let Err(error) = dashboard_text::artwork::configure_desktop() {
+    if let Err(error) = dashboard_text::artwork::prepare_desktop() {
         eprintln!("{error}");
     }
     let exiting: &'static Exiting = match start_exit_worker() {
