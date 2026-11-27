@@ -2,31 +2,37 @@ use super::*;
 
 #[test]
 fn content_bound_read_ahead_keeps_all_three_first_log_reads_warm() {
-    use dashboard_base::test_fixtures::{source, source_with_content};
-    let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[]);
+    use dashboard_base::{source::Work, test_fixtures::{source, visual_mods::{Machine, RED, png, select}}};
+    let machine = Machine::new("feed_index_warm");
+    machine.write_mod("art", "gfx/warm.png", &png(RED));
     let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
-    let (source, context) = source_with_content(frames, &folder.0);
+    let (source, mut options) = machine.open_frames(frames);
     let unbound = LoadContext { content: None };
     warm(&source, 1, &unbound).unwrap();
     assert!(kept(&source).is_empty(), "unavailable content never starts a competing unbound scan");
-    warm(&source, 1, &context).unwrap();
-    assert_eq!(kept(&source), [1], "the source-open warm keeps the branch index");
-    let (scanned, decisions, choices, feed) = {
-        let branch = branch_of(&source, 1);
-        let held = branch.lock().unwrap();
-        (held.scanned.clone().unwrap(), held.decisions.clone().unwrap(), held.choices.clone().unwrap(), held.feed.clone().unwrap())
-    };
-    let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let catalogue = super::super::resolve_content(&source, &context).unwrap();
-    let cancelled = AtomicBool::new(false);
-    let reused = [
-        Arc::ptr_eq(&decisions, &decisions_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
-        Arc::ptr_eq(&choices, &choices_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
-        Arc::ptr_eq(&feed, &feed_for(&source, &query, 1, &context, Some(&catalogue), &cancelled).unwrap()),
-    ];
-    assert_eq!(reused.into_iter().filter(|reused| !reused).count(), 0, "index builds on the first log reads after open");
-    warm(&source, 1, &unbound).unwrap();
-    assert!(Arc::ptr_eq(&scanned, &scanned_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()));
+    for visual_mods in [false, true] {
+        select(&source, &mut options, if visual_mods { &["art"] } else { &[] });
+        warm(&source, 1, &LoadContext { content: source.admit_resolved(Work::Ahead) }).unwrap();
+        assert_eq!(kept(&source), [1], "the source-open warm keeps the branch index");
+        let (scanned, decisions, choices, feed) = {
+            let branch = branch_of(&source, 1);
+            let held = branch.lock().unwrap();
+            (held.scanned.clone().unwrap(), held.decisions.clone().unwrap(), held.choices.clone().unwrap(), held.feed.clone().unwrap())
+        };
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let context = LoadContext { content: source.admit_resolved(Work::Content(Arc::new(AtomicBool::new(false)))) };
+        assert_eq!(!dashboard_base::catalogue::reads_recorded(context.content.as_ref().unwrap()), visual_mods);
+        let catalogue = super::super::resolve_content(&source, &context).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let reused = [
+            Arc::ptr_eq(&decisions, &decisions_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
+            Arc::ptr_eq(&choices, &choices_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
+            Arc::ptr_eq(&feed, &feed_for(&source, &query, 1, &context, Some(&catalogue), &cancelled).unwrap()),
+        ];
+        assert_eq!(reused.into_iter().filter(|reused| !reused).count(), 0, "index builds on first log reads after open, visual mods: {visual_mods}");
+        warm(&source, 1, &unbound).unwrap();
+        assert!(Arc::ptr_eq(&scanned, &scanned_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()));
+    }
     dashboard_base::queries::forget(&source);
     crate::forget(&source);
     assert!(kept(&source).is_empty(), "forgotten with the recording's index");
