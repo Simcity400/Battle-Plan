@@ -49,7 +49,8 @@ function divisionRow(view: BoundedReadView, row: DivisionLogRow, boundary: Retur
     ? { value: resolveName(view, 'province', String(e.province), { atHour: e.placeHour, boundary }).value, glyph: 'place', missingFigure: 'Place',
       ...(e.kind === 0 || e.exact ? {} : { tooltipLabel: 'Last seen at' }) }
     : { value: notRecorded('Location not recorded'), missingFigure: 'Place', ...(e.kind === 0 || e.exact ? {} : { tooltipLabel: 'Last seen at' }) };
-  const name = e.name ?? 'Division name not recorded';
+  const name = e.name?.trim() ? knownValue(e.name)
+    : notRecorded(e.nameMissing?.trim() ? e.nameMissing : 'Division name not recorded for this event');
   const art = drawableIcon(e.icon);
   const kind = artKindCell(view, urlArtHandle(art), 'drawn', e.templateName, e.iconMissing ?? 'Division template artwork not recorded');
   const status = statuses[e.status] ?? 'Removal cause not recorded';
@@ -70,10 +71,10 @@ function divisionRow(view: BoundedReadView, row: DivisionLogRow, boundary: Retur
     ...(!art && e.iconMissing ? [{ label: 'Artwork', value: notRecorded(e.iconMissing) }] : []),
   ];
   return {
-    key: row.key, name, rowHour: row.hour, meta: row.observed, ...(row.parent ? { pageParent: row.parent } : {}),
+    key: row.key, name: name.kind === 'known' ? name.value : 'Division name not recorded', rowHour: row.hour, meta: row.observed, ...(row.parent ? { pageParent: row.parent } : {}),
     cells: {
       date: child ? blank : date, kind: child ? blank : { ...kind, artTile: 'raised' },
-      item: { value: e.name ? knownValue(e.name) : notRecorded(e.nameMissing ?? name), missingFigure: 'Division',
+      item: { value: name, missingFigure: 'Division',
         ...(!child && e.templateName ? { inlineSubtext: e.templateName } : {}) },
       country: child ? blank : country, place, outcome, action: blank,
     },
