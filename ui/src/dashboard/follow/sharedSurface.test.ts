@@ -6,6 +6,7 @@ import type { FamilyTheme } from '../../families/contract.ts';
 import { createLaneView, type LaneBinding, type LaneFamily } from '../../families/laneRuntime.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { PAGES } from '../pages.ts';
+import { Page, type FrameRequest } from './page.ts';
 import { computeSharedLaneGeometry, computeSpatialLaneMap, isImageBackdropActive, SharedSurfaceHost } from './sharedSurface.ts';
 import { laneCount } from './useFollowed.ts';
 
@@ -341,6 +342,7 @@ test('stationary widget costs zero repaints with shared surface on while active 
       kind,
       view: 'main',
       options: {},
+      revisions: {},
       sources: {},
       scrollTop: 0,
       theme: TEST_THEME,
@@ -886,6 +888,331 @@ test('round-3 regressions: uncovered refusal restores installed model while park
     sharedCanvas.ops.length = 0;
     lane.unmount(1);
     assert.ok(sharedCanvas.ops.includes('fillRect:40,20,300,200'));
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+function pixelCanvas(initialW: number, initialH: number) {
+  let w = initialW;
+  let h = initialH;
+  const fills: { x: number; y: number; w: number; h: number; style: string }[] = [];
+  let transform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  const stack: { transform: typeof transform; fillStyle: string }[] = [];
+  const ctx: Record<string, unknown> = {
+    fillStyle: 'transparent',
+    strokeStyle: 'transparent',
+    font: '12px sans-serif',
+    save() { stack.push({ transform: { ...transform }, fillStyle: String(ctx.fillStyle) }); },
+    restore() {
+      const top = stack.pop();
+      if (top) { transform = top.transform; ctx.fillStyle = top.fillStyle; }
+    },
+    beginPath() {},
+    rect() {},
+    clip() {},
+    fillRect(x: number, y: number, rw: number, rh: number) {
+      const x0 = transform.a * x + transform.e;
+      const y0 = transform.d * y + transform.f;
+      const x1 = transform.a * (x + rw) + transform.e;
+      const y1 = transform.d * (y + rh) + transform.f;
+      fills.push({
+        x: Math.min(x0, x1),
+        y: Math.min(y0, y1),
+        w: Math.abs(x1 - x0),
+        h: Math.abs(y1 - y0),
+        style: String(ctx.fillStyle),
+      });
+    },
+    clearRect(x: number, y: number, rw: number, rh: number) {
+      const x0 = transform.a * x + transform.e;
+      const y0 = transform.d * y + transform.f;
+      const x1 = transform.a * (x + rw) + transform.e;
+      const y1 = transform.d * (y + rh) + transform.f;
+      fills.push({
+        x: Math.min(x0, x1),
+        y: Math.min(y0, y1),
+        w: Math.abs(x1 - x0),
+        h: Math.abs(y1 - y0),
+        style: 'cleared',
+      });
+    },
+    drawImage() {},
+    fillText() {},
+    measureText(text: string) { return { width: text.length * 7 }; },
+    setTransform(a?: unknown, b?: unknown, c?: unknown, d?: unknown, e?: unknown, f?: unknown) {
+      if (typeof a === 'number') {
+        transform = { a, b: Number(b ?? 0), c: Number(c ?? 0), d: Number(d ?? 1), e: Number(e ?? 0), f: Number(f ?? 0) };
+      } else if (a && typeof a === 'object') {
+        const m = a as { a?: number; b?: number; c?: number; d?: number; e?: number; f?: number };
+        transform = { a: m.a ?? 1, b: m.b ?? 0, c: m.c ?? 0, d: m.d ?? 1, e: m.e ?? 0, f: m.f ?? 0 };
+      } else {
+        transform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+      }
+    },
+    resetTransform() { transform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }; },
+    getTransform() { return { ...transform }; },
+  };
+  const canvas = {
+    get width() { return w; },
+    set width(v: number) { w = v; fills.length = 0; },
+    get height() { return h; },
+    set height(v: number) { h = v; fills.length = 0; },
+    getContext() { return ctx; },
+  };
+  const pixelAt = (px: number, py: number): string => {
+    for (let i = fills.length - 1; i >= 0; i--) {
+      const f = fills[i]!;
+      if (px >= f.x && px < f.x + f.w && py >= f.y && py < f.y + f.h) return f.style;
+    }
+    return 'empty';
+  };
+  return { canvas: canvas as unknown as OffscreenCanvas, ctx: ctx as unknown as OffscreenCanvasRenderingContext2D, pixelAt };
+}
+
+function makeDirectHarness(kind: string) {
+  registerFamilyProjection({
+    family: 'bars',
+    kind,
+    project(view, options) {
+      return { hour: view.hour, tag: (options as { tag?: string }).tag ?? 'installed' };
+    },
+  }, 'main');
+
+  let paintCalls = 0;
+  const family: LaneFamily<LaneBinding, { readonly hour: number; readonly tag: string }, { readonly key: string }> = {
+    family: 'bars',
+    boundary: (_model, hour) => hour + 1,
+    redraw: () => Infinity,
+    status: () => 'picture',
+    view: [],
+    layout: (model) => ({ key: `${model.hour}:${model.tag}` }),
+    paint(ctx, frame) {
+      paintCalls++;
+      ctx.fillStyle = `pixel:h${frame.hour}:${frame.model.tag}`;
+      ctx.fillRect(0, 0, frame.surface.width, frame.surface.height);
+      return false;
+    },
+    hit: () => null,
+    tooltip: () => null,
+    structure: () => ({}),
+    mirror: null,
+    audit: () => [],
+    visibleArt: () => [],
+  };
+
+  const view: LaneView = createLaneView(family, () => {});
+  const requests: FrameRequest[] = [];
+  const page = new Page<Bitmapped & { close(): void }>({
+    lanes: 1,
+    seek: 1,
+    post(_lane, message) {
+      if (message.type === 'frame') requests.push(message);
+    },
+  });
+  page.mount(1, { route: 0, lane: 0, offset: 0, pin: null, surfaces: [] });
+
+  const heldPresentations: Parameters<typeof page.offer>[0][] = [];
+  const lane = new Lane<Bitmapped & { close(): void }>({
+    lane: 0,
+    lanes: 1,
+    views: () => view,
+    crop: async () => [],
+    present(p) { heldPresentations.push(p); },
+    release() {},
+    fail(reason) { throw new Error(reason); },
+    later() {},
+    clock: () => 0,
+    budget: Infinity,
+  });
+
+  const surface = pixelCanvas(800, 300);
+  lane.setLaneSurface(surface.canvas, true);
+  const bindingModel = (tag: string): LaneBinding => ({
+    family: 'bars',
+    kind,
+    view: 'main',
+    options: { tag },
+    sources: {},
+    scrollTop: 0,
+    theme: TEST_THEME,
+  });
+  lane.mount(1, [], 'bars', bindingModel('installed'));
+  lane.bind(1, { generation: 1, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 5 } });
+  lane.setLaneSlots({
+    width: 800,
+    height: 300,
+    dpr: 1,
+    scrollTop: 0,
+    scrollLeft: 0,
+    originX: 0,
+    originY: 0,
+    surfaceColor: TEST_THEME.surface,
+    clipPathFallback: false,
+    slots: [{ widget: 1, x: 40, y: 20, w: 300, h: 200, visible: true }],
+  });
+
+  const drainLane = async () => {
+    for (const req of requests.splice(0)) lane.frame(req);
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+  };
+  const deliverToPage = () => {
+    for (const p of heldPresentations.splice(0)) page.offer(p);
+  };
+
+  return { page, lane, surface, bindingModel, drainLane, deliverToPage, requests, heldPresentations, paints: () => paintCalls };
+}
+
+test('direct-surface rules: content identity rejects uncovered pause replacement and restores installed pixels past parked entry', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number; height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) { this.width = w; this.height = h; this.ctx = fakeContext2D().ctx; }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+  try {
+    const h = makeDirectHarness('test-rule-uncovered-parked');
+    h.page.publish(1, { playing: false, seek: 1, speed: 0, step: 0 });
+    await h.drainLane();
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h1:installed');
+    h.deliverToPage();
+    h.page.frame();
+    assert.equal(h.page.view(1).through, 1);
+
+    h.page.publish(5, { playing: true, seek: 1, speed: 24, step: 4 });
+    await h.drainLane();
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h5:installed');
+
+    h.deliverToPage();
+    h.page.publish(6, { playing: false, seek: 1, speed: 0, step: 1 });
+    assert.equal(h.page.stats.rejected.uncovered, 1);
+    assert.equal(h.page.view(1).through, 1);
+
+    await h.drainLane();
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h1:installed');
+
+    const paintsBefore = h.paints();
+    h.page.publish(6, { playing: false, seek: 1, speed: 0, step: 0 });
+    await h.drainLane();
+    assert.equal(h.paints(), paintsBefore);
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h1:installed');
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+test('direct-surface rules: refusal of an old-generation entry after rebind restores installed pixels with installed model', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number; height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) { this.width = w; this.height = h; this.ctx = fakeContext2D().ctx; }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+  try {
+    const h = makeDirectHarness('test-rule-old-gen-binding');
+    h.page.publish(1, { playing: false, seek: 1, speed: 0, step: 0 });
+    await h.drainLane();
+    h.deliverToPage();
+    h.page.frame();
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h1:installed');
+
+    h.page.publish(5, { playing: true, seek: 1, speed: 24, step: 4 });
+    await h.drainLane();
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h5:installed');
+
+    h.page.rebind(1);
+    const nextGen = h.page.widgets.get(1)!.binding;
+    h.lane.bind(1, { generation: nextGen, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 5 } }, h.bindingModel('rebound'));
+
+    h.deliverToPage();
+    h.page.publish(6, { playing: false, seek: 1, speed: 0, step: 1 });
+    assert.equal(h.page.stats.rejected.binding, 1);
+    assert.equal(h.page.view(1).through, 1);
+
+    await h.drainLane();
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h1:installed');
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+test('direct-surface rules: resize while awaiting a first reading restores held installed pixels with installed model', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number; height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) { this.width = w; this.height = h; this.ctx = fakeContext2D().ctx; }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+  try {
+    const h = makeDirectHarness('test-rule-resize-awaiting');
+    h.page.publish(1, { playing: false, seek: 1, speed: 0, step: 0 });
+    await h.drainLane();
+    h.deliverToPage();
+    h.page.frame();
+    await h.drainLane();
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h1:installed');
+
+    h.page.rebind(1);
+    const nextGen = h.page.widgets.get(1)!.binding;
+    h.lane.bind(1, { generation: nextGen, surfaces: [{ width: 360, height: 240, dpr: 1 }], offset: 0, pin: null, dated: { h: 100, c: 100 } }, h.bindingModel('rebound'));
+    h.lane.setLaneSlots({
+      width: 900,
+      height: 400,
+      dpr: 1,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [{ widget: 1, x: 40, y: 20, w: 360, h: 240, visible: true }],
+    });
+    assert.equal(h.surface.pixelAt(80, 60), TEST_THEME.surface);
+
+    await h.drainLane();
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h1:installed');
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+test('direct-surface rules: lane skips painting a known uncovered replacement while paused', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number; height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) { this.width = w; this.height = h; this.ctx = fakeContext2D().ctx; }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+  try {
+    const h = makeDirectHarness('test-rule-skip-known-refusal');
+    h.page.publish(1, { playing: false, seek: 1, speed: 0, step: 0 });
+    await h.drainLane();
+    h.deliverToPage();
+    h.page.frame();
+    await h.drainLane();
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h1:installed');
+
+    const paintsBefore = h.paints();
+    h.page.publish(6, { playing: false, seek: 1, speed: 0, step: 5 });
+    await h.drainLane();
+    assert.equal(h.paints(), paintsBefore);
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h1:installed');
   } finally {
     Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
   }

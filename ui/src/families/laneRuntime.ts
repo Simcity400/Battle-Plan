@@ -785,7 +785,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const tLayout = timed ? performance.now() : 0;
       let readNow: BoundedReadView | null = null;
       const shared = input.sharedSurface;
-      const slotDirty = canvasSwitched || (shared ? (shared.dirty || !keep.sharedPainted) : false);
+      const slotDirty = canvasSwitched || (shared ? (shared.dirty || !keep.sharedPainted) : Boolean(input.workerCanvas?.dirty));
       const frame: LaneFrame<TBinding, TModel, TLayout> = {
         binding, theme, model, layout, surface,
         hour: drawn,
@@ -1000,6 +1000,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         ...nextChangeAt,
         viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: binding.scrollLeft ?? 0, scrollTop: binding.scrollTop },
         surfaces: keep.workerCanvas || shared ? [] : [{ source: keep.canvas, content: keep.content }],
+        ...(keep.workerCanvas || shared ? { surfaceContent: keep.content } : {}),
         fields,
         motion: keep.motion,
         repainted,
