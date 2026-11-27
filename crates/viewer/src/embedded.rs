@@ -42,6 +42,7 @@ impl Seek {
         OpenRequest {
             path: self.path.clone(),
             revision: Some(self.revision.clone()),
+            open_id: None,
         }
     }
 }
@@ -50,6 +51,7 @@ impl Seek {
 pub struct OpenRequest {
     pub path: PathBuf,
     pub revision: Option<String>,
+    pub open_id: Option<u64>,
 }
 
 fn validate_snapshot(path: &str, revision: Option<&str>) -> Result<(), String> {
@@ -196,11 +198,12 @@ impl Pending {
                     .validate()?,
                 );
             }
-            NativeCommand::Open { path, revision } => {
+            NativeCommand::Open { path, revision, open_id } => {
                 validate_snapshot(&path, revision.as_deref())?;
                 self.open = Some(OpenRequest {
                     path: PathBuf::from(path),
                     revision,
+                    open_id,
                 });
                 self.seek = None;
                 self.error = None;
@@ -255,6 +258,7 @@ impl Pending {
 #[derive(Clone, Debug, PartialEq)]
 struct ReportedState {
     viewer: ViewerState,
+    open_id: Option<u64>,
     error: Option<String>,
 }
 
@@ -265,6 +269,7 @@ impl ReportedState {
             branch: self.viewer.branch,
             hour: self.viewer.hour,
             revision: self.viewer.revision,
+            open_id: self.open_id,
             error: self.error,
         }
     }
@@ -947,9 +952,10 @@ impl Controller {
         self.shared.error(message);
     }
 
-    pub fn report(&mut self, state: ViewerState, error: Option<&str>, ctx: &egui::Context) {
+    pub fn report(&mut self, state: ViewerState, open_id: Option<u64>, error: Option<&str>, ctx: &egui::Context) {
         let state = ReportedState {
             viewer: state,
+            open_id,
             error: error.map(str::to_owned),
         };
         if self.last_state.as_ref() == Some(&state) {
@@ -1502,6 +1508,7 @@ mod tests {
         let open = NativeCommand::Open {
             path: "A".into(),
             revision: Some("v1".into()),
+            open_id: None,
         };
         pending.push(open.clone()).unwrap();
         pending
@@ -1562,6 +1569,7 @@ mod tests {
             .push(NativeCommand::Open {
                 path: "new.battleplan".into(),
                 revision: Some("100:20:0".into()),
+                open_id: None,
             })
             .unwrap();
         assert_eq!(pending.seek, None);
@@ -1593,6 +1601,7 @@ mod tests {
             .push(NativeCommand::Open {
                 path: "late.battleplan".into(),
                 revision: Some("100:30:0".into()),
+                open_id: None,
             })
             .unwrap();
         assert!(pending.close && pending.open.is_none() && pending.seek.is_none());
@@ -1605,6 +1614,7 @@ mod tests {
             .push(NativeCommand::Open {
                 path: "older.battleplan".into(),
                 revision: Some("100:10:0".into()),
+                open_id: None,
             })
             .unwrap();
         for (path, revision) in [
@@ -1632,6 +1642,7 @@ mod tests {
             OpenRequest {
                 path: PathBuf::from("B.battleplan"),
                 revision: Some("120:30:0".into()),
+                open_id: None,
             }
         );
         assert_eq!(
@@ -1683,6 +1694,7 @@ mod tests {
                 hour: Some(12),
                 revision: Some("100:20:0".into()),
             },
+            open_id: None,
             error: None,
         };
         let previous = reported.clone();

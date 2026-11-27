@@ -314,10 +314,11 @@ export function startSurfaceVideoExport(
   request: SurfaceVideoRequest,
   destination: string,
   targetLabel: string,
+  retryJobId?: number,
 ): Promise<ExportJobSnapshot> {
   requireDesktop();
   return invoke<ExportJobSnapshot>('start_surface_video_export', {
-    args: { request, destination, targetLabel },
+    args: { request, destination, targetLabel, retryJobId },
   });
 }
 
@@ -329,10 +330,11 @@ export function startMapVideoExport(
   request: MapVideoRequest,
   destination: string,
   targetLabel: string,
+  retryJobId?: number,
 ): Promise<ExportJobSnapshot> {
   requireDesktop();
   return invoke<ExportJobSnapshot>('start_map_video_export', {
-    args: { request, destination, targetLabel },
+    args: { request, destination, targetLabel, retryJobId },
   });
 }
 

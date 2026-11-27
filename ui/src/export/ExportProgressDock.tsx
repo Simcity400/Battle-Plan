@@ -17,7 +17,7 @@ export default function ExportProgressDock({
   onRetry,
 }: {
   job: ExportJobSnapshot;
-  onRetry?: () => void;
+  onRetry?: () => Promise<void>;
 }) {
   const dockRef = useRef<HTMLDivElement>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -73,6 +73,15 @@ export default function ExportProgressDock({
     setActionError(null);
     try {
       await revealExportFile(job.destination);
+    } catch (cause) {
+      setActionError(errorMessage(cause));
+    }
+  };
+
+  const handleRetry = async () => {
+    setActionError(null);
+    try {
+      await onRetry?.();
     } catch (cause) {
       setActionError(errorMessage(cause));
     }
@@ -139,7 +148,7 @@ export default function ExportProgressDock({
           </button>
         )}
         {job.state === 'failed' && onRetry && (
-          <button type="button" className="button small" onClick={onRetry}>
+          <button type="button" className="button small" onClick={() => void handleRetry()}>
             <Icon name="refresh" />Retry
           </button>
         )}

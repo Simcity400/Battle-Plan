@@ -695,6 +695,8 @@ pub struct Viewer {
     embedded_seek: Option<crate::embedded::Seek>,
     revision: Option<String>,
     expected_revision: Option<String>,
+    expected_open_id: Option<u64>,
+    installed_open_id: Option<u64>,
     hidden_since: Option<Instant>,
     combat: combat::Window,
     config: Config,
@@ -1206,7 +1208,7 @@ impl Viewer {
             }
         }
         if let Some(path) = viewer.options.replay.clone() {
-            viewer.open(path, ctx, None);
+            viewer.open(path, ctx, None, None);
         }
         viewer
     }
@@ -1294,6 +1296,8 @@ impl Viewer {
             embedded_seek: None,
             revision: None,
             expected_revision: None,
+            expected_open_id: None,
+            installed_open_id: None,
             hidden_since,
             combat: combat::Window::default(),
             awaiting_folders: config.resolve_options().is_err(),
@@ -1932,6 +1936,8 @@ impl Viewer {
         self.loaded_config = None;
         self.revision = None;
         self.expected_revision = None;
+        self.expected_open_id = None;
+        self.installed_open_id = None;
         self.map_preferences_seen = None;
         self.playhead = None;
         self.seek_owed = false;
@@ -2965,7 +2971,13 @@ impl Viewer {
         }
     }
 
-    fn open(&mut self, mut path: PathBuf, ctx: &egui::Context, expected_revision: Option<String>) {
+    fn open(
+        &mut self,
+        mut path: PathBuf,
+        ctx: &egui::Context,
+        expected_revision: Option<String>,
+        open_id: Option<u64>,
+    ) {
         let _stage = viewer_runtime::load_record::stage("open.ui");
         self.export_closed("its map was replaced before its picture was saved");
         if self.embedded.is_some() {
@@ -2980,6 +2992,7 @@ impl Viewer {
                 self.embedded_open = Some(crate::embedded::OpenRequest {
                     path,
                     revision: expected_revision,
+                    open_id,
                 });
                 self.embedded_seek = None;
                 return;
@@ -2994,6 +3007,7 @@ impl Viewer {
             }
             self.options.replay = Some(path.clone());
             self.expected_revision = expected_revision.clone();
+            self.expected_open_id = open_id;
         }
         let resolve = match self.config.resolve_options() {
             Ok(resolve) => resolve,
@@ -3187,6 +3201,7 @@ impl Viewer {
         self.opened = Some(Instant::now());
         self.combat.close();
         drop(self.replace_document(None));
+        self.installed_open_id = None;
         self.diplomatic_selected = None;
         self.ground_selection = None;
         self.hover_rows = Default::default();
@@ -3412,6 +3427,7 @@ impl Viewer {
                 self.close_playhead();
                 self.scene_error = None;
                 drop(self.replace_document(Some(document)));
+                self.installed_open_id = self.expected_open_id;
                 self.uploaded = Uploaded::default();
                 self.loading = None;
                 if let (Some(service), Some(source)) = (self.service(), &self.source) {

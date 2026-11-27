@@ -98,6 +98,19 @@ struct Inner {
 }
 
 impl Inner {
+    fn start_refusal(&self, retry_job_id: Option<u64>) -> Option<&'static str> {
+        if retry_job_id.is_some_and(|id| self.snapshot.id != id || self.snapshot.state != "failed") {
+            return Some("That video export is no longer available to retry.");
+        }
+        if self.active.is_some() {
+            return Some("Another video export is already running.");
+        }
+        if self.pending_partial.as_ref().is_some_and(|p| p.saving) {
+            return Some("Wait for the partial export save to finish before starting a new export.");
+        }
+        None
+    }
+
     fn changed(&mut self) -> ExportJobSnapshot {
         self.snapshot.revision += 1;
         self.snapshot.clone()
@@ -122,17 +135,24 @@ pub struct ExportJobs {
 }
 
 impl ExportJobs {
-    fn fail_start(&self, app: &AppHandle, id: u64, staged_path: &std::path::Path, error: String) -> String {
+    fn fail_start(
+        &self,
+        app: &AppHandle,
+        id: u64,
+        staged_path: &std::path::Path,
+        error: String,
+    ) -> Result<ExportJobSnapshot, String> {
         let failed = self.inner.lock().unwrap_or_else(|e| e.into_inner()).failed_start(id, &error);
-        if let Some((snapshot, lease)) = failed {
-            if let Some(lease) = lease {
-                lease.cleanup_and_release();
-            } else {
-                let _ = export_settings::remove_stage_with_sidecars(staged_path);
-            }
-            self.emit(app, snapshot);
+        let Some((snapshot, lease)) = failed else {
+            return Err(error);
+        };
+        if let Some(lease) = lease {
+            lease.cleanup_and_release();
+        } else {
+            let _ = export_settings::remove_stage_with_sidecars(staged_path);
         }
-        error
+        self.emit(app, snapshot.clone());
+        Ok(snapshot)
     }
 
     fn emit(&self, app: &AppHandle, snapshot: ExportJobSnapshot) {
@@ -293,6 +313,7 @@ pub struct StartMapVideoExportArgs {
     pub request: MapVideoRequest,
     pub destination: String,
     pub target_label: String,
+    pub retry_job_id: Option<u64>,
 }
 
 #[tauri::command]
@@ -325,15 +346,10 @@ pub fn start_map_video_export(
 
     let (initial_snapshot, old_partial_lease) = {
         let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.active.is_some() {
+        if let Some(reason) = inner.start_refusal(args.retry_job_id) {
             drop(inner);
             stage_lease.cleanup_and_release();
-            return Err("Another video export is already running.".into());
-        }
-        if inner.pending_partial.as_ref().is_some_and(|p| p.saving) {
-            drop(inner);
-            stage_lease.cleanup_and_release();
-            return Err("Wait for the partial export save to finish before starting a new export.".into());
+            return Err(reason.into());
         }
         let old_partial = inner.pending_partial.take().and_then(|mut p| p.lease.take());
         inner.active = Some(ActiveJob {
@@ -391,7 +407,7 @@ pub fn start_map_video_export(
 
     let app_for_worker = app.clone();
     let worker_staged = staged_path.clone();
-    let worker_handle = std::thread::Builder::new()
+    let worker = std::thread::Builder::new()
         .name(format!("video-export-{job_id}"))
         .spawn(move || {
             let outcome = run_map_video_export(
@@ -634,10 +650,18 @@ pub fn start_map_video_export(
                 }
             };
             jobs_cloned.emit(&app_for_worker, final_snapshot);
-        })
-        .map_err(|e| {
-            jobs.fail_start(&app, job_id, &staged_path, format!("Could not start export worker thread: {e}"))
-        })?;
+        });
+    let worker_handle = match worker {
+        Ok(handle) => handle,
+        Err(error) => {
+            return jobs.fail_start(
+                &app,
+                job_id,
+                &staged_path,
+                format!("Couldn’t start export worker thread: {error}"),
+            );
+        }
+    };
     {
         let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(active) = inner.active.as_mut()
@@ -657,6 +681,7 @@ pub struct StartSurfaceVideoExportArgs {
     pub request: SurfaceVideoRequest,
     pub destination: String,
     pub target_label: String,
+    pub retry_job_id: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -786,15 +811,10 @@ pub fn start_surface_video_export(
 
     let (initial_snapshot, old_partial_lease) = {
         let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.active.is_some() {
+        if let Some(reason) = inner.start_refusal(args.retry_job_id) {
             drop(inner);
             stage_lease.cleanup_and_release();
-            return Err("Another video export is already running.".into());
-        }
-        if inner.pending_partial.as_ref().is_some_and(|p| p.saving) {
-            drop(inner);
-            stage_lease.cleanup_and_release();
-            return Err("Wait for the partial export save to finish before starting a new export.".into());
+            return Err(reason.into());
         }
         let old_partial = inner.pending_partial.take().and_then(|mut p| p.lease.take());
         inner.active = Some(ActiveJob {
@@ -854,7 +874,7 @@ pub fn start_surface_video_export(
     let app_for_worker = app.clone();
     let webview_cloned = webview_state.inner().clone();
     let worker_staged = staged_path.clone();
-    let worker_handle = std::thread::Builder::new()
+    let worker = std::thread::Builder::new()
         .name(format!("surface-video-export-{job_id}"))
         .spawn(move || {
             let outcome = run_surface_video_export(
@@ -1098,10 +1118,18 @@ pub fn start_surface_video_export(
                 }
             };
             jobs_cloned.emit(&app_for_worker, final_snapshot);
-        })
-        .map_err(|e| {
-            jobs.fail_start(&app, job_id, &staged_path, format!("Could not start surface export worker thread: {e}"))
-        })?;
+        });
+    let worker_handle = match worker {
+        Ok(handle) => handle,
+        Err(error) => {
+            return jobs.fail_start(
+                &app,
+                job_id,
+                &staged_path,
+                format!("Couldn’t start surface export worker thread: {error}"),
+            );
+        }
+    };
     {
         let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(active) = inner.active.as_mut()
@@ -1231,5 +1259,27 @@ pub fn reveal_export_file(path: String) -> Result<(), String> {
     {
         let _ = target;
         Err("Revealing exported files in the file manager is supported on Windows.".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExportJobSnapshot, Inner};
+
+    #[test]
+    fn only_the_current_failed_export_can_be_retried() {
+        let mut jobs = Inner {
+            snapshot: ExportJobSnapshot {
+                id: 2,
+                state: "failed".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(jobs.start_refusal(Some(1)).is_some());
+        assert_eq!(jobs.start_refusal(Some(2)), None);
+        jobs.snapshot.state = "completed".into();
+        assert!(jobs.start_refusal(Some(2)).is_some());
+        assert_eq!(jobs.start_refusal(None), None);
     }
 }

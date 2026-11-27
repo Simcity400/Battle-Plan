@@ -42,7 +42,7 @@ pub(super) struct Pending {
     pub(super) campaign_map: bool,
     pub(super) bounds: Option<ViewBounds>,
     pub(super) visibility: Option<bool>,
-    pub(super) open: Option<(String, Option<String>)>,
+    pub(super) open: Option<(String, Option<String>, Option<u64>)>,
     pub(super) seek: Option<SeekTarget>,
     pub(super) maps: Option<DashboardSnapshot>,
     pub(super) gamepad: Option<dashboard_core::protocol::GamepadMessage>,
@@ -93,8 +93,8 @@ impl Pending {
         if let Some(bounds) = self.bounds.take() {
             commands.push(bounds.command());
         }
-        if visible && let Some((path, revision)) = self.open.take() {
-            commands.push(NativeCommand::Open { path, revision });
+        if visible && let Some((path, revision, open_id)) = self.open.take() {
+            commands.push(NativeCommand::Open { path, revision, open_id });
         }
         if visible && let Some(target) = self.seek.take() {
             commands.push(target.command());
@@ -116,12 +116,46 @@ impl Pending {
 }
 
 impl Inner {
+    pub(super) fn open_path(&mut self, path: String) {
+        self.dashboard_views = None;
+        self.pending.maps = None;
+        self.path_open_id += 1;
+        self.requested_path = Some(path.clone());
+        self.requested_revision = None;
+        self.requested_seek = None;
+        self.pending.open = Some((path, None, Some(self.path_open_id)));
+        self.pending.seek = None;
+    }
+
+    pub(super) fn note_viewer_state(&mut self, state: ViewerState, open_id: Option<u64>) {
+        if self.pending.open.is_none()
+            && self.requested_path.is_some()
+            && state.path.is_some()
+            && state.revision.is_some()
+            && match &self.requested_revision {
+                Some(revision) => {
+                    self.requested_path == state.path && state.revision.as_ref() == Some(revision)
+                }
+                None => open_id == Some(self.path_open_id),
+            }
+        {
+            self.requested_path = None;
+            self.requested_revision = None;
+        }
+        if self.requested_path.is_none()
+            && self.requested_seek.as_ref().is_some_and(|target| target.matches(&state))
+        {
+            self.requested_seek = None;
+        }
+        self.status.viewer = state;
+    }
+
     pub(super) fn forget_recording(&mut self, path: &str) {
         if self
             .pending
             .open
             .as_ref()
-            .is_some_and(|(pending, _)| pending == path)
+            .is_some_and(|(pending, _, _)| pending == path)
         {
             self.pending.open = None;
         }
@@ -198,7 +232,8 @@ impl Inner {
                 .filter(|seek| seek.path == path && Some(&seek.revision) == revision.as_ref())
                 .cloned()
                 .or(last_position);
-            self.pending.open = Some((path, revision));
+            let open_id = revision.is_none().then_some(self.path_open_id);
+            self.pending.open = Some((path, revision, open_id));
         }
     }
 }

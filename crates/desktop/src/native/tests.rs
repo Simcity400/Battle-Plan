@@ -58,9 +58,8 @@ fn unload_forgets_only_its_recording_and_cannot_restore_it_after_restart() {
 }
 
 #[test]
-fn restart_restores_a_path_only_open_without_the_previous_replays_clock() {
+fn restart_restores_the_latest_path_only_open_even_after_an_old_state_for_it() {
     let mut inner = Inner {
-        requested_path: Some("new.battleplan".into()),
         status: HostStatus {
             viewer: ViewerState {
                 path: Some("old.battleplan".into()),
@@ -72,9 +71,26 @@ fn restart_restores_a_path_only_open_without_the_previous_replays_clock() {
         },
         ..Default::default()
     };
+    let old = inner.status.viewer.clone();
+    inner.open_path("old.battleplan".into());
+    let _ = inner.pending.take_commands(true);
+    let first = inner.path_open_id;
+    inner.open_path("new.battleplan".into());
+    let _ = inner.pending.take_commands(true);
+    inner.open_path("old.battleplan".into());
+    let _ = inner.pending.take_commands(true);
+    let latest = inner.path_open_id;
+    inner.note_viewer_state(old.clone(), Some(first));
     inner.restore_commands();
-    assert_eq!(inner.pending.open, Some(("new.battleplan".into(), None)));
+    assert_eq!(inner.pending.open, Some(("old.battleplan".into(), None, Some(latest))));
     assert!(inner.pending.seek.is_none());
+    let _ = inner.pending.take_commands(true);
+    inner.note_viewer_state(ViewerState::default(), None);
+    assert!(inner.requested_path.is_some());
+    inner.note_viewer_state(ViewerState { hour: Some(0), ..old }, Some(latest));
+    assert!(inner.requested_path.is_none());
+    inner.restore_commands();
+    assert_eq!(inner.pending.seek.as_ref().map(|seek| seek.hour), Some(0));
 }
 
 #[test]
@@ -111,7 +127,7 @@ fn restart_restores_unacknowledged_open_and_seek() {
     inner.restore_commands();
     assert_eq!(
         inner.pending.open,
-        Some(("new.battleplan".into(), Some("new-version".into())))
+        Some(("new.battleplan".into(), Some("new-version".into()), None))
     );
     assert_eq!(inner.pending.seek, Some(requested));
     inner.requested_path = None;
@@ -120,7 +136,7 @@ fn restart_restores_unacknowledged_open_and_seek() {
     inner.restore_commands();
     assert_eq!(
         inner.pending.open,
-        Some(("old.battleplan".into(), Some("old-version".into())))
+        Some(("old.battleplan".into(), Some("old-version".into()), None))
     );
     assert_eq!(
         inner.pending.seek,
@@ -160,7 +176,7 @@ fn seek_acknowledgement_requires_the_same_recording_and_revision() {
 #[test]
 fn hidden_map_defers_document_work_without_spinning() {
     let mut pending = Pending {
-        open: Some(("next.battleplan".into(), Some("v2".into()))),
+        open: Some(("next.battleplan".into(), Some("v2".into()), None)),
         seek: Some(SeekTarget {
             path: "next.battleplan".into(),
             revision: "v2".into(),
@@ -431,7 +447,7 @@ fn retired_clock_origin_seeks_cannot_overwrite_pending_seek_or_reopen_previous_r
     assert_eq!(inner.requested_revision.as_deref(), Some("rev-new"));
     assert_eq!(
         inner.pending.open,
-        Some(("new.battleplan".into(), Some("rev-new".into())))
+        Some(("new.battleplan".into(), Some("rev-new".into()), None))
     );
     let pending_seek = inner.pending.seek.as_ref().expect("B seek stays queued");
     assert_eq!(pending_seek.path, "new.battleplan");

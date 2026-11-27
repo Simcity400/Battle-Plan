@@ -37,6 +37,7 @@ struct Inner {
     pending: Pending,
     requested_path: Option<String>,
     requested_revision: Option<String>,
+    path_open_id: u64,
     requested_seek: Option<SeekTarget>,
     dashboard_views: Option<DashboardSnapshot>,
     active_dashboard: bool,
@@ -476,13 +477,7 @@ impl NativeHost {
 
     pub fn open(&self, path: String) -> Result<(), String> {
         let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
-        inner.dashboard_views = None;
-        inner.pending.maps = None;
-        inner.requested_path = Some(path.clone());
-        inner.requested_revision = None;
-        inner.requested_seek = None;
-        inner.pending.open = Some((path, None));
-        inner.pending.seek = None;
+        inner.open_path(path);
         drop(inner);
         self.flush();
         Ok(())
@@ -518,7 +513,7 @@ impl NativeHost {
         if !current_matches {
             inner.requested_path = Some(path.clone());
             inner.requested_revision = Some(revision.clone());
-            inner.pending.open = Some((path.clone(), Some(revision.clone())));
+            inner.pending.open = Some((path.clone(), Some(revision.clone()), None));
         }
         let target = SeekTarget {
             path,

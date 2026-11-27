@@ -203,7 +203,7 @@ pub(crate) fn measure(config: dashboard_core::config::Config, mut options: Optio
     let ctx = egui::Context::default();
     ctx.set_theme(egui::Theme::Dark);
     let opened = Instant::now();
-    viewer.open(path, &ctx, Some(source.key().revision.clone()));
+    viewer.open(path, &ctx, Some(source.key().revision.clone()), None);
     let mut run = Run { viewer: &mut viewer, ctx, state, service, started: opened, switches, layers: Vec::new() };
     let open = run.until_settled("open", None, None, false, opened)?;
     println!("open: settled at {:?} ms", open["ms"]["settled"]);

@@ -476,6 +476,7 @@ mod tests {
         fs::create_dir_all(&folder).unwrap();
         let path = folder.join("Queued.battleplan");
         fs::write(&path, replay_journal::fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)])).unwrap();
+        let path = path.canonicalize().unwrap();
         let jobs = Jobs::default();
         jobs.request(&path).unwrap();
         jobs.unavailable(std::io::Error::other("job object unavailable"));

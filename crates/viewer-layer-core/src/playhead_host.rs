@@ -2094,7 +2094,8 @@ impl<P: PlaybackProducts> MapSide<P> {
         let away = Away { mirrors, layers, compose, upstream: self.upstream.clone(), cost: self.compose_ns.clone(), cancel: Arc::clone(&self.cancel), results: Vec::new() };
         if let Err(error) = self.worker.jobs.send(Job::Compose(Box::new(away))) {
             let Job::Compose(away) = error.0 else { unreachable!() };
-            self.take_home(*away);
+            self.mirrors = Some(away.mirrors);
+            self.layers = away.layers;
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "Map compose worker stopped"));
         }
         self.composing = true;
