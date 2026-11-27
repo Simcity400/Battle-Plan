@@ -231,6 +231,10 @@ impl Playback {
         (released.0.is_some() || released.1.is_some()).then_some(released)
     }
 
+    pub fn release_bootstrap_cursor(&mut self) -> Option<impl Send + 'static + use<>> {
+        self.cursor.take()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn holds_source(&self) -> bool {
         self.cursor.is_some()

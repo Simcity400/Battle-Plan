@@ -48,6 +48,7 @@ struct Inner {
     display: Vec<(u64, dashboard_core::protocol::MapAction)>,
     display_sent: u64,
     popout: Option<PopOutWindow>,
+    popout_open: bool,
     muted: Option<bool>,
     clock_origins: viewer::page_clock::OriginGate,
 }
@@ -238,6 +239,15 @@ impl NativeHost {
             inner.pending.campaign_map = true;
         }
         host
+    }
+
+    pub(crate) fn note_popout(&self, open: bool) {
+        let mut inner = self.shared.lock().unwrap_or_else(|error| error.into_inner());
+        if std::mem::replace(&mut inner.popout_open, open) != open
+            && let Some(map) = &inner.map
+        {
+            map.send(viewer::host::Command::PopoutOpen(open));
+        }
     }
 
     pub fn select_view(&self, dashboard: bool) -> Result<(), String> {

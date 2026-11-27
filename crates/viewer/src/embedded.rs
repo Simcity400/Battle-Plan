@@ -70,6 +70,7 @@ pub struct Pending {
     pub exports: Vec<crate::host::ExportJob>,
     pub snapshots: Vec<crate::host::SnapshotJob>,
     pub campaign_map: bool,
+    pub popout_open: Option<bool>,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
     pub close: bool,
@@ -97,6 +98,7 @@ impl Pending {
             && self.exports.is_empty()
             && self.snapshots.is_empty()
             && !self.campaign_map
+            && self.popout_open.is_none()
             && self.map_views.is_none()
             && self.seek.is_none()
             && !self.close
@@ -113,6 +115,10 @@ impl Pending {
         }
         let command = match command.into() {
             crate::host::Command::Native(command) => command,
+            crate::host::Command::PopoutOpen(open) => {
+                self.popout_open = Some(open);
+                return Ok(());
+            }
             crate::host::Command::Export(job) => {
                 self.exports.push(job);
                 return Ok(());

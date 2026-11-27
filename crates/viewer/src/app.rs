@@ -663,6 +663,7 @@ fn unit_family(
 pub struct Viewer {
     dashboard: Option<Box<crate::dashboard_maps::DashboardMaps>>,
     dashboard_active: bool,
+    popout_open: bool,
     dashboard_map: bool,
     host_graphics: bool,
     shared_pool: Option<Arc<crate::worker_pool::WorkerPool>>,
@@ -1265,6 +1266,7 @@ impl Viewer {
         Self {
             dashboard: None,
             dashboard_active: false,
+            popout_open: false,
             dashboard_map: false,
             host_graphics: false,
             shared_pool: None,
@@ -7610,6 +7612,7 @@ impl eframe::App for Viewer {
             self.poll(ctx);
         }
         self.follow_shown_maps(ctx, Some(frame));
+        self.retire_hidden_cursor();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -7677,6 +7680,7 @@ impl Viewer {
             self.export_closed("its map was hidden before its picture was saved");
             self.release_audio();
             self.close_playhead();
+            self.retire_hidden_cursor();
         } else if let Some(dashboard) = &mut self.dashboard {
             dashboard.release_audio();
             dashboard.not_drawn();

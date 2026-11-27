@@ -296,6 +296,7 @@ pub enum Command {
     Export(ExportJob),
     Snapshot(SnapshotJob),
     Holes(Holes),
+    PopoutOpen(bool),
 }
 
 pub struct Holes {
@@ -332,14 +333,14 @@ impl Map {
     pub fn send_export(&self, job: ExportJob) -> Result<(), ExportJob> {
         self.commands.send(Command::Export(job)).map_err(|refused| match refused.0 {
             Command::Export(job) => job,
-            Command::Native(_) | Command::Snapshot(_) | Command::Holes(_) => unreachable!("an export was sent"),
+            _ => unreachable!("an export was sent"),
         })
     }
 
     pub fn send_snapshot(&self, job: SnapshotJob) -> Result<(), SnapshotJob> {
         self.commands.send(Command::Snapshot(job)).map_err(|refused| match refused.0 {
             Command::Snapshot(job) => job,
-            Command::Native(_) | Command::Export(_) | Command::Holes(_) => unreachable!("a snapshot was sent"),
+            _ => unreachable!("a snapshot was sent"),
         })
     }
 }
