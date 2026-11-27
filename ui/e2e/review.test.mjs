@@ -12,6 +12,34 @@ import { copyPreparedSeed } from './nativeSeed.mjs';
 import { captureCases, validateMatrix } from './matrix.mjs';
 import { captureWidget } from './capture.mjs';
 
+test('map picture tolerance accepts only isolated one-level differences', async t => {
+  const [{ PNG }, { compareCaptures }] = await Promise.all([import('pngjs'), import('./compare.mjs')]);
+  const root = await mkdtemp(path.join(tmpdir(), 'parity-map-'));
+  t.after(() => rm(root, { recursive: true }));
+  const dirs = [path.join(root, 'base'), path.join(root, 'head')];
+  const screenshot = 'picture.png', model = { header: true, body: true, lists: [] };
+  for (const dir of dirs) {
+    await mkdir(dir);
+    const items = ['map', 'widget'].map(kind => ({ kind, screenshot, model, status: 'captured' }));
+    await writeFile(path.join(dir, 'manifest.json'), JSON.stringify({ complete: true, items }));
+  }
+  const image = new PNG({ width: 3, height: 3 });
+  await writeFile(path.join(dirs[0], screenshot), PNG.sync.write(image));
+  for (const [changes, status, toleratedPixels] of [
+    [[[0, 1], [1, 1]], 'PASS', 1],
+    [[[0, 2]], 'DIFF', 0],
+    [[[0, 1], [4, 1]], 'DIFF', 0],
+    [[[0, 1], [16, 1]], 'DIFF', 0],
+  ]) {
+    image.data.fill(0);
+    for (const [channel, value] of changes) image.data[channel] = value;
+    await writeFile(path.join(dirs[1], screenshot), PNG.sync.write(image));
+    const { results: [map, widget] } = await compareCaptures(...dirs, { tolerateMapPictures: true });
+    assert.deepEqual([map.status, map.toleratedPixels, widget.status], [status, toleratedPixels, 'DIFF']);
+    assert.equal((await compareCaptures(...dirs)).results[0].status, 'DIFF');
+  }
+});
+
 test('explicit prepared seed keeps every page and private writes with provenance', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'parity-prepared-seed-'));
   try {
