@@ -1128,6 +1128,50 @@ fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themsel
 }
 
 #[test]
+fn occupation_charts_and_ranks_recompute_the_inputs_instead_of_old_wrapped_summaries() {
+    use replay_data::rows::{OccupierTotalRow, Recorded};
+    use replay_journal::synthetic::{Input, Sample};
+    let table = TableId::OccupierTotals;
+    let mut registry = replay_recording::summaries::registry().unwrap();
+    let (_, Shape::Values(columns)) = registry.iter_mut().find(|(held, _)| *held == table.index()).unwrap() else { panic!("occupation has value summaries") };
+    let mut sources = Vec::new();
+    for column in columns {
+        if let summary::Source::Computed { inputs, .. } = column.source {
+            sources.push(column.source.id());
+            column.source = summary::Source::Computed { id: sources.len() as u32 - 1, inputs, value: |_, _| summary::Computed::Value(-2) };
+        }
+    }
+    assert_eq!(sources.len(), 2);
+    let rows = [
+        OccupierTotalRow { slot: 7, id: 1, resistance_sum: Recorded::Value((1 << 60) + 7), compliance_sum: Recorded::Value(-((1 << 60) + 7)), states: Recorded::Value(2), ..Default::default() },
+        OccupierTotalRow { slot: 8, id: 2, resistance_sum: Recorded::Value(10), compliance_sum: Recorded::Value(20), states: Recorded::Value(2), ..Default::default() },
+    ];
+    let (bytes, _) = fixtures::written_with_summaries(recorder_derive::writers_within(&[], &[]), b"occupation synthetic", &[(1, 120, 1)], &[table], registry, |synthetic, _, _| {
+        synthetic.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let recording = Recording::open(bytes).unwrap();
+    let held = recording.run(0).unwrap();
+    let (from, to) = (held.first_hour, held.last_hour());
+    let keys = [7u128 << 32 | 1, 8u128 << 32 | 2];
+    for (source, expected, top_key, top_value) in [(sources[0], [(1 << 59) + 3, 5], keys[0], (1 << 59) + 3), (sources[1], [-((1 << 59) + 3), 10], keys[1], 10)] {
+        for level in [0, 1] {
+            let chart = chart_at(&recording, 0, table, source, Some(&keys), from, to, level, summary::bucket_hours(level)).unwrap();
+            assert!(chart.walked > 0, "old mean ids must never serve a corrected mean");
+            assert_eq!(chart.keys, keys);
+            for (at, value) in expected.into_iter().enumerate() {
+                assert!(chart.values(at).iter().any(|bin| bin.hours > 0));
+                assert!(chart.values(at).iter().filter(|bin| bin.hours > 0).all(|bin| (bin.first, bin.last, bin.min, bin.max) == (value, value, value, value)));
+            }
+        }
+        for by in [By::Last, By::Min, By::Max] {
+            let bins = top(&recording, 0, table, source, from, to, 96, 1, by).unwrap();
+            assert!(bins.iter().flatten().all(|(key, bin)| *key == top_key && bin.last == top_value));
+            assert!(bins.iter().any(|bin| !bin.is_empty()));
+        }
+    }
+}
+
+#[test]
 fn a_block_summary_counts_only_changes_from_rows_read_at_the_previous_hour() {
     use replay_data::rows::CountryRow;
     use replay_journal::synthetic::{Input, Sample};
