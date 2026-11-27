@@ -1138,6 +1138,52 @@ fn group_leader_choices_follow_member_slots_through_a_rename_over_observed_servi
 }
 
 #[test]
+fn leader_choices_on_a_fork_keep_a_leader_last_seen_before_the_fork() {
+    use super::career::{LeaderChoices, LeaderChoicesParams};
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures::{CAMPAIGN, ownership_frame, snapshot_records}};
+    use replay::campaign::Replay;
+    use replay_capture_spool::spool::Record;
+    use replay_data::rows::{FactionMemberRow, FactionRow, TableId, TableRows, UnitLeaderRow};
+    use replay_frame::{branches::{BranchReason, BranchStart, Parentage}, frame::TableView};
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let leader = |id| UnitLeaderRow { id, owner: 9001, skill_valid: 1, kind: KIND_ARMY, ..Default::default() };
+    let (home, returning) = (leader(1), leader(2));
+    let frame = |branch: u64, hour: i32| {
+        let mut frame = ownership_frame(branch, hour, 9001);
+        *frame.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(vec![FactionMemberRow { faction: 9, country: 9001, ordinal: 0 }]));
+        *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![FactionRow { id: 9, ..Default::default() }]));
+        for table in [TableId::Characters, TableId::LexicalTokens] {
+            *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+        }
+        let mut leaders = vec![home.clone()];
+        if branch == 1 && (hour <= 160 || hour >= 200) { leaders.push(returning.clone()); }
+        *frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(leaders));
+        frame
+    };
+    let parent = snapshot_records(1, (150..=220).map(|hour| frame(1, hour)).collect());
+    let mut child = snapshot_records(2, (191..=210).map(|hour| frame(2, hour)).collect());
+    let Record::BranchStart(start) = &mut child[1] else { panic!("the second record starts the branch") };
+    *start = BranchStart { loaded_hour: Some(190), parent: Parentage::Probable { branch: 1, hour: 190 }, reason: BranchReason::LoadSignal, ..start.clone() };
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[parent, child]).unwrap().into_timelines(&Default::default()).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let source = Arc::new(Source::from_replay(SourceKey { source_id: "forked-choices".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap());
+    let load = LoadContext { content: None };
+    let fork = dashboard_base::queries::query(&source, 2).unwrap().timeline.stretches.iter().map(|stretch| (stretch.first, stretch.last)).collect::<Vec<_>>();
+    assert_eq!(fork, [(150, 190), (191, 210)], "the fork reads the parent through its load hour, then its own run");
+    let mut expected = vec![
+        (super::handle(&home).to_string(), None, Some("GER".to_owned()), 210, None),
+        (super::handle(&returning).to_string(), None, Some("GER".to_owned()), 160, None),
+    ];
+    expected.sort_by_key(|choice| choice.0.parse::<u64>().unwrap_or_default());
+    for selection in [serde_json::json!({"kind":"all"}), serde_json::json!({"kind":"group","group":{"type":"faction","id":"9","membership":"hour"}})] {
+        let params = LeaderChoicesParams { branch_id: "2".into(), selection: serde_json::from_value(selection).unwrap() };
+        assert_eq!(LeaderChoices::load(&source, &params, &load, &cancelled).unwrap().choices, expected,
+            "a leader that served before the fork and reappears only on the parent after it is offered at its last hour on the fork");
+    }
+}
+
+#[test]
 fn a_thousand_played_hours_keep_the_ranking_and_only_rebuild_a_changed_top() {
     use dashboard_base::test_fixtures::{ownership_frame, played, source_with_content, streamed, visual_mods::Machine};
     use replay_data::rows::{CharacterRow, TableId, TableRows, UnitLeaderRow};

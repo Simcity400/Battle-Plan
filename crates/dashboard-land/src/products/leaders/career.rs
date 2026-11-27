@@ -1314,18 +1314,14 @@ impl Product for LeaderChoices {
         let mut last: BTreeMap<u128, (u32, i32)> = BTreeMap::new();
         let mut lives: HashMap<u128, Vec<(i32, i32)>> = HashMap::new();
         for stretch in &query.timeline.stretches {
-            for &(key, first, end) in dashboard_base::queries::lifetimes(source, stretch.run, TableId::UnitLeaders)?.iter() {
-                let hour = end.min(i64::from(stretch.last));
-                if first <= i64::from(stretch.last) && hour >= i64::from(stretch.first) {
-                    last.insert(key, (stretch.run, hour as i32));
+            let (from, to) = (i64::from(stretch.first), i64::from(stretch.last));
+            for (key, spans) in dashboard_query::cost::presences(recording, stretch.run, TableId::UnitLeaders, (0, u128::MAX), from, to)? {
+                let seen: Vec<(i32, i32)> = spans.into_iter().filter(|&(a, b)| a <= to && b >= from).map(|(a, b)| (a.max(from) as i32, b.min(to) as i32)).collect();
+                if let Some(&(_, end)) = seen.last() {
+                    last.insert(key, (stretch.run, end));
                 }
-            }
-            if roster.is_some() {
-                let (from, to) = (i64::from(stretch.first), i64::from(stretch.last));
-                let found = dashboard_query::cost::storage(|| replay_lanes::lanes::presences(recording, stretch.run, TableId::UnitLeaders, (0, u128::MAX), from, to))?;
-                for (key, spans) in found {
-                    let held = lives.entry(key).or_default();
-                    held.extend(spans.into_iter().filter(|&(a, b)| a <= to && b >= from).map(|(a, b)| (a.max(from) as i32, b.min(to) as i32)));
+                if roster.is_some() {
+                    lives.entry(key).or_default().extend(seen);
                 }
             }
         }
