@@ -338,7 +338,8 @@ export async function hover(s, input, dpr, { scanTimeoutMs = 150, timeoutMs = 40
       else if (budgetExhausted()) return false;
       else {
         const latest = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
-        recordSeen(latest, x, y, point);
+        if (latest && Number.isFinite(latest.tooltipDelayMs)) knownTooltipDelayMs = latest.tooltipDelayMs;
+        if ((latest?.drawnAt ?? 0) > posted) recordSeen(latest, x, y, point);
         if (latest && !latest.hover && !latest.tooltip) { neutral = [x, y]; pointerAtNeutral = true; }
         settledNeutral = true;
       }
@@ -361,25 +362,14 @@ export async function hover(s, input, dpr, { scanTimeoutMs = 150, timeoutMs = 40
     }
     return true;
   };
-  const gridCases = HOVER_CASES.filter(hoverCase => hoverCase.id !== 'map GUI button');
-  const needBar = () => !seen.has('map GUI button') || !neutral;
-  for (const [x, y] of grid) {
-    if (gridCases.every(hoverCase => seen.has(hoverCase.id)) && neutral) break;
-    if (budgetExhausted()) { cutShort = { scanned, total: grid.length + (needBar() ? bar.length : 0) }; break; }
-    if (!(await probe(x, y)) && !(gridCases.every(hoverCase => seen.has(hoverCase.id)) && neutral)) {
-      cutShort = { scanned, total: grid.length + (needBar() ? bar.length : 0) };
+  const points = [...grid, ...bar];
+  const discoveryComplete = () => HOVER_CASES.every(hoverCase => seen.has(hoverCase.id)) && Boolean(neutral);
+  for (const [x, y] of points) {
+    if (discoveryComplete()) break;
+    if (budgetExhausted()) { cutShort = { scanned, total: points.length }; break; }
+    if (!(await probe(x, y)) && !discoveryComplete()) {
+      cutShort = { scanned, total: points.length };
       break;
-    }
-  }
-  const gridDone = scanned;
-  if (!cutShort && needBar()) {
-    for (const [x, y] of bar) {
-      if (!needBar()) break;
-      if (budgetExhausted()) { cutShort = { scanned, total: gridDone + bar.length }; break; }
-      if (!(await probe(x, y)) && needBar()) {
-        cutShort = { scanned, total: gridDone + bar.length };
-        break;
-      }
     }
   }
   for (const hoverCase of HOVER_CASES) {
