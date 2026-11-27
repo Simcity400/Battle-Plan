@@ -23,7 +23,7 @@ type Slot = { name: string; hours: Set<number>; held: StripReceipt; coarseNext: 
 type HeldWidget = { input: StripWidget; build: number; bytes: number; coarse: number | null; slots: Slot[]; building: StripDensity };
 type Status = 'not ready' | 'coarse' | 'ready' | 'will not follow';
 export const STRIP_PAGE_BUDGET_BYTES = 64 * 1024 * 1024;
-const BUILD_TIMELINE_STRIPS = false;
+const BUILD_TIMELINE_STRIPS = true;
 const DENSITIES = [16, 8, 4] as const;
 let nextBuild = 0;
 
