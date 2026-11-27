@@ -219,6 +219,24 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     assert_eq!(gap_assignment(Some(60), Some(70), 61), Some((false, 61)));
     assert_eq!(gap_assignment(Some(60), Some(70), 80), Some((true, 80)));
 
+    let deferred = Facts {
+        from: 100,
+        to: 125,
+        lines: vec![LineFacts {
+            leaf: (false, 7, 12, NONE),
+            building: Some(7),
+            new_from: Some(120),
+            repair_from: Some(115),
+            gaps: vec![(105, SpendingGap::LinkedOutput)],
+            before_first_read: None,
+        }],
+        ..Facts::default()
+    };
+    let deferred_index = index(&deferred);
+    let at_105 = deferred_index.at(105);
+    assert_eq!(at_105.breakdown.total.state, BreakdownState::Partial, "an output gap at 105 qualifies the total immediately even when child purpose waits");
+    assert_eq!(at_105.through, 114, "validity ends before the child attribution appears at 115");
+
     let frames = (100..=125)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
@@ -242,6 +260,7 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
                     since_hour: 100,
                     linked: true,
                     exact: false,
+                    repair_ticks: if hour >= 115 { 1 } else { 0 },
                     country: Recorded::Value(Some(9001)),
                     building_type: Recorded::Value(Some(7)),
                     target_state: Recorded::Value(Some(12)),
@@ -256,6 +275,14 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
                 literal: b"alpha_mill".to_vec(),
             }]))
             .into();
+            for table in [
+                TableId::BuildingConstruction,
+                TableId::RailwayConstruction,
+                TableId::ConstructionLineOutput,
+                TableId::LexicalTokens,
+            ] {
+                frame.metrics.table_ns[table.index()] = 1;
+            }
             frame
         })
         .collect();
@@ -333,15 +360,23 @@ fn construction_spellings_and_warnings_are_dated_to_their_charge_hours() {
             frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(outputs)).into();
             frame.tables[TableId::LexicalTokens.index()] = if hour < 120 {
                 TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 7, literal: b"alpha_mill".to_vec() }])).into()
-            } else if hour <= 132 {
+            } else if hour < 130 {
                 TableView::Complete(TableRows::LexicalTokens(vec![
                     LexicalTokenRow { token: 7, literal: b"beta_mill".to_vec() },
                     LexicalTokenRow { token: 8, literal: b"alpha_mill".to_vec() },
                 ]))
                 .into()
+            } else if hour <= 132 {
+                TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 7, literal: b"beta_mill".to_vec() }])).into()
             } else {
                 TableView::Unavailable { reason: "lexical unread at end".into() }.into()
             };
+            for table in [TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+            if hour <= 132 {
+                frame.metrics.table_ns[TableId::LexicalTokens.index()] = 1;
+            }
             frame
         })
         .collect();
@@ -360,6 +395,10 @@ fn construction_spellings_and_warnings_are_dated_to_their_charge_hours() {
         reply.breakdown.parts.iter().find(|part| part.key == "new").and_then(|part| part.children.iter().find(|child| child.key == key)).map(|child| child.name.as_str())
     }
 
+    let before_spend = ask(100);
+    assert!(before_spend.warnings.is_empty(), "naming warnings do not precede the first charged building: {:?}", before_spend.warnings);
+    assert_eq!(before_spend.through, 104);
+
     let early = ask(105);
     assert_eq!(child_name(&early, "type:7"), Some("Alpha Mill"), "spelling at charge hour 105 is alpha_mill");
     assert_eq!(child_name(&early, "type:8"), Some("Building name unavailable"), "token 8 is not yet spelled at 105");
@@ -370,12 +409,18 @@ fn construction_spellings_and_warnings_are_dated_to_their_charge_hours() {
     let mid = ask(125);
     assert_eq!(child_name(&mid, "type:7"), Some("Beta Mill"), "token 7 updated at 120");
     assert_eq!(child_name(&mid, "type:8"), Some("Alpha Mill"), "token 8 spelled at 120");
-    assert_eq!(mid.through, 129, "validity ends before building 99 is charged at 130");
+    assert_eq!(mid.through, 129, "validity ends before token 8 drops and building 99 is charged at 130");
     assert!(mid.warnings.iter().all(|w| !w.contains("lexical dictionary")), "both 7 and 8 are spelled by 125 and 99 is not charged yet: {:?}", mid.warnings);
+
+    let dropped = ask(131);
+    assert_eq!(child_name(&dropped, "type:7"), Some("Beta Mill"));
+    assert_eq!(child_name(&dropped, "type:8"), Some("Building name unavailable"), "a complete dictionary omitting token 8 clears its spelling");
+    assert_eq!(child_name(&dropped, "type:99"), Some("Building name unavailable"));
+    assert!(dropped.warnings.iter().any(|w| w.contains("lexical dictionary") && w.contains('8') && w.contains("99")), "{:?}", dropped.warnings);
 
     let late = ask(135);
     assert_eq!(child_name(&late, "type:7"), Some("Beta Mill"), "earlier spellings survive an unavailable stretch end");
-    assert_eq!(child_name(&late, "type:8"), Some("Alpha Mill"));
+    assert_eq!(child_name(&late, "type:8"), Some("Building name unavailable"));
     assert_eq!(child_name(&late, "type:99"), Some("Building name unavailable"));
     assert!(late.warnings.iter().any(|w| w.contains("lexical dictionary") && w.contains("99")), "{:?}", late.warnings);
 }

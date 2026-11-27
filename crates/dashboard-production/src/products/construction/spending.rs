@@ -191,7 +191,7 @@ const BUILDINGS_UNREAD: &str = "The building construction queue was not read in 
 const RAILWAYS_UNREAD: &str = "The railway construction queue was not read in full, so railway output in those hours is not counted";
 const HOURS_UNRECORDED: &str = "Output in hours that were not recorded is not counted";
 
-pub(crate) fn dated_gaps(steps: &[(i32, Option<u8>, bool)], last: i32, final_reason: u8, had_output: bool) -> Vec<(i32, SpendingGap)> {
+pub(crate) fn dated_gaps(steps: &[(i32, Option<u8>, bool)], final_state: Option<(i32, u8, bool)>) -> Vec<(i32, SpendingGap)> {
     let mut out: Vec<(i32, SpendingGap)> = Vec::new();
     let mut push = |hour: i32, reason: Option<SpendingGap>, output: bool| {
         if let Some(reason) = reason
@@ -204,7 +204,9 @@ pub(crate) fn dated_gaps(steps: &[(i32, Option<u8>, bool)], last: i32, final_rea
     for &(hour, reason, output) in steps {
         push(hour, reason.and_then(gap_of), output);
     }
-    push(last, gap_of(final_reason), had_output);
+    if let Some((last, final_reason, had_output)) = final_state {
+        push(last, gap_of(final_reason), had_output);
+    }
     out
 }
 
@@ -279,23 +281,27 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
     Ok(out)
 }
 
-fn dated_spellings(query: &Query<'_>, run: u32, first: i32, last: i32, ids: &BTreeSet<u32>, into: &mut BTreeMap<u32, Vec<(i32, String)>>) -> io::Result<()> {
+fn dated_spellings(query: &Query<'_>, run: u32, first: i32, last: i32, ids: &BTreeSet<u32>, into: &mut BTreeMap<u32, Vec<(i32, Option<String>)>>) -> io::Result<()> {
     let recording = query.replay.recording();
     if ids.is_empty() || recording.predates(TableId::LexicalTokens.index()).is_some() || recording.withheld_reason(TableId::LexicalTokens.index()).is_some() {
         return Ok(());
     }
     let wanted: Vec<u128> = ids.iter().map(|&id| u128::from(id)).collect();
     let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, run, TableId::LexicalTokens, &[0], Keys::These(&wanted), first, last))?;
+    let complete: Vec<(i32, i32)> =
+        history.statuses.iter().filter(|held| replay_recording::columnar_frames::complete(held.status)).map(|held| (held.first, held.last)).collect();
     let mut asks = Vec::new();
     for (key, steps) in &history.keys {
         for step in steps {
             match step.cells.as_deref().and_then(|cells| cells.first().copied()) {
                 Some(Cell::Written(_)) => asks.push((step.hour, *key)),
                 Some(cell) => {
-                    if let Some(text) = history.text(cell).and_then(|bytes| std::str::from_utf8(bytes).ok()) {
-                        into.entry(*key as u32).or_default().push((step.hour, text.to_owned()));
+                    let text = history.text(cell).and_then(|bytes| std::str::from_utf8(bytes).ok()).map(str::to_owned);
+                    if text.is_some() || read_within(&complete, step.hour, step.hour) {
+                        into.entry(*key as u32).or_default().push((step.hour, text));
                     }
                 }
+                None if read_within(&complete, step.hour, step.hour) => into.entry(*key as u32).or_default().push((step.hour, None)),
                 None => {}
             }
         }
@@ -303,11 +309,12 @@ fn dated_spellings(query: &Query<'_>, run: u32, first: i32, last: i32, ids: &BTr
     if !asks.is_empty() {
         dashboard_query::cost::storage(|| {
             replay_lanes::lanes::at_each(recording, run, TableId::LexicalTokens, Some(&[0]), &asks, &mut |hour, key, row| {
-                if let Some(text) = row
+                let text = row
                     .and_then(|(view, slot)| view.list(0, slot).or_else(|| dashboard_query::read::text(&view, 0, slot)))
                     .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                {
-                    into.entry(key as u32).or_default().push((hour, text.to_owned()));
+                    .map(str::to_owned);
+                if text.is_some() || read_within(&complete, hour, hour) {
+                    into.entry(key as u32).or_default().push((hour, text));
                 }
                 Ok(())
             })
@@ -316,14 +323,28 @@ fn dated_spellings(query: &Query<'_>, run: u32, first: i32, last: i32, ids: &BTr
     Ok(())
 }
 
-fn first_building_hours(from: i32, spent: &BTreeMap<LeafKey, Vec<SpentStep>>, lines: &[LineFacts]) -> BTreeMap<u32, i32> {
+pub(crate) fn place_buildings(spent: &BTreeMap<LeafKey, Vec<SpentStep>>, lines: &[LineFacts]) -> HashMap<LeafKey, Option<u32>> {
+    let mut buildings: HashMap<LeafKey, Option<u32>> = spent.keys().map(|&place| (place, named(place.2))).collect();
+    for line in lines {
+        let (railway, building, state, to_state) = line.leaf;
+        for (repair, start) in [(false, line.new_from), (true, line.repair_from)] {
+            if start.is_some() {
+                let held = buildings.entry((repair, railway, building, state, to_state)).or_insert(None);
+                *held = held.or(line.building);
+            }
+        }
+    }
+    buildings
+}
+
+fn first_building_hours(from: i32, spent: &BTreeMap<LeafKey, Vec<SpentStep>>, lines: &[LineFacts], buildings: &HashMap<LeafKey, Option<u32>>) -> BTreeMap<u32, i32> {
     let mut first_at: BTreeMap<u32, i32> = BTreeMap::new();
     let mut note = |id: u32, hour: i32| {
         let hour = hour.max(from);
         first_at.entry(id).and_modify(|held| *held = (*held).min(hour)).or_insert(hour);
     };
     for (place, steps) in spent {
-        if let (Some(id), Some(step)) = (named(place.2), steps.first()) {
+        if let (Some(id), Some(step)) = (buildings.get(place).copied().flatten(), steps.first()) {
             note(id, step.known_at);
         }
     }
@@ -339,19 +360,27 @@ fn first_building_hours(from: i32, spent: &BTreeMap<LeafKey, Vec<SpentStep>>, li
     first_at
 }
 
+struct SeenLine {
+    line: Line,
+    attributed: bool,
+    history: LineHistory,
+    ends_in_branch: bool,
+}
+
+fn min_opt(a: Option<i32>, b: Option<i32>) -> Option<i32> {
+    [a, b].into_iter().flatten().min()
+}
+
 pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Facts> {
     let names = Names::new(&query.holders);
     let mut out = Facts { from: query.timeline.first, to: query.timeline.last, spent: spent_by_leaf(query, country)?, ..Facts::default() };
-    let mut seen = BTreeSet::new();
+    let mut seen: BTreeMap<u64, SeenLine> = BTreeMap::new();
     for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let lines = crate::products::construction::cached_construction(source, stretch.run)?;
         let links = dashboard_base::queries::links(source, stretch.run)?;
         let mut kept: Vec<(&Line, bool)> = Vec::new();
         for line in lines.within(stretch.first, stretch.last) {
-            if !seen.insert(line.id) {
-                continue;
-            }
             let Some(owner) = line.country.filter(|_| !(line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown))) else {
                 kept.push((line, false));
                 continue;
@@ -364,54 +393,72 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             }
         }
         let ids: Vec<u128> = kept.iter().map(|(line, _)| u128::from(line.id)).collect();
-        let steps = if ids.is_empty() { ReasonSteps::new() } else { reason_steps(query, stretch.run, &ids, stretch.first, stretch.last)? };
+        let mut steps = if ids.is_empty() { ReasonSteps::new() } else { reason_steps(query, stretch.run, &ids, stretch.first, stretch.last)? };
         for (line, attributed) in kept {
-            let held = steps.get(&line.id);
-            let read = held.map_or(&[][..], |history| history.read.as_slice());
-            let repair_tick = held.and_then(|history| history.repair_tick);
-            let first_new = held.and_then(|history| history.first_new);
-            let first_repair = held.and_then(|history| history.first_repair);
-            let gaps = dated_gaps(read, line.last, line.output_reason, line.had_output);
-            if !attributed {
-                let owner_gaps = gaps.iter().filter(|gap| gap.1 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
-                if line.country.is_some() {
-                    out.unattributed.push(owner_gaps.min().unwrap_or(line.first));
-                    continue;
-                }
-                let first_output = read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);
-                match owner_gaps.chain(first_output).filter(|&hour| stretch.first <= hour && hour <= stretch.last).min() {
-                    Some(hour) => out.unattributed.push(hour),
-                    None => {
-                        seen.remove(&line.id);
-                    }
-                }
-                continue;
-            }
-            let leaf = leaf_keys(line)[0];
-            let repair_from = repair_tick.or(first_repair).map(|hour| hour.max(line.first_read));
-            let new_from = first_new.map(|hour| hour.max(line.first_read)).or_else(|| repair_from.is_none().then_some(line.first_read));
-            out.lines.push(LineFacts {
-                leaf: (leaf.1, leaf.2, leaf.3, leaf.4),
-                building: line.building,
-                new_from,
-                repair_from,
-                gaps,
-                before_first_read: line.before_observation.then_some(line.first_read),
+            let entry = seen.entry(line.id).or_insert_with(|| SeenLine {
+                line: line.clone(),
+                attributed,
+                history: LineHistory::default(),
+                ends_in_branch: false,
             });
+            entry.attributed |= attributed;
+            entry.ends_in_branch |= stretch.first <= line.last && line.last <= stretch.last;
+            if let Some(part) = steps.remove(&line.id) {
+                entry.history.read.extend(part.read);
+                entry.history.repair_tick = min_opt(entry.history.repair_tick, part.repair_tick);
+                entry.history.first_new = min_opt(entry.history.first_new, part.first_new);
+                entry.history.first_repair = min_opt(entry.history.first_repair, part.first_repair);
+            }
         }
     }
-    let first_at = first_building_hours(out.from, &out.spent, &out.lines);
+    for mut acc in seen.into_values() {
+        acc.history.read.sort_by_key(|step| step.0);
+        let gaps = dated_gaps(&acc.history.read, acc.ends_in_branch.then_some((acc.line.last, acc.line.output_reason, acc.line.had_output)));
+        if !acc.attributed {
+            let owner_gaps = gaps.iter().filter(|gap| gap.1 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
+            if acc.line.country.is_some() {
+                out.unattributed.push(owner_gaps.min().unwrap_or(acc.line.first));
+                continue;
+            }
+            let first_output = acc.history.read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);
+            if let Some(hour) = owner_gaps.chain(first_output).min() {
+                out.unattributed.push(hour);
+            }
+            continue;
+        }
+        let leaf = leaf_keys(&acc.line)[0];
+        let repair_from = min_opt(acc.history.repair_tick, acc.history.first_repair).map(|hour| hour.max(acc.line.first_read));
+        let new_from = acc.history.first_new.map(|hour| hour.max(acc.line.first_read)).or_else(|| repair_from.is_none().then_some(acc.line.first_read));
+        out.lines.push(LineFacts {
+            leaf: (leaf.1, leaf.2, leaf.3, leaf.4),
+            building: acc.line.building,
+            new_from,
+            repair_from,
+            gaps,
+            before_first_read: acc.line.before_observation.then_some(acc.line.first_read),
+        });
+    }
+    let buildings = place_buildings(&out.spent, &out.lines);
+    let first_at = first_building_hours(out.from, &out.spent, &out.lines, &buildings);
     let ids: BTreeSet<u32> = first_at.keys().copied().collect();
-    let mut raw_spellings: BTreeMap<u32, Vec<(i32, String)>> = BTreeMap::new();
+    let mut raw_spellings: BTreeMap<u32, Vec<(i32, Option<String>)>> = BTreeMap::new();
     for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
         dated_spellings(query, stretch.run, stretch.first, stretch.last, &ids, &mut raw_spellings)?;
     }
     for steps in raw_spellings.values_mut() {
         steps.sort_by_key(|(hour, _)| *hour);
-        steps.dedup_by(|next, prev| next.1 == prev.1);
+        let mut compacted: Vec<(i32, Option<String>)> = Vec::with_capacity(steps.len());
+        for (hour, text) in std::mem::take(steps) {
+            match compacted.last_mut() {
+                Some(last) if last.0 == hour => last.1 = text,
+                Some(last) if last.1 == text => {}
+                _ => compacted.push((hour, text)),
+            }
+        }
+        *steps = compacted;
     }
-    let mut change_hours = BTreeSet::from([out.from]);
+    let mut change_hours = BTreeSet::new();
     for (&id, &start) in &first_at {
         change_hours.insert(start);
         change_hours.extend(raw_spellings.get(&id).into_iter().flatten().filter(|(at, _)| *at > start).map(|(at, _)| *at));
@@ -421,7 +468,7 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
     for hour in change_hours {
         for (&id, &start) in &first_at {
             if start <= hour {
-                let text = raw_spellings.get(&id).and_then(|s| s[..s.partition_point(|(at, _)| *at <= hour)].last()).map(|(_, t)| t.clone());
+                let text = raw_spellings.get(&id).and_then(|s| s[..s.partition_point(|(at, _)| *at <= hour)].last()).and_then(|(_, t)| t.clone());
                 active.insert(id, text);
             }
         }

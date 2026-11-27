@@ -1,9 +1,8 @@
-use super::spending::{ConstructionSpendingParams, Facts, facts, gap_assignment};
+use super::spending::{ConstructionSpendingParams, Facts, facts, gap_assignment, place_buildings};
 use super::{COST_SCALE, SpendingGap};
 use dashboard_base::products::breakdown::{self, Amount, Breakdown, BreakdownPart, Dated, Exact, History, HistoryBuilder, Node, counted};
 use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
 use dashboard_base::Source;
-use replay_data::rows::TagHolderRow;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, sync::atomic::AtomicBool};
 #[cfg(any(test, feature = "export-types"))]
@@ -120,10 +119,6 @@ fn gap_reason(gap: SpendingGap) -> &'static str {
 
 type Place = (bool, bool, u32, u32, u32);
 
-fn named(value: u32) -> Option<u32> {
-    (value != TagHolderRow::NONE).then_some(value)
-}
-
 pub(super) fn index(facts: &Facts) -> ConstructionHistory {
     let mut events: Vec<(i32, Place, Amount)> = Vec::new();
     for (&place, steps) in &facts.spent {
@@ -141,17 +136,15 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
             }
         }
     }
-    let mut buildings: HashMap<Place, Option<u32>> = facts.spent.keys().map(|&place| (place, named(place.2))).collect();
+    let buildings = place_buildings(&facts.spent, &facts.lines);
+    let mut early_gaps: Vec<(i32, SpendingGap)> = Vec::new();
     for line in &facts.lines {
         let (railway, building, state, to_state) = line.leaf;
-        for (repair, start) in [(false, line.new_from), (true, line.repair_from)] {
-            if start.is_some() {
-                let held = buildings.entry((repair, railway, building, state, to_state)).or_insert(None);
-                *held = held.or(line.building);
-            }
-        }
         for &(hour, gap) in &line.gaps {
             let Some((repair, at)) = gap_assignment(line.new_from, line.repair_from, hour) else { continue };
+            if hour < at {
+                early_gaps.push((hour, gap));
+            }
             events.push((at, (repair, railway, building, state, to_state), Amount::Partial(Exact::ZERO, gap_reason(gap).into())));
         }
     }
@@ -174,6 +167,10 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
         let kind = Node::new(format!("type:{}", building.map_or_else(|| "none".to_owned(), |id| id.to_string())), name, ordinals[&building]);
         let leaf = built.leaf(vec![purpose, kind]);
         built.add(hour, leaf, amount, None);
+    }
+    for (hour, gap) in early_gaps {
+        built.qualify(hour, gap_reason(gap));
+        built.change(hour);
     }
     for hour in names.values().flat_map(Dated::hours).chain(warnings.hours()) {
         built.change(hour);
