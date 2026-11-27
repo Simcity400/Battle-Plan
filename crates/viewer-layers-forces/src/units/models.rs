@@ -208,7 +208,7 @@ impl Shared {
 
     fn stood(&self, generation: u64, stands: Hour, frame: &Arc<DecodedFrame>) {
         let mut held = self.lock();
-        let stamp = held.published + 1;
+        let (stamp, before) = (held.published + 1, held.made.as_ref().map(|made| made.stands));
         let moved = held.generation == generation
             && held.made.as_mut().is_some_and(|made| {
                 if made.generation != generation {
@@ -219,6 +219,8 @@ impl Shared {
             });
         if moved {
             held.published = stamp;
+        }
+        if held.made.as_ref().map(|made| made.stands) != before {
             viewer_layer_core::landed::moved();
         }
         drop(held);

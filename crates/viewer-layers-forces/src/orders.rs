@@ -185,7 +185,7 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
         let key = (TableKey::of(&*newest, &declared), asked);
         if built.as_ref() == Some(&key) {
             let mut held = shared.lock();
-            let stamp = held.published + 1;
+            let (stamp, before) = (held.published + 1, held.made.as_ref().map(|made| made.stands));
             let moved = held.generation == generation
                 && held.made.as_mut().is_some_and(|made| {
                     if made.generation != generation {
@@ -196,6 +196,8 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
                 });
             if moved {
                 held.published = stamp;
+            }
+            if held.made.as_ref().map(|made| made.stands) != before {
                 viewer_layer_core::landed::moved();
             }
             drop(held);

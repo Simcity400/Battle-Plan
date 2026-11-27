@@ -389,11 +389,13 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
         let mut forces: Vec<u64> = batch.iter().map(|&(force, _)| force).collect();
         if forces.is_empty() {
             if newer {
+                if asked.answered != Some(frame.hour) {
+                    viewer_layer_core::landed::moved();
+                }
                 asked.answered = Some(frame.hour);
                 asked.answered_at = Some(Instant::now());
                 last = Some(frame);
                 timeline::mark(maker, Mark::Published);
-                viewer_layer_core::landed::moved();
                 shared.answered.notify_all();
             } else if let Some(stands) = reader.as_ref().and_then(|reader| reader.through(Arc::as_ptr(&frame)))
                 && asked.answered.is_some_and(|answered| answered < stands)
