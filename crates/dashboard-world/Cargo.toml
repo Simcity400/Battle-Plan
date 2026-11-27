@@ -54,6 +54,7 @@ content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-layers = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-capture-spool.workspace = true
+replay-journal = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-gfx = { workspace = true, features = ["test-support"] }

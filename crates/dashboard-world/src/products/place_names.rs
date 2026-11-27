@@ -5,8 +5,8 @@ use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContex
 use dashboard_query::coverage::{Witness, reading_witness, witnessed_selection};
 use dashboard_text::{metadata::{check_cancel, not_recorded}, naval_battle_name::{Picker, battle_name_candidates}, scope, scripted_text};
 use replay_columnar::manifest::Status;
-use replay_data::{codec::Decoder, rows::{StateRow, TableId, tables}, scope::CaptureMode, value::Value as _};
-use replay_frame::frame::{DecodedFrame, DecodedSource, TableView};
+use replay_data::{codec::Decoder, rows::{Field, Opaque, StateRow, TableId, tables}, scope::CaptureMode, value::Value as _};
+use replay_frame::frame::{DecodedFrame, DecodedSource, TableView, table_field};
 use replay_lanes::lanes::{self, Cell, History, Keys, Reading, StatusRun};
 use replay_recording::columnar_frames::{Recording, TableCoverage};
 use std::{cell::{OnceCell, RefCell}, collections::{BTreeMap, BTreeSet, HashMap}, io, sync::{Arc, OnceLock, atomic::AtomicBool}};
@@ -483,7 +483,9 @@ fn decode_written_tags(recording: &Recording, run: u32, table: TableId, history:
     let format = recording.format();
     dashboard_query::cost::storage(|| {
         lanes::at_each(recording, run, table, Some(&[column]), &asks, &mut |hour, key, row| {
-            if let Some((view, slot)) = row && let Some(bytes) = view.list(column, slot) {
+            if let Some((view, slot)) = row
+                && let Field::Opaque(Opaque::Encoded(bytes, _)) = table_field(table, &view, slot, column, format)?
+            {
                 let mut input = Decoder::new(bytes);
                 input.format = format;
                 out.insert((hour, key), Option::<Vec<u8>>::decode(&mut input)?);

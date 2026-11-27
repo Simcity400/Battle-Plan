@@ -4,6 +4,8 @@ use dashboard_base::test_fixtures::{CAMPAIGN, content_identity, records, source}
 use replay::campaign::Replay;
 use replay_data::rows::{CountryAppearanceRow, CountryLinkRow, ProvinceNameRow, ProvinceRow, Recorded, ReservedCountryNamingRow, TableRows, TableSchema};
 
+mod malformed_original_tag;
+
 fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
 }
