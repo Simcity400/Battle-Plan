@@ -12,6 +12,7 @@ use dashboard_query::{Query, identity::Holders, timeline::Stretch};
 use rayon::prelude::*;
 use replay_lanes::lanes::{self, Chart};
 use replay_data::rows::{CountryLinkRow, RaidAirScoreRow, TableId, tables};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -695,8 +696,7 @@ impl Charted<'_> {
 
 impl RegionRows for Charted<'_> {
     fn rows(&self, day: usize, region: u32, out: &mut Vec<RaidAirScoreRow>) {
-        if let Some((rows, ..)) = self.at_hour.get(&day) {
-            out.extend(rows.iter().filter(|row| row.region == region).cloned());
+        if self.at_hour.contains_key(&day) {
             return;
         }
         let Some(read) = self.days[day] else { return };
@@ -828,7 +828,7 @@ fn day_span(view_first: i32, view_last: i32) -> io::Result<(i32, i32, usize)> {
     Ok((first_day, first_hour, count))
 }
 
-fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_last: i32, cancelled: &AtomicBool) -> io::Result<Window> {
+fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_last: i32, current: Option<&DecodedFrame>, cancelled: &AtomicBool) -> io::Result<Window> {
     let (first_day, first_hour, count) = day_span(view_first, view_last)?;
     let stretches: Vec<Stretch> = query.timeline.within(first_hour, view_last).collect();
     let mut days: Vec<Option<DayAt>> = vec![None; count];
@@ -837,9 +837,7 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
             days[(day - first_day) as usize] = Some(DayAt { hour: stretch.last.min(day * DAY + DAY - 1), part: at });
         }
     }
-    let parts = stretches.par_iter().map(|stretch| part(query, stretch)).collect::<io::Result<Vec<_>>>().map_err(|error| dashboard_core::refused(format!("Air scores are not summarized in this recording: {error}")))?;
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let links: Vec<Option<Links>> = stretches.par_iter().map(|stretch| links(query, stretch)).collect();
 
     let recording = query.replay.recording();
     let status_runs: Vec<(Vec<replay_lanes::lanes::StatusRun>, HashMap<u32, String>)> = stretches
@@ -878,8 +876,12 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
             continue;
         }
         let reads = [Read::all(TableId::RaidAirScores), Read::all(TableId::CountryLinks)];
-        let frame = at_hour::frame_with(query, read.hour, &reads, AirSuperiorityAt::columns, "Air superiority")?;
-        match dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(&frame)?.into_rows(TableId::RaidAirScores, read.hour) {
+        let exact;
+        let frame = if let Some(frame) = current.filter(|frame| frame.hour == read.hour) { frame } else {
+            exact = at_hour::frame_with(query, read.hour, &reads, AirSuperiorityAt::columns, "Air superiority")?;
+            &exact
+        };
+        match dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(frame)?.into_rows(TableId::RaidAirScores, read.hour) {
             Ok((rows, incomplete)) => {
                 let complete = incomplete.is_none();
                 if let Some(why) = incomplete {
@@ -894,6 +896,14 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
             }
         }
     }
+    let exact_day = count == 1 && params.every != Some(true) && at_hours.contains_key(&0);
+    let (parts, links) = if exact_day {
+        (Vec::new(), Vec::new())
+    } else {
+        let parts = stretches.par_iter().map(|stretch| part(query, stretch)).collect::<io::Result<Vec<_>>>().map_err(|error| dashboard_core::refused(format!("Air scores are not summarized in this recording: {error}")))?;
+        let links = stretches.par_iter().map(|stretch| links(query, stretch)).collect();
+        (parts, links)
+    };
     let charted = Charted { parts: &parts, days: &days, first_day, at_hour: &at_hours };
     let mut held_links: HashMap<(usize, usize), Arc<Vec<CountryLinkRow>>> = HashMap::new();
     let mut reads: Vec<Option<DayRead>> = Vec::with_capacity(count);
@@ -943,7 +953,7 @@ struct AirHistory {
 impl AirHistory {
     #[expect(clippy::too_many_arguments, reason = "one read of the history's days: the query, the side index, the view, and the regions and sides it already holds")]
     fn read(query: &Query<'_>, index: &AirIndex, params: &AirTimelineParams, (first, last): (i32, i32), held: &[u32], mut dictionary: Dictionary, resolver: &mut dyn SideResolver, cancelled: &AtomicBool) -> io::Result<Self> {
-        let window = window(query, params, first, last, cancelled)?;
+        let window = window(query, params, first, last, None, cancelled)?;
         let mut regions: Vec<u32> = window.candidates().into_iter().chain(held.iter().copied()).collect::<BTreeSet<u32>>().into_iter().collect();
         regions.push(ABSENT);
         let charted = window.charted();
@@ -1061,7 +1071,7 @@ fn truncated_warnings(truncated: &[(usize, i32, String)], count: usize) -> Vec<S
         .collect()
 }
 
-fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<AirTimelineReply> {
+fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, current: Option<&DecodedFrame>, cancelled: &AtomicBool) -> io::Result<AirTimelineReply> {
     let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid air branch"))?;
     let query = dashboard_base::queries::query(source, branch)?;
     let index = index::index(source, branch).map_err(|error| dashboard_core::refused(format!("Air sides are not known: {error}")))?;
@@ -1115,7 +1125,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
         let cells = finish(composition, &history.hours, &history.dictionary.sides, params.mode.unwrap_or_default());
         (shown, cells, history.hours)
     } else {
-        let shown_window = window(&query, params, view_first, view_last, cancelled)?;
+        let shown_window = window(&query, params, view_first, view_last, current, cancelled)?;
         warnings.extend(unread_warnings(&shown_window.unread, shown_window.reads.len()));
         warnings.extend(truncated_warnings(&shown_window.truncated, shown_window.reads.len()));
         let charted = shown_window.charted();
@@ -1190,6 +1200,6 @@ impl Product for AirSuperiorityTimeline {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        timeline(source, params, context, cancelled)
+        timeline(source, params, context, None, cancelled)
     }
 }
