@@ -325,7 +325,7 @@ impl PanelJob {
                     if let Some((_, _, mut hour)) = product.last {
                         while hour < through {
                             hour = hour.saturating_add(quantum).min(through);
-                            if !self.read_one(&mut product, hour, quantum > 1, false, true, &head) {
+                            if !self.read_one(&mut product, hour, false, false, true, &head) {
                                 product.resend = true;
                                 product.joined = true;
                                 break;
@@ -360,8 +360,10 @@ impl PanelJob {
             (epoch == self.epoch || (seed_paused && epoch > self.epoch && head == hour)).then_some(epoch)
         };
         if live_epoch().is_none() { return false; }
-        let Some((change, _)) = product.read_at(seek, self.epoch, hour, reset, seed_paused, catch_up, &self.token, None, &self.reads) else { return false };
-        let (kind, body) = change.unwrap_or((panel::dated::STANDS, &[]));
+        let unread_from = product.last.filter(|&(e, g, _)| (e, g) == (self.epoch, seek)).map(|(_, _, last)| last.saturating_add(1));
+        let Some((change, from)) = product.read_at(seek, self.epoch, hour, reset, seed_paused, catch_up, &self.token, None, &self.reads) else { return false };
+        let unproven = unread_from.is_some_and(|next| from > next);
+        let (kind, body) = change.unwrap_or(if unproven { (panel::dated::AGAIN, &[]) } else { (panel::dated::STANDS, &[]) });
         let packet = panel::dated::at_one_hour(self.stamp, id, hour, kind, body);
         let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(epoch) = live_epoch().filter(|_| reads.current(self.epoch, seek)) else { return false };

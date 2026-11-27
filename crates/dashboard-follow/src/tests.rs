@@ -2809,6 +2809,38 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     let expected_wide = (9_007_199_254_740_990 + i64::from(target7)).to_string();
     assert_eq!(wide7["live"]["groups"][0]["rawValues"], serde_json::json!([expected_wide]), "multi-hour (quantum=6) catch-up preserves lossless wide rawValues");
     assert!(wide7["live"]["groups"][0].get("follow").is_none());
+
+    host.unpanel(7);
+    let (s8_entered_tx, s8_entered_rx) = mpsc::channel();
+    let (s8_release_tx, s8_release_rx) = mpsc::channel();
+    let s8_release_rx = Mutex::new(s8_release_rx);
+    let s8_first = AtomicBool::new(true);
+    let s8_reads = Arc::new(Mutex::new(Vec::new()));
+    let s8_reads_cb = Arc::clone(&s8_reads);
+    let proven: Arc<crate::panel::PanelData> = Arc::new(Ok(serde_json::json!({ "tile": "closed before the clock" })));
+    host.prepare_panel(product(Arc::new(move |hour, seed, _, step| {
+        if s8_first.swap(false, Ordering::Relaxed) {
+            let _ = s8_entered_tx.send(hour);
+            let _ = s8_release_rx.lock().unwrap().recv();
+        } else if step.is_none() {
+            s8_reads_cb.lock().unwrap().push((hour, seed));
+        }
+        ProductRead { value: Arc::clone(&proven), rows: 1, fresh: false, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN }
+    }))).unwrap()(8, 1).unwrap();
+    let start8 = s8_entered_rx.recv().unwrap();
+    host.playhead().anchor(f64::from(start8 + 3 * quantum), true, 0.0, anchored_at, false);
+    host.playhead().wait_newest(start8 + 2 * quantum).unwrap();
+    s8_release_tx.send(()).unwrap();
+    let mut caught = Vec::new();
+    while !caught.iter().any(|&(hour, _)| hour >= start8 + 2 * quantum) {
+        let (kind, bytes, session) = push.take_sent().expect("a catch-up packet for panel 8");
+        push.credit(session, u64::MAX);
+        if kind != PANEL { continue; }
+        caught.extend(dated::records(&bytes).unwrap().into_iter().filter(|r| r.id == 8 && r.hour > start8 && r.kind != dated::WAITING).map(|r| (r.hour, r.kind)));
+    }
+    let reads = s8_reads.lock().unwrap().clone();
+    assert!(!reads.is_empty() && reads.iter().all(|&(_, seed)| !seed), "multi-hour catch-up reads through the held interval, never as a seed: {reads:?}");
+    assert!(caught.iter().all(|&(_, kind)| kind == dated::STANDS), "a value proven held since the previous record is STANDS at each catch-up step, not a full body again: {caught:?}");
 }
 
 type StepGate = mpsc::Receiver<(Hour, mpsc::Sender<()>)>;
