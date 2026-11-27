@@ -585,7 +585,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             push(&mut sunk, *at, vessels(read.sunk, read.convoys_sunk));
             push(&mut ic, *at, read.ic[0].zip(read.ic[1]).map(|(a, b)| a.saturating_add(b)));
             push(&mut ships, *at, vessels(read.ships, read.convoys));
-            roles.extend(read.countries.iter().flatten().map(|slot| Role { slot: Some(*slot), at: *at }));
+            roles.extend(read.countries.iter().flatten().map(|slot| Role::at(Some(*slot), *at)));
         }
         if let Some(joined) = line.joined {
             push(&mut states, joined, JOINED);
@@ -600,7 +600,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             subjects: Box::default(),
             states: states.into(),
             sort_keys: [SortKey::dated_numbers(sunk), SortKey::dated_numbers(ic), SortKey::dated_numbers(ships)].into(),
-            text: Box::default(),
+            text: Default::default(),
             payload: line,
         });
     }
