@@ -25,7 +25,25 @@ pub fn table_field<'a>(
     if id.column_withheld_at(column, format) {
         return Ok(Field::NotRecorded);
     }
-    field(table, slot, column, format)
+    let read = field(table, slot, column, format)?;
+    if let Field::Opaque(Opaque::Encoded(bytes, _)) = read
+        && matches!(id, TableId::CountryAppearance | TableId::ReservedCountryNaming)
+        && id.field_name(column) == Some("original_tag")
+        && !original_tag_option_fits(bytes)
+    {
+        return Ok(Field::NotRecorded);
+    }
+    Ok(read)
+}
+
+fn original_tag_option_fits(bytes: &[u8]) -> bool {
+    match bytes {
+        [0] => true,
+        [1, rest @ ..] => rest
+            .split_first_chunk::<4>()
+            .is_some_and(|(length, tag)| u32::from_le_bytes(*length) as usize == tag.len()),
+        _ => false,
+    }
 }
 
 pub fn field<'a>(
