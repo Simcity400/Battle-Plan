@@ -1,5 +1,6 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, ownership_frame, records, source};
+use dashboard_query::log::occurrence::Direction;
 use replay_data::rows::{LexicalTokenRow, MarketContractTermsRow, MarketEquipment, MarketPool, TableRows, VariantDefinitionRow};
 use replay_frame::frame::{DecodedFrame, TableView};
 
@@ -500,6 +501,11 @@ fn a_range_orders_contracts_by_the_first_event_in_it_known_at_the_played_hour() 
     assert_eq!(contracts(&before).iter().map(|row| (row.hour, row.events_total.as_str())).collect::<Vec<_>>(), [(101, "1"), (100, "1")]);
     let after = load(&src, &MarketLedgerTailParams { hour: Some(112), ..params.clone() });
     assert_eq!(contracts(&after).iter().map(|row| (row.hour, row.events_total.as_str())).collect::<Vec<_>>(), [(100, "2"), (101, "2")], "a late-read earlier event changes the first event only once witnessed");
+    for (column, direction) in [("date", dashboard_query::log::occurrence::Direction::Ascending), ("paid", dashboard_query::log::occurrence::Direction::Descending)] {
+        let sorted = load(&src, &MarketLedgerTailParams { hour: Some(112), sort: Some(occurrences::OccurrenceSort { column: column.into(), direction }), ..params.clone() });
+        assert_eq!(contracts(&sorted).iter().map(|row| row.hour).collect::<Vec<_>>(), [101, 100], "{column} uses its own key inside a range");
+    }
+    stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 2, "from": 104, "to": 107, "sort": { "column": "paid", "direction": "descending" } }), &[103, 105, 106, 107, 108, 110, 112]);
     let keys: Vec<_> = contracts(&after).iter().map(|row| row.key.clone()).collect();
     let expanded = load(&src, &MarketLedgerTailParams { hour: Some(112), expanded: Some(keys), ..params });
     assert_eq!(expanded.total, "6");

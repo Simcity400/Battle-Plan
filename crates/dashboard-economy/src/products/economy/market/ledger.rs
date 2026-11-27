@@ -111,6 +111,7 @@ const HIDDEN: u8 = STATUSES.len() as u8;
 const CONTRACTS: [u16; 2] = [0, 1];
 const EVENT: u16 = 2;
 const MORE: u16 = 3;
+const SORT_COLUMNS: [&str; 5] = ["country", "item", "status", "delivered", "paid"];
 
 const START_UNSEEN: &str = "The contract began before its first recorded event";
 const UNTOLD_REMOVAL: &str = "do not record whether a removal ended a request or an accepted contract";
@@ -931,7 +932,7 @@ fn scan(source: &Source, query: &Query<'_>, load: &LoadContext, cancelled: &Atom
             return Err(invalid("Two market contracts share one key"));
         }
     }
-    let mut ledger = Ledger { contracts, by_key, unread, untold, closed: Arc::new(Index::new(Vec::new(), Vec::new(), &LIVE)?), opened: Mutex::default(), terms: Mutex::default() };
+    let mut ledger = Ledger { contracts, by_key, unread, untold, closed: Arc::new(Lines { index: Index::new(Vec::new(), Vec::new(), &LIVE)?, reads: None }), opened: Mutex::default(), terms: Mutex::default() };
     sort_keys(source, query, load, &mut ledger, cancelled)?;
     ledger.closed = Arc::new(lines(&ledger.contracts, &Opening::default(), ledger.unread.gaps.clone())?);
     Ok(ledger)
@@ -1245,9 +1246,9 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
         Chip { kinds: Some(CONTRACTS.to_vec()), states: Some(vec![MarketContractStatus::Active.code()]) },
         Chip { kinds: Some(CONTRACTS.to_vec()), states: Some(LIVE.to_vec()) },
     ];
-    let (order, newest) = occurrences::order(params.sort.as_ref(), &["country", "item", "status", "delivered", "paid"])?;
+    let (order, newest) = occurrences::order(params.sort.as_ref(), &SORT_COLUMNS)?;
     let ranged = prepared.index.reads.is_some();
-    let order = match order { Order::Date(direction) if ranged => Order::Key(5, direction), order => order };
+    let order = match order { Order::Date(direction) if ranged => Order::Key(SORT_COLUMNS.len(), direction), order => order };
     let answer = index.ask(
         &query.holders,
         &Ask {

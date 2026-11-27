@@ -18,7 +18,7 @@ export type OptionField = FieldBase & (
   | { kind: 'toggle'; default: boolean }
   | { kind: 'choice'; choices: readonly { value: string; label: string }[]; default: string; titleChoice?: true }
   | { kind: 'number'; min: number; max: number; step: number; unit?: string; default: number | null }
-  | { kind: 'text'; maxLength: number; default: '' }
+  | { kind: 'text'; maxLength: number; default: string }
   | { kind: 'content-choice'; automatic: string; default: ''; titleChoice?: false; catalogue?: boolean }
   | { kind: 'content-set'; automatic: string; default: ''; catalogue?: boolean }
   | { kind: 'regions'; automatic: string; default: ''; sea?: boolean }
