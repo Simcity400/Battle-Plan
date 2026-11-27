@@ -625,6 +625,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           kind: binding.kind,
           ...(binding.pagedRows ? { pagedRows: binding.pagedRows } : {}),
           ...(binding.window ? { window: binding.window } : {}),
+          ...(projection.validateTail ? { validateTail: projection.validateTail } : {}),
         };
         const series = keep.tiles.series(input, base, binding, hour);
         const projected = projectScene(input, series ? { ...base, series } : base, hour, readers, view => projection.project(view, binding.options));
@@ -705,7 +706,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         before: keep.before,
         changedAt: keep.changedAt,
         continuity: keep.continuity,
-        readNow: () => readNow ??= sceneReadView(input, binding, drawn, readers),
+        readNow: () => readNow ??= sceneReadView(input, projection.validateTail ? { ...binding, validateTail: projection.validateTail } : binding, drawn, readers),
       };
 
       const drawKey = [layout, keep.continuity, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.artRevision, width, height];
