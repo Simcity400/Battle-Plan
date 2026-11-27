@@ -114,7 +114,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
     let registry = Registry::load(&shared).unwrap();
     let interface = Interface {
         sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
-        registry,
+        registry: Arc::new(registry),
         decode: Decode::default(),
     };
     let lazy = LazyTextures::new();
@@ -170,11 +170,15 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         extra,
     );
     let mut map_gui = GuiResources::new(
-        interface.registry.clone(),
+        Arc::clone(&interface.registry),
         b"l_english",
         [10, 10],
         Decode::default(),
     );
+    assert!(std::ptr::eq(
+        combat.gui.registry().sprite(b"GFX_fixture_late").unwrap(),
+        interface.registry.sprite(b"GFX_fixture_late").unwrap(),
+    ));
     map_gui.load(&shared, &native_gui::Assets::default(), &mut images).unwrap();
     map_gui.defer_window_art(&shared, &map_assets, &lazy);
     assert!(map_gui.loaded_sheet(b"GFX_ESCAPE").is_none());

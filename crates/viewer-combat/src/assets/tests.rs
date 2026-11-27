@@ -1,4 +1,5 @@
 use super::*;
+use content_reader_gui::gui::native::sprites::Sprites;
 use content_reader_image::native::Decode;
 use viewer_native_gui::lazy_icons::flag_set;
 use viewer_native_gui::sprites::Interface;
@@ -193,7 +194,7 @@ pub(crate) fn synthetic_assets(
     let registry = Registry::load(&shared).unwrap();
     let interface = Interface {
         sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
-        registry,
+        registry: Arc::new(registry),
         decode: Decode::default(),
     };
     let mut declaration = String::from("guiTypes = {");

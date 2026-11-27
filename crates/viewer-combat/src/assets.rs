@@ -2,7 +2,7 @@ use content_reader_key_names::key_name_products::KeyNamesExt as _;
 use content_reader_script::sub_units::SubUnits;
 use content_reader_layers::ResolvedLayers;
 use content_reader_defines::defines::Defines;
-use content_reader_gui::gui::{self, native::{resources::{self, Registry}, sprites::{Plain, SpriteFacts, SpriteKind, Sprites}}};
+use content_reader_gui::gui::{self, native::{resources::{self, Registry}, sprites::{Plain, SpriteFacts, SpriteKind}}};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -717,8 +717,7 @@ impl Assets {
                 )));
             }
         }
-        let mut files = interface.registry.files.clone();
-        let mut direct = Sprites::default();
+        let mut direct = Vec::new();
         let mut direct_portraits = BTreeSet::new();
         let names = layers.key_names()?;
         for file in layers
@@ -734,11 +733,9 @@ impl Assets {
         }
         for texture in direct_portraits {
             let key = format!("combat_portrait:{texture}");
-            direct.sprites.push(texture_sprite(key, texture));
+            direct.push(texture_sprite(key, texture));
         }
-        direct
-            .sprites
-            .push(texture_sprite("air_texture:".into(), String::new()));
+        direct.push(texture_sprite("air_texture:".into(), String::new()));
         let content = CombatContent::read_with_products(products, layers, defines)?;
         let content_warnings: Vec<String> = content.warnings().collect();
         let CombatContent {
@@ -750,17 +747,16 @@ impl Assets {
             ..
         } = content;
         for (key, texture) in tactics.pictures() {
-            direct.sprites.push(texture_sprite(key.to_owned(), texture));
+            direct.push(texture_sprite(key.to_owned(), texture));
         }
         let null_picture = "gfx/interface/landcombat/tactics/.dds";
         if layers.has_file(null_picture)? {
-            direct.sprites.push(texture_sprite(
+            direct.push(texture_sprite(
                 super::tactics::NULL_PICTURE.into(),
                 null_picture.into(),
             ));
         }
-        files.push(("combat runtime textures".into(), direct));
-        let registry = Registry::from_files(files);
+        let registry = Registry::with_sprites(Arc::clone(&interface.registry), "combat runtime textures".into(), direct);
         let mut wanted = BTreeSet::new();
         let native_assets = native_window_assets(native_windows, &Default::default());
         wanted.extend(
@@ -781,7 +777,7 @@ impl Assets {
                 warnings.push(format!("Combat UI: {refusal} (1 gui_reader)."));
             }
         }
-        for sprite in content_reader_gui::gui::native::sprites::registry(&registry.files).values() {
+        for sprite in registry.visible_sprites().values() {
             let name = &sprite.name;
             let portrait = sprite
                 .kind

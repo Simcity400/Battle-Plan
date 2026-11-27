@@ -47,6 +47,7 @@ pub fn counter_assets_fixture(
     sheets: BTreeMap<String, SpriteSheet>,
 ) -> (CounterArt, text::Fonts) {
     use viewer_native_gui::{native_resources::GuiResources, sprites::Interface};
+    let registry = Arc::new(registry);
     let sprites = SpriteSet::default();
     let decode = Default::default();
     let lazy = LazyTextures::new();
@@ -55,7 +56,7 @@ pub fn counter_assets_fixture(
     let fonts = text::Fonts::load(
         &shared,
         &Interface {
-            registry: registry.clone(),
+            registry: Arc::clone(&registry),
             sprites,
             decode,
         },

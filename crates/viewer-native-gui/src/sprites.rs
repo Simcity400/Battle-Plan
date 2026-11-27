@@ -64,7 +64,7 @@ impl SpriteSheet {
 }
 
 pub struct Interface {
-    pub registry: content_reader_gui::gui::native::resources::Registry,
+    pub registry: Arc<resources::Registry>,
     pub sprites: gfx::SpriteSet,
     pub decode: Decode,
 }
@@ -74,7 +74,7 @@ impl Interface {
         let registry = resources::Registry::load(layers)?;
         let sprites = gfx::SpriteSet::new(&registry.files);
         Ok(Self {
-            registry,
+            registry: Arc::new(registry),
             sprites,
             decode,
         })
