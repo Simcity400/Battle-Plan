@@ -688,6 +688,7 @@ export default function App() {
         onStart={startExport}
       />
       <ExportProgressDock
+        key={exportJob.id}
         job={exportJob}
         onRetry={lastExport?.id === exportJob.id
           ? () => startExport(lastExport.request, lastExport.id)

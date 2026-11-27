@@ -6,7 +6,7 @@ use super::*;
 fn resized_commands_coalesce_and_close_takes_priority() {
     let mut pending = Pending {
         visibility: Some(true),
-        open: Some(("x".into(), Some("v1".into()))),
+        open: Some(("x".into(), Some("v1".into()), None)),
         close: true,
         ..Default::default()
     };
