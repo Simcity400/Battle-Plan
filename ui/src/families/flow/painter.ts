@@ -1,4 +1,5 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
+import { barsLabelMuted, barsLabelText } from '../bars/model.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { colour } from '../../charts/palette.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
@@ -271,9 +272,9 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
   const flagW = node.others !== undefined || node.unknown !== undefined ? 0 : FLAG_SLOT_WIDTH;
   const room = Math.max(10, layout.labelWidth - figureW - (flagW ? flagW + FLAG_GAP : 0) - 12);
   ctx.font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
-  const name = ellipsise(node.label, room, s => textWidth(ctx, s));
+  const name = ellipsise(barsLabelText(node.label, 'Name', node.placeholder ?? node.tag), room, s => textWidth(ctx, s));
   const nameW = textWidth(ctx, name);
-  const muted = node.labelMissing || node.labelLoading || node.others !== undefined;
+  const muted = barsLabelMuted(node.label) || node.others !== undefined;
   const nameColour = muted ? theme.muted : theme.text;
   if (node.side === 'left') {
     let cursor = box.x - 6;
@@ -305,9 +306,9 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.font = `${VALUE_WEIGHT} ${fontSize}px ${theme.font}`;
-    ctx.fillStyle = theme.text;
+    ctx.fillStyle = nameColour;
     const centreRoom = Math.max(40, layout.rightBarX - layout.leftBarX - 20);
-    ctx.fillText(ellipsise(node.label, centreRoom, s => textWidth(ctx, s)), box.x + FLOW_CENTRE_WIDTH / 2, box.y - 3);
+    ctx.fillText(ellipsise(barsLabelText(node.label, 'Name', node.placeholder ?? node.tag), centreRoom, s => textWidth(ctx, s)), box.x + FLOW_CENTRE_WIDTH / 2, box.y - 3);
   }
 }
 
@@ -328,7 +329,7 @@ export function drawFlow(ctx: Canvas2D, input: DrawFlowInput): void {
           length: partCount,
           at: i => {
             const part = model.parts[i]!;
-            return { label: part.label, color: colour(theme.surface, part.ordinal), swatch: 'square' as const };
+            return { label: barsLabelText(part.label, 'Name', part.key), color: colour(theme.surface, part.ordinal), swatch: 'square' as const };
           },
           ...(trailing ? { trailing } : {}),
         },

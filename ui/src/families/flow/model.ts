@@ -1,4 +1,6 @@
-import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
+import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
+import { barsLabelAudit } from '../bars/model.ts';
+import type { Value } from '../value.ts';
 import type { ArtResult, BoundedReadView, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
@@ -9,17 +11,15 @@ export type FlowSide = 'left' | 'centre' | 'right';
 
 export interface FlowPartKey {
   readonly key: string;
-  readonly label: string;
+  readonly label: Value<string>;
   readonly ordinal: number;
-  readonly missing?: string;
 }
 
 export interface FlowNode {
   readonly key: string;
   readonly side: FlowSide;
-  readonly label: string;
-  readonly labelMissing?: boolean;
-  readonly labelLoading?: boolean;
+  readonly label: Value<string>;
+  readonly placeholder?: string;
   readonly tag?: string;
   readonly flag?: ArtResult;
   readonly numeric: number | null;
@@ -115,7 +115,8 @@ export function deriveFlowAudit(model: FlowModel): readonly FamilyAuditRow[] {
   const rows: FamilyAuditRow[] = [];
   if (model.refused !== undefined) rows.push(auditRow('__refused__', model.refused));
   if (model.empty) rows.push(auditRow('__empty__', `${model.emptyKind ?? 'empty'}: ${model.empty}${model.emptyDetail ? `: ${model.emptyDetail}` : ''}`));
-  for (const node of flowNodes(model)) rows.push(auditRow(`node:${node.key}`, node.audit));
+  for (const node of flowNodes(model)) rows.push(auditRow(`node:${node.key}`, node.audit), auditCell(`node:${node.key}`, 'label', barsLabelAudit(node.label)));
+  for (const part of model.parts) rows.push(auditCell(`part:${part.key}`, 'label', barsLabelAudit(part.label)));
   for (const ribbon of model.ribbons) rows.push(auditRow(`ribbon:${ribbon.key}`, ribbon.audit));
   return rows;
 }

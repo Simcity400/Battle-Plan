@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useRef } from 'react';
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react';
 import { Icon } from '../../components/Icons';
 import { Popover, usePopover } from '../../components/Popover';
@@ -21,7 +21,7 @@ export interface DetailWindowHostProps {
   readonly open: boolean;
   readonly subject: string | null;
   readonly hour: number | null;
-  readonly title: string;
+  readonly title: ReactNode;
   readonly day?: ReactNode;
   readonly placement?: 'center' | 'beside';
   readonly anchor?: RefObject<HTMLElement | null>;
@@ -69,6 +69,7 @@ export function DetailWindowHost({
   children,
 }: DetailWindowHostProps) {
   const visible = open && subject !== null;
+  const titleId = useId();
   const panel = usePopover('start');
   const panelRef = useRef(panel);
   panelRef.current = panel;
@@ -274,7 +275,7 @@ export function DetailWindowHost({
       manual
       tabIndex={-1}
       className={`detail-window ${className}`.trim()}
-      aria-label={title}
+      aria-labelledby={titleId}
       data-subject={subject ?? undefined}
       data-hour={hour ?? undefined}
       onToggle={event => {
@@ -284,7 +285,7 @@ export function DetailWindowHost({
       {visible && (
         <DetailWindowCloseContext.Provider value={requestClose}>
           <div className={`detail-window-header${draggable ? ' is-draggable' : ''}`} onPointerDown={onHeaderPointerDown}>
-            <strong>{title}</strong>
+            <strong id={titleId}>{title}</strong>
             {displayDay ? <span className="detail-window-day">{displayDay}</span> : null}
             <div className="detail-window-actions">
               {headerActions}

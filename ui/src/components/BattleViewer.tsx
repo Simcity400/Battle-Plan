@@ -25,7 +25,7 @@ const DAY = 24;
 
 export interface BattleViewerProps {
   readonly subject: string;
-  readonly title: string;
+  readonly title: ReactNode;
   readonly day: ReactNode;
   readonly closeLabel: string;
   readonly anchor: RefObject<HTMLElement | null>;

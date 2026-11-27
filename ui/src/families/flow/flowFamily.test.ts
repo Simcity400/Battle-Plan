@@ -3,14 +3,17 @@ import test from 'node:test';
 import { createBoundedReadView } from '../boundedView.ts';
 import type { CountryFlowReply, FlowEndpoint, FlowLink, FlowSide } from '../../generated/dashboard';
 import { projectCountryFlow, type CountryFlowText } from './countryFlow.ts';
-import { deriveFlowAudit, deriveFlowNav, findFlowTooltip } from './model.ts';
-import { hitFlow, layoutFlow } from './painter.ts';
-import { assertFreshPaint, assertQuietFrames, assertTooltipDated, LANE_THEME } from '../laneRuntime.fixture.ts';
+import { deriveFlowAudit, deriveFlowMirror, deriveFlowNav, findFlowTooltip } from './model.ts';
+import { drawFlow, hitFlow, layoutFlow } from './painter.ts';
+import { assertFreshPaint, assertQuietFrames, assertTooltipDated, installRecordingCanvas, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { flowLane } from './laneView.ts';
 import { projectTradeMatrix, projectTradeTable } from '../../widgets/trade-flows/tradeFlowsProjection.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { flowPerSide } from './countryFlowPlan.ts';
+import { barsLabelText } from '../bars/model.ts';
+import { knownValue } from '../value.ts';
+import { buildTooltipContent } from '../host/tooltips.ts';
 
 const HOUR = 60_810_000;
 const TEXT: CountryFlowText = {
@@ -66,6 +69,43 @@ const centred: CountryFlowReply = {
   largestLink: amount(74),
 };
 
+test('pending flow names paint, mirror, audit and hover as loading rather than unrecorded', () => {
+  const model = projectCountryFlow(view(centred), TEXT);
+  assert.deepEqual(model.left[0]!.label, { kind: 'pending', reason: 'Name is loading' });
+  assert.match(deriveFlowMirror(model).rows[0]!.name, /^Loading: Name is loading:/);
+  assert.equal(deriveFlowAudit(model).find(row => row.key === 'node:left:s2:label')?.value, '["pending","Name is loading"]');
+  assert.ok(findFlowTooltip(model, 'node:left:s2')?.items?.some(item => item.pendingReason === 'Name is loading'));
+  assert.ok(findFlowTooltip(model, 'node:centre:s1')?.items?.some(item => item.pendingReason === 'Name is loading'));
+  assert.ok(findFlowTooltip(model, 'ribbon:left:s2>centre:s1')?.items?.some(item => item.pendingReason === 'Name is loading'));
+  assert.deepEqual(findFlowTooltip(model, 'ribbon:left:s2>centre:s1')?.items?.filter(item => item.pendingReason).map(item => item.label), ['From name', 'To name']);
+  const recording = installRecordingCanvas();
+  try {
+    const canvas = new OffscreenCanvas(846, 360);
+    drawFlow(canvas.getContext('2d')!, { model, layout: layoutFlow(model, 846, 360), theme: LANE_THEME, inspected: null, focused: null });
+    const marks = [...recording.canvases[0]!.marks.values()];
+    assert.equal(marks.filter(mark => mark === `${LANE_THEME.muted}|Loading…`).length, 4);
+    assert.ok(!marks.some(mark => mark.endsWith('|Name not recorded')));
+    for (const name of [{ status: 'ready' as const, value: 'Loading…' }, { status: 'absent' as const, reason: 'Country name unavailable' }]) {
+      const pending = view(centred);
+      const resolved = projectCountryFlow(createBoundedReadView({ hour: HOUR, panels: new Map([['main', centred]]),
+        identity: { resolve: (kind, key, hour) => ({ ...pending.who(kind, key, hour), name }) } }), TEXT);
+      const label = resolved.left[0]!.label;
+      assert.deepEqual(label, name.status === 'ready' ? knownValue('Loading…') : { kind: 'notRecorded', reason: name.reason });
+      if (name.status === 'ready') assert.equal(findFlowTooltip(resolved, 'node:centre:s1'), null);
+      const traded = { ...centred, table: [{ partner: 1, cells: ['8', '0'], net: '8' }] };
+      const table = projectTradeTable(createBoundedReadView({ hour: HOUR, panels: new Map([['main', traded]]),
+        identity: { resolve: (kind, key, hour) => ({ ...pending.who(kind, key, hour), name }) } }));
+      assert.equal(table.rows[0]!.name, name.status === 'ready' ? 'Loading…' : 'HOL');
+      assert.equal(table.rows[0]!.tooltipTitle, name.status === 'ready' ? 'Loading… and Loading…' : 'HOL and USA');
+      assert.notEqual(deriveFlowAudit(resolved).find(row => row.key === 'node:left:s2:label')?.value, '["pending","Name is loading"]');
+      const next = new OffscreenCanvas(846, 360);
+      drawFlow(next.getContext('2d')!, { model: resolved, layout: layoutFlow(resolved, 846, 360), theme: LANE_THEME, inspected: null, focused: null });
+      const drawn = [...recording.canvases.at(-1)!.marks.values()];
+      assert.ok(drawn.includes(name.status === 'ready' ? `${LANE_THEME.text}|Loading…` : `${LANE_THEME.muted}|HOL`));
+    }
+  } finally { recording.restore(); }
+});
+
 test('a country-centred flow: partners in the product\'s order, an unrecorded partner hatched with its reason, the rest folded, never a zero', () => {
   const model = projectCountryFlow(view(centred), TEXT);
   assert.equal(model.mode, 'centred');
@@ -74,14 +114,14 @@ test('a country-centred flow: partners in the product\'s order, an unrecorded pa
     ['left:others', 14, '14'],
     ['left:s3', null, 'Not recorded'],
   ]);
-  assert.equal(model.left[1]!.label, '14 other partners');
+  assert.deepEqual(model.left[1]!.label, knownValue('14 other partners'));
   assert.equal(model.right[0]!.numeric, 74);
   assert.equal(model.notRecordedKey, true, 'a hatched partner adds the not-recorded key');
   const ribbon = model.ribbons.find(item => item.from === 'left:s2')!;
   assert.deepEqual(ribbon.bands, [{ part: 0, numeric: 20 }, { part: 1, numeric: 6 }]);
   assert.equal(findFlowTooltip(model, 'ribbon:left:s3>centre:s1')?.missingReason, 'A deal\'s daily delivery was not recorded at this hour');
   assert.ok(deriveFlowAudit(model).some(row => row.key === 'node:left:s3' && (row.value ?? '').includes(' · Not recorded · Steel: Not recorded (')));
-  assert.equal(model.left[0]!.audit, 'Loading name… [HOL] · 26 · Oil: 20; Steel: 6', 'the audit carries each part, so swapped bands differ');
+  assert.equal(model.left[0]!.audit, 'Loading: Name is loading [HOL] · 26 · Oil: 20; Steel: 6', 'the audit carries each part, so swapped bands differ');
   assert.ok(deriveFlowNav(model).some(tuple => tuple[0] === 'ribbon:left:s2>centre:s1'), 'a ribbon takes keyboard focus');
   assert.deepEqual(model.notes, ['A deal\'s daily delivery was not recorded at this hour'], 'the side whose total is unproven says why');
   assert.match(model.centre!.audit, /Imports from Not recorded: .*Exports to 74/);
@@ -127,13 +167,23 @@ test('licences from distinct unlinked givers stay distinct partners, a combined 
     largestLink: '1',
   };
   const model = projectCountryFlow(view(reply), TEXT);
-  assert.deepEqual(model.left.map(node => [node.key, node.label]), [
-    ['left:s8', 'Loading name…'], ['left:r77', 'Unknown country'], ['left:r78', 'Unknown country'], ['left:collective', 'Unknown countries, combined'], ['left:s9', 'Loading name…'],
+  assert.deepEqual(model.left.map(node => [node.key, barsLabelText(node.label, 'Name', node.placeholder ?? node.tag)]), [
+    ['left:s8', 'Loading…'], ['left:r77', 'Unknown country'], ['left:r78', 'Unknown country'], ['left:collective', 'Unknown countries, combined'], ['left:s9', 'Loading…'],
   ], '"Unknown country" is a label, not a key');
   assert.equal(model.left[1]!.unknown, reason);
   assert.equal(findFlowTooltip(model, 'node:left:r77')?.missingReason, reason);
+  assert.equal(buildTooltipContent(findFlowTooltip(model, 'node:left:r77')!).rows.filter(row => row.detail === reason).length, 1);
+  assert.equal(deriveFlowAudit(model).find(row => row.key === 'node:left:r77:label')?.value, JSON.stringify(['notRecorded', reason]));
   assert.equal(model.left[1]!.subject, undefined, 'an unknown partner is no country to open');
   assert.equal(model.left[4]!.unknown, unnamed, 'a recorded slot that cannot be named keeps its reason');
+  assert.match(model.left[1]!.spoken, /^Unknown country:/);
+  assert.match(model.left[3]!.spoken, /^Unknown countries, combined:/);
+  assert.match(model.left[3]!.audit, /^Unknown countries, combined ·/);
+  assert.equal(model.left[3]!.spoken.split(combined).length - 1, 1);
+  const pending = view(reply);
+  const absent = projectCountryFlow(createBoundedReadView({ hour: HOUR, panels: new Map([['main', reply]]),
+    identity: { resolve: (kind, key, hour) => ({ ...pending.who(kind, key, hour), name: { status: 'absent', reason: unnamed } }) } }), TEXT);
+  assert.equal(absent.left[4]!.spoken.split(unnamed).length - 1, 1);
   const ribbon = model.ribbons.find(item => item.from === 'left:collective')!;
   assert.ok(ribbon.tooltip?.items?.some(item => item.label === 'Unknown countries, combined' && item.missingReason === combined), 'the ribbon says why its partner is unknown');
   assert.ok(ribbon.audit.endsWith(`Unknown countries, combined: ${combined}`));
@@ -271,7 +321,7 @@ test('a recorded 0.04 a day is drawn as under one tenth and read exactly with it
   const model = projectCountryFlow(view(small), { ...TEXT, unit: 'per day' });
   const node = model.left[0]!;
   assert.equal(node.figure, '<0.1');
-  assert.equal(node.audit, 'Loading name… [HOL] · 0.04 per day · Oil: 0.04 per day');
+  assert.equal(node.audit, 'Loading: Name is loading [HOL] · 0.04 per day · Oil: 0.04 per day');
   assert.equal(findFlowTooltip(model, 'node:left:s2')?.items?.[0]?.value, '0.04 per day');
 });
 
@@ -393,7 +443,7 @@ test('an unnamed resource keeps its reason beside its amount in hover and audit'
     parts: [parts[0]!, { key: 'resource:7', name: null, nameMissing: why, ordinal: 7, icon: null }],
   };
   const model = projectCountryFlow(view(reply), TEXT);
-  assert.deepEqual(model.parts.map(part => [part.ordinal, part.missing ?? null]), [[0, null], [7, why]]);
+  assert.deepEqual(model.parts.map(part => [part.ordinal, part.label]), [[0, knownValue('Oil')], [7, { kind: 'notRecorded', reason: why }]]);
   const items = findFlowTooltip(model, 'node:left:s2')?.items ?? [];
   assert.ok(items.some(item => item.label === why), 'hover says why the resource has no name');
   assert.match(model.left[0]!.audit, /resource:7 \(Resource 7 has no recorded definition at this hour\): 6/);
@@ -426,8 +476,8 @@ test('hover gives the exact total where the drawn figure rounds, and counts carr
     largestLink: String(n),
   });
   const units = { ...TEXT, unit: ['division', 'divisions'] as const };
-  assert.equal(projectCountryFlow(view(count(3)), units).right[0]!.audit, 'Loading name… [HOL] · 3 divisions · Divisions: 3 divisions');
-  assert.equal(projectCountryFlow(view(count(1)), units).right[0]!.audit, 'Loading name… [HOL] · 1 division · Divisions: 1 division');
+  assert.equal(projectCountryFlow(view(count(3)), units).right[0]!.audit, 'Loading: Name is loading [HOL] · 3 divisions · Divisions: 3 divisions');
+  assert.equal(projectCountryFlow(view(count(1)), units).right[0]!.audit, 'Loading: Name is loading [HOL] · 1 division · Divisions: 1 division');
 });
 
 test('the audit tells apart a changed number of folded partners, a proven-empty frame and an unavailable one', () => {
@@ -501,7 +551,7 @@ test('flowLane.visibleArt reports visible country node flags and skips centre, o
   const nodes = Array.from({ length: 16 }, (_, i) => ({
     key: `left:s${i + 1}`,
     side: 'left' as const,
-    label: `Country ${i + 1}`,
+    label: knownValue(`Country ${i + 1}`),
     tag: `C${i + 1}`,
     numeric: 10,
     figure: '10',
@@ -512,14 +562,14 @@ test('flowLane.visibleArt reports visible country node flags and skips centre, o
   const model = {
     hour: HOUR,
     mode: 'centred' as const,
-    centre: { key: 'centre:s0', side: 'centre' as const, label: 'Centre', tag: 'USA', numeric: 160, figure: '160', spoken: 'USA', audit: 'USA', flag: readyArt('flag://USA') },
+    centre: { key: 'centre:s0', side: 'centre' as const, label: knownValue('Centre'), tag: 'USA', numeric: 160, figure: '160', spoken: 'USA', audit: 'USA', flag: readyArt('flag://USA') },
     left: [
       ...nodes,
-      { key: 'left:others', side: 'left' as const, label: '2 other partners', numeric: 5, figure: '5', spoken: 'others', audit: 'others', others: 2, flag: readyArt('flag://others') },
-      { key: 'left:unk', side: 'left' as const, label: 'Unknown', numeric: 5, figure: '5', spoken: 'unk', audit: 'unk', unknown: 'Unlinked', flag: readyArt('flag://unk') },
+      { key: 'left:others', side: 'left' as const, label: knownValue('2 other partners'), numeric: 5, figure: '5', spoken: 'others', audit: 'others', others: 2, flag: readyArt('flag://others') },
+      { key: 'left:unk', side: 'left' as const, label: knownValue('Unknown'), numeric: 5, figure: '5', spoken: 'unk', audit: 'unk', unknown: 'Unlinked', flag: readyArt('flag://unk') },
     ],
     right: [
-      { key: 'right:s99', side: 'right' as const, label: 'Right', tag: 'ENG', numeric: 10, figure: '10', spoken: 'ENG', audit: 'ENG', flag: readyArt('flag://ENG') },
+      { key: 'right:s99', side: 'right' as const, label: knownValue('Right'), tag: 'ENG', numeric: 10, figure: '10', spoken: 'ENG', audit: 'ENG', flag: readyArt('flag://ENG') },
     ],
     ribbons: [],
     parts: [],

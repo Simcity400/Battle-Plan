@@ -157,7 +157,7 @@ test('cards draw every colour from the theme', () => {
 
 test('a flow draws its parts from the palette for its surface and its chrome from the theme', () => {
   assertThemed('flow', (ctx, theme) => {
-    const node = (key: string, side: 'left' | 'centre' | 'right', numeric: number | null) => ({ key, side, label: key, numeric, figure: numeric === null ? 'Not recorded' : String(numeric), spoken: key, audit: key });
+    const node = (key: string, side: 'left' | 'centre' | 'right', numeric: number | null) => ({ key, side, label: knownValue(key), numeric, figure: numeric === null ? 'Not recorded' : String(numeric), spoken: key, audit: key });
     const model: FlowModel = {
       hour: 10, mode: 'centred',
       left: [node('left:a', 'left', 26), node('left:b', 'left', null)],
@@ -167,7 +167,7 @@ test('a flow draws its parts from the palette for its surface and its chrome fro
         { key: 'r1', from: 'left:a', to: 'centre:c', bands: [{ part: 0, numeric: 20 }, { part: 1, numeric: 6 }], numeric: 26, audit: 'r1' },
         { key: 'r2', from: 'centre:c', to: 'right:d', bands: [{ part: 0, numeric: 40 }], numeric: 40, audit: 'r2' },
       ],
-      parts: [{ key: 'oil', label: 'Oil', ordinal: 0 }, { key: 'steel', label: 'Steel', ordinal: 1 }],
+      parts: [{ key: 'oil', label: knownValue('Oil'), ordinal: 0 }, { key: 'steel', label: knownValue('Steel'), ordinal: 1 }],
       notRecordedKey: true,
     };
     drawFlow(ctx, { model, layout: layoutFlow(model, 846, 360), theme, inspected: 'r1', focused: null });
