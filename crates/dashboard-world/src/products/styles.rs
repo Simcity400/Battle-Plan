@@ -862,7 +862,7 @@ struct IndexedRunLooks {
 }
 
 impl IndexedRunLooks {
-    fn new(run: Arc<RunLooks>, localisation: Option<&Localisation>) -> Self {
+    fn new(run: Arc<RunLooks>, validity_localisation: Option<&Localisation>) -> Self {
         let mut by_tag: HashMap<Arc<str>, Vec<(i32, i32, u32)>> = HashMap::new();
         for &(number, look, first, last) in &run.spans {
             if let Some(tag) = run.tags.get(&number) {
@@ -872,7 +872,7 @@ impl IndexedRunLooks {
         for spans in by_tag.values_mut() {
             spans.sort_unstable_by_key(|&(first, last, _)| (first, last));
         }
-        let scripted_looks = match localisation {
+        let scripted_looks = match validity_localisation {
             Some(localisation) => run
                 .looks
                 .iter()
@@ -985,7 +985,7 @@ impl<'a> LookResolver<'a> {
         };
         let run = match self.runs.entry(stretch.run) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(IndexedRunLooks::new(cached_looks(self.source, stretch.run)?, self.localisation.as_deref())),
+            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(IndexedRunLooks::new(cached_looks(self.source, stretch.run)?, None)),
         };
         let source = self.source;
         let content = self.content.as_ref();
