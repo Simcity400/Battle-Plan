@@ -216,6 +216,7 @@ pub struct ScriptTailParams {
 pub enum ScriptEventKind {
     Country,
     News,
+    Unknown,
 }
 
 impl ScriptEventKind {
@@ -223,6 +224,7 @@ impl ScriptEventKind {
         match self {
             Self::Country => EventFeedKind::ScriptEventFired,
             Self::News => EventFeedKind::NewsEventFired,
+            Self::Unknown => EventFeedKind::EventOptionSelected,
         }
     }
 }
@@ -803,11 +805,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
     if list == List::Decisions && params.events.is_some() {
         return Err(invalid("Decisions are not filtered by event kind"));
     }
-    let kinds: Option<Vec<u16>> = params.events.as_ref().map(|events| {
-        let mut codes: Vec<u16> = events.iter().map(|event| kind_code(event.kind())).collect();
-        codes.push(kind_code(EventFeedKind::EventOptionSelected));
-        codes
-    });
+    let kinds: Option<Vec<u16>> = params.events.as_ref().map(|events| events.iter().map(|event| kind_code(event.kind())).collect());
     let states: Option<Vec<u8>> = match (&params.statuses, list) {
         (Some(statuses), _) => Some(statuses.iter().map(|status| status.code()).collect()),
         (None, List::Decisions) => Some(STATUSES_LISTED.iter().map(|status| status.code()).collect()),

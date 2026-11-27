@@ -294,7 +294,7 @@ function buildFeedTableRow(
 
   const viewable = VIEWABLE_KINDS.has(event.kind);
   const chosenOrdinal = parsedOptionOrdinal(event, page.choice);
-  const chosenHour = page.choice?.row.hour ?? (event.kind === 'eventOptionSelected' ? event.hour : null);
+  const chosenHour = page.choice?.row.hour ?? (event.kind === 'eventOptionSelected' ? event.readHour : null);
   let detailSubject: EventDetailSubject | undefined;
   if (viewable) {
     const recipient = event.kind === 'eventOptionSelected'
@@ -315,7 +315,7 @@ function buildFeedTableRow(
     detailSubject = {
       key,
       hour: event.hour,
-      firedHour: event.hour,
+      firedHour: event.kind === 'eventOptionSelected' ? null : event.hour,
       asOfHour: displayedHour,
       title: item?.name ?? null,
       countryTag: recipient,

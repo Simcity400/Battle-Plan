@@ -1929,7 +1929,7 @@ reason?: string,
  */
 flagChoice?: CountryFlagChoice, };
 export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
-export type ScriptEventKind = "country" | "news";
+export type ScriptEventKind = "country" | "news" | "unknown";
 export type ScriptTailParams = { branchId: string, hour?: number, from?: number, to?: number,
 /**
  * Rows naming one of these countries at the row's date; every row when neither this nor `group`.

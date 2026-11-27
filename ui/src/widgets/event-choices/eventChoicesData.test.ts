@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { engineHour } from '../../dashboard/calendar.ts';
+import { engineHour, formatDateTime } from '../../dashboard/calendar.ts';
+import { buildColumnLayouts } from '../../families/table/layout.ts';
+import { LOG_TABLE_BASE } from '../../families/table/logHelpers.ts';
+import { deriveTableAudit, deriveTableMirror, resolveTableRows } from '../../families/table/model.ts';
+import { tableSettingsOf } from '../../families/table/settings.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead, validateGenericTailReply } from '../../families/table/rowSource.ts';
 import { awaitingText, choiceAt, choiceCard, choiceDates, choiceText, choiceTitle, isOpen, noChoiceText, optionLetter, optionLines } from './eventChoicesData.ts';
-import { eventChoicesProjection } from './eventChoicesProjection.ts';
+import { eventChoicesDeclaration, eventChoicesProjection } from './eventChoicesProjection.ts';
 import type { EventDetailSubject } from './EventDetailWindow.tsx';
 import type { EventFeedItem, EventFeedKind, EventFeedRow, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
@@ -49,6 +53,55 @@ test('a choice whose firing was not recorded is its own card, and immediate effe
   assert.deepEqual([alone?.fired, alone?.country], [null, 'ITA']);
   assert.equal(choiceCard(occurrence([choose(day(5, 1), -1)], false)), null);
   assert.equal(choiceAt(choiceCard(occurrence([choose(day(5, 1), -1)], false)), day(6, 1), []), null);
+});
+
+test('an orphan choice keeps firing missing in its row, tooltip, detail, mirror and audit', () => {
+  const selected = day(5, 1), observed = selected + 30;
+  const selectedEdge = choose(selected, 0, 'ITA');
+  selectedEdge.row.readHour = observed;
+  const card = occurrence([selectedEdge], false);
+  const head = { branchId: '1', total: '1', offset: '0', live: '0', counts: [],
+    rows: [{ hour: observed, observed, key: card.id, ordinal: '0', live: false, status: 'chosen', occurrence: card }],
+    missing: [], unavailable: [], warnings: [] };
+  const source = buildRowSourceFromHead('test:orphan-choice', head, undefined, observed)!;
+  const model = eventChoicesProjection.project(createBoundedReadView({ hour: observed, rows: new Map([['main', source]]) }),
+    { events: ['country', 'news'], awaiting: false, artwork: false, breaks: [] });
+  const shown = model.rows[0]!;
+  assert.equal(shown.cells.date?.value.kind, 'notRecorded');
+  assert.match(shown.cells.date?.value.kind === 'notRecorded' ? shown.cells.date.value.reason : '', /firing was not recorded/i);
+  assert.equal(shown.cells.date?.subtext, `Chosen by ${formatDateTime(observed)}`);
+  assert.equal(shown.rowHour, observed);
+  const subject = shown.meta as EventDetailSubject;
+  assert.equal(subject.firedHour, null);
+  assert.equal(subject.chosenHour, observed);
+  const tooltip = (typeof shown.tooltipExtra === 'function' ? shown.tooltipExtra() : shown.tooltipExtra) ?? [];
+  const timing = tooltip.find(row => row.label === 'Timing')!.value;
+  assert.match(timing.kind === 'known' ? String(timing.value) : '', /firing was not recorded/i);
+  assert.ok(tooltip.some(row => row.label === 'Chosen by' && row.value.kind === 'known' && row.value.value === formatDateTime(observed)));
+  const settings = tableSettingsOf(undefined, model.columns, LOG_TABLE_BASE);
+  const flat = resolveTableRows(model, settings);
+  const spoken = deriveTableMirror(flat, model.columns, false).rows[0]!.cells.find(cell => cell.column === 'date')!.spoken;
+  assert.match(spoken, /firing was not recorded/i);
+  assert.ok(spoken.includes(`Chosen by ${formatDateTime(observed)}`));
+  const audit = deriveTableAudit({ model, flatRows: flat, visibleColumns: buildColumnLayouts(model.columns, settings) });
+  const date = audit.find(row => row.key === `${card.id}:date`)!.value!;
+  assert.match(date, /notRecorded/);
+  assert.ok(date.includes(`Chosen by ${formatDateTime(observed)}`));
+});
+
+test('event family not recorded is selectable on its own or excluded from the known families', () => {
+  const askFor = (options: Record<string, boolean>) => {
+    const plan = eventChoicesDeclaration.sources({
+      track: { id: 't1', source: { id: 's1', revision: 'r1' }, branch: { id: '1', firstHour: 0, lastHour: 200 }, axisOffset: 0 },
+      branch: { id: '1', firstHour: 0, lastHour: 200 },
+      widget: { id: 'w1', kind: 'event-choices', time: { mode: 'follow' }, countries: { kind: 'all' } },
+      countries: { all: true, tags: [] }, options, following: true,
+    } as never, {} as never);
+    return (plan.entries[0]!.read as { tailQuery: { ask: Record<string, unknown> } }).tailQuery.ask;
+  };
+  assert.deepEqual(askFor({ countryEvents: false, newsEvents: false }).events, ['unknown']);
+  assert.deepEqual(askFor({ unknownEvents: false }).events, ['country', 'news']);
+  assert.equal(askFor({}).events, undefined);
 });
 
 test('titles and options the content could not resolve fall back cleanly; a chosen option not listed is its own line', () => {

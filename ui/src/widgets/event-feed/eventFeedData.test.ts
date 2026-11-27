@@ -334,6 +334,17 @@ test('a firing whose options come only from its choice lists them from the choic
   assert.deepEqual(options(120, choice), ['Option A: Receive', 'Option B: Refuse'], 'after it, the choice the page shows supplies them');
 });
 
+test('an orphan choice opened from the feed has no firing time and labels its observation as chosen by', () => {
+  const selected = row('eventOptionSelected', 119, ['ITA'], { category: 'politics', readHour: 137, participants: ['ITA', null] });
+  const source = buildRowSourceFromHead('test:feed-orphan', { branchId: '1', offset: '0', total: '1', live: '0', counts: [],
+    rows: [{ line: 'event', key: selected.id, hour: 119, observed: 137, ordinal: '0', live: false, row: selected, choice: null }],
+    missing: [], unavailable: [], warnings: [] }, undefined, 137)!;
+  const model = eventFeedProjection.project(createBoundedReadView({ hour: 137, rows: new Map([['main', source]]) }), { categories: ['politics'], artwork: false });
+  const subject = model.rows[0]!.meta as EventDetailSubject;
+  assert.equal(subject.firedHour, null);
+  assert.equal(subject.chosenHour, 137);
+});
+
 test('witnessed participant roles keep unidentified countries without adding an absent decision target', () => {
   const ceased = validateFeedRow(row('ceasedToExist', 100, [], { exact: false, participants: [null, null] }));
   const guarantee = validateFeedRow(row('guaranteeGranted', 101, ['NOR'], { category: 'diplomacy', exact: false, participants: ['NOR', null] }));

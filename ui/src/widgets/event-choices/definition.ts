@@ -16,6 +16,7 @@ import type { ScriptEventKind } from '../../generated/dashboard';
 export const EVENT_KINDS: readonly { value: string; label: string; event: ScriptEventKind }[] = [
   { value: 'countryEvents', label: 'Country events', event: 'country' },
   { value: 'newsEvents', label: 'News events', event: 'news' },
+  { value: 'unknownEvents', label: 'Event family not recorded', event: 'unknown' },
 ];
 export const AWAITING = { value: 'awaiting', label: 'Awaiting choice only', hint: 'Only events still awaiting a choice at the moment shown.' } as const;
 
