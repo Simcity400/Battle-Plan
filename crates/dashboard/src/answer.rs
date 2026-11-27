@@ -110,7 +110,7 @@ fn kind(params: &Value) -> Option<&str> {
 }
 
 pub fn answers(product: &str, params: &Value) -> bool {
-    if follows(product) {
+    if product == crate::strip::PRODUCT || follows(product) {
         return true;
     }
     if SERIES_PRODUCTS.contains(&product) {
@@ -135,6 +135,9 @@ pub fn follows(product: &str) -> bool {
 pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Value> {
     let check_cancel = || dashboard_text::metadata::check_cancel(cancelled);
     check_cancel()?;
+    if product == crate::strip::PRODUCT {
+        return Ok(serde_json::to_value(crate::strip::answer(source, params, context, cancelled)?)?);
+    }
     if follows(product) {
         return dashboard_follow::registry::for_session(params).answer_heads(
             source.path(),

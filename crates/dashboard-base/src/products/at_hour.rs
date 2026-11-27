@@ -26,6 +26,9 @@ use ts_rs::TS;
 
 mod incremental;
 mod placed;
+pub use placed::with_strip_pool;
+#[cfg(any(test, feature = "test-support"))]
+pub use placed::interactive_pool_snapshot;
 mod validity;
 pub use validity::{ReadDates, ScriptedInputs, reads_through, row_change_hours};
 pub use incremental::{Edits, Held};

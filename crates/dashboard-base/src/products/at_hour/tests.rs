@@ -124,6 +124,22 @@ fn recording() -> (Source, Arc<dyn Pages>) {
     (source, pages)
 }
 
+#[test]
+fn strip_pools_are_dropped_and_restore_the_interactive_pool() {
+    let (source, _) = recording();
+    let interactive = placed::Pool::of(&source).unwrap();
+    let strip = with_strip_pool(&source, || {
+        let strip = placed::Pool::of(&source).unwrap();
+        assert!(!Arc::ptr_eq(&strip, &interactive));
+        let nested = with_strip_pool(&source, || Arc::downgrade(&placed::Pool::of(&source).unwrap()));
+        assert!(nested.upgrade().is_none());
+        assert!(Arc::ptr_eq(&strip, &placed::Pool::of(&source).unwrap()));
+        Arc::downgrade(&strip)
+    });
+    assert!(strip.upgrade().is_none());
+    assert!(Arc::ptr_eq(&interactive, &placed::Pool::of(&source).unwrap()));
+}
+
 fn load() -> LoadContext {
     LoadContext { content: None }
 }

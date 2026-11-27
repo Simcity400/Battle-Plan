@@ -622,8 +622,9 @@ impl Inner {
         source: &Arc<Source>,
         body: &ProductRequest,
     ) -> Result<String, dashboard_core::QueryError> {
+        let content_dependent = body.product == crate::strip::PRODUCT && crate::strip::content_dependent(&body.params);
         let context = LoadContext {
-            content: self.content_for(source, work(false, request)),
+            content: self.content_for(source, work(content_dependent, request)),
         };
         let data = source
             .in_scope(|| crate::answer::answer(source, &body.product, &body.params, &context, &request.cancelled))
@@ -876,6 +877,13 @@ impl LoadJob {
 #[cfg(test)]
 mod lane_tests {
     use super::*;
+
+    #[test]
+    fn strips_use_non_interactive_reply_workers() {
+        assert_eq!(product_lane(crate::strip::PRODUCT, &serde_json::Value::Null), Lane::Replies);
+        assert!(crate::strip::content_dependent(&serde_json::json!({"product":"nuclear-arsenal"})));
+        assert!(!crate::strip::content_dependent(&serde_json::json!({"product":"series-rank"})));
+    }
 
     #[test]
     fn pages_that_replay_hours_wait_apart_from_every_reply() {
