@@ -603,10 +603,12 @@ impl Pool {
             });
         }
         drop(registration);
+        if result.is_ok() {
+            batch.credit_remaining_refusals();
+        }
         let (child_panic, child_cancelled) = batch.take_unobserved_panic();
         match result {
             Ok(value) => {
-                batch.credit_remaining_refusals();
                 if let Some(panic) = child_panic {
                     resume_unwind(panic);
                 }
@@ -1506,31 +1508,29 @@ mod tests {
         );
 
         let scope_pool = Pool::with_budget(2);
-        let running_started = Barrier::new(2);
-        let item_0_joining = Barrier::new(2);
+        let nested_map_open = Barrier::new(2);
         let nested_stolen = Barrier::new(2);
         let caller_in_item_0 = AtomicBool::new(false);
         let reentered_outer = AtomicBool::new(false);
         let scope_caller = std::thread::current().id();
         scope_pool.scope(|scope| {
-            let started_ref = &running_started;
-            let joining_ref = &item_0_joining;
+            let open_ref = &nested_map_open;
             let stolen_ref = &nested_stolen;
             let pool_ref = &scope_pool;
             let running = scope.spawn(move || {
-                started_ref.wait();
-                joining_ref.wait();
                 pool_ref.map(&[10usize, 20], |&inner| {
+                    if inner == 10 {
+                        open_ref.wait();
+                    }
                     stolen_ref.wait();
                     inner + 1
                 })
             });
-            running_started.wait();
+            nested_map_open.wait();
             let running_slot = Mutex::new(Some(running));
             let out = scope_pool.map(&[0usize, 1, 2], |&index| {
                 if index == 0 {
                     caller_in_item_0.store(true, Ordering::Release);
-                    item_0_joining.wait();
                     let handle = running_slot.lock().unwrap().take().unwrap();
                     let inner = handle.join().unwrap();
                     caller_in_item_0.store(false, Ordering::Release);
@@ -1705,6 +1705,11 @@ mod tests {
                                         ]));
                                         42usize
                                     });
+                                    let _unjoined = scope.spawn(|| {
+                                        crate::content::credit_overlay_refusals(&BTreeSet::from([
+                                            "scope-unjoined-refusal".to_owned(),
+                                        ]));
+                                    });
                                     scope_barrier.wait();
                                     super::join(handle)
                                 });
@@ -1729,6 +1734,7 @@ mod tests {
             );
         }
         assert!(observed_refusals.contains("scope-refusal"));
+        assert!(observed_refusals.contains("scope-unjoined-refusal"));
 
         let panic_barrier = Barrier::new(2);
         let helper_panicked = catch_unwind(AssertUnwindSafe(|| {
