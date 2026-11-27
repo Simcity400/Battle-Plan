@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::Instant;
 use viewer_runtime::debug_fields;
-use viewer_gpu::textures::load_file;
+use viewer_gpu::textures::{load_file, locate_file};
 use viewer_runtime::profiling::BuilderSpans;
 mod animation_dispatch;
 mod draw_snapshot;
@@ -232,55 +232,61 @@ pub struct ModelLibrary {
 #[derive(Clone)]
 pub struct ModelTexture(Arc<TextureSource>);
 
-struct TextureSource {
-    path: Option<String>,
-    layers: std::sync::OnceLock<Arc<ResolvedLayers>>,
-    held: std::sync::Mutex<Option<dds::Texture>>,
+enum TextureSource {
+    Held(dds::Texture),
+    Deferred {
+        path: String,
+        layers: Arc<ResolvedLayers>,
+        visual: bool,
+    },
 }
 
 impl ModelTexture {
     pub fn held(texture: dds::Texture) -> Self {
-        Self::with(None, None, texture)
+        Self(Arc::new(TextureSource::Held(texture)))
     }
 
-    fn read(path: String, texture: dds::Texture) -> Self {
-        Self::with(Some(path), None, texture)
-    }
-
-    fn with(path: Option<String>, layers: Option<Arc<ResolvedLayers>>, texture: dds::Texture) -> Self {
-        let source = TextureSource {
+    fn deferred(path: String, layers: Arc<ResolvedLayers>, visual: bool) -> Self {
+        Self(Arc::new(TextureSource::Deferred {
             path,
-            layers: std::sync::OnceLock::new(),
-            held: std::sync::Mutex::new(Some(texture)),
-        };
-        if let Some(layers) = layers {
-            let _ = source.layers.set(layers);
-        }
-        Self(Arc::new(source))
+            layers,
+            visual,
+        }))
     }
 
     #[cfg(test)]
-    pub(crate) fn readable(path: String, layers: Arc<ResolvedLayers>, texture: dds::Texture) -> Self {
-        Self::with(Some(path), Some(layers), texture)
+    pub(crate) fn deferred_for_tests(path: String, layers: Arc<ResolvedLayers>) -> Self {
+        Self::deferred(path, layers, false)
     }
 
     pub fn source(&self) -> Option<dds::Texture> {
-        self.0.held.lock().unwrap_or_else(|error| error.into_inner()).clone()
-    }
-
-    fn read_again(&self) -> bool {
-        self.0.path.is_some() && self.0.layers.get().is_some()
-    }
-
-    fn adopt_layers(&self, layers: Option<Arc<ResolvedLayers>>) {
-        if let Some(layers) = layers {
-            let _ = self.0.layers.set(layers);
+        match self.0.as_ref() {
+            TextureSource::Held(texture) => Some(texture.clone()),
+            TextureSource::Deferred { .. } => None,
         }
     }
 
-    fn release_source(&self) {
-        if self.read_again() {
-            *self.0.held.lock().unwrap_or_else(|error| error.into_inner()) = None;
+    pub fn path(&self) -> Option<&str> {
+        match self.0.as_ref() {
+            TextureSource::Held(_) => None,
+            TextureSource::Deferred { path, .. } => Some(path.as_str()),
+        }
+    }
+
+    fn is_visual(&self) -> bool {
+        match self.0.as_ref() {
+            TextureSource::Held(_) => false,
+            TextureSource::Deferred { visual, .. } => *visual,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn decode(&self, decode: Decode) -> io::Result<dds::Texture> {
+        match self.0.as_ref() {
+            TextureSource::Held(texture) => Ok(texture.clone()),
+            TextureSource::Deferred { path, layers, .. } => {
+                load_file(path, &|path| layers.read_uncovered_path(path), decode)
+            }
         }
     }
 
@@ -292,42 +298,53 @@ impl ModelTexture {
         space: ColorSpace,
         decode: Decode,
     ) -> io::Result<Bound> {
-        let mut held = self.0.held.lock().unwrap_or_else(|error| error.into_inner());
-        let bound = match (held.as_ref(), &self.0.path, self.0.layers.get()) {
-            (Some(texture), ..) => upload(device, queue, label, texture, space)?,
-            (None, Some(path), Some(layers)) => {
+        match self.0.as_ref() {
+            TextureSource::Held(texture) => upload(device, queue, label, texture, space),
+            TextureSource::Deferred { path, layers, .. } => {
                 let texture = load_file(path, &|path| layers.read_uncovered_path(path), decode)
-                    .map_err(|error| invalid(format!("{path} could not be read again for this map: {error}")))?;
-                upload(device, queue, label, &texture, space)?
+                    .map_err(|error| {
+                        invalid(format!(
+                            "{path} could not be loaded for this map: {error}"
+                        ))
+                    })?;
+                upload(device, queue, label, &texture, space)
             }
-            (None, ..) => return Err(invalid(format!("{label} has no source left to upload"))),
-        };
-        if self.read_again() {
-            *held = None;
         }
-        Ok(bound)
     }
 }
 
 #[cfg(test)]
 impl PartialEq for ModelTexture {
     fn eq(&self, other: &Self) -> bool {
-        self.0.path == other.0.path && self.source() == other.source()
-    }
-}
-
-#[cfg(test)]
-impl PartialEq<dds::Texture> for ModelTexture {
-    fn eq(&self, other: &dds::Texture) -> bool {
-        self.source().as_ref() == Some(other)
+        match (self.0.as_ref(), other.0.as_ref()) {
+            (TextureSource::Held(a), TextureSource::Held(b)) => a == b,
+            (
+                TextureSource::Deferred {
+                    path: a,
+                    visual: av,
+                    ..
+                },
+                TextureSource::Deferred {
+                    path: b,
+                    visual: bv,
+                    ..
+                },
+            ) => a == b && av == bv,
+            _ => false,
+        }
     }
 }
 
 impl std::fmt::Debug for ModelTexture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModelTexture")
-            .field("path", &self.0.path)
-            .field("held", &self.source().map(|texture| (texture.width, texture.height, texture.format)))
+            .field("path", &self.path())
+            .field(
+                "held",
+                &self
+                    .source()
+                    .map(|texture| (texture.width, texture.height, texture.format)),
+            )
             .finish()
     }
 }
@@ -578,15 +595,18 @@ impl ModelLibrary {
         let shards = unique.len().clamp(1, BAKE_SHARDS);
         let chunk = unique.len().div_ceil(shards).max(1);
         let asset_namespace = identity::namespace_for(layers, session);
+        let shared_layers = Arc::new(layers.clone());
         let baked = std::thread::scope(|scope| {
             let mut handles = Vec::new();
             for shard_names in unique.chunks(chunk).collect::<Vec<_>>() {
                 let mut worker = spans.fork();
                 let asset_namespace = Arc::clone(&asset_namespace);
+                let shared_layers = Arc::clone(&shared_layers);
                 handles.push(job_priority::spawn_in(scope, move || {
                     let baked = viewer_runtime::worker_priority::at_bake_priority(|| {
                         worker.measure(labels.worker, |_| {
                             let mut library = ModelLibrary {
+                                layers: Some(shared_layers),
                                 asset_namespace: Some(asset_namespace),
                                 decode,
                                 ..Default::default()
@@ -611,7 +631,7 @@ impl ModelLibrary {
             })
         });
         let mut library = ModelLibrary {
-            layers: Some(Arc::new(layers.clone())),
+            layers: Some(shared_layers),
             decode,
             ..Default::default()
         };
@@ -841,7 +861,6 @@ impl ModelLibrary {
                 Some(&global) => global,
                 None => {
                     let global = self.textures.len();
-                    texture.adopt_layers(self.layers.clone().or_else(|| shard.layers.clone()));
                     self.textures.push(texture);
                     self.spaces.push(shard.spaces[slot]);
                     self.paths.insert(key.clone(), global);
@@ -1490,17 +1509,20 @@ impl ModelLibrary {
             return Ok(self.blank(space));
         }
         let path = layers.texture_index()?.resolve(directory, file)?;
-        self.composing_visual |= layers.supplied_by_visual_mod(&path);
         let key = (path, space);
         if let Some(slot) = self.paths.get(&key) {
+            self.composing_visual |= self.textures[*slot].is_visual();
             return Ok(*slot);
         }
-        let texture = load_file(
-            &key.0,
-            &|path| layers.read_uncovered_path(path),
-            self.decode,
-        )?;
-        self.textures.push(ModelTexture::read(key.0.clone(), texture));
+        let (_, layer) = locate_file(&key.0, &|path| layers.locate_uncovered_path(path))?;
+        let visual = layers.is_overlay_layer(layer);
+        self.composing_visual |= visual;
+        let stack = Arc::clone(
+            self.layers
+                .get_or_insert_with(|| Arc::new(layers.clone())),
+        );
+        self.textures
+            .push(ModelTexture::deferred(key.0.clone(), stack, visual));
         self.spaces.push(space);
         let slot = self.textures.len() - 1;
         self.paths.insert(key, slot);
@@ -1545,10 +1567,7 @@ fn drawn_sources(library: &ModelLibrary) -> Vec<(ModelTexture, ColorSpace)> {
         .textures
         .iter()
         .zip(&library.spaces)
-        .map(|(texture, space)| {
-            texture.release_source();
-            (texture.clone(), *space)
-        })
+        .map(|(texture, space)| (texture.clone(), *space))
         .collect()
 }
 

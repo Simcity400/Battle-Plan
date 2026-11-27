@@ -1266,6 +1266,55 @@ fn an_entity_a_visual_mod_breaks_is_baked_from_the_recording() {
 }
 
 #[test]
+fn a_visual_mod_texture_stays_deferred_and_keeps_its_recorded_counterpart() {
+    let tga = |b: u8, g: u8, r: u8| {
+        let mut bytes = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 32, 0x28];
+        bytes.extend([b, g, r, 255].repeat(4));
+        bytes
+    };
+    let meshes_gfx = br#"objectTypes = {
+        pdxmesh = {
+            name = body
+            file = "gfx/models/plane.mesh"
+            scale = 1
+            meshsettings = { texture_diffuse = "plane.tga" }
+        }
+    }"#;
+    let base_tga = tga(10, 20, 30);
+    let art_tga = tga(40, 50, 60);
+    let (root, layers) = visual_stack(
+        "visual_texture",
+        &[
+            ("base/gfx/models/meshes.gfx", meshes_gfx),
+            ("base/gfx/entities/plane.asset", PLANE_ASSET),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            ("base/gfx/models/plane.tga", &base_tga),
+            ("art/gfx/models/plane.tga", &art_tga),
+        ],
+    );
+    let presentation = layers.presentation().clone();
+    let library = baked(&presentation, "plane");
+    let slot = library.slot("plane").unwrap();
+    assert!(library.meshes[slot].visual);
+    let counterpart = library.alternatives[&slot];
+    let diffuse = |mesh_slot: usize| {
+        let material = library.meshes[mesh_slot].native[0].lods[0][0].material_index;
+        &library.textures[library.materials[material].diffuse]
+    };
+    let visual_tex = diffuse(slot);
+    let recorded_tex = diffuse(counterpart);
+    assert!(visual_tex.source().is_none());
+    assert!(recorded_tex.source().is_none());
+    assert_eq!(visual_tex.path(), Some("gfx/models/plane.tga"));
+    assert_eq!(recorded_tex.path(), Some("gfx/models/plane.tga"));
+    let visual_decoded = visual_tex.decode(Decode::default()).unwrap();
+    let recorded_decoded = recorded_tex.decode(Decode::default()).unwrap();
+    assert_eq!(&visual_decoded.base().data[..4], &[60, 50, 40, 255]);
+    assert_eq!(&recorded_decoded.base().data[..4], &[30, 20, 10, 255]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn an_animation_a_mod_breaks_is_read_from_the_recording() {
     let clip: &[u8] = b"@@b@[info\0[samples\0";
     let broken: &[u8] = b"not an animation";

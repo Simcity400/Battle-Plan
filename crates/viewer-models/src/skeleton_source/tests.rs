@@ -617,7 +617,24 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
     ] {
         std::fs::write(root.join("gfx/models").join(name), bytes).unwrap();
     }
-    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let recorded_reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&recorded_reads);
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])])
+        .unwrap()
+        .with_read_trace(Arc::new(move |read| {
+            sink.lock().unwrap().push(read);
+        }));
+    let report = layers.report_uncovered_reads();
+    let take_texture_reads = || {
+        recorded_reads
+            .lock()
+            .unwrap()
+            .drain(..)
+            .filter(|read: &content_reader_layers::content::ContentRead| {
+                read.path.ends_with(b".dds") || read.path.ends_with(b".tga")
+            })
+            .collect::<Vec<_>>()
+    };
     let descriptors = mesh::parse_descriptors(
         br#"
         objectTypes = {
@@ -670,7 +687,9 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
     let assert_crack = |library: &ModelLibrary, slot: usize| {
         assert_eq!(library.failed, expected_failed);
         assert_eq!(library.paths[&("gfx/models/crack.dds".into(), Srgb)], slot);
-        assert_eq!(library.textures[slot], texture(2, 5));
+        assert_eq!(library.textures[slot].path(), Some("gfx/models/crack.dds"));
+        assert!(library.textures[slot].source().is_none());
+        assert_eq!(library.textures[slot].decode(decode).unwrap(), texture(2, 5));
         assert_eq!(
             library
                 .animations
@@ -691,7 +710,37 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
     };
     let mut library = ModelLibrary::empty(decode);
     library.add(&layers, &descriptors, "plane").unwrap();
-    assert_eq!(library.textures, [texture(2, 9), texture(1, 0)]);
+    let plane_reads = take_texture_reads();
+    assert!(
+        plane_reads.iter().any(|read| {
+            read.path == b"gfx/models/plane.dds"
+                && read.layer == Some(0)
+                && matches!(read.outcome, content_reader_layers::content::ReadOutcome::Probe(true))
+        }),
+        "{plane_reads:?}"
+    );
+    assert!(
+        plane_reads.iter().all(|read| {
+            !matches!(read.outcome, content_reader_layers::content::ReadOutcome::Bytes { .. })
+        }),
+        "{plane_reads:?}"
+    );
+    assert!(report.warning().unwrap().contains("gfx/models/plane.dds"));
+    assert_eq!(library.textures.len(), 2);
+    assert_eq!(library.textures[0].path(), Some("gfx/models/plane.dds"));
+    assert!(library.textures[0].source().is_none());
+    assert_eq!(library.textures[0].decode(decode).unwrap(), texture(2, 9));
+    let plane_decode_reads = take_texture_reads();
+    assert!(
+        plane_decode_reads.iter().any(|read| {
+            read.path == b"gfx/models/plane.dds"
+                && read.layer == Some(0)
+                && matches!(read.outcome, content_reader_layers::content::ReadOutcome::Bytes { .. })
+        }),
+        "{plane_decode_reads:?}"
+    );
+    assert_eq!(library.textures[1].path(), None);
+    assert_eq!(library.textures[1].source(), Some(texture(1, 0)));
     assert_eq!(
         library.paths,
         BTreeMap::from([
@@ -703,6 +752,7 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
     assert!(library.failed.is_empty());
     let expected_asset = AssetKey::selected("plane", identity::namespace(&layers), decode);
     for names in [&["cracked"][..], &[], &["cracked"], &[]] {
+        take_texture_reads();
         let mut warnings = Vec::new();
         let shard = ModelLibrary::load(
             &layers,
@@ -715,6 +765,42 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
             &mut warnings,
         )
         .unwrap();
+        let load_reads = take_texture_reads();
+        assert!(
+            load_reads.iter().all(|read| {
+                !matches!(read.outcome, content_reader_layers::content::ReadOutcome::Bytes { .. })
+            }),
+            "{load_reads:?}"
+        );
+        if !names.is_empty() {
+            assert!(
+                load_reads.iter().any(|read| {
+                    read.path == b"gfx/models/crack.dds"
+                        && read.layer == Some(0)
+                        && matches!(read.outcome, content_reader_layers::content::ReadOutcome::Probe(true))
+                }),
+                "{load_reads:?}"
+            );
+            assert!(
+                load_reads.iter().any(|read| {
+                    read.path == b"gfx/models/absent_n.dds"
+                        && read.layer.is_none()
+                        && matches!(read.outcome, content_reader_layers::content::ReadOutcome::Probe(false))
+                }),
+                "{load_reads:?}"
+            );
+            assert!(
+                load_reads.iter().any(|read| {
+                    read.path == b"gfx/models/absent_n.tga"
+                        && read.layer.is_none()
+                        && matches!(read.outcome, content_reader_layers::content::ReadOutcome::Probe(false))
+                }),
+                "{load_reads:?}"
+            );
+            let warning = report.warning().unwrap();
+            assert!(warning.contains("gfx/models/crack.dds"), "{warning}");
+            assert!(warning.contains("gfx/models/absent_n.dds"), "{warning}");
+        }
         assert!(shard.index.is_empty());
         assert!(shard.meshes.is_empty());
         assert!(shard.rigs.is_empty());
@@ -743,7 +829,7 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
                 shard.paths,
                 BTreeMap::from([(("gfx/models/crack.dds".into(), Srgb), 0)])
             );
-            assert_eq!(shard.textures, [texture(2, 5)]);
+            assert_eq!(shard.textures.len(), 1);
             assert_eq!(shard.spaces, [Srgb]);
         }
         library.merge(shard);
@@ -757,9 +843,16 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
             ])
         );
         assert_eq!(
-            library.textures,
+            library
+                .textures
+                .iter()
+                .map(|item| item.decode(decode).unwrap())
+                .collect::<Vec<_>>(),
             [texture(2, 9), texture(1, 0), texture(2, 5)]
         );
+        assert!(library.textures[0].source().is_none());
+        assert_eq!(library.textures[1].source(), Some(texture(1, 0)));
+        assert!(library.textures[2].source().is_none());
         assert_eq!(library.spaces, [Srgb, Linear, Srgb]);
         assert_eq!(
             library.materials,

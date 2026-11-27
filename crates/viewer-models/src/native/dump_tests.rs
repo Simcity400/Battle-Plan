@@ -1742,15 +1742,23 @@ fn a_model_texture_is_uploaded_once_per_device_and_read_again_once_its_upload_is
     let layers = Arc::new(ResolvedLayers::from_folders(&[(root, &[])]).unwrap());
     let path = "gfx/models/painted.tga".to_owned();
     let decode = Decode::default();
-    let source = viewer_gpu::textures::load_file(&path, &|path| layers.read_uncovered_path(path), decode).unwrap();
     let mut library = ModelLibrary::empty(decode);
-    library.textures.push(crate::ModelTexture::readable(path, Arc::clone(&layers), source));
+    library
+        .textures
+        .push(crate::ModelTexture::deferred_for_tests(path, Arc::clone(&layers)));
     library.spaces.push(ColorSpace::Srgb);
+    assert!(
+        library.textures[0].source().is_none(),
+        "a file-backed texture is not decoded on the CPU before upload"
+    );
     let (_serial, device, queue) = tests::device();
     let shared = library.device_textures(&device);
     assert!(Arc::ptr_eq(&shared, &library.device_textures(&device)));
     let first = library.gpu_texture(&shared, &device, &queue, "painted", 0).unwrap();
-    assert!(library.textures[0].source().is_none(), "the source bytes go once the device holds the texture");
+    assert!(
+        library.textures[0].source().is_none(),
+        "the source bytes stay off the CPU after the device holds the texture"
+    );
     let again = library.gpu_texture(&library.device_textures(&device), &device, &queue, "painted", 0).unwrap();
     assert!(Arc::ptr_eq(&first, &again), "a second pass on the device draws the same texture");
     drop((shared, first, again));
@@ -1761,7 +1769,7 @@ fn a_model_texture_is_uploaded_once_per_device_and_read_again_once_its_upload_is
 }
 
 #[test]
-fn a_pass_drops_only_the_library_sources_it_can_read_again() {
+fn file_backed_model_textures_stay_deferred_while_in_memory_textures_stay_held() {
     let directory = TestDir::new();
     let root = &directory.0;
     std::fs::create_dir_all(root.join("gfx/models")).unwrap();
@@ -1771,13 +1779,23 @@ fn a_pass_drops_only_the_library_sources_it_can_read_again() {
     let layers = Arc::new(ResolvedLayers::from_folders(&[(root, &[])]).unwrap());
     let path = "gfx/models/painted.tga".to_owned();
     let decode = Decode::default();
-    let source = viewer_gpu::textures::load_file(&path, &|path| layers.read_uncovered_path(path), decode).unwrap();
     let mut library = ModelLibrary::empty(decode);
-    library.textures.push(crate::ModelTexture::readable(path, layers, source));
+    library
+        .textures
+        .push(crate::ModelTexture::deferred_for_tests(path, layers));
     library.spaces.push(ColorSpace::Srgb);
     let blank = library.blank(ColorSpace::Srgb);
+    assert!(
+        library.textures[0].source().is_none(),
+        "a texture backed by the installation stays deferred until upload"
+    );
+    assert!(
+        library.textures[blank].source().is_some(),
+        "a texture made in memory has no file to read on upload"
+    );
     let pass = ModelPass::new(&library, "warmed");
-    assert!(library.textures[0].source().is_none(), "a texture read from the installation is read again when first drawn");
-    assert!(library.textures[blank].source().is_some(), "a texture made in memory has no file to read again");
-    assert!(pass.sources[0].0.source().is_none(), "the pass shares the library's texture, not a copy of its bytes");
+    assert!(pass.sources[0].0.source().is_none());
+    assert!(pass.sources[blank].0.source().is_some());
+    assert_eq!(library.textures[0].decode(decode).unwrap().width, 2);
+    assert!(library.textures[0].source().is_none());
 }
