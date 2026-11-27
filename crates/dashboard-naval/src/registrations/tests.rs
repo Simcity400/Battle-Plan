@@ -44,6 +44,10 @@ fn frame(branch: u64, hour: i32) -> DecodedFrame {
 }
 
 fn recording(name: &str, branches: &[u64]) -> (Machine, Arc<Source>, LoadContext) {
+    recording_with(name, branches, frame)
+}
+
+fn recording_with(name: &str, branches: &[u64], read: impl Fn(u64, i32) -> DecodedFrame) -> (Machine, Arc<Source>, LoadContext) {
     let machine = Machine::new(name);
     machine.write("hoi4.exe", b"test");
     machine.write("user/settings.txt", b"language=l_english force_pow2_textures=no");
@@ -51,7 +55,7 @@ fn recording(name: &str, branches: &[u64]) -> (Machine, Arc<Source>, LoadContext
     let (options, identity) = content_identity(&machine.root);
     let mut input = Vec::new();
     for &branch in branches {
-        let mut part = records(branch, (100..=122).map(|hour| frame(branch, hour)).collect());
+        let mut part = records(branch, (100..=122).map(|hour| read(branch, hour)).collect());
         let Record::SessionStart(session) = &mut part[0] else { unreachable!() };
         session.identity = identity.clone();
         input.extend(part);
@@ -111,6 +115,32 @@ fn minefields_follow_the_shown_countries_and_reseed_on_seek_and_branch_change() 
 #[test]
 fn repairs_follow_the_selected_ports_and_reseed_on_seek_and_branch_change() {
     follows::<crate::products::naval_yards::NavalRepairs>(NAVAL_YARDS_NAVALREPAIRS, json!({"country":"GER"}));
+}
+
+#[test]
+fn repairs_follow_the_state_name_of_a_port_witnessed_in_a_truncated_province_table() {
+    let (_machine, source, load) = recording_with("repair-port-state-fallback", &[1], |branch, hour| {
+        let mut held = frame(branch, hour);
+        *held.tables[TableId::Provinces.index()] = TableView::Truncated {
+            rows: TableRows::Provinces(vec![ProvinceRow { id: 9, state: 65, ..Default::default() }]),
+            missing: 1,
+        };
+        held.metrics.table_ns[TableId::Provinces.index()] = 1;
+        *held.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
+            id: 65, owner: 9001, custom_name: if hour == 100 { b"Recorded harbour".to_vec() } else { b"Renamed harbour".to_vec() }, ..Default::default()
+        }]));
+        held
+    });
+    let registration = NAVAL_YARDS_NAVALREPAIRS;
+    let panel = (registration.panel.unwrap().open)(&source, &load, &json!({"panel":"naval-repairs","branchId":"1","country":"GER"})).unwrap();
+    let followed = played(source.replay_ref(), panel.exact().unwrap(), 100, 101);
+    for (hour, expected) in [(100, "Recorded harbour"), (101, "Renamed harbour")] {
+        let params = json!({"branchId":"1","country":"GER","hour":hour});
+        let exact = registration.answer(&source, params, &load, &false.into()).unwrap();
+        assert_eq!(exact["ports"][0]["name"], expected);
+        let reply = followed.iter().find(|read| read.hour == hour).unwrap().value.as_ref().as_ref().unwrap();
+        assert_eq!(reply["ports"][0]["name"], expected);
+    }
 }
 
 #[test]

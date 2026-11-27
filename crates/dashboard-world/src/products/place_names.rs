@@ -2,7 +2,7 @@ use content_reader_country_names::country_names;
 use content_reader_localisation::localisation::Argument;
 use content_reader_map::province_geometry::ProvinceGeometry;
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{self, Read}}};
-use dashboard_query::coverage::{Witness, reading_witness};
+use dashboard_query::coverage::{Witness, reading_witness, witnessed_selection};
 use dashboard_text::{metadata::{check_cancel, not_recorded}, naval_battle_name::{Picker, battle_name_candidates}, scope, scripted_text};
 use replay_columnar::manifest::Status;
 use replay_data::{codec::Decoder, rows::{StateRow, TableId, tables}, scope::CaptureMode, value::Value as _};
@@ -45,9 +45,7 @@ pub fn reads(provinces: &[u32], states: &[u32], step: usize, held: &DecodedFrame
         }
         1 => {
             let mut wanted: BTreeSet<u32> = states.iter().copied().collect();
-            if let Ok(rows) = held.complete::<tables::Provinces>() {
-                wanted.extend(rows.iter().map(|row| row.state).filter(|&state| state != 0));
-            }
+            wanted.extend(witnessed_selection::<tables::Provinces>(held).rows.iter().map(|row| row.state).filter(|&state| state != 0));
             if wanted.is_empty() { return Vec::new(); }
             vec![Read::these(TableId::States, wanted.into_iter().map(u128::from))]
         }
