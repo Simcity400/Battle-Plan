@@ -27,6 +27,7 @@ use dashboard_query::{
 use replay::campaign::Replay;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
@@ -603,6 +604,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
     if !opened {
         listed(&mut presented, false, true);
     }
+    let mut art_warnings = BTreeMap::new();
     let rows = planned
         .into_iter()
         .zip(shapes)
@@ -610,7 +612,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             PlannedLine::Event { at, ordinal, parent } => {
                 let occurrence = feed.index.get(at);
                 let (key, mut row, mut choice) = match (&occurrence.payload, shape) {
-                    (Item::Family(row), _) => (row.id.clone(), Some(row.as_ref().clone()), None),
+                    (Item::Family(family), _) => (family.row.id.clone(), Some(family.shown(&mut art_warnings)), None),
                     (Item::Log { .. }, Some((head_at, choice))) => {
                         let row = presented[head_at].take();
                         let choice = choice.and_then(|at| presented[at].take().map(|row| edge(events[at], row, prepared.scanned.partial_read(events[at].read_hour))));
@@ -654,7 +656,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             PlannedLine::Fold { key, first_at, observed, ordinal, count, kind, country } => {
                 let occurrence = feed.index.get(first_at);
                 let mut first_row = match (&occurrence.payload, shape) {
-                    (Item::Family(row), _) => Some(row.as_ref().clone()),
+                    (Item::Family(family), _) => Some(family.shown(&mut art_warnings)),
                     (Item::Log { .. }, Some((head_at, _))) => presented[head_at].clone(),
                     _ => unreachable!(),
                 };
@@ -721,7 +723,9 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         next_change: [next_change(prepared, base_next, true, hour), feed_next_change(feed, &params.categories, (from, params.to.unwrap_or(query.timeline.last).min(query.timeline.last)), hour), feed.unsettled().then(|| hour.saturating_add(1))].into_iter().flatten().min(),
         missing: gaps,
         unavailable: notices.into_list(),
-        warnings: feed.warnings.iter().filter(|(at, _)| *at <= hour).map(|(_, text)| text.clone()).collect(),
+        warnings: feed.warnings.iter().filter(|(at, _)| *at <= hour).map(|(_, text)| text.clone())
+            .chain(art_warnings.into_iter().map(|(reason, rows)| format!("{reason} (count: {})", rows.len())))
+            .collect(),
     };
     dashboard_base::products::check_reply_budget(&reply)?;
     Ok(reply)

@@ -479,14 +479,15 @@ fn incomplete_reads_raise_the_notices_a_walk_of_the_reads_asked_raises() {
 #[test]
 fn two_projects_completing_in_one_hour_are_two_rows() {
     use dashboard_research::products::special_projects::{CompletionOwner, ProjectCompletion};
-    let completion = |project, ordinal, attribution| ProjectCompletion { attribution, date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None, icon_missing: None };
+    let completion = |project, ordinal, attribution| ProjectCompletion { attribution, date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None };
     let resolved = || CompletionOwner::Resolved { slot: 7, tag: "X01".into() };
     let ids: std::collections::BTreeSet<String> = [completion(1, 4, resolved()), completion(2, 4, resolved()), completion(1, 7, resolved())]
         .into_iter()
-        .map(|item| families::completion_row(item).0.id)
+        .map(|item| families::completion_row(item).0.row.id)
         .collect();
     assert_eq!(ids.len(), 3, "each project's completion marker is its own row: {ids:?}");
     let (row, slot) = families::completion_row(completion(1, 4, resolved()));
+    let row = row.row;
     assert_eq!(
         (row.hour, row.read_hour, row.name_hour, row.tags.as_slice(), row.participants, row.owner_missing, slot),
         (100, 101, 100, ["X01".to_owned()].as_slice(), Some([Some("X01".to_owned()), None]), None, Some(7)),
@@ -501,6 +502,7 @@ fn two_projects_completing_in_one_hour_are_two_rows() {
     let (second_unknown, second_slot) = families::completion_row(
         completion(4, 0, CompletionOwner::NotRecorded { slot: None, reason: second_reason.clone() }),
     );
+    let (first_unknown, second_unknown) = (first_unknown.row, second_unknown.row);
     assert_eq!(
         (first_unknown.hour, first_unknown.read_hour, first_unknown.name_hour, first_unknown.tags.as_slice(), first_unknown.participants, first_unknown.owner_missing.as_deref(), first_slot),
         (100, 101, 100, [].as_slice(), Some([None, None]), Some(first_reason.as_str()), Some(7)),
@@ -2436,4 +2438,106 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
         }
         assert_eq!(*stepped.value, (exact.cold)(hour, &cancel), "stepped vs cold at step {idx} hour {hour}");
     }
+}
+
+#[test]
+fn project_completion_art_warns_when_the_event_or_fold_shows_it() {
+    use dashboard_base::{
+        products::LoadContext,
+        test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select},
+    };
+    use dashboard_research::products::special_projects::test_fixtures::completion_frame;
+    use replay_data::{
+        event_feed_rows::{EventFeedCounts, EventFeedCoverage, EventFeedHistoryRow},
+        rows::{LexicalTokenRow, TableRows},
+    };
+    use replay_frame::frame::TableView;
+    use serde_json::{Value, json};
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let machine = Machine::new("feed_completion_art");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    machine.write("common/special_projects/projects/fixture.txt", b"fixture_project={icon=GFX_fixture_mod} fixture_other={icon=GFX_fixture_base}");
+    machine.write("localisation/fixture_l_english.yml", b"\xef\xbb\xbfl_english:\n fixture_project:0 \"Fixture project\"\n fixture_other:0 \"Other project\"\n");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_mod textureFile=gfx/fixture_mod.png} spriteType={name=GFX_fixture_base textureFile=gfx/fixture_base.png}}");
+    machine.write("gfx/fixture_mod.png", &png(RED));
+    machine.write("gfx/fixture_base.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_mod.png", &png(BLUE));
+    let opened = || {
+        let completed = [(1, 40, 96, 97), (2, 40, 98, 98), (3, 40, 99, 99), (4, 40, 100, 100), (5, 41, 101, 101)];
+        let frames = (96..=101).map(|hour| {
+            let present = completed.into_iter().filter(|&(_, _, _, read)| read <= hour).map(|(id, definition, date, _)| (id, definition, date));
+            let mut frame = completion_frame(hour, present);
+            frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+            *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+                generation: 1,
+                read_hour: hour,
+                coverage: EventFeedCoverage::Complete,
+                counts: Some(EventFeedCounts { acquired: 0, settled: 0, failed: 0, rejected: 0 }),
+                outstanding: 0,
+                failure: None,
+                script_refusals: 0,
+                events: Vec::new(),
+                script_tokens: Vec::new(),
+                script_scopes: Vec::new(),
+                windows: Default::default(),
+            }]));
+            *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+                LexicalTokenRow { token: 40, literal: b"fixture_project".to_vec() },
+                LexicalTokenRow { token: 41, literal: b"fixture_other".to_vec() },
+            ]));
+            frame
+        }).collect();
+        let (source, mut options) = machine.open_frames(frames);
+        select(&source, &mut options, &["fixture_art"]);
+        (Arc::new(source), LoadContext { content: Some(options) })
+    };
+    let cancelled = AtomicBool::new(false);
+    let has_mod_note = |reply: &Value| reply["warnings"].as_array().unwrap().iter().any(|line| {
+        line.as_str().is_some_and(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art"))
+    });
+    let request = || json!({"branchId": "1", "limit": 64, "categories": ["milestones"]});
+    let read = |source: &dashboard_base::Source, load: &LoadContext, hour: i32, mut ask: Value| {
+        ask["hour"] = json!(hour);
+        crate::registrations::FEED_EVENTFEEDTAIL.answer(source, ask, load, &cancelled).unwrap()
+    };
+    let (source, load) = opened();
+    let (followed_source, followed_load) = opened();
+    let mut panel_ask = request();
+    panel_ask["panel"] = json!("event-feed-tail");
+    let panel = super::event_feed_dated_panel(&followed_source, &followed_load, &panel_ask).unwrap();
+    let followed = panel.exact().unwrap();
+
+    for hour in [96, 97, 101] {
+        let exact = read(&source, &load, hour, request());
+        let step = (followed.advance)(hour, hour == 96, &cancelled, None);
+        let held = step.value.as_ref().as_ref().unwrap();
+        assert_eq!(held["warnings"], exact["warnings"], "exact and followed at {hour}");
+        assert_eq!((followed.cold)(hour, &cancelled).unwrap()["warnings"], exact["warnings"], "followed cold read at {hour}");
+        assert_eq!(has_mod_note(&exact), hour == 97, "artwork warnings at {hour}: {}", exact["warnings"]);
+        match hour {
+            96 => assert!(exact["rows"].as_array().unwrap().is_empty()),
+            97 => {
+                let line = &exact["rows"][0];
+                assert_eq!(line["line"], "event");
+                assert_eq!(line["hour"], 96);
+                assert_eq!(line["observed"], 97);
+                assert_eq!(first_pixel(line["row"]["item"]["icon"].as_str().unwrap()), BLUE);
+            }
+            _ => {
+                let line = &exact["rows"][0];
+                assert_eq!(line["line"], "fold");
+                assert_eq!(line["count"], "5");
+                assert_eq!(first_pixel(line["firstRow"]["item"]["icon"].as_str().unwrap()), RED);
+            }
+        }
+    }
+    let mut ascending = request();
+    ascending["sort"] = json!({"column": "date", "direction": "ascending"});
+    let fold = read(&source, &load, 101, ascending.clone());
+    assert_eq!(fold["rows"][0]["line"], "fold");
+    assert_eq!(first_pixel(fold["rows"][0]["firstRow"]["item"]["icon"].as_str().unwrap()), BLUE);
+    assert!(has_mod_note(&fold), "the cached fold first row credits its own icon");
+    let (fresh_source, fresh_load) = opened();
+    assert_eq!(read(&fresh_source, &fresh_load, 101, ascending)["warnings"], fold["warnings"]);
 }

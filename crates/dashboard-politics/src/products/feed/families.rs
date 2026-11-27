@@ -270,26 +270,53 @@ pub(crate) fn subject_rows(source: &Source, query: &Query<'_>, from: i32, to: i3
     Ok(rows)
 }
 
-pub(crate) fn project_completions(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<(EventFeedRow, Option<u32>)>, Vec<String>, Unrecorded)> {
+#[derive(Clone)]
+pub(crate) struct FamilyRow {
+    pub row: EventFeedRow,
+    icon: Option<special_projects::CompletionIcon>,
+}
+
+impl From<EventFeedRow> for FamilyRow {
+    fn from(row: EventFeedRow) -> Self {
+        Self { row, icon: None }
+    }
+}
+
+impl FamilyRow {
+    pub fn shown<'row>(&'row self, art_warnings: &mut BTreeMap<String, BTreeSet<&'row str>>) -> EventFeedRow {
+        let mut row = self.row.clone();
+        if let Some((icon, item)) = self.icon.as_ref().zip(row.item.as_mut()) {
+            match icon.draw() {
+                Ok(icon) => item.icon = Some(icon),
+                Err(reason) => {
+                    art_warnings.entry(reason).or_default().insert(&self.row.id);
+                }
+            }
+        }
+        row
+    }
+}
+
+pub(crate) fn project_completions(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<(FamilyRow, Option<u32>)>, Vec<String>, Unrecorded)> {
     let found = special_projects::completions(source, context, query, from, to, cancelled)?;
     let unrecorded = Unrecorded::of(EventFeedCategory::Milestones, ("projectFinished", "Special projects"), ("A completion dated in", "may not be listed: project histories were not recorded then"), &found.unrecorded);
     let rows = found.events.into_iter().map(completion_row).collect();
     Ok((rows, found.warnings, unrecorded))
 }
 
-pub(super) fn completion_row(event: special_projects::ProjectCompletion) -> (EventFeedRow, Option<u32>) {
+pub(super) fn completion_row(event: special_projects::ProjectCompletion) -> (FamilyRow, Option<u32>) {
     let slot = event.attribution.slot();
     let (tag, owner_missing) = match event.attribution {
         special_projects::CompletionOwner::Resolved { tag, .. } => (Some(tag), None),
         special_projects::CompletionOwner::NotRecorded { reason, .. } => (None, Some(reason)),
     };
     let tags: Vec<String> = tag.iter().cloned().collect();
-    let item = EventFeedItem { token: None, name: event.name, icon: event.icon, ..Default::default() };
+    let item = EventFeedItem { token: None, name: event.name, ..Default::default() };
     let subject = format!("{}:{}:{}", event.owner, event.project, event.ordinal);
     let mut row = family_row(EventFeedKind::ProjectFinished, event.date, event.observed_hour, event.date, tags, Some(subject), Some(item));
     row.participants = Some([tag, None]);
     row.owner_missing = owner_missing;
-    (row, slot)
+    (FamilyRow { row, icon: event.icon }, slot)
 }
 
 pub(crate) fn unread(categories: &[EventFeedCategory], notices: &mut Notices) {
