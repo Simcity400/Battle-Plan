@@ -17,7 +17,7 @@ test('a removed division keeps its last recorded facts and the opponent of its r
       province: 5, placeHour: 91, title: null, status: 'division_destroyed', medal: null }],
   };
   const viewOf = (reply: ServiceRecordTailReply) => createBoundedReadView({ hour: 100, rows: new Map([['main', buildRowSourceFromHead('branch', reply, undefined, 100)!]]), identity: {
-    resolve: (kind, key, atHour) => ({ kind, key, atHour, name: { status: 'ready', value: `${key} at ${atHour}` },
+    resolve: (kind, key, atHour) => ({ kind, key, atHour, name: { status: 'ready', value: kind === 'battle' ? 'Second Battle of Shale Peak' : `${key} at ${atHour}` },
       holder: { status: 'absent', reason: 'fixture' }, validInterval: [atHour, atHour], nextChangeAt: Infinity }),
   } });
   const model = serviceRecordProjection.project(viewOf(head), { campaign: 'c', chosen: subjectToken('c', '17') });
@@ -36,7 +36,7 @@ test('a removed division keeps its last recorded facts and the opponent of its r
   assert.deepEqual(cells.country!.flags?.map(flag => [flag.tag, Boolean(flag.dimmed)]), [['DEF', false], ['ABC', true]]);
   const pendingBattle: ServiceRecordTailReply = {
     ...head,
-    rows: [{ key: 'battle:17', hour: 90, observed: 90, kind: 'battle', exact: true, tag: 'ABC', other: 'DEF',
+    rows: [{ key: 'battle:17:90', hour: 90, observed: 90, kind: 'battle', exact: true, tag: 'ABC', other: 'DEF',
       province: 5, placeHour: 90, title: null, status: 'won', medal: null }],
   };
   const pendingModel = serviceRecordProjection.project(
@@ -45,4 +45,6 @@ test('a removed division keeps its last recorded facts and the opponent of its r
   );
   assert.deepEqual(pendingModel.rows[0]!.cells.kind!.value, { kind: 'known', value: 'Land battle' });
   assert.deepEqual(pendingModel.rows[0]!.cells.item!.value, { kind: 'pending', reason: 'Name is loading' });
+  const named = serviceRecordProjection.project(viewOf(pendingBattle), { campaign: 'c', chosen: subjectToken('c', '17') });
+  assert.deepEqual(named.rows[0]!.cells.item!.value, { kind: 'known', value: 'Second Battle of Shale Peak' });
 });

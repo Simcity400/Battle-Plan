@@ -275,15 +275,7 @@ mod details {
             ShipsSunkTail::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
         };
         let (sunk, reads) = replay_recording::cells::count_reads(|| page(serde_json::json!({"branchId":"1","limit":64})));
-        let reads = &reads[&TableId::NavalCombats];
-        assert_eq!(
-            (reads.opened, reads.stretches, reads.visited_ordinals), (1, 1, 0),
-            "four linked sinkings in two battles share one province history"
-        );
-        let provinces: Vec<_> = sunk.rows.iter().map(|row| (row.name.as_deref().unwrap(), row.battle_province)).collect();
-        assert_eq!(provinces, [
-            ("Second escort", Some(601)), ("After", Some(601)), ("Unlinked", None), ("First escort", Some(600)), ("Before", Some(600)),
-        ]);
+        assert!(!reads.contains_key(&TableId::NavalCombats), "sinking pages do not read a separate battle province history");
         let filtered = |hour| page(serde_json::json!({
             "branchId":"1", "hour":hour, "limit":64, "classes":[104]
         }));
@@ -297,7 +289,7 @@ mod details {
         assert!(gap.rows.is_empty());
         let first_seen = filtered(105);
         assert_eq!((first_seen.rows[0].hour, first_seen.rows[0].observed), (104, 105));
-        assert_eq!(first_seen.rows[0].battle_province, Some(601));
+        assert!(matches!(&first_seen.rows[0].battle, ShipSinkingBattle::Linked { id, .. } if id == "combat:20:103"));
         assert_eq!(first_seen.classes.len(), 2);
         let battle = |name: &str| sunk.rows.iter().find(|row| row.name.as_deref() == Some(name)).map(|row| row.battle.clone());
         let live = |first: i32| ShipSinkingBattle::Linked {
@@ -482,7 +474,6 @@ mod details {
         let before_result = page_at_103("0");
         let merged = before_result.rows.iter().find(|row| row.name.as_deref() == Some("Ship Merged")).unwrap();
         assert!(matches!(merged.battle, ShipSinkingBattle::NotRecorded { .. }));
-        assert_eq!(merged.battle_province, None);
         assert_eq!(before_result.next_change, Some(104));
         assert_eq!(page_at_103("64").next_change, None, "the result only changes pages showing the sinking");
         let b1 = ShipsSunkTail::load(&replay_source, &serde_json::from_value(serde_json::json!({"branchId":"1","limit":64})).unwrap(), &ctx, &cancel).unwrap();
@@ -504,7 +495,6 @@ mod details {
         );
 
         let del = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Del")).unwrap();
-        assert_eq!(del.battle_province, Some(500), "a documented deletion retains the last combat location");
         assert_eq!(
             del.sinking_cause,
             ShipSinkingAttribution::AirWing { carrier_name: None, carrier_class_key: None, carrier_class_name: None, assisted: false }

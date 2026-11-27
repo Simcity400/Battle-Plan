@@ -236,8 +236,8 @@ export type BranchRead = 'facts' | 'identities' | 'groups';
 
 export const BRANCH_READS: readonly BranchRead[] = ['facts', 'identities', 'groups'];
 
-const ALL_IDENTITY_KINDS: readonly IdentityKey['kind'][] = ['country', 'faction', 'leader', 'design', 'state', 'province', 'region'];
-const ENTITY_IDENTITY_KINDS: readonly EntityIdentityKey['kind'][] = ['leader', 'design', 'state', 'province', 'region'];
+const ALL_IDENTITY_KINDS: readonly IdentityKey['kind'][] = ['country', 'faction', 'leader', 'design', 'state', 'province', 'region', 'battle'];
+const ENTITY_IDENTITY_KINDS: readonly EntityIdentityKey['kind'][] = ['leader', 'design', 'state', 'province', 'region', 'battle'];
 const NO_FLAG_CHANGES: readonly string[] = [];
 let nextIndexEpoch = 1;
 
@@ -300,6 +300,7 @@ export class IdentityIndex {
     state: 0,
     province: 0,
     region: 0,
+    battle: 0,
   };
   private trackedRevisions = true;
   private snapshot?: IdentitySnapshot;

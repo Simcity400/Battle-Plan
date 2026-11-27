@@ -1,8 +1,6 @@
 import { useCallback, useMemo, type ReactNode, type RefObject } from 'react';
 import { BattleGameWindow, BattleViewer } from '../../components/BattleViewer.tsx';
-import { useBattleTitle } from '../../components/battleTitle.ts';
-import { ValueState } from '../../components/ValueState.tsx';
-import { barsLabelText } from '../../families/bars/model.ts';
+import { BattleTitleHeading } from '../../components/BattleTitleHeading.tsx';
 import type { BattleClock } from '../../components/battleClock.ts';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { formatDateRange, formatDateTime, formatDay } from '../../dashboard/calendar';
@@ -106,7 +104,6 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, retu
 }) {
   const { subject } = opened;
   const { row } = subject;
-  const title = useBattleTitle(runtime.client, track, row.province, row.hour);
   const ongoing = row.result === 'ongoing';
   const { liveEnd, live, result, span, noteFrom } = useMemo(() => navalBattleClock(row, opened.hour, track.branch.firstHour, track.branch.lastHour),
     [row, opened.hour, track.branch.firstHour, track.branch.lastHour]);
@@ -146,7 +143,7 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, retu
     return <BattleGameWindow key={row.key} runtime={runtime} track={track} clock={clock} kind="naval" combat={combat} result={result} lead={lead} live={live} until={until} ended={ended} />;
   };
 
-  return <BattleViewer subject={row.key} title={title.kind === 'pending' ? <ValueState kind="pending" reason={title.reason} /> : barsLabelText(title, 'Battle name')} day={day} closeLabel="Close battle viewer" anchor={anchor}
+  return <BattleViewer subject={row.key} title={<BattleTitleHeading client={runtime.client} track={track} battle={row.key} />} day={day} closeLabel="Close battle viewer" anchor={anchor}
     returnFocus={returnFocus ?? mirrorRowSelector(row.key)} runtime={runtime} track={track} province={row.province} span={span} unplayable={unplayable}
     gaps={gaps} fallbackHour={first} startHour={opened.start} onClose={onClose}
     details={() => <Details runtime={runtime} track={track} battle={row.detailId} hour={row.detailHour ?? opened.hour} />}

@@ -62,6 +62,22 @@ use viewer_playback::worker_pool;
 
 use dashboard_core::config::Config;
 
+fn battle_title_source(document: &viewer_playback::document::Document) -> Option<combat::BattleTitleSource> {
+    use viewer_engagements::combat_selection::Selection;
+    let source = document.playback.source()?;
+    let load = dashboard_core::config::LoadContext { content: source.admit(dashboard_base::source::Work::Recorded) };
+    let source = Arc::downgrade(source);
+    Some(Arc::new(move |branch, hour, selection| {
+        let source = source.upgrade().ok_or("Recording was closed")?;
+        let names = source.in_scope(|| dashboard::products::battle_names::read(&source, branch, &load, &false.into())).map_err(|error| error.to_string())?;
+        match selection {
+            Selection::Naval(id) => names.naval(id, hour),
+            Selection::NavalResult(id) => names.get(&format!("result:{id}")),
+            _ => None,
+        }.ok_or("Battle identity not recorded")?.as_ref().map(|title| title.to_string()).map_err(|reason| reason.to_string())
+    }))
+}
+
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
@@ -1369,6 +1385,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }));
             let content = Arc::clone(&document.content);
             window.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
+            window.set_battle_title_source(battle_title_source(&document));
             let rosters = document.playback.roster_sampler();
             let mut gui_elapsed = 0.0_f64;
             let drawn = loop {

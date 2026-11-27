@@ -2,7 +2,8 @@ import { subjectHandle } from '../../dashboard/chosen.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, LOADING_NAME, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { battleTitleText } from '../../components/battleTitle.ts';
+import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logDateCell, logStatusCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TableSubjectPicture } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
@@ -40,16 +41,16 @@ function serviceRow(view: BoundedReadView, row: ServiceEntry, sprite: string | n
   const status = removed ? removals[row.status ?? ''] : row.status;
   const place = row.province !== null && row.placeHour !== null
     ? resolveName(view, 'province', String(row.province), { atHour: row.placeHour, boundary }).value : undefined;
-  const title = row.kind === 'battle' && place?.kind === 'known' ? `Battle of ${place.value}` : created ? 'First seen' : removed ? 'Division removed' : row.title;
-  const battlePending = row.kind === 'battle' && title === null && place?.kind === 'pending';
-  const name = title ?? (battlePending ? LOADING_NAME : award ? 'Medal name not recorded' : 'Entry description not recorded');
+  const battle = row.kind === 'battle' ? resolveName(view, 'battle', row.key, { boundary }).value : undefined;
+  const title = created ? 'First seen' : removed ? 'Division removed' : row.title;
+  const name = battle ? battleTitleText(battle) : title ?? (award ? 'Medal name not recorded' : 'Entry description not recorded');
   return {
     key: row.key, name, rowHour: row.hour, meta: row.hour,
     cells: {
       date: logDateCell(row.hour),
-      kind: kindCell(view, row, sprite, battlePending ? null : name),
+      kind: kindCell(view, row, sprite, battle?.kind === 'pending' ? null : name),
       country: logCountryCell(view, countries, row.observed, boundary),
-      item: { value: title ? knownValue(title) : battlePending ? place : notRecorded(name), missingFigure: award ? 'Medal' : 'Entry' },
+      item: { value: battle ?? (title ? knownValue(title) : notRecorded(name)), missingFigure: award ? 'Medal' : 'Entry' },
       place: place ? { value: place }
         : award ? blank : { value: notRecorded('Place not recorded'), missingFigure: 'Place' },
       status: status ? logStatusCell(status, removed ? 'ended' : 'finished') : removed ? { value: notRecorded('Removal cause not recorded') } : blank,

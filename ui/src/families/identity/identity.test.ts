@@ -133,7 +133,8 @@ function sampleGroups(): CountryGroupReply {
   };
 }
 
-const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNameRuns' | 'loadLeaderNameRuns'> = {
+const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNameRuns' | 'loadLeaderNameRuns' | 'loadBattleNames'> = {
+  loadBattleNames: () => deferred<never>().promise,
   loadRegions: () => deferred<StrategicRegionsReply>().promise,
   loadPlaceNameRuns: () => deferred<PlaceNameRunsReply>().promise,
   loadLeaderNameRuns: () => deferred<LeaderNameRunsReply>().promise,
@@ -908,7 +909,7 @@ test('an identity key and an art handle keep their whole identity from demand to
   assert.equal(new Set([plain, asText, asRecorded].map(artHandleKey)).size, 3);
 });
 
-test('leader, state, province and region asks each start their product read and answer with its validity', async () => {
+test('leader, state, province, region and battle asks each start their product read and answer with its validity', async () => {
   const calls: string[] = [];
   const transport: IdentityTransport = {
     loadFacts: () => deferred<CountryFactsReply>().promise,
@@ -916,6 +917,10 @@ test('leader, state, province and region asks each start their product read and 
     loadGroups: () => deferred<CountryGroupReply>().promise,
     loadStyles: () => deferred<CountryStyleReply>().promise,
     loadFlags: () => deferred<CountryFlagReply>().promise,
+    loadBattleNames: async (_scope, battles) => {
+      calls.push(`battles ${battles.join(',')}`);
+      return { titles: { 'result:7': { name: 'Second Battle of Coral Reach', missing: null }, 'result:8': { name: null, missing: 'Battle place name not recorded' } }, warnings: [] };
+    },
     loadRegions: async () => {
       calls.push('regions');
       return { regions: [{ id: 3, name: 'Coral Reach', nameMissing: null, land: false, sea: true }], warnings: [] };
@@ -949,6 +954,7 @@ test('leader, state, province and region asks each start their product read and 
   const provider = createBrokerIdentityProvider(broker, SCOPE, {}, { branchBounds: [0, 500], needFlags: false });
   const view = createBoundedReadView({ hour: 200, identity: provider });
   const ask = () => [
+    view.who('battle', 'result:7', 20), view.who('battle', 'result:8', 20),
     view.who('region', '3', 150), view.who('region', '9', 150),
     view.who('state', '64', 150), view.who('province', '7', 150), view.who('leader', 'ALP:L1', 150), view.who('leader', 'ALP:L2', 150),
   ];
@@ -956,9 +962,11 @@ test('leader, state, province and region asks each start their product read and 
   for (let i = 0; i < 20; i++) await Promise.resolve();
   ask();
   for (let i = 0; i < 20; i++) await Promise.resolve();
-  assert.deepEqual([...calls].sort(), ['leaders ALP 0-500 L1,L2', 'places 0-500 64 7', 'regions']);
+  assert.deepEqual([...calls].sort(), ['battles result:7,result:8', 'leaders ALP 0-500 L1,L2', 'places 0-500 64 7', 'regions']);
 
-  const [region, unknownRegion, state, province, leader, otherLeader] = ask();
+  const [battle, unknownBattle, region, unknownRegion, state, province, leader, otherLeader] = ask();
+  assert.deepEqual(battle!.name, { status: 'ready', value: 'Second Battle of Coral Reach' });
+  assert.deepEqual(unknownBattle!.name, { status: 'absent', reason: 'Battle place name not recorded' });
   assert.deepEqual(region!.name, { status: 'ready', value: 'Coral Reach' });
   assert.deepEqual(region!.validInterval, [0, 500]);
   assert.equal(unknownRegion!.name.status, 'absent');
@@ -976,7 +984,7 @@ test('leader, state, province and region asks each start their product read and 
   assert.deepEqual(otherLeader!.holder, { status: 'absent', reason: "The leader's owner is not named at this hour" }, 'an unnamed owner is not known, never another owner and never ready');
   assert.deepEqual(view.who('state', '64', 110).holder, { status: 'absent', reason: 'Not in this recording: the game was paused' }, 'a place inside a recording gap is not ready');
   assert.deepEqual(worker.resolve('leader', 'ALP:L2', 150 as DisplayedHour).holder, otherLeader!.holder, 'unknown ownership crosses to the worker');
-  assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
+  assert.equal(calls.length, 4, 'answers inside their validity ask nothing again');
   broker.dispose();
 });
 

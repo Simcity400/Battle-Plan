@@ -59,6 +59,7 @@ export interface RegionIdentityKey {
 }
 
 export type EntityIdentityKey =
+  | { readonly kind: 'battle'; readonly id: string }
   | LeaderIdentityKey
   | DesignIdentityKey
   | StateIdentityKey
@@ -68,11 +69,7 @@ export type EntityIdentityKey =
 export type IdentityKey =
   | CountryIdentityKey
   | FactionIdentityKey
-  | LeaderIdentityKey
-  | DesignIdentityKey
-  | StateIdentityKey
-  | ProvinceIdentityKey
-  | RegionIdentityKey;
+  | EntityIdentityKey;
 
 export type RecordedValue<T> = { readonly [K in keyof T]: RecordedValue<T[K]> };
 
@@ -136,7 +133,7 @@ export type FactionIdentityResult =
 export type EntityIdentityResult =
   | {
       readonly kind: 'known';
-      readonly entityKind: 'leader' | 'design' | 'state' | 'province' | 'region';
+      readonly entityKind: EntityIdentityKey['kind'];
       readonly valid: HourInterval;
       readonly nextBoundary: number;
       readonly holder: IdentityField<string>;
@@ -244,6 +241,7 @@ export const designKey = (owner: string, variant: string): DesignIdentityKey => 
 export const stateKey = (id: number | string): StateIdentityKey => ({ kind: 'state', id });
 export const provinceKey = (id: number | string): ProvinceIdentityKey => ({ kind: 'province', id });
 export const regionKey = (id: number | string): RegionIdentityKey => ({ kind: 'region', id });
+export const battleKey = (id: string): EntityIdentityKey => ({ kind: 'battle', id });
 
 export function countryKeyFromString(raw: string): CountryIdentityKey {
   const country = countryFromKey(raw);
@@ -263,6 +261,8 @@ export function countryKeyFromString(raw: string): CountryIdentityKey {
 
 export function parseEntityKey(kind: EntityKind, key: string): IdentityKey {
   switch (kind) {
+    case 'battle':
+      return battleKey(key);
     case 'country':
       return countryKeyFromString(key);
     case 'faction':
@@ -307,7 +307,8 @@ export function identityKeyString(key: IdentityKey): string {
     case 'province':
       return `province:${key.id}`;
     case 'region':
-      return `region:${key.id}`;
+    case 'battle':
+      return `${key.kind}:${key.id}`;
   }
 }
 

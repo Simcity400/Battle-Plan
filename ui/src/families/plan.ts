@@ -204,7 +204,7 @@ export interface BoundedHover<T = unknown> {
   readonly data: T;
 }
 
-export type EntityKind = 'country' | 'faction' | 'leader' | 'design' | 'state' | 'province' | 'region';
+export type EntityKind = 'country' | 'faction' | 'leader' | 'design' | 'state' | 'province' | 'region' | 'battle';
 
 export type FieldStatus<T> =
   | { readonly status: 'ready'; readonly value: T }

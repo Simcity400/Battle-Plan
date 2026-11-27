@@ -27,7 +27,6 @@ pub struct Content {
     pub scripted: Arc<Result<dashboard_text::scripted_text::ScriptedContent, String>>,
     pub map: Arc<MapData>,
     pub strategic_regions: Arc<BTreeMap<u32, StrategicRegion>>,
-    pub battle_name_provinces: Arc<BTreeMap<u32, Vec<u32>>>,
     pub state_name_keys: Arc<BTreeMap<u32, Result<String, String>>>,
     pub province_geometry: Arc<ProvinceGeometry>,
     pub region_of: Arc<BTreeMap<u32, u32>>,

@@ -8,6 +8,7 @@ import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import type {
+  BattleNamesReply,
   CountryFactsReply,
   CountryFlagReply,
   CountryFlagSize,
@@ -47,6 +48,7 @@ export interface IdentityTransport {
   loadRegions(scope: IdentityScope, signal: AbortSignal, recording?: DashboardSource): Promise<StrategicRegionsReply>;
   loadPlaceNameRuns(scope: IdentityScope, from: number, to: number, states: readonly number[], provinces: readonly number[], signal: AbortSignal, recording?: DashboardSource): Promise<PlaceNameRunsReply>;
   loadLeaderNameRuns(scope: IdentityScope, owner: string, from: number, to: number, references: readonly string[], signal: AbortSignal, recording?: DashboardSource): Promise<LeaderNameRunsReply>;
+  loadBattleNames(scope: IdentityScope, battles: readonly string[], signal: AbortSignal, recording?: DashboardSource): Promise<BattleNamesReply>;
 }
 
 export function clientIdentityTransport(client: DashboardClient): IdentityTransport {
@@ -91,6 +93,9 @@ export function clientIdentityTransport(client: DashboardClient): IdentityTransp
       signal,
       undefined,
       recording,
+    ),
+    loadBattleNames: (scope, battles, signal, recording) => loadTransientProduct<BattleNamesReply>(
+      client, productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'battle-names', params: { branchId: scope.branchId, battles: [...battles] } }), signal, recording,
     ),
     loadPlaceNameRuns: (scope, from, to, states, provinces, signal, recording) => loadTransientProduct<PlaceNameRunsReply>(
       client,
@@ -152,6 +157,7 @@ function runEntry(run: NameRun, absent: string, warnings: readonly string[]): En
 
 type EntityRequest =
   | { readonly kind: 'regions'; readonly id: string }
+  | { readonly kind: 'battles'; readonly id: string; readonly from: number; readonly to: number }
   | { readonly kind: 'places'; readonly id: string; readonly from: number; readonly to: number }
   | { readonly kind: 'leaders'; readonly id: string; readonly owner: string; readonly from: number; readonly to: number };
 
@@ -175,6 +181,8 @@ function windowOf(at: number, bounds: HourInterval): { readonly start: number; r
 
 function entityRequestOf(key: EntityIdentityKey, at: number, bounds: HourInterval): EntityRequest | null {
   switch (key.kind) {
+    case 'battle':
+      return { kind: 'battles', id: 'battles', from: bounds[0], to: bounds[1] };
     case 'region':
       return { kind: 'regions', id: 'regions' };
     case 'design':
@@ -648,6 +656,16 @@ export class IdentityBroker {
   private loadEntityRequest(state: ScopeState, request: EntityRequest, keys: ReadonlyMap<string, EntityIdentityKey>, signal: AbortSignal): Promise<() => void> {
     const index = state.index;
     switch (request.kind) {
+      case 'battles': {
+        const battles = [...keys.values()].flatMap(key => key.kind === 'battle' ? [key.id] : []);
+        return this.transport.loadBattleNames(state.scope, battles, signal, state.recording).then(reply => () => {
+          for (const id of battles) {
+            const title = reply.titles[id];
+            index.setEntityRuns({ kind: 'battle', id }, [{ firstHour: request.from, lastHour: request.to,
+              name: title?.name ?? null, ...(title?.name == null ? { nameReason: title?.missing ?? 'Battle name not answered' } : {}), warnings: reply.warnings }]);
+          }
+        });
+      }
       case 'regions':
         return this.transport.loadRegions(state.scope, signal, state.recording).then(reply => () => {
           const bounds = index.bounds();
@@ -743,7 +761,8 @@ export class IdentityBroker {
       if (state.entityWindows.size <= MAX_ENTITY_WINDOWS) break;
       state.entityWindows.delete(window.request.id);
       for (const keyId of window.keys.keys()) state.entityRetryAt.delete(entityRetryKey(window.request.id, keyId));
-      const kinds = window.request.kind === 'places' ? ['state', 'province'] as const : ['leader'] as const;
+      const kinds = window.request.kind === 'places' ? ['state', 'province'] as const
+        : window.request.kind === 'battles' ? ['battle'] as const : ['leader'] as const;
       const still = [...state.entityWindows.values()].filter(other => other.request.kind === window.request.kind).map(other => [other.request.from, other.request.to] as const);
       state.index.dropEntityRuns(window.keys.values(), window.request.from, window.request.to, kinds, still);
       dropped = true;

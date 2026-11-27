@@ -4,7 +4,8 @@ import { artHoverText } from '../../families/art/adapters.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, LOADING_NAME, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { battleTitleText } from '../../components/battleTitle.ts';
+import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
@@ -130,11 +131,10 @@ function sideNames(side: readonly ReturnType<typeof resolveIdentity>[]): Value<s
 }
 
 function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: IdentityBoundary, options: Options): TableRow {
-  const place = row.province === null ? notRecorded('Province not recorded') : resolveName(view, 'province', String(row.province), { atHour: row.hour, boundary }).value;
-  const name = place.kind === 'known' ? knownValue('Battle of ' + place.value) : place;
+  const name = resolveName(view, 'battle', row.key, { boundary }).value;
   const sides = row.countries.map((slots, i) => slots.map(slot => resolveIdentity(view, 'country', countryKey(slot), { atHour: row.countriesHour[i], boundary })));
   const flags = row.countries.map((slots, i) => ({ tag: slots.length ? countryKey(slots[0]!) : null, atHour: row.countriesHour[i] }));
-  const title = name.kind === 'known' ? name.value : name.kind === 'pending' ? LOADING_NAME : 'Battle name not recorded';
+  const title = battleTitleText(name);
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
   const status = live ? logStatusCell('Ongoing', 'running') : row.result === 'unknown'

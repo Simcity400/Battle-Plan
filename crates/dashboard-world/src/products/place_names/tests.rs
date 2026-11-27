@@ -182,6 +182,7 @@ fn truncated_tables_use_witnessed_rows_refuse_absent_renames_and_preserve_vp_tag
     assert!(vp_fallback.missing.is_some());
     assert!(history.land_battle_title(&content, 19, 102).is_err(), "battle titles refuse when VP tag lookup fails");
     assert_eq!(history.province_name(&content, 18, ProvinceMode::Naval, 103).name.as_deref(), Some(""), "naval mode returns an empty translated rename immediately");
+    assert_eq!(content.naval_battle_title_text("", false).as_deref(), Err(&"Battle place name not recorded".to_owned()));
 
     drop(query);
     drop(source);

@@ -47,7 +47,6 @@ fn map_battle_windows_read_only_recorded_tables() {
             country_colors: Default::default(),
         }),
         strategic_regions: Default::default(),
-        battle_name_provinces: Default::default(),
         state_name_keys: Default::default(),
         province_geometry: Default::default(),
         region_of: Default::default(),

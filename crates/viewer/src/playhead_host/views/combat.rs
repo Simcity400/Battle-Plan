@@ -69,6 +69,7 @@ fn outputs(name: &str, document: &Document, frame: &Arc<DecodedFrame>, targets: 
             selections
                 .map(|selection| {
                     let mut window = Window::default();
+                    window.set_battle_title_source(crate::battle_title_source(document));
                     window.open(selection);
                     format!("{selection:?}: {:?}", window.prepare(content, &document.playback.roster_sampler(), frame.branch, frame.hour, Ok(Arc::clone(frame)), &Choice::default(), None, false))
                 })
@@ -159,7 +160,7 @@ pub(crate) struct Line {
 }
 
 impl Line {
-    pub(crate) fn open(views: Views, timed: &[&'static str], learned: Option<&str>, timing: bool, hz: f64) -> io::Result<Self> {
+    pub(crate) fn open(document: &Document, views: Views, timed: &[&'static str], learned: Option<&str>, timing: bool, hz: f64) -> io::Result<Self> {
         let mut known: BTreeMap<&str, Vec<TableId>> = BTreeMap::new();
         if let Some(file) = learned {
             for line in std::fs::read_to_string(file)?.lines().map(str::trim).filter(|line| !line.is_empty()) {
@@ -182,7 +183,9 @@ impl Line {
         let mut window_rows = AtHead::learning("combat window");
         window_rows.learn(known.get("window").map_or(&[][..], Vec::as_slice));
         let battle = AtHead::new("proof battle", &[TableId::LandCombats, TableId::LandCombatDivisions, TableId::NavalCombats], Pace::PerSecond(4));
-        let timing = Timing { rows: combat, window: Window::default(), window_rows, window_reads: Vec::new(), battle, targets: None, base: Arc::new(Tooltip::default()), frames: Vec::new(), each: Default::default(), hz, behind: Vec::new(), loading: 0 };
+        let mut window = Window::default();
+        window.set_battle_title_source(crate::battle_title_source(document));
+        let timing = Timing { rows: combat, window, window_rows, window_reads: Vec::new(), battle, targets: None, base: Arc::new(Tooltip::default()), frames: Vec::new(), each: Default::default(), hz, behind: Vec::new(), loading: 0 };
         Ok(Self { views, readers, timing, timed: timed.to_vec(), battles: Vec::new(), totals: BTreeMap::new() })
     }
 

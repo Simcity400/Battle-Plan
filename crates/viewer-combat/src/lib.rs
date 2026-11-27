@@ -10,6 +10,7 @@ use viewer_engagements::engaged::Ambiguity;
 use viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap as NavySources;
 
 pub type NavySourcesOf = Arc<dyn Fn(&replay_frame::frame::DecodedFrame, u32, u32) -> NavySources + Send + Sync>;
+pub type BattleTitleSource = Arc<dyn Fn(replay_data::BranchId, replay_data::Hour, Selection) -> Result<String, String> + Send + Sync>;
 
 pub type RuleRelations = Arc<
     dyn Fn(
@@ -199,6 +200,7 @@ pub struct Window {
     playing: bool,
     rule_relations: Option<RuleRelations>,
     navy_sources_of: Option<NavySourcesOf>,
+    battle_title_source: Option<BattleTitleSource>,
     settled: bool,
     strict: bool,
     pub selection: Option<Selection>,
@@ -393,11 +395,11 @@ impl Window {
     }
 
     pub fn take_inputs(&mut self) -> impl Send + 'static {
-        (self.rule_relations.take(), self.navy_sources_of.take())
+        (self.rule_relations.take(), self.navy_sources_of.take(), self.battle_title_source.take())
     }
 
     pub fn holds_inputs(&self) -> bool {
-        self.rule_relations.is_some() || self.navy_sources_of.is_some()
+        self.rule_relations.is_some() || self.navy_sources_of.is_some() || self.battle_title_source.is_some()
     }
 
     fn kept(&mut self) -> (Option<RuleRelations>, Option<NavySourcesOf>, bool, bool) {
@@ -432,6 +434,9 @@ impl Window {
 
     pub fn set_navy_sources_of(&mut self, of: NavySourcesOf) {
         self.navy_sources_of = Some(of);
+    }
+    pub fn set_battle_title_source(&mut self, source: Option<BattleTitleSource>) {
+        self.battle_title_source = source;
     }
     pub fn warnings(&self, artwork: &[String]) -> Vec<String> {
         let Some(cache) = self.cached.as_ref().filter(|_| self.selection.is_some() && !self.loading) else {
@@ -493,6 +498,7 @@ impl Window {
             retired,
             rule_relations,
             navy_sources_of,
+            battle_title_source: self.battle_title_source.take(),
             settled,
             strict,
             selection: Some(selection),
@@ -514,6 +520,7 @@ impl Window {
             retired,
             rule_relations,
             navy_sources_of,
+            battle_title_source: self.battle_title_source.take(),
             settled,
             strict,
             ..Self::default()
@@ -730,7 +737,7 @@ impl Window {
             Want::Kept => return Ok(Prepared::Kept),
             Want::Read(family) => family,
         };
-        read(&self.asking_of(document, rosters, family).request(branch, hour, frame, engaged)).map(|fresh| Prepared::Read(Box::new(fresh)))
+        self.asking_of(document, rosters, family).fresh(branch, hour, frame, engaged).map(|fresh| Prepared::Read(Box::new(fresh)))
     }
 
     pub fn asking(&mut self, document: &Arc<StaticContent>, rosters: &Arc<Sampler>, perspective: &Choice, nato: bool) -> Option<Asking> {
@@ -816,7 +823,7 @@ impl Window {
     }
 
     fn asking_of(&self, document: &Arc<StaticContent>, rosters: &Arc<Sampler>, family: Family) -> Asking {
-        Asking { content: Arc::clone(document), family, air: self.air_asking(rosters), details: self.result_details_open, rule_relations: self.rule_relations.clone(), navy_sources_of: self.navy_sources_of.clone(), strict: self.strict }
+        Asking { content: Arc::clone(document), family, air: self.air_asking(rosters), details: self.result_details_open, rule_relations: self.rule_relations.clone(), navy_sources_of: self.navy_sources_of.clone(), battle_title_source: self.battle_title_source.clone(), strict: self.strict }
     }
 
     fn air_asking(&self, rosters: &Arc<Sampler>) -> AirAsking {
@@ -1082,6 +1089,7 @@ pub struct Asking {
     details: bool,
     rule_relations: Option<RuleRelations>,
     navy_sources_of: Option<NavySourcesOf>,
+    battle_title_source: Option<BattleTitleSource>,
     strict: bool,
 }
 
@@ -1094,7 +1102,26 @@ impl Asking {
     }
 
     pub fn read(&self, branch: replay_data::BranchId, hour: replay_data::Hour, seek: u64, frame: Arc<replay_frame::frame::DecodedFrame>, engaged: Option<Arc<History>>) -> Product {
-        Product { key: self.key(), branch, hour, seek, fresh: read(&self.request(branch, hour, Ok(frame), engaged)) }
+        Product { key: self.key(), branch, hour, seek, fresh: self.fresh(branch, hour, Ok(frame), engaged) }
+    }
+
+    fn fresh(&self, branch: replay_data::BranchId, hour: replay_data::Hour, frame: Result<Arc<replay_frame::frame::DecodedFrame>, String>, engaged: Option<Arc<History>>) -> io::Result<Fresh> {
+        let mut fresh = read(&self.request(branch, hour, frame, engaged))?;
+        if let Read::Refresh { bindings, .. } = &mut fresh.read {
+            let key = match self.family.selection {
+                Selection::Naval(_) => "header_container/naval_battle_title",
+                Selection::NavalResult(_) => "name",
+                _ => return Ok(fresh),
+            };
+            if bindings.values.get(key).is_some_and(|widget| widget.hidden) { return Ok(fresh); }
+            let name = self.battle_title_source.as_ref().ok_or_else(|| "Battle name source unavailable".into())
+                .and_then(|source| source(branch, hour, self.family.selection)).unwrap_or_else(|reason| {
+                    bindings.refuse(reason);
+                    "Battle name not recorded".into()
+                });
+            bindings.bind(key, binding::TEXT, Ok(name));
+        }
+        Ok(fresh)
     }
 
     fn request(&self, branch: replay_data::BranchId, hour: replay_data::Hour, frame: Result<Arc<replay_frame::frame::DecodedFrame>, String>, engaged: Option<Arc<History>>) -> Request {

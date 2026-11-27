@@ -1,6 +1,7 @@
 import { useRef, useState, type RefObject } from 'react';
 import { jumpItem } from '../../charts/jump.ts';
 import { BattleViewer } from '../../components/BattleViewer.tsx';
+import { BattleTitleHeading } from '../../components/BattleTitleHeading.tsx';
 import { formatDay } from '../../dashboard/calendar';
 import type { FamilyViewProps, FamilyViewRenderer, WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
@@ -42,7 +43,7 @@ function SunkBattle({ asked, track, runtime, anchor, onClose }: {
     <span className="bv-missing" data-tooltip={reason} tabIndex={0}><i className="bv-hatch" aria-hidden="true" />Battle not available</span>
     {course.error && classifyFailure(course.error)?.kind === 'retryable' && <button type="button" className="button small" onClick={course.retry}>Try again</button>}
   </> : <span className="lb-note" aria-busy="true">Reading the battle…</span>;
-  return <BattleViewer subject={asked.battle.key} title={asked.battle.title} day={<span className="bv-when"><time>{formatDay(asked.sunk)}</time></span>}
+  return <BattleViewer subject={asked.battle.key} title={<BattleTitleHeading client={runtime.client} track={track} battle={asked.battle.key} />} day={<span className="bv-when"><time>{formatDay(asked.sunk)}</time></span>}
     closeLabel="Close battle viewer" anchor={anchor} returnFocus={mirrorRowSelector(asked.row)} runtime={runtime} track={track} province={null}
     span={null} unplayable={unplayable} gaps={[]} fallbackHour={asked.sunk} onClose={onClose} views={['battle']}
     sides={() => null} battle={() => null} />;

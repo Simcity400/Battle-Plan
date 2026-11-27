@@ -1,5 +1,7 @@
 use dashboard_base::products::Registered;
 
+pub mod battle_names;
+
 pub static PRODUCTS: std::sync::LazyLock<Vec<Registered>> = std::sync::LazyLock::new(|| {
     let mut products = [
         dashboard_air::registrations::PRODUCTS,
@@ -13,6 +15,7 @@ pub static PRODUCTS: std::sync::LazyLock<Vec<Registered>> = std::sync::LazyLock:
         dashboard_research::registrations::PRODUCTS,
         dashboard_wars::registrations::PRODUCTS,
         dashboard_world::registrations::PRODUCTS,
+        battle_names::PRODUCTS,
     ].concat();
     products.sort_unstable_by_key(|product| product.key);
     products

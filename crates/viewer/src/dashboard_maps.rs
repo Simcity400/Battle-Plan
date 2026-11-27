@@ -944,7 +944,7 @@ impl DashboardMaps {
                 .service
                 .widget_map_settings(&source.source.replay(), &view.target.id)
                 .graphics;
-            let document = match Document::from_content(Arc::clone(content), source.source.replay())
+            let mut document = match Document::from_content(Arc::clone(content), source.source.replay())
             {
                 Ok(document) => document,
                 Err(error) => {
@@ -952,6 +952,7 @@ impl DashboardMaps {
                     continue;
                 }
             };
+            document.bind_source(&source.source);
             let (sender, receiver) = mpsc::sync_channel(1);
             let wake = ctx.clone();
             let alive = Arc::new(AtomicBool::new(true));

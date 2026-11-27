@@ -8,9 +8,9 @@ import type { ShipsSunkTailReply, SinkingRow } from '../../generated/dashboard';
 import { SHIPS_SUNK_COLUMNS } from './definition.ts';
 import { shipsSunkProjection } from './shipsSunkProjection.ts';
 
-const provinces: IdentityProvider = {
+const titles: IdentityProvider = {
   resolve(kind, key, atHour) {
-    const name = kind === 'province' && key === '601' ? 'Mod Strait' : undefined;
+    const name = kind === 'battle' && key === 'combat:20:5' ? 'Second Battle of Mod Strait' : undefined;
     return {
       kind, key, atHour,
       holder: { status: 'ready', value: key }, tag: { status: 'ready', value: key },
@@ -28,13 +28,13 @@ function project(rows: SinkingRow[]) {
     nextChange: null, missing: [], warnings: [],
   };
   const source = buildRowSourceFromHead('branch', head, undefined, 20)!;
-  const view = createBoundedReadView({ hour: 20, rows: new Map([['main', source]]), identity: provinces });
+  const view = createBoundedReadView({ hour: 20, rows: new Map([['main', source]]), identity: titles });
   return shipsSunkProjection.project(view, { prefix: 'branch:', selected: [] });
 }
 
 const sinking = (key: string, overrides: Partial<SinkingRow>): SinkingRow => ({
   key, hour: 10, observed: 20, name: 'Meridian', classToken: 17, recordedClass: 'Corvette', attacker: 'AAA', victim: 'BBB',
-  seaZone: null, battle: { kind: 'notRecorded', reason: 'No recorded link' }, battleProvince: null,
+  seaZone: null, battle: { kind: 'notRecorded', reason: 'No recorded link' },
   sinkingCause: { kind: 'notRecorded', reason: 'Cause not recorded' }, ...overrides,
 });
 
@@ -65,17 +65,17 @@ test('ship rows name the class and keep the victim dimmed, with the missing mark
 
 test('a battle row names the battle in bold with its recorded killer beside it, and only the battle when the killer is not recorded', () => {
   const model = project([
-    sinking('0', { battle: linked, battleProvince: 601, sinkingCause: { kind: 'ship', name: 'Mod Raider', classKey: 'mod_raider_hull', className: null, assisted: false } }),
-    sinking('1', { battle: linked, battleProvince: 601 }),
-    sinking('2', { battle: linked, battleProvince: 999, sinkingCause: { kind: 'airWing', carrierName: null, carrierClassKey: null, carrierClassName: null, assisted: false } }),
+    sinking('0', { battle: linked, sinkingCause: { kind: 'ship', name: 'Mod Raider', classKey: 'mod_raider_hull', className: null, assisted: false } }),
+    sinking('1', { battle: linked }),
+    sinking('2', { battle: { ...linked, id: 'combat:22:6', liveId: 'combat:22:6', firstHour: 6 },
+      sinkingCause: { kind: 'airWing', carrierName: null, carrierClassKey: null, carrierClassName: null, assisted: false } }),
   ]);
   const [known, unknown, unnamed] = model.rows;
-  assert.deepEqual(known!.cells.cause?.value, { kind: 'known', value: 'Battle of Mod Strait' });
+  assert.deepEqual(known!.cells.cause?.value, { kind: 'known', value: 'Second Battle of Mod Strait' });
   assert.equal(known!.cells.cause?.strong, true);
   assert.equal(known!.cells.cause?.inlineSubtext, 'by mod_raider_hull');
-  assert.equal(known!.cells.cause?.narrowText, 'Battle');
   const knownTip = tooltip(known!);
-  assert.deepEqual(knownTip.value('Battle'), { kind: 'known', value: 'Battle of Mod Strait' });
+  assert.deepEqual(knownTip.value('Battle'), { kind: 'known', value: 'Second Battle of Mod Strait' });
   assert.deepEqual(knownTip.value('Sunk by'), { kind: 'known', value: 'Mod Raider' });
   assert.deepEqual(knownTip.value('Killer class'), { kind: 'known', value: 'mod_raider_hull' });
   assert.deepEqual(knownTip.labels, ['Date', 'Killer', 'Victim', 'Class', 'Sea zone', 'Battle', 'Sunk by', 'Killer class', 'First recorded'],
@@ -83,12 +83,12 @@ test('a battle row names the battle in bold with its recorded killer beside it, 
   assert.deepEqual(knownTip.value('Victim'), { kind: 'partial', value: 'BBB', reason: 'Name not recorded' }, 'a country whose name is not recorded keeps its tag, marked partial, never as a known name');
   assert.equal(unknown!.cells.cause?.inlineSubtext, undefined);
   assert.deepEqual(tooltip(unknown!).value('Sunk by'), { kind: 'notRecorded', reason: 'Killer not recorded' });
-  assert.deepEqual(unnamed!.cells.cause?.value, { kind: 'known', value: 'Battle' }, 'a battle whose name is not recorded still shows its killer');
+  assert.deepEqual(unnamed!.cells.cause?.value, { kind: 'notRecorded', reason: 'Name not recorded' });
   assert.equal(unnamed!.cells.cause?.inlineSubtext, 'by aircraft');
   assert.equal(tooltip(unnamed!).value('Battle')?.kind, 'notRecorded');
   assert.equal(known!.cells.action?.actionLabel, 'Watch', 'a sinking in a recorded battle offers Watch on that battle');
-  assert.deepEqual(known!.meta, { hour: known!.rowHour, battle: { key: linked.id, title: 'Battle of Mod Strait' } });
-  assert.deepEqual(unnamed!.meta, { hour: unnamed!.rowHour, battle: { key: linked.id, title: 'Naval battle' } });
+  assert.deepEqual(known!.meta, { hour: known!.rowHour, battle: { key: linked.id } });
+  assert.deepEqual(unnamed!.meta, { hour: unnamed!.rowHour, battle: { key: 'combat:22:6' } });
   const [alone] = project([sinking('3', {})]).rows;
   assert.equal(alone!.cells.action?.blank, true, 'a sinking with no recorded battle has nothing to watch');
   assert.deepEqual(alone!.meta, { hour: alone!.rowHour, battle: null });
