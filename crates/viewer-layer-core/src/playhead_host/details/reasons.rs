@@ -2,7 +2,13 @@ use super::super::{Entry, lock};
 use playhead::pages::Pages;
 use replay_columnar::unit::reader;
 use replay_data::rows::TableId;
-use std::{collections::HashMap, io, sync::{Arc, Condvar, Mutex, Weak}, time::{Duration, Instant}};
+use std::{collections::HashMap, io, sync::{Arc, Condvar, Mutex, Weak, atomic::{AtomicU64, Ordering}}, time::{Duration, Instant}};
+
+static READ: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn landed() -> u64 {
+    READ.load(Ordering::Acquire)
+}
 
 pub const BEING_READ: &str = "its reason is being read from the recording";
 
@@ -28,6 +34,7 @@ impl Reason {
             Err(error) => Text::Failed(error.to_string()),
         };
         *lock(&self.text) = Some(text);
+        READ.fetch_add(1, Ordering::AcqRel);
         self.read.notify_all();
     }
 

@@ -3769,6 +3769,7 @@ impl Viewer {
         device: &eframe::wgpu::Device,
         queue: &eframe::wgpu::Queue,
         point: Option<[f32; 2]>,
+        ctx: &egui::Context,
     ) -> Result<(), String> {
         let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
         let adjacency = self.map_mode == viewer_map_modes::map_mode::MapMode::Stock(viewer_map_modes::map_mode::Stock::StrategicNavy);
@@ -3833,7 +3834,13 @@ impl Viewer {
         });
         if let Some(prepared) = self.faction_highlight.update_with(
             key,
-            |job| pool.try_submit(job),
+            |job| {
+                let wake = ctx.clone();
+                pool.try_submit(Box::new(move || {
+                    job();
+                    wake.request_repaint();
+                }))
+            },
             move || {
                 let source = over;
                 move || {
@@ -4432,12 +4439,14 @@ impl Viewer {
             self.playhead_opening = None;
             let ctx = ui.ctx().clone();
             let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(viewer_runtime::worker_priority::waking(move || ctx.request_repaint()));
+            let published = Arc::clone(&wake);
             match made.and_then(|side| viewer_playback::side::SideThread::new(side, wake)) {
                 Ok(side) if self.playhead.is_some_and(|clock| side.branch().is_some_and(|branch| branch != clock.branch)) => {
                     self.drop_later(side);
                     self.playhead_opened = false;
                 }
                 Ok(side) => {
+                    side.views().set_on_publish(published);
                     document.playback.read_rosters_of(side.entry());
                     let released = document.playback.release_source();
                     self.retire(released);
@@ -5579,6 +5588,9 @@ impl Viewer {
                 }
                 return Ok(());
             }
+            if let Some(side) = live_of(&self.playhead_map) {
+                self.overlay_loading.extend(side.products().overlay_loading.iter().cloned());
+            }
             if self.drop_overlay_drawn()
                 && let Some(scene) = self.scene.as_mut()
             {
@@ -5603,7 +5615,11 @@ impl Viewer {
             if std::mem::take(&mut self.overlay_routes_pending) && tables.counters().routes_by_key() {
                 let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
                 let (fill, counters, movement) = (Arc::clone(&tables), Arc::clone(&document.content.counters), document.content.movement.clone());
-                pool.try_submit(Box::new(move || viewer_runtime::redraws::apart(|| fill.counters().fill_routes(&counters, movement.as_deref()))));
+                let wake = ui.ctx().clone();
+                pool.try_submit(Box::new(move || {
+                    viewer_runtime::redraws::apart(|| fill.counters().fill_routes(&counters, movement.as_deref()));
+                    wake.request_repaint();
+                }));
             }
             let overlay_state = live_of(&self.playhead_map).map(|side| {
                 let products = side.products();
@@ -6571,6 +6587,7 @@ impl Viewer {
             &state.device,
             &state.queue,
             point.filter(|_| !over_combat),
+            ui.ctx(),
         )?;
         let radar_at = point
             .filter(|_| !over_combat)

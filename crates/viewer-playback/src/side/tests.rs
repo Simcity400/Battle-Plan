@@ -170,6 +170,9 @@ impl viewer_layer_core::playhead_host::Overlaying<crate::map_open::Products> for
     fn refused(&self) -> bool {
         self.0.lock().unwrap().joined.is_some_and(|(_, refused)| refused)
     }
+    fn offered_stale(&self, _: viewer_layer_core::playhead_host::LayerParts<'_>) -> bool {
+        false
+    }
 }
 
 fn still(name: &str, overlay: Option<Answers>) -> (SideThread, Arc<AtomicUsize>) {

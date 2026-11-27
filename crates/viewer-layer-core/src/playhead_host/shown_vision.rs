@@ -1,5 +1,5 @@
 use replay_data::Hour;
-use std::{sync::Arc, time::Instant};
+use std::{sync::{Arc, atomic::{AtomicU64, Ordering}}, time::Instant};
 use viewer_foundation::perspective::{Choice, Vision};
 
 #[derive(Default)]
@@ -8,6 +8,8 @@ pub struct ShownVision {
     making: Option<(VisionKey, Instant, u64)>,
     forgotten: u64,
     maker: Option<(std::sync::mpsc::Sender<crate::vision::SeenCopy>, std::sync::mpsc::Receiver<Arc<Vision>>)>,
+    landed: Arc<AtomicU64>,
+    joined: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -50,6 +52,7 @@ impl ShownVision {
         if self.maker.is_none() {
             let (jobs, receive) = std::sync::mpsc::channel::<crate::vision::SeenCopy>();
             let (send, made) = std::sync::mpsc::channel();
+            let landed = Arc::clone(&self.landed);
             let started = std::thread::Builder::new().name("shown vision".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();
                 let mut before = None;
@@ -59,6 +62,7 @@ impl ShownVision {
                     if send.send(Arc::new(seen)).is_err() {
                         return;
                     }
+                    landed.fetch_add(1, Ordering::AcqRel);
                 }
             });
             if started.is_ok() {
@@ -73,6 +77,7 @@ impl ShownVision {
 
     fn take_made(&mut self) {
         let Some((_, made)) = &self.maker else { return };
+        self.joined = self.landed.load(Ordering::Acquire);
         while let Ok(vision) = made.try_recv() {
             if let Some((key, at, forgotten)) = self.making.take()
                 && forgotten == self.forgotten
@@ -80,6 +85,10 @@ impl ShownVision {
                 self.held = Some((key, at, Ok(vision)));
             }
         }
+    }
+
+    pub fn landed(&self) -> bool {
+        self.landed.load(Ordering::Acquire) != self.joined
     }
 
     pub fn kept(&self) -> Result<Arc<Vision>, String> {

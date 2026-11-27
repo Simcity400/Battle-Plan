@@ -421,6 +421,7 @@ struct Held {
     laid_out: Option<LaidOut>,
     answered: u64,
     failed: bool,
+    refused: bool,
     loading: Vec<String>,
     missed: Vec<TableId>,
 }
@@ -471,7 +472,14 @@ pub struct Overlay {
     art: u64,
     posted: bool,
     suppressed: bool,
+    offered: Option<Offered>,
     maker: timeline::Maker,
+}
+
+type Offered = (LayInKeys, [usize; 6], Kinds, LeftToLayers, bool);
+
+fn offered(layers: viewer_layer_core::playhead_host::LayerParts<'_>) -> Offered {
+    (LayInKeys::of(layers), counter_kinds::published(layers).identity(), counter_kinds::draws(layers), LeftToLayers::of(Some(layers)), layers.draws("labels"))
 }
 
 impl Overlay {
@@ -498,6 +506,7 @@ impl Overlay {
             art: 0,
             posted: false,
             suppressed: false,
+            offered: None,
             maker: timeline::maker("overlay"),
         }
     }
@@ -592,6 +601,7 @@ impl Overlay {
             return false;
         }
         self.stamp += 1;
+        self.offered = Some((keys.clone(), published.identity(), draws, left, draws_labels));
         let want = Wanted {
             generation: self.generation,
             stamp: self.stamp,
@@ -658,7 +668,7 @@ impl Overlay {
     }
 
     fn joined(&mut self, published: u64, held: &Held) {
-        (self.joined, self.refused) = (published, held.failed && held.missed.is_empty());
+        (self.joined, self.refused) = (published, held.refused);
         if self.missed != held.missed {
             self.missed.clone_from(&held.missed);
         }
@@ -1126,9 +1136,9 @@ impl Maker {
         if made || said != self.said {
             self.shared.published.fetch_add(1, Ordering::AcqRel);
         }
-        self.said = said;
         held.loading = loading;
-        (held.answered, held.failed) = (want.stamp, failed);
+        (held.answered, held.failed, held.refused) = (want.stamp, failed, failed && said.missed.is_empty());
+        self.said = said;
         drop(held);
         self.shared.signal.notify_all();
     }
@@ -1199,6 +1209,10 @@ impl Overlaying<Products> for Overlay {
 
     fn refused(&self) -> bool {
         Overlay::refused(self)
+    }
+
+    fn offered_stale(&self, layers: viewer_layer_core::playhead_host::LayerParts<'_>) -> bool {
+        self.posted && self.offered.as_ref() != Some(&offered(layers))
     }
 }
 
