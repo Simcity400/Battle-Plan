@@ -470,10 +470,10 @@ fn a_range_orders_contracts_by_the_first_event_in_it_known_at_the_played_hour() 
         "mkt-range-order",
         frames(100..=112, |hour| match hour {
             100 => vec![event(1, hour, 11, MarketEventRow::default())],
-            101 => vec![event(2, hour, 11, MarketEventRow { agreement: 0x35, ..Default::default() })],
+            101 => vec![MarketEventRow { agreement: 0x35, ..event(2, hour, 11, MarketEventRow::default()) }],
             105 => vec![event(3, hour, 21, MarketEventRow { amount_raw: 7_300, ..Default::default() })],
-            106 => vec![event(4, hour, 21, MarketEventRow { agreement: 0x35, amount_raw: 8_300, ..Default::default() })],
-            108 => vec![event(5, 104, 21, MarketEventRow { agreement: 0x35, amount_raw: 9_300, ..Default::default() })],
+            106 => vec![MarketEventRow { agreement: 0x35, ..event(4, hour, 21, MarketEventRow { amount_raw: 8_300, ..Default::default() }) }],
+            108 => vec![MarketEventRow { agreement: 0x35, ..event(5, 104, 21, MarketEventRow { amount_raw: 9_300, ..Default::default() }) }],
             110 => vec![event(6, 107, 12, MarketEventRow { flags: 1, ..Default::default() })],
             _ => Vec::new(),
         }),
