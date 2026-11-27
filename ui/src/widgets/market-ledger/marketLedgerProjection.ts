@@ -30,6 +30,7 @@ export interface MarketLedgerProjectionOptions {
   readonly perspective: string | null;
   readonly selectionEmpty: string | null;
   readonly expanded?: readonly string[];
+  readonly range?: boolean;
 }
 
 const GROUP = 'group:';
@@ -287,6 +288,7 @@ function buildContractRow(
   perspective: string | null,
   boundary: ReturnType<typeof newIdentityBoundary>,
   expanded: readonly string[],
+  totalsAt: number | null,
 ): TableRow {
   const sign = perspectiveSign(contract, perspective);
   const summary = primaryItemSummary(contract.items);
@@ -302,6 +304,10 @@ function buildContractRow(
       { label: 'Seller', value: contract.seller ? knownValue(contract.seller) : notRecorded(contract.sellerNotRecorded ? 'Seller not recorded' : 'Seller name unavailable') },
       { label: 'Buyer', value: contract.buyer ? knownValue(contract.buyer) : notRecorded(contract.buyerNotRecorded ? 'Buyer not recorded' : 'Buyer name unavailable') },
     ];
+    if (totalsAt !== null) {
+      out.push({ label: 'Totals at', value: knownValue(formatDateTime(totalsAt)) });
+      out.push({ label: 'Events in range', value: knownValue(contract.eventsTotal) });
+    }
     if (!contract.exact) out.push({ label: 'First seen', value: knownValue(formatDateTime(contract.observed)) });
     if (contract.startedHour !== null) out.push({ label: 'Started', value: knownValue(formatDateTime(contract.startedHour)) });
     else if (!contract.request) out.push({ label: 'Started', value: notRecorded('The contract began before its first recorded event') });
@@ -349,8 +355,8 @@ function buildContractRow(
       item: summary.label !== null
         ? { value: knownValue(summary.label), ...(summary.subtext ? { inlineSubtext: summary.subtext } : {}) }
         : { value: notRecorded(summary.missing ?? 'Equipment design not recorded'), ...(summary.subtext ? { inlineSubtext: summary.subtext } : {}) },
-      delivered: deliveredCell(contract.items, contract.deliveryMissing),
-      paid: paidCell(contract, sign),
+      delivered: { ...deliveredCell(contract.items, contract.deliveryMissing), ...(totalsAt !== null ? { inlineSubtext: 'Contract total' } : {}) },
+      paid: { ...paidCell(contract, sign), ...(totalsAt !== null ? { inlineSubtext: 'Contract total' } : {}) },
       status: logStatusCell(statusInfo.label, statusInfo.mark, statusInfo.muted ? 'muted' : undefined),
       action: { value: notApplicable('Expand contract'), blank: true },
     },
@@ -394,7 +400,7 @@ export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptio
       hour,
       readView.rowWindow,
       line => line.line === 'contract'
-        ? buildContractRow(readView, line, options.perspective, boundary, options.expanded ?? [])
+        ? buildContractRow(readView, line, options.perspective, boundary, options.expanded ?? [], options.range ? source.at ?? hour : null)
         : line.line === 'event' ? buildChildEventRow(line, options.perspective) : buildMoreRow(line),
     );
     const rawHead = source.rawHead as { readonly warnings?: readonly string[] } | undefined;
@@ -479,6 +485,7 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
       perspective,
       selectionEmpty,
       expanded: contentSet(ctx.options.expanded),
+      range: ctx.widget.time.mode === 'range',
     };
   },
 };

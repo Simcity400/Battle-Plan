@@ -12,7 +12,7 @@ use dashboard_query::{
     identity::{Country, Holders},
     log::{
         Cell, Reader,
-        occurrence::{Ask, Chip, Direction, Index, Occurrence, Order, PlacedGap, Role, SearchText, Selection, Shown},
+        occurrence::{Ask, Chip, Direction, Index, Occurrence, Order, PlacedGap, Role, SearchText, Selection, Shown, SortKey},
     },
     series::{MissingSpan, ranked::GroupSelection},
     timeline::Timeline,
@@ -519,6 +519,29 @@ enum Line {
 struct Opening {
     expanded: BTreeSet<u32>,
     full: BTreeSet<u32>,
+    from: Option<i32>,
+    to: Option<i32>,
+}
+
+impl Opening {
+    fn ranged(&self) -> bool {
+        self.from.is_some() || self.to.is_some()
+    }
+
+    fn includes(&self, child: &Child) -> bool {
+        self.from.is_none_or(|from| child.hour >= from) && self.to.is_none_or(|to| child.hour <= to)
+    }
+}
+
+struct Lines {
+    index: Index<Line>,
+    reads: Option<Vec<Box<[i32]>>>,
+}
+
+impl Lines {
+    fn events_total(&self, at: u32, placed: &Placed, hour: i32) -> usize {
+        self.reads.as_ref().map_or_else(|| placed.contract.read_by(hour), |reads| reads[at as usize].partition_point(|&observed| observed <= hour))
+    }
 }
 
 type TermsKey = (i32, u32, u64, u8);
@@ -528,8 +551,8 @@ struct Ledger {
     by_key: HashMap<u128, u32>,
     unread: Unread,
     untold: Vec<(i32, [u32; 2])>,
-    closed: Arc<Index<Line>>,
-    opened: Mutex<Option<(Opening, Arc<Index<Line>>)>>,
+    closed: Arc<Lines>,
+    opened: Mutex<Option<(Opening, Arc<Lines>)>>,
     terms: Mutex<HashMap<TermsKey, Option<Arc<Terms>>>>,
 }
 
@@ -540,11 +563,11 @@ impl Ledger {
         };
         let expanded = find(&params.expanded);
         let full = find(&params.full).intersection(&expanded).copied().collect();
-        Opening { expanded, full }
+        Opening { expanded, full, from: params.from, to: params.to }
     }
 
-    fn index(&self, opening: Opening, cancelled: &AtomicBool) -> io::Result<Arc<Index<Line>>> {
-        if opening.expanded.is_empty() {
+    fn index(&self, opening: Opening, cancelled: &AtomicBool) -> io::Result<Arc<Lines>> {
+        if opening.expanded.is_empty() && !opening.ranged() {
             return Ok(Arc::clone(&self.closed));
         }
         let mut kept = self.opened.lock().unwrap_or_else(PoisonError::into_inner);
@@ -569,32 +592,61 @@ fn following(states: &[(i32, u8)], from: i32, hidden: Option<i32>) -> Box<[(i32,
     out.into_boxed_slice()
 }
 
-fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io::Result<Index<Line>> {
+fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io::Result<Lines> {
     let opened: usize = opening.expanded.iter().map(|&at| contracts[at as usize].contract.children.len() + 1).sum();
     let mut entries = Vec::with_capacity(contracts.len() + opened);
-    let mut push = |payload: Line, placed: &Placed, kind: u16, observed: i32, states: Box<[(i32, u8)]>| {
-        entries.push(Occurrence {
-            id: u128::MAX - entries.len() as u128,
-            date: placed.date,
-            observed,
-            kind,
-            roles: placed.roles.clone(),
-            subjects: Box::new([]),
-            states,
-            sort_keys: Box::new([]),
-            text: placed.text.clone(),
-            payload,
-        });
-    };
+    let mut reads = opening.ranged().then(|| Vec::with_capacity(contracts.len()));
     for (at, placed) in contracts.iter().enumerate() {
         let at = at as u32;
-        push(Line::Contract(at), placed, u16::from(placed.contract.request), placed.observed, placed.states.clone());
+        let children = &placed.contract.children;
+        let selected: Vec<u32> = if opening.ranged() || opening.expanded.contains(&at) {
+            (0..children.len() as u32).filter(|&place| opening.includes(&children[place as usize])).collect()
+        } else {
+            Vec::new()
+        };
+        if let Some(reads) = &mut reads {
+            reads.push(selected.iter().map(|&place| children[place as usize].observed).collect());
+        }
+        if opening.ranged() && selected.is_empty() { continue; }
+        let observed = selected.first().filter(|_| opening.ranged()).map_or(placed.observed, |&first| children[first as usize].observed);
+        let date = if opening.ranged() { selected.iter().map(|&place| children[place as usize].hour).min().unwrap_or(placed.date) } else { placed.date };
+        let mut steps: Vec<(i32, Option<i64>)> = Vec::new();
+        if opening.ranged() {
+            let mut earliest = i32::MAX;
+            for &place in &selected {
+                let child = &children[place as usize];
+                if steps.is_empty() || child.hour < earliest {
+                    earliest = child.hour;
+                    let value = Some((i64::from(earliest) << 32) + i64::from(u32::MAX - at));
+                    match steps.last_mut() {
+                        Some(last) if last.0 == child.observed => last.1 = value,
+                        _ => steps.push((child.observed, value)),
+                    }
+                }
+            }
+        }
+        let sort_key = if steps.len() == 1 { SortKey::number(steps[0].1) } else { SortKey::dated_numbers(steps) };
+        let mut push = |payload: Line, kind: u16, observed: i32, states: Box<[(i32, u8)]>| {
+            entries.push(Occurrence {
+                id: u128::MAX - entries.len() as u128,
+                date,
+                observed,
+                kind,
+                roles: placed.roles.clone(),
+                subjects: Box::new([]),
+                states,
+                sort_keys: if opening.ranged() { vec![sort_key.clone()].into_boxed_slice() } else { Box::new([]) },
+                text: placed.text.clone(),
+                payload,
+            });
+        };
+        push(Line::Contract(at), u16::from(placed.contract.request), observed, following(&placed.states, observed, None));
         if !opening.expanded.contains(&at) {
             continue;
         }
-        let children = &placed.contract.children;
         let full = opening.full.contains(&at);
-        let mut ranked: Vec<u32> = (0..children.len() as u32).collect();
+        let more = selected.get(CHILDREN_SHOWN).map(|&place| children[place as usize].observed);
+        let mut ranked = selected;
         ranked.sort_unstable_by_key(|&place| Reverse(children[place as usize].rank()));
         let mut newer: BinaryHeap<i32> = BinaryHeap::with_capacity(CHILDREN_SHOWN + 1);
         for place in ranked {
@@ -609,13 +661,13 @@ fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io:
             if hidden.is_some_and(|hidden| hidden <= child.observed) {
                 continue;
             }
-            push(Line::Event(at, place), placed, EVENT, child.observed, following(&placed.states, child.observed, hidden));
+            push(Line::Event(at, place), EVENT, child.observed, following(&placed.states, child.observed, hidden));
         }
-        if let Some(first) = children.get(CHILDREN_SHOWN) {
-            push(Line::More(at), placed, MORE, first.observed, following(&placed.states, first.observed, None));
+        if let Some(observed) = more {
+            push(Line::More(at), MORE, observed, following(&placed.states, observed, None));
         }
     }
-    Index::new(entries, gaps, &LIVE)
+    Ok(Lines { index: Index::new(entries, gaps, &LIVE)?, reads })
 }
 
 #[derive(Default)]
@@ -981,7 +1033,7 @@ const UNNAMED: &str = "The recording does not name this design at the ledger's r
 
 struct Prepared {
     ledger: Arc<Ledger>,
-    index: Arc<Index<Line>>,
+    index: Arc<Lines>,
     selection: Option<Selection>,
     context: Arc<names::Context>,
     namings: Arc<BTreeMap<u32, Arc<names::Naming>>>,
@@ -1092,7 +1144,7 @@ fn contract_row(ledger: &Ledger, shown: &Shown, placed: &Placed, hour: i32, term
 
 fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<MarketLedgerTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let (ledger, index) = (&prepared.ledger, &prepared.index);
+    let (ledger, index) = (&prepared.ledger, &prepared.index.index);
     let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
     let states: Vec<u8> = match &params.statuses {
         Some(statuses) => statuses.iter().map(|status| status.code()).collect(),
@@ -1114,8 +1166,8 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
             kinds: None,
             states: Some(&states),
             search: params.search.as_deref(),
-            order: Order::Date(Direction::Descending),
-            live_first: true,
+            order: if prepared.index.reads.is_some() { Order::Key(0, Direction::Descending) } else { Order::Date(Direction::Descending) },
+            live_first: prepared.index.reads.is_none(),
             offset,
             limit,
             chips: &chips,
@@ -1180,7 +1232,12 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
         .rows
         .iter()
         .map(|shown| match index.get(shown.at).payload {
-            Line::Contract(at) => MarketLedgerLine::Contract(contract_row(ledger, shown, &ledger.contracts[at as usize], hour, &terms, &name_of)),
+            Line::Contract(at) => {
+                let placed = &ledger.contracts[at as usize];
+                let mut row = contract_row(ledger, shown, placed, hour, &terms, &name_of);
+                row.events_total = prepared.index.events_total(at, placed, hour).to_string();
+                MarketLedgerLine::Contract(row)
+            }
             Line::Event(at, place) => {
                 let placed = &ledger.contracts[at as usize];
                 let child = &placed.contract.children[place as usize];
@@ -1205,7 +1262,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
             }
             Line::More(at) => {
                 let placed = &ledger.contracts[at as usize];
-                let total = placed.contract.read_by(hour);
+                let total = prepared.index.events_total(at, placed, hour);
                 let hidden = if prepared.full.contains(&at) { 0 } else { total.saturating_sub(CHILDREN_SHOWN) };
                 MarketLedgerLine::More(MarketEventsMore { key: format!("more:{}", placed.key), hour: placed.date, contract: placed.key.to_string(), total: total.to_string(), hidden: hidden.to_string() })
             }
