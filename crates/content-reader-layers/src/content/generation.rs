@@ -59,6 +59,10 @@ impl Loading {
         self.graph.release_sources();
     }
 
+    pub fn release_parsers(&self, parsers: &[&str]) {
+        self.graph.release_parsers(parsers);
+    }
+
     pub fn enter_generation(&self) -> Generation {
         Generation::attach(Arc::clone(&self.graph))
     }

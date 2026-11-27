@@ -1,11 +1,11 @@
 use crate::unit_pose::PLANE_UNRECORDED;
 use viewer_runtime::{errors::invalid, name_draw::Placements};
-use crate::{ribbon_fixed::Smoothing, textures::load_file};
+use crate::ribbon_fixed::Smoothing;
 use bytemuck::{Pod, Zeroable};
 use content_reader_layers::ResolvedLayers;
 use content_reader_defines::defines::{Defines, Defines as ContentDefines};
 use content_reader_parser::parser::{self, Value};
-use content_reader_image::{dds, native::Decode};
+use content_reader_image::native::Decode;
 use std::{collections::BTreeMap, io};
 pub const MAPARROWS: &str = "gfx/maparrows/maparrows.txt";
 pub const GROUP_SECTION_TYPE_NAME: &str = "ag_child_defence_line";
@@ -602,7 +602,7 @@ pub struct OrderAssets {
 pub struct SymbolPage {
     pub technique: String,
     pub size: f32,
-    pub texture: dds::Texture,
+    pub texture: super::textures::DeferredTexture,
     pub colors: [[f32; 4]; 3],
     pub rotation: i64,
 }
@@ -715,11 +715,13 @@ impl SymbolPage {
                 "{symbol} symbolType text attachments are not drawn"
             )));
         }
-        let texture = load_file(&texture, &|path| layers.read_uncovered_path(path), decode)?;
-        if texture.format != dds::TextureFormat::Rgba8 {
-            return Err(invalid(format!("{symbol} symbol texture: expected RGBA8")));
-        }
-        super::textures::check_upload("radar symbol", &texture, super::textures::ColorSpace::Srgb)?;
+        let texture = super::textures::DeferredTexture::load_uncovered(
+            layers,
+            texture,
+            decode,
+            true,
+            Some(("radar symbol", super::textures::ColorSpace::Srgb)),
+        )?;
         let (colors, rotation) =
             layers.graphics_define("radar symbols", graphics, recorded, |defines| {
                 let color = |name| -> io::Result<[f32; 4]> {
@@ -753,8 +755,8 @@ impl SymbolPage {
 
 #[derive(Debug)]
 pub struct ArrowPage {
-    pub mask: dds::Texture,
-    pub pattern: dds::Texture,
+    pub mask: super::textures::DeferredTexture,
+    pub pattern: super::textures::DeferredTexture,
     pub variants: u32,
 }
 
@@ -890,12 +892,14 @@ fn page(
     arrow: &ArrowType,
     choice: usize,
 ) -> io::Result<ArrowPage> {
-    let read = |path: &str| -> io::Result<dds::Texture> {
-        let image = load_file(path, &|path| layers.read_uncovered_path(path), decode)?;
-        if image.format != dds::TextureFormat::Rgba8 {
-            return Err(invalid(format!("{path}: expected RGBA8")));
-        }
-        Ok(image)
+    let read = |path: &str| -> io::Result<super::textures::DeferredTexture> {
+        super::textures::DeferredTexture::load_uncovered(
+            layers,
+            path.to_owned(),
+            decode,
+            true,
+            None,
+        )
     };
     Ok(ArrowPage {
         mask: read(&arrow.masks[choice])?,

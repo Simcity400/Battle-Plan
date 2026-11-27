@@ -175,6 +175,27 @@ impl Loader {
         Ok(localisation)
     }
 
+    pub fn record_shared_localisation(
+        &self,
+        stack: &ResolvedLayers,
+        language: &str,
+        localisation: &content_reader_localisation::localisation::Localisation,
+    ) -> io::Result<()> {
+        let reader = self.reader(stack, "localisation");
+        self.result(content_reader_localisation::localisation::observe_files(
+            &reader, language,
+        ))?;
+        for note in localisation
+            .logged
+            .iter()
+            .chain(&localisation.refused)
+            .chain(&localisation.duplicates)
+        {
+            self.reads.session_note(note);
+        }
+        Ok(())
+    }
+
     pub fn validate_heightmap(
         &self,
         image: &content_reader_image::IndexedImage,

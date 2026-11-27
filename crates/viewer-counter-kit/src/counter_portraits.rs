@@ -11,7 +11,9 @@ use content_reader_layers::ResolvedLayers;
 use content_reader_key_names::characters::{self, Authored};
 use content_reader_gui::gui::native::resources;
 use content_reader_gfx::gfx::SpriteSet;
-use content_reader_image::{dds, native::Decode};
+#[cfg(test)]
+use content_reader_image::dds;
+use content_reader_image::native::Decode;
 
 use viewer_native_gui::{lazy_icons::{LazyImages, LazyTextures, Lookup}, sprites::SpriteSheet};
 
@@ -132,11 +134,11 @@ impl Portraits {
 }
 
 pub fn load_sprite(
-    layers: &ResolvedLayers,
+    layers: &Arc<ResolvedLayers>,
     sprites: &SpriteSet,
     name: &str,
     decode: Decode,
-    images: &mut Vec<dds::Texture>,
+    images: &mut Vec<viewer_gpu::textures::GuiSource>,
 ) -> io::Result<SpriteSheet> {
     let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
     let sprite = sprites.lookup(name).map_err(invalid)?;
@@ -146,8 +148,9 @@ pub fn load_sprite(
             .as_deref()
             .ok_or_else(|| invalid(format!("sprite {name} names no texturefile")))?,
     );
-    let texture = resources::stack_texture(layers, path.as_bytes(), decode)?
-        .map_err(|why| invalid(format!("{name}: {why}")))?;
+    let texture =
+        resources::stack_texture_or_recorded_transient(layers, None, path.as_bytes(), decode)?
+            .map_err(|why| invalid(format!("{name}: {why}")))?;
     let texture = texture.image;
     if sprite.frames == 0 || texture.width < sprite.frames {
         return Err(invalid(format!(
@@ -156,7 +159,13 @@ pub fn load_sprite(
         )));
     }
     let size = [texture.width, texture.height];
-    images.push(texture);
+    images.push(viewer_gpu::textures::GuiSource::deferred_stack(
+        Arc::clone(layers),
+        None,
+        path.into_bytes(),
+        decode,
+        &texture,
+    ));
     Ok(SpriteSheet {
         name: name.to_owned(),
         texture: images.len() - 1,
@@ -342,6 +351,7 @@ mod tests {
                 b"spriteTypes = { spriteType = { name = GFX_portrait texturefile = gfx/portrait.tga } }",
             ),
         )]);
+        let shared = Arc::new(layers);
         for (decode, expected) in [
             (Decode::default(), [3, 2]),
             (
@@ -352,7 +362,7 @@ mod tests {
             ),
         ] {
             let sheet =
-                load_sprite(&layers, &sprites, "GFX_portrait", decode, &mut Vec::new()).unwrap();
+                load_sprite(&shared, &sprites, "GFX_portrait", decode, &mut Vec::new()).unwrap();
             assert_eq!(sheet.size, expected);
         }
         std::fs::remove_dir_all(root).unwrap();

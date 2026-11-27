@@ -1,5 +1,7 @@
 use content_reader_gui::gui::native::{self, Element, resources};
-use content_reader_image::{dds, native::Decode};
+#[cfg(test)]
+use content_reader_image::dds;
+use content_reader_image::native::Decode;
 use content_reader_layers::ResolvedLayers;
 use content_reader_localisation::localisation::{self, Localisation, Piece, pieces};
 use dashboard_base::Source;
@@ -579,7 +581,7 @@ pub struct CachedWindow {
     pub guis: Arc<native::Guis>,
     pub gui: GuiResources,
     pub localisation: Arc<Localisation>,
-    pub images: Vec<dds::Texture>,
+    pub images: Vec<viewer_gpu::textures::GuiSource>,
     pub textures: IconTextures,
     pub lazy: Arc<LazyTextures>,
     pub pass: SpritePass,
@@ -592,6 +594,7 @@ pub struct CachedWindow {
     decode: Decode,
     base_assets: Assets,
     base_image_count: usize,
+    dirty_textures: bool,
 }
 
 fn resolve_map_size(recorded_layers: &ResolvedLayers, warnings: &mut Vec<String>) -> [u32; 2] {
@@ -654,7 +657,7 @@ impl CachedWindow {
         if let Some(note) = gui.uncovered_note(window_name) {
             warnings.push(note);
         }
-        let textures = IconTextures::new(&gpu.device, &gpu.queue, &images).map_err(|error| {
+        let textures = IconTextures::from_sources(&gpu.device, &gpu.queue, &images).map_err(|error| {
             GameWindowError::failed(format!(
                 "Could not upload textures for '{window_name}': {error}"
             ))
@@ -687,6 +690,7 @@ impl CachedWindow {
             decode,
             base_assets,
             base_image_count,
+            dirty_textures: false,
         })
     }
 
@@ -698,12 +702,14 @@ impl CachedWindow {
     ) -> Result<(), GameWindowError> {
         let art_layers = layers.presentation();
         let before = self.images.len();
-        self.gui
-            .load(art_layers, extra, &mut self.images)
-            .map_err(|error| {
-                GameWindowError::failed(format!("Could not load extra window assets: {error}"))
-            })?;
-        if self.images.len() == before {
+        let loaded = self.gui.load(art_layers, extra, &mut self.images);
+        if self.images.len() != before {
+            self.dirty_textures = true;
+        }
+        loaded.map_err(|error| {
+            GameWindowError::failed(format!("Could not load extra window assets: {error}"))
+        })?;
+        if !self.dirty_textures {
             return Ok(());
         }
         if self.images.len() > self.base_image_count.saturating_add(MAX_DYNAMIC_WINDOW_IMAGES) {
@@ -725,7 +731,7 @@ impl CachedWindow {
                         self.window_name
                     ))
                 })?;
-            self.base_image_count = rebuilt.len();
+            let new_base_count = rebuilt.len();
             fresh
                 .load(art_layers, extra, &mut rebuilt)
                 .map_err(|error| {
@@ -733,17 +739,42 @@ impl CachedWindow {
                         "Could not load extra window assets after compaction: {error}"
                     ))
                 })?;
+            let textures =
+                IconTextures::from_sources(&gpu.device, &gpu.queue, &rebuilt).map_err(|error| {
+                    GameWindowError::failed(format!(
+                        "Could not upload extra window textures: {error}"
+                    ))
+                })?;
+            let mut pass = SpritePass::new(
+                &gpu.device,
+                &gpu.queue,
+                &textures,
+                &self.lazy,
+                OUTPUT_FORMAT,
+            )
+            .map_err(|error| {
+                GameWindowError::failed(format!(
+                    "Could not rebuild renderer for extra assets: {error}"
+                ))
+            })?;
+            pass.set_layer(true);
+            pass.warm(&gpu.device, fresh.effects());
             self.gui = fresh;
             self.images = rebuilt;
+            self.base_image_count = new_base_count;
+            self.textures = textures;
+            self.pass = pass;
+            self.dirty_textures = false;
+            return Ok(());
         }
-        self.textures =
-            IconTextures::new(&gpu.device, &gpu.queue, &self.images).map_err(|error| {
+        let textures =
+            IconTextures::from_sources(&gpu.device, &gpu.queue, &self.images).map_err(|error| {
                 GameWindowError::failed(format!("Could not upload extra window textures: {error}"))
             })?;
-        self.pass = SpritePass::new(
+        let mut pass = SpritePass::new(
             &gpu.device,
             &gpu.queue,
-            &self.textures,
+            &textures,
             &self.lazy,
             OUTPUT_FORMAT,
         )
@@ -752,8 +783,11 @@ impl CachedWindow {
                 "Could not rebuild renderer for extra assets: {error}"
             ))
         })?;
-        self.pass.set_layer(true);
-        self.pass.warm(&gpu.device, self.gui.effects());
+        pass.set_layer(true);
+        pass.warm(&gpu.device, self.gui.effects());
+        self.textures = textures;
+        self.pass = pass;
+        self.dirty_textures = false;
         Ok(())
     }
 

@@ -29,6 +29,31 @@ pub fn localisation(source: &Source, content: &ContentOptions) -> io::Result<Arc
     localisation_with_key(source, content, localisation_key(content))
 }
 
+pub fn localisation_for(
+    source: &Source,
+    options: &content_reader_layers::ResolveOptions,
+    allow_unverified: bool,
+    resolved: &Arc<content_reader_layers::content::ResolvedContent>,
+) -> io::Result<Arc<Localisation>> {
+    let key = (
+        (
+            options.game_dir.clone(),
+            options.user_dir.clone(),
+            allow_unverified,
+        ),
+        options.cache_dir.clone(),
+    );
+    localisation_for_resolved(
+        source,
+        options,
+        allow_unverified,
+        key,
+        Some(resolved),
+        || Ok(Arc::clone(resolved)),
+        Keeping::On,
+    )
+}
+
 pub(crate) fn localisation_with_key(
     source: &Source,
     content: &ContentOptions,
@@ -50,36 +75,65 @@ pub(crate) fn localisation_in(
     resolved: impl FnOnce() -> io::Result<Arc<content_reader_layers::content::ResolvedContent>>,
     keeping: Keeping,
 ) -> io::Result<Arc<Localisation>> {
+    localisation_for_resolved(
+        source,
+        &content.options,
+        content.allow_unverified,
+        key,
+        None,
+        resolved,
+        keeping,
+    )
+}
+
+fn localisation_for_resolved(
+    source: &Source,
+    options: &content_reader_layers::ResolveOptions,
+    allow_unverified: bool,
+    key: LocalisationKey,
+    expected_resolved: Option<&Arc<content_reader_layers::content::ResolvedContent>>,
+    resolved: impl FnOnce() -> io::Result<Arc<content_reader_layers::content::ResolvedContent>>,
+    keeping: Keeping,
+) -> io::Result<Arc<Localisation>> {
     type Cached = Option<(
         LocalisationKey,
+        Option<std::sync::Weak<content_reader_layers::content::ResolvedContent>>,
         Arc<Localisation>,
         content_reader_layers::content::diagnostics::Diagnostics,
     )>;
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     if keeping == Keeping::On
-        && let Some((cached, localisation, diagnostics)) = state.as_ref()
+        && let Some((cached, cached_resolved, localisation, diagnostics)) = state.as_ref()
         && *cached == key
+        && expected_resolved.is_none_or(|expected| {
+            cached_resolved
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .is_some_and(|old| Arc::ptr_eq(&old, expected))
+        })
     {
         diagnostics.credit();
         return Ok(Arc::clone(localisation));
     }
     let mut warnings = Vec::new();
-    check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
+    check_replay(&source.replay(), allow_unverified, &mut warnings)?;
+    let mut built_resolved = expected_resolved.map(Arc::downgrade);
     let build = || {
         content_reader_layers::content::diagnostics::capture(|| {
             let layers = resolved()?;
+            built_resolved = Some(Arc::downgrade(&layers));
             let language = recorded_language(source.replay_ref());
             content_reader_localisation::localisation::read_cached(
                 &layers.layers,
                 &language,
-                &content.options.cache_dir,
+                &options.cache_dir,
             )
         })
     };
     let (localisation, diagnostics) = match keeping {
         Keeping::On => crate::catalogue::kept::kept(
-            crate::catalogue::kept::place::<Localisation>(source, &content.options.cache_dir, &[]),
+            crate::catalogue::kept::place::<Localisation>(source, &options.cache_dir, &[]),
             build,
         ),
         Keeping::Off => build(),
@@ -87,7 +141,13 @@ pub(crate) fn localisation_in(
     diagnostics.credit();
     let localisation = Arc::new(localisation?);
     if keeping == Keeping::On {
-        *state = Some((key, Arc::clone(&localisation), diagnostics));
+        if built_resolved.is_none() {
+            built_resolved = source
+                .bound_content(options)
+                .as_ref()
+                .map(Arc::downgrade);
+        }
+        *state = Some((key, built_resolved, Arc::clone(&localisation), diagnostics));
     }
     Ok(localisation)
 }
@@ -193,6 +253,28 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("unverified content"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn localisation_for_shares_cached_arc_with_localisation() {
+        let root = std::env::temp_dir().join(format!("shared-loc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (source, context) = crate::test_fixtures::source_with_content(
+            vec![crate::test_fixtures::source(1, 0, Some(1))],
+            &root,
+        );
+        let content = context.content.unwrap();
+        let resolved = source.content(&content.options).unwrap();
+        let first = super::localisation(&source, &content).unwrap();
+        let second = super::localisation_for(
+            &source,
+            &content.options,
+            content.allow_unverified,
+            &resolved,
+        )
+        .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -8,7 +8,7 @@ use viewer_gpu::{
     gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, Targets, buffer},
     province_map::HeightField,
     ribbon_content::SymbolPage,
-    textures::{ColorSpace, upload},
+    textures::ColorSpace,
 };
 use viewer_foundation::visibility::Families;
 
@@ -286,11 +286,10 @@ impl Pass {
         effect: &Arc<shader_pipeline::library::Effect>,
         label: &'static str,
     ) -> io::Result<Self> {
-        let texture = upload(
+        let texture = page.texture.upload(
             device,
             queue,
             "radar range symbol",
-            &page.texture,
             ColorSpace::Srgb,
         )?;
         let seed = std::time::SystemTime::now()

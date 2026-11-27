@@ -15,7 +15,9 @@ use content_reader_image::{IndexedImage, Rgba8Image, dds, native::Decode};
 use super::{camera::MapSize, gradient_math};
 
 mod gui;
-pub use gui::{GuiTexture, upload_gui};
+pub use gui::{
+    GuiMeta, GuiSource, GuiTexture, upload_gui, upload_gui_sources, upload_gui_sources_tolerant,
+};
 
 mod intel_cells;
 pub use intel_cells::{IntelCells, IntelCellsCache};
@@ -192,8 +194,26 @@ pub fn load_file<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_
     }
 }
 
+pub fn load_file_transient<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<dds::Texture> {
+    match resources::texture_transient(name.as_bytes(), read, decode)? {
+        Ok(texture) => Ok(texture.image),
+        Err(NoTexture::Missing(tried)) => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{name}: no layer holds any of {tried:?}"),
+        )),
+        Err(reason) => Err(invalid(format!("{name}: {reason}"))),
+    }
+}
+
 pub fn load_image<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<content_reader_image::SharedRgba8Image> {
-    let texture = load_file(name, read, decode)?;
+    load_image_from(name, load_file(name, read, decode)?)
+}
+
+pub fn load_image_transient<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<content_reader_image::SharedRgba8Image> {
+    load_image_from(name, load_file_transient(name, read, decode)?)
+}
+
+fn load_image_from(name: &str, texture: dds::Texture) -> io::Result<content_reader_image::SharedRgba8Image> {
     if texture.format != dds::TextureFormat::Rgba8 || texture.faces != 1 {
         return Err(invalid(format!(
             "{name} loads as a {:?} texture with {} faces, not the RGBA image the map reads",
@@ -249,6 +269,150 @@ pub fn load_uploadable<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<co
     Ok(texture)
 }
 
+pub fn load_uploadable_transient<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(
+    name: &str,
+    read: Read<'_, B>,
+    decode: Decode,
+    space: ColorSpace,
+) -> io::Result<dds::Texture> {
+    let texture = load_file_transient(name, read, decode)?;
+    check_upload(name, &texture, space)?;
+    Ok(texture)
+}
+
+#[derive(Clone)]
+pub struct DeferredTexture(std::sync::Arc<DeferredTextureInner>);
+
+enum DeferredTextureInner {
+    Held(dds::Texture),
+    Artwork {
+        layers: std::sync::Arc<content_reader_layers::ResolvedLayers>,
+        path: String,
+        decode: Decode,
+        space: ColorSpace,
+    },
+    Uncovered {
+        layers: std::sync::Arc<content_reader_layers::ResolvedLayers>,
+        path: String,
+        decode: Decode,
+        require_rgba8: bool,
+    },
+}
+
+impl DeferredTexture {
+    pub fn held(texture: dds::Texture) -> Self {
+        Self(std::sync::Arc::new(DeferredTextureInner::Held(texture)))
+    }
+
+    pub fn load_artwork(
+        layers: &content_reader_layers::ResolvedLayers,
+        path: String,
+        decode: Decode,
+        space: ColorSpace,
+    ) -> io::Result<Self> {
+        layers.artwork(&path, |stack| {
+            load_uploadable_transient(&path, &|request| stack.read_path(request), decode, space)
+        })?;
+        Ok(Self(std::sync::Arc::new(DeferredTextureInner::Artwork {
+            layers: std::sync::Arc::new(layers.clone()),
+            path,
+            decode,
+            space,
+        })))
+    }
+
+    pub fn load_uncovered(
+        layers: &content_reader_layers::ResolvedLayers,
+        path: String,
+        decode: Decode,
+        require_rgba8: bool,
+        check: Option<(&str, ColorSpace)>,
+    ) -> io::Result<Self> {
+        let image =
+            load_file_transient(&path, &|request| layers.read_uncovered_path(request), decode)?;
+        if require_rgba8 && image.format != dds::TextureFormat::Rgba8 {
+            return Err(invalid(format!("{path}: expected RGBA8")));
+        }
+        if let Some((label, space)) = check {
+            check_upload(label, &image, space)?;
+        }
+        Ok(Self(std::sync::Arc::new(DeferredTextureInner::Uncovered {
+            layers: std::sync::Arc::new(layers.clone()),
+            path,
+            decode,
+            require_rgba8,
+        })))
+    }
+
+    pub fn is_held(&self) -> bool {
+        matches!(self.0.as_ref(), DeferredTextureInner::Held(_))
+    }
+
+    pub fn decode(&self) -> io::Result<dds::Texture> {
+        match self.0.as_ref() {
+            DeferredTextureInner::Held(texture) => Ok(texture.clone()),
+            DeferredTextureInner::Artwork {
+                layers,
+                path,
+                decode,
+                space,
+            } => layers.artwork(path, |stack| {
+                load_uploadable_transient(path, &|request| stack.read_path(request), *decode, *space)
+            }),
+            DeferredTextureInner::Uncovered {
+                layers,
+                path,
+                decode,
+                require_rgba8,
+            } => {
+                let image = load_file_transient(
+                    path,
+                    &|request| layers.read_uncovered_path(request),
+                    *decode,
+                )?;
+                if *require_rgba8 && image.format != dds::TextureFormat::Rgba8 {
+                    return Err(invalid(format!("{path}: expected RGBA8")));
+                }
+                Ok(image)
+            }
+        }
+    }
+
+    pub fn upload(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        space: ColorSpace,
+    ) -> io::Result<Bound> {
+        match self.0.as_ref() {
+            DeferredTextureInner::Held(texture) => upload(device, queue, label, texture, space),
+            DeferredTextureInner::Artwork { .. } | DeferredTextureInner::Uncovered { .. } => {
+                let texture = self.decode()?;
+                upload(device, queue, label, &texture, space)
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for DeferredTexture {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.as_ref() {
+            DeferredTextureInner::Held(texture) => formatter
+                .debug_struct("DeferredTexture::Held")
+                .field("width", &texture.width)
+                .field("height", &texture.height)
+                .field("format", &texture.format)
+                .finish(),
+            DeferredTextureInner::Artwork { path, .. }
+            | DeferredTextureInner::Uncovered { path, .. } => formatter
+                .debug_struct("DeferredTexture::Deferred")
+                .field("path", path)
+                .finish(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct MapTexture {
     pub texture: dds::Texture,
@@ -262,7 +426,31 @@ pub fn load_map_texture<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<c
     space: ColorSpace,
     warnings: &mut Vec<String>,
 ) -> io::Result<MapTexture> {
-    match resources::texture(name.as_bytes(), read, decode)? {
+    map_texture_from(name, resources::texture(name.as_bytes(), read, decode)?, space, warnings)
+}
+
+pub fn load_map_texture_transient<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(
+    name: &str,
+    read: Read<'_, B>,
+    decode: Decode,
+    space: ColorSpace,
+    warnings: &mut Vec<String>,
+) -> io::Result<MapTexture> {
+    map_texture_from(
+        name,
+        resources::texture_transient(name.as_bytes(), read, decode)?,
+        space,
+        warnings,
+    )
+}
+
+fn map_texture_from(
+    name: &str,
+    found: Result<content_reader_layers::textures::Texture, NoTexture>,
+    space: ColorSpace,
+    warnings: &mut Vec<String>,
+) -> io::Result<MapTexture> {
+    match found {
         Ok(texture) => {
             check_upload(name, &texture.image, space)?;
             Ok(MapTexture {

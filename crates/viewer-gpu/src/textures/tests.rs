@@ -700,3 +700,64 @@ fn upload_refusals_are_known_without_a_device() {
     let plain = texture(dds::TextureFormat::Bc1, 8, 8, 1);
     assert!(check_upload("plain", &plain, ColorSpace::Srgb).is_ok());
 }
+
+#[test]
+fn deferred_textures_drop_cpu_copies_and_reload_through_mod_stack() {
+    let root = std::env::temp_dir().join(format!(
+        "bp_deferred_tex_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let base = root.join("base");
+    let mod_dir = root.join("mod");
+    std::fs::create_dir_all(base.join("map/terrain")).unwrap();
+    std::fs::create_dir_all(mod_dir.join("map/terrain")).unwrap();
+    let base_tga = viewer_runtime::test_support::test_tga_rgba8(4, 4);
+    let mut mod_tga = viewer_runtime::test_support::test_tga_rgba8(4, 4);
+    mod_tga[17] |= 0x20;
+    mod_tga[18..22].copy_from_slice(&[9, 8, 7, 255]);
+    std::fs::write(base.join("map/terrain/test.tga"), &base_tga).unwrap();
+    std::fs::write(mod_dir.join("map/terrain/test.tga"), &mod_tga).unwrap();
+
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[
+        (base.as_path(), &[][..]),
+        (mod_dir.as_path(), &[][..]),
+    ])
+    .unwrap();
+    let _generation = content_reader_layers::content::Generation::enter();
+    let loading = layers.loading();
+    let deferred = DeferredTexture::load_artwork(
+        &layers,
+        "map/terrain/test.tga".into(),
+        Decode::default(),
+        ColorSpace::Srgb,
+    )
+    .unwrap();
+    assert!(!deferred.is_held());
+    assert!(
+        !layers
+            .content_counts()
+            .products
+            .iter()
+            .any(|product| product.parser == "native texture decoding")
+    );
+    let reloaded = deferred.decode().unwrap();
+    assert_eq!((reloaded.width, reloaded.height), (4, 4));
+    assert_eq!(&reloaded.base().data[..4], &[7, 8, 9, 255]);
+    assert!(
+        !layers
+            .content_counts()
+            .products
+            .iter()
+            .any(|product| product.parser == "native texture decoding")
+    );
+
+    drop(loading);
+    std::fs::remove_file(mod_dir.join("map/terrain/test.tga")).unwrap();
+    std::fs::remove_file(base.join("map/terrain/test.tga")).unwrap();
+    let missing = deferred.decode().unwrap_err().to_string();
+    assert!(missing.contains("map/terrain/test.tga"), "{missing}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}

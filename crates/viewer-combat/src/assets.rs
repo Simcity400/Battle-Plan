@@ -3,7 +3,6 @@ use content_reader_script::sub_units::SubUnits;
 use content_reader_layers::ResolvedLayers;
 use content_reader_defines::defines::Defines;
 use content_reader_gui::gui::{self, native::{resources::{self, Registry}, sprites::{Plain, SpriteFacts, SpriteKind, Sprites}}};
-use content_reader_image::dds;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -690,7 +689,7 @@ impl Assets {
         interface: &Interface,
         flags: &Arc<LazyFlags>,
         client: (&str, [u32; 2], &NativeWindows),
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<viewer_gpu::textures::GuiSource>,
         lazy: &Arc<LazyTextures>,
     ) -> io::Result<Self> {
         Self::load_with_products(
@@ -706,7 +705,7 @@ impl Assets {
         interface: &Interface,
         flags: &Arc<LazyFlags>,
         client: (&str, [u32; 2], &NativeWindows),
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<viewer_gpu::textures::GuiSource>,
         lazy: &Arc<LazyTextures>,
     ) -> io::Result<Self> {
         let (language, map_size, native_windows) = client;

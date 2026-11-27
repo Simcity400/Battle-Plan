@@ -23,7 +23,6 @@ use content_reader_map::map::MapData;
 use content_reader_map::map::ProvinceKind;
 use content_reader_map::positions;
 use content_reader_gfx::gfx::SpriteSet;
-use content_reader_image::dds;
 use content_reader_regions::regions;
 use dashboard_text::table_access::TokenKeys;
 use dashboard_text::table_access::rows as table_access_rows;
@@ -159,7 +158,6 @@ use viewer_native_gui::native_windows::NativeWindows as SharedNativeWindows;
 use viewer_native_gui::native_windows::WindowCache;
 use viewer_native_gui::sprites::Batch;
 use viewer_native_gui::sprites::SpriteSheet;
-use viewer_native_gui::sprites::decode_sheet;
 use viewer_native_gui::sprites::load_sheet;
 use viewer_runtime::memo::Recent;
 use viewer_runtime::unit_handle::Unit;
@@ -200,22 +198,27 @@ impl CounterAssets {
         defines: &Defines,
         (sprites, registry): (&SpriteSet, &native::resources::Registry),
         (language, map_size, decode): (&str, [u32; 2], content_reader_image::native::Decode),
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<viewer_gpu::textures::GuiSource>,
         lazy: &Arc<LazyTextures>,
     ) -> io::Result<Self> {
         let layers: &ResolvedLayers = shared;
         let sheet_names: Vec<&str> = layouts.sprite_names();
-        let decoded: Vec<io::Result<(dds::Texture, u32, [u32; 2])>> = std::thread::scope(|scope| {
-            sheet_names
-                .iter()
-                .map(|name| {
-                    job_priority::spawn_in(scope, || decode_sheet(layers, sprites, name, decode))
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|handle| handle.join().expect("sheet decoder panicked"))
-                .collect()
-        });
+        let decoded: Vec<io::Result<(viewer_gpu::textures::GuiSource, u32, [u32; 2])>> =
+            std::thread::scope(|scope| {
+                sheet_names
+                    .iter()
+                    .map(|name| {
+                        job_priority::spawn_in(scope, || {
+                            viewer_native_gui::sprites::load_deferred_sheet(
+                                shared, sprites, name, decode,
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|handle| handle.join().expect("sheet decoder panicked"))
+                    .collect()
+            });
         let mut sheets = BTreeMap::new();
         let mut warnings: Vec<String> = layouts
             .missing
@@ -289,7 +292,27 @@ impl CounterAssets {
             |_| {},
             lazy,
         )?;
-        let (types, type_warnings) = templates::TypeAtlas::load(layers, sprites, decode, images)?;
+        let (mut types, type_recipe, type_warnings) =
+            templates::TypeAtlas::load_deferred(shared, sprites, decode)?;
+        types.texture = images.len();
+        let meta = viewer_gpu::textures::GuiMeta {
+            width: type_recipe.size[0],
+            height: type_recipe.size[1],
+            faces: 1,
+            levels: 1,
+            format: content_reader_image::dds::TextureFormat::Rgba8,
+        };
+        images.push(viewer_gpu::textures::GuiSource::deferred_generated(
+            "counter type atlas",
+            meta,
+            move |tolerant| {
+                if tolerant {
+                    Ok(type_recipe.build_tolerant())
+                } else {
+                    type_recipe.build().map(|texture| (texture, Vec::new()))
+                }
+            },
+        ));
         warnings.extend(type_warnings);
         warnings.extend(overlay_missing);
         let (portraits, portrait_warnings) =
@@ -315,9 +338,9 @@ impl CounterAssets {
                 continue;
             }
             let loaded = if name == counter_order::UNKNOWN_LEADER_PORTRAIT {
-                counter_portraits::load_sprite(layers, sprites, name, decode, images)
+                counter_portraits::load_sprite(shared, sprites, name, decode, images)
             } else {
-                load_sheet(layers, sprites, name, decode, images)
+                load_sheet(shared, sprites, name, decode, images)
             };
             match loaded {
                 Ok(sheet) => {
@@ -348,7 +371,7 @@ impl CounterAssets {
             if sheets.contains_key(name) || recorded_sheets.contains_key(name) {
                 continue;
             }
-            match load_sheet(layers, sprites, name, decode, images) {
+            match load_sheet(shared, sprites, name, decode, images) {
                 Ok(sheet) => {
                     recorded_sheets.insert(name.to_owned(), sheet);
                 }

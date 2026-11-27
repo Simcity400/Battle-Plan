@@ -1656,6 +1656,7 @@ impl Document {
                         allow_unverified,
                         initial,
                         Arc::clone(&replay),
+                        source,
                         Arc::clone(&current),
                         visual_mods,
                         texture_quality,
@@ -1703,6 +1704,7 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
+        source: &dashboard_base::Source,
         resolved: Arc<content_reader_layers::content::ResolvedContent>,
         visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
         texture_quality: u8,
@@ -1718,6 +1720,7 @@ impl Document {
                 allow_unverified,
                 initial,
                 replay,
+                source,
                 tables,
                 resolved,
                 visual_mods,
@@ -1734,6 +1737,7 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
+        source: &dashboard_base::Source,
         tables: Option<engine_executable::executable_tables::Tables>,
         resolved: Arc<content_reader_layers::content::ResolvedContent>,
         visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
@@ -1847,10 +1851,13 @@ impl Document {
         Self::load_product_content(
             path,
             options,
+            allow_unverified,
             initial,
             visual_mods,
             texture_quality,
             replay,
+            source,
+            &resolved,
             tables,
             content,
             &product_loader,
@@ -1866,10 +1873,13 @@ impl Document {
     fn load_product_content(
         path: &Path,
         options: &ResolveOptions,
+        allow_unverified: bool,
         initial: &InitialHour,
         visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
         texture_quality: u8,
         replay: Arc<Replay>,
+        source: &dashboard_base::Source,
+        resolved: &Arc<content_reader_layers::content::ResolvedContent>,
         tables: Option<engine_executable::executable_tables::Tables>,
         content: content_reader_layers::content::ResolvedContent,
         product_loader: &map_products::loader::Loader,
@@ -2060,7 +2070,22 @@ impl Document {
                 let _startup = crate::perf_log::StartupSpan::new("document_names");
                 layers.artwork("map names", |stack| {
                     NameContent::load_with_localisation(stack, &map, || {
-                        product_loader.localisation(stack, &recorded_language)
+                        if stack.shows_visual_mods() {
+                            product_loader.localisation(stack, &recorded_language)
+                        } else {
+                            let localisation = dashboard_base::content::localisation_for(
+                                source,
+                                options,
+                                allow_unverified,
+                                resolved,
+                            )?;
+                            product_loader.record_shared_localisation(
+                                stack,
+                                &recorded_language,
+                                &localisation,
+                            )?;
+                            Ok(localisation)
+                        }
                     })
                 })
             });
@@ -2264,7 +2289,10 @@ impl Document {
                         .unwrap_or_else(|error| error.into_inner())
                         .current()
                     {
-                        let _ = counters::initial_flags::warm_initial_flags(frame, &icons.read()?.counters);
+                        let _ = counters::initial_flags::warm_initial_flags(
+                            frame,
+                            &icons.read()?.counters,
+                        );
                     }
                     Ok(())
                 })
@@ -2487,7 +2515,19 @@ impl Document {
             let products_stage = viewer_runtime::load_record::stage("products");
             dag.run();
             drop(products_stage);
-            let (mut assets, notes, mut scene_sources, _) = h_assets.take()?;
+            content.layers.release_parsers(&[
+                "source bytes",
+                "resolved bytes",
+                "binary asset grammar",
+                "native texture decoding",
+                "palette bitmap decoding",
+            ]);
+            let (
+                mut assets,
+                notes,
+                mut scene_sources,
+                viewer_world::scene_content::LoadMasks { perm_snow, .. },
+            ) = h_assets.take()?;
             let mut joined_warnings = notes;
             let crate::map_icons::LoadedIcons {
                 combat: mut combat_assets,
@@ -2996,9 +3036,10 @@ impl Document {
             .map_err(|error| error.to_string());
             let snow_content = map_products::display::SnowContent::new(
                 &map,
-                &assets.perm_snow,
+                &perm_snow,
                 assets.post.volumes.winter(),
             );
+            drop(perm_snow);
             let products = map_products::ProductContent::from_inputs(
                 product_loader.reads.clone(),
                 map_products::ProductInputs {
@@ -3016,6 +3057,7 @@ impl Document {
                 },
             )
             .with_snow(snow_content);
+            products.seal_bindings()?;
             {
                 let _validation = crate::perf_log::StartupSpan::new("generation_validation");
                 content.layers.validate_generation()?;

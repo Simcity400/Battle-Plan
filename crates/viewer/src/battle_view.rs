@@ -98,7 +98,7 @@ struct Held {
     window: Window,
     pass: SpritePass,
     arena: shader_pipeline::gpu::Arena,
-    _icons: Arc<IconTextures>,
+    icons: Arc<IconTextures>,
     reads: Reads<Key, (Hours, [f64; 2])>,
     cursor: Arc<Mutex<Cursor>>,
     replay: Arc<replay::campaign::Replay>,
@@ -362,7 +362,7 @@ impl Held {
             window,
             pass,
             arena: shader_pipeline::gpu::Arena::new(device),
-            _icons: icons,
+            icons,
             reads: Reads::new("battle window reads"),
             cursor,
             replay,
@@ -472,6 +472,7 @@ impl Held {
                 self.refused = None;
                 self.notes = self.window.warnings(&self.document.icons.combat.warnings);
                 self.notes.extend(self.document.icons.combat.gui.window_warnings());
+                self.notes.extend(self.icons.warnings().iter().cloned());
                 self.notes.extend(self.pass.native_refusals.iter().map(|(reason, count)| format!("{reason} ({count} times)")));
                 if let Some(at) = self.at.filter(|_| crate::perf_log::enabled()) {
                     crate::perf_log::mark("battle_drawn", serde_json::json!({"hour": at.hour, "step_ms": self.read_ms[0], "read_ms": self.read_ms[1], "draw_ms": started.elapsed().as_secs_f64() * 1e3, "tables": self.tables.len(), "art_bytes": self.document.icons.lazy.resident_bytes(), "why": why}));

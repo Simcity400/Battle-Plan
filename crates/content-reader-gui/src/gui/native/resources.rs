@@ -6,8 +6,8 @@ use super::{
 };
 use content_reader_image::native;
 use content_reader_layers::{ResolvedLayers, content::ArtFileRead};
-use content_reader_layers::textures::texture_within;
-pub use content_reader_layers::textures::{NoTexture, Texture, texture};
+use content_reader_layers::textures::{texture_within, texture_within_transient};
+pub use content_reader_layers::textures::{NoTexture, Texture, texture, texture_transient};
 use content_reader_parser::crt::truncate_f32;
 
 pub const FALLBACK_SPRITE: &[u8] = b"GFX_default_fallback_texture";
@@ -113,7 +113,26 @@ pub fn stack_texture_or_recorded(
     name: &[u8],
     decode: native::Decode,
 ) -> io::Result<Result<Texture, NoTexture>> {
-    let shown = stack_texture(layers, name, decode);
+    stack_texture_or_recorded_mode(layers, recorded, name, decode, false)
+}
+
+pub fn stack_texture_or_recorded_transient(
+    layers: &ResolvedLayers,
+    recorded: Option<&ResolvedLayers>,
+    name: &[u8],
+    decode: native::Decode,
+) -> io::Result<Result<Texture, NoTexture>> {
+    stack_texture_or_recorded_mode(layers, recorded, name, decode, true)
+}
+
+fn stack_texture_or_recorded_mode(
+    layers: &ResolvedLayers,
+    recorded: Option<&ResolvedLayers>,
+    name: &[u8],
+    decode: native::Decode,
+    transient: bool,
+) -> io::Result<Result<Texture, NoTexture>> {
+    let shown = stack_texture_within_mode(layers, name, decode, None, transient);
     let why = match &shown {
         Ok(Ok(_)) => None,
         Ok(Err(why)) => Some(why.to_string()),
@@ -122,7 +141,7 @@ pub fn stack_texture_or_recorded(
     if let Some(why) = why
         && !content_reader_layers::content::is_strict()
         && let Some(recorded) = recorded
-        && let Ok(Ok(texture)) = stack_texture(recorded, name, decode)
+        && let Ok(Ok(texture)) = stack_texture_within_mode(recorded, name, decode, None, transient)
     {
         layers.note_overlay_refusal(format!("texture {} ({why})", String::from_utf8_lossy(name)));
         return Ok(Ok(texture));
@@ -143,6 +162,16 @@ pub fn stack_texture_within(
     name: &[u8],
     decode: native::Decode,
     max_texels: Option<u64>,
+) -> io::Result<Result<Texture, NoTexture>> {
+    stack_texture_within_mode(layers, name, decode, max_texels, false)
+}
+
+fn stack_texture_within_mode(
+    layers: &ResolvedLayers,
+    name: &[u8],
+    decode: native::Decode,
+    max_texels: Option<u64>,
+    transient: bool,
 ) -> io::Result<Result<Texture, NoTexture>> {
     let read_error = std::cell::RefCell::new(None);
     let unmounted = std::cell::RefCell::new(None);
@@ -169,7 +198,11 @@ pub fn stack_texture_within(
             }
         }
     };
-    let found = texture_within(name, &read, decode, max_texels)?;
+    let found = if transient {
+        texture_within_transient(name, &read, decode, max_texels)?
+    } else {
+        texture_within(name, &read, decode, max_texels)?
+    };
     if let Some(error) = read_error.into_inner() {
         return Err(error);
     }

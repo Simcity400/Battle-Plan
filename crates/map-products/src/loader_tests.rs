@@ -417,6 +417,29 @@ fn standalone_and_staged_loader_witnesses_match_in_both_completion_orders() {
         loader.reads.witness().unwrap()
     };
     assert_eq!(staged([0, 1, 2, 3, 4, 5]), staged([5, 4, 3, 2, 1, 0]));
+    let shared_loader = Loader::new(&layers);
+    let map = shared_loader.map().unwrap();
+    let (_, default_map) = shared_loader.terrain().unwrap();
+    let defines = shared_loader.defines().unwrap();
+    shared_loader.audio(&defines, &stack.base(), &mut Vec::new());
+    let heightmap = shared_loader.heightmap(&default_map).unwrap();
+    shared_loader
+        .validate_heightmap(&heightmap, [map.width, map.height])
+        .unwrap();
+    shared_loader.combat(&layers).unwrap();
+    loader::TriggerLoader::new(&layers, Some(&shared_loader))
+        .load(&defines, &map)
+        .unwrap();
+    shared_loader
+        .record_shared_localisation(&layers, "english", &standalone.localisation)
+        .unwrap();
+    shared_loader.anchors(&layers).unwrap();
+    shared_loader.fog(&layers, &map, &defines);
+    shared_loader.buildings().unwrap();
+    shared_loader.ideologies().unwrap();
+    shared_loader.resources().unwrap();
+    let _ = shared_loader.movement(&defines);
+    assert_eq!(shared_loader.reads.witness().unwrap(), expected);
 }
 
 #[test]

@@ -10,6 +10,7 @@ use content_reader_layers::content::diagnostics::{self, Diagnostics};
 use content_reader_layers::ResolvedLayers;
 use content_reader_gui::gui::native::{fonts::{self, TextColors}, resources::{self, Lookup, NoTexture, Registry}, sprites::{Plain, SpriteFacts, SpriteKind as Declared}};
 use content_reader_image::{dds, native::Decode};
+use viewer_gpu::textures::GuiSource;
 
 use super::{
     native_effects::Effect,
@@ -28,6 +29,27 @@ pub const CIRCULAR_EFFECT: &str = "gfx/FX/circularprogressbar.shader";
 pub use content_reader_gui::gui::native::resources::SHIELD_OVERLAY_EFFECT;
 
 pub const DEFAULT_SPRITE_EFFECT: &str = "gfx/FX/buttonstate.lua";
+
+fn record_alpha_mask(
+    alpha: &mut BTreeMap<usize, AlphaMask>,
+    texture: usize,
+    image: &dds::Texture,
+) {
+    if image.format == dds::TextureFormat::Rgba8 {
+        alpha.insert(
+            texture,
+            AlphaMask {
+                width: image.width as i32,
+                transparent: image
+                    .base()
+                    .data
+                    .chunks_exact(4)
+                    .map(|texel| u8::from(texel[3] == 0))
+                    .collect(),
+            },
+        );
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct Loaded {
@@ -121,7 +143,8 @@ pub struct GuiResources {
     compiler: Option<shader_pipeline::library::Library>,
     globals: Vec<String>,
     uncovered: BTreeSet<Vec<u8>>,
-    recorded: Option<ResolvedLayers>,
+    shared_layers: Option<Arc<ResolvedLayers>>,
+    recorded: Option<Arc<ResolvedLayers>>,
     missing_fonts: BTreeMap<String, String>,
     recorded_registry: Option<Arc<Registry>>,
 }
@@ -163,6 +186,7 @@ impl GuiResources {
             compiler: None,
             globals,
             uncovered: BTreeSet::new(),
+            shared_layers: None,
             recorded: None,
             missing_fonts: BTreeMap::new(),
             recorded_registry: None,
@@ -316,31 +340,36 @@ impl GuiResources {
         &mut self,
         layers: &ResolvedLayers,
         assets: &Assets,
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<GuiSource>,
     ) -> io::Result<()> {
-        for effect in [TEXT_EFFECT, SHIELD_OVERLAY_EFFECT, DEFAULT_SPRITE_EFFECT] {
-            let _ = self.effect_result(layers, effect.as_bytes(), false);
-        }
-        for name in assets
-            .sprites
-            .iter()
-            .map(Vec::as_slice)
-            .chain([FALLBACK_SPRITE])
-        {
-            if !self.sprites.contains_key(name) {
-                self.prepare(layers, name, images)?;
+        self.shared_layers = Some(Arc::new(layers.clone()));
+        let result = (|| {
+            for effect in [TEXT_EFFECT, SHIELD_OVERLAY_EFFECT, DEFAULT_SPRITE_EFFECT] {
+                let _ = self.effect_result(layers, effect.as_bytes(), false);
             }
-            if let Some(diagnostics) = self.sprite_diagnostics.get(name) {
-                diagnostics.credit();
+            for name in assets
+                .sprites
+                .iter()
+                .map(Vec::as_slice)
+                .chain([FALLBACK_SPRITE])
+            {
+                if !self.sprites.contains_key(name) {
+                    self.prepare(layers, name, images)?;
+                }
+                if let Some(diagnostics) = self.sprite_diagnostics.get(name) {
+                    diagnostics.credit();
+                }
             }
-        }
-        for name in &assets.fonts {
-            self.load_font(layers, name, images)?;
-        }
-        for path in &assets.textures {
-            self.texture(Stack::Retried, layers, path, images)?;
-        }
-        Ok(())
+            for name in &assets.fonts {
+                self.load_font(layers, name, images)?;
+            }
+            for path in &assets.textures {
+                self.texture(Stack::Retried, layers, path, images)?;
+            }
+            Ok(())
+        })();
+        self.shared_layers = None;
+        result
     }
 
     fn effect_result(
@@ -379,7 +408,18 @@ impl GuiResources {
         stack: Stack,
         layers: &ResolvedLayers,
         name: &[u8],
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<GuiSource>,
+    ) -> io::Result<Loaded> {
+        self.texture_with_alpha(stack, layers, name, images, false)
+    }
+
+    fn texture_with_alpha(
+        &mut self,
+        stack: Stack,
+        layers: &ResolvedLayers,
+        name: &[u8],
+        images: &mut Vec<GuiSource>,
+        need_alpha: bool,
     ) -> io::Result<Loaded> {
         let key = (stack, name.to_vec());
         self.touched.push(key.clone());
@@ -387,14 +427,44 @@ impl GuiResources {
             if let Some(diagnostics) = self.texture_diagnostics.get(&key) {
                 diagnostics.credit();
             }
+            if need_alpha
+                && loaded.missing.is_none()
+                && !self.alpha.contains_key(&loaded.texture)
+            {
+                let uploaded = self
+                    .uploads
+                    .as_ref()
+                    .and_then(|uploads| uploads.image(loaded.texture));
+                let decoded = if uploaded.is_none() {
+                    images
+                        .get(loaded.texture)
+                        .map(GuiSource::decode)
+                        .transpose()?
+                } else {
+                    None
+                };
+                if let Some(image) = uploaded.as_deref().or(decoded.as_ref()) {
+                    record_alpha_mask(&mut self.alpha, loaded.texture, image);
+                }
+            }
             return Ok(loaded.clone());
         }
         let recorded = match stack {
             Stack::Retried => self.recorded_layers(layers),
             Stack::Shown | Stack::Recorded => None,
         };
+        let transient = self.uploads.is_none();
         let (loaded, diagnostics) = diagnostics::capture(|| {
-            resources::stack_texture_or_recorded(layers, recorded.as_ref(), name, self.decode)
+            if transient {
+                resources::stack_texture_or_recorded_transient(
+                    layers,
+                    recorded.as_deref(),
+                    name,
+                    self.decode,
+                )
+            } else {
+                resources::stack_texture_or_recorded(layers, recorded.as_deref(), name, self.decode)
+            }
         });
         diagnostics.credit();
         let loaded = match loaded? {
@@ -403,10 +473,40 @@ impl GuiResources {
                     self.uncovered.insert(name.to_vec());
                 }
                 let id = if let Some(uploads) = &self.uploads {
-                    uploads.insert(texture.image)
+                    if need_alpha {
+                        let id = uploads.insert(texture.image);
+                        if let Some(image) = uploads.image(id) {
+                            record_alpha_mask(&mut self.alpha, id, &image);
+                        }
+                        id
+                    } else {
+                        uploads.insert(texture.image)
+                    }
                 } else {
-                    images.push(texture.image);
-                    images.len() - 1
+                    let source_layers = match stack {
+                        Stack::Recorded => self
+                            .recorded
+                            .as_ref()
+                            .map(Arc::clone)
+                            .unwrap_or_else(|| Arc::new(layers.clone())),
+                        Stack::Retried | Stack::Shown => self
+                            .shared_layers
+                            .as_ref()
+                            .map(Arc::clone)
+                            .unwrap_or_else(|| Arc::new(layers.clone())),
+                    };
+                    let id = images.len();
+                    if need_alpha {
+                        record_alpha_mask(&mut self.alpha, id, &texture.image);
+                    }
+                    images.push(GuiSource::deferred_stack(
+                        source_layers,
+                        recorded,
+                        name.to_vec(),
+                        self.decode,
+                        &texture.image,
+                    ));
+                    id
                 };
                 Loaded {
                     texture: id,
@@ -433,12 +533,12 @@ impl GuiResources {
         Ok(loaded)
     }
 
-    fn recorded_layers(&mut self, layers: &ResolvedLayers) -> Option<ResolvedLayers> {
+    fn recorded_layers(&mut self, layers: &ResolvedLayers) -> Option<Arc<ResolvedLayers>> {
         if !layers.shows_visual_mods() {
             return None;
         }
         if self.recorded.is_none() {
-            self.recorded = layers.without_overlays();
+            self.recorded = layers.without_overlays().map(Arc::new);
         }
         self.recorded.clone()
     }
@@ -488,7 +588,7 @@ impl GuiResources {
         &mut self,
         layers: &ResolvedLayers,
         name: &[u8],
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<GuiSource>,
     ) -> io::Result<()> {
         let (result, diagnostics) =
             diagnostics::capture(|| self.prepare_inner(layers, name, images));
@@ -503,7 +603,7 @@ impl GuiResources {
         &mut self,
         layers: &ResolvedLayers,
         name: &[u8],
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<GuiSource>,
     ) -> io::Result<()> {
         if self.recorded_registry.is_none() {
             if let Some((prepared, _)) = self.prepare_from(Stack::Retried, layers, name, images)? {
@@ -543,7 +643,7 @@ impl GuiResources {
         stack: Stack,
         layers: &ResolvedLayers,
         name: &[u8],
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<GuiSource>,
     ) -> io::Result<Option<(Prepared, Option<String>)>> {
         self.touched.clear();
         let registry: &Registry = match stack {
@@ -595,27 +695,26 @@ impl GuiResources {
             | Declared::MaskedShield { plain, .. } => {
                 let (main, second) = match &facts.kind {
                     Declared::MaskedShield { shield, .. } => (
-                        self.texture(stack, layers, &shield.texture1, images)?,
+                        self.texture_with_alpha(
+                            stack,
+                            layers,
+                            &shield.texture1,
+                            images,
+                            plain.transparence_check,
+                        )?,
                         Some(self.texture(stack, layers, &shield.texture2, images)?),
                     ),
-                    _ => (self.texture(stack, layers, &plain.texture, images)?, None),
+                    _ => (
+                        self.texture_with_alpha(
+                            stack,
+                            layers,
+                            &plain.texture,
+                            images,
+                            plain.transparence_check,
+                        )?,
+                        None,
+                    ),
                 };
-                if plain.transparence_check && main.missing.is_none() {
-                    let uploaded = self.uploads.as_ref().and_then(|uploads| uploads.image(main.texture));
-                    if let Some(image) = uploaded.as_deref().or_else(|| images.get(main.texture))
-                        && image.format == dds::TextureFormat::Rgba8
-                    {
-                        self.alpha.entry(main.texture).or_insert_with(|| AlphaMask {
-                            width: image.width as i32,
-                            transparent: image
-                                .base()
-                                .data
-                                .chunks_exact(4)
-                                .map(|texel| u8::from(texel[3] == 0))
-                                .collect(),
-                        });
-                    }
-                }
                 let masking = if plain.masking_texture.is_empty() {
                     None
                 } else {
@@ -866,7 +965,7 @@ impl GuiResources {
         &mut self,
         layers: &ResolvedLayers,
         name: &[u8],
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<GuiSource>,
     ) -> io::Result<()> {
         let (result, diagnostics) =
             diagnostics::capture(|| self.load_font_inner(layers, name, images));
@@ -883,7 +982,7 @@ impl GuiResources {
         &mut self,
         layers: &ResolvedLayers,
         name: &[u8],
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<GuiSource>,
     ) -> io::Result<()> {
         let Some(found) = self.registry.fonts.get_or_fallback(name) else {
             return Ok(());
@@ -962,7 +1061,7 @@ impl GuiResources {
         stack: Stack,
         layers: &ResolvedLayers,
         (family, facts): (fonts::FontFamily, fonts::FontFacts),
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<GuiSource>,
     ) -> io::Result<(native_text::Font, FontNotes, Option<String>)> {
         let recorded = match stack {
             Stack::Retried => self.recorded_layers(layers),

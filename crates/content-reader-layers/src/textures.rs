@@ -140,11 +140,38 @@ pub fn texture<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<Bytes>>(
     texture_within(name, read, decode, None)
 }
 
+pub fn texture_transient<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<Bytes>>(
+    name: &[u8],
+    read: &dyn Fn(&[u8]) -> io::Result<B>,
+    decode: native::Decode,
+) -> io::Result<Result<Texture, NoTexture>> {
+    texture_within_transient(name, read, decode, None)
+}
+
 pub fn texture_within<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<Bytes>>(
     name: &[u8],
     read: &dyn Fn(&[u8]) -> io::Result<B>,
     decode: native::Decode,
     max_texels: Option<u64>,
+) -> io::Result<Result<Texture, NoTexture>> {
+    decode_texture_within(name, read, decode, max_texels, true)
+}
+
+pub fn texture_within_transient<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<Bytes>>(
+    name: &[u8],
+    read: &dyn Fn(&[u8]) -> io::Result<B>,
+    decode: native::Decode,
+    max_texels: Option<u64>,
+) -> io::Result<Result<Texture, NoTexture>> {
+    decode_texture_within(name, read, decode, max_texels, false)
+}
+
+fn decode_texture_within<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<Bytes>>(
+    name: &[u8],
+    read: &dyn Fn(&[u8]) -> io::Result<B>,
+    decode: native::Decode,
+    max_texels: Option<u64>,
+    cache: bool,
 ) -> io::Result<Result<Texture, NoTexture>> {
     let name = content_reader_parser::parser::c_string(name);
     if name.is_empty() {
@@ -177,21 +204,25 @@ pub fn texture_within<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<Byt
                 bytes: bytes.len(),
             }));
         }
-        let mut parameters = vec![
-            u8::from(decode.force_pow2_textures),
-            u8::from(name.len() > 3 && name[name.len() - 4..].eq_ignore_ascii_case(b".tga")),
-            u8::from(max_texels.is_some()),
-        ];
-        parameters.extend_from_slice(&max_texels.unwrap_or_default().to_le_bytes());
-        let decoded =
+        let decode_now = || match max_texels {
+            Some(max_texels) => {
+                native::decode_texture_image_within(name, &bytes, decode, max_texels)
+            }
+            None => native::decode_texture_image(name, &bytes, decode),
+        };
+        let decoded = if cache {
+            let mut parameters = vec![
+                u8::from(decode.force_pow2_textures),
+                u8::from(name.len() > 3 && name[name.len() - 4..].eq_ignore_ascii_case(b".tga")),
+                u8::from(max_texels.is_some()),
+            ];
+            parameters.extend_from_slice(&max_texels.unwrap_or_default().to_le_bytes());
             Generation::derive(&bytes, "native texture decoding", 1, &parameters, || {
-                Ok(match max_texels {
-                    Some(max_texels) => {
-                        native::decode_texture_image_within(name, &bytes, decode, max_texels)
-                    }
-                    None => native::decode_texture_image(name, &bytes, decode),
-                })
-            })?;
+                Ok(decode_now())
+            })?
+        } else {
+            decode_now()
+        };
         return Ok(match decoded {
             Ok(image) => Ok(Texture {
                 path,

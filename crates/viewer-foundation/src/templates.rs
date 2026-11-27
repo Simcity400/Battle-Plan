@@ -10,6 +10,7 @@ pub const NO_INTEL_SPRITE: &str = "GFX_unit_no_intel_icon_medium_white";
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    sync::Arc,
 };
 
 use content_reader_layers::ResolvedLayers;
@@ -92,6 +93,123 @@ pub fn no_intel_icon(nato_counters: bool) -> TypeIcon {
         } else {
             PICTORIAL_FRAME
         },
+    }
+}
+
+#[derive(Clone)]
+pub struct TypeAtlasRecipe {
+    layers: Arc<ResolvedLayers>,
+    recorded: Option<Arc<ResolvedLayers>>,
+    decode: Decode,
+    pub size: [u32; 2],
+    columns: u32,
+    sheet_size: [u32; 2],
+    sheets: Vec<(String, [u32; 2])>,
+}
+
+impl TypeAtlasRecipe {
+    pub fn build(&self) -> io::Result<dds::Texture> {
+        let (texture, warnings) = self.build_tolerant();
+        if let Some(first) = warnings.into_iter().next() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, first));
+        }
+        Ok(texture)
+    }
+
+    pub fn build_tolerant(&self) -> (dds::Texture, Vec<String>) {
+        let mut unique_paths = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (path, _) in &self.sheets {
+            if seen.insert(path.as_str()) {
+                unique_paths.push(path.as_str());
+            }
+        }
+        let decoded_list = content_reader_layers::parallel::map(&unique_paths, |&path| {
+            resources::stack_texture_or_recorded_transient(
+                &self.layers,
+                self.recorded.as_deref(),
+                path.as_bytes(),
+                self.decode,
+            )
+            .and_then(|found| {
+                found.map_err(|why| {
+                    io::Error::new(io::ErrorKind::InvalidData, format!("{path}: {why}"))
+                })
+            })
+            .and_then(|found| {
+                rgba8(&found.image).map_err(|why| {
+                    io::Error::new(io::ErrorKind::InvalidData, format!("{path}: {why}"))
+                })
+            })
+        });
+        let mut decoded = BTreeMap::new();
+        let mut warnings = Vec::new();
+        let mut warned = BTreeSet::new();
+        for (path, result) in unique_paths.into_iter().zip(decoded_list) {
+            match result {
+                Ok(texture) => {
+                    decoded.insert(path, texture);
+                }
+                Err(error) => {
+                    if warned.insert(path.to_owned()) {
+                        warnings.push(format!("counter type atlas: {path}: {error}"));
+                    }
+                }
+            }
+        }
+        let mut pixels = vec![0u8; self.size[0] as usize * self.size[1] as usize * 4];
+        for (sheet, (path, dimensions)) in self.sheets.iter().enumerate() {
+            let Some(texture) = decoded.get(path.as_str()) else {
+                continue;
+            };
+            if [texture.width, texture.height] != *dimensions {
+                if warned.insert(path.clone()) {
+                    warnings.push(format!(
+                        "counter type atlas: {path}: counter type texture changed from {}x{} to {}x{}",
+                        dimensions[0], dimensions[1], texture.width, texture.height
+                    ));
+                }
+                continue;
+            }
+            blit_sheet(
+                &mut pixels,
+                self.size,
+                self.columns,
+                self.sheet_size,
+                sheet as u32,
+                *dimensions,
+                &texture.base().data,
+            );
+        }
+        (
+            dds::Texture::from_rgba8(Rgba8Image {
+                width: self.size[0],
+                height: self.size[1],
+                pixels,
+            }),
+            warnings,
+        )
+    }
+}
+
+fn blit_sheet(
+    pixels: &mut [u8],
+    size: [u32; 2],
+    columns: u32,
+    sheet_size: [u32; 2],
+    sheet: u32,
+    dimensions: [u32; 2],
+    source: &[u8],
+) {
+    let (ox, oy) = (
+        (sheet % columns) * sheet_size[0],
+        (sheet / columns) * sheet_size[1],
+    );
+    let span = dimensions[0] as usize * 4;
+    for row in 0..dimensions[1] {
+        let from = row as usize * span;
+        let to = ((oy + row) as usize * size[0] as usize + ox as usize) * 4;
+        pixels[to..to + span].copy_from_slice(&source[from..from + span]);
     }
 }
 
@@ -217,6 +335,50 @@ impl TypeAtlas {
         decode: Decode,
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<(Self, Vec<String>)> {
+        let (mut atlas, recipe, decoded, warnings) =
+            Self::prepare(&Arc::new(layers.clone()), sprites, decode)?;
+        let mut pixels = vec![0u8; recipe.size[0] as usize * recipe.size[1] as usize * 4];
+        for (sheet, (path, dimensions)) in recipe.sheets.iter().enumerate() {
+            let texture = decoded[path].as_ref().unwrap();
+            blit_sheet(
+                &mut pixels,
+                recipe.size,
+                recipe.columns,
+                recipe.sheet_size,
+                sheet as u32,
+                *dimensions,
+                &texture.base().data,
+            );
+        }
+        atlas.texture = images.len();
+        images.push(dds::Texture::from_rgba8(Rgba8Image {
+            width: recipe.size[0],
+            height: recipe.size[1],
+            pixels,
+        }));
+        Ok((atlas, warnings))
+    }
+
+    pub fn load_deferred(
+        layers: &Arc<ResolvedLayers>,
+        sprites: &SpriteSet,
+        decode: Decode,
+    ) -> io::Result<(Self, TypeAtlasRecipe, Vec<String>)> {
+        let (atlas, recipe, _decoded, warnings) = Self::prepare(layers, sprites, decode)?;
+        Ok((atlas, recipe, warnings))
+    }
+
+    #[expect(clippy::type_complexity, reason = "internal preparation returns the atlas metadata, deferred recipe, decoded map, and warnings")]
+    fn prepare(
+        layers: &Arc<ResolvedLayers>,
+        sprites: &SpriteSet,
+        decode: Decode,
+    ) -> io::Result<(
+        Self,
+        TypeAtlasRecipe,
+        BTreeMap<String, Result<dds::Texture, (&'static str, String)>>,
+        Vec<String>,
+    )> {
         let wanted: Vec<&SpriteType> = sprites
             .iter()
             .map(|(_, sprite)| sprite)
@@ -225,7 +387,7 @@ impl TypeAtlas {
         let mut index = BTreeMap::new();
         let mut source_dimensions = BTreeMap::new();
         let mut rejected: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let recorded = layers.without_overlays();
+        let recorded = layers.without_overlays().map(Arc::new);
         let (declared, refused) = Self::declared(sprites);
         let mut unique_paths = Vec::new();
         let mut seen_paths = BTreeSet::new();
@@ -241,9 +403,9 @@ impl TypeAtlas {
         let decoded_list = content_reader_layers::parallel::map(&unique_paths, |&path| {
             content_reader_layers::content::observe_overlay_refusals_isolated(|| {
                 let load = || {
-                    resources::stack_texture_or_recorded(
+                    resources::stack_texture_or_recorded_transient(
                         layers,
-                        recorded.as_ref(),
+                        recorded.as_deref(),
                         path.as_bytes(),
                         decode,
                     )
@@ -326,34 +488,28 @@ impl TypeAtlas {
                 ([texture.width, texture.height], plain.grid()),
             );
         }
-        let sheets = source_dimensions.len() as u32;
-        let columns = (sheets as f64).sqrt().ceil().max(1.) as u32;
-        let rows = sheets.div_ceil(columns).max(1);
+        let sheets_count = source_dimensions.len() as u32;
+        let columns = (sheets_count as f64).sqrt().ceil().max(1.) as u32;
+        let rows = sheets_count.div_ceil(columns).max(1);
         let sheet_size = source_dimensions
             .values()
             .fold([1, 1], |size, (texture, _)| {
                 [size[0].max(texture[0]), size[1].max(texture[1])]
             });
         let size = [columns * sheet_size[0], rows * sheet_size[1]];
-        let mut pixels = vec![0u8; size[0] as usize * size[1] as usize * 4];
         let mut cells = Vec::new();
+        let mut sheets = Vec::with_capacity(sheets_count as usize);
         let mut sheet = 0;
         for sprite in wanted {
             let Some(&(dimensions, _)) = source_dimensions.get(&sprite.name) else {
                 continue;
             };
-            let texture = decoded[sprite.texture.as_ref().unwrap()].as_ref().unwrap();
-            let source = &texture.base().data;
+            let path = sprite.texture.as_ref().unwrap();
+            sheets.push((path.clone(), dimensions));
             let (ox, oy) = (
                 (sheet % columns) * sheet_size[0],
                 (sheet / columns) * sheet_size[1],
             );
-            let span = dimensions[0] as usize * 4;
-            for row in 0..dimensions[1] {
-                let from = row as usize * span;
-                let to = ((oy + row) as usize * size[0] as usize + ox as usize) * 4;
-                pixels[to..to + span].copy_from_slice(&source[from..from + span]);
-            }
             let plain = sprite.facts.kind.plain().unwrap();
             let frame_size = resources::frame_geometry(plain, dimensions);
             for frame in 0..sprite.frames {
@@ -370,12 +526,15 @@ impl TypeAtlas {
             }
             sheet += 1;
         }
-        let texture = images.len();
-        images.push(dds::Texture::from_rgba8(Rgba8Image {
-            width: size[0],
-            height: size[1],
-            pixels,
-        }));
+        let recipe = TypeAtlasRecipe {
+            layers: Arc::clone(layers),
+            recorded,
+            decode,
+            size,
+            columns,
+            sheet_size,
+            sheets,
+        };
         let warnings = rejected
             .into_iter()
             .map(|(why, names)| {
@@ -394,13 +553,15 @@ impl TypeAtlas {
             .collect();
         Ok((
             Self {
-                texture,
+                texture: 0,
                 size,
                 cells,
                 index,
                 source_dimensions,
                 declared,
             },
+            recipe,
+            decoded,
             warnings,
         ))
     }
@@ -455,6 +616,19 @@ mod tests {
                 }
             }
         }
+        let shared = Arc::new(layers);
+        let (deferred_atlas, recipe, deferred_warnings) =
+            TypeAtlas::load_deferred(&shared, &sprites, Decode::default()).unwrap();
+        assert!(deferred_warnings.is_empty(), "{deferred_warnings:?}");
+        assert_eq!(deferred_atlas.size, atlas.size);
+        let rebuilt = recipe.build().unwrap();
+        assert_eq!(rebuilt.base().data, images[atlas.texture].base().data);
+        std::fs::remove_file(root.join("gfx/type.tga")).unwrap();
+        let (partial_atlas, partial_warnings) = recipe.build_tolerant();
+        assert_eq!([partial_atlas.width, partial_atlas.height], atlas.size);
+        assert!(partial_atlas.base().data.iter().all(|&byte| byte == 0));
+        assert_eq!(partial_warnings.len(), 1);
+        assert!(partial_warnings[0].contains("gfx/type.tga"), "{partial_warnings:?}");
         std::fs::remove_dir_all(root).unwrap();
     }
 

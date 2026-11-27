@@ -17,7 +17,6 @@ pub struct MapAssets {
     pub heightmap: Arc<IndexedImage>,
     pub post: PostAssets,
     pub shadow_blur: Arc<shader_pipeline::library::Effect>,
-    pub perm_snow: Arc<[bool]>,
     pub spawn_city: Arc<Vec<bool>>,
     pub sight: std::sync::OnceLock<viewer_gpu::terrain_sight::TerrainSight>,
 }
@@ -25,12 +24,12 @@ pub struct MapAssets {
 pub struct LoadMasks {
     pub rivers: IndexedImage,
     pub trees: IndexedImage,
+    pub perm_snow: Box<[bool]>,
 }
 
 pub struct SceneSources {
-    pub terrain: TerrainSources,
     pub reader: TerrainReader,
-    pub icon_images: Vec<dds::Texture>,
+    pub icon_images: Vec<viewer_gpu::textures::GuiSource>,
 }
 
 pub struct TerrainReader {

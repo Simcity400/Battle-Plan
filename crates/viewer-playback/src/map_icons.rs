@@ -1,10 +1,11 @@
 use content_reader_layers::ResolvedLayers;
 use content_reader_gfx::gfx;
-use content_reader_image::{dds, native::Decode};
+use content_reader_image::native::Decode;
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_combat as combat;
 use viewer_native_gui::native_windows::WindowCache;
 use viewer_counters::counters::CounterAssets;
+use viewer_gpu::textures::GuiSource;
 use viewer_runtime::errors::invalid;
 use viewer_native_gui::{lazy_icons::{DYNAMIC_BASE, LazyTextures}, sprites::Interface, text};
 
@@ -22,7 +23,7 @@ pub struct MapIcons {
 pub struct LoadedIcons {
     pub combat: combat::Assets,
     pub raids: viewer_raids::map::raids::RaidAssets,
-    pub images: Vec<dds::Texture>,
+    pub images: Vec<GuiSource>,
     pub fonts: text::Fonts,
     pub counters: CounterAssets,
     pub animated_text: viewer_map_text::animated_map_text::Assets,

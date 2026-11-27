@@ -4,7 +4,6 @@ use viewer_runtime::presentation::Continuity;
 use viewer_gpu::province_admission::side_planes;
 use viewer_gpu::province_admission::views as province_admission_views;
 use viewer_gpu::province_schedule::Schedule;
-use viewer_gpu::textures::load_file;
 use viewer_gpu::{camera::Camera, gpu_contract::Targets, textures::{self, ColorSpace}};
 mod fade;
 mod motion;
@@ -14,7 +13,7 @@ use eframe::wgpu;
 use content_reader_layers::ResolvedLayers;
 use content_reader_parser::parser::{self, Item, Value};
 use content_reader_mesh::particles::Catalog;
-use content_reader_image::{dds, native::Decode};
+use content_reader_image::native::Decode;
 pub use fade::RegionProvinces;
 pub use native::EntitySimulations;
 pub use native::Inputs as NativeInputs;
@@ -617,7 +616,7 @@ pub fn read_emitters(
     layers: &ResolvedLayers,
     decode: Decode,
     root: &[Item],
-    textures: &mut Vec<dds::Texture>,
+    textures: &mut Vec<textures::DeferredTexture>,
     pages: &mut BTreeMap<String, usize>,
 ) -> io::Result<Vec<Emitter>> {
     let mut emitters = parse_emitters(root)?;
@@ -627,10 +626,12 @@ pub fn read_emitters(
             p
         } else {
             let p = textures.len();
-            textures.push(load_file(
-                file,
-                &|path| layers.read_uncovered_path(path),
+            textures.push(textures::DeferredTexture::load_uncovered(
+                layers,
+                file.to_owned(),
                 decode,
+                false,
+                None,
             )?);
             pages.insert(file.to_owned(), p);
             p
@@ -810,7 +811,7 @@ fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
 fn system_capacity(emitters: &[Emitter]) -> usize {
     emitters.iter().map(|e| e.max).sum()
 }
-type LocalEmitters = (Vec<Emitter>, Vec<(String, dds::Texture)>);
+type LocalEmitters = (Vec<Emitter>, Vec<(String, textures::DeferredTexture)>);
 struct WeatherPair {
     members: [Vec<Emitter>; 2],
     radii: [Option<f32>; 2],
@@ -819,15 +820,15 @@ struct WeatherPair {
 type LocalSystem = (
     (usize, bool),
     WeatherPair,
-    Vec<(String, dds::Texture)>,
+    Vec<(String, textures::DeferredTexture)>,
     Option<String>,
 );
 
 fn merge_pages(
-    pages: &mut Vec<dds::Texture>,
+    pages: &mut Vec<textures::DeferredTexture>,
     global: &mut BTreeMap<String, usize>,
     emitters: &mut [Emitter],
-    local: Vec<(String, dds::Texture)>,
+    local: Vec<(String, textures::DeferredTexture)>,
 ) {
     let mut remap = Vec::with_capacity(local.len());
     for (file, texture) in local {
@@ -894,7 +895,7 @@ pub struct Assets {
     anchors_by_region: BTreeMap<u32, Vec<usize>>,
     region_provinces: RegionProvinces,
     systems: BTreeMap<(usize, bool), Vec<WeatherPair>>,
-    pages: Vec<dds::Texture>,
+    pages: Vec<textures::DeferredTexture>,
     entities: BTreeMap<String, (f32, Vec<Emitter>)>,
     pub withheld: Vec<String>,
     lights: super::entity_effects::Lights,
@@ -928,7 +929,7 @@ fn read_pair(
     layers: &ResolvedLayers,
     decode: Decode,
     pair: &content_reader_weather::weather::EffectPair,
-) -> io::Result<([Vec<Emitter>; 2], Vec<(String, dds::Texture)>)> {
+) -> io::Result<([Vec<Emitter>; 2], Vec<(String, textures::DeferredTexture)>)> {
     let mut textures = Vec::new();
     let mut pages = BTreeMap::new();
     let mut emitters = [Vec::new(), Vec::new()];
@@ -2302,7 +2303,7 @@ impl Pass {
     ) -> io::Result<Self> {
         let mut native_pages = Vec::new();
         for page in &assets.pages {
-            let bound = textures::upload(device, queue, "weather", page, ColorSpace::Srgb)?;
+            let bound = page.upload(device, queue, "weather", ColorSpace::Srgb)?;
             native_pages.push(bound.view);
         }
         Ok(Self {

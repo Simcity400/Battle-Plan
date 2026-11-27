@@ -9,7 +9,8 @@ use std::{
 
 use content_reader_layers::ResolvedLayers;
 use content_reader_gui::gui::native::{fonts::{self, GlyphSet}, resources};
-use content_reader_image::dds;
+use std::sync::Arc;
+use viewer_gpu::textures::GuiSource;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlyphBox {
@@ -192,7 +193,7 @@ pub fn load(
     interface: &super::sprites::Interface,
     name: &str,
     language: &str,
-    images: &mut Vec<dds::Texture>,
+    images: &mut Vec<GuiSource>,
 ) -> io::Result<Font> {
     let font = interface
         .registry
@@ -243,6 +244,8 @@ pub fn load(
             "bitmapfont {name:?}: its first file gives no lineHeight or base"
         )));
     }
+    let shared_layers = Arc::new(layers.clone());
+    let shared_recorded = recorded.as_ref().cloned().map(Arc::new);
     let mut pages = Vec::with_capacity(glyphs.pages.len());
     let mut logged = Vec::new();
     for (file, texture) in family.files.iter().zip(&glyphs.pages) {
@@ -255,7 +258,7 @@ pub fn load(
             pages.push(None);
             continue;
         }
-        match resources::stack_texture_or_recorded(
+        match resources::stack_texture_or_recorded_transient(
             layers,
             recorded.as_ref(),
             texture,
@@ -266,7 +269,13 @@ pub fn load(
                     images.len(),
                     [page.width as f32, page.height as f32],
                 )));
-                images.push(page.image);
+                images.push(GuiSource::deferred_stack(
+                    Arc::clone(&shared_layers),
+                    shared_recorded.clone(),
+                    texture.to_vec(),
+                    interface.decode,
+                    &page.image,
+                ));
             }
             Err(failure) if failure.native_failure() => {
                 layers.note_refused(format!("font page {}", String::from_utf8_lossy(texture)));
@@ -317,7 +326,7 @@ impl Fonts {
         interface: &super::sprites::Interface,
         language: &str,
         declared: &DeclaredFonts<'_>,
-        images: &mut Vec<dds::Texture>,
+        images: &mut Vec<GuiSource>,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         let DeclaredFonts { counter, arrow } = *declared;
@@ -1131,7 +1140,8 @@ path=\"{art}\"
         assert!(font.logged.is_empty(), "{:?}", font.logged);
         let glyph = GlyphMetrics::glyph(&font, 'A').unwrap();
         assert_eq!(glyph.uv, [0.0, 0.0, 0.5, 7.0 / 8.0]);
-        assert_eq!((images[0].width, images[0].height), (8, 8));
+        assert_eq!((images[0].meta().width, images[0].meta().height), (8, 8));
+        assert!(!images[0].is_held());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
