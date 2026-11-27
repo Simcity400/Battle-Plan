@@ -842,7 +842,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
       onDragEnd: () => dragEvents.push('end'),
       onDoubleClick: () => { doubleClicks++; return true; },
     },
-    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
+    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, target: { kind: 'row', key }, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
   });
 
   body.dispatch('pointerdown', { button: 0, clientX: 110, clientY: 70, pointerId: 1 });
@@ -1111,7 +1111,7 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
     getInstalled: () => installed,
     getViewportHeight: () => 800,
     parseHit: hit => parseDefaultRowHit(hit),
-    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
+    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, target: { kind: 'row', key }, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
     onContextMenu: key => { menus.push(key); return true; },
   });
 

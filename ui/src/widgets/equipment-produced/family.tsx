@@ -11,7 +11,7 @@ import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ProducedAtReply, ProducedCount, ProducedMeasure } from '../../generated/dashboard';
-import { detailCountry, detailEmptyText, type EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
+import { detailCountry, detailEmptyText, detailRowFromAction, type EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
 
 function validateProducedAt(data: unknown): ProducedAtReply {
   const reply = data as Partial<ProducedAtReply> | null;
@@ -76,6 +76,7 @@ function rangeStart(widget: FamilyViewProps['widget'], runtime: FamilyViewProps[
 
 function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
   const { widget, runtime, active, manifestDeclaration, options } = props;
+  const isLines = manifestDeclaration?.family === 'time-chart';
   const count: ProducedCount = options.count === 'ic' ? 'ic' : 'units';
   const measure: ProducedMeasure = options.measure === 'total' || options.measure === 'month' || options.measure === 'week'
     ? options.measure : 'day';
@@ -85,10 +86,11 @@ function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
   const gate = useGate(runtime, widget, SPEC, active);
 
   const onActivate = useCallback((action: InstalledAction) => {
+    const row = detailRowFromAction(action);
+    if (!row) return;
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
-    const meta = action.meta as EquipmentProducedRowMeta | null | undefined;
-    setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, counted: meta?.counted ?? meta?.key ?? action.subject, hour: gated });
+    setDetail({ ...row, hour: gated });
   }, [gate]);
 
   if (!manifestDeclaration) return null;
@@ -100,8 +102,7 @@ function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
         family={manifestDeclaration.family}
         view={props.view ?? 'race'}
         declaration={manifestDeclaration}
-        selectedKey={detail?.key ?? null}
-        onActivate={onActivate}
+        {...(isLines ? {} : { selectedKey: detail?.key ?? null, onActivate })}
       />
       <DetailWindowHost
         open={detail !== null}
