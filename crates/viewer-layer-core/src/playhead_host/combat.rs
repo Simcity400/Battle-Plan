@@ -96,7 +96,7 @@ impl<A: Asking> Combat<A> {
     }
 
     pub fn wants_turn(&self) -> bool {
-        self.pending.as_ref().zip(self.maker.as_ref()).is_some_and(|(key, maker)| maker.reads.wait(|done| done == key, Duration::ZERO))
+        self.pending.is_some() && self.maker.as_ref().is_some_and(|maker| !maker.reads.busy())
     }
 
     pub fn ask_step(&mut self, store: &views::Store, applied: Option<Hour>, branch: Option<BranchId>, epoch: u64, engaged: Option<Arc<History>>) -> bool {

@@ -266,8 +266,8 @@ fn joins_on(whole: bool, answered: bool, out: bool) -> bool {
     whole && !answered && !out
 }
 
-fn turns(pending: bool, laid: Option<(bool, bool)>, answered_anew: bool, missed: bool) -> bool {
-    !pending && (laid.is_some_and(|(made, later)| made || later) || answered_anew || missed)
+fn turns(blocked: bool, pending: bool, laid: Option<(bool, bool)>, answered_anew: bool, owed: bool) -> bool {
+    blocked || (!pending && (laid.is_some_and(|(made, later)| made || later) || answered_anew || owed))
 }
 
 fn stands(hour: Option<Hour>, missed: usize, head: Hour) -> bool {
@@ -425,6 +425,7 @@ struct Held {
     laid_out: Option<LaidOut>,
     answered: u64,
     failed: bool,
+    tables_only: bool,
     loading: Vec<String>,
     missed: Vec<TableId>,
 }
@@ -473,6 +474,7 @@ pub struct Overlay {
     answer: (bool, Vec<String>),
     refused: bool,
     seen: u64,
+    art: u64,
     maker: timeline::Maker,
 }
 
@@ -498,6 +500,7 @@ impl Overlay {
             answer: (false, Vec::new()),
             refused: false,
             seen: 0,
+            art: 0,
             maker: timeline::maker("overlay"),
         }
     }
@@ -602,6 +605,7 @@ impl Overlay {
         };
         post(&mut lock(&self.shared.held).want, want);
         self.shared.signal.notify_all();
+        self.art = self.content.icons.lazy.version();
         self.lay_owed.asked(lay, whole, self.stamp);
         self.asked = Some(Asked { stamp: self.stamp, hour, lay });
         timeline::mark(self.maker, Mark::Asked);
@@ -647,14 +651,16 @@ impl Overlay {
 
     pub fn wants_turn(&mut self) -> bool {
         let answers = self.shared.answers.load(Ordering::Acquire);
-        if answers == self.seen && self.missed.is_empty() {
+        let art = self.stamp > 0 && self.content.icons.lazy.version() != self.art;
+        if answers == self.seen && self.missed.is_empty() && !art {
             return false;
         }
         let held = lock(&self.shared.held);
+        let blocked = held.built.is_some() && held.want.is_some();
         let laid = held.laid_out.as_ref().filter(|laid| installs((laid.generation, laid.hour), self.generation, self.hour)).map(|laid| (laid.made.is_some(), Some(laid.hour) != self.hour));
         let anew = (held.failed, &held.loading, &held.missed) != (self.answer.0, &self.answer.1, &self.missed);
         let pending = held.answered < self.stamp;
-        let turns = turns(pending, laid, anew, !held.missed.is_empty());
+        let turns = turns(blocked, pending, laid, anew, art || held.tables_only || !held.missed.is_empty());
         drop(held);
         if !turns && !pending {
             self.seen = answers;
@@ -1120,7 +1126,7 @@ impl Maker {
         }
         let mut held = lock(&self.shared.held);
         held.loading = loading;
-        (held.answered, held.failed) = (want.stamp, failed);
+        (held.answered, held.failed, held.tables_only) = (want.stamp, failed, !want.lay);
         self.shared.answers.fetch_add(1, Ordering::AcqRel);
         drop(held);
         self.shared.signal.notify_all();
@@ -1351,13 +1357,14 @@ mod tests {
 
     #[test]
     fn the_side_turns_for_an_answer_it_has_not_joined_and_never_for_one_it_has() {
-        assert!(!turns(true, Some((true, true)), true, true), "its latest ask is unanswered: the side waits for the answer");
-        assert!(turns(false, Some((true, false)), false, false), "a layout to hand over");
-        assert!(turns(false, Some((false, true)), false, false), "the same layout standing at a later hour");
-        assert!(!turns(false, Some((false, false)), false, false), "the same layout at the same hour: nothing new");
-        assert!(turns(false, None, true, false), "an answer unlike the one joined, a refusal among them, is shown once");
-        assert!(!turns(false, None, false, false), "the answer already joined, a refusal among them, is not shown again");
-        assert!(turns(false, None, false, true), "tables still missed are asked for again until the rows hold them");
+        assert!(!turns(false, true, Some((true, true)), true, true), "its latest ask is unanswered: the side waits for the answer");
+        assert!(turns(true, true, None, false, false), "tables published and a newer ask queued: the maker waits on the side");
+        assert!(turns(false, false, Some((true, false)), false, false), "a layout to hand over");
+        assert!(turns(false, false, Some((false, true)), false, false), "the same layout standing at a later hour");
+        assert!(!turns(false, false, Some((false, false)), false, false), "the same layout at the same hour: nothing new");
+        assert!(turns(false, false, None, true, false), "an answer unlike the one joined, a refusal among them, is shown once");
+        assert!(!turns(false, false, None, false, false), "the answer already joined, a refusal among them, is not shown again");
+        assert!(turns(false, false, None, false, true), "a layout still owed (tables alone, tables missed, newer art) is asked for again");
     }
 
     #[test]

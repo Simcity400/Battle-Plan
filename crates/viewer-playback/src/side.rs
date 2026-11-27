@@ -551,12 +551,10 @@ fn advance(shared: &Shared) {
                     turn.side.fail(format!("The map's playhead stopped: {error}"));
                 }
                 turn.answered = still.map(|hour| Ready::of(hour, &ask));
-                shared.signal.notify_all();
-                if still.is_some() {
-                    drop(turn);
+                if still.is_some() || turn.side.head_from(head, interval).is_none() {
                     (shared.wake)();
-                    turn = lock(&shared.held);
                 }
+                shared.signal.notify_all();
             }
         }
     }
@@ -843,7 +841,11 @@ impl Products {
             if self.overlay_missed != overlay.missed() {
                 self.overlay_missed = overlay.missed().to_vec();
             }
-            self.overlay_refused = overlay.refused();
+            let refused = overlay.refused();
+            if refused && !self.overlay_refused {
+                (self.overlay, self.overlay_withdrawn) = (None, true);
+            }
+            self.overlay_refused = refused;
         }
         let side = &*side;
         self.labels = viewer_layers_political::labels::stamped(side);

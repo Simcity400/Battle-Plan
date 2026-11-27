@@ -241,4 +241,5 @@ fn a_late_overlay_answer_and_a_refusal_each_give_one_frame_and_then_none() {
     side.wait_window(|side| side.products().overlay_refused).unwrap();
     assert_eq!(rests(&mut side, &wakes, &view, "the refusal, shown"), woken + 2, "the refusal gave the window one frame");
     assert!(!side.products().overlay_coming(), "a refused overlay is not waited for: the layers make the picture whole");
+    assert!(side.products().overlay_withdrawn, "and the overlay of the answer before is withdrawn, not drawn as this one");
 }

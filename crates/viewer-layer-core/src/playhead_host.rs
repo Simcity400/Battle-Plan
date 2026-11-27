@@ -2255,7 +2255,7 @@ impl<P: PlaybackProducts> MapSide<P> {
     }
 
     pub fn answers_waiting(&mut self) -> bool {
-        self.views.demand() != self.demand || self.overlay.as_deref_mut().is_some_and(Overlaying::wants_turn) || self.combat.wants_turn()
+        self.views.demand() != self.demand || self.epoch != self.entry.playhead.epoch() || self.overlay.as_deref_mut().is_some_and(Overlaying::wants_turn) || self.combat.wants_turn()
     }
 }
 
