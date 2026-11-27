@@ -5,6 +5,24 @@ import { withNativePage } from '../../../tools/native-page.ts';
 type Mounted = { asked: string[]; shownOnPause: number };
 type Played = { commits: number; preparedRenders: number; asked: string[]; hostWhilePlaying: boolean };
 
+test('two event feeds share one kinds read through page preparation, playback and two seeks', async t => {
+  await withNativePage('event-feed-kinds', '/ui/src/dashboard/prepareLane.dom.fixture.tsx', page => page.stage('event feed kinds', async () => {
+    const count = await page.evaluate<number>('window.prepareLane.eventFeedKinds()');
+    t.diagnostic(`event-feed-kinds requests: ${count}`);
+    assert.equal(count, 1);
+    for (const state of ['pending', 'failed', 'missing', 'ready']) {
+      const shown = await page.evaluate<{ status: string | null; choices: string[] }>(`window.prepareLane.eventFeedKindsState('${state}')`);
+      if (state === 'ready') {
+        assert.equal(shown.status, null);
+        assert.deepEqual(shown.choices, ['War declared']);
+      } else {
+        assert.match(shown.status ?? '', state === 'pending' ? /Loading kinds/ : /Event kinds could not be loaded/);
+        assert.deepEqual(shown.choices, [], `${state} kinds do not become an empty recorded list or guessed choices`);
+      }
+    }
+  }));
+});
+
 test('at 15 hours a frame for 600 frames, the page plays the same with the prepare lane on as with it off; paused, the lane prepares every other page', async t => {
   await withNativePage('prepare-lane', '/ui/src/dashboard/prepareLane.dom.fixture.tsx', page => page.stage('prepare lane', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.prepareLane.${expression}`);

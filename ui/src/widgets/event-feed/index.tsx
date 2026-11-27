@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { validateProductReply } from '../../dashboard/client.ts';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model.ts';
+import { useProduct } from '../../dashboard/products.ts';
+import { failureText } from '../../dashboard/queryError.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import { useExpandedGroups } from '../../families/table/ExpandableLogView.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
-import type { EventFeedKindInfo } from '../../generated/dashboard';
+import { PickerContext } from '../../families/table/picker.ts';
 import EventDetailWindow, { type EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { readableRow, useEventDetail, useTooltipText } from '../event-choices/eventDetail.ts';
 import { withHoverText } from './hoverText.ts';
@@ -23,7 +24,7 @@ function EventFeedView(props: FamilyViewProps) {
   const scope = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
   const groups = useExpandedGroups(scope);
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: EventDetailSubject } | null>(null);
-  const [kinds, setKinds] = useState<{ readonly scope: string; readonly list: readonly EventFeedKindInfo[] } | null>(null);
+  const kinds = useProduct(props.runtime.client, track ? kindsRequest(track) : null, props.active, validateKinds, track?.source);
   const [frozenState, setFrozenState] = useState<{ readonly scope: string; readonly hour: number | null }>({ scope: '', hour: null });
   const [installedState, setInstalledState] = useState<{ readonly scope: string; readonly hour: number | null }>({ scope: '', hour: null });
   const onFrozenHour = useCallback((hour: number | null) => {
@@ -36,24 +37,12 @@ function EventFeedView(props: FamilyViewProps) {
   const detail = useEventDetail(props.runtime, props.widget.trackIds[0], 'event-feed-tail', shown, shown !== null);
   const hover = useTooltipText(props.runtime, props.widget.trackIds[0], 'event-feed-tail', props.widget.time.mode === 'follow', props.active, isEventRow);
 
-  useEffect(() => {
-    if (!track || !props.active) return;
-    if (kinds?.scope === scope) return;
-    const controller = new AbortController();
-    const request = kindsRequest(track);
-    props.runtime.client.product(request, controller.signal).then(reply => {
-      if (controller.signal.aborted) return;
-      setKinds({ scope, list: validateKinds(validateProductReply(reply, request).data) });
-    }).catch(() => {});
-    return () => controller.abort();
-  }, [track, props.active, props.runtime.client, scope, kinds?.scope]);
-
   const { options } = props;
   const familyOptions = useMemo(
     () => ({ ...withHoverText(options, hover.texts), expanded: groups.expanded, full: groups.full }),
     [options, hover.texts, groups.expanded, groups.full],
   );
-  const recordingKinds = kinds?.scope === scope ? kinds.list : null;
+  const recordingKinds = kinds.data;
   const categories = useMemo(
     () => CATEGORIES.filter(cat => options[cat.value] !== false).map(cat => cat.value),
     [options],
@@ -137,14 +126,16 @@ function EventFeedView(props: FamilyViewProps) {
 
   return (
     <div ref={anchor} className="fh-detail-anchor">
-      <LogKindFilter
+      <PickerContext.Provider value={(_hour, _selected, children) => kinds.error
+        ? children([], { kind: 'failed', message: failureText(kinds.error, 'Event kinds could not be loaded.') })
+        : recordingKinds === undefined ? children([], { kind: 'loading' }) : children(filterItems)}><LogKindFilter
         slot={props.filterSlot}
         allLabel="All kinds"
         noun="kinds"
         items={filterItems}
         onToggle={onToggleFilter}
         onSelectAll={onSelectAll}
-      />
+      /></PickerContext.Provider>
       {showStrip ? (
         <EventFeedActivityStrip
           widget={props.widget}
