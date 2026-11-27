@@ -1,5 +1,5 @@
 use super::casualties::{EndedCounters, Lifetime, cached_casualty_ends};
-use dashboard_base::{Source, products::{Country, LoadContext, at_hour::{At, AtHour, Clock, Edits, ReadsAt, before, field_columns}, validate_country}};
+use dashboard_base::{Source, products::{Country, LoadContext, at_hour::{At, AtHour, Edits, ReadsAt, before, field_columns}, validate_country}};
 use dashboard_query::{identity::{Holder, Holders, TAG_UNLINKED}, timeline::Timeline};
 use dashboard_world::products::{
     groups::{FactionAt, FactionGroup, factions_at, factions_valid_through},
@@ -403,7 +403,6 @@ impl AtHour for CasualtyMatrix {
     const KEY: &'static str = "casualty-matrix";
     const TITLE: &'static str = "Casualties between countries";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::Boundaries;
     type Params = CasualtyMatrixParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", between, top, subject];
     type Reply = CasualtyMatrixReply;

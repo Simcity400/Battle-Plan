@@ -5,7 +5,7 @@ use super::{
     participation::{contributions, factors},
 };
 use dashboard_base::{Source, catalogue};
-use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Clock, Edits, ReadsAt, at_hour, before, field_columns}};
+use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Edits, ReadsAt, at_hour, before, field_columns}};
 use dashboard_base::products::check_reply_budget;
 use replay_data::{
     rows::{TableId, tables},
@@ -79,7 +79,6 @@ impl AtHour for WarContributions {
     const KEY: &'static str = "war-contributions";
     const TITLE: &'static str = "War contributions";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: Clock = Clock::Boundaries;
     const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(at_hour);
     type Params = WarContributionsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint];

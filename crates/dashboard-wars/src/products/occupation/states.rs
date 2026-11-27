@@ -1008,7 +1008,6 @@ impl AtHour for OccupiedStates {
     const KEY: &'static str = "occupied-states";
     const TITLE: &'static str = "Occupied states";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = OccupiedStatesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = OccupiedStatesReply;

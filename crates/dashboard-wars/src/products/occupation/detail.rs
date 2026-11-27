@@ -1,7 +1,7 @@
 
 use dashboard_base::products::Country;
 use super::{occupied, slot};
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Clock, Edits, Owner, Read, ReadsAt, before, field_columns}}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Edits, Owner, Read, ReadsAt, before, field_columns}}};
 use dashboard_intelligence::products::intelligence::{Tags, branch, missing};
 use dashboard_follow::live::Source as Cell;
 use dashboard_query::identity::Holder;
@@ -87,7 +87,6 @@ impl AtHour for OccupationDetail {
     const KEY: &'static str = "occupation-at";
     const TITLE: &'static str = "Occupation";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::Boundaries;
     type Params = OccupationDetailParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, collaboration, "countries[]"];
     type Reply = OccupationDetailReply;

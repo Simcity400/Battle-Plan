@@ -188,7 +188,6 @@ impl AtHour for AutonomyLevels {
     const KEY: &'static str = "autonomy-levels";
     const TITLE: &'static str = "Autonomy levels";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = AutonomyLevelsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = AutonomyLevelsReply;

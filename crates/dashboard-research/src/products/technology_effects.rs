@@ -3,7 +3,7 @@ use dashboard_base::{
     Source,
     products::{
         LoadContext,
-        at_hour::{At, AtHour, Clock, ScriptedInputs, warnings_through},
+        at_hour::{At, AtHour, ScriptedInputs, warnings_through},
         game_text::{GameRun, runs},
         politics_content::{PoliticsContent, politics_content},
     },
@@ -67,7 +67,6 @@ impl AtHour for TechnologyEffectsAt {
     const KEY: &'static str = "technology-effects";
     const TITLE: &'static str = "Technology effects";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: Clock = Clock::Boundaries;
     const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(dashboard_base::products::at_hour::at_hour);
     type Params = TechnologyEffectsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, token, databaseIndex];

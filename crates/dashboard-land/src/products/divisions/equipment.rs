@@ -147,7 +147,6 @@ impl AtHour for DivisionEquipment {
     const KEY: &'static str = "division-equipment";
     const TITLE: &'static str = "Division equipment";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = DivisionEquipmentParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, countFor, view];
     type Reply = DivisionEquipmentReply;

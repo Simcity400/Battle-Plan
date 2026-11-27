@@ -312,7 +312,6 @@ impl AtHour for DoctrineMastery {
     }
 
 
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
     fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> bool {
         stage == 1 && (edits.fields(TableId::DoctrineFolders, u64::MAX) || edits.fields(TableId::DoctrineTracks, dashboard_base::products::at_hour::field_mask(TableId::DoctrineTracks, &["sub_doctrine"])))

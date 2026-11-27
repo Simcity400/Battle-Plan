@@ -1,7 +1,7 @@
 
 use dashboard_base::products::{Country, validate_country};
 use super::rows;
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Clock, Owner, Read, at_hour, field_columns, warnings_through}}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Owner, Read, at_hour, field_columns, warnings_through}}};
 use replay_data::rows::{CountryFactoriesRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -91,7 +91,6 @@ impl AtHour for FactoryParts {
     const KEY: &'static str = "factory-parts";
     const TITLE: &'static str = "Factory parts";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::InputsOnly;
     const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(at_hour);
     type Params = FactoryPartsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
