@@ -54,6 +54,11 @@
 
 .fh-extent {
   position: relative;
+  display: flow-root;
+  overflow: clip;
+  box-sizing: content-box;
+  padding: 2px 0 0 2px;
+  margin: -2px 0 0 -2px;
 }
 
 .fh-canvas {

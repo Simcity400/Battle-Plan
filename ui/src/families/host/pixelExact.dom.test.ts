@@ -8,6 +8,34 @@ type Cdp = { send(method: string, params?: Record<string, unknown>): Promise<unk
 const RATIOS = [1, 1.25, 1.5, 1.75, 2];
 const FAMILIES = ['bars', 'breakdown', 'card', 'flow', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'];
 
+test('moving a paused canvas onto fractional device pixels keeps its installed answer while drawing is held', async () => {
+  await withNativePage('pixel-exact-paused', '/ui/src/families/host/pixelExact.dom.fixture.tsx', async page => {
+    assert.ok((await page.evaluate<{ settled: boolean }>('window.pixelExact.mount()')).settled);
+    await page.evaluate('window.pixelExact.placeEmptyBars()');
+    assert.ok((await page.evaluate<{ settled: boolean }>('window.pixelExact.settle()')).settled);
+    const before = await page.evaluate<{ id: number; busy: string | null }>('window.pixelExact.barsPicture()');
+    assert.ok(before.id);
+    assert.equal(before.busy, null);
+    try {
+      await page.evaluate('window.pixelExact.hold(); window.pixelExact.moveEmptyBars(); window.pixelExact.frames(6)');
+      assert.deepEqual(await page.evaluate('window.pixelExact.barsPicture()'), before);
+      const bars = (await page.evaluate<Placement[]>('window.pixelExact.placements()')).find(row => row.id === 'bars');
+      assert.ok(bars);
+      assert.ok(bars.origin.every(value => Math.abs(value - Math.round(value)) <= 0.01));
+      assert.deepEqual(bars.backing, bars.box);
+    } finally {
+      await page.evaluate('window.pixelExact.release()');
+    }
+    const cdp = await cdpFor(page);
+    try {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 0, height: 0, deviceScaleFactor: 1, mobile: false });
+      const edge = await page.evaluate<{ offset: number; inside: boolean }>('window.pixelExact.barsLeadingEdgeAtSmallScale()');
+      assert.ok(edge.offset < -1, `the canvas moves ${edge.offset} local CSS pixels above the body`);
+      assert.ok(edge.inside, 'the leading paint edge stays inside the extent');
+    } finally { cdp.close(); }
+  }, [], false, ['--force-device-scale-factor=1.25', '--window-size=1440,1000']);
+});
+
 async function cdpFor(page: NativePage): Promise<Cdp> {
   const { cdpSession } = await import(new URL('../../../../tools/e2e/cdp.mjs', import.meta.url).href) as { cdpSession(url: string): Promise<Cdp> };
   return cdpSession(page.page);
