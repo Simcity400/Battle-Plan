@@ -1,4 +1,4 @@
-use super::super::{PowerSpendingReply, SpendCategory, SpendCoverage, SpendCurrency, SpendDay, SpendGain, SpendItem, SpendKind, SpendPayment, SpendReconciliation};
+use super::super::{PowerSpendingReply, SpendCategory, SpendCoverage, SpendCurrency, SpendDay, SpendGain, SpendItem, SpendKind, SpendPayment};
 use super::{holes, index, unrecorded};
 use dashboard_base::products::breakdown::{BreakdownAmount, BreakdownState};
 
@@ -56,8 +56,6 @@ fn reply() -> PowerSpendingReply {
         ],
         coverage: vec![SpendCoverage { first_hour: 0, last_hour: 1, covered: false, reason: Some("Spending was not recorded".into()) }, covered(2, 100)],
         gain_coverage: vec![covered(0, 100)],
-        balances: Vec::new(),
-        reconciliation: SpendReconciliation::default(),
         warnings: vec!["A warning about the whole branch".into()],
     }
 }

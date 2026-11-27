@@ -9,10 +9,10 @@ use dashboard_base::products::Country;
 use super::politics::{Holding, holdings};
 use dashboard_base::products::at_hour;
 use dashboard_query::{Query, coverage};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, Unsayable, cells_rows};
 use replay_lanes::{lanes::{self, Keys}, points::{self, Cell}};
 use replay_columnar::manifest::Status;
-use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
+use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, TableRows, tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -175,41 +175,6 @@ pub struct SpendCoverage {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct SpendBalanceRun {
-    pub first_hour: i32,
-    pub last_hour: i32,
-    #[doc = " Recorded currency balance, fixed5; none when the balance or Countries table was not recorded."]
-    pub value_raw: Option<String>,
-    pub reason: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct SpendReconciliation {
-    #[doc = " Balance immediately before the span (`from - 1`), fixed5; none when not recorded."]
-    pub opening_raw: Option<String>,
-    #[doc = " Total recorded gains before cap across the span, fixed5; none when not recorded whole."]
-    pub gained_raw: Option<String>,
-    #[doc = " Total recorded gains lost at cap across the span, fixed5; none when not recorded whole."]
-    pub lost_at_cap_raw: Option<String>,
-    #[doc = " Total recorded spending across the span, fixed5; none when not recorded whole."]
-    pub spent_raw: Option<String>,
-    #[doc = " Total command power newly allocated to continuous assignments across the span, fixed5; none when not recorded whole."]
-    pub allocated_raw: Option<String>,
-    #[doc = " Total command power released from continuous assignments across the span, fixed5; none when not recorded whole."]
-    pub released_raw: Option<String>,
-    #[doc = " Balance at the end of the span (`to`), fixed5; none when not recorded."]
-    pub closing_raw: Option<String>,
-    #[doc = " Signed difference `closing - opening - (gained - lost_at_cap - spent - allocated + released)`, fixed5; none when any operand was not recorded."]
-    pub other_changes_raw: Option<String>,
-    #[doc = " Why `other_changes_raw` or an operand was not recorded; none when all operands are recorded."]
-    pub reason: Option<String>,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -232,10 +197,6 @@ pub struct PowerSpendingReply {
     pub coverage: Vec<SpendCoverage>,
     #[doc = " The span's hours where instant power changes were read completely."]
     pub gain_coverage: Vec<SpendCoverage>,
-    #[doc = " Recorded currency balances over the span and its baseline hour, in order."]
-    pub balances: Vec<SpendBalanceRun>,
-    #[doc = " Span balance identity and its availability over `from..=to`."]
-    pub reconciliation: SpendReconciliation,
     pub warnings: Vec<String>,
 }
 
@@ -249,7 +210,6 @@ pub(super) fn recurring(row: &PowerItemRow) -> bool {
 pub(super) struct Piece {
     pub run: u32,
     pub slot: u32,
-    pub id: u32,
     pub run_first: i32,
     pub first: i32,
     pub last: i32,
@@ -278,7 +238,7 @@ pub(super) fn pieces(query: &Query<'_>, tag: &Country, first: i32, last: i32) ->
             } else {
                 Some(stretch.first)
             };
-            out.push(Piece { run: stretch.run, slot: holding.slot, id: holding.id, run_first, first: from, last: to, baseline });
+            out.push(Piece { run: stretch.run, slot: holding.slot, run_first, first: from, last: to, baseline });
         }
     }
     out.sort_by_key(|piece| piece.first);
@@ -833,41 +793,12 @@ fn maps_to_slot(steps: &[(i32, Option<u32>)], hour: i32, slot: u32) -> bool {
     at > 0 && steps[at - 1].1 == Some(slot)
 }
 
-struct AllocationTotals {
-    allocated: Option<i128>,
-    released: Option<i128>,
-    unknown: u32,
-}
-
-impl Default for AllocationTotals {
-    fn default() -> Self {
-        Self { allocated: Some(0), released: Some(0), unknown: 0 }
-    }
-}
-
-impl AllocationTotals {
-    fn add_allocated(&mut self, amount: i128) {
-        self.allocated = self.allocated.and_then(|held| held.checked_add(amount));
-    }
-
-    fn add_released(&mut self, amount: i128) {
-        self.released = self.released.and_then(|held| held.checked_add(amount));
-    }
-
-    fn mark_unknown(&mut self) {
-        self.allocated = None;
-        self.released = None;
-        self.unknown = self.unknown.saturating_add(1);
-    }
-}
-
 fn instant_gains(
     query: &Query<'_>,
     piece: &Piece,
     currency: SpendCurrency,
     gain_coverage: &mut Vec<SpendCoverage>,
     buckets: &mut BTreeMap<(i32, Option<i32>), GainBucket>,
-    allocations: &mut AllocationTotals,
 ) -> io::Result<()> {
     let change_statuses = status_runs(query, piece.run, TableId::CountryPowerChanges, piece.first, piece.last, "Power changes")?;
     let link_statuses = status_runs(query, piece.run, TableId::CountryLinks, piece.first, piece.last, "Country links")?;
@@ -961,7 +892,6 @@ fn instant_gains(
             let requested = Value::of(cells[order[6]]).number();
             if is_hold(row_currency, site, cause) {
                 match operation {
-                    PowerOperation::Clamp => {}
                     PowerOperation::AllocationClamp => match before.zip(after) {
                         Some((b, a)) => {
                             let delta = i128::from(a) - i128::from(b);
@@ -973,22 +903,15 @@ fn instant_gains(
                             buckets.entry((hour, event_hour)).or_default().push(Some(0), None, 0, 1, 0);
                         }
                     },
-                    _ => match before.zip(after) {
-                        Some((b, a)) => {
+                    PowerOperation::Refund => {
+                        if let Some((b, a)) = before.zip(after) {
                             let delta = i128::from(a) - i128::from(b);
-                            if operation == PowerOperation::Refund
-                                && let Some(req) = requested.map(i128::from).filter(|&req| req > delta && delta >= 0)
-                            {
-                                allocations.add_released(req);
+                            if let Some(req) = requested.map(i128::from).filter(|&req| req > delta && delta >= 0) {
                                 buckets.entry((hour, event_hour)).or_default().push(Some(0), Some(req - delta), 0, 0, 0);
-                            } else if delta < 0 {
-                                allocations.add_allocated(-delta);
-                            } else if delta > 0 {
-                                allocations.add_released(delta);
                             }
                         }
-                        None => allocations.mark_unknown(),
-                    },
+                    }
+                    _ => {}
                 }
                 return true;
             }
@@ -1035,268 +958,6 @@ fn instant_gains(
     Ok(())
 }
 
-fn push_balance_run(out: &mut Vec<SpendBalanceRun>, mut run: SpendBalanceRun) {
-    if let Some(last) = out.last() {
-        if run.first_hour <= last.last_hour {
-            run.first_hour = last.last_hour.saturating_add(1);
-        }
-    }
-    if run.first_hour > run.last_hour {
-        return;
-    }
-    match out.last_mut() {
-        Some(last) if last.last_hour.checked_add(1) == Some(run.first_hour) && last.value_raw == run.value_raw && last.reason == run.reason => {
-            last.last_hour = run.last_hour;
-        }
-        _ => out.push(run),
-    }
-}
-
-fn balances(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, out: &mut Vec<SpendBalanceRun>) -> io::Result<()> {
-    let start = piece.baseline.unwrap_or(piece.first);
-    let end = piece.last;
-    if start > end {
-        return Ok(());
-    }
-    let statuses = status_runs(query, piece.run, TableId::Countries, start, end, "Country balances")?;
-    let col_name = if currency == SpendCurrency::Political { "political_power_raw" } else { "command_power_raw" };
-    let column = dashboard_declare::field(TableId::Countries, col_name)?;
-    let keys = [u128::from(piece.id)];
-    let history = dashboard_query::cost::storage(|| lanes::history(query.replay.recording(), piece.run, TableId::Countries, &[column], Keys::These(&keys), start, end))?;
-    let at = history.columns.binary_search(&column).map_err(|_| dashboard_core::invalid("Countries power balance column was not read"))?;
-    let steps = history.keys.iter().find(|(key, _)| *key == keys[0]).map(|(_, steps)| steps.as_slice()).unwrap_or_default();
-    let mut values: Vec<(i32, i32, Option<i64>)> = Vec::new();
-    if steps.is_empty() {
-        values.push((start, end, None));
-    } else {
-        if steps[0].hour > start {
-            values.push((start, steps[0].hour - 1, None));
-        }
-        for (index, step) in steps.iter().enumerate() {
-            let until = steps.get(index + 1).map_or(end, |next| next.hour - 1).min(end);
-            if step.hour <= until {
-                let value = step.cells.as_ref().and_then(|cells| Value::of(cells[at]).number());
-                values.push((step.hour, until, value));
-            }
-        }
-    }
-    let (mut si, mut vi) = (0usize, 0usize);
-    while si < statuses.len() && vi < values.len() {
-        let (sa, sb, ref status_why) = statuses[si];
-        let (va, vb, val) = values[vi];
-        let a = sa.max(va);
-        let b = sb.min(vb);
-        if a <= b {
-            let (value_raw, reason) = match (status_why, val) {
-                (Some(why), _) => (None, Some(why.clone())),
-                (None, Some(raw)) => (Some(raw.to_string()), None),
-                (None, None) => (None, Some("Balance was not recorded".into())),
-            };
-            push_balance_run(out, SpendBalanceRun { first_hour: a, last_hour: b, value_raw, reason });
-        }
-        if sb < vb {
-            si += 1;
-        } else if vb < sb {
-            vi += 1;
-        } else {
-            si += 1;
-            vi += 1;
-        }
-    }
-    Ok(())
-}
-
-fn full_coverage_reason(runs: &[SpendCoverage], from: i32, to: i32, fallback: &str) -> Option<String> {
-    let mut cursor = from;
-    for run in runs {
-        let a = run.first_hour.max(from);
-        let b = run.last_hour.min(to);
-        if a > b {
-            continue;
-        }
-        if cursor < a {
-            return Some(fallback.to_owned());
-        }
-        if !run.covered {
-            return Some(run.reason.clone().unwrap_or_else(|| fallback.to_owned()));
-        }
-        cursor = match b.checked_add(1) {
-            Some(next) => next,
-            None => return None,
-        };
-    }
-    (cursor <= to).then(|| fallback.to_owned())
-}
-
-fn balance_at(runs: &[SpendBalanceRun], hour: i32) -> (Option<i128>, Option<String>) {
-    let at = runs.partition_point(|run| run.last_hour < hour);
-    let Some(run) = runs.get(at).filter(|run| run.first_hour <= hour && hour <= run.last_hour) else {
-        return (None, None);
-    };
-    match run.value_raw.as_deref().and_then(|value| value.parse::<i128>().ok()) {
-        Some(value) => (Some(value), None),
-        None => (None, Some(run.reason.clone().unwrap_or_else(|| "Balance was not recorded".into()))),
-    }
-}
-
-pub(super) const HOLDER_UNRESOLVED: &str = "The country's holder was not resolved during this span";
-
-pub(super) fn continuity(from: i32, to: i32, held: &[Piece], nobody: impl Fn(i32, i32) -> i64, unresolved: impl Fn(i32, i32) -> bool) -> Option<String> {
-    let unheld = |first: i32, last: i32| first <= last && nobody(first, last) > 0;
-    let unknown = |first: i32, last: i32| first <= last && unresolved(first, last);
-    let Some((first, last)) = held.first().zip(held.last()) else {
-        let hours = if from <= to { nobody(from, to) } else { 0 };
-        return Some(
-            if unknown(from, to) {
-                HOLDER_UNRESOLVED
-            } else if hours == i64::from(to) - i64::from(from) + 1 {
-                "Country was not held during this span"
-            } else if hours > 0 {
-                "Country was not held for the entire span"
-            } else {
-                "This span was not recorded"
-            }
-            .to_owned(),
-        );
-    };
-    let gaps = || {
-        [(from, first.first.saturating_sub(1)), (last.last.saturating_add(1), to)]
-            .into_iter()
-            .chain(held.windows(2).map(|pair| (pair[0].last.saturating_add(1), pair[1].first.saturating_sub(1))))
-    };
-    if gaps().any(|(a, b)| unheld(a, b)) {
-        Some("Country was not held for the entire span".to_owned())
-    } else if gaps().any(|(a, b)| unknown(a, b)) {
-        Some(HOLDER_UNRESOLVED.to_owned())
-    } else if first.first > from || last.last < to || held.windows(2).any(|pair| pair[0].run != pair[1].run || pair[1].baseline != pair[1].first.checked_sub(1)) {
-        Some("Continuity broke across a load or recording gap during this span".to_owned())
-    } else if held.len() > 1 {
-        Some("Country holder changed during this span".to_owned())
-    } else {
-        None
-    }
-}
-
-fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals, nobody: impl Fn(i32, i32) -> i64, unresolved: impl Fn(i32, i32) -> bool) -> SpendReconciliation {
-    let (from, to) = (params.from, params.to);
-    let continuity_reason = continuity(from, to, held, nobody, unresolved);
-
-    let spend_coverage_reason = full_coverage_reason(&reply.coverage, from, to, "Spending coverage was not recorded");
-    let gain_coverage_reason = full_coverage_reason(&reply.gain_coverage, from, to, "Power changes were not recorded");
-
-    let (opening, opening_reason) = match from.checked_sub(1) {
-        Some(prev) if held.first().is_some_and(|piece| piece.first == from && piece.baseline == Some(prev)) => {
-            let (value, reason) = balance_at(&reply.balances, prev);
-            let why = value.is_none().then(|| reason.unwrap_or_else(|| "Opening balance before the span was not recorded".into()));
-            (value, why)
-        }
-        _ => (None, Some("Opening balance before the span was not recorded".into())),
-    };
-
-    let (closing, closing_reason) = if held.last().is_some_and(|piece| piece.last == to) {
-        let (value, reason) = balance_at(&reply.balances, to);
-        let why = value.is_none().then(|| reason.unwrap_or_else(|| "Closing balance at the end of the span was not recorded".into()));
-        (value, why)
-    } else {
-        (None, Some("Closing balance at the end of the span was not recorded".into()))
-    };
-
-    let mut spent_sum: Option<i128> = Some(0);
-    let mut spent_item_reason: Option<String> = None;
-    for payment in &reply.payments {
-        if payment.uncovered {
-            spent_item_reason.get_or_insert_with(|| "Some payments occurred during uncovered hours".into());
-            spent_sum = None;
-        } else if payment.unknown > 0 || payment.known_raw.is_none() {
-            spent_item_reason.get_or_insert_with(|| "Some payment costs were not recorded".into());
-            spent_sum = None;
-        } else if let (Some(total), Some(add)) = (spent_sum, payment.known_raw.as_deref().and_then(|value| value.parse::<i128>().ok())) {
-            spent_sum = total.checked_add(add);
-        } else {
-            spent_sum = None;
-        }
-    }
-    for day in &reply.days {
-        if day.uncovered > 0 {
-            spent_item_reason.get_or_insert_with(|| "Some payments occurred during uncovered hours".into());
-            spent_sum = None;
-        } else if day.unknown > 0 || day.charge_raw.is_none() {
-            spent_item_reason.get_or_insert_with(|| "Some payment costs were not recorded".into());
-            spent_sum = None;
-        } else if let (Some(total), Some(add)) = (spent_sum, day.charge_raw.as_deref().and_then(|value| value.parse::<i128>().ok())) {
-            spent_sum = total.checked_add(add);
-        } else {
-            spent_sum = None;
-        }
-    }
-    let spent = (continuity_reason.is_none() && spend_coverage_reason.is_none() && spent_item_reason.is_none())
-        .then_some(spent_sum)
-        .flatten();
-
-    let mut gained_sum: Option<i128> = Some(0);
-    let mut capped_sum: Option<i128> = Some(0);
-    let mut gain_item_reason: Option<String> = None;
-    for gain in &reply.gains {
-        if gain.unknown_days > 0 || gain.gained_raw.is_none() || gain.capped_raw.is_none() {
-            gain_item_reason.get_or_insert_with(|| "Some power gains were not recorded".into());
-            gained_sum = None;
-            capped_sum = None;
-        } else if gain.unmatched > 0 {
-            gain_item_reason.get_or_insert_with(|| "Some daily power applications were not recorded".into());
-            gained_sum = None;
-            capped_sum = None;
-        } else {
-            gained_sum = gained_sum.zip(gain.gained_raw.as_deref().and_then(|value| value.parse::<i128>().ok())).and_then(|(a, b)| a.checked_add(b));
-            capped_sum = capped_sum.zip(gain.capped_raw.as_deref().and_then(|value| value.parse::<i128>().ok())).and_then(|(a, b)| a.checked_add(b));
-        }
-    }
-    let gains_ok = continuity_reason.is_none() && spend_coverage_reason.is_none() && gain_coverage_reason.is_none() && gain_item_reason.is_none();
-    let gained = gains_ok.then_some(gained_sum).flatten();
-    let lost_at_cap = gains_ok.then_some(capped_sum).flatten();
-
-    let alloc_item_reason = (allocations.unknown > 0 || allocations.allocated.is_none() || allocations.released.is_none())
-        .then(|| "Some command power allocations were not recorded".to_owned());
-    let alloc_ok = continuity_reason.is_none() && spend_coverage_reason.is_none() && gain_coverage_reason.is_none() && alloc_item_reason.is_none();
-    let allocated = alloc_ok.then_some(allocations.allocated).flatten();
-    let released = alloc_ok.then_some(allocations.released).flatten();
-
-    let (other_changes, reason) = match (continuity_reason.is_none(), opening, gained, lost_at_cap, spent, allocated, released, closing) {
-        (true, Some(open), Some(gain), Some(capped), Some(spend), Some(alloc), Some(rel), Some(close)) => {
-            let attributed = gain
-                .checked_sub(capped)
-                .and_then(|net| net.checked_sub(spend))
-                .and_then(|net| net.checked_sub(alloc))
-                .and_then(|net| net.checked_add(rel));
-            let other = close.checked_sub(open).and_then(|delta| attributed.and_then(|value| delta.checked_sub(value)));
-            let why = other.is_none().then(|| "Reconciliation arithmetic overflowed".to_owned());
-            (other, why)
-        }
-        _ => {
-            let why = continuity_reason
-                .or(spend_coverage_reason)
-                .or(gain_coverage_reason)
-                .or(opening_reason)
-                .or(closing_reason)
-                .or(spent_item_reason)
-                .or(gain_item_reason)
-                .or(alloc_item_reason);
-            (None, why)
-        }
-    };
-
-    SpendReconciliation {
-        opening_raw: opening.map(|value| value.to_string()),
-        gained_raw: gained.map(|value| value.to_string()),
-        lost_at_cap_raw: lost_at_cap.map(|value| value.to_string()),
-        spent_raw: spent.map(|value| value.to_string()),
-        allocated_raw: allocated.map(|value| value.to_string()),
-        released_raw: released.map(|value| value.to_string()),
-        closing_raw: closing.map(|value| value.to_string()),
-        other_changes_raw: other_changes.map(|value| value.to_string()),
-        reason,
-    }
-}
-
 fn item_key(slot: u32, ordinal: u32) -> u128 {
     PowerItemRow { holder: slot, ordinal, ..PowerItemRow::default() }.key()
 }
@@ -1308,7 +969,75 @@ struct ItemAsks<'a> {
     asks: BTreeMap<(i32, u32), bool>,
 }
 
-fn item_membership(query: &Query<'_>, batches: &[ItemAsks<'_>]) -> io::Result<HashMap<u32, lanes::History>> {
+fn complete_span(statuses: &[lanes::StatusRun], first: i32, last: i32) -> bool {
+    let mut cursor = first;
+    for run in statuses {
+        if run.last < cursor {
+            continue;
+        }
+        if run.first > cursor || run.status != Status::Complete {
+            return false;
+        }
+        if run.last >= last {
+            return true;
+        }
+        cursor = match run.last.checked_add(1) {
+            Some(next) => next,
+            None => return true,
+        };
+    }
+    false
+}
+
+fn complete_items(query: &Query<'_>, batch: &ItemAsks<'_>) -> io::Result<Option<HashMap<u32, PowerItemRow>>> {
+    let Some((&(first, _), _)) = batch.asks.first_key_value() else { return Ok(None) };
+    let (&(last, _), _) = batch.asks.last_key_value().expect("a nonempty batch has a last ask");
+    let piece = batch.piece;
+    let recording = query.replay.recording();
+    if recording.predates(TableId::PowerItems.index()).is_some() {
+        return Ok(None);
+    }
+    let statuses = match dashboard_query::cost::storage(|| lanes::statuses(recording, piece.run, TableId::PowerItems, first, last)) {
+        Ok(runs) => runs,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !complete_span(&statuses, first, last) {
+        return Ok(None);
+    }
+    let mut first_ask: HashMap<u32, i32> = HashMap::new();
+    for (&(hour, ordinal), _) in &batch.asks {
+        first_ask.entry(ordinal).or_insert(hour);
+    }
+    let mut keys: Vec<u128> = first_ask.keys().map(|&ordinal| item_key(piece.slot, ordinal)).collect();
+    keys.sort_unstable();
+    let snapshot = match dashboard_query::cost::storage(|| lanes::at_keys(recording, piece.run, TableId::PowerItems, last, None, Keys::These(&keys))) {
+        Ok(snapshot) => snapshot,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if snapshot.status != Status::Complete {
+        return Ok(None);
+    }
+    let decoded = match cells_rows(TableId::PowerItems, &snapshot.view(), &snapshot.rows, recording.format()) {
+        Ok(rows) => rows,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData || Unsayable::of(&error).is_some() => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let TableRows::PowerItems(rows) = decoded else { return Ok(None) };
+    let mut by_ordinal = HashMap::with_capacity(rows.len());
+    for row in rows {
+        if row.holder == piece.slot {
+            by_ordinal.insert(row.ordinal, row);
+        }
+    }
+    if first_ask.iter().any(|(&ordinal, &hour)| !by_ordinal.get(&ordinal).is_some_and(|row| row.first_read <= hour)) {
+        return Ok(None);
+    }
+    Ok(Some(by_ordinal))
+}
+
+fn item_membership(query: &Query<'_>, batches: &[&ItemAsks<'_>]) -> io::Result<HashMap<u32, lanes::History>> {
     let mut runs = BTreeMap::<u32, (i32, i32, Vec<u128>)>::new();
     for batch in batches {
         let piece = batch.piece;
@@ -1356,6 +1085,20 @@ struct Items {
 }
 
 impl Items {
+    fn read_complete(&mut self, batch: &ItemAsks<'_>, mut rows: HashMap<u32, PowerItemRow>) -> HashMap<(u32, i32), (u32, bool)> {
+        let mut out = HashMap::with_capacity(batch.asks.len());
+        let piece = batch.piece;
+        for (&(hour, ordinal), _) in &batch.asks {
+            let at = *self.index.entry((piece.run, piece.slot, ordinal)).or_insert_with(|| {
+                let row = rows.remove(&ordinal).expect("complete_items validated every asked item");
+                self.asked.push((piece.run, row));
+                (self.asked.len() - 1) as u32
+            });
+            out.insert((ordinal, hour), (at, true));
+        }
+        out
+    }
+
     fn read(&mut self, frames: &mut at_hour::Frames<'_>, batch: &ItemAsks<'_>, membership: Option<&lanes::History>) -> io::Result<HashMap<(u32, i32), (u32, bool)>> {
         let mut out = HashMap::with_capacity(batch.asks.len());
         let piece = batch.piece;
@@ -1462,15 +1205,12 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
         gains: Vec::new(),
         coverage: Vec::new(),
         gain_coverage: Vec::new(),
-        balances: Vec::new(),
-        reconciliation: SpendReconciliation::default(),
         warnings: Vec::new(),
     };
     let mut items = Items::default();
     let mut credits: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
     let mut day_gap_hours: BTreeMap<String, u64> = BTreeMap::new();
     let mut gain_buckets: BTreeMap<(i32, Option<i32>), GainBucket> = BTreeMap::new();
-    let mut allocations = AllocationTotals::default();
     let mut unmatched = 0_u64;
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     let held = pieces(query, &params.country, params.from, params.to)?;
@@ -1480,8 +1220,7 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
         coverage(query, piece, currency, &mut reply.coverage)?;
-        balances(query, piece, currency, &mut reply.balances)?;
-        instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets, &mut allocations)?;
+        instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets)?;
         let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
         let (payments_from, days_from) = (reply.payments.len(), reply.days.len());
         let mut asks = BTreeMap::new();
@@ -1517,11 +1256,25 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
         }
         batches.push(ItemAsks { piece, payments: payments_from..reply.payments.len(), days: days_from..reply.days.len(), asks });
     }
-    let membership = item_membership(query, &batches)?;
-    let mut frames = at_hour::Frames::new(query)?;
-    for batch in batches {
+    let mut fast_items: Vec<Option<HashMap<u32, PowerItemRow>>> = Vec::with_capacity(batches.len());
+    let mut fallback: Vec<&ItemAsks<'_>> = Vec::new();
+    for batch in &batches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let resolved = items.read(&mut frames, &batch, membership.get(&batch.piece.run))?;
+        let fast = complete_items(query, batch)?;
+        if fast.is_none() && !batch.asks.is_empty() {
+            fallback.push(batch);
+        }
+        fast_items.push(fast);
+    }
+    let membership = if fallback.is_empty() { HashMap::new() } else { item_membership(query, &fallback)? };
+    let mut frames = if fallback.is_empty() { None } else { Some(at_hour::Frames::new(query)?) };
+    for (batch, fast) in batches.into_iter().zip(fast_items) {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let resolved = match fast {
+            Some(rows) => items.read_complete(&batch, rows),
+            None if batch.asks.is_empty() => HashMap::new(),
+            None => items.read(frames.as_mut().expect("fallback batches open Frames"), &batch, membership.get(&batch.piece.run))?,
+        };
         let missing = resolved.values().filter(|(_, known)| !known).count();
         for payment in &mut reply.payments[batch.payments] {
             payment.item = resolved[&(payment.item, payment.read)].0;
@@ -1559,31 +1312,6 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
             unmatched: bucket.unmatched,
         })
         .collect();
-    let runs: Vec<&dashboard_query::identity::HolderRun> = match &params.country {
-        Country::Slot(_) => query.holders.tags.values().flatten().collect(),
-        Country::Tag(_) => query.holders.runs(&params.country).iter().collect(),
-    };
-    let mut unknown: Vec<(i32, i32)> = runs
-        .into_iter()
-        .filter(|run| run.holder == dashboard_query::identity::Holder::Unresolved)
-        .map(|run| (run.first, run.last))
-        .chain(query.holders.unknown.iter().map(|&(first, last, _)| (first, last)))
-        .collect();
-    unknown.sort_unstable();
-    unknown.dedup_by(|next, held| {
-        let joined = next.0 <= held.1.saturating_add(1);
-        if joined {
-            held.1 = held.1.max(next.1);
-        }
-        joined
-    });
-    let overlap = |first: i32, last: i32, spans: &mut dyn Iterator<Item = (i32, i32)>| -> i64 {
-        spans.map(|(a, b)| i64::from(b.min(last)) - i64::from(a.max(first)) + 1).filter(|&hours| hours > 0).sum()
-    };
-    let recorded = |first: i32, last: i32| overlap(first, last, &mut query.timeline.within(first, last).map(|stretch| (stretch.first, stretch.last)));
-    let unresolved = |first: i32, last: i32| overlap(first, last, &mut unknown.iter().copied()) > 0;
-    let nobody = |first: i32, last: i32| recorded(first, last) - overlap(first, last, &mut unknown.iter().copied());
-    reply.reconciliation = reconcile(params, &held, &reply, &allocations, nobody, unresolved);
     let asked = &items.asked;
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
     let named = naming::name(query, &rows, naming, cancelled)?;
