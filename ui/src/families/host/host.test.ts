@@ -13,7 +13,8 @@ import type { FamilyTheme, InstalledAction, InstalledPicture, MirrorModel } from
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { familyBinding, lazyActionKeys, nextReportedRowWindow, reconcileInstalledRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
-import { allReady, inputOf, inputsStatus } from './planInputs.ts';
+import { allReady, familyBodyStatus, inputOf } from './planInputs.ts';
+import type { FamilyBodyStatus } from '../plan.ts';
 import { BoundSelections, displayedHoverKeys, focusedSubject, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { hoverAsks, readPlanExact } from '../broker.ts';
@@ -2710,20 +2711,27 @@ test('R5: exact audit verifier uses the installed frame art resolutions for indi
   laneCache.dispose();
 });
 
-test('the plan inputs name the read a widget waits for, show a failed read as failed with its retry and never as loading, and are complete only when every input is ready', () => {
-  let retried = 0;
-  const retry = () => { retried++; };
-  const failure = { kind: 'local', message: 'party history broke' } as never;
-  const country = inputOf('the country', { data: 7, retry });
-  const history = inputOf('the party history', { retry });
-  assert.deepEqual(inputsStatus([country, history]), { kind: 'loading', label: 'Reading the party history…' }, 'a read that never answers is named, not a bare loading');
-  assert.equal(allReady([country, history]), false);
-  const failed = inputsStatus([inputOf('the country groups', { retry }), inputOf('the party history', { error: failure, retry })]);
-  assert.equal(failed?.kind, 'failed', 'a failed input wins over one still pending');
-  if (failed?.kind === 'failed') { assert.equal(failed.failure, failure); failed.onRetry?.(); }
-  assert.equal(retried, 1, 'the failure carries the input’s own retry');
-  const held = inputOf('the party history', { data: { parties: [] }, error: failure, retry });
+test('the body names the read a widget waits for, shows a failed read as failed with its retry, never hides a failure behind a pending read, and keeps a known outcome ahead of a static read', () => {
+  let retried = '';
+  const retry = (name: string) => () => { retried = name; };
+  const failure = { kind: 'local', message: 'value read broke' } as never;
+  const ready: FamilyBodyStatus = { kind: 'ready' };
+  const refused: FamilyBodyStatus = { kind: 'refused', reason: 'No members in this group' };
+  const none = { early: null, plan: [], outcome: null, tiles: [], units: [], settled: ready };
+  const history = inputOf('the party history', { retry: retry('history') });
+  assert.deepEqual(familyBodyStatus({ ...none, plan: [inputOf('the country', { data: 7, retry: retry('country') }), history] }),
+    { kind: 'loading', label: 'Reading the party history…' }, 'a plan read that never answers is named');
+  assert.equal(allReady([history]), false);
+  assert.equal(familyBodyStatus({ ...none, plan: [history], outcome: refused }).kind, 'loading', 'an outcome waits for the plan inputs it is decided from');
+  const tiles = inputOf('the chart history', { retry: retry('tiles') });
+  const value = inputOf('command power', { error: failure, retry: retry('value') });
+  const failed = familyBodyStatus({ ...none, tiles: [tiles], units: [value] });
+  assert.equal(failed.kind, 'failed', 'a failed value read is not hidden behind chart tiles still loading');
+  if (failed.kind === 'failed') { assert.equal(failed.failure, failure); failed.onRetry?.(); }
+  assert.equal(retried, 'value', 'the failure carries its own read’s retry');
+  assert.deepEqual(familyBodyStatus({ ...none, outcome: refused, units: [inputOf('command power', { retry: retry('value') })] }), refused, 'a refused selection is not hidden behind a static read');
+  assert.deepEqual(familyBodyStatus({ ...none, early: { kind: 'choose', message: 'Choose a country' }, plan: [history] }).kind, 'choose');
+  const held = inputOf('the party history', { data: { parties: [] }, error: failure, retry: retry('history') });
   assert.equal(held.state, 'ready', 'a held answer stays ready through a later failure');
-  assert.equal(inputsStatus([country, held]), null);
-  assert.equal(allReady([country, held]), true);
+  assert.equal(familyBodyStatus({ ...none, plan: [held], tiles: [inputOf('the chart history', { data: 1, retry: retry('tiles') })] }), ready);
 });

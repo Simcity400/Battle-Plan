@@ -14,9 +14,22 @@ export function inputOf<T>(name: string, read: InputState<T>): PlanInput {
 
 export const allReady = (inputs: readonly PlanInput[]): boolean => inputs.every(input => input.state === 'ready');
 
-export function inputsStatus(inputs: readonly PlanInput[]): FamilyBodyStatus | null {
+function inputsStatus(inputs: readonly PlanInput[]): FamilyBodyStatus | null {
   const failed = inputs.find(input => input.state === 'failed');
   if (failed?.state === 'failed') return { kind: 'failed', failure: failed.failure, origin: 'local', onRetry: failed.retry };
   const pending = inputs.find(input => input.state === 'pending');
   return pending ? { kind: 'loading', label: `Reading ${pending.name}…` } : null;
+}
+
+export interface BodyFacts {
+  readonly early: FamilyBodyStatus | null;
+  readonly plan: readonly PlanInput[];
+  readonly outcome: FamilyBodyStatus | null;
+  readonly tiles: readonly PlanInput[];
+  readonly units: readonly PlanInput[];
+  readonly settled: FamilyBodyStatus;
+}
+
+export function familyBodyStatus(facts: BodyFacts): FamilyBodyStatus {
+  return facts.early ?? inputsStatus(facts.plan) ?? facts.outcome ?? inputsStatus([...facts.tiles, ...facts.units]) ?? facts.settled;
 }

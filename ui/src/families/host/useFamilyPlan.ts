@@ -43,7 +43,7 @@ import {
   stabilizeCanvasDimension,
 } from '../broker.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
-import { allReady, inputOf, inputsStatus, type PlanInput } from './planInputs.ts';
+import { allReady, familyBodyStatus, inputOf, type PlanInput } from './planInputs.ts';
 import { displayedHoverKeys, type DrawnKeys } from './installed.ts';
 import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources, watchPlanValid } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
@@ -1127,7 +1127,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   if (view.failure) unitInputs.push({ name: subject, state: 'failed', failure: view.failure.failure, retry: retryUnits });
   else if (unitsWait) unitInputs.push({ name: subject, state: 'pending' });
 
-  const bodyStatus = ((): FamilyBodyStatus => {
+  const early = ((): FamilyBodyStatus | null => {
     if (!track) return { kind: 'unbound', message: emptyCampaign };
     if (gateStage) {
       const s = gateStage;
@@ -1152,10 +1152,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       };
     }
 
-    if (compiledFollow.refused) return { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused };
-    const waiting = inputsStatus(planInputs);
-    if (waiting) return waiting;
-
+    return compiledFollow.refused ? { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused } : null;
+  })();
+  const outcome = ((): FamilyBodyStatus | null => {
     if (isFilter) {
       if (filterMatch?.reason) return { kind: 'refused', reason: filterMatch.reason };
       if (countriesState.reason) return { kind: 'refused', reason: countriesState.reason };
@@ -1185,14 +1184,15 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if (currentTiled?.topRefused) return { kind: 'not-recorded', reason: currentTiled.topRefused };
       if (tileUnrecorded?.reason) return { kind: 'not-recorded', reason: tileUnrecorded.reason };
     }
-    if (following && compiledFollow.unavailable) return { kind: 'refused', reason: compiledFollow.unavailable };
-    const reading = inputsStatus([...tileInputs, ...unitInputs]);
-    if (reading) return reading;
+    return following && compiledFollow.unavailable ? { kind: 'refused', reason: compiledFollow.unavailable } : null;
+  })();
+  const settled = ((): FamilyBodyStatus => {
     if (following) return view.kind === 'outside' ? { kind: 'outside' } : { kind: 'ready' };
     if (pixelBinnedKey) return atTime ? { kind: 'ready' } : { kind: 'outside' };
     if (view.kind === 'none') return allowEmpty ? { kind: 'ready' } : pinHour === null ? { kind: 'outside' } : { kind: 'loading', label: loadingLabel };
     return view.kind === 'outside' ? { kind: 'outside' } : { kind: 'ready' };
   })();
+  const bodyStatus = familyBodyStatus({ early, plan: planInputs, outcome, tiles: tileInputs, units: unitInputs, settled });
 
   const bannerFailure: BannerFailureInfo | null = (isSingle && singleCountry?.chosen && singleCountry.error && singleCountry.historyHeld)
     ? { failure: singleCountry.error, retry: singleCountry.retry }
