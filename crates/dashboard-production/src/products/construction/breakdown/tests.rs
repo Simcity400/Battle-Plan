@@ -630,6 +630,97 @@ fn owner_unknown_before_census_qualifies_both_eventual_owner_and_other_countries
 }
 
 #[test]
+fn census_spending_waits_for_the_recorded_country_link_in_exact_and_followed_reads() {
+    use crate::registrations::CONSTRUCTION_BREAKDOWN_CONSTRUCTIONBREAKDOWN as PRODUCT;
+    use dashboard_base::{
+        Source, SourceKey, products::LoadContext,
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::{BuildingConstructionRow, ConstructionLineOutputRow, CountryLinkRow, CountryRow, Recorded, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let frames = (100..=114)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![CountryRow {
+                id: 9001, canonical_slot: 7, tag: b"QXZ".to_vec(), ..Default::default()
+            }])).into();
+            if hour < 108 {
+                frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+                    CountryLinkRow { id: 9001, canonical_slot: 7 },
+                ])).into();
+            }
+            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
+                id: 5, country: 11, building_type: 37, target_state: 19, created_hour: 95, amount: 2, ..Default::default()
+            }])).into();
+            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
+            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(vec![ConstructionLineOutputRow {
+                line: 5, since_hour: 100,
+                construction_raw: match hour { ..=104 => 200_000, 105..=110 => 300_000, 111..=112 => 500_000, _ => 700_000 },
+                exact: !(105..=110).contains(&hour),
+                country: Recorded::Value(Some(11)), building_type: Recorded::Value(Some(37)), target_state: Recorded::Value(Some(19)),
+                ..Default::default()
+            }])).into();
+            for table in [TableId::CountryLinks, TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let loaded = Arc::new(Source::from_replay(
+        SourceKey { source_id: "construction-delayed-country-link".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &cancel,
+    ).unwrap());
+    let load = LoadContext { content: None };
+    let exact = |country, hour| PRODUCT.answer(&loaded, json!({"branchId": "1", "country": country, "hour": hour}), &load, &cancel).unwrap();
+    let panel = (PRODUCT.panel.unwrap().open)(&loaded, &load, &json!({"panel": PRODUCT.key, "branchId": "1", "country": 7})).unwrap();
+    let advance = &panel.exact().unwrap().advance;
+
+    let early = exact(json!(7), 100);
+    assert_eq!(early["unattributed"], 1);
+    assert_eq!(early["beforeFirstRead"], 0);
+    assert_eq!(early["breakdown"]["parts"], json!([]));
+    assert_eq!(early["breakdown"]["total"]["reason"], "Some output was not traced to a country");
+    assert_eq!(early["through"], 107);
+    assert_eq!(exact(json!("QXZ"), 100), early);
+    assert_eq!((advance)(100, true, &cancel, None).value.as_ref().as_ref().unwrap(), &early);
+    let held = (advance)(107, false, &cancel, None);
+    assert!(!held.fresh);
+    assert_eq!(held.value.as_ref().as_ref().unwrap(), &early);
+
+    let linked = exact(json!(7), 108);
+    assert_eq!(linked["beforeFirstRead"], 1);
+    let child = &linked["breakdown"]["parts"][0]["children"][0];
+    assert_eq!(child["key"], "type:37");
+    assert_eq!(child["state"], "partial");
+    assert_eq!(child["reason"], "Some output was not recorded exactly");
+    assert_eq!(exact(json!("QXZ"), 108), linked);
+    let refreshed = (advance)(108, false, &cancel, None);
+    assert!(refreshed.fresh);
+    assert_eq!(refreshed.value.as_ref().as_ref().unwrap(), &linked);
+
+    let later = exact(json!(7), 113);
+    assert_eq!(later["breakdown"]["total"]["amount"], json!({"numerator": "2", "denominator": "1"}));
+    assert_eq!(later["unattributed"], 1, "the earlier output remains outside the attributed total");
+    assert_eq!((advance)(113, false, &cancel, None).value.as_ref().as_ref().unwrap(), &later);
+    for hour in [100, 108, 113] {
+        let other = exact(json!(8), hour);
+        assert_eq!(other["unattributed"], 1);
+        assert_eq!(other["beforeFirstRead"], 0);
+        assert_eq!(other["breakdown"]["parts"], json!([]));
+    }
+}
+
+#[test]
 fn closed_gap_in_earlier_stretch_does_not_reopen_after_clipped_second_stretch() {
     use super::{ConstructionBreakdown, ConstructionBreakdownParams};
     use dashboard_base::{
