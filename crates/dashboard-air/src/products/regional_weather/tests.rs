@@ -120,7 +120,7 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
     let cat = catalogue::catalogue(&cat_source, load.content().unwrap()).unwrap();
     let weather = Weather {
         members: BTreeMap::new(),
-        names: [(1, Ok("Region One".into())), (2, Ok("Region Two".into()))].into(),
+        names: [(1, Ok("Region One".into())), (2, Ok("Region Two".into())), (3, Ok("Region Three".into()))].into(),
         pass: Err("no pass".into()),
         cat,
         warnings: Vec::new(),
@@ -132,14 +132,29 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
         ..Default::default()
     };
     let mut frames = Vec::new();
-    for hour in 0..(3 * DAY) {
+    for hour in 0..(4 * DAY) {
         let mut frame = source(1, hour, Some(i64::from(hour)));
-        *frame.tables[TableId::WeatherRegions.index()] = if hour < DAY {
-            TableView::Complete(TableRows::WeatherRegions(vec![make_row(1, 0, 1), make_row(2, 0, 2)]))
+        *frame.tables[TableId::WeatherRegions.index()] = if hour < 5 {
+            TableView::Complete(TableRows::WeatherRegions(vec![make_row(1, 0, 1), make_row(2, 0, 2), make_row(3, 0, 3)]))
+        } else if hour < DAY {
+            TableView::Unavailable { reason: "mid-day outage".into() }
         } else if hour < 2 * DAY {
             TableView::Unavailable { reason: "weather sensor failed".into() }
+        } else if hour < 3 * DAY {
+            TableView::Truncated {
+                rows: TableRows::WeatherRegions(vec![
+                    make_row(1, 1, 5),
+                    WeatherRegionRow { id: 3, light_rain: 0, air_detection: Recorded::Value(None), ..Default::default() },
+                ]),
+                missing: 2,
+            }
         } else {
-            TableView::Truncated { rows: TableRows::WeatherRegions(vec![make_row(1, 1, 5)]), missing: 2 }
+            TableView::NotRecorded { mode: replay_data::scope::CaptureMode::Full }
+        };
+        *frame.tables[TableId::WeatherProvinces.index()] = if (DAY..2 * DAY).contains(&hour) {
+            TableView::Unavailable { reason: "provinces sensor failed".into() }
+        } else {
+            TableView::Complete(TableRows::WeatherProvinces(Vec::new()))
         };
         frames.push(frame);
     }
@@ -155,12 +170,15 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
         show,
         modifier: Some("air_detection".into()),
         regions: None,
-        pinned_regions: Some(vec![1, 2]),
+        pinned_regions: Some(vec![1, 2, 3]),
         hidden_regions: None,
         top: Some(5),
     };
 
     for show in [Show::Conditions, Show::Modifier] {
+        let before_outage = history(&query, &params(show, 0), &weather, &AtomicBool::new(false)).unwrap();
+        assert_eq!(before_outage.valid_through, 4, "{show:?}: reply must expire before the status change at hour 5");
+
         let unavailable = history(&query, &params(show, 2 * DAY - 1), &weather, &AtomicBool::new(false)).unwrap();
         assert_eq!(unavailable.columns.columns.last().unwrap().recorded, 0);
         assert!(unavailable.warnings.iter().any(|why| why.contains("weather sensor failed")), "{show:?}: {:?}", unavailable.warnings);
@@ -180,5 +198,26 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
         }
         let r2 = truncated.columns.regions.iter().find(|region| region.id == "2").unwrap();
         assert!(matches!(&r2.readout, Some(WeatherReadout::NotRecorded { reason }) if reason.contains("2 rows not read")), "{show:?}: {:?}", r2.readout);
+        if show == Show::Modifier {
+            let r3 = truncated.columns.regions.iter().find(|region| region.id == "3").unwrap();
+            assert!(
+                matches!(&r3.readout, Some(WeatherReadout::NotRecorded { reason }) if reason == "Weather reading was not recorded at this hour"),
+                "witnessed row with unrecorded modifier must keep its field-level reason: {:?}",
+                r3.readout
+            );
+        }
+
+        let not_recorded = history(&query, &params(show, 3 * DAY), &weather, &AtomicBool::new(false)).unwrap();
+        assert_eq!(not_recorded.valid_through, 3 * DAY, "{show:?}: hour-stamped NotRecorded reason must not be reused on later hours");
+        let r1 = not_recorded.columns.regions.iter().find(|region| region.id == "1").unwrap();
+        assert!(matches!(&r1.readout, Some(WeatherReadout::NotRecorded { reason }) if reason.contains(&format!("hour {}", 3 * DAY))), "{show:?}: {:?}", r1.readout);
     }
+
+    let temp_unavailable = history(&query, &params(Show::Temperature, 2 * DAY - 1), &weather, &AtomicBool::new(false)).unwrap();
+    let r1 = temp_unavailable.columns.regions.iter().find(|region| region.id == "1").unwrap();
+    assert!(
+        matches!(&r1.readout, Some(WeatherReadout::NotRecorded { reason }) if reason.contains("provinces sensor failed")),
+        "unsampled WeatherProvinces day should preserve the recorded table reason even when temperature content fails: {:?}",
+        r1.readout
+    );
 }

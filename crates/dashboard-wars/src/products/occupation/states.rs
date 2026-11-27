@@ -811,6 +811,14 @@ impl AtHour for OccupiedStates {
         }
     }
 
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, _reply: &Self::Reply, partial: bool) -> i32 {
+        if partial || TABLES.into_iter().any(|table| matches!(frame.tables[table.index()].held(), replay_frame::frame::TableView::NotRecorded { .. })) {
+            at.hour
+        } else {
+            i32::MAX
+        }
+    }
+
     fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         Ok(data["missing"].is_null() && structure_holds(frame, edits) && law_stands(at.context, frame, edits))
     }

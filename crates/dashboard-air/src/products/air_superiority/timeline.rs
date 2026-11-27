@@ -841,13 +841,35 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
     dashboard_text::metadata::check_cancel(cancelled)?;
     let links: Vec<Option<Links>> = stretches.par_iter().map(|stretch| links(query, stretch)).collect();
 
+    let recording = query.replay.recording();
+    let status_runs: Vec<(Vec<replay_lanes::lanes::StatusRun>, HashMap<u32, String>)> = stretches
+        .iter()
+        .map(|stretch| {
+            let held = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, stretch.run, TableId::RaidAirScores, stretch.first, stretch.last))?;
+            let reasons = dashboard_query::cost::storage(|| replay_lanes::lanes::status_reasons(recording, stretch.run, TableId::RaidAirScores, &held))?;
+            Ok((held, reasons))
+        })
+        .collect::<io::Result<_>>()?;
     let mut at_hours: HashMap<usize, DayRows> = HashMap::new();
     let mut unread: HashSet<usize> = HashSet::new();
     let mut unread_notes: Vec<(usize, i32, String)> = Vec::new();
     let mut truncated_notes: Vec<(usize, i32, String)> = Vec::new();
     for (at, read) in days.iter().enumerate() {
         let Some(read) = read else { continue };
-        if read.hour != stretches[read.part].last || read.hour == bucket_end(read.hour) {
+        let (runs, reasons) = &status_runs[read.part];
+        let truncated = match runs.iter().find(|run| run.first <= read.hour && read.hour <= run.last) {
+            Some(run) => match crate::products::status_rows(run.status, reasons, query.replay.capture_mode).into_rows(TableId::RaidAirScores, read.hour) {
+                Ok(((), None)) => false,
+                Ok(((), Some(_))) => true,
+                Err(why) => {
+                    unread_notes.push((at, read.hour, why));
+                    unread.insert(at);
+                    continue;
+                }
+            },
+            None => false,
+        };
+        if !truncated && (read.hour != stretches[read.part].last || read.hour == bucket_end(read.hour)) {
             continue;
         }
         let reads = [Read::all(TableId::RaidAirScores), Read::all(TableId::CountryLinks)];
@@ -868,15 +890,6 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
         }
     }
     let charted = Charted { parts: &parts, days: &days, first_day, at_hour: &at_hours };
-    let recording = query.replay.recording();
-    let status_runs: Vec<(Vec<replay_lanes::lanes::StatusRun>, HashMap<u32, String>)> = stretches
-        .iter()
-        .map(|stretch| {
-            let held = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, stretch.run, TableId::RaidAirScores, stretch.first, stretch.last))?;
-            let reasons = dashboard_query::cost::storage(|| replay_lanes::lanes::status_reasons(recording, stretch.run, TableId::RaidAirScores, &held))?;
-            Ok((held, reasons))
-        })
-        .collect::<io::Result<_>>()?;
     let mut held_links: HashMap<(usize, usize), Arc<Vec<CountryLinkRow>>> = HashMap::new();
     let mut reads: Vec<Option<DayRead>> = Vec::with_capacity(count);
     for (at, day) in days.iter().enumerate() {
@@ -892,22 +905,10 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
             reads.push(None);
             continue;
         }
-        let (runs, reasons) = &status_runs[day.part];
-        let complete = match runs.iter().find(|run| run.first <= day.hour && day.hour <= run.last) {
-            Some(run) => match crate::products::status_rows(run.status, reasons, query.replay.capture_mode).into_rows(TableId::RaidAirScores, day.hour) {
-                Ok(((), None)) => true,
-                Ok(((), Some(why))) => {
-                    truncated_notes.push((at, day.hour, why));
-                    false
-                }
-                Err(why) => {
-                    unread_notes.push((at, day.hour, why));
-                    reads.push(None);
-                    continue;
-                }
-            },
-            None => false,
-        };
+        let complete = status_runs[day.part]
+            .0
+            .iter()
+            .any(|run| replay_recording::columnar_frames::complete(run.status) && run.first <= day.hour && day.hour <= run.last);
         let links = links[day.part].as_ref().map(|links| {
             let cut = links.cuts.partition_point(|cut| *cut <= day.hour);
             Arc::clone(held_links.entry((day.part, cut)).or_insert_with(|| Arc::new(links.at(day.hour))))

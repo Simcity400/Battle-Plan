@@ -628,6 +628,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     let mut status_runs: Vec<(Vec<replay_lanes::lanes::StatusRun>, HashMap<u32, String>)> = Vec::new();
     let mut terminal_failure: Option<String> = None;
     let mut terminal_reason: Option<String> = None;
+    let mut terminal_witnessed: HashSet<u32> = HashSet::new();
     let mut reads: Vec<(i32, i32)> = Vec::new();
     let mut rows: BTreeSet<u32> = BTreeSet::new();
     let sampled = if params.show == Show::Temperature { TableId::WeatherProvinces } else { TableId::WeatherRegions };
@@ -681,6 +682,9 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                     Ok((held, incomplete)) => {
                         for row in held {
                             rows.insert(row.id);
+                            if index + 1 == days_len {
+                                terminal_witnessed.insert(row.id);
+                            }
                             if !keeps(row.id) {
                                 continue;
                             }
@@ -745,6 +749,9 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                         Ok((held, incomplete)) => {
                             for row in held {
                                 rows.insert(row.id);
+                                if index + 1 == days_len {
+                                    terminal_witnessed.insert(row.id);
+                                }
                                 if keeps(row.id)
                                     && let Some(value) = modifiers(row)[slot]
                                 {
@@ -873,6 +880,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     };
     let mut by_id: HashMap<u32, ColumnRegion> = columns.regions.into_iter().filter_map(|r| Some((r.id.parse::<u32>().ok()?, r))).collect();
     let col_count = columns.columns.len();
+    let terminal_unsampled = days.last().is_none_or(|day| day.at.is_none());
     columns.regions = displayed_order
         .iter()
         .map(|&(region, pinned)| {
@@ -886,7 +894,11 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
             });
             entry.pinned = pinned;
             entry.readout = Some(match (region_readout(region, &days, &measures, params.show, &flags, &temperature), &terminal_reason) {
-                (WeatherReadout::NotRecorded { .. }, Some(reason)) if params.show != Show::Temperature || temperature == "available" => WeatherReadout::NotRecorded { reason: reason.clone() },
+                (WeatherReadout::NotRecorded { .. }, Some(reason))
+                    if !terminal_witnessed.contains(&region) && (terminal_unsampled || params.show != Show::Temperature || temperature == "available") =>
+                {
+                    WeatherReadout::NotRecorded { reason: reason.clone() }
+                }
                 (readout, _) => readout,
             });
             entry
@@ -917,7 +929,20 @@ fn valid_through(query: &Query<'_>, sampled: TableId, last: i32) -> io::Result<i
     if through <= last {
         return Ok(last);
     }
-    let next = dashboard_query::cost::storage(|| replay_lanes::lanes::reads(query.replay.recording(), stretch.run, sampled, last + 1, through))?.first().map(|read| read.0);
+    let statuses = read::statuses(query.replay.recording(), stretch.run, sampled, last, through)?;
+    if statuses
+        .iter()
+        .find(|run| run.first <= last && last <= run.last)
+        .is_some_and(|run| !replay_recording::columnar_frames::complete(run.status))
+    {
+        return Ok(last);
+    }
+    let next_status = statuses.iter().find(|run| run.first > last).map(|run| run.first);
+    let next_read = dashboard_query::cost::storage(|| replay_lanes::lanes::reads(query.replay.recording(), stretch.run, sampled, last + 1, through))?.first().map(|read| read.0);
+    let next = match (next_read, next_status) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     Ok(next.map_or(through, |next| next - 1).max(last))
 }
 
