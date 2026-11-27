@@ -107,10 +107,11 @@ export class Pipeline {
   stripSettled(id: number): boolean {
     const widget = this.widgets.get(id);
     if (!widget) return false;
-    if (widget.route?.pending || widget.route?.sending) return false;
+    const route = widget.subs.size ? widget.route : null;
+    if (route?.pending || route?.sending) return false;
     const view = this.page.view(id);
     const interval = view.validInterval;
-    const current = widget.route ? view.gen?.seek === this.page.seek : interval && interval[0] <= view.target && view.target <= interval[1];
+    const current = route ? view.gen?.seek === this.page.seek : interval && interval[0] <= view.target && view.target <= interval[1];
     return view.mode === 'failed' || view.mode === 'outside' || (view.mode === 'refused' && !view.gen) ||
       (view.mode !== 'reading' && current === true && !view.dim);
   }
@@ -737,10 +738,7 @@ export class Pipeline {
     if (!widget || id === undefined) return;
     widget.subs.delete(token);
     this.release(id, widgetId);
-    if (!widget.subs.size) {
-      widget.route = null;
-      widget.stripReset?.();
-    }
+    if (!widget.subs.size) widget.stripReset?.();
     this.remount(widget);
   }
 

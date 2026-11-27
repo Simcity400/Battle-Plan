@@ -6,6 +6,10 @@ import { stripLattice } from './lattice.ts';
 import fixture from './messages.fixture.json' with { type: 'json' };
 import { StripStore } from './store.ts';
 
+const part = (data: Uint8Array) => [data.length & 255, (data.length >> 8) & 255, 0, 0, ...data];
+const frame = (state: unknown, ...changes: unknown[]) => Uint8Array.of(66, 80, 83, 84, 1, state ? 1 : 0, 1 + changes.length / 2, 0,
+  ...(state ? part(encode(state)) : []), ...changes.flatMap(change => part(encode(change))));
+
 test('the TypeScript decoder rebuilds the shared states, from the whole and from an omitted anchor, in both directions', t => {
   let statesChecked = 0;
   for (const [states, bytes] of [[fixture.states, fixture.whole], [fixture.states, fixture.patchesOnly],
@@ -63,9 +67,6 @@ test('the cursor takes a coarse skip across a fine chain and drops only fine byt
   const store = new StripStore();
   const [a, b] = fixture.states;
   const whole = Uint8Array.from(fixture.whole);
-  const part = (data: Uint8Array) => [data.length & 255, (data.length >> 8) & 255, 0, 0, ...data];
-  const frame = (state: unknown, ...changes: unknown[]) => Uint8Array.of(66, 80, 83, 84, 1, state ? 1 : 0, 1 + changes.length / 2, 0,
-    ...(state ? part(encode(state)) : []), ...changes.flatMap(change => part(encode(change))));
   const skip = frame(a, [{ replace: [[], b] }], [{ replace: [[], a] }]);
   const fine = frame(null, [], [], [{ replace: [[], b] }], [{ replace: [[], a] }]);
   store.append([0, 10], skip, false);
@@ -80,4 +81,14 @@ test('the cursor takes a coarse skip across a fine chain and drops only fine byt
   assert.equal(store.at(5), undefined);
   assert.equal(store.bytes, skip.length);
   assert.ok(readStrip(whole).whole);
+});
+
+test('a corrupt patch discards the cursor before the next read', () => {
+  const store = new StripStore();
+  const whole = { answer: { rows: [1, 2] } };
+  const corrupt = [{ splice: [['answer', 'rows'], 0, 1, []] }, { remove: ['answer', 'missing'] }];
+  store.append([0, 6], frame(whole, corrupt, []), false);
+  assert.deepEqual(store.at(0), whole);
+  assert.throws(() => store.at(6), /Invalid dashboard strip/);
+  assert.deepEqual(store.at(0), whole);
 });

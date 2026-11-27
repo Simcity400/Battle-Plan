@@ -9,6 +9,7 @@ import type { LaneView } from '../../draw/lane';
 import { classifyFailure, ShownError } from '../queryError.ts';
 import { pipelineFor, prepareLanes, restartPipeline, type LaneWorker } from './pipeline.ts';
 import { PlaybackController } from '../playback.ts';
+import { configuredStripPage } from '../strip/driver.ts';
 
 const surface = (): PageSurface<ImageBitmap> & { cleared: number } => ({ cleared: 0, install() {}, clear() { this.cleared++; } });
 
@@ -159,7 +160,9 @@ test('review 5 finding 14: a failed stream stays failed through a resubscription
 test('identity and statics are supplied apart from the binding: one snapshot per lane, no new generation, and pictures in flight are installed', async () => {
   const drawn: LaneView = { paint: input => ({ surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 },
     content: `snapshot:${JSON.stringify((input.model as { identitySnapshot?: unknown }).identitySnapshot ?? null)}` })), fields: {}, motion: false }) };
-  const { pipeline, clock, settle, posted, source, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined });
+  let finishClock: (() => void) | undefined;
+  const { pipeline, clock, settle, posted, source, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined,
+    gate: product => product === 'follow-clock' ? new Promise<void>(resolve => { finishClock = resolve; }) : undefined });
   try {
     const slow = pipeline.acquire('slow|0', { offset: 0, pin: null });
     const other = pipeline.acquire('other|0', { offset: 0, pin: null });
@@ -198,6 +201,7 @@ test('identity and statics are supplied apart from the binding: one snapshot per
     const token = {};
     const sub = pipeline.subscribe(slow, token, source, '1', 0, { product: 'series-state' }, 'followed')!;
     assert.ok(await settle(() => pipeline.status(sub).status === 'followed'));
+    assert.ok(await settle(() => finishClock !== undefined), 'the old route has an in-flight clock command');
     let stripResets = 0;
     const stopReset = pipeline.onStripReset(slow, () => { stripResets++; });
     pipeline.unsubscribe(slow, token);
@@ -211,6 +215,22 @@ test('identity and statics are supplied apart from the binding: one snapshot per
     pipeline.unmount(slow);
     pipeline.unmount(other);
     assert.ok(posted.some(item => item.type === 'payloads' && ((item.message as { drop?: unknown[] }).drop?.length ?? 0) > 0), 'a snapshot no widget reads is dropped from the lane');
+  } finally { finishClock?.(); close(); }
+});
+
+test('with strip building off, unsubscribing the last source retains the follow route', async () => {
+  assert.equal(configuredStripPage(() => assert.fail('the shipped switch is off')), null);
+  const { pipeline, settle, source, close } = inProcess();
+  try {
+    const id = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const token = {};
+    const sub = pipeline.subscribe(id, token, source, '1', 0, { product: 'series-state' }, 'followed')!;
+    assert.ok(await settle(() => pipeline.status(sub).status === 'followed'));
+    const widget = pipeline['widgets'].get(id)!;
+    const route = widget.route;
+    assert.ok(route);
+    pipeline.unsubscribe(id, token);
+    assert.equal(widget.route, route);
   } finally { close(); }
 });
 

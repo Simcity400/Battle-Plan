@@ -67,31 +67,36 @@ export class StripStore {
   at(hour: number): StripState | null | undefined {
     if (this.coarse.missing.has(hour) || this.fine.missing.has(hour)) return null;
     if (!this.whole || !this.has(hour)) return undefined;
-    this.cursor ??= { hour: this.whole.hour, state: decodeState(this.whole.bytes) };
-    const from = this.cursor.hour;
-    if (from === hour) return this.cursor.state;
-    const via = new Map<number, Edge>();
-    const queue = [from];
-    for (let i = 0; i < queue.length && !via.has(hour); i++) {
-      const at = queue[i]!;
-      for (const [next, patch] of [...(this.coarse.edges.get(at) ?? []), ...(this.fine.edges.get(at) ?? [])]) {
-        if (next === from || via.has(next)) continue;
-        via.set(next, [at, patch]);
-        queue.push(next);
+    try {
+      this.cursor ??= { hour: this.whole.hour, state: decodeState(this.whole.bytes) };
+      const from = this.cursor.hour;
+      if (from === hour) return this.cursor.state;
+      const via = new Map<number, Edge>();
+      const queue = [from];
+      for (let i = 0; i < queue.length && !via.has(hour); i++) {
+        const at = queue[i]!;
+        for (const [next, patch] of [...(this.coarse.edges.get(at) ?? []), ...(this.fine.edges.get(at) ?? [])]) {
+          if (next === from || via.has(next)) continue;
+          via.set(next, [at, patch]);
+          queue.push(next);
+        }
       }
+      const route: Uint8Array[] = [];
+      for (let at = hour; at !== from;) {
+        const edge = via.get(at);
+        if (!edge) throw new Error('Disconnected dashboard strip keyframe');
+        const [previous, patch] = edge;
+        route.push(patch);
+        at = previous;
+      }
+      const state = route.reverse().reduce(applyStripPatch, this.cursor.state);
+      this.patchesApplied += route.length;
+      this.cursor = { hour, state };
+      return state;
+    } catch (error) {
+      this.cursor = null;
+      throw error;
     }
-    const route: Uint8Array[] = [];
-    for (let at = hour; at !== from;) {
-      const edge = via.get(at);
-      if (!edge) throw new Error('Disconnected dashboard strip keyframe');
-      const [previous, patch] = edge;
-      route.push(patch);
-      at = previous;
-    }
-    const state = route.reverse().reduce(applyStripPatch, this.cursor.state);
-    this.patchesApplied += route.length;
-    this.cursor = { hour, state };
-    return state;
   }
 }
 
