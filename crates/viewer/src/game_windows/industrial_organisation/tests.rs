@@ -249,6 +249,7 @@ fn a_trait_is_locked_only_when_every_unlocked_and_queued_token_is_named() {
         TraitStatus::Unknown(reason) if reason.contains("77")
     ));
     assert_eq!(trait_status(&details(vec![20, 99], vec![]), "synthetic_first"), TraitStatus::Unlocked);
+    assert_eq!(trait_status(&details(vec![99], vec![30]), "synthetic_third"), TraitStatus::Queued(1));
     assert!(matches!(
         trait_status(&RecordedDetails::Unavailable("not read".to_owned()), "synthetic_first"),
         TraitStatus::Unknown(reason) if reason.contains("not read")
@@ -995,6 +996,49 @@ fn missing_chosen_emblem_trait_policy_and_background_are_named_as_placeholders()
         policy_plan.text
     );
 
+    let mut unspelled_data = prepared.data.clone();
+    if let RecordedDetails::Available(ref mut details) = unspelled_data.details {
+        let unspelled = Spelled::Unspelled {
+            token: 55,
+            reason: "LexicalTokens does not spell it at this hour".to_owned(),
+        };
+        details.policy = Some(unspelled.clone());
+        details.allowed_policies = vec![unspelled];
+    }
+    let unspelled_prepared = PreparedMio {
+        data: unspelled_data,
+        sub_view: SubView::Policy,
+        catalog: prepared.catalog.clone(),
+        org_db: prepared.org_db.clone(),
+        emblem: prepared.emblem.clone(),
+        tree_background: prepared.tree_background.clone(),
+        history_icons: HashMap::new(),
+        read_hour: prepared.read_hour,
+        cadence_warning: prepared.cadence_warning.clone(),
+        scroll: BTreeMap::new(),
+    };
+    let mut unspelled_policy_plan = ComposedPlan::default();
+    compose_policy_list(
+        &policy_layout,
+        policy_root,
+        &guis,
+        &resources,
+        &loc,
+        &unspelled_prepared,
+        &mut unspelled_policy_plan,
+    )
+    .unwrap();
+    assert!(
+        unspelled_policy_plan.text.iter().any(|t| t.label == "Policy" && t.value.as_deref() == Some("Attached")),
+        "unspelled attached policy must still emit Attached in text: {:?}",
+        unspelled_policy_plan.text
+    );
+    assert!(
+        unspelled_policy_plan.text.iter().any(|t| t.label == "Policy" && t.missing.as_deref().is_some_and(|m| m.contains("55"))),
+        "unspelled attached policy must still emit its missing-name reason: {:?}",
+        unspelled_policy_plan.text
+    );
+
     let item_tpl = guis.template(b"industrial_organisation_history_item").unwrap();
     let hist_rows = [
         IndustrialOrganisationHistoryRow {
@@ -1212,6 +1256,106 @@ fn history_scroll_cost_stays_constant_as_world_history_grows() {
     assert!(
         huge_mid.variant_lookups <= 4 && huge_mid.variant_lookups >= 3,
         "only visible rows should resolve variants/names/layouts, got {huge_mid:?}"
+    );
+
+    let plain_gui_bytes = br#"guiTypes = {
+        scrollbarType = {
+            name = "list_slider" size = { x = 10 y = 100 } minValue = 0 maxValue = 1
+            slider = "slider" track = "track" leftButton = "down" rightButton = "up"
+            buttonType = { name = "up" spriteType = "GFX_btn" }
+            buttonType = { name = "down" spriteType = "GFX_btn" }
+            guiButtonType = { name = "track" spriteType = "GFX_btn" }
+            guiButtonType = { name = "slider" spriteType = "GFX_btn" }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_detail_window"
+            size = { width = 500 height = 300 }
+            containerWindowType = {
+                name = "history_window"
+                position = { x = 0 y = 0 }
+                size = { width = 500 height = 300 }
+                containerWindowType = {
+                    name = "prod_lines_window"
+                    position = { x = 0 y = 0 }
+                    size = { width = 300 height = 240 }
+                    listBoxType = { name = "prod_line_history_list" position = { x = 0 y = 0 } size = { x = 260 y = 150 } scrollbartype = "list_slider" }
+                }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_history_item"
+            size = { width = 260 height = 50 }
+            iconType = { name = "equipment_icon" position = { x = 120 y = 25 } spriteType = "GFX_btn" centerposition = yes }
+            instantTextboxType = { name = "equipment_name" position = { x = 4 y = 4 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            instantTextboxType = { name = "equipment_archetype_name" position = { x = 4 y = 18 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            instantTextboxType = { name = "flavor_fact" position = { x = 4 y = 32 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            buttonType = { name = "upgrade_variant_button" position = { x = 220 y = 10 } quadTextureSprite = "GFX_btn" }
+        }
+    }"#;
+    let plain_guis = super::super::load_native_guis_from_bytes("plain.gui", plain_gui_bytes).unwrap();
+    let plain_doc = native::read_at(plain_gui_bytes, DEFAULT_VIEWPORT.map(|v| v as i32));
+    let mut plain_resources = gui_fixture::fixture_with(plain_doc);
+    plain_resources.add_sprite("GFX_btn", [20, 20], 1);
+    let plain_root = plain_guis.template(DETAIL_WINDOW_NAME.as_bytes()).unwrap();
+    let plain_item_tpl = plain_guis.template(b"industrial_organisation_history_item").unwrap();
+    let plain_main =
+        layout_window(plain_root, &plain_resources, DEFAULT_VIEWPORT.map(|v| v as i32), |_| {}).unwrap();
+    let plain_list_el = find_direct(plain_root, PRODUCTION_LIST_PATH).unwrap();
+    let plain_rows: Vec<_> = (0..20_000u64)
+        .map(|i| IndustrialOrganisationHistoryRow {
+            organisation: 1,
+            variant: 10_000 + i,
+            units: (i + 1) as i32,
+            design_hour: Recorded::Value(None),
+        })
+        .collect();
+    let plain_variants: Vec<_> = (0..20_000u64)
+        .map(|i| VariantDefinitionRow {
+            id: 10_000 + i,
+            display_name: format!("Design {i}\0").into_bytes(),
+            ..Default::default()
+        })
+        .collect();
+    let plain_index = HistoryIndex::build(&plain_rows, 1);
+    let plain_variants_res: Result<&[VariantDefinitionRow], String> = Ok(&plain_variants);
+    let plain_lexical: Result<&[LexicalTokenRow], String> = Ok(&[]);
+    let plain_icons = HashMap::new();
+    let plain_scroll = BTreeMap::from([(plain_list_el.path.clone(), 10_000.0)]);
+    let mut plain_plan = ComposedPlan::scrolled(plain_scroll.clone());
+    let plain_counts = compose_history_list(
+        &plain_main,
+        plain_root,
+        plain_item_tpl,
+        &plain_resources,
+        &loc,
+        HistoryListInput {
+            path: PRODUCTION_LIST_PATH,
+            prefix: "production",
+            kind: HistoryKind::Produced,
+            list: &plain_index.produced,
+            all_rows: &plain_rows,
+            variants: &plain_variants_res,
+            lexical: &plain_lexical,
+            icons: &plain_icons,
+            scroll: &plain_scroll,
+        },
+        &mut plain_plan,
+    )
+    .unwrap();
+    assert!(
+        plain_counts.placed_slots <= 4 && plain_counts.variant_lookups == 3,
+        "ordinary listBoxType must stay O(visible) for 20,000 rows, got {plain_counts:?}"
+    );
+    let plain_bar = plain_plan
+        .extra_regions
+        .iter()
+        .find_map(|r| r.scroll.as_ref().filter(|s| s.list == plain_list_el.path))
+        .expect("ordinary listBoxType scrollbar");
+    assert_eq!(plain_bar.range, 19_997.0);
+    assert!(
+        plain_plan.text.iter().any(|t| t.label == "Design 10000"),
+        "ordinary listBoxType scroll must place the scrolled row: {:?}",
+        plain_plan.text
     );
 }
 
@@ -1437,6 +1581,7 @@ fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
                 name = "tree_header"
                 position = { x = 0 y = 0 }
                 size = { width = 260 height = 24 }
+                clipping = yes
                 background = { name = "Background" spriteType = "GFX_btn" }
             }
             containerWindowType = {
@@ -1558,6 +1703,382 @@ fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
     assert!(
         !scrolled.text.iter().any(|t| t.label == "synthetic_origin"),
         "scrolling to the far corner must scroll the origin trait out of view"
+    );
+
+    let offset_gui_bytes = br#"guiTypes = {
+        containerWindowType = {
+            name = "industrial_organisation_detail_window"
+            size = { width = 400 height = 320 }
+            containerWindowType = {
+                name = "tree_scrollbar_window"
+                position = { x = 20 y = 20 }
+                size = { width = 320 height = 260 }
+                containerWindowType = {
+                    name = "tree_window"
+                    position = { x = 0 y = 0 }
+                    size = { width = 320 height = 260 }
+                    gridBoxType = { name = "tree_list" position = { x = 0 y = 0 } slotsize = { width = 320 height = 260 } }
+                }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_tree_window"
+            size = { width = 320 height = 260 }
+            background = { name = "Background" spriteType = "GFX_btn" }
+            containerWindowType = {
+                name = "tree_header"
+                position = { x = 0 y = 0 }
+                size = { width = 260 height = 24 }
+                clipping = yes
+                background = { name = "Background" spriteType = "GFX_btn" }
+            }
+            containerWindowType = {
+                name = "scrollbar_window"
+                position = { x = 10 y = 10 }
+                size = { width = 260 height = 220 }
+                background = { name = "Background" spriteType = "GFX_btn" }
+                containerWindowType = { name = "traits_window" position = { x = 0 y = 0 } clipping = no }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_flavortext_window"
+            size = { width = 300 height = 24 }
+            instantTextboxType = { name = "flavortext" position = { x = 270 y = 0 } font = "Main_14" text = "" maxWidth = 80 maxHeight = 20 }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_trait_entry"
+            size = { width = 88 height = 112 }
+            containerWindowType = {
+                name = "industrial_organisation_trait_icon"
+                orientation = center
+                buttonType = { name = "icon_frame" position = { x = -29 y = -40 } quadTextureSprite = "GFX_industrial_org_trait_button" }
+                iconType = { name = "trait_icon" position = { x = -21 y = -32 } }
+                containerWindowType = { name = "queue_number_window" instantTextboxType = { name = "queue_number" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 20 maxHeight = 20 } }
+            }
+            instantTextboxType = { name = "ai_value" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 20 maxHeight = 20 }
+        }
+    }"#;
+    let offset_guis = super::super::load_native_guis_from_bytes("offset.gui", offset_gui_bytes).unwrap();
+    let offset_doc = native::read_at(offset_gui_bytes, DEFAULT_VIEWPORT.map(|v| v as i32));
+    let mut offset_resources = gui_fixture::fixture_with(offset_doc);
+    offset_resources.add_sprite("GFX_btn", [12, 12], 1);
+    offset_resources.add_sprite("GFX_industrial_org_trait_button", [58, 58], 3);
+    let offset_root = offset_guis.template(DETAIL_WINDOW_NAME.as_bytes()).unwrap();
+    let offset_main =
+        layout_window(offset_root, &offset_resources, DEFAULT_VIEWPORT.map(|v| v as i32), |_| {}).unwrap();
+    let offset_prepared = PreparedMio {
+        data: data.clone(),
+        sub_view: SubView::Traits,
+        catalog: catalog.clone(),
+        org_db: org_db.clone(),
+        emblem: Ok("GFX_btn".to_owned()),
+        tree_background: None,
+        history_icons: HashMap::new(),
+        read_hour: 0,
+        cadence_warning: None,
+        scroll: BTreeMap::new(),
+    };
+    let mut offset_plan = ComposedPlan::default();
+    compose_trait_tree(
+        &offset_main,
+        offset_root,
+        &offset_guis,
+        &offset_resources,
+        &loc,
+        &offset_prepared,
+        &mut offset_plan,
+    )
+    .unwrap();
+    assert!(
+        !offset_plan.text.iter().any(|t| t.label == "Tree header"),
+        "header whose placed flavortext is clipped past tree_header must not be announced: {:?}",
+        offset_plan.text
+    );
+}
+
+#[test]
+fn hidden_unlocked_trait_is_not_shown_and_undecided_keeps_queued_status() {
+    use viewer_native_gui::test_support::gui as gui_fixture;
+    content_reader_script::test_game::enter();
+
+    let layers = synthetic_layers(&[
+        (
+            "common/defines/00_defines.lua",
+            b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 10 }, NBuildings = { MAX_BUILDING_LEVELS = 10 } }\n",
+        ),
+        (
+            "map/default.map",
+            b"definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=continent.txt\n",
+        ),
+        ("map/continent.txt", b"continents = { europe }\n"),
+        ("map/definition.csv", b"0;0;0;0;land;false;unknown;0\n1;1;0;0;land;false;plains;1\n"),
+        (
+            "common/military_industrial_organization/organizations/00_synthetic.txt",
+            br#"
+            synthetic_vis_organisation = {
+                trait = {
+                    token = synthetic_hidden_unlocked
+                    name = synthetic_hidden_unlocked
+                    icon = GFX_btn
+                    position = { x = 0 y = 0 }
+                    visible = { always = no }
+                }
+                trait = {
+                    token = synthetic_undecided_queued
+                    name = synthetic_undecided_queued
+                    icon = GFX_btn
+                    position = { x = 1 y = 0 }
+                    visible = { FROM = { has_country_flag = synthetic_flag } }
+                }
+            }
+        "#,
+        ),
+    ]);
+    let gui_bytes = br#"guiTypes = {
+        containerWindowType = {
+            name = "industrial_organisation_detail_window"
+            size = { width = 400 height = 320 }
+            containerWindowType = {
+                name = "tree_scrollbar_window"
+                position = { x = 20 y = 20 }
+                size = { width = 320 height = 260 }
+                containerWindowType = {
+                    name = "tree_window"
+                    position = { x = 0 y = 0 }
+                    size = { width = 320 height = 260 }
+                    gridBoxType = { name = "tree_list" position = { x = 0 y = 0 } slotsize = { width = 320 height = 260 } }
+                }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_tree_window"
+            size = { width = 320 height = 260 }
+            background = { name = "Background" spriteType = "GFX_btn" }
+            containerWindowType = {
+                name = "scrollbar_window"
+                position = { x = 10 y = 10 }
+                size = { width = 260 height = 220 }
+                background = { name = "Background" spriteType = "GFX_btn" }
+                containerWindowType = { name = "traits_window" position = { x = 0 y = 0 } clipping = no }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_trait_entry"
+            size = { width = 88 height = 112 }
+            containerWindowType = {
+                name = "industrial_organisation_trait_icon"
+                orientation = center
+                buttonType = { name = "icon_frame" position = { x = -29 y = -40 } quadTextureSprite = "GFX_industrial_org_trait_button" }
+                iconType = { name = "trait_icon" position = { x = -21 y = -32 } }
+                containerWindowType = { name = "queue_number_window" instantTextboxType = { name = "queue_number" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 20 maxHeight = 20 } }
+            }
+            instantTextboxType = { name = "ai_value" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 20 maxHeight = 20 }
+        }
+    }"#;
+    let guis = super::super::load_native_guis_from_bytes("vis.gui", gui_bytes).unwrap();
+    let doc = native::read_at(gui_bytes, DEFAULT_VIEWPORT.map(|v| v as i32));
+    let mut resources = gui_fixture::fixture_with(doc);
+    resources.add_sprite("GFX_btn", [12, 12], 1);
+    resources.add_sprite("GFX_industrial_org_trait_button", [58, 58], 3);
+    let root = guis.template(DETAIL_WINDOW_NAME.as_bytes()).unwrap();
+    let main_layout =
+        layout_window(root, &resources, DEFAULT_VIEWPORT.map(|v| v as i32), |_| {}).unwrap();
+    let localisation = Localisation::default();
+    let mut frame = empty_frame();
+    frame.tables[TableId::Countries.index()] =
+        TableView::Complete(replay_data::rows::TableRows::Countries(vec![
+            replay_data::rows::CountryRow {
+                id: 1,
+                canonical_slot: 1,
+                tag: b"SYN".to_vec(),
+                ..Default::default()
+            },
+        ]))
+        .into();
+    frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(replay_data::rows::TableRows::CountryLinks(vec![
+            replay_data::rows::CountryLinkRow {
+                id: 1,
+                canonical_slot: 1,
+                ..Default::default()
+            },
+        ]))
+        .into();
+    frame.tables[TableId::Provinces.index()] =
+        TableView::Complete(replay_data::rows::TableRows::Provinces(Vec::new())).into();
+    frame.tables[TableId::States.index()] =
+        TableView::Complete(replay_data::rows::TableRows::States(Vec::new())).into();
+    frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(replay_data::rows::TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 1,
+                literal: b"synthetic_vis_organisation".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 2,
+                literal: b"synthetic_flag".to_vec(),
+            },
+        ]))
+        .into();
+    frame.tables[TableId::IndustrialOrganisations.index()] =
+        TableView::Complete(replay_data::rows::TableRows::IndustrialOrganisations(vec![
+            IndustrialOrganisationRow {
+                organisation: 1,
+                owner: 1,
+                token: 1,
+                ..Default::default()
+            },
+        ]))
+        .into();
+    let content = Arc::new(content_reader_layers::content::ResolvedContent {
+        layers: layers.clone(),
+        stats: Default::default(),
+        changed: Vec::new(),
+        notes: Vec::new(),
+    });
+    let scripted = ScriptedContent::read(content, "english".to_owned()).map(Arc::new);
+    if let Err(err) = &scripted {
+        panic!("synthetic scripted content must load: {err}");
+    }
+    let failures = RefCell::new(Vec::new());
+    let catalog = mio_traits::cached(&layers);
+    let org_db = cached_organisation_database(&layers);
+    let mut data = unread_organisation("synthetic_vis_organisation");
+    data.owner_tag = Some("SYN".to_owned());
+    data.details = RecordedDetails::Available(Box::new(OrganisationDetails {
+        funds_raw: 0,
+        size: 1,
+        points: 0,
+        research_bonus_raw: 0,
+        task_capacity: 1,
+        research_assign_cost_raw: 0,
+        production_assign_cost_raw: 0,
+        design_team_change_cost: 0,
+        funds_gain_factor_raw: 0,
+        size_cost_factor_raw: 0,
+        auto_upgrade: false,
+        policy: None,
+        cooldown_hour: None,
+        unlocked: vec![
+            Spelled::Text("synthetic_hidden_unlocked".to_owned()),
+            Spelled::Unspelled {
+                token: 99,
+                reason: "LexicalTokens does not spell it at this hour".to_owned(),
+            },
+        ],
+        queued: vec![Spelled::Text("synthetic_undecided_queued".to_owned())],
+        allowed_policies: Vec::new(),
+    }));
+    let loc = Loc::new(&localisation, &frame, &scripted, &data, &failures);
+    assert_eq!(
+        loc.trait_condition(1, "synthetic_hidden_unlocked", OrganisationCondition::Visible),
+        Ok(false)
+    );
+    assert!(
+        loc.trait_condition(1, "synthetic_undecided_queued", OrganisationCondition::Visible)
+            .is_err()
+    );
+    let prepared = PreparedMio {
+        data,
+        sub_view: SubView::Traits,
+        catalog,
+        org_db,
+        emblem: Ok("GFX_btn".to_owned()),
+        tree_background: None,
+        history_icons: HashMap::new(),
+        read_hour: 0,
+        cadence_warning: None,
+        scroll: BTreeMap::new(),
+    };
+    let mut plan = ComposedPlan::default();
+    compose_trait_tree(&main_layout, root, &guis, &resources, &loc, &prepared, &mut plan).unwrap();
+    assert!(
+        !plan.text.iter().any(|t| t.label == "synthetic_hidden_unlocked"),
+        "unlocked trait whose visible condition is false must stay hidden: {:?}",
+        plan.text
+    );
+    assert!(
+        plan.text.iter().any(|t| t.label == "synthetic_undecided_queued" && t.value.as_deref() == Some("Queued (#1)")),
+        "queued trait with undecided visibility and an unspelled unlocked token must keep Queued (#1): {:?}",
+        plan.text
+    );
+    assert!(
+        plan.text.iter().any(|t| t.label == "synthetic_undecided_queued visibility" && t.missing.is_some()),
+        "undecided visibility reason must still be emitted independently: {:?}",
+        plan.text
+    );
+}
+
+#[test]
+fn history_icon_reads_exclude_unread_tables_after_earlier_error() {
+    content_reader_script::test_game::enter();
+    let mut bmp = vec![0_u8; 58];
+    bmp[..2].copy_from_slice(b"BM");
+    bmp[2..6].copy_from_slice(&58_u32.to_le_bytes());
+    bmp[10..14].copy_from_slice(&54_u32.to_le_bytes());
+    bmp[14..18].copy_from_slice(&40_u32.to_le_bytes());
+    bmp[18..22].copy_from_slice(&1_i32.to_le_bytes());
+    bmp[22..26].copy_from_slice(&1_i32.to_le_bytes());
+    bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bmp[34..38].copy_from_slice(&4_u32.to_le_bytes());
+    bmp[54..58].copy_from_slice(&[0, 0, 1, 0]);
+    let layers = synthetic_layers(&[
+        (
+            "map/default.map",
+            b"definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=continent.txt\n",
+        ),
+        ("map/continent.txt", b"continents = { europe asia }\n"),
+        (
+            "map/definition.csv",
+            b"0;0;0;0;land;false;unknown;0\n1;1;0;0;land;false;plains;1\n",
+        ),
+        ("map/provinces.bmp", &bmp),
+        (
+            "common/defines/00_defines.lua",
+            b"NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 10 } }\n",
+        ),
+        (
+            "common/country_tags/00_countries.txt",
+            b"SYN = \"countries/Synthetic.txt\"\n",
+        ),
+    ]);
+    let db = designer_database(&layers, "history equipment").unwrap();
+    let registry = content_reader_gui::gui::native::resources::Registry::default();
+    let ic = Arc::new(
+        dashboard_base::products::equipment_icon::IconContent::native(
+            Arc::new(layers),
+            db,
+            &Err("unread".to_owned()),
+            &registry,
+        )
+        .unwrap(),
+    );
+    let mut frame = empty_frame();
+    let set = |frame: &mut DecodedFrame, id: TableId, rows: replay_data::rows::TableRows, hour: i32| {
+        frame.tables[id.index()] =
+            replay_frame::frame::SharedView::from(TableView::Complete(rows)).with_sampled_at(Some(hour));
+    };
+    set(&mut frame, TableId::CountryLinks, replay_data::rows::TableRows::CountryLinks(Vec::new()), 100);
+    set(&mut frame, TableId::Countries, replay_data::rows::TableRows::Countries(Vec::new()), 100);
+    set(&mut frame, TableId::CountryAppearance, replay_data::rows::TableRows::CountryAppearance(Vec::new()), 100);
+    set(&mut frame, TableId::ReservedCountryNaming, replay_data::rows::TableRows::ReservedCountryNaming(Vec::new()), 100);
+    set(&mut frame, TableId::PoliticalParties, replay_data::rows::TableRows::PoliticalParties(Vec::new()), 100);
+    set(&mut frame, TableId::States, replay_data::rows::TableRows::States(Vec::new()), 10);
+    frame.tables[TableId::Politics.index()] = TableView::Unavailable {
+        reason: "unavailable".to_owned(),
+    }
+    .into();
+
+    let (icon_hour, icon_tables) = read_icon_hour_with_tables(&frame, &Ok(ic));
+    assert!(icon_hour.is_ok(), "IconHour::read retains Politics error internally");
+    assert!(
+        !icon_tables.contains(&TableId::States),
+        "States was never read after Politics failed and must not pollute read_hour: {icon_tables:?}"
+    );
+    assert!(
+        icon_tables.contains(&TableId::CountryAppearance),
+        "tables actually read by IconHour::read must remain accounted for: {icon_tables:?}"
     );
 }
 

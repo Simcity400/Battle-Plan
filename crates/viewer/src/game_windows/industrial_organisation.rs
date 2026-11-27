@@ -110,16 +110,6 @@ const HISTORY_TABLES: &[TableId] = &[
     TableId::SimulationFeatures,
 ];
 
-const HISTORY_ICON_TABLES: &[TableId] = &[
-    TableId::CountryAppearance,
-    TableId::ReservedCountryNaming,
-    TableId::PoliticalParties,
-    TableId::Politics,
-    TableId::Factions,
-    TableId::FactionMembers,
-    TableId::States,
-];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubView {
     Traits,
@@ -348,11 +338,11 @@ pub fn trait_status(details: &RecordedDetails, token: &str) -> TraitStatus {
     if named(&details.unlocked).is_some() {
         return TraitStatus::Unlocked;
     }
-    if let Some(reason) = unspelled(&details.unlocked, "unlocked trait") {
-        return TraitStatus::Unknown(reason);
-    }
     if let Some(index) = named(&details.queued) {
         return TraitStatus::Queued(index + 1);
+    }
+    if let Some(reason) = unspelled(&details.unlocked, "unlocked trait") {
+        return TraitStatus::Unknown(reason);
     }
     if let Some(reason) = unspelled(&details.queued, "queued trait") {
         return TraitStatus::Unknown(reason);
@@ -1142,29 +1132,39 @@ fn visible_list_indices(
     } else {
         let fit = (extent / step).max(0) as usize;
         let max_scroll = count.saturating_sub(fit) as f32;
-        let first = scroll
-            .get(&list.path)
-            .copied()
-            .filter(|v| v.is_finite())
-            .unwrap_or(0.0)
-            .clamp(0.0, max_scroll)
-            .floor() as usize;
+        let first = if fields.scrollbar_type.is_empty() {
+            0
+        } else {
+            scroll
+                .get(&list.path)
+                .copied()
+                .filter(|v| v.is_finite())
+                .unwrap_or(0.0)
+                .clamp(0.0, max_scroll)
+                .floor() as usize
+        };
         let end = first.saturating_add(fit).min(count);
         first.min(count)..end
     }
 }
 
-fn push_spacer_sizes(out: &mut Vec<[i32; 2]>, item_size: [i32; 2], axis: usize, rows: usize) {
-    let step = i64::from(item_size[axis].max(1));
-    let mut remaining = step.saturating_mul(rows as i64);
-    let max_chunk = i64::from(i32::MAX / 2);
-    while remaining > 0 {
-        let chunk = remaining.min(max_chunk) as i32;
-        let mut size = item_size;
-        size[axis] = chunk;
-        out.push(size);
-        remaining -= i64::from(chunk);
-    }
+fn placed_text_visible(parts: &[native_gui::Part]) -> bool {
+    parts.iter().any(|part| match &part.kind {
+        native_gui::PartKind::Text { glyphs, scale, .. } => glyphs.iter().any(|g| {
+            clip_rect(
+                [
+                    g.at[0],
+                    g.at[1],
+                    g.size[0] as f32 * *scale,
+                    g.size[1] as f32 * *scale,
+                ],
+                part.clip,
+            )
+            .is_some()
+        }),
+        native_gui::PartKind::Inline { rect, .. } => clip_rect(*rect, part.clip).is_some(),
+        _ => false,
+    })
 }
 
 fn place_uniform_visible_rows(
@@ -1179,52 +1179,9 @@ fn place_uniform_visible_rows(
     if count == 0 {
         return Ok((Vec::new(), 0));
     }
-    let Fields::ListBox(fields) = &list.fields else {
-        let places = plan.list_rows(list, holder, &vec![item_size; count], resources)?;
-        let out = places
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, p)| p.map(|p| (i, p)))
-            .collect();
-        return Ok((out, count));
-    };
-    let smooth = list.kind == native::Kind::SmoothListBox;
-    if !smooth {
-        let places = plan.list_rows(list, holder, &vec![item_size; count], resources)?;
-        let out = places
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, p)| p.map(|p| (i, p)))
-            .collect();
-        return Ok((out, count));
-    }
-    let vertical = fields.horizontal == 0;
-    let axis = usize::from(vertical);
     let visible = visible_list_indices(list, item_size, count, scroll);
-    let mut summary = Vec::with_capacity(visible.len() + 3);
-    let mut mapped = Vec::with_capacity(visible.len());
-    summary.push(item_size);
-    if visible.contains(&0) {
-        mapped.push((0, 0));
-    }
-    let first_after_zero = visible.start.max(1);
-    if first_after_zero > 1 {
-        push_spacer_sizes(&mut summary, item_size, axis, first_after_zero - 1);
-    }
-    for idx in first_after_zero..visible.end {
-        mapped.push((idx, summary.len()));
-        summary.push(item_size);
-    }
-    let tail_start = visible.end.max(1);
-    if tail_start < count {
-        push_spacer_sizes(&mut summary, item_size, axis, count - tail_start);
-    }
-    let slots = summary.len();
-    let places = plan.list_rows(list, holder, &summary, resources)?;
-    let placed = mapped
-        .into_iter()
-        .filter_map(|(idx, slot)| places.get(slot).copied().flatten().map(|place| (idx, place)))
-        .collect();
+    let slots = visible.len();
+    let placed = plan.list_uniform_rows(list, holder, item_size, count, visible, resources)?;
     Ok((placed, slots))
 }
 
@@ -2954,8 +2911,11 @@ fn compose_trait_tree(
         ))
     })?;
     let scrollbar_holder = container_holder(&tree_layout, &scrollbar_el.path);
-    let header_holder = find_direct(tree_tpl, TREE_HEADER_PATH)
-        .and_then(|el| container_holder(&tree_layout, &el.path));
+    let header_el = find_direct(tree_tpl, TREE_HEADER_PATH);
+    let header_clips = header_el
+        .and_then(Element::container)
+        .is_some_and(|c| c.clipping.unwrap_or(!c.backgrounds.is_empty()));
+    let header_holder = header_el.and_then(|el| container_holder(&tree_layout, &el.path));
 
     let tree_parts = tree_holder.place([0, 0], &tree_layout);
     let tree_regions = tree_holder.place_regions([0, 0], &tree_layout.regions);
@@ -3022,29 +2982,34 @@ fn compose_trait_tree(
             tree_holder.logical[0] + hdr.logical[0],
             tree_holder.logical[1] + hdr.logical[1],
         ];
-        hdr.clip = intersect_clips(tree_holder.clip, hdr.clip.map(translate_clip));
+        let own_clip = header_clips.then_some([
+            hdr.logical[0],
+            hdr.logical[1],
+            hdr.logical[0] + hdr.content[0],
+            hdr.logical[1] + hdr.content[1],
+        ]);
+        hdr.clip = intersect_clips(
+            intersect_clips(tree_holder.clip, hdr.clip.map(translate_clip)),
+            own_clip,
+        );
         hdr.before = tree_before;
         let traits_left = scrollbar_holder
             .as_ref()
             .map(|h| h.logical[0] + traits_local_pos[0])
             .unwrap_or(0);
-        let [header_w, header_h] = flavor_tpl
-            .container()
-            .map(|c| [c.size.size[0].value.max(1) as f32, c.size.size[1].value.max(1) as f32])
-            .unwrap_or([250.0, 80.0]);
         for (idx, header_text) in tree.tree_header_texts.iter().enumerate() {
             let label = loc.get(&header_text.text);
             let px = (header_text.x - min_x) * step_x + traits_left - scroll_offset[0];
-            let header_rect = [hdr.origin[0] + px as f32, hdr.origin[1], header_w, header_h];
-            if !label.is_empty() && clip_rect(header_rect, hdr.clip).is_some() {
-                plan.text(&format!("mio_header:{idx}"), "Tree header", Ok(label.clone()));
-            }
             let layout = layout_window(flavor_tpl, resources, viewport, |instance| {
-                set_text_by_name(instance, flavor_tpl, "flavortext", label);
+                set_text_by_name(instance, flavor_tpl, "flavortext", label.clone());
             })?;
+            let parts = hdr.place([px, 0], &layout);
+            if !label.is_empty() && placed_text_visible(&parts) {
+                plan.text(&format!("mio_header:{idx}"), "Tree header", Ok(label));
+            }
             plan.sub_windows.push(ComposedSubWindow {
                 before_part: tree_before,
-                parts: hdr.place([px, 0], &layout),
+                parts,
                 regions: Vec::new(),
                 diagnostics: layout.diagnostics,
                 root_window: "industrial_organisation_flavortext_window".to_owned(),
@@ -3881,6 +3846,13 @@ fn compose_policy_list(
                 let is_attached = details.policy.as_ref() == Some(entry);
                 let row_path = format!("policy:{idx}");
                 let Spelled::Text(token) = entry else {
+                    if is_attached {
+                        plan.text(
+                            &format!("{row_path}/attached"),
+                            "Policy",
+                            Ok("Attached".to_owned()),
+                        );
+                    }
                     let reason = entry.missing("allowed policy").unwrap_or_default();
                     plan.text(&row_path, "Policy", Err(reason.clone()));
                     let layout = layout_window(item_tpl, resources, viewport, |instance| {
@@ -4087,6 +4059,35 @@ pub fn classify_exhausted_variant_icon(
     }
 }
 
+fn read_icon_hour_with_tables(
+    frame: &DecodedFrame,
+    icon_content: &Result<Arc<dashboard_base::products::equipment_icon::IconContent>, String>,
+) -> (Result<IconHour, String>, Vec<TableId>) {
+    let (icon_hour, icon_views) = replay_frame::frame::view_reads::record(|| {
+        icon_content.as_ref().map_err(Clone::clone).and_then(|ic| {
+            IconHour::read(frame, ic)
+                .map_err(|error| format!("equipment icon hour context is unavailable: {error}"))
+        })
+    });
+    let icon_tables = if icon_hour.is_ok() {
+        TableId::ALL
+            .iter()
+            .copied()
+            .filter(|table| {
+                let view = &frame.tables[table.index()];
+                icon_views.iter().any(|read| read.is(view))
+                    && !matches!(
+                        view.held(),
+                        TableView::Unavailable { .. } | TableView::NotRecorded { .. }
+                    )
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (icon_hour, icon_tables)
+}
+
 fn prepare_visible_history_icons(
     prep: &HistoryIconPrep<'_>,
     index: &HistoryIndex,
@@ -4144,24 +4145,7 @@ fn prepare_visible_history_icons(
             )
         })
     });
-    let icon_hour = icon_content.as_ref().map_err(Clone::clone).and_then(|ic| {
-        IconHour::read(frame, ic)
-            .map_err(|error| format!("equipment icon hour context is unavailable: {error}"))
-    });
-    let icon_tables: Vec<TableId> = if icon_hour.is_ok() {
-        HISTORY_ICON_TABLES
-            .iter()
-            .copied()
-            .filter(|table| {
-                !matches!(
-                    frame.tables[table.index()].held(),
-                    TableView::Unavailable { .. } | TableView::NotRecorded { .. }
-                )
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let (icon_hour, icon_tables) = read_icon_hour_with_tables(frame, &icon_content);
     for variant_id in visible_ids {
         let state = match (&variants, &icon_content, &icon_hour) {
             (Err(why), _, _) => ResolvedHistoryIcon::Missing {
