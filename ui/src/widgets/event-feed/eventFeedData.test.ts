@@ -236,3 +236,55 @@ test('a witnessed cessation or guarantee with an unidentified country keeps its 
   };
   assert.ok(tip('k1').includes('Observed at') && !tip('k1').includes('Time'), 'an inexact row is dated by its observation, and says so');
 });
+
+test('a finished project with an unidentified owner keeps its row and carries its own missing reason in the country cell', () => {
+  const firstReason = 'Owner not recorded: Countries was not complete at these hours';
+  const secondReason = 'Owner not recorded: raw owner 9001 had no country link at this hour.';
+  const firstUnknown = validateFeedRow(row('projectFinished', 100, [], {
+    category: 'milestones',
+    readHour: 105,
+    participants: [null, null],
+    ownerMissing: firstReason,
+    item: { token: null, name: 'Modded Project', icon: null, description: null },
+  }));
+  const secondUnknown = validateFeedRow(row('projectFinished', 101, [], {
+    category: 'milestones',
+    readHour: 105,
+    participants: [null, null],
+    ownerMissing: secondReason,
+    item: { token: null, name: 'Unlinked Project', icon: null, description: null },
+  }));
+  const known = validateFeedRow(row('projectFinished', 102, ['X01'], {
+    category: 'milestones',
+    readHour: 106,
+    participants: ['X01', null],
+    item: { token: null, name: 'Second Project', icon: null, description: null },
+  }));
+  assert.throws(() => validateFeedRow(row('projectFinished', 103, ['X01'], { category: 'milestones', participants: [null, 'X01'] })), /malformed/,
+    'a project completion has no second role');
+  assert.throws(() => validateFeedRow(row('projectFinished', 103, [], { category: 'milestones', participants: [null, null] })), /malformed/,
+    'an unidentified project completion must carry its missing reason');
+  assert.throws(() => validateFeedRow(row('projectFinished', 103, ['X01'], { category: 'milestones', participants: ['X01', null], ownerMissing: firstReason })), /malformed/,
+    'a resolved project completion carries no missing-owner reason');
+  assert.throws(() => validateFeedRow(row('ceasedToExist', 103, [], { exact: false, participants: [null, null], ownerMissing: firstReason })), /malformed/,
+    'other kinds do not carry ownerMissing');
+  const all = [firstUnknown, secondUnknown, known];
+  const head = {
+    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: String(all.length),
+    rows: all.map((r, i) => ({ hour: r.hour, key: `p${i}`, ordinal: String(i), cells: [], row: r })),
+    facetTotals: [], missing: [], unavailable: [], warnings: [],
+  };
+  const source = buildRowSourceFromHead('test:project-finished', head, undefined, 120)!;
+  const model = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', source]]) }),
+    { categories: ['milestones'], artwork: false },
+  );
+  const firstCountry = model.rows.find(r => r.key === 'p0')!.cells.country!;
+  assert.deepEqual(firstCountry.value, { kind: 'notRecorded', reason: firstReason });
+  assert.deepEqual(firstCountry.flags?.map(flag => flag.tag), ['?']);
+  const secondCountry = model.rows.find(r => r.key === 'p1')!.cells.country!;
+  assert.deepEqual(secondCountry.value, { kind: 'notRecorded', reason: secondReason });
+  assert.deepEqual(secondCountry.flags?.map(flag => flag.tag), ['?']);
+  const knownCountry = model.rows.find(r => r.key === 'p2')!.cells.country!;
+  assert.deepEqual(knownCountry.flags?.map(flag => flag.tag), ['X01']);
+});

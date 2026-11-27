@@ -186,6 +186,9 @@ pub struct EventFeedRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub participants: Option<[Option<String>; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub owner_missing: Option<String>,
     pub item: Option<EventFeedItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
@@ -517,6 +520,7 @@ pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_
         kind,
         tags: participants.iter().flatten().cloned().collect(),
         participants: Some(participants),
+        owner_missing: None,
         item,
         amount: None,
         cause: cause::words(event, ally.flatten()),
@@ -537,6 +541,7 @@ fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, no
         kind,
         tags: participants.iter().flatten().cloned().collect(),
         participants: Some(participants),
+        owner_missing: None,
         item: None,
         amount: None,
         cause: None,

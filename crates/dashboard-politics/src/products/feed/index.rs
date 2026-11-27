@@ -605,18 +605,21 @@ fn family_id(text: &str) -> u128 {
     (u128::from(FeedEventRow::DERIVED - 1) << 64) | u128::from(hash)
 }
 
-fn family_occurrence(query: &Query<'_>, row: EventFeedRow) -> Occurrence<Item> {
-    let roles: Vec<Role> = row
-        .tags
-        .iter()
-        .map(|tag| Role {
-            slot: query.holders.at(tag.as_str(), row.name_hour).and_then(|run| match run.holder {
-                Holder::Found { slot, .. } => Some(slot),
-                _ => None,
-            }),
-            at: row.name_hour,
-        })
-        .collect();
+fn family_occurrence(query: &Query<'_>, row: EventFeedRow, slot: Option<u32>) -> Occurrence<Item> {
+    let roles: Vec<Role> = if let Some(slot) = slot {
+        vec![Role { slot: Some(slot), at: row.name_hour }]
+    } else {
+        row.tags
+            .iter()
+            .map(|tag| Role {
+                slot: query.holders.at(tag.as_str(), row.name_hour).and_then(|run| match run.holder {
+                    Holder::Found { slot, .. } => Some(slot),
+                    _ => None,
+                }),
+                at: row.name_hour,
+            })
+            .collect()
+    };
     let name = row.item.as_ref().and_then(|item| item.name.clone());
     let text = text_of(name.as_deref(), row.tags.iter().cloned());
     Occurrence {
@@ -705,17 +708,17 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     let (first, last) = (query.timeline.first, query.timeline.last);
     let mut refused: Vec<Notice> = Vec::new();
     let mut unsettled = false;
-    let mut rows: Vec<EventFeedRow> = Vec::new();
+    let mut rows: Vec<(EventFeedRow, Option<u32>)> = Vec::new();
     let mut warnings: families::DatedNotes = Vec::new();
     let mut unattributed = Vec::new();
     let mut unrecorded = Vec::new();
     if let Some((made, notes, left_out)) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, (cancelled, &mut unsettled))? {
-        rows.extend(made);
+        rows.extend(made.into_iter().map(|row| (row, None)));
         warnings.extend(notes);
         unattributed = left_out;
     }
     if let Some(made) = family(families::subject_rows(source, query, first, last, cancelled), &[Diplomacy], "subjects", "Subjects", &mut refused, (cancelled, &mut unsettled))? {
-        rows.extend(made);
+        rows.extend(made.into_iter().map(|row| (row, None)));
     }
     if let Some((made, notes, projects)) = family(families::project_completions(source, query, context, first, last, cancelled), &[Milestones], "projectFinished", "Special projects", &mut refused, (cancelled, &mut unsettled))? {
         rows.extend(made);
@@ -732,13 +735,13 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     let localise = |spelling: &str| localisation.as_ref().ok().and_then(|held| dashboard_text::catalogue::localised(held, spelling, dashboard_text::catalogue::View::Plain).ok());
     let mut notices = Notices::default();
     if let Some(made) = family(super::nuclear::strike_rows(query, first, last, &localise, &mut notices, cancelled), &[WarsPeace], "nuclearStrike", "Nuclear strikes", &mut refused, (cancelled, &mut unsettled))? {
-        rows.extend(made);
+        rows.extend(made.into_iter().map(|row| (row, None)));
     }
     refused.extend(notices.into_list().into_iter().map(|notice| (vec![WarsPeace], notice.kind, notice.label, notice.reason, notice.count)));
     let mut occurrences = script_feed(scanned);
     let mut seen: BTreeSet<u128> = occurrences.iter().map(|occurrence| occurrence.id).collect();
-    for row in rows {
-        let occurrence = family_occurrence(query, row);
+    for (row, slot) in rows {
+        let occurrence = family_occurrence(query, row, slot);
         if seen.insert(occurrence.id) {
             occurrences.push(occurrence);
         }

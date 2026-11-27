@@ -38,7 +38,7 @@ const HEAD_LIMIT = 256;
 const FOLD_MIN_RUN = 5;
 
 const LOSER_SECOND_KINDS = new Set(['annexed', 'warDeclared', 'warStarted']);
-const ONE_COUNTRY_KINDS = new Set(['ceasedToExist']);
+const ONE_COUNTRY_KINDS = new Set(['ceasedToExist', 'projectFinished']);
 const VIEWABLE_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected']);
 
 const KIND_SPRITES: Readonly<Record<string, string>> = {
@@ -360,7 +360,7 @@ function buildFeedTableRow(
     countryEntries.push({
       tag,
       dimmed: idx === 1 && LOSER_SECOND_KINDS.has(event.kind) || (idx === 0 && (event.kind === 'capitulated' || event.kind === 'ceasedToExist')),
-      missingLabel: 'Country not identified',
+      missingLabel: idx === 0 && event.ownerMissing ? event.ownerMissing : 'Country not identified',
     });
   }
   if (!countryEntries.length && event.tags.length) {

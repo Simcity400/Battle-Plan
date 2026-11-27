@@ -205,6 +205,7 @@ fn a_decisions_cost_is_listed_only_when_proven_and_only_the_currencies_it_charge
         kind: EventFeedKind::DecisionSelected,
         tags: Vec::new(),
         participants: None,
+        owner_missing: None,
         item: None,
         amount: None,
         cause: None,
@@ -415,12 +416,39 @@ fn incomplete_reads_raise_the_notices_a_walk_of_the_reads_asked_raises() {
 
 #[test]
 fn two_projects_completing_in_one_hour_are_two_rows() {
-    use dashboard_research::products::special_projects::ProjectCompletion;
-    let completion = |project, ordinal| ProjectCompletion { tag: Some("GER".into()), date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None, icon_missing: None };
-    let ids: std::collections::BTreeSet<String> = [completion(1, 4), completion(2, 4), completion(1, 7)].into_iter().filter_map(families::completion_row).map(|row| row.id).collect();
+    use dashboard_research::products::special_projects::{CompletionOwner, ProjectCompletion};
+    let completion = |project, ordinal, attribution| ProjectCompletion { attribution, date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None, icon_missing: None };
+    let resolved = || CompletionOwner::Resolved { slot: 7, tag: "X01".into() };
+    let ids: std::collections::BTreeSet<String> = [completion(1, 4, resolved()), completion(2, 4, resolved()), completion(1, 7, resolved())]
+        .into_iter()
+        .map(|item| families::completion_row(item).0.id)
+        .collect();
     assert_eq!(ids.len(), 3, "each project's completion marker is its own row: {ids:?}");
-    let row = families::completion_row(completion(1, 4)).unwrap();
-    assert_eq!((row.hour, row.read_hour, row.name_hour, row.tags.as_slice()), (100, 101, 100, ["GER".to_owned()].as_slice()), "named, flagged and coloured at its completion, not at the read");
+    let (row, slot) = families::completion_row(completion(1, 4, resolved()));
+    assert_eq!(
+        (row.hour, row.read_hour, row.name_hour, row.tags.as_slice(), row.participants, row.owner_missing, slot),
+        (100, 101, 100, ["X01".to_owned()].as_slice(), Some([Some("X01".to_owned()), None]), None, Some(7)),
+        "named, flagged and coloured at its completion, not at the read"
+    );
+
+    let first_reason = "Owner not recorded: Countries was not complete at these hours".to_owned();
+    let second_reason = "Owner not recorded: raw owner 9 had no country link at this hour.".to_owned();
+    let (first_unknown, first_slot) = families::completion_row(
+        completion(3, 0, CompletionOwner::NotRecorded { slot: Some(7), reason: first_reason.clone() }),
+    );
+    let (second_unknown, second_slot) = families::completion_row(
+        completion(4, 0, CompletionOwner::NotRecorded { slot: None, reason: second_reason.clone() }),
+    );
+    assert_eq!(
+        (first_unknown.hour, first_unknown.read_hour, first_unknown.name_hour, first_unknown.tags.as_slice(), first_unknown.participants, first_unknown.owner_missing.as_deref(), first_slot),
+        (100, 101, 100, [].as_slice(), Some([None, None]), Some(first_reason.as_str()), Some(7)),
+        "an unidentified project owner keeps its row with its own missing reason and known slot"
+    );
+    assert_eq!(
+        (second_unknown.participants, second_unknown.owner_missing.as_deref(), second_slot),
+        (Some([None, None]), Some(second_reason.as_str()), None),
+        "a second unidentified completion carries its own distinct reason on its row"
+    );
 }
 
 #[test]
@@ -604,6 +632,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
             kind: EventFeedKind::DecisionActivated,
             tags: Vec::new(),
             participants: None,
+            owner_missing: None,
             item: None,
             amount: None,
             cause: None,
@@ -621,6 +650,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
             kind: EventFeedKind::DecisionTimedOut,
             tags: Vec::new(),
             participants: None,
+            owner_missing: None,
             item: None,
             amount: None,
             cause: None,
@@ -1222,6 +1252,7 @@ fn a_listed_row_leaves_unexpanded_text_reasons_and_unshown_states_to_the_opened_
         kind: EventFeedKind::DecisionActivated,
         tags: Vec::new(),
         participants: None,
+        owner_missing: None,
         item: Some(super::EventFeedItem { name: Some("Raise war bonds".into()), description: Some("Bonds.".into()), gaps: Some("GER_war_bonds.d shows its scripted text elided".into()), ..Default::default() }),
         amount: None,
         cause: None,
@@ -1253,6 +1284,7 @@ fn a_listed_choice_card_names_the_option_its_last_choice_took() {
             kind,
             tags: Vec::new(),
             participants: None,
+            owner_missing: None,
             item: None,
             amount: None,
             cause: None,
