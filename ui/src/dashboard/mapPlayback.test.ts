@@ -417,6 +417,17 @@ test('MapViewsStore stamps clockId on populated and teardown snapshots and filte
     assert.equal(pinStore.getState('map-2')?.error ?? null, null);
     emitStates([reply(pinned.sequence, null, 140), reply(followed.sequence, null, 130)]);
     assert.equal(pinStore.getState('map-2')?.requestedSequence, pinned.sequence, 'a reply from before the switch is not taken after the pin’s own reply');
+
+    Object.assign(pin, { follow: true });
+    pinClock.play(140);
+    const run = await sentNow();
+    pinClock.update({ hour: 141, hoursPerSecond: 48 });
+    const later = await sentNow();
+    assert.ok(later.sequence > run.sequence, 'a playing map recomposed at a later hour is a new request');
+    emitStates([reply(run.sequence, 'gap')]);
+    flushFrames();
+    await tick();
+    assert.equal(pinStore.getState('map-2')?.error ?? null, null, 'an error answering an earlier hour of the run is not shown at the later one');
     stopPin();
     await tick();
   } finally {

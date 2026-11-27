@@ -15,7 +15,7 @@ export function mapFrameOnScreen(state: DashboardMapState | null): boolean {
 export function mapRequests(clock: Pick<PlaybackController, 'issue'>): (target: Omit<MapTarget, 'sequence'>) => MapTarget {
   let last = { key: '', sequence: 0 };
   return (target) => {
-    const key = JSON.stringify([target.sourceId, target.path, target.revision, target.branchId, !!target.playing, target.seekSequence ?? null, target.playing ? null : target.hour]);
+    const key = JSON.stringify([target.sourceId, target.path, target.revision, target.branchId, !!target.playing, target.seekSequence ?? null, target.hour]);
     if (key !== last.key) last = { key, sequence: clock.issue() };
     return { ...target, sequence: last.sequence };
   };
