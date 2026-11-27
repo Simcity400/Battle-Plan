@@ -56,6 +56,19 @@ test('the lattice uses the finest nested absolute grid, preserves both sides of 
   const grown = stripLattice({ ...branch, lastHour: branch.lastHour + 100 }, offset);
   assert.equal(lattice.hours(16).at(-1), 86561);
   assert.equal(grown.hours(16).at(-1), 86661);
+  assert.equal(lattice.scrub(98.5, 16)?.gap?.kind, 'not-recorded');
+  assert.equal(lattice.scrub(86562, 16), null);
+  for (const density of [1, 4, 8, 16] as const) {
+    const hours = lattice.hours(density);
+    for (const stretch of lattice.stretches) {
+      let expected = stretch.first;
+      const within = new Set(hours.filter(hour => hour >= stretch.first && hour <= stretch.last));
+      for (let hour = stretch.first; hour <= stretch.last; hour++) {
+        if (within.has(hour)) expected = hour;
+        assert.equal(lattice.scrub(hour + 0.5, density)?.hour, expected);
+      }
+    }
+  }
   const many = stripLattice({ firstHour: 0, lastHour: 899, gaps: Array.from({ length: 299 }, (_, i) => ({
     firstHour: i * 3 + 2, lastHour: i * 3 + 2,
   })) } as Parameters<typeof stripLattice>[0], 0);
@@ -72,7 +85,10 @@ test('the cursor takes a coarse skip across a fine chain and drops only fine byt
   store.append([0, 10], skip, false);
   store.append([0, 5, 10], fine, true);
   assert.equal(store.bytes, skip.byteLength + fine.byteLength);
-  assert.deepEqual(store.at(10), b);
+  const work = { leaves: 0, bytes: 0 };
+  assert.deepEqual(store.at(10, work), b);
+  const encoded = readStrip(skip);
+  assert.deepEqual(work, { leaves: 1, bytes: encoded.whole!.length + encoded.patches[0]![0].length });
   assert.equal(store.patchesApplied, 1);
   assert.deepEqual(store.at(5), a);
   assert.deepEqual(store.at(0), a);

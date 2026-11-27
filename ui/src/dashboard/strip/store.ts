@@ -1,8 +1,10 @@
 import { applyStripPatch, decodeState, readStrip, type StripState } from './decode.ts';
+import type { StripScenePlan, StripTrack, StripWork } from './scrub.ts';
 
 export type StripUpdate =
   | { kind: 'append'; slot: string; fine: boolean; hours: readonly number[]; bytes: Uint8Array }
   | { kind: 'mark'; slot: string; fine: boolean; hours: readonly number[] }
+  | { kind: 'scenes'; page: number; fine: boolean; frames: readonly [hour: number, scene: StripScenePlan][]; track?: StripTrack }
   | { kind: 'drop'; fine: boolean };
 
 export interface StripReceipt { bytes: number; coarseKeys: number; keys: number }
@@ -64,11 +66,11 @@ export class StripStore {
     return this.whole?.hour === hour || this.coarse.edges.has(hour) || (fine && this.fine.edges.has(hour));
   }
 
-  at(hour: number): StripState | null | undefined {
+  at(hour: number, work?: StripWork): StripState | null | undefined {
     if (this.coarse.missing.has(hour) || this.fine.missing.has(hour)) return null;
     if (!this.whole || !this.has(hour)) return undefined;
     try {
-      this.cursor ??= { hour: this.whole.hour, state: decodeState(this.whole.bytes) };
+      this.cursor ??= { hour: this.whole.hour, state: decodeState(this.whole.bytes, work) };
       const from = this.cursor.hour;
       if (from === hour) return this.cursor.state;
       const via = new Map<number, Edge>();
@@ -89,7 +91,8 @@ export class StripStore {
         route.push(patch);
         at = previous;
       }
-      const state = route.reverse().reduce(applyStripPatch, this.cursor.state);
+      let state = this.cursor.state;
+      for (const patch of route.reverse()) state = applyStripPatch(state, patch, work);
       this.patchesApplied += route.length;
       this.cursor = { hour, state };
       return state;
@@ -102,18 +105,42 @@ export class StripStore {
 
 export class WidgetStrips {
   readonly slots = new Map<string, StripStore>();
+  page: number | undefined;
+  track: StripTrack | undefined;
+  private coarse = new Map<number, StripScenePlan>();
+  private fine = new Map<number, StripScenePlan>();
+  private coarseBytes = 0;
+  private fineBytes = 0;
+
+  scene(hour: number, fine: boolean) {
+    return this.coarse.get(hour) ?? (fine ? this.fine.get(hour) : undefined);
+  }
 
   update(update: StripUpdate): StripReceipt {
     let slot: StripStore | undefined;
     if (update.kind === 'drop') {
+      this.fine.clear();
+      this.fineBytes = 0;
       if (update.fine) for (const strip of this.slots.values()) strip.dropFine();
-      else this.slots.clear();
+      else {
+        this.page = undefined;
+        this.track = undefined;
+        this.coarse.clear();
+        this.coarseBytes = 0;
+        this.slots.clear();
+      }
+    } else if (update.kind === 'scenes') {
+      this.page = update.page;
+      this.track = update.track;
+      const bytes = new TextEncoder().encode(JSON.stringify(update.fine || !update.track ? update.frames : [update.frames, update.track])).byteLength;
+      if (update.fine) { this.fine = new Map(update.frames); this.fineBytes = bytes; }
+      else { this.coarse = new Map(update.frames); this.coarseBytes = bytes; }
     } else {
       slot = this.slots.get(update.slot);
       if (!slot) this.slots.set(update.slot, slot = new StripStore());
       if (update.kind === 'append') slot.append(update.hours, update.bytes, update.fine);
       else slot.mark(update.hours, update.fine);
     }
-    return { ...(slot?.counts ?? EMPTY_STRIP_RECEIPT), bytes: [...this.slots.values()].reduce((sum, strip) => sum + strip.bytes, 0) };
+    return { ...(slot?.counts ?? EMPTY_STRIP_RECEIPT), bytes: [...this.slots.values()].reduce((sum, strip) => sum + strip.bytes, this.coarseBytes + this.fineBytes) };
   }
 }

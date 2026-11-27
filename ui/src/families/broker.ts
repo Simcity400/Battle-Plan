@@ -2,14 +2,15 @@ import { countryFromKey, countryKey } from '../dashboard/countryKey.ts';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
 import { canonical } from '../dashboard/follow/canonical.ts';
 import type { Channel } from '../dashboard/follow/facts';
-import { repliedCells } from '../dashboard/follow/liveCells.ts';
 import { TRAILING_HOURS, type WidgetTime } from '../dashboard/model.ts';
 import type { FollowRefusal } from '../dashboard/regionGate';
 import type { BoundWindow, FollowRequest, GatedHour } from '../dashboard/regionTime';
 import { forwardRequest, productRequest, type DeclaredProduct } from '../dashboard/request.ts';
-import { createBoundedReadView, displayedHour } from './boundedView.ts';
+import type { StripKeyframe } from '../dashboard/strip/scrub.ts';
+import { createBoundedReadView } from './boundedView.ts';
+import { exactPart, exactStatics, type ExactEntry, type ExactPart } from './exactScene.ts';
 import type { DrawnKeys } from './host/installed.ts';
-import { buildRowSourceFromHead, dataWindowOf, DEFAULT_TAIL_PAGE_SIZE, pageOffsets, validateGenericTailReply, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type RowWindow, type SnapshotPage, type TableRowSource } from './table/rowSource.ts';
+import { dataWindowOf, DEFAULT_TAIL_PAGE_SIZE, pageOffsets, type LogTailQuery, type PageFetchAsk, type RowWindow, type SnapshotPage } from './table/rowSource.ts';
 import type {
   ArtProvider,
   BoundedReadView,
@@ -604,15 +605,6 @@ export interface ExactReadOptions {
   readonly pagedSnapshot?: (name: string) => Readonly<Record<number, PagedSnapshotPage>> | null;
 }
 
-interface ExactPart {
-  readonly name: string;
-  readonly hour: number;
-  readonly panel?: unknown;
-  readonly live?: ReturnType<ReturnType<typeof repliedCells>['read']>;
-  readonly hover?: unknown;
-  readonly rows?: TableRowSource<DatedLogRow>;
-}
-
 export function exactEntries(plan: SourcePlan): readonly SourceEntry[] {
   const primary = primaryExactEntry(plan);
   if (!primary) return NO_ENTRIES;
@@ -630,11 +622,13 @@ interface ExactAsk {
   readonly page?: PageFetchAsk;
 }
 
+type ExactRequests = { hour: number; asks: ExactAsk[]; refusedPages?: Record<number, SnapshotPage> };
+
 export function buildExactRequests(
   entry: SourceEntry,
   recorded: GatedHour,
   options: Omit<ExactReadOptions, 'client'>,
-): { hour: number; asks: ExactAsk[]; refusedPages?: Record<number, SnapshotPage> } | null {
+): ExactRequests | null {
   const read = entry.read;
   const single = (request: ProductRequest, hour = recorded as number) => ({ hour, asks: [{ slot: 'answer', request }] });
   const product = (name: DeclaredProduct, params: Record<string, unknown>) =>
@@ -729,6 +723,42 @@ export function buildExactRequests(
   return null;
 }
 
+function exactEntry(entry: SourceEntry, spec: ExactRequests): ExactEntry {
+  const { name, read } = entry;
+  const { hour, asks, refusedPages } = spec;
+  if (read.shape === 'paged-rows') return { name, hour, kind: 'rows', rowIdentity: `${entry.source.id}|${entry.branch}|${name}`,
+    pages: asks.map(ask => ask.page), refusedPages };
+  return { name, hour, kind: read.shape === 'exact-hover' ? 'hover'
+    : read.shape === 'point' && read.channel === 'panel' && !read.exactProduct ? 'live' : 'panel' };
+}
+
+function exactAllowsEmpty(plan: SourcePlan) {
+  return plan.allowEmptyFollow === true && !plan.refused && !plan.unavailable;
+}
+
+export function buildStripKeyframe(
+  plan: SourcePlan,
+  recorded: GatedHour,
+  options: Omit<ExactReadOptions, 'client'>,
+  projectionOptions?: unknown,
+  slotSource: (entry: SourceEntry, request: ProductRequest) => string | null = entry => entry.name,
+): StripKeyframe {
+  const asks: StripKeyframe['asks'][number][] = [];
+  const parts = exactEntries(plan).map(entry => {
+    const spec = buildExactRequests(entry, recorded, options);
+    if (!spec) return null;
+    const slots = spec.asks.flatMap(({ slot, request }) => {
+      const source = slotSource(entry, request);
+      if (source === null) return [];
+      const key = JSON.stringify([source, slot, request.sourceId, request.revision, request.product]);
+      asks.push({ slot: key, request });
+      return [key];
+    });
+    return slots.length === spec.asks.length ? { ...exactEntry(entry, spec), slots } : null;
+  });
+  return { asks, scene: { recorded, parts, allowEmpty: exactAllowsEmpty(plan), ...(projectionOptions !== undefined ? { options: projectionOptions } : {}) } };
+}
+
 async function readEntryExact(
   entry: SourceEntry,
   recorded: GatedHour,
@@ -737,22 +767,10 @@ async function readEntryExact(
 ): Promise<ExactPart | null> {
   const spec = buildExactRequests(entry, recorded, options);
   if (!spec) return null;
-  const { read, name } = entry;
-  const { hour, asks, refusedPages } = spec;
+  const { read } = entry;
+  const { asks } = spec;
   const raws = asks.length === 1 ? [await fetchRaw(asks[0]!.request)] : await Promise.all(asks.map(ask => fetchRaw(ask.request)));
-  const panel = raws[0];
-  if (read.shape === 'exact-hover') return { name, hour, hover: panel };
-  if (read.shape === 'point' && read.channel === 'panel' && !read.exactProduct) {
-    return { name, hour, panel, live: repliedCells(panel).read() };
-  }
-  if (read.shape !== 'paged-rows') return { name, hour, panel };
-  const validate = read.validate ?? validateGenericTailReply;
-  const pages = refusedPages;
-  asks.forEach(({ page }, i) => {
-    if (page) pages![page.offset] = { ...page, raw: raws[i], reply: validate(raws[i], page.hour) };
-  });
-  const rows = buildRowSourceFromHead(`${entry.source.id}|${entry.branch}|${name}`, asks[0]?.page ? undefined : panel, undefined, recorded, pages, read.validate);
-  return { name, hour, panel, ...(rows ? { rows } : {}) };
+  return exactPart(exactEntry(entry, spec), recorded, raws, read.shape === 'paged-rows' ? read.validate : undefined);
 }
 
 export async function readPlanExact(
@@ -763,44 +781,16 @@ export async function readPlanExact(
   const recorded = options.gate.recorded(wantedHour);
   if (recorded === null) return null;
   const entries = exactEntries(plan);
-  if (!entries.length) {
-    if (plan.allowEmptyFollow && !plan.refused && !plan.unavailable) {
-      return createBoundedReadView({
-        hour: displayedHour(recorded),
-        ...(options.identity ? { identity: options.identity } : {}),
-        ...(options.art ? { art: options.art } : {}),
-      });
-    }
-    return null;
-  }
 
   const fetchRaw = async (request: ProductRequest): Promise<unknown> => {
     const load = async () => (await options.client.product(request, new AbortController().signal)).data;
     return options.exactOnce ? options.exactOnce(JSON.stringify(request), load) : load();
   };
 
-  const parts = await Promise.all(entries.map(entry => readEntryExact(entry, recorded, options, fetchRaw)));
-  if (!parts[0]) return null;
-  const panels = new Map<string, unknown>();
-  const live = new Map<string, NonNullable<ExactPart['live']>>();
-  const hovers = new Map<string, { hour: number; data: unknown }>();
-  const rows = new Map<string, TableRowSource<DatedLogRow>>();
-  let hour = recorded as number;
-  for (const part of parts) {
-    if (!part) continue;
-    hour = Math.min(hour, part.hour);
-    if (part.panel !== undefined) panels.set(part.name, part.panel);
-    if (part.live) live.set(part.name, part.live);
-    if (part.hover !== undefined) hovers.set(part.name, { hour: part.hour, data: part.hover });
-    if (part.rows !== undefined) rows.set(part.name, part.rows);
-  }
-  return createBoundedReadView({
-    hour: displayedHour(hour),
-    ...(panels.size ? { panels } : {}),
-    ...(live.size ? { live } : {}),
-    ...(hovers.size ? { hovers } : {}),
-    ...(rows.size ? { rows } : {}),
-    ...(rows.size && options.rowWindow ? { rowWindow: options.rowWindow } : {}),
+  const parts = entries.length ? await Promise.all(entries.map(entry => readEntryExact(entry, recorded, options, fetchRaw))) : [];
+  const statics = exactStatics(recorded, parts, exactAllowsEmpty(plan), options.rowWindow);
+  return statics && createBoundedReadView({
+    ...statics,
     ...(options.identity ? { identity: options.identity } : {}),
     ...(options.art ? { art: options.art } : {}),
   });

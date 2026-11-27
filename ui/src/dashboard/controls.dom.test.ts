@@ -3,7 +3,7 @@ import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 
 interface State { seeks: number; requests: number; clears: number; pauses: number; position: number; playing: boolean; scrub: number | null;
-  handle: number; fill: string; knob: string; date: string; dated: string; expectedDate: string; mapHours: number[]; captured: boolean }
+  handle: number; fill: string; knob: string; date: string; dated: string; expectedDate: string; mapHours: number[]; captured: boolean; scrubHours: (number | null)[] }
 
 test('a fifty-move timeline drag holds widgets and map, commits once, and a 150 ms dwell adds one seek', async () => {
   await withNativePage('timeline-scrub', '/ui/src/dashboard/controls.dom.fixture.tsx', page => page.stage('timeline scrub', async () => {
@@ -12,6 +12,7 @@ test('a fifty-move timeline drag holds widgets and map, commits once, and a 150 
     await act('press()');
     const held = await page.evaluate<State>('(() => { let state; for (let hour = 60; hour > 10; hour--) state = window.timeline.move(hour); return state; })()');
     assert.deepEqual([held.seeks, held.requests, held.clears, held.position], [0, 0, 0, 80]);
+    assert.deepEqual((await act('frame()')).scrubHours, []);
     assert.equal(held.scrub, 11);
     assert.equal(held.handle, 11);
     assert.equal(held.fill, 'scaleX(0.11)');
@@ -67,5 +68,16 @@ test('a fifty-move timeline drag holds widgets and map, commits once, and a 150 
     await act('press(35)'); await act('move(45)');
     const unmounted = await page.evaluate<{ seeks: number; scrub: number | null }>('window.timeline.unmount()');
     assert.deepEqual(unmounted, { seeks: 2, scrub: null }, 'unmount cancels the drag and its dwell');
+
+    await act('mount(false, true)'); await act('press()'); await act('move(30)'); await act('move(31)');
+    const scrub = await act('frame()');
+    assert.equal(scrub.scrubHours.length, 2);
+    assert.equal(scrub.scrubHours[0], scrub.scrubHours[1]);
+    assert.deepEqual([scrub.seeks, scrub.requests, scrub.clears, scrub.position], [0, 0, 0, 80]);
+    const stripDwell = await act('advance(150)');
+    assert.deepEqual([stripDwell.seeks, stripDwell.requests, stripDwell.scrub], [1, 1, 31]);
+    const stripRelease = await act('release()');
+    assert.deepEqual([stripRelease.seeks, stripRelease.requests, stripRelease.position], [1, 1, 31]);
+    assert.deepEqual(stripRelease.scrubHours.slice(-2), [null, null]);
   }));
 });

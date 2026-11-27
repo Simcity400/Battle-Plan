@@ -42,7 +42,7 @@ import { viewSlotProps } from './viewProps.ts';
 import type { WidgetMeta } from '../dashboard/definitions';
 import type { WidgetSpec } from '../dashboard/model';
 import type { CountryPolicy, SourcePlan } from '../families/plan.ts';
-import { buildExactRequests, exactEntries, readPlanExact, type ExactReadOptions } from '../families/broker.ts';
+import { buildStripKeyframe, exactEntries, readPlanExact, type ExactReadOptions } from '../families/broker.ts';
 import type { DashboardClient, ProductRequest } from '../dashboard/client.ts';
 import { openGate } from '../test-support/gated.ts';
 
@@ -539,7 +539,8 @@ test('every family view gives the same exact requests to strip building and seek
   const stop = new Error('Fixture captured the request');
   const compare = async (label: string, plan: SourcePlan, hour: number, options: Omit<ExactReadOptions, 'client'>) => {
     const at = options.gate.recorded(hour);
-    const expected = at === null ? [] : exactEntries(plan).flatMap(entry => buildExactRequests(entry, at, options)?.asks.map(ask => JSON.stringify(ask.request)) ?? []);
+    const strip = at === null ? null : buildStripKeyframe(plan, at, options);
+    const expected = strip?.asks.map(ask => JSON.stringify(ask.request)) ?? [];
     const actual: string[] = [];
     const client = { product: async (request: ProductRequest) => { actual.push(JSON.stringify(request)); throw stop; } } as unknown as DashboardClient;
     const exact = readPlanExact(plan, hour, { ...options, client });

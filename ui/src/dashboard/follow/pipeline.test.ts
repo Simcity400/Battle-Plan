@@ -220,7 +220,7 @@ test('identity and statics are supplied apart from the binding: one snapshot per
 
 test('with strip building off, unsubscribing the last source retains the follow route', async () => {
   assert.equal(configuredStripPage(() => assert.fail('the shipped switch is off')), null);
-  const { pipeline, settle, source, close } = inProcess();
+  const { pipeline, clock, posted, asked, settle, source, close } = inProcess();
   try {
     const id = pipeline.acquire('widget|0', { offset: 0, pin: null });
     const token = {};
@@ -229,8 +229,30 @@ test('with strip building off, unsubscribing the last source retains the follow 
     const widget = pipeline['widgets'].get(id)!;
     const route = widget.route;
     assert.ok(route);
+    const wire = JSON.stringify(posted), requests = JSON.stringify(asked);
+    clock.scrub(10);
+    clock.scrub(11.5);
+    clock.endScrub();
+    assert.equal(JSON.stringify(posted), wire);
+    assert.equal(JSON.stringify(asked), requests);
     pipeline.unsubscribe(id, token);
     assert.equal(widget.route, route);
+  } finally { close(); }
+});
+
+test('a scrub frame broadcasts one hour and density to all lanes with no service requests', () => {
+  const { pipeline, asked, posted, close } = inProcess({ lanes: 5 });
+  try {
+    const start = posted.length;
+    const frame = { page: 3, frame: 17, hour: 300, density: 8 as const, gap: null };
+    pipeline.scrub(frame.page, frame);
+    assert.equal(asked.length, 0);
+    const items = posted.slice(start);
+    assert.equal(items.length, 5);
+    assert.equal(new Set(items.map(item => item.lane)).size, 5);
+    for (const item of items) assert.deepEqual(item.message, { type: 'scrub', page: 3, frame });
+    pipeline.scrub(frame.page, null);
+    assert.equal(posted.slice(start + 5).filter(item => item.message.type === 'scrub' && item.message.frame === null).length, 5);
   } finally { close(); }
 });
 

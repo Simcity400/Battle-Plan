@@ -145,12 +145,22 @@ export default function DeclaredFamilyWidget<
 
   const optionFields = familyViewOptionFields(declaration.kind, view);
   const settingsPolicy = adapter.settings;
+  const { theme } = useFamilyTheme();
+  const surfaceColor = theme?.surface;
   const captureSettings = useCallback(
     (ctx: FamilyPlanContext<TAux>) => settingsPolicy!.resolve(declaration, ctx as FamilyPlanContext<unknown>, ctx.options),
     [settingsPolicy, declaration],
   );
+  const stripProjection = useMemo(() => surfaceColor ? {
+    surface: surfaceColor,
+    options: (ctx: FamilyPlanContext<TAux>) => {
+      const context = settingsPolicy ? { ...ctx, settings: captureSettings(ctx) } : ctx;
+      return declaration.projectionOptions(context, { extent: ctx.staticSpan ?? [ctx.branch.firstHour, ctx.branch.lastHour], surface: surfaceColor });
+    },
+  } : undefined, [surfaceColor, settingsPolicy, captureSettings, declaration]);
   const plan = useFamilyPlan<TAux, TSettings | undefined>({
     ...(settingsPolicy ? { captureExtra: captureSettings } : {}),
+    stripProjection,
     kind: declaration.kind,
     subject: declaration.subject,
     emptyCampaign: declaration.emptyCampaign,
@@ -191,8 +201,6 @@ export default function DeclaredFamilyWidget<
     reportHover(hour, keys);
     externalHoverHour?.(hour);
   }, [reportHover, externalHoverHour]);
-
-  const { theme } = useFamilyTheme();
 
   const laneArt = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
 
@@ -266,7 +274,6 @@ export default function DeclaredFamilyWidget<
     () => (plan.displayedCtx && settingsPolicy ? { ...plan.displayedCtx, settings } : plan.displayedCtx),
     [plan.displayedCtx, settingsPolicy, settings],
   );
-  const surfaceColor = theme?.surface;
   const lastProjectionOptionsRef = useRef<TProjectionOptions | undefined>(undefined);
   const projectionOptions = useMemo(() => {
     const next = displayedCtx && surfaceColor ? declaration.projectionOptions(displayedCtx, { extent, surface: surfaceColor }) : ({} as TProjectionOptions);

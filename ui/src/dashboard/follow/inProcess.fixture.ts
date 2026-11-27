@@ -12,19 +12,21 @@ import type { LaneView } from '../../draw/lane';
 
 export const NATIVE = 3;
 
-export interface Posted { readonly type: ToLane['type']; readonly bytes: number; readonly message: ToLane }
+export interface Posted { readonly lane: number; readonly type: ToLane['type']; readonly bytes: number; readonly message: ToLane }
 
 interface Held { hold: ((message: FromLane) => boolean) | null; queue: (() => void)[] }
 
 function lane(views: (kind: string) => LaneView | undefined, onClose?: () => void, posted?: Posted[], held?: Held): LaneWorker & { close(): void } {
   const fields = fieldsView(() => undefined);
   let closed = false;
+  let laneNumber = -1;
   let lanePort: MessagePort | null = null;
   const worker: LaneWorker & { close(): void } = {
     onmessage: null,
     postMessage(message: ToLane, transfer: Transferable[] = []) {
       if (closed) return;
-      if (posted && message.type !== 'init') posted.push({ type: message.type, bytes: serialize(message).byteLength, message });
+      if (message.type === 'init') laneNumber = message.lane;
+      else if (posted) posted.push({ lane: laneNumber, type: message.type, bytes: serialize(message).byteLength, message });
       const copy = structuredClone(message, { transfer: transfer as Transferable[] });
       if (copy.type === 'init') {
         lanePort = copy.port;

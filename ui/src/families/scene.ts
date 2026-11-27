@@ -9,6 +9,7 @@ import { artHandleKey, flagArtKey } from './art/types.ts';
 import { createBoundedReadView } from './boundedView.ts';
 import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
+import type { ExactStatics } from './exactScene.ts';
 import { buildRowSourceFromHead, frozenAnswer, type DatedLogRow, type PagedRows, type RowWindow, type TableRowSource, type TailValidator } from './table/rowSource.ts';
 
 export interface SceneSources {
@@ -22,6 +23,7 @@ export interface SceneSources {
   readonly pagedRows?: PagedRows;
   readonly window?: RowWindow;
   readonly validateTail?: TailValidator;
+  readonly exact?: ExactStatics;
 }
 
 export interface SceneReaders {
@@ -109,7 +111,7 @@ function readScene(
   }
   const liveCache = new Map<string, Live | null>();
   const rowsCache = new Map<string, TableRowSource<DatedLogRow> | undefined>();
-  return createBoundedReadView({
+  const statics = {
     hour,
     revisions,
     ...(sources.series ? { series: sources.series } : {}),
@@ -147,6 +149,10 @@ function readScene(
           },
         }
       : {}),
+  };
+  if (sources.exact) return createBoundedReadView({ ...statics, ...sources.exact });
+  return createBoundedReadView({
+    ...statics,
     ...(sources.staticShifts ? { panelShifts: sources.staticShifts } : {}),
     ensureNonLive: () => {
       const answers = new Map<string, FollowedAnswer | undefined>();

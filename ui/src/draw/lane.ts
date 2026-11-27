@@ -6,6 +6,11 @@ import { sectionOf } from '../dashboard/follow/liveCells.ts';
 import { PayloadStore, type PayloadsMessage, type Revisions } from '../dashboard/follow/payloads.ts';
 import type { InstalledViewport } from '../families/plan.ts';
 import { EMPTY_STRIP_RECEIPT, WidgetStrips, type StripUpdate } from '../dashboard/strip/store.ts';
+import { stripCoverageAt, type StripFrame, type StripScenePlan, type StripWork } from '../dashboard/strip/scrub.ts';
+import type { Outside } from '../dashboard/regionTime.ts';
+import type { SceneProjection } from '../families/scene.ts';
+import { exactPart, exactStatics, type ExactPart, type ExactStatics } from '../families/exactScene.ts';
+import type { RowWindow, TailValidator } from '../families/table/rowSource.ts';
 
 export interface PanelValue { kind: 'panel'; bytes: Uint8Array | null; data: unknown; refused: string | null; stopped?: string }
 export interface AnswerValue { kind: 'answer'; body?: Uint8Array; answer: FollowedAnswer }
@@ -70,7 +75,14 @@ export interface LaneView {
   onSpeed?(speed: number, state: Map<string, unknown>): void;
   unmount?(widget: number, state: Map<string, unknown>): void;
   prepare?(): Promise<void>;
+  scrub?(scene: Scene, statics: (validateTail?: TailValidator, window?: RowWindow) => ScrubInput, state: Map<string, unknown>): ScrubScene;
 }
+
+export type ScrubInput = { mode: 'picture'; statics: ExactStatics; options?: unknown } | { mode: 'missing' | 'waiting' } | { mode: 'refused'; reason: string };
+export type ScrubScene = Exclude<ScrubInput, { mode: 'picture' }> | { mode: 'outside'; outside: Outside }
+  | { mode: 'failed'; reason: string }
+  | { mode: 'picture'; picture: SceneProjection<unknown> };
+export type ScrubSample = StripWork & { widget: number; mode: ScrubScene['mode']; error?: string };
 
 export interface Presented<B extends Bitmap> {
   lane: number;
@@ -97,6 +109,7 @@ export interface LaneHost<B extends Bitmap> {
   schedule?(run: () => void): void;
   hit?(widget: number, key: string | null, installedId?: number, owner?: string): void;
   served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; costs?: [widget: number, cost: number][] }): void;
+  scrubbed?(frame: StripFrame, samples: readonly ScrubSample[]): void;
   budget?: number;
   earlyBuffer?: number;
   clock?: () => number;
@@ -213,6 +226,7 @@ function cellsOf(data: unknown): { id: number; seedHour?: number; values?: Value
 
 export class Lane<B extends { readonly width: number; close(): void }> {
   strips?: Map<number, { build: number; held: WidgetStrips }>;
+  scrubScenes?: { frame: StripFrame; widgets: Map<number, ScrubScene> };
 
   strip(widget: number, build: number, update: StripUpdate) {
     let current = this.strips?.get(widget);
@@ -221,6 +235,64 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (update.kind === 'drop' && !update.fine) { this.strips?.delete(widget); return EMPTY_STRIP_RECEIPT; }
     if (!current || current.build !== build) (this.strips ??= new Map()).set(widget, current = { build, held: new WidgetStrips() });
     return current.held.update(update);
+  }
+
+  private scrubStatics(held: WidgetStrips, hour: number, plan: Extract<StripScenePlan, { recorded: number }>,
+    work?: StripWork, validate?: TailValidator, window?: RowWindow): ScrubInput {
+    const parts: (ExactPart | null)[] = [];
+    for (const part of plan.parts) {
+      if (!part) { parts.push(null); continue; }
+      const raws: unknown[] = [];
+      for (const slot of part.slots) {
+        const state = held.slots.get(slot)?.at(hour, work);
+        if (state === undefined) return { mode: 'waiting' };
+        if (state === null) break;
+        if ('refused' in state) return { mode: 'refused', reason: state.refused };
+        raws.push(structuredClone(state.answer));
+      }
+      parts.push(raws.length === part.slots.length ? exactPart(part, plan.recorded, raws, validate) : null);
+    }
+    const statics = exactStatics(plan.recorded, parts, plan.allowEmpty, window);
+    return statics ? { mode: 'picture', statics, options: plan.options } : { mode: 'missing' };
+  }
+
+  scrub(page: number, frame: StripFrame | null) {
+    if (!frame) {
+      if (this.scrubScenes?.frame.page === page) this.scrubScenes = undefined;
+      return;
+    }
+    const widgets = new Map<number, ScrubScene>();
+    this.scrubScenes = { frame, widgets };
+    const samples: ScrubSample[] = [];
+    for (const [id, { held }] of this.strips ?? []) {
+      if (held.page !== page) continue;
+      const widget = this.widgets.get(id);
+      const coverage = frame.gap && held.track ? stripCoverageAt(held.track, frame.hour) : null;
+      const gap = coverage ? (coverage.hour === null ? coverage.outside : null) : frame.gap;
+      const plan = frame.gap ? (gap ? { outside: gap } : undefined) : held.scene(frame.hour, frame.density !== 1);
+      if (!widget || !plan) continue;
+      const work = frame.measure ? { leaves: 0, bytes: 0 } : undefined;
+      const mark = work ? `bp-strip:${page}:${frame.frame}:${this.host.lane}:${id}` : null;
+      if (mark) performance.mark(`${mark}:start`);
+      try {
+        const scene: Scene = { widget: id, subs: [], pictures: [], model: widget.model, owner: widget.binding.owner };
+        const scrub = 'outside' in plan ? { mode: 'outside', outside: plan.outside } as const : this.host.views(widget.view)
+          .scrub?.(scene, (validate, window) => this.scrubStatics(held, frame.hour, plan, work, validate, window), widget.state);
+        if (scrub) widgets.set(id, scrub);
+        if (work) samples.push({ widget: id, mode: scrub?.mode ?? 'waiting', ...work });
+      } catch (error) {
+        const reason = String(error);
+        widgets.set(id, { mode: 'failed', reason });
+        if (work) samples.push({ widget: id, mode: 'failed', error: reason, ...work });
+      } finally {
+        if (mark) {
+          performance.mark(`${mark}:end`, { detail: work });
+          performance.clearMarks(`${mark}:start`);
+          performance.clearMarks(`${mark}:end`);
+        }
+      }
+    }
+    if (frame.measure) this.host.scrubbed?.(frame, samples);
   }
   readonly facts = new Facts<Value>();
   readonly stats = { frames: 0, entries: 0, motion: 0, crops: 0, refused: {} as Record<string, number>, visited: 0, pruned: 0 };
@@ -605,6 +677,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   unmount(widget: number) {
     this.strips?.delete(widget);
+    this.scrubScenes?.widgets.delete(widget);
     const held = this.widgets.get(widget);
     if (held) {
       this.host.views(held.view).unmount?.(widget, held.state);

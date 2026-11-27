@@ -245,7 +245,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly extent?: readonly [number, number] | null;
   readonly plan?: SourcePlan | null;
   readonly exactReadView?: (hour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null>;
-  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'requests' | 'tiles'> & { tilesSettled(): boolean };
+  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'keyframe' | 'track' | 'tiles'> & { tilesSettled(): boolean };
   readonly offset: number;
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
@@ -482,14 +482,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const stripPlanRef = useRef(stripPlan);
   stripPlanRef.current = stripPlan;
   useLayoutEffect(() => {
+    if (!strips || !active) return;
     const plan = stripPlanRef.current;
-    const tiled = adapter.family === 'heat-lanes' || adapter.family === 'time-chart';
     const supported = plan?.supported === true;
-    if (!strips || (!tiled && (!plan || (supported && (!pipeline || pipe === null))))) return;
     let reset = 0;
     const register = (available: boolean) => strips.register(widget.id, { ...plan,
       key: `${pipeline?.generation}:${pipe}:${reset}:${plan?.key}`, supported: supported && available,
-      requests: plan?.requests ?? (() => []),
+      keyframe: plan?.keyframe ?? (() => ({ asks: [] })),
+      scrub: pipeline?.scrub,
       settled: () => (!plan || plan.tilesSettled()) && (!pipeline || pipe === null || pipeline.stripSettled(pipe)),
       store: (build, update) => pipeline && pipe !== null ? pipeline.storeStrip(pipe, build, update) : Promise.resolve(EMPTY_STRIP_RECEIPT),
     });
@@ -504,7 +504,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       release = register(available);
     }) : undefined;
     return () => { stop?.(); stopReset?.(); release(); };
-  }, [strips, widget.id, pipeline, pipe, adapter.family, stripPlan?.key, stripPlan?.supported]);
+  }, [strips, active, widget.id, pipeline, pipe, adapter.family, stripPlan?.key, stripPlan?.supported]);
 
   useEffect(() => {
     if (!exportSurface.active || !exportSurface.reportWidget || !active || prepared || enabled) return undefined;

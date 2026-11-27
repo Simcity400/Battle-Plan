@@ -3,15 +3,18 @@ import { describe, it } from 'node:test';
 import { liveKey } from '../../charts/live.ts';
 import { engineHour, firstHourOfMonth } from '../../dashboard/calendar.ts';
 import { NOT_LIVE_CELL, sectionValues, valuedGroup, type LiveSection } from '../../dashboard/follow/liveCells.ts';
+import { buildStripKeyframe, planSignature } from '../../families/broker.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
-import type { InstalledPicture } from '../../families/plan.ts';
+import { stripContextAt, stripPlanKey } from '../../families/host/planSources.ts';
+import type { FamilyPlanContext, InstalledPicture } from '../../families/plan.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from '../../families/time-chart/hitTest.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import { chartNavStops } from '../../families/time-chart/laneView.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
 import type { ArmyLossesReply } from '../../generated/dashboard';
-import { armyLossesProjection, monthOfHour, resolveArmyMonthDetail } from './armyLossesProjection.ts';
+import { gatedHour, openGate } from '../../test-support/gated.ts';
+import { armyLossesDeclaration, armyLossesProjection, monthOfHour, resolveArmyMonthDetail } from './armyLossesProjection.ts';
 
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const H1941_SEP15 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
@@ -46,6 +49,33 @@ function makeReply(overrides: Partial<ArmyLossesReply> = {}): ArmyLossesReply {
 }
 
 describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
+  it('invalidates held strip options for a renamed country when the time axis changes', () => {
+    const declaration = armyLossesDeclaration;
+    const branch = { id: '1', firstHour: 0, lastHour: 200 };
+    const viewport = { following: true, staticSpan: null };
+    const extra = { extent: [0, 200] as const, surface: '#161616' };
+    const read = { ...viewport, branch, timeMode: 'follow' as const, gate: openGate(0, 200), window: null };
+    const resolve = (timeAxis: string) => {
+      const initial = { countryTag: 'GER', countryName: 'Germany', planHour: 50, branch, following: true, options: { timeAxis },
+        track: { source: { id: 's', revision: 'r' }, axisOffset: 0 } } as unknown as FamilyPlanContext;
+      const plan = declaration.sources(initial, viewport);
+      const signature = planSignature(plan);
+      const projected = declaration.projectionOptions(initial, extra);
+      const key = stripPlanKey(plan, signature, initial.options, projected);
+      const renamed = stripContextAt(initial, plan.valid, 119, 'DEU', 'Germany');
+      const options = declaration.projectionOptions(renamed, extra);
+      const frame = buildStripKeyframe(declaration.sources(renamed, viewport), gatedHour(119), read, options);
+      return { plan, signature, key, projected, options, frame };
+    };
+    const held = resolve('fold'), updated = resolve('true');
+    assert.equal(held.signature, updated.signature);
+    assert.notEqual(held.key, updated.key);
+    assert.notEqual(held.key, stripPlanKey(held.plan, held.signature, { timeAxis: 'fold' }, updated.projected));
+    assert.equal(held.frame.asks[0]?.request?.params.country, 'DEU');
+    assert.deepEqual(held.frame.scene, { ...updated.frame.scene, options: held.options });
+    assert.equal(held.options.foldUnrecorded, true);
+    assert.equal(updated.options.foldUnrecorded, false);
+  });
   it('folds 6+ quiet no-rows months, preserves recorded zero, marks partial current month, and emits nav stops', () => {
     const readView = createBoundedReadView({
       hour: H1941_SEP15,

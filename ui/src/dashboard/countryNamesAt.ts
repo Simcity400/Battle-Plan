@@ -168,6 +168,12 @@ const NAMES: FactSpec<NameFact> = {
   }),
 };
 
+export function heldCountryNameAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'>, content: number, hour: number, tag: string): NameRead {
+  const timeline = heldTimeline(client, { sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id, content });
+  const names = timeline ? NAMES.held?.(timeline, hour, [tag]) : undefined;
+  return nameReadFrom(names ? names.get(tag) ?? null : undefined, true);
+}
+
 export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
   maxHours = Infinity, attempt = 0, exact = false): ReadonlyMap<string, NameRead> {
   const available = useMemo(() => wanted.filter(item => Number.isSafeInteger(item.hour) && recordedHour(track, item.hour) === item.hour), [wanted, track]);
