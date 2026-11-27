@@ -1,4 +1,4 @@
-use super::{Columns, Key, at, combats, ended_battles, live_battles};
+use super::{Columns, Combats, Key, at, combats, ended_battles, live_battles};
 use dashboard_base::{
     Source,
     products::{
@@ -21,7 +21,7 @@ use replay_data::rows::{LandEquipmentLoss, TableId, VariantStatsRow};
 use replay_lanes::lanes::{self, Cell, Keys, Reading};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{Arc, PoisonError, atomic::AtomicBool},
 };
@@ -211,10 +211,15 @@ impl Readings<'_> {
     }
 }
 
-fn scan_block(query: &Query<'_>, columns: &Columns, span: Stretch, readings: &Readings<'_>, cancelled: &AtomicBool) -> io::Result<Vec<(Key, Line)>> {
+struct BlockInput {
+    found: BTreeMap<Key, super::Battle>,
+    data: Combats,
+}
+
+fn prepare_block(query: &Query<'_>, columns: &Columns, span: Stretch, cancelled: &AtomicBool) -> io::Result<BlockInput> {
     check_cancel(cancelled)?;
     let recording = query.replay.recording();
-    let mut found = std::collections::BTreeMap::new();
+    let mut found = BTreeMap::new();
     if recording.withheld_reason(TableId::LandBattles.index()).is_none() {
         live_battles(query, columns, span.run, span.first, span.last, None, &mut found)?;
     }
@@ -224,6 +229,11 @@ fn scan_block(query: &Query<'_>, columns: &Columns, span: Stretch, readings: &Re
     let mut handles: Vec<u64> = found.keys().map(|key| key.0).collect();
     handles.dedup();
     let data = combats(query, columns, span.run, span.first, span.last, &handles, false)?;
+    Ok(BlockInput { found, data })
+}
+
+fn scan_block(query: &Query<'_>, BlockInput { found, data }: BlockInput, readings: &Readings<'_>, cancelled: &AtomicBool) -> io::Result<Vec<(Key, Line)>> {
+    check_cancel(cancelled)?;
     let mut out = Vec::with_capacity(found.len());
     for (key, battle) in found {
         let (combat, _, _) = key;
@@ -375,45 +385,12 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             );
         }
         let links = queries::links(source, stretch.run)?;
-        let costs =
-            if recording.predates(TableId::VariantStats.index()).is_some() || recording.withheld_reason(TableId::VariantStats.index()).is_some() {
-                lanes::History::default()
-            } else {
-                lanes::history(
-                    recording,
-                    stretch.run,
-                    TableId::VariantStats,
-                    &[VariantStatsRow::BUILD_COST_IC],
-                    Keys::All,
-                    stretch.first,
-                    stretch.last,
-                )?
-            };
-        let provinces = if recording.predates(TableId::Provinces.index()).is_some() || recording.withheld_reason(TableId::Provinces.index()).is_some()
-        {
-            lanes::History::default()
-        } else {
-            lanes::history(
-                recording,
-                stretch.run,
-                TableId::Provinces,
-                &[dashboard_declare::field(TableId::Provinces, "state")?],
-                Keys::All,
-                stretch.first,
-                stretch.last,
-            )?
-        };
-        let readings = Readings {
-            links: &links,
-            costs: &costs,
-            provinces: &provinces,
-        };
         let origin = recording.run(stretch.run)?.first_hour;
         let spans = dashboard_world::products::army_windows::coalesce(origin, [(stretch.first, stretch.last)]);
-        let blocks: Vec<_> = spans
+        let inputs: Vec<_> = spans
             .par_iter()
             .map(|s| {
-                scan_block(
+                prepare_block(
                     query,
                     &columns,
                     Stretch {
@@ -421,11 +398,38 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
                         last: s.last_hour,
                         ..*stretch
                     },
-                    &readings,
                     cancelled,
                 )
             })
             .collect::<io::Result<_>>()?;
+        let mut province_keys = BTreeSet::new();
+        let mut variant_keys = BTreeSet::new();
+        let mut add_variants = |equipment: &[Option<Vec<LandEquipmentLoss>>; 2]| {
+            variant_keys.extend(equipment.iter().flatten().flatten().filter(|item| item.amount_raw != 0).map(|item| u128::from(item.variant)));
+        };
+        for BlockInput { found, data } in &inputs {
+            for read in data.census.values().flatten().filter_map(|(_, read)| read.as_ref()) {
+                province_keys.extend(read.province.map(u128::from));
+            }
+            for read in data.losses.values().flatten().filter_map(|(_, read)| read.as_ref()) {
+                add_variants(&read.equipment);
+            }
+            for end in found.values().filter_map(|battle| battle.end.as_ref()) {
+                province_keys.extend(end.province.map(u128::from));
+                add_variants(&end.terminal_equipment);
+            }
+        }
+        let history = |table: TableId, columns: &[usize], keys: BTreeSet<u128>| {
+            if keys.is_empty() || recording.predates(table.index()).is_some() || recording.withheld_reason(table.index()).is_some() {
+                return Ok(lanes::History::default());
+            }
+            let keys: Vec<_> = keys.into_iter().collect();
+            lanes::history(recording, stretch.run, table, columns, Keys::These(&keys), stretch.first, stretch.last)
+        };
+        let costs = history(TableId::VariantStats, &[VariantStatsRow::BUILD_COST_IC], variant_keys)?;
+        let provinces = history(TableId::Provinces, &[dashboard_declare::field(TableId::Provinces, "state")?], province_keys)?;
+        let readings = Readings { links: &links, costs: &costs, provinces: &provinces };
+        let blocks: Vec<_> = inputs.into_par_iter().map(|input| scan_block(query, input, &readings, cancelled)).collect::<io::Result<_>>()?;
         for (key, part) in blocks.into_iter().flatten() {
             let line = lines.entry(key).or_default();
             if line.states.is_empty() {
