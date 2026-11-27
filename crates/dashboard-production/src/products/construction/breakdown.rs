@@ -140,8 +140,8 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
     let mut early_gaps: Vec<(i32, SpendingGap)> = Vec::new();
     for line in &facts.lines {
         let (railway, building, state, to_state) = line.leaf;
-        for &(hour, gap) in &line.gaps {
-            match gap_purpose(line, hour) {
+        for &(hour, until, gap) in &line.gaps {
+            match gap_purpose(line, hour, until) {
                 Some((repair, at)) => {
                     if hour < at {
                         early_gaps.push((hour, gap));

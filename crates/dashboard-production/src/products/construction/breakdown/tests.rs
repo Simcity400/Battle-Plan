@@ -71,8 +71,8 @@ fn an_empty_queue_read_in_full_certifies_only_itself() {
 #[test]
 fn an_output_gap_is_dated_at_the_read_that_shows_it_and_stays() {
     let mut held = facts();
-    held.lines.push(LineFacts { leaf: (false, 7, 1, NONE), building: Some(7), new_from: Some(5), repair_from: None, purpose: Vec::new(), gaps: vec![(12, SpendingGap::InexactOutput), (40, SpendingGap::FinalOutputMissing)], before_first_read: Some(5) });
-    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), purpose: Vec::new(), gaps: vec![(61, SpendingGap::LinkedOutput), (80, SpendingGap::InexactOutput)], before_first_read: None });
+    held.lines.push(LineFacts { leaf: (false, 7, 1, NONE), building: Some(7), new_from: Some(5), repair_from: None, purpose: Vec::new(), gaps: vec![(12, i32::MAX, SpendingGap::InexactOutput), (40, i32::MAX, SpendingGap::FinalOutputMissing)], before_first_read: Some(5) });
+    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), purpose: Vec::new(), gaps: vec![(61, 69, SpendingGap::LinkedOutput), (80, i32::MAX, SpendingGap::InexactOutput)], before_first_read: None });
     held.unattributed.push(35);
     let index = index(&held);
     let state_of = |hour: i32| index.at(hour).breakdown.parts[0].children.iter().find(|part| part.name == "Workshop").map(|part| part.state);
@@ -214,15 +214,17 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
-    assert_eq!(gap_assignment(Some(120), Some(115), 105), Some((true, 115)));
-    assert_eq!(gap_assignment(Some(120), Some(100), 122), Some((false, 122)));
-    assert_eq!(gap_assignment(Some(60), Some(70), 61), Some((false, 61)));
-    assert_eq!(gap_assignment(Some(60), Some(70), 80), Some((true, 80)));
-    assert_eq!(gap_assignment(Some(100), Some(100), 105), None);
+    assert_eq!(gap_assignment(Some(120), Some(115), 105, i32::MAX), Some((true, 115)));
+    assert_eq!(gap_assignment(Some(120), Some(100), 122, i32::MAX), Some((false, 122)));
+    assert_eq!(gap_assignment(Some(60), Some(70), 61, 69), Some((false, 61)));
+    assert_eq!(gap_assignment(Some(60), Some(70), 80, i32::MAX), Some((true, 80)));
+    assert_eq!(gap_assignment(Some(100), Some(100), 105, i32::MAX), None);
+    assert_eq!(gap_assignment(Some(120), None, 105, 109), None, "a closed gap does not qualify work first witnessed after it ended");
 
     let deferred = Facts {
         from: 100,
         to: 125,
+        spent: [((false, false, 9, 14, NONE), steps(&[(120, Some(100_000))]))].into(),
         lines: vec![
             LineFacts {
                 leaf: (false, 7, 12, NONE),
@@ -230,7 +232,7 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
                 new_from: Some(120),
                 repair_from: Some(115),
                 purpose: Vec::new(),
-                gaps: vec![(105, SpendingGap::LinkedOutput)],
+                gaps: vec![(105, i32::MAX, SpendingGap::LinkedOutput)],
                 before_first_read: None,
             },
             LineFacts {
@@ -239,7 +241,16 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
                 new_from: None,
                 repair_from: None,
                 purpose: Vec::new(),
-                gaps: vec![(118, SpendingGap::InexactOutput)],
+                gaps: vec![(118, i32::MAX, SpendingGap::InexactOutput)],
+                before_first_read: None,
+            },
+            LineFacts {
+                leaf: (false, 9, 14, NONE),
+                building: Some(9),
+                new_from: Some(120),
+                repair_from: None,
+                purpose: Vec::new(),
+                gaps: vec![(105, 109, SpendingGap::InexactOutput)],
                 before_first_read: None,
             },
         ],
@@ -250,7 +261,10 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     assert_eq!(at_105.breakdown.total.state, BreakdownState::Partial, "an output gap at 105 qualifies the total immediately even when child purpose waits");
     assert_eq!(at_105.through, 114, "validity ends before the child attribution appears at 115");
     let at_120 = deferred_index.at(120);
-    assert!(at_120.breakdown.parts.iter().all(|part| part.key != "new"), "an unknown-purpose gap qualifies the total without fabricating a new-work child");
+    let new_part = at_120.breakdown.parts.iter().find(|part| part.key == "new").expect("exact spent part for building 9");
+    assert_eq!(new_part.children.len(), 1, "unknown-purpose gap qualifies total without fabricating a child");
+    assert_eq!(new_part.children[0].key, "type:9");
+    assert_eq!(new_part.children[0].state, BreakdownState::Known, "a closed gap at 105..109 does not qualify new work first witnessed at 120");
 
     let frames = (100..=125)
         .map(|hour| {
@@ -440,4 +454,72 @@ fn construction_spellings_and_warnings_are_dated_to_their_charge_hours() {
     assert_eq!(child_name(&late, "type:8"), Some("Building name unavailable"));
     assert_eq!(child_name(&late, "type:99"), Some("Building name unavailable"));
     assert!(late.warnings.iter().any(|w| w.contains("lexical dictionary") && w.contains("99")), "{:?}", late.warnings);
+}
+
+#[test]
+fn owner_unknown_before_census_qualifies_both_eventual_owner_and_other_countries() {
+    use super::{ConstructionBreakdown, ConstructionBreakdownParams};
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{Country, LoadContext, Product},
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::{BuildingConstructionRow, ConstructionLineOutputRow, Recorded, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let frames = (100..=115)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let buildings = if hour >= 110 {
+                vec![BuildingConstructionRow {
+                    id: 5, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95, amount: 1, ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(buildings)).into();
+            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
+            let output = ConstructionLineOutputRow {
+                line: 5,
+                since_hour: 100,
+                construction_raw: if hour >= 110 { 100_000 } else { 0 },
+                exact: true,
+                country: Recorded::Value((hour >= 110).then_some(9001)),
+                building_type: Recorded::Value(Some(7)),
+                target_state: Recorded::Value(Some(12)),
+                ..Default::default()
+            };
+            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(vec![output])).into();
+            for table in [TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let source = Source::from_replay(
+        SourceKey { source_id: "construction-owner-before-census".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &cancel,
+    )
+    .unwrap();
+    for slot in [7, 8] {
+        let reply = ConstructionBreakdown::load(
+            &source,
+            &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(slot), hour: 100 },
+            &LoadContext { content: None },
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(reply.unattributed, 1, "slot {slot} must count the owner-unknown gap at 100 even after the line enters the census at 110");
+        assert_eq!(reply.breakdown.total.state, BreakdownState::Partial, "slot {slot} total must be partial at 100");
+    }
 }
