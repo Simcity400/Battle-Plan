@@ -301,7 +301,8 @@ fn location(frame: &DecodedFrame, cat: &Result<Arc<Catalogue>, String>, province
     let cat = cat.as_ref().map_err(|_| "Location names need the recorded content stack".to_owned())?;
     let provinces = provinces.as_ref().map_err(|why| format!("Provinces were not read: {why}"))?;
     let row = provinces.binary_search_by_key(&province, |row| row.id).ok().map(|at| &provinces[at]).ok_or_else(|| format!("Province {province} was not read"))?;
-    let text = ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, 0);
+    let content = cat.scripted_content()?;
+    let text = dashboard_text::triggers::inputs::unrecorded(|| ScriptedText::new(frame, &cat.localisation, content, 0));
     text.plain_state_name(row.state).and_then(|name| catalogue::plain_text(&name))
 }
 

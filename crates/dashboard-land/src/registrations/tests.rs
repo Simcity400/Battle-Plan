@@ -216,9 +216,14 @@ fn training_locations_follow_only_the_state_of_each_queued_province() {
             ProvinceRow { id: 2, state: hour as u32, controller: hour as u32, ..Default::default() },
             ProvinceRow { id: 3, state: if hour < 110 { 2 } else { 1 }, ..Default::default() },
         ]));
+        let second_name = match hour {
+            100 => "Old second camp",
+            101..=108 => "Second camp",
+            _ => "Renamed camp",
+        };
         *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
             StateRow { id: 1, custom_name: b"First camp".to_vec(), ..Default::default() },
-            StateRow { id: 2, custom_name: b"Second camp".to_vec(), ..Default::default() },
+            StateRow { id: 2, custom_name: second_name.as_bytes().to_vec(), ..Default::default() },
         ]));
         frame
     }).collect();
