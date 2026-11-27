@@ -281,6 +281,64 @@ pub struct Meta {
     pub strings: Vec<(u32, Vec<u8>)>,
 }
 
+#[derive(Debug, Default)]
+pub struct StringTable {
+    bytes: Vec<u8>,
+    at: Vec<(u32, u32, u32)>,
+}
+
+impl StringTable {
+    pub fn get(&self, id: u32) -> Option<&[u8]> {
+        let (_, from, length) = self.at[self.at.binary_search_by_key(&id, |&(held, ..)| held).ok()?];
+        self.bytes.get(from as usize..from as usize + length as usize)
+    }
+
+    fn packed(self) -> Self {
+        if self.at.is_empty() {
+            return Self::default();
+        }
+        let mut bytes = Vec::with_capacity(self.at.iter().map(|&(_, _, length)| length as usize).sum());
+        let at = self.at.iter().map(|&(id, from, length)| {
+            let start = bytes.len() as u32;
+            bytes.extend_from_slice(&self.bytes[from as usize..from as usize + length as usize]);
+            (id, start, length)
+        }).collect();
+        Self { bytes, at }
+    }
+
+    pub(crate) fn without_held_in(mut self, earlier: &StringTable) -> io::Result<Self> {
+        let mut conflict = None;
+        self.at.retain(|&(id, from, length)| match earlier.get(id) {
+            Some(held) if *held != self.bytes[from as usize..from as usize + length as usize] => {
+                conflict.get_or_insert(id);
+                false
+            }
+            Some(_) => false,
+            None => true,
+        });
+        match conflict {
+            Some(id) => Err(invalid(format!("A writer's string {id} is held as another text"))),
+            None => Ok(self.packed()),
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &[u8])> {
+        self.at.iter().map(|&(id, from, length)| (id, &self.bytes[from as usize..from as usize + length as usize]))
+    }
+
+    pub fn len(&self) -> usize {
+        self.at.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.at.is_empty()
+    }
+
+    pub fn held_bytes(&self) -> usize {
+        self.bytes.capacity() + self.at.capacity() * size_of::<(u32, u32, u32)>()
+    }
+}
+
 fn read_whole_table(bytes: &[u8], at: &mut usize, kinds: &[Kind]) -> io::Result<TableState> {
     let mut table = TableState::new(kinds);
     let slots = get_varint(bytes, at)? as u32;
@@ -304,6 +362,26 @@ fn read_whole_table(bytes: &[u8], at: &mut usize, kinds: &[Kind]) -> io::Result<
 }
 
 pub(crate) fn read_meta(bytes: &[u8], kinds: &[Kind], table: &mut TableState) -> io::Result<Meta> {
+    let mut strings = Vec::new();
+    let meta = read_meta_with(bytes, kinds, table, &mut |id, text, _| strings.push((id, text.to_vec())))?;
+    Ok(Meta { strings, ..meta })
+}
+
+pub(crate) fn read_meta_lazily(bytes: Vec<u8>, length: usize, kinds: &[Kind], table: &mut TableState) -> io::Result<(Meta, StringTable)> {
+    let mut at = Vec::new();
+    let meta = read_meta_with(bytes.get(..length).ok_or_else(|| invalid("A restore's meta passes its chunk"))?, kinds, table, &mut |id, text, from| {
+        at.push((id, from as u32, text.len() as u32));
+    })?;
+    let text = |&(_, from, length): &(u32, u32, u32)| &bytes[from as usize..from as usize + length as usize];
+    at.sort_by_key(|&(id, ..)| id);
+    if let Some(pair) = at.windows(2).find(|pair| pair[0].0 == pair[1].0 && text(&pair[0]) != text(&pair[1])) {
+        return Err(invalid(format!("A writer's string {} is held as another text", pair[0].0)));
+    }
+    at.dedup_by_key(|&mut (id, ..)| id);
+    Ok((meta, StringTable { bytes, at }.packed()))
+}
+
+fn read_meta_with(bytes: &[u8], kinds: &[Kind], table: &mut TableState, each: &mut dyn FnMut(u32, &[u8], usize)) -> io::Result<Meta> {
     let mut at = 0;
     let count = get_varint(bytes, &mut at)?;
     let slots = if table.is_log() { 0 } else { u32::try_from(count).map_err(|_| invalid("A restore's slots pass 32 bits"))? };
@@ -326,12 +404,11 @@ pub(crate) fn read_meta(bytes: &[u8], kinds: &[Kind], table: &mut TableState) ->
             Some(view)
         }
     };
-    let mut strings = Vec::new();
     let mut id = 0_u32;
     for _ in 0..get_varint(bytes, &mut at)? {
         id += get_varint(bytes, &mut at)? as u32;
         let length = get_varint(bytes, &mut at)? as usize;
-        strings.push((id, bytes.get(at..at + length).ok_or_else(|| invalid("A restore's string passes its stream"))?.to_vec()));
+        each(id, bytes.get(at..at + length).ok_or_else(|| invalid("A restore's string passes its stream"))?, at);
         at += length;
     }
     let last = match *bytes.get(at).ok_or_else(|| invalid("A restore's meta ends early"))? {
@@ -353,5 +430,5 @@ pub(crate) fn read_meta(bytes: &[u8], kinds: &[Kind], table: &mut TableState) ->
         return Err(invalid("A restore's meta holds bytes past its end"));
     }
     table.set_meta(status, sampled, view, last);
-    Ok(Meta { slots, count, strings })
+    Ok(Meta { slots, count, strings: Vec::new() })
 }

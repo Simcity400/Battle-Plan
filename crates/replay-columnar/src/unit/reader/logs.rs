@@ -47,19 +47,24 @@ pub fn log_state_named<P: PageEntry>(source: &dyn Extents, pages: &[P], kinds: &
     Ok((state, meta.strings.into_iter().collect()))
 }
 
-pub(super) fn log_restore(source: &dyn Extents, entry: &held::RestoreEntry, kinds: &[Kind]) -> io::Result<(TableState, held::Meta)> {
+pub(super) fn log_restore(source: &dyn Extents, entry: &held::RestoreEntry, kinds: &[Kind], lazy: bool) -> io::Result<(TableState, held::Meta, Vec<held::StringTable>)> {
     super::reading(|reading| {
         let stream = |id: u32| entry.streams.iter().find(|(stream, _)| *stream == id).and_then(|(_, chunks)| chunks.first());
         let (mut raw, mut prefix) = (Vec::new(), Vec::new());
         let meta_chunk = stream(held::META).ok_or_else(|| invalid("A restore holds no meta stream"))?;
         super::chunk_and_prefix(source, meta_chunk, reading, &mut raw, &mut prefix)?;
         let mut table = TableState::log(kinds, 0, Default::default());
-        let meta = held::read_meta(&raw[..meta_chunk.frame.raw as usize], kinds, &mut table)?;
+        let (meta, tables) = if lazy {
+            let (meta, strings) = held::read_meta_lazily(std::mem::take(&mut raw), meta_chunk.frame.raw as usize, kinds, &mut table)?;
+            (meta, if strings.is_empty() { Vec::new() } else { vec![strings] })
+        } else {
+            (held::read_meta(&raw[..meta_chunk.frame.raw as usize], kinds, &mut table)?, Vec::new())
+        };
         let rows = stream(held::ROWS).ok_or_else(|| invalid("A log's restore holds no live set"))?;
         super::chunk_and_prefix(source, rows, reading, &mut raw, &mut prefix)?;
         let listed = held::read_listed(&raw[..rows.frame.raw as usize], meta.count)?;
         table.set_log_rows(meta.count, listed);
-        Ok((table, meta))
+        Ok((table, meta, tables))
     })
 }
 

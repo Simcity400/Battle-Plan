@@ -443,6 +443,20 @@ fn strings_that_return_on_later_blocks_are_read_after_a_seek() {
     assert_eq!(tags(800), named(&[(1, "old string"), (2, "new string 800"), (3, "cycle 16"), (4, "returning")]));
     assert_eq!(tags(2000), named(&[(1, "old string"), (2, "new string 2000"), (3, "cycle 0"), (4, "returning")]));
     assert_eq!(tags(4319), named(&[(1, "old string"), (2, "new string 4319"), (3, "cycle 6")]));
+    let tag = dashboard_declare::field(TableId::Countries, "tag").unwrap();
+    for (ordinal, expected) in [(2000, named(&[(1, "old string"), (2, "new string 2000"), (3, "cycle 0"), (4, "returning")])), (4319, named(&[(1, "old string"), (2, "new string 4319"), (3, "cycle 6")]))] {
+        let (read, counts) = crate::cells::count_reads(|| {
+            let mut reader = crate::cells::TableReader::new(&file, 0, TableId::Countries, None).unwrap();
+            reader.seek(&file, ordinal).unwrap();
+            let view = reader.view();
+            let mut read: Vec<(u32, String)> = view.rows().filter_map(|slot| Some((view.key(slot)? as u32, String::from_utf8(view.string(view.text(tag, slot)?)?.to_vec()).unwrap()))).collect();
+            read.sort();
+            read
+        });
+        assert_eq!(read, expected, "a reader sought to {ordinal} names every row's text from the restore's own string table");
+        let stats = counts[&TableId::Countries];
+        assert!(stats.restores == 1 && stats.pinned == 0, "a restore keeps its strings where they were read instead of copying each one: {stats:?}");
+    }
     let mut frames = Frames::new(&file, &WATCHED).unwrap();
     frames.seek(0, 2100).unwrap();
     assert_eq!(*frames.frame(1).unwrap().tables[TableId::WorldTension.index()], TableView::Unavailable { reason: "refused 0".into() });
