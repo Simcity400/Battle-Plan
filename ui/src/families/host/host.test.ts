@@ -20,6 +20,11 @@ import type { SourcePlan } from '../contract.ts';
 import type { FrozenGate } from '../sources.ts';
 import { parseTableHit, tableHostAdapter } from '../table/hostAdapter.ts';
 import { cardHostAdapter } from '../card/hostAdapter.ts';
+import type { CardModel } from '../card/model.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
+import { createExactArtProvider, createLaneArtProvider, type ArtResolutions } from '../art/provider.ts';
+import { artHandleKey, PENDING_ART, readyArt } from '../art/types.ts';
+import { knownValue } from '../value.ts';
 import { pagedTailEntry } from '../table/logHelpers.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, SnapshotPager } from '../table/rowSource.ts';
 import { ROW_HEIGHT, tableSettingsOf } from '../table/settings.ts';
@@ -2580,4 +2585,126 @@ test('points keyboard navigation supports async next-change focus without activa
   assert.equal(lastPointerRef.current, null);
   stopPointer();
   tips.dispose();
+});
+
+test('R5: exact audit verifier uses the installed frame art resolutions for indirect handles while keeping pending handles pending', async () => {
+  const readyHandle = { kind: 'sprite' as const, key: 'GFX_synthetic_badge', frame: 0 };
+  const pendingHandle = { kind: 'sprite' as const, key: 'GFX_synthetic_pending', frame: 0 };
+  const resolvedArt = readyArt('art://synthetic-badge.png', { assetId: 'sprite:synthetic-badge' });
+  const installedResolutions: ArtResolutions = {
+    [artHandleKey(readyHandle)]: resolvedArt,
+    [artHandleKey(pendingHandle)]: PENDING_ART,
+  };
+  const projection = {
+    family: 'card' as const,
+    kind: 'test-card-art',
+    project(readView: import('../contract.ts').BoundedReadView): CardModel {
+      return {
+        hour: readView.hour,
+        columns: {},
+        rowHeight: 40,
+        rows: [
+          {
+            kind: 'item',
+            key: 'resolved',
+            title: knownValue('Resolved item'),
+            art: { kind: 'art', name: 'Badge', art: readView.art(readyHandle) },
+          },
+          {
+            kind: 'item',
+            key: 'waiting',
+            title: knownValue('Pending item'),
+            art: { kind: 'art', name: 'Pending', art: readView.art(pendingHandle) },
+          },
+        ],
+      };
+    },
+  };
+
+  const laneCache = new LaneArtCache();
+  const laneView = createBoundedReadView({
+    hour: 100,
+    art: createLaneArtProvider(laneCache, { resolutions: installedResolutions }),
+  });
+  const laneModel = projection.project(laneView);
+  const laneAudit = cardHostAdapter.deriveAuditRows!(laneModel, 100, {
+    viewport: { width: 400, height: 300, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null },
+    settings: undefined,
+    expanded: {},
+    theme: undefined,
+    fields: {},
+  });
+
+  const source = { id: 'card-src', revision: 'r1', path: 'p', metadata: { branches: [{ id: '1', firstHour: 0, lastHour: 500 }] } } as unknown as DashboardSource;
+  const plan: SourcePlan = {
+    owner: 'card-art',
+    entries: [{
+      name: 'main',
+      source,
+      branch: '1',
+      offset: 0,
+      read: {
+        shape: 'point',
+        channel: 'panel',
+        product: 'synthetic-card' as never,
+        coverage: { mode: 'population', form: 'all' },
+        followQuery: null,
+        params: { branchId: '1' },
+      },
+    }],
+  };
+  const client = {
+    product: async () => ({ data: { ok: true } }),
+  } as unknown as DashboardClient;
+  const gate: FrozenGate = {
+    recorded: h => (typeof h === 'number' ? h : null) as never,
+    span: (first, last) => ({ firstHour: first as never, lastHour: last as never }),
+  };
+  const exactRead = createExactReadView(plan, {}, {
+    client,
+    following: false,
+    timeMode: 'pin',
+    branch: { firstHour: 0, lastHour: 500 },
+    window: null,
+    staticSpan: null,
+    gate,
+    art: resolutions => createExactArtProvider({ ...(resolutions ? { resolutions } : {}) }),
+  });
+  const verifier = createPlanAuditVerifier<CardModel, undefined>();
+  const runVerifier = (resolutions: ArtResolutions | undefined) => verifier(100, {
+    projection,
+    options: undefined,
+    exactReadView: hour => exactRead(hour, null, resolutions),
+    deriveRows: (model, hour, fields) => cardHostAdapter.deriveAuditRows!(model, hour, {
+      viewport: { width: 400, height: 300, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null },
+      settings: undefined,
+      expanded: {},
+      theme: undefined,
+      fields: fields ?? {},
+    }),
+    ordered: true,
+  }, undefined, {});
+
+  const verifiedResolved = await runVerifier(installedResolutions);
+  assert.equal(laneAudit.find(r => r.key === 'resolved:art')?.value, 'art::Badge:ready:sprite:synthetic-badge');
+  assert.equal(laneAudit.find(r => r.key === 'waiting:art')?.value, 'art::Pending:pending');
+  assert.equal(verifiedResolved?.values.get('resolved:art'), 'art::Badge:ready:sprite:synthetic-badge');
+  assert.equal(verifiedResolved?.values.get('waiting:art'), 'art::Pending:pending');
+
+  const pendingLaneView = createBoundedReadView({
+    hour: 100,
+    art: createLaneArtProvider(laneCache),
+  });
+  const pendingLaneAudit = cardHostAdapter.deriveAuditRows!(projection.project(pendingLaneView), 100, {
+    viewport: { width: 400, height: 300, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null },
+    settings: undefined,
+    expanded: {},
+    theme: undefined,
+    fields: {},
+  });
+  const verifiedPending = await runVerifier(undefined);
+  assert.equal(pendingLaneAudit.find(r => r.key === 'resolved:art')?.value, 'art::Badge:pending');
+  assert.equal(verifiedPending?.values.get('resolved:art'), 'art::Badge:pending');
+  assert.equal(verifiedPending?.values.get('waiting:art'), 'art::Pending:pending');
+  laneCache.dispose();
 });
