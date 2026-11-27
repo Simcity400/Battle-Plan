@@ -320,7 +320,7 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
         .into_timelines(&Default::default())
         .unwrap();
     let cancel = AtomicBool::new(false);
-    let source = Source::from_replay(
+    let loaded = Source::from_replay(
         SourceKey { source_id: "construction-new-work".into(), revision: "1".into() },
         "synthetic.battleplan".into(),
         Arc::new(replay),
@@ -328,7 +328,7 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     )
     .unwrap();
     let reply = ConstructionBreakdown::load(
-        &source,
+        &loaded,
         &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 108 },
         &LoadContext { content: None },
         &cancel,
@@ -337,6 +337,51 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     assert!(reply.breakdown.parts.iter().all(|part| part.key != "new"), "new work first seen at 120 must not receive the gap at 105");
     let repair = reply.breakdown.parts.iter().find(|part| part.key == "repair").expect("repair part carries the gap");
     assert_eq!(repair.state, BreakdownState::Partial);
+
+    let tick_frames = (100..=118)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
+                id: 2, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95, amount: 1, repair_levels: 0, ..Default::default()
+            }]))
+            .into();
+            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
+            let outputs = if hour >= 115 {
+                vec![ConstructionLineOutputRow {
+                    line: 2, since_hour: 100, exact: false, repair_ticks: 1,
+                    country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(7)), target_state: Recorded::Value(Some(12)), ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(outputs)).into();
+            for table in [TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+            frame
+        })
+        .collect();
+    let tick_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, tick_frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let tick_source = Source::from_replay(
+        SourceKey { source_id: "construction-repair-tick-vs-queue".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(tick_replay),
+        &cancel,
+    )
+    .unwrap();
+    let tick_reply = ConstructionBreakdown::load(
+        &tick_source,
+        &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 116 },
+        &LoadContext { content: None },
+        &cancel,
+    )
+    .unwrap();
+    assert!(tick_reply.breakdown.parts.iter().all(|part| part.key != "new"), "queued new level must not steal an inexact first-repair-tick gap");
+    assert_eq!(tick_reply.breakdown.parts.iter().find(|part| part.key == "repair").map(|part| part.state), Some(BreakdownState::Partial));
 }
 
 #[test]

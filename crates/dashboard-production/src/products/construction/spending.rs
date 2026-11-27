@@ -260,6 +260,7 @@ struct LineHistory {
     first_new: Option<i32>,
     first_repair: Option<i32>,
     first_known_owner: Option<i32>,
+    last_known_owner: Option<bool>,
     before_observation: Option<i32>,
 }
 
@@ -294,10 +295,11 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
             let known_owner = number(cells, alone) == Some(0)
                 || match reason_val {
                     Some(r) if r == unknown_owner => false,
-                    Some(r) if r == unread_output => held.first_known_owner.is_some() || number(cells, owner).is_some_and(|v| v != 0),
+                    Some(r) if r == unread_output => held.last_known_owner.unwrap_or_else(|| number(cells, owner).is_some_and(|v| v != 0)),
                     Some(_) => true,
                     None => false,
                 };
+            held.last_known_owner = Some(known_owner);
             if known_owner && held.first_known_owner.is_none() { held.first_known_owner = Some(step.hour); }
             let effective_reason = if had_output && !known_owner { Some(unknown_owner) } else { reason_val };
             held.read.push((step.hour, effective_reason, had_output));
@@ -322,12 +324,10 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
                     prev_repair[slot] = value;
                 }
             }
-            let active = if number(cells, rep_lvl).is_some_and(|v| v > 0) {
+            let active = if number(cells, rep_lvl).is_some_and(|v| v > 0) || (repair_grew && !new_grew) {
                 Some(true)
-            } else if number(cells, rem).is_some_and(|v| v > 0) {
+            } else if (number(cells, rem).is_some_and(|v| v > 0) || new_grew) && !repair_grew {
                 Some(false)
-            } else if repair_grew != new_grew {
-                Some(repair_grew)
             } else {
                 None
             };
@@ -450,9 +450,9 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             entry.matched |= matched;
             entry.line.country = entry.line.country.or(line.country);
             entry.line.building = entry.line.building.or(line.building);
-            let mut part_known = false;
+            let mut part_last_known = None;
             if let Some(part) = steps.remove(&line.id) {
-                part_known = part.first_known_owner.is_some();
+                part_last_known = part.last_known_owner;
                 if let (Some(owner), Some(at)) = (line.country, part.first_known_owner) { entry.matched |= is_owner(owner, at); }
                 entry.history.read.extend(part.read);
                 entry.history.purpose.extend(part.purpose);
@@ -464,7 +464,9 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             if stretch.first <= line.last && line.last <= stretch.last {
                 let unknown = replay_data::rows::ConstructionProjectRow::OUTPUT_OWNER_UNKNOWN;
                 let unread = replay_data::rows::ConstructionProjectRow::OUTPUT_NOT_RECORDED;
-                let end_known = !line.output_alone || part_known || (line.output_reason != unknown && line.output_reason != unread);
+                let end_known = !line.output_alone
+                    || (line.output_reason != unknown && line.output_reason != unread)
+                    || (line.output_reason == unread && part_last_known.unwrap_or(line.country.is_some()));
                 let end_reason = if line.had_output && !end_known { unknown } else { line.output_reason };
                 entry.history.read.push((line.last, Some(end_reason), line.had_output));
             }
