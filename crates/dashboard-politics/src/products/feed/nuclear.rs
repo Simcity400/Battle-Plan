@@ -123,6 +123,7 @@ pub(crate) fn row(strike: &NuclearStrikeRow, read_hour: i32, participants: [Opti
         kind,
         tags: participants.iter().flatten().cloned().collect(),
         participants: Some(participants),
+        participants_missing: None,
         owner_missing: None,
         item,
         amount: None,

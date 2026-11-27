@@ -82,7 +82,7 @@ pub struct UnobservedHours {
     pub humans: Vec<HourSpan>,
     pub factions: Vec<HourSpan>,
     pub wars: Vec<HourSpan>,
-    #[doc = " The hour of each war start or capitulation read whose country no link resolved, in hour order:"]
+    #[doc = " The hour of each war start or capitulation read with no resolved country, in hour order:"]
     #[doc = " it is left out, and who it was is not known."]
     pub unattributed: Vec<i32>,
 }
@@ -92,8 +92,10 @@ pub struct UnobservedHours {
 #[serde(rename_all = "camelCase")]
 pub struct WarStart {
     pub hour: i32,
-    pub attacking: String,
-    pub defending: String,
+    pub attacking: Option<String>,
+    pub defending: Option<String>,
+    pub attacking_missing: Option<String>,
+    pub defending_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -504,12 +506,19 @@ fn built(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
             }
             let tag = |slot: u32| event_tag(&holders, slot, hour);
             match kind {
-                WarEventRow::START => match (tag(first), tag(second)) {
-                    (Some(attacking), Some(defending)) => {
-                        war_starts.insert(WarStart { hour, attacking: attacking.to_owned(), defending: defending.to_owned() });
+                WarEventRow::START => {
+                    let attacking = tag(first).map(str::to_owned);
+                    let defending = tag(second).map(str::to_owned);
+                    if attacking.is_none() && defending.is_none() {
+                        unobserved.unattributed.push(hour);
+                        continue;
                     }
-                    _ => unobserved.unattributed.push(hour),
-                },
+                    let reason = |side: &str| query.holders.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last)
+                        .map_or_else(|| format!("The {side} country has no resolved link at the war start"), |(_, _, reason)| format!("The {side} country is not resolved: {reason}"));
+                    let attacking_missing = attacking.is_none().then(|| reason("attacking"));
+                    let defending_missing = defending.is_none().then(|| reason("defending"));
+                    war_starts.insert(WarStart { hour, attacking, defending, attacking_missing, defending_missing });
+                }
                 WarEventRow::CAPITULATION => match tag(first) {
                     Some(tag) => {
                         capitulations.insert(Capitulation { hour, tag: tag.to_owned() });
@@ -808,6 +817,30 @@ pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn war_starts_keep_each_resolved_side_and_why_the_other_side_is_missing() {
+        use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
+        let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![source(1, 100, Some(1))])]).unwrap().into_timelines(&Default::default()).unwrap();
+        let held = Source::from_replay(dashboard_base::SourceKey { source_id: "partial-war-start".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let query = dashboard_base::queries::query(&held, 1).unwrap();
+        let run = query.timeline.stretches[0].run;
+        Runs::held(&held.state::<Runs>(), run, || Ok(RunGroups {
+            spans: Vec::new(),
+            events: [(7, 9), (9, 7), (7, 7), (TagHolderRow::NONE, TagHolderRow::NONE)].into_iter().map(|(first, second)| (WarEventRow::START, 100, first, second, 100)).collect(),
+            factions: HashMap::new(),
+            names: HashMap::new(),
+        })).unwrap();
+        let reply = groups(&held, &query, "1", &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+        assert_eq!(reply.war_starts.len(), 3, "resolving one side never drops the known side of a recorded start");
+        let starts = serde_json::to_value(&reply.war_starts).unwrap();
+        for (attacking, defending) in [(Some("GER"), None), (None, Some("GER")), (Some("GER"), Some("GER"))] {
+            let start = starts.as_array().unwrap().iter().find(|start| start["attacking"].as_str() == attacking && start["defending"].as_str() == defending).unwrap();
+            assert_eq!(start["attackingMissing"].is_string(), attacking.is_none());
+            assert_eq!(start["defendingMissing"].is_string(), defending.is_none());
+        }
+        assert_eq!(reply.unobserved.unattributed, [100], "only the wholly unresolved start is omitted");
+    }
 
     #[test]
     fn a_branchs_group_reply_is_built_once_and_every_request_shares_it() {

@@ -279,13 +279,13 @@ function buildFeedTableRow(
     if (tag === null && event.participants === undefined) continue;
     if (idx > 0 && ONE_COUNTRY_KINDS.has(event.kind)) continue;
     if (idx > 0 && tag !== null && tag === rawRoles[0]) continue;
-    if (tag === null && idx === 1 && (rawRoles[0] !== null || (event.kind.startsWith('decision') && !event.cause?.targetRecorded)) && !['scriptEventFired', 'newsEventFired', 'warDeclared', 'warJoined', 'annexed', 'released', 'guaranteeGranted'].includes(event.kind)) {
+    if (tag === null && idx === 1 && (rawRoles[0] !== null || (event.kind.startsWith('decision') && !event.cause?.targetRecorded)) && !['scriptEventFired', 'newsEventFired', 'warStarted', 'warDeclared', 'warJoined', 'annexed', 'released', 'guaranteeGranted'].includes(event.kind)) {
       continue;
     }
     countryEntries.push({
       tag,
       dimmed: idx === 1 && LOSER_SECOND_KINDS.has(event.kind) || (idx === 0 && (event.kind === 'capitulated' || event.kind === 'ceasedToExist')),
-      missingLabel: idx === 0 && event.ownerMissing ? event.ownerMissing : 'Country not identified',
+      missingLabel: event.participantsMissing?.[idx] ?? (idx === 0 && event.ownerMissing ? event.ownerMissing : 'Country not identified'),
     });
   }
   if (!countryEntries.length && event.tags.length) {

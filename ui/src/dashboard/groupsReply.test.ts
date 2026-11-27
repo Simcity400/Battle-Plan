@@ -7,10 +7,22 @@ const good: CountryGroupReply = {
   branchId: '1', warnings: [], humans: [{ tag: 'GER', firstHour: 0, lastHour: 9 }],
   factions: [{ id: '3', name: null, recordedName: '', firstHour: 0, lastHour: 9, nameReason: 'Faction template not recorded', names: [{ firstHour: 0, lastHour: 9, name: null, reason: 'Faction template not recorded', token: null }], members: [{ tag: 'GER', firstHour: 0, lastHour: 9 }], leaders: [], incomplete: [] }],
   wars: [{ first: 'GER', second: 'POL', firstHour: 5, lastHour: 9 }],
-  warStarts: [{ hour: 5, attacking: 'GER', defending: 'POL' }], capitulations: [{ hour: 8, tag: 'POL' }], identityChanges: [{ hour: 7, from: 'AAA', to: 'BBB' }],
+  warStarts: [{ hour: 5, attacking: 'GER', defending: 'POL', attackingMissing: null, defendingMissing: null }], capitulations: [{ hour: 8, tag: 'POL' }], identityChanges: [{ hour: 7, from: 'AAA', to: 'BBB' }],
   countryIdentities: ['GER', 'POL'].map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 9, slot, countryId: slot + 1 }] })),
   unobserved: { humans: [], factions: [{ firstHour: 2, lastHour: 3 }], wars: [], unattributed: [] },
 };
+
+test('a war start retains either known side and requires a reason for each unresolved side', () => {
+  const check = (start: Record<string, unknown>) => validateCountryGroupReply({ ...good, warStarts: [{ hour: 5, ...start }] });
+  for (const known of ['attacking', 'defending']) {
+    const unknown = known === 'attacking' ? 'defending' : 'attacking';
+    const start = { [known]: 'AAA', [`${known}Missing`]: null, [unknown]: null, [`${unknown}Missing`]: 'Country link not resolved' };
+    assert.equal(check(start).warStarts.length, 1);
+    assert.throws(() => check({ ...start, [`${unknown}Missing`]: null }), /malformed/);
+    assert.throws(() => check({ ...start, [`${unknown}Missing`]: '' }), /malformed/);
+    assert.throws(() => check({ ...start, [`${known}Missing`]: 'Contradiction' }), /malformed/);
+  }
+});
 
 
 test('a reply missing a list, or with a malformed entry, is refused', () => {

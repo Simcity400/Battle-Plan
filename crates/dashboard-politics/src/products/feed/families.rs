@@ -108,6 +108,7 @@ fn family_row(kind: EventFeedKind, hour: i32, read_hour: i32, name_hour: i32, ta
         kind,
         tags,
         participants: None,
+        participants_missing: None,
         owner_missing: None,
         item,
         amount: None,
@@ -160,7 +161,17 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
     let within = |hour: i32| from <= hour && hour <= to;
     let mut rows = Vec::new();
     if wanted(EventFeedKind::WarStarted) {
-        rows.extend(reply.war_starts.iter().filter(|start| within(start.hour)).map(|start| family_row(EventFeedKind::WarStarted, start.hour, start.hour, start.hour, vec![start.attacking.clone(), start.defending.clone()], None, None)));
+        for start in reply.war_starts.iter().filter(|start| within(start.hour)) {
+            let participants = [start.attacking.clone(), start.defending.clone()];
+            let missing = [start.attacking_missing.clone(), start.defending_missing.clone()];
+            for reason in missing.iter().flatten() {
+                notes.push((start.hour, format!("War start: {reason}. Country-filtered war-start totals may be incomplete.")));
+            }
+            let mut row = family_row(EventFeedKind::WarStarted, start.hour, start.hour, start.hour, participants.iter().flatten().cloned().collect(), None, None);
+            row.participants = Some(participants);
+            row.participants_missing = Some(missing);
+            rows.push(row);
+        }
         rows.extend(reply.capitulations.iter().filter(|capitulation| within(capitulation.hour)).map(|capitulation| family_row(EventFeedKind::Capitulated, capitulation.hour, capitulation.hour, capitulation.hour, vec![capitulation.tag.clone()], None, None)));
         let mut ends: Vec<(i32, String, String)> = Vec::new();
         for war in &reply.wars {

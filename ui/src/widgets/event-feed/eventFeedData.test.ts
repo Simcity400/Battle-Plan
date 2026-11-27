@@ -30,6 +30,24 @@ test('a feed row is validated, an icon the dashboard cannot draw dropped, and ma
   assert.throws(() => validateFeedRow(null), /malformed/);
 });
 
+test('war starts retain both role positions and the unresolved country reason', () => {
+  for (const participants of [['AAA', null], [null, 'AAA'], [null, null]]) {
+    const reasons = participants.map(tag => tag === null ? 'Country link not resolved' : null);
+    const event = validateFeedRow({ ...row('warStarted', 101, participants.filter(tag => tag !== null)), participants, participantsMissing: reasons });
+    const head = { branchId: '1', offset: '0', total: '1', live: '0', counts: [],
+      rows: [{ line: 'event', hour: 101, observed: 101, key: 'partial-start', ordinal: '0', live: false, row: event, choice: null }],
+      missing: [], nextChange: null, unavailable: [], warnings: [] };
+    const source = buildRowSourceFromHead('partial-start', head, undefined, 101, undefined, eventFeedProjection.validateTail)!;
+    const view = createBoundedReadView({ hour: 101, rows: new Map([['main', source]]), identity: datedIdentity({ AAA: [{ from: 0, name: 'Synthetic country' }] }) });
+    const model = eventFeedProjection.project(view, { categories: ['warsPeace'], artwork: false, expanded: [] });
+    const country = model.rows[0]!.cells.country!;
+    assert.equal(country.flags?.length, 2, 'each side keeps its position, including an unresolved defender');
+    assert.equal(country.value.kind, participants.includes('AAA') ? 'partial' : 'notRecorded', 'a partial pair is never a complete country value');
+    assert.ok('reason' in country.value && country.value.reason.includes('Country link not resolved'));
+    assert.throws(() => validateFeedRow({ ...event, participantsMissing: [null, null] }), /malformed/);
+  }
+});
+
 test('nuclear strike and decision state validation reject mismatched kinds', () => {
   const strike = { province: 13000, state: 1204, buildingLevels: 2.5, warSupport: -25, units: 1, manpowerLost: null, equipmentLost: null,
     notRecorded: ['equipment: writers not forwarded (1×)'] };
