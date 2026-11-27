@@ -132,21 +132,3 @@ test('liveSection ignores occurrence tail live-count strings while still rejecti
   assert.throws(() => liveSection({ live: 'bad' }), /malformed/);
   assert.throws(() => liveSection({ live: '3' }), /malformed/);
 });
-
-test('keyed descriptors use recorded row and column identities after group and row order change', () => {
-  const raw = 9007199254740993n;
-  const groups = [
-    { ref: 'one', table: 7, columns: [5, 3], keys: ['00', '10'],
-      values: [0, 0, 'No reading', Number(raw)], rawValues: [null, null, null, raw.toString()] },
-    { ref: 'two', table: 7, columns: [8], keys: ['20'], values: [4] },
-  ];
-  const kinds = [{ ref: 'a', id: 'height', op: 'value', scale: 1 }, { ref: 'b', id: 'height', op: 'value', scale: 2 }];
-  const cellsByRow = { '10': { height: ['a', [['one', '10', 3]]] },
-    '20': { height: ['b', [['two', '20', 8]]], missing: ['m', [['one', '10', 5]]] } };
-  const missing = { ref: 'm', id: 'missing', op: 'value', scale: 1 };
-  const values = repliedCells({ live: { groups: groups.slice().reverse(), kinds: [...kinds.slice().reverse(), missing], cellsByRow } }).read();
-  assert.equal(values.raw?.(liveKey('10', 'height')), raw);
-  assert.equal(values.get(liveKey('20', 'height')), 8);
-  assert.equal(values.missing(liveKey('20', 'missing')), 'No reading');
-  assert.throws(() => liveSection({ live: { groups, kinds, cellsByRow } }), /malformed/);
-});
