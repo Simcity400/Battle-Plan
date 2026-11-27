@@ -76,6 +76,13 @@ test('the resource icon comes from the reply; a missing name or icon is said, ne
   assert.equal(rows[2]!.media?.art.status, 'unavailable');
   assert.equal(rows[1]!.label?.kind, 'notRecorded');
   assert.notEqual(rows[0]!.color, rows[1]!.color, 'colours follow the recorded resource order');
+
+  const base = reply();
+  const blankRows = (await project(reply({
+    resources: base.resources.map((item, idx) => (idx === 0 ? { ...item, name: '   ', ordinal: 2 } : item)),
+  }))).rows as BarsDataRow[];
+  assert.deepEqual(blankRows[0]!.label, { kind: 'notRecorded', reason: 'Resource name not recorded' });
+  assert.equal(blankRows[0]!.numeric, -13);
 });
 
 test('no shortage says so; unrecorded resources are the body state with their reason, never a list of zeros', async () => {

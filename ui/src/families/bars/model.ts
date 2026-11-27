@@ -300,12 +300,23 @@ export function assertBarsModelValid(model: BarsModel, displayedHour: number): v
       model.form !== 'two-sided'
       || model.twoSidedLayout !== 'split-sides'
       || !row.rightSide
-      || row.value
-      || row.left
-      || row.right
-      || row.pair
-      || row.segments?.length
-      || row.readout
+      || row.subject !== undefined
+      || row.media !== undefined
+      || row.color !== undefined
+      || row.muted !== undefined
+      || row.region !== undefined
+      || row.group !== undefined
+      || row.value !== undefined
+      || row.numeric !== undefined
+      || row.target !== undefined
+      || row.segments !== undefined
+      || row.left !== undefined
+      || row.right !== undefined
+      || row.readout !== undefined
+      || row.pair !== undefined
+      || row.tooltip !== undefined
+      || row.action !== undefined
+      || row.meta !== undefined
     ) {
       throw new InvalidBarsModelError(`${prefix}.label: data row without label must be an empty split-side placeholder`);
     }

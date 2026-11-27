@@ -172,6 +172,44 @@ test('guards reject future hours, bare nulls, and missing values carrying bar ma
       },
     }],
   }, h);
+  assert.throws(
+    () => assertBarsModelValid({
+      form: 'two-sided',
+      twoSidedLayout: 'split-sides',
+      hour: h,
+      rows: [{
+        kind: 'data',
+        key: 'left:none:0',
+        numeric: 100,
+        rightSide: {
+          key: 'right:GER',
+          label: knownValue('German Reich'),
+          value: { value: knownValue(10) },
+          numeric: 10,
+        },
+      }],
+    }, h),
+    InvalidBarsModelError,
+  );
+  assert.throws(
+    () => assertBarsModelValid({
+      form: 'two-sided',
+      twoSidedLayout: 'split-sides',
+      hour: h,
+      rows: [{
+        kind: 'data',
+        key: 'left:none:0',
+        tooltip: { title: 'Ghost', hour: h },
+        rightSide: {
+          key: 'right:GER',
+          label: knownValue('German Reich'),
+          value: { value: knownValue(10) },
+          numeric: 10,
+        },
+      }],
+    }, h),
+    InvalidBarsModelError,
+  );
   const idx = new IdentityIndex({ sourceId: 's', revision: '1', branchId: '1', content: 1 });
   idx.ingestStylesReply({
     branchId: '1',

@@ -120,6 +120,14 @@ test('missing consumers, zero requests, and unavailable icons stay honest', () =
   assert.equal(row.readout?.primary, '0');
   assert.equal(row.media?.art.status, 'unavailable');
   assert.equal(row.readout?.icon?.status, 'unavailable');
+
+  const blank = project(sampleReply({
+    consumerNames: ['   ', 'Air', 'Navy'],
+    consumers: [{ index: 0, requested: '100000', received: '100000', priority: 1 }],
+  }));
+  const blankRow = blank.rows[0] as BarsDataRow;
+  assert.deepEqual(blankRow.label, { kind: 'notRecorded', reason: 'Branch name not recorded' });
+  assert.equal(blankRow.numeric, 1);
 });
 
 test('source plan keys by recorded country slot and withholds while unresolved', () => {

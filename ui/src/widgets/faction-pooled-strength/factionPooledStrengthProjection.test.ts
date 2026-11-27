@@ -167,10 +167,20 @@ test('manpower, research and doctrine pools resolve recorded slots and honest st
     pool: 'doctrine',
     decimals: 0,
     resources: [],
-    doctrines: [{ ordinal: 0, token: 'land_doctrine', name: 'Land Doctrine', reason: null }],
+    doctrines: [
+      { ordinal: 0, token: 'land_doctrine', name: 'Land Doctrine', reason: null },
+      { ordinal: 1, token: 'blank_doctrine', name: '   ', reason: null },
+    ],
   }));
-  assert.equal(doctrine.summaryText, '1 doctrine');
+  assert.equal(doctrine.summaryText, '2 doctrines');
   assert.deepEqual((doctrine.rows[0] as BarsDataRow).label, { kind: 'known', value: 'Land Doctrine' });
+  assert.deepEqual((doctrine.rows[1] as BarsDataRow).label, { kind: 'notRecorded', reason: 'Doctrine name not recorded' });
+
+  const blankResource = await project('resources', baseReply({
+    resources: [{ ordinal: 0, token: 'steel', name: '   ', icon: null, amount: '500000', nameReason: null, iconReason: null, missing: null }],
+  }));
+  assert.deepEqual((blankResource.rows[0] as BarsDataRow).label, { kind: 'notRecorded', reason: 'Resource name not recorded' });
+  assert.equal((blankResource.rows[0] as BarsDataRow).readout?.primary, '5');
 
   const unrecorded = await project('resources', baseReply({ status: 'poolNotRecorded', reason: 'Resources unread', resources: [] }));
   assert.equal(unrecorded.emptyKind, 'unavailable');

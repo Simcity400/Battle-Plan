@@ -94,8 +94,12 @@ function fixedValue(raw: string | null, reason: string | null): Value<bigint> {
   return parsed === 0n ? zeroValue(0n) : knownValue(parsed);
 }
 
+function nonBlankName(name: string | null): string | null {
+  return name !== null && name.trim().length > 0 ? name : null;
+}
+
 function resourceMedia(readView: BoundedReadView, entry: FactionPoolResource): BarsRowMedia {
-  const name = entry.name ?? entry.token ?? 'Resource';
+  const name = nonBlankName(entry.name) ?? entry.token ?? 'Resource';
   if (entry.icon === null) {
     return { kind: 'art', art: unavailableArt(entry.iconReason ?? NO_ICON), resolvedName: name };
   }
@@ -151,7 +155,8 @@ function projectResources(readView: BoundedReadView, reply: FactionPoolsReply, s
     const value = fixedValue(entry.amount, entry.missing);
     const numeric = entry.amount === null ? null : Number(BigInt(entry.amount)) / scale;
     const media = resourceMedia(readView, entry);
-    const label: Value<string> = entry.name !== null ? knownValue(entry.name) : notRecorded(entry.nameReason ?? 'Resource name not recorded');
+    const named = nonBlankName(entry.name);
+    const label: Value<string> = named !== null ? knownValue(named) : notRecorded(entry.nameReason ?? 'Resource name not recorded');
     const formatted = value.kind === 'known' || value.kind === 'zero' ? formatValueState(value, format) : null;
     const exactFormatted = value.kind === 'known' || value.kind === 'zero' ? formatValueState(value, exactFormat) : null;
     const items: TooltipListItem[] = [
@@ -175,7 +180,7 @@ function projectResources(readView: BoundedReadView, reply: FactionPoolsReply, s
         readout: { primary: formatted.text, ...(value.kind === 'zero' ? { tone: 'muted' as const } : {}) },
       } : {}),
       tooltip: {
-        title: entry.name ?? 'Resource name not recorded',
+        title: named ?? 'Resource name not recorded',
         hour: readView.hour,
         items,
         ...(value.kind === 'notRecorded' ? { missingReason: value.reason } : {}),
@@ -298,7 +303,8 @@ function projectDoctrines(readView: BoundedReadView, reply: FactionPoolsReply): 
     return { ...base, rows: [], summaryText, empty: 'This faction shares no doctrines yet.', emptyKind: 'empty', warnings: reply.warnings };
   }
   const rows: BarsDataRow[] = reply.doctrines.map(folder => {
-    const label: Value<string> = folder.name !== null ? knownValue(folder.name) : notRecorded(folder.reason ?? 'Doctrine name not recorded');
+    const named = nonBlankName(folder.name);
+    const label: Value<string> = named !== null ? knownValue(named) : notRecorded(folder.reason ?? 'Doctrine name not recorded');
     const items: TooltipListItem[] = [{ label: 'Doctrine', value: 'Shared with the faction' }];
     if (folder.reason) items.push({ label: 'Name', missingReason: folder.reason });
     return {
@@ -308,7 +314,7 @@ function projectDoctrines(readView: BoundedReadView, reply: FactionPoolsReply): 
       numeric: null,
       readout: { primary: 'Shared', tone: 'muted' },
       tooltip: {
-        title: folder.name ?? 'Doctrine name not recorded',
+        title: named ?? 'Doctrine name not recorded',
         hour: readView.hour,
         items,
       },

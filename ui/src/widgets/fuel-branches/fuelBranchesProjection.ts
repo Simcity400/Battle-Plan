@@ -42,6 +42,7 @@ function branchRow(
   const deliveredNum = Number(deliveredRaw) / reply.scale;
   const unmetNum = Number(unmetRaw) / reply.scale;
   const rawName = reply.consumerNames[consumer.index] ?? null;
+  const named = rawName !== null && rawName.trim().length > 0 ? rawName : null;
   const label = branchName(reply.consumerNames, consumer.index);
   const iconUrl = reply.consumerIcons[consumer.index] ?? null;
   const iconReason = reply.consumerIconReasons[consumer.index] ?? null;
@@ -77,7 +78,7 @@ function branchRow(
     kind: 'data',
     key: String(consumer.index),
     subject: String(consumer.index),
-    label: rawName === null ? notRecorded('Branch name not recorded') : knownValue(label),
+    label: named === null ? notRecorded('Branch name not recorded') : knownValue(named),
     media,
     color: colour(surface, consumer.index),
     value: {
