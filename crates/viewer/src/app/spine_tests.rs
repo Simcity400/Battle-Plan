@@ -245,7 +245,7 @@ fn a_map_whose_overlay_is_not_laid_out_is_not_ready() {
     shown(map(&mut viewer), 2);
     drawn(&mut viewer);
     assert!(!viewer.presentation_ready(at(2), false), "the layers show hour 2, the overlay nothing");
-    viewer.overlay_hour = Some(2);
+    whole_at(&mut viewer, 2);
     assert!(viewer.presentation_ready(at(2), false), "every part shows hour 2");
     viewer.overlay_missed = vec![TableId::Countries];
     assert!(!viewer.presentation_ready(at(2), false), "a read the overlay missed is still learned");
