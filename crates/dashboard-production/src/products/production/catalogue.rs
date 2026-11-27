@@ -66,6 +66,9 @@ pub struct ProductionLicencesParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub side_totals_only: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -211,7 +214,7 @@ impl AtHour for ProductionLicences {
     const TITLE: &'static str = "Production licences";
     const CONTENT_DEPENDENT: bool = false;
     type Params = ProductionLicencesParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top, sideTotalsOnly];
     type Reply = CountryFlowReply;
     type Context = GroupsAt;
 
@@ -345,6 +348,7 @@ impl AtHour for ProductionLicences {
             between: params.between,
             limit: params.limit.map(|limit| limit.max(1) as usize),
             top: params.top.map(|top| top.max(1) as usize),
+            side_totals_only: params.side_totals_only.unwrap_or_default(),
             table: false,
             not_recorded: LICENCES_NOT_RECORDED,
             unlinked: LICENCE_UNLINKED,
