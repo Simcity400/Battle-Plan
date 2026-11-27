@@ -432,14 +432,30 @@ pub struct SceneTextures {
     hatch_heights: Option<Arc<Bound>>,
     terrain_null: Arc<Bound>,
     icon_textures: Arc<IconTextures>,
+    warnings: Vec<String>,
 }
 
 impl SceneTextures {
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         assets: &MapAssets,
         sources: &TerrainSources,
+        icon_textures: impl FnOnce() -> io::Result<Arc<IconTextures>>,
+    ) -> io::Result<Arc<Self>> {
+        Self::new_with_warnings(device, queue, assets, sources, Vec::new(), icon_textures)
+    }
+
+    pub fn new_with_warnings(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        assets: &MapAssets,
+        sources: &TerrainSources,
+        mut warnings: Vec<String>,
         icon_textures: impl FnOnce() -> io::Result<Arc<IconTextures>>,
     ) -> io::Result<Arc<Self>> {
         check_textures(device)?;
@@ -500,6 +516,8 @@ impl SceneTextures {
             })
             .transpose()?
             .map(Arc::new);
+        let icon_textures = icon_textures()?;
+        warnings.extend(icon_textures.warnings().iter().cloned());
         Ok(Arc::new(Self {
             atlas: Arc::new(upload(
                 device,
@@ -620,35 +638,73 @@ impl SceneTextures {
             heightmap,
             terrain_ids,
             hatch_heights,
-            icon_textures: icon_textures()?,
+            icon_textures,
+            warnings,
         }))
     }
 }
 
 pub struct TextureCache(std::sync::Mutex<Uploads>);
 
-struct Uploads {
-    first: Option<Box<TerrainSources>>,
-    reader: crate::scene_content::TerrainReader,
-    icons: Icons,
-    device: Option<wgpu::Device>,
+struct DeviceUpload {
+    device: wgpu::Device,
+    icons: std::sync::Weak<IconTextures>,
     terrain: std::sync::Weak<SceneTextures>,
 }
 
-enum Icons {
-    Pending(Vec<content_reader_image::dds::Texture>),
-    Made(Arc<IconTextures>),
+struct Uploads {
+    reader: crate::scene_content::TerrainReader,
+    icon_sources: Vec<viewer_gpu::textures::GuiSource>,
+    entries: Vec<DeviceUpload>,
+}
+
+impl Uploads {
+    fn prune(&mut self) {
+        self.entries
+            .retain(|entry| entry.icons.strong_count() != 0 || entry.terrain.strong_count() != 0);
+    }
+
+    fn entry_mut(&mut self, device: &wgpu::Device) -> &mut DeviceUpload {
+        self.prune();
+        if let Some(index) = self.entries.iter().position(|entry| &entry.device == device) {
+            return &mut self.entries[index];
+        }
+        self.entries.push(DeviceUpload {
+            device: device.clone(),
+            icons: std::sync::Weak::new(),
+            terrain: std::sync::Weak::new(),
+        });
+        self.entries.last_mut().expect("pushed entry")
+    }
+
+    fn icons_for(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Arc<IconTextures>> {
+        self.prune();
+        if let Some(existing) = self
+            .entries
+            .iter()
+            .find(|entry| &entry.device == device)
+            .and_then(|entry| entry.icons.upgrade())
+        {
+            return Ok(existing);
+        }
+        let made = Arc::new(IconTextures::from_sources_tolerant(
+            device,
+            queue,
+            &self.icon_sources,
+        )?);
+        let entry = self.entry_mut(device);
+        entry.icons = Arc::downgrade(&made);
+        Ok(made)
+    }
 }
 
 impl TextureCache {
     pub fn new(sources: SceneSources) -> Self {
-        let SceneSources { terrain, reader, icon_images } = sources;
+        let SceneSources { reader, icon_images } = sources;
         Self(std::sync::Mutex::new(Uploads {
-            first: Some(Box::new(terrain)),
             reader,
-            icons: Icons::Pending(icon_images),
-            device: None,
-            terrain: std::sync::Weak::new(),
+            icon_sources: icon_images,
+            entries: Vec::new(),
         }))
     }
 
@@ -658,24 +714,16 @@ impl TextureCache {
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => return None,
         };
-        match &uploads.icons {
-            Icons::Made(icons) if uploads.device.as_ref() == Some(device) => Some(Arc::clone(icons)),
-            _ => None,
-        }
+        uploads
+            .entries
+            .iter()
+            .find(|entry| &entry.device == device)
+            .and_then(|entry| entry.icons.upgrade())
     }
 
     pub fn icons(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Arc<IconTextures>> {
         let mut uploads = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        if uploads.device.as_ref().is_some_and(|owner| owner != device) {
-            return Err(invalid("this map content's art lives on another graphics device"));
-        }
-        let made = match &uploads.icons {
-            Icons::Made(icons) => return Ok(Arc::clone(icons)),
-            Icons::Pending(images) => Arc::new(IconTextures::new(device, queue, images)?),
-        };
-        uploads.icons = Icons::Made(Arc::clone(&made));
-        uploads.device = Some(device.clone());
-        Ok(made)
+        uploads.icons_for(device, queue)
     }
 
     pub fn warm(
@@ -685,30 +733,25 @@ impl TextureCache {
         assets: &MapAssets,
     ) -> io::Result<Arc<SceneTextures>> {
         let mut uploads = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        if uploads.device.as_ref().is_some_and(|owner| owner != device) {
-            return Err(invalid(
-                "this map content's textures live on another graphics device; the map loads its content again to draw here",
-            ));
-        }
-        if let Some(shared) = uploads.terrain.upgrade() {
+        uploads.prune();
+        if let Some(shared) = uploads
+            .entries
+            .iter()
+            .find(|entry| &entry.device == device)
+            .and_then(|entry| entry.terrain.upgrade())
+        {
             viewer_runtime::load_record::count("scene textures reused", 1, 0);
             return Ok(shared);
         }
-        let sources = match uploads.first.take() {
-            Some(first) => first,
-            None => {
-                viewer_runtime::load_record::count("scene textures read again", 1, 0);
-                Box::new(uploads.reader.read(&assets.heightmap)?)
-            }
-        };
-        let made = SceneTextures::new(device, queue, assets, &sources, || match &uploads.icons {
-            Icons::Made(icons) => Ok(Arc::clone(icons)),
-            Icons::Pending(images) => Ok(Arc::new(IconTextures::new(device, queue, images)?)),
+        viewer_runtime::load_record::count("scene textures read", 1, 0);
+        let (sources, warnings) = uploads.reader.read(&assets.heightmap)?;
+        let made = SceneTextures::new_with_warnings(device, queue, assets, &sources, warnings, || {
+            uploads.icons_for(device, queue)
         })?;
         viewer_runtime::load_record::count("scene textures uploaded", 1, 0);
-        uploads.icons = Icons::Made(Arc::clone(&made.icon_textures));
-        uploads.device = Some(device.clone());
-        uploads.terrain = Arc::downgrade(&made);
+        let entry = uploads.entry_mut(device);
+        entry.icons = Arc::downgrade(&made.icon_textures);
+        entry.terrain = Arc::downgrade(&made);
         Ok(made)
     }
 }
@@ -754,6 +797,10 @@ fn check_device(device: &wgpu::Device, samples: u32) -> io::Result<()> {
 }
 
 impl Scene {
+    pub fn warnings(&self) -> &[String] {
+        self._shared.warnings()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn offline_particle_packets(&self) -> BTreeMap<String, usize> {
         self.weather_effects
@@ -849,6 +896,7 @@ impl Scene {
             hatch_heights,
             terrain_null,
             icon_textures,
+            warnings: _,
         } = SceneTextures::clone(&textures);
         let name_pass = NamePass::new(
             device,
@@ -4704,7 +4752,8 @@ impl Scene {
     }
 
     pub fn pass_warnings(&self) -> Vec<String> {
-        let mut warnings: Vec<_> = passes::lines(&self.pass_diagnostics).collect();
+        let mut warnings = self._shared.warnings().to_vec();
+        warnings.extend(passes::lines(&self.pass_diagnostics));
         warnings.extend(self.compiled_terrain.not_kept().map(|(technique, reason)| {
             format!("Map shader {technique}: drawn every frame: {reason}")
         }));
@@ -5080,6 +5129,104 @@ mod tests {
         assert!(validate_size([100, 0], 8192).is_err());
         assert!(validate_size([9000, 100], 8192).is_err());
         assert!(validate_size([2048, 1152], 8192).is_ok());
+    }
+
+    #[test]
+    fn texture_cache_reloads_deferred_icons_on_new_device_after_device_loss() {
+        let _serial = viewer_gpu::test_support::serial();
+        let instance = shader_pipeline::gpu::instance();
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .ok()
+        else {
+            return;
+        };
+        let descriptor = viewer_gpu::gpu_contract::device_descriptor(&adapter);
+        let (device_a, queue_a) = pollster::block_on(adapter.request_device(&descriptor)).unwrap();
+        let (device_b, queue_b) = pollster::block_on(adapter.request_device(&descriptor)).unwrap();
+
+        let root = std::env::temp_dir().join(format!(
+            "bp_texture_cache_reload_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let base = root.join("base");
+        let mod_dir = root.join("mod");
+        std::fs::create_dir_all(base.join("gfx")).unwrap();
+        std::fs::create_dir_all(mod_dir.join("gfx")).unwrap();
+        std::fs::write(
+            base.join("gfx/icon.tga"),
+            viewer_runtime::test_support::test_tga_rgba8(4, 4),
+        )
+        .unwrap();
+        let mut modded_tga = viewer_runtime::test_support::test_tga_rgba8(4, 4);
+        modded_tga[18..22].copy_from_slice(&[10, 20, 30, 255]);
+        std::fs::write(mod_dir.join("gfx/icon.tga"), modded_tga).unwrap();
+
+        let layers = Arc::new(
+            content_reader_layers::ResolvedLayers::from_folders(&[
+                (base.as_path(), &[][..]),
+                (mod_dir.as_path(), &[][..]),
+            ])
+            .unwrap(),
+        );
+        let decoded = content_reader_gui::gui::native::resources::stack_texture_or_recorded(
+            &layers,
+            None,
+            b"gfx/icon.tga",
+            content_reader_image::native::Decode::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let source = viewer_gpu::textures::GuiSource::deferred_stack(
+            Arc::clone(&layers),
+            None,
+            b"gfx/icon.tga".to_vec(),
+            content_reader_image::native::Decode::default(),
+            &decoded.image,
+        );
+        assert!(!source.is_held());
+        let cache = TextureCache::new(SceneSources {
+            reader: crate::scene_content::TerrainReader {
+                layers: Arc::clone(&layers),
+                terrain: "map/terrain.bmp".into(),
+                atlas_of_palette: [0; 256],
+                quality: 0,
+                decode: content_reader_image::native::Decode::default(),
+            },
+            icon_images: vec![source],
+        });
+
+        let icons_a = cache.icons(&device_a, &queue_a).unwrap();
+        assert_eq!(icons_a.page_count(), 1);
+        assert!(icons_a.warnings().is_empty());
+        assert!(cache.uploaded_icons(&device_a).is_some());
+
+        let icons_b = cache.icons(&device_b, &queue_b).unwrap();
+        assert_eq!(icons_b.page_count(), 1);
+        assert!(icons_b.warnings().is_empty());
+        assert!(cache.uploaded_icons(&device_b).is_some());
+
+        drop(icons_a);
+        assert!(cache.uploaded_icons(&device_a).is_none());
+        assert!(cache.uploaded_icons(&device_b).is_some());
+
+        drop(icons_b);
+        std::fs::remove_file(mod_dir.join("gfx/icon.tga")).unwrap();
+        std::fs::remove_file(base.join("gfx/icon.tga")).unwrap();
+        let fallback = cache.icons(&device_a, &queue_a).unwrap();
+        assert_eq!(fallback.page_count(), 1);
+        assert!(
+            fallback
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("gfx/icon.tga")),
+            "{:?}",
+            fallback.warnings()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
 }

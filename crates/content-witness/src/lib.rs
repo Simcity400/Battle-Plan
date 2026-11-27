@@ -60,12 +60,23 @@ impl Ord for Canonical {
     }
 }
 
+#[derive(Default)]
+struct RecorderState {
+    entries: BTreeMap<Canonical, Option<Weak<EncodedRecord>>>,
+    shards: BTreeMap<Vec<String>, Witness>,
+    digests: BTreeMap<Vec<String>, [u8; 32]>,
+    sealed_digests: BTreeMap<Vec<String>, [u8; 32]>,
+    sealed_entries: BTreeSet<[u8; 32]>,
+    all_digest: Option<[u8; 32]>,
+    sealed_all_digest: Option<[u8; 32]>,
+    sealed: bool,
+}
+
 #[derive(Clone)]
 pub struct Recorder {
     roster: Arc<[Layer]>,
     sources: Arc<[(LayerSource, Layer)]>,
-    entries: Arc<Mutex<BTreeMap<Canonical, Option<Weak<EncodedRecord>>>>>,
-    shards: Arc<Mutex<std::collections::BTreeMap<Vec<String>, Witness>>>,
+    state: Arc<Mutex<RecorderState>>,
 }
 impl Recorder {
     pub fn new(layers: &ResolvedLayers) -> Self {
@@ -85,8 +96,10 @@ impl Recorder {
                 .map(|(layer, witness)| (layer.source.clone(), witness.clone()))
                 .collect(),
             roster: roster.into(),
-            entries: Arc::new(Mutex::new(entries)),
-            shards: Default::default(),
+            state: Arc::new(Mutex::new(RecorderState {
+                entries,
+                ..Default::default()
+            })),
         }
     }
     pub fn for_layers(&self, layers: &ResolvedLayers) -> Self {
@@ -122,8 +135,7 @@ impl Recorder {
         Self {
             roster,
             sources: Arc::clone(&self.sources),
-            entries: Arc::clone(&self.entries),
-            shards: Arc::clone(&self.shards),
+            state: Arc::clone(&self.state),
         }
     }
     fn roster(layers: &ResolvedLayers) -> Vec<Layer> {
@@ -159,20 +171,27 @@ impl Recorder {
         });
     }
     fn record(&self, entry: Entry) {
-        let mut entries = self
-            .entries
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if state.sealed
+            && let Ok(digest) = entry_digest(&entry)
+            && state.sealed_entries.contains(&digest)
+        {
+            return;
+        }
         let entry = Canonical(entry);
-        let mut shards = self
-            .shards
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let std::collections::btree_map::Entry::Vacant(slot) = entries.entry(entry) {
-            shards.retain(|purposes, _| {
-                !purposes.iter().any(|wanted| wanted == slot.key().0.location().1)
-            });
+        let purpose = entry.0.location().1.to_owned();
+        if let std::collections::btree_map::Entry::Vacant(slot) = state.entries.entry(entry) {
             slot.insert(None);
+            state
+                .shards
+                .retain(|purposes, _| !purposes.iter().any(|wanted| wanted == &purpose));
+            state
+                .digests
+                .retain(|purposes, _| !purposes.iter().any(|wanted| wanted == &purpose));
+            state.all_digest = None;
         }
     }
     pub fn record_read(&self, read: ContentRead) {
@@ -215,35 +234,150 @@ impl Recorder {
                 .unwrap_or_default(),
         });
     }
-    pub fn snapshot_for(&self, purposes: &[&str]) -> io::Result<Witness> {
-        let mut entries = self
+    pub fn digest_for(&self, purposes: &[&str]) -> io::Result<[u8; 32]> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((_, digest)) = state.digests.iter().find(|(key, _)| {
+            key.len() == purposes.len()
+                && key.iter().map(String::as_str).eq(purposes.iter().copied())
+        }) {
+            return Ok(*digest);
+        }
+        let digest = if state.sealed {
+            let Some((_, base)) = state.sealed_digests.iter().find(|(key, _)| {
+                key.len() == purposes.len()
+                    && key.iter().map(String::as_str).eq(purposes.iter().copied())
+            }) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("content witness was sealed without binding for {purposes:?}"),
+                ));
+            };
+            if state
+                .entries
+                .keys()
+                .any(|entry| purposes.contains(&entry.0.location().1))
+            {
+                let delta = hash_entries(&state.entries, purposes, false)?;
+                fold_sealed_delta(*base, delta)
+            } else {
+                *base
+            }
+        } else {
+            hash_entries(&state.entries, purposes, false)?
+        };
+        state.digests.insert(
+            purposes.iter().map(|value| (*value).to_owned()).collect(),
+            digest,
+        );
+        Ok(digest)
+    }
+
+    pub fn digest_all(&self) -> io::Result<[u8; 32]> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(digest) = state.all_digest {
+            return Ok(digest);
+        }
+        let digest = if state.sealed {
+            let Some(base) = state.sealed_all_digest else {
+                return Err(invalid("content witness was sealed without full digest"));
+            };
+            if state.entries.is_empty() {
+                base
+            } else {
+                let delta = hash_entries(&state.entries, &[], true)?;
+                fold_sealed_delta(base, delta)
+            }
+        } else {
+            hash_entries(&state.entries, &[], true)?
+        };
+        state.all_digest = Some(digest);
+        Ok(digest)
+    }
+
+    pub fn seal(&self, purposes: &[&[&str]]) -> io::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state.sealed {
+            return Ok(());
+        }
+        let all = match state.all_digest {
+            Some(digest) => digest,
+            None => hash_entries(&state.entries, &[], true)?,
+        };
+        state.all_digest = Some(all);
+        state.sealed_all_digest = Some(all);
+        for set in purposes {
+            let digest = if let Some((_, existing)) = state.digests.iter().find(|(key, _)| {
+                key.len() == set.len() && key.iter().map(String::as_str).eq(set.iter().copied())
+            }) {
+                *existing
+            } else {
+                hash_entries(&state.entries, set, false)?
+            };
+            let key: Vec<String> = set.iter().map(|value| (*value).to_owned()).collect();
+            state.digests.insert(key.clone(), digest);
+            state.sealed_digests.insert(key, digest);
+        }
+        let mut sealed_entries = BTreeSet::new();
+        let mut scratch = Vec::new();
+        for entry in state.entries.keys() {
+            sealed_entries.insert(encode_entry_digest(&entry.0, &mut scratch)?);
+        }
+        state.sealed_entries = sealed_entries;
+        state.entries = BTreeMap::new();
+        state.shards = BTreeMap::new();
+        state.sealed = true;
+        Ok(())
+    }
+
+    pub fn retained_entry_count(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .entries
+            .len()
+    }
+
+    pub fn snapshot_for(&self, purposes: &[&str]) -> io::Result<Witness> {
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let mut shards = self
-            .shards
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some((_, witness)) = shards.iter().find(|(key, _)| {
+        if state.sealed {
+            return Err(invalid("content witness was sealed after load"));
+        }
+        if let Some((_, witness)) = state.shards.iter().find(|(key, _)| {
             key.len() == purposes.len()
                 && key.iter().map(String::as_str).eq(purposes.iter().copied())
         }) {
             return Ok(witness.clone());
         }
-        let witness = build_witness(&mut entries, purposes, false)?;
-        shards.insert(
-            purposes.iter().map(|value| value.to_string()).collect(),
-            witness.clone(),
-        );
+        let witness = build_witness(&mut state.entries, purposes, false)?;
+        let key: Vec<String> = purposes.iter().map(|value| (*value).to_owned()).collect();
+        state.digests.insert(key.clone(), witness.digest);
+        state.shards.insert(key, witness.clone());
         Ok(witness)
     }
 
     pub fn snapshot(&self) -> io::Result<Witness> {
-        let mut entries = self
-            .entries
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        build_witness(&mut entries, &[], true)
+        if state.sealed {
+            return Err(invalid("content witness was sealed after load"));
+        }
+        let witness = build_witness(&mut state.entries, &[], true)?;
+        state.all_digest = Some(witness.digest);
+        Ok(witness)
     }
 }
 
@@ -268,6 +402,55 @@ impl EncodedRecord {
         *cached = Some(Arc::downgrade(&record));
         Ok(record)
     }
+}
+
+fn encode_entry_digest(entry: &Entry, scratch: &mut Vec<u8>) -> io::Result<[u8; 32]> {
+    scratch.clear();
+    let needed = entry_bytes(entry)?;
+    if scratch.capacity() < needed {
+        scratch
+            .try_reserve(needed - scratch.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+    }
+    entry.encode(scratch)?;
+    Ok(Sha256::digest(scratch.as_slice()).into())
+}
+
+fn entry_digest(entry: &Entry) -> io::Result<[u8; 32]> {
+    let mut scratch = Vec::new();
+    encode_entry_digest(entry, &mut scratch)
+}
+
+fn fold_sealed_delta(base: [u8; 32], delta: [u8; 32]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"content-witness-sealed-delta/v1\0");
+    hash.update(base);
+    hash.update(delta);
+    hash.finalize().into()
+}
+
+fn hash_entries(
+    entries: &BTreeMap<Canonical, Option<Weak<EncodedRecord>>>,
+    purposes: &[&str],
+    all: bool,
+) -> io::Result<[u8; 32]> {
+    let selected = |entry: &Entry| {
+        all || matches!(entry, Entry::Roster { .. }) || purposes.contains(&entry.location().1)
+    };
+    let mut hash = witness_hash();
+    let mut scratch = Vec::new();
+    for entry in entries.keys().filter(|entry| selected(&entry.0)) {
+        scratch.clear();
+        let needed = entry_bytes(&entry.0)?;
+        if scratch.capacity() < needed {
+            scratch
+                .try_reserve(needed - scratch.len())
+                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        }
+        entry.0.encode(&mut scratch)?;
+        hash_entry(&mut hash, &scratch)?;
+    }
+    Ok(hash.finalize().into())
 }
 
 fn build_witness(
@@ -459,7 +642,7 @@ mod tests {
         let record = Arc::downgrade(&map.records[1]);
         drop(map);
         drop(all);
-        recorder.shards.lock().unwrap().clear();
+        recorder.state.lock().unwrap().shards.clear();
         assert!(record.upgrade().is_none());
     }
     #[test]
@@ -581,8 +764,10 @@ mod tests {
             Recorder {
                 roster: layers.into(),
                 sources: Arc::from([]),
-                entries: Arc::new(Mutex::new(entries)),
-                shards: Default::default(),
+                state: Arc::new(Mutex::new(RecorderState {
+                    entries,
+                    ..Default::default()
+                })),
             }
         }
         let a = Layer {
@@ -612,5 +797,64 @@ mod tests {
             first.snapshot_for(&["unused"]).unwrap().digest,
             reordered.snapshot_for(&["unused"]).unwrap().digest
         );
+    }
+
+    #[test]
+    fn sealing_preserves_binding_digests_and_releases_stored_entries() {
+        let recorder = Recorder {
+            roster: Arc::from([]),
+            sources: Arc::from([]),
+            state: Arc::new(Mutex::new(RecorderState {
+                entries: BTreeMap::from([(Canonical(Entry::Roster { layers: Vec::new() }), None)]),
+                ..Default::default()
+            })),
+        };
+        recorder.record(read("map", Outcome::Probe { present: true }));
+        recorder.record(read("localisation", Outcome::Probe { present: false }));
+        recorder.record_error("session-error", &io::Error::other("same error"));
+        let map_digest = recorder.snapshot_for(&["map"]).unwrap().digest;
+        let both_digest = recorder
+            .snapshot_for(&["map", "localisation"])
+            .unwrap()
+            .digest;
+        let full_digest = recorder.snapshot().unwrap().digest;
+        assert_eq!(recorder.digest_for(&["map"]).unwrap(), map_digest);
+        assert_eq!(
+            recorder.digest_for(&["map", "localisation"]).unwrap(),
+            both_digest
+        );
+        assert_eq!(recorder.digest_all().unwrap(), full_digest);
+        assert!(recorder.retained_entry_count() > 0);
+
+        recorder
+            .seal(&[&["map"], &["map", "localisation"]])
+            .unwrap();
+        assert_eq!(recorder.retained_entry_count(), 0);
+        assert_eq!(recorder.digest_for(&["map"]).unwrap(), map_digest);
+        assert_eq!(
+            recorder.digest_for(&["map", "localisation"]).unwrap(),
+            both_digest
+        );
+        assert_eq!(recorder.digest_all().unwrap(), full_digest);
+        assert!(recorder.digest_for(&["unsealed"]).is_err());
+        assert!(recorder.snapshot().is_err());
+
+        recorder.record(read("map", Outcome::Probe { present: true }));
+        recorder.record_error("session-error", &io::Error::other("same error"));
+        assert_eq!(recorder.retained_entry_count(), 0);
+        assert_eq!(recorder.digest_for(&["map"]).unwrap(), map_digest);
+        assert_eq!(
+            recorder.digest_for(&["map", "localisation"]).unwrap(),
+            both_digest
+        );
+        assert_eq!(recorder.digest_all().unwrap(), full_digest);
+
+        recorder.record(read("localisation", Outcome::Probe { present: true }));
+        assert_eq!(recorder.digest_for(&["map"]).unwrap(), map_digest);
+        assert_ne!(
+            recorder.digest_for(&["map", "localisation"]).unwrap(),
+            both_digest
+        );
+        assert_ne!(recorder.digest_all().unwrap(), full_digest);
     }
 }

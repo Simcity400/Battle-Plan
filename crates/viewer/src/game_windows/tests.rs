@@ -1464,3 +1464,89 @@ fn a_placeholder_takes_the_place_and_rectangle_of_the_art_it_stands_for() {
     );
     assert!(plan.warnings.iter().any(|warning| warning.contains("absent")), "{:?}", plan.warnings);
 }
+
+#[test]
+fn ensure_assets_retries_upload_after_missing_deferred_texture_is_restored() {
+    let (_guard, device, queue) = gpu::device();
+    let gpu = GpuContext::from_device(device, queue);
+    let fixture = SyntheticModFixture::create(SYNTHETIC_BUTTON_SHADER);
+    let mod_extra = fixture.root_dir.join("mod/gfx/ui/extra.tga");
+    fs::write(&mod_extra, make_tga_rgba8(8, 8, &[40, 80, 120, 255].repeat(64))).unwrap();
+    let layers = ResolvedLayers::from_folders(&[
+        (fixture.root_dir.join("base").as_path(), &[][..]),
+        (fixture.root_dir.join("mod").as_path(), &[][..]),
+    ])
+    .unwrap();
+    let shared = SharedInterface::load(&layers, DEFAULT_VIEWPORT, Some("english")).unwrap();
+    let mut window = CachedWindow::load(
+        &gpu,
+        &layers,
+        &shared,
+        "mod_only_panel",
+        &Assets::default(),
+        Decode::default(),
+    )
+    .unwrap();
+    let initial_pages = window.textures.page_count();
+    assert!(initial_pages >= 1);
+
+    let mod_plate = fixture.root_dir.join("mod/gfx/ui/plate.tga");
+    let base_plate = fixture.root_dir.join("base/gfx/ui/plate.tga");
+    let saved_mod = fs::read(&mod_plate).unwrap();
+    let saved_base = fs::read(&base_plate).unwrap();
+    fs::remove_file(&mod_plate).unwrap();
+    fs::remove_file(&base_plate).unwrap();
+
+    let extra = Assets {
+        textures: std::collections::BTreeSet::from([b"gfx/ui/extra.tga".to_vec()]),
+        ..Default::default()
+    };
+    let failed = window.ensure_assets(&gpu, &layers, &extra);
+    assert!(failed.is_err());
+    assert_eq!(window.textures.page_count(), initial_pages);
+
+    fs::write(&base_plate, &saved_base).unwrap();
+    fs::write(&mod_plate, &saved_mod).unwrap();
+    window.ensure_assets(&gpu, &layers, &extra).unwrap();
+    assert_eq!(window.textures.page_count(), initial_pages + 1);
+
+    let extra2_path = fixture.root_dir.join("base/gfx/ui/a_extra2.tga");
+    let locked_path = fixture.root_dir.join("base/gfx/ui/z_locked.tga");
+    fs::write(
+        &extra2_path,
+        make_tga_rgba8(12, 12, &[60, 120, 180, 255].repeat(144)),
+    )
+    .unwrap();
+    fs::write(
+        &locked_path,
+        make_tga_rgba8(12, 12, &[10, 20, 30, 255].repeat(144)),
+    )
+    .unwrap();
+    let layers = ResolvedLayers::from_folders(&[
+        (fixture.root_dir.join("base").as_path(), &[][..]),
+        (fixture.root_dir.join("mod").as_path(), &[][..]),
+    ])
+    .unwrap();
+    use std::os::windows::fs::OpenOptionsExt;
+    let locked = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&locked_path)
+        .unwrap();
+    let partial = Assets {
+        textures: std::collections::BTreeSet::from([
+            b"gfx/ui/a_extra2.tga".to_vec(),
+            b"gfx/ui/z_locked.tga".to_vec(),
+        ]),
+        ..Default::default()
+    };
+    assert!(window.ensure_assets(&gpu, &layers, &partial).is_err());
+    assert_eq!(window.textures.page_count(), initial_pages + 1);
+    drop(locked);
+    let only_extra2 = Assets {
+        textures: std::collections::BTreeSet::from([b"gfx/ui/a_extra2.tga".to_vec()]),
+        ..Default::default()
+    };
+    window.ensure_assets(&gpu, &layers, &only_extra2).unwrap();
+    assert_eq!(window.textures.page_count(), initial_pages + 2);
+}

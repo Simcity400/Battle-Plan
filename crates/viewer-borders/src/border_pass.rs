@@ -4,12 +4,10 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_gpu::textures::load_uploadable;
-
 use eframe::wgpu;
 use content_reader_layers::ResolvedLayers;
 use content_reader_map::{adjacencies::{Adjacency, IMPASSABLE}, map::{MapData, ProvinceKind}};
-use content_reader_image::{dds, native::Decode};
+use content_reader_image::native::Decode;
 use content_reader_regions::regions::StrategicRegion;
 use content_reader_states::states::StateDefinition;
 
@@ -18,7 +16,7 @@ use map_display_data::landscape::Regions;
 use viewer_gpu::{
     gpu_contract::{DEPTH_FORMAT, buffer, invalid},
     province_map::WATER_HEIGHT,
-    textures::{ColorSpace, upload},
+    textures::{ColorSpace, DeferredTexture},
 };
 
 pub const STRAIT_WIDTH: f32 = 4.0;
@@ -29,8 +27,8 @@ use super::strait_shader::StraitVertex;
 pub struct BorderAssets {
     pub border_shader: Arc<shader_pipeline::library::Effect>,
     pub strait_shader: Arc<shader_pipeline::library::Effect>,
-    pub classes: Vec<dds::Texture>,
-    pub strait: dds::Texture,
+    pub classes: Vec<DeferredTexture>,
+    pub strait: DeferredTexture,
     pub demilitarized_color: [f32; 4],
     pub faction_highlight_color: Result<[f32; 4], String>,
     pub adjacency_highlight_color: Result<[f32; 4], String>,
@@ -48,10 +46,8 @@ impl BorderAssets {
         let channel = |name: &str| -> io::Result<f32> {
             Ok(defines.number("NGraphics", &format!("BORDER_COLOR_DEMILITARIZED_{name}"))? as f32)
         };
-        let texture = |path: String, space: ColorSpace| -> io::Result<dds::Texture> {
-            layers.artwork(&path, |stack| {
-                load_uploadable(&path, &|request| stack.read_path(request), decode, space)
-            })
+        let texture = |path: String, space: ColorSpace| -> io::Result<DeferredTexture> {
+            DeferredTexture::load_artwork(layers, path, decode, space)
         };
         Ok(Self {
             border_shader: super::border_shader::load(layers, map, decode)?,
@@ -778,14 +774,13 @@ impl BorderPass {
             .zip(&assets.classes)
             .map(|(class, texture)| {
                 let label = format!("border_{}", class.texture_name());
-                Ok(upload(device, queue, &label, texture, ColorSpace::Srgb)?.view)
+                Ok(texture.upload(device, queue, &label, ColorSpace::Srgb)?.view)
             })
             .collect::<io::Result<Vec<_>>>()?;
-        let strait_texture = upload(
+        let strait_texture = assets.strait.upload(
             device,
             queue,
             "strait",
-            &assets.strait,
             ColorSpace::Linear,
         )?;
         let compiled_straits = super::strait_shader::Straits::new(

@@ -441,13 +441,17 @@ impl Graph {
     }
 
     pub(super) fn release_sources(&self) {
+        self.release_parsers(&["source bytes", "resolved bytes"]);
+    }
+
+    pub(super) fn release_parsers(&self, parsers: &[&str]) {
         let entries: Vec<_> = self
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .nodes
             .values()
-            .filter(|node| matches!(node.key.parser, "source bytes" | "resolved bytes"))
+            .filter(|node| parsers.contains(&node.key.parser))
             .filter_map(|node| {
                 node.result
                     .lock()
@@ -932,5 +936,63 @@ mod tests {
         }).unwrap();
         assert!(built);
         assert_eq!(*product.value::<u32>().unwrap(), 7);
+    }
+
+    #[test]
+    fn release_parsers_downgrades_only_matching_entries_and_keeps_confirmation() {
+        let graph = Graph::fresh();
+        let released_key = Key {
+            context: [2; 32],
+            parser: "binary asset grammar",
+            schema: 1,
+            parameters: Vec::new(),
+        };
+        let kept_key = Key {
+            context: [2; 32],
+            parser: "retained product",
+            schema: 1,
+            parameters: Vec::new(),
+        };
+        graph.acquire();
+        let (released, built) = graph
+            .product(released_key.clone(), None, |_| {
+                (Ok(42_u32), Vec::new(), diagnostics::Diagnostics::default())
+            })
+            .unwrap();
+        assert!(built);
+        let (kept, built) = graph
+            .product(kept_key.clone(), None, |_| {
+                (Ok(99_u32), Vec::new(), diagnostics::Diagnostics::default())
+            })
+            .unwrap();
+        assert!(built);
+        let held = released.value::<u32>().unwrap();
+        let kept_weak = Arc::downgrade(&kept.value::<u32>().unwrap());
+        let released_weak = Arc::downgrade(&held);
+        drop(released);
+        drop(kept);
+
+        graph.release_parsers(&["binary asset grammar"]);
+        assert!(released_weak.upgrade().is_some());
+        drop(held);
+        assert!(released_weak.upgrade().is_none());
+        assert!(kept_weak.upgrade().is_some());
+
+        let (kept_again, rebuilt_kept) = graph
+            .product(kept_key, None, |_| {
+                (Ok(0_u32), Vec::new(), diagnostics::Diagnostics::default())
+            })
+            .unwrap();
+        assert!(!rebuilt_kept);
+        assert_eq!(*kept_again.value::<u32>().unwrap(), 99);
+
+        let (rebuilt, was_rebuilt) = graph
+            .product(released_key, None, |_| {
+                (Ok(42_u32), Vec::new(), diagnostics::Diagnostics::default())
+            })
+            .unwrap();
+        assert!(was_rebuilt);
+        assert_eq!(*rebuilt.value::<u32>().unwrap(), 42);
+        graph.release();
     }
 }

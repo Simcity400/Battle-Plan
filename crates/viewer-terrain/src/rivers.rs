@@ -1,16 +1,15 @@
 use viewer_gpu::gpu_contract::Targets;
 use std::{cell::RefCell, collections::BTreeMap, io, sync::Arc};
-use viewer_gpu::textures::load_uploadable;
 
 use eframe::wgpu;
 use content_reader_layers::ResolvedLayers;
 use content_reader_defines::defines::Defines;
-use content_reader_image::{dds, native::Decode};
+use content_reader_image::native::Decode;
 
 use viewer_gpu::{
     gpu_contract::{DEPTH_FORMAT, buffer},
     province_map::{HeightField, world_from_pixel},
-    textures::{Bound, ColorSpace, upload},
+    textures::{Bound, ColorSpace},
 };
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -681,9 +680,9 @@ fn coarse_points(
 
 pub struct RiverAssets {
     pub shader: Arc<shader_pipeline::library::Effect>,
-    pub diffuse: dds::Texture,
-    pub normal: dds::Texture,
-    pub masks: dds::Texture,
+    pub diffuse: viewer_gpu::textures::DeferredTexture,
+    pub normal: viewer_gpu::textures::DeferredTexture,
+    pub masks: viewer_gpu::textures::DeferredTexture,
 }
 
 impl RiverAssets {
@@ -693,11 +692,9 @@ impl RiverAssets {
         texture_quality: u8,
         decode: Decode,
     ) -> io::Result<Self> {
-        let texture = |name: &str, space: ColorSpace| -> io::Result<dds::Texture> {
+        let texture = |name: &str, space: ColorSpace| -> io::Result<viewer_gpu::textures::DeferredTexture> {
             let path = format!("map/terrain/{name}");
-            layers.artwork(&path, |stack| {
-                load_uploadable(&path, &|request| stack.read_path(request), decode, space)
-            })
+            viewer_gpu::textures::DeferredTexture::load_artwork(layers, path, decode, space)
         };
         Ok(Self {
             shader: super::river_shader::load(layers, map, decode)?,
@@ -751,25 +748,22 @@ impl RiverPass {
             format,
             runs: Vec::new(),
             coarse_runs: Vec::new(),
-            diffuse: upload(
+            diffuse: assets.diffuse.upload(
                 device,
                 queue,
                 "RiverSurface diffuse",
-                &assets.diffuse,
                 ColorSpace::Srgb,
             )?,
-            normal: upload(
+            normal: assets.normal.upload(
                 device,
                 queue,
                 "RiverSurface normal",
-                &assets.normal,
                 ColorSpace::Linear,
             )?,
-            masks: upload(
+            masks: assets.masks.upload(
                 device,
                 queue,
                 "RiverSurface_masks",
-                &assets.masks,
                 ColorSpace::Linear,
             )?,
             vertices: None,

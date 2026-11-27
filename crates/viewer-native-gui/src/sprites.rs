@@ -21,7 +21,10 @@ use content_reader_image::{dds, native::Decode};
 use viewer_gpu::{
     icon_tracks::{IconAnchor, Track},
     gpu_contract::{Targets, sampler_entry, texture_entry},
-    textures::{Bound, ColorSpace, GuiTexture, upload, upload_gui},
+    textures::{
+        Bound, ColorSpace, GuiSource, GuiTexture, upload, upload_gui, upload_gui_sources,
+        upload_gui_sources_tolerant,
+    },
 };
 use super::{free_icons::Present, lazy_icons::{DYNAMIC_BASE, LazyTextures}, text};
 
@@ -86,21 +89,58 @@ pub fn gui_refusal(draw: &super::native_shader::draw::Quad) -> String {
 }
 
 pub fn load_sheet(
-    layers: &ResolvedLayers,
+    layers: &Arc<ResolvedLayers>,
     sprites: &gfx::SpriteSet,
     name: &str,
     decode: Decode,
-    images: &mut Vec<dds::Texture>,
+    images: &mut Vec<GuiSource>,
 ) -> io::Result<SpriteSheet> {
-    let (texture, frames, size) = decode_sheet(layers, sprites, name, decode)?;
+    let (source, frames, size) = load_deferred_sheet(layers, sprites, name, decode)?;
     let id = images.len();
-    images.push(texture);
+    images.push(source);
     Ok(SpriteSheet {
         name: name.to_owned(),
         texture: id,
         frames,
         size,
     })
+}
+
+pub fn load_deferred_sheet(
+    layers: &Arc<ResolvedLayers>,
+    sprites: &gfx::SpriteSet,
+    name: &str,
+    decode: Decode,
+) -> io::Result<(GuiSource, u32, [u32; 2])> {
+    let sprite = sprites.lookup(name).map_err(invalid)?;
+    let path = sprite
+        .texture
+        .as_deref()
+        .ok_or_else(|| invalid(format!("sprite {name} names no texturefile")))?;
+    let recorded = layers.without_overlays().map(Arc::new);
+    let texture = resources::stack_texture_or_recorded_transient(
+        layers,
+        recorded.as_deref(),
+        path.as_bytes(),
+        decode,
+    )?
+    .map_err(|why| invalid(format!("sprite {name}: {why}")))?;
+    let texture = texture.image;
+    if sprite.frames == 0 || texture.width < sprite.frames {
+        return Err(invalid(format!(
+            "sprite {name} declares {} frames for a {} texel wide strip",
+            sprite.frames, texture.width
+        )));
+    }
+    let size = [texture.width, texture.height];
+    let source = GuiSource::deferred_stack(
+        Arc::clone(layers),
+        recorded,
+        path.as_bytes().to_vec(),
+        decode,
+        &texture,
+    );
+    Ok((source, sprite.frames, size))
 }
 
 pub fn decode_sheet(
@@ -644,11 +684,16 @@ pub struct IconTextures {
     bound: Vec<GuiTexture>,
     unpack: Arc<wgpu::ComputePipeline>,
     screen: wgpu::Sampler,
+    warnings: Vec<String>,
 }
 
 impl IconTextures {
     pub fn views(&self) -> Vec<shader_pipeline::gpu::TextureBinding> {
         self.bound.iter().map(GuiTexture::binding).collect()
+    }
+
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     pub fn new(
@@ -658,6 +703,36 @@ impl IconTextures {
     ) -> io::Result<Self> {
         let unpack = viewer_gpu::textures::unpack_pipeline(device);
         let bound = upload_gui(device, queue, images, &unpack)?;
+        Ok(Self::from_bound(device, bound, unpack, Vec::new()))
+    }
+
+    pub fn from_sources(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        images: &[GuiSource],
+    ) -> io::Result<Self> {
+        let unpack = viewer_gpu::textures::unpack_pipeline(device);
+        let bound = upload_gui_sources(device, queue, images, &unpack)?;
+        Ok(Self::from_bound(device, bound, unpack, Vec::new()))
+    }
+
+    pub fn from_sources_tolerant(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        images: &[GuiSource],
+    ) -> io::Result<Self> {
+        let unpack = viewer_gpu::textures::unpack_pipeline(device);
+        let mut warnings = Vec::new();
+        let bound = upload_gui_sources_tolerant(device, queue, images, &unpack, &mut warnings)?;
+        Ok(Self::from_bound(device, bound, unpack, warnings))
+    }
+
+    fn from_bound(
+        device: &wgpu::Device,
+        bound: Vec<GuiTexture>,
+        unpack: Arc<wgpu::ComputePipeline>,
+        warnings: Vec<String>,
+    ) -> Self {
         let clamp = |label, mip, max_lod| {
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some(label),
@@ -672,11 +747,12 @@ impl IconTextures {
                 ..Default::default()
             })
         };
-        Ok(Self {
+        Self {
             bound,
             unpack,
             screen: clamp("icon screen sampler", wgpu::MipmapFilterMode::Nearest, 0.0),
-        })
+            warnings,
+        }
     }
 
     pub fn bind_all(

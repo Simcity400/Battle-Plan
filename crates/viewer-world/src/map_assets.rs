@@ -9,7 +9,11 @@ use content_reader_image::IndexedImage;
 use viewer_runtime::errors::invalid;
 use viewer_gpu::{
     camera::MapSize,
-    textures::{atlas_lookup, expect_size, load_image, load_map_texture, load_uploadable, sampled_heights, terrain_flag_mask, terrain_id_map, ColorSpace, MapTexture},
+    textures::{
+        atlas_lookup, expect_size, load_image_transient, load_map_texture_transient,
+        load_uploadable_transient, sampled_heights, terrain_flag_mask, terrain_id_map, ColorSpace,
+        MapTexture,
+    },
 };
 use viewer_scene_base::post::PostAssets;
 
@@ -81,7 +85,6 @@ pub fn load_with_products(
         quality,
         decode,
     };
-    let terrain_sources = read_terrain_sources(&reader, &terrain, &heightmap, warnings)?;
     let (arrow_shader, movement_arrows, order_label_shader) =
         layers.artwork("map arrows", |stack| {
             Ok((
@@ -102,10 +105,10 @@ pub fn load_with_products(
             ))
         })?;
     let sources = SceneSources {
-        terrain: terrain_sources,
         reader,
         icon_images: Vec::new(),
     };
+    let perm_snow = map_snow::permanent_mask(definitions, &terrain).into_boxed_slice();
     let assets = MapAssets {
         map,
         mesh_limit: graphics_define(layers, "mesh budget", art_defines, defines, |defines| {
@@ -124,20 +127,24 @@ pub fn load_with_products(
             PostAssets::load(stack, defines_for(stack), map, decode)
         })?,
         shadow_blur: shader("shadow blur shader", viewer_scene_base::shadow_blur::load)?,
-        perm_snow: map_snow::permanent_mask(definitions, &terrain).into(),
         spawn_city: Arc::new(terrain_flag_mask(definitions, &terrain, |kind| {
             kind.spawn_city
         })),
         sight: Default::default(),
     };
-    Ok((assets, sources, LoadMasks { rivers, trees }))
+    Ok((assets, sources, LoadMasks { rivers, trees, perm_snow }))
 }
 
 impl TerrainReader {
-    pub fn read(&self, heightmap: &IndexedImage) -> io::Result<TerrainSources> {
-        let terrain = content_reader_map::terrain_images::read_indexed_image(&self.layers, &self.terrain)?;
+    pub fn read(&self, heightmap: &IndexedImage) -> io::Result<(TerrainSources, Vec<String>)> {
+        let terrain = content_reader_map::terrain_images::read_indexed_image_transient(
+            &self.layers,
+            &self.terrain,
+        )?;
         expect_size(&self.terrain, terrain.width, terrain.height, [heightmap.width, heightmap.height])?;
-        read_terrain_sources(self, &terrain, heightmap, &mut Vec::new())
+        let mut warnings = Vec::new();
+        let sources = read_terrain_sources(self, &terrain, heightmap, &mut warnings)?;
+        Ok((sources, warnings))
     }
 }
 
@@ -155,14 +162,18 @@ fn read_terrain_sources(
         let path = format!("map/terrain/{name}");
         layers.artwork(&path, |stack| {
             if stack.shows_visual_mods() {
-                load_uploadable(&path, &|request| stack.read_path(request), decode, space).map(
-                    |texture| MapTexture {
-                        texture,
-                        unbound: false,
-                    },
+                load_uploadable_transient(
+                    &path,
+                    &|request| stack.read_path(request),
+                    decode,
+                    space,
                 )
+                .map(|texture| MapTexture {
+                    texture,
+                    unbound: false,
+                })
             } else {
-                load_map_texture(
+                load_map_texture_transient(
                     &path,
                     &|request| stack.read_path(request),
                     decode,
@@ -173,7 +184,7 @@ fn read_terrain_sources(
         })
     };
     let padded_heights =
-        sampled_heights(&load_image("map/heightmap.bmp", &read, decode)?, heightmap);
+        sampled_heights(&load_image_transient("map/heightmap.bmp", &read, decode)?, heightmap);
     let world_normal = world_normal(layers, decode)?;
     let terrain_ids = terrain_id_map(
         terrain.width,
@@ -232,7 +243,7 @@ fn world_normal(
     decode: Decode,
 ) -> io::Result<content_reader_image::SharedRgba8Image> {
     layers.artwork("map/world_normal.bmp", |stack| {
-        content_reader_map::terrain_images::read_world_normal(stack, decode)
+        content_reader_map::terrain_images::read_world_normal_transient(stack, decode)
     })
 }
 

@@ -104,7 +104,17 @@ impl ContentReads {
         self.recorder.record_error("session-error", error);
     }
     pub fn binding(&self, purposes: &[&str]) -> io::Result<[u8; 32]> {
-        Ok(self.recorder.snapshot_for(purposes)?.digest)
+        self.recorder.digest_for(purposes)
+    }
+    pub fn digest(&self) -> io::Result<[u8; 32]> {
+        self.recorder.digest_all()
+    }
+    pub fn seal(&self, purposes: &[&[&str]]) -> io::Result<()> {
+        self.recorder.seal(purposes)
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn retained_entry_count(&self) -> usize {
+        self.recorder.retained_entry_count()
     }
     pub fn dependent_binding(&self, dependent: &str, purposes: &[&str]) -> io::Result<[u8; 32]> {
         let content = self.binding(purposes)?;

@@ -8,7 +8,7 @@ use viewer_gpu::{
     gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, Targets, buffer},
     ribbon_content::{ArrowType, Mode, OrderAssets, OrderDraw, OrderField},
     ribbon_native as native,
-    textures::{ColorSpace, upload},
+    textures::ColorSpace,
 };
 
 #[repr(C)]
@@ -208,18 +208,16 @@ impl OrderPass {
             let Some(arrow) = assets.types.get(name) else {
                 continue;
             };
-            let mask = upload(
+            let mask = page.mask.upload(
                 device,
                 queue,
                 &format!("TexMask ({name})"),
-                &page.mask,
                 ColorSpace::Linear,
             )?;
-            let pattern = upload(
+            let pattern = page.pattern.upload(
                 device,
                 queue,
                 &format!("TexPattern ({name})"),
-                &page.pattern,
                 ColorSpace::Srgb,
             )?;
             let mut compiled = BTreeMap::new();

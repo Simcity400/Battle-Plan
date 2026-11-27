@@ -2797,6 +2797,10 @@ impl ResolvedLayers {
         Loading::new(Arc::clone(&self.generation))
     }
 
+    pub fn release_parsers(&self, parsers: &[&str]) {
+        self.generation.release_parsers(parsers);
+    }
+
     fn watch_directory(&self, layer: &ResolvedLayer, relative: &[u8]) -> io::Result<()> {
         if let LayerSource::Folder(root) = &layer.source {
             if let Ok(relative) = std::str::from_utf8(relative) {

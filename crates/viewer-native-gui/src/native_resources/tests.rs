@@ -50,7 +50,7 @@ fn loaded(
     layers: &ResolvedLayers,
     language: &[u8],
     assets: &Assets,
-) -> (GuiResources, Vec<dds::Texture>) {
+) -> (GuiResources, Vec<viewer_gpu::textures::GuiSource>) {
     let mut resources = GuiResources::new(
         Registry::load(layers).unwrap(),
         language,
@@ -320,10 +320,12 @@ fn a_sixteen_bit_texture_is_loaded_at_full_precision() {
     };
     let (resources, images) = loaded(&layers, b"l_english", &assets);
     assert!(resources.sprite(b"GFX_565").unwrap().refusals.is_empty());
-    let image = images
+    let source = images
         .iter()
-        .find(|image| image.format == dds::TextureFormat::B5G6R5)
+        .find(|image| image.meta().format == dds::TextureFormat::B5G6R5)
         .unwrap();
+    assert!(!source.is_held());
+    let image = source.decode().unwrap();
     assert_eq!(
         image
             .format

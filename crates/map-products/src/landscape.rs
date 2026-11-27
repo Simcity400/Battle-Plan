@@ -20,6 +20,36 @@ use viewer_models::ModelField;
 use viewer_map_text::name_pass::{self, NameAreas, NameContent, PlacedAreas, PlacementInputs};
 use viewer_rail::railways::{self, Bridges, RailGeometry, RailNetwork};
 
+pub(crate) const BINDING_LOCALISATION: &[&str] = &["localisation"];
+pub(crate) const BINDING_MAP: &[&str] = &["map"];
+pub(crate) const BINDING_MAP_LOCALISATION: &[&str] = &["map", "localisation"];
+pub(crate) const BINDING_MAP_HEIGHTMAP: &[&str] = &["map", "heightmap"];
+pub(crate) const BINDING_TERRITORY: &[&str] = &["map", "session-error"];
+pub(crate) const BINDING_MODES: &[&str] = &[
+    "map",
+    "defines",
+    "trigger",
+    "display/modes",
+    "session-error",
+];
+pub(crate) const BINDING_BUILDINGS: &[&str] = &[
+    "map",
+    "defines",
+    "trigger",
+    "heightmap",
+    "display/buildings",
+    "session-error",
+];
+pub(crate) const BINDING_PURPOSES: &[&[&str]] = &[
+    BINDING_LOCALISATION,
+    BINDING_MAP,
+    BINDING_MAP_LOCALISATION,
+    BINDING_MAP_HEIGHTMAP,
+    BINDING_TERRITORY,
+    BINDING_MODES,
+    BINDING_BUILDINGS,
+];
+
 #[derive(Default)]
 pub(crate) struct Projections {
     countries: crate::country_index::CountryIndex,
@@ -137,7 +167,7 @@ impl ProductHour<'_> {
     pub fn labels(&self, ours: u32) -> io::Result<Arc<map_display_data::landscape::Labels>> {
         self.content.landscape.labels.project_fields(
             self.frame,
-            (ours, self.content.reads.binding(&["localisation"])?),
+            (ours, self.content.reads.binding(BINDING_LOCALISATION)?),
             Clock::Relations,
             label_fields,
             || {
@@ -150,7 +180,7 @@ impl ProductHour<'_> {
                     viewer_foundation::allegiance::war_table(self.frame, &links, ours)?;
                 let facts = self.content.landscape.label_facts.project_fields(
                     self.frame,
-                    self.content.reads.binding(&["localisation"])?,
+                    self.content.reads.binding(BINDING_LOCALISATION)?,
                     Clock::Stable,
                     label_fields,
                     || labels::LabelTables::facts(self.frame, &self.content.localisation),
@@ -190,13 +220,7 @@ impl ProductHour<'_> {
                 ours,
                 self.content.reads.dependent_binding(
                     "modes",
-                    &[
-                        "map",
-                        "defines",
-                        "trigger",
-                        "display/modes",
-                        "session-error",
-                    ],
+                    BINDING_MODES,
                 )?,
             ),
             clock,
@@ -361,7 +385,7 @@ impl ProductHour<'_> {
         let binding = self
             .content
             .reads
-            .dependent_binding("territory", &["map", "session-error"])?;
+            .dependent_binding("territory", BINDING_TERRITORY)?;
         self.content.landscape.territory.project_fields(
             self.frame,
             binding,
@@ -467,14 +491,7 @@ impl ProductHour<'_> {
         let vision = self.vision(choice)?;
         let binding = self.content.reads.dependent_binding(
             "buildings",
-            &[
-                "map",
-                "defines",
-                "trigger",
-                "heightmap",
-                "display/buildings",
-                "session-error",
-            ],
+            BINDING_BUILDINGS,
         )?;
         let key = BuildingKey {
             assets: assets.projection_id(),
@@ -624,9 +641,9 @@ impl ProductHour<'_> {
             modes: uses(map_mode::NameLayer::Factions).then(|| inputs.content.projection_id()),
             layers: (layers.far as u8, layers.near as u8),
             witness: self.content.reads.binding(if names_localised {
-                &["map", "localisation"]
+                BINDING_MAP_LOCALISATION
             } else {
-                &["map"]
+                BINDING_MAP
             })?,
             localisation: names_localised.then(|| Operand::new(&inputs.names.localisation)),
             regions: uses(map_mode::NameLayer::StrategicRegions)
@@ -647,7 +664,7 @@ impl ProductHour<'_> {
             placement: inputs.placement.content.projection_id(),
             font: inputs.placement.font.projection_id(),
             heightmap: Operand::new(inputs.heightmap),
-            witness: self.content.reads.binding(&["map", "heightmap"])?,
+            witness: self.content.reads.binding(BINDING_MAP_HEIGHTMAP)?,
         };
         let source = &self.frame.tables[replay_data::rows::TableId::Campaign.index()];
         let areas = self.content.landscape.name_areas.project_equal_fields(

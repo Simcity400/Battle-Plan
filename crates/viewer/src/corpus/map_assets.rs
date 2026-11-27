@@ -67,12 +67,14 @@ pub(super) fn read(
                 quality,
                 decode,
             )
-            .map(|(assets, _, masks)| {
+            .and_then(|(assets, sources, masks)| {
+                let (_, terrain_warnings) = sources.reader.read(&assets.heightmap)?;
+                warnings.extend(terrain_warnings);
                 let summary = (assets.map.width, assets.map.height, assets.post.luts.len());
                 if quality == 0 {
                     loaded = Some((assets, masks));
                 }
-                summary
+                Ok(summary)
             })
         });
         if let Some((assets, masks)) = loaded {

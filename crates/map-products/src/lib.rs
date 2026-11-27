@@ -77,8 +77,7 @@ impl ProductContent {
     pub fn from_inputs(reads: ContentReads, inputs: ProductInputs) -> Self {
         let intel_cells = textures::IntelCellsCache::prewarm(Arc::clone(&inputs.map));
         let display_binding = reads
-            .witness()
-            .map(|witness| witness.digest)
+            .digest()
             .map_err(|error| error.to_string());
         Self {
             reads,
@@ -92,6 +91,10 @@ impl ProductContent {
             snow_loader: None,
             landscape: Default::default(),
         }
+    }
+
+    pub fn seal_bindings(&self) -> io::Result<()> {
+        self.reads.seal(landscape::BINDING_PURPOSES)
     }
 
     pub fn display_binding(&self) -> io::Result<[u8; 32]> {

@@ -234,6 +234,9 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
         )
         .unwrap()
         .0;
+    content.seal_bindings().unwrap();
+    assert_eq!(content.reads.retained_entry_count(), 0);
+    assert_eq!(before, dependencies());
     content.reads.session_error(&std::io::Error::other(
         "late unrelated optional content refusal",
     ));
@@ -295,6 +298,24 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
         error.to_string(),
         "building bank was replaced without rebinding its content"
     );
+}
+
+#[test]
+fn seal_bindings_preserves_every_landscape_digest_and_drops_entries() {
+    let stack = fixture("products_seal_bindings");
+    let content = content(&stack);
+    assert!(content.reads.retained_entry_count() > 0);
+    let before: Vec<[u8; 32]> = crate::landscape::BINDING_PURPOSES
+        .iter()
+        .map(|purposes| content.reads.binding(purposes).unwrap())
+        .collect();
+    let display = content.display_binding().unwrap();
+    content.seal_bindings().unwrap();
+    assert_eq!(content.reads.retained_entry_count(), 0);
+    for (purposes, expected) in crate::landscape::BINDING_PURPOSES.iter().zip(before) {
+        assert_eq!(content.reads.binding(purposes).unwrap(), expected);
+    }
+    assert_eq!(content.display_binding().unwrap(), display);
 }
 
 #[test]

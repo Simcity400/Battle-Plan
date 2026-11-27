@@ -646,6 +646,7 @@ impl ModelLibrary {
                 library.merge(shard);
             }
         });
+        layers.release_parsers(&["binary asset grammar"]);
         if let Some(recorded) = layers.without_overlays()
             && let Some(roster) = layers.recorded_descriptor_roster()?
         {

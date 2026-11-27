@@ -45,8 +45,22 @@ pub fn read_indexed_image(layers: &ResolvedLayers, path: &str) -> io::Result<Ind
         .map(|image| image.as_ref().clone())
 }
 
+pub fn read_indexed_image_transient(
+    layers: &ResolvedLayers,
+    path: &str,
+) -> io::Result<IndexedImage> {
+    bmp::decode_indexed(&layers.read(path)?).map_err(|error| invalid(format!("{path}: {error}")))
+}
+
 pub fn read_world_normal(layers: &ResolvedLayers, decode: Decode) -> io::Result<Rgba8Image> {
     world_normal(&|path| layers.read_uncovered_path(path), decode)
+}
+
+pub fn read_world_normal_transient(
+    layers: &ResolvedLayers,
+    decode: Decode,
+) -> io::Result<Rgba8Image> {
+    world_normal_with(&|path| layers.read_uncovered_path(path), decode, false)
 }
 
 fn world_normal<
@@ -55,8 +69,22 @@ fn world_normal<
     read: &dyn Fn(&[u8]) -> io::Result<B>,
     decode: Decode,
 ) -> io::Result<Rgba8Image> {
-    let texture = textures::texture(b"map/world_normal.bmp", read, decode)?
-        .map_err(|why| invalid(format!("map/world_normal.bmp {why}")))?;
+    world_normal_with(read, decode, true)
+}
+
+fn world_normal_with<
+    B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>,
+>(
+    read: &dyn Fn(&[u8]) -> io::Result<B>,
+    decode: Decode,
+    cache: bool,
+) -> io::Result<Rgba8Image> {
+    let texture = if cache {
+        textures::texture(b"map/world_normal.bmp", read, decode)?
+    } else {
+        textures::texture_transient(b"map/world_normal.bmp", read, decode)?
+    }
+    .map_err(|why| invalid(format!("map/world_normal.bmp {why}")))?;
     match texture.image {
         Texture {
             format: TextureFormat::Rgba8,
@@ -185,5 +213,48 @@ mod tests {
                 .to_string()
                 .contains("does not load")
         );
+    }
+
+    #[test]
+    fn transient_indexed_image_does_not_retain_palette_bitmap_product() {
+        let root = std::env::temp_dir().join(format!(
+            "bp_transient_indexed_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("map")).unwrap();
+        let mut bmp = b"BM".to_vec();
+        let offset = 14_u32 + 40 + 4;
+        bmp.extend((offset + 4).to_le_bytes());
+        bmp.extend([0; 4]);
+        bmp.extend(offset.to_le_bytes());
+        bmp.extend(40_u32.to_le_bytes());
+        bmp.extend(1_i32.to_le_bytes());
+        bmp.extend(1_i32.to_le_bytes());
+        bmp.extend(1_u16.to_le_bytes());
+        bmp.extend(8_u16.to_le_bytes());
+        bmp.extend(0_u32.to_le_bytes());
+        bmp.extend(4_u32.to_le_bytes());
+        bmp.extend([0; 8]);
+        bmp.extend(1_u32.to_le_bytes());
+        bmp.extend(0_u32.to_le_bytes());
+        bmp.extend([10, 20, 30, 0]);
+        bmp.extend([0, 0, 0, 0]);
+        std::fs::write(root.join("map/terrain.bmp"), &bmp).unwrap();
+
+        let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
+        let _generation = content_reader_layers::content::Generation::enter();
+        let _loading = layers.loading();
+        let image = read_indexed_image_transient(&layers, "map/terrain.bmp").unwrap();
+        assert_eq!((image.width, image.height), (1, 1));
+        assert!(
+            !layers
+                .content_counts()
+                .products
+                .iter()
+                .any(|product| product.parser == "palette bitmap decoding")
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

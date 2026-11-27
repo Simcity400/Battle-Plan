@@ -1167,11 +1167,10 @@ fn carried<'a>(layers: &'a ResolvedLayers, language: &'a str) -> &'a str {
     }
 }
 
-fn read_with(
+fn localisation_files(
     layers: &ResolvedLayers,
     language: &str,
-    parse: &(dyn Fn(&[u8]) -> ParsedFile + Sync),
-) -> io::Result<Localisation> {
+) -> io::Result<Vec<(bool, usize, Vec<u8>)>> {
     if language.is_empty()
         || !language
             .bytes()
@@ -1188,6 +1187,36 @@ fn read_with(
         files.push(load_order(path, layer));
     }
     files.sort();
+    Ok(files)
+}
+
+pub fn observe_files(layers: &ResolvedLayers, language: &str) -> io::Result<()> {
+    let language = carried(layers, language);
+    let files = localisation_files(layers, language)?;
+    let read = content_reader_layers::parallel::map(&files, |(_, _, path)| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = layers.read_path(&normalize_path(path)?)?;
+            io::Result::Ok(())
+        }))
+        .unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Localisation reader worker failed",
+            ))
+        })
+    });
+    for result in read {
+        result?;
+    }
+    Ok(())
+}
+
+fn read_with(
+    layers: &ResolvedLayers,
+    language: &str,
+    parse: &(dyn Fn(&[u8]) -> ParsedFile + Sync),
+) -> io::Result<Localisation> {
+    let files = localisation_files(layers, language)?;
     let mut localisation = Localisation {
         language: language.to_owned(),
         ..Localisation::default()

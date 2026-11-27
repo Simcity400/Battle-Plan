@@ -10,7 +10,7 @@ use super::{
     borders::{BorderClass, BorderMeshes, Vertex},
 };
 use map_display_data::landscape::Regions;
-use viewer_gpu::{gpu_contract::{DEPTH_FORMAT, buffer, invalid}, textures::{ColorSpace, upload}};
+use viewer_gpu::{gpu_contract::{DEPTH_FORMAT, buffer, invalid}, textures::ColorSpace};
 use viewer_foundation::tables::rows;
 
 pub const TRANSPARENCY: f32 = 1.0;
@@ -299,7 +299,7 @@ impl DemilitarizedPass {
             .zip(&assets.classes)
             .map(|(class, texture)| {
                 let label = format!("demilitarized border_{}", class.texture_name());
-                Ok(upload(device, queue, &label, texture, ColorSpace::Srgb)?.view)
+                Ok(texture.upload(device, queue, &label, ColorSpace::Srgb)?.view)
             })
             .collect::<io::Result<Vec<_>>>()?;
         Ok(Self {
