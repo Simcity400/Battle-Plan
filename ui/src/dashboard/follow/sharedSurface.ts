@@ -401,6 +401,7 @@ export class SharedSurfaceHost {
       if (this.widgets.get(widget) === entry) {
         this.widgets.delete(widget);
         delete frameEl.dataset.sharedSurface;
+        delete frameEl.dataset.sharedLane;
         this.scheduleSync();
       }
     };
@@ -410,7 +411,10 @@ export class SharedSurfaceHost {
     const entry = this.widgets.get(widget);
     if (!entry || entry.active === active) return;
     entry.active = active;
-    if (!active) delete entry.frameEl.dataset.sharedSurface;
+    if (!active) {
+      delete entry.frameEl.dataset.sharedSurface;
+      delete entry.frameEl.dataset.sharedLane;
+    }
     this.scheduleSync();
   }
 
@@ -446,11 +450,13 @@ export class SharedSurfaceHost {
       const dragging = Boolean(entry.frameEl.closest('.react-draggable-dragging, .resizing'));
       if (!activeEnabled || dragging) {
         delete entry.frameEl.dataset.sharedSurface;
+        delete entry.frameEl.dataset.sharedLane;
         continue;
       }
       const laneState = this.ensureLane(entry.lane);
       if (!laneState?.transferred) {
         delete entry.frameEl.dataset.sharedSurface;
+        delete entry.frameEl.dataset.sharedLane;
         continue;
       }
       const r = entry.bodyEl.getBoundingClientRect();
@@ -470,8 +476,13 @@ export class SharedSurfaceHost {
       const h = snapRound(contentH, dpr);
       const inView = w > 0 && h > 0 && contentLeft + contentW > scrollRect.left && contentLeft < scrollRect.right && contentTop + contentH > scrollRect.top && contentTop < scrollRect.bottom;
       const visible = inView && entry.active;
-      if (visible) entry.frameEl.dataset.sharedSurface = '1';
-      else delete entry.frameEl.dataset.sharedSurface;
+      if (visible) {
+        entry.frameEl.dataset.sharedSurface = '1';
+        entry.frameEl.dataset.sharedLane = String(entry.lane);
+      } else {
+        delete entry.frameEl.dataset.sharedSurface;
+        delete entry.frameEl.dataset.sharedLane;
+      }
       inputs.push({ widget: entry.widget, lane: entry.lane, rect: { x, y, w, h }, inView, active: visible });
     }
 
@@ -552,6 +563,7 @@ export class SharedSurfaceHost {
     }
     for (const entry of this.widgets.values()) {
       delete entry.frameEl.dataset.sharedSurface;
+      delete entry.frameEl.dataset.sharedLane;
     }
     this.widgets.clear();
     this.lanes.clear();

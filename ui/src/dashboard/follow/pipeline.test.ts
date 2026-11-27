@@ -1364,8 +1364,8 @@ test('#1071: lanesHost installs an error handler at worker construction, isolate
       rawWorkers.push(raw);
       return raw as unknown as Worker;
     });
-    assert.equal(hostPartial.lanes.length, 2);
-    assert.equal(typeof rawWorkers[0]!.onerror, 'function', 'parent error handler is installed immediately at worker construction');
+    assert.equal(hostPartial.laneCapacity, 2);
+    assert.equal(rawWorkers.length, 0, 'lanesHost does not construct workers eagerly before a widget mounts');
     const clock = new PlaybackController();
     clock.setBounds({ firstHour: 0, lastHour: 100 });
     clock.seek(10);
@@ -1373,6 +1373,7 @@ test('#1071: lanesHost installs an error handler at worker construction, isolate
     const pPartial = new Pipeline(clock, client, hostPartial);
     try {
       const wA = pPartial.acquire('a|0', { offset: 0, pin: null });
+      assert.equal(typeof rawWorkers[0]!.onerror, 'function', 'parent error handler is installed immediately at worker construction');
       const wB = pPartial.acquire('b|0', { offset: 0, pin: null });
       assert.deepEqual([pPartial.lane(wA), pPartial.lane(wB)], [1, 1], 'new placements exclude the lane that threw at construction');
       assert.equal(pPartial.view(wA)?.mode, 'reading');
@@ -1400,20 +1401,10 @@ test('#1071: lanesHost installs an error handler at worker construction, isolate
       },
     } as never;
     const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as never;
-    const earlyRaw: { onerror: ((ev: ErrorEvent) => void) | null; terminated: boolean }[] = [];
+    let failIdx = 0;
     const hostPreError = lanesHost(trackingClient, () => {
-      const raw = {
-        onmessage: null,
-        onerror: null as ((ev: ErrorEvent) => void) | null,
-        terminated: false,
-        postMessage(m: { type: string; port?: MessagePort }) { if (m.type === 'init') m.port?.close(); },
-        terminate() { this.terminated = true; },
-      };
-      earlyRaw.push(raw);
-      return raw as unknown as Worker;
+      throw new Error(`load error ${failIdx++}`);
     });
-    earlyRaw[0]!.onerror!({ message: 'load error 0' } as ErrorEvent);
-    earlyRaw[1]!.onerror!({ message: 'load error 1' } as ErrorEvent);
     const pAll = pipelineFor(clock, trackingClient, () => hostPreError);
     try {
       assert.equal(pAll.prepared(), true, 'all-dead pipeline does not hang readiness');

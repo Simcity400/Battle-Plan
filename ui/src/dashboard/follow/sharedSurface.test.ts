@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { snapCanvasText } from '../../draw/kit.ts';
 import { Lane, type Bitmapped, type LaneView } from '../../draw/lane.ts';
 import type { LaneSlotsPayload } from '../../draw/laneMessages.ts';
 import type { FamilyTheme } from '../../families/contract.ts';
 import { createLaneView, type LaneBinding, type LaneFamily } from '../../families/laneRuntime.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { PAGES } from '../pages.ts';
+import { PlaybackController } from '../playback.ts';
 import { Page, type FrameRequest } from './page.ts';
+import { Pipeline } from './pipeline.ts';
 import { computeSharedLaneGeometry, computeSpatialLaneMap, isImageBackdropActive, SharedSurfaceHost } from './sharedSurface.ts';
-import { laneCount } from './useFollowed.ts';
+import { laneCount, lanesHost } from './useFollowed.ts';
 
 function fakeContext2D() {
   const ops: string[] = [];
@@ -252,7 +255,9 @@ test('image backdrop disables shared surface host and restores it when cleared',
     assert.equal(host.enabled, true);
     assert.equal(notifications, 2);
     assert.equal(frameEl.dataset.sharedSurface, '1');
+    assert.equal(frameEl.dataset.sharedLane, '0');
     host.dispose();
+    assert.equal(frameEl.dataset.sharedLane, undefined);
   } finally {
     Object.defineProperty(globalThis, 'document', { value: origDoc, configurable: true });
     Object.defineProperty(globalThis, 'HTMLCanvasElement', { value: origHtmlCanvas, configurable: true });
@@ -1215,5 +1220,158 @@ test('direct-surface rules: lane skips painting a known uncovered replacement wh
     assert.equal(h.surface.pixelAt(80, 60), 'pixel:h1:installed');
   } finally {
     Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+test('direct-surface rules: dirty slot without kept picture stays blank while loading, paints on first entry, and counts restore failures', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number; height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) { this.width = w; this.height = h; this.ctx = fakeContext2D().ctx; }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+  try {
+    let failRestore = false;
+    const h = makeDirectHarness('test-rule-no-kept-and-restore-failure');
+    h.lane.bind(1, { generation: 1, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 10, c: 20 } });
+    h.page.publish(1, { playing: false, seek: 1, speed: 0, step: 0 });
+    await h.drainLane();
+    assert.equal(h.page.view(1).mode, 'reading');
+    assert.equal(h.surface.pixelAt(80, 60), TEST_THEME.surface);
+    assert.equal(h.paints(), 0);
+
+    h.page.publish(10, { playing: false, seek: 1, speed: 0, step: 9 });
+    await h.drainLane();
+    h.deliverToPage();
+    h.page.frame();
+    await h.drainLane();
+    assert.equal(h.page.view(1).mode, 'picture');
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h10:installed');
+
+    const failKind = 'test-rule-restore-failure-counter';
+    registerFamilyProjection({ family: 'bars', kind: failKind, project(v) { return { hour: v.hour }; } }, 'main');
+    const failView: LaneView = createLaneView({
+      family: 'bars',
+      boundary: (_m, hour) => hour + 1,
+      redraw: () => Infinity,
+      status: () => 'picture',
+      view: [],
+      layout: (m: { hour: number }) => ({ hour: m.hour }),
+      paint(ctx, frame) {
+        if (failRestore) throw new Error('restore boom');
+        ctx.fillStyle = `pixel:h${frame.hour}`;
+        ctx.fillRect(0, 0, frame.surface.width, frame.surface.height);
+        return false;
+      },
+      hit: () => null, tooltip: () => null, structure: () => ({}), mirror: null, audit: () => [], visibleArt: () => [],
+    }, () => {});
+    const presented: { id: number; widget: number; binding: number }[] = [];
+    const lane = new Lane<Bitmapped & { close(): void }>({
+      lane: 0, lanes: 1, views: () => failView, crop: async () => [],
+      present(p) { for (const e of p.entries) presented.push({ id: e.id, widget: e.widget, binding: e.binding }); },
+      release() {}, fail(r) { throw new Error(r); }, later() {}, clock: () => 0, budget: Infinity,
+    });
+    const surface = pixelCanvas(800, 300);
+    lane.setLaneSurface(surface.canvas, true);
+    lane.mount(1, [], 'bars', { family: 'bars', kind: failKind, view: 'main', options: {}, revisions: {}, sources: {}, scrollTop: 0, theme: TEST_THEME } satisfies LaneBinding);
+    lane.bind(1, { generation: 1, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 5 } });
+    lane.setLaneSlots({ width: 800, height: 300, dpr: 1, scrollTop: 0, scrollLeft: 0, originX: 0, originY: 0, surfaceColor: TEST_THEME.surface, clipPathFallback: false, slots: [{ widget: 1, x: 0, y: 0, w: 300, h: 200, visible: true }] });
+    lane.frame({ type: 'frame', serial: 1, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    const acks = presented.splice(0);
+    lane.frame({ type: 'frame', serial: 2, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: acks, refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    failRestore = true;
+    lane.setLaneSlots({ width: 900, height: 300, dpr: 1, scrollTop: 0, scrollLeft: 0, originX: 0, originY: 0, surfaceColor: TEST_THEME.surface, clipPathFallback: false, slots: [{ widget: 1, x: 10, y: 0, w: 300, h: 200, visible: true }] });
+    lane.frame({ type: 'frame', serial: 3, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    assert.equal(lane.stats.restoreFailures, 1);
+
+    failRestore = false;
+    lane.frame({ type: 'frame', serial: 4, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    assert.equal(surface.pixelAt(20, 20), 'pixel:h1');
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+test('R4-4: snapCanvasText wraps a reused context only once', () => {
+  let transforms = 0;
+  const ctx = {
+    getTransform() { transforms++; return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }; },
+    fillText() {},
+  } as unknown as OffscreenCanvasRenderingContext2D;
+  snapCanvasText(ctx);
+  snapCanvasText(ctx);
+  snapCanvasText(ctx);
+  ctx.fillText('hi', 1.4, 2.6);
+  assert.equal(transforms, 1);
+});
+
+test('R4-5: lazy lane creation builds zero workers for an empty page and one worker for a one-widget page on 64 threads', () => {
+  const navDesc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { value: { hardwareConcurrency: 64 }, configurable: true });
+  try {
+    let created = 0;
+    const messagesByWorker: unknown[][] = [];
+    const client = { available: true, openFollow: async () => 'sess', product: async () => ({ data: { available: true, route: 1 } }) } as never;
+    const host = {
+      ...lanesHost(client, () => {
+        created++;
+        const log: unknown[] = [];
+        messagesByWorker.push(log);
+        return {
+          onmessage: null,
+          onerror: null,
+          postMessage(m: { type: string; port?: MessagePort }) {
+            log.push(m.type);
+            if (m.type === 'init') m.port?.close();
+          },
+          terminate() {},
+        } as unknown as Worker;
+      }),
+      frameRate: () => 60,
+    };
+    const clock = new PlaybackController();
+    clock.setBounds({ firstHour: 0, lastHour: 100 });
+    clock.seek(10);
+    const pipeline = new Pipeline(clock, client, host);
+    try {
+      pipeline.prepare(['bars'], [['bars', 'a', 'main']]);
+      assert.equal(created, 0);
+      assert.equal(pipeline.createdLanes, 0);
+      assert.equal(pipeline.prepared(), true);
+
+      const w1 = pipeline.acquire('w1|0', { offset: 0, pin: null, preferredLane: 0 });
+      assert.equal(created, 1);
+      assert.equal(pipeline.createdLanes, 1);
+      assert.deepEqual(messagesByWorker[0], ['init', 'prepare']);
+
+      clock.seek(12);
+      assert.equal(created, 1);
+      assert.ok(messagesByWorker[0]!.includes('frame'));
+
+      const w2 = pipeline.acquire('w2|0', { offset: 0, pin: null, preferredLane: 1 });
+      assert.equal(created, 2);
+      assert.equal(pipeline.createdLanes, 2);
+
+      pipeline.drop('w2|0');
+      const lane1Before = messagesByWorker[1]!.length;
+      clock.seek(14);
+      assert.equal(messagesByWorker[1]!.slice(lane1Before).filter(t => t === 'frame').length, 0);
+      pipeline.drop('w1|0');
+      void w1; void w2;
+    } finally {
+      pipeline.close();
+    }
+  } finally {
+    if (navDesc) Object.defineProperty(globalThis, 'navigator', navDesc);
+    else delete (globalThis as { navigator?: unknown }).navigator;
   }
 });

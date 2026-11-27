@@ -34,7 +34,11 @@ import { timeChartCacheState } from '../families/time-chart/cacheControl.ts';
 
 export type RowDensity = 'compact' | 'normal' | 'comfortable';
 
+const snappedContexts = new WeakSet<Canvas2D>();
+
 export function snapCanvasText(ctx: Canvas2D): void {
+  if (snappedContexts.has(ctx)) return;
+  snappedContexts.add(ctx);
   const fill = ctx.fillText;
   ctx.fillText = (text, x, y, maxWidth) => {
     const t = ctx.getTransform();

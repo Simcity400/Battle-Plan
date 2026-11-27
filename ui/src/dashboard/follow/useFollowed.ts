@@ -65,14 +65,20 @@ export function lanesHost(
   client: DashboardClient,
   createWorker: () => Worker = () => new Worker(new URL('../../draw/lane.worker.ts', import.meta.url), { type: 'module' }),
 ): PipelineHost {
-  const lanes = Array.from({ length: laneCount() }, () => makeLaneWorker(createWorker));
+  const created: (LaneWorker & { terminate(): void })[] = [];
   return {
-    lanes,
+    lanes: [],
+    laneCapacity: laneCount(),
+    createLane: () => {
+      const worker = makeLaneWorker(createWorker);
+      created.push(worker);
+      return worker;
+    },
     open: ports => client.openFollow ? client.openFollow(ports) : Promise.reject(new Error('This connection has no channel for pushed answers')),
     channel: () => new MessageChannel(),
     frameRate: playbackRate,
     rate: weakCpu,
-    close: () => { for (const lane of lanes) lane.terminate(); },
+    close: () => { for (const lane of created) lane.terminate(); },
   };
 }
 

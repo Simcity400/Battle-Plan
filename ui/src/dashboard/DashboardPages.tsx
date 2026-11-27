@@ -54,10 +54,11 @@ export default function DashboardPages({ active, viewport, stripPageId, runtime,
   }, [active, viewport, template.widgets, drawn]);
 
   const { client, clock } = runtime;
-  const pipeline = usePipeline(active ? clock : null, active ? client : null);
+  const hasWidgets = template.widgets.length > 0;
+  const pipeline = usePipeline(active && hasWidgets ? clock : null, active && hasWidgets ? client : null);
   const [sharedHost, setSharedHost] = useState<SharedSurfaceHost | null>(null);
   useLayoutEffect(() => {
-    if (!active || !pipeline || !viewport) {
+    if (!active || !hasWidgets || !pipeline || !viewport) {
       setSharedHost(null);
       return;
     }
@@ -67,7 +68,7 @@ export default function DashboardPages({ active, viewport, stripPageId, runtime,
       host.dispose();
       setSharedHost(null);
     };
-  }, [active, pipeline, viewport]);
+  }, [active, hasWidgets, pipeline, viewport]);
   const laneClient = useMemo(() => preparingClient(client), [client]);
   const pages = useMemo(() => drawn ? preparePages().map(page => ({
     ...page,
@@ -84,7 +85,7 @@ export default function DashboardPages({ active, viewport, stripPageId, runtime,
     }
     return { families: [...new Set([...projections.values()].map(([family]) => family))], projections: [...projections.values()] };
   }, [drawn, laneKinds, template.widgets]);
-  useEffect(() => { if (active) prepareLanes(pageClock(clock), needs); }, [active, clock, needs]);
+  useEffect(() => { if (active && (hasWidgets || drawn)) prepareLanes(pageClock(clock), needs); }, [active, hasWidgets, drawn, clock, needs]);
 
   return <>
     {active && (template.widgets.length

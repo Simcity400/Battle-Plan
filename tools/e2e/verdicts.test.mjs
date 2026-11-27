@@ -381,7 +381,7 @@ test('sessionConfinement checks each session Job affinity, hardwareConcurrency, 
   assert.equal(playbackConf.pass, false);
   assert.ok(playbackConf.reasons.some(r => r.includes('3/4')));
   assert.ok(playbackConf.reasons.some(r => r.includes('hardwareConcurrency = 16')));
-  assert.ok(playbackConf.reasons.some(r => r.includes('4 drawing lanes, expected 2')));
+  assert.ok(playbackConf.reasons.some(r => r.includes('4 drawing lanes, expected 1..2')));
   const header = profileLines(run, sweep);
   assert.ok(header[0].includes('pages: Job 4/4, hardwareConcurrency=4'));
   assert.ok(header[0].includes('playback: Job 3/4 (NOT ALL CONFINED), hardwareConcurrency=16, 4 lanes'));

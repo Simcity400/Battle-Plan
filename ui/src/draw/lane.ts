@@ -395,7 +395,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (frame.measure) this.host.scrubbed?.(frame, samples);
   }
   readonly facts = new Facts<Value>();
-  readonly stats = { frames: 0, entries: 0, motion: 0, crops: 0, refused: {} as Record<string, number>, visited: 0, pruned: 0 };
+  readonly stats = { frames: 0, entries: 0, motion: 0, crops: 0, refused: {} as Record<string, number>, visited: 0, pruned: 0, restoreFailures: 0 };
   private readonly subs = new Map<number, Sub>();
   private readonly widgets = new Map<number, Widget>();
   private readonly workerCanvases = new Map<number, WorkerCanvasInfo>();
@@ -2019,9 +2019,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const widget = this.widgets.get(refusal.widget);
       if (!widget) continue;
       if (widget.inflight?.id === refusal.id) widget.inflight = null;
-      if (this.isDirectTarget(widget.id) && refusal.reason !== 'failed' && refusal.reason !== 'refused') {
-        this.markDirectDirty(widget.id);
-      }
+      if (this.isDirectTarget(widget.id)) this.markDirectDirty(widget.id);
       if (!owner || owner.sent.binding !== widget.binding.generation || (widget.installed && refusal.id < widget.installed.id)) {
         for (const sub of widget.subs) this.schedulePrune(sub);
         this.syncWindowTracking(widget);
@@ -2087,6 +2085,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         if (wc && !sharedArg) this.dirtyWorkerCanvases.delete(wid);
         widget.forceFull = false;
       } catch {
+        this.stats.restoreFailures++;
       }
     }
   }

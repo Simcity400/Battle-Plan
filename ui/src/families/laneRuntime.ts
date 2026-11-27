@@ -480,6 +480,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     artRevision: held.artRevision,
   });
 
+  const clearColorGetters = new WeakMap<OffscreenCanvasRenderingContext2D, () => string>();
+
   function configureContext(
     canvas: OffscreenCanvas,
     opaque: boolean,
@@ -489,15 +491,19 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     if (!ctx) throw new Error('Could not acquire 2D canvas context');
     snapCanvasText(ctx);
     if (opaque) {
-      const rawClearRect = ctx.clearRect.bind(ctx);
-      ctx.clearRect = (x: number, y: number, w: number, h: number) => {
-        const color = getSurfaceColor();
-        if (!color) { rawClearRect(x, y, w, h); return; }
-        const prev = ctx.fillStyle;
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y, w, h);
-        ctx.fillStyle = prev;
-      };
+      const wrapped = clearColorGetters.has(ctx);
+      clearColorGetters.set(ctx, getSurfaceColor);
+      if (!wrapped) {
+        const rawClearRect = ctx.clearRect.bind(ctx);
+        ctx.clearRect = (x: number, y: number, w: number, h: number) => {
+          const color = clearColorGetters.get(ctx)?.() ?? '';
+          if (!color) { rawClearRect(x, y, w, h); return; }
+          const prev = ctx.fillStyle;
+          ctx.fillStyle = color;
+          ctx.fillRect(x, y, w, h);
+          ctx.fillStyle = prev;
+        };
+      }
     }
     return ctx;
   }

@@ -41,6 +41,8 @@ const laneFailureMessage = (lane: number, detail: string | undefined) =>
 
 export interface PipelineHost {
   lanes: readonly LaneWorker[];
+  readonly laneCapacity?: number;
+  createLane?: (index: number) => LaneWorker;
   open(ports: readonly MessagePort[]): FollowOpen;
   channel(): { port1: MessagePort; port2: MessagePort };
   frameRate(): number;
@@ -96,7 +98,7 @@ export class Pipeline {
   private readonly stripReceipts = new Map<number, { lane: number; resolve: (held: StripReceipt) => void; reject: (error: Error) => void }>();
 
   scrub = (page: number, frame: StripFrame | null) => {
-    for (let lane = 0; lane < this.host.lanes.length; lane++) this.postLane(lane, { type: 'scrub', page, frame });
+    for (let lane = 0; lane < this.workers.length; lane++) this.postLane(lane, { type: 'scrub', page, frame });
   };
 
   storeStrip(id: number, build: number, update: StripUpdate): Promise<StripReceipt> {
@@ -177,6 +179,10 @@ export class Pipeline {
   private stopPublish: (() => void) | null = null;
   private stopClock: (() => void) | null = null;
   private rate: number;
+  private readonly workers: (LaneWorker | null)[];
+  private readonly lanePorts: (MessagePort | null)[];
+  private activeLaneCount = 0;
+  private lastPrepare: { ask: number; families: readonly string[]; projections: readonly ProjectionKey[] } | null = null;
   private prepareAsk = 0;
   private preparedAt: number[];
   private readonly laneErrors: (Failure | undefined)[];
@@ -184,44 +190,69 @@ export class Pipeline {
 
   constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost, generation = 0) {
     this.clock = clock; this.client = client; this.host = host; this.rate = host.rate(); this.generation = generation;
-    const count = host.lanes.length;
-    perfLog?.lanes(count);
+    const count = host.laneCapacity ?? host.lanes.length;
+    this.workers = Array.from({ length: count }, () => null);
     this.loads = Array.from({ length: count }, () => 0);
     this.preparedAt = Array.from({ length: count }, () => 0);
     this.laneErrors = Array.from({ length: count }, () => undefined);
     this.costLoads = Array.from({ length: count }, () => 0);
     this.nextSub = Array.from({ length: count }, () => 1);
-    this.payloads = host.lanes.map((_lane, index) => new PayloadSender(message => this.postLane(index, message)));
+    this.payloads = Array.from({ length: count }, (_v, index) => new PayloadSender(message => this.postLane(index, message)));
     this.page = new Page<ImageBitmap>({ lanes: count, seek: clock.getSnapshot().seekSequence, post: (lane, message) => this.post(lane, message) });
-    host.lanes.forEach((lane, index) => {
-      if (lane.failed !== undefined) {
-        const failure = asFailure(new Error(laneFailureMessage(index, lane.failed || undefined)));
-        this.laneErrors[index] = failure;
-        this.preparedAt[index] = Infinity;
-        lane.onmessage = null;
-        lane.onerror = null;
-        lane.terminate?.();
-        this.page.failLane(index, failure.message);
-      } else {
-        lane.onmessage = ({ data }) => this.receive(index, data);
-        lane.onerror = event => this.failLane(index, laneFailureMessage(index, workerErrorDetail(event)));
-      }
-    });
-    const channels = host.lanes.map(() => host.channel());
-    channels.forEach((channel, lane) => {
-      if (this.laneErrors[lane]) channel.port1.close();
-      else host.lanes[lane]!.postMessage({ type: 'init', lane, lanes: count, port: channel.port1, rate: this.rate }, [channel.port1]);
-    });
+    const channels = Array.from({ length: count }, () => host.channel());
+    this.lanePorts = channels.map(channel => channel.port1);
     this.ports = channels.map(channel => channel.port2);
+    host.lanes.forEach((lane, index) => {
+      if (index < count) this.attachLane(index, lane);
+    });
+    if (this.activeLaneCount === 0) perfLog?.lanes(0);
     this.stopPublish = clock.onPublish((previous, next) => this.published(previous, next), true);
     this.stopClock = clock.subscribe(() => this.anchor());
     const s = clock.getSnapshot();
     this.page.publish(s.hour, { playing: s.playing, speed: s.hoursPerSecond, step: 0 });
   }
 
-  get lanes() { return this.host.lanes.length; }
+  private attachLane(index: number, lane: LaneWorker) {
+    this.workers[index] = lane;
+    this.activeLaneCount++;
+    perfLog?.lanes(this.activeLaneCount);
+    const port = this.lanePorts[index];
+    this.lanePorts[index] = null;
+    if (lane.failed !== undefined) {
+      const failure = asFailure(new Error(laneFailureMessage(index, lane.failed || undefined)));
+      this.laneErrors[index] = failure;
+      this.preparedAt[index] = Infinity;
+      lane.onmessage = null;
+      lane.onerror = null;
+      lane.terminate?.();
+      port?.close();
+      this.page.failLane(index, failure.message);
+      this.settlePrepared();
+      return;
+    }
+    lane.onmessage = ({ data }) => this.receive(index, data);
+    lane.onerror = event => this.failLane(index, laneFailureMessage(index, workerErrorDetail(event)));
+    if (port) lane.postMessage({ type: 'init', lane: index, lanes: this.workers.length, port, rate: this.rate }, [port]);
+    if (this.lastPrepare) {
+      lane.postMessage({ type: 'prepare', ask: this.lastPrepare.ask, families: this.lastPrepare.families, projections: this.lastPrepare.projections });
+    }
+  }
 
-  get laneCount() { return this.host.lanes.length; }
+  private ensureLane(lane: number): LaneWorker | null {
+    if (this.closed || lane < 0 || lane >= this.workers.length || this.laneErrors[lane]) return null;
+    const existing = this.workers[lane];
+    if (existing) return existing;
+    if (!this.host.createLane) return null;
+    const worker = this.host.createLane(lane);
+    this.attachLane(lane, worker);
+    return this.laneErrors[lane] ? null : worker;
+  }
+
+  get lanes() { return this.workers.length; }
+
+  get laneCount() { return this.workers.length; }
+
+  get createdLanes() { return this.activeLaneCount; }
 
   transferCanvas(id: number, canvas: OffscreenCanvas, opaque: boolean) {
     if (this.closed) return;
@@ -252,28 +283,33 @@ export class Pipeline {
   }
 
   transferLaneSurface(lane: number, canvas: OffscreenCanvas, opaque: boolean) {
-    if (this.closed || lane < 0 || lane >= this.host.lanes.length) return;
+    if (this.closed || lane < 0 || lane >= this.workers.length) return;
+    this.ensureLane(lane);
     this.postLane(lane, { type: 'lane-surface', canvas, opaque }, [canvas]);
   }
 
   sendLaneSlots(lane: number, payload: LaneSlotsPayload) {
-    if (this.closed || lane < 0 || lane >= this.host.lanes.length) return;
+    if (this.closed || lane < 0 || lane >= this.workers.length) return;
     this.postLane(lane, { type: 'lane-slots', ...payload });
   }
 
   disposeLaneSurface(lane: number) {
-    if (this.closed || lane < 0 || lane >= this.host.lanes.length) return;
+    if (this.closed || lane < 0 || lane >= this.workers.length) return;
     this.postLane(lane, { type: 'lane-surface-dispose' });
   }
 
   prepare(families: readonly string[], projections: readonly ProjectionKey[]) {
     if (this.closed) return;
     const ask = ++this.prepareAsk;
-    for (let lane = 0; lane < this.host.lanes.length; lane++) this.postLane(lane, { type: 'prepare', ask, families, projections });
+    this.lastPrepare = { ask, families, projections };
+    for (let lane = 0; lane < this.workers.length; lane++) {
+      if (this.workers[lane]) this.postLane(lane, { type: 'prepare', ask, families, projections });
+    }
+    this.settlePrepared();
   }
 
   prepared(): boolean {
-    return this.closed || this.preparedAt.every(ask => ask >= this.prepareAsk);
+    return this.closed || this.workers.every((worker, lane) => !worker || this.preparedAt[lane]! >= this.prepareAsk);
   }
 
   whenPrepared(): Promise<void> {
@@ -286,7 +322,9 @@ export class Pipeline {
     this.abort.abort();
     this.stopPublish?.(); this.stopPublish = null;
     this.stopClock?.(); this.stopClock = null;
-    for (const lane of this.host.lanes) { lane.onmessage = null; lane.onerror = null; }
+    for (const lane of this.workers) { if (lane) { lane.onmessage = null; lane.onerror = null; } }
+    for (const port of this.lanePorts) port?.close();
+    this.lanePorts.fill(null);
     this.closeReader?.(); this.closeReader = null;
     this.retireReaderLane = null;
     this.host.close?.();
@@ -305,14 +343,16 @@ export class Pipeline {
 
   private postLane(lane: number, message: ToLane, transfer?: Transferable[]) {
     if (this.closed || this.laneErrors[lane]) return;
-    this.host.lanes[lane]!.postMessage(message, transfer);
+    const worker = this.workers[lane];
+    if (!worker) return;
+    worker.postMessage(message, transfer);
     if (message.type === 'bind') perfLog?.count('page', 'rebind');
   }
 
   private post(lane: number | 'all', message: PageMessage) {
     if (this.closed) return;
     if (lane === 'all') {
-      for (let i = 0; i < this.host.lanes.length; i++) this.postLane(i, message);
+      for (let i = 0; i < this.workers.length; i++) this.postLane(i, message);
     } else this.postLane(lane, message);
   }
 
@@ -356,7 +396,7 @@ export class Pipeline {
     const rate = this.host.rate();
     if (rate !== this.rate) {
       this.rate = rate;
-      for (let lane = 0; lane < this.host.lanes.length; lane++) this.postLane(lane, { type: 'options', rate });
+      for (let lane = 0; lane < this.workers.length; lane++) this.postLane(lane, { type: 'options', rate });
     }
     const fps = Math.max(1, this.host.frameRate());
     const nominal = Math.max(1, Math.ceil(next.hoursPerSecond / fps * 1.5));
@@ -455,10 +495,12 @@ export class Pipeline {
     const failure = asFailure(new Error(reason));
     this.laneErrors[lane] = failure;
     this.preparedAt[lane] = Infinity;
-    const worker = this.host.lanes[lane]!;
-    worker.onmessage = null;
-    worker.onerror = null;
-    worker.terminate?.();
+    const worker = this.workers[lane];
+    if (worker) {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.terminate?.();
+    }
     this.retireReaderLane?.(lane);
     this.settlePrepared();
     for (const [key, placedLane] of [...this.placed]) {
@@ -651,7 +693,14 @@ export class Pipeline {
 
   mount(options: MountOptions) {
     const kind = options.kind;
-    const { lane, cost } = this.place(options.key, kind, options.preferredLane);
+    let { lane, cost } = this.place(options.key, kind, options.preferredLane);
+    while (!this.workers[lane] && !this.laneErrors[lane] && this.host.createLane) {
+      this.ensureLane(lane);
+      if (!this.laneErrors[lane]) break;
+      const next = this.place(options.key, kind);
+      if (next.lane === lane) break;
+      lane = next.lane;
+    }
     const id = this.nextWidget++;
     this.loads[lane]!++;
     this.costLoads[lane]! += cost;
