@@ -81,7 +81,7 @@ impl std::ops::Deref for NativeWindows {
 
 #[derive(Debug, PartialEq)]
 pub struct WindowLayout {
-    pub guis: native::Guis,
+    pub guis: Arc<native::Guis>,
     navy: (usize, usize),
     naval_combat: (usize, usize),
     tiny: Option<(usize, usize)>,
@@ -97,7 +97,8 @@ impl NativeWindows {
         )?)
     }
 
-    pub fn of(guis: native::Guis) -> io::Result<Self> {
+    pub fn of(guis: impl Into<Arc<native::Guis>>) -> io::Result<Self> {
+        let guis = guis.into();
         let index = |name: &str| {
             let found = guis
                 .template(name.as_bytes())

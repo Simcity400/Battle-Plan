@@ -185,6 +185,7 @@ struct WatchState {
 
 pub(super) struct Graph {
     state: Arc<Mutex<State>>,
+    pub(super) product_selection: Arc<Mutex<()>>,
     pub witnesses: Arc<super::generation::Witnesses>,
     pub(super) changes: Arc<super::changes::Changes>,
     watches: Arc<Mutex<WatchState>>,
@@ -202,6 +203,7 @@ impl Default for Graph {
     fn default() -> Self {
         super::generation::current().map_or_else(Self::fresh, |current| Self {
             state: Arc::clone(&current.state),
+            product_selection: Arc::clone(&current.product_selection),
             witnesses: Arc::clone(&current.witnesses),
             changes: Arc::clone(&current.changes),
             watches: Arc::clone(&current.watches),
@@ -256,6 +258,7 @@ impl Graph {
     pub(super) fn fresh() -> Self {
         Self {
             state: Arc::default(),
+            product_selection: Arc::default(),
             witnesses: Arc::default(),
             changes: Arc::default(),
             watches: Arc::default(),
@@ -496,6 +499,23 @@ impl Graph {
         }
         Ok(())
     }
+    pub(super) fn matching_product<T: Send + Sync + 'static>(
+        &self, key: &Key, matches: impl Fn(&T) -> bool,
+    ) -> Option<(Key, Arc<Product>)> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let first = Key { parameters: Vec::new(), ..key.clone() };
+        for (candidate, node) in state.nodes.range(first..) {
+            if (candidate.context, candidate.parser, candidate.schema) != (key.context, key.parser, key.schema) {
+                break;
+            }
+            if let Some(product) = node.ready(true)
+                && product.value::<T>().is_ok_and(|value| matches(&value)) {
+                return Some((candidate.clone(), product));
+            }
+        }
+        None
+    }
+
     pub(super) fn product<T: Send + Sync + 'static>(
         &self,
         key: Key,

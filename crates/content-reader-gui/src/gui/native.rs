@@ -1557,8 +1557,13 @@ pub fn read_layers(layers: &ResolvedLayers) -> io::Result<Guis> {
     read_layers_with(layers, None)
 }
 
-pub fn read_layers_at(layers: &ResolvedLayers, viewport: [i32; 2]) -> io::Result<Guis> {
-    read_layers_with(layers, Some(viewport))
+pub fn read_layers_at(layers: &ResolvedLayers, viewport: [i32; 2]) -> io::Result<std::sync::Arc<Guis>> {
+    let _loading = (!layers.is_generation_scoped()).then(|| layers.loading());
+    let key = viewport.map(i32::to_le_bytes).concat();
+    layers.compatible_product("GUI layouts at viewport", 1, &key,
+        |guis: &Guis| guis.fits_viewport(viewport),
+        |layers| read_layers_with(layers, Some(viewport)),
+    )
 }
 
 fn read_layers_with(layers: &ResolvedLayers, viewport: Option<[i32; 2]>) -> io::Result<Guis> {
