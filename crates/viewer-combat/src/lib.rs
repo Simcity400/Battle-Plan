@@ -1255,7 +1255,7 @@ pub struct Drawn {
     pub rect: [f32; 4],
     areas: Vec<[f32; 4]>,
     pub close: Option<[f32; 4]>,
-    dismiss: Option<[f32; 4]>,
+    pub dismiss: Option<[f32; 4]>,
     result_details_button: Option<[f32; 4]>,
     lists: Vec<([f32; 4], ScrollTarget)>,
     scroll_buttons: Vec<([f32; 4], ScrollTarget, i32)>,

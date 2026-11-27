@@ -719,7 +719,7 @@ impl Held {
         let mut clicked = false;
         if let Some(pressed) = drawn.as_ref().filter(|drawn| !drawn.clicks.is_empty()) {
             self.window.set_modifiers(modifiers.shift, modifiers.ctrl);
-            for (path, hit, _) in pressed.clicks.iter().filter(|(_, hit, _)| pressed.close != Some(*hit)) {
+            for (path, hit, _) in pressed.clicks.iter().filter(|(_, hit, _)| ![pressed.close, pressed.dismiss].contains(&Some(*hit))) {
                 self.window.click(pressed, path, *hit);
             }
             clicked = true;
