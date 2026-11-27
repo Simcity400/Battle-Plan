@@ -25,6 +25,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 dashboard.workspace = true
 dashboard-follow = { path = "../dashboard-follow" }
+shader-pipeline = { path = "../shader-pipeline" }
 viewer = { path = "../viewer" }
 video-export.workspace = true
 png.workspace = true

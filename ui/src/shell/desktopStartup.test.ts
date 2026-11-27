@@ -13,6 +13,12 @@ test('desktop setup does only the ordered work the initial window and its reader
   ]);
 });
 
+test('the artwork renderer starts in the background once the shell has painted, never inside a read', () => {
+  const ready = source.slice(source.indexOf('async fn shell_ready('), source.indexOf('struct Receipt'));
+  assert.match(ready, /spawn_blocking\(\|\| \{\s*shader_pipeline::artwork::warm\(\);/);
+  assert.equal([...source.matchAll(/\bshader_pipeline::artwork::warm\(/g)].length, 1);
+});
+
 test('desktop update checks start off-thread from native Ready, even without a page call', () => {
   const eventLoop = source.slice(source.indexOf('    app.run('));
   const ready = eventLoop.match(/tauri::RunEvent::Ready\s*=>\s*\{([^}]*)\}/)?.[1];

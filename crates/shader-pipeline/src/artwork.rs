@@ -1,5 +1,6 @@
 
 use crate::gpu::stats::CountedPasses as _;
+use job_priority::SpawnCarried as _;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard, OnceLock},
@@ -156,6 +157,12 @@ fn flag_rectangle_checked(
 }
 
 const FLAG_RECTANGLE: u32 = 64;
+
+pub fn warm() {
+    let _ = std::thread::Builder::new()
+        .name("artwork renderer".into())
+        .spawn_carried(|| drop(renderer()));
+}
 
 fn renderer() -> Result<&'static Mutex<Renderer>, String> {
     RENDERER

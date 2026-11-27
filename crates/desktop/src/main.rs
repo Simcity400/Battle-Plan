@@ -251,6 +251,7 @@ async fn shell_ready(webview: tauri::Webview) -> Result<(), String> {
     }
     if !webview.state::<ShellReady>().0.swap(true, std::sync::atomic::Ordering::Relaxed) {
         tauri::async_runtime::spawn_blocking(|| {
+            shader_pipeline::artwork::warm();
             recorder::start_recorder();
             export_settings::sweep_pending_stages();
         }).await.map_err(|error| error.to_string())?;
