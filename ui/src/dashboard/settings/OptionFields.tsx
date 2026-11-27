@@ -13,6 +13,7 @@ import type { OptionField, OptionValue } from '../options';
 import { listedChoices, unavailableChoices } from '../definitions';
 import type { OptionChoices } from '../definitions';
 import { contentTitleHint } from '../contentTitles';
+import { failureText } from '../queryError';
 import { leaveNumber, numberText, receiveNumber, typeNumber } from './numberDraft';
 import type { NumberDraft, NumberStep } from './numberDraft';
 import { TableSettingsField } from './TableSettingsField.tsx';
@@ -44,9 +45,9 @@ function OptionRow({ field, value, choices, regionSource, onChange }: {
         : <div data-setting={field.key} className="setting-row">{caption}<Select label={field.label} value={String(value)} options={field.choices} onChange={onChange} /></div>;
     case 'content-choice': {
       const listed = listedChoices(choices) ?? [];
+      const unavailable = unavailableChoices(choices);
       if (field.catalogue) {
         const chosen = typeof value === 'string' && value ? value : '';
-        const unavailable = unavailableChoices(choices);
         const missing = !unavailable ? 'Saved choice unavailable' : 'loading' in unavailable ? 'Loading…' : 'Choices unavailable';
         const shown = chosen ? listed.find(choice => choice.value === chosen)?.label ?? missing : field.automatic;
         return <div data-setting={field.key} className="setting-row setting-row-stacked">{caption}
@@ -57,12 +58,14 @@ function OptionRow({ field, value, choices, regionSource, onChange }: {
       const kept = typeof value === 'string' && value && !listed.some(choice => choice.value === value)
         ? [{ value, label: 'Saved choice unavailable', reason: contentTitleHint(value, 'Not in this campaign.') }] : [];
       return <div data-setting={field.key} className="setting-row">{caption}
-        <Select label={field.label} value={String(value)} options={[{ value: '', label: field.automatic }, ...listed, ...kept]} onChange={onChange} /></div>;
+        <Select label={field.label} value={String(value)} options={[{ value: '', label: field.automatic }, ...listed, ...kept]} onChange={onChange} />
+        {unavailable && 'error' in unavailable && <p className="field-hint" role="status">{failureText(unavailable.error, 'Couldn’t load choices.')}</p>}</div>;
     }
     case 'content-set': {
       const chosen = contentSet(value);
+      const unavailable = unavailableChoices(choices);
       if (field.catalogue) return <div data-setting={field.key} className="setting-row setting-row-stacked">{caption}
-        <ContentSetPicker label={field.label} automatic={field.automatic} choices={listedChoices(choices) ?? []} selected={chosen}
+        <ContentSetPicker label={field.label} automatic={field.automatic} choices={listedChoices(choices) ?? []} selected={chosen} unavailable={unavailable}
           onReset={() => onChange('')} onToggle={token => { const next = toggleContentSet(value, token, Number.MAX_SAFE_INTEGER); if (next !== null) onChange(next); }} />
       </div>;
       const listed = listedChoices(choices) ?? [];
@@ -72,7 +75,8 @@ function OptionRow({ field, value, choices, regionSource, onChange }: {
         <SettingLabel label={field.label} hint={chosen.length ? field.hint : `${field.automatic}${field.hint ? ` · ${field.hint}` : ''}`} />
         {chips.length ? <ChipSet label={field.label} chips={chips} selected={chosen} max={Number.MAX_SAFE_INTEGER}
           onToggle={token => { const next = toggleContentSet(value, token, Number.MAX_SAFE_INTEGER); if (next != null) onChange(next); }} />
-          : <p className="field-hint">Nothing to choose from yet.</p>}
+          : !unavailable && <p className="field-hint">Nothing to choose from yet.</p>}
+        {unavailable && 'error' in unavailable && <p className="field-hint" role="status">{failureText(unavailable.error, 'Couldn’t load choices.')}</p>}
       </div>;
     }
     case 'regions':

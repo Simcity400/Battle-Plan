@@ -7,6 +7,27 @@ use replay_frame::frame::{Metrics, TableView, not_selected};
 
 const TAGS: [(&str, u32); 4] = [("ENG", 1), ("FRA", 2), ("GER", 3), ("USA", 4)];
 
+#[test]
+fn side_choices_distinguish_peace_from_unread_war_membership() {
+    use dashboard_base::test_fixtures::{replay, source};
+    let ask = |wars| {
+        let mut frame = source(1, 100, Some(1));
+        *frame.tables[TableId::WarRelations.index()] = wars;
+        *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![]));
+        *frame.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(vec![]));
+        let replay = replay(vec![frame]).into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "air-side-choices".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+        AirSuperiorityChoices::load(&source, &BranchParams { branch_id: "1".into() }, &LoadContext { content: None }, &false.into()).unwrap()
+    };
+    let empty = ask(TableView::Complete(TableRows::WarRelations(vec![])));
+    assert!(empty.sides.is_empty());
+    assert_eq!(serde_json::to_value(&empty).unwrap().get("sidesMissing"), Some(&serde_json::Value::Null));
+    let unread = ask(TableView::Unavailable { reason: "fixture war membership failed".into() });
+    assert!(unread.sides.is_empty());
+    assert_eq!(unread.countries, empty.countries);
+    assert!(serde_json::to_value(&unread).unwrap()["sidesMissing"].as_str().is_some_and(|reason| reason.contains("fixture war membership failed")));
+}
+
 fn run(tag: &str, first_hour: i32, last_hour: i32) -> Run {
     Run { tag: tag.into(), first_hour, last_hour }
 }

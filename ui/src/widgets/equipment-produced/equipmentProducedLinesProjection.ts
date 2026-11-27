@@ -65,7 +65,7 @@ export interface EquipmentProducedLinesOptions {
   readonly count: ProducedCount;
   readonly measure: ProducedMeasure;
   readonly equipmentLabel: string;
-  readonly noDataMessage: string | null;
+  readonly noData: ReturnType<typeof resolvedEquipment>['noData'];
   readonly fromHour: number | null;
   readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership: Readonly<Record<string, HourRanges>> | null;
@@ -171,7 +171,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
     };
     const gaps = options.gaps.length > 0 ? options.gaps : undefined;
 
-    if (options.noDataMessage) {
+    if (options.noData) {
       return {
         kind: 'equipment-produced',
         measureTitle: options.equipmentLabel,
@@ -182,7 +182,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
         yAxis,
         series: [],
         gaps,
-        empty: { kind: 'empty' as const, message: options.noDataMessage },
+        empty: options.noData,
         auditRows: [],
       };
     }
@@ -376,15 +376,15 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
     validate: validateEquipmentProducedTypes,
   },
   sources(ctx: FamilyPlanContext<ProducedTypesReply>): SourcePlan {
-    const { count, measure, refits, shownTypes, noDataMessage } = resolvedEquipment(ctx);
+    const { count, measure, refits, shownTypes, noData } = resolvedEquipment(ctx);
     const top = chartTopOf(ctx.countries);
     const all = ctx.countries.all;
     const group = top === null && !all ? groupSelection(ctx.widget.countries) : null;
     const tags = top === null ? ctx.countries.tags : [];
     const fromHour = measure === 'total' && ctx.widget.time.mode === 'range' && ctx.staticSpan ? ctx.staticSpan[0] : undefined;
-    const waitingForDefault = count === 'units' && !shownTypes.length && !noDataMessage;
+    const waitingForDefault = count === 'units' && !shownTypes.length && !noData;
     const emptySelection = top === null && !all && !group && tags.length === 0;
-    const skip = waitingForDefault || noDataMessage !== null || emptySelection;
+    const skip = waitingForDefault || noData !== null || emptySelection;
     const owner = `equipment-produced:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${count}:${measure}:${refits ? 1 : 0}:${shownTypes.join(',')}:${fromHour ?? ''}`;
     if (skip) {
       return { owner, entries: [], allowEmptyFollow: true };
@@ -474,7 +474,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
   },
   projection: equipmentProducedLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
-    const { count, measure, equipmentLabel, noDataMessage } = resolvedEquipment(ctx);
+    const { count, measure, equipmentLabel, noData } = resolvedEquipment(ctx);
     const top = chartTopOf(ctx.countries);
     const fromHour = measure === 'total' && ctx.widget.time.mode === 'range' && ctx.staticSpan ? ctx.staticSpan[0] : null;
     return {
@@ -483,7 +483,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
       count,
       measure,
       equipmentLabel,
-      noDataMessage,
+      noData,
       fromHour,
       holders: ctx.countries.holders,
       membership: top === null ? ctx.countries.membership : null,
@@ -497,6 +497,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
   unavailable: ctx => ctx.countries.reason,
   warnings: (ctx, followRefused) => [
     ...(ctx.aux?.warnings ?? []),
+    ...(ctx.aux?.typesMissing ? [ctx.aux.typesMissing] : []),
     ...(followRefused ? [followRefused] : []),
   ],
 };

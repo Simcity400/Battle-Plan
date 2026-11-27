@@ -3,7 +3,7 @@ use super::{Content, DECIMALS, NAME_TABLES, NEED_BOUND_RAW, StockType, Types, da
 use crate::products::production::LineKind;
 use dashboard_base::products::{Country, LoadContext, Product, at_hour::{self, Keys, Read}, validate_country};
 use dashboard_base::{Source, span::HourSpan};
-use dashboard_query::identity::Holder;
+use dashboard_query::{coverage::witnessed_selection, identity::Holder};
 use replay_data::{
     cadence::STAGGER_PERIOD,
     rows::{Recorded, TableId, tables},
@@ -106,6 +106,7 @@ pub struct StockpileTypesReply {
     pub need_missing: Option<String>,
     #[doc = " Shortages first, worst first, then surpluses, largest first, then the rest in the equipment database's order."]
     pub rows: Vec<StockTypeRow>,
+    pub rows_missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -138,7 +139,7 @@ pub(super) struct Logistic {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Need {
-    Player(BTreeMap<String, Vec<Logistic>>),
+    Player(BTreeMap<String, Vec<Logistic>>, Option<String>),
     Ai,
     Unknown(String),
 }
@@ -173,9 +174,12 @@ fn produced(held: &Held, missing: Option<&str>) -> StockFigure {
     }
 }
 
-fn sum(figures: impl Iterator<Item = StockFigure>, blocked: bool) -> StockFigure {
+fn sum(figures: impl Iterator<Item = StockFigure>, blocked: bool, missing: Option<&str>) -> StockFigure {
     if blocked {
         return StockFigure::missing(UNTYPED_HOLDS);
+    }
+    if let Some(why) = missing {
+        return StockFigure::missing(why);
     }
     let mut total = 0_i128;
     for figure in figures {
@@ -235,7 +239,7 @@ pub(super) fn rows(input: &Inputs<'_>) -> Vec<StockTypeRow> {
     let mut keys: Vec<(String, Option<&StockType>)> = input.types.iter().map(|kind| (kind.key.clone(), Some(kind))).collect();
     let listed: BTreeSet<String> = keys.iter().map(|(key, _)| key.clone()).collect();
     let mut extra: BTreeSet<String> = input.variants.iter().map(type_key).filter(|key| !listed.contains(key)).collect();
-    if let Need::Player(by_key) = input.need {
+    if let Need::Player(by_key, _) = input.need {
         extra.extend(by_key.keys().filter(|key| !listed.contains(*key)).cloned());
     }
     keys.extend(extra.into_iter().map(|key| (key, None)));
@@ -244,15 +248,18 @@ pub(super) fn rows(input: &Inputs<'_>) -> Vec<StockTypeRow> {
         let members: Vec<&Held> = input.variants.iter().filter(|held| type_key(held) == key).collect();
         let resolved = kind.is_some();
         let blocked = resolved && untyped_blocks;
-        let stored_total = if resolved { sum(members.iter().map(|held| stored(held, input.stock_missing)), blocked) } else { StockFigure::missing(UNRESOLVED_TYPE) };
-        let produced_total = if resolved { sum(members.iter().map(|held| produced(held, input.lines_missing)), blocked) } else { StockFigure::missing(UNRESOLVED_TYPE) };
+        let stored_total = if resolved { sum(members.iter().map(|held| stored(held, None)), blocked, input.stock_missing) } else { StockFigure::missing(UNRESOLVED_TYPE) };
+        let produced_total = if resolved { sum(members.iter().map(|held| produced(held, None)), blocked, input.lines_missing) } else { StockFigure::missing(UNRESOLVED_TYPE) };
         let (balance, need, listed_row) = match input.need {
             Need::Ai => (StockFigure::missing(AI_NEED), StockFigure::missing(AI_NEED), false),
             Need::Unknown(why) => (StockFigure::missing(why), StockFigure::missing(why), false),
-            Need::Player(by_key) => {
+            Need::Player(by_key, missing) => {
                 let held = by_key.get(&key);
                 let note = kind.map_or(Some(NEED_UNAVAILABLE), |kind| kind.need_note.as_deref());
-                let (balance, need) = logistics(held, note);
+                let (balance, need) = match missing {
+                    Some(why) => (StockFigure::missing(why), StockFigure::missing(why)),
+                    None => logistics(held, note),
+                };
                 (balance, need, held.is_some_and(|rows| rows.iter().any(|row| row.balance != 0 || row.stock != 0 || row.available.is_some_and(|value| value != 0))))
             }
         };
@@ -324,26 +331,18 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
     ];
     reads.extend(NAME_TABLES.map(Read::all));
     let frame = at_hour::frame(&query, hour, &reads, "Equipment stockpile")?;
-    let raws: BTreeSet<u32> = frame.complete::<tables::CountryLinks>().map(|links| links.iter().filter(|link| link.canonical_slot == slot).map(|link| link.id).collect()).unwrap_or_default();
-    let stock_missing = match frame.complete::<tables::StockByVariant>() {
-        Err(error) => Some(format!("The stockpile is not known at this hour: {error}")),
-        Ok(_) => stale(&frame, TableId::Stockpiles, "stockpile"),
-    };
-    let stock_rows: Vec<_> = frame.complete::<tables::StockByVariant>().map(|rows| rows.iter().filter(|row| row.slot == slot).cloned().collect()).unwrap_or_default();
-    let (lines_missing, lines) = match frame.complete::<tables::ProductionLines>() {
-        Err(error) => (Some(format!("Production lines are not known at this hour: {error}")), Vec::new()),
-        Ok(rows) => (stale(&frame, TableId::ProductionLines, "production lines"), rows.iter().filter(|line| raws.contains(&line.country)).cloned().collect()),
-    };
-    let (logistics_state, logistics_rows) = match frame.complete::<tables::LogisticsEquipment>() {
-        Err(error) => (Err(format!("The logistics record is not known at this hour: {error}")), Vec::new()),
-        Ok(rows) => match stale(&frame, TableId::LogisticsEquipment, "logistics record") {
-            Some(why) => (Err(why), Vec::new()),
-            None => {
-                let held: Vec<_> = rows.iter().filter(|row| row.country == id).cloned().collect();
-                (Ok(!held.is_empty()), held)
-            }
-        },
-    };
+    let links = witnessed_selection::<tables::CountryLinks>(&frame);
+    let raws: BTreeSet<u32> = links.rows.iter().filter(|link| link.canonical_slot == slot).map(|link| link.id).collect();
+    let stock = witnessed_selection::<tables::StockByVariant>(&frame);
+    let stock_missing = stock.missing.or_else(|| stale(&frame, TableId::Stockpiles, "stockpile"));
+    let stock_rows: Vec<_> = stock.rows.iter().filter(|row| row.slot == slot).collect();
+    let production = witnessed_selection::<tables::ProductionLines>(&frame);
+    let lines_missing = production.missing.or(links.missing).or_else(|| stale(&frame, TableId::ProductionLines, "production lines"));
+    let lines: Vec<_> = production.rows.iter().filter(|line| raws.contains(&line.country)).collect();
+    let logistics = witnessed_selection::<tables::LogisticsEquipment>(&frame);
+    let logistics_stale = stale(&frame, TableId::LogisticsEquipment, "logistics record");
+    let logistics_rows: Vec<_> = logistics.rows.iter().filter(|row| row.country == id && logistics_stale.is_none()).collect();
+    let logistics_missing = logistics.missing.or(logistics_stale);
     let mut ids: BTreeSet<u64> = stock_rows.iter().map(|row| row.variant).collect();
     ids.extend(lines.iter().map(|line| line.variant));
     let ids: Vec<u64> = ids.into_iter().collect();
@@ -381,10 +380,11 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
             daily,
         });
     }
-    let need = match logistics_state {
-        Err(why) => Need::Unknown(why),
-        Ok(false) => Need::Ai,
-        Ok(true) => {
+    let rows_missing = stock_missing.clone().or_else(|| lines_missing.clone()).or_else(|| logistics_missing.clone());
+    let need = match (logistics_rows.is_empty(), logistics_missing) {
+        (true, Some(why)) => Need::Unknown(why),
+        (true, None) => Need::Ai,
+        (false, missing) => {
             let mut by_key: BTreeMap<String, Vec<Logistic>> = BTreeMap::new();
             for row in &logistics_rows {
                 let spelling = spelled.get(&row.token).cloned().unwrap_or_else(|| format!("token {}", row.token));
@@ -394,7 +394,7 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
                 };
                 by_key.entry(types.logistics(&content, &spelling)).or_default().push(Logistic { balance: row.balance_raw, stock: row.stock_raw, available });
             }
-            Need::Player(by_key)
+            Need::Player(by_key, missing)
         }
     };
     for (why, count) in refused {
@@ -407,11 +407,12 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
         valid_until: valid_until(&replay, hour, run.last, query.timeline.last),
         decimals: DECIMALS,
         need_missing: match &need {
-            Need::Player(_) => None,
+            Need::Player(_, missing) => missing.clone(),
             Need::Ai => Some(AI_NEED.to_owned()),
             Need::Unknown(why) => Some(why.clone()),
         },
         rows,
+        rows_missing,
         warnings,
     })
 }

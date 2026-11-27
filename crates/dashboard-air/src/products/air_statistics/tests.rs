@@ -2,6 +2,43 @@ use super::*;
 use dashboard_follow::live::{CellValue, GroupState};
 use replay_frame::frame::{Metrics, TableView, not_selected};
 
+#[test]
+fn region_choices_keep_witnessed_regions_and_name_unread_statistics() {
+    use dashboard_base::test_fixtures::{replay, source};
+    use replay_data::rows::TableRows;
+    let ask = |statistics| {
+        let mut frame = source(1, 100, Some(1));
+        *frame.tables[TableId::AirStatistics.index()] = statistics;
+        let replay = replay(vec![frame]).into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "air-statistics-regions".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+        AirStatisticsRegions::load(&source, &AirStatisticsRegionsParams { branch_id: "1".into(), country: Country::Slot(7) }, &LoadContext { content: None }, &false.into()).unwrap()
+    };
+    let empty = ask(TableView::Complete(TableRows::AirStatistics(vec![])));
+    assert!(empty.regions.is_empty());
+    assert_eq!(serde_json::to_value(&empty).unwrap().get("missing"), Some(&serde_json::Value::Null));
+    let unread = ask(TableView::Unavailable { reason: "fixture air statistics failed".into() });
+    assert!(unread.regions.is_empty());
+    assert!(serde_json::to_value(&unread).unwrap()["missing"].as_str().is_some_and(|reason| reason.contains("fixture air statistics failed")));
+    let partial = ask(TableView::Truncated { rows: TableRows::AirStatistics(vec![row(9001, 17)]), missing: 3 });
+    assert_eq!(partial.regions[0].region, "17");
+    assert!(serde_json::to_value(&partial).unwrap()["missing"].as_str().is_some_and(|reason| reason.contains("3 rows")));
+
+    let mut known = source(1, 100, Some(1));
+    *known.tables[TableId::AirStatistics.index()] = TableView::Complete(TableRows::AirStatistics(vec![]));
+    let mut unlinked = source(1, 101, Some(1));
+    *unlinked.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![]));
+    *unlinked.tables[TableId::AirStatistics.index()] = TableView::Complete(TableRows::AirStatistics(vec![]));
+    let replay = replay(vec![known, unlinked]).into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "air-statistics-unlinked".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    assert_eq!(query.holders.unlinked(), [(101, 101)]);
+    assert!(query.holders.unknown.is_empty());
+    for country in [Country::Slot(7), Country::from("GER")] {
+        let reply = AirStatisticsRegions::load(&source, &AirStatisticsRegionsParams { branch_id: "1".into(), country }, &LoadContext { content: None }, &false.into()).unwrap();
+        assert!(reply.missing.as_deref().is_some_and(|reason| reason.contains(dashboard_query::identity::TAG_UNLINKED)));
+    }
+}
+
 fn row(country: u32, region: u32) -> AirStatisticsRow {
     let mut channels = [0i64; 24];
     for (at, value) in channels.iter_mut().enumerate() {
