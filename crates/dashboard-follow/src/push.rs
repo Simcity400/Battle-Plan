@@ -11,7 +11,6 @@ pub const FOLLOW: u8 = 1;
 pub const PANEL: u8 = 2;
 pub const PART: usize = 1 << 22;
 const HEAD: usize = 12;
-pub const FAILURE: u32 = u32::from_le_bytes(*b"FEN1");
 
 pub fn write_frame(out: &mut impl Write, kind: u8, sequence: u32, payload: &[u8]) -> io::Result<()> {
     if payload.is_empty() {
@@ -60,10 +59,6 @@ pub fn read_frame(input: &mut impl Read, payload: &mut Vec<u8>) -> io::Result<Op
             return Ok(named);
         }
     }
-}
-
-pub fn failure(reason: &str) -> Vec<u8> {
-    [&FAILURE.to_le_bytes()[..], reason.as_bytes()].concat()
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -143,6 +138,7 @@ struct State {
     heads: std::collections::HashMap<u32, (u32, i32)>,
     admitted: std::collections::HashMap<u32, u32>,
     next: u32,
+    pressed: Option<u64>,
     stopped: bool,
     failed: Option<String>,
     counters: PushCounters,
@@ -164,7 +160,7 @@ fn lock(held: &Mutex<State>) -> MutexGuard<'_, State> {
 
 impl State {
     fn new(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
-        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit: budget.limit() / 2, session: 0, heads: std::collections::HashMap::new(), admitted: std::collections::HashMap::new(), next: 0, stopped: false, failed: None, counters: PushCounters::default() }
+        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit: budget.limit() / 2, session: 0, heads: std::collections::HashMap::new(), admitted: std::collections::HashMap::new(), next: 0, pressed: None, stopped: false, failed: None, counters: PushCounters::default() }
     }
 
     fn reached(&self, stream: Stream) -> bool {
@@ -178,8 +174,8 @@ impl State {
         usize::try_from(self.sent - self.released).unwrap_or(usize::MAX)
     }
 
-    fn charged(&mut self) -> io::Result<()> {
-        self.charge.resize(self.bytes + self.in_flight())
+    fn charged(&mut self) {
+        self.charge.resize(self.bytes + self.in_flight());
     }
 
     fn sendable(&self) -> Option<usize> {
@@ -187,7 +183,7 @@ impl State {
         for (at, queued) in self.queue.iter().enumerate() {
             let route = queued.stream.version().map(|(route, _)| route);
             if route.is_some_and(|route| blocked.contains(&route)) { continue; }
-            if queued.stream == Stream::Notice || self.in_flight() == 0 || self.in_flight() + answer::charge(&queued.bytes) <= self.credit || self.reached(queued.stream) {
+            if queued.stream == Stream::Notice || self.in_flight() == 0 || self.in_flight() + answer::charge(&queued.bytes) <= self.credit || (self.reached(queued.stream) && (!self.charge.full() || self.pressed.is_none_or(|at| self.released > at))) {
                 return Some(at);
             }
             if let Some(route) = route { blocked.push(route); }
@@ -195,24 +191,6 @@ impl State {
         None
     }
 
-    fn settle(&mut self) {
-        if let Err(error) = self.charged() {
-            let sequence = self.next;
-            self.next = self.next.wrapping_add(1);
-            self.overflow(&error.to_string(), sequence);
-        }
-    }
-
-    fn overflow(&mut self, reason: &str, sequence: u32) {
-        self.released = self.sent;
-        let _ = self.charge.resize(0);
-        let bytes = failure(reason);
-        self.counters.unwritten += self.queue.len() as u64;
-        self.queue.clear();
-        self.bytes = bytes.len();
-        self.queue.push_back(Queued { stream: Stream::Notice, kind: FOLLOW, bytes, sequence, offered: Instant::now(), kept: false, session: self.session });
-        self.failed = Some(reason.to_owned());
-    }
 
     fn merge_passed(&mut self) {
         let mut at = 0;
@@ -239,46 +217,6 @@ impl State {
             }
             at += 1;
         }
-    }
-
-    fn refuse_largest_panel(&mut self, reason: &str) -> bool {
-        let replacement = panel::dated::refused_record_len(reason) as i64;
-        let mut savings: std::collections::BTreeMap<u32, i64> = std::collections::BTreeMap::new();
-        for queued in &self.queue {
-            if !matches!(queued.stream, Stream::Panels { .. }) {
-                continue;
-            }
-            let Ok(records) = panel::dated::records(&queued.bytes) else {
-                continue;
-            };
-            for r in records {
-                if r.kind == panel::dated::DATA {
-                    *savings.entry(r.id).or_default() += r.byte_len() as i64 - replacement;
-                }
-            }
-        }
-        let Some((offender, _)) = savings
-            .into_iter()
-            .filter(|&(_, saved)| saved > 0)
-            .max_by_key(|&(id, saved)| (saved, std::cmp::Reverse(id)))
-        else {
-            return false;
-        };
-        let mut reduced = false;
-        for queued in &mut self.queue {
-            if !matches!(queued.stream, Stream::Panels { .. }) {
-                continue;
-            }
-            let Ok(Some(rebuilt)) = panel::dated::refuse_panel(&queued.bytes, offender, reason) else {
-                continue;
-            };
-            let before = answer::charge(&queued.bytes);
-            let after = answer::charge(&rebuilt);
-            self.bytes = self.bytes - before + after;
-            queued.bytes = rebuilt;
-            reduced = true;
-        }
-        reduced
     }
 
     fn merge(&mut self, at: usize, later: usize) -> bool {
@@ -319,7 +257,9 @@ impl State {
             self.merge(at, last);
         }
         self.merge_passed();
-        while self.charged().is_err() {
+        loop {
+            self.charged();
+            if !self.charge.full() { break; }
             let pair = {
                 let mut ours = self.queue.iter().enumerate()
                     .filter(|(_, q)| q.kind == kind && q.stream.version() == Some(version) && !q.kept && self.reached(q.stream)).map(|(at, _)| at);
@@ -374,13 +314,6 @@ impl Push {
         let session = state.session;
         state.queue.push_back(Queued { stream, kind, bytes, sequence, offered: Instant::now(), kept: false, session });
         state.compact(stream);
-        while let Err(error) = state.charged() {
-            let reason = error.to_string();
-            if !state.refuse_largest_panel(&reason) {
-                state.overflow(&reason, sequence);
-                break;
-            }
-        }
         state.counters.most_queued = state.counters.most_queued.max(state.queue.len() as u64);
         drop(state);
         self.ready.notify_one();
@@ -397,7 +330,7 @@ impl Push {
         if released <= state.released { return; }
         state.counters.credited += released - state.released;
         state.released = released;
-        state.settle();
+        state.charged();
         drop(state);
         self.ready.notify_all();
     }
@@ -407,6 +340,7 @@ impl Push {
         state.session += 1;
         state.sent = 0;
         state.released = 0;
+        state.pressed = None;
         state.counters.unwritten += state.queue.len() as u64;
         state.queue.clear();
         state.bytes = 0;
@@ -414,7 +348,7 @@ impl Push {
         state.heads.clear();
         state.admitted.clear();
         let session = state.session;
-        state.settle();
+        state.charged();
         drop(state);
         self.ready.notify_all();
         session
@@ -438,7 +372,7 @@ impl Push {
         if state.heads.insert(route, (seek, hour)) == Some((seek, hour)) { return; }
         state.merge_passed();
         if state.failed.is_none() {
-            let _ = state.charged();
+            state.charged();
         }
         drop(state);
         self.ready.notify_all();
@@ -460,9 +394,11 @@ impl Push {
         let at = state.sendable()?;
         let held = state.queue.remove(at)?;
         let charge = answer::charge(&held.bytes);
+        let pressed = held.stream != Stream::Notice && state.charge.full() && state.in_flight() != 0 && state.in_flight() + charge > state.credit;
         state.bytes -= charge;
+        if pressed { state.pressed = Some(state.released); }
         if held.stream != Stream::Notice { state.sent += charge as u64; }
-        state.settle();
+        state.charged();
         state.counters.written += 1;
         state.counters.bytes += held.bytes.len() as u64;
         Some(held)
@@ -484,7 +420,7 @@ impl Push {
     pub fn take_waiting(&self) -> Vec<Vec<u8>> {
         let mut state = lock(&self.state);
         state.bytes = 0;
-        state.settle();
+        state.charged();
         state.queue.drain(..).map(|held| held.bytes).collect()
     }
 
@@ -513,7 +449,7 @@ impl Push {
                 state.queue.clear();
                 state.bytes = 0;
                 state.released = state.sent;
-                let _ = state.charge.resize(0);
+                state.charge.resize(0);
                 return Err(error);
             }
         }

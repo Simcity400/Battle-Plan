@@ -42,7 +42,6 @@ export function createPullDispatcher(
         credit(charge(raw));
         return;
       }
-      if (split.kind === 'failure') { failAll(split.reason); return; }
       let immediate = split.header;
       split.lanes.forEach((bytes, lane) => {
         if (!bytes) return;

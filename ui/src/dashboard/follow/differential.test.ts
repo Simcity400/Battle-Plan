@@ -97,7 +97,6 @@ async function run(seed: number): Promise<{ faults: Fault[]; frames: number; ins
   const sent = new Map<number, string | bigint[]>();
   const emit = (bytes: Uint8Array) => {
     const split = splitForLanes(bytes, LANES);
-    if (split.kind === 'failure') return;
     lastDue = Math.max(lastDue, tick + rnd(4));
     queue.push({ due: lastDue, lanes: split.lanes });
   };

@@ -406,6 +406,57 @@ fn a_failed_read_for_an_abandoned_seek_does_not_stop_the_playhead() {
     });
 }
 
+#[test]
+fn a_playhead_stopped_by_a_damaged_run_plays_again_after_a_seek_to_a_healthy_run() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK), (1000, BLOCK)]);
+    let log = Log::default();
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap();
+    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    pages.extents[0].close(0, u64::MAX);
+    playhead.seek(0);
+    pages.extents[0].wait_blocked();
+    pages.extents[0].fail();
+    let stopped = playhead.wait_for(|| false).expect_err("the damaged run stops the playhead");
+    assert!(stopped.contains("a damaged extent"), "{stopped}");
+    playhead.seek(1000);
+    assert_eq!(playhead.error(), None, "a seek clears the error of the epoch it leaves");
+    let mut taken = Vec::new();
+    play(&playhead, &mut consumer, 1000, 1100, 24, &mut taken);
+    assert!(taken.last().is_some_and(|step| step.last() >= 1100 && step.epoch() == playhead.epoch()), "the healthy run plays in the epoch of the seek");
+}
+
+#[test]
+fn a_payload_budget_smaller_than_a_step_never_stops_the_playhead() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
+    let log = Log::default();
+    let largest = {
+        let (playhead, mut consumer) = start(&pages, whole_ahead(), &[0], &log);
+        let mut taken = Vec::new();
+        play(&playhead, &mut consumer, 0, 240, 24, &mut taken);
+        taken.iter().map(|step| step.payload()).max().expect("steps")
+    };
+    let budget = crate::ByteBudget::new(largest / 2);
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), whole_ahead(), None).unwrap();
+    playhead.share_budget(Arc::clone(&budget)).unwrap();
+    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(playhead.timeline().first());
+    let mut head = 0;
+    while head < 240 {
+        head += 24;
+        advance(&playhead, head);
+        playhead.wait_until(|| {
+            let built = playhead.newest().is_some_and(|newest| newest >= head);
+            let mut now = Vec::new();
+            take_steps(&mut consumer, head, &mut now);
+            built
+        });
+        assert!(budget.used() <= budget.limit() + largest, "{} held under a limit of {}: more than one step past it at hour {head}", budget.used(), budget.limit());
+    }
+    assert_eq!(playhead.error(), None, "a full budget holds read-ahead back and never stops the playhead");
+}
+
 #[derive(Default)]
 struct Hold {
     state: Mutex<(bool, bool)>,
@@ -2463,7 +2514,7 @@ fn steps_no_reader_took_stop_the_ring_at_its_byte_target_though_the_head_is_past
     let mut hour = 0;
     while ring.room(1000) && hour < 16 {
         hour += 1;
-        ring.publish(Arc::new(Step { epoch: ring.epoch, first: hour, last: hour, piece: Some(0), tables: vec![changes.clone()], ..Step::default() })).unwrap().unwrap();
+        ring.publish(Arc::new(Step { epoch: ring.epoch, first: hour, last: hour, piece: Some(0), tables: vec![changes.clone()], ..Step::default() })).unwrap();
     }
     assert_eq!(hour, 3, "three steps of 80 bytes no reader took fill a byte target of 240, though the head at 1000 is past them all");
     let mut taken = Vec::new();
@@ -2491,14 +2542,14 @@ fn completed_steps_keep_exact_byte_bounds_through_parking_and_rewind() {
     ring.asks(fast);
     ring.asks(slow);
     let publish = |ring: &mut crate::ring::Ring, hour, count| {
-        ring.publish(Arc::new(Step { epoch: ring.epoch, first: hour, last: hour, piece: Some(0), tables: vec![changes(0, count)], ..Step::default() })).unwrap().unwrap();
+        ring.publish(Arc::new(Step { epoch: ring.epoch, first: hour, last: hour, piece: Some(0), tables: vec![changes(0, count)], ..Step::default() })).unwrap();
     };
     for hour in 1..=4 {
         publish(&mut ring, hour, hour as u32);
     }
     let mut before = Vec::new();
     ring.ahead(fast, &mut before);
-    ring.complete(vec![(before[3].seq(), vec![changes(0, 1)]), (before[1].seq(), vec![changes(1, 2), changes(0, 6)])]).unwrap();
+    ring.complete(vec![(before[3].seq(), vec![changes(0, 1)]), (before[1].seq(), vec![changes(1, 2), changes(0, 6)])]);
     assert_eq!(budget.used(), (13 + 2 + 4) * 8);
     assert_eq!(before[1].payload(), 2 * 8);
     ring.resize(16, 12 * 8);
@@ -2511,7 +2562,7 @@ fn completed_steps_keep_exact_byte_bounds_through_parking_and_rewind() {
     ring.take(slow, 1, &mut taken);
     ring.take(fast, 3, &mut taken);
     assert_eq!(ring.parked(slow), Some(1));
-    ring.land_at(slow, 3, vec![]).unwrap().unwrap();
+    ring.land_at(slow, 3, vec![]).unwrap();
     assert_eq!(ring.lead(3), (1, 8, false));
     ring.cut(before[3].seq());
     assert_eq!(budget.used(), 18 * 8);
@@ -2526,8 +2577,8 @@ fn completed_steps_keep_exact_byte_bounds_through_parking_and_rewind() {
     publish(&mut ring, 1, 3);
     assert_eq!(ring.lead(0), (1, 3 * 8, false));
     let orphan = Arc::new(Step { tables: vec![changes(0, 4)], ..Step::default() });
-    ring.give(Reader(9), 0, std::slice::from_ref(&orphan)).unwrap();
-    ring.give(Reader(1), 0, std::slice::from_ref(&orphan)).unwrap();
+    ring.give(Reader(9), 0, std::slice::from_ref(&orphan));
+    ring.give(Reader(1), 0, std::slice::from_ref(&orphan));
     assert_eq!(budget.used(), 7 * 8);
     ring.abandon();
     assert_eq!(budget.used(), 4 * 8);

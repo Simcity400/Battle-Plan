@@ -6,7 +6,7 @@ import { sectionOf } from '../dashboard/follow/liveCells.ts';
 import { PayloadStore, type PayloadsMessage, type Revisions } from '../dashboard/follow/payloads.ts';
 import type { InstalledViewport } from '../families/plan.ts';
 
-export interface PanelValue { kind: 'panel'; bytes: Uint8Array | null; data: unknown; refused: string | null }
+export interface PanelValue { kind: 'panel'; bytes: Uint8Array | null; data: unknown; refused: string | null; stopped?: string }
 export interface AnswerValue { kind: 'answer'; body?: Uint8Array; answer: FollowedAnswer }
 export interface SeedValue { kind: 'seed'; values: readonly (number | string)[] }
 export type Value = PanelValue | AnswerValue | SeedValue;
@@ -184,6 +184,11 @@ const refusalOf = (picture: Picture<Value>): string | null => {
   const value = picture.parts[0]!.value;
   if (value.kind === 'answer') return value.answer.kind === 'notRecorded' ? value.answer.reason : null;
   return value.kind === 'panel' ? value.refused : null;
+};
+
+const stopOf = (picture: Picture<Value>): string | null => {
+  const value = picture.parts[0]!.value;
+  return value.kind === 'panel' ? value.stopped ?? null : null;
 };
 
 const BUFFER = 8 << 20;
@@ -1327,6 +1332,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
     if (panel.panel.refused !== null) return { kind: 'refused', id: panel.id, hour: panel.hour, reason: panel.panel.refused, stepped: panel.stepped, bytes: size,
       value: { kind: 'panel', bytes: null, data: undefined, refused: panel.panel.refused } };
+    if (panel.panel.stopped !== undefined) return { kind: 'data', id: panel.id, hour: panel.hour, stepped: panel.stepped, bytes: size, cells: [],
+      value: { kind: 'panel', bytes: null, data: undefined, refused: null, stopped: panel.panel.stopped } };
     for (const cell of cells) {
       if (this.lost.has(cell.id)) {
         this.freed += size;
@@ -1796,6 +1803,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       let failedLocally = false;
       for (let pass = 0; pass < 4; pass++) {
         try {
+          const stops = activeSelected.pictures.map(stopOf).filter(stop => stop !== null);
+          if (stops.length) {
+            painted = { surfaces: [], fields: {}, motion: false };
+            mode = 'failed'; reason = [...new Set(stops)].join('; '); failureOrigin = 'stream';
+            break;
+          }
           painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: activeSelected.pictures, model: widget.model, ...widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {},
             hour: activeSelected.window[0], seek: request.seek, speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
           mode = painted.mode ?? 'picture'; reason = painted.reason; failureOrigin = undefined;

@@ -50,15 +50,8 @@ export type FollowedAnswer = { kind: 'notRecorded'; reason: string } | FollowedR
 export interface FollowedPanel {
   data?: unknown;
   refused: string | null;
+  stopped?: string;
   bytes?: Uint8Array;
-}
-
-const FAILURE_MAGIC = 0x314e4546;
-
-export function followFailure(bytes: ArrayBuffer | Uint8Array): string | null {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  if (view.byteLength < 4 || new DataView(view.buffer, view.byteOffset, 4).getUint32(0, true) !== FAILURE_MAGIC) return null;
-  return decoder.decode(view.subarray(4));
 }
 
 const decoder = new TextDecoder();
@@ -242,7 +235,7 @@ export const rowKey = (answer: FollowedRows, row: number): bigint =>
 
 export interface DatedPanel { id: number; hour: number; panel: FollowedPanel | null; stepped?: boolean; waiting?: boolean; again?: boolean }
 
-export const DATED_PANEL_VERSION = 7;
+export const DATED_PANEL_VERSION = 8;
 
 type PreviousPanel = { bytes: Uint8Array | null; data: unknown };
 
@@ -263,11 +256,11 @@ export function parseDatedPanelRecord(record: Uint8Array, previous?: PreviousPan
   const data = new DataView(record.buffer, record.byteOffset, record.byteLength);
   if (record.byteLength < 16) throw new Error('Invalid dated panel record.');
   const id = data.getUint32(0, true), hour = data.getInt32(4, true), kind = data.getUint8(8), length = data.getUint32(12, true), end = 16 + length;
-  if (end > record.length || ![0, 1, 3, 5, 6].includes(kind) || (kind >= 3 && length)) throw new Error('Invalid dated panel record.');
+  if (end > record.length || ![0, 1, 3, 5, 6, 7].includes(kind) || (kind >= 3 && kind !== 7 && length)) throw new Error('Invalid dated panel record.');
   if (kind === 5) return { id, hour, panel: null, waiting: true };
   if (kind === 6) return { id, hour, panel: null, again: true, ...data.getUint8(9) & 1 ? { stepped: true } : {} };
   const body = record.subarray(16, end);
-  const panel: DatedPanel = { id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : decodePanel(body, previous) };
+  const panel: DatedPanel = { id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : kind === 7 ? { refused: null, stopped: decoder.decode(body) } : decodePanel(body, previous) };
   if (data.getUint8(9) & 1) panel.stepped = true;
   return panel;
 }

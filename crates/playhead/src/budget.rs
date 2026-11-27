@@ -15,6 +15,8 @@ impl ByteBudget {
 
     pub fn limit(&self) -> usize { self.limit }
 
+    pub fn full(&self) -> bool { self.used() >= self.limit }
+
     pub fn charge(self: &Arc<Self>) -> Charge {
         Charge { budget: self.clone(), bytes: 0 }
     }
@@ -32,19 +34,15 @@ impl Charge {
         self.bytes += std::mem::take(&mut reserved.bytes);
     }
 
-    pub fn available(&self) -> usize { self.budget.limit - self.budget.used() }
+    pub fn full(&self) -> bool { self.budget.full() }
 
-    pub fn resize(&mut self, bytes: usize) -> std::io::Result<()> {
+    pub fn resize(&mut self, bytes: usize) {
         if bytes > self.bytes {
-            let extra = bytes - self.bytes;
-            self.budget.used.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used|
-                used.checked_add(extra).filter(|&total| total <= self.budget.limit)
-            ).map_err(|_| std::io::Error::other(format!("Dated playback exceeds the shared {} byte payload limit", self.budget.limit)))?;
-        } else if bytes < self.bytes {
+            self.budget.used.fetch_add(bytes - self.bytes, Ordering::Relaxed);
+        } else {
             self.budget.used.fetch_sub(self.bytes - bytes, Ordering::Relaxed);
         }
         self.bytes = bytes;
-        Ok(())
     }
 }
 

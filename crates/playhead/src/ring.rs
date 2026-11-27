@@ -66,12 +66,9 @@ impl Ring {
         let mut steps = self.steps();
         steps.sort_unstable_by_key(Arc::as_ptr);
         steps.dedup_by(|a, b| Arc::ptr_eq(a, b));
-        let reservations = steps.iter().map(|step| {
+        for step in steps {
             let mut charge = budget.charge();
-            charge.resize(step.payload())?;
-            Ok(charge)
-        }).collect::<std::io::Result<Vec<_>>>()?;
-        for (step, charge) in steps.into_iter().zip(reservations) {
+            charge.resize(step.payload());
             *step.charge.lock().unwrap() = Some(charge);
         }
         self.budget = Some(budget);
@@ -79,22 +76,21 @@ impl Ring {
         Ok(())
     }
 
-    fn admit(&self, step: &Step) -> std::io::Result<()> {
+    fn admit(&self, step: &Step) {
         if let Some(budget) = &self.budget {
             let mut charge = step.charge.lock().unwrap();
             if charge.is_none() {
                 let mut new = budget.charge();
-                new.resize(step.payload())?;
+                new.resize(step.payload());
                 *charge = Some(new);
             }
         }
-        Ok(())
     }
 
     pub(crate) fn room(&self, head: Hour) -> bool {
         let past = self.past(head);
         let untaken = next_of(&self.built, self.furthest().unwrap_or(0));
-        past < self.size && self.built.len() - untaken < self.size && (untaken == self.built.len() || self.payload_between(untaken, self.built.len()) < self.ahead) && (past == 0 || (self.past_bytes(head) < self.ahead && self.budget.as_ref().is_none_or(|b| b.used() < b.limit())))
+        past < self.size && self.built.len() - untaken < self.size && (untaken == self.built.len() || self.payload_between(untaken, self.built.len()) < self.ahead) && (past == 0 || (self.past_bytes(head) < self.ahead && self.budget.as_ref().is_none_or(|b| !b.full())))
     }
 
     pub(crate) fn resize(&mut self, size: usize, ahead: usize) {
@@ -107,7 +103,7 @@ impl Ring {
 
     pub(crate) fn lead(&self, head: Hour) -> (usize, usize, bool) {
         let (past, bytes) = (self.past(head), self.past_bytes(head));
-        (past, bytes, past > 0 && past < self.size && (bytes >= self.ahead || self.budget.as_ref().is_some_and(|b| b.used() == b.limit())))
+        (past, bytes, past > 0 && past < self.size && (bytes >= self.ahead || self.budget.as_ref().is_some_and(|b| b.full())))
     }
 
     fn past_bytes(&self, head: Hour) -> usize {
@@ -198,11 +194,11 @@ impl Ring {
         self.epoch
     }
 
-    pub(crate) fn publish(&mut self, mut step: Arc<Step>) -> std::io::Result<Result<(), Arc<Step>>> {
+    pub(crate) fn publish(&mut self, mut step: Arc<Step>) -> Result<(), Arc<Step>> {
         if step.epoch != self.epoch {
-            return Ok(Err(step));
+            return Err(step);
         }
-        self.admit(&step)?;
+        self.admit(&step);
         let held = Arc::get_mut(&mut step).expect("a step being published is held once");
         held.seq = self.next_seq;
         if held.reset {
@@ -213,7 +209,7 @@ impl Ring {
         self.next_seq += 1;
         self.payload_offsets.push_back(self.payload_offsets[self.built.len()].wrapping_add(step.payload()));
         self.built.push_back(step);
-        Ok(Ok(()))
+        Ok(())
     }
 
     pub(crate) fn reclaim(&mut self) -> (Option<Arc<Step>>, Vec<Arc<Step>>) {
@@ -299,16 +295,16 @@ impl Ring {
         self.consumers.iter().enumerate().filter(|(_, seat)| seat.as_ref().is_some_and(|seat| seat.own.iter().any(|(_, held)| Arc::ptr_eq(held, step)))).map(|(id, _)| id).collect()
     }
 
-    pub(crate) fn land_standing(&mut self, id: usize, hour: Hour, step: Arc<Step>, revoke: &Arc<Step>) -> std::io::Result<Result<(), Arc<Step>>> {
+    pub(crate) fn land_standing(&mut self, id: usize, hour: Hour, step: Arc<Step>, revoke: &Arc<Step>) -> Result<(), Arc<Step>> {
         if self.stands_at(id) != Some(hour) {
-            return Ok(Err(step));
+            return Err(step);
         }
-        self.admit(&step)?;
-        let Some(seat) = self.consumers[id].as_mut() else { return Ok(Err(step)) };
-        let Some(at) = seat.own.iter().position(|(_, held)| Arc::ptr_eq(held, revoke)) else { return Ok(Err(step)) };
+        self.admit(&step);
+        let Some(seat) = self.consumers[id].as_mut() else { return Err(step) };
+        let Some(at) = seat.own.iter().position(|(_, held)| Arc::ptr_eq(held, revoke)) else { return Err(step) };
         retire(&mut self.lent, self.budget.is_none(), seat.own.remove(at).map(|(_, held)| held));
         seat.own.push_front((seat.next, step));
-        Ok(Ok(()))
+        Ok(())
     }
 
     pub(crate) fn published_now(&self) -> Option<(Hour, u64)> {
@@ -332,19 +328,19 @@ impl Ring {
         Some(self.piece_end(from).map_or(hour, |step| hour.min(step.first - 1)))
     }
 
-    pub(crate) fn land_at(&mut self, id: usize, hour: Hour, steps: Vec<Arc<Step>>) -> std::io::Result<Result<(), Vec<Arc<Step>>>> {
+    pub(crate) fn land_at(&mut self, id: usize, hour: Hour, steps: Vec<Arc<Step>>) -> Result<(), Vec<Arc<Step>>> {
         let position = match self.built.iter().find(|step| step.last > hour) {
             Some(step) if step.first == hour + 1 => step.seq,
             None if self.published == Some(hour) => self.next_seq,
-            _ => return Ok(Err(steps)),
+            _ => return Err(steps),
         };
-        for step in &steps { self.admit(step)?; }
-        let Some(seat) = self.consumers.get_mut(id).and_then(Option::as_mut).filter(|seat| seat.parked.is_some()) else { return Ok(Err(steps)) };
+        for step in &steps { self.admit(step); }
+        let Some(seat) = self.consumers.get_mut(id).and_then(Option::as_mut).filter(|seat| seat.parked.is_some()) else { return Err(steps) };
         (seat.next, seat.parked) = (position, None);
         seat.own.extend(steps.into_iter().map(|step| (position, step)));
         self.park_behind();
         self.trim();
-        Ok(Ok(()))
+        Ok(())
     }
 
     pub(crate) fn take(&mut self, id: usize, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
@@ -439,7 +435,7 @@ impl Ring {
         Some((position, hour, past.map(|step| Span { seq: step.seq, first: step.first, last: step.last, gap: step.piece.is_none() }).collect()))
     }
 
-    pub(crate) fn complete(&mut self, sets: Vec<(u64, Vec<Changes>)>) -> std::io::Result<Vec<Changes>> {
+    pub(crate) fn complete(&mut self, sets: Vec<(u64, Vec<Changes>)>) -> Vec<Changes> {
         let mut reservations = VecDeque::new();
         if let Some(budget) = &self.budget {
             for (seq, set) in &sets {
@@ -452,7 +448,7 @@ impl Ring {
                     after += changes.payload();
                 }
                 let mut reserved = budget.charge();
-                reserved.resize(if Arc::strong_count(step) == 1 { after.saturating_sub(before) } else { after })?;
+                reserved.resize(if Arc::strong_count(step) == 1 { after.saturating_sub(before) } else { after });
                 reservations.push_back((reserved, after));
             }
         }
@@ -473,7 +469,7 @@ impl Ring {
                 let charge = step.charge.get_mut().unwrap();
                 if let Some(existing) = charge {
                     existing.absorb(reserved);
-                    existing.resize(after)?;
+                    existing.resize(after);
                 } else { *charge = Some(reserved); }
             }
             for changes in set {
@@ -486,11 +482,11 @@ impl Ring {
         for at in first_changed..self.built.len() {
             self.payload_offsets[at + 1] = self.payload_offsets[at].wrapping_add(self.built[at].payload());
         }
-        Ok(replaced)
+        replaced
     }
 
-    pub(crate) fn give(&mut self, reader: Reader, before: u64, steps: &[Arc<Step>]) -> std::io::Result<()> {
-        for step in steps { self.admit(step)?; }
+    pub(crate) fn give(&mut self, reader: Reader, before: u64, steps: &[Arc<Step>]) {
+        for step in steps { self.admit(step); }
         let mut given = false;
         for seat in self.consumers.iter_mut().flatten().filter(|seat| seat.reader == reader) {
             let at = place(&seat.own, before);
@@ -502,26 +498,24 @@ impl Ring {
         if !given {
             self.orphans.extend(steps.iter().map(|step| (reader, before, Arc::clone(step))));
         }
-        Ok(())
     }
 
     pub(crate) fn holds_own(&self, step: &Arc<Step>) -> bool {
         self.consumers.iter().flatten().any(|seat| seat.own.iter().any(|(_, held)| Arc::ptr_eq(held, step))) || self.orphans.iter().any(|(_, _, held)| Arc::ptr_eq(held, step))
     }
 
-    pub(crate) fn jump(&mut self, id: usize, step: Arc<Step>) -> std::io::Result<()> {
-        self.admit(&step)?;
+    pub(crate) fn jump(&mut self, id: usize, step: Arc<Step>) {
+        self.admit(&step);
         let next = self.next_seq;
         let Some(seat) = self.consumers[id].as_mut() else {
             retire(&mut self.lent, self.budget.is_none(), [step]);
-            return Ok(());
+            return;
         };
         (seat.next, seat.parked) = (next, None);
         retire(&mut self.lent, self.budget.is_none(), seat.own.drain(..).map(|(_, held)| held));
         seat.own.push_back((next, step));
         self.park_behind();
         self.trim();
-        Ok(())
     }
 
     pub(crate) fn cut(&mut self, position: u64) -> (Vec<(Reader, Vec<usize>)>, Vec<usize>) {
