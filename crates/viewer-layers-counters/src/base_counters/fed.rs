@@ -50,7 +50,7 @@ impl Work {
     }
 }
 
-fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
+fn run(jobs: mpsc::Receiver<Job>, made: viewer_layer_core::landed::Sender<Made>) {
     let mut work: Option<Work> = None;
     let mut epoch = 0;
     let mut next = None;
@@ -227,7 +227,7 @@ impl Layer for BaseCountersFed {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = viewer_layer_core::landed::channel();
             thread::Builder::new().name("base counters".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();
                 run(receive, send)

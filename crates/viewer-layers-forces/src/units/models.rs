@@ -197,7 +197,11 @@ impl Shared {
 
     fn answered(&self, stands: Hour) {
         let mut held = self.lock();
+        let before = held.answered;
         (held.answered, held.working) = (held.answered.max(Some(stands)), false);
+        if held.answered != before {
+            viewer_layer_core::landed::moved();
+        }
         drop(held);
         self.done.notify_all();
     }
@@ -215,6 +219,7 @@ impl Shared {
             });
         if moved {
             held.published = stamp;
+            viewer_layer_core::landed::moved();
         }
         drop(held);
         self.done.notify_all();
@@ -314,6 +319,7 @@ fn work(shared: &Shared, select: &dyn Select, reader: &views::Reader, maker: tim
         }
         (held.answered, held.working) = (held.answered.max(Some(stands)), false);
         drop(held);
+        viewer_layer_core::landed::moved();
         shared.done.notify_all();
     }
 }

@@ -377,7 +377,7 @@ fn superseded(next: Option<&Job>, epoch: u64, due: &Due) -> bool {
     }
 }
 
-fn run(content: Arc<Content>, jobs: Receiver<Job>, made: Sender<Made>, due: Due) {
+fn run(content: Arc<Content>, jobs: Receiver<Job>, made: crate::landed::Sender<Made>, due: Due) {
     let mut work: Option<Work> = None;
     let mut epoch = 0;
     while let Ok(job) = jobs.recv() {
@@ -473,7 +473,7 @@ impl Folder {
     pub(super) fn reset(&mut self, mirrors: &Mirrors, columns: &Columns, choice: &Choice) {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = crate::landed::channel();
             let (content, due) = (Arc::clone(&self.content), self.fed.due());
             if std::thread::Builder::new().name("vision fold".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();

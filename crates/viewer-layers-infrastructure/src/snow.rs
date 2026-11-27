@@ -288,7 +288,7 @@ fn superseded(next: Option<&Job>, epoch: u64, due: &Due) -> bool {
     }
 }
 
-fn run(content: Arc<Content>, jobs: Receiver<Job>, made: Sender<Made>, due: Due) {
+fn run(content: Arc<Content>, jobs: Receiver<Job>, made: viewer_layer_core::landed::Sender<Made>, due: Due) {
     let mut work: Option<(Fold, Option<Table>, [u64; 3], Option<Hour>)> = None;
     let mut epoch = 0;
     while let Ok(job) = jobs.recv() {
@@ -583,7 +583,7 @@ impl Layer for Snow {
         let (Ok(content), Some(columns)) = (&self.content, self.columns) else { return Ok(()) };
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = viewer_layer_core::landed::channel();
             let (content, due) = (Arc::clone(content), self.fed.due());
             std::thread::Builder::new().name("snow fold".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();

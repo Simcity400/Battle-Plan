@@ -84,7 +84,7 @@ impl Open {
     fn new(views: &Views, tables: &[TableId], pace: Pace, evaluate: &Arc<dyn Evaluate>) -> io::Result<Self> {
         let reader = views.reader_at(NAME, &tables.iter().copied().map(Need::every).collect::<Vec<Need>>(), pace);
         let (jobs, receive) = mpsc::channel::<Work>();
-        let (send, done) = mpsc::channel();
+        let (send, done) = viewer_layer_core::landed::channel();
         let evaluate = Arc::clone(evaluate);
         std::thread::Builder::new().name("intel icons".into()).spawn(move || {
             viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);

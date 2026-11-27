@@ -1450,7 +1450,7 @@ fn make_views(shared: &Shared) {
 fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[usize], (hour, branch, epoch): (Hour, BranchId, u64)) {
     let (mut order, mut made) = (Vec::new(), Made::default());
     let mut readers = lock(&shared.readers);
-    let mut published = false;
+    let (mut published, mut landed) = (false, false);
     for &place in places {
         let Some(reading) = readers.get(place) else { continue };
         let is_written = |table: usize| matches!(shared.written[table], playhead::pages::TableWritten::Written);
@@ -1555,6 +1555,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
         reading.frame = Some(Arc::new(frame));
         published = true;
         reading.failures = Arc::from(failures);
+        landed |= reading.stands != Some((hour, epoch));
         reading.stands = Some((hour, epoch));
         reading.published += 1;
         reading.due_at = reading.pace.interval().map(|interval| Instant::now() + interval);
@@ -1576,6 +1577,9 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
     }
     drop(readers);
     shared.made.notify_all();
+    if landed {
+        crate::landed::moved();
+    }
     if published {
         shared.entry.playhead().wake_waiters();
         let on_publish = lock(&shared.on_publish).clone();

@@ -127,7 +127,11 @@ impl Shared {
         if held.hour.is_some() {
             held.hour = held.hour.max(Some(stands));
         }
+        let before = held.answered;
         held.answered = held.answered.max(Some(stands));
+        if held.answered != before {
+            viewer_layer_core::landed::moved();
+        }
         drop(held);
         self.done.notify_all();
     }
@@ -506,6 +510,7 @@ impl Run {
             }
             self.publish_answer(shared, answer, busy_ns, &frame);
             self.publish(shared, reader, false);
+            viewer_layer_core::landed::moved();
             shared.done.notify_all();
         }
     }

@@ -476,10 +476,11 @@ pub struct Overlay {
     maker: timeline::Maker,
 }
 
-type Offered = (LayInKeys, [usize; 6], Kinds, LeftToLayers, bool);
+type Offered = (LayInKeys, [usize; 6], Kinds, LeftToLayers, bool, Option<usize>);
 
-fn offered(layers: viewer_layer_core::playhead_host::LayerParts<'_>) -> Offered {
-    (LayInKeys::of(layers), counter_kinds::published(layers).identity(), counter_kinds::draws(layers), LeftToLayers::of(Some(layers)), layers.draws("labels"))
+fn offered(layers: viewer_layer_core::playhead_host::LayerParts<'_>, branch: Option<BranchId>) -> Offered {
+    let raids = LayIns::of(layers, branch).raids.map(|icons| Arc::as_ptr(&icons) as usize);
+    (LayInKeys::of(layers), counter_kinds::published(layers).identity(), counter_kinds::draws(layers), LeftToLayers::of(Some(layers)), layers.draws("labels"), raids)
 }
 
 impl Overlay {
@@ -601,7 +602,7 @@ impl Overlay {
             return false;
         }
         self.stamp += 1;
-        self.offered = Some((keys.clone(), published.identity(), draws, left, draws_labels));
+        self.offered = Some((keys.clone(), published.identity(), draws, left, draws_labels, lay_ins.raids.as_ref().map(|icons| Arc::as_ptr(icons) as usize)));
         let want = Wanted {
             generation: self.generation,
             stamp: self.stamp,
@@ -1211,8 +1212,8 @@ impl Overlaying<Products> for Overlay {
         Overlay::refused(self)
     }
 
-    fn offered_stale(&self, layers: viewer_layer_core::playhead_host::LayerParts<'_>) -> bool {
-        self.posted && self.offered.as_ref() != Some(&offered(layers))
+    fn offered_stale(&self, layers: viewer_layer_core::playhead_host::LayerParts<'_>, branch: Option<BranchId>) -> bool {
+        self.posted && self.offered.as_ref() != Some(&offered(layers, branch))
     }
 }
 

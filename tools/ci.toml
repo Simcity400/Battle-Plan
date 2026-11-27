@@ -91,6 +91,14 @@ inputs = [".github/**", "tools/check-workflows.py"]
 command = ["{python}", "tools/check-workflows.py"]
 
 [[job]]
+name = "landed"
+group = "linux"
+tier = "check"
+toolchain = "python"
+inputs = ["crates/viewer-layer-core/src/**", "crates/viewer-layers-*/src/**", "tools/check-landed.py"]
+command = ["{python}", "tools/check-landed.py"]
+
+[[job]]
 name = "suppressions"
 group = "linux"
 tier = "check"

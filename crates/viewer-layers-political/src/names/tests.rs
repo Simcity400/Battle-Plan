@@ -636,7 +636,7 @@ fn a_reset_places_its_areas_where_the_camera_draws_names() {
     let tables = viewer_layer_core::owned::Tables::from_mirrors(mirrors, &columns.shapes());
     let atlas: Arc<dyn Atlas> = Arc::clone(&layer.content);
     let (jobs, receive) = std::sync::mpsc::channel();
-    let (send, made) = std::sync::mpsc::channel();
+    let (send, made) = viewer_layer_core::landed::channel();
     let due = super::Due::default();
     let worker = std::thread::Builder::new().name("names reset".into()).spawn(move || super::run(atlas, receive, send, due)).unwrap();
     jobs.send(super::Job::Reset { epoch: 7, tables: Box::new(tables), columns, stamp: Some(4), placing: true }).unwrap();

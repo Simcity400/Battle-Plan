@@ -196,7 +196,7 @@ impl Maker {
         #[cfg(test)] sent: Arc<(Mutex<(usize, bool)>, std::sync::Condvar)>,
     ) -> io::Result<(Sender<Job>, Receiver<Made>)> {
         let (jobs, receive) = mpsc::channel::<Job>();
-        let (send, made) = mpsc::channel::<Made>();
+        let (send, made) = viewer_layer_core::landed::channel::<Made>();
         let mut maker = Self { routes, stops: HashMap::new(), ribbons: HashMap::new(), provinces_version: 0 };
         std::thread::Builder::new().name("convoys".into()).spawn(move || {
             #[cfg(test)]

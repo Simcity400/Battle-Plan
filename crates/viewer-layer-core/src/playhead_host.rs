@@ -416,7 +416,7 @@ struct Worker {
 impl Worker {
     fn new() -> io::Result<Self> {
         let (jobs, receive) = mpsc::channel::<Job>();
-        let (send, done) = mpsc::channel();
+        let (send, done) = crate::landed::channel();
         std::thread::Builder::new().name("playhead host worker".into()).spawn(move || {
             viewer_runtime::worker_priority::enter(COMPOSE_CLASS);
             for job in receive {
@@ -653,7 +653,7 @@ pub trait Overlaying<P: PlaybackProducts>: Send {
     fn missed(&self) -> &[TableId];
     fn wants_turn(&self) -> bool;
     fn refused(&self) -> bool;
-    fn offered_stale(&self, layers: LayerParts<'_>) -> bool;
+    fn offered_stale(&self, layers: LayerParts<'_>, branch: Option<replay_data::BranchId>) -> bool;
 }
 
 #[derive(Clone, Copy)]
@@ -777,7 +777,7 @@ pub struct MapSide<P: PlaybackProducts = NoProducts> {
     cancel: Arc<AtomicBool>,
     superseded: bool,
     demand: u64,
-    reasons: u64,
+    landed: u64,
     covered: bool,
     whole: bool,
     fresh: Vec<bool>,
@@ -934,7 +934,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             cancel: Arc::default(),
             superseded: false,
             demand: 0,
-            reasons: 0,
+            landed: 0,
             covered: false,
             whole: false,
             fresh: Vec::new(),
@@ -1256,7 +1256,8 @@ impl<P: PlaybackProducts> MapSide<P> {
 
     fn frame_step(&mut self, head: Hour, settling: crate::layers::Settling, lay: bool, wait_compose: bool) -> io::Result<Frame> {
         self.frame += 1;
-        (self.demand, self.reasons) = (self.views.demand(), details::reasons_landed());
+        (self.demand, self.landed, self.covered) = (self.views.demand(), crate::landed::count(), self.covering());
+        self.vision.take_made();
         let stepping = Instant::now();
         let doing = Arc::clone(&self.doing);
         let mut watch = Watch::new(&doing);
@@ -1597,7 +1598,6 @@ impl<P: PlaybackProducts> MapSide<P> {
         self.combat.join(settling, viewer_runtime::simulation_rate::interval());
         timeline::close(frame.composing);
         self.last = frame.clone();
-        self.covered = self.covering();
         Ok(frame)
     }
 
@@ -2257,16 +2257,16 @@ impl<P: PlaybackProducts> MapSide<P> {
             || self.mode.as_ref() != Some(&view.map_mode)
             || !self.whole
             || !self.on_screen().is_some_and(|on| on.settled && on.drawn == Some(head))
-            || self.overlay.as_deref().is_some_and(|overlay| overlay.offered_stale(self.layer_parts()))
+            || self.overlay.as_deref().is_some_and(|overlay| overlay.offered_stale(self.layer_parts(), self.branch))
             || self.answers_waiting()
     }
 
     pub fn answers_waiting(&self) -> bool {
         self.views.demand() != self.demand
             || self.epoch != self.entry.playhead.epoch()
-            || details::reasons_landed() != self.reasons
+            || crate::landed::count() != self.landed
             || self.covering() != self.covered
-            || self.vision.landed()
+            || (self.failure.is_none() && self.entry.playhead.error().is_some())
             || self.overlay.as_deref().is_some_and(Overlaying::wants_turn)
             || self.combat.wants_turn()
     }

@@ -145,6 +145,7 @@ impl Asker {
                 let mut answers = answers.lock().unwrap_or_else(|error| error.into_inner());
                 answers.asked.remove(&question);
                 answers.given.insert(question, answer);
+                viewer_layer_core::landed::moved();
                 signal.notify_all();
             }
         });

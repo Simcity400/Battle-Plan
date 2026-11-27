@@ -59,7 +59,7 @@ pub(super) struct Worker {
 impl Worker {
     pub(super) fn start(source: Arc<dyn Source>, branch: BranchId, stepped: Result<Stepped, String>) -> io::Result<Self> {
         let (jobs, received) = mpsc::channel::<Sent>();
-        let (made, taken) = mpsc::channel::<Made>();
+        let (made, taken) = viewer_layer_core::landed::channel::<Made>();
         let generation = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let alive = Arc::new(AtomicBool::new(true));
@@ -155,7 +155,7 @@ struct Run {
 type Through = Option<(u64, u64, Hour)>;
 
 impl Run {
-    fn run(mut self, received: &Receiver<Sent>, made: &Sender<Made>) {
+    fn run(mut self, received: &Receiver<Sent>, made: &viewer_layer_core::landed::Sender<Made>) {
         let mut pending: VecDeque<(u64, u64, Job)> = VecDeque::new();
         let mut through: Through = None;
         loop {
@@ -183,7 +183,7 @@ impl Run {
         }
     }
 
-    fn progress(&mut self, pending: &mut VecDeque<(u64, u64, Job)>, through: Through, made: &Sender<Made>) -> bool {
+    fn progress(&mut self, pending: &mut VecDeque<(u64, u64, Job)>, through: Through, made: &viewer_layer_core::landed::Sender<Made>) -> bool {
         let current = self.generation.load(Ordering::Acquire);
         pending.retain(|&(generation, ..)| generation == current);
         let through = through.filter(|&(generation, ..)| generation == current).map(|(_, epoch, hour)| (epoch, hour));

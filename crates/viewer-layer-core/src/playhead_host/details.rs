@@ -5,7 +5,6 @@ use super::{Entry, MapSide, mirror::Mirrors};
 mod reasons;
 #[cfg(any(test, feature = "test-support"))]
 pub use reasons::BEING_READ;
-pub(crate) use reasons::landed as reasons_landed;
 use replay_columnar::{
     manifest::Status,
     unit::{BLOCK, reader},

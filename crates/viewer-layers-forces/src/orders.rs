@@ -196,6 +196,7 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
                 });
             if moved {
                 held.published = stamp;
+                viewer_layer_core::landed::moved();
             }
             drop(held);
             shared.done.notify_all();
@@ -246,6 +247,7 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
             notes: plan_notes(own.map_err(|error| error.to_string())),
         });
         drop(held);
+        viewer_layer_core::landed::moved();
         shared.done.notify_all();
     }
 }

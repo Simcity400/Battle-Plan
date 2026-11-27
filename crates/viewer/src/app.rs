@@ -4439,14 +4439,12 @@ impl Viewer {
             self.playhead_opening = None;
             let ctx = ui.ctx().clone();
             let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(viewer_runtime::worker_priority::waking(move || ctx.request_repaint()));
-            let published = Arc::clone(&wake);
             match made.and_then(|side| viewer_playback::side::SideThread::new(side, wake)) {
                 Ok(side) if self.playhead.is_some_and(|clock| side.branch().is_some_and(|branch| branch != clock.branch)) => {
                     self.drop_later(side);
                     self.playhead_opened = false;
                 }
                 Ok(side) => {
-                    side.views().set_on_publish(published);
                     document.playback.read_rosters_of(side.entry());
                     let released = document.playback.release_source();
                     self.retire(released);

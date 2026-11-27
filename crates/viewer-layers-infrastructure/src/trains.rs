@@ -419,7 +419,7 @@ fn superseded(queue: &VecDeque<Job>, epoch: u64, due: &Due) -> bool {
     })
 }
 
-fn run(jobs: Receiver<Job>, out: Sender<Product>, due: Due) {
+fn run(jobs: Receiver<Job>, out: viewer_layer_core::landed::Sender<Product>, due: Due) {
     let mut work: Option<Box<Work>> = None;
     let (mut epoch, mut stamp) = (0, None);
     while let Ok(job) = jobs.recv() {
@@ -843,7 +843,7 @@ impl Layer for Trains {
         self.worker_held = work.held();
         if self.worker.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = viewer_layer_core::landed::channel();
             let due = self.fed.due();
             std::thread::Builder::new().name("trains plan".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();

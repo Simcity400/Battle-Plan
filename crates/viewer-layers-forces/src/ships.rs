@@ -330,6 +330,7 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
                 asked.answered = Some(head);
                 asked.answered_at = Some(Instant::now());
                 timeline::mark(maker, Mark::Published);
+                viewer_layer_core::landed::moved();
                 shared.answered.notify_all();
             }
             if !std::mem::take(&mut asked.woken) {
@@ -392,6 +393,7 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
                 asked.answered_at = Some(Instant::now());
                 last = Some(frame);
                 timeline::mark(maker, Mark::Published);
+                viewer_layer_core::landed::moved();
                 shared.answered.notify_all();
             } else if let Some(stands) = reader.as_ref().and_then(|reader| reader.through(Arc::as_ptr(&frame)))
                 && asked.answered.is_some_and(|answered| answered < stands)

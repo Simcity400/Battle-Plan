@@ -136,7 +136,7 @@ impl Gate {
     }
 }
 
-fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, #[cfg(any(test, feature = "test-support"))] gate: Arc<Gate>) {
+fn run(jobs: mpsc::Receiver<Job>, made: viewer_layer_core::landed::Sender<Made>, #[cfg(any(test, feature = "test-support"))] gate: Arc<Gate>) {
     let mut work: Option<Work> = None;
     let mut epoch = 0;
     let mut next = None;
@@ -428,7 +428,7 @@ impl Layer for Fed {
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = viewer_layer_core::landed::channel();
             #[cfg(any(test, feature = "test-support"))]
             let gate = Arc::clone(&self.gate);
             thread::Builder::new().name("counters fold".into()).spawn(move || {

@@ -4,6 +4,7 @@ static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 pub mod comparison;
 pub mod counter_rows;
+pub mod landed;
 pub mod lane_rows;
 pub mod layers;
 pub mod playhead_host;

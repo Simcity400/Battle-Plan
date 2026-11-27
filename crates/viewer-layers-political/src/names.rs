@@ -210,7 +210,7 @@ struct Placers {
 impl Placers {
     fn new(atlas: &Arc<dyn Atlas>) -> Self {
         let queue: Arc<(Mutex<(VecDeque<Placing>, bool)>, Condvar)> = Arc::default();
-        let (sender, done) = mpsc::channel();
+        let (sender, done) = viewer_layer_core::landed::channel();
         let threads = (0..PLACERS)
             .filter_map(|_| {
                 let (held, atlas, sender) = (Arc::clone(&queue), Arc::clone(atlas), sender.clone());
@@ -243,7 +243,7 @@ fn placing(atlas: &dyn Atlas, job: Placing) -> Placed {
     Placed { slot: job.slot, tag: job.tag, shown: job.shown, placed, ns: started.elapsed().as_nanos() as u64 }
 }
 
-fn place_jobs(queue: &(Mutex<(VecDeque<Placing>, bool)>, Condvar), atlas: &dyn Atlas, sender: &mpsc::Sender<Placed>) {
+fn place_jobs(queue: &(Mutex<(VecDeque<Placing>, bool)>, Condvar), atlas: &dyn Atlas, sender: &viewer_layer_core::landed::Sender<Placed>) {
     let (lock, wake) = queue;
     loop {
         let job = {
@@ -836,7 +836,7 @@ fn superseded(next: Option<&Job>, epoch: u64, due: &Due) -> bool {
     }
 }
 
-fn run(content: Arc<dyn Atlas>, jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, due: Due) {
+fn run(content: Arc<dyn Atlas>, jobs: mpsc::Receiver<Job>, made: viewer_layer_core::landed::Sender<Made>, due: Due) {
     let placers = Placers::new(&content);
     let mut model: Option<Model> = None;
     let mut epoch = 0;
@@ -979,7 +979,7 @@ impl Names {
         let columns = self.columns.expect("the names layer is declared before it starts");
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = viewer_layer_core::landed::channel();
             let (content, due) = (Arc::clone(&self.content), self.fed.due());
             thread::Builder::new().name("names fold".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();
