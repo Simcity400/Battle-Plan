@@ -90,3 +90,29 @@ test('a lane worker still loading the code two widgets need keeps the pipeline u
     assert.equal(await act<boolean>('prepared()'), true);
     assert.deepEqual(ids.map(id => after[id]!.main), [['empty: This country is in no faction at this date.'], ['empty: Choose a holder: click its bar in the race.']]);
   }, 300_000), [HOLD]));
+
+test('seeking into recorded divisions registers the settled row count once, and a height change registers one new count', () =>
+  withNativePage('time-sweep-decorated', '/ui/src/dashboard/timeSweep.dom.fixture.tsx', page => page.stage('decorated divisions seek', async () => {
+    const act = <T,>(expression: string) => page.evaluate<T>(`window.timeSweep.${expression}`);
+    const id = 'most-decorated-divisions|follow|main';
+    await act(`mount(["${id}"], 'decorated', 95)`);
+    assert.deepEqual(await act('decoratedRegistrations()'), []);
+    const seeking = await act<Step>('seek(100)');
+    assert.match(seeking.states[id]!.main[0]!, /^loading:/);
+    const settled = await act<Read>('settleDecorated()');
+    assert.equal(settled.shown, 1000);
+    assert.deepEqual(settled.main, []);
+    const seek = await act<{ count: number }[]>('decoratedRegistrations()');
+    assert.deepEqual(seek.map(query => query.count), [11]);
+
+    await act('seek(104)');
+    const followed = await act<Read>('settleDecorated()');
+    assert.equal(followed.shown, 1004);
+    assert.deepEqual(await act('decoratedRegistrations()'), []);
+
+    await act('resizeDecorated(492)');
+    const resized = await act<Read>('settleDecorated()');
+    assert.equal(resized.shown, 1004);
+    const resize = await act<{ count: number }[]>('decoratedRegistrations()');
+    assert.deepEqual(resize.map(query => query.count), [13]);
+  })));

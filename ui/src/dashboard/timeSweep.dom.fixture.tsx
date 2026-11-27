@@ -13,11 +13,13 @@ import { MapViewsStore } from './geometry';
 import { WidgetBody } from './widgets';
 import { loadEveryWidgetModule } from './widgetModules.fixture.ts';
 import { pipelineOf } from './follow/useFollowed.ts';
+import { datedPanel } from './follow/messages.fixture.ts';
+import { packet, splitForLanes } from './follow/split.ts';
 import { laneModules } from '../widgets/manifest';
 import { MeasuredWidget } from './widgetPerf';
 import { measureWith } from '../shell/perf';
 import type { PerfRecorder } from '../shell/perf';
-import type { CountryGroupReply, CountryIdentitiesReply } from '../generated/dashboard';
+import type { CountryGroupReply, CountryIdentitiesReply, DecoratedDivisionsReply } from '../generated/dashboard';
 
 class OnScreen {
   private readonly heard: IntersectionObserverCallback;
@@ -46,10 +48,21 @@ const groups: CountryGroupReply = {
   countryIdentities: ['GER', 'ENG'].map((tag, index) => ({ tag, identities: [{ slot: index + 1, countryId: index + 101, firstHour: FIRST, lastHour: LAST }] })),
 } as unknown as CountryGroupReply;
 
-type Replies = 'pending' | 'failing';
+type Replies = 'pending' | 'failing' | 'decorated';
 const pending = new Promise<never>(() => {});
 const requests: string[] = [];
 const asked: { product: string; hour: number }[] = [];
+const decoratedRegistrations: { count: number }[] = [];
+const decoratedRoute = 9;
+let decoratedSub: number | undefined;
+let followPorts: readonly MessagePort[] = [];
+const decoratedReply: DecoratedDivisionsReply = {
+  divisions: [{
+    division: 'd-17', tag: null, template: 't-17', name: 'Field unit', nameMissing: null,
+    facts: { medals: 0, awards: [], historyMissing: null, experienceRaw: null, level: null, levelName: null, casualtiesTaken: 0, enemyKilled: 0, enemyKilledMissing: null },
+  }],
+  medals: [], templates: [], partial: null, missing: null, warnings: [],
+};
 const reply = (request: { sourceId: string; revision: string; product: string }, data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
 const POINT = (key: string) => key === 'hour' || key === 'reads' || key.endsWith('Hour') && key !== 'firstHour' && key !== 'lastHour';
 const hoursIn = (value: unknown, key = ''): number[] => Array.isArray(value) ? value.flatMap(item => hoursIn(item, key))
@@ -57,10 +70,18 @@ const hoursIn = (value: unknown, key = ''): number[] => Array.isArray(value) ? v
   : typeof value === 'number' && POINT(key) ? [value] : [];
 const makeClient = (replies: Replies) => ({
   available: true,
+  ...(replies === 'decorated' ? { openFollow: async (ports: readonly MessagePort[]) => { followPorts = ports; } } : {}),
   product: async (request: { sourceId: string; revision: string; product: string; params?: unknown }) => {
     requests.push(`${request.product} ${JSON.stringify(request.params)}`.slice(0, 300));
     if (request.product !== 'follow' && request.product !== 'follow-clock') for (const hour of new Set(hoursIn(request.params))) asked.push({ product: request.product, hour });
-    if (request.product === 'follow') return reply(request, { available: false, reason: 'not followed in the sweep' });
+    if (request.product === 'follow') {
+      if (replies !== 'decorated') return reply(request, { available: false, reason: 'not followed in the sweep' });
+      const { id, query } = request.params as { id: number; query: { count: number } };
+      decoratedSub = id;
+      decoratedRegistrations.push(query);
+      return reply(request, { available: true, route: decoratedRoute });
+    }
+    if (replies === 'decorated' && request.product === 'follow-clock') return reply(request, { available: true });
     if (request.product === 'follow-clock' || request.product === 'unfollow') return reply(request, null);
     if (request.product === 'country-groups') return reply(request, groups);
     if (request.product === 'country-identities') return reply(request, { branchId: 'branch', known: [], countries: groups.countryIdentities.map(entry => ({ ...entry, unresolved: [] })), unknown: [], warnings: [] } satisfies CountryIdentitiesReply);
@@ -161,6 +182,21 @@ Object.assign(window, { timeSweep: {
   async whenPrepared() { await pipeline?.whenPrepared(); await settle(); return Object.fromEntries(mounted.map(item => [item.id, read(item)])); },
   asked: () => asked.splice(0),
   preload: () => loadEveryWidgetModule(),
+  decoratedRegistrations: () => decoratedRegistrations.splice(0),
+  async settleDecorated() {
+    if (decoratedSub === undefined || pipeline?.status(decoratedSub).status !== 'followed') throw new Error('Expected an active decorated divisions registration');
+    const hour = clock.getHour() + OFFSET;
+    const bytes = datedPanel(decoratedSub, hour, decoratedReply, clock.getSnapshot().seekSequence, decoratedRoute);
+    splitForLanes(bytes, followPorts.length).lanes.forEach((part, lane) => {
+      if (part) followPorts[lane]!.postMessage(packet('panels', part, undefined), [part.buffer]);
+    });
+    await settle();
+    return read(mounted[0]!);
+  },
+  async resizeDecorated(height: number) {
+    document.getElementById(mounted[0]!.id)!.style.height = `${height}px`;
+    await settle();
+  },
   async mount(ids: string[], replies: Replies, axis: number, prepared = true) {
     const runtime = makeRuntime(replies);
     root?.unmount();
