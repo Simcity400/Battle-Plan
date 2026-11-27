@@ -14,20 +14,39 @@ interface Row extends DatedLogRow {
 const makeReply = (rows: readonly Row[], total: number, missing: TailReply<Row>['missing'] = []): TailReply<Row> => ({
   total,
   offset: 0,
-  baseOrdinal: 0,
-  firstOrdinal: 0,
   rows,
   facetTotals: new Map(),
   missing,
 });
 
 const rawReply = (rows: readonly DatedLogRow[], total: number, extra: Record<string, unknown> = {}) => ({
-  total: String(total), offset: '0', baseOrdinal: '0', firstOrdinal: '0', rows, missing: [], counts: [], ...extra,
+  total: String(total), offset: '0', rows, missing: [], counts: [], ...extra,
 });
 const page = (hour: number, offset: number, limit: number, rows: readonly DatedLogRow[], total: number, counts: { key: string; total: string }[] = []): SnapshotPage => {
   const raw = rawReply(rows, total, { offset: String(offset), counts });
   return { hour, offset, limit, raw, reply: validateGenericTailReply(raw, hour) };
 };
+
+test('the log refuses a missing or empty row identity and keeps the next recorded row', () => {
+  const raw = { total: '3', offset: '0', rows: [{ hour: 100 }, { key: '', hour: 100 }, { key: 'third', hour: 98 }] };
+  const source = buildRowSourceFromHead('log', raw, undefined, 100)!;
+  const slots = source.sliceAt(100, 0, 3);
+  assert.deepEqual(slots, [
+    { kind: 'refused', ordinal: 0, readAt: 100, hour: 100, reason: 'The log row identity was not recorded.' },
+    { kind: 'refused', ordinal: 1, readAt: 100, hour: 100, reason: 'The log row identity was not recorded.' },
+    { kind: 'data', ordinal: 2, readAt: 100, row: { key: 'third', hour: 98 } },
+  ]);
+  const withGap = buildNavigableSlots(100, slots, [{ firstHour: 99, lastHour: 99, reason: 'Recording gap' }], 3);
+  assert.deepEqual(withGap.map(slot => slot.kind), ['refused', 'refused', 'gap', 'data']);
+});
+
+test('a scrolled log places a recording gap using the recorded hour of a refused row', () => {
+  const raw = { total: '3', offset: '1', rows: [{ key: '', hour: 100 }, { key: 'next', hour: 98 }] };
+  const source = buildRowSourceFromHead('log', raw, undefined, 100)!;
+  const slots = source.sliceAt(100, 1, 2);
+  const withGap = buildNavigableSlots(100, slots, [{ firstHour: 99, lastHour: 99, reason: 'Recording gap' }], 3);
+  assert.deepEqual(withGap.map(slot => slot.kind), ['refused', 'gap', 'data']);
+});
 
 test('a scrolled log is one snapshot: total, chips and rows come from the pages of one hour, never mixed with a later live head', () => {
   const head = rawReply([{ key: 'new', hour: 101 }, { key: 'r0', hour: 100 }, { key: 'r1', hour: 99 }], 7);
@@ -246,7 +265,7 @@ test('S3: tail decoder turns per-row decode errors into refused slots with their
   ], 2, { missing: [{ firstHour: 110, lastHour: 115, reason: 'Collector detached', before: '1' }] });
   const source = buildRowSourceFromHead('q:head', head, undefined, 130, undefined, validate)!;
   assert.deepEqual(source.sliceAt(130, 0, 2), [
-    { kind: 'refused', ordinal: 0, readAt: 130, reason: 'Row payload is malformed.' },
+    { kind: 'refused', ordinal: 0, readAt: 130, hour: 120, reason: 'Row payload is malformed.' },
     { kind: 'data', ordinal: 1, readAt: 130, row: { key: 'ok1', hour: 100, label: 'good' } },
   ]);
   const projected = projectPagedSlots(source, 130, { first: 0, count: 10 }, row => ({ key: row.key, name: row.label, cells: {} }));
@@ -266,6 +285,6 @@ test('S3: tail decoder turns per-row decode errors into refused slots with their
   const frozen = buildRowSourceFromHead<Row>('q:frozen', undefined, undefined, 130, pages, validate)!;
   assert.deepEqual(frozen.sliceAt(130, 4, 2), [
     { kind: 'data', ordinal: 4, readAt: 130, row: { key: 'p4', hour: 95, label: 'four' } },
-    { kind: 'refused', ordinal: 5, readAt: 130, reason: 'Row payload is malformed.' },
+    { kind: 'refused', ordinal: 5, readAt: 130, hour: 94, reason: 'Row payload is malformed.' },
   ]);
 });

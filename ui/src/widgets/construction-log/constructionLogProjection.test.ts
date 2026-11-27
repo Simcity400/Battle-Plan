@@ -13,7 +13,6 @@ function sampleRow(overrides: Partial<ConstructionLogRow> = {}): ConstructionLog
     hour,
     exact: true,
     observed: hour,
-    ordinal: '0',
     live: true,
     kind: 'building',
     source: 'census',
@@ -265,10 +264,10 @@ test('pending state or province lookup stays pending in construction place cell,
     },
   };
   const rows: ConstructionLogRow[] = [
-    sampleRow({ key: 'p-state', ordinal: '0', place: { kind: 'building', state: 77, toState: null, province: null, atHour: 100 } }),
-    sampleRow({ key: 'p-rail-both', ordinal: '1', kind: 'railway', place: { kind: 'railway', state: 77, toState: 88, province: null, atHour: 100 } }),
-    sampleRow({ key: 'p-rail-mixed', ordinal: '2', kind: 'railway', place: { kind: 'railway', state: 10, toState: 88, province: null, atHour: 100 } }),
-    sampleRow({ key: 'p-rail-half-null', ordinal: '3', kind: 'railway', place: { kind: 'railway', state: 10, toState: null, province: null, atHour: 100 } }),
+    sampleRow({ key: 'p-state', place: { kind: 'building', state: 77, toState: null, province: null, atHour: 100 } }),
+    sampleRow({ key: 'p-rail-both', kind: 'railway', place: { kind: 'railway', state: 77, toState: 88, province: null, atHour: 100 } }),
+    sampleRow({ key: 'p-rail-mixed', kind: 'railway', place: { kind: 'railway', state: 10, toState: 88, province: null, atHour: 100 } }),
+    sampleRow({ key: 'p-rail-half-null', kind: 'railway', place: { kind: 'railway', state: 10, toState: null, province: null, atHour: 100 } }),
   ];
   const source = buildRowSourceFromHead('test:construction:pending-place', sampleReply(rows), undefined, 100)!;
   const model = constructionLogProjection.project(

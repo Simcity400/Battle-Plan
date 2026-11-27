@@ -44,13 +44,16 @@ export interface DatedLogRow {
   readonly hour: number;
 }
 
+interface RefusedLogRow {
+  readonly hour: number;
+  readonly reason: string;
+}
+
 export interface TailReply<TRow extends DatedLogRow = LogReplyRow> {
   readonly total: number;
   readonly offset: number;
-  readonly baseOrdinal: number;
-  readonly firstOrdinal: number;
   readonly rows: readonly (TRow | null)[];
-  readonly rowRefusals?: ReadonlyMap<number, string>;
+  readonly rowRefusals?: ReadonlyMap<number, RefusedLogRow>;
   readonly facetTotals: ReadonlyMap<string, number>;
   readonly facetMissing?: ReadonlyMap<string, string>;
   readonly missing: readonly PlacedSpan[];
@@ -62,7 +65,7 @@ export type LogRowSlot<TRow extends DatedLogRow> =
   | { readonly kind: 'data'; readonly ordinal: number; readonly readAt: number; readonly row: TRow }
   | { readonly kind: 'gap'; readonly key: string; readonly readAt: number; readonly firstHour: number; readonly lastHour: number; readonly reason: string; readonly beforeOrdinal: number }
   | { readonly kind: 'loading'; readonly ordinal: number; readonly readAt: number }
-  | { readonly kind: 'refused'; readonly ordinal: number; readonly readAt: number; readonly reason: string };
+  | { readonly kind: 'refused'; readonly ordinal: number; readonly readAt: number; readonly reason: string; readonly hour?: number };
 
 export interface RowWindow {
   readonly first: number;
@@ -103,6 +106,9 @@ const NO_PAGES: SnapshotPages = {};
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+export const MISSING_LOG_ROW_IDENTITY = 'The log row identity was not recorded.';
+export const hasLogRowIdentity = (key: unknown): key is string => typeof key === 'string' && key.length > 0;
+
 const parseCount = (value: unknown): number | null => {
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
   const parsed = Number(value);
@@ -134,9 +140,7 @@ export function validateRowTailReply<TRow extends DatedLogRow>(
   }
   const total = parseCount(value.total);
   const offset = parseCount(value.offset);
-  const baseOrdinal = parseCount(value.baseOrdinal ?? '0');
-  const firstOrdinal = parseCount(value.firstOrdinal ?? '0');
-  if (total === null || offset === null || baseOrdinal === null || firstOrdinal === null || offset + value.rows.length > total) {
+  if (total === null || offset === null || offset + value.rows.length > total) {
     throw malformed();
   }
   const missing = value.missing ?? [];
@@ -154,22 +158,24 @@ export function validateRowTailReply<TRow extends DatedLogRow>(
     else facetTotals.set(entry.key, count);
   }
   const rows: (TRow | null)[] = [];
-  const rowRefusals = new Map<number, string>();
+  const rowRefusals = new Map<number, RefusedLogRow>();
   for (let index = 0; index < value.rows.length; index++) {
     const raw = (value.rows as unknown[])[index];
-    if (!isObject(raw) || typeof raw.key !== 'string' || !Number.isSafeInteger(raw.hour)) {
+    if (!isObject(raw) || !Number.isSafeInteger(raw.hour)) {
       throw malformed();
     }
     const hour = raw.hour as number;
     if (readAt !== undefined && hour > readAt) throw new Error(`The log tail reply contained a row from hour ${hour} after displayed hour ${readAt}.`);
     try {
+      if (!hasLogRowIdentity(raw.key)) throw new Error(MISSING_LOG_ROW_IDENTITY);
       rows.push(mapRow(raw, columns, readAt));
     } catch (error) {
       rows.push(null);
-      rowRefusals.set(index, error instanceof Error && error.message.trim().length > 0 ? error.message : 'The log row is malformed.');
+      const reason = error instanceof Error && error.message.trim().length > 0 ? error.message : 'The log row is malformed.';
+      rowRefusals.set(index, { hour, reason });
     }
   }
-  return { total, offset, baseOrdinal, firstOrdinal, rows, ...(rowRefusals.size ? { rowRefusals } : {}), facetTotals, ...(facetMissing.size ? { facetMissing } : {}), missing };
+  return { total, offset, rows, ...(rowRefusals.size ? { rowRefusals } : {}), facetTotals, ...(facetMissing.size ? { facetMissing } : {}), missing };
 }
 
 export function validateGenericTailReply(value: unknown, readAt?: number): TailReply<DatedLogRow> {
@@ -244,7 +250,7 @@ function sliceSlots<TRow extends DatedLogRow>(
   for (let ordinal = start; ordinal < end; ordinal++) {
     const made = slot(ordinal);
     out.push(made.kind === 'data' && made.row.hour > reqHour
-      ? { kind: 'refused', ordinal, readAt: reqHour, reason: `Row ${made.row.key} came from after the displayed hour.` }
+      ? { kind: 'refused', ordinal, readAt: reqHour, hour: made.row.hour, reason: `Row ${made.row.key} came from after the displayed hour.` }
       : made);
   }
   return out;
@@ -289,7 +295,7 @@ export function buildRowSourceFromHead<TRow extends DatedLogRow = DatedLogRow>(
         if ('refused' in page) return { kind: 'refused', ordinal, readAt: reqHour, reason: page.refused };
         const index = ordinal - page.offset;
         const refusedRow = page.reply.rowRefusals?.get(index);
-        if (refusedRow !== undefined) return { kind: 'refused', ordinal, readAt: reqHour, reason: refusedRow };
+        if (refusedRow !== undefined) return { kind: 'refused', ordinal, readAt: reqHour, ...refusedRow };
         const row = page.reply.rows[index];
         return row ? { kind: 'data', ordinal, readAt: reqHour, row } : { kind: 'loading', ordinal, readAt: reqHour };
       }),
@@ -321,7 +327,7 @@ export function buildRowSourceFromHead<TRow extends DatedLogRow = DatedLogRow>(
     sliceAt: (reqHour, first, count) => sliceSlots<TRow>(reqHour, first, count, head.total, ordinal => {
       const index = ordinal - head.offset;
       const refusedRow = head.rowRefusals?.get(index);
-      if (refusedRow !== undefined) return { kind: 'refused', ordinal, readAt: reqHour, reason: refusedRow };
+      if (refusedRow !== undefined) return { kind: 'refused', ordinal, readAt: reqHour, ...refusedRow };
       const row = head.rows[index];
       if (row) return { kind: 'data', ordinal, readAt: reqHour, row };
       const refusal = refusedAt(ordinal);
@@ -364,17 +370,21 @@ export function buildNavigableSlots<TRow extends DatedLogRow>(
   }
   if (!slots.length) return [];
 
-  const firstData = slots.find(slot => slot.kind === 'data');
   const out: LogRowSlot<TRow>[] = [];
   let gapIndex = 0;
-  if (firstData && firstData.ordinal > 0 && previousRowHour === undefined) {
-    while (gapIndex < activeGaps.length && activeGaps[gapIndex]!.firstHour > firstData.row.hour) {
-      gapIndex++;
-    }
-  }
+  let positioned = previousRowHour !== undefined;
   for (const slot of slots) {
-    if (slot.kind === 'data') {
-      while (gapIndex < activeGaps.length && activeGaps[gapIndex]!.lastHour >= slot.row.hour) {
+    if (slot.kind === 'data' || slot.kind === 'refused') {
+      const hour = slot.kind === 'data' ? slot.row.hour : slot.hour;
+      if (hour === undefined) {
+        out.push(slot);
+        continue;
+      }
+      if (!positioned && slot.ordinal > 0) {
+        while (gapIndex < activeGaps.length && activeGaps[gapIndex]!.firstHour > hour) gapIndex++;
+      }
+      positioned = true;
+      while (gapIndex < activeGaps.length && activeGaps[gapIndex]!.lastHour >= hour) {
         const span = activeGaps[gapIndex++]!;
         out.push({
           kind: 'gap',

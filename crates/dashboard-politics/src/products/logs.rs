@@ -46,23 +46,17 @@ fn load_tail_at(query: &Query<'_>, caches: Option<&LogCaches>, params: &LogTailP
         None => (0..all.len()).collect(),
         Some(names) => names.iter().map(|name| dashboard_declare::field(log.table, name)).collect::<io::Result<_>>()?,
     };
-    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
     let offset = params.offset.as_deref().unwrap_or("0").parse::<u64>().map_err(|_| invalid("Invalid offset"))?;
     let (page, rows, counts, missing) = tail_with(query, &params.log, &params.facets, params.from, hour, offset, params.limit, &params.count_facets, caches, |paged, tag| LogPageRow {
         hour: paged.row.hour,
         key: paged.row.key.to_string(),
-        ordinal: paged.ordinal.to_string(),
         country: tag.cloned(),
-        own_ordinal: tagged.then(|| paged.own.to_string()),
         cells: shown.iter().map(|&column| paged.row.cells.get(column).map_or(LogCell::NotRecorded, cell)).collect(),
     })?;
-    let first_ordinal = rows.first().map_or_else(|| page.base.to_string(), |row| row.ordinal.clone());
     Ok(LogTailReply {
         branch_id: params.branch_id.clone(),
         log: params.log.clone(),
         columns: shown.iter().map(|&column| all[column].to_owned()).collect(),
-        base_ordinal: page.base.to_string(),
-        first_ordinal,
         offset: page.offset.to_string(),
         total: page.total.to_string(),
         rows,

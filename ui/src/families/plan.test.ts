@@ -1136,7 +1136,7 @@ test('a family cannot reach data after the displayed hour through a slice, a til
   assert.deepEqual(boundedUnrecorded([recordedLater, reasons], 4).validInterval, [0, 10]);
   assert.deepEqual(boundedUnrecorded([], 4), { reason: null, validInterval: [-Infinity, Infinity] });
 
-  const reply = (hour: number, total: number) => ({ total: String(total), offset: '0', baseOrdinal: '0', firstOrdinal: '0', rows: [{ key: `a${hour}`, hour }, { key: `b${hour}`, hour }], missing: [], counts: [] });
+  const reply = (hour: number, total: number) => ({ total: String(total), offset: '0', rows: [{ key: `a${hour}`, hour }, { key: `b${hour}`, hour }], missing: [], counts: [] });
   const snapshot = { 0: { hour: 100, offset: 0, limit: 2, raw: reply(100, 3), reply: validateGenericTailReply(reply(100, 3), 100) } };
   const frozen = createBoundedReadView({ hour: 150, rows: new Map([['log', buildRowSourceFromHead('log', reply(150, 9), undefined, 150, snapshot)!]]) }).rows('log')!;
   assert.equal(frozen.at, 100);

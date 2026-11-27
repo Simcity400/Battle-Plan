@@ -79,9 +79,9 @@ fn has_gap(marks: &[i32], lo: i32, hi: i32, desc: bool) -> bool {
 }
 
 pub(crate) enum PlannedLine {
-    Event { at: u32, ordinal: u64, parent: Option<String> },
-    Fold { key: String, first_at: u32, observed: i32, ordinal: u64, count: u32, kind: EventFeedKind, country: String },
-    More { key: String, parent: String, hour: i32, ordinal: u64, total: u32, remaining: u32 },
+    Event { at: u32, parent: Option<String> },
+    Fold { key: String, first_at: u32, observed: i32, count: u32, kind: EventFeedKind, country: String },
+    More { key: String, parent: String, hour: i32, total: u32, remaining: u32 },
 }
 
 pub(crate) struct FoldedPage {
@@ -161,7 +161,7 @@ pub(crate) fn page(feed: &Feed, dated: DatedRows<'_>, direction: Direction, offs
             let members = if desc { &ordered[ordered.len() - run.offset as usize - run.len as usize..ordered.len() - run.offset as usize] } else { &ordered[run.offset as usize..run.offset as usize + run.len as usize] };
             if !run.is_fold() {
                 for &at in members[local..].iter().take(cap - lines.len()) {
-                    lines.push(PlannedLine::Event { at, ordinal, parent: None });
+                    lines.push(PlannedLine::Event { at, parent: None });
                     ordinal += 1;
                 }
             } else {
@@ -170,7 +170,7 @@ pub(crate) fn page(feed: &Feed, dated: DatedRows<'_>, direction: Direction, offs
                     let country = feed.country(meta.country);
                     let first_at = members[0];
                     let kind = EventFeedKind::of_index(feed.index.get(first_at).kind).unwrap_or(EventFeedKind::ScriptEventFired);
-                    lines.push(PlannedLine::Fold { key: key_of(meta, country, run.anchor), first_at, observed: run.max_observed, ordinal, count: run.len, kind, country: country.to_owned() });
+                    lines.push(PlannedLine::Fold { key: key_of(meta, country, run.anchor), first_at, observed: run.max_observed, count: run.len, kind, country: country.to_owned() });
                     ordinal += 1;
                 }
                 if let Ok(pos) = open.binary_search_by_key(&cur, |item| item.0) {
@@ -183,12 +183,12 @@ pub(crate) fn page(feed: &Feed, dated: DatedRows<'_>, direction: Direction, offs
                         &members[members.len() - CHILDREN_SHOWN..]
                     };
                     for &at in visible[local.saturating_sub(1).min(visible.len())..].iter().take(cap - lines.len()) {
-                        lines.push(PlannedLine::Event { at, ordinal, parent: Some(key.clone()) });
+                        lines.push(PlannedLine::Event { at, parent: Some(key.clone()) });
                         ordinal += 1;
                     }
                     if members.len() > CHILDREN_SHOWN && local <= 1 + visible.len() && lines.len() < cap {
                         let remaining = if *is_full { 0 } else { (members.len() - CHILDREN_SHOWN) as u32 };
-                        lines.push(PlannedLine::More { key: format!("more:{key}"), parent: key.clone(), hour: feed.index.get(members[0]).date, ordinal, total: run.len, remaining });
+                        lines.push(PlannedLine::More { key: format!("more:{key}"), parent: key.clone(), hour: feed.index.get(members[0]).date, total: run.len, remaining });
                         ordinal += 1;
                     }
                 }

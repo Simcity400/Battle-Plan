@@ -1334,7 +1334,7 @@ export type ConstructionLevelsAt = { built: number, total: number, unknown: numb
 export type ConstructionEndAt = { kind: EndKind, hour: number | null, knownAt: number, unknown: UnknownEnd | null, };
 export type ConstructionOutputAt = { constructionRaw: string | null, repairRaw: string | null, reason: SpendingGap | null, beforeObservation: boolean, };
 export type ConstructionTypeChip = { token: string, firstHour: number, name: string | null, icon: string | null, };
-export type ConstructionLogRow = { key: string, hour: number, exact: boolean, observed: number, ordinal: string, live: boolean, kind: ProjectKind, source: ProjectSource, status: ConstructionStatus, owner: ConstructionOwner, buildingToken: string | null, buildingName: string | null, buildingMissing: string | null, icon: string | null, place: ConstructionPlaceAt | null, placeMissing: string | null, levels: ConstructionLevelsAt | null, levelsMissing: string | null, factories: number | null, lastFactories: number | null, factoriesMissing: string | null, createdHour: number | null, firstRead: number, costRaw: string | null, baseLevel: number | null, targetLevel: number | null, routeProvinces: number | null, end: ConstructionEndAt | null, output: ConstructionOutputAt | null, };
+export type ConstructionLogRow = { key: string, hour: number, exact: boolean, observed: number, live: boolean, kind: ProjectKind, source: ProjectSource, status: ConstructionStatus, owner: ConstructionOwner, buildingToken: string | null, buildingName: string | null, buildingMissing: string | null, icon: string | null, place: ConstructionPlaceAt | null, placeMissing: string | null, levels: ConstructionLevelsAt | null, levelsMissing: string | null, factories: number | null, lastFactories: number | null, factoriesMissing: string | null, createdHour: number | null, firstRead: number, costRaw: string | null, baseLevel: number | null, targetLevel: number | null, routeProvinces: number | null, end: ConstructionEndAt | null, output: ConstructionOutputAt | null, };
 export type ConstructionLogTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, buildingTypes: Array<ConstructionTypeChip>, repairIcon: string | null,
 /**
  * The most civilian factories one construction line takes, from the recorded defines; null with `factory_cap_missing` when they cannot be read.
@@ -1986,7 +1986,7 @@ export type ScriptOccurrence = { id: string,
  * recorded or joined.
  */
 opened: boolean, edges: Array<ScriptEdge>, };
-export type ScriptPageRow = { key: string, hour: number, observed: number, ordinal: string, live: boolean,
+export type ScriptPageRow = { key: string, hour: number, observed: number, live: boolean,
 /**
  * The card's status at the hour asked.
  */
@@ -2514,7 +2514,7 @@ export type EspionageRunningOrder = "start" | "preparation";
 export type EspionageCountry = { tag: string | null, slot: number | null, missing: string | null, };
 export type EspionageTypeChip = { token: string, firstHour: number, name: string | null, icon: string | null, iconMissing: string | null, };
 export type EspionageCompletion = { completionHour: number | null, bonus: boolean | null, bonusRefused: string | null, detected: boolean | null, detectedRefused: string | null, description: string | null, descriptionUnrecorded: string | null, };
-export type EspionageLogRow = { key: string, hour: number, exact: boolean, observed: number, ordinal: string, live: boolean, status: EspionageStatus, owner: EspionageCountry, target: EspionageCountry, operationToken: string | null, operationName: string | null, operationMissing: string | null, icon: string | null, iconMissing: string | null, startHour: number | null, firstSeen: number | null, lastSeen: number | null, endedHour: number | null, durationDays: number | null, preparationRatio: number | null, phaseCount: number | null, currentPhase: number | null, assignedSlots: number | null, autoRepeat: boolean | null, autoCommence: boolean | null, outcomeMissing: string | null, completion: EspionageCompletion | null, };
+export type EspionageLogRow = { key: string, hour: number, exact: boolean, observed: number, live: boolean, status: EspionageStatus, owner: EspionageCountry, target: EspionageCountry, operationToken: string | null, operationName: string | null, operationMissing: string | null, icon: string | null, iconMissing: string | null, startHour: number | null, firstSeen: number | null, lastSeen: number | null, endedHour: number | null, durationDays: number | null, preparationRatio: number | null, phaseCount: number | null, currentPhase: number | null, assignedSlots: number | null, autoRepeat: boolean | null, autoCommence: boolean | null, outcomeMissing: string | null, completion: EspionageCompletion | null, };
 export type EspionageLogTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, operationTypes: Array<EspionageTypeChip>, rows: Array<EspionageLogRow>, missing: Array<OccurrenceGap>, nextChange: number | null, unavailable: string | null, warnings: Array<string>, };
 export type EventFeedActivityParams = { branchId: string,
 /**
@@ -2745,7 +2745,7 @@ hour: number,
 /**
  * The hour the recording first witnessed it.
  */
-observed: number, ordinal: string, live: boolean, row: EventFeedRow | null,
+observed: number, live: boolean, row: EventFeedRow | null,
 /**
  * A fired event's chosen option, where one was observed by the hour asked.
  */
@@ -2754,8 +2754,8 @@ choice: ScriptEdge | null, status?: ScriptStatus, notRecordedReason?: string,
  * The fold this event was expanded under; absent for standalone events.
  */
 parent?: string, };
-export type EventFeedFoldRow = { key: string, hour: number, observed: number, ordinal: string, count: string, kind: EventFeedKind, country: string, firstRow: EventFeedRow | null, };
-export type EventFeedMoreRow = { key: string, parent: string, hour: number, ordinal: string, total: string, remaining: string, };
+export type EventFeedFoldRow = { key: string, hour: number, observed: number, count: string, kind: EventFeedKind, country: string, firstRow: EventFeedRow | null, };
+export type EventFeedMoreRow = { key: string, parent: string, hour: number, total: string, remaining: string, };
 export type EventFeedLine = { "line": "event" } & EventFeedPageRow | { "line": "fold" } & EventFeedFoldRow | { "line": "more" } & EventFeedMoreRow;
 export type EventFeedTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, rows: Array<EventFeedLine>, missing: Array<OccurrenceGap>, nextChange: number | null, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
 export type FactionDetailParams = { branchId: string,
@@ -3434,24 +3434,16 @@ export type LogPageRow = { hour: number,
  */
 key: string,
 /**
- * Its ordinal among the asked rows from the timeline's first hour.
- */
-ordinal: string,
-/**
  * The country whose filter it matched, when a facet is filtered by countries.
  */
 country?: CountryRef,
-/**
- * Its ordinal among its country's rows from the timeline's first hour, with a country.
- */
-ownOrdinal?: string,
 /**
  * By the reply's `columns`.
  */
 cells: Array<LogCell>, };
 export type LogFacetCountAsk = { key: string, facets: Array<FacetFilter>, };
 export type LogTailParams = { branchId: string, log: string, facets: Array<FacetFilter>, from: number | null, hour?: number, offset?: string, limit: number, columns: Array<string> | null, countFacets: Array<LogFacetCountAsk>, };
-export type LogTailReply = { branchId: string, log: string, columns: Array<string>, baseOrdinal: string, firstOrdinal: string, offset: string, total: string, rows: Array<LogPageRow>, counts: Array<OccurrenceCount>, missing: Array<MissingSpan>, warnings: Array<string>, };
+export type LogTailReply = { branchId: string, log: string, columns: Array<string>, offset: string, total: string, rows: Array<LogPageRow>, counts: Array<OccurrenceCount>, missing: Array<MissingSpan>, warnings: Array<string>, };
 export type MarketLedgerTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, search?: string, sort?: OccurrenceSort, perspective?: string, offset?: string, limit: number,
 /**
  * The statuses listed, each at the hour asked; every one when none.
@@ -3494,7 +3486,7 @@ key: string,
 /**
  * The hour the request was posted or the contract accepted; the first event seen when neither was (`exact` false).
  */
-hour: number, observed: number, exact: boolean, ordinal: string, live: boolean, request: boolean, requestedHour: number | null, startedHour: number | null, endedHour: number | null, status: MarketContractStatus, seller: string | null, sellerNotRecorded: boolean, buyer: string | null, buyerNotRecorded: boolean, items: Array<MarketContractItem>,
+hour: number, observed: number, exact: boolean, live: boolean, request: boolean, requestedHour: number | null, startedHour: number | null, endedHour: number | null, status: MarketContractStatus, seller: string | null, sellerNotRecorded: boolean, buyer: string | null, buyerNotRecorded: boolean, items: Array<MarketContractItem>,
 /**
  * Why deliveries are not known for the whole contract (a refusal naming no design, or an unread stretch).
  */
@@ -5018,7 +5010,7 @@ key: string,
 /**
  * The episode's start: its first read.
  */
-hour: number, exact: boolean, observed: number, ordinal: string, live: boolean, status: RaidStatus, phaseName: string | null, outcomeMissing: string | null, raider: RaidRaider,
+hour: number, exact: boolean, observed: number, live: boolean, status: RaidStatus, phaseName: string | null, outcomeMissing: string | null, raider: RaidRaider,
 /**
  * The victim as last read by the hour asked, named at that read.
  */

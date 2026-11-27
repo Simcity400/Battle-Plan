@@ -2396,18 +2396,19 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
 
     let at_105_open = EventFeedTail::load(&replay_source, &EventFeedTailParams { expanded: Some(vec![day4_key.clone()]), ..ask(105) }, &context, &cancel).unwrap();
     assert_eq!(at_105_open.total, "8");
+    assert_eq!(at_105_open.offset, "0");
     assert_eq!(at_105_open.missing[0].before, "1");
     assert_eq!(
         at_105_open.unavailable.iter().find(|item| item.kind == "scriptEventScope").and_then(|item| item.count),
         Some(7),
         "expanded fold header and first child present the shared event once without double-counting notices"
     );
-    assert!(matches!(&at_105_open.rows[1], EventFeedLine::Fold(fold) if fold.key == day4_key && fold.ordinal == "1"));
-    for (idx, line) in at_105_open.rows[2..8].iter().enumerate() {
+    assert!(matches!(&at_105_open.rows[1], EventFeedLine::Fold(fold) if fold.key == day4_key));
+    for (line, sequence) in at_105_open.rows[2..8].iter().zip((1..=6).rev()) {
         match line {
             EventFeedLine::Event(row) => {
                 assert_eq!(row.parent.as_deref(), Some(day4_key.as_str()));
-                assert_eq!(row.ordinal, (2 + idx).to_string());
+                assert_eq!(row.key, format!("native:1:{sequence}"));
             }
             other => panic!("expected expanded child event, got {other:?}"),
         }
@@ -2425,13 +2426,14 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
     };
     let at_120_open = EventFeedTail::load(&replay_source, &EventFeedTailParams { expanded: Some(vec![day5_key.clone()]), offset: Some("31".into()), limit: 5, ..ask(120) }, &context, &cancel).unwrap();
     assert_eq!(at_120_open.total, "36");
+    assert_eq!(at_120_open.offset, "31");
     assert_eq!(at_120_open.missing[0].before, "35");
     assert_eq!(at_120_open.rows.len(), 5);
-    assert!(matches!(&at_120_open.rows[0], EventFeedLine::Event(row) if row.ordinal == "31" && row.parent.as_deref() == Some(day5_key.as_str())));
-    assert!(matches!(&at_120_open.rows[1], EventFeedLine::Event(row) if row.ordinal == "32" && row.parent.as_deref() == Some(day5_key.as_str())));
-    assert!(matches!(&at_120_open.rows[2], EventFeedLine::More(more) if more.parent == day5_key && more.ordinal == "33" && more.total == "35" && more.remaining == "3"));
-    assert!(matches!(&at_120_open.rows[3], EventFeedLine::Event(row) if row.ordinal == "34" && row.parent.is_none()));
-    assert!(matches!(&at_120_open.rows[4], EventFeedLine::Fold(fold) if fold.key == day4_key && fold.ordinal == "35"));
+    assert!(matches!(&at_120_open.rows[0], EventFeedLine::Event(row) if row.key == "native:1:104" && row.parent.as_deref() == Some(day5_key.as_str())));
+    assert!(matches!(&at_120_open.rows[1], EventFeedLine::Event(row) if row.key == "native:1:103" && row.parent.as_deref() == Some(day5_key.as_str())));
+    assert!(matches!(&at_120_open.rows[2], EventFeedLine::More(more) if more.parent == day5_key && more.total == "35" && more.remaining == "3"));
+    assert!(matches!(&at_120_open.rows[3], EventFeedLine::Event(row) if row.key == "native:1:7" && row.parent.is_none()));
+    assert!(matches!(&at_120_open.rows[4], EventFeedLine::Fold(fold) if fold.key == day4_key));
 
     let at_120_full = EventFeedTail::load(
         &replay_source,
@@ -2441,9 +2443,10 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
     )
     .unwrap();
     assert_eq!(at_120_full.total, "39");
+    assert_eq!(at_120_full.offset, "35");
     assert_eq!(at_120_full.missing[0].before, "38");
-    assert!(matches!(&at_120_full.rows[0], EventFeedLine::Event(row) if row.ordinal == "35" && row.parent.as_deref() == Some(day5_key.as_str())));
-    assert!(matches!(&at_120_full.rows[1], EventFeedLine::More(more) if more.parent == day5_key && more.ordinal == "36" && more.total == "35" && more.remaining == "0"));
+    assert!(matches!(&at_120_full.rows[0], EventFeedLine::Event(row) if row.key == "native:1:100" && row.parent.as_deref() == Some(day5_key.as_str())));
+    assert!(matches!(&at_120_full.rows[1], EventFeedLine::More(more) if more.parent == day5_key && more.total == "35" && more.remaining == "0"));
 
     let asc_open = EventFeedTail::load(
         &replay_source,

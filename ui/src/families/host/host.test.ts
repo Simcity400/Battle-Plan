@@ -1241,7 +1241,7 @@ test('R3-S1: a paged table scrolled past its head asks the absolute rows under t
       const limit = Number(request.params.limit);
       asked.push([offset, limit]);
       const rows = Array.from({ length: Math.max(0, Math.min(limit, TOTAL - offset)) }, (_, i) => ({ key: `e${offset + i}`, hour: 100 }));
-      return { data: { total: String(TOTAL), offset: String(offset), baseOrdinal: '0', firstOrdinal: '0', rows, missing: [], facetTotals: [] } };
+      return { data: { total: String(TOTAL), offset: String(offset), rows, missing: [], facetTotals: [] } };
     },
   } as unknown as DashboardClient;
   const gate: FrozenGate = { recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never, span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never) };
@@ -2185,8 +2185,6 @@ test('audit exact reads keep the snapshot page states captured with the installe
   const fakeTail = (offset: number, hour: number) => ({
     total: 800,
     offset,
-    baseOrdinal: 0,
-    firstOrdinal: offset,
     rows: [rowAt(hour, offset)],
     facetTotals: new Map<string, number>(),
     missing: [],
@@ -2249,8 +2247,6 @@ test('audit exact reads keep the snapshot page states captured with the installe
   p0.pager.answer(p0.step.fetch[0]!, {
     total: 800,
     offset: 0,
-    baseOrdinal: 0,
-    firstOrdinal: 0,
     rows: Array.from({ length: 256 }, (_, i) => rowAt(100, i)),
     facetTotals: new Map(),
     missing: [],

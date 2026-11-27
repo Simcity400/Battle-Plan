@@ -16,7 +16,6 @@ function sampleRow(overrides: Partial<EspionageLogRow> = {}): EspionageLogRow {
     hour: 24 * 10,
     exact: true,
     observed: 24 * 10,
-    ordinal: '0',
     live: true,
     status: 'running',
     owner: { tag: 'SOV', slot: 2, missing: null },

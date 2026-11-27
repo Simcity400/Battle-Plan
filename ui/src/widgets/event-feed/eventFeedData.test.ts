@@ -48,7 +48,7 @@ test('R3-S5: event feed tooltip quantities retain their recorded numbers behind 
       equipmentLost: 31.8642, notRecorded: [] },
   });
   const head = { branchId: '1', offset: '0', total: '1', live: '0', counts: [],
-    rows: [{ line: 'event', hour: 7, observed: 7, key: 'E01', ordinal: '0', live: false, row: event, choice: null }],
+    rows: [{ line: 'event', hour: 7, observed: 7, key: 'E01', live: false, row: event, choice: null }],
     missing: [], nextChange: null, unavailable: [], warnings: [] };
   const source = buildRowSourceFromHead('test:precision', head, undefined, 7, undefined, eventFeedProjection.validateTail)!;
   const model = eventFeedProjection.project(createBoundedReadView({ hour: 7, rows: new Map([['main', source]]) }), {
@@ -86,7 +86,7 @@ test('war starts retain both role positions and the unresolved country reason', 
     const reasons = participants.map(tag => tag === null ? 'Country link not resolved' : null);
     const event = validateFeedRow({ ...row('warStarted', 101, participants.filter(tag => tag !== null)), participants, participantsMissing: reasons });
     const head = { branchId: '1', offset: '0', total: '1', live: '0', counts: [],
-      rows: [{ line: 'event', hour: 101, observed: 101, key: 'partial-start', ordinal: '0', live: false, row: event, choice: null }],
+      rows: [{ line: 'event', hour: 101, observed: 101, key: 'partial-start', live: false, row: event, choice: null }],
       missing: [], nextChange: null, unavailable: [], warnings: [] };
     const source = buildRowSourceFromHead('partial-start', head, undefined, 101, undefined, eventFeedProjection.validateTail)!;
     const view = createBoundedReadView({ hour: 101, rows: new Map([['main', source]]), identity: datedIdentity({ AAA: [{ from: 0, name: 'Synthetic country' }] }) });
@@ -117,8 +117,8 @@ test('inferred peace and faction transitions accept resolved rows without partic
   const head = {
     branchId: '1', offset: '0', total: '2', live: '0', counts: [],
     rows: [
-      { line: 'event', hour: 101, observed: 101, key: partialPeace.id, ordinal: '0', live: false, row: partialPeace, choice: null },
-      { line: 'event', hour: 101, observed: 101, key: missingJoin.id, ordinal: '1', live: false, row: missingJoin, choice: null },
+      { line: 'event', hour: 101, observed: 101, key: partialPeace.id, live: false, row: partialPeace, choice: null },
+      { line: 'event', hour: 101, observed: 101, key: missingJoin.id, live: false, row: missingJoin, choice: null },
     ],
     missing: [], nextChange: null, unavailable: [], warnings: [],
   };
@@ -171,10 +171,10 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
     live: '0',
     counts: [],
     rows: [
-      { line: 'event', hour: chosenRow.hour, observed: chosenRow.hour, key: 'k0', ordinal: '0', live: false, row: chosenRow, choice: null },
-      { line: 'event', hour: unknownRecipient.hour, observed: unknownRecipient.hour, key: 'k1', ordinal: '1', live: false, row: unknownRecipient, choice: null },
-      { line: 'event', hour: strikeRow.hour, observed: strikeRow.hour, key: 'k2', ordinal: '2', live: false, row: strikeRow, choice: null },
-      { line: 'fold', hour: firstRepeated.hour, observed: firstRepeated.hour, key: 'fold:2:GER:warJoined:1', ordinal: '3', count: '5', kind: 'warJoined', country: 'GER', firstRow: firstRepeated },
+      { line: 'event', hour: chosenRow.hour, observed: chosenRow.hour, key: 'k0', live: false, row: chosenRow, choice: null },
+      { line: 'event', hour: unknownRecipient.hour, observed: unknownRecipient.hour, key: 'k1', live: false, row: unknownRecipient, choice: null },
+      { line: 'event', hour: strikeRow.hour, observed: strikeRow.hour, key: 'k2', live: false, row: strikeRow, choice: null },
+      { line: 'fold', hour: firstRepeated.hour, observed: firstRepeated.hour, key: 'fold:2:GER:warJoined:1', count: '5', kind: 'warJoined', country: 'GER', firstRow: firstRepeated },
     ],
     missing: [],
     nextChange: null,
@@ -271,9 +271,9 @@ test('expanded event-feed folds project children with pageParent, detail meta, m
     live: '0',
     counts: [],
     rows: [
-      { line: 'fold', key: foldKey, hour: 100, observed: 100, ordinal: '0', count: '35', kind: 'scriptEventFired', country: 'GER', firstRow: child },
-      { line: 'event', key: 'native:1:50', hour: 100, observed: 100, ordinal: '1', live: false, row: child, choice: null, parent: foldKey },
-      { line: 'more', key: `more:${foldKey}`, parent: foldKey, hour: 100, ordinal: '2', total: '35', remaining: '3' },
+      { line: 'fold', key: foldKey, hour: 100, observed: 100, count: '35', kind: 'scriptEventFired', country: 'GER', firstRow: child },
+      { line: 'event', key: 'native:1:50', hour: 100, observed: 100, live: false, row: child, choice: null, parent: foldKey },
+      { line: 'more', key: `more:${foldKey}`, parent: foldKey, hour: 100, total: '35', remaining: '3' },
     ],
     missing: [],
     nextChange: null,
@@ -296,7 +296,7 @@ test('expanded event-feed folds project children with pageParent, detail meta, m
   const fullHead = {
     ...head,
     total: '1',
-    rows: [{ line: 'more', key: `more:${foldKey}`, parent: foldKey, hour: 100, ordinal: '0', total: '35', remaining: '0' }],
+    rows: [{ line: 'more', key: `more:${foldKey}`, parent: foldKey, hour: 100, total: '35', remaining: '0' }],
   };
   const fullSource = buildRowSourceFromHead('test:feed-full', fullHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
   const fullModel = eventFeedProjection.project(
@@ -361,10 +361,10 @@ test('event feed projection renders merged choice letter and text, awaiting choi
     live: '1',
     counts: [],
     rows: [
-      { line: 'event', key: 'm-chosen', hour: 100, observed: 100, ordinal: '0', live: false, status: 'chosen', row: firedChosen, choice: choiceEdge },
-      { line: 'event', key: 'm-await', hour: 104, observed: 104, ordinal: '1', live: true, status: 'awaiting', row: firedAwaiting, choice: null },
-      { line: 'event', key: 'm-paused', hour: 96, observed: 96, ordinal: '2', live: false, status: 'notRecorded', row: firedPaused, choice: null },
-      { line: 'event', key: 'm-null-opt', hour: 92, observed: 92, ordinal: '3', live: false, status: 'chosen', row: firedUnknownOption, choice: missingOptionEdge },
+      { line: 'event', key: 'm-chosen', hour: 100, observed: 100, live: false, status: 'chosen', row: firedChosen, choice: choiceEdge },
+      { line: 'event', key: 'm-await', hour: 104, observed: 104, live: true, status: 'awaiting', row: firedAwaiting, choice: null },
+      { line: 'event', key: 'm-paused', hour: 96, observed: 96, live: false, status: 'notRecorded', row: firedPaused, choice: null },
+      { line: 'event', key: 'm-null-opt', hour: 92, observed: 92, live: false, status: 'chosen', row: firedUnknownOption, choice: missingOptionEdge },
     ],
     missing: [],
     nextChange: null,
@@ -425,7 +425,7 @@ test('a firing whose options come only from its choice lists them from the choic
   const options = (hour: number, picked: typeof choice | null) => {
     const head = {
       branchId: '1', offset: '0', total: '1', live: '0', counts: [],
-      rows: [{ line: 'event', key: 'm-envoy', hour: 100, observed: 100, ordinal: '0', live: false, status: picked ? 'chosen' : 'awaiting', row: fired, choice: picked }],
+      rows: [{ line: 'event', key: 'm-envoy', hour: 100, observed: 100, live: false, status: picked ? 'chosen' : 'awaiting', row: fired, choice: picked }],
       missing: [], nextChange: null, unavailable: [], warnings: [],
     };
     const source = buildRowSourceFromHead(`test:feed-envoy-${hour}`, head, undefined, hour)!;
@@ -440,7 +440,7 @@ test('a firing whose options come only from its choice lists them from the choic
 test('an orphan choice opened from the feed has no firing time and labels its observation as chosen by', () => {
   const selected = row('eventOptionSelected', 119, ['ITA'], { category: 'politics', readHour: 137, participants: ['ITA', null] });
   const source = buildRowSourceFromHead('test:feed-orphan', { branchId: '1', offset: '0', total: '1', live: '0', counts: [],
-    rows: [{ line: 'event', key: selected.id, hour: 119, observed: 137, ordinal: '0', live: false, row: selected, choice: null }],
+    rows: [{ line: 'event', key: selected.id, hour: 119, observed: 137, live: false, row: selected, choice: null }],
     missing: [], unavailable: [], warnings: [] }, undefined, 137)!;
   const model = eventFeedProjection.project(createBoundedReadView({ hour: 137, rows: new Map([['main', source]]) }), { categories: ['politics'], artwork: false });
   const subject = model.rows[0]!.meta as EventDetailSubject;
@@ -467,8 +467,8 @@ test('witnessed participant roles keep unidentified countries without adding an 
   ];
   const all = [ceased, guarantee, ...roleCases.map(({ event }) => event)];
   const head = {
-    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: String(all.length),
-    rows: all.map((r, i) => ({ line: 'event', hour: r.hour, observed: r.hour, key: `k${i}`, ordinal: String(i), live: false, row: r, choice: null })),
+    branchId: '1', log: 'feed-events', columns: [], offset: '0', total: String(all.length),
+    rows: all.map((r, i) => ({ line: 'event', hour: r.hour, observed: r.hour, key: `k${i}`, live: false, row: r, choice: null })),
     facetTotals: [], missing: [], unavailable: [], warnings: [],
   };
   const source = buildRowSourceFromHead('test:feed', head, undefined, 120, undefined, eventFeedProjection.validateTail)!;
@@ -529,8 +529,8 @@ test('a finished project with an unidentified owner keeps its row and carries it
     'other kinds do not carry ownerMissing');
   const all = [firstUnknown, secondUnknown, known];
   const head = {
-    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: String(all.length),
-    rows: all.map((r, i) => ({ line: 'event', hour: r.hour, observed: r.hour, key: `p${i}`, ordinal: String(i), live: false, row: r, choice: null })),
+    branchId: '1', log: 'feed-events', columns: [], offset: '0', total: String(all.length),
+    rows: all.map((r, i) => ({ line: 'event', hour: r.hour, observed: r.hour, key: `p${i}`, live: false, row: r, choice: null })),
     facetTotals: [], missing: [], unavailable: [], warnings: [],
   };
   const source = buildRowSourceFromHead('test:project-finished', head, undefined, 120)!;
@@ -576,11 +576,9 @@ test('event feed projection shows each scripted gap in place with its own reason
     branchId: '1',
     log: 'feed-events',
     columns: [],
-    baseOrdinal: '0',
-    firstOrdinal: '0',
     offset: '0',
     total: '1',
-    rows: [{ line: 'event', hour: gapped.hour, observed: gapped.hour, key: 'k-gap', ordinal: '0', live: false, row: gapped, choice }],
+    rows: [{ line: 'event', hour: gapped.hour, observed: gapped.hour, key: 'k-gap', live: false, row: gapped, choice }],
     facetTotals: [],
     missing: [],
     unavailable: [],
@@ -680,8 +678,8 @@ test('S3: a malformed event feed row becomes a refused slot with its reason inst
     live: '0',
     counts: [],
     rows: [
-      { line: 'event', key: 'ok', hour: 100, observed: 100, ordinal: '0', live: false, row: good, choice: null },
-      { line: 'event', key: 'bad', hour: 100, observed: 100, ordinal: '1', live: false, row: bad, choice: null },
+      { line: 'event', key: 'ok', hour: 100, observed: 100, live: false, row: good, choice: null },
+      { line: 'event', key: 'bad', hour: 100, observed: 100, live: false, row: bad, choice: null },
     ],
     missing: [],
     nextChange: null,
@@ -704,7 +702,7 @@ test('S3: a malformed event feed row becomes a refused slot with its reason inst
   const onlyBadHead = {
     ...mixedHead,
     total: '1',
-    rows: [{ line: 'event', key: 'bad', hour: 100, observed: 100, ordinal: '0', live: false, row: bad, choice: null }],
+    rows: [{ line: 'event', key: 'bad', hour: 100, observed: 100, live: false, row: bad, choice: null }],
   };
   const onlyBadSource = buildRowSourceFromHead('test:feed-only-bad', onlyBadHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
   const onlyBadModel = eventFeedProjection.project(
@@ -719,7 +717,7 @@ test('S3: a malformed event feed row becomes a refused slot with its reason inst
   const badChoiceHead = {
     ...mixedHead,
     total: '1',
-    rows: [{ line: 'event', key: 'bad-choice', hour: 100, observed: 100, ordinal: '0', live: false, row: good, choice: { row: bad, option: 0 } }],
+    rows: [{ line: 'event', key: 'bad-choice', hour: 100, observed: 100, live: false, row: good, choice: { row: bad, option: 0 } }],
   };
   const badChoiceSource = buildRowSourceFromHead('test:feed-bad-choice', badChoiceHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
   const badChoiceModel = eventFeedProjection.project(
@@ -734,9 +732,9 @@ test('S3: a malformed event feed row becomes a refused slot with its reason inst
     ...mixedHead,
     total: '3',
     rows: [
-      { line: 'event', key: 'null-row', hour: 100, observed: 100, ordinal: '0', live: false, row: null, choice: null },
-      { line: 'event', key: 'future-name', hour: 100, observed: 100, ordinal: '1', live: false, row: { ...good, readHour: 100, nameHour: 101 }, choice: null },
-      { line: 'fold', key: 'fold:4:GER:warDeclared:1', hour: 100, observed: 100, ordinal: '2', count: '5', kind: 'warDeclared', country: 'GER', firstRow: null },
+      { line: 'event', key: 'null-row', hour: 100, observed: 100, live: false, row: null, choice: null },
+      { line: 'event', key: 'future-name', hour: 100, observed: 100, live: false, row: { ...good, readHour: 100, nameHour: 101 }, choice: null },
+      { line: 'fold', key: 'fold:4:GER:warDeclared:1', hour: 100, observed: 100, count: '5', kind: 'warDeclared', country: 'GER', firstRow: null },
     ],
   };
   const nullAndFutureSource = buildRowSourceFromHead('test:feed-null-and-name-hour', nullAndFutureNameHead, undefined, 100, undefined, eventFeedProjection.validateTail)!;

@@ -122,7 +122,7 @@ test('a log frozen on an answered snapshot reads that snapshot, not the live hea
     pictures: [{ h: 160, c: 170, parts: [part(2, { kind: 'panel', bytes: null, data: null, refused: 'Not recorded at this hour' })] }],
     model: null,
   } as unknown as Scene;
-  const raw = { total: '300', offset: '256', baseOrdinal: '0', firstOrdinal: '0', rows: [{ key: 'old', hour: 100 }], missing: [], counts: [] };
+  const raw = { total: '300', offset: '256', rows: [{ key: 'old', hour: 100 }], missing: [], counts: [] };
   const frozen = { 256: { hour: 100, offset: 256, limit: 256, raw, reply: validateGenericTailReply(raw, 100) } };
   const view = sceneReadView(scene, { sources: { main: 7 }, pagedRows: { main: frozen } }, 165);
   assert.equal(view.refused('main'), undefined);
@@ -136,7 +136,7 @@ test('S3: sceneReadView applies validateTail to live and static log heads so mal
     if (row.ok !== true) throw new Error('Row payload is malformed.');
     return { key: row.key as string, hour: row.hour as number };
   }, readAt);
-  const head = { total: '2', offset: '0', baseOrdinal: '0', firstOrdinal: '0', rows: [{ key: 'a', hour: 100, ok: true }, { key: 'b', hour: 99, ok: false }], missing: [], counts: [] };
+  const head = { total: '2', offset: '0', rows: [{ key: 'a', hour: 100, ok: true }, { key: 'b', hour: 99, ok: false }], missing: [], counts: [] };
   const liveScene = {
     widget: 1,
     subs: [{ id: 7, channel: 'panel', route: null }],
@@ -146,11 +146,11 @@ test('S3: sceneReadView applies validateTail to live and static log heads so mal
   const liveView = sceneReadView(liveScene, { sources: { main: 7 }, validateTail }, 110);
   assert.deepEqual(liveView.rows('main')?.sliceAt(110, 0, 2), [
     { kind: 'data', ordinal: 0, readAt: 110, row: { key: 'a', hour: 100 } },
-    { kind: 'refused', ordinal: 1, readAt: 110, reason: 'Row payload is malformed.' },
+    { kind: 'refused', ordinal: 1, readAt: 110, hour: 99, reason: 'Row payload is malformed.' },
   ]);
   const staticView = sceneReadView({ widget: 1, subs: [], pictures: [], model: null } as unknown as Scene, { sources: {}, staticPanels: { main: head }, validateTail }, 110);
   assert.deepEqual(staticView.rows('main')?.sliceAt(110, 0, 2), [
     { kind: 'data', ordinal: 0, readAt: 110, row: { key: 'a', hour: 100 } },
-    { kind: 'refused', ordinal: 1, readAt: 110, reason: 'Row payload is malformed.' },
+    { kind: 'refused', ordinal: 1, readAt: 110, hour: 99, reason: 'Row payload is malformed.' },
   ]);
 });

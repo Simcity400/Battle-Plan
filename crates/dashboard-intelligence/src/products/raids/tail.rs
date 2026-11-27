@@ -150,7 +150,6 @@ pub struct RaidLogRow {
     pub hour: i32,
     pub exact: bool,
     pub observed: i32,
-    pub ordinal: String,
     pub live: bool,
     pub status: RaidStatus,
     pub phase_name: Option<String>,
@@ -426,7 +425,7 @@ fn preparation_at(episode: &RaidEpisode, hour: i32) -> Option<RaidPreparationAt>
     Some(RaidPreparationAt { since: run.0, hours: run.2, per_hour: if run.1 > run.0 { run.3 } else { 0 }, through: (run.1 < hour).then_some(run.1) })
 }
 
-fn row(tail: &Tail, holders: &Holders, raid: &Raid, shown_ordinal: u64, live: bool, status: RaidStatus, hour: i32) -> Option<RaidLogRow> {
+fn row(tail: &Tail, holders: &Holders, raid: &Raid, live: bool, status: RaidStatus, hour: i32) -> Option<RaidLogRow> {
     let at = episode_at(&raid.episode, hour)?;
     let date = at.first_hour;
     let raider = match at.raider_slot {
@@ -445,7 +444,6 @@ fn row(tail: &Tail, holders: &Holders, raid: &Raid, shown_ordinal: u64, live: bo
         hour: date,
         exact: at.first_hour_exact,
         observed: date,
-        ordinal: shown_ordinal.to_string(),
         live,
         status,
         phase_name: at.phase_name.clone(),
@@ -502,7 +500,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &RaidLogTailPara
     for shown in &answer.rows {
         let raid = &index.get(shown.at).payload;
         let status = shown.state.and_then(RaidStatus::of_code).unwrap_or(RaidStatus::PhaseNotRecorded);
-        rows.push(row(tail, &query.holders, raid, shown.ordinal, shown.live, status, hour).ok_or_else(|| invalid(format!("Raid {} is listed before its first read", raid.episode.id)))?);
+        rows.push(row(tail, &query.holders, raid, shown.live, status, hour).ok_or_else(|| invalid(format!("Raid {} is listed before its first read", raid.episode.id)))?);
         if let Some(&later) = raid.changes.get(raid.changes.partition_point(|&at| at <= hour)) {
             next_change = Some(next_change.map_or(later, |held| held.min(later)));
         }
