@@ -54,11 +54,16 @@ test('a step whose selection was not recorded is its own row', () => {
 });
 
 test('a decision title operand the recording cannot prove is a "not recorded" token with its reason, never a bare ellipsis', () => {
-  const why = 'decision title seize_gold: it names a highlighted state the recording does not hold';
-  const item = { token: 'seize_gold', name: 'Seize the Gold Reserve of \uFFFC', icon: null, description: null, gaps: why };
-  assert.equal(plainScripted(item.name), 'Seize the Gold Reserve of [not recorded]');
-  assert.deepEqual(scriptedParts(item.name, why), [{ text: 'Seize the Gold Reserve of ' }, { gap: `Not recorded: ${why}` }]);
-  assert.deepEqual(scriptedParts('Recruit in …', why), [{ text: 'Recruit in …' }], 'an authored ellipsis is text');
+  const gap = { field: 'title' as const, key: 'FROM.GetName', reason: 'it names a highlighted state the recording does not hold' };
+  const item = { token: 'synth_gold', name: 'Reserve of \uFFFC and \uFFFC', icon: null, description: null, gaps: [gap, { field: 'title' as const, key: 'ROOT.GetLeader', reason: 'reads more than a country name or date' }] };
+  assert.equal(plainScripted(item.name, item.gaps), 'Reserve of [not recorded: FROM.GetName: it names a highlighted state the recording does not hold] and [not recorded: ROOT.GetLeader: reads more than a country name or date]');
+  assert.deepEqual(scriptedParts(item.name, item.gaps), [
+    { text: 'Reserve of ' },
+    { gap: 'Not recorded: FROM.GetName: it names a highlighted state the recording does not hold', inline: 'not recorded: FROM.GetName: it names a highlighted state the recording does not hold', key: 'FROM.GetName', reason: 'it names a highlighted state the recording does not hold' },
+    { text: ' and ' },
+    { gap: 'Not recorded: ROOT.GetLeader: reads more than a country name or date', inline: 'not recorded: ROOT.GetLeader: reads more than a country name or date', key: 'ROOT.GetLeader', reason: 'reads more than a country name or date' },
+  ]);
+  assert.deepEqual(scriptedParts('Recruit in …', item.gaps), [{ text: 'Recruit in …' }], 'an authored ellipsis is text');
 });
 
 test('a mission with a recorded Failed native state shows Failed with its observation date while keeping its witnessed cause and filter choice', () => {
@@ -335,10 +340,10 @@ test('a decision tooltip shows its listed description until the hovered row is r
     const model = decisionsProjection.project(createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]) }), { artwork: false, breaks: [], hover: hoverTextOf(withHoverText({}, hover === null ? [] : 'key' in hover ? [hover] : hover)) });
     const extra = model.rows.find(row => row.key === occ.id)?.tooltipExtra;
     const shown = (typeof extra === 'function' ? extra() : extra) ?? [];
-    return shown.filter(row => ['Description', 'Full description', 'Authored effects', 'Text not recorded'].includes(row.label))
+    return shown.filter(row => row.label.startsWith('Text not recorded') || ['Description', 'Full description', 'Authored effects'].includes(row.label))
       .map(row => [row.label, row.value.kind === 'known' ? row.value.value : row.value.kind === 'notRecorded' ? `not recorded: ${row.value.reason}` : row.value.kind]);
   };
-  const read = { key: occ.id, description: 'Raise war bonds. Effects: +5% war support', gaps: null, options: null, missing: null };
+  const read: HoverText = { key: occ.id, description: 'Raise war bonds. Effects: +5% war support', gaps: null, options: null, missing: null };
   assert.deepEqual(tip(null), [['Description', 'Raise war bonds.']], 'before the read answers, the listed description');
   assert.deepEqual(tip(read), [['Description', 'Raise war bonds. Effects: +5% war support']], 'the read row brings the full text');
   assert.deepEqual(tip({ ...read, key: other.id }), [['Description', 'Raise war bonds.']], 'a read of another row changes nothing here');
@@ -346,9 +351,17 @@ test('a decision tooltip shows its listed description until the hovered row is r
   assert.deepEqual(tip({ ...read, description: null, missing: 'This event is not in the log at the hour it was read' }), [
     ['Description', 'Raise war bonds.'], ['Full description', 'not recorded: This event is not in the log at the hour it was read'],
   ]);
-  assert.deepEqual(tip({ ...read, gaps: 'GER_war_bonds.d shows its scripted text elided' }), [
-    ['Text not recorded', 'not recorded: GER_war_bonds.d shows its scripted text elided'], ['Description', 'Raise war bonds. Effects: +5% war support'],
-  ], 'the text the read row could not expand is named once its row is read');
+  assert.deepEqual(tip({
+    ...read,
+    gaps: [
+      { field: 'title', key: 'FROM.GetName', reason: 'targeted decision country has no exact occurrence-hour slot' },
+      { field: 'description', key: 'ROOT.GetLeader', reason: 'reads more than a country name or date' },
+    ],
+  }), [
+    ['Text not recorded (title)', 'FROM.GetName: targeted decision country has no exact occurrence-hour slot'],
+    ['Text not recorded (description)', 'ROOT.GetLeader: reads more than a country name or date'],
+    ['Description', 'Raise war bonds. Effects: +5% war support'],
+  ], 'every gap the read row could not expand is listed with its field and reason once its row is read');
 });
 
 test('a decision cost read in one currency keeps it, partial, when the other currency was not read', () => {

@@ -1926,7 +1926,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, [blockedState, rowsFocus, syncTableTabIndex]);
 
   return (
-    <div ref={frameRef} className={className ? `fh-frame ${className}` : 'fh-frame'}>
+    <div ref={frameRef} data-tooltip-owner={tooltipOwner} className={className ? `fh-frame ${className}` : 'fh-frame'}>
       {headerSlot && headerSummary ? createPortal(<FamilyHeaderSummary ref={headerSummaryRef} summary={headerSummary} />, headerSlot) : null}
       {Chrome ? (
         <Chrome

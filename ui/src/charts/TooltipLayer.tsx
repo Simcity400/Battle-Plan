@@ -1,7 +1,7 @@
-import { useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { CountryFlagUrl } from '../components/CountryFlag';
 import { placeTooltip } from './tooltipPlacement';
-import { tooltipStore } from './tooltip';
+import { handleActiveTooltipKey, handleActiveTooltipWheel, tooltipStore } from './tooltip';
 import { ScrollableTooltipRows, TooltipRowView } from './TooltipRows';
 import './charts.css';
 import { commitZone } from '../shell/commitCount';
@@ -12,6 +12,46 @@ export default function TooltipLayer() {
     ? { ...state.content, rows: [...state.content.rows, ...state.detailRows] }
     : state?.content, [state?.content, state?.detailRows]);
   const ref = useRef<HTMLDivElement>(null);
+  const scrollable = Boolean(state?.content.scrollable);
+  useEffect(() => {
+    if (!scrollable) return;
+    const maxScroll = () => {
+      const element = ref.current;
+      return element ? Math.max(0, element.scrollHeight - element.clientHeight) : 0;
+    };
+    const eventOwner = (target: EventTarget | null, client?: { readonly x: number; readonly y: number }): string | null => {
+      const element = ref.current;
+      const activeOwner = tooltipStore.get()?.owner ?? null;
+      if (client && element && activeOwner) {
+        const rect = element.getBoundingClientRect();
+        if (client.x >= rect.left && client.x <= rect.right && client.y >= rect.top && client.y <= rect.bottom) {
+          return activeOwner;
+        }
+      }
+      if (!(target instanceof Element)) return null;
+      return target.closest('[data-tooltip-owner]')?.getAttribute('data-tooltip-owner') ?? null;
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey || event.deltaY === 0) return;
+      const owner = eventOwner(event.target, { x: event.clientX, y: event.clientY });
+      if (!handleActiveTooltipWheel(owner, event.deltaY, maxScroll())) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey) return;
+      const owner = eventOwner(event.target);
+      if (!handleActiveTooltipKey(owner, event.key, event.altKey, maxScroll())) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.addEventListener('wheel', onWheel, { passive: false, capture: true });
+    window.addEventListener('keydown', onKeyDown, { capture: true });
+    return () => {
+      window.removeEventListener('wheel', onWheel, true);
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [scrollable]);
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;

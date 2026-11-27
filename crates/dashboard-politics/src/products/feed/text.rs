@@ -1,8 +1,8 @@
 
-use super::{EventFeedItem, EventFeedKind, EventFeedOption, EventFeedUnavailable, row::FeedEvent, row::Slot};
+use super::{EventFeedGap, EventFeedGapField, EventFeedItem, EventFeedKind, EventFeedOption, EventFeedUnavailable, row::FeedEvent, row::Slot};
 use dashboard_base::{catalogue::{self, Catalogue}, products::artwork};
 use dashboard_effects::{ScriptedEffects, effect_description};
-use dashboard_text::{scripted_text::{EventObject, EventScope, EventScopes, Link, ScopeName, ScriptedText}};
+use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ExpandedText, Link, SCRIPTED_GAP, ScopeName, ScriptedText, expand_dates_in};
 use content_reader_layers::content::diagnostics::Diagnostics;
 use dashboard_query::Query;
 use replay_lanes::{at::Read, dated::Dated, lanes::Keys};
@@ -137,6 +137,7 @@ struct ScopeInput {
 const OBJECTS: [&str; 9] = ["a character", "an operation", "an ace", "a unit", "an industrial organisation", "a purchase contract", "a raid", "a project", "a faction"];
 
 pub(super) struct Inputs {
+    hour: i32,
     option: Option<i32>,
     actor_slot: Option<u32>,
     targeted: bool,
@@ -152,6 +153,7 @@ impl Inputs {
         let identities = [event.actor, event.target];
         let targeted = event.country_target.is_some() || event.numeric_target.is_some();
         Self {
+            hour: event.hour,
             option: event.option,
             actor_slot: match event.actor.slot {
                 Slot::Of(slot) => Some(slot),
@@ -259,21 +261,88 @@ impl Inputs {
     }
 
     fn title_graph(&self) -> Result<(EventScopes, Vec<ScopeName>), String> {
-        if !self.scopes.iter().any(|scope| scope.attempted) {
-            return Ok((self.graph(false)?, Vec::new()));
+        if self.missing || self.scopes.is_empty() {
+            return Err("event execution scope graph was not recorded".into());
         }
+        let attempted = self.scopes.iter().any(|scope| scope.attempted);
         let names = self
             .scopes
             .iter()
-            .map(|scope| match (&scope.opaque, scope.slot, &scope.names) {
-                (Some(kinds), ..) => ScopeName::Unproven(format!("it carries {kinds}")),
-                (None, None, _) => ScopeName::Unproven(format!("its country reference {} has no exact occurrence-hour canonical slot", scope.reference)),
-                (None, Some(_), Some(names)) => ScopeName::Recorded(names.clone()),
-                (None, Some(_), None) if scope.reference as i32 <= 0 => ScopeName::Unproven("it holds no country".into()),
-                (None, Some(_), None) => ScopeName::Unproven("its country's names were not recorded: unreadable, too long or possibly mid-rename".into()),
+            .map(|scope| {
+                if let Some(kinds) = &scope.opaque {
+                    ScopeName::Unproven(format!("it carries {kinds}"))
+                } else if !attempted && scope.unsupported {
+                    ScopeName::Unproven("it carries unsupported saved or tooltip-target operands".into())
+                } else if scope.slot.is_none() {
+                    ScopeName::Unproven(format!("its country reference {} has no exact occurrence-hour canonical slot", scope.reference))
+                } else if !attempted {
+                    ScopeName::Hour
+                } else if let Some(names) = &scope.names {
+                    ScopeName::Recorded(names.clone())
+                } else if scope.reference as i32 <= 0 {
+                    ScopeName::Unproven("it holds no country".into())
+                } else {
+                    ScopeName::Unproven("its country's names were not recorded: unreadable, too long or possibly mid-rename".into())
+                }
             })
             .collect();
         Ok((self.scope_graph(), names))
+    }
+
+    fn decision_title_graph(
+        &self,
+        owner: u32,
+        definition: &content_reader_politics::decisions::Decision,
+        state_selection_reason: Option<&str>,
+    ) -> (EventScopes, Vec<ScopeName>) {
+        let mut root = EventScope::of(EventObject::Country(owner));
+        root.random_seed_refusal = Some("decision title random seed was not recorded");
+        let mut scopes = vec![root];
+        let mut names = vec![ScopeName::Hour];
+        let push_unproven = |scopes: &mut Vec<EventScope>, names: &mut Vec<ScopeName>, reason: &str| {
+            let mut unproven = EventScope::of(EventObject::Country(0));
+            unproven.random_seed_refusal = Some("decision title random seed was not recorded");
+            scopes.push(unproven);
+            names.push(ScopeName::Unproven(reason.to_owned()));
+            scopes.len() - 1
+        };
+        if let Some(target) = self.target.as_ref() {
+            if target.country.is_some_and(|country| country as i32 > 0) {
+                match target.slot {
+                    Some(target_slot) => {
+                        let mut from = EventScope::of(EventObject::Country(target_slot));
+                        from.random_seed_refusal = Some("decision title random seed was not recorded");
+                        scopes[0].from = Link::Scope(1);
+                        scopes.push(from);
+                        names.push(ScopeName::Hour);
+                        if let Some(reason) = state_selection_reason {
+                            let highlighted = push_unproven(&mut scopes, &mut names, reason);
+                            scopes[1].from = Link::Scope(highlighted);
+                        }
+                    }
+                    None => {
+                        let from = push_unproven(&mut scopes, &mut names, "targeted decision country has no exact occurrence-hour slot");
+                        scopes[0].from = Link::Scope(from);
+                    }
+                }
+            } else if let Some(numeric) = target.numeric.filter(|&numeric| numeric > 0) {
+                let mut from = EventScope::of(EventObject::State(numeric as u32));
+                from.random_seed_refusal = Some("decision title random seed was not recorded");
+                scopes[0].from = Link::Scope(1);
+                scopes.push(from);
+                names.push(ScopeName::Hour);
+            } else {
+                let from = push_unproven(&mut scopes, &mut names, "targeted decision numeric selector was not recorded");
+                scopes[0].from = Link::Scope(from);
+            }
+        } else if let Some(reason) = state_selection_reason {
+            let from = push_unproven(&mut scopes, &mut names, reason);
+            scopes[0].from = Link::Scope(from);
+        } else if definition.targeted {
+            let from = push_unproven(&mut scopes, &mut names, "targeted decision selector was not recorded");
+            scopes[0].from = Link::Scope(from);
+        }
+        (EventScopes::new(scopes), names)
     }
 }
 
@@ -286,19 +355,23 @@ fn script_events(catalogue: &Catalogue) -> Arc<content_reader_events::events::La
     Arc::clone(index.get_or_insert_with(|| Arc::new(content_reader_events::events::LazyEvents::from_content(Arc::clone(&catalogue.content)))))
 }
 
-pub const SCRIPTED_GAP: char = '\u{FFFC}';
-
-pub(super) fn elide_scripted(text: &str) -> String {
-    let mut shown = String::new();
-    let mut rest = text;
-    while let Some(open) = rest.find('[') {
-        let Some(close) = rest[open..].find(']') else { break };
-        shown.push_str(&rest[..open]);
-        shown.push(SCRIPTED_GAP);
-        rest = &rest[open + close + 1..];
+fn inline_gaps(expanded: &ExpandedText) -> String {
+    if expanded.gaps.is_empty() {
+        return expanded.text.clone();
     }
-    shown.push_str(rest);
-    shown
+    let mut out = String::with_capacity(expanded.text.len());
+    let mut gaps = expanded.gaps.iter();
+    for ch in expanded.text.chars() {
+        if ch == SCRIPTED_GAP {
+            match gaps.next() {
+                Some(gap) => out.push_str(&format!("[not recorded: {}: {}]", gap.key, gap.reason)),
+                None => out.push_str("[not recorded]"),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 pub(super) fn names_decision(kind: EventFeedKind) -> bool {
@@ -582,11 +655,11 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
         if names_decision(kind) {
             let token = item.token.clone().unwrap_or_else(|| "unidentified decision".to_owned());
             match frame.clone().and_then(|frame| decision_title(catalogue, inputs, frame, &token)) {
-                Ok((name, elided)) => {
-                    item.name = Some(name);
-                    if let Some(reason) = elided {
-                        notices.unavailable("decisionPresentation", "Decision presentation", format!("Decision {token}: {reason}; its scripted text is elided."), Some(1));
-                        item.gaps = Some(reason);
+                Ok(expanded) => {
+                    item.name = Some(expanded.text);
+                    for gap in expanded.gaps {
+                        notices.unavailable("decisionPresentation", "Decision presentation", format!("Decision {token}: [{}]: {}", gap.key, gap.reason), Some(1));
+                        item.gaps.push(EventFeedGap { field: EventFeedGapField::Title, ordinal: None, key: gap.key, reason: gap.reason });
                     }
                 }
                 Err(reason) => {
@@ -621,23 +694,34 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
             return if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) };
         }
     };
-    let mut scripted = Vec::new();
-    let mut localise = |key: &[u8]| -> Result<String, String> {
+    let localise = |key: &[u8]| -> Result<(String, ExpandedText), String> {
         let key = std::str::from_utf8(key).map_err(|_| format!("Event {token} localisation key is not UTF-8"))?;
         let text = catalogue.localised(key, catalogue::View::Plain).ok_or_else(|| format!("Event {token}: {key} needs unavailable historical localisation operands"))?;
         if !text.contains('[') {
-            return Ok(text);
+            return Ok((key.to_owned(), ExpandedText { text, gaps: Vec::new() }));
         }
-        let expanded = frame.clone().and_then(|frame| scoped_text(catalogue, inputs, frame, key));
-        Ok(expanded.unwrap_or_else(|reason| {
-            scripted.push(format!("Event {token}: {key} shows its scripted text elided: {reason}"));
-            elide_scripted(&text)
-        }))
+        let expanded = scoped_text(catalogue, inputs, frame.clone(), key)?;
+        Ok((key.to_owned(), expanded))
     };
-    for (field, keys) in [("title", event.sole_title_key()), ("body", event.sole_description_key())] {
-        match keys.and_then(|key| key.map(&mut localise).transpose()) {
-            Ok(Some(value)) if field == "title" => item.name = Some(value),
-            Ok(Some(value)) => item.description = Some(value),
+    let record_gaps = |notices: &mut Notices, item: &mut EventFeedItem, key: &str, field: EventFeedGapField, ordinal: Option<u32>, gaps: Vec<dashboard_text::scripted_text::ScriptedGap>| {
+        for gap in gaps {
+            notices.unavailable("scriptEventText", "Scripted event text", format!("Event {token}: {key}: [{}]: {}", gap.key, gap.reason), Some(1));
+            item.gaps.push(EventFeedGap { field, ordinal, key: gap.key, reason: gap.reason });
+        }
+    };
+    for (field, gap_field, keys) in [
+        ("title", EventFeedGapField::Title, event.sole_title_key()),
+        ("body", EventFeedGapField::Description, event.sole_description_key()),
+    ] {
+        match keys.and_then(|key| key.map(&localise).transpose()) {
+            Ok(Some((key, expanded))) if field == "title" => {
+                item.name = Some(expanded.text);
+                record_gaps(notices, item, &key, gap_field, None, expanded.gaps);
+            }
+            Ok(Some((key, expanded))) => {
+                item.description = Some(expanded.text);
+                record_gaps(notices, item, &key, gap_field, None, expanded.gaps);
+            }
             Ok(None) if field == "title" => item.name_missing = Some(format!("event {token} has no title in its content")),
             Ok(None) => {}
             Err(reason) => {
@@ -658,16 +742,22 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
     let mut options = Vec::new();
     let mut authored = Vec::new();
     for (ordinal, name) in event.option_names.iter().enumerate() {
+        let ordinal_u32 = u32::try_from(ordinal).map_err(|_| io::Error::other("Too many authored event options"))?;
         let resolved = localise(name);
-        authored.push(EventFeedOption { ordinal: u32::try_from(ordinal).map_err(|_| io::Error::other("Too many authored event options"))?, name: resolved.as_ref().ok().cloned() });
-        let name = match resolved {
-            Ok(name) => name,
+        let display = match resolved {
+            Ok((key, expanded)) => {
+                let inline = inline_gaps(&expanded);
+                authored.push(EventFeedOption { ordinal: ordinal_u32, name: Some(expanded.text) });
+                record_gaps(notices, item, &key, EventFeedGapField::Option, Some(ordinal_u32), expanded.gaps);
+                inline
+            }
             Err(reason) => {
+                authored.push(EventFeedOption { ordinal: ordinal_u32, name: None });
                 notices.unavailable("scriptEventOptionName", "Event option name", reason, Some(1));
                 String::from_utf8_lossy(name).into_owned()
             }
         };
-        options.push(format!("{ordinal}: {name}"));
+        options.push(format!("{ordinal}: {display}"));
         for trigger in event.option_triggers.get(ordinal).into_iter().flatten() {
             let key = trigger.key.as_deref().map(String::from_utf8_lossy).unwrap_or_default();
             notices.unavailable("scriptEventOptionAdmission", "Offered event option", format!("Event {token} option {ordinal}: trigger {key} needs exact presentation-time inputs"), Some(1));
@@ -681,10 +771,6 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
                 Some(1),
             );
         }
-    }
-    item.gaps = scripted.first().cloned();
-    for reason in scripted {
-        notices.unavailable("scriptEventText", "Scripted event text", reason, Some(1));
     }
     item.options = Some(authored);
     if !options.is_empty() {
@@ -719,14 +805,23 @@ fn draw_picture(notices: &mut Notices, art: &Art<'_>, token: &str, picture: &str
     }
 }
 
-fn scoped_text(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, key: &str) -> Result<String, String> {
-    let (scopes, names) = inputs.title_graph()?;
-    let text = catalogue.localisation.localise(key.as_bytes()).map_err(|why| why.to_string())?;
-    let expander = ScriptedText::new_in(frame, &catalogue.localisation, catalogue.scripted_content()?, inputs.actor_slot.unwrap_or(0));
-    catalogue::plain_text(&expander.expand_names_in(&text, &scopes, &names)?)
+fn scoped_text(catalogue: &Catalogue, inputs: &Inputs, frame: Result<HourFrame<'_>, String>, key: &str) -> Result<ExpandedText, String> {
+    let raw = catalogue.localisation.localise(key.as_bytes()).map_err(|why| why.to_string())?;
+    let ready = frame
+        .and_then(|frame| Ok((frame, catalogue.scripted_content()?)))
+        .and_then(|(frame, content)| Ok((frame, content, inputs.title_graph()?)));
+    let expanded = match ready {
+        Ok((frame, content, (scopes, names))) => {
+            let expander = ScriptedText::new_in(frame, &catalogue.localisation, content, inputs.actor_slot.unwrap_or(0));
+            expander.expand_names_in(&raw, &scopes, &names)
+        }
+        Err(why) => expand_dates_in(&raw, inputs.hour, &catalogue.localisation, &why),
+    };
+    let text = catalogue::plain_text(&expanded.text)?;
+    Ok(ExpandedText { text, gaps: expanded.gaps })
 }
 
-fn decision_title(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, token: &str) -> Result<(String, Option<String>), String> {
+fn decision_title(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, token: &str) -> Result<ExpandedText, String> {
     let content = catalogue.scripted_content()?;
     let effects = content.effects()?;
     let decisions = effects.view(None).decisions.ok_or("decision database is unavailable from the recorded content stack")?;
@@ -739,17 +834,18 @@ fn decision_title(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, 
     let key = effect_description::decision_name_key_at(frame, text.recorded(), &catalogue.localisation, definition, owner, text.country_tag(owner)?)?;
     let name = catalogue.localised(&key, catalogue::View::Plain).ok_or_else(|| format!("decision title {key} is absent from recorded content"))?;
     if !name.contains('[') {
-        return Ok((name, None));
+        return Ok(ExpandedText { text: name, gaps: Vec::new() });
     }
-    let expanded = if !definition.has_state_targets && definition.highlight_conditions.is_empty() {
-        decision_title_text(catalogue, inputs, frame, &key)
-    } else {
-        Err("it names a highlighted state the recording does not hold".into())
+    let raw = catalogue.localisation.localise(key.as_bytes()).map_err(|why| why.to_string())?;
+    let state_selection_reason = match definition.name_selects_state(|body| text.trigger_world()?.has_children(body)) {
+        Ok(true) => Some("it names a highlighted state the recording does not hold".to_owned()),
+        Ok(false) => None,
+        Err(why) => Some(why),
     };
-    Ok(match expanded {
-        Ok(name) => (name, None),
-        Err(reason) => (elide_scripted(&name), Some(format!("decision title {key}: {reason}"))),
-    })
+    let (scopes, names) = inputs.decision_title_graph(owner, definition, state_selection_reason.as_deref());
+    let expanded = text.expand_names_in(&raw, &scopes, &names);
+    let plain = catalogue::plain_text(&expanded.text)?;
+    Ok(ExpandedText { text: plain, gaps: expanded.gaps })
 }
 
 fn decision_icon(catalogue: &Catalogue, token: &str) -> Result<String, String> {
@@ -775,19 +871,6 @@ fn decision_icon(catalogue: &Catalogue, token: &str) -> Result<String, String> {
         }
     }
     Err(selected.err().unwrap_or_else(|| format!("no sprite of {} is declared in the installation", candidates.join(", "))))
-}
-
-fn decision_title_text(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, key: &str) -> Result<String, String> {
-    let mut scopes = inputs.graph(true)?;
-    for scope in &mut scopes.scopes {
-        scope.random_seed_refusal = Some("decision title random seed was not recorded");
-    }
-    if let Some(target) = scopes.scopes.get_mut(1) {
-        target.from = Link::Itself;
-    }
-    let text = catalogue.localisation.localise(key.as_bytes()).map_err(|why| why.to_string())?;
-    let expander = ScriptedText::new_in(frame, &catalogue.localisation, catalogue.scripted_content()?, inputs.actor_slot.unwrap_or(0));
-    catalogue::plain_text(&expander.expand_names_in(&text, &scopes, &[])?)
 }
 
 fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, items: &[content_reader_parser::parser::Item]) -> Result<effect_description::Description, String> {

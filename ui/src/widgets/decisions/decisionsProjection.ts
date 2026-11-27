@@ -23,8 +23,8 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptCurrency, ScriptOccurrence, ScriptPageRow, ScriptStatus } from '../../generated/dashboard';
-import { descriptionRows, gapRows, hoverTextOf, type TooltipTexts } from '../event-feed/hoverText.ts';
-import { plainScripted, reasonsOf } from '../event-feed/scriptedGaps.ts';
+import { descriptionRows, gapRows, hasTooltipGaps, hoverTextOf, type TooltipTexts } from '../event-feed/hoverText.ts';
+import { gapsForField, plainScripted, reasonsOf, scriptedValue } from '../event-feed/scriptedGaps.ts';
 import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import type { DecisionDetailSubject } from './DecisionDetailWindow.tsx';
 import {
@@ -178,8 +178,9 @@ function buildDecisionRow(
   const art = artHandle ? readView.art(artHandle) : unavailableArt('The product drew no icon for this item');
 
   const rawName = card.item?.name && card.item.name.trim().length > 0 ? card.item.name : null;
-  const safeName = plainScripted(rawName ?? decisionName(card)) || 'Decision name not recorded';
   const reasons = reasonsOf(card.item);
+  const titleGaps = gapsForField(card.item?.gaps, 'title');
+  const safeName = plainScripted(rawName ?? decisionName(card), titleGaps) || 'Decision name not recorded';
   const participants = firstRow.participants ?? [card.country, card.target];
   const countryEntries: { readonly tag: string | null; readonly missingLabel?: string }[] = [
     { tag: card.country, missingLabel: 'Country not identified' },
@@ -248,8 +249,8 @@ function buildDecisionRow(
     if (at.failureMissing) out.push({ label: 'Mission failure state', value: notRecorded(at.failureMissing) });
     if (card.item?.token) out.push({ label: 'Content identity', value: knownValue(card.item.token) });
     if (reasons.nameMissing) out.push({ label: 'Name not recorded', value: notRecorded(reasons.nameMissing) });
-    out.push(...gapRows(hover, card.occurrence.id));
-    out.push(...descriptionRows(hover, card.occurrence.id, card.item?.description));
+    out.push(...gapRows(hover, card.occurrence.id, card.item?.gaps));
+    out.push(...descriptionRows(hover, card.occurrence.id, card.item?.description, card.item?.gaps));
     return out;
   };
 
@@ -274,7 +275,7 @@ function buildDecisionRow(
           : { value: notApplicable('Game artwork hidden'), blank: true },
         country: logCountryCell(readView, countryEntries, nameHour, boundary),
         item: rawName !== null
-          ? { value: knownValue(rawName), ...(isMission ? { inlineSubtext: 'Mission' } : {}) }
+          ? { value: scriptedValue(rawName, titleGaps), ...(isMission ? { inlineSubtext: 'Mission' } : {}) }
           : { value: notRecorded(reasons.nameMissing ?? 'Decision name not recorded') },
         place: placeCell,
         timer: timer.cell,
@@ -283,6 +284,7 @@ function buildDecisionRow(
       },
       tooltipTitle: safeName,
       tooltipExtra,
+      ...(hasTooltipGaps(hover, card.occurrence.id, card.item?.gaps) ? { tooltipScrollId: card.occurrence.id } : {}),
       tooltipAction: 'Click to view decision',
       meta: detailSubject,
     },

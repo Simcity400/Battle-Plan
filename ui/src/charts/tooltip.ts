@@ -203,7 +203,7 @@ export function fitTooltip(forms: Iterable<TooltipContent>, height: number, opti
   for (const form of forms) {
     first ??= form;
     last = form;
-    if (tooltipHeight(form, metrics) <= room) return form === first && !options.full ? form : { ...form, spoken: tooltipText(options.full ?? first) };
+    if (form.scrollable || tooltipHeight(form, metrics) <= room) return form === first && !options.full ? form : { ...form, spoken: tooltipText(options.full ?? first) };
   }
   if (!first || !last) return { title: '', rows: [] };
   const summary = last.rows.findIndex(row => Number.isSafeInteger(row.omittedRows) && (row.omittedRows ?? 0) > 0);
@@ -260,6 +260,29 @@ export function scrollTooltip(owner: string, delta: number, pages = false): bool
   const scrollTop = Math.max(0, (state.scrollTop ?? 0) + delta * (pages ? state.scrollViewport ?? 0 : 1));
   if (scrollTop !== state.scrollTop) { state = { ...state, scrollTop }; emit(); }
   return true;
+}
+
+export function handleActiveTooltipWheel(eventOwner: string | null, deltaY: number, maxScroll: number): boolean {
+  if (!state?.content.scrollable || !eventOwner || state.owner !== eventOwner || maxScroll <= 0 || deltaY === 0) return false;
+  const current = state.scrollTop ?? 0;
+  const next = Math.max(0, Math.min(maxScroll, current + deltaY));
+  if (next === current) return false;
+  return scrollTooltip(state.owner, next - current);
+}
+
+export function handleActiveTooltipKey(eventOwner: string | null, key: string, altKey: boolean, maxScroll: number): boolean {
+  if (!state?.content.scrollable || !eventOwner || state.owner !== eventOwner || maxScroll <= 0) return false;
+  const direction = key === 'PageDown' || (altKey && key === 'ArrowDown')
+    ? 1
+    : key === 'PageUp' || (altKey && key === 'ArrowUp')
+      ? -1
+      : 0;
+  if (direction === 0) return false;
+  const current = state.scrollTop ?? 0;
+  const step = state.scrollViewport && state.scrollViewport > 0 ? state.scrollViewport : maxScroll;
+  const next = Math.max(0, Math.min(maxScroll, current + direction * step));
+  if (next === current) return false;
+  return scrollTooltip(state.owner, next - current);
 }
 
 export function measureTooltipScroll(owner: string, height: number): void {
