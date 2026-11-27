@@ -413,6 +413,9 @@ type Born = HashMap<(u16, u32), Vec<Raw>, foldhash::fast::RandomState>;
 
 fn born<L: Look>(recording: &Recording, (run, table): (u32, TableId), probe: &mut Option<TableReader>, stretch: &Stretch, reading: &Reading<'_, L>) -> io::Result<Born> {
     let mut out = Born::default();
+    if reading.columns.is_empty() {
+        return Ok(out);
+    }
     for &(hour, slot, key) in &stretch.inserted {
         if !reading.wanted.wants(key) {
             continue;
