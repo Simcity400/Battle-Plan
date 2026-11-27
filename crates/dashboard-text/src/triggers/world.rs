@@ -478,7 +478,7 @@ pub fn core_gap(frame: &dyn replay_frame::frame::RecordedSource) -> Option<Strin
 
 type TemplateNames<'a> = (
     &'a content_reader_layers::content::diagnostics::Once<
-        Result<content_reader_localisation::localisation::Localisation, String>,
+        Result<Arc<content_reader_localisation::localisation::Localisation>, String>,
     >,
     &'a content_reader_layers::ResolvedLayers,
     &'a str,
@@ -4351,7 +4351,7 @@ impl<'a> World<'a> {
     pub(crate) fn with_template_names(
         mut self,
         names: &'a content_reader_layers::content::diagnostics::Once<
-            Result<content_reader_localisation::localisation::Localisation, String>,
+            Result<Arc<content_reader_localisation::localisation::Localisation>, String>,
         >,
         layers: &'a content_reader_layers::ResolvedLayers,
         language: &'a str,
@@ -4408,7 +4408,8 @@ impl<'a> World<'a> {
                     .ok_or("template display-name localisation is unavailable")?;
                 let names = names
                     .get_or_init(|| {
-                        content_reader_localisation::localisation::read(layers, language)
+                        use content_reader_localisation::localisation::{read, read_shared};
+                        read_shared(layers, language, read)
                             .map_err(|e| e.to_string())
                     })
                     .as_ref()

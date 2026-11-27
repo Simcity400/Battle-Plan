@@ -89,6 +89,12 @@ impl Generation {
         current().map(Loading::new)
     }
 
+    pub fn release_source(bytes: &super::Bytes) {
+        if let (Some(graph), Some(request)) = (bytes.owner::<super::graph::Graph>(), bytes.origin()) {
+            graph.release_source(request);
+        }
+    }
+
     pub(super) fn attach(graph: Arc<super::graph::Graph>) -> Self {
         Self::resume(Some(graph))
     }
