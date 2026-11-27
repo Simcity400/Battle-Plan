@@ -3,7 +3,7 @@ use super::{
     EventFeedCategory, EventFeedKind, EventFeedRow, EventFeedUnavailable, Names, Notices, Presenter, branch, content_from, content_refusals, families, invalid,
     cards::{List, ScriptEdge, ScriptOccurrence, edge},
     fold::{self, PlannedLine},
-    index::{self, Feed, Item, Locator, ScriptStatus, Scanned, kind_code},
+    index::{self, Feed, Item, Locator, ScriptStatus, Scanned, TitleKeys, kind_code},
     present_all,
     row::FeedEvent,
     text::{KeptNaming, kept_naming},
@@ -405,7 +405,22 @@ fn branch_id(text: &str) -> io::Result<u64> {
     text.parse().map_err(|_| invalid("Invalid branch"))
 }
 
-fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContext, list: Option<List>, asked: (Option<&[Country]>, Option<&GroupSelection>), cancelled: &AtomicBool) -> io::Result<Prepared> {
+fn title_keys(search: Option<&str>, sort: Option<&OccurrenceSort>) -> Option<TitleKeys> {
+    if search.is_some_and(|text| !text.trim().is_empty()) { return Some(TitleKeys::Search); }
+    match sort.map(|sort| sort.column.as_str()) {
+        Some("item") => Some(TitleKeys::Item),
+        Some("choice") => Some(TitleKeys::Choice),
+        _ => None,
+    }
+}
+
+macro_rules! asked {
+    ($params:expr) => {
+        ($params.countries.as_deref(), $params.group.as_ref(), title_keys($params.search.as_deref(), $params.sort.as_ref()))
+    };
+}
+
+fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContext, list: Option<List>, asked: (Option<&[Country]>, Option<&GroupSelection>, Option<TitleKeys>), cancelled: &AtomicBool) -> io::Result<Prepared> {
     let selection = dashboard_world::products::group_members::dated(source, query, context, asked.0, asked.1, cancelled)?;
     let content = Arc::new(super::resolve_content(source, context));
     let scanned = index::scanned_for(source, query, branch, content.as_ref().as_ref().ok(), cancelled)?;
@@ -417,8 +432,16 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContex
             (Arc::clone(&feed.index), Some(feed))
         }
     };
+    let kept = kept_naming(source);
+    let index = match asked.2 {
+        Some(keys) => {
+            let presenter = Presenter::new(query, content.as_ref().as_ref().ok(), Arc::clone(&kept));
+            dashboard_base::catalogue::capture_isolated(|| scanned.title_index(query, &index, list, keys, presenter, cancelled)).0?
+        }
+        None => index,
+    };
     let losses = source.replay_ref().event_losses(branch).collect();
-    Ok(Prepared { selection, index, feed, scanned, losses, content, kept: kept_naming(source) })
+    Ok(Prepared { selection, index, feed, scanned, losses, content, kept })
 }
 
 struct Window<'p> {
@@ -508,22 +531,23 @@ fn notices_for(prepared: &Prepared, unattributed: u64, windows: bool, from: i32,
 fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<EventFeedTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
+    let index = prepared.index.as_ref();
     let kinds = feed_kinds(&params.categories, params.exclude.as_deref())?;
     let (order, _newest) = occurrences::order(params.sort.as_ref(), &["country", "item"])?;
     let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
     let opened = params.row.is_some();
     let (total, reply_offset, live_total, unattributed, gaps, base_next, planned) = if let Some(row_key) = params.row.as_deref() {
-        let located = prepared.scanned.locate(row_key).and_then(|key| feed.index.find(key)).or_else(|| index::family_at(&feed.index, row_key));
+        let located = prepared.scanned.locate(row_key).and_then(|key| index.find(key)).or_else(|| index::family_at(index, row_key));
         match located {
             Some(at) => {
-                let occ = feed.index.get(at);
+                let occ = index.get(at);
                 if occ.observed > hour {
                     (0, 0, 0, 0, Vec::new(), Some(occ.observed), Vec::new())
-                } else if feed.index.retired_at(at).is_some_and(|end| hour >= end) {
+                } else if index.retired_at(at).is_some_and(|end| hour >= end) {
                     (0, 0, 0, 0, Vec::new(), None, Vec::new())
                 } else {
                     let live = u64::from(occ.state_at(hour).is_some_and(|state| index::LIVE.contains(&state)));
-                    let next = [occ.states.get(occ.states.partition_point(|&(h, _)| h <= hour)).map(|step| step.0), feed.index.retired_at(at)].into_iter().flatten().min();
+                    let next = [occ.states.get(occ.states.partition_point(|&(h, _)| h <= hour)).map(|step| step.0), index.retired_at(at)].into_iter().flatten().min();
                     (1, 0, live, 0, Vec::new(), next, vec![PlannedLine::Event { at, parent: None }])
                 }
             }
@@ -546,25 +570,25 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             limit,
             chips: &[],
         };
-        let (folded, live, unattributed, mut next) = if let Order::Date(direction) = order { feed.index.with_dated(&query.holders, &ask, |dated| {
+        let (folded, live, unattributed, mut next) = if let Order::Date(direction) = order { index.with_dated(&query.holders, &ask, |dated| {
             let (live, unattributed, until) = (dated.live, dated.unattributed, dated.until);
             let folded = fold::page(feed, dated, direction, offset, limit, params.expanded.as_deref(), params.full.as_deref());
             (folded, live, unattributed, until)
         })? } else {
-            let answer = feed.index.ask(&query.holders, &ask)?;
+            let answer = index.ask(&query.holders, &ask)?;
             let lines = answer.rows.iter().map(|shown| PlannedLine::Event { at: shown.at, parent: None }).collect();
             (fold::FoldedPage { total: answer.total, offset: answer.offset, lines, gaps: answer.gaps }, answer.live, answer.unattributed, answer.next_change)
         };
         for line in &folded.lines {
             if let PlannedLine::Event { at, .. } = line {
-                let entry = feed.index.get(*at);
+                let entry = index.get(*at);
                 let after = entry.states.partition_point(|&(h, _)| h <= hour);
                 next = next.into_iter().chain(entry.states.get(after).map(|step| step.0)).min();
             }
         }
         (folded.total, folded.offset, live, unattributed, folded.gaps, next, folded.lines)
     };
-    let read = index::read_events(query, &planned_locators(&feed.index, &planned, hour))?;
+    let read = index::read_events(query, &planned_locators(index, &planned, hour))?;
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
     let presenter = Presenter::new(query, content_from(&prepared.content, &mut notices), Arc::clone(&prepared.kept));
@@ -581,7 +605,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                 continue;
             }
         };
-        let Item::Log { head, edges, .. } = &feed.index.get(at).payload else {
+        let Item::Log { head, edges, .. } = &index.get(at).payload else {
             shapes.push(None);
             continue;
         };
@@ -614,7 +638,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         .zip(shapes)
         .map(|(line, shape)| match line {
             PlannedLine::Event { at, parent } => {
-                let occurrence = feed.index.get(at);
+                let occurrence = index.get(at);
                 let (key, mut row, mut choice) = match (&occurrence.payload, shape) {
                     (Item::Family(family), _) => (family.row.id.clone(), Some(family.shown(&mut art_warnings)), None),
                     (Item::Log { .. }, Some((head_at, choice))) => {
@@ -657,7 +681,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                 }))
             }
             PlannedLine::Fold { key, first_at, observed, count, kind, country } => {
-                let occurrence = feed.index.get(first_at);
+                let occurrence = index.get(first_at);
                 let mut first_row = match (&occurrence.payload, shape) {
                     (Item::Family(family), _) => Some(family.shown(&mut art_warnings)),
                     (Item::Log { .. }, Some((head_at, _))) => presented[head_at].clone(),
@@ -956,7 +980,7 @@ impl Product for EventFeedTail {
         let branch = branch_id(&params.branch_id)?;
         let query = dashboard_base::queries::query(source, branch)?;
         let hour = occurrences::cutoff(&query, params.hour)?;
-        let prepared = prepare(source, &query, branch, context, None, (params.countries.as_deref(), params.group.as_ref()), cancelled)?;
+        let prepared = prepare(source, &query, branch, context, None, asked!(params), cancelled)?;
             load_feed_at(&prepared, &query, params, hour, cancelled)
     }
 }
@@ -972,7 +996,7 @@ pub fn event_feed_dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &
     EventFeedTail::validate(&params)?;
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, None, (params.countries.as_deref(), params.group.as_ref()), &AtomicBool::new(false)));
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, None, asked!(params), &AtomicBool::new(false)));
     let held = Mutex::new((finish, Arc::new(prepared.map_err(|error| error.to_string())?)));
     let owned = Owned::of(&query, source.replay());
     let (shared, load) = (Arc::clone(source), LoadContext { content: load.content.clone() });
@@ -982,7 +1006,7 @@ pub fn event_feed_dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &
         let (finish, prepared) = {
             let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if held.1.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
-                let (finish, prepared) = dashboard_base::products::Finish::open(&shared, &load, EventFeedTail::CONTENT_DEPENDENT, || prepare(&shared, &query, branch, &load, None, (params.countries.as_deref(), params.group.as_ref()), cancelled));
+                let (finish, prepared) = dashboard_base::products::Finish::open(&shared, &load, EventFeedTail::CONTENT_DEPENDENT, || prepare(&shared, &query, branch, &load, None, asked!(params), cancelled));
                 *held = (finish, Arc::new(prepared.map_err(|error| dashboard_core::duplicate(&error))?));
             }
             (held.0.clone(), Arc::clone(&held.1))
@@ -1001,7 +1025,7 @@ fn cards_load(list: List, source: &Source, params: &ScriptTailParams, context: &
     let branch = branch_id(&params.branch_id)?;
     let query = dashboard_base::queries::query(source, branch)?;
     let hour = occurrences::cutoff(&query, params.hour)?;
-    let prepared = prepare(source, &query, branch, context, Some(list), (params.countries.as_deref(), params.group.as_ref()), cancelled)?;
+    let prepared = prepare(source, &query, branch, context, Some(list), asked!(params), cancelled)?;
     load_cards_at(list, &prepared, &query, params, hour, cancelled)
 }
 
@@ -1010,7 +1034,7 @@ fn cards_dated_panel<P: Product>(list: List, source: &Source, load: &LoadContext
     branch(&params.branch_id)?;
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, P::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, Some(list), (params.countries.as_deref(), params.group.as_ref()), &AtomicBool::new(false)));
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, P::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, Some(list), asked!(params), &AtomicBool::new(false)));
     let prepared = prepared.map_err(|error| error.to_string())?;
     let owned = Owned::of(&query, source.replay());
     Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
@@ -1046,7 +1070,7 @@ impl Product for EventFeedActivity {
         if params.from > hour || params.bin_hours < 1 {
             return Err(invalid("Invalid activity span"));
         }
-        let prepared = prepare(source, &query, branch, context, None, (params.countries.as_deref(), params.group.as_ref()), cancelled)?;
+        let prepared = prepare(source, &query, branch, context, None, (params.countries.as_deref(), params.group.as_ref(), None), cancelled)?;
         let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
         let whole = Ask {
             hour,

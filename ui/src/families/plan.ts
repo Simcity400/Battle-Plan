@@ -156,6 +156,7 @@ export interface SourceEntry {
 
 export interface SourcePlan {
   readonly owner: string;
+  readonly loadingLabel?: string;
   readonly entries: readonly SourceEntry[];
   readonly staticEntry?: SourceEntry | null;
   readonly exactEntry?: SourceEntry | null;

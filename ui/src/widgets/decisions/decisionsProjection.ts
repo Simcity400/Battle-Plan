@@ -405,6 +405,7 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
     const selection = occurrenceSelection(ctx);
     return {
       owner: `${ctx.track.source.id}:${ctx.branch.id}:decisions:${statuses ? statuses.join(',') : 'every'}:${selection ? JSON.stringify(selection) : 'all'}:${JSON.stringify([search, sort])}`,
+      loadingLabel: search.trim() || sort.column === 'item' ? 'Preparing titles…' : undefined,
       entries: [
         pagedTailEntry(
           'main',

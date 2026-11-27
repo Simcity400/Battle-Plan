@@ -1,13 +1,14 @@
 
 use super::{
     EventFeedCategory, EventFeedKind, EventFeedRow, LOG, Notices, invalid,
+    cards::List,
     decision_state::{self, DecisionLifecycleState},
     families,
     fold::{FoldMeta, group_of},
     row::{Columns, FeedEvent, Slot},
     transitions::{self, BranchTransitions, NativeWarEnd},
 };
-use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals, capture_isolated}, products::LoadContext, queries::country_ids::Names};
+use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals}, products::LoadContext, queries::country_ids::Names};
 use dashboard_query::{
     Query,
     identity::Holder,
@@ -99,8 +100,6 @@ struct Brief {
     days: Option<i32>,
     token: Option<String>,
     costs: [Option<Option<i64>>; 2],
-    name: Option<String>,
-    choice: Option<String>,
 }
 
 pub(crate) struct Scanned {
@@ -109,9 +108,10 @@ pub(crate) struct Scanned {
     pub war_ends: Vec<NativeWarEnd>,
     pub incomplete: Vec<(i32, u128, FeedEvent)>,
     pub windows_unrecorded: Vec<(i32, i32, String)>,
-    states: HashMap<u128, DecisionLifecycleState>,
+    lifecycles: Vec<Locator>,
     resolved: Mutex<ResolvedDecisions>,
     presented: Mutex<Presented>,
+    titles: Mutex<HashMap<(Option<List>, TitleKeys), Titled>>,
     breaks: Vec<(i32, i32)>,
     choice_breaks: Vec<(i32, i32, String)>,
     decision_breaks: Vec<(i32, i32)>,
@@ -179,9 +179,10 @@ impl Scanned {
             war_ends: Vec::new(),
             incomplete: Vec::new(),
             windows_unrecorded: Vec::new(),
-            states: HashMap::new(),
+            lifecycles: Vec::new(),
             resolved: Mutex::default(),
             presented: Mutex::default(),
+            titles: Mutex::default(),
             breaks: whole.clone(),
             choice_breaks: vec![(first, last, message.clone())],
             decision_breaks: whole,
@@ -253,10 +254,9 @@ impl Scanned {
                 continue;
             }
             let key = key(event);
-            match (self.states.get(&key), held.states.get(&key)) {
-                (Some(state), _) => out[at] = Some(state.clone()),
-                (None, Some(state)) => out[at] = state.clone(),
-                (None, None) => missing.push(at),
+            match held.states.get(&key) {
+                Some(state) => out[at] = state.clone(),
+                None => missing.push(at),
             }
         }
         if missing.is_empty() {
@@ -344,8 +344,7 @@ fn text_of(token: Option<&str>, tags: impl Iterator<Item = String>) -> Box<str> 
     text.join(" ").into_boxed_str()
 }
 
-fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &Names, name: Option<&str>) -> Occurrence<Item> {
-    let tags = |roles: &[Role]| roles.iter().filter_map(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)).map(str::to_owned)).collect::<Vec<_>>();
+fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &Names) -> Occurrence<Item> {
     let (date, roles, valid_clock): (i32, Vec<Role>, bool) = if !event.derived() {
         let ally = event.cause.and_then(|cause| cause.ally).and_then(|ally| slot_of(ally.slot));
         let date = event.hour.min(at.hour);
@@ -366,19 +365,14 @@ fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &
         let date = shown.min(at.hour);
         (date, vec![Role::dated(actor, date, at.hour), Role::dated(target, date, at.hour)], shown <= event.read_hour)
     };
-    let token = event.token.as_deref().and_then(|bytes| std::str::from_utf8(bytes).ok());
-    let label = kind.row_label();
-    let name = if kind.scripted() { name.or(label) } else { label.or(name) };
-    let text = SearchText::from(text_of(token, tags(&roles).into_iter().chain(name.map(str::to_owned))));
-    let sort_keys = Box::new([SortKey::text(roles.first().and_then(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)))), SortKey::text(name)]);
-    Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys, text, payload: Item::Log { head: at, edges: Box::new([]), valid_clock } }
+    let sort_keys = Box::new([SortKey::text(roles.first().and_then(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)))), SortKey::text(kind.row_label())]);
+    Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys, text: SearchText::default(), payload: Item::Log { head: at, edges: Box::new([]), valid_clock } }
 }
 
-fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Scanned> {
+fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool) -> io::Result<Scanned> {
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let columns = Columns::new()?;
-    let presenter = super::text::Presenter::new(query, catalogue, super::text::kept_naming(source)).for_index();
     let names = Names::new(&query.holders);
     let mut runs: Vec<u32> = query.timeline.stretches.iter().map(|stretch| stretch.run).collect();
     runs.sort_unstable();
@@ -388,7 +382,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
     let mut war_ends = Vec::new();
     let mut incomplete = Vec::new();
     let mut windows_unrecorded = Vec::new();
-    let mut lifecycles: Vec<FeedEvent> = Vec::new();
+    let mut lifecycles = Vec::new();
     for run in runs {
         dashboard_text::metadata::check_cancel(cancelled)?;
         reader.each(run, |row| {
@@ -407,17 +401,10 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
             let Some(kind) = EventFeedKind::of_code(event.code) else { return Ok(()) };
             let at = Locator { run, hour: row.hour, key: row.key };
             if decision_state::applies(&event) && event.lifecycle.is_some() {
-                lifecycles.push(event.clone());
+                lifecycles.push(at);
             }
-            let item = super::present(&event, &names, &presenter, &mut Notices::discarded())?.and_then(|row| row.item);
-            let name = item.as_ref().filter(|item| !item.gaps.iter().any(|gap| gap.field == super::EventFeedGapField::Title)).and_then(|item| item.name.clone());
-            let choice = event.option.filter(|&option| option >= 0).and_then(|option| {
-                let item = item.as_ref()?;
-                if item.gaps.iter().any(|gap| gap.field == super::EventFeedGapField::Option && gap.ordinal == Some(option as u32)) { return None; }
-                item.options.as_ref()?.iter().find(|held| held.ordinal == option as u32)?.name.clone()
-            });
             if !internal(kind) {
-                native.push(feed_occurrence(&event, kind, at, &names, name.as_deref()));
+                native.push(feed_occurrence(&event, kind, at, &names));
             }
             if !event.derived() && kind == EventFeedKind::WarEnded && event.hour <= event.read_hour {
                 war_ends.push(NativeWarEnd { hour: event.hour.min(row.hour), observed: row.hour, actor: event.actor, target: event.target });
@@ -434,8 +421,6 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
                 days: event.days,
                 token: event.token.as_deref().and_then(|bytes| std::str::from_utf8(bytes).ok()).map(str::to_owned),
                 costs: event.costs,
-                name,
-                choice,
             });
             Ok(())
         })?;
@@ -451,9 +436,6 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
             None => reasons.push((*hour, *hour, reason)),
         }
     }
-    let refs: Vec<&FeedEvent> = lifecycles.iter().collect();
-    let resolved = decision_state::resolve_all(query, &refs, &mut None)?;
-    let states = lifecycles.iter().zip(resolved).filter_map(|(event, state)| state.map(|state| ((u128::from(event.generation) << 64) | u128::from(event.sequence), state))).collect();
     let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
     let mut choice_breaks: Vec<(i32, i32, String)> = query.timeline.unheld.iter().map(|gap| (gap.first, gap.last, gap.reason.clone())).collect();
     choice_breaks.extend(source.replay_ref().event_losses(branch).map(|(after, hour)| (after + 1, hour, dashboard_text::metadata::EVENT_LOSS_REASON.to_owned())));
@@ -469,7 +451,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
     let breaks = spans(held.clone());
     let decision_lost = incomplete.iter().filter(|(_, _, read)| read.refusals != Some(0)).map(|&(hour, ..)| (hour, hour));
     let decision_breaks = spans(held.into_iter().chain(decision_lost).collect());
-    Ok(Scanned { briefs, native, war_ends, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
+    Ok(Scanned { briefs, native, war_ends, incomplete, windows_unrecorded: reasons, lifecycles, resolved: Mutex::default(), presented: Mutex::default(), titles: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
 }
 
 fn incomplete_break_reason(read: &FeedEvent) -> String {
@@ -641,10 +623,9 @@ fn cost_key(edges: &[&Brief]) -> SortKey {
     SortKey::dated_numbers(steps)
 }
 
-fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i32, u8)]>) -> Occurrence<Item> {
-    let roles: Vec<Role> = card.edges.iter().flat_map(|e| e.slots.iter().map(|&slot| Role::dated(slot, e.hour, e.at.hour.max(head.at.hour)))).filter(|r| r.slot.is_some()).collect();
-    let mut by_read: Vec<&Brief> = card.edges.clone();
-    by_read.sort_by_key(|edge| (edge.at.hour, edge.at.key));
+type Labels = HashMap<u128, (Option<String>, Option<String>)>;
+
+fn card_text(by_read: &[&Brief], head: &Brief, names: &Names, labels: &Labels) -> SearchText {
     let (mut seen_tokens, mut seen_tags, mut parts) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
     let mut at = 0;
     while at < by_read.len() {
@@ -659,20 +640,27 @@ fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i
             .map(str::to_owned)
             .collect();
         words.extend(tags);
-        words.extend(by_read[at..end].iter().flat_map(|edge| edge.name.iter().chain(edge.choice.iter())).cloned());
+        words.extend(by_read[at..end].iter().filter_map(|edge| labels.get(&edge.at.key))
+            .flat_map(|(name, choice)| name.iter().chain(choice)).cloned());
         if !words.is_empty() { parts.push((observed, words.join(" ").into_boxed_str())); }
         at = end;
     }
-    let text = if parts.iter().all(|(at, _)| *at <= head.at.hour) {
+    if parts.iter().all(|(at, _)| *at <= head.at.hour) {
         SearchText::from(parts.into_iter().map(|(_, p)| p.into_string()).collect::<Vec<_>>().join(" "))
     } else {
         SearchText::dated(parts)
-    };
+    }
+}
+
+fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i32, u8)]>) -> Occurrence<Item> {
+    let roles: Vec<Role> = card.edges.iter().flat_map(|e| e.slots.iter().map(|&slot| Role::dated(slot, e.hour, e.at.hour.max(head.at.hour)))).filter(|r| r.slot.is_some()).collect();
     let primary = head.slots[usize::from(script_opener(head.kind))];
-    let mut sort_keys = vec![SortKey::text(primary.and_then(|slot| names.slot_tag(slot, head.hour))), SortKey::text(head.name.as_deref())];
+    let mut sort_keys = vec![SortKey::text(primary.and_then(|slot| names.slot_tag(slot, head.hour))), SortKey::text(None::<&str>)];
     if script_opener(head.kind) || chosen(head) {
-        sort_keys.push(SortKey::dated_text(by_read.iter().filter(|edge| chosen(edge)).map(|edge| (edge.at.hour, edge.choice.as_deref().map(Into::into))).collect::<BTreeMap<_, _>>()));
+        sort_keys.push(SortKey::text(None::<&str>));
     } else {
+        let mut by_read = card.edges.clone();
+        by_read.sort_by_key(|edge| (edge.at.hour, edge.at.key));
         sort_keys.push(cost_key(&by_read));
         sort_keys.push(SortKey::dated_text(states.iter().map(|&(at, code)| (at, match ScriptStatus::of_code(code) {
             Some(ScriptStatus::Active) => Some("Running".into()),
@@ -689,12 +677,12 @@ fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i
         subjects: Box::new([]),
         sort_keys: sort_keys.into_boxed_slice(),
         states,
-        text,
+        text: SearchText::default(),
         payload: Item::Log { head: head.at, edges: card.edges.iter().map(|edge| edge.at).collect(), valid_clock: true },
     }
 }
 
-fn decisions(scanned: &Scanned, names: &Names) -> io::Result<Index<Item>> {
+fn decisions(scanned: &Scanned, names: &Names, states: &HashMap<u128, DecisionLifecycleState>) -> io::Result<Index<Item>> {
     let list = super::cards::List::Decisions;
     let found = cards(&scanned.briefs, list.openers(), list.continuing());
     let later = superseded(&found);
@@ -708,7 +696,7 @@ fn decisions(scanned: &Scanned, names: &Names) -> io::Result<Index<Item>> {
                 candidates.extend(timer_end(&card.edges[..=at]));
             }
             candidates.extend(later);
-            let states = transitions(card.head.at.hour, candidates, |hour| Some(decision_status(card, &scanned.states, &scanned.decision_breaks, later, hour)));
+            let states = transitions(card.head.at.hour, candidates, |hour| Some(decision_status(card, states, &scanned.decision_breaks, later, hour)));
             card_occurrence(card, card.head, names, states)
         })
         .collect();
@@ -812,8 +800,6 @@ fn script_feed(scanned: &Scanned) -> Vec<Occurrence<Item>> {
         let observed = occurrence.observed;
         let candidates = chosen_edges.iter().map(|edge| edge.at.hour).chain(break_after(&scanned.breaks, observed)).collect();
         occurrence.states = transitions(observed, candidates, |hour| Some(choice_status(chosen_edges, observed, &scanned.breaks, hour)));
-        let prior = match &occurrence.text { SearchText::Static(text) => vec![(observed, text.clone())], SearchText::Dated(steps) => steps.to_vec() };
-        occurrence.text = SearchText::dated(prior.into_iter().chain(chosen_edges.iter().filter_map(|edge| edge.choice.as_deref().map(|text| (edge.at.hour, text.into())))));
         if let Item::Log { edges, .. } = &mut occurrence.payload {
             *edges = chosen_edges.iter().map(|edge| edge.at).collect();
         }
@@ -966,8 +952,7 @@ fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, c
     if let Some(found) = &held.scanned {
         return Ok(Arc::clone(found));
     }
-    let (scanned, _) = capture_isolated(|| scan(source, query, branch, catalogue, cancelled));
-    let made = Arc::new(match scanned {
+    let made = Arc::new(match scan(source, query, branch, cancelled) {
         Ok(made) => made,
         Err(error) if error.kind() == io::ErrorKind::InvalidData && !cancelled.load(std::sync::atomic::Ordering::Relaxed) => Scanned::refused(query.timeline.first, query.timeline.last, &error.to_string()),
         Err(error) => return Err(error),
@@ -989,7 +974,12 @@ pub(crate) fn decisions_for(source: &Source, query: &Query<'_>, branch: u64, cat
     if let Some(found) = &held.decisions {
         return Ok(Arc::clone(found));
     }
-    let made = Arc::new(decisions(&scanned, &Names::new(&query.holders))?);
+    let read = read_events(query, &scanned.lifecycles)?;
+    let events: Vec<_> = scanned.lifecycles.iter().map(|at| read.get(&at.key)
+        .ok_or_else(|| invalid("An indexed decision was not read back"))).collect::<io::Result<_>>()?;
+    let states = events.iter().zip(scanned.decision_states(query, &events)?)
+        .filter_map(|(event, state)| state.map(|state| (u128::from(event.generation) << 64 | u128::from(event.sequence), state))).collect();
+    let made = Arc::new(decisions(&scanned, &Names::new(&query.holders), &states)?);
     held.decisions = Some(Arc::clone(&made));
     Ok(made)
 }
@@ -1081,6 +1071,104 @@ pub(crate) fn read_events(query: &Query<'_>, locators: &[Locator]) -> io::Result
         }
     }
     Ok(out)
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub(crate) enum TitleKeys {
+    Item,
+    Choice,
+    #[default]
+    Search,
+}
+
+struct Titled {
+    base: Weak<Index<Item>>,
+    index: Arc<Index<Item>>,
+}
+
+impl Scanned {
+    fn brief(&self, at: Locator) -> &Brief {
+        &self.briefs[self.briefs.binary_search_by_key(&at, |brief| brief.at).expect("indexed feed row has a brief")]
+    }
+
+    pub(crate) fn title_index(&self, query: &Query<'_>, base: &Arc<Index<Item>>, list: Option<List>, keys: TitleKeys, presenter: super::text::Presenter<'_>, cancelled: &AtomicBool) -> io::Result<Arc<Index<Item>>> {
+        let mut held = self.titles.lock().unwrap_or_else(PoisonError::into_inner);
+        let base_key = Arc::downgrade(base);
+        if let Some(found) = held.get(&(list, keys)).filter(|found| found.base.ptr_eq(&base_key)) {
+            return Ok(Arc::clone(&found.index));
+        }
+        let mut locators = BTreeSet::new();
+        for at in 0..base.len() {
+            let Item::Log { head, edges, .. } = &base.get(at as u32).payload else { continue };
+            if keys != TitleKeys::Choice { locators.insert(*head); }
+            if keys != TitleKeys::Item { locators.extend(edges.iter().copied()); }
+        }
+        let bound = presenter.catalogue().is_some();
+        let locators: Vec<_> = locators.into_iter().filter(|&at| {
+            let brief = self.brief(at);
+            (keys != TitleKeys::Choice || chosen(brief))
+                && (brief.kind == EventFeedKind::EventWindowPresented || bound && brief.kind.scripted() && brief.generation != FeedEventRow::DERIVED)
+        }).collect();
+        let names = Names::new(&query.holders);
+        let mut labels = Labels::new();
+        if !locators.is_empty() {
+            let mut read = read_events(query, &locators)?;
+            let presenter = presenter.for_index(keys);
+            let mut notices = Notices::discarded();
+            for at in locators {
+                dashboard_text::metadata::check_cancel(cancelled)?;
+                let event = read.remove(&at.key).ok_or_else(|| invalid("An indexed event was not read back"))?;
+                let item = super::present(&event, &names, &presenter, &mut notices)?.and_then(|row| row.item);
+                let Some(item) = item else { continue };
+                let name = (!item.gaps.iter().any(|gap| gap.field == super::EventFeedGapField::Title)).then_some(item.name).flatten();
+                let choice = event.option.filter(|&option| option >= 0).and_then(|option| {
+                    let ordinal = option as u32;
+                    if item.gaps.iter().any(|gap| gap.field == super::EventFeedGapField::Option && gap.ordinal == Some(ordinal)) { return None; }
+                    item.options?.into_iter().find(|held| held.ordinal == ordinal)?.name
+                });
+                labels.insert(at.key, (name, choice));
+            }
+        }
+        let index = Arc::new(self.labelled(base, list.is_some(), keys, &names, &labels)?);
+        held.insert((list, keys), Titled { base: base_key, index: Arc::clone(&index) });
+        Ok(index)
+    }
+
+    fn labelled(&self, base: &Index<Item>, cards: bool, keys: TitleKeys, names: &Names, labels: &Labels) -> io::Result<Index<Item>> {
+        let title = |key| labels.get(&key).and_then(|held| held.0.as_deref());
+        let choice = |key| labels.get(&key).and_then(|held| held.1.as_deref());
+        let mut retired = HashMap::new();
+        let mut entries = Vec::with_capacity(base.len());
+        for at in 0..base.len() as u32 {
+            let mut row = base.get(at).clone();
+            if let Some(end) = base.retired_at(at) { retired.insert(row.id, end); }
+            if let Item::Log { head, edges, .. } = &row.payload {
+                let head = self.brief(*head);
+                let label = head.kind.row_label();
+                let title = title(head.at.key);
+                let title = if cards { title } else if head.kind.scripted() { title.or(label) } else { label.or(title) };
+                row.sort_keys[1] = SortKey::text(title);
+                if cards && keys != TitleKeys::Item {
+                    let mut edges: Vec<_> = edges.iter().map(|&at| self.brief(at)).collect();
+                    edges.sort_by_key(|edge| (edge.at.hour, edge.at.key));
+                    if keys == TitleKeys::Search { row.text = card_text(&edges, head, names, labels); }
+                    if script_opener(head.kind) || chosen(head) {
+                        row.sort_keys[2] = SortKey::dated_text(edges.iter().filter(|edge| chosen(edge))
+                            .map(|edge| (edge.at.hour, choice(edge.at.key).map(Into::into))).collect::<BTreeMap<_, _>>());
+                    }
+                } else if keys == TitleKeys::Search {
+                    let tags = row.roles.iter().filter_map(|role| names.slot_tag(role.slot?, role.at)).map(str::to_owned);
+                    let text = text_of(head.token.as_deref(), tags.chain(title.map(str::to_owned)));
+                    row.text = if edges.is_empty() { SearchText::from(text) } else {
+                        SearchText::dated(std::iter::once((row.observed, text)).chain(edges.iter()
+                            .filter_map(|at| choice(at.key).map(|label| (at.hour, label.into())))))
+                    };
+                }
+            }
+            entries.push(row);
+        }
+        Ok(Index::new(entries, base.gaps().to_vec(), &LIVE)?.with_retirements(retired))
+    }
 }
 
 #[cfg(test)]

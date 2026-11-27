@@ -1096,7 +1096,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     },
   } : undefined;
 
-  const loadingLabel = `Loading ${subject}…`;
+  const loadingLabel = plan?.loadingLabel ?? `Loading ${subject}…`;
   const hasStaticBundle = staticBundle !== null;
   const allowEmpty = following
     ? compiledFollow.allowEmptyFollow
@@ -1172,7 +1172,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   else if (pixelBinnedKey && tilesWait) tileInputs.push({ name: 'the chart history', state: 'pending' });
   const unitInputs: PlanInput[] = [];
   if (view.failure) unitInputs.push({ name: subject, state: 'failed', failure: view.failure.failure, retry: retryUnits });
-  else if (unitsWait) unitInputs.push({ name: subject, state: 'pending' });
+  else if (unitsWait) unitInputs.push({ name: subject, state: 'pending', loadingLabel: plan?.loadingLabel });
 
   const early = ((): FamilyBodyStatus | null => {
     if (!track) return { kind: 'unbound', message: emptyCampaign };

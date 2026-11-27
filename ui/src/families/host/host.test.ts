@@ -2768,6 +2768,8 @@ test('the body names the read a widget waits for, shows a failed read as failed 
   const history = inputOf('the party history', { retry: retry('history') });
   assert.deepEqual(familyBodyStatus({ ...none, plan: [inputOf('the country', { data: 7, retry: retry('country') }), history] }),
     { kind: 'loading', label: 'Reading the party history…' }, 'a plan read that never answers is named');
+  assert.deepEqual(familyBodyStatus({ ...none, units: [{ name: 'event feed', state: 'pending', loadingLabel: 'Preparing titles…' }] }),
+    { kind: 'loading', label: 'Preparing titles…' });
   assert.equal(allReady([history]), false);
   assert.equal(familyBodyStatus({ ...none, plan: [history], outcome: refused }).kind, 'loading', 'an outcome waits for the plan inputs it is decided from');
   const tiles = inputOf('the chart history', { retry: retry('tiles') });
