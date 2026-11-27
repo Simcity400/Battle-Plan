@@ -50,8 +50,11 @@ let ports: readonly MessagePort[] = [];
 const panelFollows = new Map<number, { panel: string; params: Record<string, unknown>; route: number }>();
 const pushed = new Map<number, number>();
 const landed = () => {
-  if (!pushed.size || clock.getSnapshot().playing) return true;
+  if (!ports.length) return true;
   const pipeline = pipelineFor(pageClock(clock), client as never, () => { throw new Error('missing pipeline'); });
+  const { byId } = pipeline as unknown as { byId: ReadonlyMap<number, unknown> };
+  for (const id of byId.keys()) if (pipeline.status(id).status === 'pending') return false;
+  if (!pushed.size || clock.getSnapshot().playing) return true;
   const views = [...pipeline.page.widgets.keys()].flatMap(widget => { const view = pipeline.view(widget); return view?.fields ? [view] : []; });
   const perFollow = (key: string) => key.startsWith('model:') || key.startsWith('refused:');
   const holds = (fields: Readonly<Record<string, unknown>>, id: number) => `model:${id}` in fields || `refused:${id}` in fields || !Object.keys(fields).some(perFollow);

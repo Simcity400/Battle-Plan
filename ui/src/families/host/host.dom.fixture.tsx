@@ -40,13 +40,14 @@ import type { PagedRows } from '../table/rowSource.ts';
 import type { ArtResolutions } from '../art/provider.ts';
 import '../../styles.css';
 
-const NATIVE = 1;
+type FollowAnswer = { id: number; hour: number; body: Uint8Array };
+const routesBySub = new Map<number, number>();
 
-function followMessage(hour: number, seek: number, answers: { id: number; hour: number; body: Uint8Array }[], reset = false) {
+function followMessage(route: number, hour: number, seek: number, answers: FollowAnswer[], reset = false) {
   const out = new Uint8Array(24 + answers.reduce((sum, a) => sum + 16 + a.body.length, 0));
   const view = new DataView(out.buffer);
   view.setUint32(0, 0x334c4f46, true);
-  view.setUint32(4, (NATIVE << 1) | (reset ? 1 : 0), true);
+  view.setUint32(4, (route << 1) | (reset ? 1 : 0), true);
   view.setInt32(8, hour, true);
   view.setUint32(12, answers.length, true);
   view.setUint32(16, seek, true);
@@ -87,8 +88,12 @@ const sourceB = makeSource('camp-B');
 const client = {
   available: true,
   openFollow: (opened: readonly MessagePort[]) => { ports = opened; return Promise.resolve(); },
-  product: async (request: { product: string; sourceId: string; revision: string; params: { hour?: number } }) => {
-    if (request.product === 'follow') return { data: { available: true, route: NATIVE } };
+  product: async (request: { product: string; sourceId: string; revision: string; params: { hour?: number; id: number; route: number } }) => {
+    if (request.product === 'follow') {
+      const { id, route } = request.params;
+      routesBySub.set(id, route);
+      return { data: { available: true, route } };
+    }
     if (request.product === 'span-history') return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { through: request.params.hour } };
     return { data: { available: true } };
   },
@@ -235,12 +240,15 @@ function sendHour(subIds: readonly number[], hour: number, fac: [bigint, bigint,
   const keys = [1n, 2n, 3n, 4n];
   const facBody = answerBody({ keys, columns: 1, names, values: [...fac], states: [0, 0, 0, 0] });
   const casBody = answerBody({ keys, columns: 1, names, values: [10n, 20n, 30n, 40n], states: [0, 0, 0, 0] });
-  const answers: { id: number; hour: number; body: Uint8Array }[] = [];
-  for (let i = 0; i < subIds.length; i += 2) {
-    answers.push({ id: subIds[i]!, hour, body: facBody });
-    answers.push({ id: subIds[i + 1]!, hour, body: casBody });
+  const answersByRoute = new Map<number, FollowAnswer[]>();
+  for (const [index, id] of subIds.entries()) {
+    const route = routesBySub.get(id);
+    if (route === undefined) throw new Error(`No native route for follow ${id}`);
+    let answers = answersByRoute.get(route);
+    if (!answers) answersByRoute.set(route, answers = []);
+    answers.push({ id, hour, body: index % 2 === 0 ? facBody : casBody });
   }
-  send(followMessage(hour, seek, answers, reset));
+  for (const [route, answers] of answersByRoute) send(followMessage(route, hour, seek, answers, reset));
 }
 
 function subsForPipe(pipeId: number): number[] {
