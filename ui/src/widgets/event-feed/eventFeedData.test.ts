@@ -100,6 +100,39 @@ test('war starts retain both role positions and the unresolved country reason', 
   }
 });
 
+test('inferred peace and faction transitions accept resolved rows without participants and missing-party rows with reasons', () => {
+  const resolvedPeace = validateFeedRow({
+    id: 'Peace:101:AAA,BBB:', hour: 101, readHour: 101, nameHour: 100, exact: true, category: 'warsPeace', kind: 'peace', tags: ['AAA', 'BBB'], item: null, amount: null,
+  });
+  assert.equal(resolvedPeace.participants, undefined);
+  const partialPeace = validateFeedRow({
+    id: 'Peace:101:AAA,#9999:', hour: 101, readHour: 101, nameHour: 100, exact: true, category: 'warsPeace', kind: 'peace', tags: ['AAA'],
+    participants: ['AAA', null], participantsMissing: [null, 'Country link was not recorded at this hour'], item: null, amount: null,
+  });
+  const missingJoin = validateFeedRow({
+    id: 'FactionJoined:101:#9001:10', hour: 101, readHour: 101, nameHour: 101, exact: true, category: 'diplomacy', kind: 'factionJoined', tags: [],
+    participants: [null, null], participantsMissing: ['Countries unavailable at this hour', null],
+    item: { token: null, name: 'Alpha Pact', icon: null, description: null }, amount: null,
+  });
+  const head = {
+    branchId: '1', offset: '0', total: '2', live: '0', counts: [],
+    rows: [
+      { line: 'event', hour: 101, observed: 101, key: partialPeace.id, ordinal: '0', live: false, row: partialPeace, choice: null },
+      { line: 'event', hour: 101, observed: 101, key: missingJoin.id, ordinal: '1', live: false, row: missingJoin, choice: null },
+    ],
+    missing: [], nextChange: null, unavailable: [], warnings: [],
+  };
+  const source = buildRowSourceFromHead('partial-transitions', head, undefined, 101, undefined, eventFeedProjection.validateTail)!;
+  const view = createBoundedReadView({ hour: 101, rows: new Map([['main', source]]), identity: datedIdentity({ AAA: [{ from: 0, name: 'Synthetic country' }] }) });
+  const model = eventFeedProjection.project(view, { categories: ['warsPeace', 'diplomacy'], artwork: false, expanded: [] });
+  assert.equal(model.rows[0]!.cells.country!.flags?.length, 2);
+  assert.equal(model.rows[0]!.cells.country!.value.kind, 'partial');
+  assert.equal(model.rows[1]!.cells.country!.flags?.length, 1);
+  assert.equal(model.rows[1]!.cells.country!.value.kind, 'notRecorded');
+  assert.throws(() => validateFeedRow({ ...partialPeace, participantsMissing: [null, null] }), /malformed/);
+  assert.throws(() => validateFeedRow({ ...missingJoin, participantsMissing: [null, null] }), /malformed/);
+});
+
 test('nuclear strike and decision state validation reject mismatched kinds', () => {
   const strike = { province: 13000, state: 1204, buildingLevels: 2.5, warSupport: -25, units: 1, manpowerLost: null, equipmentLost: null,
     notRecorded: ['equipment: writers not forwarded (1×)'] };

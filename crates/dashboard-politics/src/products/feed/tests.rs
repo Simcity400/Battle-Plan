@@ -118,7 +118,10 @@ fn a_war_start_keeps_the_known_participant_its_role_and_the_missing_reason() {
     let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let held = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "partial-war-feed".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let query = dashboard_base::queries::query(&held, 1).unwrap();
-    let (rows, notes, omitted) = families::group_rows(&held, &query, &LoadContext { content: None }, 100, 102, &[super::EventFeedCategory::WarsPeace], &AtomicBool::new(false)).unwrap();
+    let transitions = super::transitions::load_branch(&query, &AtomicBool::new(false)).unwrap();
+    let reply = dashboard_world::products::groups::shared(&held, &query, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    let (made, notes, omitted, _) = families::group_rows(Some(&reply), None, &transitions, &[], (100, 102), &[super::EventFeedCategory::WarsPeace]);
+    let rows: Vec<_> = made.into_iter().map(|entry| entry.row).collect();
     assert_eq!(rows.iter().filter(|row| row.kind == EventFeedKind::WarStarted).map(|row| &row.id).collect::<std::collections::HashSet<_>>().len(), 2, "opposite partial starts at the same hour never share a row key");
     let start = rows.iter().find(|row| row.kind == EventFeedKind::WarStarted && row.participants.as_ref().is_some_and(|roles| roles[0].is_some())).expect("the start exists even when its defender is unresolved");
     assert_eq!(start.tags, ["GER"]);
@@ -494,10 +497,10 @@ fn a_family_failing_for_other_than_damage_or_a_refusal_is_read_again_at_the_next
         let reply = read.value.as_ref().as_ref().unwrap().clone();
         (reply["unavailable"].as_array().unwrap().iter().map(|notice| notice["kind"].as_str().unwrap().to_owned()).collect::<Vec<_>>(), reply["nextChange"].as_i64())
     };
-    assert_eq!(kinds(103, true), (vec!["contentStack".to_owned(), "subjects".to_owned()], Some(104)), "a panel opened on a failed read refuses the family, valid for its own hour only");
+    assert_eq!(kinds(103, true), (vec!["contentStack".to_owned(), "subjects".to_owned(), "factionMembership".to_owned()], Some(104)), "a panel opened on a failed read refuses the family, valid for its own hour only");
     FAULT.with(|held| held.set(None));
-    assert_eq!(kinds(103, false).0, ["contentStack"], "asked again at the same hour, the panel keeps no failed reply: it prepares the feed again and reads the family");
-    assert_eq!(kinds(102, true).0, ["contentStack"]);
+    assert_eq!(kinds(103, false).0, ["contentStack", "factionMembership"], "asked again at the same hour, the panel keeps no failed reply: it prepares the feed again and reads the family");
+    assert_eq!(kinds(102, true).0, ["contentStack", "factionMembership"]);
 }
 
 #[test]
@@ -532,11 +535,11 @@ fn two_projects_completing_in_one_hour_are_two_rows() {
     let resolved = || CompletionOwner::Resolved { slot: 7, tag: "X01".into() };
     let ids: std::collections::BTreeSet<String> = [completion(1, 4, resolved()), completion(2, 4, resolved()), completion(1, 7, resolved())]
         .into_iter()
-        .map(|item| families::completion_row(item).0.row.id)
+        .map(|item| families::completion_row(item).row.id)
         .collect();
     assert_eq!(ids.len(), 3, "each project's completion marker is its own row: {ids:?}");
-    let (row, slot) = families::completion_row(completion(1, 4, resolved()));
-    let row = row.row;
+    let completed = families::completion_row(completion(1, 4, resolved()));
+    let (row, slot) = (completed.row, completed.slots.and_then(|s| s[0]));
     assert_eq!(
         (row.hour, row.read_hour, row.name_hour, row.tags.as_slice(), row.participants, row.owner_missing, slot),
         (100, 101, 100, ["X01".to_owned()].as_slice(), Some([Some("X01".to_owned()), None]), None, Some(7)),
@@ -545,13 +548,13 @@ fn two_projects_completing_in_one_hour_are_two_rows() {
 
     let first_reason = "Owner not recorded: Countries was not complete at these hours".to_owned();
     let second_reason = "Owner not recorded: raw owner 9 had no country link at this hour.".to_owned();
-    let (first_unknown, first_slot) = families::completion_row(
+    let first = families::completion_row(
         completion(3, 0, CompletionOwner::NotRecorded { slot: Some(7), reason: first_reason.clone() }),
     );
-    let (second_unknown, second_slot) = families::completion_row(
+    let second = families::completion_row(
         completion(4, 0, CompletionOwner::NotRecorded { slot: None, reason: second_reason.clone() }),
     );
-    let (first_unknown, second_unknown) = (first_unknown.row, second_unknown.row);
+    let (first_unknown, first_slot, second_unknown, second_slot) = (first.row, first.slots.and_then(|s| s[0]), second.row, second.slots.and_then(|s| s[0]));
     assert_eq!(
         (first_unknown.hour, first_unknown.read_hour, first_unknown.name_hour, first_unknown.tags.as_slice(), first_unknown.participants, first_unknown.owner_missing.as_deref(), first_slot),
         (100, 101, 100, [].as_slice(), Some([None, None]), Some(first_reason.as_str()), Some(7)),
@@ -1597,7 +1600,10 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     )
     .unwrap();
     let query = dashboard_base::queries::query(&replay_source, 1).unwrap();
-    let (rows, notes, _) = families::group_rows(&replay_source, &query, &LoadContext { content: None }, 100, 104, &[super::EventFeedCategory::Diplomacy], &AtomicBool::new(false)).unwrap();
+    let transitions = super::transitions::load_branch(&query, &AtomicBool::new(false)).unwrap();
+    let reply = dashboard_world::products::groups::shared(&replay_source, &query, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    let (made, notes, _, _) = families::group_rows(Some(&reply), None, &transitions, &[], (100, 104), &[super::EventFeedCategory::Diplomacy]);
+    let rows: Vec<_> = made.into_iter().map(|entry| entry.row).collect();
     let joined = rows.iter().find(|row| row.kind == EventFeedKind::FactionJoined).expect("faction join row at hour 101");
     assert_eq!(joined.hour, 101);
     let item = joined.item.as_ref().expect("faction item");

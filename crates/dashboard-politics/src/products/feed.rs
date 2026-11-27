@@ -9,8 +9,11 @@ mod nuclear;
 mod row;
 mod tails;
 mod text;
+mod transitions;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transitions_tests;
 mod window;
 
 pub use index::ScriptStatus;

@@ -399,6 +399,7 @@ impl AdmittedTree {
 
 struct Filtered {
     display: Vec<(u32, i32)>,
+    retired: Vec<(i32, i32, i32)>,
     admitted: AdmittedTree,
     unattributed_rows: Vec<(u32, i32, Option<i32>)>,
     unknown: Vec<MissingSpan>,
@@ -426,6 +427,7 @@ pub struct Index<P> {
     entries: Vec<Occurrence<P>>,
     by_subject: HashMap<u128, Vec<u32>>,
     subject_gaps: HashMap<u128, Vec<MissingSpan>>,
+    retired: HashMap<u32, i32>,
     gaps: Vec<MissingSpan>,
     live: u64,
     filtered: Mutex<Recent<Signature, Filtered>>,
@@ -598,13 +600,24 @@ impl<P> Index<P> {
         gaps.retain(|gap| gap.first_hour <= gap.last_hour);
         gaps.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
         let live = live.iter().fold(0u64, |mask, &state| mask | 1 << state);
-        Ok(Self { entries, by_subject, subject_gaps: HashMap::new(), gaps, live, filtered: Mutex::new(Recent::new()) })
+        Ok(Self { entries, by_subject, subject_gaps: HashMap::new(), retired: HashMap::new(), gaps, live, filtered: Mutex::new(Recent::new()) })
     }
 
     pub fn with_subject_gaps(mut self, gaps: HashMap<u128, Vec<MissingSpan>>) -> Self {
         self.subject_gaps = gaps.into_iter().map(|(subject, spans)| (subject, merge_missing_spans(spans))).collect();
         self
     }
+
+    pub fn with_retirements(mut self, retired: HashMap<u128, i32>) -> Self {
+        if !retired.is_empty() {
+            for (at, entry) in self.entries.iter().enumerate() {
+                if let Some(&end) = retired.get(&entry.id) { self.retired.insert(at as u32, end); }
+            }
+        }
+        self
+    }
+
+    pub fn retired_at(&self, at: u32) -> Option<i32> { self.retired.get(&at).copied() }
 
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -670,6 +683,7 @@ impl<P> Index<P> {
         let members = ask.selection.map(|selection| Members::resolve(holders, selection));
         let (from, to) = (signature.from.unwrap_or(i32::MIN), signature.to.unwrap_or(i32::MAX));
         let mut display = Vec::new();
+        let mut retired = Vec::new();
         let mut unattributed_rows = Vec::new();
         let mut visit = |at: usize| {
             let entry = &self.entries[at];
@@ -685,7 +699,11 @@ impl<P> Index<P> {
             };
             let (admit, unattributed) = members.as_ref().map_or((Admit::Yes(entry.observed), None), |members| members.admits(&entry.roles, entry.observed));
             if let Admit::Yes(from) = admit {
-                display.push((at as u32, from.max(search_from)));
+                let admitted = from.max(search_from);
+                display.push((at as u32, admitted));
+                if let Some(end) = self.retired_at(at as u32) {
+                    retired.push((entry.date, admitted, end));
+                }
             }
             if let Some(until) = unattributed
                 && until.is_none_or(|end| search_from < end)
@@ -710,7 +728,7 @@ impl<P> Index<P> {
         }
         let rows = display.len() + unattributed_rows.len();
         let admitted = AdmittedTree::build(&display);
-        let made = Filtered { display, admitted, unattributed_rows, unknown, views: Mutex::new(Recent::new()) };
+        let made = Filtered { display, retired, admitted, unattributed_rows, unknown, views: Mutex::new(Recent::new()) };
         self.filtered.lock().unwrap_or_else(PoisonError::into_inner).insert(signature, made, rows, self.entries.len())
     }
 
@@ -720,20 +738,14 @@ impl<P> Index<P> {
             return found;
         }
         let mut changes = Vec::new();
-        for &(at, admitted) in &filtered.display {
-            self.changes(self.get(at), admitted, ask, true, |hour| changes.push(hour));
-        }
-        for &(at, admitted, until) in &filtered.unattributed_rows {
+        let mut push_changes = |at: u32, admitted: i32, until: Option<i32>, counted: bool| {
             let entry = self.get(at);
-            self.changes(entry, admitted, ask, false, |hour| {
-                if until.is_none_or(|end| hour < end) { changes.push(hour); }
-            });
-            if let Some(end) = until
-                && ask.states.is_none_or(|states| entry.state_at(end.saturating_sub(1)).is_some_and(|state| states.contains(&state)))
-            {
-                changes.push(end);
-            }
-        }
+            let until = match (until, self.retired_at(at)) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) };
+            self.changes(entry, admitted, ask, counted, |hour| if until.is_none_or(|end| hour < end) { changes.push(hour); });
+            if let Some(end) = until && admitted < end && ask.states.is_none_or(|states| entry.state_at(end.saturating_sub(1)).is_some_and(|state| states.contains(&state))) { changes.push(end); }
+        };
+        for &(at, admitted) in &filtered.display { push_changes(at, admitted, None, true); }
+        for &(at, admitted, until) in &filtered.unattributed_rows { push_changes(at, admitted, until, false); }
         changes.sort_unstable();
         changes.dedup();
         let rows = filtered.display.len() + filtered.unattributed_rows.len();
@@ -865,13 +877,17 @@ impl<P> Index<P> {
         let start = if visible.is_some() { 0 } else { filtered.display.partition_point(|&(at, _)| self.entries[at as usize].date > hour) };
         for &(at, from) in &filtered.display[start..] {
             let entry = &self.entries[at as usize];
+            let retired = self.retired_at(at);
             if let Some(visible) = visible {
                 if !visible(&entry.payload) { continue; }
                 self.changes(entry, from, ask, true, |at| {
-                    if at > hour { next = Some(next.map_or(at, |held| held.min(at))); }
+                    if at > hour && retired.is_none_or(|end| at < end) { next = Some(next.map_or(at, |held| held.min(at))); }
                 });
+                if let Some(end) = retired && end > hour && from < end && state_ok(entry.state_at(end.saturating_sub(1))) {
+                    next = Some(next.map_or(end, |held| held.min(end)));
+                }
             }
-            if from > hour {
+            if from > hour || retired.is_some_and(|end| hour >= end) {
                 continue;
             }
             let state = entry.state_at(hour);
@@ -952,6 +968,7 @@ impl<P> Index<P> {
             .collect();
         let unattributed = filtered.unattributed_rows.iter().filter(|&&(at, admitted, until)| {
             let entry = self.get(at);
+            let until = match (until, self.retired_at(at)) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) };
             if visible.is_some() {
                 self.changes(entry, admitted, ask, false, |at| {
                     if at > hour && until.is_none_or(|end| at < end) { next = Some(next.map_or(at, |held| held.min(at))); }
@@ -1018,7 +1035,7 @@ impl<P> Index<P> {
             #[cfg(test)]
             BIN_SCANS.set(BIN_SCANS.get() + 1);
             let entry = &self.entries[at as usize];
-            if from > ask.hour || ask.states.is_some_and(|states| entry.state_at(ask.hour).is_none_or(|state| !states.contains(&state))) {
+            if from > ask.hour || self.retired_at(at).is_some_and(|end| ask.hour >= end) || ask.states.is_some_and(|states| entry.state_at(ask.hour).is_none_or(|state| !states.contains(&state))) {
                 continue;
             }
             *bins.entry(((i64::from(entry.date) - first_bin).div_euclid(bin_hours)) as u32).or_default() += 1;
@@ -1027,12 +1044,18 @@ impl<P> Index<P> {
             filtered.display[mid..].iter().filter(|&&(at, from)| {
                 #[cfg(test)]
                 BIN_SCANS.set(BIN_SCANS.get() + 1);
-                from <= ask.hour && self.entries[at as usize].state_at(ask.hour).is_some_and(|state| states.contains(&state))
+                from <= ask.hour && self.retired_at(at).is_none_or(|end| ask.hour < end) && self.entries[at as usize].state_at(ask.hour).is_some_and(|state| states.contains(&state))
             }).count() as u64
         } else {
-            filtered.admitted.count_from(&filtered.display, mid, ask.hour)
+            let retired_before = filtered.retired.iter().filter(|&&(date, from, end)| date < first && from <= ask.hour && ask.hour >= end).count() as u64;
+            filtered.admitted.count_from(&filtered.display, mid, ask.hour).saturating_sub(retired_before)
         };
         Ok((before, bins.into_iter().collect()))
+    }
+
+    pub fn latest_retirement(&self, holders: &Holders, ask: &Ask<'_>, before: i32) -> Option<i32> {
+        if self.retired.is_empty() { return None; }
+        self.filtered(holders, ask).retired.iter().filter(|&&(date, from, end)| date < before && from <= ask.hour && ask.hour >= end).map(|&(_, _, end)| end).max()
     }
 
     pub fn coverage(&self, holders: &Holders, ask: &Ask<'_>, from: i32, hour: i32) -> Vec<MissingSpan> {
