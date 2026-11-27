@@ -661,6 +661,7 @@ test('heat matrix keeps census dataHour on hover and pinned tooltips as playback
     shape: 'wide',
     rows,
     columns,
+    margin: { header: 'Active / maximum', cell: () => ({ kind: 'value', fraction: 0.5, text: '2 / 4' }) },
     cells: {
       present: new Map([[1, { kind: 'missing', reason: 'Target not recorded', text: '2', selectable: true }]]),
       absent: { kind: 'missing', reason: 'Target not recorded' },
@@ -676,7 +677,7 @@ test('heat matrix keeps census dataHour on hover and pinned tooltips as playback
   registerFamilyProjection({
     family: 'heat-matrix',
     kind: 'test-matrix-held-census',
-    project: view => view.panel('main') as HeatMatrixModel,
+    project: () => compactModel,
   });
   const recording = installRecordingCanvas();
   try {
@@ -686,7 +687,7 @@ test('heat matrix keeps census dataHour on hover and pinned tooltips as playback
       kind: 'test-matrix-held-census',
       options: {},
       sources: {},
-      staticPanels: { main: compactModel },
+      staticPanels: {},
       scrollTop: 0,
       scrollLeft: 0,
       theme: THEME,
@@ -730,6 +731,29 @@ test('heat matrix keeps census dataHour on hover and pinned tooltips as playback
     );
     assert.equal(pinned?.kind, 'pin');
     assert.equal(pinned?.kind === 'pin' && pinned.hour, 100, 'pinned matrix tooltip keeps census readHour');
+
+    const marginBinding = { ...binding, focusedKey: '0:2' };
+    const marginAdvanced = lane.paint({ label: 'margin-after-sample', binding: marginBinding, hour: 112, inspect: 'cell:0:2', speed: 24, seek: 1 });
+    const marginHover = (marginAdvanced.fields.tooltip?.value as FamilyTooltipField | undefined)?.text ?? null;
+    const marginFocus = (marginAdvanced.fields.focusTooltip?.value as FamilyTooltipField | undefined)?.text ?? null;
+    assert.equal(marginHover?.hour, 112, 'capacity margin hover tracks displayed hour');
+    assert.equal(marginHover?.payload?.hour, 112);
+    assert.equal(marginFocus?.hour, 112, 'capacity margin focus tracks displayed hour');
+    const marginInstalled = recordInstalled(
+      picture,
+      { extent: atSample.fields.extent?.value, focusTooltip: marginAdvanced.fields.focusTooltip?.value },
+      null,
+    );
+    const marginPinned = resolveHostInput(
+      heatMatrixHostAdapter,
+      'pin',
+      { key: '0:2', hit: null, picture },
+      { current: marginInstalled, held: false, expired: false },
+      { expansion: {}, takesToggles: false, regions: false, menu: false },
+      parseMatrixCellKey,
+    );
+    assert.equal(marginPinned?.kind, 'pin');
+    assert.equal(marginPinned?.kind === 'pin' && marginPinned.hour, 112, 'pinned capacity margin tracks displayed hour');
   } finally {
     recording.restore();
   }

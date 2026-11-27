@@ -4189,7 +4189,7 @@ rows: Array<OperativeMatrixRow>,
  */
 columns: Array<number>,
 /**
- * Pairs with a recorded target country and operatives, by row then column; other pairs have none unless the spy's row sets `missing`.
+ * Pairs with a recorded target country and operatives, by row then column; other pairs covered by the selection have none unless the spy's row sets `missing`.
  */
 cells: Array<OperativeMatrixCell>,
 /**

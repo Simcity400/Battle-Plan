@@ -103,7 +103,10 @@ export const heatMatrixLane: LaneFamily<FamilyHeatMatrixBinding, HeatMatrixModel
     if (!cell) return null;
     const payload = deriveMatrixTooltip(frame.model, cell.row, cell.column);
     if (!payload) return null;
-    const fixedHour = frame.model.dataHour ?? (payload.hour !== undefined && payload.hour !== frame.model.hour ? payload.hour : undefined);
+    const isMargin = cell.column === frame.model.columns.length;
+    const fixedHour = isMargin
+      ? (payload.hour !== undefined && payload.hour !== frame.model.hour ? payload.hour : undefined)
+      : (frame.model.dataHour ?? (payload.hour !== undefined && payload.hour !== frame.model.hour ? payload.hour : undefined));
     return { rowKey: matrixCellKey(cell.row, cell.column), payload, ...(fixedHour !== undefined ? { hour: fixedHour } : {}) };
   },
   structure({ model, layout }) {

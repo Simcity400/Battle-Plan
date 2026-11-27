@@ -116,7 +116,7 @@ pub struct OperativeMatrixReply {
     pub rows: Vec<OperativeMatrixRow>,
     #[doc = " Indexes into `countries`, in the rows' faction order, then by operatives received."]
     pub columns: Vec<u32>,
-    #[doc = " Pairs with a recorded target country and operatives, by row then column; other pairs have none unless the spy's row sets `missing`."]
+    #[doc = " Pairs with a recorded target country and operatives, by row then column; other pairs covered by the selection have none unless the spy's row sets `missing`."]
     pub cells: Vec<OperativeMatrixCell>,
     #[doc = " The most operatives in one displayed pair abroad, for the colour scale."]
     pub most: u32,

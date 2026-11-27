@@ -205,11 +205,10 @@ export function deriveMatrixTooltip(
 }
 
 function marginTooltip(model: HeatMatrixModel, margin: MatrixMargin, row: MatrixAxisEntity, rowIndex: number): FamilyTooltipPayload {
-  const tipHour = model.dataHour ?? model.hour;
   const item = margin.cell(rowIndex);
-  if (item.kind === 'missing') return { title: row.label, hour: tipHour, missingReason: item.reason };
-  if (item.kind === 'none') return { title: row.label, hour: tipHour, items: [{ label: margin.header, value: item.label }] };
-  return { title: row.label, hour: tipHour, items: [{ label: margin.header, value: item.exact ?? item.text }] };
+  if (item.kind === 'missing') return { title: row.label, hour: model.hour, missingReason: item.reason };
+  if (item.kind === 'none') return { title: row.label, hour: model.hour, items: [{ label: margin.header, value: item.label }] };
+  return { title: row.label, hour: model.hour, items: [{ label: margin.header, value: item.exact ?? item.text }] };
 }
 
 export function marginAuditValue(item: MatrixMarginCell): string {
