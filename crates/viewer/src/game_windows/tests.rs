@@ -1075,6 +1075,79 @@ fn a_render_admitted_before_its_source_is_released_is_cancelled_and_caches_nothi
 }
 
 #[test]
+fn a_cached_reply_is_cancelled_when_its_content_is_retired_during_preparation() {
+    assert_retired_content_cancels_render(true);
+}
+
+#[test]
+fn a_composed_reply_is_cancelled_when_its_content_is_retired_during_composition() {
+    assert_retired_content_cancels_render(false);
+}
+
+fn assert_retired_content_cancels_render(cached: bool) {
+    let fixture = SyntheticModFixture::create(SYNTHETIC_BUTTON_SHADER);
+    let (_guard, device, queue) = gpu::device();
+    let service = Service {
+        gpu: Mutex::new(Some(GpuContext::from_device(device, queue))),
+        ..Service::default()
+    };
+    let key = fixture.key("mod_only_panel");
+    let (_, admitted) = service.admit(&key.source_id, || Ok::<_, ()>(())).unwrap().unwrap();
+    let witness = fixture.root_dir.join("mount-witness");
+    let retire_mount = || {
+        assert!(fixture.layers.generation_is_current());
+        let result = fixture.layers.with_file_witness(&witness, || fs::write(&witness, b"changed"));
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert!(!fixture.layers.generation_is_current());
+    };
+    let render = |retire: bool| {
+        service.render_composed_from_layers(
+            key.clone(),
+            &fixture.layers,
+            RenderParams {
+                window_name: "mod_only_panel",
+                scale: 1.0,
+                read_hour: Some(0),
+                art_from_current_install: true,
+                close_paths: &[],
+                tooltip_overrides: &BTreeMap::new(),
+                extra_warnings: Vec::new(),
+                admitted_gen: Some(admitted),
+                scroll: &BTreeMap::new(),
+            },
+            &AtomicBool::new(false),
+            |_| {
+                if retire && cached {
+                    retire_mount();
+                }
+                Ok(Prepared {
+                    assets: Assets::default(),
+                    state: (),
+                    fingerprint: Some([7; 32]),
+                })
+            },
+            |_, _, _, _, _, _, _| {},
+            |_, _, _, _, _, _, _| {
+                if retire {
+                    assert!(!cached, "the warmed frame should bypass composition");
+                    retire_mount();
+                }
+                Ok(())
+            },
+        )
+    };
+
+    if cached {
+        render(false).unwrap();
+        assert_eq!(service.cached_render_count(), 1);
+    }
+    assert_eq!(render(true).err(), Some(GameWindowError::Cancelled));
+    assert!(!fixture.layers.generation_is_current());
+    assert_eq!(service.capture_generation(&key.source_id), admitted);
+    assert_eq!(service.cached_render_count(), 0);
+}
+
+#[test]
 fn rendered_frames_are_reused_by_fingerprint_bounded_and_dropped_with_their_source() {
     let render = |title: &str| GameWindowRender {
         title: Some(title.to_owned()),

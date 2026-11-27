@@ -152,6 +152,7 @@ export default function GameWindowView({
   const canvasRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const flight = useRef<Flight | null>(null);
+  const cancellations = useRef(0);
   const completedRef = useRef<CompletedRender | null>(null);
   completedRef.current = completed;
 
@@ -184,13 +185,21 @@ export default function GameWindowView({
   const launch = useCallback((request: GameWindowRequest, key: string, subject: string, generation: number) => {
     const renderWindow = latest.current.client.renderGameWindow;
     if (!renderWindow) return;
+    if (cancellations.current >= 2) cancellations.current = 0;
     const controller = new AbortController();
     const settled = { key, subject, generation };
     flight.current = { ...settled, controller };
+    setFailed(null);
     setLoading(true);
-    const next = () => {
+    const next = (error?: Error) => {
       const now = latest.current;
-      if (followGameWindowRender(settled, now, completedRef.current)) launch(now.request, now.key, now.subject, now.generation);
+      const stop = error?.message === 'Request cancelled' ? ++cancellations.current >= 2 : now.key === key && acceptRender(settled, now);
+      const needsRender = followGameWindowRender(now, completedRef.current);
+      if (needsRender && error && stop) {
+        setFailed({ key: now.key, error });
+        onShownRef.current?.(null);
+      }
+      if (needsRender && (!error || !stop)) launch(now.request, now.key, now.subject, now.generation);
       else setLoading(false);
     };
     renderWindow(request, controller.signal)
@@ -198,6 +207,7 @@ export default function GameWindowView({
         if (controller.signal.aborted) return;
         flight.current = null;
         if (acceptRender(settled, latest.current)) {
+          cancellations.current = 0;
           const done: CompletedRender = { ...settled, render: result, hour: request.hour };
           completedRef.current = done;
           setCompleted(done);
@@ -209,11 +219,7 @@ export default function GameWindowView({
       .catch(caught => {
         if (controller.signal.aborted) return;
         flight.current = null;
-        if (acceptRender(settled, latest.current) && !followGameWindowRender(settled, latest.current, completedRef.current)) {
-          setFailed({ key, error: caught instanceof Error ? caught : new Error(String(caught)) });
-          onShownRef.current?.(null);
-        }
-        next();
+        next(caught instanceof Error ? caught : new Error(String(caught)));
       });
   }, [report]);
 
@@ -299,7 +305,7 @@ export default function GameWindowView({
 
   const wheelState = useRef({ render, logicalPoint, subjectKey, positions });
   wheelState.current = { render, logicalPoint, subjectKey, positions };
-  const shown = render !== null;
+  const shown = render !== null && !error;
   const moveList = useCallback((scroll: GameWindowScroll, input: ListInput): boolean => {
     const now = wheelState.current;
     const current = now.positions?.[scroll.list];
@@ -417,7 +423,7 @@ export default function GameWindowView({
     const failure = error instanceof RefusedError && !error.subject?.trim()
       ? new RefusedError(error.text, error.causeKind, label)
       : error;
-    return shell(<WidgetState kind="error" what={label} failure={failure} />);
+    return shell(<WidgetState kind="error" what={label} failure={failure} onRetry={active && !flight.current && error.message === 'Request cancelled' ? () => launch(stableRequest, requestKey, subjectKey, generation) : undefined} />);
   }
   if (!render) {
     const heldSize = previousLogicalSize

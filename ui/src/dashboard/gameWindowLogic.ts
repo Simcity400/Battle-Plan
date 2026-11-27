@@ -114,11 +114,10 @@ export function planGameWindowRender(
 }
 
 export function followGameWindowRender(
-  settled: GameWindowFrame,
   want: GameWindowWant,
   shown: GameWindowFrame | null,
 ): boolean {
-  return want.active && want.key !== settled.key && !(frameShown(shown, want) && shown!.key === want.key);
+  return planGameWindowRender(want, null, shown) === 'start';
 }
 
 function inRect(rect: readonly [number, number, number, number], x: number, y: number): boolean {
