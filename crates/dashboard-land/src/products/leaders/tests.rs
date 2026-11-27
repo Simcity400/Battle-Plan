@@ -583,7 +583,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     ]);
     let (content, identity) = dashboard_base::test_fixtures::content_identity(&folder.0);
     let conditioned_ace = UnitLeaderRow { character_id: 9, skill_level: 7, visibility_choice: 1, ..base(14) };
-    let cond_frames: Vec<_> = (100..=105)
+    let cond_frames: Vec<_> = (100..=105).chain(108..=109)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1_000));
             for table in [TableId::Provinces, TableId::States, TableId::UnitLeaderTraits, TableId::LandCombatDetails, TableId::NavalCombatDetails, TableId::UnitLeaderTraitExperience] {
@@ -605,7 +605,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
                 replay_data::rows::LexicalTokenRow { token: 901, literal: b"mod_ace".to_vec() },
             ]))
             .into();
-            let mut flags = if hour >= 101 {
+            let mut flags = if (101..=105).contains(&hour) || hour == 109 {
                 vec![replay_data::rows::ScriptFlagRow { scope_kind: 3, scope_id: 9, token: 900, value: 1, ..Default::default() }]
             } else {
                 Vec::new()
@@ -614,6 +614,9 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
                 flags.push(replay_data::rows::ScriptFlagRow { scope_kind: 3, scope_id: 77, token: 900, value: 1, ..Default::default() });
             }
             frame.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(flags)).into();
+            frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
+                (1..=64).map(|id| replay_data::rows::DivisionRow { id, ..Default::default() }).collect(),
+            )).into();
             frame
         })
         .collect();
@@ -632,6 +635,30 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     )
     .unwrap();
     let cond_load = LoadContext { content: Some(content) };
+    let fresh_source = || Source::from_replay(
+        SourceKey { source_id: "conditioned-exact".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        cond_src.replay(),
+        &cancelled,
+    ).unwrap();
+    let exact_source = fresh_source();
+    let asked = serde_json::json!({"branchId":"1","leaders":"land","selection":{"kind":"countries","countries":["GER"]}});
+    let open = |source: &Source| dashboard_base::products::at_hour::exact_panel::<UnitLeaders>(source, &cond_load, &asked).unwrap();
+    let panel = open(&exact_source);
+    let cold = &panel.exact().unwrap().cold;
+    let before = cold(100, &cancelled).unwrap();
+    let (after, rows) = dashboard_base::products::at_hour::counted(|| cold(101, &cancelled));
+    let after = after.unwrap();
+    assert_eq!(before["leaders"].as_array().unwrap().len(), 1);
+    assert_eq!(after["leaders"].as_array().unwrap().len(), 2);
+    assert!(rows < 64, "one character flag must not decode all 64 unrelated divisions: decoded {rows} rows");
+    let query = dashboard_base::queries::query(&exact_source, 1).unwrap();
+    assert_ne!(query.timeline.at(105).unwrap().run, query.timeline.at(108).unwrap().run);
+    assert!(query.timeline.at(106).is_none());
+    for hour in [104, 102, 106, 108, 109] {
+        let fresh = open(&fresh_source());
+        assert_eq!(cold(hour, &cancelled), (fresh.exact().unwrap().cold)(hour, &cancelled), "hour {hour}");
+    }
     let cond_context = LeadersContext::load(&cond_src, &cond_load).unwrap();
     let cond_ger = LeaderSelection::Countries { countries: vec!["GER".into()] };
     let warm_at = At { owner: None, holders: &holders, context: &cond_context, hour: 100, cancelled: &cancelled, live: &live };
