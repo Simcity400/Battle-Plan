@@ -634,7 +634,6 @@ impl Held {
             live.iter().map(|[first, _]| *first).min().or_else(|| self.replay.pieces(branch).first().map(|piece| piece.first_hour))
         };
         let country = perspective.country.clone();
-        let selection = self.selection;
         let executable = self.document.content.tables;
         let seek = key.epoch;
         let wake = ctx.clone();
@@ -663,11 +662,6 @@ impl Held {
                         }
                     };
                     spent[0] = stepping.elapsed().as_secs_f64() * 1e3;
-                    if let Some(reason) = cursor.limitation(selection) {
-                        made.push((hour, Err(reason)));
-                        stepping = Instant::now();
-                        continue;
-                    }
                     let reading = Instant::now();
                     let mut frame = *frame;
                     for table in TableId::ALL.into_iter().filter(|table| !declared.contains(table)) {

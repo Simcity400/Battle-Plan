@@ -63,12 +63,6 @@ fn flag(cursor: &mut Cursor, hour: Hour, epoch: u64, country: u32, kind: usize) 
     let relations = Relations::read(&frame, &links);
     let (flags, provenance) = combats(&frame, kind, country, &links, relations.as_ref().map_err(|reason| *reason), history.as_deref()).unwrap();
     let combat = if kind == LAND { COMBAT } else { NAVAL_COMBAT };
-    let selection = if kind == LAND { Selection::Land(combat) } else { Selection::Naval(combat) };
-    match flags[&combat] {
-        Engaged::Unknown => assert!(cursor.limitation(selection).is_some_and(|reason| reason.contains("its engaged flag is unknown"))),
-        Engaged::Yes | Engaged::No => assert_eq!(cursor.limitation(selection), None),
-        Engaged::Ambiguous(_) => assert!(cursor.limitation(selection).is_some()),
-    }
     if hour >= FIRST + 2 && country == 1 {
         let (unindexed, _) = combats(&frame, kind, country, &links, relations.as_ref().map_err(|reason| *reason), None).unwrap();
         assert_eq!(unindexed[&combat], Engaged::Yes);

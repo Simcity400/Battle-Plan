@@ -2,7 +2,6 @@ use super::{History, Pass, core, native_load, pass_tables};
 use replay::campaign::{HourCursor, Replay, SeekResult};
 use replay_data::{BranchId, Hour, rows::{TableId, tables}};
 use std::{io, sync::Arc};
-use viewer_engagements::{combat_selection::Selection, engaged::Engaged, engagement_history::{LAND, NAVAL}};
 use viewer_foundation::perspective::Country;
 
 pub struct Cursor {
@@ -37,24 +36,6 @@ impl Cursor {
         self.tables.sort_unstable_by_key(|table| table.index());
         self.tables.dedup();
         self.hours = HourCursor::new(Arc::clone(self.hours.replay()), &self.tables, false);
-    }
-
-    pub fn limitation(&self, selection: Selection) -> Option<String> {
-        let (kind, combat) = match selection {
-            Selection::Land(combat) => (LAND, combat),
-            Selection::Naval(combat) => (NAVAL, combat),
-            _ => return None,
-        };
-        let held = self.held.as_ref()?;
-        let flag = held.pass.viewer.as_ref().and_then(|viewer| {
-            held.pass.shared.lookup(kind, held.branch, held.last?, viewer.slot?, &[combat]).ok()?.get(&combat).copied()
-        });
-        let reason = match flag {
-            Some(Engaged::Yes | Engaged::No) => return None,
-            Some(Engaged::Ambiguous(cause)) => cause.reason(),
-            _ => "its engaged flag is unknown",
-        };
-        Some(format!("Battle {combat}: {reason}."))
     }
 
     pub fn read(&mut self, branch: BranchId, hour: Hour, epoch: u64, country: &Country, first: Option<Hour>) -> io::Result<(SeekResult, Option<Arc<History>>)> {
