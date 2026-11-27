@@ -18,7 +18,7 @@ mod series_tests;
 #[cfg(test)]
 mod tests;
 
-pub use answer::{Answer, Decoded, MAGIC, Message, NO_REASON, State, charge, decode, merge};
+pub use answer::{Answer, Decoded, MAGIC, Message, NO_REASON, State, charge, decode};
 pub use evaluate::answer_at;
 pub use follow::{Counters, Follow, Held, Sink, StepStats};
 pub use parse::parse;

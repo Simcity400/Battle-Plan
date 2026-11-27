@@ -715,7 +715,7 @@ export async function startPerf(): Promise<void> {
   });
   Object.assign(window, { __perf: { start: () => recorder.start(), stop: () => recorder.stop(), flush: () => recorder.flush(),
     beginAudit: () => recorder.beginAudit(), auditPictures: () => recorder.auditPictures(), auditPicturesBatch: (limit: number) => recorder.auditPicturesBatch(limit),
-    pressureMerges: () => invoke('playback_pressure_merges'), hour: () => recorder.hour, lanes: () => recorder.laneCount,
+    dropped: () => invoke('playback_dropped'), hour: () => recorder.hour, lanes: () => recorder.laneCount,
     preloadStatus: async () => (await import('../widgets/rendererLoaders.ts')).preloadStatus(),
     waitPreloadComplete: async () => (await import('../widgets/rendererLoaders.ts')).whenPreloadComplete() } });
 }

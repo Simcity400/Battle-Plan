@@ -1,4 +1,4 @@
-import { answerShape } from './message.ts';
+import { answerShape, parseFollowedFrame, parseWireAnswer } from './message.ts';
 import { answerBody } from './messages.fixture.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -56,4 +56,20 @@ test('review 10: an answer\'s shape names its rows and columns, not their order'
   const other = answerBody({ keys: [1n, 2n, 4n], columns: 1, values: [10n, 20n, 40n] });
   assert.equal(answerShape(a), answerShape(swapped), 'a rank swap with the same members commits nothing');
   assert.notEqual(answerShape(a), answerShape(other), 'a new member is a new shape');
+});
+
+test('a stopped followed answer round-trips with its reason and matches the Rust wire layout', () => {
+  const reason = 'This page fell too far behind while it was not responding.';
+  const golden = '464f4c3300000000180000000100000002000000000000000700000018000000580000000000000004000000000000000000000001000000000000003a0000005468697320706167652066656c6c20746f6f2066617220626568696e64207768696c6520697420776173206e6f7420726573706f6e64696e672e000000000000';
+  const built = message(24, [{ id: 7, answer: { stopped: reason } }], false, 0, 2);
+  assert.equal(Buffer.from(built).toString('hex'), golden);
+  const frame = parseFollowedFrame(built);
+  assert.equal(frame.hour, 24);
+  assert.equal(frame.seek, 2);
+  assert.equal(frame.count, 1);
+  const data = new DataView(built.buffer, built.byteOffset, built.byteLength);
+  assert.deepEqual([data.getUint32(24, true), data.getInt32(28, true)], [7, 24]);
+  const length = data.getUint32(32, true);
+  assert.deepEqual(parseWireAnswer(built.subarray(40, 40 + length)), { kind: 'stopped', reason });
+  assert.equal(answerShape(answerBody({ stopped: reason })), `stopped:${reason}`);
 });

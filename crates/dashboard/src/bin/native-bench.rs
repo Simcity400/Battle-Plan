@@ -60,7 +60,6 @@ fn cycles() -> u64 { unreachable!() }
 
 struct Batch {
     hour: i32,
-    packets: Vec<Vec<u8>>,
     bytes: usize,
 }
 
@@ -80,26 +79,18 @@ impl Window {
     fn offer(&mut self, hour: i32, packets: Vec<Vec<u8>>, lane_bytes: usize) -> io::Result<usize> {
         let bytes = packets.iter().map(Vec::len).sum();
         self.bytes += bytes;
-        self.queued.push_back(Batch { hour, packets, bytes });
-        let mut merged = 0;
+        self.queued.push_back(Batch { hour, bytes });
+        let mut dropped = 0;
         while self.bytes + lane_bytes > lead::BYTES && self.queued.len() >= 2 {
-            let older = self.queued.pop_front().unwrap();
-            let newer = self.queued.front_mut().unwrap();
-            self.bytes -= older.bytes + newer.bytes;
-            for (old, new) in older.packets.iter().zip(&mut newer.packets) {
-                let merge = if new.starts_with(dated::MAGIC) { dated::merge } else { dashboard_follow::merge };
-                *new = merge(old, new)?.0;
-            }
-            newer.bytes = newer.packets.iter().map(Vec::len).sum();
-            self.bytes += newer.bytes;
-            merged += 1;
+            self.bytes -= self.queued.pop_front().unwrap().bytes;
+            dropped += 1;
         }
-        Ok(merged)
+        Ok(dropped)
     }
 }
 
 fn standing_cost() {
-    use dashboard_follow::{panel::product::take_due, push::{PANEL, Push}};
+    use dashboard_follow::{panel::product::take_due, push::{Panels, Push}};
     use std::{collections::BTreeSet, hint::black_box};
 
     let push = Push::default();
@@ -113,7 +104,7 @@ fn standing_cost() {
             let start = Instant::now();
             for hour in 0..STEPS {
                 assert!(take_due(black_box(&mut due), hour).is_none());
-                push.offer_kind(PANEL, dated::ProductBatch::new((0, 1, 0)).finish(Some(hour)));
+                push.offer_panel(session, dated::ProductBatch::new((0, 1, 0)).finish(Some(hour)), Panels::All, false);
                 if let Some((_, bytes, ..)) = black_box(push.take_kind()) {
                     released += dashboard_follow::charge(&bytes) as u64;
                     push.credit(session, released);
@@ -123,7 +114,7 @@ fn standing_cost() {
                 "nsPerStep": start.elapsed().as_nanos() as f64 / f64::from(STEPS)}));
         }
     }
-    println!("{}", json!({"stepsPerSample": STEPS, "samples": samples, "pressureMerges": push.counters().pressure_merges}));
+    println!("{}", json!({"stepsPerSample": STEPS, "samples": samples}));
 }
 
 fn main() -> io::Result<()> {
@@ -322,12 +313,12 @@ fn main() -> io::Result<()> {
                     packets.push(bytes);
                 }
                 if widened { ph.redeclare(reader, declared.values().cloned().collect())?; }
-                let merges = window.offer(hour, packets, ring.bytes)?;
+                let dropped = window.offer(hour, packets, ring.bytes)?;
                 finished = hour;
                 if audit && trace.len() % 30 == 0 { eprintln!("step {} at {hour}, {:.1}s elapsed", trace.len(), ms(ready) / 1000.0); }
                 trace.push(json!({ "from": from, "hour": hour, "reset": reset, "readyMs": ms(ready), "buildNs": build_ns,
                     "leadHours": i64::from(*through.iter().min().unwrap()) - i64::from(clock), "clock": clock,
-                    "cap": ring.capped || window.bytes + ring.bytes > lead::BYTES, "merges": merges,
+                    "cap": ring.capped || window.bytes + ring.bytes > lead::BYTES, "dropped": dropped,
                     "wireHeld": window.bytes, "laneBytes": ring.bytes, "products": rows }));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => return Err(io::Error::other("playhead stopped before the last step")),

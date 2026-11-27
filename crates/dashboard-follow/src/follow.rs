@@ -91,6 +91,7 @@ struct Control {
     logs: Option<LogReads>,
     classes: BTreeMap<usize, bool>,
     session: u64,
+    stopped: Option<(u64, Vec<u32>)>,
 }
 
 type ProductHook = Arc<dyn Fn(&Step, &Lanes<'_>) + Send + Sync>;
@@ -135,7 +136,7 @@ impl Follow {
                 products: Mutex::default(),
                 page_seek: Mutex::default(),
                 route: next_route(),
-                control: Mutex::new(Control { products: BTreeMap::new(), ops: Vec::new(), followed: BTreeMap::new(), declare: None, logs: None, classes: BTreeMap::new(), session: 0 }),
+                control: Mutex::new(Control { products: BTreeMap::new(), ops: Vec::new(), followed: BTreeMap::new(), declare: None, logs: None, classes: BTreeMap::new(), session: 0, stopped: None }),
                 report: Mutex::default(),
                 wake: Mutex::default(),
             }),
@@ -165,6 +166,68 @@ impl Follow {
                 engine.step_added(step, lanes);
             }
         })
+    }
+
+    pub(crate) fn stop_all(&self, session: u64) -> Vec<u32> {
+        let ordinary: Vec<u32> = {
+            let mut control = lock(&self.shared.control);
+            if control.session != session { return Vec::new(); }
+            let ids: Vec<u32> = control.followed.keys().copied().collect();
+            control.followed.clear();
+            control.ops.retain(|op| matches!(op, Op::Unfollow(_)));
+            for &id in &ids {
+                control.ops.push(Op::Unfollow(id));
+            }
+            let _ = redeclare(&mut control, false);
+            let ordinary: Vec<u32> = ids.into_iter().filter(|&id| id < crate::live::CELLS).collect();
+            control.stopped = Some((session, ordinary.clone()));
+            ordinary
+        };
+        self.shared.notify_wake();
+        ordinary
+    }
+
+    pub(crate) fn stopped_message(&self, reason: &str, session: u64, seek: u32, hour: Hour) -> Option<Vec<u8>> {
+        let ordinary = {
+            let control = lock(&self.shared.control);
+            match &control.stopped {
+                Some((s, ids)) if *s == session => ids.clone(),
+                _ => return None,
+            }
+        };
+        self.encode_stopped(&ordinary, reason, seek, hour)
+    }
+
+    pub(crate) fn encode_stopped(&self, ordinary: &[u32], reason: &str, seek: u32, hour: Hour) -> Option<Vec<u8>> {
+        if ordinary.is_empty() { return None; }
+        let mut out = Vec::new();
+        answer::begin(&mut out, self.shared.route, self.shared.clock, hour, seek, false);
+        let mut body = Vec::new();
+        answer::stopped(reason, &mut body);
+        for &id in ordinary {
+            answer::push(&mut out, id, hour, &body);
+        }
+        Some(out)
+    }
+
+    pub(crate) fn follow_or_stopped(&self, id: u32, query: Query) -> io::Result<Option<u64>> {
+        query.check()?;
+        let stopped = {
+            let mut control = lock(&self.shared.control);
+            let current = control.session;
+            if let Some((session, ids)) = &mut control.stopped && *session == current {
+                if id < crate::live::CELLS && !ids.contains(&id) {
+                    ids.push(id);
+                }
+                return Ok(Some(*session));
+            }
+            control.followed.insert(id, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() });
+            control.ops.push(Op::Follow(id, Box::new(query)));
+            redeclare(&mut control, true)?;
+            None
+        };
+        self.shared.notify_wake();
+        Ok(stopped)
     }
 
     pub(crate) fn anchor(&self, seek: u32, apply: impl FnOnce() -> u64) {
@@ -256,6 +319,9 @@ impl Follow {
         query.check()?;
         let result = {
             let mut control = lock(&self.shared.control);
+            if control.stopped.as_ref().is_some_and(|(s, _)| *s == control.session) {
+                return Err(crate::invalid(crate::push::OVERFLOW_REASON));
+            }
             control.followed.insert(id, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() });
             control.ops.push(Op::Follow(id, Box::new(query)));
             redeclare(&mut control, seed_paused)
@@ -267,13 +333,21 @@ impl Follow {
     }
 
     pub fn serve(&self, session: u64) {
-        lock(&self.shared.control).session = session;
+        let mut control = lock(&self.shared.control);
+        if control.session != session {
+            control.session = session;
+            control.stopped = None;
+        }
+        drop(control);
         self.shared.notify_wake();
     }
 
     pub fn unfollow(&self, id: u32) -> io::Result<()> {
         let changed = {
             let mut control = lock(&self.shared.control);
+            if let Some((_, ids)) = &mut control.stopped {
+                ids.retain(|&held| held != id);
+            }
             if control.followed.remove(&id).is_some() {
                 control.ops.push(Op::Unfollow(id));
                 redeclare(&mut control, false)?;

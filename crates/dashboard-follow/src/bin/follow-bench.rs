@@ -665,8 +665,8 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
         "queries": parsed.len(), "not_available": unavailable,
         "push_latency_ns": percentiles(&mut latency),
         "push_offer_ns": percentiles(&mut offer_ns),
-        "push": { "offered": push_counters.offered, "written": push_counters.written, "superseded": push_counters.superseded, "merges": push_counters.merges,
-            "unmerged": push_counters.unmerged, "most_queued": push_counters.most_queued, "bytes": push_counters.bytes, "byte_bound": dashboard_follow::lead::BYTES },
+        "push": { "offered": push_counters.offered, "written": push_counters.written, "dropped": push_counters.dropped,
+            "most_queued": push_counters.most_queued, "bytes": push_counters.bytes, "byte_bound": dashboard_follow::lead::BYTES },
     }));
     let occupied = options.occupied_states.then(|| {
         let measured: Vec<&StepStats> = stats.iter().filter(|stat| !stat.reset && !stat.gap).collect();

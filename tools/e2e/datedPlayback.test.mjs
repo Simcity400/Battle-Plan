@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+﻿import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { datedPlaybackVerdict, inputPictures, rankWidgetCosts, summarizeWidgetCosts } from './datedPlayback.mjs';
@@ -55,7 +55,7 @@ test('an input applies once every drawing lane has presented its seek, not the f
 test('input marks judge a scrub from the start of its drag and a pin after it applies', () => {
   const tick = { t: 'tick', at: 0, hour: 100, playing: false, seek: 2 };
   const picture = { t: 'picture', at: 15, placement: 1, hour: 80, since: 80, through: 80, seek: 2, fixedHour: 80 };
-  const window = { complete: true, from: 0, to: 100, seconds: 1, presented: [0, 50, 100], pressureMerges: 0,
+  const window = { complete: true, from: 0, to: 100, seconds: 1, presented: [0, 50, 100], dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }],
     audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: [{ kind: 'rewind', at: 0 }, { kind: 'scrub', at: 10 }, { kind: 'pin', at: 20, pinWidget: 'w' },
@@ -122,7 +122,7 @@ test('review 6 D: a lane that served twice and then stalled for the rest of the 
     { t: 'workerFrame', at: 0, playing: true, changed: 1, workMs: 0.1 }, { t: 'workerFrame', at: 10, playing: true, changed: 1, workMs: 0.1 },
     ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
-  const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } };
   assert.equal(datedPlaybackVerdict([window], records).pass, false);
@@ -211,7 +211,7 @@ test('Research requires five visible dated widgets, a full playing window and sa
   const widgets = kinds.map(kind => ({ id: kind, kind, visible: true, surfaces: [kind] }));
   widgets[2].surfaces.push('special-project-details');
   const audit = widgets.flatMap(w => w.surfaces.map(surface => ({ widget: w.id, surface, placement: surface, hour: 720, at: 500, error: null })));
-  const window = { complete: true, from: 0, to: 1000, seconds: 1, widgets, audit, pressureMerges: 0,
+  const window = { complete: true, from: 0, to: 1000, seconds: 1, widgets, audit, dropped: 0,
     presented: Array.from({ length: 101 }, (_, i) => 10 * i) };
   const records = Array.from({ length: 101 }, (_, i) => {
     const at = 10 * i, hour = Math.floor(at * 1.44);
@@ -276,7 +276,10 @@ test('Research requires five visible dated widgets, a full playing window and sa
     'an expected widget without an inventory entry fails coverage');
   assert.equal(verdict(records, { ...window, audit: [] }), false);
   assert.equal(verdict(records, { ...window, audit: audit.map((a,i) => i ? a : { ...a, error: 'Wrong row' }) }), false);
-  assert.equal(verdict(records, { ...window, pressureMerges: 1 }), false);
+  assert.equal(verdict(records, { ...window, dropped: 1 }), false);
+  const { dropped: _, ...legacyWindow } = window;
+  assert.equal(datedPlaybackVerdict([{ ...legacyWindow, pressureMerges: 0 }], records, { legacy: true }).pass, true, 'legacy regrading accepts pressureMerges: 0');
+  assert.equal(datedPlaybackVerdict([{ ...legacyWindow, pressureMerges: 1 }], records, { legacy: true }).pass, false, 'legacy regrading rejects non-zero pressureMerges');
   assert.equal(verdict(records, { ...window, presented: [] }), false);
   assert.equal(verdict(records.filter(r => r.t !== 'frame')), false);
   assert.equal(verdict(records.filter(r => r.at < 100)), false);
@@ -316,7 +319,7 @@ test('placement visibility keeps a hidden surface out of the held-frame gate unt
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.1 })),
     ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
-  const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }],
     visibility: [{ id: 'w', placement: 1, at: 0, visible: true }, { id: 'w', placement: 2, at: 0, visible: false }, { id: 'w', placement: 2, at: 500, visible: true }],
     audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }, { widget: 'w', surface: 'surface', placement: 2, at: 500, error: null }],
@@ -336,7 +339,7 @@ test('the dated verdict rejects a stale pinned picture after it has settled', ()
     { t: 'picture', at: 1100, widget: 'w', surface: 'w', placement: 'p', hour: 10, seek: 1, fixedHour: 10, since: 10, through: 10 },
     { t: 'picture', at: 1210, widget: 'w', surface: 'w', placement: 'p', hour: 9, seek: 1, fixedHour: 10, since: 10, through: 10 },
   ];
-  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['w'] }],
     audit: [{ widget: 'w', surface: 'w', placement: 'p', at: 500, error: null }],
     inputs: { actions: [{ kind: 'pin', at: 1100, pinWidget: 'w' }], to: 1300, presented: [1110, 1210],
@@ -357,7 +360,7 @@ test('displayed age p95 fails even when every late frame crosses a verified stru
     { t: 'commit', at: 0, serial: 1, widgets: ['w'], changes: [{ widget: 'w', source: 's', hour: 100000,
       previousHour: 0, before: ['a'], after: ['b'], verified: true }] },
   ];
-  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['s'] }],
     audit: [{ widget: 'w', surface: 's', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] } };
@@ -380,7 +383,7 @@ test('an unmatched or ambiguous commit source fails instead of being assigned by
     { t: 'commit', at: 0, serial: 1, widgets: ['w'], changes: [{ widget: 'w', source: 'missing-source', hour: 100,
       previousHour: 0, before: ['a'], after: ['b'], verified: true }] },
   ];
-  const base = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const base = { complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['one', 'two'] }],
     audit: [{ widget: 'w', surface: 'one', placement: 1, at: 500, error: null }, { widget: 'w', surface: 'two', placement: 2, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] } };
@@ -435,7 +438,7 @@ test('a pin action with no settled pictures fails input coverage', () => {
 
 test('an unsettled scrub is reported as a verdict failure with each widget reason', () => {
   const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
-  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }],
     audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window' })),
@@ -455,7 +458,7 @@ test('an unsettled scrub is reported as a verdict failure with each widget reaso
 
 test('an unsettled rewind is reported as a verdict failure with its wait time', () => {
   const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
-  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }],
     audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window' })),
@@ -499,7 +502,7 @@ test('a visible two-surface widget fails exact coverage when one surface reports
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.1 })),
     ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
-  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['one', 'two'] }],
     audit: [{ widget: 'w', surface: 'one', placement: 1, at: 500, error: null }, { widget: 'w', surface: 'two', placement: 2, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } };
@@ -538,7 +541,7 @@ test('review 7 F: every lane is held to both rate bounds', () => {
     ...presented.flatMap(at => [at, at + 8].map(when => ({ t: 'workerFrame', at: when, lane: 1, lanes: 2, playing: true, changed: 1, workMs: 0.1 }))).filter(r => r.at <= 1000),
     ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
-  const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } };
   assert.equal(datedPlaybackVerdict([window], records).pass, false, 'a lane at 120/s on a 60 FPS display fails though the other is at 60');
@@ -572,7 +575,7 @@ test('review 9: a table placement passes exact content only on its own renderer\
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
     ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
-  const window = owner => ({ page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const window = owner => ({ page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['table'] }], audit: [{ widget: 'w', surface: 'table', placement: 1, owner, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } });
   assert.equal(datedPlaybackVerdict([window(-1)], records).pass, true, 'the table renderer compared its own rows');
@@ -612,7 +615,7 @@ test('a window with overlapping lost perf records, a refused widget, or a failed
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
     ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
-  const baseWindow = { page: 'Heaviest', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const baseWindow = { page: 'Heaviest', complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'ok-kind', title: 'Ok', visible: true, surfaces: ['surface'] }],
     audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] } };
@@ -814,7 +817,7 @@ test('dated playback fails on playbackReasons, fails every placement on playing-
     ...presented.map((at, i) => ({ t: 'frame', at, playing: true, pictures: 1, commits: i === 0 ? 1 : 0, commitSequence: 1, session })),
     { t: 'commit', at: 0, serial: 1, widgets: ['w'], changes: [{ widget: 'w', source: 'surface', hour: 10, previousHour: 0, before: ['a'], after: ['b'], verified: true }], session },
   ];
-  const baseWindow = session => ({ session, page: 'Heaviest', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+  const baseWindow = session => ({ session, page: 'Heaviest', complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'ok-kind', title: 'Ok', visible: true, surfaces: ['surface'] }],
     audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic', at: 1100 })), to: 1500, presented: [] } });
@@ -859,7 +862,7 @@ test('S20: per-picture audit coverage checks every painted picture including own
   ];
   const baseAudit = presented.slice(1).map(at => ({ widget: 'w', surface: 'table', placement: 1, owner: -1, generation: 1, at, error: null }));
   const window = {
-    page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+    page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w', kind: 'scoreboard', visible: true, surfaces: ['table'] }],
     audit: baseAudit,
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] },
@@ -932,7 +935,7 @@ test('cancelled workerFrame is excluded from worker presentation rate, workerGap
     })),
   ];
   const window = {
-    page: 'test', from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+    page: 'test', from: 0, to: 1000, seconds: 1, presented, dropped: 0,
     widgets: [{ id: 'w1', title: 'W1', kind: 'k', visible: true, surfaces: ['main'] }],
     audit: presented.map(at => ({ widget: 'w1', surface: 'main', placement: 1, owner: 0, at, error: null })),
   };

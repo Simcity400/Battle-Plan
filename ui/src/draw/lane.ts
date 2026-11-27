@@ -1,6 +1,6 @@
 import { Facts, changeWindow, followsChannel, joinComponents, samePicture, type Channel, type PanelRecord, type Picture, type Window } from '../dashboard/follow/facts.ts';
 import { SAME, type Ack, type Bitmap, type Entry, type FailureOrigin, type FrameRequest, type Refusal } from '../dashboard/follow/page.ts';
-import { parseAnswer, parseDatedPanelRecord, parseFollowedFrame, type FollowedAnswer } from '../dashboard/follow/message.ts';
+import { parseDatedPanelRecord, parseFollowedFrame, parseWireAnswer, type FollowedAnswer } from '../dashboard/follow/message.ts';
 import { patchAnswer } from '../dashboard/follow/tables.ts';
 import { sectionOf } from '../dashboard/follow/liveCells.ts';
 import { PayloadStore, type PayloadsMessage, type Revisions } from '../dashboard/follow/payloads.ts';
@@ -403,7 +403,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly newestUnboundSeek = new Map<number, number>();
   private readonly earlyOverflow = new Map<number, number>();
   private readonly overflowedSubs = new Map<number, { seek: number; subs: Set<number> }>();
-  private heldBytes = 0;
+  private readonly heldBytes = new Map<number, number>();
   private readonly heldIds = new Map<number, number>();
   private readonly lost = new Map<number, number>();
   private readonly gone = new Set<number>();
@@ -996,20 +996,25 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private hold(item: Held) {
     if (this.failedSubs.has(item.id) || this.lost.has(item.id)) { this.freed += item.size; return; }
-    if (this.heldBytes + item.size + HELD_COST > BUFFER) {
+    const cost = item.size + HELD_COST, held = this.heldBytes.get(item.id) ?? 0;
+    if (held + cost > BUFFER) {
       this.freed += item.size;
       this.forget(item.id);
       if (item.id < CELL) this.failSub(item.id, LOST);
       else this.lost.set(item.id, item.native);
       return;
     }
-    this.heldBytes += item.size + HELD_COST;
+    this.heldBytes.set(item.id, held + cost);
     this.heldIds.set(item.id, item.native);
     this.held.push(item);
   }
 
   private release(items: readonly Held[]) {
-    for (const item of items) { this.heldBytes -= item.size + HELD_COST; this.freed += item.size; }
+    for (const item of items) {
+      const left = (this.heldBytes.get(item.id) ?? 0) - (item.size + HELD_COST);
+      if (left > 0) this.heldBytes.set(item.id, left); else this.heldBytes.delete(item.id);
+      this.freed += item.size;
+    }
   }
 
   private reindex() {
@@ -1284,7 +1289,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const ready = this.held.filter(item => this.known(item.id) && this.routes.has(item.native) && this.current(item) === 0);
     if (!ready.length) { this.reindex(); return; }
     this.held = this.held.filter(item => !ready.includes(item));
-    for (const item of ready) this.heldBytes -= item.size + HELD_COST;
+    for (const item of ready) {
+      const left = (this.heldBytes.get(item.id) ?? 0) - (item.size + HELD_COST);
+      if (left > 0) this.heldBytes.set(item.id, left); else this.heldBytes.delete(item.id);
+    }
     this.reindex();
     for (const item of ready) {
       if (this.failedSubs.has(item.id) || (item.id >= CELL && !this.facts.owns(item.id))) {
@@ -1344,15 +1352,21 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const view = new DataView(record.buffer, record.byteOffset, record.byteLength), at = view.getInt32(4, true);
     let value: AnswerValue;
     try {
-      const parsed = parseAnswer(record.subarray(16, 16 + view.getUint32(8, true)));
+      const parsed = parseWireAnswer(record.subarray(16, 16 + view.getUint32(8, true)));
       if (parsed.kind === 'changed') {
         const base = this.facts.latest(id);
         if (!base || base.kind !== 'answer') throw new Error('Changed rows arrived without the table they change.');
         const patched = patchAnswer(base.answer, parsed);
         value = { kind: 'answer', answer: patched };
+      } else if (parsed.kind === 'stopped') {
+        this.freed += bytes;
+        this.failSub(id, parsed.reason);
+        return false;
       } else {
         const body = record.slice(16);
-        value = { kind: 'answer', body, answer: parseAnswer(body) };
+        const answer = parseWireAnswer(body);
+        if (answer.kind === 'stopped') return false;
+        value = { kind: 'answer', body, answer };
       }
     } catch (error) {
       this.freed += bytes;
@@ -1546,6 +1560,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         this.noteWaiting(made.id, made.kind === 'waiting');
       }
     }
+    if (this.held.length) this.replay();
     this.holdMessage('panels', native, seek, completed ?? data.getInt32(12, true), unbound, completed);
   }
 

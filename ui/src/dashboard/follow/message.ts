@@ -46,6 +46,7 @@ export interface FollowedRows {
 }
 
 export type FollowedAnswer = { kind: 'notRecorded'; reason: string } | FollowedRows;
+export type ParsedFollowedAnswer = FollowedAnswer | { kind: 'stopped'; reason: string };
 
 export interface FollowedPanel {
   data?: unknown;
@@ -98,14 +99,14 @@ export function textAt(answer: FollowedRows, at: number): string | null {
   return text;
 }
 
-function body(views: MessageViews, data: DataView, start: number, end: number): FollowedAnswer {
+function body(views: MessageViews, data: DataView, start: number, end: number): ParsedFollowedAnswer {
   const kind = data.getUint8(start), flags = data.getUint8(start + 1);
   const rows = data.getUint32(start + 4, true), columns = data.getUint32(start + 8, true), count = data.getUint32(start + 12, true);
   let at = start + 16;
-  if (kind === 0) {
+  if (kind === 0 || kind === 4) {
     const table = textTable(views, at, count, end);
-    if (count < 1) throw new Error('A followed answer that is not recorded gives no reason.');
-    return { kind: 'notRecorded', reason: decoder.decode(views.u8.subarray(table.text + table.ends[0]!, table.text + table.ends[1]!)) };
+    if (count < 1) throw new Error(kind === 0 ? 'A followed answer that is not recorded gives no reason.' : 'A stopped followed answer gives no reason.');
+    return { kind: kind === 0 ? 'notRecorded' : 'stopped', reason: decoder.decode(views.u8.subarray(table.text + table.ends[0]!, table.text + table.ends[1]!)) };
   }
   if (kind !== 1 && kind !== 2 && kind !== 3) throw new Error(`No followed answer kind ${kind}.`);
   const cells = rows * columns;
@@ -135,9 +136,15 @@ function viewsOf(bytes: ArrayBuffer | Uint8Array) {
   return { views, data, byteLength };
 }
 
-export function parseAnswer(bytes: Uint8Array): FollowedAnswer {
+export function parseWireAnswer(bytes: Uint8Array): ParsedFollowedAnswer {
   const { views, data, byteLength } = viewsOf(bytes);
   return body(views, data, 0, byteLength);
+}
+
+export function parseAnswer(bytes: Uint8Array): FollowedAnswer {
+  const parsed = parseWireAnswer(bytes);
+  if (parsed.kind === 'stopped') throw new Error(parsed.reason);
+  return parsed;
 }
 
 export const DATED_FOLLOW = 0x334c4f46, DATED_PANEL = 0x324c4e50;
@@ -270,9 +277,10 @@ const shapes = new WeakMap<Uint8Array, string>();
 export function answerShape(body: Uint8Array): string {
   let held = shapes.get(body);
   if (held !== undefined) return held;
-  let answer: FollowedAnswer;
-  try { answer = parseAnswer(body); } catch { answer = { kind: 'notRecorded', reason: 'unreadable' }; }
+  let answer: ParsedFollowedAnswer;
+  try { answer = parseWireAnswer(body); } catch { answer = { kind: 'notRecorded', reason: 'unreadable' }; }
   if (answer.kind === 'notRecorded') held = `refused:${answer.reason}`;
+  else if (answer.kind === 'stopped') held = `stopped:${answer.reason}`;
   else {
     const u64 = answer.views.u64, keys = new Uint8Array(u64.buffer, u64.byteOffset + answer.keys * 8, answer.rows * 16);
     let sum = 0, mix = 0;

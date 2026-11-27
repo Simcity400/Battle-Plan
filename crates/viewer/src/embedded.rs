@@ -554,7 +554,7 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         let follow = dashboard_follow::Follow::new(clock);
         let out = Arc::clone(push);
         let hook = follow.hook(Box::new(move |stats, message| {
-            if let Some(message) = message { out.offer_from(stats.session, dashboard_follow::push::FOLLOW, message.bytes); }
+            if let Some(message) = message { out.offer_follow(stats.session, message.bytes); }
         }));
         let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
         let host = dashboard_follow::host::PlayheadHost::new_with_budget(Arc::clone(&entry), crate::playhead_host::Entry::playhead, crate::playhead_host::Entry::follow_anchor, follow, held, Arc::clone(&self.budget)).map_err(|error| error.to_string())?;

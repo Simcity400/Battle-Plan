@@ -13,7 +13,7 @@ pub fn export_budget() -> std::sync::Arc<playhead::ByteBudget> {
     EXPORT_BUDGET.get_or_init(|| playhead::ByteBudget::new(BYTES)).clone()
 }
 
-static PRESSURE_MERGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-pub(crate) fn count_merge() { PRESSURE_MERGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-pub fn pressure_merges() -> u64 { PRESSURE_MERGES.load(std::sync::atomic::Ordering::Relaxed) }
+pub(crate) fn count_dropped(count: u64) { DROPPED.fetch_add(count, std::sync::atomic::Ordering::Relaxed); }
+pub fn dropped() -> u64 { DROPPED.load(std::sync::atomic::Ordering::Relaxed) }

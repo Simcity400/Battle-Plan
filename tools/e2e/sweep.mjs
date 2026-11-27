@@ -786,7 +786,7 @@ await phase('playback', async () => {
           await seekTo(0.3);
           await throttle(rate);
           const dated = speed === 1440;
-          const pressureBefore = dated && await app.evaluate('window.__perf.pressureMerges()');
+          const droppedBefore = dated && await app.evaluate('window.__perf.dropped()');
           if (dated) await app.evaluate('window.__perf.beginAudit()');
           trace = dated && await startTrace(app, ['disabled-by-default-display.framedisplayed', 'blink.user_timing']);
           const clockMark = trace && await app.evaluate("performance.timeOrigin + performance.mark('dated-playback-clock').startTime");
@@ -828,7 +828,7 @@ await phase('playback', async () => {
           const to = s.epoch + await app.evaluate('performance.now()');
           const playbackReasons = await s.unwatch();
           const visibility = dated ? await app.evaluate('__e2e.endPlaybackVisibility()') : undefined;
-          let presented, audit, pressureMerges, inputs, idleCost;
+          let presented, audit, dropped, inputs, idleCost;
           if (trace) {
             inputs = await playbackInputs();
             const events = await trace();
@@ -839,7 +839,7 @@ await phase('playback', async () => {
             const firstInput = inputs.actions[0]?.at ?? from;
             inputs.presented = presented.filter(at => at >= firstInput && at <= inputs.to);
             await writeFile(path.join(out, `dated-playback-compositor-${page.replace(/[^\w.-]+/g, '_')}-${scroll}.json.gz`), await promisify(gzip)(JSON.stringify(events)));
-            pressureMerges = await app.evaluate('window.__perf.pressureMerges()') - pressureBefore;
+            dropped = await app.evaluate('window.__perf.dropped()') - droppedBefore;
             idleCost = await measureIdleCost({
               pausePlayback,
               waitPlayButton: () => s.until("document.querySelector('button.header-play[aria-label=\"Play\"]')", 3_000),
@@ -865,7 +865,7 @@ await phase('playback', async () => {
           const allReasons = [...windowReasons, ...playbackReasons, ...(dated ? (inputs?.failures ?? []) : [])];
           await s.record({ area: 'playback', item: `${page}/${speed}`, label: null, pass: true, reasons: allReasons, playbackReasons, from, to, seekStart, speed, page, scroll, visibility: observedVisibility, seconds: PLAY_SECONDS, widgets, expectedWidgets, lastHour: (await s.timeline()).max,
             perf: { family: 'play', context: perfContext, recipe: s.recipe, scenario: scenarioId(perfScenario), page, start: from, settled: to, complete: summary.complete },
-            presented, pressureMerges, audit, inputs, idleCost, frames: summary.ui_frames, complete: summary.complete, losses: summary.losses, maps: summary.playback?.maps ?? null, screenshot: false });
+            presented, dropped, audit, inputs, idleCost, frames: summary.ui_frames, complete: summary.complete, losses: summary.losses, maps: summary.playback?.maps ?? null, screenshot: false });
         } catch (error) {
           if (trace) await trace().catch(() => {});
           await app.evaluate('__e2e.endWidgetOutcomes?.()').catch(() => {});

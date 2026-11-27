@@ -3,6 +3,7 @@ import { DATED_PANEL_VERSION } from './message.ts';
 
 export type Spec =
   | { notRecorded: string }
+  | { stopped: string }
   | { keys: bigint[]; columns: number; values: bigint[]; states?: number[]; reasons?: (string | null)[]; names?: (string | null)[]; hours?: number[]; changed?: boolean };
 
 class Bytes {
@@ -30,6 +31,11 @@ function body(spec: Spec): number[] {
   if ('notRecorded' in spec) {
     out.u8(0); out.u8(0); out.u16(0); out.u32(0); out.u32(0); out.u32(1);
     out.texts([spec.notRecorded]);
+    return out.bytes;
+  }
+  if ('stopped' in spec) {
+    out.u8(4); out.u8(0); out.u16(0); out.u32(0); out.u32(0); out.u32(1);
+    out.texts([spec.stopped]);
     return out.bytes;
   }
   const rows = spec.keys.length;
