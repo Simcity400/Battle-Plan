@@ -284,10 +284,14 @@ if (sweep) {
     `Cold seeks: p50 ${fmt(seekTimes.p50)}, p95 ${fmt(seekTimes.p95)}, max ${fmt(seekTimes.max)} ms.`);
   under('map');
   const modes = area('map').filter(result => result.item.startsWith('mode: '));
-  const modeSummary = item('map modes', modes.filter(result => !result.unavailable));
+  const modeSummary = item('map modes', modes.filter(result => result.unavailable == null));
   section(`Map modes (ms from the view's options sent with the mode, as the host sends them, to the present of the first frame the viewer drew in it): p50 ${fmt(modeSummary.p50)}, p95 ${fmt(modeSummary.p95)}, max ${fmt(modeSummary.max)}`,
-    ['Mode', 'ms', 'Result', 'Why'], modes.length ? modes.map(result => ({ pass: result.pass, cells: [`${result.item.slice(6)} (${result.label})`, result.unavailable ? 'unavailable' : fmt(result.ms),
-      verdict(result.pass), result.unavailable ? `the recording cannot draw it: ${result.unavailable}` : why(result.reasons)] }))
+    ['Mode', 'ms', 'Result', 'Why'], modes.length ? modes.map(result => {
+      const refused = result.verdict === 'refuses by name' && result.pass;
+      const msCell = refused ? 'refuses by name' : result.unavailable != null ? 'unavailable' : fmt(result.ms);
+      const whyCell = refused ? result.unavailable : why(result.reasons.length ? result.reasons : result.unavailable != null ? [`the recording cannot draw it: ${result.unavailable}`] : []);
+      return { pass: result.pass, cells: [`${result.item.slice(6)} (${result.label})`, msCell, refused ? 'pass (refuses by name)' : verdict(result.pass), whyCell] };
+    })
       : [{ pass: false, cells: ['–', '–', verdict(false), 'no map mode was chosen'] }]);
   section(`Map interactions (the viewer's frames at 120 Hz: window-thread work and GPU time per frame within ${MAP_FRAME_MS.toFixed(2)} ms, p99 within ${MAP_P99_MS} ms; a frame over ${MAP_FRAME_MS.toFixed(2)} ms is a dropped frame)`,
     ['Interaction', 'While', 'Frames', 'Work p50', 'Work p99', 'Work max', 'GPU p99', 'GPU max', 'Dropped', 'Result', 'Why'],
@@ -313,12 +317,14 @@ if (sweep) {
         ran ? '' : `**FAIL**: ${why([...result.reasons, ...(frames?.frames ? [] : ['no frames recorded'])])}`] };
     }) : [{ pass: false, cells: ['–', '–', '–', '–', '–', '**FAIL**: the uncapped session did not run'] }]);
   under('map');
-  section('Map hover (ms from the pointer moving onto it, after the game\'s tooltip delay for a tooltip, to the present of the frame drawing it; it must be the next frame and within 100 ms)', ['Target', 'Highlight', 'ms', 'Frames late', 'Result', 'Why'],
-    area('map').filter(result => result.item.startsWith('hover: ')).map(result => {
-      const late = result.drawnAt != null && result.deadline != null ? framesLate(mapRecords, result.deadline, result.drawnAt) : null;
+  section('Map hover (presence: target highlight or tooltip seen; timing: ms from the pointer moving onto it, after the game\'s tooltip delay for a tooltip, to the present of the frame drawing it; it must be the next frame and within 100 ms)', ['Target', 'Check', 'Highlight', 'ms', 'Frames late', 'Result', 'Why'],
+    area('map').filter(result => result.item.startsWith('hover presence: ') || result.item.startsWith('hover: ')).map(result => {
+      const isPresence = result.item.startsWith('hover presence: ');
+      const target = isPresence ? result.item.slice(16) : result.item.slice(7);
+      const late = !isPresence && result.drawnAt != null && result.deadline != null ? framesLate(mapRecords, result.deadline, result.drawnAt) : null;
       const reasons = [...result.reasons, ...(late ? [`${late} frames drawn before the highlight`] : [])];
       const pass = result.pass && !late;
-      return { pass, cells: [result.item.slice(7), result.label ?? '–', fmt(result.ms), late ?? '–', verdict(pass), why(reasons)] };
+      return { pass, cells: [target, isPresence ? 'presence' : 'timing', result.label ?? '–', isPresence ? '–' : fmt(result.ms), late ?? '–', verdict(pass), why(reasons)] };
     }));
   section('Pop-out map', ['Step', 'ms', 'Result', 'Why'], area('map').filter(result => result.item === 'pop-out' || result.item === 'phase')
     .map(result => ({ pass: result.pass, cells: [result.label ?? result.item, fmt(result.ms), verdict(result.pass), why(result.reasons)] })));

@@ -13,6 +13,7 @@ import {
   assertValidPng,
   cameraPoseMatches,
   deriveCloseCameraPose,
+  hover,
   mapModes,
   mapPictures,
   zoomedMapPicture,
@@ -471,4 +472,243 @@ test('mapModes preserves the set_dashboard_maps envelope including clockId on mo
   assert.deepEqual(invokes[2], lastArgs);
   assert.equal(recorded.length, 2);
   assert.deepEqual(recorded.map(entry => entry.reasons), [[], []]);
+});
+
+test('mapModes passes an expected named refusal for supply and fails blank, unexpected, or rendering failures', async () => {
+  const runModes = async (modes, drawState) => {
+    const invokes = [];
+    const recorded = [];
+    let activeMode = 'default';
+    const lastArgs = {
+      clockId: 'page-e2e-1',
+      views: [{ id: 'overview-map', options: { mapMode: 'default' } }],
+    };
+    const s = {
+      app: {
+        lastSent(command) { return command === 'set_dashboard_maps' ? { args: lastArgs } : null; },
+        async evaluate(expression) {
+          if (expression.includes('article.dash-widget.kind-map')) {
+            return { view: 'overview-map', left: 12, top: 12, right: 200, bottom: 200 };
+          }
+          if (expression.startsWith('__e2e.mapModes[')) return modes;
+          if (expression.includes('x.mapMode).at(-1)?.mapMode')) return activeMode;
+          if (expression.includes("invoke('set_dashboard_maps'")) {
+            const fakeWindow = {
+              __TAURI_INTERNALS__: {
+                async invoke(_command, payload) {
+                  invokes.push(payload);
+                  const mapView = payload.views?.find(entry => entry.id === 'overview-map');
+                  if (mapView?.options?.mapMode) activeMode = mapView.options.mapMode;
+                },
+              },
+            };
+            return await new Function('window', `return ${expression}`)(fakeWindow);
+          }
+          if (expression.startsWith('__e2e.mapState(')) return drawState(activeMode);
+          throw new Error(`unexpected evaluate: ${expression}`);
+        },
+      },
+      async watch() {},
+      async unwatch() { return []; },
+      async record(entry) { recorded.push(entry); },
+    };
+    await mapModes(s, 1);
+    return { invokes, recorded };
+  };
+
+  const { invokes, recorded } = await runModes([
+    { token: 'default', label: 'Default', unavailable: null },
+    { token: 'supply', label: 'Supply', unavailable: 'Not available in replays: supply network is not recorded.' },
+    { token: 'states', label: 'States', unavailable: 'States table missing.' },
+    { token: 'terrain', label: 'Terrain', unavailable: null },
+  ], mode => (mode === 'terrain'
+    ? { id: 'overview-map', mapMode: 'terrain', loading: false, error: 'terrain shader failed', drawnAt: Date.now() }
+    : { id: 'overview-map', mapMode: mode, loading: false, error: null, drawnAt: Date.now() }));
+
+  const byItem = new Map(recorded.map(entry => [entry.item, entry]));
+  assert.equal(invokes.some(payload => payload.views[0].options.mapMode === 'supply'), false);
+  assert.equal(invokes.some(payload => payload.views[0].options.mapMode === 'states'), false);
+
+  const supply = byItem.get('mode: supply');
+  assert.equal(supply.pass, true);
+  assert.equal(supply.verdict, 'refuses by name');
+  assert.deepEqual(supply.reasons, []);
+  assert.equal(supply.unavailable, 'Not available in replays: supply network is not recorded.');
+
+  const states = byItem.get('mode: states');
+  assert.equal(states.pass, false);
+  assert.match(states.reasons.join('; '), /unexpected refusal/i);
+
+  const terrain = byItem.get('mode: terrain');
+  assert.equal(terrain.pass, false);
+  assert.match(terrain.reasons.join('; '), /terrain shader failed/);
+
+  const def = byItem.get('mode: default');
+  assert.equal(def.pass, true);
+  assert.deepEqual(def.reasons, []);
+
+  const blankRefusal = await runModes([
+    { token: 'supply', label: 'Supply', unavailable: '   ' },
+  ], () => null);
+  assert.equal(blankRefusal.recorded[0].pass, false);
+  assert.match(blankRefusal.recorded[0].reasons.join('; '), /stated reason/i);
+});
+
+test('hover separates presence from timing and does not require a neutral point to confirm presence', async () => {
+  const runHover = async stateForMove => {
+    const mapStates = [];
+    const recorded = [];
+    let now = 1000;
+    const s = {
+      app: {
+        async evaluate(expression) {
+          if (expression.includes('article.dash-widget.kind-map')) {
+            return { view: 'overview-map', left: 0, top: 0, right: 200, bottom: 120 };
+          }
+          const match = expression.match(/^__e2e\.mapState\(("[^"]+"),\s*(\d+),\s*([\s\S]+)\)$/);
+          if (match) {
+            const view = JSON.parse(match[1]);
+            const after = Number(match[2]);
+            const predicate = new Function(`return (${match[3]});`)();
+            return mapStates.find(state => state.id === view && (state.drawnAt ?? 0) > after && predicate(state)) ?? null;
+          }
+          if (expression.includes('__e2e.mapStates.filter')) {
+            return mapStates.filter(state => state.id === 'overview-map').at(-1) ?? null;
+          }
+          throw new Error(`unexpected evaluate: ${expression}`);
+        },
+      },
+      async watch() {},
+      async unwatch() { return []; },
+      async record(entry) { recorded.push(entry); },
+      async fail(area, item, label, reason) { recorded.push({ area, item, label, ms: null, pass: false, reasons: [reason] }); },
+    };
+    const input = {
+      async ask(command) {
+        if (command.op !== 'move') throw new Error(`unexpected input op: ${command.op}`);
+        const posted = (now += 10);
+        const [px, py] = command.points[0];
+        const next = stateForMove(px, py, posted);
+        for (const [index, frame] of (Array.isArray(next) ? next : next ? [next] : []).entries()) {
+          mapStates.push({ id: 'overview-map', tooltipDelayMs: 0, drawnAt: posted + 5 + index, ...frame });
+        }
+        return { posted: [posted] };
+      },
+    };
+    await hover(s, input, 1, { scanTimeoutMs: 0, timeoutMs: 0, neutralPauseMs: 0 });
+    return recorded;
+  };
+
+  let movesNoNeutral = 0;
+  const noNeutral = await runHover(() => {
+    movesNoNeutral++;
+    if (movesNoNeutral === 1) return { hover: 'division:1', tooltip: 'province:42' };
+    return { hover: 'button:supply', tooltip: 'province:42' };
+  });
+  for (const [id, expected] of [['division counter', 'division:1'], ['province tooltip', 'province:42'], ['map GUI button', 'button:supply']]) {
+    const presence = noNeutral.find(entry => entry.item === `hover presence: ${id}`);
+    const timing = noNeutral.find(entry => entry.item === `hover: ${id}`);
+    assert.ok(presence, `missing presence record for ${id}`);
+    assert.equal(presence.pass, true);
+    assert.equal(presence.label, expected);
+    assert.deepEqual(presence.reasons, []);
+    assert.ok(timing, `missing timing record for ${id}`);
+    assert.equal(timing.pass, false);
+    assert.equal(timing.label, expected);
+    assert.match(timing.reasons.join('; '), /cannot be timed/i);
+  }
+
+  let neutralPoint = null;
+  let movesStuckNeutral = 0;
+  const stuckNeutral = await runHover((px, py) => {
+    movesStuckNeutral++;
+    if (movesStuckNeutral === 1) { neutralPoint = [px, py]; return { hover: null, tooltip: null }; }
+    if (neutralPoint && px === neutralPoint[0] && py === neutralPoint[1]) return { hover: null, tooltip: 'province:stuck' };
+    if (movesStuckNeutral === 2) return { hover: 'division:7', tooltip: 'province:9' };
+    return { hover: 'button:terrain', tooltip: 'province:9' };
+  });
+  for (const [id, expected] of [['division counter', 'division:7'], ['province tooltip', 'province:9'], ['map GUI button', 'button:terrain']]) {
+    const presence = stuckNeutral.find(entry => entry.item === `hover presence: ${id}`);
+    const timing = stuckNeutral.find(entry => entry.item === `hover: ${id}`);
+    assert.equal(presence?.pass, true);
+    assert.equal(presence?.label, expected);
+    assert.equal(timing?.pass, false);
+    assert.match(timing?.reasons.join('; ') ?? '', /never cleared/i);
+  }
+
+  let cleanNeutral = null;
+  let divPoint = null;
+  let movesClean = 0;
+  const timed = await runHover((px, py) => {
+    movesClean++;
+    if (movesClean === 1) { cleanNeutral = [px, py]; return { hover: null, tooltip: null }; }
+    if (cleanNeutral && px === cleanNeutral[0] && py === cleanNeutral[1]) return { hover: null, tooltip: null };
+    if (movesClean === 2 || (divPoint && px === divPoint[0] && py === divPoint[1])) {
+      divPoint ??= [px, py];
+      return { hover: 'division:3', tooltip: 'province:5' };
+    }
+    return { hover: 'button:states', tooltip: 'province:5' };
+  });
+  for (const [id, expected] of [['division counter', 'division:3'], ['province tooltip', 'province:5'], ['map GUI button', 'button:states']]) {
+    const presence = timed.find(entry => entry.item === `hover presence: ${id}`);
+    const timing = timed.find(entry => entry.item === `hover: ${id}`);
+    assert.equal(presence?.pass, true);
+    assert.equal(presence?.label, expected);
+    assert.equal(timing?.pass, true);
+    assert.equal(timing?.label, expected);
+    assert.equal(timing?.ms, 5);
+  }
+
+  const missingButton = await runHover(() => ({ hover: 'division:2', tooltip: 'province:8' }));
+  const missingPresence = missingButton.find(entry => entry.item === 'hover presence: map GUI button');
+  const missingTiming = missingButton.find(entry => entry.item === 'hover: map GUI button');
+  assert.equal(missingPresence?.pass, false);
+  assert.equal(missingPresence?.label, null);
+  assert.match(missingPresence?.reasons.join('; ') ?? '', /no map GUI button/);
+  assert.equal(missingTiming?.pass, false);
+  assert.equal(missingTiming?.ms, null);
+  assert.match(missingTiming?.reasons.join('; ') ?? '', /never observed/i);
+
+  let delayedNeutral = null;
+  let delayedPoint = null;
+  let delayedButtonPoint = null;
+  let delayedMoves = 0;
+  const delayedAfterNeutral = await runHover((px, py) => {
+    delayedMoves++;
+    if (delayedMoves === 1) { delayedNeutral = [px, py]; return { hover: null, tooltip: null }; }
+    if (delayedNeutral && px === delayedNeutral[0] && py === delayedNeutral[1]) return { hover: null, tooltip: null };
+    if (delayedMoves === 2 || (delayedPoint && px === delayedPoint[0] && py === delayedPoint[1])) {
+      delayedPoint ??= [px, py];
+      return [
+        { hover: null, tooltip: null },
+        { hover: 'division:4', tooltip: null },
+        { hover: 'division:4', tooltip: 'province:77' },
+      ];
+    }
+    if (delayedMoves === 3 || (delayedButtonPoint && px === delayedButtonPoint[0] && py === delayedButtonPoint[1])) {
+      delayedButtonPoint ??= [px, py];
+      return [{ hover: null, tooltip: null }, { hover: 'button:supply', tooltip: null }];
+    }
+    return { hover: null, tooltip: null };
+  });
+  const delayedDivisionPresence = delayedAfterNeutral.find(entry => entry.item === 'hover presence: division counter');
+  const delayedDivisionTiming = delayedAfterNeutral.find(entry => entry.item === 'hover: division counter');
+  assert.equal(delayedDivisionPresence?.pass, true);
+  assert.equal(delayedDivisionPresence?.label, 'division:4');
+  assert.equal(delayedDivisionTiming?.pass, true);
+  assert.equal(delayedDivisionTiming?.ms, 6);
+  const delayedPresence = delayedAfterNeutral.find(entry => entry.item === 'hover presence: province tooltip');
+  const delayedTiming = delayedAfterNeutral.find(entry => entry.item === 'hover: province tooltip');
+  assert.equal(delayedPresence?.pass, true);
+  assert.equal(delayedPresence?.label, 'province:77');
+  assert.equal(delayedTiming?.pass, true);
+  assert.equal(delayedTiming?.label, 'province:77');
+  assert.equal(delayedTiming?.ms, 7);
+  const delayedButtonPresence = delayedAfterNeutral.find(entry => entry.item === 'hover presence: map GUI button');
+  const delayedButtonTiming = delayedAfterNeutral.find(entry => entry.item === 'hover: map GUI button');
+  assert.equal(delayedButtonPresence?.pass, true);
+  assert.equal(delayedButtonPresence?.label, 'button:supply');
+  assert.equal(delayedButtonTiming?.pass, true);
+  assert.equal(delayedButtonTiming?.label, 'button:supply');
+  assert.equal(delayedButtonTiming?.ms, 6);
 });
