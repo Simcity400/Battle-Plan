@@ -2190,14 +2190,20 @@ fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_o
     let (_, bytes, ..) = push.try_take().expect("the reached completion leaves past credit");
     assert_eq!(sent(&bytes), [(42, 10, dated::DATA), (0, 10, dated::COMPLETED)]);
 
+    let reset = |hour, value| {
+        let mut message = Vec::new();
+        crate::answer::begin(&mut message, 3, 0, hour, 0, true);
+        crate::answer::push_held(&mut message, 7, hour, &body(7, value), 0);
+        message
+    };
     let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
     push.head(3, 0, 10);
-    push.offer(routed(3, 10, 1, 0));
+    push.offer(reset(10, 1));
     push.offer_kind(PANEL, record(45, 10, dated::DATA, &[8; 8]));
     push.offer(routed(3, 10, 2, 0));
-    assert_eq!(push.counters().merges, 0, "a follow answer never folds past a panel message of its route");
+    assert_eq!(push.counters().merges, 0, "a reset follow answer never folds past a panel message of its route");
     let kinds: Vec<u8> = std::iter::from_fn(|| push.try_take()).map(|(kind, ..)| kind).collect();
-    assert_eq!(kinds, [crate::push::FOLLOW, PANEL, crate::push::FOLLOW], "the route leaves in the order it was offered");
+    assert_eq!(kinds, [crate::push::FOLLOW, PANEL, crate::push::FOLLOW], "the panel arrives after the reset it may depend on");
 
     let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
     push.head(3, 0, 10);

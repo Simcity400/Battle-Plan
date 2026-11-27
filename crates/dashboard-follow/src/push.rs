@@ -220,8 +220,11 @@ impl State {
         let older = &self.queue[at];
         let Some((route, _)) = older.stream.version() else { return true };
         self.queue.range(at + 1..later).all(|q| {
-            q.stream.version().is_none_or(|(other, _)| other != route)
-                || matches!((&older.panels, &q.panels), (Some(ids), Some(others)) if !others.iter().any(|id| ids.contains(id)))
+            q.stream.version().is_none_or(|(other, _)| other != route) || match (older.kind, q.kind) {
+                (PANEL, PANEL) => matches!((&older.panels, &q.panels), (Some(ids), Some(others)) if !others.iter().any(|id| ids.contains(id))),
+                (FOLLOW, PANEL) => !answer::resets(&older.bytes),
+                _ => true,
+            }
         })
     }
 

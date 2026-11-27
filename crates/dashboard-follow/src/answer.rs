@@ -224,6 +224,10 @@ pub fn not_recorded(reason: &str, out: &mut Vec<u8>) {
     texts(out, std::iter::once(reason));
 }
 
+pub fn resets(message: &[u8]) -> bool {
+    message.len() >= 8 && message.starts_with(&MAGIC.to_le_bytes()) && u32::from_le_bytes(message[4..8].try_into().expect("four bytes")) & RESET != 0
+}
+
 pub fn begin(out: &mut Vec<u8>, route: u32, clock: i32, hour: Hour, seek: u32, reset: bool) {
     debug_assert!(route <= ROUTES, "a route fits above the reset bit");
     out.clear();
