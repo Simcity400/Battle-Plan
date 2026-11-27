@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { contrast, isDark, mixRgb, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
+import { createHash } from 'node:crypto';
+import { contrast, isDark, luminance, mixRgb, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
 import type { Rgb } from '../shell/appearance/color';
 import { BUILT_IN_THEMES, themeColors } from '../shell/appearance/themes.ts';
 import {
@@ -20,11 +21,13 @@ import {
   measureColour,
   neutralColour,
   nudgeApart,
+  paletteCache,
   paletteVariables,
   surfaceGrey,
   tailColour,
 } from './palette.ts';
 import { NearestColours } from './paletteDistance.ts';
+import { ContrastGamut } from './paletteGamut.ts';
 
 function scalarDistance(first: Rgb, second: Rgb): number {
   const a = rgbToOklch(first), b = rgbToOklch(second);
@@ -187,6 +190,93 @@ test('ordinal colours are stable and extend lazily', () => {
   const later = colour('#12151a', 80);
   assert.equal(colour('#12151a', 0), firstOnly);
   assert.notEqual(firstOnly, later);
+});
+
+test('the first 2,048 ordinal colours keep their complete existing tables', () => {
+  const tables = [
+    ['#16181d', 'fca8f010a12a4e7f43fb4f15f69d6af360e3aa218475db8f07bec04685e98b67'],
+    ['#ffffff', '958927cd5eb765fec01070fa0ccae4e33e10ccec0ad86700c11edc8c5932e9b3'],
+    ['#808080', '3362e0c534aa30b0bb1ada1be10d1ed5f7e6956c96e466bb27a03fe6674defea'],
+  ];
+  for (const [surface, expected] of tables) {
+    const colors = Array.from({ length: 2048 }, (_, ordinal) => colour(surface, ordinal));
+    assert.equal(createHash('sha256').update(colors.join('')).digest('hex'), expected);
+  }
+});
+
+test('5,000 contiguous ordinals stay distinct and readable beyond the original table', () => {
+  for (const surface of ['#16181d', '#ffffff', '#808080']) {
+    const background = parseColor(surface)!;
+    const seen = new Set<string>();
+    for (let ordinal = 0; ordinal < 5000; ordinal++) {
+      const hex = colour(surface, ordinal);
+      assert.equal(seen.has(hex), false, `${surface} repeats ${hex} at ${ordinal}`);
+      seen.add(hex);
+      if (ordinal >= 2048) assert.ok(contrast(parseColor(hex)!, background) >= MARK_CONTRAST);
+    }
+  }
+});
+
+test('extra surfaces, custom bases and registered identities extend beyond the original table', () => {
+  const surface = '#16181d';
+  for (const options of [{ contrastSurfaces: [surface] }, { base: ['#4f86f7'] }, { avoid: ['#3987e5'] }]) {
+    const existing = new Set(Array.from({ length: 2048 }, (_, ordinal) => colour(surface, ordinal, options)));
+    const next = colour(surface, 2048, options);
+    assert.equal(existing.has(next), false);
+    assert.ok(contrast(parseColor(next)!, parseColor(surface)!) >= MARK_CONTRAST);
+  }
+  const existing = new Set(Array.from({ length: 2048 }, (_, ordinal) => identityColour(surface, 'weather', 'new', ordinal)));
+  assert.equal(existing.has(identityColour(surface, 'weather', 'new', 2048)), false);
+});
+
+test('ordinals beyond the finite contrast-valid byte RGB gamut repeat deterministically across its whole range', () => {
+  for (const surface of ['#16181d', '#ffffff', '#808080']) {
+    const background = parseColor(surface)!;
+    const original = Array.from({ length: 2048 }, (_, ordinal) => colour(surface, ordinal));
+    const gamut = new ContrastGamut([{ background, ratio: MARK_CONTRAST }], original);
+    const count = original.length + gamut.size;
+    assert.ok(count > 1_000_000);
+    const seen = new Set(original);
+    for (let sample = 0; sample < 20_000; sample++) {
+      const ordinal = 2048 + Math.floor(sample * gamut.size / 20_000);
+      const hex = colour(surface, ordinal);
+      assert.equal(seen.has(hex), false);
+      seen.add(hex);
+      assert.ok(contrast(parseColor(hex)!, background) >= MARK_CONTRAST);
+    }
+    assert.equal(seen.has(colour(surface, count - 1)), false);
+    assert.equal(colour(surface, count), original[0]);
+    assert.equal(colour(surface, count + 2048), colour(surface, 2048));
+    const last = colour(surface, count - 1);
+    const huge = colour(surface, Number.MAX_SAFE_INTEGER);
+    paletteCache.clear();
+    assert.equal(colour(surface, count - 1), last);
+    assert.equal(colour(surface, Number.MAX_SAFE_INTEGER), huge);
+  }
+});
+
+test('the gamut counts every contrast-valid RGB byte triple exactly once, excluding supplied colours', () => {
+  const background = parseColor('#808080')!;
+  const extras = [parseColor('#929292')!];
+  const excluded = ['#000000', '#ffffff', '#5a2c8d'];
+  const constraints = [{ background, ratio: MARK_CONTRAST }, { background: extras[0]!, ratio: MARK_CONTRAST + 0.05 }];
+  const gamut = new ContrastGamut(constraints, excluded);
+  const lights = constraints.map(item => ({ light: luminance(item.background), ratio: item.ratio }));
+  const accepts = (light: number) => lights.every(other => (Math.max(light, other.light) + 0.05) / (Math.min(light, other.light) + 0.05) >= other.ratio);
+  const reds = Array.from({ length: 256 }, (_, r) => luminance({ r, g: 0, b: 0 }));
+  const greens = Array.from({ length: 256 }, (_, g) => luminance({ r: 0, g, b: 0 }));
+  const blues = Array.from({ length: 256 }, (_, b) => luminance({ r: 0, g: 0, b }));
+  let count = 0;
+  for (const red of reds) for (const green of greens) for (const blue of blues) if (accepts(red + green + blue)) count++;
+  count -= excluded.filter(hex => accepts(luminance(parseColor(hex)!))).length;
+  assert.equal(gamut.size, count);
+  const seen = new Set(excluded);
+  for (let sample = 0; sample < 20_000; sample++) {
+    const hex = gamut.at(Math.floor(sample * gamut.size / 20_000));
+    assert.equal(seen.has(hex), false);
+    seen.add(hex);
+    for (const item of constraints) assert.ok(contrast(parseColor(hex)!, item.background) >= item.ratio);
+  }
 });
 
 test('unbounded ordinals such as hashes stay bounded and readable without hanging the palette', () => {
