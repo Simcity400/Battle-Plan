@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { gzip } from 'node:zlib';
 import { connect, log, sleep } from './cdp.mjs';
 import { Session, settleCall } from './session.mjs';
-import { scenarioId } from './perfBaseline.mjs';
+import { scenarioId, scopeScenario } from './perfBaseline.mjs';
 import { CASES } from './controls.mjs';
 import { PINS, readHistory } from './coverage.mjs';
 import { Visual } from './visual.mjs';
@@ -105,7 +105,7 @@ await s.init();
 s.history = history;
 s.tier = tier;
 s.pin = pin;
-s.recipe = { version: 1, branchIndex: 0, tier, rate, coresCount, allViews, heaviestCount, kinds: onlyKinds, pagesAt, playSeconds: PLAY_SECONDS };
+s.recipe = { version: 1, branchIndex: 0, tier, phases, cases: only, pages: onlyPages, rate, coresCount, allViews, heaviestCount, kinds: onlyKinds, pagesAt, playSeconds: PLAY_SECONDS };
 const visual = new Visual(app, out, session);
 await visual.init();
 const started = new Date();
@@ -791,7 +791,8 @@ await phase('playback', async () => {
           const clockMark = trace && await app.evaluate("performance.timeOrigin + performance.mark('dated-playback-clock').startTime");
           await app.evaluate('window.__perf.start()');
           await s.watch();
-          const perfContext = { recipe: s.recipe, context: await app.evaluate('__e2e.perfContext()'), speed, scroll };
+          const perfContext = await app.evaluate('__e2e.perfContext()');
+          const perfScenario = { ...scopeScenario(s.recipe, { ...perfContext, page }, 'play'), speed, scroll };
           const from = s.epoch + await app.evaluate('performance.now()');
           if (dated) { await playbackVisibility(); await s.frames(2); }
           await settledForReplies();
@@ -862,7 +863,7 @@ await phase('playback', async () => {
           await throttle(1);
           const allReasons = [...windowReasons, ...playbackReasons, ...(dated ? (inputs?.failures ?? []) : [])];
           await s.record({ area: 'playback', item: `${page}/${speed}`, label: null, pass: true, reasons: allReasons, playbackReasons, from, to, seekStart, speed, page, scroll, visibility: observedVisibility, seconds: PLAY_SECONDS, widgets, expectedWidgets, lastHour: (await s.timeline()).max,
-            perf: { family: 'play', context: perfContext, scenario: scenarioId(perfContext), page, start: from, settled: to, complete: summary.complete },
+            perf: { family: 'play', context: perfContext, recipe: s.recipe, scenario: scenarioId(perfScenario), page, start: from, settled: to, complete: summary.complete },
             presented, pressureMerges, audit, inputs, idleCost, frames: summary.ui_frames, complete: summary.complete, losses: summary.losses, maps: summary.playback?.maps ?? null, screenshot: false });
         } catch (error) {
           if (trace) await trace().catch(() => {});
@@ -1134,7 +1135,7 @@ async function controls() {
   }
 }
 
-await app.evaluate('window.__perf.stop()', 120_000);
+try { await app.evaluate('window.__perf.stop()', 120_000); } catch (error) { await s.fail('measurement', 'finish', null, `measurement did not finish: ${error.message}`); }
 if (replies) {
   meta.replies = { file: recordReplies, counts: await replies.finish() };
   log('replies recorded', JSON.stringify(meta.replies.counts), 'to', recordReplies);

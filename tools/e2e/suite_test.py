@@ -703,9 +703,13 @@ class CountAcceptanceTests(unittest.TestCase):
             baseline = json.loads((state / "perf-baseline.json").read_text())
             self.assertEqual(len(baseline["entries"]), 1)
             self.assertEqual(baseline["entries"][0]["counts"]["requests:total"]["accepted"], 8)
-            args.counts = [key("scroll")]
+            selection = root / "selected-counts.json"
+            selection.write_text(json.dumps([key("scroll")]))
+            args.counts = None
+            args.counts_file = selection
             suite.accept(args)
             self.assertEqual(len(json.loads((state / "perf-baseline.json").read_text())["entries"]), 2)
+            self.assertNotIn("context", json.loads((state / "perf-baseline.json").read_text())["entries"][0])
             self.assertEqual(len(list((state / "perf-archive").glob("*.json"))), 1)
             before = (state / "perf-baseline.json").read_bytes()
             with patch.object(suite.os, "replace", side_effect=OSError("atomic failure")):

@@ -286,11 +286,7 @@
   };
   p.inFlight = () => { try { return window.__busy ? window.__busy.kinds() : null; } catch { return null; } };
   p.perfContext = () => ({ enabled: !!window.__perf, page: document.querySelector('.sidebar-page-list [aria-current=page]')?.textContent.trim() ?? null,
-    hour: document.querySelector('input.header-timeline')?.value ?? null, viewport: [innerWidth, innerHeight, devicePixelRatio],
-    settings: Object.fromEntries(Object.keys(localStorage).filter(key => key.startsWith('battleplan.')).sort().map(key => { const raw = localStorage.getItem(key); let value; try { value = JSON.parse(raw); } catch { value = raw; } return [key, value]; })),
-    controls: [...document.querySelectorAll('button[aria-pressed], [role=option][aria-selected=true], input:not(.header-timeline), select')]
-      .filter(shownOnScreen).map(e => [e.getAttribute('aria-label') ?? e.textContent.trim(), e.tagName === 'BUTTON' ? e.getAttribute('aria-pressed') : e.value]),
-    placements: [...document.querySelectorAll('article.dash-widget')].map(e => [e.getAttribute('aria-label'), [...e.classList].filter(c => c.startsWith('kind-')), e.dataset.fixedHour ?? null]) });
+    hour: document.querySelector('input.header-timeline')?.value ?? null, viewport: [innerWidth, innerHeight, devicePixelRatio] });
   p.settle = (timeout, quiet, only = null, over) => new Promise(resolve => {
     let since = null, idle = 0;
     const check = () => {
@@ -299,7 +295,7 @@
       const finished = !p.done || p.doneAt !== null;
       const kinds = p.inFlight();
       const busy = kinds === null ? null : Object.values(kinds).reduce((sum, n) => sum + n, 0);
-      const settled = visible.every(w => w.state !== 'loading') && (finished || p.altAt !== null);
+      const settled = visible.every(w => w.state !== 'loading') && (finished || p.altAt !== null) && placeholders().length === 0;
       since = settled ? since ?? now : null;
       idle = settled && busy === 0 ? idle + 1 : 0;
       const wait = finished ? quiet : Math.max(quiet, p.altQuiet);
@@ -352,7 +348,7 @@
       loafs: p.loafs.filter(l => l.dur >= 50 && l.start + l.dur >= p.t0).map(l => ({ dur: Math.round(l.dur), top: l.top })) };
   };
   p.watch = () => { p.watching = true; placeholderSince = null; p.placeholders = { ms: 0, where: new Set() }; startLoop(); };
-  p.unwatch = () => { placeholderEnd(performance.now()); p.watching = false; stopLoopIfIdle(); return { ms: p.placeholders.ms, where: [...p.placeholders.where] }; };
+  p.unwatch = () => { placeholderEnd(performance.now()); p.watching = false; stopLoopIfIdle(); return { ms: p.placeholders.ms, where: [...p.placeholders.where], still: [...new Set(placeholders().map(placeholderAt))] }; };
   p.startFrames = () => { recordingFrames = true; startLoop(); };
   p.stopFrames = () => { recordingFrames = false; stopLoopIfIdle(); };
   p.gaps = (from, to) => { const f = p.frames.filter(t => t >= from && t <= to); const gaps = []; for (let i = 1; i < f.length; i++) gaps.push(f[i] - f[i - 1]); return gaps; };

@@ -7,7 +7,7 @@
         --fixture <folder> --game-dir <the game folder> --out <report dir>
         [--tier full|quick] [--history <file>] [--pin all|product] [--record-replies <file>]
         [--state <dir>] [--stages copy,sweep,report] [--phases pages,...] [--cases id,...] [--pages page,...] [--pages-at <fraction>]
-    python tools/e2e/suite.py accept --run <report dir> --reason "<the change it accepts>" [--state <dir>]
+    python tools/e2e/suite.py accept --run <report dir> --reason "<the change it accepts>" [--state <dir>] [--counts <key> | --counts-file <JSON key list>]
     python tools/e2e/suite.py playback map|harness|dashboard ...   (tools/e2e/playback.py: the playback phase)
 
 `shell` fetches and verifies the hosted measuring shell built by `.github/workflows/measuring-shell.yml` for `--commit`
@@ -893,8 +893,10 @@ def run_locked(args, started, state):
                         session["confinement"] = record["confinement"] = app.confinement()
                     session["machine"]["after"] = record["machine"]["end"] = machine_load(int(app.running()))
                 finally:
-                    session["sessionPeakCommitBytes"] = app.usage()[1]
-                    session["appExit"] = app.close()
+                    try:
+                        session["sessionPeakCommitBytes"] = app.usage()[1]
+                    finally:
+                        session["appExit"] = app.close()
             session["seconds"] = time.monotonic() - began
             record["sessions"].append(session)
             phases[f"sweep: {name}"] = session["seconds"]
@@ -922,6 +924,11 @@ def accept(args):
     run_folder, state = Path(args.run).resolve(), Path(args.state).resolve()
     if not args.reason.strip():
         raise RuntimeError("acceptance needs a nonblank reason")
+    if getattr(args, "counts_file", None):
+        keys = json.loads(Path(args.counts_file).read_text(encoding="utf-8"))
+        if not isinstance(keys, list) or not keys or any(not isinstance(key, str) for key in keys):
+            raise RuntimeError("--counts-file needs an explicit nonempty JSON list of entry keys")
+        args.counts = (args.counts or []) + keys
     if getattr(args, "counts", None):
         with state_lock(state):
             return accept_counts(args, run_folder, state)
@@ -974,7 +981,7 @@ def accept_counts(args, folder, state):
     for entry in chosen:
         if any(not isinstance(value, int) or value < 0 for value in entry["counts"].values()):
             raise RuntimeError("invalid request count")
-        kept.append({**entry, "counts": {name: {"accepted": value, "tolerance": {"absolute": 2 if value else 0, "relative": .2 if value else 0}} for name, value in entry["counts"].items()},
+        kept.append({**{name: entry.get(name) for name in ("recording", "scenario", "interaction", "family", "phase", "session", "page", "recipe")}, "counts": {name: {"accepted": value, "tolerance": {"absolute": 2 if value else 0, "relative": .2 if value else 0}} for name, value in entry["counts"].items()},
                      "acceptedAt": datetime.datetime.now().isoformat(timespec="seconds"), "commit": run.get("commit"), "run": str(folder), "reason": args.reason})
     if baseline.exists():
         archive = state / "perf-archive"
@@ -1535,6 +1542,7 @@ def parse(argv):
     accept_command.add_argument("--reason", required=True, help="the change this baseline accepts")
     accept_command.add_argument("--state", default=str(DEFAULT_STATE))
     accept_command.add_argument("--counts", action="append", help="explicit count entry key from counts.json; repeat to select more")
+    accept_command.add_argument("--counts-file", help="JSON list of explicit count entry keys from counts.json")
     run_command = commands.add_parser("run")
     app = run_command.add_mutually_exclusive_group(required=True)
     app.add_argument("--app", help="folder holding replay-desktop.exe; the pinned shader compiler is put beside it")

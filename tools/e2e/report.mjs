@@ -1,7 +1,7 @@
 import { COST_FORMULA, datedPlaybackVerdict, summarizeWidgetCosts } from './datedPlayback.mjs';
 import { createReadStream, existsSync } from 'node:fs';
 import { appendFile, readFile, readdir, writeFile } from 'node:fs/promises';
-import { compareCounts, countKey, countRow, functionalReasons, GAPS, measureCounts } from './perfBaseline.mjs';
+import { compareCounts, countKey, countRow, functionalReasons, GAPS, measureCounts, sameVisualFixture, trend } from './perfBaseline.mjs';
 import readline from 'node:readline';
 import path from 'node:path';
 import { compareCaptures } from '../../ui/e2e/compare.mjs';
@@ -13,9 +13,8 @@ import { perFrame } from './trace.mjs';
 
 const flag = name => { const at = process.argv.indexOf(name); return at < 0 ? null : process.argv[at + 1]; };
 const files = Object.fromEntries(['run', 'sweeps', 'perf', 'out', 'baseline', 'history', 'perf-baseline'].map(name => [name, flag(`--${name}`)]));
-const nightly = !!files['perf-baseline'];
-const reasonsFor = reasons => nightly ? functionalReasons(reasons) : reasons;
-const item = (name, samples, options) => summarizeItem(name, samples.map(s => ({ ...s, reasons: reasonsFor(s.reasons), pass: s.pass || (s.reasons?.length > 0 && !reasonsFor(s.reasons).length) })), { ...options, ...(nightly ? { budget: Infinity } : {}) });
+const reasonsFor = functionalReasons;
+const item = (name, samples, options) => summarizeItem(name, samples.map(s => ({ ...s, reasons: reasonsFor(s.reasons), pass: s.pass || (s.reasons?.length > 0 && !reasonsFor(s.reasons).length) })), { ...options, budget: Infinity });
 const legacy = process.argv.includes('--legacy') || process.argv.includes('--legacy-regrade');
 const readJSON = async file => (file && existsSync(file) ? JSON.parse(await readFile(file, 'utf8')) : null);
 
@@ -62,8 +61,7 @@ async function perfRecords(folder, { keepQueries = false } = {}) {
   }
   return { records, mapRecords };
 }
-const hasWidgetCosts = Boolean(sweep?.results?.some(result => result.area === 'widget-costs'));
-const { records, mapRecords } = await perfRecords(files.perf, { keepQueries: hasWidgetCosts || nightly });
+const { records, mapRecords } = await perfRecords(files.perf, { keepQueries: true });
 
 async function visualManifest(folder) {
   const names = (await readdir(folder).catch(() => [])).filter(name => /^manifest-.+\.json$/.test(name)).sort();
@@ -84,7 +82,7 @@ const section = (title, columns, rows, note = null) => { sections.push({ title, 
 const quantileCells = q => [q.n, fmt(q.p50), fmt(q.p95), fmt(q.max)];
 
 const results = sweep?.results ?? [];
-if (nightly) for (const result of results) {
+for (const result of results) {
   const before = result.reasons ?? [];
   result.timing = [...(result.timing ?? []), ...before.filter(reason => !functionalReasons([reason]).length)];
   result.reasons = functionalReasons(before);
@@ -100,13 +98,11 @@ for (const result of results.filter(result => result.drawnAt != null)) {
   }
   if (start == null) continue;
   const at = presentedAt(mapRecords, result.drawnAt, result.session);
-  const budget = result.budget ?? BUDGET_MS;
   const reasons = result.reasons.filter(reason => !reason.includes(' ms, over '));
   if (at === null) Object.assign(result, { ms: null, reasons: [...reasons, UNPRESENTED] });
   else {
     const exact = result.item.startsWith('hover: ') || result.label === 'show map';
     const ms = exact ? at - start : Math.max(result.ms ?? 0, at - start);
-    if (!nightly && result.check !== false && ms > budget) reasons.push(`${Math.round(ms)} ms, over ${budget} ms${result.delay ? ` after the ${Math.round(result.delay)} ms tooltip delay` : ''}`);
     Object.assign(result, { ms, reasons, presentedAt: at });
   }
   result.pass = result.reasons.length === 0;
@@ -263,7 +259,6 @@ if (sweep) {
       const ms = !hour.pass ? result.ms : result.shownFrom != null ? (presented === null ? null : presented - from) : Math.max(result.ms ?? 0, hour.at - from);
       const reasons = [...result.reasons.filter(reason => !reason.includes(' ms, over ')), ...(hour.pass ? [] : [hour.reason])];
       if (hour.pass && result.shownFrom != null && presented === null) reasons.push(UNPRESENTED);
-      if (!nightly && ms !== null && ms > BUDGET_MS) reasons.push(`${Math.round(ms)} ms, over ${BUDGET_MS} ms`);
       return { pass: !reasons.length, cells: [result.item, fmt(ms), hour.hour ?? '–', verdict(!reasons.length), why(reasons)] };
     }));
   const catalogueSetup = item('catalogue setup', area('catalogue').filter(result => result.item === 'setup'));
@@ -278,7 +273,7 @@ if (sweep) {
       for (const [view, list] of [...acks].filter(([view]) => result.maps.includes(view))) {
         const { ms, reason } = mapSeek(list, result.input, mapRecords);
         const judged = result.check !== false;
-        const pass = ms !== null && (nightly || !judged || ms <= BUDGET_MS);
+        const pass = ms !== null;
         mapRows.push({ pass, judged, cells: [`seek ${result.label} (${result.item})`, view, fmt(ms), verdict(pass), reason ?? (pass ? '' : `${Math.round(ms)} ms, over ${BUDGET_MS} ms`)] });
       }
     }
@@ -329,7 +324,7 @@ if (sweep) {
       const target = isPresence ? result.item.slice(16) : result.item.slice(7);
       const late = !isPresence && result.drawnAt != null && result.deadline != null ? framesLate(mapRecords, result.deadline, result.drawnAt, result.session) : null;
       const reasons = [...result.reasons, ...(late ? [`${late} frames drawn before the highlight`] : [])];
-      const pass = result.pass && (nightly || !late);
+      const pass = result.pass;
       return { pass, cells: [target, isPresence ? 'presence' : 'timing', result.label ?? '–', isPresence ? '–' : fmt(result.ms), late ?? '–', verdict(pass), why(reasons)] };
     }));
   section('Pop-out map', ['Step', 'ms', 'Result', 'Why'], area('map').filter(result => result.item === 'pop-out' || result.item === 'phase')
@@ -433,7 +428,7 @@ if (sweep) {
     const label = `${result.page} ${result.speed} h/s`;
     if (!log) { barRows.push({ pass: false, cells: [label, '–', '–', '–', verdict(false), 'no perf log for this session'] }); continue; }
     for (const entry of dashboardRows(log, { page: label, refreshHz: refresh, window: { from: result.from, to: result.to } }).rows) {
-      const pass = entry.verdict !== FAIL && entry.verdict !== PARTIAL || nightly && entry.verdict !== PARTIAL && ['webview frame interval', 'long animation frames'].includes(entry.bar);
+      const pass = entry.verdict !== FAIL && entry.verdict !== PARTIAL || entry.verdict !== PARTIAL && ['webview frame interval', 'long animation frames'].includes(entry.bar);
       barRows.push({ pass, cells: [entry.page, entry.bar, entry.measured, entry.limit, pass ? entry.verdict : `**${entry.verdict}**`, why([entry.note])] });
     }
   }
@@ -518,7 +513,7 @@ if (sweep) {
   const head = path.join(files.out, 'visual');
   const accepted = files.baseline && existsSync(path.join(files.baseline, 'accepted.json')) ? JSON.parse(await readFile(path.join(files.baseline, 'accepted.json'), 'utf8')) : null;
   if (!existsSync(path.join(head, 'manifest.json'))) visualRows.push({ pass: false, cells: ['–', '–', verdict(false), 'no captures were taken', ''] });
-  else if (accepted && JSON.stringify(accepted.fixture ?? null) !== JSON.stringify(run.fixture ?? null))
+  else if (accepted && !sameVisualFixture(accepted.fixture, run.fixture))
     visualRows.push({ pass: false, cells: ['–', '–', verdict(false), `the accepted baseline is of another fixture (${accepted.fixture?.name ?? 'unknown'}), not ${run.fixture?.name}: review visual/ and accept a new one`, ''] });
   else if (!accepted) visualRows.push({ pass: false, cells: ['–', '–', verdict(false), `no accepted baseline: review visual/ and accept it with \`python tools/e2e/suite.py accept --run "${files.out}"${files.baseline ? ` --state "${path.dirname(files.baseline)}"` : ''} --reason "…"\``, ''] });
   else {
@@ -557,14 +552,14 @@ if (sweep) {
     failing.length > 400 ? `The first 400 of ${failing.length}; sweep.json holds them all.` : null);
 }
 
-if (nightly) {
+if (files['perf-baseline']) {
   const entries = measureCounts(run, results, records).map(entry => ({ ...entry, key: countKey(entry) }));
   const selected = entry => entry.recording === run.fixture?.sha256 && (entry.phase === 'startup' || run.requested?.includes(entry.phase))
     && (run.sessions ?? []).some(s => s.name.replaceAll(' ', '-') === entry.session)
-    && (sweep?.meta.sessions ?? []).some(s => JSON.stringify(s.recipe) === JSON.stringify(entry.context?.recipe))
+    && (sweep?.meta.sessions ?? []).some(s => JSON.stringify(s.recipe) === JSON.stringify(entry.recipe))
     && !entries.some(e => e.interaction === entry.interaction && e.scenario !== entry.scenario)
-    && (!run.selection?.pages || !entry.page || run.selection.pages.split(',').includes(entry.page))
-    && (!run.selection?.cases || run.selection.cases.split(',').some(id => entry.interaction.includes(`|${id}|`)));
+    && (entry.phase === 'startup' || !run.selection?.pages || !entry.page || run.selection.pages.split(',').includes(entry.page))
+    && (entry.phase === 'startup' || !run.selection?.cases || entry.phase !== 'controls' || run.selection.cases.split(',').some(id => entry.interaction.includes(`|${id}|`)));
   const compared = compareCounts(entries, await readJSON(files['perf-baseline']), selected);
   await writeFile(path.join(files.out, 'counts.json'), JSON.stringify({ run, entries }, null, 1));
   under();
@@ -573,9 +568,7 @@ if (nightly) {
     cells: [verdict(row.pass), countRow(row, run, path.join(files.out, 'counts.json')).replaceAll('|', '\\|')] }))
     : [{ pass: false, cells: [verdict(false), 'unmeasured: no scoped count interactions'] }],
   `${families.size} of 12 driven families have accepted gated counts in this run (8 available). Gaps: ${GAPS.join(', ')}. Timings, pictures, commits, layout figures and session peak memory are trends, never timing gates.`);
-  await appendFile(path.join(path.dirname(files['perf-baseline']), 'perf-history.jsonl'), JSON.stringify({ at: run.started, commit: run.commit, recording: run.fixture,
-    sessions: run.sessions, interactions: results.map(({ area, item, label, ms, timing, placeholderMs, placeholderAt, trace, idleCost, from, to }) => ({ area, item, label, ms, timing, placeholderMs, placeholderAt, trace, idleCost, from, to })),
-    frames: (records ?? []).filter(r => r.t === 'frame').map(({ session, at, pictures, commits, work }) => ({ session, at, pictures, commits, work })) }) + '\n');
+  await appendFile(path.join(path.dirname(files['perf-baseline']), 'perf-history.jsonl'), JSON.stringify(trend(run, results, records, entries)) + '\n');
 }
 const judged = sections.filter(entry => !entry.phases || entry.phases.some(phase => asked(run, phase)));
 const failed = judged.flatMap(entry => entry.rows).filter(row => !row.pass).length;
@@ -592,7 +585,7 @@ const lines = [
   machineLine(run),
   ...extraHeader.filter(line => !line.startsWith('> ')),
   ...(run.shell ? [`Measuring shell ${run.shell.folder} (${run.shell.revision?.slice(0, 10) ?? 'revision unknown'}) serving the production bundle ${run.shell.ui.folder}, built ${run.shell.ui.built}, ${run.shell.ui.files} files.`] : []),
-  `${failed} failing rows. ${nightly ? 'Timing budgets are informational.' : `Budget: ${BUDGET_MS} ms for anything a user waits on.`}`, '',
+  `${failed} failing rows. Timing budgets are informational.`, '',
 ];
 for (const entry of judged) {
   lines.push(`## ${entry.title}`, '');

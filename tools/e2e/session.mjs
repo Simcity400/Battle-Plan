@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { log, sleep } from './cdp.mjs';
 import { everFailed } from './coverage.mjs';
-import { familyOf, scenarioId } from './perfBaseline.mjs';
+import { familyOf, scenarioId, scopeScenario } from './perfBaseline.mjs';
 import { DRAWN_GRACE_MS, mapDrew, noVisibleChange, pageShown, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 export const BUDGET_MS = 100;
@@ -52,7 +52,9 @@ export class Session {
 
   async step(area, item, label, action, { done = null, changes = null, drew = null, from = 'first', timeout = 6000, quiet = 200, widget = null, awaits = true, budget = BUDGET_MS, check = true, control = label, unobservable = null, shot = false, extra = {} } = {}) {
     this.app.setCase(`${area}/${item}/${label}`);
-    const context = await this.app.evaluate('__e2e.perfContext()');
+    const family = familyOf(area, item, label), playing = item === 'header/play-pause' && label === 'play';
+    const context = family || playing ? await this.app.evaluate('__e2e.perfContext()') : null;
+    if (playing) this.playOrigin = context;
     let changed = null, sentBefore = null, settingsBefore = null, drawnSame = null;
     const article = key => `document.querySelector(${JSON.stringify(`article.dash-widget[data-widget="${key}"]`)})`;
     const settingsOf = key => `${article(key)}?.dataset.settings ?? null`;
@@ -120,12 +122,11 @@ export class Session {
         first: first === null || probe.input === null ? null : first - probe.input, ready: ready === null || probe.input === null ? null : ready - probe.input,
         loadingMax, end, errors, notice })),
       loafs: probe.loafs, placeholderMs: probe.placeholderMs, placeholderAt: probe.placeholderAt, ...(acted && typeof acted === 'object' ? acted : {}), ...extra });
-    const family = familyOf(area, item, label);
     if (family) {
-      const after = await this.app.evaluate('__e2e.perfContext()');
-      const scenario = { recipe: this.recipe, context, after, visit: /warm/.test(`${item}/${label}`) || !check ? 'warm' : 'cold' };
-      result.perf = { family, context: scenario, page: after.page, scenario: scenarioId(scenario), start: this.epoch + probe.t0,
-        settled: this.epoch + probe.now, complete: context.enabled && after.enabled && probe.busySignal && !probe.timedOut && start !== null };
+      const page = area === 'seeks' ? item : ['pages', 'pages-at'].includes(area) ? item.slice(item.indexOf('/') + 1) : context.page;
+      const scenario = scopeScenario(this.recipe, { ...context, page, ...(family === 'pause' && this.playOrigin ? { hour: this.playOrigin.hour } : {}) }, /warm/.test(`${item}/${label}`) || !check ? 'warm' : 'cold');
+      result.perf = { family, context, recipe: this.recipe, page, scenario: scenarioId(scenario), start: this.epoch + probe.t0,
+        settled: this.epoch + probe.now, complete: context.enabled && probe.busySignal && !probe.timedOut && start !== null };
     }
     result.timing = timing;
     result.probe = probe;
@@ -203,7 +204,8 @@ export class Session {
   watch() { return this.app.evaluate('__e2e.watch()'); }
   async unwatch() {
     const shown = await this.app.evaluate('__e2e.unwatch()');
-    return shown.ms > 0 ? [`showed a loading placeholder for ${Math.round(shown.ms)} ms (${shown.where.join(', ')})`] : [];
+    return [...(shown.ms > 0 ? [`showed a loading placeholder for ${Math.round(shown.ms)} ms (${shown.where.join(', ')})`] : []),
+      ...(shown.still ?? []).map(name => `${name}: still showing a loading placeholder at settlement`)];
   }
 
   holds(expression) { return this.app.evaluate(`!!(${expression})`); }

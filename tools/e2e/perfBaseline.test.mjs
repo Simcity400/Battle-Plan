@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { compareCounts, scenarioId, measureCounts, countRow, functionalReasons, familyOf } from './perfBaseline.mjs';
+import { compareCounts, scenarioId, scopeScenario, measureCounts, countRow, functionalReasons, familyOf, sameVisualFixture, trend } from './perfBaseline.mjs';
+import { Session } from './session.mjs';
 
 const run = { fixture: { name: 'fixture', sha256: 'sha256:fixture' }, commit: 'rev', started: 'today' };
 const entry = { recording: run.fixture.sha256, scenario: 'scenario', interaction: 'seeks|Army|early warm', family: 'seek', phase: 'seeks', session: 'seeks', counts: { 'requests:total': 8 }, complete: true };
@@ -25,12 +26,36 @@ test('new, missing, and incomplete entries fail without pretending zero work', (
   assert.throws(() => compareCounts([entry, entry], null), /duplicate/);
   assert.throws(() => compareCounts([entry], { ...accepted(), entries: [...accepted().entries, ...accepted().entries] }), /duplicate/);
 });
-test('scenario includes settings and fixture recipe, excludes application commit and key order', () => {
-  const scenario = { recipe: { tier: 'full' }, branch: [1], hour: 5, settings: { x: 1 }, viewport: [800, 600, 1], visit: 'warm' };
-  assert.equal(scenarioId({ ...scenario, commit: 'a' }), scenarioId({ commit: 'b', ...scenario }));
-  for (const key of ['recipe', 'branch', 'hour', 'settings', 'viewport', 'visit']) assert.notEqual(scenarioId(scenario), scenarioId({ ...scenario, [key]: 'different' }));
-  const layout = id => ({ activeId: id, layouts: [{ id, template: { widgets: [{ id, kind: 'example', trackIds: ['main'] }], tracks: [{ id: 'main', branchIndex: 0 }], roles: [], layouts: { lg: [{ i: id, x: 0 }] } } }] });
-  assert.equal(scenarioId(layout('first')), scenarioId(layout('second')));
+test('scenario is pinned by recipe and starting state, independent of output labels and random saved ids', () => {
+  const recipe = { branchIndex: 0, tier: 'full', cases: ['widget/settings'], settings: { options: 'all' } };
+  const context = { page: 'Example', hour: 5, viewport: [800, 600, 1], settings: { 'page-random1': 'Acceptance 111' }, controls: ['old label'], commit: 'old' };
+  const scope = scopeScenario(recipe, context, 'warm');
+  assert.equal(scenarioId(scope), scenarioId(scopeScenario(recipe, { ...context, settings: { 'page-random2': 'Acceptance 222' }, controls: ['new label'], commit: 'new' }, 'warm')));
+  assert.equal(scenarioId(scope), scenarioId({ visit: 'warm', viewport: context.viewport, hour: 5, page: 'Example', recipe }));
+  for (const key of ['recipe', 'hour', 'viewport', 'visit', 'page']) assert.notEqual(scenarioId(scope), scenarioId({ ...scope, [key]: 'different' }));
+  assert.notEqual(scenarioId(scope), scenarioId(scopeScenario({ ...recipe, branchIndex: 1 }, context, 'warm')));
+});
+test('new product names stay in the breakdown and do not bypass the total request allowance', () => {
+  const baseline = accepted(23);
+  const measured = { ...entry, counts: { 'requests:total': 25, 'requests:new-product': 2 } };
+  assert.equal(compareCounts([measured], baseline).every(row => row.pass), true);
+  baseline.entries[0].counts['requests:stable-product'] = { accepted: 4 };
+  assert.equal(compareCounts([{ ...measured, counts: { ...measured.counts, 'requests:stable-product': 7 } }], baseline).some(row => row.name === 'requests:stable-product' && !row.pass), true);
+});
+test('visual acceptances made before recording hashes stay valid for the same fixture', () => {
+  assert.equal(sameVisualFixture({ name: 'fixture', bytes: 123 }, { name: 'fixture', bytes: 123, sha256: 'hash' }), true);
+  assert.equal(sameVisualFixture({ name: 'fixture', bytes: 123 }, { name: 'fixture', bytes: 124 }), false);
+  assert.equal(sameVisualFixture({ name: 'fixture', bytes: 123, sha256: 'first' }, { name: 'fixture', bytes: 123, sha256: 'second' }), false);
+});
+test('history contains trend totals rather than per-frame logs or trace stacks', () => {
+  const frames = Array.from({ length: 100 }, () => ({ t: 'frame', session: 'example', pictures: 2, commits: 3 }));
+  const history = trend({ ...run, sessions: [{ name: 'example', sessionPeakCommitBytes: 99 }] }, [{ area: 'trace', trace: { layouts: 3, dirtyObjects: 4, frames: 5, roots: ['not trend data'] } }], frames, []);
+  assert.equal(history.sessions[0].sessionPeakCommitBytes, 99);
+  assert.equal(history.sessions[0].pictures, 200);
+  assert.equal(history.sessions[0].commits, 300);
+  assert.deepEqual(history.interactions[0].layout, { layouts: 3, dirtyObjects: 4, frames: 5 });
+  assert.equal('frames' in history, false);
+  assert.equal(JSON.stringify(history).includes('not trend data'), false);
 });
 test('measurement counts completed actual sends including errors, excludes hits and joins', () => {
   const result = { area: 'seeks', item: 'Army', label: 'early warm', session: 'seeks', pass: true, reasons: [], perf: { start: 100, settled: 200, complete: true, scenario: 'scenario', family: 'seek' } };
@@ -45,6 +70,12 @@ test('transient placeholders are timing trends; content still missing at settlem
   assert.deepEqual(functionalReasons(['showed a loading placeholder for 123 ms (Widget)']), []);
   assert.deepEqual(functionalReasons(['Widget: still loading after 6 s']), ['Widget: still loading after 6 s']);
   assert.deepEqual(functionalReasons(['never finished: expected content']), ['never finished: expected content']);
+});
+test('unwatch preserves a still-visible placeholder as a fatal named reason', async () => {
+  const session = new Session({ evaluate: async () => ({ ms: 123, where: ['Example'], still: ['Example'] }) });
+  const reasons = await session.unwatch();
+  assert.match(reasons[0], /123 ms/);
+  assert.deepEqual(functionalReasons(reasons), ['Example: still showing a loading placeholder at settlement']);
 });
 test('eight families gate actual work; timed play gates only the proven zero-head-read invariant', () => {
   const families = [['startup', 'open', 'open'], ['pages', 'cold/Example', 'switch'], ['pages', 'cold/Example', 'scroll 1'],
