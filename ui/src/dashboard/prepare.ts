@@ -14,6 +14,7 @@ const animationFrames: PrepareFrames = typeof requestAnimationFrame === 'functio
 export class PrepareGate {
   private waiting: Waiting[] = [];
   private running = 0;
+  private readonly sent = new Set<string>();
   private frame = 0;
   private asked: ProductRequest[] = [];
   private listeners = new Set<() => void>();
@@ -32,10 +33,11 @@ export class PrepareGate {
         key: requestKey(request), request,
         send: background => {
           signal.removeEventListener('abort', leave);
-          if (background) this.running++;
+          if (background) { this.running++; this.sent.add(entry.key); }
           send(signal, background).then(resolve, reject).finally(() => {
             if (!background) return;
             this.running--;
+            this.sent.delete(entry.key);
             this.pump();
           });
         },
@@ -50,6 +52,13 @@ export class PrepareGate {
       this.waiting.push(entry);
       this.pump();
     });
+  }
+
+  hold(request: ProductRequest, signal: AbortSignal): AbortSignal {
+    const key = requestKey(request), held = new AbortController();
+    const follow = () => { if (!this.sent.has(key)) held.abort(); };
+    if (signal.aborted) follow(); else signal.addEventListener('abort', follow, { once: true });
+    return held.signal;
   }
 
   promote(request: ProductRequest): void {

@@ -102,3 +102,33 @@ test('a prepared client reads into its base\'s caches, its requests apart from w
   assert.deepEqual(await waiting, { product: 'joined' });
   pageBusy();
 });
+
+test('a prepared read already sent finishes into the shared cache when its asker leaves, so seeks in a row start one read per key and a waiting one leaves with its asker', async () => {
+  const sent: { product: string; answer: () => void }[] = [];
+  const base = {
+    available: true,
+    product<T>(query: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>> {
+      return new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('Request cancelled', 'AbortError')), { once: true });
+        sent.push({ product: query.product, answer: () => resolve({ sourceId: query.sourceId, revision: query.revision, product: query.product, data: { product: query.product } as T }) });
+      });
+    },
+  } as unknown as DashboardClient;
+  const lane = preparingClient(base);
+  const slow = request('slow-history'), waiting = request('waiting-behind');
+  for (let seek = 0; seek < 5; seek++) {
+    const asker = new AbortController();
+    const read = loadProduct(lane, slow, asker.signal);
+    const behind = loadProduct(lane, waiting, asker.signal);
+    await flush();
+    asker.abort();
+    await assert.rejects(read, { name: 'AbortError' });
+    await assert.rejects(behind, { name: 'AbortError' });
+  }
+  assert.deepEqual(sent.map(item => item.product), ['slow-history'], 'five seeks, one read in flight, nothing queued behind it sent');
+  sent[0].answer();
+  await flush();
+  assert.deepEqual(peekProduct(base, slow, productKey(slow)), { product: 'slow-history' }, 'the read its askers left landed in the shared cache');
+  assert.deepEqual(await loadProduct(base, slow, new AbortController().signal), { product: 'slow-history' });
+  assert.deepEqual(sent.map(item => item.product), ['slow-history'], 'the page reads it without asking again');
+});
