@@ -105,6 +105,7 @@ export interface SharedSlotInput {
   readonly widget: number;
   readonly lane: number;
   readonly rect: Rect;
+  readonly clipRect?: Rect;
   readonly inView: boolean;
   readonly active: boolean;
 }
@@ -117,6 +118,7 @@ export interface SharedLaneLayout {
   readonly height: number;
   readonly clipPath: string;
   readonly clipPathFallback: boolean;
+  readonly roundBottom: boolean;
   readonly slots: readonly SharedSurfaceSlot[];
 }
 
@@ -130,21 +132,22 @@ function rectsOverlap(a: Rect, b: Rect): boolean {
 }
 
 function snapFloor(v: number, dpr: number): number {
-  return Math.floor(v * dpr) / dpr;
+  return Math.floor(v * dpr + 1e-3) / dpr;
 }
 
 function snapCeil(v: number, dpr: number): number {
-  return Math.ceil(v * dpr) / dpr;
+  return Math.ceil(v * dpr - 1e-3) / dpr;
 }
 
 function snapRound(v: number, dpr: number): number {
-  return Math.round(v * dpr) / dpr;
+  return Math.round(v * dpr + 1e-3) / dpr;
 }
 
 export function computeSharedLaneGeometry(
   items: readonly SharedSlotInput[],
   viewport: Rect,
   dpr: number,
+  cornerRadius = 0,
 ): SharedGeometryResult {
   const perLane = new Map<number, SharedSlotInput[]>();
   for (const item of items) {
@@ -163,10 +166,11 @@ export function computeSharedLaneGeometry(
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const item of list) {
       if (!item.inView || !item.active) continue;
-      const cx0 = Math.max(minXLimit, item.rect.x);
-      const cy0 = Math.max(minYLimit, item.rect.y);
-      const cx1 = Math.min(maxXLimit, item.rect.x + item.rect.w);
-      const cy1 = Math.min(maxYLimit, item.rect.y + item.rect.h);
+      const box = item.clipRect ?? item.rect;
+      const cx0 = Math.max(minXLimit, box.x);
+      const cy0 = Math.max(minYLimit, box.y);
+      const cx1 = Math.min(maxXLimit, box.x + box.w);
+      const cy1 = Math.min(maxYLimit, box.y + box.h);
       if (cx1 <= cx0 || cy1 <= cy0) continue;
       if (cx0 < minX) minX = cx0;
       if (cy0 < minY) minY = cy0;
@@ -205,7 +209,7 @@ export function computeSharedLaneGeometry(
     const ch = overlap ? vpH : b.h;
     const slots: SharedSurfaceSlot[] = [];
     const clipParts: string[] = [];
-    let singleSlot: SharedSurfaceSlot | null = null;
+    let singleClip: Rect | null = null;
     for (const item of list) {
       const sx = snapRound(item.rect.x - ox, dpr);
       const sy = snapRound(item.rect.y - oy, dpr);
@@ -214,14 +218,22 @@ export function computeSharedLaneGeometry(
       const slot: SharedSurfaceSlot = { widget: item.widget, x: sx, y: sy, w: sw, h: sh, visible: item.active };
       slots.push(slot);
       if (item.active) {
-        clipParts.push(`M${sx} ${sy}H${sx + sw}V${sy + sh}H${sx}Z`);
-        singleSlot = slot;
+        const box = item.clipRect ?? item.rect;
+        const bx = snapRound(box.x - ox, dpr);
+        const by = snapRound(box.y - oy, dpr);
+        const r = Math.min(cornerRadius, box.w / 2, box.h / 2);
+        if (r > 0) {
+          clipParts.push(`M${bx} ${by}H${bx + box.w}V${by + box.h - r}A${r} ${r} 0 0 1 ${bx + box.w - r} ${by + box.h}H${bx + r}A${r} ${r} 0 0 1 ${bx} ${by + box.h - r}Z`);
+        } else {
+          clipParts.push(`M${bx} ${by}H${bx + box.w}V${by + box.h}H${bx}Z`);
+        }
+        singleClip = { x: bx, y: by, w: box.w, h: box.h };
       }
     }
     const needsClip = overlap
       || clipParts.length > 1
-      || (clipParts.length === 1 && singleSlot !== null && (
-        singleSlot.x > 0.5 || singleSlot.y > 0.5 || singleSlot.w < cw - 0.5 || singleSlot.h < ch - 0.5
+      || (clipParts.length === 1 && singleClip !== null && (
+        singleClip.x > 0.5 || singleClip.y > 0.5 || singleClip.w < cw - 0.5 || singleClip.h < ch - 0.5
       ));
     lanes.set(lane, {
       lane,
@@ -231,6 +243,7 @@ export function computeSharedLaneGeometry(
       height: ch,
       clipPath: needsClip && clipParts.length ? `path("${clipParts.join(' ')}")` : '',
       clipPathFallback: overlap,
+      roundBottom: !needsClip && clipParts.length === 1 && cornerRadius > 0,
       slots,
     });
   }
@@ -253,10 +266,20 @@ interface LaneCanvasState {
   lastSig: string;
 }
 
+function readCornerRadius(root: HTMLElement): number {
+  try {
+    const cs = getComputedStyle(root);
+    const parsed = parseFloat(cs.getPropertyValue('--radius').trim()) || parseFloat(cs.getPropertyValue('--r-md').trim());
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function readSurfaceColor(root: HTMLElement): string {
   try {
     const cs = getComputedStyle(root);
-    const bg = cs.getPropertyValue('--bg').trim() || cs.getPropertyValue('--canvas').trim() || cs.backgroundColor;
+    const bg = cs.getPropertyValue('--surface').trim() || cs.getPropertyValue('--bg').trim() || cs.getPropertyValue('--canvas').trim() || cs.backgroundColor;
     return bg && bg !== 'transparent' && !/^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$/.test(bg) ? bg : '';
   } catch {
     return '';
@@ -442,6 +465,10 @@ export class SharedSurfaceHost {
     const dpr = window.devicePixelRatio || 1;
     const scrollRect = this.scrollEl.getBoundingClientRect();
     const layerRect = this.layerEl.getBoundingClientRect();
+    const layerSnapLeft = snapRound(layerRect.left, dpr);
+    const layerSnapTop = snapRound(layerRect.top, dpr);
+    const originDx = layerSnapLeft - layerRect.left;
+    const originDy = layerSnapTop - layerRect.top;
     const vpW = Math.max(0, Math.round(scrollRect.width));
     const vpH = Math.max(0, Math.round(scrollRect.height));
     const scrollTop = this.scrollEl.scrollTop;
@@ -452,7 +479,8 @@ export class SharedSurfaceHost {
     const inputs: SharedSlotInput[] = [];
     for (const entry of this.widgets.values()) {
       const dragging = Boolean(entry.frameEl.closest('.react-draggable-dragging, .resizing'));
-      if (!activeEnabled || dragging) {
+      const inScroll = typeof this.scrollEl.contains !== 'function' || this.scrollEl.contains(entry.bodyEl);
+      if (!activeEnabled || dragging || !inScroll) {
         delete entry.frameEl.dataset.sharedSurface;
         delete entry.frameEl.dataset.sharedLane;
         continue;
@@ -474,11 +502,26 @@ export class SharedSurfaceHost {
       const contentTop = r.top + (entry.bodyEl.clientTop || 0) * zoomY;
       const contentW = ow > 0 && cw > 0 ? cw * zoomX : r.width;
       const contentH = oh > 0 && ch > 0 ? ch * zoomY : r.height;
-      const x = snapRound(contentLeft - layerRect.left, dpr);
-      const y = snapRound(contentTop - layerRect.top, dpr);
-      const w = snapRound(contentW, dpr);
-      const h = snapRound(contentH, dpr);
-      const inView = w > 0 && h > 0 && contentLeft + contentW > scrollRect.left && contentLeft < scrollRect.right && contentTop + contentH > scrollRect.top && contentTop < scrollRect.bottom;
+      const clipBox = entry.frameEl.closest('.dash-widget-content')?.getBoundingClientRect();
+      const visLeft = clipBox ? Math.max(contentLeft, clipBox.left) : contentLeft;
+      const visTop = clipBox ? Math.max(contentTop, clipBox.top) : contentTop;
+      const visW = Math.max(0, (clipBox ? Math.min(contentLeft + contentW, clipBox.right) : contentLeft + contentW) - visLeft);
+      const visH = Math.max(0, (clipBox ? Math.min(contentTop + contentH, clipBox.bottom) : contentTop + contentH) - visTop);
+      const x = snapRound(visLeft, dpr) - layerSnapLeft;
+      const y = snapRound(visTop, dpr) - layerSnapTop;
+      const w = Math.max(0, Math.floor(visW * dpr + 1e-3)) / dpr;
+      const h = Math.max(0, Math.floor(visH * dpr + 1e-3)) / dpr;
+      const boxLeft = snapFloor(clipBox ? Math.max(r.left, clipBox.left) : r.left, dpr) - layerSnapLeft;
+      const boxTop = y;
+      const boxRight = snapCeil(clipBox ? Math.min(r.right, clipBox.right) : r.right, dpr) - layerSnapLeft;
+      const boxBottom = snapCeil(clipBox ? Math.min(r.bottom, clipBox.bottom) : r.bottom, dpr) - layerSnapTop;
+      const clipRect: Rect = {
+        x: boxLeft,
+        y: boxTop,
+        w: Math.max(w, boxRight - boxLeft),
+        h: Math.max(h, boxBottom - boxTop),
+      };
+      const inView = w > 0 && h > 0 && visLeft + visW > scrollRect.left && visLeft < scrollRect.right && visTop + visH > scrollRect.top && visTop < scrollRect.bottom;
       const visible = inView && entry.active;
       if (visible) {
         entry.frameEl.dataset.sharedSurface = '1';
@@ -487,13 +530,15 @@ export class SharedSurfaceHost {
         delete entry.frameEl.dataset.sharedSurface;
         delete entry.frameEl.dataset.sharedLane;
       }
-      inputs.push({ widget: entry.widget, lane: entry.lane, rect: { x, y, w, h }, inView, active: visible });
+      inputs.push({ widget: entry.widget, lane: entry.lane, rect: { x, y, w, h }, clipRect, inView, active: visible });
     }
 
+    const cornerRadius = readCornerRadius(this.scrollEl);
     const geometry = computeSharedLaneGeometry(
       inputs,
-      { x: scrollRect.left - layerRect.left, y: scrollRect.top - layerRect.top, w: scrollRect.width, h: scrollRect.height },
+      { x: scrollRect.left - layerSnapLeft, y: scrollRect.top - layerSnapTop, w: scrollRect.width, h: scrollRect.height },
       dpr,
+      cornerRadius,
     );
     this.lastUsedClipPath = geometry.clipPathFallback;
 
@@ -503,6 +548,7 @@ export class SharedSurfaceHost {
       if (!layout) {
         laneState.canvas.style.display = 'none';
         laneState.canvas.style.clipPath = '';
+        laneState.canvas.style.borderRadius = '';
         const sig = 'off';
         if (laneState.lastSig !== sig) {
           laneState.lastSig = sig;
@@ -520,9 +566,6 @@ export class SharedSurfaceHost {
         continue;
       }
 
-      const originDx = (Math.round((layerRect.left + layout.left) * dpr) - (layerRect.left + layout.left) * dpr) / dpr;
-      const originDy = (Math.round((layerRect.top + layout.top) * dpr) - (layerRect.top + layout.top) * dpr) / dpr;
-
       laneState.canvas.style.display = 'block';
       laneState.canvas.style.left = `${layout.left}px`;
       laneState.canvas.style.top = `${layout.top}px`;
@@ -532,10 +575,11 @@ export class SharedSurfaceHost {
         ? `translate(${originDx}px, ${originDy}px)`
         : '';
       laneState.canvas.style.clipPath = layout.clipPath;
+      laneState.canvas.style.borderRadius = layout.roundBottom ? `0 0 ${cornerRadius}px ${cornerRadius}px` : '';
       laneState.canvas.dataset.clipFallback = layout.clipPathFallback ? '1' : '0';
 
-      const originX = snapRound(scrollLeft + layout.left, dpr);
-      const originY = snapRound(scrollTop + layout.top, dpr);
+      const originX = snapRound(scrollLeft + layout.left + originDx, dpr);
+      const originY = snapRound(scrollTop + layout.top + originDy, dpr);
       const sig = `${layout.width}:${layout.height}:${dpr}:${originX}:${originY}:${surfaceColor}:${layout.clipPathFallback ? 1 : 0}|${layout.slots.map(s => `${s.widget},${s.x},${s.y},${s.w},${s.h},${s.visible ? 1 : 0}`).join(';')}`;
       if (laneState.lastSig !== sig) {
         laneState.lastSig = sig;

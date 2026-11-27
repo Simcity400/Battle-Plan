@@ -848,8 +848,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
             const { lane: sharedLane, slot } = shared;
             const sctx = sharedLane.ctx;
             const sdpr = sharedLane.dpr > 0 ? sharedLane.dpr : dpr;
-            const sx = surface.width > 0 ? (slot.w / surface.width) * sdpr : sdpr;
-            const sy = surface.height > 0 ? (slot.h / surface.height) * sdpr : sdpr;
             sharedLane.activeSlot.ox = Math.round(slot.x * sdpr);
             sharedLane.activeSlot.oy = Math.round(slot.y * sdpr);
             sharedLane.activeSlot.w = slot.w;
@@ -864,9 +862,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
             });
             sctx.save();
             try {
-              sctx.setTransform(sx, 0, 0, sy, 0, 0);
+              sctx.setTransform(sdpr, 0, 0, sdpr, 0, 0);
               sctx.beginPath();
-              sctx.rect(0, 0, surface.width, surface.height);
+              sctx.rect(0, 0, Math.min(surface.width, slot.w), Math.min(surface.height, slot.h));
               sctx.clip();
               if (sharedLane.opaque && family.family !== 'table') {
                 sctx.fillStyle = theme.surface;

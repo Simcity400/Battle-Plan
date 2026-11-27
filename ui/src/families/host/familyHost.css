@@ -11,7 +11,8 @@
   outline: none;
 }
 
-.fh-frame[data-shared-surface='1'] {
+.fh-frame[data-shared-surface='1'],
+.fh-frame:has(.fh-frame[data-shared-surface='1']) {
   background: transparent;
 }
 

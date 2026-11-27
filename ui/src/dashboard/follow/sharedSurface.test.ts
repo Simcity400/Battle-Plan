@@ -1511,3 +1511,139 @@ test('direct-surface rules: cancelled seek during sibling crop wait clears unacc
     Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
   }
 });
+
+test('SharedSurfaceHost aligns slots to viewport device pixels without double rounding at fractional DPR and excludes portaled bodies', () => {
+  const origDoc = globalThis.document;
+  const origHtmlCanvas = (globalThis as { HTMLCanvasElement?: unknown }).HTMLCanvasElement;
+  const origMO = globalThis.MutationObserver;
+  const origRO = globalThis.ResizeObserver;
+  const origRaf = globalThis.requestAnimationFrame;
+  const origCancelRaf = globalThis.cancelAnimationFrame;
+  const origWindow = (globalThis as { window?: unknown }).window;
+  const origGetComputedStyle = globalThis.getComputedStyle;
+
+  const sentSlots: { lane: number; payload: LaneSlotsPayload }[] = [];
+  const dpr = 1.25;
+
+  class FakeElement {
+    className = '';
+    dataset: Record<string, string> = {};
+    style: Record<string, string> = {};
+    children: FakeElement[] = [];
+    firstChild: FakeElement | null = null;
+    scrollTop = 0;
+    scrollLeft = 0;
+    width = 0;
+    height = 0;
+    offsetWidth = 0;
+    offsetHeight = 0;
+    clientWidth = 0;
+    clientHeight = 0;
+    clientLeft = 0;
+    clientTop = 0;
+    rect = { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    contained = new Set<FakeElement>();
+    setAttribute() {}
+    appendChild(child: FakeElement) {
+      this.children.push(child);
+      if (!this.firstChild) this.firstChild = child;
+      return child;
+    }
+    insertBefore(child: FakeElement) {
+      this.children.unshift(child);
+      this.firstChild = child;
+      return child;
+    }
+    addEventListener() {}
+    removeEventListener() {}
+    remove() {}
+    closest() { return null; }
+    contains(el: FakeElement) { return this.contained.has(el); }
+    getBoundingClientRect() { return this.rect; }
+    transferControlToOffscreen() { return fakeOffscreenCanvas().canvas; }
+  }
+
+  const docEl = new FakeElement();
+  docEl.dataset.backdrop = 'solid';
+  const created: FakeElement[] = [];
+
+  Object.defineProperty(globalThis, 'HTMLCanvasElement', { value: FakeElement, configurable: true });
+  Object.defineProperty(globalThis, 'document', {
+    value: {
+      documentElement: docEl,
+      createElement() {
+        const el = new FakeElement();
+        created.push(el);
+        return el;
+      },
+    },
+    configurable: true,
+  });
+  Object.defineProperty(globalThis, 'window', { value: { devicePixelRatio: dpr }, configurable: true });
+  Object.defineProperty(globalThis, 'getComputedStyle', {
+    value: () => ({ getPropertyValue: () => '#0a0a0a', backgroundColor: '#0a0a0a' }),
+    configurable: true,
+  });
+  Object.defineProperty(globalThis, 'ResizeObserver', { value: undefined, configurable: true });
+  Object.defineProperty(globalThis, 'requestAnimationFrame', { value: (fn: FrameRequestCallback) => { fn(0); return 1; }, configurable: true });
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', { value: () => {}, configurable: true });
+  Object.defineProperty(globalThis, 'MutationObserver', { value: undefined, configurable: true });
+
+  try {
+    const fakePipeline = {
+      laneCount: 4,
+      transferLaneSurface() {},
+      sendLaneSlots(lane: number, payload: LaneSlotsPayload) { sentSlots.push({ lane, payload }); },
+    };
+    const scrollEl = new FakeElement();
+    scrollEl.rect = { left: 0, top: 48, right: 1522, bottom: 827, width: 1522, height: 779 };
+    const host = new SharedSurfaceHost(fakePipeline as never, scrollEl as unknown as HTMLElement);
+    const layerEl = created[0]!;
+    layerEl.rect = { left: 6, top: 56.4, right: 1522, bottom: 56.4, width: 1516, height: 0 };
+
+    const bodyEl = new FakeElement();
+    bodyEl.rect = { left: 238, top: 119.6, right: 764, bottom: 395.6, width: 526, height: 276 };
+    bodyEl.offsetWidth = 526;
+    bodyEl.offsetHeight = 276;
+    bodyEl.clientWidth = 526;
+    bodyEl.clientHeight = 276;
+    const frameEl = new FakeElement();
+    scrollEl.contained.add(bodyEl);
+
+    const portalBody = new FakeElement();
+    portalBody.rect = { left: 300, top: 200, right: 600, bottom: 400, width: 300, height: 200 };
+    const portalFrame = new FakeElement();
+
+    host.register(1, 0, bodyEl as unknown as HTMLElement, frameEl as unknown as HTMLElement);
+    host.register(2, 1, portalBody as unknown as HTMLElement, portalFrame as unknown as HTMLElement);
+
+    assert.equal(frameEl.dataset.sharedSurface, '1');
+    assert.equal(portalFrame.dataset.sharedSurface, undefined);
+
+    const canvasEl = created.find(el => el.className === 'dash-shared-canvas')!;
+    const leftCss = parseFloat(canvasEl.style.left);
+    const topCss = parseFloat(canvasEl.style.top);
+    const txMatch = /translate\(([-0-9.]+)px,\s*([-0-9.]+)px\)/.exec(canvasEl.style.transform || '');
+    const tx = txMatch ? parseFloat(txMatch[1]!) : 0;
+    const ty = txMatch ? parseFloat(txMatch[2]!) : 0;
+    const last = sentSlots.filter(s => s.lane === 0).at(-1)!.payload;
+    const slot = last.slots[0]!;
+
+    const actualDevX = (layerEl.rect.left + leftCss + tx + slot.x) * dpr;
+    const actualDevY = (layerEl.rect.top + topCss + ty + slot.y) * dpr;
+    assert.equal(Math.round(actualDevX * 1000) / 1000, Math.round(bodyEl.rect.left * dpr));
+    assert.equal(Math.round(actualDevY * 1000) / 1000, Math.round(bodyEl.rect.top * dpr));
+    assert.equal(Math.round(slot.w * dpr), Math.floor(bodyEl.clientWidth * dpr + 1e-3));
+    assert.equal(Math.round(slot.h * dpr), Math.floor(bodyEl.clientHeight * dpr + 1e-3));
+    host.dispose();
+  } finally {
+    Object.defineProperty(globalThis, 'document', { value: origDoc, configurable: true });
+    Object.defineProperty(globalThis, 'HTMLCanvasElement', { value: origHtmlCanvas, configurable: true });
+    Object.defineProperty(globalThis, 'MutationObserver', { value: origMO, configurable: true });
+    Object.defineProperty(globalThis, 'ResizeObserver', { value: origRO, configurable: true });
+    Object.defineProperty(globalThis, 'requestAnimationFrame', { value: origRaf, configurable: true });
+    Object.defineProperty(globalThis, 'cancelAnimationFrame', { value: origCancelRaf, configurable: true });
+    Object.defineProperty(globalThis, 'window', { value: origWindow, configurable: true });
+    Object.defineProperty(globalThis, 'getComputedStyle', { value: origGetComputedStyle, configurable: true });
+  }
+});

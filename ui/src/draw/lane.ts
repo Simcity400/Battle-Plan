@@ -871,7 +871,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   setLaneSurface(canvas: OffscreenCanvas, opaque: boolean) {
-    const ctx = canvas.getContext('2d', opaque ? { alpha: false } : undefined);
+    const ctx = canvas.getContext('2d');
     if (!ctx) {
       this.host.failLaneSurface?.();
       return;

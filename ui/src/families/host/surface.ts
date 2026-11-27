@@ -268,6 +268,8 @@ export function mountFamilyCanvas(
     if (useSharedSurface) {
       canvas.width = 1;
       canvas.height = 1;
+      canvas.style.width = '300px';
+      canvas.style.height = '150px';
       canvas.dataset.workerPresented = 'shared';
       return { canvas, surface: NOOP_SURFACE, workerPresented: true };
     }
