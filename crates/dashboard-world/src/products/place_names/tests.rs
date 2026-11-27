@@ -129,10 +129,11 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
 
 #[test]
 fn truncated_tables_use_witnessed_rows_refuse_absent_renames_and_preserve_vp_tag_fallback_for_place_mode() {
-    let frames: Vec<_> = (100..=103)
+    let frames: Vec<_> = (99..=103)
         .map(|hour| {
             let mut f = frame(hour);
             match hour {
+                99 => set::<tables::ProvinceNames>(&mut f, Vec::new()),
                 100 => {
                     *f.tables[TableId::ProvinceNames.index()] = TableView::Truncated {
                         rows: TableRows::ProvinceNames(vec![ProvinceNameRow { province: 18, name: b"RENAME".to_vec() }]),
