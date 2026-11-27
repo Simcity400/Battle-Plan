@@ -225,6 +225,11 @@ struct Panels {
     thread: Option<JoinHandle<()>>,
     cells: Option<HostCells>,
     session: u64,
+    proven: BTreeMap<u32, (u32, Hour)>,
+}
+
+fn unread_from(proven: Option<&(u32, Hour)>, seek: u32, through: Hour) -> Option<Hour> {
+    proven.filter(|&&(at, _)| at == seek).map(|&(_, hour)| hour).filter(|&hour| hour < through).map(|hour| hour.saturating_add(1))
 }
 
 #[derive(Default)]
@@ -503,6 +508,7 @@ impl StepProduct {
 
 impl Panels {
     fn remove(&mut self, id: u32) {
+        self.proven.remove(&id);
         if self.products.remove(&id).is_some() {
             self.due.retain(|&(_, due)| due != id);
         }
@@ -684,9 +690,8 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             let mut replies = Vec::with_capacity(due.len());
             for (id, work, token) in due {
                 if token.load(Ordering::Acquire) || get(&owner).epoch() != epoch { continue; }
-                let unread = Some((step.first(), panel::dated::WAITING, Vec::new()));
                 let Some(mut product) = work.take() else {
-                    replies.push((id, None, token, step.last(), unread, None));
+                    replies.push((id, None, token, step.last(), None, None));
                     continue;
                 };
                 let playhead = get(&owner);
@@ -707,7 +712,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 if let Some(job) = job {
                     let task = PanelJob { stamp, session, epoch, token: token.clone(), reads: active.clone(), push: push.clone(), wake: wake.clone() };
                     task.start(job, product, work, &owner, get);
-                    replies.push((id, None, token, step.last(), unread, None));
+                    replies.push((id, None, token, step.last(), None, None));
                     continue;
                 }
                 product.resend |= resend;
@@ -724,17 +729,22 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                     let mut batch = panel::dated::ProductBatch::new(stamp);
                     for (id, held, token, next, change, stepped) in replies {
                         let live = !token.load(Ordering::Acquire);
+                        let read = held.is_some();
                         if let Some((work, mut product)) = held {
                             if live && let Some(hour) = stepped {
                                 product.last = Some((epoch, stamp.2, hour));
                                 product.wire.commit();
                                 product.joined = true;
+                                panels.proven.insert(id, (stamp.2, hour));
                             }
                             held_products.push((work, product));
                         }
                         if !live { continue; }
                         panels.due.insert((next, id));
                         if let Some((at, kind, body)) = change { batch.changed(id, at, kind, &body); }
+                        if !read && let Some(from) = unread_from(panels.proven.get(&id), stamp.2, step.last()) {
+                            batch.changed(id, from, panel::dated::WAITING, &[]);
+                        }
                     }
                     push.offer_from(session, PANEL, batch.finish(Some(step.last())));
                 } else {
@@ -1031,6 +1041,16 @@ impl<E: Send + Sync + 'static> Drop for PlayheadHost<E> {
         }
         self.playhead().retire(self.reader);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn an_unread_product_waits_only_from_the_first_hour_it_has_not_proven() {
+    assert_eq!(unread_from(Some(&(3, 8)), 3, 0), None, "a paused step at a proven hour leaves a busy product's panel as it is");
+    assert_eq!(unread_from(Some(&(3, 8)), 3, 8), None);
+    assert_eq!(unread_from(Some(&(3, 8)), 3, 14), Some(9), "a step past the proven hours waits from the first one unproven");
+    assert_eq!(unread_from(Some(&(2, 8)), 3, 14), None, "a proof from another seek is not this panel's: its records closed or replaced it");
+    assert_eq!(unread_from(None, 3, 14), None, "a panel never stepped is closed by its seed's own WAITING");
 }
 
 #[cfg(test)]
