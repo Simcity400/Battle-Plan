@@ -46,7 +46,7 @@ export function paneModel(model: TableModel, pane: TablePane): TableModel {
 
 export function paneTitleText(title: TablePaneTitle): string {
   const formatted = formatValueState(title.name);
-  return formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
+  return formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending' ? formatted.label : formatted.text;
 }
 
 function paneHeaderKey(paneKey: string): string {
@@ -94,7 +94,7 @@ export function combinedPaneRows(panes: readonly ResolvedPane[]): FlatTableRow[]
   for (const pane of panes) {
     let count = 0;
     for (const item of pane.rows) if (item.kind === 'data' && !item.isTotal) count++;
-    out.push({ kind: 'group-header', key: paneHeaderKey(pane.key), label: paneTitleText(pane.title), count });
+    out.push({ kind: 'group-header', key: paneHeaderKey(pane.key), label: paneTitleText(pane.title), titleValue: pane.title.name, count });
     for (const item of pane.rows) out.push(item);
   }
   return out;

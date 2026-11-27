@@ -542,9 +542,9 @@ mod tests {
             .unwrap()
             .unwrap();
         let entries = vec![
-            Occurrence { id: 1, date: 105, observed: 105, kind: 0, roles: Box::new([Role { slot: Some(7), at: 105 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
-            Occurrence { id: 2, date: 119, observed: 119, kind: 0, roles: Box::new([Role { slot: Some(7), at: 119 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
-            Occurrence { id: 3, date: 120, observed: 120, kind: 0, roles: Box::new([Role { slot: Some(8), at: 120 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
+            Occurrence { id: 1, date: 105, observed: 105, kind: 0, roles: Box::new([Role::at(Some(7), 105)]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
+            Occurrence { id: 2, date: 119, observed: 119, kind: 0, roles: Box::new([Role::at(Some(7), 119)]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
+            Occurrence { id: 3, date: 120, observed: 120, kind: 0, roles: Box::new([Role::at(Some(8), 120)]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
         ];
         let index = Index::new(entries, Vec::new(), &[]).unwrap();
         let answer = index

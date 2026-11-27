@@ -5,7 +5,7 @@ import { formatPower, formatPowerChange } from '../../dashboard/powerDecimals.ts
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
+import { identityFlags, identityName, LOADING_NAME, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
 import {
   LOG_TABLE_BASE,
   logCountryCell,
@@ -195,16 +195,9 @@ function buildDecisionRow(
   let placeCell: TableCell = { value: notApplicable('No target state'), blank: true };
   let placeLabel: string | null = null;
   if (stateId !== null) {
-    const stateRes = readView.who('state', String(stateId), firstRow.hour);
-    if (stateRes.name.status === 'ready') {
-      placeLabel = stateRes.name.value;
-      placeCell = { value: knownValue(placeLabel) };
-    } else if (stateRes.name.status === 'pending') {
-      placeLabel = `State ${stateId}`;
-      placeCell = { value: knownValue(placeLabel) };
-    } else {
-      placeCell = { value: notRecorded('State name not recorded') };
-    }
+    const stateRes = resolveName(readView, 'state', String(stateId), { atHour: firstRow.hour, boundary });
+    placeCell = { value: stateRes.value };
+    placeLabel = stateRes.value.kind === 'known' ? stateRes.value.value : stateRes.value.kind === 'pending' ? LOADING_NAME : null;
   }
 
   const timer = decisionTimerCell(at);

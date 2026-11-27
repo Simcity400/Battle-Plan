@@ -210,8 +210,31 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     assert.equal(valueStateText({ kind: 'missing', reason: 'Gap' }), 'Not recorded: Gap');
     assert.equal(valueStateText({ kind: 'notApplicable', reason: 'No navy' }), 'Not applicable: No navy');
     assert.equal(valueStateText({ kind: 'partial', text: '12', reason: '2 countries missing' }), '12, partial: 2 countries missing');
+    assert.equal(valueStateText({ kind: 'pending', reason: 'Name is loading' }), 'Loading: Name is loading');
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /data-value-state="missing"/);
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /is-compact/);
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'partial', text: '12', reason: '2 countries missing' })), /data-value-state="partial"/);
+    assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'pending', reason: 'Name is loading' })), /data-value-state="pending"/);
+    assert.doesNotMatch(renderToStaticMarkup(createElement(ValueState, { kind: 'pending', reason: 'Name is loading' })), /Not recorded|val-hatch/);
+    const { FamilyTableHeader } = await vite.ssrLoadModule('/ui/src/families/table/TableHeader.tsx') as typeof import('../families/table/TableHeader');
+    const { tableDefaults } = await vite.ssrLoadModule('/ui/src/families/table/settings.ts') as typeof import('../families/table/settings');
+    const { valueStateProps } = await vite.ssrLoadModule('/ui/src/families/valueFormat.ts') as typeof import('../families/valueFormat');
+    const { pendingValue } = await vite.ssrLoadModule('/ui/src/families/value.ts') as typeof import('../families/value');
+    const headerCols = [{ key: 'country', label: 'Country', as: 'flagName' as const, offered: ['flagName' as const], priority: 0, text: true, minWidth: 120 }];
+    const headerHtml = renderToStaticMarkup(createElement(FamilyTableHeader, {
+      columns: [{ ...headerCols[0]!, width: 120, display: 'flagName', shown: true, displays: [['flagName', 'Flag and name']] }],
+      allColumns: headerCols,
+      settings: tableDefaults(headerCols, { density: 'normal', sort: { column: 'country', direction: 'ascending' } }),
+      pinned: false,
+      scrollLeft: 0,
+      identity: { name: 'Loading…', nameState: valueStateProps(pendingValue('Name is loading')), missing: false, flag: null, flagPending: true, country: 'AAA' },
+      onChange() {},
+      onResize() {},
+      onResizing() {},
+    }));
+    assert.match(headerHtml, /data-value-state="pending"/);
+    assert.match(headerHtml, /tf-th-identity-name is-pending/);
+    assert.match(headerHtml, /aria-label="Loading: Name is loading"/);
+    assert.match(headerHtml, />Loading…</);
   } finally { await vite.close(); }
 });

@@ -1532,6 +1532,10 @@ impl Playhead {
         lock(&self.shared.control).newest
     }
 
+    pub fn published(&self) -> Option<(Hour, u64)> {
+        lock(&self.shared.ring).published_now()
+    }
+
     #[cfg(feature = "test-support")]
     pub fn wait_newest(&self, hour: Hour) -> Result<(), String> {
         let mut control = lock(&self.shared.control);

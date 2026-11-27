@@ -3,7 +3,7 @@ use std::cell::Cell;
 use std::time::Instant;
 
 const WIDTH: f32 = 5632.0;
-const DEFINES: GroupDefines = GroupDefines::VANILLA;
+const DEFINES: GroupDefines = GroupDefines::FIXTURE;
 
 fn icon(kind: u32, owner: u32, province: u32, state: Option<u32>, x: f32) -> Icon {
     Icon {
@@ -38,25 +38,28 @@ fn all_friendly(_: u32, _: u32) -> bool {
 #[test]
 fn the_camera_height_picks_the_level_the_defines_name() {
     assert_eq!(DEFINES.level(0.0), Level::None);
-    assert_eq!(DEFINES.level(89.9), Level::None);
-    assert_eq!(DEFINES.level(90.0), Level::Province);
-    assert_eq!(DEFINES.level(179.9), Level::Province);
-    assert_eq!(DEFINES.level(180.0), Level::State);
-    assert_eq!(DEFINES.level(349.9), Level::State);
-    assert_eq!(DEFINES.level(350.0), Level::Strategic);
+    assert_eq!(DEFINES.level(DEFINES.province_distance - 0.1), Level::None);
+    assert_eq!(DEFINES.level(DEFINES.province_distance), Level::Province);
+    assert_eq!(DEFINES.level(DEFINES.state_distance - 0.1), Level::Province);
+    assert_eq!(DEFINES.level(DEFINES.state_distance), Level::State);
+    assert_eq!(
+        DEFINES.level(DEFINES.strategic_distance - 0.1),
+        Level::State
+    );
+    assert_eq!(DEFINES.level(DEFINES.strategic_distance), Level::Strategic);
     let modded = GroupDefines {
-        state_distance: 400.0,
-        strategic_distance: 800.0,
+        state_distance: DEFINES.strategic_distance + 50.0,
+        strategic_distance: DEFINES.strategic_distance + 450.0,
         ..DEFINES
     };
-    assert_eq!(modded.level(350.0), Level::Province);
-    assert_eq!(modded.grouping(350.0), Level::Province);
+    assert_eq!(modded.level(DEFINES.strategic_distance), Level::Province);
+    assert_eq!(modded.grouping(DEFINES.strategic_distance), Level::Province);
     let off = GroupDefines {
         passes: 0,
         ..DEFINES
     };
-    assert_eq!(off.grouping(350.0), Level::None);
-    assert_eq!(off.level(350.0), Level::Strategic);
+    assert_eq!(off.grouping(DEFINES.strategic_distance), Level::None);
+    assert_eq!(off.level(DEFINES.strategic_distance), Level::Strategic);
 }
 
 #[test]

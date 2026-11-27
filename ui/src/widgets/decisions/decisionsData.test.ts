@@ -486,3 +486,31 @@ test('S3: a malformed decision row becomes a refused slot with its reason instea
     assert.equal(entry.read.shape === 'paged-rows' ? entry.read.validate : undefined, declaration.projection.validateTail, `${declaration.kind}: pagedTailEntry carries its product tail validator`);
   }
 });
+
+test('a decision targeting a state whose name is still loading keeps pending in the Place cell instead of emitting State N', () => {
+  const start = day(3, 1);
+  const stateEdge = edge('decisionSelected', start);
+  const occ = card([{ ...stateEdge, row: { ...stateEdge.row, cause: { state: 77, notes: [], targetRecorded: false } } }]);
+  const source = buildRowSourceFromHead('test:decisions-pending-state', {
+    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', counts: [],
+    rows: [{ hour: start, key: 'k-state', ordinal: '0', cells: [], occurrence: occ }],
+    facetTotals: [], missing: [], unavailable: [], warnings: [],
+  }, undefined, start + 1)!;
+  const pendingIdentity = {
+    resolve(kind: string, key: string, atHour: number) {
+      return {
+        kind,
+        key,
+        holder: { status: 'absent', reason: 'not set' },
+        name: kind === 'state' ? { status: 'pending' } : { status: 'ready', value: key },
+        validInterval: [atHour, atHour],
+        nextChangeAt: Infinity,
+      };
+    },
+  } as never;
+  const model = decisionsProjection.project(
+    createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]), identity: pendingIdentity }),
+    { artwork: false, breaks: [] },
+  );
+  assert.deepEqual(model.rows[0]?.cells.place?.value, { kind: 'pending', reason: 'Name is loading' });
+});

@@ -70,8 +70,8 @@ test("minefields projection projects owner shares from Rust live totals, the use
   ]);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data').slice(1);
   const pick = model.rows[1] as BarsDataRow;
-  assert.deepEqual([pick.label, pick.region, pick.group, pick.value?.value.kind], ['Skagerrak', 7, 'picked', 'notRecorded'], 'an unread pick is not shown as no mines');
-  assert.deepEqual(rows.map(r => [r.key, r.label, r.region]), [['3', 'North Sea', 3], ['5', 'Baltic Sea', 5]]);
+  assert.deepEqual([pick.label, pick.region, pick.group, pick.value?.value.kind], [{ kind: 'known', value: 'Skagerrak' }, 7, 'picked', 'notRecorded'], 'an unread pick is not shown as no mines');
+  assert.deepEqual(rows.map(r => [r.key, r.label, r.region]), [['3', { kind: 'known', value: 'North Sea' }, 3], ['5', { kind: 'known', value: 'Baltic Sea' }, 5]]);
   assert.equal(rows[0]!.readout?.primary, '14 mines');
   assert.deepEqual(rows[0]!.segments?.map(s => [s.key, s.label, Math.round(s.share * 100)]), [
     ['ENG', 'United Kingdom', 64],
@@ -97,9 +97,12 @@ test('minefields projection marks truncated total as notRecorded rather than zer
   const model = minefieldsProjection.project(view, { surface: '#1e1e1e', order: 'mines' });
   assertBarsModelValid(model, 100);
   const first = model.rows.find(row => row.key === '3') as BarsDataRow;
+  assert.deepEqual(first.label, { kind: 'pending', reason: 'Name is loading' });
   assert.equal(first.value?.value.kind, 'notRecorded');
   assert.equal(first.segments?.length, 0);
   assert.equal(first.readout?.primary, 'Not recorded');
+  const audit = deriveBarsAudit(model);
+  assert.ok(audit.some(entry => entry.key === '3:label' && entry.value === '["pending","Name is loading"]'));
   assert.throws(() => view.who('country', 'ENG', displayedHour(101)), FutureDataError);
 });
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { navalDetailTooltip, validateNavalBattleDetails } from './navalBattleDetails.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
-import { ART_STATUS_ROW, deriveRowTooltip } from '../../families/table/model.ts';
+import { ART_STATUS_ROW, deriveRowTooltip, deriveTableMirror } from '../../families/table/model.ts';
 import { navalBattleClock, navalBattlesProjection, type NavalBattleSubject } from './navalBattlesProjection.ts';
 import type { NavalBattleDetail, NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/dashboard';
 
@@ -176,4 +176,34 @@ test('convoy-only sides show convoy counts and live zero sinkings stay qualified
       ['IC lost', 'notRecorded', null],
     ],
   );
+  const mixedHead: NavalBattlesTailReply = {
+    branchId: '1', total: '2', offset: '0', missing: [], warnings: [], nextChange: null,
+    rows: [
+      { ...raid, key: 'combat:15:20', countries: [[1, 2], [3]] },
+      { ...raid, key: 'combat:16:20', countries: [[1], [2]] },
+    ],
+  };
+  const mixedView = createBoundedReadView({
+    hour: 22,
+    rows: new Map([['main', buildRowSourceFromHead('branch', mixedHead, undefined, 22)!]]),
+    identity: {
+      resolve(kind, key) {
+        const name = key === '\u00001'
+          ? { status: 'pending' as const }
+          : key === '\u00002'
+            ? { status: 'absent' as const, reason: 'Country name unavailable' }
+            : { status: 'ready' as const, value: 'Bravo' };
+        return { kind, key, holder: { status: 'ready', value: key }, name, colour: { status: 'absent', reason: 'none' }, flagChoice: { status: 'absent', reason: 'none' }, validInterval: [0, Infinity] as const, nextChangeAt: Infinity };
+      },
+    },
+  });
+  const mixedModel = navalBattlesProjection.project(mixedView, { scope: 'test', following: true, byDate: true });
+  const [mixedRow, pendingAbsentRow] = mixedModel.rows;
+  const mixedFound = { kind: 'data', key: mixedRow!.key, name: mixedRow!.name, row: mixedRow!, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
+  const mixedTip = deriveRowTooltip(mixedFound, mixedModel.columns).rows;
+  assert.deepEqual(mixedTip.find(line => line.label === 'Attackers')?.rawValue, { kind: 'pending', reason: 'Name is loading; Country name unavailable' });
+  assert.equal(JSON.stringify(mixedTip).includes('\u0000'), false);
+  assert.deepEqual(pendingAbsentRow!.cells.country!.value, { kind: 'pending', reason: 'Name is loading; Country name unavailable' });
+  const pendingAbsentMirror = deriveTableMirror([{ kind: 'data', key: pendingAbsentRow!.key, name: pendingAbsentRow!.name, row: pendingAbsentRow!, rank: 1, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 }], mixedModel.columns, false);
+  assert.equal(pendingAbsentMirror.rows[0]!.cells.find(cell => cell.column === 'country')?.spoken, 'Loading: Name is loading; Country name unavailable');
 });

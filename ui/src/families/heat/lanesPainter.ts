@@ -301,7 +301,7 @@ export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
       fontSize: theme.fontSize.body,
       weight: 400,
       maxLines: 1,
-      color: row.nameMissing ? theme.muted : mutedAuto && !row.pinned ? autoNameColor : theme.text,
+      color: row.nameMissing || row.labelValue?.kind === 'pending' ? theme.muted : mutedAuto && !row.pinned ? autoNameColor : theme.text,
     });
     if (tools) {
       drawRowGrip(ctx, LANE_PAD, y + layout.rowHeight / 2, theme);

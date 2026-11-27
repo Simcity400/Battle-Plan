@@ -2,7 +2,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
-import { artKindCell, cellArt, identityFlags, identityName, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { artKindCell, cellArt, identityFlags, newIdentityBoundary, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableCellIconItem, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -100,7 +100,7 @@ function missionCell(readView: BoundedReadView, operative: RosterOperative, boun
 }
 
 function targetName(readView: BoundedReadView, tag: string | null | undefined): Value<string> {
-  return tag ? knownValue(identityName(readView, 'country', tag)) : notRecorded('Not recorded');
+  return tag ? resolveName(readView, 'country', tag).value : notRecorded('Not recorded');
 }
 
 function rosterExtra(readView: BoundedReadView, operative: RosterOperative): readonly TooltipExtraRow[] {

@@ -6,10 +6,10 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
-import { LOG_TABLE_BASE, logCountryCell, logDateCell, occurrenceSelection, pagedTailEntry, projectPagedSlots, urlArtHandle } from '../../families/table/logHelpers.ts';
+import { LOG_TABLE_BASE, logCountryCell, logDateCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots, urlArtHandle } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ShipClassInfo, ShipSinkingAttribution, SinkingRow, ShipsSunkTailReply } from '../../generated/dashboard';
 import { SHIPS_SUNK_COLUMNS } from './definition.ts';
@@ -41,6 +41,11 @@ function sunkBy(cause: ShipSinkingAttribution): readonly TooltipExtraRow[] {
   return [{ label: 'Sunk by', value: cause.kind === 'cause' ? knownValue(cause.text) : notRecorded('Killer not recorded') }];
 }
 
+export interface SinkingSubject {
+  readonly hour: number;
+  readonly battle: { readonly key: string; readonly title: string } | null;
+}
+
 function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInfo | undefined, boundary: ReturnType<typeof newIdentityBoundary>): TableRow {
   const name = row.name ?? 'Ship name not recorded';
   const className = shipClass?.name ?? row.recordedClass;
@@ -52,18 +57,21 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
   const country = namedCause ? { ...flags, tooltipRows: [{ label: 'Killer', value: notRecorded('Killer not recorded') }, ...flags.tooltipRows ?? []] } : flags;
   const place = row.seaZone ? knownValue(row.seaZone) : notRecorded('Sea zone not recorded');
   let loss: TableCell;
+  let battle: SinkingSubject['battle'] = null;
   if (row.battle.kind === 'linked') {
     const where = row.battleProvince === null ? null : resolveName(view, 'province', String(row.battleProvince), { atHour: row.hour, boundary }).value;
     const named = where?.kind === 'known' ? `Battle of ${where.value}` : null;
     const killer = killerBeside(cause);
-    const tooltipRows = [{ label: 'Battle', value: named ? knownValue(named) : notRecorded('Naval battle recorded, battle name not recorded') }, ...sunkBy(cause)];
+    const battleValue = named ? knownValue(named) : where?.kind === 'pending' ? where : notRecorded('Naval battle recorded, battle name not recorded');
+    const tooltipRows = [{ label: 'Battle', value: battleValue }, ...sunkBy(cause)];
     loss = { value: knownValue(named ?? 'Battle'), strong: true, narrowText: 'Battle', tooltipRows, ...(killer ? { inlineSubtext: killer } : {}) };
+    battle = { key: row.battle.id, title: named ?? 'Naval battle' };
   } else {
     loss = cause.kind === 'notRecorded' ? { value: notRecorded(cause.reason), missingFigure: 'Cause' }
       : { value: knownValue(cause.kind === 'cause' ? cause.text : cause.kind === 'airWing' ? 'Air attack' : `Sunk by ${cause.name}`) };
   }
   return {
-    key: row.key, name, rowHour: row.hour, meta: row.hour,
+    key: row.key, name, rowHour: row.hour, meta: { hour: row.hour, battle } satisfies SinkingSubject,
     cells: {
       date: logDateCell(row.hour),
       kind: artKindCell(view, urlArtHandle(drawableIcon(shipClass?.icon)), 'equipment', className, 'Ship class artwork not recorded'),
@@ -71,6 +79,7 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
       item: { value: row.name ? knownValue(row.name) : notRecorded(name), missingFigure: 'Ship name', inlineSubtext: className ?? 'Class not recorded',
         tooltipRows: [{ label: 'Class', value: className ? knownValue(className) : notRecorded('Ship class not recorded') }] },
       place: { value: place, missingFigure: 'Sea zone' }, cause: loss,
+      action: battle ? logWatchCell() : { value: notApplicable('No recorded battle to watch'), blank: true },
     },
     tooltipExtra: () => [{ label: 'First recorded', value: knownValue(formatDateTime(row.observed)) }],
   };

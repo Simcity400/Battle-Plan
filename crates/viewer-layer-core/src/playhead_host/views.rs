@@ -860,6 +860,30 @@ impl Store {
         lock(&self.shared.readers).iter().any(|reading| reading.open) || !lock(&self.shared.asked).is_empty()
     }
 
+    pub fn asking(&self) -> bool {
+        !lock(&self.shared.asked).is_empty()
+    }
+
+    pub fn declared(&self) -> Vec<playhead::Declared> {
+        let mut wanted: BTreeMap<usize, u64> = reading(&self.shared).iter().enumerate().filter_map(|(table, kept)| Some((table, kept.as_ref()?.columns))).collect();
+        for asked in lock(&self.shared.asked).iter() {
+            if let Asked::Open { needs, .. } | Asked::Declare { needs, .. } = asked {
+                for need in needs {
+                    *wanted.entry(need.table.index()).or_default() |= need.columns;
+                }
+            }
+        }
+        wanted
+            .into_iter()
+            .filter(|&(table, _)| matches!(self.shared.written.get(table), Some(playhead::pages::TableWritten::Written)))
+            .filter_map(|(table, mask)| {
+                let width = self.shared.kinds.get(table)?.len();
+                let columns = (0..width).filter(|&column| column >= 64 || mask & (1 << column) != 0).collect();
+                Some(playhead::Declared { table, columns, keyed: true, passing: false, hourly: false })
+            })
+            .collect()
+    }
+
     pub fn reader(&self, name: &'static str, needs: &[Need]) -> Reader {
         open(&self.shared, name, needs, false, Pace::Step, false)
     }
@@ -1244,7 +1268,7 @@ pub struct Stepped {
     mirrors: Mirrors,
     kept: Vec<Option<Kept>>,
     tables: Vec<usize>,
-    absent: Vec<TableId>,
+    absent: Vec<(TableId, playhead::pages::TableWritten)>,
     hour: Option<(Hour, u64)>,
     order: Vec<(u128, u32)>,
     steps: Vec<Arc<playhead::Step>>,
@@ -1252,14 +1276,19 @@ pub struct Stepped {
 
 impl Stepped {
     pub fn new(entry: &Arc<Entry>, tables: &[TableId]) -> io::Result<Self> {
-        let (held, absent): (Vec<TableId>, Vec<TableId>) = tables.iter().partition(|&&table| super::details::held_at_all(entry, table));
-        let kinds = entry.kinds();
+        let (held, missing): (Vec<TableId>, Vec<TableId>) = tables.iter().partition(|&&table| super::details::held_at_all(entry, table));
+        let absent = if missing.is_empty() {
+            Vec::new()
+        } else {
+            let written = entry.pages().written_tables(&super::timeline_runs(entry), TABLE_COUNT);
+            missing.into_iter().map(|table| (table, written[table.index()].clone())).collect()
+        };
         let mut kept: Vec<Option<Kept>> = (0..TABLE_COUNT).map(|_| None).collect();
         let mut declared = Vec::with_capacity(held.len());
         for table in &held {
-            let columns = kinds.get(table.index()).ok_or_else(|| io::Error::other(format!("No table {table:?} in the schema")))?;
+            let columns = entry.pages().kinds(table.index()).ok_or_else(|| io::Error::other(format!("No table {table:?} in the schema")))?;
             declared.push(playhead::Declared { table: table.index(), columns: (0..columns.len()).collect(), keyed: true, passing: false, hourly: false });
-            let mut set = Kept::new(columns.clone());
+            let mut set = Kept::new(columns.to_vec());
             set.at(u64::MAX);
             kept[table.index()] = Some(set);
         }
@@ -1278,10 +1307,6 @@ impl Stepped {
             order: Vec::new(),
             steps: Vec::new(),
         })
-    }
-
-    pub fn absent(&self) -> &[TableId] {
-        &self.absent
     }
 
     pub fn epoch(&self) -> u64 {
@@ -1338,6 +1363,15 @@ impl Stepped {
                 Some(standing) => SharedView::from(TableView::Unavailable { reason: format!("{:?} was not read at hour {hour}: the steps reached it only at hour {:?}", TableId::ALL[table], standing.head()) }),
                 None => kept.view(table, u64::MAX, mirror, &mut self.order, &mut made),
             };
+        }
+        for (table, state) in &self.absent {
+            frame.tables[table.index()] = SharedView::from(match state {
+                playhead::pages::TableWritten::Withheld(reason) | playhead::pages::TableWritten::Damaged(reason) => TableView::Unavailable { reason: reason.clone() },
+                playhead::pages::TableWritten::Unwritten | playhead::pages::TableWritten::Written => match self.entry.capture.get() {
+                    Some(&mode) => TableView::NotRecorded { mode },
+                    None => TableView::Unavailable { reason: format!("{table:?} is not recorded here, in a recording whose capture mode the playhead was not given") },
+                },
+            });
         }
         Some(frame)
     }
@@ -1446,6 +1480,12 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
                         kind: view::HeadFailureKind::BuildError(reason.clone()),
                     };
                     (view, Some(failure))
+                }
+                playhead::pages::TableWritten::Withheld(reason) => {
+                    let view = shared.unwritten[table]
+                        .get_or_init(|| TableView::Unavailable { reason: reason.clone() }.into())
+                        .clone();
+                    (view, None)
                 }
                 playhead::pages::TableWritten::Unwritten | playhead::pages::TableWritten::Written => {
                     let view = shared.unwritten[table]
@@ -1900,6 +1940,9 @@ fn declare(shared: &Arc<Shared>, id: u64, needs: &[Need], republishes: bool) {
         }
         drop(readers);
         for (&table, sets) in &read {
+            if !matches!(shared.written[table], playhead::pages::TableWritten::Written) {
+                continue;
+            }
             let Some(kinds) = shared.kinds.get(table) else { continue };
             let held = kept[table].get_or_insert_with(|| Kept::new(kinds.clone()));
             let columns = sets.iter().fold(0, |columns, &(set, _, _)| columns | set);

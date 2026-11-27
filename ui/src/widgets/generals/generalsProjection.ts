@@ -1,15 +1,14 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { artHandleKey, unavailableArt, type ArtResult } from '../../families/art/types.ts';
-import { countryRowPresentation } from '../../families/bars/model.ts';
 import { nextChangeAfter } from '../../families/holders.ts';
 import type { ArtHandle, BoundedReadView } from '../../families/plan.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { cellArt, type CellArt } from '../../families/table/identityCell.ts';
+import { cellArt, LOADING_NAME, NAME_LOADING, resolveIdentity, type CellArt } from '../../families/table/identityCell.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableCellIconItem, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, textValue, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, textValue, zeroValue, type Value } from '../../families/value.ts';
 import type { LeaderKinds, LeaderSelection, SpriteFrame, UnitLeadersReply } from '../../generated/dashboard';
 import { COLUMNS, LEADERS_OPTION, TABLE_BASE } from './definition.ts';
 import { attributeNames, leaderRows, traitDateText, validateLeaders, withheldLeaderState, withheldLeaders, type LeaderRow } from './generalsData.ts';
@@ -60,7 +59,8 @@ function datedName(readView: BoundedReadView, row: LeaderRow, hour: number): Val
   if (key === null) return recorded;
   const who = readView.who('leader', key, hour);
   if (who.name.status === 'ready' && who.name.value.trim()) return knownValue(who.name.value);
-  if (who.name.status === 'pending' || row.row.name !== null) return recorded;
+  if (who.name.status === 'pending') return recorded.kind === 'known' ? recorded : pendingValue(NAME_LOADING);
+  if (recorded.kind === 'known') return recorded;
   return notRecorded(who.name.status === 'ready' ? 'Character name unavailable' : who.name.reason);
 }
 
@@ -170,15 +170,15 @@ export const generalsProjection: TableProjection<GeneralsOptions> = declareTable
     const shown = shownRows(reply, hour, options);
     const rows = shown.map((leader): GeneralRow => {
       const owner = leader.role.owner;
-      const presented = owner === null ? null : countryRowPresentation(readView, owner, undefined, undefined, hour);
+      const presented = owner === null ? null : resolveIdentity(readView, 'country', owner, { atHour: hour });
       const portrait = cellArt(readView, { kind: 'portrait', leader: leader.key, hour: leader.row.firstSeenHour ?? hour }, 'Portrait unavailable');
       return {
         leader,
         name: datedName(readView, leader, hour),
         portrait,
-        flag: presented?.media.kind === 'flag' ? presented.media.art : undefined,
-        ...(presented?.flagKey ? { flagKey: presented.flagKey } : {}),
-        country: presented === null ? notRecorded('Owner not recorded') : presented.labelMissing ? notRecorded('Country name not recorded') : textValue(presented.label, 'Country name not recorded'),
+        flag: presented?.art,
+        ...(presented?.artKey ? { flagKey: presented.artKey } : {}),
+        country: presented === null ? notRecorded('Owner not recorded') : presented.value,
         skills: leader.role.kind === KIND_NAVY ? navy : land,
         traits: (leader.row.traits ?? []).map((at, i) => ({
           name: contentTitle(leader.traits[i]?.name, leader.traits[i]?.token ?? String(at), 'Trait name unavailable'),
@@ -204,7 +204,7 @@ export const generalsProjection: TableProjection<GeneralsOptions> = declareTable
     };
   },
   rowKey: row => row.leader.key,
-  rowName: row => row.name.kind === 'known' ? row.name.value : row.leader.name,
+  rowName: row => row.name.kind === 'known' ? row.name.value : row.name.kind === 'pending' ? LOADING_NAME : row.leader.name,
   tooltipExtra: row => traitRows(row.leader),
   tooltipNote: row => (row.leader.foughtPartial ? PARTIAL : undefined),
 });

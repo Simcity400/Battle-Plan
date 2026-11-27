@@ -106,7 +106,7 @@ pub fn anchors() -> Anchors {
         },
         aggression: Arc::new(Vec::new()),
         fog: Arc::new(Err("unused in fixture".into())),
-        defines: CounterDefines::VANILLA,
+        defines: CounterDefines::FIXTURE,
         supply_grace: Err("unused in fixture".into()),
         dig_in_factor: Err("unused in fixture".into()),
         attrition: Err("unused in fixture".into()),

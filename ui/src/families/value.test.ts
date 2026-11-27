@@ -13,6 +13,7 @@ import {
   notApplicable,
   notRecorded,
   partialValue,
+  pendingValue,
   valueFromLive,
   answerRowIndex,
   valueFromNamedAnswer,
@@ -48,7 +49,7 @@ import { engineHour } from '../dashboard/calendar.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
-test('value constructors enforce the five states and reject bare null, undefined, NaN and empty reasons', () => {
+test('value constructors enforce the value states and reject bare null, undefined, NaN and empty reasons', () => {
   assert.deepEqual(knownValue(42), { kind: 'known', value: 42 });
   assert.deepEqual(knownValue(0), { kind: 'zero', value: 0 });
   assert.deepEqual(knownValue(0n), { kind: 'zero', value: 0n });
@@ -72,13 +73,13 @@ test('value constructors enforce the five states and reject bare null, undefined
   assert.throws(() => notApplicable('   '), InvalidFamilyValueError);
   assert.throws(() => partialValue(Number.NaN, 'reason'), InvalidFamilyValueError);
   assert.throws(() => partialValue(5, ''), InvalidFamilyValueError);
-  assert.throws(() => assertValue(null, 'test cell'), /InvalidFamilyValueError|expected a 5-state family Value/);
+  assert.throws(() => assertValue(null, 'test cell'), /InvalidFamilyValueError|expected a family Value/);
   assert.throws(() => assertValue(undefined, 'test cell'), InvalidFamilyValueError);
   assert.throws(() => assertValue({ kind: 'known', value: Number.NaN }), InvalidFamilyValueError);
   assert.throws(() => assertValue({ kind: 'bogus' }), InvalidFamilyValueError);
 });
 
-test('wire and exact adapters map every wire state and nullable meaning into the five states', () => {
+test('wire and exact adapters map every wire state and nullable meaning into Value states', () => {
   const big = (1n << 60n) + 7n;
   const rows = answer({
     keys: [1n, 2n, 3n, 4n, 5n, 6n],
@@ -182,6 +183,10 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
   assert.equal(part.kind, 'partial');
   assert.equal(part.text, '120');
   assert.equal(part.reason, 'Gaps excluded');
+  const pend = formatValueState(pendingValue('Name is loading'));
+  assert.deepEqual(pend, { kind: 'pending', label: 'Loading…', reason: 'Name is loading', spoken: 'Loading: Name is loading', audit: 'Loading: Name is loading' });
+  assert.deepEqual(valueStateProps(pendingValue('Name is loading')), { kind: 'pending', reason: 'Name is loading' });
+  assert.equal(canonicalAuditData(pendingValue('Name is loading')), '["pending","Name is loading"]');
 
   assert.equal(spokenValue(zeroValue(0), 'integer'), '0');
   assert.equal(spokenValue(notRecorded('No sensor'), 'integer'), 'Not recorded: No sensor');

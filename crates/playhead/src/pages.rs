@@ -171,6 +171,7 @@ impl Run {
 pub enum TableWritten {
     Written,
     Unwritten,
+    Withheld(String),
     Damaged(String),
 }
 
@@ -247,7 +248,15 @@ pub trait Pages: Send + Sync {
         (0..tables)
             .map(|table| {
                 if self.kinds(table).is_none() {
-                    return TableWritten::Unwritten;
+                    if self.held(table) == 0 {
+                        return TableWritten::Unwritten;
+                    }
+                    return runs
+                        .iter()
+                        .copied()
+                        .filter(|&run| run < total_runs)
+                        .find_map(|run| self.withheld_at(run, table, self.runs()[run].first_hour).map(|reason| TableWritten::Withheld(reason.to_owned())))
+                        .unwrap_or(TableWritten::Unwritten);
                 }
                 let mut damaged = None;
                 for &run in runs {
@@ -266,12 +275,13 @@ pub trait Pages: Send + Sync {
             .collect()
     }
     fn table_has_activity(&self, table: usize) -> bool {
-        self.runs().iter().enumerate().any(|(run_idx, run)| {
-            (0..run.blocks()).any(|block| {
-                self.table_entry(run_idx, block, table)
-                    .is_ok_and(|entry| !entry.parts.is_empty() || entry.first.is_some() || entry.restore.is_some())
+        self.kinds(table).is_some()
+            && self.runs().iter().enumerate().any(|(run_idx, run)| {
+                (0..run.blocks()).any(|block| {
+                    self.table_entry(run_idx, block, table)
+                        .is_ok_and(|entry| !entry.parts.is_empty() || entry.first.is_some() || entry.restore.is_some())
+                })
             })
-        })
     }
 }
 
@@ -578,6 +588,14 @@ impl Pages for WorldPages {
         let available_tables = tables.min(self.recording.tables());
         let mut written = vec![TableWritten::Unwritten; tables];
         let mut remaining = available_tables;
+        for (table, state) in written[..available_tables].iter_mut().enumerate() {
+            if self.kinds(table).is_none() {
+                if let Some(reason) = self.recording.withheld_reason(table) {
+                    *state = TableWritten::Withheld(reason.to_owned());
+                }
+                remaining -= 1;
+            }
+        }
         for &run_idx in runs {
             if remaining == 0 {
                 break;
@@ -593,7 +611,8 @@ impl Pages for WorldPages {
             match self.recording.open_block_shared(recorded_run, rec_block) {
                 Ok(Some(open)) => {
                     for table in 0..available_tables {
-                        if !matches!(written[table], TableWritten::Written)
+                        if matches!(written[table], TableWritten::Unwritten | TableWritten::Damaged(_))
+                            && self.kinds(table).is_some()
                             && open.tables.get(table).is_some_and(|entry| entry.unit.first.is_some())
                         {
                             written[table] = TableWritten::Written;
@@ -603,7 +622,7 @@ impl Pages for WorldPages {
                 }
                 Ok(None) => {
                     for table in 0..available_tables {
-                        if matches!(written[table], TableWritten::Written) {
+                        if matches!(written[table], TableWritten::Written | TableWritten::Withheld(_)) || self.kinds(table).is_none() {
                             continue;
                         }
                         match self.recording.table_entry(recorded_run, rec_block, table) {
@@ -621,8 +640,8 @@ impl Pages for WorldPages {
                 }
                 Err(error) => {
                     let reason = error.to_string();
-                    for state in &mut written[..available_tables] {
-                        if matches!(state, TableWritten::Unwritten) {
+                    for (table, state) in written[..available_tables].iter_mut().enumerate() {
+                        if matches!(state, TableWritten::Unwritten) && self.kinds(table).is_some() {
                             *state = TableWritten::Damaged(reason.clone());
                         }
                     }
@@ -633,7 +652,7 @@ impl Pages for WorldPages {
     }
 
     fn table_has_activity(&self, table: usize) -> bool {
-        if table >= self.recording.tables() {
+        if table >= self.recording.tables() || self.kinds(table).is_none() {
             return false;
         }
         for (run_idx, run) in self.runs.iter().enumerate() {

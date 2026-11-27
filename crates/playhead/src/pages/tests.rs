@@ -103,6 +103,16 @@ fn a_recording_of_an_earlier_format_plays_what_it_held_and_withholds_the_tables_
             assert!(Lane::new(pages, 0, table.index(), &[0], false).is_err());
         }
         let pages: Arc<dyn Pages> = Arc::new(opened);
+        let written = pages.written_tables(&[0], TableId::ALL.len());
+        assert_eq!(written[TableId::Countries.index()], super::TableWritten::Written, "{span:?}");
+        assert!(pages.table_has_activity(TableId::Countries.index()), "{span:?}");
+        for table in [TableId::VariantStats, TableId::VariantChanges, TableId::RaidSpeedInputs, TableId::RocketProductionOutput] {
+            let gap = table.last_change().table_gap(table, format).unwrap();
+            assert_eq!(written[table.index()], super::TableWritten::Withheld(gap), "{span:?}: {table:?}");
+            assert!(!pages.table_has_activity(table.index()), "{span:?}: {table:?}");
+        }
+        assert_eq!(written[TableId::ScriptVariableValues.index()], super::TableWritten::Unwritten, "{span:?}");
+        assert!(!pages.table_has_activity(TableId::ScriptVariableValues.index()), "{span:?}");
         let mut lane = lane(&pages, 0);
         for ordinal in [BLOCK + 40, BLOCK + 79] {
             lane.seek(ordinal as i32).unwrap();

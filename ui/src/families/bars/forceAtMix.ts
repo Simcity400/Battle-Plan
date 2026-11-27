@@ -4,7 +4,7 @@ import { notRecorded, type Value } from '../value.ts';
 import { formatShare, formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForcePart } from '../../generated/dashboard';
 import { forcePartLabel, forceReading, forceRowIdentity, formatScaled, GROUP_EMPTY, witnessedPartItems } from './forceAtRace.ts';
-import { type BarsLegendItem, type BarsModel, type BarsSegment } from './model.ts';
+import { barsLabelText, type BarsLegendItem, type BarsModel, type BarsSegment } from './model.ts';
 import { partColours } from './partColour.ts';
 import { buildShareRowsModel, type ShareRowEntry } from './shareRows.ts';
 
@@ -77,13 +77,12 @@ export function projectForceAtMix(
         key,
         subject: displayTag,
         label: pres.label,
-        labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         segments: [],
         missing: value,
         format: config.valueFormat,
         tooltip: {
-          title: pres.labelMissing ? 'Name not recorded' : pres.label,
+          title: barsLabelText(pres.label),
           hour,
           missingReason: value.reason,
           items: tooltipItems,
@@ -100,12 +99,11 @@ export function projectForceAtMix(
         key,
         subject: displayTag,
         label: pres.label,
-        labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         segments: [],
         countText,
         tooltip: {
-          title: pres.labelMissing ? 'Name not recorded' : pres.label,
+          title: barsLabelText(pres.label),
           hour,
           items: tooltipItems,
           ...(config.note ? { note: config.note } : {}),
@@ -121,14 +119,13 @@ export function projectForceAtMix(
         key,
         subject: displayTag,
         label: pres.label,
-        labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         segments: [],
         countText,
         missing: notRecorded(item.partsMissing),
         format: config.valueFormat,
         tooltip: {
-          title: pres.labelMissing ? 'Name not recorded' : pres.label,
+          title: barsLabelText(pres.label),
           hour,
           missingReason: item.partsMissing,
           items: tooltipItems,
@@ -162,14 +159,13 @@ export function projectForceAtMix(
         key,
         subject: displayTag,
         label: pres.label,
-        labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         segments: [],
         countText,
         missing: notRecorded(reason),
         format: config.valueFormat,
         tooltip: {
-          title: pres.labelMissing ? 'Name not recorded' : pres.label,
+          title: barsLabelText(pres.label),
           hour,
           missingReason: reason,
           items: tooltipItems,
@@ -212,12 +208,11 @@ export function projectForceAtMix(
       key,
       subject: displayTag,
       label: pres.label,
-      labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
       media: pres.media,
       segments,
       countText,
       tooltip: {
-        title: pres.labelMissing ? 'Name not recorded' : pres.label,
+        title: barsLabelText(pres.label),
         hour,
         items: tooltipItems,
         ...(config.note ? { note: config.note } : {}),

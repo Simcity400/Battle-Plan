@@ -161,7 +161,7 @@ pub(super) fn production_selected(
     let ctx = NavyContext {
         settings,
         selected,
-        defines: &CounterDefines::VANILLA,
+        defines: &CounterDefines::FIXTURE,
         art: &art,
         gui: fixture,
     };

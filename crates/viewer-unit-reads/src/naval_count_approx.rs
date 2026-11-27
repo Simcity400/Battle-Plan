@@ -34,14 +34,14 @@ impl Defines {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub const VANILLA: Self = Self {
-        low_half_range_percent: 10,
-        low_min_ships: 3,
-        low_min_capitals: 1,
-        medium_half_range_percent: 5,
-        medium_min_ships: 1,
-        medium_min_capitals: 1,
-        port_detail: Some([0, 10_000, 30_000, 70_000, 80_000]),
+    pub const FIXTURE: Self = Self {
+        low_half_range_percent: 14,
+        low_min_ships: 5,
+        low_min_capitals: 2,
+        medium_half_range_percent: 7,
+        medium_min_ships: 2,
+        medium_min_capitals: 2,
+        port_detail: Some([0, 15_000, 35_000, 65_000, 85_000]),
     };
 }
 
@@ -158,26 +158,48 @@ fn jitter_hash(mut value: u32) -> u32 {
 mod tests {
     use super::*;
 
-    fn vanilla() -> Defines {
-        Defines::VANILLA
+    fn fixture() -> Defines {
+        Defines::FIXTURE
     }
 
     const FORCE: u64 = (7_u64 << 32) | 61;
 
+    fn range_text(total: i32, percent: i32, minimum: i32, handle: u64) -> String {
+        let (lower, upper) = count_range(total, percent, minimum, (handle >> 32) as u32);
+        if lower == upper {
+            lower.to_string()
+        } else {
+            format!("{lower}-{upper}")
+        }
+    }
+
     #[test]
     fn visibility_boundaries_choose_unknown_low_medium_and_exact() {
-        let defines = vanilla();
+        let defines = fixture();
+        let low = range_text(
+            15,
+            defines.low_half_range_percent,
+            defines.low_min_ships,
+            FORCE,
+        );
+        let medium = range_text(
+            15,
+            defines.medium_half_range_percent,
+            defines.medium_min_ships,
+            FORCE,
+        );
+        assert_ne!(low, medium);
         assert_eq!(format_count(15, FORCE, 99, false, 15, &defines), "?");
-        assert_eq!(format_count(15, FORCE, 100, false, 15, &defines), "12-18");
-        assert_eq!(format_count(15, FORCE, 149, false, 15, &defines), "12-18");
-        assert_eq!(format_count(15, FORCE, 150, false, 15, &defines), "14-16");
-        assert_eq!(format_count(15, FORCE, 249, false, 15, &defines), "14-16");
+        assert_eq!(format_count(15, FORCE, 100, false, 15, &defines), low);
+        assert_eq!(format_count(15, FORCE, 149, false, 15, &defines), low);
+        assert_eq!(format_count(15, FORCE, 150, false, 15, &defines), medium);
+        assert_eq!(format_count(15, FORCE, 249, false, 15, &defines), medium);
         assert_eq!(format_count(15, FORCE, 250, false, 15, &defines), "15");
     }
 
     #[test]
     fn unrecorded_counts_are_unknown_only_where_the_text_reads_them() {
-        let defines = vanilla();
+        let defines = fixture();
         let text = |total, visibility, ships| {
             format_recorded_count(total, FORCE, visibility, false, ships, &defines)
         };
@@ -194,15 +216,27 @@ mod tests {
 
     #[test]
     fn capital_minimum_switches_only_when_total_ships_exceed_three() {
-        let defines = vanilla();
-        assert_eq!(format_count(2, FORCE, 149, true, 3, &defines), "1-3");
+        let defines = fixture();
+        let low_cap = range_text(
+            2,
+            defines.low_half_range_percent,
+            defines.low_min_capitals,
+            FORCE,
+        );
+        let med_cap = range_text(
+            2,
+            defines.medium_half_range_percent,
+            defines.medium_min_capitals,
+            FORCE,
+        );
+        assert_eq!(format_count(2, FORCE, 149, true, 3, &defines), low_cap);
         assert_eq!(format_count(2, FORCE, 150, true, 3, &defines), "2");
-        assert_eq!(format_count(2, FORCE, 150, true, 4, &defines), "1-3");
+        assert_eq!(format_count(2, FORCE, 150, true, 4, &defines), med_cap);
     }
 
     #[test]
     fn range_hash_uses_handle_id_with_wrapping_unsigned_multiplication() {
-        let defines = vanilla();
+        let defines = fixture();
         assert_eq!(
             format_count(
                 15,
@@ -212,14 +246,14 @@ mod tests {
                 15,
                 &defines
             ),
-            "10-16"
+            "11-21"
         );
         assert_eq!(format_count(99, FORCE, 100, false, 99, &defines), ">100");
     }
 
     #[test]
     fn matching_content_defines_control_range_without_capture_operands() {
-        let mut defines = vanilla();
+        let mut defines = fixture();
         defines.low_half_range_percent = 0;
         defines.low_min_ships = 0;
         assert_eq!(format_count(15, FORCE, 100, false, 15, &defines), "15");
@@ -229,14 +263,14 @@ mod tests {
 
     #[test]
     fn every_count_words_a_text_as_the_game_formats_it() {
-        let defines = vanilla();
+        let defines = fixture();
         assert_eq!(format_count(-1, FORCE, 250, false, 0, &defines), "-1");
         assert_eq!(format_count(5, FORCE, 250, true, 4, &defines), "5");
         assert_eq!(
             format_count(1, FORCE, 100, false, -1, &defines),
             format_count(1, FORCE, 100, false, 15, &defines)
         );
-        let mut modded = vanilla();
+        let mut modded = fixture();
         modded.low_half_range_percent = 0;
         modded.low_min_ships = 40;
         let total = i32::MAX - 10;

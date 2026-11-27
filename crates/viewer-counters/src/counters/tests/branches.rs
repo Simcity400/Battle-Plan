@@ -103,7 +103,19 @@ fn transcript(branched: bool) -> Vec<String> {
             let mut pings = PoolView::default();
             let mut bases = BaseView::default();
             let mut combats = land_windows::View::default();
-            let heights = [80., 89.999, 90., 179.999, 180., 349.999, 350., 80., 80.];
+            let groups = inputs.content.defines.groups;
+            let low = groups.province_distance - 10.0;
+            let heights = [
+                low,
+                groups.province_distance - 0.001,
+                groups.province_distance,
+                groups.state_distance - 0.001,
+                groups.state_distance,
+                groups.strategic_distance - 0.001,
+                groups.strategic_distance,
+                low,
+                low,
+            ];
             let mut frames = Vec::new();
             for (at, height) in heights.into_iter().enumerate() {
                 inputs.camera.height = height;

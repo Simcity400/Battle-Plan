@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { ValueState, type ValueStateProps } from '../../components/ValueState.tsx';
 import {
   CELL_INSET,
   endAligned,
@@ -99,6 +100,7 @@ export interface TableHeaderColumn extends TableColumnLayout {
 
 export interface TableHeaderIdentity {
   readonly name: string;
+  readonly nameState?: ValueStateProps;
   readonly missing: boolean;
   readonly flag: string | null;
   readonly flagPending: boolean;
@@ -111,7 +113,9 @@ function HeaderIdentity({ identity }: { identity: TableHeaderIdentity }) {
     {identity.flag
       ? <img className="tf-th-flag" src={identity.flag} alt="" aria-hidden="true" />
       : <span className={`tf-th-flag${identity.flagPending ? '' : ' is-missing'}`} aria-hidden="true">{identity.flagPending ? null : initials}</span>}
-    <span className={`tf-th-identity-name${identity.missing ? ' is-missing' : ''}`}>{identity.name}</span>
+    {identity.nameState?.kind === 'pending'
+      ? <ValueState {...identity.nameState} className="tf-th-identity-name is-pending" />
+      : <span className={`tf-th-identity-name${identity.missing ? ' is-missing' : ''}`}>{identity.name}</span>}
   </span>;
 }
 

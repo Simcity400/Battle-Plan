@@ -450,7 +450,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
         let roles = line
             .sides
             .iter()
-            .flat_map(|(at, sides)| sides.countries.iter().flatten().map(|slot| Role { slot: Some(*slot), at: *at }))
+            .flat_map(|(at, sides)| sides.countries.iter().flatten().map(|slot| Role::at(Some(*slot), *at)))
             .collect();
         let sort_keys = [
             dated(&line.losses, |loss| sum(loss.manpower)),
@@ -467,7 +467,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             subjects: Box::default(),
             states: std::mem::take(&mut line.states).into(),
             sort_keys,
-            text: Box::default(),
+            text: Default::default(),
             payload: line,
         });
     }

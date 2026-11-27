@@ -164,9 +164,36 @@ test('a selected slot untagged raid is listed instead of dropped on the client',
   assert.deepEqual(projected.cells.country?.flags?.map(flag => flag.tag), ['?', 'ENG']);
   assert.deepEqual(projected.cells.country?.value, {
     kind: 'partial',
-    value: "The raider's country holds no tag at the raid's hour · United Kingdom",
+    value: 'United Kingdom',
     reason: "The raider's country holds no tag at the raid's hour",
   });
+});
+
+test('pending state or province lookup stays pending in raid place cell and Target hover instead of falling back to State N', () => {
+  const pendingIdentity: IdentityProvider = {
+    resolve(kind: EntityKind, key: string, atHour: DisplayedHour): IdentityResult {
+      return {
+        kind,
+        key,
+        holder: { status: 'absent', reason: 'not set' },
+        name: kind === 'state' || kind === 'province' ? { status: 'pending' } : { status: 'ready', value: key },
+        validInterval: [atHour, atHour],
+        nextChangeAt: Infinity,
+      };
+    },
+  };
+  const stateRaid = sampleRow({ key: 'r-pending-state', place: { province: null, provinceHour: null, state: 77, stateHour: 100 } });
+  const provinceRaid = sampleRow({ key: 'r-pending-prov', ordinal: '1', place: { province: 404, provinceHour: 100, state: null, stateHour: null } });
+  const source = buildRowSourceFromHead('test:raids:pending-place', sampleReply([stateRaid, provinceRaid]), undefined, 100)!;
+  const model = raidLogProjection.project(
+    createBoundedReadView({ hour: 100, rows: new Map([['main', source]]), identity: pendingIdentity }),
+    { artwork: false, selected: [] },
+  );
+  for (const row of model.rows) {
+    assert.deepEqual(row.cells.place?.value, { kind: 'pending', reason: 'Name is loading' });
+    const extra = (typeof row.tooltipExtra === 'function' ? row.tooltipExtra() : row.tooltipExtra) ?? [];
+    assert.deepEqual(extra.find(item => item.label === 'Target')?.value, { kind: 'pending', reason: 'Name is loading' });
+  }
 });
 
 test('an end-dated row shows endedHour and names the end observation raider, never borrowing the start raider', () => {

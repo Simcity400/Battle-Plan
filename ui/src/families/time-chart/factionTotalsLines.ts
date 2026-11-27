@@ -169,7 +169,7 @@ function factionPresentation(
   const resolved = resolveName(readView, 'faction', id, { atHour });
   const style = options.styles?.[id];
   const recordedName = resolved.value.kind === 'known' ? resolved.name : null;
-  const name = style?.name ?? (resolved.value.kind === 'known' || resolved.loading ? resolved.name : `Faction ${id}`);
+  const name = style?.name ?? (resolved.value.kind === 'known' || resolved.value.kind === 'pending' ? resolved.name : `Faction ${id}`);
   const founderTag = founder ?? options.factions.find(item => item.id === id)?.founder ?? null;
   const ownColour = style?.colour ?? sharedFactionColour(options.shared, options.identities?.get(id), recordedName, founderTag);
   const fallbackOrdinal = ordinals?.get(id) ?? factionColourOrdinals([id], options.factions.map(item => item.id)).get(id) ?? 0;
@@ -185,7 +185,7 @@ function memberNames(readView: BoundedReadView, row: FactionTotalRow, atHour: nu
   const keys = row.memberCountries.length ? row.memberCountries.map(countryKey) : row.members;
   const shown = keys.slice(0, limit).map((key, index) => {
     const resolved = resolveName(readView, 'country', key, { atHour });
-    return resolved.value.kind === 'known' || resolved.loading ? resolved.name : (row.members[index] ?? key);
+    return resolved.value.kind === 'known' || resolved.value.kind === 'pending' ? resolved.name : (row.members[index] ?? key);
   });
   return keys.length > limit ? `${shown.join(', ')} +${keys.length - limit} more` : shown.join(', ');
 }

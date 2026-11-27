@@ -9,7 +9,7 @@ use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals}, products::Load
 use dashboard_query::{
     Query,
     identity::Holder,
-    log::{Reader, occurrence::{Index, Occurrence, Role}},
+    log::{Reader, occurrence::{Index, Occurrence, Role, SearchText}},
     series::MissingSpan,
 };
 use replay_data::{event_feed_rows::EventFeedCoverage, rows::FeedEventRow};
@@ -107,6 +107,7 @@ pub(crate) struct Scanned {
     resolved: Mutex<HashMap<u128, Option<DecisionLifecycleState>>>,
     presented: Mutex<Presented>,
     breaks: Vec<(i32, i32)>,
+    choice_breaks: Vec<(i32, i32, String)>,
     decision_breaks: Vec<(i32, i32)>,
     partial_reads: Vec<i32>,
     pub gaps: Vec<MissingSpan>,
@@ -140,8 +141,17 @@ impl Scanned {
         self.partial_reads.binary_search(&read_hour).is_ok()
     }
 
+    pub(crate) fn choice_break(&self, from: i32, hour: i32) -> Option<(i32, &str)> {
+        self.choice_breaks
+            .iter()
+            .filter(|&&(first, last, _)| last >= from && first <= hour)
+            .min_by_key(|&&(first, _, _)| first.max(from))
+            .map(|(first, _, reason)| ((*first).max(from), reason.as_str()))
+    }
+
     fn refused(first: i32, last: i32, reason: &str) -> Self {
         let whole = vec![(first, last)];
+        let message = format!("The event history could not be read: {reason}");
         Self {
             briefs: Vec::new(),
             native: Vec::new(),
@@ -151,9 +161,10 @@ impl Scanned {
             resolved: Mutex::default(),
             presented: Mutex::default(),
             breaks: whole.clone(),
+            choice_breaks: vec![(first, last, message.clone())],
             decision_breaks: whole,
             partial_reads: Vec::new(),
-            gaps: vec![MissingSpan { first_hour: first, last_hour: last, reason: format!("The event history could not be read: {reason}") }],
+            gaps: vec![MissingSpan { first_hour: first, last_hour: last, reason: message }],
         }
     }
 
@@ -304,18 +315,20 @@ fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &
     let tags = |roles: &[Role]| roles.iter().filter_map(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)).map(str::to_owned)).collect::<Vec<_>>();
     let (date, roles): (i32, Vec<Role>) = if !event.derived() {
         let ally = event.cause.and_then(|cause| cause.ally).and_then(|ally| slot_of(ally.slot));
-        (event.hour.min(at.hour), [slot_of(event.actor.slot), slot_of(event.target.slot), ally].into_iter().map(|slot| Role { slot, at: event.hour }).collect())
+        let date = event.hour.min(at.hour);
+        (date, [slot_of(event.actor.slot), slot_of(event.target.slot), ally].into_iter().map(|slot| Role::dated(slot, date, at.hour)).collect())
     } else if kind == EventFeedKind::CeasedToExist {
-        (event.read_hour.min(at.hour), vec![Role { slot: slot_of(event.actor.slot), at: event.dated.unwrap_or(event.read_hour) }])
+        let eff = event.dated.unwrap_or(event.read_hour).min(at.hour);
+        (event.read_hour.min(at.hour), vec![Role::dated(slot_of(event.actor.slot), eff, at.hour)])
     } else {
         let (actor, target) = (slot_of(event.actor.slot), slot_of(event.target.slot));
         let start = event.dated.unwrap_or(event.read_hour);
         let exact = [actor, target].iter().all(|slot| slot.is_some_and(|slot| names.slot_tag(slot, start).is_some() && names.slot_tag(slot, start) == names.slot_tag(slot, event.read_hour)));
-        let date = if exact { start } else { event.read_hour };
-        (date.min(at.hour), vec![Role { slot: actor, at: date }, Role { slot: target, at: date }])
+        let date = (if exact { start } else { event.read_hour }).min(at.hour);
+        (date, vec![Role::dated(actor, date, at.hour), Role::dated(target, date, at.hour)])
     };
     let token = event.token.as_deref().and_then(|bytes| std::str::from_utf8(bytes).ok());
-    let text = text_of(token, tags(&roles).into_iter());
+    let text = SearchText::from(text_of(token, tags(&roles).into_iter()));
     Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text, payload: Item::Log { head: at, edges: Box::new([]) } }
 }
 
@@ -385,17 +398,31 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let resolved = decision_state::resolve_all(query, &refs)?;
     let states = lifecycles.iter().zip(resolved).filter_map(|(event, state)| state.map(|state| ((u128::from(event.generation) << 64) | u128::from(event.sequence), state))).collect();
     let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
-    let mut held: Vec<(i32, i32)> = query.timeline.unheld.iter().map(|gap| (gap.first, gap.last)).collect();
-    held.extend(source.replay_ref().event_losses(branch).map(|(after, hour)| (after + 1, hour)));
-    held.extend(gaps.iter().map(|gap| (gap.first_hour, gap.last_hour)));
+    let mut choice_breaks: Vec<(i32, i32, String)> = query.timeline.unheld.iter().map(|gap| (gap.first, gap.last, gap.reason.clone())).collect();
+    choice_breaks.extend(source.replay_ref().event_losses(branch).map(|(after, hour)| (after + 1, hour, dashboard_text::metadata::EVENT_LOSS_REASON.to_owned())));
+    choice_breaks.extend(gaps.iter().map(|gap| (gap.first_hour, gap.last_hour, gap.reason.clone())));
     let complete = EventFeedCoverage::Complete as u32;
-    let lost = |decisions: bool| incomplete.iter().filter(move |(_, _, read)| read.coverage != Some(complete) || (decisions && read.refusals != Some(0))).map(|&(hour, ..)| (hour, hour));
+    choice_breaks.extend(incomplete.iter().filter(|(_, _, read)| read.coverage != Some(complete)).map(|&(hour, _, ref read)| (hour, hour, incomplete_break_reason(read))));
+    choice_breaks.retain(|(first, last, _)| first <= last);
     let mut partial_reads: Vec<i32> = incomplete.iter().filter(|(_, _, read)| read.coverage != Some(complete)).map(|(_, _, read)| read.read_hour).collect();
     partial_reads.sort_unstable();
     partial_reads.dedup();
-    let breaks = spans(held.iter().copied().chain(lost(false)).collect());
-    let decision_breaks = spans(held.into_iter().chain(lost(true)).collect());
-    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, decision_breaks, partial_reads, gaps })
+    let held: Vec<(i32, i32)> = choice_breaks.iter().map(|&(first, last, _)| (first, last)).collect();
+    let breaks = spans(held.clone());
+    let decision_lost = incomplete.iter().filter(|(_, _, read)| read.refusals != Some(0)).map(|&(hour, ..)| (hour, hour));
+    let decision_breaks = spans(held.into_iter().chain(decision_lost).collect());
+    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
+}
+
+fn incomplete_break_reason(read: &FeedEvent) -> String {
+    let recorded = String::from_utf8_lossy(&read.failure).trim().to_owned();
+    if !recorded.is_empty() {
+        recorded
+    } else if read.coverage == Some(EventFeedCoverage::Partial as u32) {
+        "event feed read in part".to_owned()
+    } else {
+        "event feed unavailable".to_owned()
+    }
 }
 
 fn spans(mut breaks: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
@@ -539,8 +566,31 @@ fn choice_status(edges: &[&Brief], observed: i32, breaks: &[(i32, i32)], hour: i
 
 
 fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i32, u8)]>) -> Occurrence<Item> {
-    let roles: Vec<Role> = card.edges.iter().flat_map(|edge| edge.slots.iter().map(|&slot| Role { slot, at: edge.hour })).filter(|role| role.slot.is_some()).collect();
-    let tags = roles.iter().filter_map(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)).map(str::to_owned)).collect::<BTreeSet<_>>();
+    let roles: Vec<Role> = card.edges.iter().flat_map(|e| e.slots.iter().map(|&slot| Role::dated(slot, e.hour, e.at.hour.max(head.at.hour)))).filter(|r| r.slot.is_some()).collect();
+    let mut by_read: Vec<&Brief> = card.edges.clone();
+    by_read.sort_by_key(|edge| (edge.at.hour, edge.at.key));
+    let (mut seen_tokens, mut seen_tags, mut parts) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
+    let mut at = 0;
+    while at < by_read.len() {
+        let observed = by_read[at].at.hour.max(head.at.hour);
+        let mut end = at + 1;
+        while end < by_read.len() && by_read[end].at.hour.max(head.at.hour) == observed { end += 1; }
+        let mut words: Vec<String> = by_read[at..end].iter().filter_map(|e| e.token.as_deref()).filter(|t| seen_tokens.insert(*t)).map(str::to_owned).collect();
+        let tags: BTreeSet<String> = by_read[at..end]
+            .iter()
+            .flat_map(|e| e.slots.iter().flatten().filter_map(|&slot| names.slot_tag(slot, e.hour)))
+            .filter(|tag| seen_tags.insert((*tag).to_owned()))
+            .map(str::to_owned)
+            .collect();
+        words.extend(tags);
+        if !words.is_empty() { parts.push((observed, words.join(" ").into_boxed_str())); }
+        at = end;
+    }
+    let text = if parts.iter().all(|(at, _)| *at <= head.at.hour) {
+        SearchText::from(parts.into_iter().map(|(_, p)| p.into_string()).collect::<Vec<_>>().join(" "))
+    } else {
+        SearchText::dated(parts)
+    };
     Occurrence {
         id: head.at.key,
         date: head.hour,
@@ -550,7 +600,7 @@ fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i
         subjects: Box::new([]),
         states,
         sort_keys: Box::new([]),
-        text: text_of(card.edges.iter().find_map(|edge| edge.token.as_deref()), tags.into_iter()),
+        text,
         payload: Item::Log { head: head.at, edges: card.edges.iter().map(|edge| edge.at).collect() },
     }
 }
@@ -606,26 +656,29 @@ fn family_id(text: &str) -> u128 {
 }
 
 fn family_occurrence(query: &Query<'_>, row: EventFeedRow, slot: Option<u32>) -> Occurrence<Item> {
+    let observed = row.read_hour.max(row.hour);
+    let at = row.name_hour.min(observed);
     let roles: Vec<Role> = if let Some(slot) = slot {
-        vec![Role { slot: Some(slot), at: row.name_hour }]
+        vec![Role::dated(Some(slot), at, observed)]
     } else {
         row.tags
             .iter()
-            .map(|tag| Role {
-                slot: query.holders.at(tag.as_str(), row.name_hour).and_then(|run| match run.holder {
+            .map(|tag| Role::dated(
+                query.holders.at(tag.as_str(), row.name_hour).and_then(|run| match run.holder {
                     Holder::Found { slot, .. } => Some(slot),
                     _ => None,
                 }),
-                at: row.name_hour,
-            })
+                at,
+                observed,
+            ))
             .collect()
     };
     let name = row.item.as_ref().and_then(|item| item.name.clone());
-    let text = text_of(name.as_deref(), row.tags.iter().cloned());
+    let text = SearchText::from(text_of(name.as_deref(), row.tags.iter().cloned()));
     Occurrence {
         id: family_id(&row.id),
         date: row.hour,
-        observed: row.read_hour.max(row.hour),
+        observed,
         kind: kind_code(row.kind),
         roles: roles.into_boxed_slice(),
         subjects: Box::new([]),

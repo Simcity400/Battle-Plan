@@ -25,7 +25,12 @@ pub fn lines(entry: &Entry, hour: Option<Hour>, mirrors: Option<&Mirrors>) -> Ve
     };
     let mut lines = Vec::with_capacity(TableId::ALL.len() + 2);
     lines.push(format!("At the playback head: hour {hour}"));
+    let written = entry.pages().written_tables(&super::timeline_runs(entry), TableId::ALL.len());
     for table in TableId::ALL {
+        if let playhead::pages::TableWritten::Withheld(reason) = &written[table.index()] {
+            lines.push(format!("{table:?}: unavailable ({reason})"));
+            continue;
+        }
         let held = mirrors.and_then(|mirrors| mirrors.get(table));
         lines.push(match status(entry, table, hour) {
             Err(error) => format!("{table:?}: its status cannot be read at the head ({error})"),
@@ -51,9 +56,24 @@ pub fn differ(side: &MapSide<impl crate::playhead_host::PlaybackProducts>, today
     let Some(hour) = side.applied() else { return (1, 1, Some("the head has reached no hour".into()), Vec::new()) };
     let (entry, mirrors) = (side.entry(), side.parts().map(|(mirrors, _)| mirrors));
     let (mut entries, mut differing, mut first, mut absent) = (0, 0, None, Vec::new());
+    let written = entry.pages().written_tables(&super::timeline_runs(entry), TableId::ALL.len());
     for table in TableId::ALL {
         let held = mirrors.and_then(|mirrors| mirrors.get(table));
         let view = &*today.tables[table.index()];
+        if let playhead::pages::TableWritten::Withheld(reason) = &written[table.index()] {
+            entries += 1;
+            let same = matches!(view, TableView::Unavailable { reason: today } if {
+                today == reason
+                    || today
+                        .strip_suffix(reason.as_str())
+                        .is_some_and(|prefix| prefix == format!("{table:?} of the recording: "))
+            });
+            if !same {
+                differing += 1;
+                first.get_or_insert_with(|| format!("{table:?} at {hour}: withheld ({reason})"));
+            }
+            continue;
+        }
         let ours = status(entry, table, hour).ok().flatten().map(|(status, _)| status);
         let agree = match (ours, view) {
             (Some(Status::Complete), TableView::Complete(rows)) => held.is_none_or(|mirror| mirror.rows().count() == rows.len()),
@@ -85,6 +105,13 @@ pub fn held_at_all(entry: &Entry, table: TableId) -> bool {
 }
 
 pub fn seen(entry: &Entry, table: TableId, hour: Hour, wait: Duration) -> Seen {
+    if entry.pages().kinds(table.index()).is_none()
+        && entry.pages().held(table.index()) > 0
+        && let Some(piece) = entry.playhead().timeline().pieces().iter().find(|piece| piece.first <= hour && hour <= piece.last)
+        && let Some(reason) = entry.pages().withheld_at(piece.run, table.index(), hour)
+    {
+        return Seen::Unavailable(reason.to_owned());
+    }
     match status(entry, table, hour) {
         Ok(Some((Status::Complete, _))) => Seen::Complete,
         Ok(Some((Status::Truncated { missing }, _))) => Seen::Truncated(missing),
@@ -98,6 +125,9 @@ fn status(entry: &Entry, table: TableId, hour: Hour) -> io::Result<Option<(Statu
     let Some(piece) = entry.playhead().timeline().pieces().iter().find(|piece| piece.first <= hour && hour <= piece.last) else {
         return Ok(None);
     };
+    if entry.pages().kinds(table.index()).is_none() {
+        return Ok(Some((Status::NotRecorded, (piece.run, 0))));
+    }
     let run = entry.pages().runs().get(piece.run).ok_or_else(|| io::Error::other(format!("no run {}", piece.run)))?;
     let at = hour.checked_sub(run.first_hour).and_then(|at| u32::try_from(at).ok()).ok_or_else(|| io::Error::other(format!("hour {hour} is outside run {}", piece.run)))?;
     let block = at / BLOCK;

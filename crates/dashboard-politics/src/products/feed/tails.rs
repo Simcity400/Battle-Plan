@@ -242,6 +242,9 @@ pub struct EventFeedPageRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub status: Option<ScriptStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub not_recorded_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -284,6 +287,12 @@ pub struct ScriptPageRow {
     #[doc = " The card's status at the hour asked."]
     pub status: Option<ScriptStatus>,
     pub occurrence: Option<ScriptOccurrence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub not_recorded_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub not_recorded_hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -486,6 +495,10 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                     }
                 }
             }
+            let status = shown.state.and_then(ScriptStatus::of_code);
+            let not_recorded_reason = (status == Some(ScriptStatus::NotRecorded))
+                .then(|| prepared.scanned.choice_break(occurrence.observed, hour).map(|(_, reason)| reason.to_owned()))
+                .flatten();
             EventFeedPageRow {
                 key,
                 hour: occurrence.date,
@@ -494,7 +507,8 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                 live: shown.live,
                 row,
                 choice,
-                status: shown.state.and_then(ScriptStatus::of_code),
+                status,
+                not_recorded_reason,
             }
         })
         .collect();
@@ -679,14 +693,20 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         }
         let Item::Log { head, .. } = &occurrence.payload else { return Err(invalid("A card holds no feed rows")) };
         let id = read.get(&head.key).map(FeedEvent::id).ok_or_else(|| invalid("A card's head was not read back"))?;
+        let status = shown.state.and_then(ScriptStatus::of_code);
+        let not_recorded = (list == List::EventChoices && status == Some(ScriptStatus::NotRecorded))
+            .then(|| prepared.scanned.choice_break(occurrence.observed, hour))
+            .flatten();
         rows.push(ScriptPageRow {
             key: id.clone(),
             hour: occurrence.date,
             observed: occurrence.observed,
             ordinal: shown.ordinal.to_string(),
             live: shown.live,
-            status: shown.state.and_then(ScriptStatus::of_code),
+            status,
             occurrence: (!edges.is_empty()).then(|| ScriptOccurrence { id, opened, edges }),
+            not_recorded_reason: not_recorded.map(|(_, reason)| reason.to_owned()),
+            not_recorded_hour: not_recorded.map(|(at, _)| at),
         });
     }
     content_refusals(&presenter, &mut notices)?;

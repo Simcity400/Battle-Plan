@@ -125,7 +125,7 @@ fn gaps_are_cut_at_the_hour_asked_and_placed_by_ordinal_in_the_replys_order() {
 
 #[test]
 fn a_selection_matches_every_role_at_its_own_date_through_dated_membership() {
-    let role = |slot: Option<u32>, at: i32| Role { slot, at };
+    let role = |slot: Option<u32>, at: i32| Role::at(slot, at);
     let entries = vec![
         Occurrence { roles: Box::new([role(Some(9), 100)]), ..occurrence(1, 100, 100) },
         Occurrence { roles: Box::new([role(Some(9), 250)]), ..occurrence(2, 250, 250) },
@@ -157,9 +157,9 @@ fn a_selection_matches_every_role_at_its_own_date_through_dated_membership() {
 #[test]
 fn empty_selection_admits_no_rows_and_does_not_collide_with_no_selection_in_cache() {
     let entries = vec![
-        Occurrence { roles: Box::new([Role { slot: Some(7), at: 100 }]), ..occurrence(1, 100, 100) },
-        Occurrence { roles: Box::new([Role { slot: Some(9), at: 110 }]), ..occurrence(2, 110, 110) },
-        Occurrence { roles: Box::new([Role { slot: None, at: 120 }]), ..occurrence(3, 120, 120) },
+        Occurrence { roles: Box::new([Role::at(Some(7), 100)]), ..occurrence(1, 100, 100) },
+        Occurrence { roles: Box::new([Role::at(Some(9), 110)]), ..occurrence(2, 110, 110) },
+        Occurrence { roles: Box::new([Role::at(None, 120)]), ..occurrence(3, 120, 120) },
     ];
     let empty = Selection::default();
 
@@ -178,7 +178,7 @@ fn empty_selection_admits_no_rows_and_does_not_collide_with_no_selection_in_cach
 
 #[test]
 fn a_role_known_only_after_the_hour_asked_does_not_admit_its_row() {
-    let entries = vec![Occurrence { roles: Box::new([Role { slot: Some(7), at: 100 }, Role { slot: Some(8), at: 120 }]), ..occurrence(1, 100, 100) }];
+    let entries = vec![Occurrence { roles: Box::new([Role::at(Some(7), 100), Role::at(Some(8), 120)]), ..occurrence(1, 100, 100) }];
     let index = Index::new(entries, Vec::new(), &[]).unwrap();
     let span = |tag: &str| CountrySpan { country: Country::Tag(tag.to_owned()), first_hour: 0, last_hour: 1_000 };
     let poland = Selection { membership: vec![span("POL")], unobserved: Vec::new(), unknown: Vec::new() };
@@ -187,7 +187,7 @@ fn a_role_known_only_after_the_hour_asked_does_not_admit_its_row() {
     assert_eq!(index.ask(&holders(), &Ask { selection: Some(&poland), ..ask(120) }).unwrap().total, 1);
     let germany = Selection { membership: vec![span("GER")], unobserved: Vec::new(), unknown: Vec::new() };
     assert_eq!(index.ask(&holders(), &Ask { selection: Some(&germany), ..ask(110) }).unwrap().total, 1, "a role known at the observation admits from it");
-    let untagged = Index::new(vec![Occurrence { roles: Box::new([Role { slot: Some(40), at: 100 }]), ..occurrence(2, 100, 100) }], Vec::new(), &[]).unwrap();
+    let untagged = Index::new(vec![Occurrence { roles: Box::new([Role::at(Some(40), 100)]), ..occurrence(2, 100, 100) }], Vec::new(), &[]).unwrap();
     let slot = Selection { membership: vec![CountrySpan { country: Country::Slot(40), first_hour: 0, last_hour: 1_000 }], unobserved: Vec::new(), unknown: Vec::new() };
     assert_eq!(untagged.ask(&holders(), &Ask { selection: Some(&slot), ..ask(110) }).unwrap().total, 1, "a selected slot holding no tag still names its own rows");
 }
@@ -223,9 +223,9 @@ fn unresolved_explicit_tag_holders_carry_unknown_spans_reasons_and_validity_boun
         vec![(150, 170, "Countries table unread".to_owned())],
     );
     let entries = vec![
-        Occurrence { roles: Box::new([Role { slot: Some(7), at: 50 }]), ..occurrence(1, 50, 50) },
-        Occurrence { roles: Box::new([Role { slot: Some(7), at: 110 }]), ..occurrence(2, 110, 110) },
-        Occurrence { roles: Box::new([Role { slot: Some(7), at: 160 }]), ..occurrence(3, 160, 160) },
+        Occurrence { roles: Box::new([Role::at(Some(7), 50)]), ..occurrence(1, 50, 50) },
+        Occurrence { roles: Box::new([Role::at(Some(7), 110)]), ..occurrence(2, 110, 110) },
+        Occurrence { roles: Box::new([Role::at(Some(7), 160)]), ..occurrence(3, 160, 160) },
     ];
     let index = Index::new(entries, Vec::new(), &[]).unwrap();
     let selection = Selection {
@@ -326,4 +326,83 @@ fn cutoff_aware_sort_keys_order_ongoing_rows_at_the_asked_hour_and_support_text_
     assert_eq!((ids(&index, &subject_one), subject_one.total), (vec![1], 1));
     let subject_missing = index.ask(&holders(), &Ask { subject: Some(999), ..ask(130) }).unwrap();
     assert_eq!((subject_missing.rows.len(), subject_missing.total), (0, 0));
+}
+
+#[test]
+fn dated_roles_and_dated_search_text_gate_admission_by_observation_and_membership_by_effective_hour() {
+    assert!(Index::new(vec![Occurrence { roles: Box::new([Role::dated(Some(7), 110, 100)]), ..occurrence(1, 100, 100) }], Vec::new(), &[]).is_err());
+    assert!(Index::new(vec![Occurrence { text: SearchText::Dated(Box::new([(110, "a".into()), (100, "b".into())])), ..occurrence(1, 100, 100) }], Vec::new(), &[]).is_err());
+    let entries = vec![
+        Occurrence {
+            roles: Box::new([Role::at(Some(7), 100), Role::dated(Some(8), 105, 110)]),
+            text: SearchText::dated([(100, "GER".into()), (110, "POL".into())]),
+            ..occurrence(1, 100, 100)
+        },
+        Occurrence {
+            roles: Box::new([Role::at(None, 100)]),
+            text: SearchText::dated([(100, "base".into()), (120, "later".into())]),
+            ..occurrence(2, 100, 100)
+        },
+    ];
+    let index = Index::new(entries, Vec::new(), &[]).unwrap();
+    let member = |first_hour: i32, last_hour: i32| Selection {
+        membership: vec![CountrySpan { country: Country::Tag("POL".into()), first_hour, last_hour }],
+        unobserved: Vec::new(),
+        unknown: Vec::new(),
+    };
+    let poland_early = member(100, 108);
+    let at_105 = index.ask(&holders(), &Ask { selection: Some(&poland_early), ..ask(105) }).unwrap();
+    assert_eq!((at_105.total, at_105.next_change), (0, Some(110)), "role dated 105 and observed at 110 is not admitted at 105");
+    let at_109 = index.ask(&holders(), &Ask { selection: Some(&poland_early), ..ask(109) }).unwrap();
+    assert_eq!((at_109.total, at_109.next_change), (0, Some(110)));
+    let at_110 = index.ask(&holders(), &Ask { selection: Some(&poland_early), ..ask(110) }).unwrap();
+    assert_eq!((ids(&index, &at_110), at_110.total, at_110.next_change), (vec![1], 1, None), "membership holds at effective hour 105 even after Poland left at 108");
+    let poland_late = member(108, 200);
+    let not_member_at_105 = index.ask(&holders(), &Ask { selection: Some(&poland_late), ..ask(110) }).unwrap();
+    assert_eq!((not_member_at_105.total, not_member_at_105.next_change), (0, None), "membership at 110 does not admit a role effective at 105");
+
+    let search_before = index.ask(&holders(), &Ask { search: Some("pol"), ..ask(109) }).unwrap();
+    assert_eq!((search_before.total, search_before.next_change), (0, Some(110)), "later search text does not match before observation");
+    let search_at = index.ask(&holders(), &Ask { search: Some("pol"), ..ask(110) }).unwrap();
+    assert_eq!((ids(&index, &search_at), search_at.total, search_at.next_change), (vec![1], 1, None));
+    assert_eq!(index.ask(&holders(), &Ask { search: Some("ger pol"), ..ask(109) }).unwrap().total, 0);
+    assert_eq!(index.ask(&holders(), &Ask { search: Some("ger pol"), ..ask(110) }).unwrap().total, 1);
+    assert_eq!(index.ask(&holders(), &Ask { search: Some("ger"), ..ask(100) }).unwrap().total, 1);
+    let unattr_before = index.ask(&holders(), &Ask { selection: Some(&poland_early), search: Some("later"), ..ask(110) }).unwrap();
+    assert_eq!((unattr_before.unattributed, unattr_before.next_change), (0, Some(120)));
+    let unattr_at = index.ask(&holders(), &Ask { selection: Some(&poland_early), search: Some("later"), ..ask(120) }).unwrap();
+    assert_eq!((unattr_at.unattributed, unattr_at.next_change), (1, None));
+
+    let delayed_name = Index::new(
+        vec![Occurrence { roles: Box::new([Role::at(None, 100), Role::dated(Some(8), 105, 110)]), ..occurrence(3, 100, 100) }],
+        Vec::new(),
+        &[],
+    )
+    .unwrap();
+    let sel_before = delayed_name.ask(&holders(), &Ask { selection: Some(&poland_early), ..ask(105) }).unwrap();
+    assert_eq!((sel_before.total, sel_before.unattributed, sel_before.next_change), (0, 1, Some(110)), "initially unidentified row stays unattributed until its first role is observed");
+    let sel_at = delayed_name.ask(&holders(), &Ask { selection: Some(&poland_early), ..ask(110) }).unwrap();
+    assert_eq!((sel_at.total, sel_at.unattributed, sel_at.next_change), (1, 0, None));
+    let germany = Selection { membership: vec![CountrySpan { country: Country::Tag("GER".into()), first_hour: 0, last_hour: 1_000 }], unobserved: Vec::new(), unknown: Vec::new() };
+    let other_before = delayed_name.ask(&holders(), &Ask { selection: Some(&germany), ..ask(105) }).unwrap();
+    assert_eq!((other_before.total, other_before.unattributed, other_before.next_change), (0, 1, Some(110)), "even an unselected later role ends unattributed notice at its observation");
+    let other_at = delayed_name.ask(&holders(), &Ask { selection: Some(&germany), ..ask(110) }).unwrap();
+    assert_eq!((other_at.total, other_at.unattributed, other_at.next_change), (0, 0, None));
+}
+
+#[test]
+fn bins_before_count_avoids_scanning_historical_rows_and_matches_mixed_observation_hours() {
+    let entries: Vec<Occurrence<()>> = (0..2_000)
+        .map(|hour| {
+            let observed = if (100..200).contains(&hour) { 2_500 } else if hour == 500 { 1_995 } else { hour };
+            occurrence(hour as u128, hour, observed)
+        })
+        .collect();
+    let index = Index::new(entries, Vec::new(), &[]).unwrap();
+    BIN_SCANS.set(0);
+    let (before, bins) = index.bins(&holders(), &ask(1_999), 1_990, 1_999, 5).unwrap();
+    assert_eq!((before, bins), (1_890, vec![(0, 5), (1, 5)]));
+    assert!(BIN_SCANS.get() <= 260, "tail bins scanned {} rows instead of pruning historical blocks", BIN_SCANS.get());
+    assert_eq!(index.bins(&holders(), &ask(1_994), 1_990, 1_999, 5).unwrap(), (1_889, vec![(0, 5)]), "row 500 observed at 1995 is excluded at 1994");
+    assert_eq!(index.bins(&holders(), &ask(1_994), 1_995, 2_000, 5).unwrap(), (1_894, Vec::new()), "when ask.hour < first, all observed rows count in before");
 }

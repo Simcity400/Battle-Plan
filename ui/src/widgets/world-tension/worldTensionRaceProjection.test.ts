@@ -59,11 +59,10 @@ test('world-tension race keeps the product order, keys each row by its recorded 
   assertBarsModelValid(model, 500);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => [r.key, r.label, r.numeric, formatBarsValueField(r.value!).text]), [
-    [countryKey(7), 'German Reich', 45.25, '45.25%'],
-    [countryKey(31), 'Imperial Japan', 18, '18%'],
-    [countryKey(12), 'Name not recorded', 9, '9%'],
+    [countryKey(7), { kind: 'known', value: 'German Reich' }, 45.25, '45.25%'],
+    [countryKey(31), { kind: 'known', value: 'Imperial Japan' }, 18, '18%'],
+    [countryKey(12), { kind: 'notRecorded', reason: 'The country holding this slot is not resolved at this hour' }, 9, '9%'],
   ]);
-  assert.equal(rows[2]!.labelMissing, true, 'a row whose country is not named at the hour keeps its place and says so');
   assert.deepEqual(rows[2]!.tooltip?.items?.[0], { label: 'Country', missingReason: 'The country holding this slot is not resolved at this hour' });
   assert.throws(() => view.who('country', 'GER', displayedHour(501)), FutureDataError);
 });

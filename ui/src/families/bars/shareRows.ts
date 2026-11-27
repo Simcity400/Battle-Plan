@@ -3,14 +3,12 @@ import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import { REGION_ADD_KEY, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import type { Value } from '../value.ts';
 import type { ValueFormat } from '../valueFormat.ts';
-import type { BarsDataRow, BarsLegendItem, BarsModel, BarsReadout, BarsRow, BarsRowMedia, BarsSegment } from './model.ts';
+import { barsLabelText, type BarsDataRow, type BarsLegendItem, type BarsModel, type BarsReadout, type BarsRow, type BarsRowMedia, type BarsSegment } from './model.ts';
 
 export interface ShareRowEntry {
   readonly key: string;
   readonly subject?: string;
-  readonly label: string;
-  readonly labelMissing?: boolean;
-  readonly labelLoading?: boolean;
+  readonly label: Value<string>;
   readonly media?: BarsRowMedia;
   readonly group?: 'picked' | 'auto';
   readonly region?: number;
@@ -48,8 +46,6 @@ function toShareDataRow(entry: ShareRowEntry, group?: 'picked' | 'auto'): BarsDa
     key: entry.key,
     subject: entry.subject ?? entry.key,
     label: entry.label,
-    labelMissing: entry.labelMissing,
-    ...(entry.labelLoading ? { labelLoading: true } : {}),
     ...(entry.media ? { media: entry.media } : {}),
     group: entry.group ?? group,
     ...(entry.region !== undefined ? { region: entry.region } : {}),
@@ -107,7 +103,7 @@ export function barsRegionRows(model: BarsModel, layout: { readonly bodyTop: num
     rows.push({
       key: row.key,
       id: row.region,
-      label: row.label,
+      label: barsLabelText(row.label),
       picked: row.group === 'picked',
       top,
       height,

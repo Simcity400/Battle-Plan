@@ -358,7 +358,7 @@ impl Tail {
                     subjects: Box::new([]),
                     states: ep.states.clone(),
                     sort_keys: Box::new([ep.sort_start.clone(), ep.sort_prep.clone()]),
-                    text: ep.text.clone(),
+                    text: ep.text.clone().into(),
                     payload: at,
                 }
             })
@@ -837,11 +837,11 @@ fn scan(
     for raw in raw_episodes {
         let kind = raw.token.as_ref().and_then(|t| tokens.binary_search(t).ok()).map_or(0, |at| at as u16 + 1);
         let (owner_role, target_role) = if let Some(first_step) = raw.steps.first() {
-            (Role { slot: first_step.owner_slot, at: first_step.hour }, Role { slot: first_step.target_slot, at: first_step.hour })
+            (Role::at(first_step.owner_slot, first_step.hour), Role::at(first_step.target_slot, first_step.hour))
         } else if let Some(comp) = &raw.completion {
-            (Role { slot: comp.owner_slot, at: comp.observed_hour }, Role { slot: comp.target_slot, at: comp.observed_hour })
+            (Role::at(comp.owner_slot, comp.observed_hour), Role::at(comp.target_slot, comp.observed_hour))
         } else {
-            (Role { slot: None, at: raw.appear_hour }, Role { slot: None, at: raw.appear_hour })
+            (Role::at(None, raw.appear_hour), Role::at(None, raw.appear_hour))
         };
 
         let mut changes: Vec<i32> = Vec::new();

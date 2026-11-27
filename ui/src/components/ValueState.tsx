@@ -37,5 +37,10 @@ export function ValueState({ kind, text, unit, reason, narrow = false, className
         <span className="val-partial-word" aria-hidden="true">partial</span>
       </span>;
     }
+    case 'pending': {
+      const spoken = valueStateText({ kind, reason });
+      return <span className={`val-state val-pending${extra}`} data-value-state="pending"
+        data-tooltip={spoken} aria-label={spoken}>Loading…</span>;
+    }
   }
 }

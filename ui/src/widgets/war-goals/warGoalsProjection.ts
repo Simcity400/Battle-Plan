@@ -2,10 +2,10 @@ import { liveKey } from '../../charts/live.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { CardWidgetDeclaration } from '../../families/card/declaration.ts';
-import { cardFlag, type CardItemRow, type CardModel, type CardProjection } from '../../families/card/model.ts';
+import { cardFlag, cardTitleText, type CardItemRow, type CardModel, type CardProjection } from '../../families/card/model.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { identityName, LOADING_NAME } from '../../families/table/identityCell.ts';
+import { identityName } from '../../families/table/identityCell.ts';
 import { knownValue, notRecorded, valueFromLive, type Value } from '../../families/value.ts';
 import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
 import type { WargoalEntry, WargoalJustification, WargoalRemoved, WargoalState, WargoalsReply } from '../../generated/dashboard';
@@ -43,12 +43,15 @@ function placeOf(reply: WargoalsReply, readView: BoundedReadView, states: readon
   return parts.join(' · ');
 }
 
-function titled(readView: BoundedReadView, recipient: string, name: string, options: WarGoalsOptions, atHour?: number): Pick<CardItemRow, 'flag' | 'title' | 'titleLoading' | 'subtitle' | 'subject'> {
+function titled(readView: BoundedReadView, recipient: string, name: string, options: WarGoalsOptions, atHour?: number): {
+  readonly row: Pick<CardItemRow, 'flag' | 'title' | 'subtitle' | 'subject'>;
+  readonly targetName: Value<string>;
+} {
   const target = cardFlag(readView, recipient, atHour);
   const kind = kindOf(name);
-  if (!options.targetNames) return { flag: target.media, title: kind, subject: recipient };
+  if (!options.targetNames) return { row: { flag: target.media, title: kind, subject: recipient }, targetName: target.name };
   const kindText = kind.kind === 'known' ? kind.value : 'Kind not recorded';
-  return { flag: target.media, title: target.name, ...(target.loading ? { titleLoading: true as const } : {}), subtitle: kindText, subject: recipient };
+  return { row: { flag: target.media, title: target.name, subtitle: kindText, subject: recipient }, targetName: target.name };
 }
 
 function justificationRow(reply: WargoalsReply, readView: BoundedReadView, entry: WargoalJustification, options: WarGoalsOptions): CardItemRow {
@@ -63,7 +66,7 @@ function justificationRow(reply: WargoalsReply, readView: BoundedReadView, entry
   return {
     kind: 'item',
     key: `justify:${entry.id}`,
-    ...titled(readView, entry.recipient, entry.name, options),
+    ...titled(readView, entry.recipient, entry.name, options).row,
     place: placeOf(reply, readView, entry.states, [], []),
     meter: { fraction },
     figure: running
@@ -82,14 +85,20 @@ function grantItems(granted: number | null, grantedMissing: string | null): Tool
   ];
 }
 
-function tipTitle(row: Pick<CardItemRow, 'title' | 'titleLoading'>): string {
-  return row.titleLoading ? LOADING_NAME : row.title.kind === 'known' ? String(row.title.value) : 'Kind not recorded';
+function tipTitle(row: Pick<CardItemRow, 'title'>): string {
+  return cardTitleText(row.title, 'Kind');
 }
 
 function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options: WarGoalsOptions): CardItemRow {
-  const base = removed.recipient
+  const resolved = removed.recipient
     ? titled(readView, removed.recipient, removed.name ?? UNNAMED_GOAL, options, removed.seen)
+    : null;
+  const base = resolved
+    ? resolved.row
     : { title: removed.name ? knownValue(removed.name) : notRecorded('The kind of war goal was not recorded') };
+  const targetItems: TooltipListItem[] = resolved?.targetName.kind === 'pending'
+    ? [{ label: 'Target', pendingReason: resolved.targetName.reason }]
+    : [];
   return {
     kind: 'item',
     key: `removed:${removed.handle}:${removed.removed}`,
@@ -101,6 +110,7 @@ function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options:
       title: tipTitle(base),
       hour: readView.hour,
       items: [
+        ...targetItems,
         ...grantItems(removed.granted, removed.grantedMissing),
         { label: 'Removed', value: formatDateHover(removed.removed) },
         { label: 'Reason', missingReason: removed.reasonMissing },
@@ -121,10 +131,14 @@ function goalRow(reply: WargoalsReply, readView: BoundedReadView, goal: WargoalE
   } else if (goal.state === 'expired' && goal.expires !== null) {
     figure = { value: knownValue(formatDateOnly(goal.expires)), figure: 'Expired' };
   }
+  const resolved = titled(readView, goal.recipient, goal.name, options);
+  const targetItems: TooltipListItem[] = resolved.targetName.kind === 'pending'
+    ? [{ label: 'Target', pendingReason: resolved.targetName.reason }]
+    : [];
   return {
     kind: 'item',
     key: `goal:${goal.handle}`,
-    ...titled(readView, goal.recipient, goal.name, options),
+    ...resolved.row,
     place: placeOf(reply, readView, goal.states, goal.liberate, goal.puppets),
     ...(figure ? { figure } : {}),
     ...(state ? { state } : {}),
@@ -133,6 +147,7 @@ function goalRow(reply: WargoalsReply, readView: BoundedReadView, goal: WargoalE
       title: kindOf(goal.name).kind === 'known' ? goal.name : 'Kind not recorded',
       hour: readView.hour,
       items: [
+        ...targetItems,
         state ? { label: 'State', value: state.label } : { label: 'State', missingReason: WAR_UNREAD },
         ...(goal.expires !== null ? [{ label: 'Expires', value: formatDateHover(goal.expires) }] : []),
         ...grantItems(goal.granted, goal.grantedMissing),

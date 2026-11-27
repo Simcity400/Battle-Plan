@@ -368,5 +368,9 @@ test('dated ever-group requests full matrix so a former member survives tag reus
   const oppRows = oppModel.rows as BarsDataRow[];
   assert.ok(oppAsked.some(call => call.tag === 'D04' && call.hour === 99), 'opponent bars look up past holder at shownHour');
   assert.ok(oppAsked.some(call => call.tag === 'D04' && call.hour === 250), 'opponent bars look up live holder at display hour');
-  assert.notEqual(oppRows[0]!.label, oppRows[1]!.label, 'identical displayed names get a visible distinction in opponent bars');
+  assert.notDeepEqual(oppRows[0]!.label, oppRows[1]!.label, 'identical displayed names get a visible distinction in opponent bars');
+  assert.deepEqual(oppRows.map(row => row.label), [
+    { kind: 'known', value: sameNameMatrix.rows[0]!.label },
+    { kind: 'known', value: 'Spanish Republic' },
+  ]);
 });

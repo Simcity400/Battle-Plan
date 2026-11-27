@@ -2450,6 +2450,30 @@ fn a_table_read_hourly_carries_its_hours_and_a_reset_or_a_crossing_carries_none(
 }
 
 #[test]
+fn steps_no_reader_took_stop_the_ring_at_its_byte_target_though_the_head_is_past_them() {
+    let mut changes = Changes::default();
+    changes.begin(0, &[], false, false);
+    for slot in 0..10 {
+        changes.inserted.push(1, slot, slot.into());
+    }
+    let mut ring = crate::ring::Ring::new(16);
+    let reader = ring.join(Reader(0));
+    ring.asks(reader);
+    ring.resize(16, 3 * 10 * 8);
+    let mut hour = 0;
+    while ring.room(1000) && hour < 16 {
+        hour += 1;
+        ring.publish(Arc::new(Step { epoch: ring.epoch, first: hour, last: hour, piece: Some(0), tables: vec![changes.clone()], ..Step::default() })).unwrap().unwrap();
+    }
+    assert_eq!(hour, 3, "three steps of 80 bytes no reader took fill a byte target of 240, though the head at 1000 is past them all");
+    let mut taken = Vec::new();
+    ring.take(reader, 1000, &mut taken);
+    assert!(ring.room(1000), "taking them makes room");
+    ring.resize(16, 0);
+    assert!(ring.room(1000), "with nothing untaken one step is always built, whatever the target");
+}
+
+#[test]
 fn completed_steps_keep_exact_byte_bounds_through_parking_and_rewind() {
     let changes = |table, count: u32| {
         let mut changes = Changes::default();

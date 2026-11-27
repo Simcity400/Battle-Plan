@@ -83,6 +83,14 @@ export function drawFormattedValue(
   const smallFont = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
   ctx.textBaseline = 'middle';
 
+  if (formatted.kind === 'pending') {
+    ctx.font = smallFont;
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = endAligned ? 'right' : 'left';
+    ctx.fillText(fit(formatted.label, smallFont, available), endAligned ? right : left, middle);
+    return;
+  }
+
   if (formatted.kind === 'notRecorded') {
     const label = formatted.label || NOT_RECORDED_LABEL;
     if (formatted.gameWindow) {

@@ -229,34 +229,30 @@ impl CounterDefines {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub const VANILLA: Self = Self {
-        movement_speeds: [12.0; 2],
-        icons_cutoff: 900.0,
-        units_cutoff: 120.0,
-        air_base_cutoff: 900.0,
-        naval_base_cutoff: 900.0,
-        facility_cutoff: 900.0,
-        naval_base_scale: 1.0,
-        naval_base_highlighted_scale: 1.2,
-        naval_mission_cutoff: 1500.0,
-        land_combat_cutoff: 1500.0,
-        naval_combat_cutoff: 1500.0,
-        radar_cutoff: 1100.0,
-        coarse_distance: [350.0, 350.0],
+    pub const FIXTURE: Self = Self {
+        movement_speeds: [11.0, 9.0],
+        icons_cutoff: 840.0,
+        units_cutoff: 135.0,
+        air_base_cutoff: 840.0,
+        naval_base_cutoff: 840.0,
+        facility_cutoff: 840.0,
+        naval_base_scale: 1.15,
+        naval_base_highlighted_scale: 1.35,
+        naval_mission_cutoff: 1420.0,
+        land_combat_cutoff: 1420.0,
+        naval_combat_cutoff: 1420.0,
+        radar_cutoff: 1040.0,
+        coarse_distance: [325.0, 325.0],
         priorities: Priorities::uniform([
-            10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 13, 5, 3, 3, 10, 3, 10,
+            8, 9, 4, 2, 2, 2, 2, 18, 18, 17, 12, 12, 4, 2, 2, 8, 2, 8,
         ]),
-        groups: GroupDefines::VANILLA,
-        split_selected_limit: 12,
-        naval_counts: viewer_unit_reads::naval_count_approx::Defines::VANILLA,
-        supply: counter_status::SupplyThresholds {
-            very_low: 20_000,
-            low: 35_000,
-            show: 50_000,
-        },
-        tints: allegiance::Tints::VANILLA,
-        land_combat: LandCombatDefines::VANILLA,
-        type_colors: type_tint::Colors::VANILLA,
+        groups: GroupDefines::FIXTURE,
+        split_selected_limit: 9,
+        naval_counts: viewer_unit_reads::naval_count_approx::Defines::FIXTURE,
+        supply: counter_status::SupplyThresholds::FIXTURE,
+        tints: allegiance::Tints::FIXTURE,
+        land_combat: LandCombatDefines::FIXTURE,
+        type_colors: type_tint::Colors::FIXTURE,
     };
 }
 

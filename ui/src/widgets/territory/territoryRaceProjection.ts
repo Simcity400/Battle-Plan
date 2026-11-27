@@ -13,7 +13,7 @@ import {
   projectFactionTotalsRace,
   type FactionTotalsRaceOptions,
 } from '../../families/bars/factionTotalsRace.ts';
-import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
@@ -85,13 +85,12 @@ function projectTerritoryCountries(readView: BoundedReadView, options: Territory
       key,
       subject: subjectTag,
       label: pres.label,
-      labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
       media: pres.media,
       ...(pres.color ? { color: pres.color } : {}),
       value: { value, format: { decimals: 0 }, label: options.measureLabel },
       numeric,
       tooltip: {
-        title: pres.labelMissing ? 'Name not recorded' : pres.label,
+        title: barsLabelText(pres.label),
         hour,
         items: tooltipItems,
         ...(value.kind === 'notRecorded' ? { missingReason: value.reason } : {}),

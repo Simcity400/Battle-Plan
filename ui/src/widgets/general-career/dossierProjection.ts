@@ -8,7 +8,6 @@ import { groupSelection } from '../../families/groupSelection.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { LOADING_NAME } from '../../families/table/identityCell.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
 import type { LeaderHourReply, LeaderSelection, LeaderServiceStart, LeaderTrait } from '../../generated/dashboard';
@@ -85,10 +84,17 @@ function header(readView: Parameters<CardProjection['project']>[0], reply: Leade
   const decided = reply.won + reply.lost;
   const record = `${reply.won} won · ${reply.lost} lost · ${decided ? formatShare(reply.won / decided) : 'no results'}`;
   const names = role.attributeNames.map(item => item ?? 'Name not recorded');
-  const ownerName = owner ? (owner.name.kind === 'known' ? owner.name.value : owner.loading ? LOADING_NAME : 'Country name not recorded') : 'Owner not recorded';
+  const ownerName = owner ? (owner.name.kind === 'known' ? owner.name.value : owner.name.kind === 'pending' ? 'Loading…' : 'Country name not recorded') : 'Owner not recorded';
+  const countryItem: TooltipListItem = !owner
+    ? { label: 'Country', missingReason: 'Owner not recorded' }
+    : owner.name.kind === 'known'
+      ? { label: 'Country', value: owner.name.value }
+      : owner.name.kind === 'pending'
+        ? { label: 'Country', pendingReason: owner.name.reason }
+        : { label: 'Country', missingReason: 'reason' in owner.name ? owner.name.reason : 'Country name not recorded' };
   const serviceStart = serviceStartItem(reply.serviceStart);
   const items: TooltipListItem[] = [
-    { label: 'Country', value: ownerName },
+    countryItem,
     { label: 'Rank', value: rank },
     reply.skill === null ? { label: 'Skill', missingReason: 'Skill was not recorded at this date' } : { label: 'Skill', value: skill.slice(2) },
     ...names.map((label, i) => ({ label, value: String(reply.components[i]) })),

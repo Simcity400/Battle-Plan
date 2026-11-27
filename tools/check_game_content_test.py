@@ -63,6 +63,80 @@ class Tree(unittest.TestCase):
                          ["x.rs:2: embedded base64 run of 1200 characters"])
         self.assertEqual(cgc.tree_findings([("x.rs", b"QUJD" * 200)], []), [])
 
+    def test_a_vanilla_constant_fails_in_rust_test_and_test_support_code_only(self):
+        prod = b'const VANILLA: &str = "vanilla";\n'
+        self.assertEqual(cgc.tree_findings([("crates/viewer/src/corpus/mod.rs", prod)], []), [])
+        cfg_item = (
+            b'#[cfg(any(test, feature = "test-support"))]\n'
+            b'pub const VANILLA: S = S {\n'
+            b'    value: 1,\n'
+            b'};\n'
+            b'#[cfg(all(test, feature = "test-support"))]\n'
+            b'pub const\n'
+            b'    VANILLA_ALL: i32 = 2;\n'
+            b'const VANILLA_AFTER: &str = "outside";\n'
+        )
+        self.assertEqual(
+            cgc.tree_findings([("crates/a/src/lib.rs", cfg_item)], []),
+            [
+                "crates/a/src/lib.rs:2: vanilla-fixture test constant VANILLA claims the game's values",
+                "crates/a/src/lib.rs:7: vanilla-fixture test constant VANILLA_ALL claims the game's values",
+            ],
+        )
+        cfg_mod = b"#[cfg(test)]\nmod tests {\n    const VANILLA_SUPPLY: i32 = 5;\n}\n"
+        self.assertEqual(
+            cgc.tree_findings([("crates/a/src/lib.rs", cfg_mod)], []),
+            ["crates/a/src/lib.rs:3: vanilla-fixture test constant VANILLA_SUPPLY claims the game's values"],
+        )
+        child_files = [
+            ("crates/a/src/lib.rs", b"#[cfg(test)]\nmod land_census_scale;\n"),
+            ("crates/a/src/land_census_scale.rs", b"/* const VANILLA: i32 = 1; */\nconst VANILLA_CENSUS: i32 = 5;\n"),
+        ]
+        self.assertEqual(
+            cgc.tree_findings(child_files, []),
+            ["crates/a/src/land_census_scale.rs:2: vanilla-fixture test constant VANILLA_CENSUS claims the game's values"],
+        )
+        test_support_crate = b"pub const VANILLA: i32 = 5;\n"
+        self.assertEqual(
+            cgc.tree_findings([("crates/collector-test-support/src/lib.rs", test_support_crate)], []),
+            ["crates/collector-test-support/src/lib.rs:1: vanilla-fixture test constant VANILLA claims the game's values"],
+        )
+        layer_fixture_files = [
+            ("crates/content-reader-layers/src/lib.rs", b'#[cfg(any(test, feature = "layer-fixtures"))]\npub mod test_support;\n'),
+            ("crates/content-reader-layers/src/test_support.rs", b"pub const VANILLA_LAYER: i32 = 2;\n"),
+        ]
+        self.assertEqual(
+            cgc.tree_findings(layer_fixture_files, []),
+            ["crates/content-reader-layers/src/test_support.rs:1: vanilla-fixture test constant VANILLA_LAYER claims the game's values"],
+        )
+        self.assertEqual(
+            cgc.tree_findings([("crates/a/tests/check.rs", b"/* const VANILLA: i32 = 5; */\n")], []),
+            [],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "crates" / "a" / "src"
+            hidden = src / ".fixtures"
+            hidden.mkdir(parents=True)
+            (src / "lib.rs").write_text('#[cfg(test)]\n#[path = ".fixtures/parent.rs"]\nmod parent;\n', encoding="utf-8")
+            (hidden / "parent.rs").write_text("mod tests;\n", encoding="utf-8")
+            child = b"const VANILLA_SINGLE: i32 = 5;\n"
+            (hidden / "tests.rs").write_bytes(child)
+            (root / "crates" / "a" / "examples").mkdir(parents=True)
+            (root / "crates" / "a" / "examples" / "local.rs").write_text('#[path = "../src/.fixtures/tests.rs"]\nmod tests;\n', encoding="utf-8")
+            tree = cgc.RustTree(
+                root=root,
+                names=[
+                    "crates/a/src/lib.rs",
+                    "crates/a/src/.fixtures/parent.rs",
+                    "crates/a/src/.fixtures/tests.rs",
+                ],
+            )
+            self.assertEqual(
+                cgc.offenders([("crates/a/src/.fixtures/tests.rs", child)], [], tree=tree),
+                ["crates/a/src/.fixtures/tests.rs:1: vanilla-fixture test constant VANILLA_SINGLE claims the game's values"],
+            )
+
 
 class Text(unittest.TestCase):
     def test_a_script_run_needs_three_consecutive_lines_in_the_same_order(self):

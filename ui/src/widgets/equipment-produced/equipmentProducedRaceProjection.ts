@@ -3,7 +3,7 @@ import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
 import { countryRowFromAction } from '../../families/host/installed.ts';
@@ -241,13 +241,12 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
         key,
         subject: subjectTag,
         label: pres.label,
-        labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         ...(pres.color ? { color: pres.color } : {}),
         value: { value, format: valueFormat, label: measureLabel },
         numeric,
         tooltip: {
-          title: pres.labelMissing ? 'Name not recorded' : pres.label,
+          title: barsLabelText(pres.label),
           hour,
           items: tooltipItems,
           ...(value.kind === 'notRecorded' ? { missingReason: value.reason } : {}),

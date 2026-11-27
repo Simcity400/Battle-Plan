@@ -103,7 +103,7 @@ fn memo_primary_index_and_kept_placements_keep_fixed_multi_hour_aircraft_and_fai
         entity = { name = Graphical state = { name = idle } }
     "#,
     ));
-    assets.flight_defines = Ok(FlightDefines::for_tests());
+    assets.flight_defines = Ok(FlightDefines::fixture());
     assets
         .flight_defines
         .as_mut()

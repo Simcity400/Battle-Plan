@@ -124,12 +124,16 @@ test('equal-skill leaders keep the product’s order rather than alphabetical ti
 });
 
 test('a commander is named as at the hour, the portrait is the art cache’s, and a rename is the next change', () => {
-  const readView = view(reply([leader('1', land)]), { 'GER:1': ['Erwin Rommel', 250] });
+  const readView = view(reply([leader('1', land), leader('2', land, { name: null }), leader('3', land, { name: 'Roster Fallback' })]), { 'GER:1': ['Erwin Rommel', 250] });
   const model = generalsProjection.project(readView, OPTIONS);
-  const row = model.rows[0]!;
-  assert.deepEqual(row.cells.commander!.value, { kind: 'known', value: 'Erwin Rommel' });
-  assert.equal(row.cells.commander!.subtext, 'General');
-  assert.equal(row.cells.portrait!.art?.status === 'ready' ? row.cells.portrait!.art.url : undefined, `art:${artHandleKey({ kind: 'portrait', leader: '1', hour: 10 })}`);
+  const [row, unnamedPending, fallbackPending] = model.rows;
+  assert.deepEqual(row!.cells.commander!.value, { kind: 'known', value: 'Erwin Rommel' });
+  assert.deepEqual(row!.cells.country!.value, { kind: 'pending', reason: 'Name is loading' });
+  assert.deepEqual(unnamedPending!.cells.commander!.value, { kind: 'pending', reason: 'Name is loading' });
+  assert.equal(unnamedPending!.name, 'Loading name…');
+  assert.deepEqual(fallbackPending!.cells.commander!.value, { kind: 'known', value: 'Roster Fallback' });
+  assert.equal(row!.cells.commander!.subtext, 'General');
+  assert.equal(row!.cells.portrait!.art?.status === 'ready' ? row!.cells.portrait!.art.url : undefined, `art:${artHandleKey({ kind: 'portrait', leader: '1', hour: 10 })}`);
   assert.equal(generalsProjection.nextChange!(readView, OPTIONS), 250);
 });
 

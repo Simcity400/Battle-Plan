@@ -29,4 +29,7 @@ export function validateResourceBalance(value: unknown): ResourceBalanceReply {
   return reply;
 }
 
-export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => `${item.name ?? 'Resource name unavailable'}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
+export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => {
+  const base = item.name !== null && item.name.trim().length > 0 ? item.name : 'Resource name unavailable';
+  return `${base}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
+};

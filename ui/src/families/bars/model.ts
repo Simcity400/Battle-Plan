@@ -14,6 +14,31 @@ export type BarsForm = 'ordered' | 'two-sided' | 'share' | 'net' | 'stacked';
 
 export type BarsTwoSidedLayout = 'paired' | 'split-sides' | 'stacked-pair';
 
+export function barsLabelMissing(label: Value<string> | undefined): boolean {
+  return label !== undefined && label.kind === 'notRecorded';
+}
+
+export function barsLabelMuted(label: Value<string> | undefined): boolean {
+  return label !== undefined && (label.kind === 'notRecorded' || label.kind === 'notApplicable' || label.kind === 'pending');
+}
+
+export function barsLabelText(label: Value<string> | undefined, figure = 'Name'): string {
+  if (label === undefined) return '';
+  const formatted = formatValueState(label, undefined, { figure });
+  if (formatted.kind === 'notRecorded') return notRecordedLabel(figure);
+  if (formatted.kind === 'notApplicable' || formatted.kind === 'pending') return formatted.label;
+  return formatted.text;
+}
+
+export function barsLabelSpoken(label: Value<string> | undefined, figure = 'Name'): string {
+  if (label === undefined) return '';
+  return formatValueState(label, undefined, { figure }).spoken;
+}
+
+export function barsLabelAudit(label: Value<string> | undefined): string {
+  return label === undefined ? '' : canonicalAuditValue(label);
+}
+
 export interface BarsRowMedia {
   readonly kind: 'none' | 'flag' | 'art';
   readonly art: ArtResult;
@@ -23,9 +48,7 @@ export interface BarsRowMedia {
 }
 
 export interface CountryRowPresentation {
-  readonly label: string;
-  readonly labelMissing: boolean;
-  readonly labelLoading: boolean;
+  readonly label: Value<string>;
   readonly color?: string;
   readonly media: BarsRowMedia;
   readonly flagKey?: string;
@@ -38,15 +61,12 @@ export function countryRowPresentation(
   dimmed?: boolean,
   atHour?: number,
 ): CountryRowPresentation {
-  const { value, name: label, loading: labelLoading, who: identity } = resolveName(readView, 'country', tag, atHour === undefined ? {} : { atHour });
-  const labelMissing = value.kind !== 'known' && !labelLoading;
+  const { value, who: identity } = resolveName(readView, 'country', tag, atHour === undefined ? {} : { atHour });
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
   const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
   const flagKey = identity.flagChoice?.status === 'ready' ? artHandleKey(flagArtHandle(identity.flagChoice.value, 'panel')) : undefined;
   return {
-    label,
-    labelMissing,
-    labelLoading,
+    label: value,
     color,
     media: { kind: 'flag', art, tag, dimmed },
     ...(flagKey ? { flagKey } : {}),
@@ -93,9 +113,7 @@ export interface BarsSideMeasure {
 export interface BarsOppositeRow {
   readonly key: string;
   readonly subject?: string;
-  readonly label: string;
-  readonly labelMissing?: boolean;
-  readonly labelLoading?: boolean;
+  readonly label: Value<string>;
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly value: BarsValueField;
@@ -125,9 +143,7 @@ export interface BarsDataRow {
   readonly kind: 'data';
   readonly key: string;
   readonly subject?: string;
-  readonly label: string;
-  readonly labelMissing?: boolean;
-  readonly labelLoading?: boolean;
+  readonly label?: Value<string>;
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly muted?: boolean;
@@ -278,10 +294,39 @@ export function assertBarsModelValid(model: BarsModel, displayedHour: number): v
     const row = model.rows[i]!;
     if (row.kind !== 'data') continue;
     const prefix = `bars[${row.key}]`;
+    if (row.label !== undefined) {
+      assertValue(row.label, `${prefix}.label`);
+    } else if (
+      model.form !== 'two-sided'
+      || model.twoSidedLayout !== 'split-sides'
+      || !row.rightSide
+      || row.subject !== undefined
+      || row.media !== undefined
+      || row.color !== undefined
+      || row.muted !== undefined
+      || row.region !== undefined
+      || row.group !== undefined
+      || row.value !== undefined
+      || row.numeric !== undefined
+      || row.target !== undefined
+      || row.segments !== undefined
+      || row.left !== undefined
+      || row.right !== undefined
+      || row.readout !== undefined
+      || row.pair !== undefined
+      || row.tooltip !== undefined
+      || row.action !== undefined
+      || row.meta !== undefined
+    ) {
+      throw new InvalidBarsModelError(`${prefix}.label: data row without label must be an empty split-side placeholder`);
+    }
     if (row.value) validateValueAndNumeric(row.value, row.numeric, `${prefix}.value`);
     if (row.left) validateValueAndNumeric(row.left.value, row.left.numeric, `${prefix}.left`);
     if (row.right) validateValueAndNumeric(row.right.value, row.right.numeric, `${prefix}.right`);
-    if (row.rightSide) validateValueAndNumeric(row.rightSide.value, row.rightSide.numeric, `${prefix}.rightSide`);
+    if (row.rightSide) {
+      assertValue(row.rightSide.label, `${prefix}.rightSide.label`);
+      validateValueAndNumeric(row.rightSide.value, row.rightSide.numeric, `${prefix}.rightSide`);
+    }
     if (row.target) {
       assertValue(row.target.value, `${prefix}.target`);
       if (row.target.shortfall) assertValue(row.target.shortfall, `${prefix}.target.shortfall`);
@@ -305,13 +350,13 @@ export function assertBarsModelValid(model: BarsModel, displayedHour: number): v
 export function formatBarsValueField(field: BarsValueField): { readonly text: string; readonly exact: string; readonly spoken: string; readonly missingReason?: string; readonly partialReason?: string; readonly kind: ReturnType<typeof formatValueState>['kind'] } {
   const formatted = formatValueState(field.value, field.format, { compact: field.compact, figure: field.figure });
   const suffix = field.unit ? ` ${field.unit}` : '';
-  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending') {
     return {
       kind: formatted.kind,
       text: formatted.label,
       exact: formatted.label,
       spoken: formatted.spoken,
-      missingReason: formatted.reason,
+      ...(formatted.kind === 'pending' ? {} : { missingReason: formatted.reason }),
     };
   }
   const text = `${formatted.text}${suffix}`;
@@ -342,26 +387,46 @@ export function barsRowIndex(model: BarsModel, key: string): number {
   return index.get(key) ?? -1;
 }
 
+function withPendingLabelItem(label: Value<string> | undefined, tooltip: FamilyTooltipPayload): FamilyTooltipPayload {
+  if (label?.kind !== 'pending') return tooltip;
+  const items = tooltip.items ?? [];
+  if (items.some(item => item.label === 'Name' && item.pendingReason !== undefined)) return tooltip;
+  return {
+    ...tooltip,
+    items: [{ label: 'Name', pendingReason: label.reason }, ...items],
+  };
+}
+
 export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left' | 'right'): FamilyTooltipPayload | null {
   const row = model.rows[barsRowIndex(model, rowKey)];
   if (row?.kind !== 'data') return null;
   const tipHour = model.dataHours?.length === 1 ? model.dataHours[0]! : model.hour;
   if (side === 'right' && row.rightSide) {
-    if (row.rightSide.tooltip) return row.rightSide.tooltip;
+    if (row.rightSide.tooltip) {
+      const tip = row.rightSide.tooltip.hour !== undefined ? row.rightSide.tooltip : { ...row.rightSide.tooltip, hour: tipHour };
+      return withPendingLabelItem(row.rightSide.label, tip);
+    }
     const formatted = formatBarsValueField(row.rightSide.value);
+    const items: TooltipListItem[] = [];
+    if (row.rightSide.label.kind === 'pending') {
+      items.push({ label: 'Name', pendingReason: row.rightSide.label.reason });
+    }
+    if (!formatted.missingReason) items.push({ label: model.rightHeader ?? 'Value', value: formatted.exact });
     return {
-      title: row.rightSide.labelMissing ? notRecordedLabel('Name') : row.rightSide.label,
+      title: barsLabelText(row.rightSide.label),
       hour: tipHour,
-      ...(formatted.missingReason ? { missingReason: formatted.missingReason } : { items: [{ label: model.rightHeader ?? 'Value', value: formatted.exact }] }),
+      ...(formatted.missingReason ? { missingReason: formatted.missingReason } : {}),
+      ...(items.length ? { items } : {}),
     };
   }
   if (row.tooltip) {
-    return row.tooltip.hour !== undefined ? row.tooltip : { ...row.tooltip, hour: tipHour };
+    const tip = row.tooltip.hour !== undefined ? row.tooltip : { ...row.tooltip, hour: tipHour };
+    return withPendingLabelItem(row.label, tip);
   }
-  if (!row.label && !row.labelMissing && !row.value && !row.left && !row.right && !row.pair && !row.segments?.length && !row.readout) {
+  if (row.label === undefined && !row.value && !row.left && !row.right && !row.pair && !row.segments?.length && !row.readout) {
     return null;
   }
-  const title = row.labelMissing ? notRecordedLabel('Name') : row.label;
+  const title = barsLabelText(row.label);
   const items: TooltipListItem[] = [];
   let missingReason: string | undefined;
   let exactValue: string | undefined;
@@ -385,7 +450,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
     if (targetFmt.kind === 'notRecorded' || targetFmt.kind === 'notApplicable') {
       items.push({ label: 'Need', missingReason: targetFmt.reason });
     } else {
-      items.push({ label: 'Need', value: targetFmt.text });
+      items.push({ label: 'Need', value: targetFmt.kind === 'pending' ? targetFmt.label : targetFmt.text });
     }
     if (row.target.shortfall) {
       const shortFmt = formatValueState(row.target.shortfall, row.target.format);
@@ -411,10 +476,10 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
     const botFmt = formatValueState(row.pair.bottomValue, row.pair.format);
     items.push(topFmt.kind === 'notRecorded' || topFmt.kind === 'notApplicable'
       ? { label: row.pair.topLabel, missingReason: topFmt.reason }
-      : { label: row.pair.topLabel, value: topFmt.text });
+      : { label: row.pair.topLabel, value: topFmt.kind === 'pending' ? topFmt.label : topFmt.text });
     items.push(botFmt.kind === 'notRecorded' || botFmt.kind === 'notApplicable'
       ? { label: row.pair.bottomLabel, missingReason: botFmt.reason }
-      : { label: row.pair.bottomLabel, value: botFmt.text });
+      : { label: row.pair.bottomLabel, value: botFmt.kind === 'pending' ? botFmt.label : botFmt.text });
   }
   if (row.segments?.length) {
     for (let i = 0; i < row.segments.length; i++) {
@@ -422,11 +487,14 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
       const segFmt = formatValueState(seg.value, seg.format);
       items.push(segFmt.kind === 'notRecorded' || segFmt.kind === 'notApplicable'
         ? { label: seg.label, swatch: seg.color, missingReason: segFmt.reason }
-        : { label: seg.label, swatch: seg.color, value: `${segFmt.text} (${formatShare(seg.share)})` });
+        : { label: seg.label, swatch: seg.color, value: `${segFmt.kind === 'pending' ? segFmt.label : segFmt.text} (${formatShare(seg.share)})` });
     }
   }
   if (row.readout?.primary && !items.length && !missingReason) {
     items.push({ label: row.readout.secondary ?? 'Count', value: row.readout.primary });
+  }
+  if (row.label?.kind === 'pending') {
+    items.unshift({ label: 'Name', pendingReason: row.label.reason });
   }
   const art = artTooltipItem(row.media?.kind === 'flag' ? 'Flag' : 'Art', row.media?.art);
   if (art) items.push(art);
@@ -460,13 +528,13 @@ export function deriveBarsMirror(
       rows.push({ key: item.key, name: item.label, rowIndex: index, cells: [{ column: 'action', spoken: item.label }] });
       return;
     }
-    const name = item.labelMissing ? notRecordedLabel('Name') : item.label;
+    const name = barsLabelSpoken(item.label);
     const cells: { readonly column: string; readonly spoken: string }[] = [];
     if (item.value) cells.push({ column: 'value', spoken: formatBarsValueField(item.value).spoken });
     if (item.left) cells.push({ column: model.leftHeader ?? 'left', spoken: formatBarsValueField(item.left.value).spoken });
     if (item.right) cells.push({ column: model.rightHeader ?? 'right', spoken: formatBarsValueField(item.right.value).spoken });
     if (item.rightSide) {
-      const rightName = item.rightSide.labelMissing ? notRecordedLabel('Name') : item.rightSide.label;
+      const rightName = barsLabelSpoken(item.rightSide.label);
       cells.push({ column: 'rightSide', spoken: `${rightName}: ${formatBarsValueField(item.rightSide.value).spoken}` });
     }
     if (item.segments?.length) {
@@ -511,13 +579,16 @@ export function deriveBarsAudit(
   for (let i = first; i < end; i++) {
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
-    const label = item.labelMissing ? notRecordedLabel('Name') : item.label;
+    const label = barsLabelAudit(item.label);
     const cell = (row: string, name: string, value: string) => rows.push(auditCell(row, name, value));
     cell(item.key, 'label', label);
     if (item.value) cell(item.key, 'value', canonicalAuditValue(item.value.value));
     if (item.left) cell(item.key, 'left', canonicalAuditValue(item.left.value.value));
     if (item.right) cell(item.key, 'right', canonicalAuditValue(item.right.value.value));
-    if (item.rightSide) cell(item.rightSide.key, 'rightSide', canonicalAuditValue(item.rightSide.value.value));
+    if (item.rightSide) {
+      cell(item.rightSide.key, 'label', barsLabelAudit(item.rightSide.label));
+      cell(item.rightSide.key, 'rightSide', canonicalAuditValue(item.rightSide.value.value));
+    }
     if (item.target) cell(item.key, 'target', canonicalAuditValue(item.target.value));
     if (item.pair) {
       cell(item.key, 'pairTop', canonicalAuditValue(item.pair.topValue));

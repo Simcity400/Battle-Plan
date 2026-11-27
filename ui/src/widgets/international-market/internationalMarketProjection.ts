@@ -20,7 +20,6 @@ import { MARKET_TABS, marketColumns, marketTableBase } from './definition.ts';
 const UNKNOWN_COUNTRY: ResolvedIdentity = {
   value: notRecorded('Country not recorded'),
   name: 'Country not recorded',
-  loading: false,
   art: unavailableArt('Country not recorded'),
   artKey: 'flag:unavailable:unknown',
 };

@@ -308,11 +308,11 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
             date: hour,
             observed,
             kind,
-            roles: [Role { slot: victim, at: hour }, Role { slot: attacker, at: hour }].into(),
+            roles: [Role::dated(victim, hour, observed), Role::dated(attacker, hour, observed)].into(),
             subjects: Box::default(),
             sort_keys: Box::default(),
             states: Box::default(),
-            text: Box::default(),
+            text: Default::default(),
             payload: SinkingRow {
                 key: id.to_string(),
                 hour,

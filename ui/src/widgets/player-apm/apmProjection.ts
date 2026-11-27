@@ -89,7 +89,7 @@ const observationHour = (row: ApmSeries, fallback: number): number =>
 function apmRowName(row: DisplayApmRow, hour: number, opt: ApmTableProjectionOptions, who: TableWho): string {
   if (opt.players) return row.displayName ?? 'Name not recorded';
   const country = row.tag ? who(row.tag, observationHour(row, hour)) : null;
-  return country && (country.value.kind === 'known' || country.loading) ? country.name : 'Name not recorded';
+  return country && (country.value.kind === 'known' || country.value.kind === 'pending') ? country.name : 'Name not recorded';
 }
 
 function parseAnswer(answer: FollowedAnswer): ParsedApm {

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { fitTooltip, handleActiveTooltipKey, handleActiveTooltipWheel, hideTooltip, measureTooltipScroll, showTooltip, tooltipStore, tooltipText } from '../../charts/tooltip.ts';
 import { tooltipRowOffsets, tooltipRowWindow } from '../../charts/tooltipScroll.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import { deriveRowTooltip, type TableRow } from '../../families/table/model.ts';
 import { validateFeedRow } from './eventFeedData.ts';
@@ -182,9 +183,25 @@ test('event feed projection renders merged choice letter and text, awaiting choi
   assert.equal((awaitingRow.meta as EventDetailSubject).awaiting, true);
 
   const pausedRow = model.rows.find(r => r.key === 'm-paused')!;
-  assert.equal(pausedRow.cells.detail?.value.kind, 'notRecorded');
+  assert.deepEqual(pausedRow.cells.detail?.value, { kind: 'notRecorded', reason: 'Choice not recorded' });
   assert.equal(pausedRow.cells.detail?.missingFigure, 'Choice');
   assert.equal((pausedRow.meta as EventDetailSubject).awaiting, false);
+  assert.equal((pausedRow.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded');
+
+  const reasonedHead = {
+    ...head,
+    rows: [
+      { ...head.rows[2]!, notRecordedReason: 'event feed read in part' },
+    ],
+  };
+  const reasonedSource = buildRowSourceFromHead('test:feed-reason', reasonedHead, undefined, 120)!;
+  const reasonedModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', reasonedSource]]) }),
+    { categories: ['politics'], artwork: true },
+  );
+  const reasonedRow = reasonedModel.rows.find(r => r.key === 'm-paused')!;
+  assert.deepEqual(reasonedRow.cells.detail?.value, { kind: 'notRecorded', reason: 'Choice not recorded (event feed read in part)' });
+  assert.equal((reasonedRow.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded (event feed read in part)');
 
   const nullOptRow = model.rows.find(r => r.key === 'm-null-opt')!;
   assert.equal(nullOptRow.cells.detail?.value.kind, 'notRecorded');
@@ -226,12 +243,16 @@ test('a witnessed cessation or guarantee with an unidentified country keeps its 
     facetTotals: [], missing: [], unavailable: [], warnings: [],
   };
   const source = buildRowSourceFromHead('test:feed', head, undefined, 120)!;
-  const readView = createBoundedReadView({ hour: 120, rows: new Map([['main', source]]) });
+  const readView = createBoundedReadView({
+    hour: 120,
+    identity: datedIdentity({ NOR: [{ from: 0, name: 'Norway' }] }),
+    rows: new Map([['main', source]]),
+  });
   const model = eventFeedProjection.project(readView, { categories: ['warsPeace', 'diplomacy', 'politics', 'milestones'], artwork: false });
   const country = (key: string) => model.rows.find(r => r.key === key)!.cells.country!;
   assert.deepEqual(country('k0').value, { kind: 'notRecorded', reason: 'Country not identified' }, 'one country, and it is missing, never a known string');
   assert.deepEqual(country('k0').flags?.map(flag => flag.tag), ['?']);
-  assert.equal(country('k1').value.kind, 'partial', 'the guaranteed country is missing beside the guarantor');
+  assert.deepEqual(country('k1').value, { kind: 'partial', value: 'Norway', reason: 'Country not identified' }, 'the guaranteed country is missing beside the guarantor');
   assert.deepEqual(country('k1').flags?.map(flag => flag.tag), ['NOR', '?']);
   const tip = (key: string) => {
     const extra = model.rows.find(r => r.key === key)!.tooltipExtra;

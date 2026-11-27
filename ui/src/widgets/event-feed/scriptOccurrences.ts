@@ -41,16 +41,20 @@ export function lastEdge(edges: readonly ScriptEdge[], kinds: readonly EventFeed
   return null;
 }
 
-export interface RecordingBreak { firstHour: number; lastHour: number }
-export function recordingBreaks(branch: { gaps: readonly { firstHour: number; lastHour: number }[];
-  eventLosses?: readonly { afterHour: number; hour: number }[] }): RecordingBreak[] {
-  return [...branch.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour })),
-    ...(branch.eventLosses ?? []).map(loss => ({ firstHour: loss.afterHour + 1, lastHour: loss.hour }))]
+export interface RecordingBreak { firstHour: number; lastHour: number; reason?: string }
+export function recordingBreaks(branch: { gaps: readonly { firstHour: number; lastHour: number; reason?: string }[];
+  eventLosses?: readonly { afterHour: number; hour: number; reason?: string }[] }): RecordingBreak[] {
+  const reasonOf = (reason: string | undefined): { reason?: string } => {
+    const trimmed = reason?.trim();
+    return trimmed ? { reason: trimmed } : {};
+  };
+  return [...branch.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, ...reasonOf(gap.reason) })),
+    ...(branch.eventLosses ?? []).map(loss => ({ firstHour: loss.afterHour + 1, lastHour: loss.hour, ...reasonOf(loss.reason) }))]
     .filter(span => span.firstHour <= span.lastHour).sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
 }
 
 export function breakAfter(breaks: readonly RecordingBreak[], from: number, to: number): RecordingBreak | null {
-  return breaks.find(span => span.lastHour > from && span.firstHour <= to) ?? null;
+  return breaks.find(span => span.lastHour >= from && span.firstHour <= to) ?? null;
 }
 
 export const dayOf = (hour: number): string => { const date = gameDate(hour); return date ? formatDate(date) : formatDateTime(hour); };

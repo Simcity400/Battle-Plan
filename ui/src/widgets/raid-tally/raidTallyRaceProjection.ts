@@ -2,7 +2,7 @@ import { colour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
@@ -154,13 +154,12 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
           key,
           subject: subjectTag,
           label: pres.label,
-          labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
           media: pres.media,
           ...(pres.color ? { color: pres.color } : {}),
           value: { value: notRecorded(item.missing), format: { decimals: 0 } },
           numeric: null,
           tooltip: {
-            title: pres.labelMissing ? 'Name not recorded' : pres.label,
+            title: barsLabelText(pres.label),
             hour,
             missingReason: item.missing,
             items: [{ label: unit, missingReason: item.missing }],
@@ -213,7 +212,6 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
         key,
         subject: subjectTag,
         label: pres.label,
-        labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         ...(pres.color ? { color: pres.color } : {}),
         value: { value, format: { decimals: 0 }, label: unit },
@@ -226,7 +224,7 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
           ...(partialReason ? { secondary: '(partial)' } : {}),
         },
         tooltip: {
-          title: pres.labelMissing ? 'Name not recorded' : pres.label,
+          title: barsLabelText(pres.label),
           hour,
           items: tooltipItems,
           note: NOTE,

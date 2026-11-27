@@ -434,7 +434,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (kind === 'twoWay') {
-    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending') {
       drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
       return;
     }
@@ -456,7 +456,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (kind === 'shaded') {
-    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending') {
       drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
       return;
     }
@@ -624,7 +624,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (kind === 'skill') {
-    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending') {
       drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
       return;
     }
@@ -675,7 +675,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (kind === 'status' || (cell?.statusKind && formatted.kind === 'known')) {
-    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending') {
       drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: false, muted: item.row.muted }, theme, measure, fit);
       return;
     }
@@ -694,7 +694,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (kind === 'track' || column.display === 'track' || column.display === 'meterAfter' || column.display === 'meterBefore') {
-    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending') {
       drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: !figureStarts(column, rc), muted: item.row.muted }, theme, measure, fit);
       return;
     }
@@ -753,7 +753,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       const font = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
       const missing = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable';
       let at = left + (missing ? drawMissingMark(ctx, left, middle, room, theme, { figure: cell?.missingFigure }).width
-        : drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, room, font, theme.text)) + gap;
+        : drawInlineRuns(rc, narrowText ?? (formatted.kind === 'pending' ? formatted.label : formatted.text), left, middle, room, font, formatted.kind === 'pending' ? theme.muted : theme.text)) + gap;
       for (const mark of marks) {
         if (mark.glyph) at += drawGlyph(rc, mark.glyph, at, middle, glyphColor(rc, mark.glyph)) + gap;
         for (const flag of mark.flags ?? []) {
@@ -829,7 +829,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     }
   }
 
-  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending') {
     if (kind === 'item' && formatted.kind === 'notRecorded' && !cell?.missingFigure) {
       const avail = Math.max(0, right - left - 4);
       const inline = cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined ? cell.inlineSubtext : undefined;
@@ -987,10 +987,10 @@ export function drawDetailCell(
   if (heading) {
     const mid = y + DETAIL_HEAD_LEAD + DETAIL_HEAD_HEIGHT / 2;
     const named = formatValueState(heading.text);
-    const missing = named.kind === 'notRecorded' || named.kind === 'notApplicable';
+    const quiet = named.kind === 'notRecorded' || named.kind === 'notApplicable' || named.kind === 'pending';
     drawFlagSlot(ctx, detail.left, Math.round(mid - FLAG_SLOT_HEIGHT / 2), slotOf(heading.flag.art, heading.flag.tag, rc), theme, { dimmed: heading.flag.dimmed });
     let x = detail.left + FLAG_SLOT_WIDTH + DETAIL_HEAD_FLAG_GAP;
-    x += drawInlineRuns(rc, missing ? named.label : named.text, x, mid, right - x, fontOf(theme, 13, missing ? 400 : 600), missing ? theme.muted : theme.text);
+    x += drawInlineRuns(rc, quiet ? named.label : named.text, x, mid, right - x, fontOf(theme, 13, quiet ? 400 : 600), quiet ? theme.muted : theme.text);
     if (heading.note && right - x > DETAIL_HEAD_NOTE_GAP) drawInlineRuns(rc, heading.note, x + DETAIL_HEAD_NOTE_GAP, mid, right - x - DETAIL_HEAD_NOTE_GAP, font, theme.muted);
   }
   if (flags.length) {
@@ -1010,8 +1010,8 @@ export function drawDetailCell(
     }
   }
   if (detail.text) {
-    const missing = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable';
-    drawInlineRuns(rc, missing ? formatted.label : formatted.text, detail.left, y + DETAIL_LINE_HEIGHT / 2, detail.width, font, item.row.muted || missing ? theme.muted : tokens.textSecondary);
+    const quiet = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending';
+    drawInlineRuns(rc, quiet ? formatted.label : formatted.text, detail.left, y + DETAIL_LINE_HEIGHT / 2, detail.width, font, item.row.muted || quiet ? theme.muted : tokens.textSecondary);
   }
 }
 
@@ -1028,7 +1028,7 @@ function drawShareCell(
 ): void {
   const { ctx, theme, measure, fit } = rc;
   const muted = item.row.muted === true;
-  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending') {
     drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted }, theme, measure, fit);
     return;
   }

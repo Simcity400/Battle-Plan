@@ -80,9 +80,9 @@ test('factories projection preserves Rust top order, uses identity resolver, and
   assertBarsModelValid(exactModel, 500);
   const dataRows = followedModel.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(dataRows.map(r => [r.key, r.label, r.numeric]), [
-    ['USA', 'United States', 240],
-    ['GER', 'German Reich', 210],
-    ['SOV', 'Soviet Union', 180],
+    ['USA', { kind: 'known', value: 'United States' }, 240],
+    ['GER', { kind: 'known', value: 'German Reich' }, 210],
+    ['SOV', { kind: 'known', value: 'Soviet Union' }, 180],
   ]);
   assert.equal(followedModel.form, 'ordered');
   assert.equal(followedModel.scaleUnit, 'Factories');

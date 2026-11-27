@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { recordingBreaks, validateOccurrence } from './scriptOccurrences.ts';
+import { breakAfter, recordingBreaks, validateOccurrence } from './scriptOccurrences.ts';
 import type { EventFeedRow, ScriptEdge } from '../../generated/dashboard';
 
 const edge = (kind: EventFeedRow['kind'], hour: number, extra: Partial<ScriptEdge> = {}): ScriptEdge => ({
@@ -20,7 +20,23 @@ test('an occurrence validates every edge as a checked feed row with its operands
   assert.deepEqual(validateOccurrence(sparse), sparse, 'a reply leaves out what it does not hold: an edge with no option, lifecycle, days or costs, a row with no amount, an item with no description');
 });
 
-test('recording breaks merge gaps and event losses sorted ascending', () => {
-  const breaks = recordingBreaks({ gaps: [{ firstHour: 50, lastHour: 60 }], eventLosses: [{ afterHour: 80, hour: 90 }] });
-  assert.deepEqual(breaks, [{ firstHour: 50, lastHour: 60 }, { firstHour: 81, lastHour: 90 }]);
+test('recording breaks merge gaps and event losses sorted ascending with their recorded reasons', () => {
+  const breaks = recordingBreaks({
+    gaps: [
+      { firstHour: 50, lastHour: 60, reason: 'collector queue overflow' },
+      { firstHour: 95, lastHour: 100, reason: '   ' },
+    ],
+    eventLosses: [{ afterHour: 80, hour: 90, reason: 'The recorder was detached.' }],
+  });
+  assert.deepEqual(breaks, [
+    { firstHour: 50, lastHour: 60, reason: 'collector queue overflow' },
+    { firstHour: 81, lastHour: 90, reason: 'The recorder was detached.' },
+    { firstHour: 95, lastHour: 100 },
+  ]);
+  assert.deepEqual(
+    breakAfter(breaks, 90, 90),
+    { firstHour: 81, lastHour: 90, reason: 'The recorder was detached.' },
+    'a firing read at the ending hour of an event-loss interval matches that loss',
+  );
+  assert.equal(breakAfter(breaks, 91, 94), null);
 });

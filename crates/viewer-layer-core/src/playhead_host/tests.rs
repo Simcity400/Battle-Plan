@@ -447,6 +447,105 @@ fn a_mirror_of_an_earlier_format_reads_the_columns_added_since_not_recorded() {
 }
 
 #[test]
+fn a_map_on_an_earlier_format_plays_with_changed_tables_withheld_and_newer_tables_not_recorded() {
+    use super::{
+        details, for_the_makers,
+        shared_maps_tests::Reads,
+        views::{Need, Pace, Stepped},
+    };
+    use playhead::pages::{Span, WorldPages};
+    use replay_data::{
+        rows::{CountryRow, compatibility::CAPTURE_ADDITIONS_FORMAT, tables},
+        scope::CaptureMode,
+    };
+    use replay_frame::frame::TableView;
+    use replay_journal::{
+        fixtures,
+        synthetic::{Input, Sample},
+    };
+    use replay_recording::columnar_frames::{Frames, Recording};
+    use viewer_foundation::tables::Seen;
+
+    let countries = [CountryRow { id: 7, tag: b"TST".to_vec(), stability_raw: 5, ..Default::default() }];
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, CAPTURE_ADDITIONS_FORMAT - 1, b"format 141 map", &[(1, 0, 1)], &[TableId::Countries], |synthetic, _, _| {
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let recording = Recording::open(bytes).unwrap();
+    let mut frames = Frames::new(&recording, &TableId::ALL).unwrap();
+    frames.seek(0, 5).unwrap();
+    let today = frames.frame(1).unwrap();
+    drop(frames);
+    let opened = Arc::new(WorldPages::over(recording, Span::Whole).unwrap());
+    assert!(opened.kinds(TableId::VariantStats.index()).is_none(), "VariantStats is withheld on format 141");
+    assert!(opened.table_entry(0, 0, TableId::VariantStats.index()).unwrap().first.is_some(), "format 141 wrote table 44 before its layout changed");
+    let kinds = Arc::new(opened.schema().to_vec());
+    let pages: Arc<dyn Pages> = opened;
+    let timeline = Timeline::whole(&*pages).unwrap();
+    let units = Units { name: "format 141 map".into(), pages, timeline, kinds };
+    let entry = open(units, quick()).unwrap();
+    entry.set_capture(CaptureMode::Full);
+
+    let declared = for_the_makers(&entry);
+    for table in [TableId::VariantStats, TableId::VariantChanges, TableId::RaidSpeedInputs, TableId::RocketProductionOutput, TableId::ScriptVariableValues] {
+        assert!(!declared.contains_key(&table.index()), "withheld or newer table {table:?} must not be declared");
+    }
+
+    let mut inputs = Inputs::new(entry.kinds(), "test");
+    let refused = inputs.table(TableId::VariantStats, true).unwrap_err().to_string();
+    assert!(refused.contains("test") && refused.contains("VariantStats"), "{refused}");
+
+    let (layer, _) = Reads::new(&[TableId::Countries]);
+    let mut side = MapSide::new(Arc::clone(&entry), vec![layer], View::default()).unwrap();
+    side.set_branch(1);
+    let reader = side.views().handle().reader_at(
+        "older format",
+        &[Need::every(TableId::Countries), Need::every(TableId::VariantStats), Need::every(TableId::ScriptVariableValues)],
+        Pace::Step,
+    );
+    let mut stepped = Stepped::new(&entry, &[TableId::Countries, TableId::VariantStats, TableId::ScriptVariableValues]).unwrap();
+    side.anchor(5, false, 0.0, true);
+    entry.playhead().wait_declarations().unwrap();
+    side.catch_up(5).unwrap();
+    let (frame, failures) = reader.frame_with_failures().unwrap();
+    assert_eq!(frame.hour, 5);
+    let assert_frame = |frame: &replay_frame::frame::DecodedFrame| {
+        let rows = frame.complete::<tables::Countries>().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, 7);
+        match &*frame.tables[TableId::VariantStats.index()] {
+            TableView::Unavailable { reason } => {
+                assert!(reason.contains("VariantStats") && reason.contains("144") && reason.contains("141"), "{reason}");
+            }
+            other => panic!("changed table must be unavailable with its format reason, got {other:?}"),
+        }
+        assert_eq!(&*frame.tables[TableId::ScriptVariableValues.index()], &TableView::NotRecorded { mode: CaptureMode::Full });
+    };
+    assert_frame(&frame);
+    assert!(failures.is_empty(), "a withheld layout table carries no typed head failure: {failures:?}");
+
+    let epoch = stepped.epoch();
+    while stepped.take_through(5, epoch) != Some(5) {
+        std::thread::yield_now();
+    }
+    assert_frame(&stepped.frame(1, 5).unwrap());
+    assert_frame(&stepped.frame_past(1, 5).unwrap());
+
+    let (entries, differing, first, absent) = details::differ(&side, &today);
+    assert!(entries >= TableId::ALL.len() as u64 - absent.len() as u64);
+    assert!(!absent.contains(&TableId::VariantStats));
+    assert_eq!((differing, first), (0, None));
+
+    match details::seen(&entry, TableId::VariantStats, 5, Duration::ZERO) {
+        Seen::Unavailable(reason) => assert!(reason.contains("VariantStats") && reason.contains("144"), "{reason}"),
+        other => panic!("expected withheld layout reason, got {other:?}"),
+    }
+    assert_eq!(details::seen(&entry, TableId::ScriptVariableValues, 5, Duration::ZERO), Seen::NotRecorded(Some(CaptureMode::Full)));
+    let lines = details::of_map(&side);
+    assert!(lines.iter().any(|line| line.starts_with("VariantStats: unavailable (") && line.contains("144")), "{lines:?}");
+    assert!(lines.iter().any(|line| *line == format!("ScriptVariableValues: not recorded in a {} recording", CaptureMode::Full)));
+}
+
+#[test]
 fn a_gap_step_shows_every_table_not_recorded_until_the_next_piece() {
     let (recording, _) = record(2, BLOCK, busy);
     let pages: Arc<dyn Pages> = Arc::clone(&recording) as Arc<dyn Pages>;
@@ -2317,6 +2416,7 @@ fn apart_drive_stops_when_a_read_fails() {
     )
     .unwrap();
     let mut apart = crate::playhead_host::views::apart::Apart::new(&entry, 1).unwrap();
+    let _reads = apart.store().reader("reads", &[crate::playhead_host::views::Need::every(table(0))]);
     entry.playhead().seek(4);
     assert!(!apart.drive(4), "drive must return false instead of spinning after a read error");
     assert!(

@@ -10,6 +10,8 @@ In the tree, on every machine:
   any binary file, that tools/game-content.allow does not list with where it came from. An entry
   that matches no file fails as `stale-allow`.
 - `embedded`: a base64 run of 1,024 characters or more in a text file: an asset carried as text.
+- `vanilla-fixture`: a `const VANILLA` or `const VANILLA_*` constant in Rust test or test-support
+  code, claiming to hold the game's own define values.
 
 Against the installation, where one is found (--game or BATTLEPLAN_GAME_DIR, else the Steam
 registry entry) with its mods (each installed workshop item, and the mods of --user-dir or
@@ -36,6 +38,7 @@ import argparse
 from collections import Counter
 from contextlib import closing
 import hashlib
+import importlib.util
 import os
 import re
 import sqlite3
@@ -80,6 +83,19 @@ TEXT_TYPES = {".txt", ".yml", ".yaml", ".gui", ".gfx", ".lua", ".shader", ".fxh"
 SKIPPED_DIRS = {".git", ".svn"}
 DEFINE = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\s*=\s*(-?(?:[0-9]+\.?[0-9]*|\.[0-9]+))(?![\w.])")
 TRIVIAL_VALUES = {0.0, 1.0, -1.0}
+VANILLA_CONST = re.compile(r"\bconst\s+(VANILLA(?:_[A-Z0-9_]+)?)\b")
+TEST_CRATE_SUFFIXES = ("-test-support", "-tests")
+TEST_CRATES = {"synthetic-game"}
+
+
+def _load_patterns():
+    spec = importlib.util.spec_from_file_location("check_patterns", Path(__file__).with_name("check-patterns.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+PATTERNS = _load_patterns()
 
 
 def is_binary(data):
@@ -156,9 +172,101 @@ def allow_match(name, rules, kind=None):
     return next((glob for glob, entry_kind, _ in rules if entry_kind == kind and glob_match(name, glob)), None)
 
 
-def offenders(files, rules):
-    """`asset` and `embedded` findings for (name, bytes) pairs that no asset entry allows."""
+class RustTree(PATTERNS.Revision):
+    """In-memory and optional worktree-backed view of Rust files and manifests."""
+
+    TEST_FEATURES = ("test-support", "layer-fixtures", "layout-fixtures", "batch-fallback-test-counts")
+
+    def __init__(self, files=(), *, root=None, names=()):
+        super().__init__(None)
+        self.root = Path(root) if root is not None else None
+        self._resolved_root = self.root.resolve() if self.root is not None else None
+        self.texts = {}
+        self.by_crate = {}
+        self._known = set()
+        for name in names:
+            if name.endswith(".rs") or name.endswith("/Cargo.toml"):
+                self._known.add(name)
+                self._record_path(name)
+        self.overlay(files)
+
+    def _clear_caches(self):
+        self.code.cache_clear()
+        self.spans.cache_clear()
+        self.tests_only.cache_clear()
+        self.test_file.cache_clear()
+
+    def _record_path(self, name):
+        parts = name.split("/")
+        if len(parts) >= 3 and parts[0] == "crates":
+            self.by_crate.setdefault(f"crates/{parts[1]}", set()).add(name)
+
+    def overlay(self, files):
+        changed = False
+        for name, data in files:
+            if not (name.endswith(".rs") or name.endswith("/Cargo.toml")):
+                continue
+            decoded = None if is_binary(data) else data.decode("utf-8", "replace")
+            if self.texts.get(name) != decoded:
+                if decoded is None:
+                    self.texts.pop(name, None)
+                else:
+                    self.texts[name] = decoded
+                    self._known.add(name)
+                    self._record_path(name)
+                changed = True
+        if changed:
+            self._clear_caches()
+
+    def text(self, name):
+        if name in self.texts:
+            return self.texts[name]
+        if self.root is not None and name in self._known:
+            path = self.root / name
+            if not path.is_symlink() and path.is_file():
+                try:
+                    resolved = path.resolve()
+                except OSError:
+                    return None
+                if resolved.is_relative_to(self._resolved_root):
+                    data = path.read_bytes()
+                    if not is_binary(data):
+                        self.texts[name] = data.decode("utf-8", "replace")
+                        return self.texts[name]
+        return None
+
+    def files(self, crate):
+        return frozenset(self.by_crate.get(crate, ()))
+
+    def is_test_file(self, name):
+        parts = name.split("/")
+        if len(parts) >= 3 and parts[0] == "crates" and (parts[1].endswith(TEST_CRATE_SUFFIXES) or parts[1] in TEST_CRATES):
+            return True
+        return self.test_file(name, False)
+
+
+def vanilla_fixtures(name, tree):
+    """(line, const_name) for each `const VANILLA` or `const VANILLA_*` in Rust test or test-support code."""
+    text = tree.text(name)
+    if not text or "VANILLA" not in text:
+        return []
+    code = tree.code(name, False)
+    test = tree.is_test_file(name)
+    spans = () if test else tree.spans(name, False)[0]
+    return [
+        (PATTERNS.line_of(text, match.start(1)), match.group(1))
+        for match in VANILLA_CONST.finditer(code)
+        if test or PATTERNS.within(spans, match.start(1))
+    ]
+
+
+def offenders(files, rules, *, tree=None):
+    """`asset`, `embedded` and `vanilla-fixture` findings for (name, bytes) pairs."""
     found = []
+    if tree is None:
+        tree = RustTree(files)
+    else:
+        tree.overlay(files)
     for name, data in files:
         kind = asset_kind(name, data)
         if kind and not allow_match(name, rules):
@@ -169,6 +277,9 @@ def offenders(files, rules):
         run = base64_run(data)
         if run:
             found.append(f"{name}:{run[0]}: embedded base64 run of {run[1]} characters")
+        if name.endswith(".rs") and name in tree.texts:
+            for line, const_name in vanilla_fixtures(name, tree):
+                found.append(f"{name}:{line}: vanilla-fixture test constant {const_name} claims the game's values")
     return found
 
 

@@ -403,11 +403,11 @@ impl Tail {
                 date: event.hour,
                 observed: event.observed,
                 kind: u16::from(event.kind),
-                roles: Box::new([Role { slot: event.slot, at: event.observed }]),
+                roles: Box::new([Role::at(event.slot, event.observed)]),
                 subjects: Box::new([]),
                 states: Box::new([(event.observed, state)]),
                 sort_keys: Box::new([]),
-                text: Box::default(),
+                text: Default::default(),
                 payload: line,
             });
         };
