@@ -1403,8 +1403,9 @@ impl<'a> ScriptedText<'a> {
         expanded.on_large_stack = true;
         let caller = job_priority::Caller::current();
         let reads = crate::triggers::inputs::handoff();
+        let discovery = replay_frame::frame::Discovery::current();
         let memory = engine_allocation::labels::current();
-        let (((result, session), noted), carried) = std::thread::scope(|thread_scope| {
+        let ((((result, session), noted), carried), requested) = std::thread::scope(|thread_scope| {
             let cpu = replay_frame::cpu::Context::capture();
             std::thread::Builder::new()
                 .name("scripted-localisation".into())
@@ -1413,12 +1414,12 @@ impl<'a> ScriptedText<'a> {
                     let _memory = engine_allocation::labels::resume(memory);
                     let _cpu = cpu.enter("scripted localisation");
                     caller.enter();
-                    reads.run(move || {
+                    discovery.run(|| reads.run(move || {
                         crate::catalogue::capture(move || {
                             let result = expand(&expanded);
                             (result, expanded.session.into_inner())
                         })
-                    })
+                    }))
                 })
                 .map_err(|error| {
                     format!("scripted localisation expansion thread could not start: {error}")
@@ -1428,6 +1429,7 @@ impl<'a> ScriptedText<'a> {
         })?;
         crate::catalogue::credit(&noted);
         carried.credit();
+        replay_frame::frame::Discovery::credit(requested);
         scopes.session.replace(session);
         result
     }

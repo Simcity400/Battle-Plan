@@ -243,7 +243,7 @@ impl<'q> Frames<'q> {
         self.frame_with(hour, reads, |_| None, title)
     }
 
-    pub fn frame_with(&mut self, hour: i32, reads: &[Read], columns: fn(TableId) -> Option<Vec<usize>>, title: &str) -> io::Result<DecodedFrame> {
+    pub fn frame_with(&mut self, hour: i32, reads: &[Read], columns: impl Fn(TableId) -> Option<Vec<usize>>, title: &str) -> io::Result<DecodedFrame> {
         let run = self.query.timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{title} hour is not recorded")))?.run;
         let fields: Vec<_> = reads.iter().map(|read| columns(read.table)).collect();
         dashboard_query::cost::storage(|| self.seeker.frame(run, hour, &converted(reads, &fields))).inspect(|frame| count_frame(frame, reads))
