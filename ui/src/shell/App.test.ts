@@ -43,6 +43,7 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       layouts.push(() => { previous?.cleanup?.(); slots[index] = { deps, cleanup: effect() }; });
     },
     mapSurface(_element: unknown, visible: boolean) { mapVisible = visible; return null; },
+    viewerPath: 'synthetic',
     openReplay: async (_path: string) => {},
     selectNativeView: async (_dashboard: boolean) => {},
   };
@@ -61,7 +62,7 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       export const mapAction = async () => {};
       export const selectNativeView = dashboard => globalThis.__shellFixture.selectNativeView(dashboard);
       export const openReplay = path => globalThis.__shellFixture.openReplay(path);`,
-    '/shell/useNativeViewer.ts': `export const useDesktopState = () => ({ state: { ready: true, running: true, viewer: { path: 'synthetic' } }, error: null });
+    '/shell/useNativeViewer.ts': `export const useDesktopState = () => ({ state: { ready: true, running: true, viewer: { path: globalThis.__shellFixture.viewerPath, hour: 0 } }, error: null, launchRecording: null });
       export const useMapSurface = (...args) => globalThis.__shellFixture.mapSurface(...args);`,
     '/shell/appearance/useAppearance.ts': 'export const useAppearance = () => ({ settings: { backdrop: { kind: "none" }, workspaceBackdrop: { kind: "same" } } });',
     '/shell/appearance/SidebarIconMenu.tsx': 'export const useSidebarIconMenu = () => ({ menu: null, icon: () => undefined, custom: () => undefined });',
@@ -142,6 +143,7 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       dashboard().props.onMapError('seek', null); dashboard().props.onMapError('apply', 'The map stopped: synthetic panic'); render();
       assert.deepEqual([title(), shown(), copy()?.props['data-detail']], ['The map stopped', 'Couldn’t apply the last map change.', 'The map stopped: synthetic panic'],
         'a reason that only repeats the title gives way to the action’s own sentence');
+      fixture.viewerPath = 'elsewhere';
       dashboard().props.onMapError('apply', null); render();
       assert.equal(retry(), undefined);
       assert.equal(mapVisible, true);

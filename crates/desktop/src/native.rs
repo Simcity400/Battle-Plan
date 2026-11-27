@@ -65,11 +65,12 @@ impl Inner {
         let Some(map) = self.map.as_ref() else {
             return;
         };
+        let campaign_selected = !self.active_dashboard;
         let visible = self.status.visible;
-        if !self.pending.can_send(visible) {
+        if !self.pending.can_send(campaign_selected, visible) {
             return;
         }
-        for command in self.pending.take_commands(visible) {
+        for command in self.pending.take_commands(campaign_selected, visible) {
             if !map.send(command) {
                 self.pending.hole_waiters.clear();
                 return;
@@ -210,9 +211,21 @@ fn launch_display(
 #[derive(Clone, Default)]
 pub struct NativeHost {
     shared: Arc<Mutex<Inner>>,
+    launch: Option<Arc<Result<viewer::host::LaunchOptions, String>>>,
 }
 
 impl NativeHost {
+    pub fn for_launch(args: impl Iterator<Item = std::ffi::OsString>) -> Self {
+        Self {
+            launch: Some(Arc::new(viewer::host::LaunchOptions::parse(args).map_err(|error| error.to_string()))),
+            ..Self::default()
+        }
+    }
+
+    pub fn launch_recording(&self) -> Option<&std::path::Path> {
+        self.launch.as_deref()?.as_ref().ok()?.recording()
+    }
+
     fn flush(&self) {
         self.shared.lock().unwrap_or_else(|e| e.into_inner()).flush();
     }
@@ -232,6 +245,7 @@ impl NativeHost {
         if inner.shutting_down {
             return Err("BattlePlan is closing.".into());
         }
+        let switching_to_map = inner.active_dashboard && !dashboard;
         inner.active_dashboard = dashboard;
         if dashboard {
             inner.pending.campaign_map = false;
@@ -244,8 +258,10 @@ impl NativeHost {
             inner.pending.maps = None;
             inner.pending.campaign_map = true;
             inner.pending.bounds = inner.bounds;
-            inner.status.visible = true;
-            inner.pending.visibility = Some(true);
+            if switching_to_map {
+                inner.status.visible = false;
+                inner.pending.visibility = Some(false);
+            }
         }
         drop(inner);
         self.flush();
@@ -297,13 +313,17 @@ impl NativeHost {
     pub fn map_action(&self, action: dashboard_core::protocol::MapAction) -> Result<(), String> {
         action.validate().map_err(str::to_owned)?;
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if let dashboard_core::protocol::MapAction::Unload { path } = &action
-            && inner.map.is_none()
+        let unload = match &action {
+            dashboard_core::protocol::MapAction::Unload { path } => Some(path),
+            _ => None,
+        };
+        if let Some(path) = unload
+            && inner.map.is_none() && (!inner.starting || inner.shutting_down)
         {
             inner.forget_recording(path);
             return Ok(());
         }
-        if !inner.status.ready || inner.shutting_down {
+        if (!inner.status.ready && unload.is_none()) || inner.shutting_down {
             return Err("The map isn’t ready yet".into());
         }
         if matches!(
@@ -318,7 +338,7 @@ impl NativeHost {
                 .retain(|queued| std::mem::discriminant(queued) != kind);
         }
         inner.pending.action_room()?;
-        if let dashboard_core::protocol::MapAction::Unload { path } = &action {
+        if let Some(path) = unload {
             inner.forget_recording(path);
         }
         inner.pending.actions.push_back(action);
