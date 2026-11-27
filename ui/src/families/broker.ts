@@ -6,7 +6,7 @@ import { repliedCells } from '../dashboard/follow/liveCells.ts';
 import { TRAILING_HOURS, type WidgetTime } from '../dashboard/model.ts';
 import type { FollowRefusal } from '../dashboard/regionGate';
 import type { BoundWindow, FollowRequest, GatedHour } from '../dashboard/regionTime';
-import { forwardRequest, productRequest } from '../dashboard/request.ts';
+import { forwardRequest, productRequest, type DeclaredProduct } from '../dashboard/request.ts';
 import { createBoundedReadView, displayedHour } from './boundedView.ts';
 import type { DrawnKeys } from './host/installed.ts';
 import { buildRowSourceFromHead, dataWindowOf, DEFAULT_TAIL_PAGE_SIZE, pageOffsets, validateGenericTailReply, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type RowWindow, type SnapshotPage, type TableRowSource } from './table/rowSource.ts';
@@ -624,24 +624,30 @@ export function exactEntries(plan: SourcePlan): readonly SourceEntry[] {
   return out;
 }
 
-async function readEntryExact(
+interface ExactAsk {
+  readonly slot: string;
+  readonly request: ProductRequest;
+  readonly page?: PageFetchAsk;
+}
+
+export function buildExactRequests(
   entry: SourceEntry,
   recorded: GatedHour,
-  options: ExactReadOptions,
-  fetchRaw: (request: ProductRequest) => Promise<unknown>,
-): Promise<ExactPart | null> {
+  options: Omit<ExactReadOptions, 'client'>,
+): { hour: number; asks: ExactAsk[]; refusedPages?: Record<number, SnapshotPage> } | null {
   const read = entry.read;
+  const single = (request: ProductRequest, hour = recorded as number) => ({ hour, asks: [{ slot: 'answer', request }] });
+  const product = (name: DeclaredProduct, params: Record<string, unknown>) =>
+    productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: name, params });
 
   if (read.shape === 'point') {
     const params = producePointParams(read, recorded, 'exact');
     if (!params) return null;
     const product = read.exactProduct ?? read.product;
     const forwarded = read.channel === 'panel' && !read.exactProduct;
-    const request = forwarded
+    return single(forwarded
       ? forwardRequest(entry.source, product, params)
-      : productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product, params });
-    const raw = await fetchRaw(request);
-    return { name: entry.name, hour: recorded, panel: raw, ...(forwarded ? { live: repliedCells(raw).read() } : {}) };
+      : productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product, params }));
   }
 
   if (read.shape === 'branch-to-hour' || read.shape === 'trailing-window') {
@@ -663,8 +669,7 @@ async function readEntryExact(
     if (!clampedSpan) return null;
     const params = produceSpanParams(read.params, clampedSpan, read.buildSpanParams);
     if (!params) return null;
-    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-    return { name: entry.name, hour: clampedSpan.lastHour, panel: await fetchRaw(request) };
+    return single(product(read.product, params), clampedSpan.lastHour);
   }
 
   if (read.shape === 'range') {
@@ -672,8 +677,7 @@ async function readEntryExact(
     if (!span) return null;
     const params = produceSpanParams(read.params, span, read.buildSpanParams);
     if (!params) return null;
-    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-    return { name: entry.name, hour: span.lastHour, panel: await fetchRaw(request) };
+    return single(product(read.product, params), span.lastHour);
   }
 
   if (read.shape === 'pixel-binned' && read.exactProduct) {
@@ -683,77 +687,72 @@ async function readEntryExact(
     const params = Array.isArray(reads)
       ? { ...base, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), hour: recorded })) }
       : { ...base, hour: recorded };
-    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.exactProduct, params });
-    return { name: entry.name, hour: recorded, panel: await fetchRaw(request) };
+    return single(product(read.exactProduct, params));
   }
 
   if (read.shape === 'exact-hover') {
     const params = resolveHoverParams(read, recorded, () => undefined);
     if (!params) return null;
-    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-    return { name: entry.name, hour: recorded, hover: await fetchRaw(request) };
+    return single(product(read.product, params));
   }
 
   if (read.shape === 'paged-rows') {
-    const identity = `${entry.source.id}|${entry.branch}|${entry.name}`;
     const headLimit = Math.max(1, read.tailQuery.limit);
     const window = options.rowWindow;
     const dataWindow = window ? dataWindowOf(window) : null;
+    const head = () => single(product(read.tailQuery.product, tailQueryParams(read.tailQuery, recorded, 0, read.tailQuery.limit)));
+    const pageAsk = (page: PageFetchAsk): ExactAsk => ({ slot: `page:${page.offset}`, request: buildTailPageRequest(entry, page)!, page });
     if (options.pagedSnapshot !== undefined) {
       const snap = options.pagedSnapshot(entry.name);
       const snapPages = snap ? Object.values(snap) : [];
       const activeSnap = snapPages.length > 0 && snapPages.every(page => page.hour <= recorded) ? snapPages : [];
       const answered = activeSnap.filter((page): page is Extract<PagedSnapshotPage, { readonly kind: 'answered' }> => page.kind === 'answered');
-      const pages: Record<number, SnapshotPage> = {};
+      const refusedPages: Record<number, SnapshotPage> = {};
       for (const page of activeSnap) {
-        if (page.kind === 'refused') pages[page.offset] = { hour: page.hour, offset: page.offset, limit: page.limit, refused: page.reason };
+        if (page.kind === 'refused') refusedPages[page.offset] = { hour: page.hour, offset: page.offset, limit: page.limit, refused: page.reason };
       }
-      if (answered.length > 0) {
-        const validate = read.validate ?? validateGenericTailReply;
-        const raws = await Promise.all(answered.map(page => fetchRaw(buildTailPageRequest(entry, { offset: page.offset, limit: page.limit, hour: page.hour })!)));
-        answered.forEach((page, i) => {
-          pages[page.offset] = { hour: page.hour, offset: page.offset, limit: page.limit, raw: raws[i], reply: validate(raws[i], page.hour) };
-        });
-        const rowSource = buildRowSourceFromHead(identity, undefined, undefined, recorded, pages, read.validate);
-        return { name: entry.name, hour: recorded, panel: raws[0], ...(rowSource ? { rows: rowSource } : {}) };
-      }
-      const params = tailQueryParams(read.tailQuery, recorded, 0, read.tailQuery.limit);
-      const request = productRequest({
-        sourceId: entry.source.id,
-        revision: entry.source.revision,
-        product: read.tailQuery.product,
-        params,
-      });
-      const raw = await fetchRaw(request);
-      const rowSource = buildRowSourceFromHead(identity, raw, undefined, recorded, pages, read.validate);
-      return { name: entry.name, hour: recorded, panel: raw, ...(rowSource ? { rows: rowSource } : {}) };
+      return answered.length
+        ? { hour: recorded, asks: answered.map(({ hour, offset, limit }) => pageAsk({ hour, offset, limit })), refusedPages }
+        : { ...head(), refusedPages };
     }
     const frozenHour = options.snapshotHour?.(entry.name) ?? null;
     if (frozenHour !== null || (dataWindow && dataWindow.first + dataWindow.count > headLimit)) {
       const at = Math.min(recorded, frozenHour ?? recorded);
       const pageSize = Math.max(1, read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
-      const validate = read.validate ?? validateGenericTailReply;
       const slice = dataWindow ?? { first: 0, count: headLimit };
-      const asks = pageOffsets(slice, pageSize).map(offset => ({ offset, limit: pageSize, hour: at }));
-      const raws = await Promise.all(asks.map(ask => fetchRaw(buildTailPageRequest(entry, ask)!)));
-      const pages: Record<number, SnapshotPage> = {};
-      asks.forEach((ask, i) => { pages[ask.offset] = { ...ask, raw: raws[i], reply: validate(raws[i], at) }; });
-      const rowSource = buildRowSourceFromHead(identity, undefined, undefined, recorded, pages, read.validate);
-      return { name: entry.name, hour: recorded, panel: raws[0], ...(rowSource ? { rows: rowSource } : {}) };
+      const asks = pageOffsets(slice, pageSize).map(offset => pageAsk({ offset, limit: pageSize, hour: at }));
+      return { hour: recorded, asks, refusedPages: {} };
     }
-    const params = tailQueryParams(read.tailQuery, recorded, 0, read.tailQuery.limit);
-    const request = productRequest({
-      sourceId: entry.source.id,
-      revision: entry.source.revision,
-      product: read.tailQuery.product,
-      params,
-    });
-    const raw = await fetchRaw(request);
-    const rowSource = buildRowSourceFromHead(identity, raw, undefined, recorded, undefined, read.validate);
-    return { name: entry.name, hour: recorded, panel: raw, ...(rowSource ? { rows: rowSource } : {}) };
+    return head();
   }
 
   return null;
+}
+
+async function readEntryExact(
+  entry: SourceEntry,
+  recorded: GatedHour,
+  options: ExactReadOptions,
+  fetchRaw: (request: ProductRequest) => Promise<unknown>,
+): Promise<ExactPart | null> {
+  const spec = buildExactRequests(entry, recorded, options);
+  if (!spec) return null;
+  const { read, name } = entry;
+  const { hour, asks, refusedPages } = spec;
+  const raws = asks.length === 1 ? [await fetchRaw(asks[0]!.request)] : await Promise.all(asks.map(ask => fetchRaw(ask.request)));
+  const panel = raws[0];
+  if (read.shape === 'exact-hover') return { name, hour, hover: panel };
+  if (read.shape === 'point' && read.channel === 'panel' && !read.exactProduct) {
+    return { name, hour, panel, live: repliedCells(panel).read() };
+  }
+  if (read.shape !== 'paged-rows') return { name, hour, panel };
+  const validate = read.validate ?? validateGenericTailReply;
+  const pages = refusedPages;
+  asks.forEach(({ page }, i) => {
+    if (page) pages![page.offset] = { ...page, raw: raws[i], reply: validate(raws[i], page.hour) };
+  });
+  const rows = buildRowSourceFromHead(`${entry.source.id}|${entry.branch}|${name}`, asks[0]?.page ? undefined : panel, undefined, recorded, pages, read.validate);
+  return { name, hour, panel, ...(rows ? { rows } : {}) };
 }
 
 export async function readPlanExact(

@@ -2,6 +2,7 @@ import type { Channel } from '../dashboard/follow/facts';
 import type { FrameRequest } from '../dashboard/follow/page';
 import type { PayloadsMessage } from '../dashboard/follow/payloads';
 import type { Binding, Presented, Supply } from './lane';
+import type { StripReceipt, StripUpdate } from '../dashboard/strip/store.ts';
 
 export type ProjectionKey = readonly [family: string, kind: string, view: string];
 
@@ -14,6 +15,7 @@ export type ToLane =
   | { type: 'unfollow'; sub: number }
   | { type: 'mount'; widget: number; subs: number[]; view: string; model?: unknown }
   | { type: 'unmount'; widget: number }
+  | { type: 'strip'; widget: number; build: number; receipt: number; update: StripUpdate }
   | { type: 'bind'; widget: number; binding: Binding; model?: unknown; retry?: boolean; remounted?: boolean }
   | ({ type: 'supply'; widget: number } & Supply)
   | PayloadsMessage
@@ -27,6 +29,7 @@ export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
   | { type: 'prepared'; lane: number; ask: number }
+  | { type: 'strip'; receipt: number; held: StripReceipt } | { type: 'strip'; receipt: number; error: string }
   | { type: 'sub-failed'; lane: number; sub: number; reason: string }
   | { type: 'sub-waiting'; lane: number; sub: number; waiting: boolean }
   | { type: 'widget-failed'; lane: number; widget: number; reason: string; stamp?: number }

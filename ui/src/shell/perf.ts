@@ -569,6 +569,10 @@ export class PerfRecorder {
     this.push({ t: 'shown', at: epoch(performance.now()), widget, hour });
   }
 
+  strip(fields: Record<string, unknown>) {
+    this.push({ t: 'strip', at: epoch(performance.now()), ...fields });
+  }
+
   follow(id: number, status: 'pending' | 'followed' | 'unavailable' | 'failed' | 'released', product?: string | null, reason?: string): void {
     this.push({ t: 'follow', at: epoch(performance.now()), id, status, ...(product !== undefined && { product }), ...(reason !== undefined && { reason }) });
   }

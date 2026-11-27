@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { busy, busyCount, busyKinds, busyPreparing, inBackground } from './busy.ts';
+import { busy, busyCount, busyKinds, busyPreparing, inBackground, onForegroundRequest } from './busy.ts';
 import { inFrame } from '../dashboard/frameUpdates.ts';
 
 test('each thing in flight counts once until it ends, by its kind', () => {
@@ -17,10 +17,14 @@ test('each thing in flight counts once until it ends, by its kind', () => {
 });
 
 test('a request the prepare lane starts is its own, never in the count the page settles by', () => {
+  const foreground: number[] = [];
+  const stop = onForegroundRequest(() => foreground.push(busyKinds().requests));
   const before = busyCount();
   const prepared = inBackground(() => busy('requests'));
   const update = inBackground(() => busy('updates'));
   const asked = busy('requests');
+  stop();
+  assert.deepEqual(foreground, [1], 'foreground listeners run synchronously, only for the request that takes priority');
   assert.equal(busyPreparing(), 1);
   assert.equal(busyKinds().requests, 1, 'only the request asked outside the lane');
   assert.equal(busyCount(), before + 2, 'an update is waited on wherever it starts');

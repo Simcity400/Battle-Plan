@@ -14,6 +14,7 @@ import type { AuditRow } from '../../draw/notifications';
 import { productRequest } from '../request.ts';
 import type { FollowRequest, GatedParams } from '../regionTime';
 import { asFailure, RefusedError, type Failure } from '../queryError.ts';
+import type { StripReceipt, StripUpdate } from '../strip/store.ts';
 
 export interface LaneWorker {
   postMessage(message: ToLane, transfer?: Transferable[]): void;
@@ -64,6 +65,7 @@ interface RouteAnchor {
 
 interface WidgetState {
   id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
+  stripReset?: () => void;
   installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
   held: Map<string, unknown>; error?: Failure; wire?: unknown; stamp: number | undefined; payloads: { own: ReadonlySet<number>; statics: ReadonlySet<number>; identity: ReadonlySet<number> };
 }
@@ -88,6 +90,49 @@ const NO_CHANNEL = 'This connection has no channel for pushed answers';
 const DEFAULT_COST = 0.5;
 
 export class Pipeline {
+  private nextStripReceipt = 0;
+  private readonly stripReceipts = new Map<number, { lane: number; resolve: (held: StripReceipt) => void; reject: (error: Error) => void }>();
+
+  storeStrip(id: number, build: number, update: StripUpdate): Promise<StripReceipt> {
+    const lane = this.widgets.get(id)?.lane;
+    if (this.closed || lane === undefined || this.laneErrors[lane]) return Promise.reject(new Error('Dashboard strip lane is unavailable'));
+    const receipt = this.nextStripReceipt++;
+    return new Promise((resolve, reject) => {
+      this.stripReceipts.set(receipt, { lane, resolve, reject });
+      try { this.postLane(lane, { type: 'strip', widget: id, build, receipt, update }, update.kind === 'append' ? [update.bytes.buffer as ArrayBuffer] : []); }
+      catch (error) { this.stripReceipts.delete(receipt); reject(error); }
+    });
+  }
+
+  stripSettled(id: number): boolean {
+    const widget = this.widgets.get(id);
+    if (!widget) return false;
+    const route = widget.subs.size ? widget.route : null;
+    if (route?.pending || route?.sending) return false;
+    const view = this.page.view(id);
+    const interval = view.validInterval;
+    const current = route ? view.gen?.seek === this.page.seek : interval && interval[0] <= view.target && view.target <= interval[1];
+    return view.mode === 'failed' || view.mode === 'outside' || (view.mode === 'refused' && !view.gen) ||
+      (view.mode !== 'reading' && current === true && !view.dim);
+  }
+
+  stripLaneAvailable(id: number): boolean {
+    const widget = this.widgets.get(id);
+    return !!widget && !this.laneErrors[widget.lane];
+  }
+
+  onStripReset(id: number, reset: () => void) {
+    const widget = this.widgets.get(id);
+    if (widget) widget.stripReset = reset;
+    return () => { if (widget?.stripReset === reset) widget.stripReset = undefined; };
+  }
+
+  private failStrips(error: string, lane?: number) {
+    for (const [id, receipt] of this.stripReceipts) if (lane === undefined || lane === receipt.lane) {
+      this.stripReceipts.delete(id);
+      receipt.reject(new Error(error));
+    }
+  }
   readonly page: Page<ImageBitmap>;
   readonly stats = { dateVisits: 0 };
   readonly generation: number;
@@ -190,6 +235,7 @@ export class Pipeline {
     this.host.close?.();
     for (const port of this.ports) port.close();
     this.page.dispose();
+    this.failStrips('Dashboard strip pipeline closed');
     perfLog?.dropGeneration(this.generation);
     this.widgets.clear(); this.shared.clear(); this.subs.clear(); this.byId.clear(); this.routes.clear();
     for (const resolve of this.preparedWaiters) resolve();
@@ -346,6 +392,7 @@ export class Pipeline {
 
   private failLane(lane: number, reason: string) {
     if (this.closed || this.laneErrors[lane]) return;
+    this.failStrips(reason, lane);
     const failure = asFailure(new Error(reason));
     this.laneErrors[lane] = failure;
     this.preparedAt[lane] = Infinity;
@@ -403,6 +450,13 @@ export class Pipeline {
 
   private receive(lane: number, message: FromLane) {
     if (this.closed || this.laneErrors[lane]) return;
+    if (message.type === 'strip') {
+      const receipt = this.stripReceipts.get(message.receipt);
+      if (receipt?.lane !== lane) return;
+      this.stripReceipts.delete(message.receipt);
+      if ('error' in message) receipt.reject(new Error(message.error)); else receipt.resolve(message.held);
+      return;
+    }
     if (message.type === 'prepared') {
       this.preparedAt[lane] = Math.max(this.preparedAt[lane] ?? 0, message.ask);
       this.settlePrepared();
@@ -684,6 +738,7 @@ export class Pipeline {
     if (!widget || id === undefined) return;
     widget.subs.delete(token);
     this.release(id, widgetId);
+    if (!widget.subs.size) widget.stripReset?.();
     this.remount(widget);
   }
 

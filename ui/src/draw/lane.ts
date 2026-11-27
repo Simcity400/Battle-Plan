@@ -5,6 +5,7 @@ import { patchAnswer } from '../dashboard/follow/tables.ts';
 import { sectionOf } from '../dashboard/follow/liveCells.ts';
 import { PayloadStore, type PayloadsMessage, type Revisions } from '../dashboard/follow/payloads.ts';
 import type { InstalledViewport } from '../families/plan.ts';
+import { EMPTY_STRIP_RECEIPT, WidgetStrips, type StripUpdate } from '../dashboard/strip/store.ts';
 
 export interface PanelValue { kind: 'panel'; bytes: Uint8Array | null; data: unknown; refused: string | null; stopped?: string }
 export interface AnswerValue { kind: 'answer'; body?: Uint8Array; answer: FollowedAnswer }
@@ -211,6 +212,16 @@ function cellsOf(data: unknown): { id: number; seedHour?: number; values?: Value
 }
 
 export class Lane<B extends { readonly width: number; close(): void }> {
+  strips?: Map<number, { build: number; held: WidgetStrips }>;
+
+  strip(widget: number, build: number, update: StripUpdate) {
+    let current = this.strips?.get(widget);
+    if (update.kind === 'drop' && current?.build !== build) return EMPTY_STRIP_RECEIPT;
+    if (current && current.build > build) throw new Error('Superseded dashboard strip');
+    if (update.kind === 'drop' && !update.fine) { this.strips?.delete(widget); return EMPTY_STRIP_RECEIPT; }
+    if (!current || current.build !== build) (this.strips ??= new Map()).set(widget, current = { build, held: new WidgetStrips() });
+    return current.held.update(update);
+  }
   readonly facts = new Facts<Value>();
   readonly stats = { frames: 0, entries: 0, motion: 0, crops: 0, refused: {} as Record<string, number>, visited: 0, pruned: 0 };
   private readonly subs = new Map<number, Sub>();
@@ -593,6 +604,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   unmount(widget: number) {
+    this.strips?.delete(widget);
     const held = this.widgets.get(widget);
     if (held) {
       this.host.views(held.view).unmount?.(widget, held.state);

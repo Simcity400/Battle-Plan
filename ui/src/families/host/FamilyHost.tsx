@@ -6,6 +6,8 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { WidgetBase } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
+import { StripPageContext, type StripWidget } from '../../dashboard/strip/driver.ts';
+import { EMPTY_STRIP_RECEIPT } from '../../dashboard/strip/store.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
@@ -243,6 +245,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly extent?: readonly [number, number] | null;
   readonly plan?: SourcePlan | null;
   readonly exactReadView?: (hour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null>;
+  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'requests'>;
   readonly offset: number;
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
@@ -310,6 +313,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   extent = null,
   plan = null,
   exactReadView,
+  stripPlan,
   offset,
   pin,
   bounds = null,
@@ -474,6 +478,33 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     surfaceLabel: adapter.family,
   });
   const { pipeline, pipe, sourceIdsRef, subsReady, instanceId, tooltipOwner, dataContextKey, retryStream, retryLocal } = placement;
+  const strips = useContext(StripPageContext);
+  const stripPlanRef = useRef(stripPlan);
+  stripPlanRef.current = stripPlan;
+  useLayoutEffect(() => {
+    const plan = stripPlanRef.current;
+    const tiled = adapter.family === 'heat-lanes' || (adapter.family === 'time-chart' && !plan);
+    const supported = !tiled && plan?.supported === true;
+    if (!strips || (!tiled && !plan) || (supported && (!pipeline || pipe === null))) return;
+    let reset = 0;
+    const register = (available: boolean) => strips.register(widget.id, { ...plan,
+      key: `${pipeline?.generation}:${pipe}:${reset}:${plan?.key}`, supported: supported && available,
+      requests: plan?.requests ?? (() => []),
+      settled: () => !pipeline || pipe === null || pipeline.stripSettled(pipe),
+      store: (build, update) => pipeline && pipe !== null ? pipeline.storeStrip(pipe, build, update) : Promise.resolve(EMPTY_STRIP_RECEIPT),
+    });
+    let available = !!pipeline && pipe !== null && pipeline.stripLaneAvailable(pipe);
+    let release = register(available);
+    const stop = pipeline && pipe !== null ? pipeline.onInstall(pipe, () => {
+      if (available && !pipeline.stripLaneAvailable(pipe)) { available = false; release(); release = register(false); }
+    }) : undefined;
+    const stopReset = pipeline && pipe !== null ? pipeline.onStripReset(pipe, () => {
+      reset++;
+      release();
+      release = register(available);
+    }) : undefined;
+    return () => { stop?.(); stopReset?.(); release(); };
+  }, [strips, widget.id, pipeline, pipe, adapter.family, stripPlan?.key, stripPlan?.supported]);
 
   useEffect(() => {
     if (!exportSurface.active || !exportSurface.reportWidget || !active || prepared || enabled) return undefined;

@@ -27,7 +27,9 @@ import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
 import { FollowedCard, FollowedWidgetKey, FollowedWidgetKind } from './follow/store.ts';
 import { usePipelineGeneration } from './follow/useFollowed.ts';
-import { WidgetFrames } from './widgetClock';
+import { pageClock, WidgetFrames } from './widgetClock';
+import { configuredStripPage, StripPage, StripPageContext } from './strip/driver.ts';
+import { stripLattice } from './strip/lattice.ts';
 import { perfLog } from '../shell/perf';
 import { DASHBOARD_SCROLL, NEAR_SCREEN } from './follow/useFollow.ts';
 import { preloadPageRenderers } from '../widgets/rendererLoaders';
@@ -48,6 +50,18 @@ interface Props {
   onLayouts: (layouts: GridLayouts) => void;
   onApply: (widget: WidgetSpec, view?: boolean) => void;
   onRemove: (id: string) => void;
+}
+
+function StripDashboardGrid({ stripPageId, ...props }: Omit<Props, 'prepared'> & { stripPageId?: string }) {
+  const { runtime, template } = props;
+  const reference = runtime.tracks.find(track => track.roleId === runtime.defaultRoleId);
+  const stripKey = runtime.client.available && reference && !template.widgets.some(widget => widget.kind === 'map')
+    ? JSON.stringify([stripPageId, reference.id, reference.source.id, reference.source.revision, reference.branch.id, reference.axisOffset]) : null;
+  const strips = useMemo(() => stripKey && reference
+    ? new StripPage(stripLattice(reference.branch, reference.axisOffset), pageClock(runtime.clock), runtime.client, { name: stripPageId }) : null,
+  [stripKey, runtime.clock, runtime.client]);
+  useEffect(() => strips?.start(), [strips]);
+  return <StripPageContext.Provider value={strips}><DashboardGrid {...props} /></StripPageContext.Provider>;
 }
 
 function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
@@ -409,7 +423,9 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   </article>;
 }
 
-export default memo(DashboardGrid);
+const Grid = memo(DashboardGrid);
+export const LiveDashboardGrid = configuredStripPage(() => memo(StripDashboardGrid)) ?? Grid;
+export default Grid;
 
 commitZone(DashboardGrid, 'grid');
 commitZone(WidgetFrame, 'widget frame');

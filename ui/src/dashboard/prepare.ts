@@ -4,7 +4,7 @@ import { busyCount, inBackground } from '../shell/busy.ts';
 
 const requestKey = (request: ProductRequest) => JSON.stringify([request.sourceId, request.revision, request.product, request.params]);
 
-interface Waiting { key: string; request: ProductRequest; send: (background: boolean) => void }
+interface Waiting { key: string | null; ready: () => boolean; send: (background: boolean) => void }
 
 export interface PrepareFrames { request(run: () => void): number; cancel(id: number): void }
 const animationFrames: PrepareFrames = typeof requestAnimationFrame === 'function'
@@ -26,18 +26,26 @@ export class PrepareGate {
     this.frames = frames;
   }
 
-  ask<T>(request: ProductRequest, send: (signal: AbortSignal, background: boolean) => Promise<T>, signal: AbortSignal): Promise<T> {
+  ask<T>(request: ProductRequest, send: (signal: AbortSignal, background: boolean) => Promise<T>, signal: AbortSignal, ready = () => true): Promise<T> {
+    return this.enqueue(requestKey(request), send, signal, ready);
+  }
+
+  wait(signal: AbortSignal, ready: () => boolean): Promise<void> {
+    return this.enqueue(null, async () => {}, signal, ready);
+  }
+
+  private enqueue<T>(key: string | null, send: (signal: AbortSignal, background: boolean) => Promise<T>, signal: AbortSignal, ready: () => boolean): Promise<T> {
     if (signal.aborted) return Promise.reject(new DOMException('Request cancelled', 'AbortError'));
     return new Promise<T>((resolve, reject) => {
       const entry: Waiting = {
-        key: requestKey(request), request,
+        key, ready,
         send: background => {
           signal.removeEventListener('abort', leave);
-          if (background) { this.running++; this.sent.add(entry.key); }
+          if (background) { this.running++; if (key !== null) this.sent.add(key); }
           send(signal, background).then(resolve, reject).finally(() => {
             if (!background) return;
             this.running--;
-            this.sent.delete(entry.key);
+            if (key !== null) this.sent.delete(key);
             this.pump();
           });
         },
@@ -63,7 +71,7 @@ export class PrepareGate {
 
   promote(request: ProductRequest): void {
     const key = requestKey(request);
-    const at = this.waiting.findIndex(entry => entry.key === key);
+    const at = this.waiting.findIndex(entry => entry.key === key && entry.ready());
     if (at < 0) return;
     const [entry] = this.waiting.splice(at, 1);
     entry.send(false);
@@ -86,7 +94,8 @@ export class PrepareGate {
   private pump(): void {
     if (this.frame) { this.frames.cancel(this.frame); this.frame = 0; }
     if (this.running === 0 && this.waiting.length) {
-      if (this.idle()) this.waiting.shift()!.send(true);
+      const at = this.idle() ? this.waiting.findIndex(entry => entry.ready()) : -1;
+      if (at >= 0) this.waiting.splice(at, 1)[0]!.send(true);
       else this.frame = this.frames.request(() => { this.frame = 0; this.pump(); });
     }
     this.told();

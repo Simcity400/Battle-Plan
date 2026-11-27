@@ -23,6 +23,17 @@ export class OpenedSources {
   refusal(request: { readonly sourceId: string; readonly product: string; readonly params: unknown }): string | null {
     if (ENVELOPES.has(request.product)) return null;
     const params = request.params as Readonly<Record<string, unknown>> | null | undefined;
+    if (request.product === 'strip') {
+      const { product, asks, whole } = params ?? {};
+      if (typeof product !== 'string' || product === 'strip' || product === 'follow' || ENVELOPES.has(product) ||
+          typeof whole !== 'boolean' || !Array.isArray(asks) || asks.length < 1 || asks.length > 17 ||
+          asks.some(ask => !ask || typeof ask !== 'object' || Array.isArray(ask))) return 'Invalid strip request';
+      for (const [i, params] of asks.entries()) {
+        const refusal = this.refusal({ sourceId: request.sourceId, product, params });
+        if (refusal) return `strip ask ${i + 1}: ${refusal}`;
+      }
+      return null;
+    }
     const followed = request.product === 'follow';
     const asked = followed ? followedProduct(params?.query) : { product: request.product, params };
     if (!asked) return `${request.product} names no followed product`;

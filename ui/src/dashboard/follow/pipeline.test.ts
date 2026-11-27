@@ -9,6 +9,7 @@ import type { LaneView } from '../../draw/lane';
 import { classifyFailure, ShownError } from '../queryError.ts';
 import { pipelineFor, prepareLanes, restartPipeline, type LaneWorker } from './pipeline.ts';
 import { PlaybackController } from '../playback.ts';
+import { configuredStripPage } from '../strip/driver.ts';
 
 const surface = (): PageSurface<ImageBitmap> & { cleared: number } => ({ cleared: 0, install() {}, clear() { this.cleared++; } });
 
@@ -159,7 +160,9 @@ test('review 5 finding 14: a failed stream stays failed through a resubscription
 test('identity and statics are supplied apart from the binding: one snapshot per lane, no new generation, and pictures in flight are installed', async () => {
   const drawn: LaneView = { paint: input => ({ surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 },
     content: `snapshot:${JSON.stringify((input.model as { identitySnapshot?: unknown }).identitySnapshot ?? null)}` })), fields: {}, motion: false }) };
-  const { pipeline, clock, settle, posted, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined });
+  let finishClock: (() => void) | undefined;
+  const { pipeline, clock, settle, posted, source, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined,
+    gate: product => product === 'follow-clock' ? new Promise<void>(resolve => { finishClock = resolve; }) : undefined });
   try {
     const slow = pipeline.acquire('slow|0', { offset: 0, pin: null });
     const other = pipeline.acquire('other|0', { offset: 0, pin: null });
@@ -170,6 +173,10 @@ test('identity and statics are supplied apart from the binding: one snapshot per
     }
     clock.seek(10);
     assert.ok(await settle(() => pipeline.view(slow)?.mode === 'picture' && pipeline.view(other)?.mode === 'picture'));
+    const installedSeek = pipeline.view(slow)?.gen?.seek;
+    clock.seek(11);
+    assert.equal(pipeline.view(slow)?.gen?.seek, installedSeek, 'the route-less picture still covers the new seek');
+    assert.equal(pipeline.stripSettled(slow), true, 'an installed exact proof can settle the strip gate across that seek');
     const generation = pipeline.binding(slow);
     const installs = pipeline.page.stats.installs;
     const start = posted.length;
@@ -191,9 +198,39 @@ test('identity and statics are supplied apart from the binding: one snapshot per
       Array.from({ length: 9 }, (_, i) => [['version', i + 1]]));
     assert.equal(sent.filter(item => item.type === 'bind').length, 0);
     assert.ok(Math.max(...sent.filter(item => item.type === 'supply').map(item => item.bytes)) < 80, 'a widget names its snapshot; it does not carry a copy');
+    const token = {};
+    const sub = pipeline.subscribe(slow, token, source, '1', 0, { product: 'series-state' }, 'followed')!;
+    assert.ok(await settle(() => pipeline.status(sub).status === 'followed'));
+    assert.ok(await settle(() => finishClock !== undefined), 'the old route has an in-flight clock command');
+    let stripResets = 0;
+    const stopReset = pipeline.onStripReset(slow, () => { stripResets++; });
+    pipeline.unsubscribe(slow, token);
+    assert.equal(stripResets, 1, 'dropping the last subscription invalidates the old strip');
+    stopReset();
+    assert.ok(await settle(() => pipeline.view(slow)?.mode === 'picture' && !pipeline.view(slow)!.dim));
+    const lastSeek = pipeline.view(slow)?.gen?.seek;
+    clock.seek(12);
+    assert.equal(pipeline.view(slow)?.gen?.seek, lastSeek, 'the installed interval still covers the seek');
+    assert.equal(pipeline.stripSettled(slow), true, 'a stale subscription route cannot stall the strip gate');
     pipeline.unmount(slow);
     pipeline.unmount(other);
     assert.ok(posted.some(item => item.type === 'payloads' && ((item.message as { drop?: unknown[] }).drop?.length ?? 0) > 0), 'a snapshot no widget reads is dropped from the lane');
+  } finally { finishClock?.(); close(); }
+});
+
+test('with strip building off, unsubscribing the last source retains the follow route', async () => {
+  assert.equal(configuredStripPage(() => assert.fail('the shipped switch is off')), null);
+  const { pipeline, settle, source, close } = inProcess();
+  try {
+    const id = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const token = {};
+    const sub = pipeline.subscribe(id, token, source, '1', 0, { product: 'series-state' }, 'followed')!;
+    assert.ok(await settle(() => pipeline.status(sub).status === 'followed'));
+    const widget = pipeline['widgets'].get(id)!;
+    const route = widget.route;
+    assert.ok(route);
+    pipeline.unsubscribe(id, token);
+    assert.equal(widget.route, route);
   } finally { close(); }
 });
 
@@ -1135,10 +1172,13 @@ test('#1071: lanesHost installs an error handler at worker construction, isolate
       const wB = pPartial.acquire('b|0', { offset: 0, pin: null });
       assert.deepEqual([pPartial.lane(wA), pPartial.lane(wB)], [1, 1], 'new placements exclude the lane that threw at construction');
       assert.equal(pPartial.view(wA)?.mode, 'reading');
+      assert.equal(pPartial.stripSettled(wA), false, 'a widget without a route still waits for its exact picture');
+      assert.equal(pPartial.stripLaneAvailable(wA), true);
       rawWorkers[0]!.onerror!({ message: 'script 404', preventDefault() { prevented++; } } as unknown as ErrorEvent);
       assert.equal(prevented, 1, 'error handler handles the worker error event');
       assert.equal(rawWorkers[0]!.terminated, true, 'failed worker is terminated');
       assert.equal(pPartial.view(wA)?.mode, 'failed');
+      assert.equal(pPartial.stripLaneAvailable(wA), false, 'a terminated lane can no longer hold a strip');
       assert.match(pPartial.view(wA)?.reason ?? '', /Lane 1 failed: script 404/);
       assert.equal(pPartial.view(wA)?.failureOrigin, 'stream');
     } finally {

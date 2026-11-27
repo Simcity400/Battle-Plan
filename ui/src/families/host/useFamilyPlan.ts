@@ -1,6 +1,6 @@
 import { createExactReadView, emptyPagers, NO_PAGED_SNAPSHOT, pagedEntries, pagedSnapshots, pagerWindow, replacePagers, type PagedSnapshot, type PagerSet } from './pagers.ts';
 import { NO_TILED_SERIES, reuseTiledSeries, reuseTileUnrecorded, topTileProof, type HeldTileUnrecorded } from './tiledState.ts';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
@@ -28,14 +28,17 @@ import { TileView, tileCache, type TiledLine, type TileViewport } from '../../da
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { countRead, measuredWidget } from '../../dashboard/widgetPerf.ts';
 import { useRegion, useRegionCoverage, watchBoundary } from '../../dashboard/widgetTime';
+import { StripPageContext, type StripWidget } from '../../dashboard/strip/driver.ts';
 import type { HourSpan } from '../../generated/dashboard';
 import { perfLog } from '../../shell/perf.ts';
 import type { FamilyStaticProof } from './adapter.ts';
 import { createExactArtProvider, type ArtResolutions } from '../art/provider.ts';
 import {
+  buildExactRequests,
   buildTailPageRequest,
   compileFollowPlan,
   currentHovers,
+  exactEntries,
   FamilySourceBroker,
   hoverAsks,
   type HeldHover,
@@ -198,6 +201,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly onHoverHour: (hour: number | null, keys?: DrawnKeys) => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null>) | undefined;
+  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'requests'>;
   readonly bodyStatus: FamilyBodyStatus;
   readonly bannerFailure: BannerFailureInfo | null;
   readonly nameFailureDetail: string | undefined;
@@ -1053,9 +1057,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const displayedPlan = displayed.plan ?? plan;
   const displayedExtra = displayed.extra;
 
-  const exactReadView = useMemo(() => {
-    if (!displayedCtx || !displayedPlan || !perfLog) return undefined;
-    return createExactReadView(displayedPlan, pagedSnapshot, {
+  const exactOptions = useMemo(() => displayedCtx ? {
       client: runtime.client,
       following,
       timeMode: widget.time.mode,
@@ -1063,6 +1065,12 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       window,
       staticSpan: displayedCtx.staticSpan,
       gate: displayedGate,
+  } : null, [displayedCtx, runtime.client, following, widget.time.mode, window, displayedGate]);
+
+  const exactReadView = useMemo(() => {
+    if (!exactOptions || !displayedPlan || !perfLog) return undefined;
+    return createExactReadView(displayedPlan, pagedSnapshot, {
+      ...exactOptions,
       exactOnce: (key, load) => perfLog!.exactOnce(key, load),
       identity: identityProvider,
       art: resolutions => createExactArtProvider({
@@ -1072,7 +1080,30 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         ...(resolutions ? { resolutions } : {}),
       }),
     });
-  }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window, pagedSnapshot, identityProvider, broker, identityScope, track?.source]);
+  }, [exactOptions, displayedPlan, pagedSnapshot, identityProvider, broker, identityScope, track?.source]);
+
+  const strips = useContext(StripPageContext);
+  const viewport = measuredViewport.current;
+  const frozenLog = (entry: SourceEntry) => entry.read.shape === 'paged-rows' && Object.values(pagedSnapshot[entry.name] ?? {}).some(page => page.kind === 'answered');
+  const displayedEntries = strips && displayedPlan ? exactEntries(displayedPlan) : [];
+  const fixedStrip = !following || (displayedEntries.length > 0 && displayedEntries.every(frozenLog));
+  const stripPlan: UseFamilyPlanResult<TAux, TExtra>['stripPlan'] = strips && exactOptions && displayedCtx && displayedPlan ? {
+    key: JSON.stringify([displayedPlan.valid ? [displayedPlan.owner, options] : sig, fixedStrip, pagedSnapshot, content]),
+    fixed: fixedStrip,
+    supported: ![...displayedPlan.entries, displayedPlan.exactEntry, displayedPlan.staticEntry].some(entry => entry?.read.shape === 'pixel-binned'),
+    requests: axis => {
+      if (fixedStrip) return [];
+      const recorded = displayedGate.recorded(axis + trackOffset);
+      if (recorded === null) return [];
+      const [lo, hi] = displayedPlan.valid ?? [-Infinity, Infinity];
+      const plan = recorded < lo || recorded > hi
+        ? buildSources({ ...displayedCtx, planHour: recorded }, { following, ...viewport, staticSpan: displayedCtx.staticSpan })
+        : displayedPlan;
+      return exactEntries(plan).filter(entry => !frozenLog(entry)).flatMap(entry => (buildExactRequests(entry, recorded, {
+        ...exactOptions, pagedSnapshot: name => pagedSnapshot[name] ?? null,
+      })?.asks ?? []).map(({ slot, request }) => ({ slot: JSON.stringify([entry.name, slot, request.sourceId, request.revision, request.product]), request })));
+    },
+  } : undefined;
 
   const loadingLabel = `Loading ${subject}…`;
   const hasStaticBundle = staticBundle !== null;
@@ -1259,6 +1290,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     onHoverHour,
     hovers,
     exactReadView,
+    stripPlan,
     bodyStatus,
     bannerFailure,
     nameFailureDetail,

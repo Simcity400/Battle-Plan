@@ -42,6 +42,9 @@ import { viewSlotProps } from './viewProps.ts';
 import type { WidgetMeta } from '../dashboard/definitions';
 import type { WidgetSpec } from '../dashboard/model';
 import type { CountryPolicy, SourcePlan } from '../families/plan.ts';
+import { buildExactRequests, exactEntries, readPlanExact, type ExactReadOptions } from '../families/broker.ts';
+import type { DashboardClient, ProductRequest } from '../dashboard/client.ts';
+import { openGate } from '../test-support/gated.ts';
 
 test('manifest accounts for every widget kind across family and native entries', () => {
   const familyKinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
@@ -526,26 +529,46 @@ test('every setting a time-chart view shows reaches what that view reads or proj
   assert.deepEqual(silent, [], 'a setting that changes neither the read nor the projection does nothing: wire it or remove it');
 });
 
-test('every multi and filter view says whether it draws one hour or history, and none that reads a span or resolves membership at the hour says otherwise (#1031)', async () => {
+test('every family view gives the same exact requests to strip building and seeking, and multi and filter views declare their time shape', async t => {
   const spanShapes = new Set(['range', 'branch-to-hour', 'trailing-window', 'pixel-binned', 'paged-rows']);
   const contradictions: string[] = [];
   const declared: string[] = [];
   let read = 0;
+  const kinds = new Set<string>();
+  let requests = 0;
+  const stop = new Error('Fixture captured the request');
+  const compare = async (label: string, plan: SourcePlan, hour: number, options: Omit<ExactReadOptions, 'client'>) => {
+    const at = options.gate.recorded(hour);
+    const expected = at === null ? [] : exactEntries(plan).flatMap(entry => buildExactRequests(entry, at, options)?.asks.map(ask => JSON.stringify(ask.request)) ?? []);
+    const actual: string[] = [];
+    const client = { product: async (request: ProductRequest) => { actual.push(JSON.stringify(request)); throw stop; } } as unknown as DashboardClient;
+    const exact = readPlanExact(plan, hour, { ...options, client });
+    if (expected.length) await assert.rejects(exact, error => error === stop);
+    else await exact;
+    assert.deepEqual(actual, expected, `${label} at hour ${hour}`);
+    requests += actual.length;
+  };
   for (const entry of FAMILY_VIEWS) {
     const view = normalizeView(entry.view);
     const spec = await entry.loadSpec();
     const declaration = spec.declaration as { readonly countries?: CountryPolicy; readonly sources?: (ctx: unknown, viewport: unknown) => SourcePlan } | undefined;
     const policy = declaration?.countries;
-    if (policy?.mode !== 'multi' && policy?.mode !== 'filter') continue;
     const name = `${entry.kind}/${view}`;
-    declared.push(`${name}:${policy.content}`);
-    const dated = policy.mode === 'multi' && policy.datedAtHour === true;
-    if (dated && policy.content !== 'hour') contradictions.push(`${name} resolves membership at the hour, so it draws one hour`);
-    if (!dated && (spec.family === 'time-chart' || spec.family === 'timeline') && policy.content !== 'history') contradictions.push(`${name} draws over time, so it draws history`);
+    const content = policy?.mode === 'multi' || policy?.mode === 'filter' ? policy.content : null;
+    if (content) {
+      declared.push(`${name}:${content}`);
+      const dated = policy?.mode === 'multi' && policy.datedAtHour === true;
+      if (dated && content !== 'hour') contradictions.push(`${name} resolves membership at the hour, so it draws one hour`);
+      if (!dated && (spec.family === 'time-chart' || spec.family === 'timeline') && content !== 'history') contradictions.push(`${name} draws over time, so it draws history`);
+    }
     const options = resolveOptions(familyViewOptionFields(entry.kind, view), view === DEFAULT_VIEW ? {} : { [entry.viewOption ?? 'view']: view });
     const shapes = new Set<string>();
     for (const [following, time] of [[true, { mode: 'follow' }], [false, { mode: 'range', firstOffset: 100, lastOffset: 900 }]] as const) {
-      const branch = { id: '1', firstHour: 0, lastHour: 1000, gaps: [] };
+      const branch = { id: '1', firstHour: 0, lastHour: 1000, gaps: [{ firstHour: 500, lastHour: 501, reason: 'Fixture gap' }] };
+      const within = openGate(branch.firstHour, branch.lastHour);
+      const late = entry.kind === 'resource-balance';
+      const gate = { ...within, recorded: (hour: number | null | undefined) =>
+        hour === 500 || hour === 501 || (late && hour === 0) ? null : within.recorded(hour) };
       const ctx = {
         track: { id: 't', source: { id: 's', revision: '1', metadata: { campaignKey: 'c' } }, branch, axisOffset: 0 }, branch, lastRecordedHour: 1000,
         widget: { kind: entry.kind, options: {}, countries: { kind: 'tags', tags: ['AAA'] }, time, trackIds: ['t'] }, options, following, aux: undefined,
@@ -555,16 +578,30 @@ test('every multi and filter view says whether it draws one hour or history, and
           rankedAt: () => ['AAA'], reason: null, known: () => true, unobservedIn: () => false },
         gateSpan: (first: number, last: number) => ({ firstHour: first, lastHour: last }), staticSpan: following ? null : [100, 900], planHour: 900,
       };
-      try {
-        const plan = declaration?.sources?.(ctx, { following, width: 800, height: 300 });
-        for (const source of [...plan?.entries ?? [], plan?.staticEntry, plan?.exactEntry]) if (source) shapes.add(source.read.shape);
-      } catch {
-        continue;
+      const viewport = { following, width: 800, height: 300 };
+      const plan = declaration?.sources?.(ctx, viewport);
+      assert.ok(plan, `${name} declares its source plan`);
+      kinds.add(entry.kind);
+      for (const source of [...plan.entries, plan.staticEntry, plan.exactEntry]) if (source) shapes.add(source.read.shape);
+      const exactOptions = { following, timeMode: time.mode, branch, window: following ? null : { firstHour: 100, lastHour: 900 },
+        staticSpan: following ? null : [100, 900] as const, gate };
+      for (const hour of [0, 450, 500, 1000]) {
+        const at = declaration?.sources?.({ ...ctx, planHour: hour }, viewport) ?? plan;
+        await compare(name, at, hour, exactOptions);
+      }
+      if (following && exactEntries(plan).some(source => source.read.shape === 'paged-rows')) {
+        const rowWindow = { first: 600, count: 24 };
+        await compare(`${name} scrolled`, plan, 450, { ...exactOptions, rowWindow });
+        await compare(`${name} frozen`, plan, 450, { ...exactOptions, rowWindow,
+          pagedSnapshot: () => ({ 512: { kind: 'answered', hour: 300, offset: 512, limit: 64 } }) });
       }
     }
-    if (shapes.size) read++;
-    if (policy.content === 'hour' && [...shapes].some(shape => spanShapes.has(shape))) contradictions.push(`${name} reads ${[...shapes].join(', ')}, so it draws history`);
+    if (content && shapes.size) read++;
+    if (content === 'hour' && [...shapes].some(shape => spanShapes.has(shape))) contradictions.push(`${name} reads ${[...shapes].join(', ')}, so it draws history`);
   }
+  assert.deepEqual(widgetMetas.filter(meta => !kinds.has(meta.kind)).map(meta => meta.kind), ['map']);
+  assert.ok(requests > kinds.size);
+  t.diagnostic(`${kinds.size} widget kinds with declared sources, 1 native map, ${requests} serialized requests, 0 differences`);
   assert.ok(declared.length > 50 && read > 40, `the walk reaches the multi and filter views: ${declared.length} declared, ${read} read`);
   assert.deepEqual(contradictions, []);
 });
