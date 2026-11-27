@@ -12,7 +12,7 @@ pub use channel::Channel;
 use serde::Serialize;
 use std::{
     panic::AssertUnwindSafe,
-    sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError, atomic::AtomicU64},
+    sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError, atomic::AtomicU64},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -319,7 +319,41 @@ pub fn refused_during_setup(app: &str) -> bool {
     true
 }
 
-pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result<()> {
+struct Startup {
+    role: Role,
+    host: Arc<dyn Host>,
+    control_error: Option<String>,
+    updates: OnceLock<Result<Arc<Updates>, String>>,
+}
+
+pub fn prepare(app: &AppHandle, role: Role, host: Arc<dyn Host>) {
+    let control_error = control::serve(role, Arc::clone(&host))
+        .err()
+        .map(|error| {
+            format!(
+                "Setup couldn’t ask {} to close, so it can’t be updated now: {error}",
+                role.app()
+            )
+        });
+    app.manage(Startup { role, host, control_error, updates: OnceLock::new() });
+}
+
+pub fn start(app: &AppHandle) {
+    let _ = updates(app);
+}
+
+fn updates(app: &AppHandle) -> Result<Arc<Updates>, String> {
+    let startup = app.state::<Startup>();
+    startup.updates.get_or_init(|| {
+        start_updates(app, &startup).map_err(|error| {
+            let reason = format!("{} couldn’t start its update checks: {error}", startup.role.app());
+            eprintln!("{reason}");
+            reason
+        })
+    }).clone()
+}
+
+fn start_updates(app: &AppHandle, startup: &Startup) -> std::io::Result<Arc<Updates>> {
     let build = Build::current();
     let saved = channel::load();
     let client = feed::client(VERSION);
@@ -355,14 +389,6 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
         downgrade: false,
         revision: 0,
     };
-    let control_error = control::serve(role, Arc::clone(&host))
-        .err()
-        .map(|error| {
-            format!(
-                "Setup couldn’t ask {} to close, so it can’t be updated now: {error}",
-                role.app()
-            )
-        });
     let publish = {
         let app = app.clone();
         Box::new(move |state: UpdateState| {
@@ -371,14 +397,14 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
             }
         })
     };
-    let updates = Arc::new(Updates::new(role, host, control_error, client.ok(), state, channel::load, publish));
-    app.manage(Arc::clone(&updates));
+    let updates = Arc::new(Updates::new(startup.role, Arc::clone(&startup.host), startup.control_error.clone(), client.ok(), state, channel::load, publish));
     if disabled.is_none() {
+        let polling = Arc::clone(&updates);
         std::thread::Builder::new()
             .name("update checks".into())
-            .spawn(move || updates.poll())?;
+            .spawn(move || polling.poll())?;
     }
-    Ok(())
+    Ok(updates)
 }
 
 impl Updates {
@@ -898,6 +924,19 @@ mod tests {
         let state = updates.state();
         assert_eq!(state.downloaded_version, None, "changing the channel dropped the download");
         assert_eq!(state.install_blocked, None, "no install is blocked once nothing is waiting to install");
+    }
+
+    #[test]
+    fn a_failed_automatic_check_publishes_its_error_without_an_update_window() {
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::clone(&published);
+        let mut updates = updates(Arc::default(), move |state| events.lock().unwrap().push(state));
+        updates.load_channel = || Err("Synthetic channel read failure".into());
+        updates.scheduled(true);
+        let events = published.lock().unwrap();
+        let failed = events.last().unwrap();
+        assert_eq!((failed.status, failed.error_context), (Status::Error, Some(Action::Check)));
+        assert_eq!(failed.message.as_deref(), Some("Synthetic channel read failure"));
     }
 
     #[test]

@@ -174,8 +174,8 @@ function useSidebarState() {
   return { hidden, peek: hidden && peek, openPeek: () => setPeek(true), aside, toggle, width, resizing, startResize, resetWidth, resizeByKey };
 }
 
-function SidebarUpdate() {
-  const { state } = useUpdateState();
+function SidebarUpdate({ shellReady }: { shellReady: boolean }) {
+  const { state } = useUpdateState(shellReady);
   return <UpdateButton state={state} />;
 }
 
@@ -220,12 +220,13 @@ function MapState({ icon = 'map', title, children, busy = false, alert = false }
 }
 
 export default function App() {
-  useEffect(() => {
-    if (!desktopAvailable) return;
-    return afterShellPaint(() => {
+  const [shellReady, setShellReady] = useState(false);
+  useEffect(() => afterShellPaint(() => {
+    if (desktopAvailable) {
       void reportShellReady().catch(error => console.error('BattlePlan couldn’t start its background services:', error));
-    });
-  }, []);
+    }
+    setShellReady(true);
+  }), []);
   const appearance = useAppearance();
   const iconMenu = useSidebarIconMenu(appearance);
   const widgetIconMenu = useWidgetIconMenu(appearance);
@@ -620,7 +621,7 @@ export default function App() {
         <div className="sidebar-footer">
           {tab !== 'settings' && <button id="tab-settings" type="button" className="icon-button sidebar-utility" data-sidebar-icon="settings" disabled={switching} aria-label="Settings" data-tooltip="Settings"
             onClick={() => void changeTab('settings')}><StyledIcon icon={iconMenu.icon('settings')} fallback="settings" colour={iconMenu.custom('settings')} /></button>}
-          <RestartGuardContext.Provider value={guardRestart}><SidebarUpdate /></RestartGuardContext.Provider>
+          <RestartGuardContext.Provider value={guardRestart}><SidebarUpdate shellReady={shellReady} /></RestartGuardContext.Provider>
         </div>
         </div>
         {!sidebar.hidden && <div className="sidebar-rail" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"
