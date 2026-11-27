@@ -1,6 +1,8 @@
 """BattlePlan's acceptance suite: the release desktop app on a copy of a real recording.
 
+    python tools/e2e/suite.py shell [--commit <ref>] [--out <shell dir> | --gate-dir <gate dir>] [--dispatch] [--repo <owner/name>]
     python tools/e2e/suite.py build --out <app dir> [--shell]
+    python tools/e2e/suite.py build-ui --out <bundle dir>
     python tools/e2e/suite.py run --app <app dir> | --shell <shell dir> --ui <bundle dir>
         --fixture <folder> --game-dir <the game folder> --out <report dir>
         [--tier full|quick] [--history <file>] [--pin all|product] [--record-replies <file>]
@@ -8,13 +10,17 @@
     python tools/e2e/suite.py accept --run <report dir> --reason "<the change it accepts>" [--state <dir>]
     python tools/e2e/suite.py playback map|harness|dashboard ...   (tools/e2e/playback.py: the playback phase)
 
-`build` compiles replay-desktop with the UI embedded on Boat; `--shell` builds the measuring shell instead,
-the same release app serving its UI from a production bundle on disk, so a UI change is measured by rebuilding only
-the bundle (`npx.cmd vite build --config ui/vite.config.ts`, into ui/dist) and running the shell on it with
-`run --shell <shell dir> --ui ui/dist`; a shell is built once and serves any later bundle. `run` copies the fixture's
-recording into a fresh profile, then starts the app on that profile for each session and runs
-tools/e2e/sweep.mjs over it, and writes e2e.md: a table per area, failures with screenshots, and the visual check's
-differences from the baseline `accept` last made, with diff images. `--pages-at` adds a session that seeks to that
+`shell` fetches and verifies the hosted measuring shell built by `.github/workflows/measuring-shell.yml` for `--commit`
+(HEAD by default) via `gh`, reusing one already on disk; for a commit on main, `--gate-dir` (or `BATTLEPLAN_GATE_DIR`)
+places it in `<gate dir>/shared-shell/<sha[:10]>` so every agent shares one download. If no artifact exists yet,
+`--dispatch` starts the hosted build and prints the command to fetch it when it finishes. `build` compiles replay-desktop
+with the UI embedded on Boat; `build --shell` compiles the measuring shell on Boat (prefer `suite.py shell` to avoid
+Boat). The measuring shell is the same release app serving its UI from a production bundle on disk, so a UI change is
+measured by rebuilding only the bundle (`suite.py build-ui --out <bundle dir>` or `npx.cmd vite build --config ui/vite.config.ts`)
+and running the shell on it with `run --shell <shell dir> --ui <bundle dir>`; a shell is built once and serves any later
+bundle. `run` copies the fixture's recording into a fresh profile, then starts the app on that profile for each session
+and runs tools/e2e/sweep.mjs over it, and writes e2e.md: a table per area, failures with screenshots, and the visual
+check's differences from the baseline `accept` last made, with diff images. `--pages-at` adds a session that seeks to that
 share of the timeline and visits and scrolls every page there, into sweep-pages-at.json. Each app runs in a Job on a
 desktop of its own, so it never takes the user's input or focus, at a fixed window size. `--tier quick` is one cold
 session for iterating: every page at mid-recording, the heaviest pages played at 1,440 h/s under the trace, the slowest
@@ -31,8 +37,10 @@ failed, 2 when the suite itself could not run.
 import argparse
 import ctypes as c
 import datetime
+import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -77,7 +85,22 @@ CACHES = ("local/BattlePlan/viewer", "local/BattlePlan/shader-cache", "local/Bat
 KEPT = ("local/BattlePlan/captures",)
 APPS = Path(tempfile.gettempdir()) / "battleplan-e2e" / "apps"
 APP_EXE = "replay-desktop.exe"
+SHELL_PACKAGE = "replay-desktop"
+SHELL_PROFILE = "release"
+SHELL_BASE_FEATURE = "replay-desktop/custom-protocol"
 SHELL_FEATURE = "replay-desktop/served-ui"
+SHELL_FEATURES = (SHELL_BASE_FEATURE, SHELL_FEATURE)
+SHELL_WORKFLOW = "measuring-shell.yml"
+SHELL_ARTIFACT_PREFIX = "measuring-shell-"
+SHELL_RECORD = "shell-build.json"
+BOAT_RECORD = "boat-artifacts.json"
+SHELL_RECORDS = (SHELL_RECORD, BOAT_RECORD)
+SHELL_TARGET = "x86_64-pc-windows-msvc"
+SHELL_RUN_NAME_PREFIX = "Measuring shell "
+GATE_DIR_ENV = "BATTLEPLAN_GATE_DIR"
+FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+GITHUB_REMOTE = re.compile(r"^(?:https?://github\.com/|ssh://git@github\.com/|git@github\.com:)([^/]+/[^/]+?)(?:\.git)?/?$")
+SHELL_PLACEHOLDER_HTML = "<!doctype html><title>BattlePlan Measuring Shell</title>\n"
 
 k = c.WinDLL("kernel32", use_last_error=True)
 u = c.WinDLL("user32", use_last_error=True)
@@ -450,18 +473,111 @@ def machine_load(own, seconds=1.0):
             "apps": running_apps(own)}
 
 
-def shell_build(folder):
+def shell_cargo_arguments(shell=True):
+    """Single shared Cargo build definition for the desktop app and measuring shell."""
+    features = ",".join(SHELL_FEATURES if shell else (SHELL_BASE_FEATURE,))
+    return ["build", f"--{SHELL_PROFILE}", "-p", SHELL_PACKAGE, "--features", features]
+
+
+def shell_artifact_name(revision):
+    """GitHub Actions artifact name carrying the full commit SHA."""
+    return f"{SHELL_ARTIFACT_PREFIX}{revision}"
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _is_regular_file(path):
+    return os.path.lexists(path) and not _is_link_or_reparse(path) and stat.S_ISREG(os.lstat(path).st_mode)
+
+
+def _find_hosted_record(folder):
+    candidate = Path(folder) / SHELL_RECORD
+    return candidate if _is_regular_file(candidate) else None
+
+
+def _is_hosted_shell_only(folder):
+    folder = Path(folder)
+    if _find_hosted_record(folder) is None:
+        return False
+    allowed = {SHELL_RECORD, APP_EXE, *SHADER_COMPILER}
+    for entry in folder.iterdir():
+        if entry.name not in allowed or not _is_regular_file(entry):
+            return False
+    return True
+
+
+def _select_shell_record(folder, require_hosted=False):
+    folder = Path(folder)
+    names = (SHELL_RECORD,) if require_hosted else SHELL_RECORDS
+    candidates = [folder / name for name in names if _is_regular_file(folder / name)]
+    if not candidates:
+        expected = SHELL_RECORD if require_hosted else f"{SHELL_RECORD} or {BOAT_RECORD}"
+        raise RuntimeError(f"{folder} holds no shell build record ({expected}): fetch one with `suite.py shell`")
+    if len(candidates) == 1:
+        record = candidates[0]
+        try:
+            built = json.loads(record.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise RuntimeError(f"{record} is unreadable ({error}): fetch the shell again with `suite.py shell`")
+        return record, built
+    exe = folder / APP_EXE
+    if not _is_regular_file(exe):
+        raise RuntimeError(f"{folder} holds both {SHELL_RECORD} and {BOAT_RECORD} without {APP_EXE}")
+    actual_sha = sha256_file(exe).lower()
+    for record in candidates:
+        try:
+            built = json.loads(record.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(built, dict):
+            continue
+        item = next((entry for entry in built.get("artifacts", [])
+                     if isinstance(entry, dict) and Path(entry.get("path", "")).name == APP_EXE), None)
+        if item and isinstance(item.get("sha256"), str) and item["sha256"].lower() == actual_sha:
+            return record, built
+    raise RuntimeError(f"{folder} holds both {SHELL_RECORD} and {BOAT_RECORD} and neither matches {APP_EXE} SHA-256 {actual_sha}")
+
+
+def shell_build(folder, expected_revision=None, verify_hash=False, require_hosted=False):
     """What built a measuring shell, or why the folder holds none."""
-    try:
-        built = json.loads((Path(folder) / "boat-artifacts.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        raise RuntimeError(f"{folder} holds no Boat build record ({error}): build the shell with `suite.py build --shell`")
-    arguments = next((item.get("cargo_arguments", []) for item in built.get("artifacts", [])
-                      if Path(item.get("path", "")).name == APP_EXE), [])
+    folder = Path(folder)
+    record, built = _select_shell_record(folder, require_hosted=require_hosted)
+    if not isinstance(built, dict):
+        raise RuntimeError(f"{record} is not a JSON object")
+    if require_hosted and built.get("source") != "github-actions":
+        raise RuntimeError(f"{record} is not a hosted GitHub Actions measuring shell record")
+    artifacts = built.get("artifacts", [])
+    item = next((entry for entry in artifacts if isinstance(entry, dict) and Path(entry.get("path", "")).name == APP_EXE), None)
+    arguments = list(item.get("cargo_arguments", [])) if item else []
     if not any(SHELL_FEATURE in argument for argument in arguments):
         raise RuntimeError(f"{folder}'s {APP_EXE} is not a measuring shell (built without {SHELL_FEATURE}): "
-                           "build one with `suite.py build --shell`, or pass the folder as --app")
-    return {"folder": str(folder), "revision": built.get("revision"), "cargoArguments": arguments}
+                           "fetch one with `suite.py shell`, or pass the folder as --app")
+    revision = built.get("revision")
+    if expected_revision is not None and revision != expected_revision:
+        raise RuntimeError(f"{folder} is a measuring shell for {revision or '?'}, not {expected_revision}")
+    if verify_hash:
+        if f"--{SHELL_PROFILE}" not in arguments or SHELL_PACKAGE not in arguments:
+            raise RuntimeError(f"{record} does not match the release {SHELL_PACKAGE} measuring shell build")
+        exe = folder / APP_EXE
+        if not _is_regular_file(exe):
+            raise RuntimeError(f"{folder} holds no {APP_EXE}")
+        expected_bytes = item.get("bytes")
+        expected_sha = item.get("sha256")
+        if not isinstance(expected_bytes, int) or isinstance(expected_bytes, bool) or not isinstance(expected_sha, str) or not expected_sha:
+            raise RuntimeError(f"{record} has no size or SHA-256 for {APP_EXE}")
+        actual_bytes = exe.stat().st_size
+        if actual_bytes != expected_bytes:
+            raise RuntimeError(f"{exe} is {actual_bytes} bytes, expected {expected_bytes}")
+        actual_sha = sha256_file(exe)
+        if actual_sha.lower() != expected_sha.lower():
+            raise RuntimeError(f"{exe} SHA-256 is {actual_sha}, expected {expected_sha}")
+    return {"folder": str(folder), "revision": revision, "cargoArguments": arguments}
 
 
 def ui_bundle(folder):
@@ -772,18 +888,403 @@ def accept(args):
     return 0
 
 
-def build(args):
+def run_build_boat(out, shell=False, runner=subprocess.run):
     """The release app with the UI embedded, or the measuring shell, compiled on Boat; a Boat failure is retried once,
     as Boat asks."""
-    features = "replay-desktop/custom-protocol" + (f",{SHELL_FEATURE}" if args.shell else "")
-    command = [sys.executable, str(ROOT / "tools" / "boat.py"), "build", "--out", str(Path(args.out).resolve()), "--release",
-               "-p", "replay-desktop", "--features", features]
+    if shell:
+        print("note: `python tools/e2e/suite.py shell` fetches or dispatches the hosted measuring shell without Boat", file=sys.stderr)
+    cargo_args = shell_cargo_arguments(shell=shell)
+    command = [sys.executable, str(ROOT / "tools" / "boat.py"), "build", "--out", str(Path(out).resolve()), *cargo_args[1:]]
     for attempt in (1, 2):
-        code = subprocess.run(command, cwd=ROOT).returncode
+        code = runner(command, cwd=ROOT).returncode
         if code != BOAT_FAILED:
             return code
         print(f"Boat failed (exit {code}), attempt {attempt}", file=sys.stderr)
     return code
+
+
+def build(args):
+    return run_build_boat(args.out, shell=args.shell)
+
+
+def parse_github_repo(url):
+    match = GITHUB_REMOTE.match(url.strip())
+    return match.group(1) if match else None
+
+
+def github_repo(given=None, env=None, runner=subprocess.run):
+    if given:
+        return given.strip()
+    source_env = os.environ if env is None else env
+    if source_env.get("GITHUB_REPOSITORY"):
+        return source_env["GITHUB_REPOSITORY"].strip()
+    done = runner(["git", "-C", str(ROOT), "remote", "get-url", "origin"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if done.returncode == 0:
+        parsed = parse_github_repo(done.stdout)
+        if parsed:
+            return parsed
+    raise RuntimeError("could not determine the GitHub repository from origin; pass --repo owner/name")
+
+
+def resolve_commit(ref, root=ROOT, runner=subprocess.run):
+    text = (ref or "HEAD").strip()
+    if not text:
+        text = "HEAD"
+    done = runner(["git", "-C", str(root), "rev-parse", "--verify", f"{text}^{{commit}}"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if done.returncode == 0:
+        sha = done.stdout.strip().lower()
+        if FULL_SHA.match(sha):
+            return sha
+    if FULL_SHA.match(text.lower()):
+        return text.lower()
+    detail = (done.stderr or done.stdout or "").strip()
+    raise RuntimeError(f"could not resolve commit {ref!r}: {detail or 'unknown revision'}")
+
+
+def commit_on_main(revision, runner=subprocess.run):
+    for ref in ("origin/main", "main"):
+        check = runner(["git", "-C", str(ROOT), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if check.returncode == 0:
+            anc = runner(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", revision, ref], capture_output=True, text=True, encoding="utf-8", errors="replace")
+            return anc.returncode == 0
+    return False
+
+
+def shell_destination(revision, out=None, gate_dir=None, env=None, runner=subprocess.run):
+    if out:
+        return Path(os.path.abspath(str(out)))
+    source_env = os.environ if env is None else env
+    gate = gate_dir or source_env.get(GATE_DIR_ENV)
+    if not gate:
+        raise RuntimeError(f"pass --out <dir>, --gate-dir <dir>, or set {GATE_DIR_ENV}")
+    if not commit_on_main(revision, runner=runner):
+        raise RuntimeError(
+            f"{revision[:10]} is not on origin/main: pass --out <dir> for a branch shell "
+            "(shared-shell holds only main commits; run `git fetch origin` if it was just merged)"
+        )
+    return Path(os.path.abspath(str(gate))) / "shared-shell" / revision[:10]
+
+
+def validate_shell_target(out):
+    """Refuses repo paths, links/junctions, and non-empty directories without a hosted shell build record."""
+    raw = Path(os.path.abspath(str(out)))
+    for candidate in (raw, *raw.parents):
+        if os.path.lexists(candidate) and _is_link_or_reparse(candidate):
+            raise RuntimeError(f"refusing {raw}: {candidate} is a symlink or junction")
+    resolved_root = Path(os.path.realpath(str(ROOT)))
+    resolved_raw = Path(os.path.realpath(str(raw)))
+    for target, root in ((raw, ROOT), (resolved_raw, resolved_root)):
+        if target == root or root in target.parents:
+            raise RuntimeError("shell destination must be outside the repository")
+    if os.path.lexists(raw):
+        st = os.lstat(raw)
+        if not stat.S_ISDIR(st.st_mode):
+            raise RuntimeError(f"refusing to overwrite {raw}: path exists and is not a directory")
+        entries = list(raw.iterdir())
+        if entries and not _is_hosted_shell_only(raw):
+            raise RuntimeError(
+                f"refusing to overwrite {raw}: directory holds entries outside a dedicated hosted measuring shell "
+                f"({SHELL_RECORD}, {APP_EXE}, {', '.join(SHADER_COMPILER)}); pass a new, empty, or dedicated shell folder"
+            )
+    return raw
+
+
+def _gh_api(endpoint, runner=subprocess.run):
+    done = runner(["gh", "api", endpoint], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if done.returncode != 0:
+        detail = (done.stderr or done.stdout or "").strip()
+        raise RuntimeError(f"gh api {endpoint} failed (exit {done.returncode}): {detail}")
+    try:
+        return json.loads(done.stdout)
+    except ValueError as error:
+        raise RuntimeError(f"gh api {endpoint} returned invalid JSON: {error}")
+
+
+def find_hosted_shell_artifact(repo, revision, runner=subprocess.run):
+    """The newest successful hosted run id carrying the measuring shell artifact for `revision`, or (None, reason)."""
+    name = shell_artifact_name(revision)
+    artifacts = _gh_api(f"repos/{repo}/actions/artifacts?name={name}&per_page=100", runner=runner).get("artifacts", [])
+    if not artifacts:
+        return None, f"no hosted measuring shell artifact {name} exists yet"
+    reasons = []
+    for artifact in sorted(artifacts, key=lambda entry: entry.get("created_at") or "", reverse=True):
+        if artifact.get("expired"):
+            reasons.append("expired")
+            continue
+        origin = artifact.get("workflow_run") or {}
+        run_id = origin.get("id")
+        if not run_id or origin.get("head_repository_id") != origin.get("repository_id"):
+            reasons.append("not built from this repository")
+            continue
+        state = _gh_api(f"repos/{repo}/actions/runs/{run_id}", runner=runner)
+        if state.get("path") != f".github/workflows/{SHELL_WORKFLOW}":
+            reasons.append(f"built by {state.get('path')}, not {SHELL_WORKFLOW}")
+            continue
+        if state.get("status") != "completed":
+            reasons.append(f"run {run_id} is still {state.get('status')}")
+            continue
+        if state.get("conclusion") != "success":
+            reasons.append(f"run {run_id} ended {state.get('conclusion')}")
+            continue
+        return run_id, None
+    if set(reasons) == {"expired"}:
+        return None, f"hosted measuring shell artifact {name} has expired"
+    return None, f"no usable measuring shell artifact {name}: {reasons[0]}"
+
+
+def find_active_shell_run(repo, revision, runner=subprocess.run):
+    done = runner(
+        ["gh", "api", f"repos/{repo}/actions/workflows/{SHELL_WORKFLOW}/runs?per_page=50"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if done.returncode != 0:
+        return None
+    try:
+        runs = json.loads(done.stdout).get("workflow_runs", [])
+    except ValueError:
+        return None
+    expected_title = f"{SHELL_RUN_NAME_PREFIX}{revision}"
+    for entry in runs:
+        if entry.get("status") == "completed":
+            continue
+        if entry.get("display_title") == expected_title:
+            return entry
+    return None
+
+
+def format_shell_command(revision, out=None, gate_dir=None, repo=None, dispatch=False):
+    parts = ["python", "tools/e2e/suite.py", "shell", "--commit", revision]
+    if out:
+        parts += ["--out", str(out)]
+    elif gate_dir:
+        parts += ["--gate-dir", str(gate_dir)]
+    if repo:
+        parts += ["--repo", repo]
+    if dispatch:
+        parts.append("--dispatch")
+    return subprocess.list2cmdline(parts)
+
+
+def _install_staged_shell(staging, target, revision):
+    validate_shell_target(target)
+    backup = None
+    if os.path.lexists(target):
+        backup = target.parent / f".{target.name}.old-{os.getpid()}-{time.time_ns()}"
+        target.rename(backup)
+    try:
+        staging.rename(target)
+    except OSError:
+        if backup is not None and os.path.lexists(backup) and not os.path.lexists(target):
+            backup.rename(target)
+        elif backup is None and target.is_dir():
+            try:
+                shell_build(target, expected_revision=revision, verify_hash=True, require_hosted=True)
+                shutil.rmtree(staging, ignore_errors=True)
+                return
+            except RuntimeError:
+                pass
+        raise
+    if backup is not None:
+        if _is_hosted_shell_only(backup):
+            shutil.rmtree(backup, ignore_errors=True)
+        else:
+            try:
+                backup.rmdir()
+            except OSError as error:
+                kept = sorted(entry.name for entry in backup.iterdir()) if backup.is_dir() else []
+                raise RuntimeError(
+                    f"refusing to delete backup {backup}: unexpected entries appeared before swap "
+                    f"({', '.join(kept) or error}); fetched shell is installed at {target}"
+                ) from error
+
+
+def _current_head(runner=subprocess.run):
+    done = runner(["git", "-C", str(ROOT), "rev-parse", "--verify", "--quiet", "HEAD^{commit}"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if done.returncode == 0:
+        sha = done.stdout.strip().lower()
+        if FULL_SHA.match(sha):
+            return sha
+    return None
+
+
+def run_fetch_shell(commit="HEAD", out=None, gate_dir=None, dispatch=False, repo=None, env=None, runner=subprocess.run):
+    """Fetches and verifies the hosted measuring shell for `commit`, or dispatches the workflow when absent."""
+    revision = resolve_commit(commit, runner=runner)
+    target = validate_shell_target(shell_destination(revision, out=out, gate_dir=gate_dir, env=env, runner=runner))
+    if target.is_dir() and _find_hosted_record(target) is not None:
+        try:
+            shell_build(target, expected_revision=revision, verify_hash=True, require_hosted=True)
+            print(f"Measuring shell ready at {target} ({revision[:10]})")
+            return 0
+        except RuntimeError:
+            pass
+    resolved_repo = github_repo(repo, env=env, runner=runner)
+    artifact_name = shell_artifact_name(revision)
+    run_id, why = find_hosted_shell_artifact(resolved_repo, revision, runner=runner)
+    if run_id is not None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.staging-", dir=str(target.parent)))
+        try:
+            done = runner(
+                ["gh", "run", "download", str(run_id), "--repo", resolved_repo, "--name", artifact_name, "--dir", str(staging)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+            )
+            if done.returncode != 0:
+                detail = (done.stderr or done.stdout or "").strip()
+                raise RuntimeError(f"gh run download failed (exit {done.returncode}): {detail}")
+            shell_build(staging, expected_revision=revision, verify_hash=True, require_hosted=True)
+            _install_staged_shell(staging, target, revision)
+            print(f"Fetched measuring shell for {revision[:10]} into {target} (run {run_id})")
+            return 0
+        except BaseException:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            raise
+    fetch_cmd = format_shell_command(revision, out=out, gate_dir=gate_dir, repo=repo, dispatch=False)
+    active = find_active_shell_run(resolved_repo, revision, runner=runner)
+    if active is not None:
+        where = active.get("html_url") or f"run {active.get('id')}"
+        print(
+            f"Measuring shell build for {revision[:10]} is already {active.get('status')}: {where}\n"
+            f"When it finishes, fetch it with:\n  {fetch_cmd}",
+            file=sys.stderr,
+        )
+        return 1
+    if dispatch:
+        pushed = runner(
+            ["gh", "api", f"repos/{resolved_repo}/commits/{revision}"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if pushed.returncode != 0:
+            detail = (pushed.stderr or pushed.stdout or "").strip()
+            raise RuntimeError(f"commit {revision} is not on GitHub ({resolved_repo}): push your branch before dispatching ({detail})")
+        dispatched = runner(
+            ["gh", "workflow", "run", SHELL_WORKFLOW, "--repo", resolved_repo, "-f", f"ref={revision}"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if dispatched.returncode != 0:
+            detail = (dispatched.stderr or dispatched.stdout or "").strip()
+            raise RuntimeError(f"gh workflow run {SHELL_WORKFLOW} failed (exit {dispatched.returncode}): {detail}")
+        print(
+            f"Dispatched {SHELL_WORKFLOW} for {revision}.\n"
+            f"Track progress: gh run list --repo {resolved_repo} --workflow {SHELL_WORKFLOW}\n"
+            f"When it finishes, fetch it with:\n  {fetch_cmd}",
+            file=sys.stderr,
+        )
+        return 1
+    dispatch_cmd = format_shell_command(revision, out=out, gate_dir=gate_dir, repo=repo, dispatch=True)
+    message = f"{why}.\nStart a hosted build with:\n  {dispatch_cmd}"
+    if _current_head(runner=runner) == revision:
+        message += "\nOr compile this checkout on Boat into a separate folder with:\n  python tools/e2e/suite.py build --shell --out <separate-dir>"
+    print(message, file=sys.stderr)
+    return 1
+
+
+def _load_ci_module():
+    tools_dir = str(ROOT / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import ci
+    return ci
+
+
+def run_build_hosted_shell(out, target=None, source_root=None, env=None, runner=subprocess.run):
+    """Builds and packages the measuring shell on GitHub Actions using the shared Cargo definition."""
+    source_env = os.environ if env is None else env
+    if source_env.get("GITHUB_ACTIONS") != "true":
+        raise RuntimeError("build-hosted-shell runs only on GitHub Actions (GITHUB_ACTIONS=true)")
+    ci = _load_ci_module()
+    work_root = Path(source_root).resolve() if source_root else ROOT
+    revision = resolve_commit("HEAD", root=work_root, runner=runner)
+    target_dir = Path(target).resolve() if target else (work_root / ".cargo-target")
+    out_dir = Path(out).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if target_dir.is_dir():
+        for entry in list(target_dir.iterdir()):
+            if entry.is_dir() and entry.name != SHELL_PROFILE and ((entry / ".fingerprint").is_dir() or entry.name == "shader-compiler"):
+                shutil.rmtree(entry, ignore_errors=True)
+    ui_dist = work_root / "ui" / "dist"
+    created_ui_dist = False
+    if not ui_dist.exists():
+        ui_dist.mkdir(parents=True, exist_ok=True)
+        placeholder = ui_dist / "index.html"
+        placeholder.write_text(SHELL_PLACEHOLDER_HTML, encoding="utf-8")
+        os.utime(placeholder, (ci.SETTLED, ci.SETTLED))
+        os.utime(ui_dist, (ci.SETTLED, ci.SETTLED))
+        created_ui_dist = True
+    started = time.monotonic()
+    cargo_args = shell_cargo_arguments(shell=True)
+    command = ["cargo", *cargo_args, "--message-format=json-render-diagnostics"]
+    cargo_env = dict(source_env)
+    cargo_env["CARGO_TARGET_DIR"] = str(target_dir)
+    try:
+        done = runner(command, cwd=work_root, env=cargo_env, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    finally:
+        if created_ui_dist:
+            shutil.rmtree(ui_dist, ignore_errors=True)
+    built_exe = None
+    compiled_units, fresh_units = 0, 0
+    for line in (done.stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("reason") == "compiler-message":
+            rendered = event.get("message", {}).get("rendered")
+            if rendered:
+                print(rendered, end="", file=sys.stderr, flush=True)
+        elif event.get("reason") == "compiler-artifact":
+            if event.get("fresh"):
+                fresh_units += 1
+            else:
+                compiled_units += 1
+            executable = event.get("executable")
+            if executable and Path(executable).name == APP_EXE:
+                built_exe = Path(executable)
+    if done.returncode != 0:
+        return done.returncode
+    if built_exe is None or not built_exe.is_file():
+        built_exe = target_dir / SHELL_PROFILE / APP_EXE
+    if not built_exe.is_file():
+        raise RuntimeError(f"Cargo finished without producing {built_exe}")
+    staged_exe = out_dir / APP_EXE
+    shutil.copy2(built_exe, staged_exe)
+    digest = sha256_file(staged_exe)
+    size = staged_exe.stat().st_size
+    run_id_text = source_env.get("GITHUB_RUN_ID")
+    run_id = int(run_id_text) if run_id_text and run_id_text.isdigit() else None
+    record = {
+        "source": "github-actions",
+        "revision": revision,
+        "package": SHELL_PACKAGE,
+        "profile": SHELL_PROFILE,
+        "features": list(SHELL_FEATURES),
+        "cargo_arguments": cargo_args,
+        "target": SHELL_TARGET,
+        "workflow": SHELL_WORKFLOW,
+        "run_id": run_id,
+        "built_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "artifacts": [{
+            "path": APP_EXE,
+            "sha256": digest,
+            "bytes": size,
+            "cargo_arguments": cargo_args,
+        }],
+    }
+    (out_dir / SHELL_RECORD).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    shell_build(out_dir, expected_revision=revision, verify_hash=True, require_hosted=True)
+    live = ci.live_units(done.stdout or "")
+    profile_dir = target_dir / SHELL_PROFILE
+    pruned = ci.prune(profile_dir, live) if (profile_dir / ".fingerprint").is_dir() else 0
+    if target_dir.is_dir():
+        (target_dir / ci.BUILT_FROM).write_text(revision + "\n", encoding="utf-8")
+    elapsed = time.monotonic() - started
+    print(
+        f"Built measuring shell for {revision[:10]} in {elapsed:.1f}s "
+        f"({compiled_units} compiled, {fresh_units} fresh units; pruned {pruned} unused entries)",
+        flush=True,
+    )
+    return 0
 
 
 UI_BUNDLE_MARKER = ".battleplan-ui-bundle"
@@ -903,10 +1404,21 @@ def build_ui(args):
 def parse(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    build_command = commands.add_parser("build")
+    shell_command = commands.add_parser("shell", help="fetch a hosted measuring shell for a commit, or dispatch its workflow")
+    shell_command.add_argument("--commit", default="HEAD", help="commit SHA or ref to obtain the measuring shell for (default: HEAD)")
+    shell_dest = shell_command.add_mutually_exclusive_group()
+    shell_dest.add_argument("--out", help="destination folder for the measuring shell")
+    shell_dest.add_argument("--gate-dir", help=f"gate folder holding shared-shell/<main sha> (defaults to {GATE_DIR_ENV})")
+    shell_command.add_argument("--dispatch", action="store_true", help="dispatch the hosted workflow if no artifact exists yet")
+    shell_command.add_argument("--repo", help="GitHub repository as owner/name (defaults to GITHUB_REPOSITORY or origin)")
+    hosted_command = commands.add_parser("build-hosted-shell", help="build and package the measuring shell on GitHub Actions")
+    hosted_command.add_argument("--out", required=True, help="folder to stage replay-desktop.exe and shell-build.json")
+    hosted_command.add_argument("--target", help="Cargo target directory (default: .cargo-target)")
+    hosted_command.add_argument("--source-root", help="source checkout to build (default: this script's repository root)")
+    build_command = commands.add_parser("build", help="compile replay-desktop on Boat")
     build_command.add_argument("--out", required=True)
     build_command.add_argument("--shell", action="store_true",
-                               help="the measuring shell: the release app serving its UI from the bundle `run --ui` names")
+                               help="compile the measuring shell on Boat (prefer `suite.py shell` for the hosted build)")
     build_ui_command = commands.add_parser("build-ui", help="build a production UI bundle for the measuring shell")
     build_ui_command.add_argument("--out", required=True)
     accept_command = commands.add_parser("accept", help="make a run's captures the visual baseline")
@@ -916,7 +1428,7 @@ def parse(argv):
     run_command = commands.add_parser("run")
     app = run_command.add_mutually_exclusive_group(required=True)
     app.add_argument("--app", help="folder holding replay-desktop.exe; the pinned shader compiler is put beside it")
-    app.add_argument("--shell", help="folder holding the measuring shell (`build --shell`); needs --ui")
+    app.add_argument("--shell", help="folder holding the measuring shell (`suite.py shell` or `build --shell`); needs --ui")
     run_command.add_argument("--ui", help="the production bundle the shell serves (`vite build` output, ui/dist); builds nothing")
     run_command.add_argument("--record-replies", help="file the sweep records every reply and followed message the page receives to (tools/e2e/replies.mjs)")
     run_command.add_argument("--fixture", default=os.environ.get("BATTLEPLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")), required=not os.environ.get("BATTLEPLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")))
@@ -1007,8 +1519,34 @@ def main(argv):
         import playback
         return playback.main(argv[1:])
     args = parse(argv)
+    if args.command == "shell":
+        try:
+            return run_fetch_shell(
+                commit=args.commit,
+                out=args.out,
+                gate_dir=args.gate_dir,
+                dispatch=args.dispatch,
+                repo=args.repo,
+            )
+        except Exception as error:
+            print(f"Measuring shell failed: {error}", file=sys.stderr)
+            return 2
+    if args.command == "build-hosted-shell":
+        try:
+            return run_build_hosted_shell(
+                out=args.out,
+                target=args.target,
+                source_root=args.source_root,
+            )
+        except Exception as error:
+            print(f"Hosted shell build failed: {error}", file=sys.stderr)
+            return 2
     if args.command == "build":
-        return build(args)
+        try:
+            return build(args)
+        except Exception as error:
+            print(f"Build failed: {error}", file=sys.stderr)
+            return 2
     if args.command == "build-ui":
         try:
             return build_ui(args)
