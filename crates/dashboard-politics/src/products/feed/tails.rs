@@ -436,7 +436,7 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContex
     let index = match asked.2 {
         Some(keys) => {
             let presenter = Presenter::new(query, content.as_ref().as_ref().ok(), Arc::clone(&kept));
-            dashboard_base::catalogue::capture_isolated(|| scanned.title_index(query, &index, list, keys, presenter, cancelled)).0?
+            dashboard_base::catalogue::capture_isolated(|| scanned.title_index(source, query, &index, (list, keys), presenter, cancelled)).0?
         }
         None => index,
     };

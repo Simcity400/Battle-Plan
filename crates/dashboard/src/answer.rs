@@ -110,7 +110,7 @@ fn kind(params: &Value) -> Option<&str> {
 }
 
 pub fn answers(product: &str, params: &Value) -> bool {
-    if product == crate::strip::PRODUCT || follows(product) {
+    if matches!(product, crate::strip::PRODUCT | "event-feed-title-view") || follows(product) {
         return true;
     }
     if SERIES_PRODUCTS.contains(&product) {

@@ -1,7 +1,7 @@
 import type { DashboardSource } from './client';
 import { followedProduct, hourFields, refusedHours } from './regionTime.ts';
 
-const ENVELOPES = new Set(['follow-clock', 'unfollow', 'follow-close']);
+const ENVELOPES = new Set(['follow-clock', 'unfollow', 'follow-close', 'event-feed-title-view']);
 
 function otherBranch(value: unknown, branchId: unknown): string | null {
   if (value === null || typeof value !== 'object') return null;

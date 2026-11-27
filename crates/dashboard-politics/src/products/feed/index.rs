@@ -111,7 +111,6 @@ pub(crate) struct Scanned {
     lifecycles: Vec<Locator>,
     resolved: Mutex<ResolvedDecisions>,
     presented: Mutex<Presented>,
-    titles: Mutex<HashMap<(Option<List>, TitleKeys), Titled>>,
     breaks: Vec<(i32, i32)>,
     choice_breaks: Vec<(i32, i32, String)>,
     decision_breaks: Vec<(i32, i32)>,
@@ -182,7 +181,6 @@ impl Scanned {
             lifecycles: Vec::new(),
             resolved: Mutex::default(),
             presented: Mutex::default(),
-            titles: Mutex::default(),
             breaks: whole.clone(),
             choice_breaks: vec![(first, last, message.clone())],
             decision_breaks: whole,
@@ -451,7 +449,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let breaks = spans(held.clone());
     let decision_lost = incomplete.iter().filter(|(_, _, read)| read.refusals != Some(0)).map(|&(hour, ..)| (hour, hour));
     let decision_breaks = spans(held.into_iter().chain(decision_lost).collect());
-    Ok(Scanned { briefs, native, war_ends, incomplete, windows_unrecorded: reasons, lifecycles, resolved: Mutex::default(), presented: Mutex::default(), titles: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
+    Ok(Scanned { briefs, native, war_ends, incomplete, windows_unrecorded: reasons, lifecycles, resolved: Mutex::default(), presented: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
 }
 
 fn incomplete_break_reason(read: &FeedEvent) -> String {
@@ -1073,7 +1071,7 @@ pub(crate) fn read_events(query: &Query<'_>, locators: &[Locator]) -> io::Result
     Ok(out)
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 pub(crate) enum TitleKeys {
     Item,
     Choice,
@@ -1086,15 +1084,36 @@ struct Titled {
     index: Arc<Index<Item>>,
 }
 
+type TitleSlots = HashMap<String, Weak<Mutex<Option<Titled>>>>;
+pub type TitleViews = Vec<(String, Arc<dyn Send + Sync>)>;
+pub fn title_view(source: &Source, views: &mut TitleViews, params: &serde_json::Value) -> io::Result<serde_json::Value> {
+    let (key, retain): (String, bool) = serde_json::from_value(params["view"].clone())?;
+    if retain {
+        let state = source.state::<TitleSlots>();
+        let mut slots = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let slot = slots.entry(key.clone()).or_default();
+        let held = slot.upgrade().unwrap_or_default();
+        *slot = Arc::downgrade(&held);
+        views.push((key, held));
+    } else if let Some(at) = views.iter().rposition(|(held, _)| *held == key) {
+        views.swap_remove(at);
+    }
+    Ok(serde_json::Value::Null)
+}
+
 impl Scanned {
     fn brief(&self, at: Locator) -> &Brief {
         &self.briefs[self.briefs.binary_search_by_key(&at, |brief| brief.at).expect("indexed feed row has a brief")]
     }
 
-    pub(crate) fn title_index(&self, query: &Query<'_>, base: &Arc<Index<Item>>, list: Option<List>, keys: TitleKeys, presenter: super::text::Presenter<'_>, cancelled: &AtomicBool) -> io::Result<Arc<Index<Item>>> {
-        let mut held = self.titles.lock().unwrap_or_else(PoisonError::into_inner);
+    pub(crate) fn title_index(&self, source: &Source, query: &Query<'_>, base: &Arc<Index<Item>>, request: (Option<List>, TitleKeys), presenter: super::text::Presenter<'_>, cancelled: &AtomicBool) -> io::Result<Arc<Index<Item>>> {
+        let (list, keys) = request;
+        let product = match list { None => "event-feed-tail", Some(List::EventChoices) => "event-choices-tail", Some(List::Decisions) => "decisions-tail" };
+        let key = serde_json::json!([query.timeline.id.to_string(), product, keys]).to_string();
+        let slot = source.state::<TitleSlots>().lock().unwrap_or_else(PoisonError::into_inner).get(&key).and_then(Weak::upgrade);
+        let mut held = slot.as_ref().map(|slot| slot.lock().unwrap_or_else(PoisonError::into_inner));
         let base_key = Arc::downgrade(base);
-        if let Some(found) = held.get(&(list, keys)).filter(|found| found.base.ptr_eq(&base_key)) {
+        if let Some(found) = held.as_deref().and_then(Option::as_ref).filter(|found| found.base.ptr_eq(&base_key)) {
             return Ok(Arc::clone(&found.index));
         }
         let mut locators = BTreeSet::new();
@@ -1130,7 +1149,7 @@ impl Scanned {
             }
         }
         let index = Arc::new(self.labelled(base, list.is_some(), keys, &names, &labels)?);
-        held.insert((list, keys), Titled { base: base_key, index: Arc::clone(&index) });
+        if let Some(held) = held.as_deref_mut() { *held = Some(Titled { base: base_key, index: Arc::clone(&index) }); }
         Ok(index)
     }
 

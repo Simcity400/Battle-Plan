@@ -569,7 +569,23 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   if (sig !== stablePlanRef.current.sig) {
     stablePlanRef.current = { sig, plan: rawPlan };
   }
-  const plan = stablePlanRef.current.plan;
+  const page = stablePlanRef.current.plan?.entries[0];
+  const tail = page?.read.shape === 'paged-rows' ? page.read.tailQuery : null;
+  const sort = tail?.ask?.sort as { column?: string } | undefined;
+  const titles = typeof tail?.ask?.search === 'string' && tail.ask.search.trim() ? 'Search' : sort?.column === 'item' ? 'Item' : sort?.column === 'choice' ? 'Choice' : null;
+  const scope = active && titles && page && tail && ['event-feed-tail', 'event-choices-tail', 'decisions-tail'].includes(tail.product)
+    ? JSON.stringify([page.source.id, page.source.revision, JSON.stringify([page.branch, tail.product, titles])]) : null;
+  const [entered, setEntered] = useState<string | null>(null);
+  useEffect(() => {
+    if (!scope) return;
+    const [sourceId, revision, view] = JSON.parse(scope) as [string, string, string];
+    const send = (retain: boolean) => runtime.client.product(productRequest({ sourceId, revision, product: 'event-feed-title-view', params: { view: [view, retain] } }), new AbortController().signal);
+    let live = true;
+    const opened = send(true);
+    void opened.catch(() => null).then(() => { if (live) setEntered(scope); });
+    return () => { live = false; setEntered(null); void opened.then(() => send(false)).catch(() => null); };
+  }, [runtime.client, scope]);
+  const plan = scope === null || entered === scope ? stablePlanRef.current.plan : null;
   const planLo = rawPlan?.valid?.[0];
   const planHi = rawPlan?.valid?.[1];
   useEffect(() => {
@@ -1096,7 +1112,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     },
   } : undefined;
 
-  const loadingLabel = plan?.loadingLabel ?? `Loading ${subject}…`;
+  const loadingLabel = rawPlan?.loadingLabel ?? `Loading ${subject}…`;
   const hasStaticBundle = staticBundle !== null;
   const allowEmpty = following
     ? compiledFollow.allowEmptyFollow

@@ -1,14 +1,14 @@
 import { gatedHour } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { forwardRequest, type DeclaredProduct } from './request.ts';
+import { forwardRequest, productRequest, type DeclaredProduct } from './request.ts';
 import type { ParamsFor } from './regionTime';
 
 const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).buffer;
 
 test('a page going away names itself, the owner of everything it opened or imported, so the bridge lets go of it all', async () => {
   const handlers = new Map<string, (event: { persisted: boolean }) => void>(), beacons: Blob[] = [];
-  const owners: unknown[] = [];
+  const owners: unknown[] = [], titleViews: unknown[] = [];
   Object.assign(globalThis, { window: globalThis, addEventListener: (type: string, handler: (event: { persisted: boolean }) => void) => handlers.set(type, handler) });
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { sendBeacon: (_url: string, body: Blob) => beacons.push(body) } });
   const listeners = new Map<string, () => void>();
@@ -22,6 +22,7 @@ test('a page going away names itself, the owner of everything it opened or impor
     }
     const body = JSON.parse(String(init.body));
     if (body.type === 'open') owners.push(body.page);
+    if (body.request?.product === 'event-feed-title-view') titleViews.push(body.request.params.view);
     const reply = body.type === 'open' ? { id: `lease-${body.path}`, revision: 'r', metadata: {} } : {};
     return { ok: true, arrayBuffer: async () => jsonBytes(reply) };
   }) as unknown as typeof fetch;
@@ -29,6 +30,11 @@ test('a page going away names itself, the owner of everything it opened or impor
   assert.ok(!handlers.has('pagehide'), 'a page that never used the bridge (the desktop app) says nothing as it goes');
   await client.openSource('a', AbortSignal.timeout(1000));
   await client.openSource('b', AbortSignal.timeout(1000));
+  const key = JSON.stringify(['1', 'event-feed-tail', 'Item']);
+  for (const retain of [true, false]) {
+    await client.product(productRequest({ sourceId: 'lease-a', revision: 'r', product: 'event-feed-title-view', params: { view: [key, retain] } }), AbortSignal.timeout(1000));
+  }
+  assert.deepEqual(titleViews, [[key, true], [key, false]]);
   await client.releaseSource('lease-a');
   assert.equal(await client.chooseRecording!(), 'imports/Imported.battleplan');
   handlers.get('pagehide')!({ persisted: true });

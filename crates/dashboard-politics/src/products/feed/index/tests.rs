@@ -24,12 +24,24 @@ fn content_bound_read_ahead_keeps_all_three_first_log_reads_warm() {
         assert_eq!(!dashboard_base::catalogue::reads_recorded(context.content.as_ref().unwrap()), visual_mods);
         let catalogue = super::super::resolve_content(&source, &context).unwrap();
         let cancelled = AtomicBool::new(false);
-        assert!(scanned.titles.lock().unwrap().is_empty());
+        assert!(source.state::<TitleSlots>().lock().unwrap().values().all(|slot| slot.strong_count() == 0));
         let title_index = || {
             let presenter = super::super::text::Presenter::new(&query, Some(&catalogue), super::super::text::kept_naming(&source));
-            scanned.title_index(&query, &feed.index, None, TitleKeys::Item, presenter, &cancelled).unwrap()
+            scanned.title_index(&source, &query, &feed.index, (None, TitleKeys::Item), presenter, &cancelled).unwrap()
         };
+        let key = serde_json::json!(["1", "event-feed-tail", TitleKeys::Item]).to_string();
+        let view = |views: &mut TitleViews, retain| title_view(&source, views, &serde_json::json!({"view": [&key, retain]})).unwrap();
+        let (mut first, mut second) = (TitleViews::new(), TitleViews::new());
+        view(&mut first, true);
+        view(&mut second, true);
         assert!(Arc::ptr_eq(&title_index(), &title_index()), "pages share the title index for their base");
+        let titled = Arc::downgrade(&title_index());
+        view(&mut first, false);
+        assert!(titled.upgrade().is_some(), "a second view still uses these titles");
+        drop(second);
+        assert!(titled.upgrade().is_none(), "the last title view leaves only the title-free index");
+        let titled = Arc::downgrade(&title_index());
+        assert!(titled.upgrade().is_none(), "a read finishing without a view retains no titles");
         super::super::EventFeedKinds::load(&source, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &cancelled).unwrap();
         let reused = [
             Arc::ptr_eq(&decisions, &decisions_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
@@ -184,7 +196,6 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
         lifecycles: Vec::new(),
         resolved: Mutex::default(),
         presented: Mutex::default(),
-        titles: Mutex::default(),
         breaks: Vec::new(),
         choice_breaks: Vec::new(),
         decision_breaks: Vec::new(),

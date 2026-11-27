@@ -42,6 +42,7 @@ impl Request {
 pub(super) struct Lease {
     pub(super) request: Arc<Request>,
     pub(super) source: Arc<Source>,
+    pub(super) title_views: dashboard_politics::products::feed::index::TitleViews,
 }
 
 #[derive(Default)]

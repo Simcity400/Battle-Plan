@@ -633,6 +633,11 @@ impl Inner {
             content: self.content_for(source, work(strip, request)),
         };
         let data = source.in_scope(|| {
+            if body.product == "event-feed-title-view" {
+                let mut pending = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let lease = pending.leases.get_mut(lease_id).ok_or_else(|| std::io::Error::other("The recording is closed"))?;
+                return dashboard_politics::products::feed::index::title_view(source, &mut lease.title_views, &body.params);
+            }
             if strip {
                 let (reply, pending) = self.strips.answer(source, &body.params, &context, &request.cancelled)?;
                 *keep = pending;
@@ -730,6 +735,7 @@ impl Inner {
                                 Lease {
                                     request: Arc::clone(&job.request),
                                     source,
+                                    title_views: Default::default(),
                                 },
                             );
                             pending.source_requests.insert(job.request.id.clone(), id);

@@ -97,7 +97,7 @@ pub fn check(
             continue;
         }
         let exchange: Exchange = serde_json::from_str(&line)?;
-        if !asked(&exchange.product, &exchange.params) {
+        if exchange.product == "event-feed-title-view" || !asked(&exchange.product, &exchange.params) {
             report.skipped += 1;
             continue;
         }
@@ -619,13 +619,17 @@ mod tests {
             "params": {},
             "reply": { "answered": { "data": 1 } }
         });
-        let body = format!("{exchange}\n");
+        let title_view = r#"{"product":"event-feed-title-view","params":{"view":["key",true]},"reply":{"answered":{"data":null}}}"#;
+        let body = format!("{title_view}\n{exchange}\n");
         let mut cursor = io::Cursor::new(body.as_bytes());
         let err = check(
             &mut cursor,
             &|_, _| true,
             &mut |_, _| Reply::Answered(json!({ "data": 1 })),
-            &mut |_| Err(io::Error::new(io::ErrorKind::NotFound, "recording vanished")),
+            &mut |params| {
+                assert_eq!(params, &json!({}));
+                Err(io::Error::new(io::ErrorKind::NotFound, "recording vanished"))
+            },
             &[],
             None,
         )
