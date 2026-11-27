@@ -20,6 +20,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     marker::PhantomData,
+    ops::RangeInclusive,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
@@ -287,7 +288,7 @@ fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, po
     let context = held.borrow();
     let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
     let mut count = 0;
-    let mut input = incremental::Input { pool, run: read_run, hour, mode: incremental::capture_mode(&pool.pages)?, count: &mut count, step: None, placed: None };
+    let mut input = incremental::Input { pool, run: read_run, hour, mode: incremental::capture_mode(&pool.pages)?, count: &mut count, step: None, placed: None, gap: false };
     let mut answer = AnswerFrame::new(query.timeline.id, hour);
     let mut read_frame = |reads: &[Read]| dashboard_query::cost::storage(|| input.frame(reads, P::columns, query.timeline.id));
     for step in 0.. {
@@ -424,14 +425,14 @@ where P::Params: Sync, P::Context: Sync {
 
 pub fn interval_panel(
     executable: Option<engine_executable::executable_tables::Tables>,
-    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, i32, u64)> + Send + Sync + 'static,
+    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, RangeInclusive<i32>, u64)> + Send + Sync + 'static,
 ) -> Box<dyn Panel> {
     dated_interval(executable, read, |_, _| {})
 }
 
 fn dated_interval(
     executable: Option<engine_executable::executable_tables::Tables>,
-    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, i32, u64)> + Send + Sync + 'static,
+    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, RangeInclusive<i32>, u64)> + Send + Sync + 'static,
     date: impl Fn(&mut Arc<PanelData>, i32) + Send + Sync + 'static,
 ) -> Box<dyn Panel> {
     use dashboard_follow::panel::{ExactReader, ProductRead, ProductReader};
@@ -441,25 +442,29 @@ fn dated_interval(
     });
     let cold_read = Arc::clone(&read);
     let cold: ExactReader = Arc::new(move |hour, cancelled| cold_read(hour, cancelled).map(|(data, _, _)| data));
-    let held = Mutex::new(None::<(std::ops::RangeInclusive<i32>, Arc<PanelData>, u64)>);
+    let held = Mutex::new(None::<(RangeInclusive<i32>, Arc<PanelData>, u64)>);
     let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _| {
         let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !seed && let Some((interval, value, rows)) = &mut *held && interval.contains(&hour) {
+            let undated = value.clone();
             date(value, hour);
-            return ProductRead { value: value.clone(), rows: *rows, fresh: false, pending: false, live: None, lanes: Vec::new() };
+            if !Arc::ptr_eq(&undated, value) { *interval = hour..=*interval.end(); }
+            return ProductRead { value: value.clone(), rows: *rows, fresh: false, pending: false, live: None, lanes: Vec::new(), from: *interval.start() };
         }
-        let (value, rows) = match read(hour, cancelled) {
-            Ok((reply, through, rows)) => {
+        let (value, rows, from) = match read(hour, cancelled) {
+            Ok((reply, proven, rows)) => {
                 let value = Arc::new(Ok(reply));
-                *held = Some((hour..=through, value.clone(), rows));
-                (value, rows)
+                let holds = *proven.end() >= hour;
+                let from = if holds { (*proven.start()).min(hour) } else { hour };
+                *held = holds.then(|| (from..=*proven.end(), value.clone(), rows));
+                (value, rows, from)
             }
             Err(error) => {
                 *held = None;
-                (Arc::new(Err(error)), 0)
+                (Arc::new(Err(error)), 0, hour)
             }
         };
-        ProductRead { value, rows, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        ProductRead { value, rows, fresh: true, pending: false, live: None, lanes: Vec::new(), from }
     });
     product_panel(advance, cold)
 }
@@ -508,7 +513,7 @@ pub fn dated_day_panel<P: super::Product>(
     Ok(interval_panel(source.tables(), move |hour, cancelled| {
         let today = day_start(hour);
         if today <= tile_first {
-            return Ok((Value::Null, day_start(tile_first).saturating_add(23), 0));
+            return Ok((Value::Null, hour..=day_start(tile_first).saturating_add(23), 0));
         }
         let mut request = params.clone();
         let last = tile_last.min(today.saturating_sub(1));
@@ -517,7 +522,7 @@ pub fn dated_day_panel<P: super::Product>(
             crate::metadata::check_cancel(cancelled)?;
             super::register::<P>().answer(&source, request, &load, cancelled)
         });
-        Ok((reply?, if last == tile_last { i32::MAX } else { today.saturating_add(23) }, rows))
+        Ok((reply?, hour..=if last == tile_last { i32::MAX } else { today.saturating_add(23) }, rows))
     }))
 }
 
@@ -556,7 +561,7 @@ pub fn dated_product<P: super::Product>(
         let mut reply = reply?;
         finish(reply.warnings_mut(), &own, &warnings);
         let through = valid_through(&params, &reply);
-        Ok((serde_json::to_value(reply)?, through, rows))
+        Ok((serde_json::to_value(reply)?, hour..=through, rows))
     }, date_held))
 }
 

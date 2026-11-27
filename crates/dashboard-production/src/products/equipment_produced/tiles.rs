@@ -686,6 +686,7 @@ mod tests {
                 ProductRead {
                     value: Arc::new(Ok(chart.state::<RaceEvaluations>().lock().unwrap().0.into())), rows, fresh: rows > 0, pending: false, live: None,
                     lanes: vec![Declared { table: TableId::ProducedValues.index(), columns: vec![], keyed: false, passing: false, hourly: true }],
+                    from: i32::MIN,
                 }
             }),
         };

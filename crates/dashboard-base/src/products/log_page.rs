@@ -448,6 +448,7 @@ pub fn quiet_tail_missing(
 
 struct TailSeed<R> {
     hour: i32,
+    from: i32,
     reply: R,
     value: Arc<dashboard_follow::panel::PanelData>,
     rows: u64,
@@ -471,10 +472,11 @@ where
             let guard = held.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(prev) = guard.as_ref() {
                 if hour == prev.hour {
-                    return ProductRead { value: Arc::clone(&prev.value), rows: prev.rows, fresh: false, pending: false, live: None, lanes: Vec::new() };
+                    return ProductRead { value: Arc::clone(&prev.value), rows: prev.rows, fresh: false, pending: false, live: None, lanes: Vec::new(), from: prev.from };
                 }
                 if hour > prev.hour {
                     let prev_hour = prev.hour;
+                    let prev_from = prev.from;
                     let prev_reply = prev.reply.clone();
                     let prev_value = Arc::clone(&prev.value);
                     let prev_rows = prev.rows;
@@ -489,43 +491,41 @@ where
                                 {
                                     slot.hour = hour;
                                 }
-                                return ProductRead { value: prev_value, rows: prev_rows, fresh: false, pending: false, live: None, lanes: Vec::new() };
+                                return ProductRead { value: prev_value, rows: prev_rows, fresh: false, pending: false, live: None, lanes: Vec::new(), from: prev_from };
                             }
                             let mut next_reply = prev_reply;
                             next_reply.set_missing(gaps);
                             let value = Arc::new(serde_json::to_value(&next_reply).map_err(|error| error.to_string()));
                             *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(TailSeed {
                                 hour,
+                                from: hour,
                                 reply: next_reply,
                                 value: Arc::clone(&value),
                                 rows: prev_rows,
                             });
-                            return ProductRead { value, rows: prev_rows, fresh: true, pending: false, live: None, lanes: Vec::new() };
+                            return ProductRead { value, rows: prev_rows, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour };
                         }
                         Ok(None) => {}
                         Err(error) => {
-                            return ProductRead { value: Arc::new(Err(error.to_string())), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() };
+                            return ProductRead { value: Arc::new(Err(error.to_string())), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour };
                         }
                     }
                 }
             }
         }
         let made = engine_executable::executable_tables::scope(executable, || step_read(hour, cancelled));
-        let (rows, value) = match made {
+        let (rows, value, from) = match made {
             Ok(reply) => {
                 let count = reply.row_count() as u64;
                 let value = Arc::new(serde_json::to_value(&reply).map_err(|error| error.to_string()));
-                *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(TailSeed {
-                    hour,
-                    reply,
-                    value: Arc::clone(&value),
-                    rows: count,
-                });
-                (count, value)
+                let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
+                let from = held.as_ref().filter(|prev| prev.hour < hour && prev.value == value).map_or(hour, |prev| prev.from);
+                *held = Some(TailSeed { hour, from, reply, value: Arc::clone(&value), rows: count });
+                (count, value, from)
             }
-            Err(error) => (0, Arc::new(Err(error.to_string()))),
+            Err(error) => (0, Arc::new(Err(error.to_string())), hour),
         };
-        ProductRead { value, rows, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        ProductRead { value, rows, fresh: true, pending: false, live: None, lanes: Vec::new(), from }
     });
     let cold: ExactReader = Arc::new(move |hour, cancelled| {
         let reply = engine_executable::executable_tables::scope(executable, || read(hour, cancelled)).map_err(|error| error.to_string())?;

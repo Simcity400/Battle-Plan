@@ -89,12 +89,12 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
                 s.data = Arc::new(Ok(serde_json::to_value(reply)?));
                 s.first = hour;
             }
-            Ok((s.data.clone(), fresh))
+            Ok((s.data.clone(), fresh, s.first))
         }));
-        let (value, fresh) = answer.unwrap_or_else(|e| {
+        let (value, fresh, from) = answer.unwrap_or_else(|e| {
             *held = None;
-            (Arc::new(Err(e.to_string())), true)
+            (Arc::new(Err(e.to_string())), true, hour)
         });
-        dashboard_follow::panel::ProductRead { value, rows, fresh, pending: false, live: None, lanes: Vec::new() }
+        dashboard_follow::panel::ProductRead { value, rows, fresh, pending: false, live: None, lanes: Vec::new(), from }
     })
 }

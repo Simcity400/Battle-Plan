@@ -240,9 +240,9 @@ export function rowNameText(answer: FollowedRows, row: number): number {
 export const rowKey = (answer: FollowedRows, row: number): bigint =>
   (answer.views.u64[answer.keys + answer.rows + row]! << 64n) | answer.views.u64[answer.keys + row]!;
 
-export interface DatedPanel { id: number; hour: number; panel: FollowedPanel | null; stepped?: boolean; waiting?: boolean }
+export interface DatedPanel { id: number; hour: number; panel: FollowedPanel | null; stepped?: boolean; waiting?: boolean; again?: boolean }
 
-export const DATED_PANEL_VERSION = 6;
+export const DATED_PANEL_VERSION = 7;
 
 type PreviousPanel = { bytes: Uint8Array | null; data: unknown };
 
@@ -263,8 +263,9 @@ export function parseDatedPanelRecord(record: Uint8Array, previous?: PreviousPan
   const data = new DataView(record.buffer, record.byteOffset, record.byteLength);
   if (record.byteLength < 16) throw new Error('Invalid dated panel record.');
   const id = data.getUint32(0, true), hour = data.getInt32(4, true), kind = data.getUint8(8), length = data.getUint32(12, true), end = 16 + length;
-  if (end > record.length || ![0, 1, 3, 5].includes(kind) || (kind >= 3 && length)) throw new Error('Invalid dated panel record.');
+  if (end > record.length || ![0, 1, 3, 5, 6].includes(kind) || (kind >= 3 && length)) throw new Error('Invalid dated panel record.');
   if (kind === 5) return { id, hour, panel: null, waiting: true };
+  if (kind === 6) return { id, hour, panel: null, again: true, ...data.getUint8(9) & 1 ? { stepped: true } : {} };
   const body = record.subarray(16, end);
   const panel: DatedPanel = { id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : decodePanel(body, previous) };
   if (data.getUint8(9) & 1) panel.stepped = true;
