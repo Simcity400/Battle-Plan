@@ -38,7 +38,7 @@ fn an_hour_the_index_has_not_reached_shows_unknown_and_a_covered_one_the_folded_
         covered.fold(false).record(LAND, 0, &[((100, 0), Engaged::No), ((100, 1), Engaged::No)], &[]);
         covered.fold(false).record(LAND, 6, &[((101, 0), Engaged::No), ((101, 1), Engaged::No)], &[]);
         covered.fold(false).record(LAND, 7, &[((100, 0), Engaged::Yes)], &[]);
-        history.branches.lock().unwrap().insert(3, covered);
+        history.insert_branch(3, covered);
     }
     let mut seen = Vec::new();
     play(&mut side, 4, |side, frame| {
@@ -78,7 +78,7 @@ fn a_still_publication_waits_for_no_fold_and_the_next_reads_it_once_folded() {
         covered.last = 9;
         covered.viewers.push((0, 1));
         covered.fold(false).record(LAND, 0, &[((100, 0), Engaged::No), ((100, 1), Engaged::No)], &[]);
-        history.branches.lock().unwrap().insert(3, covered);
+        history.insert_branch(3, covered);
     }
     side.frame_still(4).unwrap();
     assert_eq!(layer(&side).fold_waits.get(), waited, "nor does the one after the fold");
@@ -104,7 +104,7 @@ fn folded() -> Arc<History> {
     covered.fold(false).record(LAND, 0, &[((100, 0), Engaged::No), ((100, 1), Engaged::No)], &[]);
     covered.fold(false).record(LAND, 6, &[((101, 0), Engaged::No), ((101, 1), Engaged::No)], &[]);
     covered.fold(false).record(LAND, 7, &[((100, 0), Engaged::Yes)], &[]);
-    history.branches.lock().unwrap().insert(0, covered);
+    history.insert_branch(0, covered);
     history
 }
 

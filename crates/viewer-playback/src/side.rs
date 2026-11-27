@@ -1,5 +1,5 @@
 use crate::{map_open::{Combat, MapSide}, overlay};
-use viewer_layer_core::playhead_host::{Doing, Entry, Frame, Head, LayerParts, OnScreen, Waited, lock, views};
+use viewer_layer_core::playhead_host::{Doing, Entry, Frame, Head, LayerParts, OnScreen, Overlaying, Waited, lock, views};
 use viewer_layer_core::layers::{Gpu, Installs, View, drawn_layer as drawn};
 use replay_data::Hour;
 use std::{
@@ -723,6 +723,7 @@ pub struct Products {
     pub lines: Option<Lines>,
     pub overlay: Option<Landed<overlay::Made>>,
     overlay_withdrawn: bool,
+    pub overlay_refused: bool,
     pub vision_refused: Option<String>,
     pub overlay_generation: Option<u64>,
     pub overlay_hour: Option<Hour>,
@@ -772,6 +773,7 @@ impl Default for Products {
             lines: None,
             overlay: None,
             overlay_withdrawn: false,
+            overlay_refused: false,
             vision_refused: None,
             overlay_generation: None,
             overlay_hour: None,
@@ -815,14 +817,20 @@ impl Products {
     }
 
     pub fn overlay_coming(&self) -> bool {
-        self.vision_refused.is_none() && self.failure.is_none()
+        self.vision_refused.is_none() && self.failure.is_none() && !self.overlay_refused
     }
 
     fn take(&mut self, side: &mut MapSide, wants: Wants) {
         if side.take_overlay_withdrawal() {
             (self.overlay, self.overlay_withdrawn) = (None, true);
         }
-        if let Some(made) = side.take_overlay() {
+        let made = side.take_overlay();
+        let overlay_refused = side.overlay().is_some_and(Overlaying::refused);
+        if overlay_refused && !self.overlay_refused {
+            (self.overlay, self.overlay_withdrawn) = (None, true);
+        }
+        self.overlay_refused = overlay_refused;
+        if let Some(made) = made {
             self.overlay = Some(made);
         }
         if self.combat_loading != side.combat_loading() {

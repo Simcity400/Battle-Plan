@@ -10,8 +10,9 @@ use std::{
     time::Instant,
 };
 use viewer_engagements::engaged::HourSides;
+#[cfg(test)]
+use viewer_engagements::engagement_history::Covered;
 use viewer_engagements::engagement_history::{
-    Covered,
     Folded,
     History,
     ICON_KINDS,
@@ -811,14 +812,7 @@ impl Pass {
             .and_then(|_| player.as_ref()?.1)
             .and_then(|(slot, raw)| (raw != 0).then_some(slot).flatten());
         self.witness = witness;
-        {
-            let mut branches = self
-                .shared
-                .branches
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let covered = branches.entry(branch).or_insert_with(|| Covered::new(hour));
-            covered.last = hour;
+        self.shared.record_hour(branch, hour, |covered| {
             if let Some(slot) = slot
                 && covered.viewers.last().is_none_or(|(_, last)| *last != slot)
             {
@@ -839,8 +833,7 @@ impl Pass {
                     track.record_icons(kind, hour, changed);
                 }
             }
-        }
-        self.shared.folded();
+        });
         self.publish();
     }
 }

@@ -10,7 +10,7 @@ use replay_data::{
 use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 use viewer_engagements::{
     engaged::Engaged,
-    engagement_history::{History, LAND, NAVAL, Provenance, at},
+    engagement_history::{History, LAND, NAVAL, Provenance},
     naval_check,
 };
 
@@ -225,10 +225,7 @@ impl Engagements {
 
     fn take_player(&mut self, mirrors: &Mirrors) {
         let player = match (&self.index, self.viewer, self.player_hour(mirrors)) {
-            (Some(index), Some(viewer), Some(hour)) => {
-                let branches = index.history.branches.lock().unwrap_or_else(|p| p.into_inner());
-                branches.get(&index.branch).and_then(|covered| at(&covered.players, hour).flatten()) == Some(viewer)
-            }
+            (Some(index), Some(viewer), Some(hour)) => index.history.recording_player(index.branch, hour, viewer),
             _ => false,
         };
         if player != self.player_is_viewer {

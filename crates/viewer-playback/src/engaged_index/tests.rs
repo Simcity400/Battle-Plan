@@ -300,12 +300,13 @@ fn a_viewer_who_is_the_recording_player_takes_its_player_change_rebuilds() {
         (served.naval[&0], served.land[&100]),
         (Engaged::Yes, Engaged::Yes)
     );
-    let branches = pass.shared.branches.lock().unwrap();
-    for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
-        let points = &branches[&3].folds()[0].points()[kind][&(combat, 0)];
-        assert_eq!(at(points, 12), Some(Engaged::No));
-        assert_eq!(at(points, 13), Some(Engaged::No));
-    }
+    pass.shared.inspect(|branches| {
+        for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
+            let points = &branches[&3].folds()[0].points()[kind][&(combat, 0)];
+            assert_eq!(at(points, 12), Some(Engaged::No));
+            assert_eq!(at(points, 13), Some(Engaged::No));
+        }
+    });
 }
 
 #[test]
@@ -336,14 +337,14 @@ fn a_player_change_rebuilds_nothing_for_another_viewer() {
     pass.fold_hour(3, 11, Some(&hour11), Some(10), false);
     let index = index(&pass);
     let mut frame = naval_frame(6, &[2], allied, 1, [1, 1]);
-    let branches = pass.shared.branches.lock().unwrap();
-    for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
-        assert_eq!(
-            at(&branches[&3].folds()[0].points()[kind][&(combat, 0)], 11),
-            Some(Engaged::No)
-        );
-    }
-    drop(branches);
+    pass.shared.inspect(|branches| {
+        for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
+            assert_eq!(
+                at(&branches[&3].folds()[0].points()[kind][&(combat, 0)], 11),
+                Some(Engaged::No)
+            );
+        }
+    });
     assert_eq!(naval_flag(&index, &mut frame, 11, 5), Engaged::Yes);
     let summary = &pass.check.summary;
     assert_eq!((summary.agreements, summary.undecided), (3, 1));
@@ -772,10 +773,11 @@ fn recording_track_does_not_prove_refresh_from_remote_controller_target_without_
     let served = flags(&index, &mut frame12, 12, 3);
     assert_eq!((served.land[&100], served.naval[&0]), (Engaged::No, Engaged::No));
 
-    let branches = pass.shared.branches.lock().unwrap();
-    let perspective = &branches[&3].folds()[0];
-    assert_eq!(at(&perspective.points()[LAND][&(100, 0)], 12), Some(Engaged::Yes));
-    assert_eq!(at(&perspective.points()[NAVAL][&(0, 0)], 12), Some(Engaged::Yes));
+    pass.shared.inspect(|branches| {
+        let perspective = &branches[&3].folds()[0];
+        assert_eq!(at(&perspective.points()[LAND][&(100, 0)], 12), Some(Engaged::Yes));
+        assert_eq!(at(&perspective.points()[NAVAL][&(0, 0)], 12), Some(Engaged::Yes));
+    });
 }
 
 #[test]
@@ -884,11 +886,11 @@ fn side_refresh_evaluates_recorded_execution_viewpoint_on_recording_track_and_pe
     let served = flags(&idx, &mut frame11, 11, 4);
     assert_eq!((served.land[&100], served.naval[&1]), (Engaged::Yes, Engaged::Yes));
 
-    let branches = pass.shared.branches.lock().unwrap();
-    let perspective = &branches[&3].folds()[0];
-    assert_eq!(at(&perspective.points()[LAND][&(100, 0)], 11), Some(Engaged::No));
-    assert_eq!(at(&perspective.points()[NAVAL][&(1, 0)], 11), Some(Engaged::No));
-    drop(branches);
+    pass.shared.inspect(|branches| {
+        let perspective = &branches[&3].folds()[0];
+        assert_eq!(at(&perspective.points()[LAND][&(100, 0)], 11), Some(Engaged::No));
+        assert_eq!(at(&perspective.points()[NAVAL][&(1, 0)], 11), Some(Engaged::No));
+    });
 
     let mut unknown_pass = Pass::new(Arc::default(), Country::Tag("C4".into()));
     let mut unknown11 = observer_frame(
@@ -906,11 +908,12 @@ fn side_refresh_evaluates_recorded_execution_viewpoint_on_recording_track_and_pe
     let unknown_idx = index(&unknown_pass);
     let unknown_served = flags(&unknown_idx, &mut unknown11, 11, 4);
     assert_eq!(unknown_served.land[&100], Engaged::Unknown);
-    let branches = unknown_pass.shared.branches.lock().unwrap();
-    assert_eq!(
-        at(&branches[&3].folds()[0].points()[LAND][&(100, 0)], 11),
-        Some(Engaged::No)
-    );
+    unknown_pass.shared.inspect(|branches| {
+        assert_eq!(
+            at(&branches[&3].folds()[0].points()[LAND][&(100, 0)], 11),
+            Some(Engaged::No)
+        );
+    });
 }
 
 #[test]
@@ -1378,11 +1381,10 @@ fn unidentified_hourly_viewer_keeps_independently_witnessed_side_refresh() {
         pass.fold_hour(3, 12, Some(&frame12), Some(10), false);
 
         let idx = index(&pass);
-        {
-            let branches = idx.shared.branches.lock().unwrap();
+        idx.shared.inspect(|branches| {
             assert!(!branches[&3].recording_player(11, 1));
             assert!(branches[&3].recording_player(12, 1));
-        }
+        });
         let served12 = flags(&idx, &mut frame12, 12, 1);
         assert_eq!(served12.land[&100], Engaged::Yes);
     }
@@ -1432,11 +1434,10 @@ fn unlinked_raw_tag_at_load_matches_secondary_owner_and_carries_when_linked() {
     pass.fold_hour(3, 11, Some(&frame11), Some(10), false);
 
     let idx = index(&pass);
-    {
-        let branches = idx.shared.branches.lock().unwrap();
+    idx.shared.inspect(|branches| {
         assert!(!branches[&3].recording_player(10, 4));
         assert!(branches[&3].recording_player(11, 4));
-    }
+    });
     let served11 = flags(&idx, &mut frame11, 11, 4);
     assert_eq!(served11.land[&100], Engaged::Yes);
 }
@@ -1716,7 +1717,7 @@ fn a_lookup_takes_the_last_change_at_or_before_the_hour_for_the_folded_viewer() 
         covered.folds()[0].points()[LAND][&(62, 1)],
         [(10, Engaged::No), (14, Engaged::Yes)]
     );
-    shared.branches.lock().unwrap().insert(3, covered);
+    shared.insert_branch(3, covered);
     let changed = |from, to| shared.flags_changed(LAND, 3, from, to, 1);
     assert_eq!(changed(10, 14), Some(vec![62]), "side 1 took a new value at 14");
     assert_eq!(changed(14, 20), Some(Vec::new()), "nothing changed after it");

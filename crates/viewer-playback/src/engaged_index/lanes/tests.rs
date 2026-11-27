@@ -156,8 +156,7 @@ fn frame(branch: u64, hour: Hour) -> DecodedFrame {
 const RUNS: [(Hour, u32); 2] = [(0, 20), (30, 12)];
 
 fn covered(history: &History) -> Vec<(u64, String)> {
-    let branches = history.branches.lock().unwrap();
-    branches.iter().map(|(&branch, covered)| (branch, describe(covered))).collect()
+    history.inspect(|branches| branches.iter().map(|(&branch, covered)| (branch, describe(covered))).collect())
 }
 
 fn describe(covered: &Covered) -> String {
@@ -982,8 +981,9 @@ fn lanes_fold_serves_recording_track_for_selected_tag_mapped_to_slot_zero() {
         shared.lookup(0, 3, 9, 0, &[101]).map(|flags| flags[&101]),
         Ok(Engaged::Yes)
     );
-    let branches = shared.branches.lock().unwrap();
-    assert!(branches[&3].recording_player(9, 0));
+    shared.inspect(|branches| {
+        assert!(branches[&3].recording_player(9, 0));
+    });
 }
 
 #[test]

@@ -11,7 +11,7 @@ use viewer_foundation::{tables::rows, visibility::Relations};
 use replay_data::{BranchId, Hour, rows::NavalProvinceCombatRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Condvar, Mutex, atomic::AtomicBool, atomic::Ordering},
     time::{Duration, Instant},
@@ -419,8 +419,29 @@ fn provenance_in(
 }
 
 #[derive(Default)]
+struct Branches {
+    held: BTreeMap<BranchId, Covered>,
+    pending: BTreeSet<(BranchId, Hour)>,
+    landed: viewer_runtime::landed::Published<u64>,
+}
+
+impl Branches {
+    fn watch(&mut self, branch: BranchId, hour: Hour) {
+        self.pending.insert((branch, hour));
+    }
+
+    fn reached(&mut self, branch: BranchId, first: Hour, last: Hour) {
+        let before = self.pending.len();
+        self.pending.retain(|&(held, hour)| held != branch || !(first..=last).contains(&hour));
+        if self.pending.len() != before {
+            self.landed.inc();
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct History {
-    pub branches: Mutex<BTreeMap<BranchId, Covered>>,
+    branches: Mutex<Branches>,
     folded: Condvar,
     pub check: Mutex<Summary>,
     pub cancelled: AtomicBool,
@@ -432,10 +453,56 @@ impl History {
     }
 
     pub fn covers(&self, branch: BranchId, hour: Hour) -> bool {
-        let branches = self.branches.lock().unwrap_or_else(|p| p.into_inner());
-        branches
+        let mut state = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        let covered = state
+            .held
             .get(&branch)
-            .is_some_and(|covered| (covered.first..=covered.last).contains(&hour))
+            .is_some_and(|covered| (covered.first..=covered.last).contains(&hour));
+        if !covered {
+            state.watch(branch, hour);
+        }
+        covered
+    }
+
+    pub fn recording_player(&self, branch: BranchId, hour: Hour, viewer: u32) -> bool {
+        let mut state = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(covered) = state
+            .held
+            .get(&branch)
+            .filter(|covered| (covered.first..=covered.last).contains(&hour))
+        else {
+            state.watch(branch, hour);
+            return false;
+        };
+        covered.recording_player(hour, viewer)
+    }
+
+    pub fn record_hour(&self, branch: BranchId, hour: Hour, update: impl FnOnce(&mut Covered)) {
+        let mut state = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        let (first, last) = {
+            let covered = state.held.entry(branch).or_insert_with(|| Covered::new(hour));
+            covered.last = hour;
+            update(covered);
+            (covered.first, covered.last)
+        };
+        state.reached(branch, first, last);
+        drop(state);
+        self.folded.notify_all();
+    }
+
+    pub fn inspect<T>(&self, read: impl FnOnce(&BTreeMap<BranchId, Covered>) -> T) -> T {
+        let state = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        read(&state.held)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn insert_branch(&self, branch: BranchId, covered: Covered) {
+        let mut state = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        let (first, last) = (covered.first, covered.last);
+        state.held.insert(branch, covered);
+        state.reached(branch, first, last);
+        drop(state);
+        self.folded.notify_all();
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -456,11 +523,15 @@ impl History {
         viewer: u32,
         combats: &[u64],
     ) -> Result<BTreeMap<u64, Engaged>, Provenance> {
-        let branches = self.branches.lock().unwrap_or_else(|p| p.into_inner());
-        let covered = branches
+        let mut state = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(covered) = state
+            .held
             .get(&branch)
             .filter(|covered| (covered.first..=covered.last).contains(&hour))
-            .ok_or(Provenance::Pending)?;
+        else {
+            state.watch(branch, hour);
+            return Err(Provenance::Pending);
+        };
         let points = &covered.points_for(hour, viewer)?.points()[kind];
         let side = |combat: u64, side: u8| {
             points
@@ -482,11 +553,15 @@ impl History {
         viewer: u32,
         combats: &[u64],
     ) -> Result<BTreeMap<u64, Kept>, Provenance> {
-        let branches = self.branches.lock().unwrap_or_else(|p| p.into_inner());
-        let covered = branches
+        let mut state = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(covered) = state
+            .held
             .get(&branch)
             .filter(|covered| (covered.first..=covered.last).contains(&hour))
-            .ok_or(Provenance::Pending)?;
+        else {
+            state.watch(branch, hour);
+            return Err(Provenance::Pending);
+        };
         let points = if covered.recording_player(hour, viewer) {
             &covered.recording.icons()[kind]
         } else {
@@ -504,8 +579,12 @@ impl History {
     }
 
     pub fn provenance(&self, branch: BranchId, hour: Hour, viewer: u32) -> Provenance {
-        let branches = self.branches.lock().unwrap_or_else(|p| p.into_inner());
-        provenance_in(&branches, branch, hour, viewer)
+        let mut state = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        let provenance = provenance_in(&state.held, branch, hour, viewer);
+        if provenance == Provenance::Pending {
+            state.watch(branch, hour);
+        }
+        provenance
     }
 
     pub fn folded(&self) {
@@ -514,9 +593,9 @@ impl History {
 
     pub fn reached(&self, branch: BranchId, hour: Hour, viewer: u32, limit: Duration) -> Provenance {
         let until = Instant::now() + limit;
-        let mut branches = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.branches.lock().unwrap_or_else(|p| p.into_inner());
         loop {
-            let provenance = provenance_in(&branches, branch, hour, viewer);
+            let provenance = provenance_in(&state.held, branch, hour, viewer);
             if provenance != Provenance::Pending || self.cancelled.load(Ordering::Acquire) {
                 return provenance;
             }
@@ -526,9 +605,9 @@ impl History {
             else {
                 return Provenance::Pending;
             };
-            branches = self
+            state = self
                 .folded
-                .wait_timeout(branches, left)
+                .wait_timeout(state, left)
                 .unwrap_or_else(|p| p.into_inner())
                 .0;
         }
@@ -543,11 +622,34 @@ impl History {
     }
 
     fn advance(&self, branch: BranchId, from: Hour, to: Hour, viewer: u32, log: impl Fn(&Folded) -> &Touched) -> Option<Vec<u64>> {
-        let branches = self.branches.lock().unwrap_or_else(|p| p.into_inner());
-        let covered = branches.get(&branch)?;
+        let state = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        let covered = state.held.get(&branch)?;
         if from > to || from < covered.first || to > covered.last || !covered.one_track(from, to) {
             return None;
         }
         Some(log(covered.points_for(to, viewer).ok()?).between(from, to))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folding_moves_the_landed_count_only_when_it_reaches_a_queried_pending_hour() {
+        let history = History::default();
+        assert!(!history.covers(1, 5));
+        let before = viewer_runtime::landed::count();
+        for hour in 0..5 {
+            history.record_hour(1, hour, |_| {});
+        }
+        assert_eq!(viewer_runtime::landed::count(), before, "earlier hours do not move the count");
+        history.record_hour(1, 5, |_| {});
+        let after = viewer_runtime::landed::count();
+        assert!(after > before, "reaching the queried pending hour moves the count");
+        for hour in 6..10 {
+            history.record_hour(1, hour, |_| {});
+        }
+        assert_eq!(viewer_runtime::landed::count(), after, "later hours do not move the count");
     }
 }

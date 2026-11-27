@@ -18,7 +18,10 @@ use viewer_engagements::engagement_history::{Covered, History};
 use viewer_foundation::perspective::Country;
 
 fn differ(a: &History, b: &History) -> (BTreeMap<&'static str, u64>, Option<String>, u64) {
-    let (a, b) = (a.branches.lock().unwrap_or_else(|p| p.into_inner()), b.branches.lock().unwrap_or_else(|p| p.into_inner()));
+    a.inspect(|a| b.inspect(|b| differ_maps(a, b)))
+}
+
+fn differ_maps(a: &BTreeMap<BranchId, Covered>, b: &BTreeMap<BranchId, Covered>) -> (BTreeMap<&'static str, u64>, Option<String>, u64) {
     let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut first = None;
     let mut entries = 0;
@@ -63,7 +66,10 @@ fn differ(a: &History, b: &History) -> (BTreeMap<&'static str, u64>, Option<Stri
 }
 
 fn points(history: &History) -> (usize, usize) {
-    let branches = history.branches.lock().unwrap_or_else(|p| p.into_inner());
+    history.inspect(points_in)
+}
+
+fn points_in(branches: &BTreeMap<BranchId, Covered>) -> (usize, usize) {
     let mut out = (0, 0);
     for covered in branches.values() {
         for fold in covered.folds() {

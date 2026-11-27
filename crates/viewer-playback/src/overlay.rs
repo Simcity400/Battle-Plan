@@ -1,6 +1,6 @@
 use viewer_layer_core::playhead_host::{lock, views::{Need as RowNeed, self}, timeline::{self, Mark}};
 use crate::{document::{Content, OverlayRows, OverlayTables, PreparedOverlay}, map_open::Products, side::{LayInKeys, LayIns}, map_views::{CounterView, Presentation}};
-use viewer_layer_core::{playhead_host::{OverlayStep, Overlaying}, layers::{Layer, Settling}};
+use viewer_layer_core::{playhead_host::{LayerParts, OverlayStep, Overlaying}, layers::{Layer, Settling}};
 use viewer_layers_counters::counter_kinds;
 use viewer_layers_political::left_to_layers::LeftToLayers;
 use replay_data::{BranchId, Hour, rows::TableId};
@@ -361,9 +361,9 @@ impl Carried {
         fresh
     }
 
-    fn ended<L>(&mut self, made: &Result<(Hour, Option<L>), Gave>) {
-        if let Ok((stands, Some(_))) = made {
-            self.moved = Arc::new(self.moved.after(*stands));
+    fn ended(&mut self, stands: Option<Hour>) {
+        if let Some(stands) = stands {
+            self.moved = Arc::new(self.moved.after(stands));
         }
     }
 }
@@ -408,10 +408,111 @@ struct Built {
     perspective: Choice,
 }
 
-struct LaidOut {
+#[derive(Clone, PartialEq, Eq)]
+enum OutcomeKey {
+    Laid(Hour, bool),
+    TablesOnly,
+    MissingTables(Vec<TableId>, Vec<String>),
+    Refused(Vec<String>),
+    Superseded(Vec<String>),
+}
+
+enum Outcome {
+    Laid { hour: Hour, made: Option<Box<Made>> },
+    TablesOnly,
+    MissingTables { missed: Vec<TableId>, notes: Vec<String> },
+    Refused { reasons: Vec<String> },
+    Superseded { notes: Vec<String> },
+}
+
+struct Answer {
     generation: u64,
+    stamp: u64,
+    outcome: Outcome,
+}
+
+impl Answer {
+    fn key(&self) -> (u64, OutcomeKey) {
+        let outcome = match &self.outcome {
+            Outcome::Laid { hour, made } => OutcomeKey::Laid(*hour, made.is_some()),
+            Outcome::TablesOnly => OutcomeKey::TablesOnly,
+            Outcome::MissingTables { missed, notes } => OutcomeKey::MissingTables(missed.clone(), notes.clone()),
+            Outcome::Refused { reasons } => OutcomeKey::Refused(reasons.clone()),
+            Outcome::Superseded { notes } => OutcomeKey::Superseded(notes.clone()),
+        };
+        (self.generation, outcome)
+    }
+}
+
+enum OverlayState {
+    Ready { hour: Option<Hour>, notes: Vec<String>, missed: Vec<TableId> },
+    Refused { stamp: u64, reasons: Vec<String>, missed: Vec<TableId> },
+}
+
+impl Default for OverlayState {
+    fn default() -> Self {
+        Self::Ready { hour: None, notes: Vec::new(), missed: Vec::new() }
+    }
+}
+
+fn skips_refused(whole: bool, suppressed: bool, state: &OverlayState, stamp: u64, same_as_last: bool) -> bool {
+    !whole
+        && !suppressed
+        && same_as_last
+        && matches!(state, OverlayState::Refused { stamp: refused, missed, .. } if *refused == stamp && missed.is_empty())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Offered {
+    keys: LayInKeys,
+    raids: Option<usize>,
+    published: [usize; 6],
+    draws: Kinds,
+    left: LeftToLayers,
+    labels: bool,
+}
+
+impl Offered {
+    fn of(layers: LayerParts<'_>, branch: Option<BranchId>) -> Self {
+        let ours = viewer_layer_core::vision::drawn(layers).and_then(viewer_layer_core::vision::Vision::ours);
+        Self {
+            keys: LayInKeys::of(layers),
+            raids: branch.zip(ours).and_then(|(branch, ours)| viewer_layers_political::scripts::raids(layers, branch, ours)).map(|icons| Arc::as_ptr(&*icons) as usize),
+            published: counter_kinds::published(layers).identity(),
+            draws: counter_kinds::draws(layers),
+            left: LeftToLayers::of(Some(layers)),
+            labels: layers.draws("labels"),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AskedInput {
     hour: Hour,
-    made: Option<Made>,
+    lay: bool,
+    camera: Camera,
+    target: Option<u32>,
+    pixels: [u32; 2],
+    ui_scale: u32,
+    view: CounterView,
+    perspective: Choice,
+    offered: Offered,
+    art: u64,
+}
+
+impl AskedInput {
+    fn same(&self, other: &Self) -> bool {
+        self.hour == other.hour
+            && self.lay == other.lay
+            && self.camera == other.camera
+            && self.target == other.target
+            && self.pixels == other.pixels
+            && self.ui_scale == other.ui_scale
+            && self.view == other.view
+            && self.perspective == other.perspective
+            && self.offered == other.offered
+            && self.art == other.art
+    }
 }
 
 #[derive(Default)]
@@ -419,11 +520,9 @@ struct Held {
     stop: bool,
     want: Option<Wanted>,
     built: Published<Option<Built>>,
-    laid_out: PublishedKeyed<(u64, Hour), LaidOut>,
-    answered: u64,
-    failed: bool,
-    loading: Vec<String>,
-    missed: Vec<TableId>,
+    answer: PublishedKeyed<(u64, OutcomeKey), Answer>,
+    answered_stamp: (u64, u64),
+    waiting_note: Option<String>,
 }
 
 struct Shared {
@@ -463,9 +562,16 @@ pub struct Overlay {
     taken: u64,
     made: Option<Landed<Made>>,
     lay_owed: Owed,
-    hour: Option<Hour>,
+    state: OverlayState,
+    applied_stamp: u64,
+    ask_notes: Vec<String>,
+    waiting_note: Option<String>,
     loading: Vec<String>,
-    missed: Vec<TableId>,
+    posted: bool,
+    suppressed: bool,
+    art: u64,
+    last_asked: Option<AskedInput>,
+    offered: Option<Offered>,
     maker: timeline::Maker,
 }
 
@@ -485,9 +591,16 @@ impl Overlay {
             taken: 0,
             made: None,
             lay_owed: Owed::default(),
-            hour: None,
+            state: OverlayState::default(),
+            applied_stamp: 0,
+            ask_notes: Vec::new(),
+            waiting_note: None,
             loading: Vec::new(),
-            missed: Vec::new(),
+            posted: false,
+            suppressed: false,
+            art: 0,
+            last_asked: None,
+            offered: None,
             maker: timeline::maker("overlay"),
         }
     }
@@ -501,22 +614,30 @@ impl Overlay {
         let mut held = lock(&self.shared.held);
         held.want = None;
         held.built.clear();
-        held.laid_out.clear();
+        held.answer.clear();
+        held.answered_stamp = (self.generation, 0);
+        held.waiting_note = None;
         drop(held);
         self.shared.signal.notify_all();
         (self.tables, self.tables_for, self.stands, self.asked, self.lay_owed) = (None, None, None, None, Owed::default());
-        (self.made, self.hour) = (None, None);
+        (self.made, self.state, self.applied_stamp) = (None, OverlayState::default(), 0);
+        (self.posted, self.suppressed, self.last_asked, self.offered) = (false, false, None, None);
+        self.ask_notes.clear();
+        self.waiting_note = None;
+        self.loading.clear();
     }
 
     pub fn take(&mut self) -> Option<Landed<Made>> {
-        let laid = lock(&self.shared.held).laid_out.take();
-        if let Some(laid) = laid {
-            self.install_layout(laid);
+        let answer = lock(&self.shared.held).answer.take();
+        if let Some(answer) = answer {
+            self.apply_answer(answer);
         }
         let made = self.made.take();
         if let Some(made) = &made {
-            self.hour = Some(made.hour);
             self.lay_owed = Owed::default();
+            if let OverlayState::Ready { hour, .. } = &mut self.state {
+                *hour = Some(made.hour);
+            }
         }
         made
     }
@@ -526,7 +647,14 @@ impl Overlay {
     }
 
     pub fn hour(&self) -> Option<Hour> {
-        self.hour
+        match &self.state {
+            OverlayState::Ready { hour, .. } => *hour,
+            OverlayState::Refused { .. } => None,
+        }
+    }
+
+    pub fn refused(&self) -> bool {
+        matches!(self.state, OverlayState::Refused { .. })
     }
 
     pub fn loading(&self) -> &[String] {
@@ -534,7 +662,33 @@ impl Overlay {
     }
 
     pub fn missed(&self) -> &[TableId] {
-        &self.missed
+        match &self.state {
+            OverlayState::Ready { missed, .. } | OverlayState::Refused { missed, .. } => missed,
+        }
+    }
+
+    pub fn needs_reask(&self) -> bool {
+        if !self.posted {
+            return false;
+        }
+        let wants_suppressed = self.suppressed && self.made.is_none();
+        let wants_retry = !self.missed().is_empty() || self.content.icons.lazy.version() != self.art;
+        if !wants_suppressed && !wants_retry {
+            return false;
+        }
+        let held = lock(&self.shared.held);
+        let answered = if held.answered_stamp.0 == self.generation { held.answered_stamp.1 } else { 0 };
+        if answered < self.stamp {
+            return false;
+        }
+        if wants_retry {
+            return true;
+        }
+        !held.answer.as_ref().is_some_and(|answer| answer.generation == self.generation && matches!(answer.outcome, Outcome::Laid { made: Some(_), .. }))
+    }
+
+    pub fn offered_stale(&self, layers: LayerParts<'_>, branch: Option<BranchId>) -> bool {
+        self.offered.as_ref().is_some_and(|offered| offered != &Offered::of(layers, branch))
     }
 
     pub fn tables(&self) -> Option<&Arc<OverlayTables>> {
@@ -550,37 +704,87 @@ impl Overlay {
     }
 
     pub fn stands_at(&self, hour: Hour) -> bool {
-        stands(self.hour, self.missed.len(), hour)
+        stands(self.hour(), self.missed().len(), hour)
     }
 
     pub fn ask_step(&mut self, lend: Lend<'_>) -> bool {
         let Lend { views, applied, branch, perspective, vision, engaged, draws_labels, lay_ins, keys, published, draws, left, moved, whole, lay } = lend;
-        self.loading.clear();
-        let built = lock(&self.shared.held).built.take();
+        self.ask_notes.clear();
+        let (built, answer) = {
+            let mut held = lock(&self.shared.held);
+            (held.built.take(), held.answer.take())
+        };
         if let Some(built) = built {
             self.install(built.into_inner());
         }
+        if let Some(answer) = answer {
+            self.apply_answer(answer);
+        }
+        let wanted_lay = lay;
         if !lay {
             self.made = None;
         }
         let shared = &self.shared;
+        let generation = self.generation;
         let lay = self.lay_owed.lays(lay, whole, self.made.is_some(), || {
             let held = lock(&shared.held);
-            (held.answered, held.laid_out.is_some())
+            let answered = if held.answered_stamp.0 == generation { held.answered_stamp.1 } else { 0 };
+            (answered, held.answer.as_ref().is_some_and(|answer| answer.generation == generation && matches!(answer.outcome, Outcome::Laid { made: Some(_), .. })))
         });
-        let (Some(ask), Some(hour), true) = (self.ask.clone(), applied, branch.is_some()) else { return false };
+        let (Some(ask), Some(hour), true) = (self.ask.clone(), applied, branch.is_some()) else {
+            (self.offered, self.posted, self.suppressed, self.last_asked) = (None, false, false, None);
+            self.rebuild_loading();
+            return false;
+        };
         let vision = match vision {
             Ok(vision) => vision,
             Err(why) => {
-                self.loading.push(format!("the overlay's vision: {why}"));
+                (self.offered, self.posted, self.suppressed, self.last_asked) = (None, false, false, None);
+                self.ask_notes.push(format!("the overlay's vision: {why}"));
+                self.rebuild_loading();
                 return false;
             }
         };
-        self.start(views);
-        if self.worker.is_none() {
+        let art = self.content.icons.lazy.version();
+        let offered = Offered {
+            keys: keys.clone(),
+            raids: lay_ins.raids.as_ref().map(|icons| Arc::as_ptr(&**icons) as usize),
+            published: published.identity(),
+            draws,
+            left,
+            labels: draws_labels,
+        };
+        let input = AskedInput {
+            hour,
+            lay: wanted_lay,
+            camera: ask.camera,
+            target: ask.target.map(f32::to_bits),
+            pixels: ask.pixels,
+            ui_scale: ask.ui_scale.to_bits(),
+            view: ask.view.clone(),
+            perspective: perspective.clone(),
+            offered: offered.clone(),
+            art,
+        };
+        let same_as_last = self.last_asked.as_ref().is_some_and(|prev| prev.same(&input));
+        if skips_refused(whole, self.suppressed, &self.state, self.stamp, same_as_last) {
+            self.rebuild_loading();
             return false;
         }
+        self.start(views);
+        if self.worker.is_none() {
+            self.rebuild_loading();
+            return false;
+        }
+        let refused_current = matches!(self.state, OverlayState::Refused { stamp, ref missed, .. } if stamp == self.stamp && missed.is_empty());
+        let clearing_refusal = self.refused() && (!same_as_last || self.suppressed || !refused_current);
+        if clearing_refusal {
+            self.state = OverlayState::default();
+        }
         self.stamp += 1;
+        self.art = art;
+        self.offered = Some(offered);
+        self.last_asked = Some(input);
         let want = Wanted {
             generation: self.generation,
             stamp: self.stamp,
@@ -590,10 +794,19 @@ impl Overlay {
             lay,
             asking: Asking { ask, perspective: perspective.clone(), vision, engaged, labels: draws_labels, lay_ins, keys, published, draws, left },
         };
-        post(&mut lock(&self.shared.held).want, want);
+        {
+            let mut held = lock(&self.shared.held);
+            if clearing_refusal {
+                held.answer.forget_key();
+            }
+            post(&mut held.want, want);
+        }
         self.shared.signal.notify_all();
         self.lay_owed.asked(lay, whole, self.stamp);
+        self.posted = true;
+        self.suppressed = wanted_lay && !lay;
         self.asked = Some(Asked { stamp: self.stamp, hour, lay });
+        self.rebuild_loading();
         timeline::mark(self.maker, Mark::Asked);
         true
     }
@@ -632,7 +845,7 @@ impl Overlay {
         });
         match started {
             Ok(worker) => self.worker = Some(worker),
-            Err(error) => self.loading.push(format!("the overlay's maker cannot start: {error}")),
+            Err(error) => self.ask_notes.push(format!("the overlay's maker cannot start: {error}")),
         }
     }
 
@@ -647,26 +860,26 @@ impl Overlay {
             if let Some(built) = held.built.take() {
                 self.install(built.into_inner());
             }
-            if let Some(laid) = held.laid_out.take() {
-                self.install_layout(laid);
+            if let Some(answer) = held.answer.take() {
+                self.apply_answer(answer);
             }
             let now = Instant::now();
-            if held.stop || !joins_on(settling.strict(), held.answered >= stamp, now >= until) {
+            let answered = if held.answered_stamp.0 == self.generation { held.answered_stamp.1 } else { 0 };
+            if held.stop || !joins_on(settling.strict(), answered >= stamp, now >= until) {
                 break;
             }
             held = shared.signal.wait_timeout(held, until - now).unwrap_or_else(std::sync::PoisonError::into_inner).0;
         }
         timeline::mark(self.maker, Mark::Waited);
-        let failed = fails(settling.strict(), held.answered, stamp, held.failed);
-        self.loading.extend(held.loading.iter().cloned());
-        if self.missed != held.missed {
-            self.missed.clone_from(&held.missed);
-        }
+        let answered = if held.answered_stamp.0 == self.generation { held.answered_stamp.1 } else { 0 };
+        self.waiting_note.clone_from(&held.waiting_note);
         drop(held);
+        self.rebuild_loading();
+        let failed = fails(settling.strict(), answered, stamp, self.refused() || !self.missed().is_empty());
         shared.signal.notify_all();
         timeline::mark(self.maker, Mark::Joined);
         self.record_join(began, hour);
-        !failed && self.stands.is_some_and(|stands| stands >= hour) && self.missed.is_empty() && (!lay || self.stands_at(hour))
+        (!settling.strict() && self.refused()) || (!failed && self.stands.is_some_and(|stands| stands >= hour) && self.missed().is_empty() && (!lay || self.stands_at(hour)))
     }
 
     fn record_join(&self, began: Instant, hour: Hour) {
@@ -677,7 +890,7 @@ impl Overlay {
         viewer_runtime::view_record::add("overlay", "joins", 1);
         viewer_runtime::view_record::add("overlay", "join_us", began.elapsed().as_micros() as u64);
         viewer_runtime::view_record::add("overlay", if at { "joins_at_the_hour" } else { "joins_behind" }, 1);
-        if let Some(behind) = self.hour.map(|held| hour.saturating_sub(held)).filter(|&behind| behind > 0) {
+        if let Some(behind) = self.hour().map(|held| hour.saturating_sub(held)).filter(|&behind| behind > 0) {
             viewer_runtime::view_record::set("overlay", "hours_behind", u64::try_from(behind).unwrap_or(0));
         }
     }
@@ -692,14 +905,79 @@ impl Overlay {
         self.stands = Some(built.hour);
     }
 
-    fn install_layout(&mut self, laid: Landed<LaidOut>) {
-        let (generation, hour) = (laid.generation, laid.hour);
-        if !installs((generation, hour), self.generation, self.hour) {
+    fn apply_answer(&mut self, answer: Landed<Answer>) {
+        if answer.generation != self.generation || answer.stamp < self.applied_stamp {
             return;
         }
-        self.hour = Some(hour);
-        if let Some(made) = laid.map(|laid| laid.made).transpose() {
-            self.made = Some(made);
+        self.applied_stamp = answer.stamp;
+        if matches!(answer.outcome, Outcome::Laid { made: Some(_), .. }) {
+            let hour = match &answer.outcome {
+                Outcome::Laid { hour, .. } => *hour,
+                _ => unreachable!(),
+            };
+            let made = answer.map(|answer| match answer.outcome {
+                Outcome::Laid { made: Some(made), .. } => *made,
+                _ => unreachable!(),
+            });
+            if installs((made.generation, hour), self.generation, self.hour()) {
+                self.made = Some(made);
+                self.state = OverlayState::Ready { hour: Some(hour), notes: Vec::new(), missed: Vec::new() };
+            }
+            self.rebuild_loading();
+            return;
+        }
+        let answer = answer.into_inner();
+        match answer.outcome {
+            Outcome::Laid { hour, made: None } => {
+                if !self.refused() && installs((answer.generation, hour), self.generation, self.hour()) {
+                    self.state = OverlayState::Ready { hour: Some(hour), notes: Vec::new(), missed: Vec::new() };
+                }
+            }
+            Outcome::Laid { made: Some(_), .. } => unreachable!(),
+            Outcome::TablesOnly => match &mut self.state {
+                OverlayState::Ready { notes, missed, .. } => {
+                    notes.clear();
+                    missed.clear();
+                }
+                OverlayState::Refused { missed, .. } => {
+                    missed.clear();
+                }
+            },
+            Outcome::MissingTables { missed, notes } => match &mut self.state {
+                OverlayState::Ready { notes: held, missed: held_missed, .. } => {
+                    *held = notes;
+                    *held_missed = missed;
+                }
+                OverlayState::Refused { missed: held_missed, .. } => {
+                    *held_missed = missed;
+                }
+            },
+            Outcome::Refused { reasons } => {
+                self.made = None;
+                self.lay_owed = Owed::default();
+                if answer.stamp == self.stamp {
+                    self.suppressed = false;
+                }
+                self.state = OverlayState::Refused { stamp: answer.stamp, reasons, missed: Vec::new() };
+            }
+            Outcome::Superseded { notes } => {
+                if let OverlayState::Ready { notes: held, .. } = &mut self.state {
+                    *held = notes;
+                }
+            }
+        }
+        self.rebuild_loading();
+    }
+
+    fn rebuild_loading(&mut self) {
+        self.loading.clear();
+        self.loading.extend(self.ask_notes.iter().cloned());
+        match &self.state {
+            OverlayState::Ready { notes, .. } => self.loading.extend(notes.iter().cloned()),
+            OverlayState::Refused { reasons, .. } => self.loading.extend(reasons.iter().cloned()),
+        }
+        if let Some(note) = &self.waiting_note {
+            self.loading.push(note.clone());
         }
     }
 
@@ -720,7 +998,20 @@ impl Drop for Overlay {
 
 enum Gave {
     Superseded,
+    MissingTables(Vec<TableId>),
     Refused(String),
+}
+
+enum LayOutcome {
+    Laid(Option<Box<Made>>),
+    MissingTables(Vec<TableId>),
+    Refused(String),
+}
+
+enum TablesBuilt {
+    Ready,
+    Missing(Vec<TableId>),
+    Refused,
 }
 
 struct Maker {
@@ -766,28 +1057,30 @@ impl Maker {
 
     fn cycle(&mut self, mut want: Wanted) {
         if self.carried.take(&mut want) {
-            (self.tables, self.tabled, self.published_tables, self.laid) = (None, None, None, None);
+            (self.tables, self.tabled, self.laid, self.published_tables) = (None, None, None, None);
         }
         let mut loading = Vec::new();
         let made = self.make(&want, &mut loading);
-        self.carried.ended(&made);
-        let laid = match made {
-            Ok((stands, laid)) => laid.map(|made| (stands, made)),
-            Err(Gave::Superseded) => {
-                self.answered(&want, None, loading, false);
-                return;
-            }
-            Err(Gave::Refused(why)) => {
-                loading.push(why);
-                self.answered(&want, None, loading, true);
-                return;
-            }
+        let laid_stands = match &made {
+            Ok((stands, Some(LayOutcome::Laid(_)))) => Some(*stands),
+            _ => None,
         };
-        let failed = want.lay && laid.is_none();
-        self.answered(&want, laid, loading, failed);
+        self.carried.ended(laid_stands);
+        let outcome = match made {
+            Ok((stands, Some(LayOutcome::Laid(made)))) => Outcome::Laid { hour: stands, made },
+            Ok((_, None)) => Outcome::TablesOnly,
+            Ok((_, Some(LayOutcome::MissingTables(missed)))) | Err(Gave::MissingTables(missed)) => Outcome::MissingTables { missed, notes: loading },
+            Ok((_, Some(LayOutcome::Refused(why)))) | Err(Gave::Refused(why)) => {
+                self.laid = None;
+                loading.push(why);
+                Outcome::Refused { reasons: loading }
+            }
+            Err(Gave::Superseded) => Outcome::Superseded { notes: loading },
+        };
+        self.finish(&want, outcome);
     }
 
-    fn make(&mut self, want: &Wanted, loading: &mut Vec<String>) -> Result<(Hour, Option<Option<Made>>), Gave> {
+    fn make(&mut self, want: &Wanted, loading: &mut Vec<String>) -> Result<(Hour, Option<LayOutcome>), Gave> {
         self.declare(want.ask.need(&self.content.counters.defines).shown);
         let (rows, stands, waited_from) = self.rows_at(want, loading)?;
         timeline::mark(self.marks, Mark::Rows);
@@ -804,12 +1097,23 @@ impl Maker {
             left_out: self.left_out,
             labels: want.labels,
             need: want.ask.need(&self.content.counters.defines),
-            raids: want.lay_ins.raids.as_deref().map(|icons| Arc::as_ptr(icons) as usize),
+            raids: want.lay_ins.raids.as_ref().map(|icons| Arc::as_ptr(&**icons) as usize),
         };
-        let made = self.tabled.as_ref() == Some(&tabled) || self.make_tables(want, &rows, &tabled, loading);
-        if !made || self.tables.is_none() {
-            timeline::mark(self.marks, Mark::BuildEnded);
-            return Err(Gave::Refused(format!("the overlay's tables at hour {} were not made", rows.hour)));
+        let status = if self.tabled.as_ref() == Some(&tabled) {
+            TablesBuilt::Ready
+        } else {
+            self.make_tables(want, &rows, &tabled, loading)
+        };
+        match status {
+            TablesBuilt::Ready if self.tables.is_some() => {}
+            TablesBuilt::Missing(missed) => {
+                timeline::mark(self.marks, Mark::BuildEnded);
+                return Err(Gave::MissingTables(missed));
+            }
+            TablesBuilt::Ready | TablesBuilt::Refused => {
+                timeline::mark(self.marks, Mark::BuildEnded);
+                return Err(Gave::Refused(format!("the overlay's tables at hour {} were not made", rows.hour)));
+            }
         }
         note_us("overlay.tables_us", built);
         self.publish_tables(want, stands);
@@ -817,9 +1121,9 @@ impl Maker {
             timeline::mark(self.marks, Mark::BuildEnded);
             return Ok((stands, None));
         }
-        let made = self.lay(want, &rows, stands, loading);
+        let made = self.lay(want, &rows, stands);
         timeline::mark(self.marks, Mark::BuildEnded);
-        Ok((stands, made))
+        Ok((stands, Some(made)))
     }
 
     fn rows_at(&mut self, want: &Wanted, loading: &mut Vec<String>) -> Result<(Arc<DecodedFrame>, Hour, Instant), Gave> {
@@ -856,7 +1160,7 @@ impl Maker {
             }
             if exact {
                 if started.elapsed() > Duration::from_secs(1) {
-                    lock(&self.shared.held).loading = vec![format!("the overlay's rows have not reached hour {hour}: {}", self.rows_state())];
+                    lock(&self.shared.held).waiting_note = Some(format!("the overlay's rows have not reached hour {hour}: {}", self.rows_state()));
                 }
                 if Instant::now() >= until {
                     return Err(Gave::Refused(format!("The overlay's rows did not reach hour {hour}: {}", self.rows_state())));
@@ -911,9 +1215,9 @@ impl Maker {
         held.stop || held.want.as_ref().is_some_and(|newer| newer.generation != want.generation || newer.stamp > want.stamp)
     }
 
-    fn make_tables(&mut self, want: &Wanted, rows: &Arc<DecodedFrame>, tabled: &Tabled, loading: &mut Vec<String>) -> bool {
+    fn make_tables(&mut self, want: &Wanted, rows: &Arc<DecodedFrame>, tabled: &Tabled, loading: &mut Vec<String>) -> TablesBuilt {
         let at = crate::document::Hour::new(&self.content, rows, 0.0).with_air_rosters(Some(Arc::clone(&want.ask.rosters)));
-        let raids = want.lay_ins.raids.as_deref().cloned().unwrap_or_default();
+        let raids = want.lay_ins.raids.as_ref().map(|icons| Arc::clone(&**icons)).unwrap_or_default();
         let mut spans = viewer_runtime::profiling::BuilderSpans::new(replay_frame::cpu::enabled());
         let engaged = want.engaged.as_deref();
         let (made, missed) = replay_frame::frame::discovering(|| {
@@ -924,7 +1228,7 @@ impl Maker {
             if want.whole {
                 loading.push(format!("The overlay's tables at hour {} read tables its rows do not hold: {missed:?}", rows.hour));
             }
-            return false;
+            return TablesBuilt::Missing(missed);
         }
         let built = match made {
             Ok(tables) => {
@@ -932,11 +1236,11 @@ impl Maker {
                 self.tabled = Some(tabled.clone());
                 self.tabled_count += 1;
                 viewer_runtime::view_record::add("overlay", "tables_built", 1);
-                true
+                TablesBuilt::Ready
             }
             Err(error) => {
                 loading.push(format!("the overlay's tables: {error}"));
-                false
+                TablesBuilt::Refused
             }
         };
         for part in spans.into_records() {
@@ -945,7 +1249,7 @@ impl Maker {
         built
     }
 
-    fn lay(&mut self, want: &Wanted, rows: &Arc<DecodedFrame>, stands: Hour, loading: &mut Vec<String>) -> Option<Option<Made>> {
+    fn lay(&mut self, want: &Wanted, rows: &Arc<DecodedFrame>, stands: Hour) -> LayOutcome {
         let started = Instant::now();
         if self.lay_in_keys != want.keys {
             self.lay_ins = Arc::clone(&want.lay_ins);
@@ -953,7 +1257,10 @@ impl Maker {
         }
         let lay_ins = Arc::clone(&self.lay_ins);
         let tabled_count = self.tabled_count;
-        let (ask, tables) = (&want.ask, self.tables.as_mut()?);
+        let Some(tables) = self.tables.as_mut() else {
+            return LayOutcome::Refused("the overlay has no tables".to_owned());
+        };
+        let ask = &want.ask;
         lay_ins.set(tables);
         let left_out = tables.counters().left_out();
         let laying = match &self.laying {
@@ -982,7 +1289,7 @@ impl Maker {
             art: self.content.icons.lazy.version(),
         };
         if !want.whole && self.laid.as_ref() == Some(&laid) {
-            return Some(None);
+            return LayOutcome::Laid(None);
         }
         let view = CounterView { presentation: Arc::clone(&laying), ..ask.view.clone() };
         let at = crate::document::Hour::new(&self.content, rows, 0.0)
@@ -993,17 +1300,15 @@ impl Maker {
         let missed = read.missed();
         if !missed.is_empty() {
             self.learn(&missed);
-            lock(&self.shared.held).missed = missed;
+            self.laid = None;
             viewer_runtime::redraws::note("missed.full", 1);
-            return None;
+            return LayOutcome::MissingTables(missed);
         }
-        lock(&self.shared.held).missed.clear();
         let mut prepared = match made {
             Ok(prepared) => prepared,
             Err(error) => {
                 viewer_runtime::redraws::note("refused.full", 1);
-                loading.push(format!("the overlay: {error}"));
-                return None;
+                return LayOutcome::Refused(format!("the overlay: {error}"));
             }
         };
         lay_ins.lay(&mut prepared, &at, ask.camera, ask.pixels, ask.ui_scale, tables.ours());
@@ -1015,10 +1320,7 @@ impl Maker {
                 }
                 match at.prepare_overlay_at(ask.camera, ask.pixels, ask.ui_scale, tables, &view, &read) {
                     Ok(again) => prepared = again,
-                    Err(error) => {
-                        loading.push(format!("the overlay: {error}"));
-                        return None;
-                    }
+                    Err(error) => return LayOutcome::Refused(format!("the overlay: {error}")),
                 }
                 lay_ins.lay(&mut prepared, &at, ask.camera, ask.pixels, ask.ui_scale, tables.ours());
             }
@@ -1026,7 +1328,7 @@ impl Maker {
         viewer_runtime::redraws::note("made.full", 1);
         note_us("overlay.layout_us", started);
         self.laid = Some(laid);
-        Some(Some(Made {
+        LayOutcome::Laid(Some(Box::new(Made {
             generation: want.generation,
             hour: stands,
             branch: rows.branch,
@@ -1043,7 +1345,7 @@ impl Maker {
             left: want.left,
             lay_ins,
             moved: Arc::clone(&want.moved),
-        }))
+        })))
     }
 
     fn publish_tables(&mut self, want: &Wanted, stands: Hour) {
@@ -1069,29 +1371,35 @@ impl Maker {
         self.shared.signal.notify_all();
     }
 
-    fn publish_layout(&mut self, want: &Wanted, stands: Hour, made: Option<Made>) {
+    fn finish(&mut self, want: &Wanted, outcome: Outcome) {
         if want.generation != self.carried.generation {
             return;
         }
         let mut held = lock(&self.shared.held);
-        let fresh = made.is_some();
-        let laid = LaidOut { generation: want.generation, hour: stands, made };
-        if fresh {
-            held.laid_out.publish_new((want.generation, stands), laid);
+        held.waiting_note = None;
+        held.answered_stamp = (want.generation, want.stamp);
+        let keep_untaken_made = matches!(outcome, Outcome::TablesOnly | Outcome::Superseded { .. } | Outcome::Laid { made: None, .. })
+            && held.answer.as_ref().is_some_and(|prev| prev.generation == want.generation && matches!(prev.outcome, Outcome::Laid { made: Some(_), .. }));
+        if keep_untaken_made {
+            if let Some(prev) = held.answer.take() {
+                let mut prev = prev.into_inner();
+                prev.stamp = want.stamp;
+                if let (Outcome::Laid { hour: prev_hour, .. }, Outcome::Laid { hour, .. }) = (&mut prev.outcome, &outcome) {
+                    *prev_hour = (*prev_hour).max(*hour);
+                }
+                let key = prev.key();
+                held.answer.publish(key, prev);
+            }
         } else {
-            held.laid_out.publish((want.generation, stands), laid);
+            let fresh = matches!(outcome, Outcome::Laid { made: Some(_), .. });
+            let answer = Answer { generation: want.generation, stamp: want.stamp, outcome };
+            let key = answer.key();
+            if fresh {
+                held.answer.publish_new(key, answer);
+            } else {
+                held.answer.publish(key, answer);
+            }
         }
-        drop(held);
-        self.shared.signal.notify_all();
-    }
-
-    fn answered(&mut self, want: &Wanted, laid: Option<(Hour, Option<Made>)>, loading: Vec<String>, failed: bool) {
-        if let Some((stands, made)) = laid {
-            self.publish_layout(want, stands, made);
-        }
-        let mut held = lock(&self.shared.held);
-        held.loading = loading;
-        (held.answered, held.failed) = (want.stamp, failed);
         drop(held);
         self.shared.signal.notify_all();
     }
@@ -1154,6 +1462,18 @@ impl Overlaying<Products> for Overlay {
 
     fn missed(&self) -> &[TableId] {
         Overlay::missed(self)
+    }
+
+    fn refused(&self) -> bool {
+        Overlay::refused(self)
+    }
+
+    fn needs_reask(&self) -> bool {
+        Overlay::needs_reask(self)
+    }
+
+    fn offered_stale(&self, layers: LayerParts<'_>, branch: Option<BranchId>) -> bool {
+        Overlay::offered_stale(self, layers, branch)
     }
 }
 
@@ -1372,7 +1692,7 @@ mod tests {
                 self.tabled = Some(stands);
                 (stands, want.lay.then(|| self.layouts.push((stands, Arc::clone(&want.moved)))))
             });
-            self.carried.ended(&made);
+            self.carried.ended(made.ok().and_then(|(stands, laid)| laid.map(|_| stands)));
         }
 
         fn laid(&self) -> &[(i32, u32)] {
@@ -1509,5 +1829,39 @@ mod tests {
         making.ask(&a, 20, 3);
         making.arrive();
         assert_eq!(making.shown.kept_for(&a).map(|vision| vision.ours()), Ok(3), "a copy asked after the forget is kept");
+    }
+
+    #[test]
+    fn overlay_answer_state_is_atomic_and_unchanged_refusals_do_not_bump_landed() {
+        let mut held = Held::default();
+        let before = viewer_runtime::landed::count();
+        let refusal = Answer { generation: 1, stamp: 1, outcome: Outcome::Refused { reasons: vec!["no supply".into()] } };
+        assert!(held.answer.publish(refusal.key(), refusal));
+        let after = viewer_runtime::landed::count();
+        assert!(after > before, "first refusal moves landed");
+        let taken = held.answer.take().unwrap();
+        let repeat = Answer { generation: 1, stamp: 2, outcome: Outcome::Refused { reasons: vec!["no supply".into()] } };
+        assert!(!held.answer.publish(repeat.key(), repeat), "same refusal after take does not move landed");
+        assert_eq!(viewer_runtime::landed::count(), after);
+        assert!(matches!(taken.outcome, Outcome::Refused { .. }));
+
+        held.answer.forget_key();
+        let before_repeat = viewer_runtime::landed::count();
+        let repeat_after_forget = Answer { generation: 1, stamp: 3, outcome: Outcome::Refused { reasons: vec!["no supply".into()] } };
+        assert!(held.answer.publish(repeat_after_forget.key(), repeat_after_forget), "forgetting key lets an identical repeat refusal advance landed once");
+        assert!(viewer_runtime::landed::count() > before_repeat);
+        let _ = held.answer.take();
+
+        let arrived = Answer { generation: 1, stamp: 4, outcome: Outcome::Laid { hour: 12, made: None } };
+        assert!(held.answer.publish(arrived.key(), arrived));
+        held.answer.forget_key();
+        let kept = held.answer.take().expect("forget_key preserves an answer that landed between locks");
+        assert_eq!(kept.stamp, 4);
+
+        let refused = OverlayState::Refused { stamp: 4, reasons: vec!["no supply".into()], missed: Vec::new() };
+        assert!(skips_refused(false, false, &refused, 4, true), "identical ask at the refused stamp skips");
+        assert!(!skips_refused(false, false, &refused, 4, false), "clearing last_asked on vision suspend allows one retry when vision returns");
+        assert!(!skips_refused(false, true, &refused, 4, true), "a suppressed layout is not skipped by an earlier refusal");
+        assert!(!skips_refused(false, false, &refused, 5, true), "a refusal from an older stamp does not skip a newer stamp");
     }
 }

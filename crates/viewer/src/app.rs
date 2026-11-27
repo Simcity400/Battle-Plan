@@ -5619,6 +5619,15 @@ impl Viewer {
         let window_misses = document.icons.combat.gui.window_art_misses();
         let (overlay_ms, additions, combat_out, combat_art) = 'overlay: {
             let Some((rows, tables)) = held.clone() else {
+                let mut tooltip_refused = BTreeMap::new();
+                if let Some(side) = live_of(&self.playhead_map) {
+                    let products = side.products();
+                    self.overlay_missed.clone_from(&products.overlay_missed);
+                    for reason in &products.overlay_loading {
+                        *tooltip_refused.entry(reason.clone()).or_default() += 1;
+                    }
+                }
+                self.tooltip_refused = tooltip_refused;
                 break 'overlay (0.0, Batch::default(), Some("the frame drew no overlay to draw it in".to_owned()), None);
             };
             let now = crate::document::Hour::new(&document.content, &rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved));

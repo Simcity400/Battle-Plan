@@ -651,6 +651,9 @@ pub trait Overlaying<P: PlaybackProducts>: Send {
     fn hour(&self) -> Option<Hour>;
     fn loading(&self) -> &[String];
     fn missed(&self) -> &[TableId];
+    fn refused(&self) -> bool;
+    fn needs_reask(&self) -> bool;
+    fn offered_stale(&self, layers: LayerParts<'_>, branch: Option<replay_data::BranchId>) -> bool;
 }
 
 #[derive(Clone, Copy)]
@@ -2252,6 +2255,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             || self.mode.as_ref() != Some(&view.map_mode)
             || !self.whole
             || !self.on_screen().is_some_and(|on| on.settled && on.drawn == Some(head))
+            || self.overlay.as_deref().is_some_and(|overlay| overlay.offered_stale(self.layer_parts(), self.branch))
             || self.answers_waiting()
     }
 
@@ -2260,6 +2264,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             || self.epoch != self.entry.playhead.epoch()
             || viewer_runtime::landed::count() != self.landed
             || (self.failure.is_none() && self.entry.playhead.error().is_some())
+            || self.overlay.as_deref().is_some_and(Overlaying::needs_reask)
     }
 }
 

@@ -572,11 +572,7 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                         if case == 5 {
                             covered.players.push((frame.hour, Some(1)));
                         }
-                        history
-                            .branches
-                            .lock()
-                            .unwrap()
-                            .insert(frame.branch, covered);
+                        history.insert_branch(frame.branch, covered);
                         assert!(history.covers(frame.branch, frame.hour));
                         tables = tables.refine_engagement(Some(&history)).unwrap();
                         assert!(Arc::ptr_eq(&original_base, &tables.0.base));
