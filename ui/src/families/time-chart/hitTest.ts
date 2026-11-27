@@ -302,7 +302,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
       (band.values[at] !== null && band.values[at] !== undefined && Number.isFinite(band.values[at]) && !band.outside?.[at])
       || Boolean(!band.outside?.[at] && band.missingReason?.[at])
     ));
-    if (at >= 0 && !anyBandAt && !(model.stack.total?.values[at] != null)) {
+    if (at >= 0 && !anyBandAt && !(model.stack.total?.values[at] != null) && !model.stack.total?.missingReason?.[at]) {
       return [];
     }
     const insideGrouped = model.stack.bucketed
@@ -322,9 +322,12 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
     if (at >= 0) {
       const totalVal = model.stack.total?.values[at];
       const totalExact = model.stack.total?.exact?.[at];
+      const totalMissing = model.stack.total?.missingReason?.[at];
       const totalItem: TooltipListItem | null = totalVal !== null && totalVal !== undefined && Number.isFinite(totalVal)
         ? { label: model.measureTitle, value: formatExactFigure(totalVal, model, model.yAxis.format, totalExact?.raw, totalExact?.denominator), strong: true }
-        : null;
+        : totalMissing
+          ? { label: model.measureTitle, missingReason: totalMissing, tone: 'muted', strong: true }
+          : null;
       for (const band of model.stack.bands) {
         if (only !== undefined && band.id !== only) continue;
         const v = band.values[at];

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { assertBarsModelValid, type BarsDataRow } from '../../families/bars/model.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import type { BranchToHourSourceRead, ExactHoverSourceRead, FamilyPlanContext, IdentityProvider } from '../../families/plan.ts';
@@ -299,4 +300,321 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
   });
   assert.equal(unchosen.empty?.message, 'Choose a holder: click its bar in the race.');
   assert.equal(LANE_THEME.surface.length > 0, true);
+});
+
+test('occupation-reserve-manpower breakdown follows the holder at the displayed hour and never backfills a missing source tag', () => {
+  const aux: CountryIdentitiesReply = {
+    branchId: '1',
+    known: [],
+    unknown: [],
+    countries: [
+      {
+        tag: 'AAA',
+        identities: [
+          { countryId: 10, slot: 7, firstHour: 0, lastHour: 4 },
+          { countryId: 11, slot: 8, firstHour: 5, lastHour: 10 },
+        ],
+        unresolved: [],
+      },
+      {
+        tag: 'BBB',
+        identities: [
+          { countryId: 12, slot: 7, firstHour: 5, lastHour: 10 },
+        ],
+        unresolved: [],
+      },
+    ],
+    warnings: [],
+  };
+  const makeCtx = (tags: readonly string[], planHour: number) => ({
+    track: { source: { id: 's1', revision: 'r1' }, axisOffset: 0 },
+    branch: { id: '1', firstHour: 0, lastHour: 12 },
+    options: {},
+    countries: { all: false, top: null, tags, holders: null },
+    aux,
+    planHour,
+  }) as unknown as FamilyPlanContext<CountryIdentitiesReply>;
+
+  const planAt3 = occupationReserveBreakdownDeclaration.sources(makeCtx(['AAA'], 3), { width: 600, height: 260, following: true, staticSpan: null });
+  const histAt3 = planAt3.entries.find(e => e.name === 'history')?.read as BranchToHourSourceRead;
+  const hoverAt3 = planAt3.entries.find(e => e.name === 'hover')?.read as ExactHoverSourceRead;
+  assert.deepEqual(histAt3.params, { branchId: '1', holder: 10 });
+  assert.deepEqual(hoverAt3.params, { branchId: '1', countries: [7] });
+  assert.deepEqual(planAt3.valid, [0, 4]);
+
+  const planAt8 = occupationReserveBreakdownDeclaration.sources(makeCtx(['AAA'], 8), { width: 600, height: 260, following: true, staticSpan: null });
+  const histAt8 = planAt8.entries.find(e => e.name === 'history')?.read as BranchToHourSourceRead;
+  const hoverAt8 = planAt8.entries.find(e => e.name === 'hover')?.read as ExactHoverSourceRead;
+  assert.deepEqual(histAt8.params, { branchId: '1', holder: 11 });
+  assert.deepEqual(hoverAt8.params, { branchId: '1', countries: [8] });
+  assert.deepEqual(planAt8.valid, [5, 10]);
+  assert.deepEqual(
+    occupationReserveBreakdownDeclaration.projectionOptions(makeCtx(['AAA'], 8), { extent: [0, 12], surface: '#161616' }).holder,
+    { tag: 'AAA', id: 11, slot: 8 },
+  );
+
+  const slotPlanAt8 = occupationReserveBreakdownDeclaration.sources(makeCtx([countryKey(7)], 8), { width: 600, height: 260, following: true, staticSpan: null });
+  const slotHistAt8 = slotPlanAt8.entries.find(e => e.name === 'history')?.read as BranchToHourSourceRead;
+  const slotHoverAt8 = slotPlanAt8.entries.find(e => e.name === 'hover')?.read as ExactHoverSourceRead;
+  assert.deepEqual(slotHistAt8.params, { branchId: '1', holder: 12 });
+  assert.deepEqual(slotHoverAt8.params, { branchId: '1', countries: [7] });
+  assert.deepEqual(slotPlanAt8.valid, [5, 10]);
+
+  const absentPlanAt12 = occupationReserveBreakdownDeclaration.sources(makeCtx(['AAA'], 12), { width: 600, height: 260, following: true, staticSpan: null });
+  assert.equal(absentPlanAt12.entries.length, 0);
+  assert.equal(
+    occupationReserveBreakdownDeclaration.projectionOptions(makeCtx(['AAA'], 12), { extent: [0, 12], surface: '#161616' }).holder,
+    null,
+  );
+
+  const explicitGapCtx = { ...makeCtx(['AAA'], 8), options: { holder: 'AAA|10' } } as unknown as FamilyPlanContext<CountryIdentitiesReply>;
+  const explicitGapPlan = occupationReserveBreakdownDeclaration.sources(explicitGapCtx, { width: 600, height: 260, following: true, staticSpan: null });
+  assert.equal(explicitGapPlan.entries.length, 0, 'explicit holder in an identity gap never falls back to its first slot while another country occupies it');
+  assert.deepEqual(explicitGapPlan.valid, [5, 12]);
+  assert.equal(
+    occupationReserveBreakdownDeclaration.projectionOptions(explicitGapCtx, { extent: [0, 12], surface: '#161616' }).holder,
+    null,
+  );
+
+  const unresolvedAux: CountryIdentitiesReply = {
+    branchId: '1',
+    known: [],
+    unknown: [],
+    countries: [
+      { tag: 'AAA', identities: [{ countryId: 10, slot: 7, firstHour: 0, lastHour: 4 }], unresolved: [{ firstHour: 5, lastHour: 8 }] },
+    ],
+    warnings: [],
+  };
+  const makeUnresolvedCtx = (planHour: number) => ({
+    ...makeCtx(['AAA'], planHour),
+    options: { holder: 'AAA|10' },
+    aux: unresolvedAux,
+  }) as unknown as FamilyPlanContext<CountryIdentitiesReply>;
+  const unresAt6 = occupationReserveBreakdownDeclaration.sources(makeUnresolvedCtx(6), { width: 600, height: 260, following: true, staticSpan: null });
+  assert.deepEqual(unresAt6.valid, [5, 8], 'unresolved identity span ends before proven absence');
+  assert.equal(
+    occupationReserveBreakdownDeclaration.projectionOptions(makeUnresolvedCtx(6), { extent: [0, 12], surface: '#161616' }).holderReason,
+    'Country identity unresolved at this hour',
+  );
+  const absentAt9 = occupationReserveBreakdownDeclaration.sources(makeUnresolvedCtx(9), { width: 600, height: 260, following: true, staticSpan: null });
+  assert.deepEqual(absentAt9.valid, [9, 12]);
+  assert.equal(
+    occupationReserveBreakdownDeclaration.projectionOptions(makeUnresolvedCtx(9), { extent: [0, 12], surface: '#161616' }).holderReason,
+    'not a country at this hour',
+  );
+
+  const history: ReserveHistoryReply = {
+    hour: 8,
+    nextChange: 15,
+    segments: [
+      { firstHour: 0, lastHour: 4, admitted: true, entries: [{ source: 9, amount: 200 }, { source: 8, amount: 50 }], unknown: null },
+      { firstHour: 5, lastHour: 8, admitted: true, entries: [{ source: 9, amount: 250 }, { source: 8, amount: 75 }], unknown: null },
+    ],
+    sources: [
+      { id: 9, tags: [{ tag: 'OLD', firstHour: 0, lastHour: 4 }, { tag: null, firstHour: 5, lastHour: 8 }] },
+      { id: 8, tags: [{ tag: 'BBB', firstHour: 0, lastHour: 8 }] },
+    ],
+    warnings: [],
+  };
+  const identity = fakeIdentity({
+    AAA: { name: 'Alpha', color: '#6b7280' },
+    BBB: { name: 'Beta', color: '#3b82f6' },
+    OLD: { name: 'Old Name', color: '#22c55e' },
+  });
+  const model = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(8), panels: new Map<string, unknown>([['history', history]]), identity }),
+    { holder: { tag: 'AAA', id: 11, slot: 8 }, extent: [0, 14], gaps: [], surface: '#161616', yMin: null, yMax: null },
+  );
+  const band = model.stack?.bands[0];
+  assert.equal(band?.key, '9');
+  assert.equal(band?.name, 'Source #9 (tag not recorded)');
+  assert.equal(band?.flag, undefined);
+  assert.equal(band?.endLabel?.name, 'Source #9 (tag not recorded)');
+
+  const reusedModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(12), panels: new Map<string, unknown>([['history', history]]), identity }),
+    { holder: { tag: 'AAA', id: 11, slot: 8 }, extent: [0, 14], gaps: [], surface: '#161616', yMin: null, yMax: null },
+  );
+  assert.equal(reusedModel.gaps, undefined, 'reused reply within proven interval adds no trailing gap');
+  assert.equal(reusedModel.stack?.bands[0]?.name, 'Source #9 (tag not recorded)', 'explicit null tag at reply hour stays null across proven interval');
+  assert.equal(reusedModel.stack?.bands[1]?.name, 'Beta', 'known tag at reply hour persists across proven interval');
+  assert.deepEqual(reusedModel.auditRows?.map(r => [r.key, r.value]), [['__total__', '325'], ['9', '250'], ['8', '75']]);
+});
+
+test('occupation-reserve-manpower breakdown keeps unread source bands null and withholds partial subtotals as totals', () => {
+  const history: ReserveHistoryReply = {
+    hour: 200,
+    nextChange: null,
+    segments: [
+      { firstHour: 100, lastHour: 149, admitted: true, entries: [{ source: 9, amount: 300 }, { source: 8, amount: 100 }], unknown: null },
+      { firstHour: 150, lastHour: 179, admitted: false, entries: [{ source: 9, amount: 250 }], unknown: null },
+      { firstHour: 180, lastHour: 200, admitted: true, entries: [{ source: 9, amount: 250 }], unknown: null },
+    ],
+    sources: [
+      { id: 9, tags: [{ tag: 'CCC', firstHour: 100, lastHour: 200 }] },
+      { id: 8, tags: [{ tag: 'BBB', firstHour: 100, lastHour: 200 }] },
+    ],
+    warnings: [],
+  };
+  const identity = fakeIdentity({
+    AAA: { name: 'Alpha', color: '#6b7280' },
+    BBB: { name: 'Beta', color: '#22c55e' },
+    CCC: { name: 'Gamma', color: '#f59e0b' },
+  });
+  const opts = { holder: { tag: 'AAA', id: 2, slot: 7 }, extent: [100, 200] as const, gaps: [], surface: '#161616', yMin: null, yMax: null };
+
+  const partialHistory: ReserveHistoryReply = { ...history, hour: 170, segments: history.segments.slice(0, 2) };
+  const partialModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(170), panels: new Map<string, unknown>([['history', partialHistory]]), identity }),
+    opts,
+  );
+  assert.deepEqual(partialModel.stack?.hours, [100, 150]);
+  assert.deepEqual(partialModel.stack?.bands[0]?.values, [300, 250]);
+  assert.deepEqual(partialModel.stack?.bands[1]?.values, [100, null]);
+  assert.ok(partialModel.stack?.bands[1]?.missingReason?.[1]);
+  assert.deepEqual(partialModel.stack?.total?.values, [400, null]);
+  const totalMissing = (partialModel.stack?.total as { readonly missingReason?: readonly (string | null)[] } | undefined)?.missingReason?.[1];
+  assert.ok(totalMissing && !/at least|≥|\+$/.test(totalMissing), `missing total carries a plain reason without lower-bound wording: ${String(totalMissing)}`);
+
+  const totalAudit = partialModel.auditRows?.find(row => row.key === '__total__')?.value ?? '';
+  assert.ok(totalAudit.length > 0 && totalAudit !== '250' && !/at least|≥|\+$/.test(totalAudit));
+  assert.equal(partialModel.auditRows?.find(row => row.key === '9')?.value, '250');
+  assert.equal(partialModel.auditRows?.find(row => row.key === '8')?.value, partialModel.stack?.bands[1]?.missingReason?.[1]);
+
+  const layout = hoverTimeChartLayout(layoutTimeChart(partialModel, 600, 260, 'sans-serif', t => t.length * 6), null);
+  const stackTip = deriveTimeChartTooltip(partialModel, layout, 'plot:160');
+  const tipItems = stackTip?.payload?.items ?? [];
+  assert.equal(tipItems[0]?.value, undefined);
+  assert.ok(tipItems[0]?.missingReason && !/at least|≥|\+$/.test(tipItems[0].missingReason));
+  assert.ok(tipItems.some(item => item.label === 'Gamma' && item.value === '250'));
+  assert.ok(tipItems.some(item => item.label === 'Beta' && Boolean(item.missingReason) && item.value === undefined));
+
+  const unadmittedHover: OccupationReserveReply = {
+    holders: [{ country: { id: 2, tag: 'AAA' }, slot: 7, admitted: false, total: 250, entries: [{ ordinal: 0, source: { id: 9, tag: 'CCC' }, amount: 250 }] }],
+    readHour: 160,
+    unnamed: 0,
+    noneMissing: 'Which countries hold an occupation reserve is not known at this hour: not recorded',
+    missing: null,
+    warnings: [],
+  };
+  const exactHoverModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(170),
+      panels: new Map<string, unknown>([['history', partialHistory]]),
+      hovers: new Map([['hover', { hour: 160, data: unadmittedHover }]]),
+      identity,
+    }),
+    opts,
+  );
+  assert.equal(exactHoverModel.hoverDetail?.items[0]?.value, undefined);
+  assert.ok(exactHoverModel.hoverDetail?.items[0]?.missingReason);
+  assert.ok(exactHoverModel.hoverDetail?.items.some(item => item.label === 'Beta' && Boolean(item.missingReason)));
+
+  const fullModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(200), panels: new Map<string, unknown>([['history', history]]), identity }),
+    opts,
+  );
+  assert.deepEqual(fullModel.stack?.bands[1]?.values, [100, null, 0]);
+  assert.deepEqual(fullModel.stack?.total?.values, [400, null, 250]);
+  assert.deepEqual(fullModel.auditRows?.map(r => [r.key, r.value]), [['__total__', '250'], ['9', '250']]);
+
+  const omittedHolderHover: OccupationReserveReply = {
+    holders: [],
+    readHour: 120,
+    unnamed: 0,
+    noneMissing: null,
+    missing: null,
+    warnings: [],
+  };
+  const omittedHoverModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(200),
+      panels: new Map<string, unknown>([['history', history]]),
+      hovers: new Map([['hover', { hour: 120, data: omittedHolderHover }]]),
+      identity,
+    }),
+    opts,
+  );
+  assert.equal(omittedHoverModel.hoverDetail?.items[0]?.value, '400', 'omitted holder in exact hover uses hovered segment parts and total instead of false zero');
+  assert.ok(omittedHoverModel.hoverDetail?.items.some(item => item.label === 'Gamma' && item.value === '300'));
+  assert.ok(omittedHoverModel.hoverDetail?.items.some(item => item.label === 'Beta' && item.value === '100'));
+
+  const witnessedZeroHistory: ReserveHistoryReply = {
+    hour: 120,
+    nextChange: null,
+    segments: [{ firstHour: 100, lastHour: 120, admitted: false, entries: [{ source: 9, amount: 0 }], unknown: null }],
+    sources: [{ id: 9, tags: [{ tag: 'CCC', firstHour: 100, lastHour: 120 }] }],
+    warnings: [],
+  };
+  const witnessedZeroModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(120), panels: new Map<string, unknown>([['history', witnessedZeroHistory]]), identity }),
+    opts,
+  );
+  assert.equal(witnessedZeroModel.empty?.kind, 'empty');
+  assert.deepEqual(witnessedZeroModel.auditRows?.map(r => [r.key, r.value]), [['__total__', '0']]);
+
+  const negativeOnlyUnreadHistory: ReserveHistoryReply = {
+    hour: 170,
+    nextChange: null,
+    segments: [
+      { firstHour: 100, lastHour: 149, admitted: true, entries: [{ source: 9, amount: 250 }, { source: 8, amount: -40 }], unknown: null },
+      { firstHour: 150, lastHour: 170, admitted: false, entries: [{ source: 9, amount: 250 }], unknown: null },
+    ],
+    sources: [
+      { id: 9, tags: [{ tag: 'CCC', firstHour: 100, lastHour: 170 }] },
+      { id: 8, tags: [{ tag: 'BBB', firstHour: 100, lastHour: 170 }] },
+    ],
+    warnings: [],
+  };
+  const negUnreadModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(170), panels: new Map<string, unknown>([['history', negativeOnlyUnreadHistory]]), identity }),
+    opts,
+  );
+  const negBand = negUnreadModel.stack?.bands.find(b => b.id === '8');
+  assert.deepEqual(negBand?.values, [null, null], 'negative-only source keeps plotted area empty');
+  assert.ok(negBand?.missingReason?.[1], 'negative-only unread source carries missing reason into stack hover');
+  assert.equal(negUnreadModel.auditRows?.find(row => row.key === '8')?.value, negBand?.missingReason?.[1], 'audit lists unread negative-only source');
+  const negUnreadLayout = hoverTimeChartLayout(layoutTimeChart(negUnreadModel, 600, 260, 'sans-serif', t => t.length * 6), null);
+  const negUnreadTip = deriveTimeChartTooltip(negUnreadModel, negUnreadLayout, 'plot:160');
+  assert.ok(negUnreadTip?.payload?.items?.some(item => item.label === 'Beta' && Boolean(item.missingReason) && item.value === undefined));
+
+  const allUnreadWithNegHistory: ReserveHistoryReply = {
+    hour: 170,
+    nextChange: null,
+    segments: [
+      { firstHour: 100, lastHour: 149, admitted: true, entries: [{ source: 9, amount: 250 }, { source: 8, amount: -40 }], unknown: null },
+      { firstHour: 150, lastHour: 170, admitted: false, entries: [], unknown: null },
+    ],
+    sources: [
+      { id: 9, tags: [{ tag: 'CCC', firstHour: 100, lastHour: 170 }] },
+      { id: 8, tags: [{ tag: 'BBB', firstHour: 100, lastHour: 170 }] },
+    ],
+    warnings: [],
+  };
+  const allUnreadModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(170), panels: new Map<string, unknown>([['history', allUnreadWithNegHistory]]), identity }),
+    opts,
+  );
+  const allUnreadNegBand = allUnreadModel.stack?.bands.find(b => b.id === '8');
+  assert.deepEqual(allUnreadNegBand?.values, [null, null]);
+  assert.ok(allUnreadNegBand?.missingReason?.[1], 'negative-only source keeps missing reason even when every positive band is unread');
+  assert.equal(allUnreadModel.auditRows?.find(row => row.key === '8')?.value, allUnreadNegBand?.missingReason?.[1]);
+
+  const noPositiveUnreadHistory: ReserveHistoryReply = {
+    hour: 170,
+    nextChange: null,
+    segments: [
+      { firstHour: 100, lastHour: 149, admitted: true, entries: [{ source: 8, amount: -40 }], unknown: null },
+      { firstHour: 150, lastHour: 170, admitted: false, entries: [], unknown: null },
+    ],
+    sources: [{ id: 8, tags: [{ tag: 'BBB', firstHour: 100, lastHour: 170 }] }],
+    warnings: [],
+  };
+  const noPosUnreadModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(170), panels: new Map<string, unknown>([['history', noPositiveUnreadHistory]]), identity }),
+    opts,
+  );
+  assert.equal(noPosUnreadModel.empty?.kind, 'unavailable');
+  assert.equal(noPosUnreadModel.auditRows?.find(row => row.key === '__total__')?.value, noPosUnreadModel.empty?.message);
+  assert.equal(noPosUnreadModel.auditRows?.find(row => row.key === '8')?.value, noPosUnreadModel.empty?.message);
 });

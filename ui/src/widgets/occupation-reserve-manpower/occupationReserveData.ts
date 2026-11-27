@@ -31,9 +31,13 @@ export function validateReserveHistory(value: unknown): ReserveHistoryReply {
   return value as unknown as ReserveHistoryReply;
 }
 
+export function reserveHistoryProvenLast(history: ReserveHistoryReply): number {
+  return history.nextChange === null ? Number.MAX_SAFE_INTEGER : history.nextChange - 1;
+}
+
 export function reserveHistoryProof(data: unknown, _requested: readonly [number, number], at: number): readonly [number, number] | null {
   const reply = data as ReserveHistoryReply;
-  const last = reply.nextChange === null ? Number.MAX_SAFE_INTEGER : reply.nextChange - 1;
+  const last = reserveHistoryProvenLast(reply);
   return reply.hour <= at && at <= last ? [reply.hour, last] : null;
 }
 
@@ -41,17 +45,48 @@ export const persons = (value: number) => value.toLocaleString('en-US');
 
 export function sourceTagAt(history: ReserveHistoryReply, source: number, hour: number): string | null {
   const tags = history.sources.find(item => item.id === source)?.tags ?? [];
-  return tags.find(tag => tag.firstHour <= hour && hour <= tag.lastHour)?.tag ?? null;
+  const provenLast = reserveHistoryProvenLast(history);
+  return tags.find(tag => tag.firstHour <= hour && hour <= (tag.lastHour === history.hour ? provenLast : tag.lastHour))?.tag ?? null;
 }
 
-export const segmentAt = (history: ReserveHistoryReply, hour: number): ReserveSegment | null =>
-  history.segments.find(segment => segment.firstHour <= hour && hour <= segment.lastHour) ?? null;
+export const segmentAt = (history: ReserveHistoryReply, hour: number): ReserveSegment | null => {
+  const provenLast = reserveHistoryProvenLast(history);
+  return history.segments.find(segment => segment.firstHour <= hour && hour <= (segment.lastHour === history.hour ? provenLast : segment.lastHour)) ?? null;
+};
 
-export function segmentParts(segment: ReserveSegment, sources: readonly number[]): (number | undefined)[] {
-  if (!segment.entries) return sources.map(() => undefined);
+export const UNADMITTED_RESERVE_REASON = 'Occupation settings were not recorded at this hour';
+
+export type ReserveValue =
+  | { readonly kind: 'known'; readonly value: number }
+  | { readonly kind: 'zero'; readonly value: 0 }
+  | { readonly kind: 'notRecorded'; readonly reason: string };
+
+export function segmentParts(segment: ReserveSegment, sources: readonly number[]): ReserveValue[] {
+  if (segment.entries === null) {
+    const reason = segment.unknown ?? 'Not recorded';
+    return sources.map(() => ({ kind: 'notRecorded', reason }));
+  }
   const by = new Map<number, number>();
-  for (const entry of segment.entries) if (entry.amount > 0) by.set(entry.source, (by.get(entry.source) ?? 0) + entry.amount);
-  return sources.map(source => by.get(source) ?? (segment.admitted ? 0 : undefined));
+  for (const entry of segment.entries) {
+    if (entry.amount > 0) by.set(entry.source, (by.get(entry.source) ?? 0) + entry.amount);
+    else if (!by.has(entry.source)) by.set(entry.source, 0);
+  }
+  return sources.map(source => {
+    const amount = by.get(source);
+    if (amount !== undefined) return amount > 0 ? { kind: 'known', value: amount } : { kind: 'zero', value: 0 };
+    return segment.admitted ? { kind: 'zero', value: 0 } : { kind: 'notRecorded', reason: UNADMITTED_RESERVE_REASON };
+  });
+}
+
+export function segmentTotal(segment: ReserveSegment, parts: readonly ReserveValue[]): ReserveValue {
+  if (segment.entries === null) return { kind: 'notRecorded', reason: segment.unknown ?? 'Not recorded' };
+  let sum = 0;
+  for (const part of parts) {
+    if (part.kind === 'notRecorded') return part;
+    sum += part.value;
+  }
+  if (parts.length === 0 && !segment.admitted) return { kind: 'notRecorded', reason: UNADMITTED_RESERVE_REASON };
+  return sum === 0 ? { kind: 'zero', value: 0 } : { kind: 'known', value: sum };
 }
 
 export function holderOf(token: unknown): { tag: string; id: number } | null {
