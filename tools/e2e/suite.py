@@ -840,6 +840,8 @@ def run_locked(args, started, state):
         phases["copy"] = time.monotonic() - began
     elif not recording.is_file():
         raise RuntimeError(f"no copied recording in {work}: run the copy stage first")
+    record["fixture"]["sha256"] = "sha256:" + sha256_file(recording)
+    record["selection"] = {"cases": args.cases, "pages": args.pages, "kinds": args.kinds}
     if "sweep" in stages:
         record["sessions"] = []
         wanted = args.phases.split(",") if args.phases else (["widget-costs"] if args.kinds else None)
@@ -891,6 +893,7 @@ def run_locked(args, started, state):
                         session["confinement"] = record["confinement"] = app.confinement()
                     session["machine"]["after"] = record["machine"]["end"] = machine_load(int(app.running()))
                 finally:
+                    session["sessionPeakCommitBytes"] = app.usage()[1]
                     session["appExit"] = app.close()
             session["seconds"] = time.monotonic() - began
             record["sessions"].append(session)
@@ -900,7 +903,7 @@ def run_locked(args, started, state):
     if "report" not in stages:
         return 0
     arguments = ["--run", args.out / "run.json", "--sweeps", args.out, "--perf", work, "--out", args.out,
-                 "--baseline", state / "visual-baseline", "--history", history]
+                 "--baseline", state / "visual-baseline", "--history", history, "--perf-baseline", state / "perf-baseline.json"]
     code = driver("report.mjs", args.out / "report.log", *arguments, seconds=1800)
     if code not in (0, 1):
         raise RuntimeError(f"report.mjs failed (exit {code}); see {args.out / 'report.log'}")
@@ -917,6 +920,11 @@ def git_head():
 def accept(args):
     """Makes a run's captures the visual baseline, recording which run and change it accepted and why."""
     run_folder, state = Path(args.run).resolve(), Path(args.state).resolve()
+    if not args.reason.strip():
+        raise RuntimeError("acceptance needs a nonblank reason")
+    if getattr(args, "counts", None):
+        with state_lock(state):
+            return accept_counts(args, run_folder, state)
     captures = run_folder / "visual"
     manifest = json.loads((captures / "manifest.json").read_text(encoding="utf-8"))
     if not manifest["complete"]:
@@ -936,6 +944,49 @@ def accept(args):
         shutil.rmtree(baseline)
     staged.rename(baseline)
     print(f"Accepted {len(manifest['items'])} captures of {run_folder} ({(run.get('commit') or '?')[:10]}) as the visual baseline: {args.reason}")
+    return 0
+
+
+def accept_counts(args, folder, state):
+    run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+    measured = json.loads((folder / "counts.json").read_text(encoding="utf-8"))
+    report = json.loads((folder / "e2e.json").read_text(encoding="utf-8"))
+    if measured["run"] != run or report.get("run") != run or not run.get("fixture", {}).get("sha256"):
+        raise RuntimeError("count scenarios do not match this run")
+    if any(not row["pass"] for section in report["sections"] if section["title"] != "Accepted request counts" for row in section["rows"]):
+        raise RuntimeError("a failed action or incomplete measurement cannot be accepted")
+    entries = measured["entries"]
+    if len({entry["key"] for entry in entries}) != len(entries):
+        raise RuntimeError("duplicate count keys")
+    chosen = [entry for entry in entries if entry["key"] in args.counts]
+    for entry in chosen:
+        identity = json.dumps([entry["recording"], entry["scenario"], entry["interaction"]], ensure_ascii=False, separators=(",", ":"))
+        if entry["key"] != hashlib.sha256(identity.encode("utf-8")).hexdigest():
+            raise RuntimeError("selected count scenario does not match its entry key")
+    if len(chosen) != len(set(args.counts)) or any(not entry["complete"] or entry["recording"] != run["fixture"]["sha256"] or not entry["scenario"] for entry in chosen):
+        raise RuntimeError("selected counts are unmeasured or have mismatched scenarios")
+    baseline = state / "perf-baseline.json"
+    previous = json.loads(baseline.read_text(encoding="utf-8")) if baseline.exists() else {"version": 1, "entries": []}
+    if previous["version"] != 1 or len({(e["recording"], e["scenario"], e["interaction"]) for e in previous["entries"]}) != len(previous["entries"]):
+        raise RuntimeError("invalid baseline version or duplicate count keys")
+    selected = {(e["recording"], e["scenario"], e["interaction"]) for e in chosen}
+    kept = [e for e in previous["entries"] if (e["recording"], e["scenario"], e["interaction"]) not in selected]
+    for entry in chosen:
+        if any(not isinstance(value, int) or value < 0 for value in entry["counts"].values()):
+            raise RuntimeError("invalid request count")
+        kept.append({**entry, "counts": {name: {"accepted": value, "tolerance": {"absolute": 2 if value else 0, "relative": .2 if value else 0}} for name, value in entry["counts"].items()},
+                     "acceptedAt": datetime.datetime.now().isoformat(timespec="seconds"), "commit": run.get("commit"), "run": str(folder), "reason": args.reason})
+    if baseline.exists():
+        archive = state / "perf-archive"
+        archive.mkdir(exist_ok=True)
+        shutil.copy2(baseline, archive / f"{uuid.uuid4()}.json")
+    staged = state / f"perf-baseline.{uuid.uuid4()}.new"
+    try:
+        staged.write_text(json.dumps({"version": 1, "entries": kept}, indent=1), encoding="utf-8")
+        os.replace(staged, baseline)
+    finally:
+        staged.unlink(missing_ok=True)
+    print(f"Accepted {len(chosen)} count entries: {args.reason}")
     return 0
 
 
@@ -1483,6 +1534,7 @@ def parse(argv):
     accept_command.add_argument("--run", required=True, help="the run's report folder")
     accept_command.add_argument("--reason", required=True, help="the change this baseline accepts")
     accept_command.add_argument("--state", default=str(DEFAULT_STATE))
+    accept_command.add_argument("--counts", action="append", help="explicit count entry key from counts.json; repeat to select more")
     run_command = commands.add_parser("run")
     app = run_command.add_mutually_exclusive_group(required=True)
     app.add_argument("--app", help="folder holding replay-desktop.exe; the pinned shader compiler is put beside it")

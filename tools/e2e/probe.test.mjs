@@ -172,6 +172,10 @@ test('probe ignores aria-busy on hidden screen-reader mirrors and the library ro
   const flagged = liveHost.probe.unwatch();
   assert.ok(flagged.ms > 0, 'visible loading widget and campaign row spinner must still record placeholder time');
   assert.deepEqual([...flagged.where], ['Fuel', 'spinner']);
+  liveHost.probe.mark(null);
+  assert.deepEqual([...liveHost.probe.report(100, false, []).placeholderStill], ['Fuel', 'spinner']);
+  liveRoot.__children = [];
+  assert.deepEqual([...liveHost.probe.report(110, false, []).placeholderStill], []);
 });
 
 test('probe countryRows and revealCountry handle both named and unnamed country options', async () => {

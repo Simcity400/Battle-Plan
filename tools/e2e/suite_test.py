@@ -685,5 +685,42 @@ class HostedShellTests(unittest.TestCase):
             self.assertEqual((target_dir / "ci-built-from").read_text(encoding="utf-8").strip(), self.SHA)
 
 
+class CountAcceptanceTests(unittest.TestCase):
+    def test_selected_only_archive_and_atomic_replace(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state, run = root / "state", root / "run"
+            state.mkdir(); run.mkdir()
+            metadata = {"commit": "head", "started": "today", "fixture": {"sha256": "sha256:fixture"}}
+            (run / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+            key = lambda action: hashlib.sha256(json.dumps(["sha256:fixture", "scenario", action], separators=(",", ":")).encode()).hexdigest()
+            entry = {"key": key("seek"), "recording": "sha256:fixture", "scenario": "scenario", "interaction": "seek", "complete": True, "counts": {"requests:total": 8}}
+            (run / "counts.json").write_text(json.dumps({"run": metadata, "entries": [entry, {**entry, "key": key("scroll"), "interaction": "scroll"}]}), encoding="utf-8")
+            (run / "e2e.json").write_text(json.dumps({"run": metadata, "sections": [{"title": "Accepted request counts", "rows": [{"pass": False}]}]}), encoding="utf-8")
+            args = SimpleNamespace(run=run, state=state, reason="reviewed", counts=[key("seek")])
+            suite.accept(args)
+            baseline = json.loads((state / "perf-baseline.json").read_text())
+            self.assertEqual(len(baseline["entries"]), 1)
+            self.assertEqual(baseline["entries"][0]["counts"]["requests:total"]["accepted"], 8)
+            args.counts = [key("scroll")]
+            suite.accept(args)
+            self.assertEqual(len(json.loads((state / "perf-baseline.json").read_text())["entries"]), 2)
+            self.assertEqual(len(list((state / "perf-archive").glob("*.json"))), 1)
+            before = (state / "perf-baseline.json").read_bytes()
+            with patch.object(suite.os, "replace", side_effect=OSError("atomic failure")):
+                with self.assertRaises(OSError):
+                    suite.accept(args)
+            self.assertEqual((state / "perf-baseline.json").read_bytes(), before)
+            for change in ["failed", "mismatch", "incomplete", "blank"]:
+                with self.subTest(change=change):
+                    (run / "e2e.json").write_text(json.dumps({"run": metadata, "sections": [{"title": "Functional", "rows": [{"pass": change != "failed"}]}]}))
+                    (run / "counts.json").write_text(json.dumps({"run": {**metadata, "commit": "wrong"} if change == "mismatch" else metadata,
+                        "entries": [{**entry, "key": key("scroll"), "interaction": "scroll", "complete": change != "incomplete"}]}))
+                    args.reason = " " if change == "blank" else "reviewed"
+                    with self.assertRaises(RuntimeError):
+                        suite.accept(args)
+
+
 if __name__ == "__main__":
     unittest.main()

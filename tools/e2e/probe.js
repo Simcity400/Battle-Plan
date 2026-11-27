@@ -285,6 +285,12 @@
     return p.t0;
   };
   p.inFlight = () => { try { return window.__busy ? window.__busy.kinds() : null; } catch { return null; } };
+  p.perfContext = () => ({ enabled: !!window.__perf, page: document.querySelector('.sidebar-page-list [aria-current=page]')?.textContent.trim() ?? null,
+    hour: document.querySelector('input.header-timeline')?.value ?? null, viewport: [innerWidth, innerHeight, devicePixelRatio],
+    settings: Object.fromEntries(Object.keys(localStorage).filter(key => key.startsWith('battleplan.')).sort().map(key => { const raw = localStorage.getItem(key); let value; try { value = JSON.parse(raw); } catch { value = raw; } return [key, value]; })),
+    controls: [...document.querySelectorAll('button[aria-pressed], [role=option][aria-selected=true], input:not(.header-timeline), select')]
+      .filter(shownOnScreen).map(e => [e.getAttribute('aria-label') ?? e.textContent.trim(), e.tagName === 'BUTTON' ? e.getAttribute('aria-pressed') : e.value]),
+    placements: [...document.querySelectorAll('article.dash-widget')].map(e => [e.getAttribute('aria-label'), [...e.classList].filter(c => c.startsWith('kind-')), e.dataset.fixedHour ?? null]) });
   p.settle = (timeout, quiet, only = null, over) => new Promise(resolve => {
     let since = null, idle = 0;
     const check = () => {
@@ -342,7 +348,7 @@
     return { t0: p.t0, now, timedOut, input: input?.t ?? null, last: lastInput, inputType: input?.type ?? null, inputs: p.inputs.length,
       paint: Number.isFinite(painted) ? painted : null,
       doneAt: shown(p.doneAt), doneAtSeen: p.doneAt !== null, altAt: p.altAt, widgets: [...widgets.values()].map(({ loadingFrom, states, ...w }) => w),
-      placeholderMs: (placeholderEnd(now), p.placeholders.ms), placeholderAt: [...p.placeholders.where],
+      placeholderMs: (placeholderEnd(now), p.placeholders.ms), placeholderAt: [...p.placeholders.where], placeholderStill: [...new Set(placeholders().map(placeholderAt))],
       loafs: p.loafs.filter(l => l.dur >= 50 && l.start + l.dur >= p.t0).map(l => ({ dur: Math.round(l.dur), top: l.top })) };
   };
   p.watch = () => { p.watching = true; placeholderSince = null; p.placeholders = { ms: 0, where: new Set() }; startLoop(); };
