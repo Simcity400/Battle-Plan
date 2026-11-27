@@ -183,6 +183,7 @@ struct Harness {
     every: Hour,
     reached: Hour,
     awaiting: bool,
+    plain: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn harness(pages: &Arc<Recording>) -> Harness {
@@ -216,8 +217,13 @@ fn stepping_with(pages: &Arc<Recording>, every: Hour, timeline: Timeline, logs: 
     let reader = playhead.declare(Vec::new(), None).unwrap();
     let consumer = playhead.consumer(reader);
     let weak = Arc::downgrade(&playhead);
-    follow.bind(move |tables, _joining| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), logs(playhead.as_ref())).unwrap();
-    Harness { pages: Arc::clone(pages), playhead: Some(playhead), follow, consumer, played, head: 0, seen: Hour::MIN, every, reached: Hour::MIN, awaiting: false }
+    let plain = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stripped = Arc::clone(&plain);
+    follow.bind(move |tables: Vec<playhead::Declared>, _joining| {
+        let tables = if stripped.load(std::sync::atomic::Ordering::Relaxed) { tables.into_iter().map(|table| playhead::Declared { passing: false, ..table }).collect() } else { tables };
+        weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables))
+    }, logs(playhead.as_ref())).unwrap();
+    Harness { pages: Arc::clone(pages), playhead: Some(playhead), follow, consumer, played, head: 0, seen: Hour::MIN, every, reached: Hour::MIN, awaiting: false, plain }
 }
 
 impl Harness {
@@ -318,25 +324,74 @@ fn a_query_is_evaluated_only_when_a_step_touched_its_columns_and_keys() {
     }
 }
 
+fn assert_claimed_only_where_read(harness: &Harness, query: &Query, played: &[Played]) -> u32 {
+    let mut facts: Vec<(Hour, Hour, Answer)> = Vec::new();
+    let mut restated = 0;
+    for played in played {
+        let Some(message) = &played.message else { continue };
+        let message = decode(&message.bytes).unwrap();
+        if message.reset {
+            facts.clear();
+        }
+        for (_, hour, body) in message.answers {
+            let answer = Answer::parse(body).unwrap();
+            if facts.last().is_some_and(|last| last.0 == hour) {
+                facts.pop();
+            } else if let Some(last) = facts.last_mut() {
+                restated += u32::from(last.2 == answer);
+                last.1 = last.1.min(hour - 1);
+            }
+            facts.push((hour, hour, answer));
+        }
+        let through = message.limited.iter().rev().find(|&&(id, _)| id == 7).map_or(message.hour, |&(_, through)| through);
+        if let Some(last) = facts.last_mut() {
+            last.1 = last.1.max(through);
+        }
+    }
+    for (from, through, answer) in &facts {
+        for hour in *from..=*through {
+            assert_eq!(answer, &harness.fresh(query, hour), "the answer read at hour {from} is claimed at hour {hour}");
+        }
+    }
+    restated
+}
+
 #[test]
-fn an_answer_equal_to_the_last_is_not_sent() {
+fn an_answer_equal_to_the_last_is_claimed_only_at_the_hours_it_was_read() {
     let pages = record(quiet);
     let mut harness = harness(&pages);
-    harness.follow.follow(7, keys(&[106], &[2])).unwrap();
+    let query = keys(&[106], &[2]);
+    harness.follow.follow(7, query.clone()).unwrap();
     harness.seek(0);
     let played = harness.play(280);
-    let first = played.iter().position(|played| !played.answers().is_empty()).expect("a first answer");
-    let mut sent = played[first].head % 2;
-    let mut unchanged = 0;
-    for played in played[first + 1..].iter().filter(|played| played.moved() && played.head < 300) {
-        assert_eq!(played.stats.evaluated, 1, "written at hours {}..{}", played.from, played.head);
-        let differs = played.head % 2 != sent;
-        assert_eq!(played.stats.changed, u32::from(differs), "hours {}..{}", played.from, played.head);
-        assert_eq!(!played.answers().is_empty(), differs);
-        unchanged += u32::from(!differs);
-        sent = played.head % 2;
+    let restated = assert_claimed_only_where_read(&harness, &query, &played);
+    assert!(restated > 5, "{restated} answers equal to the last were restated at the hour they were read");
+}
+
+#[test]
+fn a_row_born_and_gone_inside_a_step_is_never_claimed_absent_over_its_life() {
+    for plain in [false, true] {
+        let pages = record(brief);
+        let mut harness = harness(&pages);
+        harness.plain.store(plain, std::sync::atomic::Ordering::Relaxed);
+        let query = keys(&[1010], &[0]);
+        harness.follow.follow(7, query.clone()).unwrap();
+        harness.seek(0);
+        let played = harness.play(100);
+        assert!(assert_claimed_only_where_read(&harness, &query, &played) > 0, "the absent row is restated at the step's end, the lane passing: {}", !plain);
     }
-    assert!(unchanged > 0, "an equal answer evaluated and not sent");
+}
+
+#[test]
+fn a_table_unread_inside_a_step_is_never_claimed_over_its_unread_hours() {
+    let pages = record(quiet);
+    let mut harness = stepping(&pages, 48);
+    let query = keys(&[100], &[3]);
+    harness.follow.follow(7, query.clone()).unwrap();
+    harness.seek(0);
+    let played = harness.play(400);
+    assert!(played.iter().any(|played| played.from < 300 && played.head >= 330), "a step spans the unread hours");
+    assert!(assert_claimed_only_where_read(&harness, &query, &played) > 0, "the unchanged answer is restated past the unread hours");
 }
 
 #[test]
@@ -743,7 +798,7 @@ fn a_follow_for_a_table_the_playhead_lacks_answers_not_available_and_makes_no_re
         (serde_json::json!(false), serde_json::json!("The followed query names branch 2, not the followed branch 1")));
     let followed = registry.answer(path, "follow", &follow_request(4, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     assert_eq!(followed["available"], true);
-    assert_eq!(held.follow.declared().unwrap(), vec![playhead::Declared { table: TABLE, columns: vec![2], keyed: false, passing: false, hourly: false }]);
+    assert_eq!(held.follow.declared().unwrap(), vec![playhead::Declared { table: TABLE, columns: vec![2], keyed: false, passing: true, hourly: false }]);
     assert_eq!(registry.followed(), 1);
 }
 
@@ -3356,7 +3411,7 @@ mod paused_reset {
         playhead.wait_declarations().unwrap();
         assert_eq!(
             host.follow().declared().unwrap(),
-            [playhead::Declared { table: TABLE, columns: vec![3], keyed: false, passing: false, hourly: false }],
+            [playhead::Declared { table: TABLE, columns: vec![3], keyed: false, passing: true, hourly: false }],
             "initial panel retains its live-cell column"
         );
 
@@ -3369,7 +3424,7 @@ mod paused_reset {
         playhead.wait_declarations().unwrap();
         assert_eq!(
             host.follow().declared().unwrap(),
-            [playhead::Declared { table: TABLE, columns: vec![0], keyed: false, passing: false, hourly: false }],
+            [playhead::Declared { table: TABLE, columns: vec![0], keyed: false, passing: true, hourly: false }],
             "replacing the request on the same panel id replaces its retained lanes instead of merging into old ones"
         );
 
@@ -3468,7 +3523,7 @@ mod paused_reset {
         playhead.wait_declarations().unwrap();
         assert_eq!(
             host.follow().declared().unwrap(),
-            [playhead::Declared { table: TABLE, columns: vec![3], keyed: false, passing: false, hourly: false }],
+            [playhead::Declared { table: TABLE, columns: vec![3], keyed: false, passing: true, hourly: false }],
             "shown panel retains its live-cell column"
         );
 
@@ -3477,7 +3532,7 @@ mod paused_reset {
         playhead.wait_declarations().unwrap();
         assert_eq!(
             host.follow().declared().unwrap(),
-            [playhead::Declared { table: TABLE, columns: vec![3], keyed: false, passing: false, hourly: false }],
+            [playhead::Declared { table: TABLE, columns: vec![3], keyed: false, passing: true, hourly: false }],
             "shown panel keeps its retained cell column when a frame has no live cells"
         );
 
@@ -3488,7 +3543,7 @@ mod paused_reset {
         playhead.wait_declarations().unwrap();
         assert_eq!(
             host.follow().declared().unwrap(),
-            [playhead::Declared { table: TABLE, columns: vec![0], keyed: false, passing: false, hourly: false }],
+            [playhead::Declared { table: TABLE, columns: vec![0], keyed: false, passing: true, hourly: false }],
             "re-installing a shown panel on the same id replaces its retained cell lanes"
         );
 
