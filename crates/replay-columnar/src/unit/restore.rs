@@ -293,6 +293,22 @@ impl StringTable {
         self.bytes.get(from as usize..from as usize + length as usize)
     }
 
+    pub(crate) fn without_held_in(mut self, earlier: &StringTable) -> io::Result<Self> {
+        let mut conflict = None;
+        self.at.retain(|&(id, from, length)| match earlier.get(id) {
+            Some(held) if *held != self.bytes[from as usize..from as usize + length as usize] => {
+                conflict.get_or_insert(id);
+                false
+            }
+            Some(_) => false,
+            None => true,
+        });
+        match conflict {
+            Some(id) => Err(invalid(format!("A writer's string {id} is held as another text"))),
+            None => Ok(self),
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (u32, &[u8])> {
         self.at.iter().map(|&(id, from, length)| (id, &self.bytes[from as usize..from as usize + length as usize]))
     }
@@ -343,7 +359,20 @@ pub(crate) fn read_meta_lazily(bytes: Vec<u8>, length: usize, kinds: &[Kind], ta
     let meta = read_meta_with(bytes.get(..length).ok_or_else(|| invalid("A restore's meta passes its chunk"))?, kinds, table, &mut |id, text, from| {
         at.push((id, from as u32, text.len() as u32));
     })?;
+    let text = |&(_, from, length): &(u32, u32, u32)| &bytes[from as usize..from as usize + length as usize];
     at.sort_by_key(|&(id, ..)| id);
+    if let Some(pair) = at.windows(2).find(|pair| pair[0].0 == pair[1].0 && text(&pair[0]) != text(&pair[1])) {
+        return Err(invalid(format!("A writer's string {} is held as another text", pair[0].0)));
+    }
+    at.dedup_by_key(|&mut (id, ..)| id);
+    let (Some(first), Some(last)) = (at.iter().map(|&(_, from, _)| from).min(), at.iter().map(|&(_, from, length)| from + length).max()) else {
+        return Ok((meta, StringTable::default()));
+    };
+    if (last - first) as usize * 2 < bytes.len() {
+        let kept = bytes[first as usize..last as usize].to_vec();
+        at.iter_mut().for_each(|entry| entry.1 -= first);
+        return Ok((meta, StringTable { bytes: kept, at }));
+    }
     Ok((meta, StringTable { bytes, at }))
 }
 

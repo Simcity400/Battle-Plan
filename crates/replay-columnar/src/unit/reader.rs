@@ -1553,7 +1553,9 @@ fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kind
             let (meta, strings) = held::read_meta_lazily(std::mem::take(&mut raw), meta_chunk.frame.raw as usize, kinds, &mut table)?;
             tables.push(strings);
             let whole_slots = if against {
-                let (whole, strings) = held::read_meta_lazily(prefix.clone(), prefix.len(), kinds, &mut TableState::new(kinds))?;
+                let length = prefix.len();
+                let (whole, strings) = held::read_meta_lazily(std::mem::take(&mut prefix), length, kinds, &mut TableState::new(kinds))?;
+                let strings = strings.without_held_in(&tables[0])?;
                 tables.push(strings);
                 Some(whole.slots)
             } else {

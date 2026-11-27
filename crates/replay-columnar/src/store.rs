@@ -1912,6 +1912,10 @@ impl Strings {
         own.chain(self.restored.iter().flat_map(|table| table.iter()).filter(|&(id, _)| !self.held.contains_key(&id) && !self.pinned.contains_key(&id)))
     }
 
+    pub fn copied(&self) -> usize {
+        self.held.len() + self.pinned.len()
+    }
+
     pub fn bytes(&self) -> usize {
         self.held_bytes()
     }
