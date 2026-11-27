@@ -603,10 +603,10 @@ impl Pool {
             });
         }
         drop(registration);
+        let (child_panic, child_cancelled) = batch.take_unobserved_panic();
         match result {
             Ok(value) => {
                 batch.credit_remaining_refusals();
-                let (child_panic, child_cancelled) = batch.take_unobserved_panic();
                 if let Some(panic) = child_panic {
                     resume_unwind(panic);
                 }
@@ -617,6 +617,15 @@ impl Pool {
                     resume_unwind(Box::new(RootCancelled));
                 }
                 value
+            }
+            Err(panic) if is_root_cancelled_panic(&*panic) => {
+                if let Some(child_panic) = child_panic {
+                    resume_unwind(child_panic);
+                }
+                if let Some(drop_panic) = drop_panic {
+                    resume_unwind(drop_panic);
+                }
+                resume_unwind(panic);
             }
             Err(panic) => resume_unwind(panic),
         }
@@ -1056,7 +1065,7 @@ impl ScopeBatch {
         }
     }
 
-    fn cancel_specific(&self, task: &ScopeTask) {
+    fn cancel_specific(&self, task: &ScopeTask) -> Option<Box<dyn Any + Send>> {
         let dropped = {
             let mut state = lock(&self.state);
             if let Some(work) = task.cancel_if_pending() {
@@ -1068,12 +1077,9 @@ impl ScopeBatch {
                 None
             }
         };
-        if let Some(work) = dropped {
-            self.pool().notify_all();
-            if let Some(work) = work {
-                let _ = catch_unwind(AssertUnwindSafe(|| drop(work)));
-            }
-        }
+        let work = dropped?;
+        self.pool().notify_all();
+        work.and_then(|work| catch_unwind(AssertUnwindSafe(|| drop(work))).err())
     }
 
     fn claim_next(&self) -> Option<Arc<ScopeTask>> {
@@ -1235,7 +1241,9 @@ impl<T> ScopedHandle<'_, T> {
     pub fn join(self) -> std::thread::Result<T> {
         let scope_meta = lock(&self.batch.state).meta;
         if is_root_cancelled(current_alive().as_ref()) {
-            self.batch.cancel_specific(&self.task);
+            if let Some(drop_panic) = self.batch.cancel_specific(&self.task) {
+                resume_unwind(drop_panic);
+            }
             resume_unwind(Box::new(RootCancelled));
         }
         if self.batch.claim_specific(&self.task) {
@@ -1497,43 +1505,51 @@ mod tests {
             "sibling DAG job A waiting on its map must not steal sibling job B's higher-ID map"
         );
 
-        let scope_pool = Pool::with_budget(3);
+        let scope_pool = Pool::with_budget(2);
         let running_started = Barrier::new(2);
-        let map_item_0_ready = Barrier::new(2);
-        let map_item_1_done = Barrier::new(2);
-        let item_lock = Mutex::new(());
-        let item_1_thread = Mutex::new(None::<ThreadId>);
+        let item_0_joining = Barrier::new(2);
+        let nested_stolen = Barrier::new(2);
+        let caller_in_item_0 = AtomicBool::new(false);
+        let reentered_outer = AtomicBool::new(false);
         let scope_caller = std::thread::current().id();
         scope_pool.scope(|scope| {
             let started_ref = &running_started;
-            let item_1_done_ref = &map_item_1_done;
+            let joining_ref = &item_0_joining;
+            let stolen_ref = &nested_stolen;
+            let pool_ref = &scope_pool;
             let running = scope.spawn(move || {
                 started_ref.wait();
-                item_1_done_ref.wait();
-                77usize
+                joining_ref.wait();
+                pool_ref.map(&[10usize, 20], |&inner| {
+                    stolen_ref.wait();
+                    inner + 1
+                })
             });
             running_started.wait();
             let running_slot = Mutex::new(Some(running));
-            let out = scope_pool.map(&[0usize, 1], |&index| {
+            let out = scope_pool.map(&[0usize, 1, 2], |&index| {
                 if index == 0 {
-                    let _held = item_lock.lock().unwrap();
-                    map_item_0_ready.wait();
+                    caller_in_item_0.store(true, Ordering::Release);
+                    item_0_joining.wait();
                     let handle = running_slot.lock().unwrap().take().unwrap();
-                    handle.join().unwrap()
+                    let inner = handle.join().unwrap();
+                    caller_in_item_0.store(false, Ordering::Release);
+                    inner.into_iter().sum::<usize>()
                 } else {
-                    map_item_0_ready.wait();
-                    let current = std::thread::current().id();
-                    *item_1_thread.lock().unwrap() = Some(current);
-                    if current == scope_caller {
-                        let _would_deadlock = item_lock.lock().unwrap();
+                    if std::thread::current().id() == scope_caller
+                        && caller_in_item_0.load(Ordering::Acquire)
+                    {
+                        reentered_outer.store(true, Ordering::Release);
                     }
-                    map_item_1_done.wait();
-                    88usize
+                    index * 10
                 }
             });
-            assert_eq!(out, [77, 88]);
+            assert_eq!(out, [32, 10, 20]);
         });
-        assert_ne!(item_1_thread.into_inner().unwrap().unwrap(), scope_caller);
+        assert!(
+            !reentered_outer.load(Ordering::Acquire),
+            "joining a running scoped task must steal its nested map without reentering the outer map"
+        );
     }
 
     #[test]
@@ -2008,6 +2024,49 @@ mod tests {
         assert!(scope_outcome.is_none());
         assert!(!unjoined_ran.load(Ordering::Acquire));
         assert_eq!(inline_pool.queued_batches(), 0);
+
+        let drop_cancel_alive = Arc::new(AtomicBool::new(true));
+        let drop_cancel_panic = catch_unwind(AssertUnwindSafe(|| {
+            with_alive(Arc::clone(&drop_cancel_alive), || {
+                inline_pool.scope(|scope| {
+                    struct PanicOnDrop;
+                    impl Drop for PanicOnDrop {
+                        fn drop(&mut self) {
+                            panic!("cancel specific drop boom");
+                        }
+                    }
+                    let guard = PanicOnDrop;
+                    let handle = scope.spawn(move || {
+                        let _keep = guard;
+                        1usize
+                    });
+                    drop_cancel_alive.store(false, Ordering::Release);
+                    let _ = handle.join();
+                });
+            })
+        }));
+        assert!(drop_cancel_panic.is_err());
+        assert_eq!(inline_pool.queued_batches(), 0);
+
+        let child_panic_alive = Arc::new(AtomicBool::new(true));
+        let child_panicked_before_cancel = Barrier::new(2);
+        let child_vs_cancel = catch_unwind(AssertUnwindSafe(|| {
+            with_alive(Arc::clone(&child_panic_alive), || {
+                pool.scope(|scope| {
+                    let sync = &child_panicked_before_cancel;
+                    let _failing = scope.spawn(move || {
+                        sync.wait();
+                        panic!("genuine child panic during cancel");
+                    });
+                    child_panicked_before_cancel.wait();
+                    let pending = scope.spawn(|| 2usize);
+                    child_panic_alive.store(false, Ordering::Release);
+                    let _ = pending.join();
+                });
+            })
+        }));
+        assert!(child_vs_cancel.is_err());
+        assert_eq!(pool.queued_batches(), 0);
 
         let nested_alive = Arc::new(AtomicBool::new(true));
         let mut nested_dag = super::dag::Dag::default();
