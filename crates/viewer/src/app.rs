@@ -1891,6 +1891,7 @@ impl Viewer {
         }
         if let Some(side) = self.playhead_map.take() {
             self.drop_later(side);
+            self.forget_overlay();
         }
         self.frame_head.forget();
         self.playhead_opening = None;

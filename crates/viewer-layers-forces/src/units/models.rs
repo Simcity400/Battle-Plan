@@ -39,7 +39,6 @@ const NAMED: &[TableId] = &[
     TableId::LexicalTokens,
     TableId::ScriptVariables,
     TableId::ScriptVariableNames,
-    TableId::ScriptVariableValues,
     TableId::SimulationFeatures,
     TableId::Ships,
     TableId::ShipModels,
