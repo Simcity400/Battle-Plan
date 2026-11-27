@@ -10,6 +10,22 @@ import { busy, busyPreparing } from '../shell/busy.ts';
 const request = (product: string, hour = 1) => ({ sourceId: 's', revision: 'r', product, params: { hour: gatedHour(hour) } }) as ProductRequest;
 const flush = async () => { for (let turn = 0; turn < 6; turn++) await Promise.resolve(); };
 
+test('page and prepared caches keep identical log requests apart by product', async () => {
+  const calls: string[] = [];
+  const base = { product: async (query: ProductRequest) => {
+    calls.push(query.product);
+    return { ...query, data: query.product };
+  } } as unknown as DashboardClient;
+  const lane = preparingClient(base);
+  const first = request('market-ledger-tail'), second = request('peace-deals-tail');
+  assert.notEqual(productKey(first), productKey(second));
+  for (const client of [lane, base]) {
+    assert.equal(await loadProduct(client, first, new AbortController().signal), first.product);
+    assert.equal(await loadProduct(client, second, new AbortController().signal), second.product);
+  }
+  assert.deepEqual(calls, [first.product, second.product]);
+});
+
 function frames(): PrepareFrames & { run(): void } {
   let next: (() => void) | null = null;
   return { request: run => { next = run; return 1; }, cancel: () => { next = null; }, run() { const due = next; next = null; due?.(); } };
