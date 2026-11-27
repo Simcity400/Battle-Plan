@@ -11,6 +11,7 @@ import { readyArt } from '../../families/art/types.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import type { ApmReply } from '../../generated/dashboard';
+import { apmTableProjection } from '../player-apm/apmProjection.ts';
 import { apmGraphDeclaration, apmGraphProjection } from './apmGraphProjection.ts';
 
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
@@ -215,6 +216,47 @@ describe('apm-graph projection', () => {
     });
     assert.equal(model.empty?.kind, 'unavailable');
     assert.equal(model.empty?.message, 'Player orders were not recorded in this campaign.');
+  });
+
+  it('treats a recorded channel with zero eligible players as an empty state matching the table, never as not recorded', () => {
+    const makeCtx = (available: boolean) => ({
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+      branch: { id: '1', firstHour: H1936, lastHour: H1943, gaps: [] },
+      countries: { all: true, tags: [], top: null },
+      options: { group: 'player' },
+      aux: { available, players: [], series: [], warnings: [] } satisfies ApmReply,
+      gateSpan: (a: number, b: number) => ({ firstHour: a, lastHour: b }),
+    });
+    const recordedCtx = makeCtx(true);
+    const unrecordedCtx = makeCtx(false);
+
+    assert.equal(apmGraphDeclaration.unavailable?.(recordedCtx as never, H1943), null);
+    const recordedPlan = apmGraphDeclaration.sources(recordedCtx as never, { width: 800, height: 300, following: true, staticSpan: null });
+    assert.equal(recordedPlan.unavailable, undefined);
+    assert.ok(recordedPlan.entries.some(e => e.name === 'head'));
+
+    assert.equal(apmGraphDeclaration.unavailable?.(unrecordedCtx as never, H1943), 'Player orders were not recorded in this campaign.');
+    const unrecordedPlan = apmGraphDeclaration.sources(unrecordedCtx as never, { width: 800, height: 300, following: true, staticSpan: null });
+    assert.equal(unrecordedPlan.unavailable, 'Player orders were not recorded in this campaign.');
+    assert.deepEqual(unrecordedPlan.entries, []);
+
+    const emptyReply: ApmReply = { available: true, players: [], series: [], warnings: [] };
+    const graphOpts = apmGraphDeclaration.projectionOptions(recordedCtx as never, { extent: [H1936, H1943], surface: '#111111' });
+    const graphModel = apmGraphProjection.project(createBoundedReadView({ hour: H1943, panels: new Map([['head', emptyReply]]) }), graphOpts);
+    const tableModel = apmTableProjection.project(createBoundedReadView({ hour: H1943, panels: new Map([['main', emptyReply]]) }), {
+      players: true, showPaused: false, rankMarkers: false,
+    });
+    assert.equal(graphModel.empty?.kind, 'empty');
+    assert.equal(tableModel.emptyKind, 'empty');
+    assert.equal(graphModel.empty?.message, 'No eAPM is available for these countries, players and dates.');
+    assert.equal(graphModel.empty?.message, tableModel.empty);
+
+    const unrecordedReply: ApmReply = { available: false, players: [], series: [], warnings: [] };
+    const tableUnavailable = apmTableProjection.project(createBoundedReadView({ hour: H1943, panels: new Map([['main', unrecordedReply]]) }), {
+      players: true, showPaused: false, rankMarkers: false,
+    });
+    assert.equal(tableUnavailable.emptyKind, 'unavailable');
+    assert.equal(tableUnavailable.empty, 'Player orders were not recorded in this campaign.');
   });
 
   it('draws top 8 ranked players with end labels and flags, and ranks 9+ as grey tail lines', () => {
