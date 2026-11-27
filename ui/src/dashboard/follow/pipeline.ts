@@ -230,6 +230,20 @@ export class Pipeline {
     this.postLane(widget.lane, { type: 'canvas', widget: id, canvas, opaque }, [canvas]);
   }
 
+  clearCanvas(id: number) {
+    if (this.closed) return;
+    const widget = this.widgets.get(id);
+    if (!widget) return;
+    this.postLane(widget.lane, { type: 'clear-canvas', widget: id });
+  }
+
+  private readonly laneSurfaceFailedListeners = new Set<(lane: number) => void>();
+
+  onLaneSurfaceFailed(listener: (lane: number) => void): () => void {
+    this.laneSurfaceFailedListeners.add(listener);
+    return () => { this.laneSurfaceFailedListeners.delete(listener); };
+  }
+
   transferLaneSurface(lane: number, canvas: OffscreenCanvas, opaque: boolean) {
     if (this.closed || lane < 0 || lane >= this.host.lanes.length) return;
     this.postLane(lane, { type: 'lane-surface', canvas, opaque }, [canvas]);
@@ -279,6 +293,7 @@ export class Pipeline {
     this.preparedWaiters.clear();
     this.dateWatchers.clear(); this.placed.clear(); this.kindCost.clear();
     this.audits.clear(); this.answered.clear(); this.hits.clear(); this.changed.clear(); this.redated.clear();
+    this.laneSurfaceFailedListeners.clear();
   }
 
   private postLane(lane: number, message: ToLane, transfer?: Transferable[]) {
@@ -503,6 +518,10 @@ export class Pipeline {
     if (message.type === 'route-bound') {
       const sub = this.byId.get(message.sub);
       if (sub?.lane === lane && sub.route.page === message.route) sub.bind?.(message.seek);
+      return;
+    }
+    if (message.type === 'lane-surface-failed') {
+      for (const listener of [...this.laneSurfaceFailedListeners]) listener(message.lane);
       return;
     }
     if (message.type === 'failure') {

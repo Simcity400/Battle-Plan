@@ -48,6 +48,7 @@ export type ToLane =
   | { type: 'fail'; route: number; seek: number; command: number; reason: string }
   | { type: 'pointer'; widget: number; surface: number; point: [number, number] | null; installed?: number }
   | { type: 'canvas'; widget: number; canvas: OffscreenCanvas; opaque: boolean }
+  | { type: 'clear-canvas'; widget: number }
   | { type: 'lane-surface'; canvas: OffscreenCanvas; opaque: boolean }
   | ({ type: 'lane-slots' } & LaneSlotsPayload)
   | { type: 'lane-surface-dispose' }
@@ -56,6 +57,7 @@ export type ToLane =
 export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
+  | { type: 'lane-surface-failed'; lane: number }
   | { type: 'prepared'; lane: number; ask: number }
   | { type: 'route-bound'; sub: number; route: number; seek: number }
   | { type: 'strip'; receipt: number; held: StripReceipt } | { type: 'strip'; receipt: number; error: string }

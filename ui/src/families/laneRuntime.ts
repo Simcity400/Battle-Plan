@@ -647,6 +647,14 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.drawKey = [];
         keep.sharedPainted = false;
         canvasSwitched = true;
+      } else if (!input.sharedSurface && !input.workerCanvas && keep.workerCanvas !== null) {
+        const [bw, bh] = backing(surface);
+        keep.workerCanvas = null;
+        keep.canvas = new OffscreenCanvas(bw, bh);
+        keep.opaque = false;
+        keep.ctx = configureContext(keep.canvas, false, () => keep.surfaceColor);
+        keep.drawKey = [];
+        canvasSwitched = true;
       }
       if (canvasSwitched) keep.drawKey = [];
       keep.wake = wakerOf(input.widget);

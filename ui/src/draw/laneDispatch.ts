@@ -171,6 +171,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       failSub: (sub, reason) => post({ type: 'sub-failed', lane: index, sub, reason }),
       waitSub: (sub, waiting) => post({ type: 'sub-waiting', lane: index, sub, waiting }),
       failWidget: (widget, reason, stamp) => post({ type: 'widget-failed', lane: index, widget, reason, ...stamp !== undefined ? { stamp } : {} }),
+      failLaneSurface: () => post({ type: 'lane-surface-failed', lane: index }),
       ...side.stretch ? { stretch: (ms: number) => side.stretch!(ms, rate) } : {},
     });
     port.onmessage = ({ data }: MessageEvent<FromPull>) => {
@@ -214,6 +215,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       case 'fail': lane.fail(m.route); break;
       case 'pointer': lane.pointer(m.widget, m.surface, m.point, m.installed); break;
       case 'canvas': lane.setCanvas(m.widget, m.canvas, m.opaque); break;
+      case 'clear-canvas': lane.clearCanvas(m.widget); break;
       case 'lane-surface': lane.setLaneSurface(m.canvas, m.opaque); break;
       case 'lane-surface-dispose': lane.disposeLaneSurface(); break;
       case 'lane-slots': lane.setLaneSlots(m); break;

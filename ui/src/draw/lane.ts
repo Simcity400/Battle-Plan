@@ -147,6 +147,7 @@ export interface LaneHost<B extends Bitmap> {
   failSub?(sub: number, reason: string): void;
   waitSub?(sub: number, waiting: boolean): void;
   failWidget?(widget: number, reason: string, stamp?: number): void;
+  failLaneSurface?(): void;
   later(run: () => void): void;
   schedule?(run: () => void): void;
   hit?(widget: number, key: string | null, installedId?: number, owner?: string): void;
@@ -408,6 +409,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private windowSafeHi = Infinity;
   private windowSafeDirty = false;
   private lastTarget = NaN;
+  private lastNow = NaN;
   private lastSpeed: number | null = null;
   private readonly parkedWidgets = new Set<number>();
   private readonly inspectedWidgets = new Set<number>();
@@ -534,10 +536,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const finiteValid = !!w && (Number.isFinite(w[0]) || Number.isFinite(w[1]));
     if (widget.binding.pin === null && (finiteActive || finiteValid)) {
       this.windowedWidgets.add(widget.id);
-      if (Number.isFinite(this.lastTarget)) {
+      const cur = this.isDirectTarget(widget.id) ? this.lastNow : this.lastTarget;
+      if (Number.isFinite(cur)) {
         let lo = this.windowSafeLo, hi = this.windowSafeHi;
-        if (w) [lo, hi] = this.clampSafeRange(lo, hi, w[0], w[1], widget.binding.offset, this.lastTarget);
-        if (active) [lo, hi] = this.clampSafeRange(lo, hi, active.lo, active.hi, widget.binding.offset, this.lastTarget);
+        if (w) [lo, hi] = this.clampSafeRange(lo, hi, w[0], w[1], widget.binding.offset, cur);
+        if (active) [lo, hi] = this.clampSafeRange(lo, hi, active.lo, active.hi, widget.binding.offset, cur);
         this.windowSafeLo = lo;
         this.windowSafeHi = hi;
       } else {
@@ -807,9 +810,24 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
   }
 
+  clearCanvas(widget: number) {
+    if (!this.workerCanvases.delete(widget)) return;
+    this.dirtyWorkerCanvases.delete(widget);
+    this.windowSafeDirty = true;
+    const held = this.widgets.get(widget);
+    if (held) {
+      held.forceFull = true;
+      this.dirtyWidgets.add(widget);
+      this.wake();
+    }
+  }
+
   setLaneSurface(canvas: OffscreenCanvas, opaque: boolean) {
     const ctx = canvas.getContext('2d', opaque ? { alpha: false } : undefined);
-    if (!ctx) return;
+    if (!ctx) {
+      this.host.failLaneSurface?.();
+      return;
+    }
     const activeSlot = {
       ox: 0,
       oy: 0,
@@ -901,6 +919,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const dy = Math.round((oy - shared.originY) * dpr);
     const originMoved = !resized && (dx !== 0 || dy !== 0);
     const prevSlots = new Map(shared.slots);
+    const prevW = shared.width;
+    const prevH = shared.height;
     shared.width = payload.width;
     shared.height = payload.height;
     shared.dpr = dpr;
@@ -949,12 +969,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (!resized && payload.width > 0 && payload.height > 0) {
       for (const [wid, prev] of prevSlots) {
         if (!prev.visible) continue;
-        const next = nextSlots.get(wid);
-        const stillSame = next && next.visible
-          && next.x === prev.x && next.y === prev.y && next.w === prev.w && next.h === prev.h;
-        if (stillSame) continue;
         const rx = originMoved ? prev.x - dx / dpr : prev.x;
         const ry = originMoved ? prev.y - dy / dpr : prev.y;
+        const next = nextSlots.get(wid);
+        const stillSame = next && next.visible
+          && Math.abs(next.x - rx) < 0.5 && Math.abs(next.y - ry) < 0.5 && next.w === prev.w && next.h === prev.h;
+        if (stillSame) continue;
         clearedRects.push({ x: rx, y: ry, w: prev.w, h: prev.h });
       }
       if (clearedRects.length && payload.surfaceColor) {
@@ -993,7 +1013,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const overlappedClear = clearedRects.some(r =>
         slot.x < r.x + r.w && slot.x + slot.w > r.x && slot.y < r.y + r.h && slot.y + slot.h > r.y
       );
-      if (slot.visible && (resized || originMoved || moved || overlappedClear)) {
+      const preservedByBlit = !resized && originMoved && prev !== undefined && prev.visible
+        && Math.abs(slot.x - (prev.x - dx / dpr)) < 0.5
+        && Math.abs(slot.y - (prev.y - dy / dpr)) < 0.5
+        && slot.w === prev.w && slot.h === prev.h
+        && prev.x >= 0 && prev.y >= 0 && prev.x + prev.w <= prevW && prev.y + prev.h <= prevH
+        && slot.x >= 0 && slot.y >= 0 && slot.x + slot.w <= payload.width && slot.y + slot.h <= payload.height
+        && !overlappedClear;
+      if (slot.visible && !preservedByBlit && (resized || originMoved || moved || overlappedClear)) {
         shared.dirtySlots.add(slot.widget);
         const held = this.widgets.get(slot.widget);
         if (held) held.forceFull = true;
@@ -1952,6 +1979,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (refusal.reason === 'kept content') widget.installed = null;
       widget.parked = refusal.reason === 'uncovered' ? owner.sent : null;
       widget.sent = { ...widget.installed?.contents ?? {} };
+      if (refusal.reason === 'uncovered' && widget.installed && this.isDirectTarget(widget.id)) {
+        if (this.sharedSurface?.slots.get(widget.id)?.visible) this.sharedSurface.dirtySlots.add(widget.id);
+        if (this.workerCanvases.has(widget.id)) this.dirtyWorkerCanvases.add(widget.id);
+        widget.forceFull = true;
+      }
       this.dirtyWidgets.add(widget.id);
       for (const sub of widget.subs) this.schedulePrune(sub);
       this.syncWindowTracking(widget);
@@ -1964,6 +1996,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (this.workerCanvases.has(widgetId)) return true;
     const shared = this.sharedSurface;
     return Boolean(shared && shared.width > 0 && shared.height > 0 && shared.slots.get(widgetId)?.visible);
+  }
+
+  private isDirectSlotDirty(widgetId: number): boolean {
+    const shared = this.sharedSurface;
+    if (shared && shared.width > 0 && shared.height > 0 && shared.slots.get(widgetId)?.visible) {
+      return shared.dirtySlots.has(widgetId);
+    }
+    return this.dirtyWorkerCanvases.has(widgetId);
   }
 
   private requestHourFor(widget: Widget, request: FrameRequest): number {
@@ -2086,6 +2126,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       return;
     }
     this.lastTarget = request.target;
+    this.lastNow = request.now;
     this.acknowledge(request.installed, request.refused);
     const inspect = new Map(request.inspect);
     const candidates = new Set<number>();
@@ -2171,7 +2212,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const shown = this.matches(widget.installed, selected, target, widget.binding.generation, widget.supply, key, route, request.seek);
       if (this.matches(widget.parked, selected, target, widget.binding.generation, widget.supply, key, route, request.seek)) continue;
       const pending = widget.inflight && this.pageRequests - widget.inflight.request <= STALE && this.matches(widget.inflight, selected, target, widget.binding.generation, widget.supply, key, route, request.seek);
-      const slotDirty = this.sharedSurface?.dirtySlots.has(wid) === true || this.dirtyWorkerCanvases.has(wid);
+      const slotDirty = this.isDirectSlotDirty(wid);
       if ((pending || (shown && !widget.motion)) && !widget.forceFull && !slotDirty) {
         widget.inspect = key;
         if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
@@ -2215,7 +2256,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const start = this.time();
       widget.served = this.requests;
       const initialOpen = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
-      const slotDirty = this.sharedSurface?.dirtySlots.has(widget.id) === true || this.dirtyWorkerCanvases.has(widget.id);
+      const slotDirty = this.isDirectSlotDirty(widget.id);
       if (!motion && !widget.motion && !widget.forceFull && !slotDirty && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.supply, widget.inspect, request.seek)) {
         const redated = this.redateEntry(widget, widget.installed, selected, request.seek, initialOpen);
         entries.push(redated);
@@ -2224,6 +2265,38 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         continue;
       }
       const view = this.host.views(widget.view);
+      if (request.exact && this.isDirectTarget(widget.id) && widget.installed && target > selected.c) {
+        if (slotDirty || widget.forceFull) {
+          const wc = this.workerCanvases.get(widget.id);
+          const shared = this.sharedSurface;
+          const sharedSlot = shared && shared.width > 0 && shared.height > 0 ? shared.slots.get(widget.id) : undefined;
+          const sharedArg = shared && sharedSlot && sharedSlot.visible
+            ? { lane: shared, slot: sharedSlot, dirty: shared.dirtySlots.has(widget.id) }
+            : undefined;
+          try {
+            view.paint({
+              widget: widget.id,
+              subs: widget.subs.map(id => this.subs.get(id)!),
+              pictures: widget.installed.pictures,
+              model: widget.model,
+              ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}),
+              hour: widget.installed.lo,
+              seek: request.seek,
+              speed: request.speed,
+              binding: widget.binding,
+              inspect: widget.inspect,
+              now: start,
+              ...(wc && !sharedArg ? { workerCanvas: wc } : {}),
+              ...(sharedArg ? { sharedSurface: sharedArg } : {}),
+            }, widget.state, this.content);
+            if (sharedArg && shared) shared.dirtySlots.delete(widget.id);
+            if (wc && !sharedArg) this.dirtyWorkerCanvases.delete(widget.id);
+            widget.forceFull = false;
+          } catch {
+          }
+        }
+        continue;
+      }
       let activeSelected = selected;
       let painted: Painted = { surfaces: [], fields: {}, motion: false };
       let mode: Entry['mode'] = 'picture', reason: string | undefined, failureOrigin: FailureOrigin | undefined;
@@ -2476,6 +2549,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode, ...reason !== undefined ? { reason } : {},
       ...open ? { open } : {}, ...failureOrigin !== undefined ? { failureOrigin } : {}, ...(viewport ? { viewport } : {}),
+      ...(mode === 'picture' && painted.repainted === true ? { repainted: true } : {}),
       surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
   }
 

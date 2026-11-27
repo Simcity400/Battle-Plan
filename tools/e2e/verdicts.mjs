@@ -103,7 +103,7 @@ export function sessionConfinement(run, sessionEntry, sweepMeta = null) {
   const page = sweepMeta?.confinement ?? null;
   const reasons = [];
   if (cores) {
-    const expectedLanes = Math.max(1, Math.min(4, cores.count - 2));
+    const expectedLanes = Math.max(1, cores.count - 2);
     if (!job) reasons.push('Job object confinement was not recorded');
     else if (!job.allConfined || job.confinedProcesses < job.jobProcesses) {
       reasons.push(`Job object confined ${job.confinedProcesses}/${job.jobProcesses} processes (expected all at ${cores.mask})`);

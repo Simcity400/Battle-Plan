@@ -272,13 +272,19 @@ export function mountFamilyCanvas(
       return { canvas, surface: NOOP_SURFACE, workerPresented: true };
     }
     if (transparentFallback && typeof canvas.transferControlToOffscreen === 'function') {
-      const offscreen = canvas.transferControlToOffscreen();
-      canvas.dataset.workerPresented = '1';
-      pipeline.transferCanvas(pipe, offscreen, false);
-      return { canvas, surface: NOOP_SURFACE, workerPresented: true };
+      try {
+        const offscreen = canvas.transferControlToOffscreen();
+        canvas.dataset.workerPresented = '1';
+        pipeline.transferCanvas(pipe, offscreen, false);
+        return { canvas, surface: NOOP_SURFACE, workerPresented: true };
+      } catch {
+      }
     }
     return { canvas, surface: bitmapSurface(canvas), workerPresented: false };
   })!;
+  if (!useSharedSurface && !drawn.workerPresented) {
+    pipeline.clearCanvas(pipe);
+  }
   extent.className = extentClassName;
   extent.append(drawn.canvas);
   bodyNode.append(extent);

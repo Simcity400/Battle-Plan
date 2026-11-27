@@ -279,11 +279,13 @@ export class SharedSurfaceHost {
   private lastUsedClipPath = false;
   private readonly failedLanes = new Set<number>();
   private readonly listeners = new Set<() => void>();
+  private readonly unsubLaneFailed: (() => void) | null;
 
   constructor(pipeline: Pipeline, scrollEl: HTMLElement) {
     this.pipeline = pipeline;
     this.scrollEl = scrollEl;
     this.supported = supportsOffscreenTransfer();
+    this.unsubLaneFailed = pipeline.onLaneSurfaceFailed?.(lane => this.failLane(lane)) ?? null;
     const layer = document.createElement('div');
     layer.className = 'dash-shared-layer';
     layer.setAttribute('aria-hidden', 'true');
@@ -310,6 +312,18 @@ export class SharedSurfaceHost {
     } else {
       this.mo = null;
     }
+  }
+
+  private failLane(lane: number): void {
+    if (this.disposed || this.failedLanes.has(lane)) return;
+    this.failedLanes.add(lane);
+    const existing = this.lanes.get(lane);
+    if (existing) {
+      existing.canvas.remove();
+      this.lanes.delete(lane);
+    }
+    for (const listener of this.listeners) listener();
+    this.scheduleSync();
   }
 
   private ensureLane(lane: number): LaneCanvasState | null {
@@ -432,11 +446,21 @@ export class SharedSurfaceHost {
         continue;
       }
       const r = entry.bodyEl.getBoundingClientRect();
-      const x = snapRound(r.left - layerRect.left, dpr);
-      const y = snapRound(r.top - layerRect.top, dpr);
-      const w = snapRound(r.width, dpr);
-      const h = snapRound(r.height, dpr);
-      const inView = w > 0 && h > 0 && r.right > scrollRect.left && r.left < scrollRect.right && r.bottom > scrollRect.top && r.top < scrollRect.bottom;
+      const ow = entry.bodyEl.offsetWidth;
+      const oh = entry.bodyEl.offsetHeight;
+      const cw = entry.bodyEl.clientWidth;
+      const ch = entry.bodyEl.clientHeight;
+      const zoomX = ow > 0 && cw > 0 ? r.width / ow : 1;
+      const zoomY = oh > 0 && ch > 0 ? r.height / oh : 1;
+      const contentLeft = r.left + (entry.bodyEl.clientLeft || 0) * zoomX;
+      const contentTop = r.top + (entry.bodyEl.clientTop || 0) * zoomY;
+      const contentW = ow > 0 && cw > 0 ? cw * zoomX : r.width;
+      const contentH = oh > 0 && ch > 0 ? ch * zoomY : r.height;
+      const x = snapRound(contentLeft - layerRect.left, dpr);
+      const y = snapRound(contentTop - layerRect.top, dpr);
+      const w = snapRound(contentW, dpr);
+      const h = snapRound(contentH, dpr);
+      const inView = w > 0 && h > 0 && contentLeft + contentW > scrollRect.left && contentLeft < scrollRect.right && contentTop + contentH > scrollRect.top && contentTop < scrollRect.bottom;
       const visible = inView && entry.active;
       if (visible) entry.frameEl.dataset.sharedSurface = '1';
       else delete entry.frameEl.dataset.sharedSurface;
@@ -514,6 +538,7 @@ export class SharedSurfaceHost {
     this.scrollEl.removeEventListener('scroll', this.onScroll);
     this.ro?.disconnect();
     this.mo?.disconnect();
+    this.unsubLaneFailed?.();
     for (const laneState of this.lanes.values()) {
       if (laneState.transferred) this.pipeline.disposeLaneSurface?.(laneState.lane);
     }
