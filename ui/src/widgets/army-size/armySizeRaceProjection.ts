@@ -107,6 +107,7 @@ export const armySizeRaceDeclaration: BarsWidgetDeclaration<ArmySizeRaceOptions,
   icon: 'shield',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',

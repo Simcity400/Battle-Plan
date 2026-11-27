@@ -118,7 +118,7 @@ export const serviceRecordProjection: TableProjection<Options> = registerFamilyP
 export const serviceRecordDeclaration: TableWidgetDeclaration<Options> = {
   picker: serviceRecordPicker,
   family: 'table', kind: 'division-service-record', jumpToDate: true, label: 'Division service record', subject: 'division', icon: 'medal',
-  emptyCampaign: 'Load a campaign to see a division’s record.', countries: { mode: 'filter' }, columns: SERVICE_COLUMNS,
+  emptyCampaign: 'Load a campaign to see a division’s record.', countries: { mode: 'filter', content: 'history' }, columns: SERVICE_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx) {
     const division = subjectHandle(ctx.track.source.metadata.campaignKey, String(ctx.options.division ?? ''));

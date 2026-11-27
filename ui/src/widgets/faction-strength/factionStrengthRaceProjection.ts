@@ -43,6 +43,7 @@ export const factionStrengthRaceDeclaration: BarsWidgetDeclaration<FactionTotals
   icon: 'shield',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     factions: true,
   },

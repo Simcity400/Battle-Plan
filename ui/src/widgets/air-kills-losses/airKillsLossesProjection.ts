@@ -44,6 +44,7 @@ export const airKillsLossesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptio
   icon: 'target',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
   },
   sources,

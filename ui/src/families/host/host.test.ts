@@ -1801,7 +1801,7 @@ test('a single-country widget that names its subject itself opens on branch cove
   assert.equal(gatedByCountry(policy, { faction: '' }), true);
   assert.equal(gatedByCountry(policy, { faction: 'axis' }), false, 'an explicit faction needs no live country');
   assert.equal(gatedByCountry({ mode: 'single' }, { faction: 'axis' }), true, 'a widget without a subject option keeps its country gate');
-  assert.equal(gatedByCountry({ mode: 'multi' }, {}), false);
+  assert.equal(gatedByCountry({ mode: 'multi', content: 'hour' }, {}), false);
 });
 
 test('a war group chosen by recorded slot matches that slot under every tag it held, and not the later holder of its old tag (#932 R2-S15)', () => {

@@ -535,6 +535,7 @@ export const apmGraphDeclaration: TimeChartWidgetDeclaration<ApmGraphOptions, Ap
   icon: 'chart-line',
   countries: {
     mode: 'multi',
+    content: 'history',
     allowSingleSlot: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group',
   },

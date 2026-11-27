@@ -412,7 +412,7 @@ export const constructionLogDeclaration: TableWidgetDeclaration<ConstructionLogP
   subject: 'construction projects',
   emptyCampaign: 'Load a campaign to see its construction log.',
   icon: 'hammer',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'history' },
   columns: CONSTRUCTION_LOG_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {

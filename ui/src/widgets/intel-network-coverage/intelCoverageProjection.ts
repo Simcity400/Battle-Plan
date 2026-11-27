@@ -117,7 +117,7 @@ export const intelCoverageDeclaration: HeatMatrixWidgetDeclaration<IntelCoverage
   subject: 'intel networks',
   emptyCampaign: 'Load a campaign to see intel networks.',
   icon: 'eye',
-  countries: { mode: 'multi' },
+  countries: { mode: 'multi', content: 'hour' },
   sources: (ctx): SourcePlan => {
     const measure = measureOf(ctx.options.measure);
     const basis = basisOf(ctx.options.basis);

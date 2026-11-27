@@ -256,7 +256,7 @@ export const dossierDeclaration: CardWidgetDeclaration<DossierOptions> = {
   subject: 'general',
   emptyCampaign: 'Load a campaign to see a general’s career.',
   icon: 'history',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'hour', allowSlots: true },
   keyByBranch: true,
   unavailable: ctx => (String(ctx.options.leader ?? '') && leaderParams(ctx) === null ? 'The saved general is from another campaign. Choose one in widget settings.' : null),
   sources: ctx => {

@@ -325,7 +325,7 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
   subject: 'stability and war support',
   emptyCampaign: 'Load a campaign to see stability and war support.',
   icon: 'chart-line',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'history', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;
     const within = withinMapOf(ctx.countries.membership);

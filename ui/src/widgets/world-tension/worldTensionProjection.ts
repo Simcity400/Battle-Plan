@@ -490,7 +490,7 @@ export const worldTensionDeclaration: TimeChartWidgetDeclaration<WorldTensionCha
   subject: 'world tension',
   emptyCampaign: 'Load a campaign to see world tension.',
   icon: 'chart-line',
-  countries: { mode: 'multi' },
+  countries: { mode: 'multi', content: 'history' },
   sources(ctx: FamilyPlanContext, view): SourcePlan {
     const layers = Math.max(1, Math.min(20, Number(ctx.options.layers) || 5));
     const values = ctx.options.values === 'recorded' ? 'recorded' : 'share';

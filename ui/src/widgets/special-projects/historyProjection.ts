@@ -304,7 +304,7 @@ export const specialProjectsHistoryDeclaration: TimelineWidgetDeclaration<Specia
   subject: 'special projects',
   emptyCampaign: 'Load a campaign and choose a country to see its special projects.',
   icon: 'flask',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'history', allowSlots: true },
   jumpToDate: true,
   keyByBranch: true,
   sources: ctx => ({

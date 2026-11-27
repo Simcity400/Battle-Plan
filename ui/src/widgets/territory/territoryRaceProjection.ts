@@ -152,6 +152,7 @@ export const territoryRaceDeclaration: BarsWidgetDeclaration<TerritoryRaceOption
   icon: 'map',
   countries: {
     mode: 'multi',
+    content: 'hour',
     allowSlots: true,
     everyOnTop: true,
     factions: true,

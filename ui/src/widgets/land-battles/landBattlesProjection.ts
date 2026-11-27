@@ -144,7 +144,7 @@ export const landBattlesProjection: TableProjection<{ byDate: boolean }> = regis
 
 export const landBattlesDeclaration: TableWidgetDeclaration<{ byDate: boolean }> = {
   family: 'table', kind: 'land-battles', label: 'Land battles', subject: 'battles', icon: 'swords',
-  emptyCampaign: 'Load a campaign to see its land battles.', countries: { mode: 'filter' }, columns: LAND_BATTLES_COLUMNS,
+  emptyCampaign: 'Load a campaign to see its land battles.', countries: { mode: 'filter', content: 'history' }, columns: LAND_BATTLES_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx) {
     const win = ctx.widget.time.mode === 'range' ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;

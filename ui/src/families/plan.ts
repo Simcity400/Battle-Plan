@@ -406,10 +406,10 @@ export type CountryContent = 'hour' | 'history';
 export type CountryPolicy =
   | { readonly mode: 'none' }
   | { readonly mode: 'single'; readonly choose?: string; readonly subjectOption?: string }
-  | { readonly mode: 'filter'; readonly content?: CountryContent }
+  | { readonly mode: 'filter'; readonly content: CountryContent }
   | {
       readonly mode: 'multi';
-      readonly content?: CountryContent;
+      readonly content: CountryContent;
       readonly factions?: boolean;
       readonly allowSlots?: boolean;
       readonly allowSingleSlot?: boolean;

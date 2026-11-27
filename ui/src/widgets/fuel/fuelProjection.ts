@@ -168,7 +168,7 @@ export const fuelDeclaration: TimeChartWidgetDeclaration<FuelOptions> = {
   subject: 'fuel',
   emptyCampaign: 'Load a campaign to see fuel.',
   icon: 'chart-line',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'history', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tag = ctx.countries.tags[0];
     const capacity = ctx.options.capacity !== false;

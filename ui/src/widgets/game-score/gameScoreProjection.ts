@@ -221,6 +221,7 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
   icon: 'grid',
   countries: {
     mode: 'multi',
+    content: 'hour',
     factions: true,
     allowSlots: true,
     requireGroupsWhen: (widget, options) => options.factions === true || (widget.countries.kind === 'group' && widget.countries.group.type !== 'top'),

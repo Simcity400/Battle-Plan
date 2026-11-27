@@ -182,7 +182,7 @@ export const worldTensionLinesDeclaration: TimeChartWidgetDeclaration<WorldTensi
   subject: 'world tension contributions',
   emptyCampaign: 'Load a campaign to see world tension contributions.',
   icon: 'chart-line',
-  countries: { mode: 'multi', everyOnTop: true },
+  countries: { mode: 'multi', content: 'history', everyOnTop: true },
   sources(ctx: FamilyPlanContext, view): SourcePlan {
     const top = ctx.countries.top ?? null;
     const keyed = !ctx.countries.all && top == null;

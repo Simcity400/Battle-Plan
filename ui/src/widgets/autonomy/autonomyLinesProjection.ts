@@ -425,7 +425,7 @@ export const autonomyLinesDeclaration: TimeChartWidgetDeclaration<AutonomyLinesO
   subject: 'autonomy',
   emptyCampaign: 'Load a campaign to see its subjects’ autonomy.',
   icon: 'link',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'history' },
   sources: (ctx: FamilyPlanContext): SourcePlan => {
     const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
     const passing = ctx.countries.filter.passing;

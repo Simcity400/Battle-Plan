@@ -345,7 +345,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
     subject: spec.subject,
     emptyCampaign: `Load a campaign to see ${spec.subject}.`,
     icon: 'chart-line',
-    countries: { mode: 'multi', allowSlots: true },
+    countries: { mode: 'multi', content: 'history', allowSlots: true },
     ...(spec.aux ? { aux: spec.aux } : {}),
     sources(ctx: FamilyPlanContext<TAux>): SourcePlan {
       const top = chartTopOf(ctx.countries);

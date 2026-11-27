@@ -365,6 +365,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
   icon: 'layers',
   countries: {
     mode: 'multi',
+    content: 'history',
     allowSlots: true,
     everyOnTop: true,
   },

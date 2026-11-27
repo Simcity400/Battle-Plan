@@ -129,7 +129,7 @@ export const worldTensionEventsDeclaration: TableWidgetDeclaration<WorldTensionE
   subject: 'threat events',
   emptyCampaign: 'Load a campaign to see threat events.',
   icon: 'alert',
-  countries: { mode: 'multi' },
+  countries: { mode: 'multi', content: 'history' },
   sources: (ctx: FamilyPlanContext) => {
     const top = ctx.countries.top ?? null;
     const keyed = !ctx.countries.all && top == null;

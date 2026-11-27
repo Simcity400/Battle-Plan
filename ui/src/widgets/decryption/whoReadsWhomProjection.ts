@@ -149,7 +149,7 @@ export const whoReadsWhomDeclaration: HeatMatrixWidgetDeclaration<DecryptionFilt
   subject: 'decryption',
   emptyCampaign: 'Load a campaign to see who reads whom.',
   icon: 'lock',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'hour' },
   sources: decryptionSources,
   projection: whoReadsWhomProjection,
   projectionOptions: decryptionFilterOptions,

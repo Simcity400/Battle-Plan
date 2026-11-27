@@ -221,7 +221,7 @@ export const occupiedStatesDeclaration: TableWidgetDeclaration<OccupiedProjectio
   emptyCampaign: 'Load a campaign to see occupied states.',
   className: 'occupied-states',
   frameClassName: 'occupied-table-surface',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'hour' },
   sources: ctx => ({
     owner: `occupied-states:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
     entries: [{

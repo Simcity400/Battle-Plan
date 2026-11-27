@@ -568,7 +568,7 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
   subject: 'raid tally',
   emptyCampaign: 'Load a campaign to see its raid tally.',
   icon: 'target',
-  countries: { mode: 'multi', allowSlots: true },
+  countries: { mode: 'multi', content: 'history', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const top = chartTopOf(ctx.countries);
     const tags = top === null ? ctx.countries.tags : [];

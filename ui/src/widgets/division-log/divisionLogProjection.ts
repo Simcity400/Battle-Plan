@@ -121,7 +121,7 @@ const eventsOf = (value: unknown): DivisionEvents => value === 'created' || valu
 
 export const divisionLogDeclaration: TableWidgetDeclaration<Options> = {
   family: 'table', kind: 'division-log', label: 'Division log', subject: 'divisions', icon: 'shield',
-  emptyCampaign: 'Load a campaign to see its divisions.', countries: { mode: 'filter' }, columns: DIVISION_LOG_COLUMNS,
+  emptyCampaign: 'Load a campaign to see its divisions.', countries: { mode: 'filter', content: 'history' }, columns: DIVISION_LOG_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx) {
     const win = ctx.widget.time.mode === 'range' ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;

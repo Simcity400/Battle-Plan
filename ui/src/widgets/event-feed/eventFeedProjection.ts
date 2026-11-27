@@ -569,7 +569,7 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
   subject: 'event feed',
   emptyCampaign: 'Load a campaign to see key moments.',
   icon: 'clock',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'history' },
   columns: EVENT_FEED_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {

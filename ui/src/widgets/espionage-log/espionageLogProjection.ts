@@ -375,7 +375,7 @@ export const espionageLogDeclaration: TableWidgetDeclaration<EspionageLogProject
   subject: 'espionage operations',
   emptyCampaign: 'Load a campaign to see its espionage operations.',
   icon: 'eye',
-  countries: { mode: 'filter' },
+  countries: { mode: 'filter', content: 'history' },
   columns: ESPIONAGE_LOG_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {
