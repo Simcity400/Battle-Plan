@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { artHandleKey, readyArt } from '../../families/art/types.ts';
 import type { ArtHandle, IdentityResult } from '../../families/plan.ts';
-import { resolveTableRows } from '../../families/table/model.ts';
+import { cellBarFraction, resolveTableRows } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableDefaults } from '../../families/table/settings.ts';
 import type { LeaderRow, UnitLeadersReply } from '../../generated/dashboard';
 import { catalogueEntries, widgetGroups } from '../../dashboard/widgetCategories.ts';
@@ -151,6 +151,13 @@ test('battle counts from a partly recorded battle log are partial and withhold w
   assert.equal(cells.winRate!.value.kind, 'notRecorded', 'partial battle counts withhold the derived win rate');
   assert.equal(cells.winRate!.secondaryValue?.kind, 'notRecorded');
   assert.equal(cells.winRate!.sortValue?.kind, 'notRecorded', 'partial battle counts withhold the win rate rank');
+  for (const key of ['won', 'lost', 'fought', 'unresolved']) {
+    const cell = cells[key]!;
+    assert.equal(cellBarFraction(cell, cell.value, 1), null, `${key} does not scale a partly recorded count into a bar`);
+    assert.equal(cell.value.kind, 'partial');
+    assert.equal(cell.value.kind === 'partial' && cell.value.reason, 'Battle counts are incomplete: some battles were not recorded.');
+    assert.equal(exactCells[key]!.bar, undefined, `${key} keeps its usual complete-data bar`);
+  }
 
   const mixedModel = {
     ...exact,

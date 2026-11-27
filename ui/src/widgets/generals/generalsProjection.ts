@@ -115,8 +115,10 @@ function generalsColumns(reply: UnitLeadersReply, options: GeneralsOptions): rea
       extra: row => ({ iconStripKind: 'traits', icons: row.traits }),
       value: row => row.leader.row.traits === null ? notRecorded('Traits not recorded') : row.traits.length ? knownValue(row.traits.length) : zeroValue(0) },
     { ...WON!, priority: 1, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
+      bar: row => row.leader.foughtPartial ? null : undefined,
       value: row => count(row.leader.won ?? 0, row.leader.foughtPartial) },
     { ...LOST!, priority: 2, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
+      bar: row => row.leader.foughtPartial ? null : undefined,
       value: row => count(row.leader.lost ?? 0, row.leader.foughtPartial) },
     { ...WIN_RATE!, priority: 1, numeric: true, cellKind: 'winRate', barEligible: false,
       extra: row => ({ secondaryValue: row.leader.foughtPartial ? notRecorded(PARTIAL) : count(row.leader.lost ?? 0, false) }),
@@ -127,8 +129,10 @@ function generalsColumns(reply: UnitLeadersReply, options: GeneralsOptions): rea
           : knownValue(row.leader.winRate),
       value: row => row.leader.foughtPartial ? notRecorded(PARTIAL) : count(row.leader.won ?? 0, false) },
     { ...FOUGHT!, priority: 6, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
+      bar: row => row.leader.foughtPartial ? null : undefined,
       value: row => count(row.leader.fought, row.leader.foughtPartial) },
     { ...UNRESOLVED!, priority: 6, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
+      bar: row => row.leader.foughtPartial ? null : undefined,
       value: row => count(row.leader.unresolved, row.leader.foughtPartial) },
   ];
 }

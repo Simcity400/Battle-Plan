@@ -178,6 +178,23 @@ const projectAt = (hour: LeaderHourReply | undefined, career: LeaderCareerReply)
   panels: new Map<string, unknown>([...(hour ? [['hour', hour] as const] : []), ['career', validateLeaderCareer(career)]]),
 }), OPTIONS);
 
+test('partial career results withhold the wide and compact header win rates', () => {
+  const hour = hourReply();
+  const career = careerReply();
+  for (const model of [
+    projectAt({ ...hour, battlesPartialFrom: AT }, career),
+    projectAt(hour, { ...career, battlesPartialFrom: AT }),
+    projectAt(undefined, { ...career, battlesPartialFrom: AT }),
+    projectAt({ ...hour, fought: 0, won: 0, lost: 0, battlesPartialFrom: AT }, career),
+  ]) {
+    assert.equal(model.header?.kpis?.at(-1)?.value, 'Not recorded');
+    assert.ok(model.header?.compactKpi?.endsWith('Not recorded'));
+    assert.ok(model.notes?.includes('Battle counts are incomplete: some battles were not recorded.'));
+  }
+  const beforeGap = projectAt({ ...hour, battlesPartialFrom: AT + 1 }, { ...career, battlesPartialFrom: AT + 1 });
+  assert.deepEqual(beforeGap.header, projectAt(hour, career).header, 'a future gap leaves the complete rates unchanged');
+});
+
 test('a general no longer serving keeps the battles the career recorded, not the hour reply’s empty counters', () => {
   const retired = H(1939, 1, 1);
   const career = { ...careerReply(), runs: [{ firstHour: FIRST, lastHour: retired, role, skill: 6, components: [5, 5, 5, 4] as [number, number, number, number] }] };
