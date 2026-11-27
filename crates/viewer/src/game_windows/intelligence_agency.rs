@@ -24,10 +24,15 @@ use dashboard_text::catalogue::View;
 use replay_data::rows::{TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     sync::atomic::AtomicBool,
 };
-use viewer_native_gui::native_gui::{self, Assets, Holder, Layout, Resources, lifecycle::Instance};
+use viewer_native_gui::{
+    native_effects::Effect,
+    native_gui::{self, AlphaMask, AnimationRecord, Assets, Holder, Layout, Resources, SpriteInfo, Texture, TextureFile, lifecycle::Instance},
+    native_text::Font,
+};
 
 #[cfg(test)]
 mod tests;
@@ -36,6 +41,9 @@ const WINDOW_NAME: &str = "countryintelligenceagencyview";
 const BRANCH_TEMPLATE: &str = "upgrade_button";
 const PIP_TEMPLATE: &str = "agency_upgrade_researched_icon";
 const OPERATION_TEMPLATE: &str = "operation_view_entry";
+const OPERATION_TARGET_FLAG: &str = "container_operation_info/btn_target_flag";
+const TARGET_FLAG_LAYOUT_INDEX: i32 = i32::MIN;
+const UNBOUND_TARGET_FLAG: &str = "No flag atlas binding is available for this target country.";
 const NOT_RECORDED_VALUE: &str = "n/a";
 const FULL_PREPARATION: i32 = 100_000;
 
@@ -61,7 +69,8 @@ const RECRUITING_NOT_RECORDED: &str = "Not recorded: whether an operative is bei
 const UPGRADING: &str = "Upgrade in progress";
 const UPGRADING_NOT_RECORDED: &str = "Not recorded: the recording holds the agency's upgrade progress but not which upgrade it is, so the bar has no fill and no remaining days.";
 const NETWORK_NOT_RECORDED: &str = "Not recorded: the network strength an operation needs is not recorded.";
-const CRYPTOLOGY_DISABLED: &str = "The cryptology view is not drawn in this window: the cipher thresholds it shows are not available to it. The Decryption widget shows each cipher's progress.";
+const CRYPTOLOGY_DISABLED: &str = "This view is unavailable in the agency window because its cipher thresholds are unavailable. The Decryption widget shows each cipher's progress.";
+const NO_RUNNING_OPERATIONS: &str = "No running operations recorded at this hour.";
 const STARTABLE_NOT_RECORDED: &str = "Only the agency's running operations are recorded: the operations it could start are not, so they are not listed.";
 
 #[derive(Deserialize)]
@@ -332,14 +341,14 @@ fn render_view(
             }
             Ok(Prepared { assets, state: (), fingerprint: print })
         },
-        |root, _, _, _, instance, tooltips, ()| configure_main(root, instance, tooltips, &view),
+        |root, _, _, localisation, instance, tooltips, ()| configure_main(root, localisation, instance, tooltips, &view),
         |plan, main_layout, root, guis, resources, localisation, ()| {
             let sources = Sources { guis, resources, localisation };
             header_text(plan, root, &view);
             compose_branches(plan, main_layout, root, &sources, &view)?;
             agents_text(plan, &view);
             compose_operations(plan, main_layout, root, &sources, &view)?;
-            plan.text("crypto_tab_button", "Cryptology", Err(CRYPTOLOGY_DISABLED.to_owned()));
+            plan.text("crypto_tab_button", &crypto_tab_title(root, localisation), Ok(CRYPTOLOGY_DISABLED.to_owned()));
             plan.title = Some(view.agency.name.clone().unwrap_or_else(|| NOT_RECORDED_VALUE.to_owned()));
             plan.read_hour = Some(view.read_hour);
             Ok(())
@@ -361,6 +370,16 @@ fn tooltip_at(root: &Element, path: &str, tip: GameWindowTooltip, tooltips: &mut
     }
 }
 
+fn crypto_tab_title(root: &Element, localisation: &Localisation) -> String {
+    find_direct(root, "crypto_tab_button")
+        .and_then(|element| match &element.fields {
+            native::Fields::Button(button) => dashboard_text::catalogue::localised_bytes(localisation, &button.text, View::Plain).ok(),
+            _ => None,
+        })
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| "Unavailable agency tab".to_owned())
+}
+
 fn name_of(agency: &Agency) -> Shown {
     agency.name.clone().ok_or_else(|| agency.name_missing.clone().unwrap_or_else(|| "Not recorded: the agency's name".to_owned()))
 }
@@ -375,6 +394,7 @@ fn operatives_of(agency: &Agency) -> String {
 
 fn configure_main(
     root: &Element,
+    localisation: &Localisation,
     instance: &mut Instance,
     tooltips: &mut BTreeMap<String, GameWindowTooltip>,
     view: &AgencyView,
@@ -419,14 +439,17 @@ fn configure_main(
     let not_active = "agency_operations/operations_grid_container/operations_not_active";
     match &view.operations {
         Ok(running) if !running.is_empty() => hide_by_name(instance, root, not_active),
-        Ok(_) => tooltip_at(root, not_active, not_recorded(NOT_RECORDED_VALUE, format!("The agency runs no operation at this hour. {STARTABLE_NOT_RECORDED}")), tooltips),
+        Ok(_) => {
+            set_text_by_name(instance, root, not_active, NO_RUNNING_OPERATIONS.to_owned());
+            tooltip_at(root, not_active, not_recorded(NO_RUNNING_OPERATIONS, STARTABLE_NOT_RECORDED), tooltips);
+        }
         Err(why) => {
             set_text_by_name(instance, root, not_active, NOT_RECORDED_VALUE.to_owned());
             tooltip_at(root, not_active, not_recorded(NOT_RECORDED_VALUE, why.clone()), tooltips);
         }
     }
     disable_by_name(instance, root, "crypto_tab_button");
-    tooltip_at(root, "crypto_tab_button", not_recorded(NOT_RECORDED_VALUE, CRYPTOLOGY_DISABLED), tooltips);
+    tooltip_at(root, "crypto_tab_button", not_recorded(&crypto_tab_title(root, localisation), CRYPTOLOGY_DISABLED), tooltips);
 }
 
 fn header_text(plan: &mut ComposedPlan, root: &Element, view: &AgencyView) {
@@ -452,6 +475,37 @@ struct Sources<'a> {
     guis: &'a native::Guis,
     resources: &'a dyn Resources,
     localisation: &'a Localisation,
+}
+
+struct TargetFlagResources<'a>(&'a dyn Resources);
+
+impl Resources for TargetFlagResources<'_> {
+    fn physical_viewport(&self) -> Option<[i32; 2]> { self.0.physical_viewport() }
+    fn sprite(&self, name: &[u8]) -> Option<SpriteInfo> { self.0.sprite(name) }
+    fn sprite_info(&self, name: &[u8]) -> Option<Cow<'_, SpriteInfo>> { self.0.sprite_info(name) }
+    fn portrait_texture(&self, name: &[u8]) -> Option<Texture> { self.0.portrait_texture(name) }
+    fn sprite_alpha(&self, name: &[u8]) -> Option<AlphaMask> { self.0.sprite_alpha(name) }
+    fn unloaded_sprite(&self, name: &[u8]) -> bool { self.0.unloaded_sprite(name) }
+    fn font(&self, name: &[u8]) -> Option<&Font> { self.0.font(name) }
+    fn localisation(&self) -> &Localisation { self.0.localisation() }
+    fn text_colors(&self) -> &native::fonts::TextColors { self.0.text_colors() }
+    fn text_effect(&self) -> Result<Effect, String> { self.0.text_effect() }
+    fn effect(&self, file: &str) -> Result<Effect, String> { self.0.effect(file) }
+
+    fn shield_flag(&self, small: bool, index: i32) -> Result<Option<(Texture, [f32; 4])>, String> {
+        if index == TARGET_FLAG_LAYOUT_INDEX {
+            return Ok(None);
+        }
+        self.0.shield_flag(small, index)
+    }
+
+    fn text_flag(&self, tag: &str) -> Result<Option<Texture>, String> { self.0.text_flag(tag) }
+    fn resolved_text_flag(&self, key: &[u8]) -> Result<Option<Texture>, String> { self.0.resolved_text_flag(key) }
+    fn resolved_text_flag_key(&self, text: &[char]) -> Option<usize> { self.0.resolved_text_flag_key(text) }
+    fn gui_type(&self, name: &[u8]) -> Option<&Element> { self.0.gui_type(name) }
+    fn texture_file(&self, path: &[u8]) -> Option<TextureFile> { self.0.texture_file(path) }
+    fn sprite_animations(&self, sprite: &[u8]) -> Option<Vec<AnimationRecord>> { self.0.sprite_animations(sprite) }
+    fn session_text_sprite(&self, name: &[u8]) -> bool { self.0.session_text_sprite(name) }
 }
 
 fn holder_for<'a>(layout: &'a Layout, element: &Element) -> Option<&'a Holder> {
@@ -564,11 +618,7 @@ fn compose_branches(
                     )
                 }),
             };
-            plan.text(&path, &name, match (&pip_state.level, &frame) {
-                (Ok(level), Ok(_)) => Ok(format!("{level} / {}", pip_state.levels)),
-                (Ok(level), Err(why)) => Ok(format!("{level} / {} ({why})", pip_state.levels)),
-                (Err(why), _) => Err(why.clone()),
-            });
+            plan.text(&path, &name, pip_state.level.as_ref().map(|level| format!("{level} / {}", pip_state.levels)).map_err(Clone::clone));
             let mut pip_layout = layout_window(pip, resources, viewport, |instance| {
                 hide_by_name(instance, pip, "agency_upgrade_anim");
                 if let Ok(frame) = &frame {
@@ -577,7 +627,7 @@ fn compose_branches(
             })?;
             let marker = find_direct(pip, "upgrade_icon");
             let unknown = match (&frame, marker) {
-                (Err(why), Some(marker)) => blank(&mut pip_layout, &marker.path).map(|region| (region, why.clone())),
+                (Err(_), Some(marker)) => blank(&mut pip_layout, &marker.path),
                 _ => None,
             };
             let inner = pip_holder.place(pip_place, &pip_layout);
@@ -591,13 +641,12 @@ fn compose_branches(
                 };
                 overrides.insert(button.path.clone(), GameWindowTooltip { title: name.clone(), body: Some(body), detail: Some(pip_state.token.clone()) });
             }
-            match (unknown, &frame) {
-                (Some((region, why)), _) => {
-                    let rect = holder.place_regions(place, &pip_holder.place_regions(pip_place, &[region]))[0].rect;
-                    plan.placeholder(&path, Some(rect), &name, "its level marker", &why);
+            if let Err(why) = &frame {
+                let rect = unknown.map(|region| holder.place_regions(place, &pip_holder.place_regions(pip_place, &[region]))[0].rect);
+                plan.placeholder(&path, rect, &format!("{name} level marker"), "its level marker", why);
+                if let Some(text) = plan.text.last_mut() {
+                    (text.value, text.missing) = (Some(why.clone()), None);
                 }
-                (None, Err(why)) => plan.placeholder(&path, None, &name, "its level marker", why),
-                (None, Ok(_)) => {}
             }
             plan.sub_windows.push(ComposedSubWindow {
                 before_part: holder.before,
@@ -614,6 +663,16 @@ fn compose_branches(
     Ok(())
 }
 
+fn operation_controls<'a>(entry: &'a Element, kind: native::Kind, name: &str) -> Vec<&'a Element> {
+    let mut parents = vec![entry];
+    let mut controls = Vec::new();
+    while let Some(parent) = parents.pop() {
+        parents.extend(&parent.children);
+        controls.extend(parent.children.iter().filter(|child| child.kind == kind && child.is_named(name)));
+    }
+    controls
+}
+
 fn compose_operations(
     plan: &mut ComposedPlan,
     main_layout: &Layout,
@@ -628,7 +687,7 @@ fn compose_operations(
             return Ok(());
         }
         Ok(running) if running.is_empty() => {
-            plan.text("operations", "Running operations", Ok(format!("none. {STARTABLE_NOT_RECORDED}")));
+            plan.text("operations", "Running operations", Ok(format!("{NO_RUNNING_OPERATIONS} {STARTABLE_NOT_RECORDED}")));
             return Ok(());
         }
         Ok(running) => running,
@@ -664,7 +723,13 @@ fn compose_operations(
                 None => Ok(sprite),
             },
         });
-        let mut layout = layout_window(entry, resources, viewport, |instance| {
+        let mut missing_controls = Vec::new();
+        let mut layout = layout_window(entry, &TargetFlagResources(resources), viewport, |instance| {
+            if let Some(flag) = find_direct(entry, OPERATION_TARGET_FLAG)
+                && let Ok(bound) = instance.control(entry, flag)
+            {
+                bound.shield = Some(TARGET_FLAG_LAYOUT_INDEX);
+            }
             set_text_by_name(instance, entry, "container_operation_info/operation_name_text", name.clone());
             for hidden in [
                 "container_operation_info/operation_ai_score",
@@ -672,17 +737,32 @@ fn compose_operations(
                 "container_operation_info/operation_prepared_remaining_days_text",
                 "container_operation_info/operation_completed_icon",
                 "container_operation_info/operation_completed_warning",
-                "container_operation_info/container_tokens",
             ] {
                 hide_by_name(instance, entry, hidden);
             }
             if let Ok(sprite) = &sprite {
                 set_sprite_by_name(instance, entry, "container_operation_info/operation_icon", sprite);
             }
-            set_text_by_name(instance, entry, "container_operation_info/container_operatives_required/operatives_required_text", operation.required.to_string());
-            set_text_by_name(instance, entry, "container_operation_info/container_network_strength/network_strength_text", NOT_RECORDED_VALUE.to_owned());
-            set_text_by_name(instance, entry, "container_operation_info/operation_duration_text", operation.duration_days.to_string());
-            set_text_by_name(instance, entry, "container_operation_info/container_launch_operation/btn_select_button", shown_or(&status));
+            for (kind, control, label, value) in [
+                (native::Kind::TextBox, "operatives_required_text", "Operatives required display", Some(operation.required.to_string())),
+                (native::Kind::TextBox, "network_strength_text", "Network strength display", Some(NOT_RECORDED_VALUE.to_owned())),
+                (native::Kind::TextBox, "operation_duration_text", "Duration display", Some(operation.duration_days.to_string())),
+                (native::Kind::Button, "btn_select_button", "Status display", Some(shown_or(&status))),
+                (native::Kind::Container, "container_tokens", "Operation tokens display", None),
+            ] {
+                let controls = operation_controls(entry, kind, control);
+                let bound = match (value, controls.as_slice()) {
+                    (Some(text), [element]) => instance.control(entry, element).map(|bound| bound.text = Some(text)),
+                    (value, elements) => {
+                        for element in elements { let _ = instance.hide(entry, element); }
+                        value.map_or(Ok(()), |_| {
+                            let state = if elements.is_empty() { "missing" } else { "ambiguous" };
+                            Err(format!("Installed operation control '{control}' is {state}."))
+                        })
+                    }
+                };
+                if let Err(why) = bound { missing_controls.push((label, why)); }
+            }
         })?;
         let mut stand_in = |element: &str, item: String, asset: &str, why: &str| {
             let rect = find_direct(entry, element)
@@ -693,17 +773,23 @@ fn compose_operations(
         if let Err(why) = &sprite {
             stand_in("container_operation_info/operation_icon", format!("{name} icon"), "the operation's picture", why);
         }
-        stand_in(
-            "container_operation_info/btn_target_flag",
-            target.clone().unwrap_or_else(|_| NOT_RECORDED_VALUE.to_owned()),
-            "the target's flag",
-            "flags are not drawn in game windows yet",
-        );
+        let country = target.clone().unwrap_or_else(|_| "Unrecorded target country".to_owned());
+        stand_in(OPERATION_TARGET_FLAG, country.clone(), "the target's flag", UNBOUND_TARGET_FLAG);
+        if let Some(text) = plan.text.last_mut() {
+            (text.label, text.value, text.missing) = (format!("Target flag for {country}"), Some(UNBOUND_TARGET_FLAG.to_owned()), None);
+        }
+        plan.warnings.push(format!("Could not draw the operation target flag for {country}: {UNBOUND_TARGET_FLAG}"));
         let mut overrides = BTreeMap::new();
+        let mut body = format!("Target: {}\nTarget flag for {country}: {UNBOUND_TARGET_FLAG}\n{NETWORK_NOT_RECORDED}", target.unwrap_or_else(|why| why));
+        for (label, why) in missing_controls {
+            plan.text(&format!("{path}/{label}"), label, Ok(why.clone()));
+            plan.warnings.push(format!("{name}: {why}"));
+            body.push_str(&format!("\n{why}"));
+        }
         if let Some(background) = find_direct(entry, "operation_bg") {
             overrides.insert(background.path.clone(), GameWindowTooltip {
                 title: name.clone(),
-                body: Some(format!("{}\n{NETWORK_NOT_RECORDED}", target.clone().unwrap_or_else(|why| why))),
+                body: Some(body),
                 detail: operation.token.clone(),
             });
         }
