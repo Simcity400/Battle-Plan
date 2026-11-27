@@ -365,9 +365,16 @@ fn resolve_selected(holders: &Holders, country: &Country, hour: i32) -> Result<O
             }
             let runs = holders.runs(country);
             let before_hour = runs.partition_point(|run| run.first <= hour);
-            match runs[..before_hour].last().map(|run| run.holder) {
-                Some(Holder::Found { slot, id }) => Ok(Some((slot, id))),
-                Some(Holder::Unresolved) => Err(format!("Who holds {} is not known: {TAG_UNLINKED}", holders.name(country, hour))),
+            match runs[..before_hour].last() {
+                Some(run) => match run.holder {
+                    Holder::Found { slot, id } => {
+                        if let Some((_, _, reason)) = holders.unknown.iter().find(|&&(first, last, _)| last > run.last && first <= hour) {
+                            return Err(format!("Who holds {} is not known: {reason}", holders.name(country, hour)));
+                        }
+                        Ok(Some((slot, id)))
+                    }
+                    Holder::Unresolved => Err(format!("Who holds {} is not known: {TAG_UNLINKED}", holders.name(country, hour))),
+                },
                 None => Ok(None),
             }
         }
@@ -687,6 +694,7 @@ mod tests {
         assert!(resolve_selected(&holders, &d04, 115).unwrap_err().contains(TAG_UNLINKED), "unresolved current run refuses instead of falling back");
         assert!(resolve_selected(&holders, &pol, 125).unwrap_err().contains("country links unread"), "recorded unknown span refuses instead of falling back");
         assert_eq!(resolve_selected(&holders, &pol, 115), Ok(Some((4, 40))), "known absence still resolves the last proven holder");
+        assert!(resolve_selected(&holders, &pol, 130).unwrap_err().contains("country links unread"), "unreadable holder span between last witness and query refuses instead of falling back");
         assert!(resolve_selected(&holders, &d04, 130).unwrap_err().contains(TAG_UNLINKED), "known absence after an unresolved run refuses instead of skipping to an older holder");
     }
 

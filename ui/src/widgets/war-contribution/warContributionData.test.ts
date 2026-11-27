@@ -754,10 +754,53 @@ test('live war-contributions confirmed at a later hour uses the displayed hour f
   const liveMeasure = warContributionMeasureProjection.project(liveRead, { wars, saved: '1', measure: 'casualties' });
   assert.deepEqual(liveMeasure.rows.filter(r => r.kind === 'data').map(r => r.key), ['opposing:AAA'], 'measure view reflects hour-250 observation orientation');
   assert.equal(liveMeasure.summaryText, undefined, 'active war measure view shows no stale As of summary');
-  assert.deepEqual(liveMeasure.dataHours, [250], 'active war records display hour as effective dataHour');
+  assert.equal(liveMeasure.dataHours, undefined, 'active war omits dataHours so held models keep live tooltips dated to the current hour');
+
+  const { createLaneView } = await import('../../families/laneRuntime.ts');
+  const { barsLane } = await import('../../families/bars/laneView.ts');
+  const { assertTooltipDated, LANE_THEME } = await import('../../families/laneRuntime.fixture.ts');
+  const { MEASURE_VIEW } = await import('./measureProjection.ts');
+  assertTooltipDated(
+    () => createLaneView(barsLane, () => {}),
+    {
+      label: 'live war-contribution measure',
+      hour: 250,
+      binding: {
+        family: 'bars' as const,
+        kind: 'war-contribution',
+        view: MEASURE_VIEW,
+        options: { wars, saved: '1', measure: 'casualties' },
+        sources: {},
+        staticPanels: { live: heldReply },
+        width: 480,
+        height: 240,
+        scrollTop: 0,
+        theme: LANE_THEME,
+        audit: false,
+        auditId: 1,
+      },
+    } as never,
+    'row:opposing:AAA',
+    25,
+  );
+
+  const adjacentWars = {
+    available: true,
+    wars: [
+      { ...war('1', 100, 199, [['BBB'], ['AAA']]) },
+      { ...war('2', 200, 500, [['BBB'], ['AAA']]) },
+    ],
+  } as unknown as WarsReply;
+  const adjacentSides = warContributionSidesProjection.project(
+    createBoundedReadView({ hour: 250, panels: new Map([['live', heldReply]]) }),
+    { wars: adjacentWars, saved: null },
+  );
+  assert.equal(adjacentSides.panes?.length, 2, 'confirmed live reply predating an adjacent same-participant war still renders instead of sticking on loading');
 
   const endedRead = createBoundedReadView({ hour: 900, panels: new Map([['ended', { ...heldReply, hour: 500 }]]) });
   const endedSides = warContributionSidesProjection.project(endedRead, { wars, saved: '1' });
   assert.equal(endedSides.tooltipHour, 500);
   assert.equal(endedSides.titleSummary, `As of ${formatDateOnly(500)}`);
+  const endedMeasure = warContributionMeasureProjection.project(endedRead, { wars, saved: '1', measure: 'casualties' });
+  assert.deepEqual(endedMeasure.dataHours, [500], 'ended war keeps dataHours pinned to the supplying hour');
 });

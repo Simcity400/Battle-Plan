@@ -44,12 +44,13 @@ export function sideCountries(group: WarContributionGroup, side: WarSide): strin
   return [...new Set(side === 'viewpoint' ? group.viewpointSide : group.opposingSide)];
 }
 
-function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): { readonly reply: WarContributionsReply; readonly live: boolean } | undefined {
+function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): { readonly reply: WarContributionsReply; readonly asOf: number } | undefined {
   const going = observationAt(war, hour) !== null;
   const raw = readView.panel(going ? 'live' : 'ended');
   if (raw === undefined) return undefined;
   const reply = validateWarContributions(raw);
-  return reply.hour >= war.firstHour && reply.hour <= war.lastHour && reply.hour <= hour ? { reply, live: going } : undefined;
+  const asOf = going ? hour : reply.hour;
+  return reply.hour <= hour && asOf >= war.firstHour && asOf <= war.lastHour ? { reply, asOf } : undefined;
 }
 
 export function warContributionNextChange(hour: number, options: WarChoiceOptions): number {
@@ -73,8 +74,7 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
   }
   const found = replyFor(readView, war, hour);
   if (!found) return { kind: 'loading' };
-  const { reply, live } = found;
-  const asOf = live ? hour : reply.hour;
+  const { reply, asOf } = found;
   const observation = observationAt(war, asOf);
   const group = observation ? warContributions(reply.contributions, observation) : null;
   if (!observation || !group || (group.reason && !group.measures.length)) return { kind: 'blank', empty: group?.reason ?? 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };

@@ -41,7 +41,7 @@ function disambiguateLabels(items: readonly { readonly country: CasualtyMatrixCo
     if (!items[at]!.loading) datedCounts.set(dated[at]!, (datedCounts.get(dated[at]!) ?? 0) + 1);
   }
   return dated.map((label, at) => (
-    !items[at]!.loading && (datedCounts.get(label) ?? 0) > 1 ? `${label} (#${items[at]!.country.countryId})` : label
+    !items[at]!.loading && (datedCounts.get(label) ?? 0) > 1 ? `${label} (#${items[at]!.country.slot}:${items[at]!.country.countryId})` : label
   ));
 }
 
