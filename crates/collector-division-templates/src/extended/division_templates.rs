@@ -195,8 +195,6 @@ struct LazyClean {
     raw: RawClean,
     country: std::sync::Arc<replay_data::rows::TableRows>,
     tables: std::sync::OnceLock<[replay_data::rows::TableRows; 2]>,
-    fallback_reasons: [std::sync::Mutex<Option<String>>; 2],
-    fallback_spent: [std::sync::atomic::AtomicBool; 2],
 }
 
 impl LazyClean {
@@ -207,62 +205,6 @@ impl LazyClean {
         let built = self.raw.materialize()?;
         let _ = self.tables.set(built);
         self.tables.get()
-    }
-
-    fn refill_fallback_reason(&self, index: usize) {
-        if !self.fallback_spent[index].load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        let Some(reason) =
-            engine_allocation::advisory(|| engine_allocation::string(CLEAN_ALLOC_FAILURE).ok())
-        else {
-            return;
-        };
-        let mut slot = self.fallback_reasons[index]
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if slot.is_none() {
-            *slot = Some(reason);
-        }
-        self.fallback_spent[index].store(false, std::sync::atomic::Ordering::Release);
-    }
-
-    fn refill_fallback_reasons(&self) {
-        self.refill_fallback_reason(0);
-        self.refill_fallback_reason(1);
-    }
-
-    fn table_input(&self, index: usize) -> TableInput {
-        let (cloned, refused) = engine_allocation::contained(|| {
-            self.tables()
-                .and_then(|tables| tables[index].try_clone().ok())
-        });
-        if !refused
-            && let Some(rows) = cloned
-        {
-            self.refill_fallback_reason(index);
-            return TableInput::Sampled(TableView::Complete(rows));
-        }
-        let (reason, reason_refused) =
-            engine_allocation::contained(|| engine_allocation::string(CLEAN_ALLOC_FAILURE).ok());
-        if !reason_refused
-            && let Some(reason) = reason
-        {
-            return TableView::Unavailable { reason }.into();
-        }
-        let mut slot = self.fallback_reasons[index]
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(reason) = slot.take() {
-            self.fallback_spent[index].store(true, std::sync::atomic::Ordering::Release);
-            return TableView::Unavailable { reason }.into();
-        }
-        drop(slot);
-        let _ = engine_allocation::oom();
-        TableView::Unavailable {
-            reason: String::new(),
-        }
-        .into()
     }
 }
 
@@ -361,6 +303,7 @@ pub struct Captured {
     dirty_country_indices: Vec<usize>,
     prev_clean: Option<CleanState>,
     fast_clean: Option<CleanState>,
+    clean_fallback_reasons: [std::sync::Mutex<Option<String>>; 2],
     generation: u64,
     witness: Option<Witness>,
     occurrences: [u64; 2],
@@ -460,6 +403,7 @@ impl Captured {
             dirty_country_indices: Vec::new(),
             prev_clean: None,
             fast_clean: None,
+            clean_fallback_reasons: [std::sync::Mutex::new(None), std::sync::Mutex::new(None)],
             generation: 0,
             witness: None,
             occurrences: [0; 2],
@@ -760,6 +704,7 @@ impl Captured {
             let start = qpc();
             if native::clean_roster_digest(memory, base, state) == Ok(clean.digest)
                 && (changes.quiet(), changes.core_dependencies()) == tokens
+                && self.reserve_clean_fallback_reasons()
             {
                 let elapsed = qpc().saturating_sub(start).max(0) as u64;
                 let icon_count = clean.digest.icon_count;
@@ -780,7 +725,6 @@ impl Captured {
                 self.locals.required = clean.required[7];
                 self.witness = Some(clean.witness);
                 self.generation = clean.generation;
-                clean.clean.refill_fallback_reasons();
                 self.fast_clean = prev_clean;
                 self.pending_owned = true;
                 crate::template_changes::record_countries(country_count);
@@ -1078,6 +1022,7 @@ impl Captured {
         if !any_dirty {
             if (changes.quiet(), changes.core_dependencies()) != (Some(tokens.0), Some(tokens.1))
                 || changes.dirty_cursor() != Some(log_cursor)
+                || !self.reserve_clean_fallback_reasons()
             {
                 return None;
             }
@@ -1103,7 +1048,6 @@ impl Captured {
             self.locals.required = clean.required[7];
             self.witness = Some(clean.witness);
             self.generation = clean.generation;
-            next.clean.refill_fallback_reasons();
             self.fast_clean = Some(next);
             self.pending_owned = true;
             crate::template_changes::record_countries(country_count);
@@ -1710,24 +1654,11 @@ impl Captured {
                         speed_spans: copy_vec(&self.speed_spans).ok()?,
                         country_rows,
                     };
-                    let fallback_reasons = [
-                        std::sync::Mutex::new(Some(
-                            engine_allocation::string(CLEAN_ALLOC_FAILURE).ok()?,
-                        )),
-                        std::sync::Mutex::new(Some(
-                            engine_allocation::string(CLEAN_ALLOC_FAILURE).ok()?,
-                        )),
-                    ];
                     Some((
                         engine_allocation::shared(LazyClean {
                             raw,
                             country,
                             tables: std::sync::OnceLock::new(),
-                            fallback_reasons,
-                            fallback_spent: [
-                                std::sync::atomic::AtomicBool::new(false),
-                                std::sync::atomic::AtomicBool::new(false),
-                            ],
                         })
                         .ok()?,
                         country_slots,
@@ -1893,6 +1824,55 @@ impl Captured {
         self.projected_inputs(None)
     }
 
+    fn reserve_clean_fallback_reasons(&mut self) -> bool {
+        for slot in &mut self.clean_fallback_reasons {
+            let slot = slot
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot.is_none() {
+                let Some(reason) = engine_allocation::advisory(|| {
+                    engine_allocation::string(CLEAN_ALLOC_FAILURE).ok()
+                }) else {
+                    return false;
+                };
+                *slot = Some(reason);
+            }
+        }
+        true
+    }
+
+    fn clean_table_input(&self, fast: &CleanState, index: usize) -> TableInput {
+        let (cloned, refused) = engine_allocation::contained(|| {
+            fast.clean
+                .tables()
+                .and_then(|tables| tables[index].try_clone().ok())
+        });
+        if !refused
+            && let Some(rows) = cloned
+        {
+            return TableInput::Sampled(TableView::Complete(rows));
+        }
+        let (reason, reason_refused) =
+            engine_allocation::contained(|| engine_allocation::string(CLEAN_ALLOC_FAILURE).ok());
+        if !reason_refused
+            && let Some(reason) = reason
+        {
+            return TableView::Unavailable { reason }.into();
+        }
+        if let Some(reason) = self.clean_fallback_reasons[index]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            return TableView::Unavailable { reason }.into();
+        }
+        let _ = engine_allocation::oom();
+        TableView::Unavailable {
+            reason: String::new(),
+        }
+        .into()
+    }
+
     pub fn projected_inputs(&self, mut projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
         let witness = self.witness;
         let previous = projection
@@ -1902,7 +1882,7 @@ impl Captured {
             projection.as_deref_mut(),
             witness,
             |projection| match &self.fast_clean {
-                Some(fast) => fast.clean.table_input(0),
+                Some(fast) => self.clean_table_input(fast, 0),
                 None => self.templates(projection),
             },
         );
@@ -1928,7 +1908,7 @@ impl Captured {
             projection.as_deref_mut(),
             witness,
             |projection| match &self.fast_clean {
-                Some(fast) => fast.clean.table_input(1),
+                Some(fast) => self.clean_table_input(fast, 1),
                 None => self.icons(projection, names),
             },
         );

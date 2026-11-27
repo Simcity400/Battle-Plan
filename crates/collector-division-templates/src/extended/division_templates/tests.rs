@@ -1895,6 +1895,8 @@ fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() 
     let changes = CoreChanges::new();
     let source = gridded_fixture();
     let mut fast = Captured::with_capacities(&capacity());
+    let mut second = Captured::without_home(&capacity());
+    second.share_home(&fast.home().expect("shared home"));
     let mut reference = Captured::with_capacities(&capacity());
     for hour in 0..3 {
         // SAFETY: Isolated unit test fixture owns both captures and mock memories.
@@ -1903,14 +1905,23 @@ fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() 
             reference.capture_original(&source, 0, 0x1000, hour, true, &changes);
         }
     }
+    // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+    unsafe {
+        second.capture_original(&source, 0, 0x1000, 3, false, &changes);
+    }
+    assert!(engine_allocation::SharedBox::ptr_eq(
+        &fast.fast_clean.as_ref().expect("first clean snapshot").clean,
+        &second.fast_clean.as_ref().expect("second clean snapshot").clean,
+    ));
+
     HOOK_FIRED.with(|fired| fired.set(false));
     WATCHED.with(|watched| watched.set(true));
     engine_allocation::set_hooks(None, Some(record_failure));
     let _hook = HookGuard;
 
-    let clean = &fast.fast_clean.as_ref().expect("clean snapshot").clean;
     let mut refusals = 0_usize;
     for ordinal in 1.. {
+        let clean = &fast.fast_clean.as_ref().expect("clean snapshot").clean;
         let guard = collector_test_support::NullGuard::new(ordinal);
         let materialized = clean.tables();
         let denied = collector_test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed);
@@ -1925,9 +1936,21 @@ fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() 
     }
     assert!(refusals >= 4);
 
+    let guard = collector_test_support::NullGuard::new(1);
+    let [first_dict, first_icons, _] = fast.projected_inputs(None);
+    let [second_dict, second_icons, _] = second.projected_inputs(None);
+    drop(guard);
+    assert!(!HOOK_FIRED.with(std::cell::Cell::get));
+    for input in [&first_dict, &first_icons, &second_dict, &second_icons] {
+        assert!(matches!(
+            input,
+            TableInput::Sampled(TableView::Unavailable { reason }) if reason == CLEAN_ALLOC_FAILURE
+        ));
+    }
+
     let mut publish_refusals = 0_usize;
     for ordinal in 1.. {
-        clean.refill_fallback_reasons();
+        assert!(fast.reserve_clean_fallback_reasons());
         let guard = collector_test_support::NullGuard::new(ordinal);
         let [dictionary, icons, _] = fast.projected_inputs(None);
         let denied = collector_test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed);
@@ -1956,4 +1979,5 @@ fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() 
     }
     assert!(publish_refusals >= 2);
     assert_eq!(fast.tables(), reference.tables());
+    assert_eq!(second.tables(), reference.tables());
 }
