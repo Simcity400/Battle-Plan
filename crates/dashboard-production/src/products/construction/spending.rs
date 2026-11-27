@@ -308,8 +308,7 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
             }
             let tick = number(cells, repair).and_then(|value| i32::try_from(value).ok());
             held.repair_tick = held.repair_tick.or(tick);
-            let (rep_now, rem_now) = (number(cells, rep_lvl).unwrap_or(0), number(cells, rem).unwrap_or(0));
-            if rep_now > 0 { repairs_cleared = false; } else if prev_repair[0] > 0 { repairs_cleared = true; }
+            let (rep_now, rem_now, prev_rep) = (number(cells, rep_lvl).unwrap_or(0), number(cells, rem).unwrap_or(0), prev_repair[0]);
             let mut new_grew = false;
             for (slot, &column) in new_at.iter().enumerate() {
                 if let Some(value) = number(cells, column) {
@@ -326,9 +325,11 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
                     prev_repair[slot] = value;
                 }
             }
+            if rep_now > 0 || (prev_rep == 0 && repair_grew) { repairs_cleared = false; } else if prev_rep > 0 { repairs_cleared = true; }
             let active = if rep_now > 0 || (repair_grew && !new_grew) {
                 Some(true)
             } else if new_grew && !repair_grew {
+                repairs_cleared = false;
                 Some(false)
             } else if rem_now > 0 && !repair_grew && (repairs_cleared || held.purpose.last().is_none_or(|&(_, r)| !r)) {
                 repairs_cleared = false;
@@ -426,7 +427,7 @@ fn owner_unknown_lines(query: &Query<'_>, run: u32, first: i32, last: i32) -> io
         .collect())
 }
 
-struct SeenLine { line: Line, matched: bool, history: LineHistory }
+struct SeenLine { line: Line, matched: bool, history: LineHistory, buildings: Vec<(i32, Option<u32>)> }
 
 fn min_opt(a: Option<i32>, b: Option<i32>) -> Option<i32> { [a, b].into_iter().flatten().min() }
 
@@ -451,9 +452,10 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         let ids: Vec<u128> = kept.iter().map(|(line, _)| u128::from(line.id)).collect();
         let mut steps = if ids.is_empty() { ReasonSteps::new() } else { reason_steps(query, stretch.run, &ids, stretch.first, stretch.last)? };
         for (line, matched) in kept {
-            let entry = seen.entry(line.id).or_insert_with(|| SeenLine { line: line.clone(), matched, history: LineHistory::default() });
+            let entry = seen.entry(line.id).or_insert_with(|| SeenLine { line: line.clone(), matched, history: LineHistory::default(), buildings: Vec::new() });
             entry.matched |= matched;
             entry.line.country = entry.line.country.or(line.country);
+            entry.buildings.push((stretch.first, line.building));
             let mut part_last_known = None;
             if let Some(part) = steps.remove(&line.id) {
                 part_last_known = part.last_known_owner;
@@ -493,14 +495,27 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         }
         if let Some(hour) = owner_gap { out.unattributed.push(hour); }
         if !acc.matched { continue; }
-        let gaps = gaps.into_iter().filter(|&(_, _, gap)| gap != SpendingGap::OwnerUnknown).collect();
+        let gaps: Vec<(i32, i32, SpendingGap)> = gaps.into_iter().filter(|&(_, _, gap)| gap != SpendingGap::OwnerUnknown).collect();
         let leaf = leaf_keys(&acc.line)[0];
         let repair_from = min_opt(acc.history.repair_tick, acc.history.first_repair).map(|hour| hour.max(acc.line.first_read));
         let new_from = acc.history.first_new.map(|hour| hour.max(acc.line.first_read));
-        out.lines.push(LineFacts {
-            leaf: (leaf.1, leaf.2, leaf.3, leaf.4), building: acc.line.building, new_from, repair_from,
-            purpose: acc.history.purpose, gaps, before_first_read: acc.history.before_observation.map(|hour| hour.max(acc.line.first_read)),
-        });
+        let mut before_first_read = acc.history.before_observation.map(|hour| hour.max(acc.line.first_read));
+        acc.buildings.sort_by_key(|&(at, _)| at);
+        let mut by_building: BTreeMap<Option<u32>, Vec<(i32, i32, SpendingGap)>> = BTreeMap::new();
+        for gap in gaps {
+            let building = acc.buildings[..acc.buildings.partition_point(|&(at, _)| at <= gap.0)].last().and_then(|&(_, b)| b);
+            by_building.entry(building).or_default().push(gap);
+        }
+        if by_building.is_empty() {
+            by_building.insert(acc.buildings.last().and_then(|&(_, b)| b), Vec::new());
+        }
+        for (building, gaps) in by_building {
+            let bcol = if leaf.1 { TagHolderRow::NONE } else { building.unwrap_or(TagHolderRow::NONE) };
+            out.lines.push(LineFacts {
+                leaf: (leaf.1, bcol, leaf.3, leaf.4), building, new_from, repair_from,
+                purpose: acc.history.purpose.clone(), gaps, before_first_read: before_first_read.take(),
+            });
+        }
     }
     let buildings = place_buildings(&out.spent, &out.lines);
     let first_at = first_building_hours(out.from, &out.spent, &out.lines, &buildings);

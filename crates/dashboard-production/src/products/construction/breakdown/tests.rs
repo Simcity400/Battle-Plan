@@ -392,7 +392,7 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
             frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
-                id: 3, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95,
+                id: 3, country: 9001, building_type: 7, target_state: 12, target_location: 12, cost: 500_000, created_hour: 95,
                 amount: 1, repair_levels: i32::from(hour < 120), ..Default::default()
             }]))
             .into();
@@ -424,6 +424,11 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
         .unwrap()
         .into_timelines(&Default::default())
         .unwrap();
+    let rep_hist = replay_lanes::lanes::history(finish_replay.recording(), 0, TableId::ConstructionProjects, &[super::super::col::REPAIRED], replay_lanes::lanes::Keys::These(&[3]), 118, 120).unwrap();
+    assert!(
+        rep_hist.keys[0].1.iter().any(|step| step.hour == 120 && matches!(step.cells.as_deref(), Some([replay_lanes::lanes::Cell::Number(1)]))),
+        "fixture must record a derived repaired completion at hour 120"
+    );
     let finish_source = Source::from_replay(
         SourceKey { source_id: "construction-repair-finish-to-new".into(), revision: "1".into() },
         "synthetic.battleplan".into(),
