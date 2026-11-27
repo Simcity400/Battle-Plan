@@ -68,7 +68,7 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, onCl
   const leadLabel = useKeyLabelsAt(runtime, track, leadKeys, leadHour, false, true)[0];
   const lead = leadSlot !== undefined && leadTag ? { slot: leadSlot, tag: leadTag } : null;
   const combat = row.key.startsWith('combat:') ? row.key.split(':')[1] ?? null : null;
-  const shownEnd = ongoing ? opened.hour : result ? result.from : row.endSeen && liveEnd !== null ? liveEnd + 1 : liveEnd;
+  const shownEnd = ongoing || liveEnd === null ? liveEnd : row.endSeen ? liveEnd + 1 : liveEnd;
   const day = <span className="bv-when"><time>{shownEnd !== null ? formatDateRange(row.hour, shownEnd) : formatDay(row.hour)}</time></span>;
   const unplayable = <span className="bv-missing" data-tooltip="The recording does not give this battle's last hour." tabIndex={0}><i className="bv-hatch" aria-hidden="true" />End not recorded</span>;
 

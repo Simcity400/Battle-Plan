@@ -108,7 +108,7 @@ struct Held {
     next: Option<Hour>,
     asked: Option<Key>,
     family: Option<ReadKey>,
-    seen: Option<(Option<u64>, BranchId)>,
+    seen: Option<(Option<u64>, BranchId, Selection)>,
     epoch_sequence: u64,
     at_sequence: u64,
     answered_sequence: u64,
@@ -513,11 +513,17 @@ impl Held {
     }
 
     fn restart(&mut self, branch: BranchId, target: &DashboardMapView, played_from: Option<Hour>) {
-        let seen = (target.seek_sequence, branch);
+        let selection = self.battle.at(target.hour);
+        let seen = (target.seek_sequence, branch, selection);
         if self.seen == Some(seen) {
             return;
         }
         self.seen = Some(seen);
+        if selection != self.selection {
+            self.selection = selection;
+            self.family = None;
+            self.window.open(selection);
+        }
         self.epoch += 1;
         self.epoch_sequence = target.sequence;
         self.queue.clear();
@@ -525,7 +531,11 @@ impl Held {
         self.refused = None;
         self.at = None;
         self.closed = None;
-        self.start = played_from.filter(|from| *from <= target.hour).unwrap_or(target.hour);
+        let opens = match (selection, self.battle.result) {
+            (Selection::NavalResult(_), Some((_, from))) => from,
+            _ => Hour::MIN,
+        };
+        self.start = played_from.filter(|from| *from <= target.hour).unwrap_or(target.hour).max(opens);
         self.next = Some(self.start);
     }
 
@@ -579,16 +589,6 @@ impl Held {
     }
 
     fn ask(&mut self, ctx: &egui::Context, branch: BranchId, target: &DashboardMapView, perspective: &Choice) {
-        if let Some(want) = self.next.map(|next| self.battle.at(next))
-            && want != self.selection
-        {
-            if !self.queue.is_empty() || self.asked.is_some() {
-                return;
-            }
-            self.selection = want;
-            self.closed = None;
-            self.window.open(want);
-        }
         if !self.window.is_open() {
             if self.closed == Some(target.hour) && self.next.is_none_or(|next| next > target.hour) {
                 return;
@@ -614,8 +614,7 @@ impl Held {
         let Some(hour) = self.next.filter(|next| *next <= target.hour) else {
             return;
         };
-        let switch = self.battle.result.map(|(_, from)| from).filter(|from| hour < *from);
-        let through = target.hour.min(hour + STEPS_BEFORE_SEEK - 1).min(switch.map_or(Hour::MAX, |from| from - 1));
+        let through = target.hour.min(hour + STEPS_BEFORE_SEEK - 1);
         let key = Key { generation: self.generation, epoch: self.epoch, branch, hour, through, landing: hour == self.start, read };
         self.next = Some(through + 1);
         self.asked = Some(key.clone());
@@ -855,7 +854,7 @@ impl Held {
         };
         let at = (pointer - rect.min) / picture.fit;
         let inside = |hit: [f32; 4]| at.x >= hit[0] && at.y >= hit[1] && at.x < hit[0] + hit[2] && at.y < hit[1] + hit[3];
-        if response.clicked() && drawn.close.is_some_and(inside) {
+        if response.clicked() && drawn.closes([at.x, at.y]) {
             self.close_requests += 1;
         }
         let wheel = ui.input(|input| input.raw.events.iter().filter_map(|event| match event {

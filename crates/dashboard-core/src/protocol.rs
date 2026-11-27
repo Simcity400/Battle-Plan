@@ -610,6 +610,12 @@ impl DashboardMapView {
         {
             return Err("A battle window names a full combat or naval result handle and one country tag");
         }
+        if let Some(battle) = &self.battle
+            && battle.combat.is_none()
+            && battle.result().is_some_and(|(_, from)| self.hour < from)
+        {
+            return Err("A battle held only as a naval result opens from the hour its result was read");
+        }
         for text in [&self.id, &self.source_id, &self.revision] {
             if text.is_empty() || text.len() > 128 || text.contains('\0') {
                 return Err("Map identity is missing or exceeds its control budget");
@@ -915,6 +921,7 @@ mod tests {
             assert_eq!(view.validate().is_ok(), valid, "battle window {combat:?} as {country:?}");
         }
         let result = |handle: &str| Some(super::BattleResult { handle: handle.into(), from: 40 });
+        view.hour = 40;
         for (kind, combat, result, valid) in [
             (super::BattleKind::Naval, None, result("31"), true),
             (super::BattleKind::Naval, Some("12".to_owned()), result("31"), true),
@@ -925,6 +932,11 @@ mod tests {
             view.battle = Some(super::BattleWindow { kind, combat: combat.clone(), result: result.clone(), ..battle("1", "GER") });
             assert_eq!(view.validate().is_ok(), valid, "{kind:?} battle window {combat:?} with result {result:?}");
         }
+        view.hour = 39;
+        view.battle = Some(super::BattleWindow { kind: super::BattleKind::Naval, combat: None, result: result("31"), ..battle("1", "GER") });
+        assert!(view.validate().is_err(), "a battle held only as a result opens from the hour its result was read");
+        view.battle = Some(super::BattleWindow { kind: super::BattleKind::Naval, combat: Some("12".to_owned()), result: result("31"), ..battle("1", "GER") });
+        assert!(view.validate().is_ok(), "a battle with live hours plays them before its result");
         let kind = |extra: serde_json::Value| {
             let mut window = serde_json::json!({ "combat": "1", "country": "GER", "canvas": [0, 0, 0], "text": [0, 0, 0] });
             window.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());

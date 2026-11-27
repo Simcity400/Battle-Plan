@@ -422,6 +422,14 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                     sides
                 };
                 let mut sides = named_at(date);
+                let result_hour = [&battle, &result]
+                    .into_iter()
+                    .filter_map(|of| lines.get(of))
+                    .flat_map(|line| &line.reads)
+                    .filter(|(at, read)| *at <= hour && read.result_id == Some(*key as u64))
+                    .filter_map(|(_, read)| read.result_hour)
+                    .min()
+                    .unwrap_or(hour);
                 let line = lines.entry(battle).or_default();
                 line.reads.truncate(line.reads.partition_point(|(at, _)| *at <= hour));
                 let mut late = None;
@@ -452,7 +460,6 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                         None => (read.result == NavalBattleStatus::Ongoing).then_some((Some(hour), false)),
                     })
                     .unwrap_or((None, false));
-                let result_hour = line.reads.iter().rev().find(|(_, read)| read.result_id == Some(*key as u64)).and_then(|(_, read)| read.result_hour).unwrap_or(hour);
                 let ic = std::array::from_fn(|i| observed.filter(|(_, prior)| prior.sunk[i] == sunk[i]).and_then(|(_, prior)| prior.ic[i]));
                 let status = match number(cells, 2) {
                     Some(1) => NavalBattleStatus::AttackerWon,
@@ -864,6 +871,16 @@ mod tests {
         let (hour, last) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
         assert_eq!((*hour, last.live_last, last.end_seen), (23, Some(21), false), "a battle live again after a stretch ended takes its live bound from its newest read");
         assert_eq!(last.result_hour, Some(21), "a refreshed result keeps the hour it was first read");
+        let mut lines = BTreeMap::new();
+        let results = History { keys: vec![(77, vec![step(20, Some(&[1, 20, 1]))])], ..History::default() };
+        let observations = History {
+            keys: vec![(77, vec![step(20, Some(&[0])), step(23, Some(&[observed, 7, 10, 20, 5, 0, 1, 0, 5, 0, 0, 0]))])],
+            ..History::default()
+        };
+        result_lines(&mut lines, span, &RunLinks::default(), &results, &observations, &History::default());
+        assert_eq!(lines[&Battle::Result(77, 20)].reads[0].1.result_hour, Some(20));
+        let (hour, linked) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
+        assert_eq!((*hour, linked.result_hour), (23, Some(20)), "a result linked to its battle later keeps the hour it was first read on its own");
     }
 
     #[test]
