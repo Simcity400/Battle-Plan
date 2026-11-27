@@ -28,9 +28,10 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
   const asked: ProductRequest[] = [];
   let now = 1000;
   performance.now = () => now;
-  const tasks = new Set<(frame: EngineFrame) => boolean | void>();
-  const engine = { every: (_phase: string, run: (frame: EngineFrame) => boolean | void) => {
-    tasks.add(run); return { wake() {}, stop() { tasks.delete(run); } };
+  const tasks = new Set<{ phase: string; run: (frame: EngineFrame) => boolean | void }>();
+  const engine = { every: (phase: string, run: (frame: EngineFrame) => boolean | void) => {
+    const task = { phase, run };
+    tasks.add(task); return { wake() {}, stop() { tasks.delete(task); } };
   } } as unknown as FrameEngine;
   const clock = new PlaybackController(engine);
   clock.setBounds({ firstHour: FIRST, lastHour: LAST }); clock.seek(FIRST); clock.setSpeed(1);
@@ -72,7 +73,7 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
   clock.setPlaying(true);
   for (let hour = 0; hour < hours; hour++) {
     now += 1000;
-    for (const run of [...tasks]) run({ now } as EngineFrame);
+    for (const phase of ['clock', 'paint']) for (const task of [...tasks]) if (task.phase === phase) task.run({ now } as EngineFrame);
     await frame();
   }
   const result = {
