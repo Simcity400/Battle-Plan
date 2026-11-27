@@ -183,6 +183,7 @@ struct Harness {
     every: Hour,
     reached: Hour,
     awaiting: bool,
+    plain: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn harness(pages: &Arc<Recording>) -> Harness {
@@ -216,8 +217,13 @@ fn stepping_with(pages: &Arc<Recording>, every: Hour, timeline: Timeline, logs: 
     let reader = playhead.declare(Vec::new(), None).unwrap();
     let consumer = playhead.consumer(reader);
     let weak = Arc::downgrade(&playhead);
-    follow.bind(move |tables, _joining| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), logs(playhead.as_ref())).unwrap();
-    Harness { pages: Arc::clone(pages), playhead: Some(playhead), follow, consumer, played, head: 0, seen: Hour::MIN, every, reached: Hour::MIN, awaiting: false }
+    let plain = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stripped = Arc::clone(&plain);
+    follow.bind(move |tables: Vec<playhead::Declared>, _joining| {
+        let tables = if stripped.load(std::sync::atomic::Ordering::Relaxed) { tables.into_iter().map(|table| playhead::Declared { passing: false, ..table }).collect() } else { tables };
+        weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables))
+    }, logs(playhead.as_ref())).unwrap();
+    Harness { pages: Arc::clone(pages), playhead: Some(playhead), follow, consumer, played, head: 0, seen: Hour::MIN, every, reached: Hour::MIN, awaiting: false, plain }
 }
 
 impl Harness {
@@ -364,13 +370,16 @@ fn an_answer_equal_to_the_last_is_claimed_only_at_the_hours_it_was_read() {
 
 #[test]
 fn a_row_born_and_gone_inside_a_step_is_never_claimed_absent_over_its_life() {
-    let pages = record(brief);
-    let mut harness = harness(&pages);
-    let query = keys(&[1010], &[0]);
-    harness.follow.follow(7, query.clone()).unwrap();
-    harness.seek(0);
-    let played = harness.play(100);
-    assert!(assert_claimed_only_where_read(&harness, &query, &played) > 0, "the absent row is restated at the step's end");
+    for plain in [false, true] {
+        let pages = record(brief);
+        let mut harness = harness(&pages);
+        harness.plain.store(plain, std::sync::atomic::Ordering::Relaxed);
+        let query = keys(&[1010], &[0]);
+        harness.follow.follow(7, query.clone()).unwrap();
+        harness.seek(0);
+        let played = harness.play(100);
+        assert!(assert_claimed_only_where_read(&harness, &query, &played) > 0, "the absent row is restated at the step's end, the lane passing: {}", !plain);
+    }
 }
 
 #[test]

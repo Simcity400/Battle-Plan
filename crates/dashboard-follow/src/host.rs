@@ -151,7 +151,7 @@ fn with_cells(frame: &DecodedFrame, data: &PanelData, live: Option<&Live>, ids: 
             let seeded = group.seed(frame);
             match register(group, ids, &mut kept, cells, class, seeded.is_none()) {
                 Ok(id) => {
-                    cell_lanes.push(Declared { table: group.table.index(), columns: group.columns.clone(), keyed: false, passing: false, hourly: false });
+                    cell_lanes.push(Declared { table: group.table.index(), columns: group.columns.clone(), keyed: false, passing: true, hourly: false });
                     match seeded {
                         Some(values) => GroupState::Seeded { follow: id, hour: frame.hour, values },
                         None => GroupState::Follow(id),
@@ -490,7 +490,7 @@ impl StepProduct {
                 let seeded = (new || seed || catch_up) && fresh && exact;
                 match register(group, &mut self.cells, &mut kept, self.host.as_ref(), self.class, seed_paused && !seeded) {
                     Ok(id) => {
-                        cell_lanes.push(Declared { table: group.table.index(), columns: group.columns.clone(), keyed: false, passing: false, hourly: false });
+                        cell_lanes.push(Declared { table: group.table.index(), columns: group.columns.clone(), keyed: false, passing: true, hourly: false });
                         out.insert("follow".into(), id.into());
                         if seeded { out.insert("seedHour".into(), hour.into()); } else { out.remove("values"); out.remove("rawValues"); }
                     }

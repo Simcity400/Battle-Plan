@@ -1013,7 +1013,7 @@ impl Engine {
         } else if changes.read_rows_changed() || (matches!(index.status, Some(Status::Truncated { .. })) && index.read.saturating_add(1) < evaluate::head(lane)) {
             index.witnessed.iter().for_each(|&query| mark_all(slab, marked, query));
         }
-        if changes.status_left().is_some() {
+        if changes.status_left().is_some() || (!lane.passing() && index.read.saturating_add(1) < evaluate::head(lane)) {
             index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
         }
         if let Some(log) = changes.log() {
