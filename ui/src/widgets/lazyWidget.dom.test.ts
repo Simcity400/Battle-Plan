@@ -10,14 +10,17 @@ test('each ordered pair of shared log renderers asks for and draws its own produ
   await withNativePage('log-isolation', '/ui/src/widgets/lazyWidget.dom.fixture.tsx', page => page.stage('log isolation', async () => {
     const wrong = new Set<Kind>();
     const failures: string[] = [];
-    for (const prepared of [false, true]) for (const first of Object.keys(witnesses) as Kind[]) for (const second of Object.keys(witnesses) as Kind[]) {
-      if (first === second) continue;
+    const pairs = (Object.keys(witnesses) as Kind[]).flatMap(first =>
+      (Object.keys(witnesses) as Kind[]).filter(second => second !== first).map(second => [first, second, first]));
+    const sequences: Kind[][] = [['market-ledger', 'peace-deals', 'division-log'], ...pairs];
+    for (const prepared of [false, true]) for (const sequence of sequences) {
       await page.reload();
-      const result = await page.evaluate<Result>(`window.logIsolation(${JSON.stringify([first, second])}, ${prepared})`);
+      const result = await page.evaluate<Result>(`window.logIsolation(${JSON.stringify(sequence)}, ${prepared})`);
       for (const shown of result.shown) {
-        if (!shown.canvas || !shown.rows.includes(witnesses[shown.kind]) || !result.asked.includes(`${shown.kind}-tail`)) {
+        if (!shown.canvas || shown.rows.length !== 1 || shown.rows[0] !== witnesses[shown.kind]
+          || result.asked.filter(product => product === `${shown.kind}-tail`).length !== 1) {
           wrong.add(shown.kind);
-          failures.push(`${first} then ${second}, prepared ${prepared}: ${JSON.stringify(result)}`);
+          failures.push(`${sequence.join(' then ')}, prepared ${prepared}: ${JSON.stringify(result)}`);
         }
       }
     }
