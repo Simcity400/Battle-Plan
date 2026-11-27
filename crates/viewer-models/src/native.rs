@@ -264,18 +264,10 @@ impl Pending {
                 self.samplers[key as usize].and_then(|part| resident(part).retained.sampler(key));
             stream.bind_texture(key / 2, stage(key), Some(texture.clone()), sampler);
         }
-        let selected = resident(part);
-        retained.bind_vertex(
-            0,
-            selected.geometry.native_stride,
-            selected.geometry.cpu_vertices.clone(),
+        retained.bind_model_geometry(
+            &resident(part).geometry.source,
+            self.skin.map(|part| &resident(part).geometry.source),
         );
-        if let Some(skin) = self
-            .skin
-            .and_then(|part| resident(part).geometry.cpu_skin.clone())
-        {
-            retained.bind_vertex(1, 16, skin);
-        }
     }
 }
 
@@ -319,7 +311,7 @@ struct PreparedPart {
 
 impl Resident {
     fn binds(&self) -> (u32, bool) {
-        (self.samplers, self.geometry.cpu_skin.is_some())
+        (self.samplers, self.geometry.has_skin())
     }
 
     fn check_bindings(&self, buffers: &Constants, textures: &Textures) -> Result<(), PrepareError> {
@@ -346,12 +338,16 @@ impl Resident {
 #[derive(Clone)]
 struct SharedGeometry {
     stride: u64,
-    native_stride: u64,
-    cpu_vertices: Arc<[u8]>,
-    cpu_skin: Option<Arc<[u8]>>,
+    source: Arc<mesh_shader::Geometry>,
     vertices: (usize, i32),
     indices: (usize, u32),
     skin_bones: usize,
+}
+
+impl SharedGeometry {
+    fn has_skin(&self) -> bool {
+        !self.source.skin.is_empty()
+    }
 }
 
 type MeshSlots = Vec<Vec<Vec<[Option<usize>; 4]>>>;
@@ -2710,12 +2706,7 @@ impl ModelPass {
                                                 )?;
                                                 let geometry = SharedGeometry {
                                                     stride,
-                                                    native_stride: source.geometry.stride,
-                                                    cpu_vertices: bytemuck::cast_slice(
-                                                        &source.geometry.vertices,
-                                                    )
-                                                    .into(),
-                                                    cpu_skin: skin.map(Into::into),
+                                                    source: Arc::clone(&source.geometry),
                                                     skin_bones: source
                                                         .geometry
                                                         .skin
@@ -2809,7 +2800,7 @@ impl ModelPass {
                                     texture_mask |= 1 << slot;
                                 }
 
-                                let skin = if gpu.geometry.cpu_skin.is_some() {
+                                let skin = if gpu.geometry.has_skin() {
                                     let pose = skin_pose.expect("skinned geometry checked above");
                                     if gpu.geometry.skin_bones > pose.bones.len() {
                                         return Err(PrepareError::Actor(invalid(format!(
@@ -2901,7 +2892,7 @@ impl ModelPass {
                                     let mut bones = 0;
                                     for part in &prepared {
                                         let resident = &native.residents[part.key];
-                                        if resident.geometry.cpu_skin.is_some() {
+                                        if resident.geometry.has_skin() {
                                             bones = bones.max(resident.geometry.skin_bones);
                                         }
                                     }
@@ -2961,7 +2952,7 @@ impl ModelPass {
                                 if !caster {
                                     pending_sources.state.record(key, gpu, textures);
                                 }
-                                let pool = (gpu.geometry.stride, gpu.geometry.cpu_skin.is_some());
+                                let pool = (gpu.geometry.stride, gpu.geometry.has_skin());
                                 let vertices = (pool, gpu.geometry.vertices.0);
                                 native.geometry_seen.resize(native.residents.len(), false);
                                 let first_geometry = !native.geometry_seen[key];
@@ -2999,7 +2990,7 @@ impl ModelPass {
                                             key,
                                             view,
                                             vertex,
-                                            skin: skin.filter(|_| gpu.geometry.cpu_skin.is_some()),
+                                            skin: skin.filter(|_| gpu.geometry.has_skin()),
                                             reference: gpu.pipeline.reference(),
                                             vertices,
                                             indices: gpu.geometry.indices.0,

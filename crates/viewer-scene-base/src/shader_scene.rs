@@ -2,6 +2,7 @@ use eframe::wgpu;
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use viewer_gpu::gpu_contract::Targets;
 use shader_pipeline::{gpu, stream, vertices::NativeBuffer};
+use crate::mesh_shader::Geometry;
 use std::sync::MutexGuard;
 use std::{
     collections::BTreeMap,
@@ -146,8 +147,25 @@ pub struct Partial {
 
 #[derive(Clone)]
 enum Bytes {
-    Complete(Arc<[u8]>),
+    Complete(Complete),
     Partial(Arc<Mutex<Partial>>),
+}
+
+#[derive(Clone)]
+enum Complete {
+    Bytes(Arc<[u8]>),
+    Vertices(Arc<Geometry>),
+    Skin(Arc<Geometry>),
+}
+
+impl Complete {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Bytes(bytes) => bytes,
+            Self::Vertices(geometry) => bytemuck::cast_slice(&geometry.vertices),
+            Self::Skin(geometry) => bytemuck::cast_slice(&geometry.skin),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -174,6 +192,17 @@ impl State {
     }
 
     pub fn bind_vertex(&mut self, slot: u32, stride: u64, bytes: Arc<[u8]>) {
+        self.bind_complete_vertex(slot, stride, Complete::Bytes(bytes));
+    }
+
+    pub fn bind_model_geometry(&mut self, vertices: &Arc<Geometry>, skin: Option<&Arc<Geometry>>) {
+        self.bind_complete_vertex(0, vertices.stride, Complete::Vertices(Arc::clone(vertices)));
+        if let Some(skin) = skin {
+            self.bind_complete_vertex(1, 16, Complete::Skin(Arc::clone(skin)));
+        }
+    }
+
+    fn bind_complete_vertex(&mut self, slot: u32, stride: u64, bytes: Complete) {
         self.stream.bind_vertex_stride(slot, stride);
         self.vertices.insert(
             slot,
@@ -315,7 +344,7 @@ impl State {
                     return false;
                 }
                 match (&a.bytes, &b.bytes) {
-                    (Bytes::Complete(a), Bytes::Complete(b)) => a == b,
+                    (Bytes::Complete(a), Bytes::Complete(b)) => a.bytes() == b.bytes(),
                     (Bytes::Partial(a), Bytes::Partial(b)) => {
                         if Arc::ptr_eq(a, b) {
                             return true;
@@ -342,13 +371,16 @@ fn with_buffers<R>(
         .iter()
         .map(|(slot, buffer)| {
             let bytes = match &buffer.bytes {
-                Bytes::Complete(bytes) => Locked::Complete(
-                    bytes,
-                    [Range {
-                        start: 0,
-                        end: bytes.len() as u64,
-                    }],
-                ),
+                Bytes::Complete(bytes) => {
+                    let bytes = bytes.bytes();
+                    Locked::Complete(
+                        bytes,
+                        [Range {
+                            start: 0,
+                            end: bytes.len() as u64,
+                        }],
+                    )
+                }
                 Bytes::Partial(allocation) => {
                     Locked::Partial(allocation.lock().unwrap_or_else(|error| error.into_inner()))
                 }

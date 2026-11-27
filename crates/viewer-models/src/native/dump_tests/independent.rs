@@ -88,23 +88,40 @@ impl Resources {
             assert_eq!(
                 (
                     a.stride,
-                    a.native_stride,
-                    &a.cpu_vertices,
-                    &a.cpu_skin,
+                    a.source.stride,
+                    bytemuck::cast_slice::<_, u8>(&a.source.vertices),
+                    bytemuck::cast_slice::<_, u8>(&a.source.skin),
                     a.vertices,
                     a.indices,
                     a.skin_bones
                 ),
                 (
                     b.stride,
-                    b.native_stride,
-                    &b.cpu_vertices,
-                    &b.cpu_skin,
+                    b.source.stride,
+                    bytemuck::cast_slice::<_, u8>(&b.source.vertices),
+                    bytemuck::cast_slice::<_, u8>(&b.source.skin),
                     b.vertices,
                     b.indices,
                     b.skin_bones
                 )
             );
+            if a.has_skin() {
+                let rigid = Arc::new(mesh_shader::Geometry {
+                    vertices: vec![1.0],
+                    stride: 4,
+                    ..Default::default()
+                });
+                let mut retained = shader_scene::State::default();
+                retained.bind_model_geometry(&rigid, Some(&a.source));
+                let mut copied = shader_scene::State::default();
+                copied.bind_vertex(0, rigid.stride, bytemuck::cast_slice(&rigid.vertices).into());
+                copied.bind_vertex(1, 16, bytemuck::cast_slice(&a.source.skin).into());
+                assert!(retained.same_bindings(&copied));
+
+                retained.bind_model_geometry(&b.source, None);
+                copied.bind_vertex(0, b.source.stride, bytemuck::cast_slice(&b.source.vertices).into());
+                assert!(retained.same_bindings(&copied));
+            }
         }
         assert_eq!(
             a.pools.keys().collect::<Vec<_>>(),
