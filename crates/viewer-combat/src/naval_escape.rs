@@ -318,7 +318,7 @@ mod tests {
             speed_factor: 30_000,
             hidden_sub: 5_000,
             sub_base: 3_000,
-            out_of_fuel: -50_000,
+            out_of_fuel: -43_000,
             initial_duration: 24,
         }
     }
@@ -379,10 +379,10 @@ mod tests {
             },
             ..Default::default()
         };
-        assert_eq!(ship_speed(&row, 20_000, &defines()), 210_000);
+        assert_eq!(ship_speed(&row, 20_000, &defines()), 217_000);
         let result = chance(&row, 24, 4_000, 20_000, &defines());
         assert_eq!(result.duration, 20_000);
-        assert_eq!(result.ship_speed, 630);
-        assert_eq!(result.total, 39_630);
+        assert_eq!(result.ship_speed, 651);
+        assert_eq!(result.total, 39_651);
     }
 }

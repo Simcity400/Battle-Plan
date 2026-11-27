@@ -725,12 +725,12 @@ mod tests {
         assert_eq!(whole_points(mul(4_000_000, -50_000)), -20);
         assert_eq!(whole_points(mul(3_999_999, -50_000)), -19);
         let defines = OccupationDefines {
-            target_base: 3_500_000,
-            occupied_capitulated: 1_000_000,
-            per_compliance: -50_000,
+            target_base: 3_700_000,
+            occupied_capitulated: 1_300_000,
+            per_compliance: -45_000,
             state_vp: vec![(500_000, -100_000), (2_000_000, -500_000)],
-            compliance_growth_base: 7_500,
-            decay_at_max_compliance: -8_300,
+            compliance_growth_base: 8_100,
+            decay_at_max_compliance: -7_700,
             ..Default::default()
         };
         assert_eq!(defines.state_vp(0), 0);

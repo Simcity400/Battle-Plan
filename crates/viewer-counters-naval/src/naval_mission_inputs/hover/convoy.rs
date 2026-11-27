@@ -903,15 +903,25 @@ mod tests {
     #[test]
     fn decryption_uses_absolute_threshold_then_original_sign() {
         let defines = Defines {
-            decryption_min: 500_000,
-            decryption_max: 4_000_000,
-            decryption_bonus: 1_000_000,
+            decryption_min: 600_000,
+            decryption_max: 3_600_000,
+            decryption_bonus: 1_200_000,
             ..Default::default()
         };
-        assert_eq!(decryption_value(499_999, defines), 0);
-        assert_eq!(decryption_value(2_250_000, defines), 500_000);
-        assert_eq!(decryption_value(-2_250_000, defines), -500_000);
-        assert_eq!(decryption_value(5_000_000, defines), 1_000_000);
+        let midpoint = (defines.decryption_min + defines.decryption_max) / 2;
+        assert_eq!(decryption_value(defines.decryption_min - 1, defines), 0);
+        assert_eq!(
+            decryption_value(midpoint, defines),
+            defines.decryption_bonus / 2
+        );
+        assert_eq!(
+            decryption_value(-midpoint, defines),
+            -defines.decryption_bonus / 2
+        );
+        assert_eq!(
+            decryption_value(defines.decryption_max + 1_000_000, defines),
+            defines.decryption_bonus
+        );
     }
     #[test]
     fn speed_keeps_the_submarine_term_outside_the_convoy_kind_multiplier() {

@@ -130,10 +130,19 @@ fn country_thickness_runs_from_five_to_twenty_five_pixels() {
 
 #[test]
 fn the_optimization_range_never_truncates_a_thicker_field() {
-    assert_eq!(field_reach(5.0, &FieldDefines::TEST), 30.0);
-    assert_eq!(field_reach(25.0, &FieldDefines::TEST), 30.0);
+    assert_eq!(
+        field_reach(5.0, &FieldDefines::TEST),
+        FieldDefines::TEST.optimization_range
+    );
+    assert_eq!(
+        field_reach(25.0, &FieldDefines::TEST),
+        FieldDefines::TEST.optimization_range
+    );
     assert_eq!(field_alpha(30.0, 25.0, 2.0), 0);
-    assert_eq!(field_reach(150.0, &FieldDefines::TEST), 152.0);
+    assert_eq!(
+        field_reach(150.0, &FieldDefines::TEST),
+        150.0 + FieldDefines::TEST.center
+    );
     assert_eq!(field_alpha(60.0, 150.0, 2.0), 147);
 }
 
@@ -239,8 +248,9 @@ fn a_plane_texel_is_the_box_average_of_its_two_by_two_block() {
     );
     let textures = build(&map, &layer, &layer).unwrap();
     let texel = textures.channel1_texel(0, 15, 8).unwrap();
-    let expected =
-        (u32::from(field_alpha(1.0, 5.0, 2.0)) * 2 + u32::from(field_alpha(0.0, 5.0, 2.0)) * 2) / 4;
+    let expected = (u32::from(field_alpha(1.0, 5.0, FieldDefines::TEST.center)) * 2
+        + u32::from(field_alpha(0.0, 5.0, FieldDefines::TEST.center)) * 2)
+        / 4;
     assert_eq!(texel, [10, 20, 30, expected as u8]);
     assert_eq!(
         texel[3], 246,
@@ -301,13 +311,13 @@ fn regions_are_adjacent_across_the_maps_x_edge() {
     assert_eq!(seam[3], 246, "vertical then horizontal truncation");
     let other_side = textures.channel1_texel(0, 31, 8).unwrap();
     assert_eq!(other_side, [40, 50, 60, 246], "map columns 62 and 63");
-    let inside =
-        2 * u32::from(field_alpha(2.0, 5.0, 2.0)) + 2 * u32::from(field_alpha(3.0, 5.0, 2.0));
+    let inside = 2 * u32::from(field_alpha(2.0, 5.0, FieldDefines::TEST.center))
+        + 2 * u32::from(field_alpha(3.0, 5.0, FieldDefines::TEST.center));
     assert_eq!(
         textures.channel1_texel(0, 1, 8).unwrap()[3],
         (inside / 4) as u8
     );
-    assert_eq!(textures.channel1_texel(0, 1, 8).unwrap()[3], 219);
+    assert_eq!(textures.channel1_texel(0, 1, 8).unwrap()[3], 232);
 }
 
 #[test]

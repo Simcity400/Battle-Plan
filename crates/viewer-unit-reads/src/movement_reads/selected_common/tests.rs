@@ -745,12 +745,13 @@ fn selected_primary_combat_scan_keeps_order_and_border_duration_uses_its_own_gat
             ..Default::default()
         }],
     );
+    let mut assets = assets();
     put::<tables::LandCombats>(
         &mut frame,
         vec![LandCombatRow {
             id: 8,
             province: 2,
-            duration: 4,
+            duration: assets.combat_minimum_time,
             ..Default::default()
         }],
     );
@@ -765,7 +766,6 @@ fn selected_primary_combat_scan_keeps_order_and_border_duration_uses_its_own_gat
     *frame.tables[TableId::NavalCombats.index()] = TableView::Unavailable {
         reason: "later location must be undemanded after first match".into(),
     };
-    let mut assets = assets();
     assets.naval_combat_min_duration = Err("unreached naval define".into());
     let world = World::read(&frame, assets.trigger_content.facts());
     let cells = Cells::default();

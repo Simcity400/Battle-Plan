@@ -167,8 +167,8 @@ mod tests {
             screen_cap_reduction_factor: 0,
             plane_stacking_penalty_effect: 0,
             sortie_stance_ratios: vec![0, 25_000],
-            base_carrier_sortie_efficiency: 50_000,
-            selected_sortie_initial_time: 24,
+            base_carrier_sortie_efficiency: 63_000,
+            selected_sortie_initial_time: 19,
             piercing: Ok(Piercing {
                 thresholds: vec![100_000, 50_000],
                 critical_values: vec![50_000, 0],

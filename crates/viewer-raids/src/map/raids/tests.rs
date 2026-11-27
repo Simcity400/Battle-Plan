@@ -1134,10 +1134,11 @@ fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
     content_reader_script::test_game::enter_viewer();
     let viewport = [2048, 1152];
     let raids = Some(RaidReach::RaidMode);
-    assert_eq!(drawn_in(raids, 1600.0, viewport, 1.0).0, 2);
-    assert_eq!(drawn_in(raids, 1600.01, viewport, 1.0).0, 0);
+    let cutoff = MapDefines::test().raid_icons_raid_mode;
+    assert_eq!(drawn_in(raids, cutoff, viewport, 1.0).0, 2);
+    assert_eq!(drawn_in(raids, cutoff + 0.01, viewport, 1.0).0, 0);
     assert_eq!(drawn_in(raids, 9.99, viewport, 1.0).0, 0);
-    assert_eq!(drawn(1600.0, viewport, 1.0).0, 0);
+    assert_eq!(drawn(cutoff, viewport, 1.0).0, 0);
     let outside = drawn(500.01, viewport, 1.0);
     for height in [10.0, 300.0, 500.0] {
         let hidden = drawn_in(None, height, viewport, 1.0);
@@ -1737,11 +1738,11 @@ mod launch_gate {
         )])
         .0;
         assets.defines = RaidDefines {
-            base_max_command_power: 100 * 100_000,
+            base_max_command_power: 73 * 100_000,
             naval_invasion_priority: 1,
             map_scale: 711_400,
             naval_commando_distance: 1500 * 100_000,
-            ace_wing_size: 100 * 100_000,
+            ace_wing_size: 80 * 100_000,
             ace_wing_size_max_bonus: 300_000,
             unit_speeds: None,
         };
@@ -2141,7 +2142,7 @@ mod launch_gate {
         put::<tables::CountryCommandPower>(
             &mut frame,
             vec![replay_data::rows::CountryCommandPowerRow {
-                allocated_command_power_raw: 90 * 100_000,
+                allocated_command_power_raw: assets.defines.base_max_command_power - 10 * 100_000,
                 ..registered_command_power([0])[0]
             }],
         );

@@ -177,23 +177,23 @@ mod tests {
     #[test]
     fn allowance_caps_only_base_term_and_truncates_modifiers_separately() {
         let defines = Defines {
-            average: 100,
+            average: 80,
             bases: 200_000,
             ratio: 50_000,
         };
-        assert_eq!(defines.allowance(1000, 400, 199_999, 199_999), Ok(4));
+        assert_eq!(defines.allowance(1000, 320, 199_999, 199_999), Ok(4));
         assert_eq!(defines.allowance(100, 10000, -99_999, -99_999), Ok(2));
         assert_eq!(defines.allowance(0, 0, 200_000, 300_000), Ok(5));
     }
     #[test]
     fn allowance_retains_half_away_rounding_signed_counts_and_native_guard() {
         let defines = Defines {
-            average: 100,
+            average: 80,
             bases: 100_000_000,
             ratio: 50_000,
         };
-        assert_eq!(defines.allowance(1000, 100, 0, 0), Ok(1));
-        assert_eq!(defines.allowance(1000, -100, 0, 0), Ok(-1));
+        assert_eq!(defines.allowance(1000, 80, 0, 0), Ok(1));
+        assert_eq!(defines.allowance(1000, -80, 0, 0), Ok(-1));
         assert!(
             Defines {
                 average: 0,
@@ -207,7 +207,7 @@ mod tests {
                 ratio: 100_000_000_000,
                 ..defines
             }
-            .allowance(1000, i32::MAX, 0, 0)
+            .allowance(10 * defines.average, i32::MAX, 0, 0)
             .unwrap(),
             10000
         );

@@ -376,7 +376,7 @@ mod tests {
             convoy_defense_max_convoy_to_ship_ratio: 1_000_000,
             convoy_defense_max_region_to_taskforce_ratio: 150_000,
             coordination_effect_on_convoy_defense_efficiency: 50_000,
-            convoy_raid_max_region_to_taskforce_ratio: 150_000,
+            convoy_raid_max_region_to_taskforce_ratio: 170_000,
             coordination_effect_on_convoy_raid_efficiency: 50_000,
             mission_efficiency_pow_factor: 50_000,
             convoy_escort_presence_warning_threshold: 50_000,
@@ -508,7 +508,10 @@ mod tests {
             mission_efficiency_pow_factor: 100_000,
             ..defines()
         };
-        assert_eq!(raid_region_ratio(0, &defines), 150_000);
+        assert_eq!(
+            raid_region_ratio(0, &defines),
+            defines.convoy_raid_max_region_to_taskforce_ratio
+        );
         assert_eq!(
             raiding_efficiency(false, [1, 5], 2, 150_000, 0, 0, &defines),
             Ok(100_000)

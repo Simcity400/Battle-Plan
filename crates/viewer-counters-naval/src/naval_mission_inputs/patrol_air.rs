@@ -822,7 +822,7 @@ mod tests {
             TableRows::AirMissionInputs(vec![AirMissionInputRow {
                 wing: 11,
                 current_type: (Some(8)).into(),
-                effective_aircraft: (Some(100)).into(),
+                effective_aircraft: (Some(80)).into(),
                 detection_stat_13: (Some(ONE)).into(),
                 detection_stat_14: (Some(0)).into(),
                 patrol_disruption_raw: (Some(0)).into(),
@@ -856,7 +856,7 @@ mod tests {
         let mut anchors = anchors();
         let mut content = content(b"categories={ocean={}}");
         content.patrol_air = Defines {
-            wing_size: 100,
+            wing_size: 80,
             mission_factors: vec![ONE; 4],
             detection: ONE,
             ..Default::default()
@@ -901,7 +901,7 @@ mod tests {
             TableRows::AirMissionInputs(vec![AirMissionInputRow {
                 wing: 11,
                 current_type: (Some(8)).into(),
-                effective_aircraft: (Some(100)).into(),
+                effective_aircraft: (Some(80)).into(),
                 patrol_disruption_raw: (Some(0)).into(),
                 detection_stat_13: (Some(ONE)).into(),
                 detection_stat_14: (Some(-ONE)).into(),
@@ -923,7 +923,7 @@ mod tests {
             TableRows::AirMissionInputs(vec![AirMissionInputRow {
                 wing: 11,
                 current_type: (Some(8)).into(),
-                effective_aircraft: (Some(100)).into(),
+                effective_aircraft: (Some(80)).into(),
                 patrol_disruption_raw: (Some(1)).into(),
                 detection_stat_13: (Some(ONE)).into(),
                 detection_stat_14: (Some(0)).into(),
@@ -1025,12 +1025,12 @@ mod tests {
     #[test]
     fn disruption_uses_normalized_combat_denominator_and_native_reduction() {
         let defines = Defines {
-            disruption_attack: 50_000,
-            disruption_defence: 50_000,
+            disruption_attack: 43_000,
+            disruption_defence: 57_000,
             disruption_speed: ONE,
             ..Default::default()
         };
-        assert_eq!(disruption(&defines, ONE, 1, ONE, ONE, ONE), 85_092);
+        assert_eq!(disruption(&defines, ONE, 1, ONE, ONE, ONE), 85_076);
         assert_eq!(disruption(&defines, -ONE, 1, ONE, ONE, ONE), ONE);
         assert_eq!(disruption(&defines, i64::MAX, 1, ONE, ONE, ONE), 100);
         assert_eq!(disruption(&defines, i64::MAX, 1, ONE, 0, ONE), ONE);

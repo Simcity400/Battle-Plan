@@ -602,7 +602,7 @@ pub fn test_defines() -> Defines {
         intel_maximums: [10_000_000, 100_000, 10_000_000, 10_000_000],
         radar_effect: 25,
         map_cutoffs: Vec::new(),
-        air_icon_threshold: 30_000,
+        air_icon_threshold: 33_000,
         air_detail_thresholds: [0, 30_000, 70_000, 100_000],
         air_plane_fuzzy_range: 100_000,
         naval_detail_thresholds: [0, 30_000, 50_000, 70_000, 100_000],

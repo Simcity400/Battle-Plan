@@ -459,7 +459,7 @@ mod tests {
             &[],
             air_range::Defines {
                 map_scale: 100_000,
-                ace_wing_size: 100,
+                ace_wing_size: 80,
                 ace_wing_size_max_bonus: 100_000,
             },
             &centers,

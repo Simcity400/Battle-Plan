@@ -170,6 +170,123 @@ class Values(unittest.TestCase):
         text = '"NDefines={NGame={DEPTH=30}}"\n"SCALE = .25, OFF = 0"\n"DEPTH = 17"\n"DEPTH = 300"\n'
         self.assertEqual(cgc.game_values(text, installed), [(1, "DEPTH"), (2, "SCALE")])
 
+    def test_rust_test_struct_fields_match_defines_by_name_or_same_file_binding(self):
+        installed = {
+            "DEPTH": {30.0},
+            "SCALE": {0.25},
+            "MAX_UNIT": {1.0},
+            "CUSTOM_RATIO": {-0.45},
+            "RADAR_FACTOR": {4.0},
+        }
+        source = (
+            b'struct Defines {\n'
+            b'    depth: f32,\n'
+            b'    scale: i64,\n'
+            b'    max_unit: i64,\n'
+            b'    alias: i64,\n'
+            b'    radar: i64,\n'
+            b'}\n'
+            b'struct Breakdown { radar: i64 }\n'
+            b'impl Defines {\n'
+            b'    fn load(d: &Loader) -> Self {\n'
+            b'        Self {\n'
+            b'            depth: 30.0,\n'
+            b'            scale: 25_000,\n'
+            b'            max_unit: 100_000,\n'
+            b'            alias: d.fixed5(\n'
+            b'                "NSection",\n'
+            b'                "CUSTOM_RATIO",\n'
+            b'            ),\n'
+            b'            radar: d.fixed5("NSection", "RADAR_FACTOR"),\n'
+            b'            nested: Breakdown { radar: d.fixed5("NSection", "DEPTH") },\n'
+            b'        }\n'
+            b'    }\n'
+            b'}\n'
+            b'#[cfg(test)]\n'
+            b'mod tests {\n'
+            b'    use super::*;\n'
+            b'    fn fixture() -> (Defines, Breakdown) {\n'
+            b'        /* depth: 30.0, */\n'
+            b'        let d = Defines {\n'
+            b'            depth: 30.0,\n'
+            b'            scale: 25_000,\n'
+            b'            max_unit: 100_000,\n'
+            b'            alias: -45_000,\n'
+            b'            radar: 9,\n'
+            b'            nested: 30.0,\n'
+            b'        };\n'
+            b'        let b = Breakdown { radar: 4 };\n'
+            b'        (d, b)\n'
+            b'    }\n'
+            b'}\n'
+        )
+        tree = cgc.RustTree([("crates/a/src/lib.rs", source)])
+        self.assertEqual(
+            cgc.struct_game_values("crates/a/src/lib.rs", tree, installed),
+            [
+                (30, "depth", "DEPTH"),
+                (31, "scale", "SCALE"),
+                (33, "alias", "CUSTOM_RATIO"),
+            ],
+        )
+
+    def test_rust_struct_game_values_classify_child_test_modules_via_tree(self):
+        installed = {"DEPTH": {30.0}}
+        files = [
+            ("crates/a/src/lib.rs", b"#[cfg(test)]\nmod child;\n"),
+            ("crates/a/src/child.rs", b"fn f() -> S { S { depth: 30.0 } }\n"),
+        ]
+        tree = cgc.RustTree(files)
+        self.assertEqual(
+            cgc.struct_game_values("crates/a/src/child.rs", tree, installed),
+            [(1, "depth", "DEPTH")],
+        )
+
+    def test_rust_struct_game_values_handle_blocks_literals_impl_self_and_generics(self):
+        installed = {"DEPTH": {30.0}, "TINY": {0.00001}, "COUNT": {7.0}}
+        source = (
+            b'impl Config {\n'
+            b'    fn load() -> Self {\n'
+            b'        let depth: i64 = loader::read("COUNT");\n'
+            b'        Self {\n'
+            b'            hp: read("DEPTH"),\n'
+            b'            amount: { read("DEPTH") },\n'
+            b'            generic: read::<A, B>("DEPTH"),\n'
+            b'            outer: score(Inner { inner: read("DEPTH"), ..base() }),\n'
+            b'            depth,\n'
+            b'        }\n'
+            b'    }\n'
+            b'}\n'
+            b'#[cfg(test)]\n'
+            b'mod tests {\n'
+            b'    fn check() {\n'
+            b'        if accepts(Config { depth: 30 }) {}\n'
+            b'        let _ = Config {\n'
+            b'            depth: 30 - 9,\n'
+            b'            tiny: 1,\n'
+            b'            hp: 3e1_f32,\n'
+            b'            amount: 0x1e,\n'
+            b'            generic: 30 * 100_000,\n'
+            b'            outer: 30,\n'
+            b'            loader: 7,\n'
+            b'        };\n'
+            b'        let _ = Inner { inner: 30 };\n'
+            b'        let _ = Other { hp: 30 };\n'
+            b'    }\n'
+            b'}\n'
+        )
+        tree = cgc.RustTree([("crates/a/src/lib.rs", source)])
+        self.assertEqual(
+            cgc.struct_game_values("crates/a/src/lib.rs", tree, installed),
+            [
+                (16, "depth", "DEPTH"),
+                (20, "hp", "DEPTH"),
+                (21, "amount", "DEPTH"),
+                (22, "generic", "DEPTH"),
+                (26, "inner", "DEPTH"),
+            ],
+        )
+
 
 class Installation(unittest.TestCase):
     def setUp(self):
@@ -211,8 +328,11 @@ class Installation(unittest.TestCase):
         cache = self.folder / "cache"
         snippet = "fixture_script = { flag = violet }"
         self.write("game/trial.txt", snippet)
+        self.write("game/common/defines/00.lua", "NDefines = { NGame = { DEPTH = 30 } }\n")
         self.write("repo/already.rs", snippet)
         self.write("repo/new.rs", "original")
+        self.write("repo/crates/a/src/lib.rs", "#[cfg(test)]\nmod child;\n")
+        self.write("repo/crates/a/src/child.rs", "fn f() -> S { S { depth: 17.0 } }\n")
         self.write("repo/tools/game-content.allow", "")
         self.addCleanup(setattr, cgc, "ROOT", cgc.ROOT)
         self.addCleanup(setattr, cgc, "ALLOW", cgc.ALLOW)
@@ -234,6 +354,10 @@ class Installation(unittest.TestCase):
         (repo / "untracked.dat").unlink()
         self.assertEqual(cgc.main(args), 1)
         self.write("repo/new.rs", "ours")
+        self.assertEqual(cgc.main(args), 0)
+        self.write("repo/crates/a/src/child.rs", "fn f() -> S { S { depth: 30.0 } }\n")
+        self.assertEqual(cgc.main(args), 1)
+        self.write("repo/crates/a/src/child.rs", "fn f() -> S { S { depth: 17.0 } }\n")
         self.assertEqual(cgc.main(args), 0)
 
     def test_an_unchanged_stamp_is_not_indexed_again_and_a_walked_folder_follows_its_files(self):

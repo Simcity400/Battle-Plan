@@ -335,7 +335,7 @@ fn carrier_penalty_uses_opponent_silhouette_and_actual_multiplier() {
         summary_fixed: [0; 14],
         summary_integer: [0, 0, 80],
         silhouette_planes: [10, 5, 16, 3, 4, 7],
-        screen_cap_reduction_factor: 2_000,
+        screen_cap_reduction_factor: 3_000,
         plane_stacking_penalty_effect: 500,
         sortie_stance_ratios: vec![ONE],
         base_carrier_sortie_efficiency: ONE,
@@ -444,7 +444,7 @@ fn opposing_silhouette_rounds_each_forward_group() {
         summary_fixed: [0; 14],
         summary_integer: [0; 3],
         silhouette_planes: [10, 5, 0, 0, 0, 0],
-        screen_cap_reduction_factor: 2_000,
+        screen_cap_reduction_factor: 3_000,
         plane_stacking_penalty_effect: 0,
         sortie_stance_ratios: vec![],
         base_carrier_sortie_efficiency: 0,
@@ -476,7 +476,7 @@ fn opposing_silhouette_rounds_each_forward_group() {
     let members: Vec<_> = rows.iter().collect();
     let models: [ShipModelRow; 0] = [];
     let models = Keyed::new(&models, |row| row.ship).unwrap();
-    assert_eq!(opposing_silhouette(&members, models, 1, &defines), Ok(30));
+    assert_eq!(opposing_silhouette(&members, models, 1, &defines), Ok(28));
 }
 #[test]
 fn pride_bonus_follows_the_pride_ship_task_force_and_country_alias() {

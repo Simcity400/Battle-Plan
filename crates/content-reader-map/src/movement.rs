@@ -782,14 +782,14 @@ mod tests {
         Rivers {
             bitmap: NativeBitmap::decode(&test_bmp(width, rows, 8)).unwrap(),
             small_start: 0,
-            small_stop: 6,
-            large_stop: 11,
+            small_stop: 5,
+            large_stop: 9,
         }
     }
 
     #[test]
     fn river_bytes_use_native_file_rows_and_the_first_qualifying_pixel_wins() {
-        let rivers = rivers(4, &[&[3, 7, 11, 255], &[255; 4]]);
+        let rivers = rivers(4, &[&[3, 6, 9, 255], &[255; 4]]);
         assert_eq!(rivers.first_crossing(&[[0, 0], [1, 0]]), Ok(Some(2)));
         assert_eq!(rivers.first_crossing(&[[1, 0], [0, 0]]), Ok(Some(3)));
         assert_eq!(rivers.first_crossing(&[[0, 1], [1, 1]]), Ok(None));

@@ -215,7 +215,11 @@ fn the_night_factor_follows_the_eye_and_applies_strength_before_saturating() {
         ),
         1.0
     );
-    let equator = [2793.0, 300.0, 2048.0 * (0.5 - 0.17) / (0.93 - 0.17)];
+    let equator = [
+        defines.gmt_offset,
+        300.0,
+        2048.0 * (0.5 - defines.poles[0]) / (defines.poles[1] - defines.poles[0]),
+    ];
     let half = DayNight {
         hour_fraction: 0.0,
         sun_direction: [0.0, 0.0, 1.0],

@@ -85,7 +85,7 @@ impl LabelDefines {
             after: vec![0.0, 9.0, 20.0],
             dot_cutoff: [100.0, 1000.0],
             text_cutoff: [100.0, 800.0],
-            max_points_for_percent: 22.0,
+            max_points_for_percent: 26.0,
             capital_cutoff: [1100.0, 1000.0],
             priorities: Priorities::uniform([
                 10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 13, 5, 3, 3, 10, 3, 10,
@@ -1317,13 +1317,25 @@ pub(crate) mod tests {
         assert!(text_cutoff(false, 20, &LabelDefines::test()) > reference);
         assert!(dot_cutoff(true, 5, &LabelDefines::test()) > reference);
         assert!(text_cutoff(true, 5, &LabelDefines::test()) > reference);
-        assert_eq!(dot_cutoff(false, 0, &LabelDefines::test()), 100.0);
-        assert_eq!(dot_cutoff(false, 22, &LabelDefines::test()), 1000.0);
-        assert_eq!(dot_cutoff(false, 99, &LabelDefines::test()), 1000.0);
-        assert_eq!(text_cutoff(false, 22, &LabelDefines::test()), 800.0);
-        assert!((text_cutoff(false, 50, &LabelDefines::test()) - 1690.909).abs() < 0.01);
-        assert_eq!(dot_cutoff(true, 0, &LabelDefines::test()), 1100.0);
-        assert_eq!(text_cutoff(true, 0, &LabelDefines::test()), 1000.0);
+        let defines = LabelDefines::test();
+        assert_eq!(dot_cutoff(false, 0, &defines), defines.dot_cutoff[0]);
+        assert_eq!(
+            dot_cutoff(false, defines.max_points_for_percent as i32, &defines),
+            defines.dot_cutoff[1]
+        );
+        assert_eq!(dot_cutoff(false, 99, &defines), defines.dot_cutoff[1]);
+        assert!(
+            (text_cutoff(false, defines.max_points_for_percent as i32, &defines)
+                - defines.text_cutoff[1])
+                .abs()
+                < 0.01
+        );
+        let expected_fifty = defines.text_cutoff[0]
+            + (defines.text_cutoff[1] - defines.text_cutoff[0])
+                * (50.0 / defines.max_points_for_percent);
+        assert!((text_cutoff(false, 50, &defines) - expected_fifty).abs() < 0.01);
+        assert_eq!(dot_cutoff(true, 0, &defines), defines.capital_cutoff[0]);
+        assert_eq!(text_cutoff(true, 0, &defines), defines.capital_cutoff[1]);
     }
 
     #[test]
