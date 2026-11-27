@@ -138,7 +138,7 @@ fn gapped_navy(case: &str) -> (std::sync::Arc<Source>, LoadContext, std::path::P
         test_fixtures::{content_identity, records, source, with_facts},
     };
     use replay_capture_spool::spool::Record;
-    use replay_data::rows::{CountryLinkRow, CountryRow, NavalMissionLedgerRow, ShipRow, TableSchema};
+    use replay_data::rows::{CountryLinkRow, CountryRow, NavalMissionLedgerRow, NavalSupremacyRow, ShipRow, TableSchema};
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
@@ -190,9 +190,15 @@ fn gapped_navy(case: &str) -> (std::sync::Arc<Source>, LoadContext, std::path::P
                 NavalMissionLedgerRow { owner: 50, region: 7, task_forces: vec![300], ..Default::default() },
             ]),
         );
-        set_complete(&mut frame, TableId::NavalRegionControl.index(), tables::NavalRegionControl::wrap(vec![NavalRegionControlRow {
-            viewer: 4, region: 7, friendly: Recorded::Value(i64::from(hour + 1)), ..Default::default()
+        set_complete(&mut frame, TableId::NavalSupremacy.index(), tables::NavalSupremacy::wrap(vec![NavalSupremacyRow {
+            country: 40, region: 7, current: i64::from(hour + 1), ..Default::default()
         }]));
+        let supremacy = &mut frame.tables[TableId::NavalSupremacy.index()];
+        *supremacy = supremacy.clone().with_sampled_at(Some(hour));
+        set_complete(&mut frame, TableId::FactionMembers.index(), tables::FactionMembers::wrap(vec![]));
+        set_complete(&mut frame, TableId::Subjects.index(), tables::Subjects::wrap(vec![]));
+        set_complete(&mut frame, TableId::WarRelations.index(), tables::WarRelations::wrap(vec![]));
+        set_complete(&mut frame, TableId::RelationTuples.index(), tables::RelationTuples::wrap(vec![]));
         frame
     };
 
@@ -269,6 +275,7 @@ fn a_new_run_projects_its_own_naval_rows() {
         assert!(!step.pending);
         assert_eq!(*step.value, (exact.cold)(step.hour, &cancelled));
         assert_eq!(step.value.as_ref().as_ref().unwrap()["regions"][0]["ownShips"]["ships"], 3);
+        assert_eq!(step.value.as_ref().as_ref().unwrap()["regions"][0]["runs"][0]["own"], (step.hour + 1).to_string());
     }
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -296,6 +303,35 @@ fn a_failed_naval_read_can_be_rebuilt() {
     let failed = (exact.advance)(5, true, &AtomicBool::new(true), None);
     assert!(failed.value.is_err() && failed.lanes.is_empty());
     assert_eq!(*(exact.advance)(5, false, &cancelled, None).value, (exact.cold)(5, &cancelled));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn another_panels_ship_lane_does_not_make_an_empty_selection_read_ships() {
+    use std::sync::Arc;
+
+    let (src, load, root) = gapped_navy("unneeded-ships");
+    let pinned = gapped_panel(&src, &load);
+    let ships = (pinned.exact().unwrap().advance)(0, true, &AtomicBool::new(false), None)
+        .lanes.into_iter().find(|lane| lane.table == TableId::Ships.index()).unwrap();
+    let panel = playback::panel(&src, &load, &serde_json::json!({ "branchId": "1", "country": "GER", "regions": [] })).unwrap();
+    let exact = panel.exact().unwrap();
+    let advance = exact.advance.clone();
+    let checked = dashboard_follow::panel::AtHour {
+        advance: Arc::new(move |hour, seed, cancelled, step| {
+            let mut read = advance(hour, seed, cancelled, step);
+            if let Some(step) = step {
+                assert!(step.lanes.get(ships.table).is_some());
+                assert!(!read.lanes.iter().any(|lane| lane.table == ships.table));
+            } else {
+                read.lanes.push(ships.clone());
+            }
+            read
+        }),
+        cold: exact.cold.clone(),
+        read: exact.read.clone(),
+    };
+    dashboard_base::test_fixtures::proven_by_steps(src.replay_ref(), &checked, 0, 1, 1);
     let _ = std::fs::remove_dir_all(&root);
 }
 
