@@ -49,7 +49,7 @@ fn snapshot<R>(rows: &[R]) -> Input<'_, R> {
 }
 
 #[test]
-fn one_malformed_original_tag_preserves_the_other_countrys_tag_in_both_readers() {
+fn one_malformed_original_tag_preserves_the_other_countrys_tag_across_readers() {
     let hour = 100;
     let branch = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: hour, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
     let country_ids = [(9001, 7, b"ONE"), (9002, 8, b"TWO")];
@@ -80,9 +80,19 @@ fn one_malformed_original_tag_preserves_the_other_countrys_tag_in_both_readers()
     let places = Places::new(&decoded);
     let run = query.timeline.stretches[0].run;
     let history = PlaceHistory::load(query.replay.recording(), run, hour, hour, Keys::All, Keys::These(&[]), false, &false.into()).unwrap();
+    let recording = query.replay.recording();
+    let table = TableId::CountryAppearance;
+    let columns = crate::products::equipment_names::naming_columns(table).unwrap();
+    let fields = columns.into_iter().fold(0, |fields, column| fields | (1 << column));
+    let dated = replay_lanes::dated::Dated::read(recording, run, table, fields, Keys::All).unwrap();
+    assert!(dated.covers(hour), "the equipment naming reader must use the dated rows");
+    let mut dated_frame = decoded.clone();
+    dated_frame.tables[table.index()] = dated.view(recording, hour).unwrap();
+    let equipment_places = Places::new(&dated_frame);
     for (reader, [bad, good]) in [
         ("frame", [places.tag(7), places.tag(8)]),
         ("history", [history.tag_at(7, hour), history.tag_at(8, hour)]),
+        ("equipment naming", [equipment_places.tag(7), equipment_places.tag(8)]),
     ] {
         assert_eq!(bad.unwrap_err(), "original tag of country appearance not recorded", "{reader}");
         assert_eq!(good.as_deref(), Ok("ORI"), "{reader}");
