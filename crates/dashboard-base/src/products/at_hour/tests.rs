@@ -1175,7 +1175,12 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
 
 #[test]
 fn empty_exact_keys_read_status_without_positioning_a_lane() {
-    let (source, _) = recording();
+    let frames = (FIRST..=LAST).map(|hour| {
+        let mut frame = frame(hour);
+        frame.metrics.table_ns[TableId::Countries.index()] = 1;
+        frame
+    }).collect();
+    let (source, _) = recording_frames(frames);
     let pool = placed::Pool::of(&source).unwrap();
     let run = pool.pages.run_of(0).unwrap();
     let mode = incremental::capture_mode(&pool.pages).unwrap();
