@@ -113,12 +113,37 @@ const LAYOUT = `(() => {
     widgets: [...document.querySelectorAll('article.dash-widget')].map(a => ({ id: a.dataset.widget, kind: [...a.classList].find(c => c.startsWith('kind-'))?.slice(5) ?? null, ...box(a) })) };
 })()`;
 
+function selectBuildRecord(exe) {
+  const dir = path.dirname(exe);
+  const exeName = path.basename(exe).toLowerCase();
+  const records = ['shell-build.json', 'boat-artifacts.json']
+    .map(name => path.join(dir, name))
+    .filter(existsSync);
+  if (!records.length) {
+    throw new Error(`no shell-build.json or boat-artifacts.json in ${dir}: the app's source revision is unknown, so its format cannot be named; pass --app-revision`);
+  }
+  if (records.length === 1) {
+    return { record: records[0], data: JSON.parse(readFileSync(records[0], 'utf8')) };
+  }
+  const actualSha = createHash('sha256').update(readFileSync(exe)).digest('hex').toLowerCase();
+  for (const record of records) {
+    let data;
+    try { data = JSON.parse(readFileSync(record, 'utf8')); } catch { continue; }
+    const entry = Array.isArray(data?.artifacts)
+      ? data.artifacts.find(item => typeof item?.path === 'string' && path.win32.basename(item.path).toLowerCase() === exeName)
+      : null;
+    if (typeof entry?.sha256 === 'string' && entry.sha256.toLowerCase() === actualSha) {
+      return { record, data };
+    }
+  }
+  throw new Error(`both shell-build.json and boat-artifacts.json exist in ${dir} and neither matches ${exe} SHA-256 ${actualSha}; pass --app-revision`);
+}
+
 export function appRevision(pid, named) {
   if (named) return named;
   const exe = execFileSync('powershell', ['-NoProfile', '-Command', `(Get-Process -Id ${Number(pid)}).Path`], { encoding: 'utf8' }).trim();
-  const record = path.join(path.dirname(exe), 'boat-artifacts.json');
-  if (!existsSync(record)) throw new Error(`no ${record}: the app's source revision is unknown, so its format cannot be named; pass --app-revision`);
-  const { revision } = JSON.parse(readFileSync(record, 'utf8'));
+  const { record, data } = selectBuildRecord(exe);
+  const { revision } = data;
   if (typeof revision !== 'string' || !revision) throw new Error(`${record} names no revision`);
   return revision;
 }

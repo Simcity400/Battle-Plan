@@ -1,6 +1,7 @@
 .github/dependabot.yml our GitHub configuration
 .github/actionlint.yaml our GitHub configuration
 .github/workflows/ci.yml our CI workflows
+.github/workflows/measuring-shell.yml our CI workflows
 .github/workflows/release-candidate.yml our CI workflows
 .github/workflows/release.yml our CI workflows
 .github/workflows/rust-cache.yml our CI workflows
