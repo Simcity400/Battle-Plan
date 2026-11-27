@@ -2,12 +2,12 @@ import { dayLabel } from '../../charts/draw.ts';
 import ArtFallback from '../../components/ArtFallback.tsx';
 import { CountryFlagUrl } from '../../components/CountryFlag.tsx';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import type { EventFeedItem } from '../../generated/dashboard';
+import type { EventFeedGap, EventFeedItem } from '../../generated/dashboard';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import type { RefObject } from 'react';
 import { optionLetter } from './eventChoicesData.ts';
 import type { EventDetail } from './eventDetail.ts';
-import { plainScripted, reasonsOf, scriptedParts } from '../event-feed/scriptedGaps.ts';
+import { gapSummary, gapsForField, plainScripted, reasonsOf, scriptedParts } from '../event-feed/scriptedGaps.ts';
 import './eventDetailWindow.css';
 
 export interface EventDetailSubject {
@@ -34,12 +34,12 @@ export interface EventDetailWindowProps {
   readonly onClose: () => void;
 }
 
-function ScriptedSpan({ text, reason }: { readonly text: string; readonly reason: string | undefined }) {
-  const parts = scriptedParts(text, reason);
+function ScriptedSpan({ text, gaps }: { readonly text: string; readonly gaps: readonly EventFeedGap[] | undefined }) {
+  const parts = scriptedParts(text, gaps);
   return (
     <>
       {parts.map((part, index) => ('gap' in part
-        ? <span key={index} className="evd-gap" title={part.gap} aria-label="Not recorded" />
+        ? <span key={index} className="evd-gap" title={part.gap}>[{part.inline}]</span>
         : <span key={index}>{part.text}</span>))}
     </>
   );
@@ -49,7 +49,10 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
   const read = detail && !detail.pending && !detail.missing ? detail.item : null;
   const item = read ?? subject?.item ?? null;
   const reasons = reasonsOf(item);
-  const titleText = subject?.title ? plainScripted(subject.title) : 'Event presentation was not recorded';
+  const allGaps = item?.gaps ?? [];
+  const titleGaps = gapsForField(allGaps, 'title');
+  const descriptionGaps = gapsForField(allGaps, 'description');
+  const titleText = subject?.title ? plainScripted(subject.title, titleGaps) : 'Event presentation was not recorded';
   const options = read?.options ?? [];
   const known = item?.options ?? [];
   const chosenIndex = subject && subject.chosenOrdinal !== null
@@ -101,12 +104,17 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
               ) : (
                 <>
                   {item?.description ? (
-                    <p><ScriptedSpan text={item.description} reason={reasons.gaps} /></p>
+                    <p><ScriptedSpan text={item.description} gaps={descriptionGaps} /></p>
                   ) : (
                     <p className="evd-missing" title={reasons.nameMissing ?? 'Event presentation was not recorded'}>
                       Event presentation was not recorded
                     </p>
                   )}
+                  {allGaps.map((gap, index) => (
+                    <p key={`${gap.field}:${gap.ordinal ?? ''}:${gap.key}:${index}`} className="evd-missing">
+                      Text not recorded ({gap.field === 'option' && gap.ordinal !== undefined ? `option ${optionLetter(gap.ordinal)}` : gap.field}): {gapSummary(gap)}
+                    </p>
+                  ))}
                   {detail?.effectsMissing?.map(reason => <p key={reason} className="evd-missing" title={reason}>Authored effects not recorded: {reason}</p>)}
                 </>
               )}
@@ -121,7 +129,7 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
                     <span className="evd-option-letter">{letter}</span>
                     <span className="evd-option-text">
                       {option.name !== null
-                        ? <ScriptedSpan text={option.name} reason={reasons.gaps} />
+                        ? <ScriptedSpan text={option.name} gaps={gapsForField(allGaps, 'option', option.ordinal)} />
                         : <span className="evd-missing-inline">Option text not recorded</span>}
                     </span>
                   </div>
@@ -140,7 +148,7 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
                 {chosenLetter ? <strong className="evd-footer-letter">{chosenLetter}</strong> : null}
                 <span>
                   {chosenOption.name !== null
-                    ? <ScriptedSpan text={chosenOption.name} reason={reasons.gaps} />
+                    ? <ScriptedSpan text={chosenOption.name} gaps={gapsForField(allGaps, 'option', chosenOption.ordinal)} />
                     : 'Option text not recorded'}
                 </span>
                 {subject.chosenHour !== null ? <span className="evd-footer-date">Chosen {dayLabel(subject.chosenHour)}</span> : null}

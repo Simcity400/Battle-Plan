@@ -39,6 +39,9 @@ test('when nothing fits, the last form is cut with its totals kept and the rest 
   assert.equal(fitTooltip([long], 120, { keep: 1 }).note, undefined);
   assert.equal(fitTooltip([long], 700, { keep: 1 }).note, long.note);
   assert.equal(fitTooltip([{ title: 'T', rows: rows(80) }], 400, { more: hidden => `${hidden} more resources` }).rows.at(-1)!.label.endsWith('more resources'), true);
+  const scrollable = fitTooltip([{ title: 'T', scrollable: true, scrollId: 'gaps', rows: rows(30) }], 160);
+  assert.equal(scrollable.scrollable, true);
+  assert.equal(scrollable.rows.length, 30, 'a scrollable tooltip keeps every row instead of replacing overflow with "N more"');
 });
 
 test('wrapping labels and dividers count toward the height', () => {

@@ -499,11 +499,11 @@ fn names_only_expansion_reads_country_names_through_scope_links() {
     script_game::enter();
     let (catalogue, _folder) = catalogue(
         "defined_text = { name = GetName text = { localization_key = READS_VARIABLE } }",
-        " READS_VARIABLE:0 \"[?amount]\"
-",
+        " READS_VARIABLE:0 \"[?amount]\"\n January:0 \"January\"\n February:0 \"Month-[GetYear]-[FROM.GetName]\"\n March:0 \"[GetMonth]\"\n",
     );
     let content = catalogue.scripted_content().unwrap();
     let mut frame = with_party(frame());
+    frame.hour = game_model::calendar::HOUR_EPOCH + 1938 * 8760;
     if let TableView::Complete(TableRows::Politics(rows)) =
         &mut *frame.tables[TableId::Politics.index()]
     {
@@ -517,22 +517,41 @@ fn names_only_expansion_reads_country_names_through_scope_links() {
     let country = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let state = EventScopes::new(vec![EventScope::of(EventObject::State(64))]);
     assert_eq!(
-        text.expand_names_in("[ROOT.GetNameDefCap] ([THIS.GetTag])", &country, &[])
-            .as_deref(),
-        Ok("The German Reich (GER)")
+        text.expand_names_in("[ROOT.GetNameDefCap] ([THIS.GetTag])", &country, &[]),
+        ExpandedText {
+            text: "The German Reich (GER)".into(),
+            gaps: Vec::new(),
+        }
     );
-    for (expression, scopes) in [
-        ("[GetName]", &country),
-        ("[ROOT.GetName]", &state),
-        ("[?amount]", &country),
-        ("[ROOT.Capital.GetName]", &country),
-        ("[ROOT.GetRulingParty]", &country),
-        ("[(ROOT.GetName?a:b)]", &country),
+    assert_eq!(
+        text.expand_names_in(
+            "[ROOT.GetName] in [GetMonth] [GetYear] ([GetDate])",
+            &country,
+            &[]
+        ),
+        ExpandedText {
+            text: "German Reich in January 1938 (1938.1.1.1)".into(),
+            gaps: Vec::new(),
+        }
+    );
+    for (expression, expected_key, scopes) in [
+        ("[GetName]", "GetName", &country),
+        ("[ROOT.GetName]", "ROOT.GetName", &state),
+        ("[?amount]", "?amount", &country),
+        ("[ROOT.Capital.GetName]", "ROOT.Capital.GetName", &country),
+        ("[ROOT.GetRulingParty]", "ROOT.GetRulingParty", &country),
+        ("[(ROOT.GetName?a:b)]", "(ROOT.GetName?a:b)", &country),
     ] {
-        let error = text.expand_names_in(expression, scopes, &[]).unwrap_err();
+        let expanded = text.expand_names_in(expression, scopes, &[]);
+        assert_eq!(expanded.text, SCRIPTED_GAP.to_string(), "{expression}");
+        assert_eq!(expanded.gaps.len(), 1, "{expression}");
+        assert_eq!(expanded.gaps[0].key, expected_key, "{expression}");
         assert!(
-            error.contains("reads more than an event scope's country name"),
-            "{expression}: {error}"
+            expanded.gaps[0]
+                .reason
+                .contains("reads more than an event scope's country name"),
+            "{expression}: {:?}",
+            expanded.gaps[0]
         );
     }
     let linked = EventScopes::new(vec![
@@ -550,16 +569,76 @@ fn names_only_expansion_reads_country_names_through_scope_links() {
         ScopeName::Unproven("it carries a character".to_owned()),
     ];
     assert_eq!(
-        text.expand_names_in("[From.Root.GetTag]", &linked, &names)
-            .as_deref(),
-        Ok("GER")
+        text.expand_names_in("[From.Root.GetTag]", &linked, &names),
+        ExpandedText {
+            text: "GER".into(),
+            gaps: Vec::new(),
+        }
     );
-    let error = text
-        .expand_names_in("[From.GetTag]", &linked, &names)
-        .unwrap_err();
-    assert!(
-        error.contains("event scope 1: it carries a character"),
-        "{error}"
+    let partial = text.expand_names_in(
+        "[ROOT.GetName] in [GetYear]: [ROOT.GetLeader] meets [From.GetTag] [open",
+        &linked,
+        &names,
+    );
+    assert_eq!(
+        partial.text,
+        format!("German Reich in 1938: {SCRIPTED_GAP} meets {SCRIPTED_GAP} [open")
+    );
+    assert_eq!(partial.gaps.len(), 2);
+    assert_eq!(partial.gaps[0].key, "ROOT.GetLeader");
+    assert!(partial.gaps[0].reason.contains("country name or occurrence date"));
+    assert_eq!(partial.gaps[1].key, "From.GetTag");
+    assert!(partial.gaps[1].reason.contains("event scope 1: it carries a character"));
+    let dates_only = expand_dates_in(
+        "Pact of [GetYear] with [FROM.GetName] and [ROOT.GetLeader]",
+        frame.hour,
+        &catalogue.localisation,
+        "event execution scope graph was not recorded",
+    );
+    assert_eq!(
+        dates_only.text,
+        format!("Pact of 1938 with {SCRIPTED_GAP} and {SCRIPTED_GAP}")
+    );
+    assert_eq!(
+        dates_only.gaps,
+        [
+            ScriptedGap {
+                key: "FROM.GetName".into(),
+                reason: "event execution scope graph was not recorded".into(),
+            },
+            ScriptedGap {
+                key: "ROOT.GetLeader".into(),
+                reason: "event execution scope graph was not recorded".into(),
+            },
+        ]
+    );
+    let nested_month = expand_dates_in(
+        "[GetMonth]",
+        frame.hour + 31 * 24,
+        &catalogue.localisation,
+        "event execution scope graph was not recorded",
+    );
+    assert_eq!(nested_month.text, format!("Month-1938-{SCRIPTED_GAP}"));
+    assert_eq!(
+        nested_month.gaps,
+        [ScriptedGap {
+            key: "FROM.GetName".into(),
+            reason: "event execution scope graph was not recorded".into(),
+        }]
+    );
+    let cyclic_month = expand_dates_in(
+        "[GetMonth]",
+        frame.hour + (31 + 28) * 24,
+        &catalogue.localisation,
+        "event execution scope graph was not recorded",
+    );
+    assert_eq!(cyclic_month.text, SCRIPTED_GAP.to_string());
+    assert_eq!(
+        cyclic_month.gaps,
+        [ScriptedGap {
+            key: "GetMonth".into(),
+            reason: "date expansion exceeded maximum nesting depth".into(),
+        }]
     );
     let recorded = [ScopeName::Recorded([
         b"Old Reich".to_vec(),
@@ -571,9 +650,11 @@ fn names_only_expansion_reads_country_names_through_scope_links() {
             "[ROOT.GetName] / [ROOT.GetNameDefCap] / [THIS.GetAdjectiveCap] / [ROOT.GetNameWithFlag]",
             &country,
             &recorded
-        )
-        .as_deref(),
-        Ok("Old Reich / The Old Reich / Old German / \u{12}GER The Old Reich")
+        ),
+        ExpandedText {
+            text: "Old Reich / The Old Reich / Old German / \u{12}GER The Old Reich".into(),
+            gaps: Vec::new(),
+        }
     );
 }
 

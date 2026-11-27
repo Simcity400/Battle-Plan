@@ -3,6 +3,7 @@ import type { ProductRequest } from '../../dashboard/client';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
 import type { EventFeedItem, EventFeedKindInfo, EventFeedRow, ScriptEdge } from '../../generated/dashboard';
 import { productRequest } from '../../dashboard/request.ts';
+import { isEventFeedGap } from './scriptedGaps.ts';
 
 const SCRIPT_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected', 'decisionRemoved', 'decisionCancelled',
   'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect',
@@ -27,7 +28,7 @@ const strike = (row: Record<string, unknown>): boolean => {
 
 const optionalText = (value: unknown) => value === undefined || typeof value === 'string';
 const item = (value: unknown): value is EventFeedItem => object(value) && text(value.token) && text(value.name) && text(value.icon) && (value.description === undefined || text(value.description))
-  && optionalText(value.nameMissing) && optionalText(value.gaps)
+  && optionalText(value.nameMissing) && (value.gaps === undefined || (Array.isArray(value.gaps) && value.gaps.every(isEventFeedGap)))
   && (value.options === undefined || (Array.isArray(value.options) && value.options.every(option => object(option) && int(option.ordinal) && text(option.name))));
 const LISTED_KINDS = new Set(['ceasedToExist', 'guaranteeGranted', 'projectFinished']);
 const listed = (row: Record<string, unknown>): boolean => Array.isArray(row.participants) && row.participants.length === 2
@@ -139,7 +140,9 @@ export function effectiveEventItem(event: EventFeedRow, choice: ScriptEdge | nul
   const fallback = choice?.row.item ?? null;
   if (!base) return fallback;
   if ((!base.options || base.options.length === 0) && fallback?.options?.length) {
-    return { ...base, options: fallback.options };
+    const optionGaps = fallback.gaps?.filter(gap => gap.field === 'option') ?? [];
+    const gaps = [...(base.gaps ?? []), ...optionGaps];
+    return { ...base, options: fallback.options, ...(gaps.length ? { gaps } : {}) };
   }
   return base;
 }

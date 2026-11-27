@@ -205,7 +205,7 @@ pub(crate) fn presented(
                 .collect()
         }),
         name_missing: window.title.is_none().then(|| "the window's title was not recorded".to_owned()),
-        gaps: None,
+        gaps: Vec::new(),
     });
     row.window = Some(EventFeedWindow {
         instance: Some(presentation.instance),

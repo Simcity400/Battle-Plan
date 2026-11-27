@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { fitTooltip, handleActiveTooltipKey, handleActiveTooltipWheel, hideTooltip, measureTooltipScroll, showTooltip, tooltipStore, tooltipText } from '../../charts/tooltip.ts';
+import { tooltipRowOffsets, tooltipRowWindow } from '../../charts/tooltipScroll.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
+import { deriveRowTooltip, type TableRow } from '../../families/table/model.ts';
 import { validateFeedRow } from './eventFeedData.ts';
 import { eventFeedProjection } from './eventFeedProjection.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
@@ -94,7 +97,7 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
     ['War support', '−15%'],
   ]);
   assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /2 units/);
-  const envoyTip = (hover: { key: string; description: string | null; gaps: string | null; options: (string | null)[] | null; missing: string | null } | null) => {
+  const envoyTip = (hover: { key: string; description: string | null; gaps: readonly { field: 'title' | 'description' | 'option'; ordinal?: number; key: string; reason: string }[] | null; options: (string | null)[] | null; missing: string | null } | null) => {
     const extra = eventFeedProjection.project(readView, { categories: ['warsPeace', 'diplomacy', 'politics', 'milestones'], artwork: true, hover: hover ? [hover] : [] }).rows.find(r => r.key === 'k1')?.tooltipExtra;
     return ((typeof extra === 'function' ? extra() : extra) ?? []).filter(r => r.label === 'Description' || r.label.startsWith('Option ')).map(r => `${r.label}: ${r.value.kind === 'known' ? r.value.value : r.value.kind === 'notRecorded' ? `not recorded: ${r.value.reason}` : r.value.kind}`);
   };
@@ -287,4 +290,126 @@ test('a finished project with an unidentified owner keeps its row and carries it
   assert.deepEqual(secondCountry.flags?.map(flag => flag.tag), ['?']);
   const knownCountry = model.rows.find(r => r.key === 'p2')!.cells.country!;
   assert.deepEqual(knownCountry.flags?.map(flag => flag.tag), ['X01']);
+});
+
+test('event feed projection shows each scripted gap in place with its own reason and lists all gaps in the tooltip', () => {
+  const gapped = row('scriptEventFired', 100, ['GER'], {
+    category: 'politics',
+    participants: ['GER', null],
+    item: {
+      token: 'synthetic.gap',
+      name: 'Summit of \uFFFC and \uFFFC in 1938',
+      icon: null,
+      description: null,
+      options: [{ ordinal: 0, name: 'Support \uFFFC' }],
+      gaps: [
+        { field: 'title', key: 'ROOT.GetLeader', reason: 'reads more than an event scope\'s country name or occurrence date' },
+        { field: 'title', key: 'FROM.GetName', reason: 'event scope 1: it carries a character' },
+        { field: 'option', ordinal: 0, key: 'FROM.GetName', reason: 'event scope 1: it carries a character' },
+      ],
+    },
+  });
+  const choice = {
+    row: row('eventOptionSelected', 102, ['GER'], { category: 'politics', participants: ['GER', null] }),
+    option: 0,
+    lifecycle: null,
+    days: null,
+    costs: null,
+  };
+  const head = {
+    branchId: '1',
+    log: 'feed-events',
+    columns: [],
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    offset: '0',
+    total: '1',
+    rows: [{ hour: gapped.hour, key: 'k-gap', ordinal: '0', cells: [], row: gapped, choice }],
+    facetTotals: [],
+    missing: [],
+    unavailable: [],
+    warnings: [],
+  };
+  const source = buildRowSourceFromHead('test:feed-gaps', head, undefined, 120)!;
+  const model = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', source]]) }),
+    { categories: ['politics'], artwork: false },
+  );
+  const out = model.rows[0]!;
+  assert.equal(out.cells.item?.value.kind, 'partial');
+  const shown = out.cells.item?.value.kind === 'partial' ? String(out.cells.item.value.value) : '';
+  assert.equal(
+    shown,
+    'Summit of [not recorded: ROOT.GetLeader: reads more than an event scope\'s country name or occurrence date] and [not recorded: FROM.GetName: event scope 1: it carries a character] in 1938',
+  );
+  assert.equal(out.cells.detail?.value.kind, 'partial');
+  assert.equal(
+    out.cells.detail?.value.kind === 'partial' ? out.cells.detail.value.value : '',
+    'Support [not recorded: FROM.GetName: event scope 1: it carries a character]',
+  );
+  const asFlat = (entry: TableRow) => ({
+    kind: 'data' as const,
+    key: entry.key,
+    name: entry.name,
+    row: entry,
+    rank: 1,
+    level: 0,
+    parent: null,
+    isTreeGroup: false,
+    isOpen: false,
+    childCount: 0,
+  });
+  const rawTip = deriveRowTooltip(asFlat(out), model.columns);
+  assert.equal(rawTip.scrollable, true);
+  assert.deepEqual(
+    rawTip.rows
+      .filter(r => r.label.startsWith('Text not recorded'))
+      .map(r => [r.label, r.valueState?.kind, r.valueState?.text]),
+    [
+      ['Text not recorded (title)', 'known', 'ROOT.GetLeader: reads more than an event scope\'s country name or occurrence date'],
+      ['Text not recorded (title)', 'known', 'FROM.GetName: event scope 1: it carries a character'],
+      ['Text not recorded (option A)', 'known', 'FROM.GetName: event scope 1: it carries a character'],
+    ],
+  );
+  const renderedTip = tooltipText(rawTip);
+  assert.match(renderedTip, /Text not recorded \(title\) ROOT\.GetLeader: reads more than an event scope's country name or occurrence date/);
+  assert.match(renderedTip, /Text not recorded \(title\) FROM\.GetName: event scope 1: it carries a character/);
+
+  const manyGaps = Array.from({ length: 12 }, (_, ordinal) => ({
+    field: 'option' as const,
+    ordinal,
+    key: `OPT_${ordinal}.GetName`,
+    reason: `option ${ordinal} scope was not recorded`,
+  }));
+  const overflowModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', source]]) }),
+    {
+      categories: ['politics'],
+      artwork: false,
+      hover: [{ key: 'k-gap', description: 'Body \uFFFC', gaps: manyGaps, options: null, missing: null }],
+    },
+  );
+  const overflowTip = deriveRowTooltip(asFlat(overflowModel.rows[0]!), overflowModel.columns);
+  const fitted = fitTooltip([overflowTip], 160);
+  assert.equal(fitted.scrollable, true, 'overflowing scripted gap tooltips scroll instead of dropping rows');
+  assert.equal(fitted.rows.filter(r => r.label.startsWith('Text not recorded (option')).length, 12);
+  assert.equal(fitted.rows.some(r => (r.omittedRows ?? 0) > 0), false, 'no gap row is replaced with "N more"');
+  assert.match(tooltipText(fitted), /OPT_11\.GetName: option 11 scope was not recorded/);
+
+  const twelfthIndex = fitted.rows.findIndex(r => r.valueState?.text?.includes('OPT_11.GetName'));
+  assert.ok(twelfthIndex >= 0);
+  const offsets = tooltipRowOffsets(fitted.rows);
+  const viewport = 120;
+  const maxScroll = offsets[offsets.length - 1]! - viewport;
+  assert.ok(maxScroll > 0, 'twelve option gaps overflow the viewport');
+  assert.ok(tooltipRowWindow(offsets, 0, viewport).last <= twelfthIndex, 'twelfth gap starts below the initial fold');
+  showTooltip('event-feed-test', fitted, 10, 10, 'k-gap');
+  measureTooltipScroll('event-feed-test', viewport);
+  assert.equal(handleActiveTooltipKey('other-widget', 'PageDown', false, maxScroll), false);
+  assert.equal(handleActiveTooltipWheel('other-widget', maxScroll, maxScroll), false);
+  assert.equal(handleActiveTooltipKey('event-feed-test', 'PageDown', false, maxScroll), true);
+  assert.equal(handleActiveTooltipWheel('event-feed-test', maxScroll, maxScroll), true);
+  const afterScroll = tooltipRowWindow(offsets, tooltipStore.get()!.scrollTop!, viewport);
+  assert.ok(twelfthIndex >= afterScroll.first && twelfthIndex < afterScroll.last, 'scrolling brings the twelfth gap into view');
+  hideTooltip('event-feed-test');
 });

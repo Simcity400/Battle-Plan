@@ -319,11 +319,25 @@ fn a_logged_strike_reads_back_whole_and_a_refused_part_is_never_totalled() {
 
 #[test]
 fn scripted_text_not_expanded_is_marked_where_it_stood_never_as_an_authored_ellipsis() {
-    use super::text::{SCRIPTED_GAP, elide_scripted};
-    assert_eq!(elide_scripted("Recruit in [FROM.GetName]"), format!("Recruit in {SCRIPTED_GAP}"));
+    use dashboard_text::scripted_text::{SCRIPTED_GAP, ScriptedGap, expand_dates_in};
+    let localisation = content_reader_localisation::localisation::Localisation::default();
+    let hour = game_model::calendar::HOUR_EPOCH + 1938 * 8760;
+    let expanded = expand_dates_in(
+        "Build in [FROM.GetName]\u{2026} [ROOT.GetAdjective] plan of [GetYear] [open",
+        hour,
+        &localisation,
+        "scope was not recorded",
+    );
     assert_eq!(
-        elide_scripted("Seize the Gold Reserve of [FROM.GetName]\u{2026} [ROOT.GetAdjective] plan [open"),
-        format!("Seize the Gold Reserve of {SCRIPTED_GAP}\u{2026} {SCRIPTED_GAP} plan [open")
+        expanded.text,
+        format!("Build in {SCRIPTED_GAP}\u{2026} {SCRIPTED_GAP} plan of 1938 [open")
+    );
+    assert_eq!(
+        expanded.gaps,
+        [
+            ScriptedGap { key: "FROM.GetName".into(), reason: "scope was not recorded".into() },
+            ScriptedGap { key: "ROOT.GetAdjective".into(), reason: "scope was not recorded".into() },
+        ]
     );
     assert_ne!(SCRIPTED_GAP, '\u{2026}');
 }
@@ -1242,6 +1256,18 @@ fn notices_kept_with_each_presented_event_add_up_to_the_notices_said_at_once() {
 
 #[test]
 fn a_listed_row_leaves_unexpanded_text_reasons_and_unshown_states_to_the_opened_row() {
+    let title_gap = super::EventFeedGap {
+        field: super::EventFeedGapField::Title,
+        ordinal: None,
+        key: "FROM.GetName".into(),
+        reason: "event scope 1: targeted decision country has no exact occurrence-hour slot".into(),
+    };
+    let body_gap = super::EventFeedGap {
+        field: super::EventFeedGapField::Description,
+        ordinal: None,
+        key: "ROOT.GetLeader".into(),
+        reason: "reads more than an event scope's country name or occurrence date".into(),
+    };
     let row = super::EventFeedRow {
         id: "native:1:9".into(),
         hour: 100,
@@ -1253,22 +1279,289 @@ fn a_listed_row_leaves_unexpanded_text_reasons_and_unshown_states_to_the_opened_
         tags: Vec::new(),
         participants: None,
         owner_missing: None,
-        item: Some(super::EventFeedItem { name: Some("Raise war bonds".into()), description: Some("Bonds.".into()), gaps: Some("GER_war_bonds.d shows its scripted text elided".into()), ..Default::default() }),
+        item: Some(super::EventFeedItem {
+            name: Some(format!("Build in {}", dashboard_text::scripted_text::SCRIPTED_GAP)),
+            description: Some(format!("Led by {}.", dashboard_text::scripted_text::SCRIPTED_GAP)),
+            gaps: vec![title_gap.clone(), body_gap.clone()],
+            ..Default::default()
+        }),
         amount: None,
         cause: None,
         strike: None,
         decision_state: Some(super::decision_state::DecisionLifecycleState::NotApplicable { reason: super::decision_state::DECISION_NO_MISSION_LIFECYCLE.to_owned() }),
         window: None,
     };
-    let mut decisions = vec![Some(row.clone())];
+    let mut decisions = [Some(row.clone())];
     super::tails::listed(&mut decisions, true, true);
     let listed = decisions[0].as_ref().unwrap();
     let item = listed.item.as_ref().unwrap();
-    assert_eq!((item.gaps.as_deref(), item.description.as_deref(), item.name.as_deref()), (None, Some("Bonds."), Some("Raise war bonds")), "the list keeps what it shows and leaves the elision reasons to the opened row");
+    assert_eq!(item.gaps, [title_gap.clone(), body_gap], "the list keeps gaps for every field it keeps");
     assert_eq!(listed.decision_state, None, "a state no list shows is left to the opened row");
-    let mut feed = vec![Some(row)];
+    let mut feed = [Some(row)];
     super::tails::listed(&mut feed, false, false);
-    assert_eq!(feed[0].as_ref().unwrap().item.as_ref().unwrap().description, None);
+    let feed_item = feed[0].as_ref().unwrap().item.as_ref().unwrap();
+    assert_eq!(feed_item.description, None);
+    assert_eq!(feed_item.gaps, [title_gap], "clearing description drops only description gaps, keeping title gaps on the listed row");
+}
+
+#[test]
+fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and_decisions() {
+    use super::{EventFeedCategory, EventFeedGapField, EventFeedTail, EventFeedTailParams};
+    use dashboard_base::{
+        products::{LoadContext, Product},
+        test_fixtures::{source, visual_mods::Machine},
+    };
+    use dashboard_text::scripted_text::SCRIPTED_GAP;
+    use replay_data::{
+        event_feed_rows::{EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScope, EventFeedScript, EventFeedText},
+        rows::{CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow, PoliticsRow, Recorded, TableRows},
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::atomic::AtomicBool;
+
+    let machine = Machine::new("feed_scripted_gaps");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}");
+    machine.write("common/decisions/categories/fixture.txt", b"SYNTH_CAT={}");
+    machine.write(
+        "common/decisions/fixture.txt",
+        b"SYNTH_CAT={\n  synth_build={allowed={always=yes}}\n  synth_trade={allowed={always=yes} highlight_states={highlight_states_trigger={}}}\n  synth_orders={allowed={always=yes} highlight_states={highlight_states_trigger={unregistered_trigger_key=yes}}}\n}\n",
+    );
+    machine.write(
+        "events/synth_events.txt",
+        b"add_namespace = synth\ncountry_event = {\n  id = synth.1\n  title = synth.1.t\n  desc = synth.1.d\n  option = { name = synth.1.a }\n  option = { name = synth.1.b }\n}\n",
+    );
+    machine.write(
+        "localisation/english/synth_l_english.yml",
+        "\u{feff}l_english:\n GER:0 \"Synthland\"\n GER_DEF:0 \"the Synthland\"\n GER_ADJ:0 \"Synth\"\n SOV:0 \"Neighboria\"\n SOV_DEF:0 \"the Neighboria\"\n SOV_ADJ:0 \"Neighborian\"\n synth.1.t:0 \"[ROOT.GetName] summit of [GetYear]: [ROOT.GetLeader] and [FROM.GetName]\"\n synth.1.d:0 \"In [GetYear], [ROOT.GetLeader] met [FROM.GetRulingParty].\"\n synth.1.a:0 \"Back [ROOT.GetLeader] in [GetYear]\"\n synth.1.b:0 \"Ask [FROM.GetName]\"\n synth_build:0 \"Build in [FROM.GetName] ([FROM.ROOT.GetName]) for [ROOT.GetName] ([GetYear])\"\n synth_trade:0 \"Trade with [FROM.GetName] ([FROM.ROOT.GetName]) from [ROOT.GetName] ([GetYear])\"\n synth_orders:0 \"Orders for [ROOT.GetName] in [GetYear] ([FROM.GetName])\"\n".as_bytes(),
+    );
+
+    let hour = game_model::calendar::HOUR_EPOCH + 1939 * 8760;
+    let actor = EventFeedCountry { reference: 9001, id: 9001, instance: 1 };
+    let mut tokens = Vec::new();
+    let push_token = |tokens: &mut Vec<u8>, literal: &[u8]| -> (u32, u32) {
+        let start = tokens.len() as u32;
+        tokens.extend_from_slice(literal);
+        (start, literal.len() as u32)
+    };
+    let (ev_start, ev_len) = push_token(&mut tokens, b"synth.1");
+    let (dec_start, dec_len) = push_token(&mut tokens, b"synth_build");
+    let (trade_start, trade_len) = push_token(&mut tokens, b"synth_trade");
+    let (orders_start, orders_len) = push_token(&mut tokens, b"synth_orders");
+    let scopes = vec![
+        EventFeedScope {
+            country: 9001,
+            country_id: Some(9001),
+            country_attempted: true,
+            country_names: Some([
+                EventFeedText::new(b"Synthland").unwrap(),
+                EventFeedText::new(b"the Synthland").unwrap(),
+                EventFeedText::new(b"Synth").unwrap(),
+            ]),
+            bindings: [0, 1, 0],
+            ..EventFeedScope::default()
+        },
+        EventFeedScope {
+            country: 9999,
+            country_attempted: true,
+            bindings: [0, 0, 0],
+            ..EventFeedScope::default()
+        },
+    ];
+    let events = vec![
+        EventFeedEvent {
+            sequence: 1,
+            generation: 1,
+            hour,
+            source: EventFeedSource::ScriptEvent,
+            actor,
+            target: actor,
+            cause: Recorded::NotRecorded,
+            script: Some(EventFeedScript {
+                token_start: ev_start,
+                token_len: ev_len,
+                scope_start: 0,
+                scope_len: scopes.len() as u32,
+                ..EventFeedScript::default()
+            }),
+        },
+        EventFeedEvent {
+            sequence: 2,
+            generation: 1,
+            hour,
+            source: EventFeedSource::DecisionSelected,
+            actor,
+            target: EventFeedCountry::default(),
+            cause: Recorded::NotRecorded,
+            script: Some(EventFeedScript {
+                token_start: dec_start,
+                token_len: dec_len,
+                country_target: Some(9999),
+                ..EventFeedScript::default()
+            }),
+        },
+        EventFeedEvent {
+            sequence: 3,
+            generation: 1,
+            hour,
+            source: EventFeedSource::DecisionSelected,
+            actor,
+            target: EventFeedCountry::default(),
+            cause: Recorded::NotRecorded,
+            script: Some(EventFeedScript {
+                token_start: trade_start,
+                token_len: trade_len,
+                country_target: Some(9002),
+                ..EventFeedScript::default()
+            }),
+        },
+        EventFeedEvent {
+            sequence: 4,
+            generation: 1,
+            hour,
+            source: EventFeedSource::DecisionSelected,
+            actor,
+            target: EventFeedCountry::default(),
+            cause: Recorded::NotRecorded,
+            script: Some(EventFeedScript {
+                token_start: orders_start,
+                token_len: orders_len,
+                ..EventFeedScript::default()
+            }),
+        },
+    ];
+    let mut frame = source(1, hour, Some(1));
+    if let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] {
+        countries.push(CountryRow {
+            id: 9002,
+            canonical_slot: 8,
+            tag: b"SOV".to_vec(),
+            border_land_doctrine_level: Recorded::Value(None),
+            ..CountryRow::default()
+        });
+    }
+    if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] {
+        links.push(CountryLinkRow { id: 9002, canonical_slot: 8 });
+    }
+    *frame.tables[TableId::CountryAppearance.index()] = TableView::Complete(TableRows::CountryAppearance(vec![
+        CountryAppearanceRow {
+            country: 9001,
+            name_tag: b"GER".to_vec(),
+            ..Default::default()
+        },
+        CountryAppearanceRow {
+            country: 9002,
+            name_tag: b"SOV".to_vec(),
+            ..Default::default()
+        },
+    ]));
+    *frame.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(vec![
+        PoliticsRow {
+            country: 9001,
+            ruling_party: Some(3),
+            ..Default::default()
+        },
+        PoliticsRow {
+            country: 9002,
+            ruling_party: Some(4),
+            ..Default::default()
+        },
+    ]));
+    *frame.tables[TableId::PoliticalParties.index()] = TableView::Complete(TableRows::PoliticalParties(vec![
+        PoliticalPartyRow {
+            country: 9001,
+            id: 3,
+            token: b"fascism".to_vec(),
+            tag: 9001,
+            name_default: 1,
+            ..Default::default()
+        },
+        PoliticalPartyRow {
+            country: 9002,
+            id: 4,
+            token: b"communism".to_vec(),
+            tag: 9002,
+            name_default: 1,
+            ..Default::default()
+        },
+    ]));
+    *frame.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(Vec::new()));
+    frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+    *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+        generation: 1,
+        read_hour: hour,
+        coverage: EventFeedCoverage::Complete,
+        counts: Some(EventFeedCounts { acquired: 4, settled: 4, failed: 0, rejected: 0 }),
+        outstanding: 0,
+        failure: None,
+        script_refusals: 0,
+        events,
+        script_tokens: tokens,
+        script_scopes: scopes,
+        windows: Default::default(),
+    }]));
+    let (replay_source, options) = machine.open_frames(vec![frame]);
+    let context = LoadContext { content: Some(options) };
+    let ask = |row: Option<&str>| EventFeedTailParams {
+        branch_id: "1".into(),
+        hour: Some(hour),
+        from: None,
+        to: None,
+        countries: None,
+        group: None,
+        search: None,
+        row: row.map(str::to_owned),
+        sort: None,
+        offset: None,
+        limit: 64,
+        categories: vec![EventFeedCategory::Politics],
+        exclude: None,
+    };
+
+    let listed = EventFeedTail::load(&replay_source, &ask(None), &context, &AtomicBool::new(false)).unwrap();
+    let ev_listed = listed.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == "native:1:1").unwrap().item.as_ref().unwrap();
+    assert_eq!(ev_listed.name.as_deref(), Some(format!("Synthland summit of 1939: {SCRIPTED_GAP} and {SCRIPTED_GAP}").as_str()));
+    assert_eq!(ev_listed.gaps.len(), 2, "listed row keeps both title gaps");
+    assert_eq!(ev_listed.gaps[0].key, "ROOT.GetLeader");
+    assert_eq!(ev_listed.gaps[1].key, "FROM.GetName");
+    assert!(ev_listed.gaps[1].reason.contains("9999"));
+
+    let opened = EventFeedTail::load(&replay_source, &ask(Some("native:1:1")), &context, &AtomicBool::new(false)).unwrap();
+    let ev_open = opened.rows[0].row.as_ref().unwrap().item.as_ref().unwrap();
+    assert_eq!(ev_open.gaps.len(), 6, "opened row carries title (2) + body (2) + option 0 (1) + option 1 (1) gaps");
+    assert_eq!(
+        ev_open.gaps.iter().map(|gap| (gap.field, gap.ordinal, gap.key.as_str())).collect::<Vec<_>>(),
+        [
+            (EventFeedGapField::Title, None, "ROOT.GetLeader"),
+            (EventFeedGapField::Title, None, "FROM.GetName"),
+            (EventFeedGapField::Description, None, "ROOT.GetLeader"),
+            (EventFeedGapField::Description, None, "FROM.GetRulingParty"),
+            (EventFeedGapField::Option, Some(0), "ROOT.GetLeader"),
+            (EventFeedGapField::Option, Some(1), "FROM.GetName"),
+        ]
+    );
+    let body = ev_open.description.as_deref().unwrap();
+    assert!(body.starts_with(&format!("In 1939, {SCRIPTED_GAP} met {SCRIPTED_GAP}.")), "{body}");
+    assert!(body.contains("0: Back [not recorded: ROOT.GetLeader:"), "{body}");
+    assert!(body.contains("1: Ask [not recorded: FROM.GetName:"), "{body}");
+
+    let dec_listed = listed.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == "native:1:2").unwrap().item.as_ref().unwrap();
+    assert_eq!(dec_listed.name.as_deref(), Some(format!("Build in {SCRIPTED_GAP} ({SCRIPTED_GAP}) for Synthland (1939)").as_str()), "missing={:?}", dec_listed.name_missing);
+    assert_eq!(dec_listed.gaps.len(), 2);
+    assert_eq!(dec_listed.gaps[0].field, EventFeedGapField::Title);
+    assert_eq!(dec_listed.gaps[0].key, "FROM.GetName");
+    assert!(dec_listed.gaps[0].reason.contains("targeted decision country has no exact occurrence-hour slot"), "{:?}", dec_listed.gaps[0]);
+    assert_eq!(dec_listed.gaps[1].key, "FROM.ROOT.GetName");
+    assert!(dec_listed.gaps[1].reason.contains("targeted decision country has no exact occurrence-hour slot"), "{:?}", dec_listed.gaps[1]);
+
+    let trade_listed = listed.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == "native:1:3").unwrap().item.as_ref().unwrap();
+    assert_eq!(trade_listed.name.as_deref(), Some("Trade with Neighboria (Neighboria) from Synthland (1939)"), "missing={:?}", trade_listed.name_missing);
+    assert!(trade_listed.gaps.is_empty(), "{:?}", trade_listed.gaps);
+
+    let orders_listed = listed.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == "native:1:4").unwrap().item.as_ref().unwrap();
+    assert_eq!(orders_listed.name.as_deref(), Some(format!("Orders for Synthland in 1939 ({SCRIPTED_GAP})").as_str()), "missing={:?}", orders_listed.name_missing);
+    assert_eq!(orders_listed.gaps.len(), 1);
+    assert_eq!(orders_listed.gaps[0].key, "FROM.GetName");
+    assert!(orders_listed.gaps[0].reason.contains("unregistered_trigger_key"), "{:?}", orders_listed.gaps[0]);
 }
 
 #[test]
