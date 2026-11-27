@@ -10,7 +10,7 @@ use dashboard_base::{Source, catalogue::{self, CachedResult, Catalogue}, product
 use content_reader_key_names::equipment::Database;
 use content_reader_politics::occupation_laws::Laws;
 use replay_data::rows::{CountryLinkRow, StateResistanceRow, TableId};
-use std::{collections::{BTreeMap, HashMap}, sync::{Arc, Mutex, OnceLock}};
+use std::{collections::{BTreeMap, BTreeSet, HashMap}, sync::{Arc, Mutex, OnceLock}};
 
 pub use law::OccupationLawInfo;
 
@@ -21,6 +21,10 @@ type Judgements = HashMap<(String, u32, u32), (Result<bool, String>, dashboard_t
 #[derive(Default)]
 struct Judged {
     at: Option<(replay_data::BranchId, replay_data::Hour)>,
+    inputs_at: replay_data::Hour,
+    stage: usize,
+    through: replay_data::Hour,
+    read: WorldReads,
     decisions: Judgements,
     carried: bool,
 }
@@ -28,24 +32,32 @@ struct Judged {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct WorldReads {
     fields: BTreeMap<TableId, u64>,
-    ends: bool,
+    ends: BTreeSet<TableId>,
+    clock: bool,
     undeclared: bool,
 }
 
 impl WorldReads {
-    fn note(&mut self, footprint: Option<&[dashboard_text::triggers::inputs::TableRead]>) {
-        match footprint {
-            Some(reads) => for read in reads {
-                *self.fields.entry(read.table).or_default() |= read.fields;
-                self.ends |= read.ends;
-            },
-            None => self.undeclared = true,
+    fn note(&mut self, inputs: &dashboard_text::triggers::inputs::Inputs) {
+        use dashboard_text::triggers::{inputs::Key, world::Query};
+        for key in inputs.keys() {
+            if matches!(key, Key::World(Query::Clock)) {
+                self.clock = true;
+                continue;
+            }
+            match key.dependence() {
+                Some(reads) => for read in reads {
+                    *self.fields.entry(read.table).or_default() |= read.fields;
+                    if read.ends { self.ends.insert(read.table); }
+                },
+                None => self.undeclared = true,
+            }
         }
     }
 
     fn add(&mut self, other: &Self) {
         for (&table, &fields) in &other.fields { *self.fields.entry(table).or_default() |= fields; }
-        self.ends |= other.ends;
+        self.ends.extend(&other.ends);
         self.undeclared |= other.undeclared;
     }
 }

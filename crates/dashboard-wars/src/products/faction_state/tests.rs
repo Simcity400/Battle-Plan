@@ -350,3 +350,160 @@ fn an_unlinked_roster_entry_leaves_membership_unknown_and_an_unknown_unlock_is_n
     assert_eq!(reply.status, FactionPoolStatus::PoolNotRecorded, "a locked pool and an unlocked empty one look alike without the unlock");
     assert!(reply.manpower.is_empty() && reply.manpower_total.is_none());
 }
+
+#[test]
+fn country_faction_goals_holds_quiet_and_foreign_hours_and_refreshes_on_membership_goal_and_damage() {
+    use super::country_goals::CountryFactionGoals;
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{LoadContext, at_hour::{exact_panel, frame_panel}},
+        test_fixtures::{CAMPAIGN, materialized_frame, played, records, source, streamed},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::CountryRow;
+    use serde_json::json;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let make = |branch: u64, hour: i32| {
+        let mut f = source(branch, hour, Some(100));
+        set(&mut f, TableId::Countries, TableRows::Countries(vec![
+            CountryRow { id: 7, canonical_slot: 3, tag: b"AAA".to_vec(), political_power_raw: Some(i64::from(hour) * 5), ..Default::default() },
+            CountryRow { id: 8, canonical_slot: 4, tag: b"BBB".to_vec(), ..Default::default() },
+            CountryRow { id: 9, canonical_slot: 5, tag: b"CCC".to_vec(), ..Default::default() },
+        ]));
+        set(&mut f, TableId::CountryLinks, TableRows::CountryLinks([(7, 3), (8, 4), (9, 5)].map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot }).to_vec()));
+        let mut members = Vec::new();
+        if hour <= 102 || (hour >= 105 && hour != 109) {
+            members.push(FactionMemberRow { country: 7, faction: FACTION, ordinal: 0 });
+        }
+        if hour % 2 == 0 {
+            members.push(FactionMemberRow { country: 8, faction: OTHER, ordinal: 0 });
+        } else {
+            members.push(FactionMemberRow { country: 9, faction: OTHER, ordinal: 0 });
+        }
+        if (111..=112).contains(&hour) {
+            *f.tables[TableId::FactionMembers.index()] = TableView::Unavailable { reason: "members unread".into() };
+        } else {
+            set(&mut f, TableId::FactionMembers, TableRows::FactionMembers(members));
+        }
+        set(&mut f, TableId::FactionGoalStatus, TableRows::FactionGoalStatus(vec![
+            FactionGoalStatusRow { faction: OTHER, manifest: Some(1) },
+            FactionGoalStatusRow { faction: FACTION, manifest: Some(if hour >= 104 { 2 } else { 1 }) },
+        ]));
+        let mut entries = vec![
+            goal(OTHER, 0, 0, Some(2), i64::from(hour) * 100),
+            FactionGoalEntryRow {
+                faction: FACTION,
+                kind: 0,
+                ordinal: 0,
+                token: Some(2),
+                status: if hour >= 106 { 3 } else { 0 },
+                progress_raw: i64::from(hour) * 1000,
+                active_sections: vec![hour as u32],
+                date: hour,
+                slots: 1,
+            },
+        ];
+        if hour >= 107 {
+            entries.push(goal(FACTION, 1, 0, Some(3), 0));
+        }
+        if hour == 108 {
+            *f.tables[TableId::FactionGoalEntries.index()] = TableView::Unavailable { reason: "goal entries damaged".into() };
+        } else {
+            set(&mut f, TableId::FactionGoalEntries, TableRows::FactionGoalEntries(entries));
+        }
+        set(&mut f, TableId::LexicalTokens, TableRows::LexicalTokens(
+            ["mod_manifest", "mod_goal", "mod_done"].into_iter().zip(1..).map(|(literal, token)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).collect(),
+        ));
+        f
+    };
+
+    let main_frames: Vec<_> = (100..=114).map(|hour| make(1, hour)).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, main_frames.clone())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(SourceKey { source_id: "cfg-played".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let load = LoadContext { content: None };
+    let params = json!({"branchId": "1", "country": "AAA", "goals": "all"});
+    let panel = exact_panel::<CountryFactionGoals>(&source, &load, &params).unwrap();
+    let exact = panel.exact().unwrap();
+    let mut whole = frame_panel::<CountryFactionGoals>(&source, &load, &params).unwrap();
+    let steps = played(source.replay_ref(), exact, 100, 114);
+    for step in &steps {
+        let expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
+        assert_eq!(streamed(&step.value, step.fresh), expected, "country-faction-goals at {}", step.hour);
+        if matches!(step.hour, 101 | 102 | 104 | 114) {
+            assert_eq!(step.product_calls, 0, "quiet/foreign/progress hour {} should not rebuild", step.hour);
+        }
+    }
+    let back = (exact.advance)(105, true, &false.into(), None);
+    assert_eq!(*back.value, materialized_frame(&mut *whole, source.replay_ref(), 1, 105), "backward seek");
+    let cold = (exact.cold)(100, &false.into());
+    assert_eq!(cold, materialized_frame(&mut *whole, source.replay_ref(), 1, 100), "cold path");
+    let progress = cold.as_ref().unwrap()["live"]["groups"][0]["values"][0].as_i64();
+    assert_eq!(progress, Some(100_000), "cold country-faction-goals must decode nonzero progress_raw live cell");
+    let alt_frames: Vec<_> = (105..=108).map(|hour| make(2, hour)).collect();
+    let branched = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, main_frames), records(2, alt_frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let branch2 = branched.timelines().unwrap().list.iter().find(|t| t.id != 1).unwrap().id;
+    let alt_source = Source::from_replay(SourceKey { source_id: "cfg-branch".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(branched), &AtomicBool::new(false)).unwrap();
+    let alt_panel = exact_panel::<CountryFactionGoals>(&alt_source, &load, &json!({"branchId": branch2.to_string(), "country": "AAA", "goals": "all"})).unwrap();
+    let alt_read = (alt_panel.exact().unwrap().advance)(106, true, &false.into(), None);
+    let mut alt_whole = frame_panel::<CountryFactionGoals>(&alt_source, &load, &json!({"branchId": branch2.to_string(), "country": "AAA", "goals": "all"})).unwrap();
+    assert_eq!(*alt_read.value, materialized_frame(&mut *alt_whole, alt_source.replay_ref(), branch2, 106), "branch switch");
+}
+
+#[test]
+fn country_faction_goals_refreshes_when_scripted_goal_text_input_changes() {
+    use super::country_goals::CountryFactionGoals;
+    use dashboard_base::{
+        products::at_hour::{exact_panel, frame_panel},
+        test_fixtures::{game, materialized_frame, played, source, source_with_content, streamed, visual_mods::Machine},
+    };
+    use replay_data::rows::{CountryRow, ScriptFlagRow};
+    use serde_json::json;
+
+    game::enter();
+    let machine = Machine::new("cfg_scripted_goal_text");
+    machine.write("common/defines/probe.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=7}}");
+    machine.write("common/factions/goals/mod_goals.txt", b"mod_goal = { name = mod_goal_name description = mod_goal_desc }\n");
+    machine.write(
+        "common/scripted_localisation/mod_loc.txt",
+        b"defined_text = {\n  name = ModGoalPhrase\n  text = { trigger = { has_global_flag = mod_flag } localization_key = mod_phrase_on }\n  text = { trigger = { always = yes } localization_key = mod_phrase_off }\n}\n",
+    );
+    machine.write(
+        "localisation/english/mod_l_english.yml",
+        "\u{feff}l_english:\n mod_goal_name:0 \"Mod Goal\"\n mod_goal_desc:0 \"State: [ROOT.ModGoalPhrase]\"\n mod_phrase_on:0 \"Active\"\n mod_phrase_off:0 \"Idle\"\n".as_bytes(),
+    );
+
+    let frames: Vec<_> = (100..=105)
+        .map(|hour| {
+            let mut f = source(1, hour, Some(100));
+            set(&mut f, TableId::Countries, TableRows::Countries(vec![CountryRow { id: 7, canonical_slot: 3, tag: b"AAA".to_vec(), ..Default::default() }]));
+            set(&mut f, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: 7, canonical_slot: 3 }]));
+            set(&mut f, TableId::FactionMembers, TableRows::FactionMembers(vec![FactionMemberRow { country: 7, faction: FACTION, ordinal: 0 }]));
+            set(&mut f, TableId::FactionGoalStatus, TableRows::FactionGoalStatus(vec![FactionGoalStatusRow { faction: FACTION, manifest: None }]));
+            set(&mut f, TableId::FactionGoalEntries, TableRows::FactionGoalEntries(vec![goal(FACTION, 0, 0, Some(1), i64::from(hour) * 100)]));
+            set(&mut f, TableId::LexicalTokens, TableRows::LexicalTokens(vec![
+                LexicalTokenRow { token: 1, literal: b"mod_goal".to_vec() },
+                LexicalTokenRow { token: 2, literal: b"mod_flag".to_vec() },
+            ]));
+            let flags = if hour >= 103 { vec![ScriptFlagRow { scope_kind: 0, scope_id: 0, token: 2, set_hour: 103, value: 1, remaining_days: 0 }] } else { Vec::new() };
+            set(&mut f, TableId::ScriptFlags, TableRows::ScriptFlags(flags));
+            f
+        })
+        .collect();
+
+    let (source, load) = source_with_content(frames, &machine.root);
+    let params = json!({"branchId": "1", "country": "AAA", "goals": "all"});
+    let panel = exact_panel::<CountryFactionGoals>(&source, &load, &params).unwrap();
+    let exact = panel.exact().unwrap();
+    let mut whole = frame_panel::<CountryFactionGoals>(&source, &load, &params).unwrap();
+    let steps = played(source.replay_ref(), exact, 100, 105);
+    for step in &steps {
+        let expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
+        assert_eq!(streamed(&step.value, step.fresh), expected, "scripted country-faction-goals at {}", step.hour);
+        let desc = step.value.as_ref().as_ref().unwrap()["definitions"][0]["description"].as_str().unwrap_or_else(|| panic!("missing description: {:?}", step.value));
+        assert_eq!(desc, if step.hour >= 103 { "State: Active" } else { "State: Idle" });
+        if matches!(step.hour, 101 | 102 | 104 | 105) {
+            assert_eq!(step.product_calls, 0, "quiet scripted hour {} should hold", step.hour);
+        }
+    }
+}

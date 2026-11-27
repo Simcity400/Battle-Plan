@@ -73,7 +73,7 @@ pub(crate) fn incarnations<'a>(
         let mut merged: Vec<Segment> = Vec::new();
         for segment in segments {
             match merged.last_mut() {
-                Some(held) if segment.first <= held.last.saturating_add(1) || (held.ends_unseen && segment.starts_unseen) => {
+                Some(held) if segment.first <= held.last.saturating_add(1) || (held.ends_unseen && segment.starts_unseen && held.absent_at.is_none_or(|at| at >= segment.first)) => {
                     if segment.last >= held.last {
                         held.last = segment.last;
                         held.key = segment.key;
@@ -144,6 +144,50 @@ impl Incarnations {
     }
 }
 
+fn split_absent(runs: &[(i32, i32, CoveredValue)], complete: &[(i32, i32)], first: i32) -> Vec<(i32, i32, CoveredValue)> {
+    let mut out = Vec::with_capacity(runs.len());
+    let push_gap = |out: &mut Vec<(i32, i32, CoveredValue)>, mut from: i32, to: i32| {
+        if from > to {
+            return;
+        }
+        let mut at = complete.partition_point(|&(_, end)| end < from);
+        while from <= to {
+            let Some(&(c_first, c_last)) = complete.get(at) else {
+                out.push((from, to, CoveredValue::Uncovered));
+                break;
+            };
+            if c_first > to {
+                out.push((from, to, CoveredValue::Uncovered));
+                break;
+            }
+            if from < c_first {
+                out.push((from, c_first - 1, CoveredValue::Uncovered));
+                from = c_first;
+            }
+            let covered_end = c_last.min(to);
+            out.push((from, covered_end, CoveredValue::Unvalued));
+            if covered_end == i32::MAX {
+                break;
+            }
+            from = covered_end + 1;
+            at += 1;
+        }
+    };
+    if let Some(&(start, _, _)) = runs.first()
+        && start > first
+    {
+        push_gap(&mut out, first, start - 1);
+    }
+    for &(start, end, value) in runs {
+        if value == CoveredValue::Uncovered {
+            push_gap(&mut out, start, end);
+        } else {
+            out.push((start, end, value));
+        }
+    }
+    out
+}
+
 #[derive(Default)]
 struct Kept(Option<(u64, Arc<Incarnations>)>);
 
@@ -160,13 +204,17 @@ pub fn follow(source: &Source, branch: u64) -> io::Result<Arc<Incarnations>> {
     let recording = query.replay.recording();
     let mut all = Vec::new();
     for (index, stretch) in query.timeline.stretches.iter().enumerate() {
-        let (handles, _) = cost::storage(|| lanes::keyed_covered_runs(recording, stretch.run, table, summary::Source::Cell(handle), None, stretch.first, stretch.last))?;
+        let (handles, complete) = cost::storage(|| lanes::keyed_covered_runs(recording, stretch.run, table, summary::Source::Cell(handle), None, stretch.first, stretch.last))?;
+        let handles: Vec<(u128, Vec<(i32, i32, CoveredValue)>)> = handles
+            .into_iter()
+            .map(|(key, runs)| (key, split_absent(&runs, &complete, stretch.first)))
+            .collect();
         let read = |at: usize| -> io::Result<HashMap<u128, Runs>> {
             Ok(cost::storage(|| lanes::runs(recording, stretch.run, table, attributes[at], stretch.first, stretch.last))?.into_iter().collect())
         };
         let columns = [read(0)?, read(1)?, read(2)?, read(3)?];
         let first_read = cost::storage(|| lanes::reads(recording, stretch.run, table, stretch.first, stretch.last))?.first().map(|span| span.0);
-        all.extend(incarnations(&handles, &columns, first_read, (index == 0).then_some(query.timeline.first), stretch.last));
+        all.extend(incarnations(handles.iter().map(|(key, runs)| (key, runs)), &columns, first_read, (index == 0).then_some(query.timeline.first), stretch.last));
     }
     let held = Arc::new(Incarnations::new(all));
     state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, Arc::clone(&held)));

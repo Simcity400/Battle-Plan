@@ -2,7 +2,10 @@
 use super::{
     Content, Judged, Judgements, WorldReads, law::{self, GroupLaw, LawInputs, OccupationLawInfo}, occupied, slot,
 };
-use dashboard_base::{Source, catalogue::Refusals, products::{LoadContext, at_hour::{At, AtHour, Edits, Keys, Owner, Read, ReadsAt, field_mask}}};
+use content_reader_parser::{fixed5::decimal_i32, parser::{Item, Operator}};
+use content_reader_politics::occupation_laws::Law;
+use content_reader_script::scripted_trigger_grammar::{Lookup, ScriptedTriggers};
+use dashboard_base::{Source, catalogue::{CachedResult, Refusals}, products::{LoadContext, at_hour::{At, AtHour, Edits, Keys, Owner, Read, ReadsAt, field_mask}}};
 use dashboard_intelligence::products::intelligence::{Tags, branch, missing};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_text::{metadata::{RecordedRows, recorded_rows}, triggers::inputs::{Since, TableChange, TableChanges}};
@@ -298,13 +301,18 @@ struct Admission<'f> {
     world: OnceCell<Result<dashboard_text::triggers::World<'f>, String>>,
     decided: Judgements,
     read: WorldReads,
+    through: i32,
 }
 
 impl<'f> Admission<'f> {
     fn new(frame: &'f DecodedFrame, content: &'f Content, links: &'f [CountryLinkRow]) -> Self {
         let judged = content.judged.lock().unwrap_or_else(|error| error.into_inner());
         let decided = if judged.at == Some((frame.branch, frame.hour)) { judged.decisions.clone() } else { Judgements::default() };
-        Self { frame, content, links, world: OnceCell::new(), decided, read: WorldReads::default() }
+        Self { frame, content, links, world: OnceCell::new(), decided, read: WorldReads::default(), through: i32::MAX }
+    }
+
+    fn fresh(frame: &'f DecodedFrame, content: &'f Content, links: &'f [CountryLinkRow]) -> Self {
+        Self { frame, content, links, world: OnceCell::new(), decided: Judgements::default(), read: WorldReads::default(), through: i32::MAX }
     }
 
     fn admit(&mut self, token: &str, key: Option<Key>, scope: Option<u32>) -> Result<bool, String> {
@@ -318,7 +326,7 @@ impl<'f> Admission<'f> {
         if definition.visible.is_empty() && controller == occupied {
             return Ok(true);
         }
-        let Self { frame, content, world, decided, read, .. } = self;
+        let Self { frame, content, world, decided, read, through, .. } = self;
         let (frame, content) = (*frame, *content);
         let slot = match decided.entry((token.to_owned(), controller, occupied)) {
             Entry::Occupied(held) => return held.get().0.clone(),
@@ -334,10 +342,176 @@ impl<'f> Admission<'f> {
             .as_ref()
             .map_err(Clone::clone)?;
         let (made, inputs) = dashboard_text::triggers::inputs::capture_in(HourFrame::from(frame), || law::admitted(world, definition, controller, occupied));
-        read.note(inputs.footprint());
+        let mut decision_read = WorldReads::default();
+        decision_read.note(&inputs);
+        *through = (*through).min(decision_through(frame, content, definition, &inputs, &decision_read));
+        read.note(&inputs);
         slot.insert((made.clone(), inputs));
         made
     }
+}
+
+fn day_start(hour: i32) -> i32 {
+    hour.wrapping_sub(hour.wrapping_sub(game_model::calendar::HOUR_EPOCH) % 24)
+}
+
+fn scalar_number(text: &[u8]) -> Option<i32> {
+    let body = text.strip_prefix(b"-").unwrap_or(text);
+    let mut dots = 0u8;
+    if body.is_empty()
+        || !body.iter().all(|&byte| {
+            if byte == b'.' {
+                dots += 1;
+                dots <= 1
+            } else {
+                byte.is_ascii_digit()
+            }
+        })
+    {
+        return None;
+    }
+    let value = decimal_i32(text);
+    (value != i32::MIN && value != i32::MAX).then_some(value)
+}
+
+fn collect_flag_days(items: &[Item], scripted: Option<&ScriptedTriggers>, visited: &mut HashSet<Vec<u8>>, out: &mut Vec<(Operator, i32)>) -> bool {
+    for item in items {
+        let keyword = item.keyword().map(|keyword| keyword.folded());
+        if matches!(keyword.as_deref(), Some(b"date" | b"has_character_flag")) {
+            return false;
+        }
+        if matches!(keyword.as_deref(), Some(b"has_country_flag" | b"has_state_flag" | b"has_global_flag")) {
+            if let Some(block) = item.value.items() {
+                for field in block {
+                    if field.keyword().is_some_and(|keyword| keyword.folded() == b"days") && matches!(field.operator, Operator::Greater | Operator::Less) {
+                        let Some(count) = field.value.scalar().and_then(scalar_number) else { return false };
+                        out.push((field.operator, count));
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some(key) = keyword.as_deref()
+            && let Some(scripted) = scripted
+            && let Lookup::Template(template) = scripted.lookup(key)
+            && visited.insert(key.to_vec())
+        {
+            match &template.body {
+                Ok(body) => {
+                    if !collect_flag_days(body, Some(scripted), visited, out) {
+                        return false;
+                    }
+                }
+                Err(_) => return false,
+            }
+        }
+        if let Some(block) = item.value.items()
+            && !collect_flag_days(block, scripted, visited, out)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn war_relation_clock_through(frame: &DecodedFrame) -> i32 {
+    match frame.tables[TableId::WarRelations.index()].held() {
+        replay_frame::frame::TableView::Complete(rows) | replay_frame::frame::TableView::Truncated { rows, .. } => {
+            rows.rows::<tables::WarRelations>().map_or(frame.hour, |rows| {
+                rows.iter()
+                    .flat_map(|row| [
+                        (row.start_hour > frame.hour).then_some(row.start_hour),
+                        (row.end_hour > row.start_hour && row.end_hour > frame.hour).then_some(row.end_hour),
+                    ])
+                    .flatten()
+                    .min()
+                    .map_or(i32::MAX, |at| at.saturating_sub(1))
+            })
+        }
+        _ => frame.hour,
+    }
+}
+
+fn decision_through(frame: &DecodedFrame, content: &Content, definition: &Law, inputs: &dashboard_text::triggers::inputs::Inputs, read: &WorldReads) -> i32 {
+    use dashboard_text::triggers::{inputs::Key, world::Query};
+    if read.undeclared {
+        return frame.hour;
+    }
+    let mut through = ends_through(frame, &read.ends);
+    if !read.clock {
+        return through;
+    }
+    let mut accounted = false;
+    let mut flag_queries: Vec<(u8, u32, &[u8])> = Vec::new();
+    for key in inputs.keys() {
+        match key {
+            Key::Table(TableId::WarRelations) | Key::Fields(TableId::WarRelations, _) => {
+                accounted = true;
+                through = through.min(war_relation_clock_through(frame));
+            }
+            Key::World(Query::IndustrialOrganisationFlags(_)) => return frame.hour,
+            Key::World(Query::Flag(kind, id, name)) => flag_queries.push((*kind, *id, name.as_slice())),
+            _ => {}
+        }
+    }
+    if !flag_queries.is_empty() {
+        let scripted = content.catalogue().ok().and_then(|cat| {
+            cat.content
+                .layers
+                .derived::<CachedResult<ScriptedTriggers>>()
+                .get_or_init(|| content_reader_key_names::scripted_triggers::read(&cat.content.layers))
+                .as_ref()
+                .ok()
+                .cloned()
+        });
+        let mut days = Vec::new();
+        let mut visited = HashSet::new();
+        if !collect_flag_days(&definition.visible, scripted.as_deref(), &mut visited, &mut days)
+            || !collect_flag_days(&definition.available, scripted.as_deref(), &mut visited, &mut days)
+            || days.is_empty()
+        {
+            return frame.hour;
+        }
+        let (Ok(tokens), Ok(flags)) = (frame.complete::<tables::LexicalTokens>(), frame.complete::<tables::ScriptFlags>()) else {
+            return frame.hour;
+        };
+        accounted = true;
+        for (kind, id, name) in flag_queries {
+            for tok in tokens.iter().filter(|row| row.literal.eq_ignore_ascii_case(name)) {
+                let key = (u128::from(kind) << 64) | (u128::from(id) << 32) | u128::from(tok.token);
+                if let Ok(at) = flags.binary_search_by_key(&key, |row| (u128::from(row.scope_kind) << 64) | (u128::from(row.scope_id) << 32) | u128::from(row.token)) {
+                    let start = day_start(flags[at].set_hour);
+                    for &(op, count) in &days {
+                        let Some(delta) = count.checked_mul(24) else { return frame.hour };
+                        let Some(threshold) = start.checked_add(delta) else { return frame.hour };
+                        let target = match op {
+                            Operator::Greater => match threshold.checked_add(24) {
+                                Some(value) => value,
+                                None => return frame.hour,
+                            },
+                            Operator::Less => threshold,
+                            _ => continue,
+                        };
+                        let flip = if target <= game_model::calendar::HOUR_EPOCH {
+                            match target.checked_sub(23) {
+                                Some(value) => value,
+                                None => return frame.hour,
+                            }
+                        } else {
+                            target
+                        };
+                        if flip > frame.hour {
+                            through = through.min(flip.saturating_sub(1));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !accounted {
+        return frame.hour;
+    }
+    through
 }
 
 struct EditChanges {
@@ -362,54 +536,121 @@ impl TableChanges for EditChanges {
     }
 }
 
+fn ends_through(frame: &DecodedFrame, ends: &BTreeSet<TableId>) -> i32 {
+    let mut through = i32::MAX;
+    for &table in ends {
+        let next = match table {
+            TableId::WarRelations => match frame.tables[table.index()].held() {
+                replay_frame::frame::TableView::Complete(rows) | replay_frame::frame::TableView::Truncated { rows, .. } => {
+                    rows.rows::<tables::WarRelations>().map_or(Some(frame.hour.saturating_add(1)), |rows| {
+                        rows.iter().filter(|row| row.end_hour > row.start_hour && row.end_hour > frame.hour).map(|row| row.end_hour).min()
+                    })
+                }
+                _ => None,
+            },
+            TableId::Subjects => match frame.tables[table.index()].held() {
+                replay_frame::frame::TableView::Complete(rows) | replay_frame::frame::TableView::Truncated { rows, .. } => {
+                    rows.rows::<tables::Subjects>().map_or(Some(frame.hour.saturating_add(1)), |rows| {
+                        rows.iter().filter(|row| row.end_hour > row.start_hour && row.end_hour > frame.hour).map(|row| row.end_hour).min()
+                    })
+                }
+                _ => None,
+            },
+            _ => return frame.hour,
+        };
+        if let Some(at) = next {
+            through = through.min(at.saturating_sub(1));
+        }
+    }
+    through
+}
+
+fn world_valid_through(frame: &DecodedFrame, world: &WorldReads) -> i32 {
+    if world.undeclared {
+        return frame.hour;
+    }
+    let mut through = ends_through(frame, &world.ends);
+    if world.clock && world.fields.contains_key(&TableId::WarRelations) {
+        through = through.min(war_relation_clock_through(frame));
+    }
+    through
+}
+
+fn world_touched(edits: &Edits, world: &WorldReads) -> bool {
+    edits.replaced.iter().any(|table| !own(table) || world.fields.contains_key(table))
+        || edits.tables.iter().any(|(table, rows)| !own(table) || world.fields.get(table).is_some_and(|&mask| rows.values().any(|&changed| changed & mask != 0)))
+}
+
+fn decision_holds(inputs: &dashboard_text::triggers::inputs::Inputs, since: &Since<'_>) -> bool {
+    use dashboard_text::triggers::{inputs::Key, world::Query};
+    inputs.keys().all(|key| match key {
+        Key::World(Query::Clock) => true,
+        _ => key.dependence().is_some_and(|reads| reads.iter().all(|read| !since.changed(read))),
+    })
+}
+
 pub(super) fn judged_through(content: &Content, held: &DecodedFrame, since: Option<i32>, edits: &Edits) -> bool {
     let mut judged = content.judged.lock().unwrap_or_else(|error| error.into_inner());
     if judged.at == Some((held.branch, held.hour)) { return true; }
-    let Some(from) = since.filter(|&from| judged.at == Some((held.branch, from))) else { return false };
+    if since.filter(|&from| judged.at == Some((held.branch, from))).is_none() { return false; }
+    if judged.read.undeclared || held.hour > judged.through {
+        judged.at = None;
+        return false;
+    }
+    if !world_touched(edits, &judged.read) {
+        judged.at = Some((held.branch, held.hour));
+        judged.carried = true;
+        return true;
+    }
     let changes = EditChanges::new(edits);
-    let since = Since::span_in(held.branch, from, held.hour, Some(HourFrame::from(held)), &changes);
-    if !judged.decisions.values_mut().all(|(_, inputs)| inputs.advance(&since)) {
+    let since = Since::span_in(held.branch, judged.inputs_at, held.hour, Some(HourFrame::from(held)), &changes);
+    if !judged.decisions.values().all(|(_, inputs)| decision_holds(inputs, &since)) {
         judged.at = None;
         return false;
     }
     judged.at = Some((held.branch, held.hour));
+    judged.inputs_at = held.hour;
+    judged.through = judged.through.min(world_valid_through(held, &judged.read));
     judged.carried = true;
     true
 }
 
 pub(super) fn law_stands(content: &Content, held: &DecodedFrame, edits: &Edits) -> bool {
-    let clocked = { let world = content.world.lock().unwrap_or_else(|error| error.into_inner()); world.ends || world.undeclared };
-    if !clocked && !world_moved(edits) { return true; }
     let judged = content.judged.lock().unwrap_or_else(|error| error.into_inner());
+    let clocked = !judged.read.ends.is_empty() || judged.read.clock || judged.read.undeclared;
+    if !clocked && !world_touched(edits, &judged.read) { return true; }
     judged.carried && judged.at == Some((held.branch, held.hour))
 }
 
-fn eligibility(frame: &DecodedFrame, content: &Content) -> (Judgements, WorldReads) {
-    (|| -> io::Result<(Judgements, WorldReads)> {
+fn eligibility(frame: &DecodedFrame, content: &Content) -> (Judgements, WorldReads, i32) {
+    (|| -> io::Result<(Judgements, WorldReads, i32)> {
         let links = frame.complete::<tables::CountryLinks>()?;
         let joins = Joins::read(frame, links, &mut Refusals::default())?;
         let (RecordedRows::Complete(resistance) | RecordedRows::Truncated { rows: resistance, .. }) = recorded_rows::<tables::StateResistance>(frame)? else {
-            return Ok(Default::default());
+            return Ok((Judgements::default(), WorldReads::default(), i32::MAX));
         };
         let (RecordedRows::Complete(states) | RecordedRows::Truncated { rows: states, .. }) = recorded_rows::<tables::States>(frame)? else {
-            return Ok(Default::default());
+            return Ok((Judgements::default(), WorldReads::default(), i32::MAX));
         };
-        let mut admission = Admission::new(frame, content, links);
+        let mut admission = Admission::fresh(frame, content, links);
         for (_, state, key) in occupied_states(resistance, states, links) {
             let Some(state) = state else { continue };
             let (inputs, scope) = joins.law_inputs(slot(links, state.controller), key);
             let _ = law::law_for(inputs, |token| admission.admit(token, key, scope));
         }
-        Ok((admission.decided, admission.read))
+        Ok((admission.decided, admission.read, admission.through))
     })()
-    .unwrap_or_default()
+    .unwrap_or_else(|_| (Judgements::default(), WorldReads::default(), i32::MAX))
 }
 
 const WORLD_CORE: [TableId; 1] = [TableId::Provinces];
 
-fn world_missing(params: &OccupiedStatesParams, held: &DecodedFrame, content: &Content) -> Vec<TableId> {
-    let (decided, read) = eligibility(held, content);
-    let lacking = |table: &TableId| held.tables[table.index()].held().is_not_selected();
+fn world_missing(params: &OccupiedStatesParams, held: &DecodedFrame, content: &Content, stage: usize) -> Vec<TableId> {
+    let (decided, read, through) = eligibility(held, content);
+    let lacking = |table: &TableId| {
+        let view = &held.tables[table.index()];
+        view.held().is_not_selected() || *view.keys() != Keys::All
+    };
     let missing: Vec<TableId> = if read.undeclared {
         OccupiedStates::tables(params).into_iter().filter(lacking).collect()
     } else {
@@ -418,14 +659,33 @@ fn world_missing(params: &OccupiedStatesParams, held: &DecodedFrame, content: &C
     let mut world = content.world.lock().unwrap_or_else(|error| error.into_inner());
     let before = world.clone();
     world.add(&read);
+    let mut judged = content.judged.lock().unwrap_or_else(|error| error.into_inner());
     if missing.is_empty() && *world == before {
-        *content.judged.lock().unwrap_or_else(|error| error.into_inner()) = Judged { at: Some((held.branch, held.hour)), decisions: decided, carried: false };
+        *judged = Judged {
+            at: Some((held.branch, held.hour)),
+            inputs_at: held.hour,
+            stage,
+            through,
+            read,
+            decisions: decided,
+            carried: false,
+        };
+    } else {
+        judged.at = None;
     }
     missing
 }
 
-fn judge_none(held: &DecodedFrame, content: &Content) {
-    *content.judged.lock().unwrap_or_else(|error| error.into_inner()) = Judged { at: Some((held.branch, held.hour)), decisions: Judgements::default(), carried: false };
+fn judge_none(held: &DecodedFrame, content: &Content, stage: usize) {
+    *content.judged.lock().unwrap_or_else(|error| error.into_inner()) = Judged {
+        at: Some((held.branch, held.hour)),
+        inputs_at: held.hour,
+        stage,
+        through: i32::MAX,
+        read: WorldReads::default(),
+        decisions: Judgements::default(),
+        carried: false,
+    };
 }
 
 fn world_planned(plan: &[(Vec<Read>, i32)]) -> bool {
@@ -676,8 +936,18 @@ fn moving_only(edits: &Edits) -> bool {
     })
 }
 
-fn world_moved(edits: &Edits) -> bool {
-    edits.replaced.iter().chain(edits.tables.keys()).any(|table| !own(table))
+fn garrison_tokens_hold(frame: &DecodedFrame, edits: &Edits) -> bool {
+    if edits.replaced.contains(&TableId::StateGarrisons) { return false; }
+    let Some(changed) = edits.tables.get(&TableId::StateGarrisons) else { return true };
+    let equipment = field_mask(TableId::StateGarrisons, &["equipment"]);
+    if changed.values().all(|&mask| mask & equipment == 0) { return true; }
+    let Some(replay_frame::frame::TableView::Complete(old)) = edits.previous.get(&TableId::StateGarrisons).map(|view| view.held()) else { return false };
+    let (Some(old), Ok(new)) = (old.rows::<tables::StateGarrisons>(), frame.complete::<tables::StateGarrisons>()) else { return false };
+    let key_of = |row: &StateGarrisonRow| u128::from(row.controller) << 32 | u128::from(row.state);
+    changed.iter().filter(|(_, mask)| *mask & equipment != 0).all(|(&key, _)| {
+        let (Some(a), Some(b)) = (find(old, key, key_of), find(new, key, key_of)) else { return false };
+        same_tokens(&a.equipment, &b.equipment)
+    })
 }
 
 fn find<R>(rows: &[R], key: u128, key_of: impl Fn(&R) -> u128) -> Option<&R> {
@@ -764,8 +1034,8 @@ impl AtHour for OccupiedStates {
     fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
         if step == 0 { return TABLES.into_iter().filter(|&table| table != TableId::LexicalTokens).map(Read::all).collect(); }
         if step > 1 {
-            if needs_world(held) { return world_missing(params, held, at.context).into_iter().map(Read::all).collect(); }
-            judge_none(held, at.context);
+            if needs_world(held) { return world_missing(params, held, at.context, step).into_iter().map(Read::all).collect(); }
+            judge_none(held, at.context, step);
             return Vec::new();
         }
         let learned = at.context.world.lock().unwrap_or_else(|error| error.into_inner()).clone();
@@ -778,6 +1048,17 @@ impl AtHour for OccupiedStates {
             _ => BTreeSet::new(),
         };
         world.into_iter().filter(|table| !TABLES.contains(table)).map(Read::all).chain([lexicon]).collect()
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let reads = Self::reads_in(params, owner, stage, held, at);
+        let through = if stage >= 2 && reads.is_empty() {
+            let judged = at.context.judged.lock().unwrap_or_else(|error| error.into_inner());
+            if judged.at == Some((held.branch, held.hour)) { judged.through } else { held.hour }
+        } else {
+            i32::MAX
+        };
+        (reads, through)
     }
 
     fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], content: &Self::Context) -> Option<Vec<usize>> {
@@ -804,28 +1085,30 @@ impl AtHour for OccupiedStates {
     }
 
     fn plan_changes(stage: usize, edits: &Edits, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> bool {
+        let terminal = at.context.judged.lock().unwrap_or_else(|error| error.into_inner()).stage;
         match stage {
             0 => false,
-            1 => !edits.tables.is_empty() || !edits.replaced.is_empty(),
+            1 => terminal > 2 || !(moving_only(edits) && garrison_tokens_hold(held, edits)),
+            _ if stage < terminal => true,
             _ => !(moving_only(edits) && judged_through(at.context, held, at.since, edits)),
         }
     }
 
-    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, _reply: &Self::Reply, partial: bool) -> i32 {
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        let judged = at.context.judged.lock().unwrap_or_else(|error| error.into_inner());
+        if judged.at == Some((frame.branch, frame.hour)) { judged.through } else { frame.hour }
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, _reply: &Self::Reply, partial: bool) -> i32 {
         if partial || TABLES.into_iter().any(|table| matches!(frame.tables[table.index()].held(), replay_frame::frame::TableView::NotRecorded { .. })) {
             at.hour
         } else {
-            i32::MAX
+            Self::valid_through(frame, params, at)
         }
     }
 
     fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         Ok(data["missing"].is_null() && structure_holds(frame, edits) && law_stands(at.context, frame, edits))
-    }
-
-    fn clock_dependent(plan: &[(Vec<Read>, i32)], content: &Self::Context) -> bool {
-        let world = content.world.lock().unwrap_or_else(|error| error.into_inner());
-        world_planned(plan) && (world.ends || world.undeclared)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

@@ -272,6 +272,75 @@ pub(super) fn scripted(frame: &DecodedFrame, faction: u64, cat: &Catalogue) -> b
     })
 }
 
+pub(super) fn shown_tokens(frame: &DecodedFrame, faction: u64, filter: super::country_goals::GoalFilter) -> Vec<u128> {
+    let mut tokens = std::collections::BTreeSet::new();
+    for row in frame
+        .complete::<tables::FactionGoalEntries>()
+        .ok()
+        .into_iter()
+        .flat_map(|rows| super::owned(rows, faction, |row| row.faction))
+        .filter(|row| match row.kind {
+            0 => super::country_goals::GoalState::of(row.status).shown(filter),
+            1 => super::country_goals::GoalState::Completed.shown(filter),
+            2 => super::country_goals::GoalState::Cancelled.shown(filter),
+            _ => false,
+        })
+    {
+        if let Some(token) = row.token {
+            tokens.insert(u128::from(token));
+        }
+    }
+    tokens.into_iter().collect()
+}
+
+fn bound_uses_lexicon(bound: &content_reader_script::localization_binding::BoundLocalization) -> bool {
+    use content_reader_script::localization_binding::{BoundValue, FormattedLocalization};
+    let uses = |value: &FormattedLocalization| !matches!(value, FormattedLocalization::Key(_));
+    bound.nodes.iter().any(|node| {
+        uses(&node.key) || node.arguments.iter().any(|argument| matches!(&argument.value, BoundValue::Localization(value) if uses(value)))
+    })
+}
+
+pub(super) fn needs_lexicon_lookup(frame: &DecodedFrame, faction: u64, cat: &Catalogue, filter: super::country_goals::GoalFilter) -> bool {
+    let Ok(definitions) = content_reader_politics::faction_goals::cached(&cat.content.layers) else { return false };
+    for token in shown_tokens(frame, faction, filter) {
+        let Some(spelling) = faction_names::template_spelling(frame, u32::try_from(token).ok()).ok().flatten() else { continue };
+        let Some(definition) = definitions.get(&spelling).ok().flatten() else { continue };
+        if bound_uses_lexicon(&definition.name) || bound_uses_lexicon(&definition.description) {
+            return true;
+        }
+    }
+    false
+}
+
+pub(super) fn scripted_for(frame: &DecodedFrame, faction: u64, cat: &Catalogue, filter: super::country_goals::GoalFilter) -> bool {
+    let Ok(definitions) = content_reader_politics::faction_goals::cached(&cat.content.layers) else { return false };
+    let lexical = faction_names::LexicalNames::from_source(frame);
+    let spelled = |token: u32| faction_names::template_spelling(frame, Some(token)).ok().flatten();
+    let goals = frame
+        .complete::<tables::FactionGoalEntries>()
+        .ok()
+        .into_iter()
+        .flat_map(|rows| super::owned(rows, faction, |row| row.faction))
+        .filter(|row| match row.kind {
+            0 => super::country_goals::GoalState::of(row.status).shown(filter),
+            1 => super::country_goals::GoalState::Completed.shown(filter),
+            2 => super::country_goals::GoalState::Cancelled.shown(filter),
+            _ => false,
+        })
+        .filter_map(|row| row.token);
+    for token in goals {
+        let Some(definition) = spelled(token).and_then(|spelling| definitions.get(&spelling).ok().flatten()) else { continue };
+        if [&definition.name, &definition.description].into_iter().any(|bound| {
+            !bound.is_empty()
+                && faction_names::bound_name(bound, &cat.localisation, |name| lexical.token_of(name)).is_ok_and(|text| text.contains('['))
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
 pub(super) fn text_tables() -> impl Iterator<Item = TableId> {
     dashboard_text::scripted_text::TABLES.iter().copied()
 }

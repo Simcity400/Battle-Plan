@@ -1,4 +1,4 @@
-use dashboard_base::products::{LoadContext, at_hour::{At, AtHour}};
+use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Clock, Edits, Held, Keys, Owner, Read, ReadsAt, field_columns, field_mask}};
 use dashboard_base::Source;
 use super::wargoal_dates::{self, Incarnation, Incarnations};
 use dashboard_follow::live::Source as Cell;
@@ -249,11 +249,32 @@ fn removed_names(source: &Source, branch: u64, cat: Option<&Catalogue>, dates: &
     Ok((out, unattributed))
 }
 
+fn linked_ids(held: &DecodedFrame, slot: u32) -> Option<Vec<u32>> {
+    let links = held.complete::<tables::CountryLinks>().ok()?;
+    let mut ids: Vec<u32> = links.iter().filter(|row| row.canonical_slot == slot).map(|row| row.id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Some(ids)
+}
+
+fn owner_ranges(ids: &[u32], shift: u32) -> Keys {
+    let tail = (1u128 << shift) - 1;
+    Keys::Ranges(ids.iter().map(|&id| (u128::from(id) << shift, (u128::from(id) << shift) | tail)).collect())
+}
+
+const NAMING_TABLES: [TableId; 5] = [
+    TableId::CountryAppearance,
+    TableId::Politics,
+    TableId::PoliticalParties,
+    TableId::Autonomy,
+    TableId::ReservedCountryNaming,
+];
+
 impl AtHour for Wargoals {
     const KEY: &'static str = "wargoals";
     const TITLE: &'static str = "War goals";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("computes justification completion hours and wargoal available/expiry state against at.hour");
+    const CLOCK: Clock = Clock::Boundaries;
     type Params = WargoalsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = WargoalsReply;
@@ -286,6 +307,190 @@ impl AtHour for Wargoals {
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         read_tables()
+    }
+
+    fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
+        let Some(owner) = owner else { return Vec::new() };
+        match step {
+            0 => vec![Read::all(TableId::CountryLinks)],
+            1 => {
+                let Some(ids) = linked_ids(held, owner.slot) else { return Vec::new() };
+                vec![
+                    Read { table: TableId::CountryWargoals, keys: owner_ranges(&ids, 32) },
+                    Read { table: TableId::WargoalJustifications, keys: owner_ranges(&ids, 32) },
+                    Read { table: TableId::WargoalTargets, keys: owner_ranges(&ids, 72) },
+                ]
+            }
+            2 => {
+                let Ok(links) = held.complete::<tables::CountryLinks>() else { return Vec::new() };
+                let goals = held.complete::<tables::CountryWargoals>().ok().unwrap_or(&[]);
+                let justifications = held.complete::<tables::WargoalJustifications>().ok().unwrap_or(&[]);
+                let targets = held.complete::<tables::WargoalTargets>().ok().unwrap_or(&[]);
+                let mut tokens = BTreeSet::new();
+                for row in goals {
+                    tokens.insert(u128::from(row.goal_type));
+                }
+                for row in justifications {
+                    tokens.insert(u128::from(row.goal_type));
+                }
+                let mut reads = vec![Read::these(TableId::LexicalTokens, tokens), Read::all(TableId::Countries)];
+                if !goals.is_empty() || !justifications.is_empty() {
+                    let states: BTreeSet<u128> = targets
+                        .iter()
+                        .filter(|row| row.kind == 0 || row.kind == 4)
+                        .map(|row| u128::from(row.value as u32))
+                        .collect();
+                    reads.push(Read::these(TableId::States, states));
+                    let slots: HashMap<u32, u32> = links.iter().map(|row| (row.id, row.canonical_slot)).collect();
+                    let actor_slots: BTreeSet<u32> = goals
+                        .iter()
+                        .map(|row| row.actor)
+                        .chain(justifications.iter().map(|row| row.actor))
+                        .filter_map(|raw| slots.get(&raw).copied())
+                        .collect();
+                    let mut actor_ids: Vec<u32> = links
+                        .iter()
+                        .filter(|row| actor_slots.contains(&row.canonical_slot))
+                        .map(|row| row.id)
+                        .collect();
+                    actor_ids.sort_unstable();
+                    actor_ids.dedup();
+                    reads.push(Read { table: TableId::WarOwnedRelations, keys: owner_ranges(&actor_ids, 32) });
+                    reads.push(Read::all(TableId::FactionMembers));
+                    reads.extend(NAMING_TABLES.into_iter().map(Read::all));
+                } else {
+                    reads.push(Read::these(TableId::States, []));
+                    reads.push(Read::these(TableId::WarOwnedRelations, []));
+                    reads.push(Read::these(TableId::FactionMembers, []));
+                    reads.extend(NAMING_TABLES.into_iter().map(|table| Read::these(table, [])));
+                }
+                reads
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::CountryLinks => Some(field_columns(table, &["canonical_slot"])),
+            TableId::Countries => Some(field_columns(table, &["canonical_slot", "tag", "political_power_raw"])),
+            TableId::CountryWargoals => Some(field_columns(table, &["handle", "actor", "recipient", "goal_type", "expires"])),
+            TableId::WargoalJustifications => Some(field_columns(table, &["actor", "recipient", "goal_type", "total_cost_raw", "daily_cost_raw", "progress_raw", "start", "end", "pay_upfront"])),
+            TableId::WargoalTargets => Some(field_columns(table, &["value"])),
+            TableId::States => Some(field_columns(table, &["custom_name", "owner_name"])),
+            TableId::WarOwnedRelations => Some(field_columns(table, &["first_country", "second_country", "retired"])),
+            TableId::FactionMembers => Some(field_columns(table, &["faction"])),
+            TableId::CountryAppearance => Some(field_columns(table, &["cosmetic_tag", "name_tag", "leader_ideology", "overlord"])),
+            TableId::Politics => Some(field_columns(table, &["ruling_party"])),
+            TableId::PoliticalParties => Some(field_columns(table, &["token"])),
+            TableId::Autonomy => Some(field_columns(table, &["state"])),
+            TableId::ReservedCountryNaming => Some(field_columns(table, &["tag", "name_tag", "cosmetic_tag", "leader_ideology", "group", "overlord", "autonomy", "built"])),
+            _ => None,
+        }
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        match stage {
+            0 => false,
+            1 => edits.replaced.contains(&TableId::CountryLinks) || edits.tables.contains_key(&TableId::CountryLinks),
+            _ => edits.replaced.iter().chain(edits.tables.keys()).any(|table| {
+                matches!(table, TableId::CountryLinks | TableId::CountryWargoals | TableId::WargoalJustifications | TableId::WargoalTargets)
+            }),
+        }
+    }
+
+    fn advance(frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, data: &mut Held<'_>) -> io::Result<bool> {
+        if !edits.replaced.is_empty() {
+            return Ok(false);
+        }
+        let pp = field_mask(TableId::Countries, &["political_power_raw"]);
+        let progress = field_mask(TableId::WargoalJustifications, &["progress_raw"]);
+        let only_moving = edits.tables.iter().all(|(table, rows)| match *table {
+            TableId::Countries => rows.values().all(|&mask| mask & !pp == 0),
+            TableId::WargoalJustifications => rows.values().all(|&mask| mask & !progress == 0),
+            _ => false,
+        });
+        if !only_moving {
+            return Ok(false);
+        }
+        let (Ok(countries), Ok(links), Ok(justifications)) = (
+            frame.complete::<tables::Countries>(),
+            frame.complete::<tables::CountryLinks>(),
+            frame.complete::<tables::WargoalJustifications>(),
+        ) else {
+            return Ok(false);
+        };
+        let Ok((selected, selected_slot)) = selected_country(countries, links, &params.country) else { return Ok(false) };
+        let slots: HashMap<u32, u32> = links.iter().map(|row| (row.id, row.canonical_slot)).collect();
+        let Some(held_justifications) = data["justifications"].as_array() else { return Ok(false) };
+        let mut owned = justifications.iter().filter(|row| slots.get(&row.country) == Some(&selected_slot));
+        for entry in held_justifications {
+            let Some(row) = owned.next() else { return Ok(false) };
+            if row.end == rows::WargoalJustificationRow::INVALID_HOUR {
+                return Ok(false);
+            }
+            let paused = if row.pay_upfront != 0 || row.daily_cost_raw <= 0 {
+                Some(false)
+            } else {
+                selected.political_power_raw.map(|pp| pp < row.daily_cost_raw)
+            };
+            let matches_paused = match paused {
+                Some(value) => entry["paused"].as_bool() == Some(value),
+                None => entry["paused"].is_null(),
+            };
+            if !matches_paused {
+                return Ok(false);
+            }
+        }
+        Ok(owned.next().is_none())
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        if partial {
+            return frame.hour;
+        }
+        if frame.complete::<tables::WargoalJustifications>().is_ok_and(|rows| {
+            rows.iter().any(|row| row.end == rows::WargoalJustificationRow::INVALID_HOUR)
+        }) {
+            return frame.hour;
+        }
+        let mut through = i32::MAX;
+        let mut bound = |at_hour: i32| {
+            if at_hour > frame.hour {
+                through = through.min(at_hour.saturating_sub(1));
+            }
+        };
+        for goal in &reply.goals {
+            if let Some(expires) = goal.expires {
+                bound(expires);
+            }
+            if let Ok(dates) = &at.context.dates
+                && let Ok(handle) = goal.handle.parse::<u64>()
+            {
+                for incarnation in dates.of_handle(handle) {
+                    if let Some(granted) = incarnation.granted {
+                        bound(granted);
+                    }
+                    if let Some(removed) = incarnation.removed {
+                        bound(removed);
+                    }
+                }
+            }
+        }
+        let next_removed = at.context.removals.partition_point(|(incarnation, _)| incarnation.removed.is_some_and(|removed| removed <= frame.hour));
+        if let Some((incarnation, _)) = at.context.removals.get(next_removed)
+            && let Some(removed) = incarnation.removed
+        {
+            bound(removed);
+        }
+        let next_unattributed = at.context.unattributed.partition_point(|(removed, _)| *removed <= frame.hour);
+        if let Some(&(removed, _)) = at.context.unattributed.get(next_unattributed) {
+            bound(removed);
+        }
+        if let Some(change) = at.holders.next_change(frame.hour) {
+            bound(change);
+        }
+        through
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -957,6 +1162,7 @@ mod tests {
             (row(0), vec![(100, 109, Value(7)), (110, 119, Uncovered), (120, 130, Unvalued)]),
             (row(1), vec![(100, 104, Unvalued), (105, 107, Uncovered), (108, 130, Value(8))]),
             (row(2), vec![(100, 112, Value(5)), (113, 130, Uncovered)]),
+            (row(3), vec![(100, 105, Value(11)), (106, 107, Uncovered), (108, 109, Unvalued), (110, 111, Uncovered), (112, 130, Value(11))]),
         ]);
         let none: [std::collections::HashMap<u128, replay_lanes::lanes::Runs>; 4] = Default::default();
         let found = wargoal_dates::Incarnations::new(wargoal_dates::incarnations(&handles, &none, Some(100), Some(100), 130));
@@ -967,7 +1173,11 @@ mod tests {
         assert_eq!((eight.granted, eight.granted_missing), (None, Some(wargoal_dates::FIRST_SEEN_AFTER_GAP)), "first seen after a gap is not held at branch start");
         let five = found.of_handle(5).next().unwrap();
         assert_eq!(five.removed, None, "never read gone is never removed");
-        assert_eq!(found.of_country(1).count(), 3);
+        let eleven: Vec<_> = found.of_handle(11).collect();
+        assert_eq!(eleven.len(), 2, "a confirmed absence between two unread gaps splits the handle into two incarnations");
+        assert_eq!((eleven[0].removed, eleven[0].removed_exact, eleven[0].last_seen), (Some(108), false, 105));
+        assert_eq!((eleven[1].granted, eleven[1].granted_missing, eleven[1].removed), (None, Some(wargoal_dates::FIRST_SEEN_AFTER_GAP), None));
+        assert_eq!(found.of_country(1).count(), 5);
         let late = wargoal_dates::Incarnations::new(wargoal_dates::incarnations(&handles, &none, Some(105), Some(100), 130));
         assert_eq!(late.of_handle(7).next().unwrap().granted_missing, Some(wargoal_dates::FIRST_SEEN_AFTER_GAP), "the first usable read after an initial gap is not the branch start");
     }
@@ -1201,5 +1411,132 @@ mod tests {
         );
         assert_eq!(reply.standings.len(), 1);
         assert_eq!(reply.standings[0].standing, Some(WargoalStanding::AtWar));
+    }
+
+    #[test]
+    fn wargoals_hold_through_foreign_activity_and_refresh_on_expiry_war_removal_and_damage() {
+        use dashboard_base::{
+            Source, SourceKey,
+            products::{LoadContext, at_hour::{exact_panel, frame_panel}},
+            test_fixtures::{CAMPAIGN, materialized_frame, played, records, source, streamed},
+        };
+        use replay::campaign::Replay;
+        use serde_json::json;
+        use std::sync::atomic::AtomicBool;
+
+        let base = 43_820_100_i32;
+        let make = |branch: u64, hour: i32| {
+            let offset = hour - base;
+            let mut f = source(branch, hour, Some(i64::from(base)));
+            fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
+                *frame.tables[table.index()] = TableView::Complete(rows);
+            }
+            let pp = if offset >= 11 { 50_000 } else { 200_000 + i64::from(offset) * 100 };
+            set(&mut f, TableId::Countries, TableRows::Countries(vec![
+                rows::CountryRow { id: 1, canonical_slot: 1, tag: b"ONE".to_vec(), political_power_raw: Some(pp), ..Default::default() },
+                rows::CountryRow { id: 2, canonical_slot: 2, tag: b"TWO".to_vec(), political_power_raw: Some(i64::from(offset) * 10), ..Default::default() },
+                rows::CountryRow { id: 3, canonical_slot: 3, tag: b"THR".to_vec(), political_power_raw: Some(i64::from(offset) * 20), ..Default::default() },
+            ]));
+            set(&mut f, TableId::CountryLinks, TableRows::CountryLinks([1, 2, 3].map(|id| rows::CountryLinkRow { id, canonical_slot: id }).to_vec()));
+            set(&mut f, TableId::CountryAppearance, TableRows::CountryAppearance([1, 2, 3].map(|country| rows::CountryAppearanceRow { country, ..Default::default() }).to_vec()));
+            set(&mut f, TableId::Politics, TableRows::Politics([1, 2, 3].map(|country| rows::PoliticsRow { country, ..Default::default() }).to_vec()));
+            set(&mut f, TableId::PoliticalParties, TableRows::PoliticalParties(Vec::new()));
+            set(&mut f, TableId::Autonomy, TableRows::Autonomy(Vec::new()));
+            set(&mut f, TableId::ReservedCountryNaming, TableRows::ReservedCountryNaming(vec![rows::ReservedCountryNamingRow { tag: b"RSV".to_vec(), ..Default::default() }]));
+            set(&mut f, TableId::States, TableRows::States(vec![
+                rows::StateRow { id: 50, owner: 2, controller: 2, manpower_available: offset * 7, ..Default::default() },
+            ]));
+            set(&mut f, TableId::LexicalTokens, TableRows::LexicalTokens(vec![
+                rows::LexicalTokenRow { token: 42, literal: b"custom_goal".to_vec() },
+            ]));
+            let war = if offset == 6 {
+                vec![rows::WarOwnedRelationRow { owner: 1, ordinal: 0, first_country: 1, second_country: 2, retired: 0, ..Default::default() }]
+            } else {
+                Vec::new()
+            };
+            set(&mut f, TableId::WarOwnedRelations, TableRows::WarOwnedRelations(war));
+            let factions = if offset == 7 {
+                vec![
+                    rows::FactionMemberRow { country: 1, faction: 9, ordinal: 0 },
+                    rows::FactionMemberRow { country: 2, faction: 9, ordinal: 1 },
+                ]
+            } else {
+                Vec::new()
+            };
+            set(&mut f, TableId::FactionMembers, TableRows::FactionMembers(factions));
+            let mut goals = Vec::new();
+            let mut targets = Vec::new();
+            if (3..=7).contains(&offset) {
+                goals.push(rows::CountryWargoalRow { country: 1, ordinal: 0, handle: 77, actor: 1, recipient: 2, goal_type: 42, name_token: 42, expires: base + 5 });
+                targets.push(rows::WargoalTargetRow { country: 1, kind: 3, goal: 0, ordinal: 0, value: 77 });
+            }
+            goals.push(rows::CountryWargoalRow { country: 2, ordinal: 0, handle: 900 + offset as u64, actor: 2, recipient: 3, goal_type: 42, name_token: 42, expires: base + 50 });
+            targets.push(rows::WargoalTargetRow { country: 2, kind: 3, goal: 0, ordinal: 0, value: 900 + offset as u64 });
+            if (13..=14).contains(&offset) {
+                *f.tables[TableId::CountryWargoals.index()] = TableView::Unavailable { reason: "wargoals damaged".into() };
+            } else {
+                set(&mut f, TableId::CountryWargoals, TableRows::CountryWargoals(goals));
+            }
+            set(&mut f, TableId::WargoalTargets, TableRows::WargoalTargets(targets));
+            let mut justs = Vec::new();
+            if (9..=11).contains(&offset) {
+                justs.push(rows::WargoalJustificationRow {
+                    country: 1, ordinal: 0, actor: 1, recipient: 2, goal_type: 42,
+                    total_cost_raw: 9_000_000, daily_cost_raw: 100_000, progress_raw: i64::from(offset) * 1000,
+                    start: base + 9, end: base + 200, pay_upfront: 0, threat_raw: i64::from(offset),
+                });
+            }
+            if offset == 12 {
+                justs.push(rows::WargoalJustificationRow {
+                    country: 1, ordinal: 0, actor: 1, recipient: 2, goal_type: 42,
+                    total_cost_raw: 9_000_000, daily_cost_raw: 100_000, progress_raw: 100_000,
+                    start: base + 12, end: rows::WargoalJustificationRow::INVALID_HOUR, pay_upfront: 1, threat_raw: 0,
+                });
+            }
+            justs.push(rows::WargoalJustificationRow { country: 2, ordinal: 0, actor: 2, recipient: 3, goal_type: 42, progress_raw: i64::from(offset) * 100, end: base + 200, ..Default::default() });
+            set(&mut f, TableId::WargoalJustifications, TableRows::WargoalJustifications(justs));
+            f
+        };
+
+        let main_frames: Vec<_> = (base..=base + 15).map(|hour| make(1, hour)).collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, main_frames.clone())]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(SourceKey { source_id: "wg-played".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let load = LoadContext { content: None };
+        let params = json!({"branchId": "1", "country": "ONE"});
+        let panel = exact_panel::<Wargoals>(&source, &load, &params).unwrap();
+        let exact = panel.exact().unwrap();
+        let mut whole = frame_panel::<Wargoals>(&source, &load, &params).unwrap();
+        let steps = played(source.replay_ref(), exact, base, base + 15);
+        for step in &steps {
+            let offset = step.hour - base;
+            let expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
+            assert_eq!(streamed(&step.value, step.fresh), expected, "wargoals at offset {offset}");
+            if matches!(offset, 1 | 2 | 4 | 10) {
+                assert_eq!(step.product_calls, 0, "quiet/foreign/unchanged-pause offset {offset} should not rebuild wargoals");
+            }
+            if offset == 4 {
+                assert_eq!(step.value.as_ref().as_ref().unwrap()["goals"][0]["state"], "ready");
+            }
+            if offset == 5 {
+                assert_eq!(step.value.as_ref().as_ref().unwrap()["goals"][0]["state"], "expired");
+            }
+            if offset == 6 {
+                assert_eq!(step.value.as_ref().as_ref().unwrap()["goals"][0]["state"], "atWar");
+            }
+            if offset == 8 {
+                let removed = step.value.as_ref().as_ref().unwrap()["removed"].as_array().unwrap();
+                assert_eq!(removed.len(), 1, "expected 1 removed wargoal at offset 8, reply={:?}, dates={:?}", step.value, wargoal_dates::follow(&source, 1).ok().map(|d| d.removed().cloned().collect::<Vec<_>>()));
+            }
+        }
+        let back = (exact.advance)(base + 4, true, &false.into(), None);
+        assert_eq!(*back.value, materialized_frame(&mut *whole, source.replay_ref(), 1, base + 4), "wargoals backward seek");
+        let alt_frames: Vec<_> = (base + 5..=base + 8).map(|hour| make(2, hour)).collect();
+        let branched = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, main_frames), records(2, alt_frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let branch2 = branched.timelines().unwrap().list.iter().find(|t| t.id != 1).unwrap().id;
+        let alt_source = Source::from_replay(SourceKey { source_id: "wg-branch".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(branched), &AtomicBool::new(false)).unwrap();
+        let alt_panel = exact_panel::<Wargoals>(&alt_source, &load, &json!({"branchId": branch2.to_string(), "country": "ONE"})).unwrap();
+        let alt_read = (alt_panel.exact().unwrap().advance)(base + 6, true, &false.into(), None);
+        let mut alt_whole = frame_panel::<Wargoals>(&alt_source, &load, &json!({"branchId": branch2.to_string(), "country": "ONE"})).unwrap();
+        assert_eq!(*alt_read.value, materialized_frame(&mut *alt_whole, alt_source.replay_ref(), branch2, base + 6), "wargoals branch switch");
     }
 }

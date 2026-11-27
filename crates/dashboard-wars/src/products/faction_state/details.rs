@@ -6,7 +6,7 @@ use super::{
     goals::{self, FactionGoalDefinition, Texts},
     owned,
 };
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt}}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt, ScriptedInputs}}};
 use dashboard_world::products::territory::slot_tags;
 use dashboard_base::products::resources::{Learned, ResourceNaming};
 use dashboard_follow::live::{Cells, Source as Cell};
@@ -127,6 +127,7 @@ pub struct DetailContent {
     catalogue: Result<Arc<Catalogue>, String>,
     naming: ResourceNaming,
     art: Arc<Art>,
+    inputs: ScriptedInputs,
 }
 
 #[derive(Default)]
@@ -148,12 +149,12 @@ pub(super) fn faction_reads(faction: u64) -> Vec<Read> {
     reads
 }
 
-pub(super) fn goal_reads(faction: u64) -> Vec<Read> {
+pub(super) fn country_goal_reads(faction: u64) -> Vec<Read> {
     let goals = u128::from(faction) << 40;
-    let mut reads: Vec<Read> = WHOLE.into_iter().map(Read::all).collect();
-    reads.push(Read::these(TableId::FactionGoalStatus, [u128::from(faction)]));
-    reads.push(Read { table: TableId::FactionGoalEntries, keys: Keys::Range(goals, goals | ((1u128 << 40) - 1)) });
-    reads
+    vec![
+        Read::these(TableId::FactionGoalStatus, [u128::from(faction)]),
+        Read { table: TableId::FactionGoalEntries, keys: Keys::Range(goals, goals | ((1u128 << 40) - 1)) },
+    ]
 }
 
 impl AtHour for FactionDetails {
@@ -222,7 +223,7 @@ impl AtHour for FactionDetails {
                 art
             }
         };
-        Ok(DetailContent { catalogue, naming: ResourceNaming::stored(source, load), art })
+        Ok(DetailContent { catalogue, naming: ResourceNaming::stored(source, load), art, inputs: ScriptedInputs::new(source.replay()) })
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -251,12 +252,16 @@ impl DetailContent {
     pub(super) fn art(&self) -> &Arc<Art> {
         &self.art
     }
+
+    pub(super) fn inputs(&self) -> &ScriptedInputs {
+        &self.inputs
+    }
 }
 
-pub(super) fn goals_only(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, filter: GoalFilter, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {
+pub(super) fn goals_only_in(frame: &DecodedFrame, world: &DecodedFrame, params: &FactionDetailParams, faction: u64, filter: GoalFilter, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {
     let mut reply = blank(params);
     let cat = at.context.catalogue.as_ref().map(Arc::as_ref);
-    let texts = cat.ok().map(|cat| Texts::new(frame, faction, cat, &at.context.art, params.viewpoint.as_ref()));
+    let texts = cat.ok().map(|cat| Texts::new(world, faction, cat, &at.context.art, params.viewpoint.as_ref()));
     goal_lists(frame, faction, texts.as_ref(), cat.err().map(String::as_str), &mut reply, at.live, Some(filter))?;
     if let Some(texts) = &texts {
         reply.warnings.extend(texts.warnings());
