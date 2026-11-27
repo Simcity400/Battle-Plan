@@ -12,6 +12,9 @@ import type { DashboardTemplate } from './model';
 import { preparingClient, prepareGate } from './prepare.ts';
 import { loadProduct, useFollowedProduct, useProduct, useProducts } from './products.ts';
 import { forgetProducts } from './products.ts';
+import EventFeed from '../widgets/event-feed/index.tsx';
+import type { FamilyViewProps } from './definitions';
+import type { BoundTrack } from './model';
 
 const START = 30_000;
 
@@ -79,6 +82,82 @@ function pages(): PreparedPage[] {
 }
 
 const fixture = {
+  async eventFeedKinds() {
+    root?.unmount(); host?.remove();
+    clock = new Clock();
+    let count = 0;
+    const counting = { available: true, product: async (request: ProductRequest) => {
+      if (request.product !== 'event-feed-kinds') throw new Error(`Unexpected product ${request.product}`);
+      count++;
+      return { sourceId: request.sourceId, revision: request.revision, product: request.product,
+        data: { kinds: [{ kind: 'warDeclared', category: 'warsPeace' }] } };
+    } } as unknown as DashboardClient;
+    const track = { id: 'main', source: { id: 'kinds', revision: '1' }, branch: { id: 'branch', firstHour: START, lastHour: START + 1000 } } as BoundTrack;
+    const runtime = { client: counting, tracks: [track], clock } as unknown as WidgetRuntime;
+    const prepared = [{ id: 'feed', template: { widgets: [] } as unknown as DashboardTemplate,
+      runtime: { ...runtime, client: preparingClient(counting) } }];
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    function Feeds({ runtime }: { runtime: WidgetRuntime }) {
+      return <>{['first', 'second'].map(id => <EventFeed.render key={id} {...{
+        widget: { id, trackIds: ['main'], time: { mode: 'follow' }, countries: { kind: 'all' } },
+        runtime, active: true, options: { activityStrip: false },
+      } as unknown as FamilyViewProps} />)}</>;
+    }
+    const draw = (visible: boolean) => root!.render(<>
+      {visible ? <Feeds runtime={runtime} /> : null}
+      <PreparedPages pages={prepared} clock={runtime.clock} client={counting} viewport={host} enabled
+        draw={page => <Feeds runtime={page.runtime} />} />
+    </>);
+    const prepare = async () => {
+      let seen = false;
+      for (let at = 0; at < 300; at++) {
+        await frame();
+        seen ||= fixture.hostShown();
+        if (seen && !fixture.hostShown() && prepareGate(counting).pending === 0) return;
+      }
+      throw new Error('The event feed page did not finish preparing');
+    };
+    draw(false);
+    await prepare();
+    draw(true);
+    await frame(); await frame();
+    clock.playing = true; clock.anchor();
+    for (let at = 0; at < 12; at++) { clock.step(15); await frame(); }
+    clock.playing = false; clock.anchor();
+    await prepare();
+    for (const hour of [START + 7, START + 31]) {
+      clock.hour = hour; clock.seekSequence++; clock.anchor();
+      await prepare();
+    }
+    root.unmount(); root = null; host.remove(); host = null;
+    return count;
+  },
+  async eventFeedKindsState(state: 'pending' | 'failed' | 'missing' | 'ready') {
+    const reading = { available: true, product: async (request: ProductRequest) => {
+      if (state === 'pending') return new Promise(() => {});
+      if (state === 'failed') throw new Error('Kinds read failed');
+      return { sourceId: request.sourceId, revision: request.revision, product: request.product,
+        data: state === 'missing' ? {} : { kinds: [{ kind: 'warDeclared', category: 'warsPeace' }] } };
+    } } as unknown as DashboardClient;
+    const slot = document.body.appendChild(document.createElement('div'));
+    const container = document.body.appendChild(document.createElement('div'));
+    const view = createRoot(container);
+    view.render(<EventFeed.render {...{
+      widget: { id: 'state', trackIds: ['main'], time: { mode: 'follow' }, countries: { kind: 'all' } },
+      runtime: { client: reading, tracks: [{ id: 'main', source: { id: 'state', revision: '1' }, branch: { id: 'branch' } }], clock },
+      active: true, options: { activityStrip: false }, filterSlot: slot,
+    } as unknown as FamilyViewProps} />);
+    for (let at = 0; at < 300 && !slot.querySelector('button'); at++) await frame();
+    slot.querySelector('button')?.click();
+    const panel = () => document.querySelector('[role="dialog"][aria-label="Filter kinds"]');
+    for (let at = 0; at < 300 && !panel()?.querySelector('[role="status"], [role="alert"], [role="option"]'); at++) await frame();
+    const result = { status: panel()?.querySelector('[role="status"], [role="alert"]')?.textContent ?? null,
+      choices: [...(panel()?.querySelectorAll('[role="option"]') ?? [])].map(item => item.textContent) };
+    view.unmount(); slot.remove(); container.remove();
+    return result;
+  },
   async mount(lane: boolean) {
     root?.unmount(); host?.remove();
     forgetProducts(client, 'fixture');
