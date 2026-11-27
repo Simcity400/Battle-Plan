@@ -135,8 +135,11 @@ const fixture = {
     return count;
   },
   async eventFeedKindsState(state: 'pending' | 'failed' | 'missing' | 'ready') {
+    let deliver = () => {};
+    const delivered = new Promise<void>(resolve => { deliver = resolve; });
     const reading = { available: true, product: async (request: ProductRequest) => {
       if (state === 'pending') return new Promise(() => {});
+      await delivered;
       if (state === 'failed') throw new Error('Kinds read failed');
       return { sourceId: request.sourceId, revision: request.revision, product: request.product,
         data: state === 'missing' ? {} : { kinds: [{ kind: 'warDeclared', category: 'warsPeace' }] } };
@@ -152,7 +155,12 @@ const fixture = {
     for (let at = 0; at < 300 && !slot.querySelector('button'); at++) await frame();
     slot.querySelector('button')?.click();
     const panel = () => document.querySelector('[role="dialog"][aria-label="Filter kinds"]');
-    for (let at = 0; at < 300 && !panel()?.querySelector('[role="status"], [role="alert"], [role="option"]'); at++) await frame();
+    for (let at = 0; at < 300 && !panel()?.querySelector('[role="status"]'); at++) await frame();
+    if (!panel()?.querySelector('[role="status"]')) throw new Error('The kinds picker did not show its loading state');
+    deliver();
+    const expected = state === 'pending' ? '[role="status"]' : state === 'ready' ? '[role="option"]' : '[role="alert"]';
+    for (let at = 0; at < 300 && !panel()?.querySelector(expected); at++) await frame();
+    if (!panel()?.querySelector(expected)) throw new Error(`The kinds picker did not reach ${state}`);
     const result = { status: panel()?.querySelector('[role="status"], [role="alert"]')?.textContent ?? null,
       choices: [...(panel()?.querySelectorAll('[role="option"]') ?? [])].map(item => item.textContent) };
     view.unmount(); slot.remove(); container.remove();
