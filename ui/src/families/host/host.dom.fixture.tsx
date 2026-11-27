@@ -95,6 +95,8 @@ const clock = new PlaybackController();
 const paintsByWidget = new Map<number, number>();
 let payloadTips = false;
 let hoverRanking: readonly string[] | null = null;
+let mirrorMetaOverride: { readonly summaryText: string; readonly summaryPartial: string | null } | null = null;
+let dropNextPopulatedMirror = false;
 const hoverReports: Array<readonly [number | null, readonly string[] | undefined]> = [];
 
 type PaintedField = { readonly value: unknown; readonly content: string };
@@ -126,9 +128,22 @@ function createLane(): LaneWorker {
           paintsByWidget.set(input.widget, (paintsByWidget.get(input.widget) ?? 0) + 1);
           const painted = paint(input, state, content);
           if (painted.mode !== undefined && painted.mode !== 'picture') return painted;
-          const fields = { ...painted.fields, accessibleDescription: { value: 'Four countries ranked by factories', content: 'description' },
-            ...(hoverRanking ? { drawnKeys: { value: { main: hoverRanking }, content: hoverRanking.join(',') } } : {}) };
-          if (payloadTips && 'focusTooltip' in fields) fields.focusTooltip = asPayloadTip(fields.focusTooltip) as typeof fields.focusTooltip;
+          const fields: Record<string, PaintedField> = { ...(painted.fields as Record<string, PaintedField>), accessibleDescription: { value: 'Four countries ranked by factories', content: 'description' },
+            ...(hoverRanking ? { drawnKeys: { value: { main: hoverRanking }, content: hoverRanking.join(',') } } : {}),
+            ...(mirrorMetaOverride ? {
+              meta: {
+                value: { ...(painted.fields.meta?.value as Record<string, unknown> | undefined), ...mirrorMetaOverride },
+                content: `${mirrorMetaOverride.summaryText}|${mirrorMetaOverride.summaryPartial ?? ''}`,
+              },
+            } : {}) };
+          if (payloadTips && 'focusTooltip' in fields) fields.focusTooltip = asPayloadTip(fields.focusTooltip) as PaintedField;
+          if (dropNextPopulatedMirror && fields.mirror) {
+            const rows = (fields.mirror.value as { readonly rows?: readonly unknown[] } | undefined)?.rows;
+            if (Array.isArray(rows) && rows.length > 0) {
+              dropNextPopulatedMirror = false;
+              delete fields.mirror;
+            }
+          }
           return { ...painted, fields };
         };
         return view;
@@ -216,7 +231,27 @@ function subsForPipe(pipeId: number): number[] {
 
 const { chromeState: _chrome, ...tableWithoutChrome } = tableHostAdapter;
 const BODY_FOCUS_ADAPTER = { ...tableWithoutChrome, mirrorFocus: 'body' as const };
+const LISTBOX_ADAPTER = { ...tableWithoutChrome, mirror: 'listbox' as const, mirrorFocus: 'body' as const };
 const POINT_HOVER_ADAPTER = { ...tableHostAdapter, navigation: 'points' as const, parseHit: (key: string | null) => key ? { key, hour: 90 } : null };
+
+const emptyToRowsProjection = registerFamilyProjection({
+  family: 'table',
+  kind: 'host-empty-to-rows',
+  project(readView): TableModel {
+    const slots: TableModelSlot[] = readView.hour <= 50
+      ? []
+      : [{ kind: 'gap', key: 'gap:50:60', firstHour: 50, lastHour: 60, reason: 'Collector detached' }];
+    return {
+      hour: readView.hour,
+      columns: DEEP_LOG_COLUMNS,
+      rows: [],
+      slots,
+      unsorted: true,
+      windowOffset: 0,
+      totalRows: 10,
+    };
+  },
+});
 
 let root: Root | null = null;
 let genericCommits = 0;
@@ -247,6 +282,9 @@ let currentState = {
   genericMounted: false,
   genericBlocked: false,
   genericBodyFocus: false,
+  genericListbox: false,
+  genericEmptyToRows: false,
+  primarySettings: SETTINGS,
   statics: null as FamilyStaticSources | null,
   tiled: undefined as Readonly<Record<string, ReadonlyMap<string, TiledLine>>> | undefined,
   hovers: undefined as Readonly<Record<string, { readonly hour: number; readonly data: unknown }>> | undefined,
@@ -451,7 +489,7 @@ function renderApp() {
               widget={widget}
               runtime={rt}
               active={currentState.active}
-              settings={SETTINGS}
+              settings={currentState.primarySettings}
               subscriptions={subs}
               identitySnapshot={identity}
               exactReadView={NO_EXACT}
@@ -490,13 +528,13 @@ function renderApp() {
             <Profiler id="generic-host" onRender={() => { genericCommits++; }}>
               <div data-slot="generic" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
                 <FamilyHost
-                  adapter={hoverRanking ? POINT_HOVER_ADAPTER : currentState.genericBodyFocus ? BODY_FOCUS_ADAPTER : tableHostAdapter}
+                  adapter={hoverRanking ? POINT_HOVER_ADAPTER : currentState.genericListbox ? LISTBOX_ADAPTER : currentState.genericBodyFocus ? BODY_FOCUS_ADAPTER : tableHostAdapter}
                   onHoverHour={(hour, keys) => { hoverReports.push([hour, keys?.main]); }}
-                  {...(currentState.genericBodyFocus ? {} : { chrome: TableChrome })}
-                  settings={SETTINGS}
-                  declaration={scoreboardProjection}
+                  {...(currentState.genericBodyFocus || currentState.genericListbox ? {} : { chrome: TableChrome })}
+                  settings={currentState.genericEmptyToRows ? DEEP_LOG_SETTINGS : SETTINGS}
+                  declaration={currentState.genericEmptyToRows ? emptyToRowsProjection : scoreboardProjection}
                   view="default"
-                  options={OPTIONS}
+                  options={currentState.genericEmptyToRows ? DEEP_LOG_OPTIONS : OPTIONS}
                   label="Scoreboard Generic"
                   subject="scoreboard"
                   widget={widget}
@@ -1317,6 +1355,7 @@ window.hostDom = {
     deepLogHeldRanges = [[DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 1]];
     rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
     const endUpLoaded = await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
+    const endUpParkedTag = (document.activeElement as HTMLElement | null)?.tagName ?? null;
     (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
     releasePages();
     const endUpArrived = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === `R${DEEP_LOG_TOTAL - 2}`, 2000);
@@ -1408,6 +1447,7 @@ window.hostDom = {
       keyCancelArrived,
       keyCancelKey,
       endUpLoaded,
+      endUpParkedTag,
       endUpArrived,
       endUpActive,
       expectedPageDown,
@@ -1423,5 +1463,380 @@ window.hostDom = {
       playBinds,
       playPaints,
     };
+  },
+
+  async testDeferredScreenReaderMirrors() {
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    clock.setPlaying(false);
+    (document.activeElement as HTMLElement | null)?.blur();
+    currentState = { ...currentState, secondMounted: true };
+    renderApp();
+    let pipeA = -1;
+    let pipeB = -1;
+    await until(() => {
+      const cA = container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas');
+      const cB = container!.querySelector<HTMLCanvasElement>('[data-slot="secondary"] canvas.fh-canvas');
+      if (!cA?.dataset.placement || !cB?.dataset.placement) return false;
+      pipeA = Number(cA.dataset.placement);
+      pipeB = Number(cB.dataset.placement);
+      return pipeA > 0 && pipeB > 0;
+    });
+    const subsA = subsForPipe(pipeA);
+    const subsB = subsForPipe(pipeB);
+    await until(() => subsA.length === 2 && subsB.length === 2
+      && [...subsA, ...subsB].every(id => pipeline.status(id).status === 'followed'));
+    const allSubs = [...subsA, ...subsB];
+    mirrorMetaOverride = { summaryText: 'Base summary', summaryPartial: null };
+    clock.seek(50);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(allSubs, 50, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeA)?.h === 50 && !pipeline.view(pipeA)?.dim
+      && pipeline.view(pipeB)?.h === 50 && !pipeline.view(pipeB)?.dim);
+    await frames(4);
+
+    const tableA = container!.querySelector<HTMLTableElement>('[data-slot="primary"] table')!;
+    const tableB = container!.querySelector<HTMLTableElement>('[data-slot="secondary"] table')!;
+    const topKey = (table: HTMLTableElement) => table.querySelector<HTMLTableRowElement>('tbody tr')?.dataset.rowKey ?? null;
+    const headLabels = (table: HTMLTableElement) => [...table.querySelectorAll<HTMLTableCellElement>('thead th')].map(th => th.textContent ?? '');
+    const rowCellCount = (table: HTMLTableElement) => table.querySelector<HTMLTableRowElement>('tbody tr')?.children.length ?? 0;
+    const pre = {
+      hourA: tableA.getAttribute('data-mirror-hour'),
+      hourB: tableB.getAttribute('data-mirror-hour'),
+      heldA: tableA.getAttribute('data-held'),
+      heldB: tableB.getAttribute('data-held'),
+      topA: topKey(tableA),
+      topB: topKey(tableB),
+      captionA: tableA.caption?.textContent ?? null,
+      headCountA: headLabels(tableA).length,
+      cellCountA: rowCellCount(tableA),
+    };
+
+    const watch = (table: HTMLTableElement) => {
+      let content = 0;
+      let holdAttrs = 0;
+      const observer = new MutationObserver(records => {
+        for (const rec of records) {
+          if (rec.target === table && rec.type === 'attributes' && (rec.attributeName === 'data-held' || rec.attributeName === 'aria-busy')) {
+            holdAttrs++;
+          } else {
+            content++;
+          }
+        }
+      });
+      observer.observe(table, { subtree: true, childList: true, characterData: true, attributes: true });
+      return {
+        get content() { return content; },
+        get holdAttrs() { return holdAttrs; },
+        reset() { observer.takeRecords(); content = 0; holdAttrs = 0; },
+        stop() { observer.disconnect(); },
+      };
+    };
+
+    const watchA = watch(tableA);
+    const watchB = watch(tableB);
+    const installsBeforeA = installCalls.get(pipeA) ?? 0;
+    const installsBeforeB = installCalls.get(pipeB) ?? 0;
+
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+    mirrorMetaOverride = { summaryText: 'Live summary', summaryPartial: 'Partial during playback' };
+    currentState = {
+      ...currentState,
+      primarySettings: {
+        ...SETTINGS,
+        columns: { ...SETTINGS.columns, casualties: { ...SETTINGS.columns.casualties!, show: false } },
+      },
+    };
+    renderApp();
+    for (let i = 1; i <= 16; i++) {
+      const h = clock.getSnapshot().hour;
+      sendHour(allSubs, h, [10n, 20n, 30n, 200n + BigInt(i * 10)]);
+      await frames(1);
+    }
+    await frames(4);
+    const played = {
+      installsA: (installCalls.get(pipeA) ?? 0) - installsBeforeA,
+      installsB: (installCalls.get(pipeB) ?? 0) - installsBeforeB,
+      viewHourA: pipeline.view(pipeA)?.h ?? null,
+      viewHourB: pipeline.view(pipeB)?.h ?? null,
+      contentA: watchA.content,
+      contentB: watchB.content,
+      holdAttrsA: watchA.holdAttrs,
+      holdAttrsB: watchB.holdAttrs,
+      heldA: tableA.getAttribute('data-held'),
+      heldB: tableB.getAttribute('data-held'),
+      busyA: tableA.getAttribute('aria-busy'),
+      busyB: tableB.getAttribute('aria-busy'),
+      hourA: tableA.getAttribute('data-mirror-hour'),
+      hourB: tableB.getAttribute('data-mirror-hour'),
+      topA: topKey(tableA),
+      topB: topKey(tableB),
+      captionA: tableA.caption?.textContent ?? null,
+      captionB: tableB.caption?.textContent ?? null,
+      headCountA: headLabels(tableA).length,
+      cellCountA: rowCellCount(tableA),
+    };
+
+    watchA.reset();
+    watchB.reset();
+    tableA.querySelector<HTMLTableRowElement>('tbody tr')!.focus();
+    await until(() => tableA.getAttribute('data-held') === null && topKey(tableA) === 'ENG', 2000);
+    await frames(2);
+    const focusedNow = {
+      heldA: tableA.getAttribute('data-held'),
+      busyA: tableA.getAttribute('aria-busy'),
+      hourA: tableA.getAttribute('data-mirror-hour'),
+      viewHourA: String(pipeline.view(pipeA)?.h ?? ''),
+      topA: topKey(tableA),
+      heldB: tableB.getAttribute('data-held'),
+      busyB: tableB.getAttribute('aria-busy'),
+      hourB: tableB.getAttribute('data-mirror-hour'),
+      topB: topKey(tableB),
+      contentB: watchB.content,
+    };
+
+    for (let i = 1; i <= 6; i++) {
+      const h = clock.getSnapshot().hour;
+      sendHour(allSubs, h, [10n, 20n, 500n + BigInt(i * 10), 40n]);
+      await frames(1);
+    }
+    await frames(4);
+    const whileFocused = {
+      topA: topKey(tableA),
+      heldA: tableA.getAttribute('data-held'),
+      hourA: tableA.getAttribute('data-mirror-hour'),
+      contentB: watchB.content,
+      topB: topKey(tableB),
+      heldB: tableB.getAttribute('data-held'),
+      hourB: tableB.getAttribute('data-mirror-hour'),
+    };
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    await frames(2);
+    clock.seek(180);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(allSubs, 180, [10n, 600n, 20n, 30n], true);
+    await until(() => pipeline.view(pipeA)?.h === 180 && !pipeline.view(pipeA)?.dim
+      && pipeline.view(pipeB)?.h === 180 && !pipeline.view(pipeB)?.dim, 2000);
+    await frames(2);
+    const afterSeek = {
+      hourA: tableA.getAttribute('data-mirror-hour'),
+      hourB: tableB.getAttribute('data-mirror-hour'),
+      heldA: tableA.getAttribute('data-held'),
+      heldB: tableB.getAttribute('data-held'),
+      topA: topKey(tableA),
+      topB: topKey(tableB),
+    };
+
+    watchA.reset();
+    watchB.reset();
+    clock.setPlaying(true);
+    let sentThrough = 180;
+    const feedGer = (target: number) => {
+      while (sentThrough < target) {
+        sentThrough++;
+        sendHour(allSubs, sentThrough, [900n + BigInt(sentThrough - 180) * 10n, 20n, 30n, 40n]);
+      }
+    };
+    for (let i = 1; i <= 12; i++) {
+      feedGer(clock.getSnapshot().hour + 2);
+      await frames(1);
+    }
+    feedGer(clock.getSnapshot().hour + 4);
+    await frames(4);
+    const afterSeekPlayed = {
+      contentA: watchA.content,
+      contentB: watchB.content,
+      heldA: tableA.getAttribute('data-held'),
+      heldB: tableB.getAttribute('data-held'),
+      hourA: tableA.getAttribute('data-mirror-hour'),
+      hourB: tableB.getAttribute('data-mirror-hour'),
+    };
+
+    currentState = { ...currentState, owner: 'mirror-owner-midplay' };
+    renderApp();
+    const afterOwnerClear = {
+      tabIndexA: tableA.tabIndex,
+      hourA: tableA.getAttribute('data-mirror-hour'),
+      rowsA: tableA.querySelectorAll('tbody tr').length,
+    };
+    await until(() => {
+      feedGer(clock.getSnapshot().hour + 2);
+      return tableA.getAttribute('data-mirror-hour') !== null && tableA.querySelectorAll('tbody tr').length === 4;
+    }, 2000);
+    const afterOwnerRecover = {
+      tabIndexA: tableA.tabIndex,
+      hourA: tableA.getAttribute('data-mirror-hour'),
+      topA: topKey(tableA),
+      rowsA: tableA.querySelectorAll('tbody tr').length,
+    };
+
+    feedGer(clock.getSnapshot().hour + 2);
+    clock.setPlaying(false);
+    await until(() => tableA.getAttribute('data-held') === null && tableB.getAttribute('data-held') === null, 2000);
+    await frames(2);
+    const paused = {
+      heldA: tableA.getAttribute('data-held'),
+      heldB: tableB.getAttribute('data-held'),
+      busyA: tableA.getAttribute('aria-busy'),
+      busyB: tableB.getAttribute('aria-busy'),
+      hourA: tableA.getAttribute('data-mirror-hour'),
+      hourB: tableB.getAttribute('data-mirror-hour'),
+      viewHourA: String(pipeline.view(pipeA)?.h ?? ''),
+      viewHourB: String(pipeline.view(pipeB)?.h ?? ''),
+      topA: topKey(tableA),
+      topB: topKey(tableB),
+      captionA: tableA.caption?.textContent ?? null,
+      captionB: tableB.caption?.textContent ?? null,
+      headCountA: headLabels(tableA).length,
+      cellCountA: rowCellCount(tableA),
+    };
+
+    watchA.stop();
+    watchB.stop();
+
+    currentState = { ...currentState, secondMounted: false, owner: undefined, primarySettings: SETTINGS, genericMounted: true, genericListbox: true, genericEmptyToRows: false };
+    mirrorMetaOverride = { summaryText: 'Listbox summary', summaryPartial: null };
+    renderApp();
+    let pipeLb = -1;
+    await until(() => {
+      const c = container!.querySelector<HTMLCanvasElement>('[data-slot="generic"] canvas.fh-canvas');
+      pipeLb = Number(c?.dataset.placement ?? -1);
+      return pipeLb > 0;
+    });
+    const subsLb = subsForPipe(pipeLb);
+    await until(() => subsLb.length === 2 && subsLb.every(id => pipeline.status(id).status === 'followed'));
+    clock.seek(50);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subsLb, 50, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeLb)?.h === 50 && !pipeline.view(pipeLb)?.dim);
+    await frames(2);
+    const lbEl = container!.querySelector<HTMLDivElement>('[data-slot="generic"] .fh-sr-only')!;
+    clock.setSpeed(1);
+    clock.setPlaying(true);
+    pipeline.pointer(pipeLb, 0, [40, 14]);
+    await frames(4);
+    const listboxSameHour = {
+      held: lbEl.getAttribute('data-held'),
+      busy: lbEl.getAttribute('aria-busy'),
+      hour: lbEl.getAttribute('data-mirror-hour'),
+    };
+    clock.setPlaying(false);
+    await frames(2);
+
+    mirrorMetaOverride = null;
+    currentState = { ...currentState, genericMounted: false, genericListbox: false, genericEmptyToRows: false };
+    renderApp();
+    await frames(2);
+    currentState = { ...currentState, genericMounted: true, genericListbox: false, genericEmptyToRows: true };
+    renderApp();
+    let pipeCoalesced = -1;
+    await until(() => {
+      const c = container!.querySelector<HTMLCanvasElement>('[data-slot="generic"] canvas.fh-canvas');
+      pipeCoalesced = Number(c?.dataset.placement ?? -1);
+      return pipeCoalesced > 0;
+    });
+    const subsCoalesced = subsForPipe(pipeCoalesced);
+    await until(() => subsCoalesced.length === 2 && subsCoalesced.every(id => pipeline.status(id).status === 'followed'));
+    clock.seek(50);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subsCoalesced, 50, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeCoalesced)?.h === 50 && !pipeline.view(pipeCoalesced)?.dim);
+    await frames(2);
+    const coalescedTable = container!.querySelector<HTMLTableElement>('[data-slot="generic"] table')!;
+    const coalescedEmpty = {
+      rows: coalescedTable.querySelectorAll('tbody tr').length,
+      tabIndex: coalescedTable.tabIndex,
+    };
+    dropNextPopulatedMirror = true;
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+    let coalescedSent = 50;
+    const recoveredCoalesced = await until(() => {
+      while (coalescedSent < clock.getSnapshot().hour + 2) {
+        coalescedSent++;
+        sendHour(subsCoalesced, coalescedSent, [90n, 70n, 50n, 30n]);
+      }
+      return coalescedTable.querySelectorAll('tbody tr').length === 1;
+    }, 2000);
+    const coalescedAfter = {
+      recovered: recoveredCoalesced,
+      dropped: !dropNextPopulatedMirror,
+      rows: coalescedTable.querySelectorAll('tbody tr').length,
+      tabIndex: coalescedTable.tabIndex,
+      text: coalescedTable.querySelector('tbody tr td')?.textContent ?? '',
+    };
+    clock.setPlaying(false);
+    dropNextPopulatedMirror = false;
+    currentState = { ...currentState, genericMounted: false, genericListbox: false, genericEmptyToRows: false };
+    renderApp();
+    await frames(2);
+
+    currentState = { ...currentState, genericMounted: true, genericListbox: false, genericEmptyToRows: false };
+    renderApp();
+    let pipeEdge = -1;
+    await until(() => {
+      const c = container!.querySelector<HTMLCanvasElement>('[data-slot="generic"] canvas.fh-canvas');
+      pipeEdge = Number(c?.dataset.placement ?? -1);
+      return pipeEdge > 0;
+    });
+    const subsEdge = subsForPipe(pipeEdge);
+    await until(() => subsEdge.length === 2 && subsEdge.every(id => pipeline.status(id).status === 'followed'));
+    clock.seek(50);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subsEdge, 50, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeEdge)?.h === 50 && !pipeline.view(pipeEdge)?.dim);
+    await frames(2);
+    const edgeTable = container!.querySelector<HTMLTableElement>('[data-slot="generic"] table')!;
+    let minRowsDuringPause = edgeTable.querySelectorAll('tbody tr').length;
+    let minHeadsDuringPause = edgeTable.querySelectorAll('thead th').length;
+    const pauseObs = new MutationObserver(() => {
+      minRowsDuringPause = Math.min(minRowsDuringPause, edgeTable.querySelectorAll('tbody tr').length);
+      minHeadsDuringPause = Math.min(minHeadsDuringPause, edgeTable.querySelectorAll('thead th').length);
+    });
+    pauseObs.observe(edgeTable, { subtree: true, childList: true });
+    const installsBeforeOmit = installCalls.get(pipeEdge) ?? 0;
+    dropNextPopulatedMirror = true;
+    sendHour(subsEdge, 50, [111n, 70n, 50n, 30n]);
+    await until(() => (installCalls.get(pipeEdge) ?? 0) > installsBeforeOmit, 2000);
+    await frames(2);
+    pauseObs.disconnect();
+    const pausedOmitted = {
+      dropped: !dropNextPopulatedMirror,
+      minRows: minRowsDuringPause,
+      minHeads: minHeadsDuringPause,
+      held: edgeTable.getAttribute('data-held'),
+      hour: edgeTable.getAttribute('data-mirror-hour'),
+    };
+
+    dropNextPopulatedMirror = true;
+    clock.seek(180);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subsEdge, 180, [10n, 600n, 20n, 30n], true);
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+    let seekSent = 180;
+    const recoveredSeek = await until(() => {
+      while (seekSent < clock.getSnapshot().hour + 2) {
+        seekSent++;
+        sendHour(subsEdge, seekSent, [10n, 600n + BigInt(seekSent - 180), 20n, 30n]);
+      }
+      return edgeTable.getAttribute('data-held') === null && topKey(edgeTable) === 'FRA';
+    }, 2000);
+    const coalescedSeek = {
+      recovered: recoveredSeek,
+      dropped: !dropNextPopulatedMirror,
+      held: edgeTable.getAttribute('data-held'),
+      top: topKey(edgeTable),
+      hour: Number(edgeTable.getAttribute('data-mirror-hour') ?? '0'),
+    };
+    clock.setPlaying(false);
+    dropNextPopulatedMirror = false;
+    currentState = { ...currentState, genericMounted: false, genericListbox: false, genericEmptyToRows: false };
+    renderApp();
+    await frames(2);
+    return { pre, played, focusedNow, whileFocused, afterSeek, afterSeekPlayed, afterOwnerClear, afterOwnerRecover, paused, listboxSameHour, coalescedEmpty, coalescedAfter, pausedOmitted, coalescedSeek };
   },
 };

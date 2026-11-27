@@ -232,13 +232,6 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
         </>,
         targets.bodyWrap,
       ) : null}
-      {targets.mirrorHead ? createPortal(
-        <tr>
-          {meta.rankShown ? <th scope="col">Rank</th> : null}
-          {layout.columns.map(col => <th key={col.key} scope="col">{col.label}</th>)}
-        </tr>,
-        targets.mirrorHead,
-      ) : null}
     </>
   );
 }

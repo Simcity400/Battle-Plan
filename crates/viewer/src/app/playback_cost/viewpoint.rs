@@ -76,7 +76,7 @@ pub(in crate::app) fn seen(viewer: &Viewer, target: Option<&Target>, head: Optio
 fn waiting(viewer: &Viewer, seen: &Seen) -> String {
     let behind: Vec<&str> = seen.parts.iter().filter(|(_, good, _)| !good).map(|(name, ..)| name.as_str()).collect();
     let layers = viewer.playhead_map.as_ref().map(|side| side.with_side(crate::playhead_host::MapSide::shown_states));
-    format!("whole {}, behind {behind:?}, layers {layers:?}, error {:?}", seen.ready, viewer.error.as_ref().or(viewer.map_error.as_ref()))
+    format!("whole {}, behind {behind:?}, layers {layers:?}, error {:?}", seen.ready, viewer.reported_error())
 }
 
 struct Run<'a> {
@@ -276,4 +276,38 @@ pub(crate) fn measure(config: dashboard_core::config::Config, mut options: Optio
         "hour_steps": steps,
         "scope": "Each switch runs from the view's perspective set to the new country's slot (what a Ctrl+click or the host's MapOptions does in the viewer) to ms.first_changed, the first frame any part shows the new country (the vision shown, the overlay's tables or a layer's held viewing country), and to ms.settled, the first frame wholly of it: the side drawing the new perspective, the vision shown, the overlay's tables and every layer holding a viewing country on the new one, and every drawn layer caught up (held) or publishing a product (playing); held, the picture is also whole at the hour (presentation_ready), while playing that is recorded per frame (whole) but not asked, since the playing picture stands behind the moving head for reasons of its own. Layers are read without waiting for the side, so a layer-held country may lead the presented frame by a publication. parts_caught_ms is each part's start of the run of correct frames up to the settled one; settled_last names the latest; behind_after counts the parts not correct in the settle frames after it. hour_steps are single held hour steps timed the same way, the cost a switch is compared with. The host's own path to the viewer (the dashboard and the desktop shell) is not in it.",
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waiting_reports_scene_build_error() {
+        let mut viewer = Viewer::create(
+            crate::Config::default(),
+            Options::default(),
+            None,
+            Arc::new(std::sync::Mutex::new(None)),
+            None,
+            None,
+        );
+        let seen = Seen {
+            parts: vec![("map".into(), false, false)],
+            whole: false,
+            ready: false,
+        };
+        assert!(waiting(&viewer, &seen).ends_with("error None"));
+
+        viewer.scene_error = Some("scene build failed".into());
+        assert!(waiting(&viewer, &seen).ends_with("error Some(\"scene build failed\")"));
+
+        viewer.error = Some("seek failed".into());
+        assert!(waiting(&viewer, &seen).ends_with("error Some(\"seek failed\")"));
+
+        viewer.error = None;
+        viewer.scene_error = None;
+        viewer.map_error = Some("map failed".into());
+        assert!(waiting(&viewer, &seen).ends_with("error Some(\"map failed\")"));
+    }
 }

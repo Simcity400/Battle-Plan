@@ -1,7 +1,7 @@
 
 use dashboard_base::products::{Country, validate_country};
 use super::rows;
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Owner, Read}}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Clock, Owner, Read, at_hour, field_columns, warnings_through}}};
 use replay_data::rows::{CountryFactoriesRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -91,7 +91,8 @@ impl AtHour for FactoryParts {
     const KEY: &'static str = "factory-parts";
     const TITLE: &'static str = "Factory parts";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stamps frame.hour into FactoryPartsReply.hour");
+    const CLOCK: Clock = Clock::InputsOnly;
+    const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(at_hour);
     type Params = FactoryPartsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = FactoryPartsReply;
@@ -115,11 +116,33 @@ impl AtHour for FactoryParts {
         vec![TableId::CountryFactories]
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        (table == TableId::CountryFactories).then(|| {
+            field_columns(
+                table,
+                &[
+                    "military_total_raw", "military_controlled_raw", "military_owned_raw", "military_damaged_raw",
+                    "military_unavailable", "military_from_subjects", "military_to_overlord", "military_from_others", "military_to_others",
+                    "naval_total_raw", "naval_controlled_raw", "naval_owned_raw", "naval_damaged_raw",
+                    "naval_unavailable", "naval_from_subjects", "naval_to_overlord", "naval_from_others", "naval_to_others",
+                    "civilian_total_raw", "civilian_controlled_raw", "civilian_owned_raw", "civilian_damaged_raw",
+                    "civilian_unavailable", "civilian_from_subjects", "civilian_to_overlord", "civilian_from_others", "civilian_to_others",
+                    "civilian_license_exports", "civilian_trade_exports", "consumer_goods", "special_projects",
+                    "license_imports", "trade_imports", "contract_payments",
+                ],
+            )
+        })
+    }
+
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
         match (step, owner) {
             (0, Some(owner)) => vec![Read::these(TableId::CountryFactories, [u128::from(owner.id)])],
             _ => Vec::new(),
         }
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        Self::valid_through(frame, params, at).min(warnings_through(frame.hour, reply.missing.as_deref()))
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {

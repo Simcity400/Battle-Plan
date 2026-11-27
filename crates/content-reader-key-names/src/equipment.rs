@@ -670,7 +670,7 @@ impl Database {
             .key_name_products()?
             .equipment_database()
             .map(Arc::clone)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "key names have no equipment database"))
+            .ok_or_else(|| content_reader_parser::fields::invalid("key names have no equipment database"))
     }
 
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
@@ -692,10 +692,9 @@ impl Database {
     pub fn load_complete(layers: &ResolvedLayers) -> io::Result<Self> {
         let database = Self::load(layers)?;
         match &database.lost {
-            Some(lost) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("the equipment database cannot be followed past {lost}"),
-            )),
+            Some(lost) => Err(content_reader_parser::fields::invalid(format!(
+                "the equipment database cannot be followed past {lost}"
+            ))),
             None => Ok(database),
         }
     }

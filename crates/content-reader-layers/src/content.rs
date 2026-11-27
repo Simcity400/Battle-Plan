@@ -1059,7 +1059,7 @@ fn scalar(document: &Document, key: &[u8]) -> io::Result<Option<String>> {
         .get(key)
         .map(|value| {
             value.scalar_str().map(str::to_owned).ok_or_else(|| {
-                invalid(format!(
+                crate::content_error(format!(
                     "descriptor {} is not a UTF-8 scalar",
                     String::from_utf8_lossy(key)
                 ))
@@ -1071,7 +1071,7 @@ fn scalar(document: &Document, key: &[u8]) -> io::Result<Option<String>> {
 fn required(document: &Document, key: &[u8]) -> io::Result<String> {
     scalar(document, key)?
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| invalid(format!("descriptor lacks {}", String::from_utf8_lossy(key))))
+        .ok_or_else(|| crate::content_error(format!("descriptor lacks {}", String::from_utf8_lossy(key))))
 }
 
 fn source_path(base: &Path, value: &str, absolute_allowed: bool) -> io::Result<PathBuf> {
@@ -1595,7 +1595,7 @@ impl ResolvedLayer {
             let layer = facts.layer();
             return match (&layer.dlc_name, self.role) {
                 (Some(name), _) => Ok(Some(name.clone())),
-                (None, LayerRole::Dlc) => Err(invalid(format!(
+                (None, LayerRole::Dlc) => Err(crate::content_error(format!(
                     "the name of DLC {} is withheld: {}",
                     self.id,
                     layer.withheld().unwrap_or("the recording does not give it")

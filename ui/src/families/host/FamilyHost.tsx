@@ -72,7 +72,7 @@ import {
 import { NO_EXPANSION, type FamilyExpansion } from './expansion.ts';
 import { BoundSelections, focusedSubject, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type DrawnKeys, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
 import { keepEqual } from './stableValue.ts';
-import { mirrorRowSelector, mirrorToSync, syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
+import { mirrorRowSelector, mirrorToSync, syncListboxMirror, syncTableHead, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
 import { regionDropAt, regionRowOf, type RegionCommand, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import { computeScrollGeometry, physicalToLogicalTop, scrollRangeIntoView, type ScrollGeometry } from './scroll.ts';
@@ -118,6 +118,14 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+
+function hasInstalledRows(record: InstalledRecord): boolean {
+  if (record.nav.length > 0) return true;
+  const range = record.fields.range as { readonly count?: number } | undefined;
+  if (typeof range?.count === 'number' && range.count > 0) return true;
+  const extent = record.fields.extent as { readonly rows?: readonly unknown[] } | undefined;
+  return Array.isArray(extent?.rows) && extent.rows.length > 0;
 }
 
 function parseGridKey(key: string | null): { readonly row: number; readonly column: number } | null {
@@ -179,7 +187,6 @@ export interface FamilyChromeTargets {
   readonly body: HTMLElement | null;
   readonly bodyWrap: HTMLElement | null;
   readonly extent: HTMLElement | null;
-  readonly mirrorHead: HTMLTableSectionElement | null;
 }
 
 export interface FamilyChromeProps<TSettings = unknown> {
@@ -198,7 +205,8 @@ export interface FamilyChromeProps<TSettings = unknown> {
   readonly setFilterOption?: (key: string, value: string) => void;
 }
 
-const NO_TARGETS: FamilyChromeTargets = { body: null, bodyWrap: null, extent: null, mirrorHead: null };
+const NO_TARGETS: FamilyChromeTargets = { body: null, bodyWrap: null, extent: null };
+const MIRROR_HOLD = {};
 
 export interface PointsNavigateRequest {
   readonly key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End';
@@ -398,8 +406,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const expansionRef = useRef<FamilyExpansion>(NO_EXPANSION);
 
   const lastMirrorKeyRef = useRef('');
+  const lastMirrorHeadKeyRef = useRef('');
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
   const lastMirrorSelectedRef = useRef<string | null>(null);
+  const lastMirrorHourRef = useRef<number | null>(null);
+  const lastMirrorSeekRef = useRef(-1);
+  const lastMirrorCaptionRef = useRef<string | null>(null);
+  const lastMirrorHadSourceRowsRef = useRef(false);
+  const mirrorRequestRef = useRef(0);
+  const mirrorNeedBindRef = useRef(false);
+  const mirrorNeedBindBindingRef = useRef(-1);
   const fieldsNow = () => recordRef.current?.fields ?? EMPTY_FIELDS;
   const navNow = () => recordRef.current?.nav ?? EMPTY_NAV;
   const lastVisibleRef = useRef<boolean | null>(null);
@@ -528,6 +544,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     viewportHeight,
     bounds,
     allowEmptyFollow,
+    blocked: !!blockedState,
     captureActive: audit.captureActive,
     exportMotion: exportSurface.motion,
   };
@@ -597,6 +614,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const kind = latestRef.current.adapter.mirror ?? 'none';
     const selected = recordRef.current?.selectedKey ?? null;
     if (kind === 'table') {
+      syncTableHead(mirrorHeadRef.current, mirror?.columns ?? null, lastMirrorHeadKeyRef);
       const moved = syncTableMirror(mirrorBodyRef.current, mirror, {
         selectedKey: selected,
         rowsFocusable: (latestRef.current.adapter.mirrorFocus ?? 'body') === 'rows',
@@ -622,6 +640,129 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, [instanceId]);
   const syncMirrorRef = useRef(syncMirror);
   syncMirrorRef.current = syncMirror;
+
+  const mirrorElement = useCallback((): Element | null => {
+    const kind = latestRef.current.adapter.mirror ?? 'none';
+    if (kind === 'table') return accessibleTableRef.current;
+    if (kind === 'listbox') return listboxMirrorRef.current;
+    return null;
+  }, []);
+
+  const syncTableTabIndex = useCallback((hasFocusableRow: boolean) => {
+    const table = accessibleTableRef.current;
+    if (!table || (latestRef.current.adapter.mirrorFocus ?? 'body') !== 'rows') return;
+    const nextTab = hasFocusableRow || latestRef.current.blocked ? -1 : 0;
+    if (hasFocusableRow && !latestRef.current.blocked && pendingOrdinalRef.current === null && document.activeElement === table) {
+      const targetRow = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>('tr[tabindex="0"]');
+      if (targetRow) {
+        restoringFocusRef.current = true;
+        try {
+          targetRow.focus({ preventScroll: true });
+        } finally {
+          restoringFocusRef.current = false;
+        }
+      }
+    }
+    if (table.tabIndex !== nextTab) table.tabIndex = nextTab;
+  }, []);
+
+  const clearMirror = useCallback(() => {
+    const el = mirrorElement();
+    if (lastMirrorObjRef.current !== null) {
+      lastMirrorObjRef.current = null;
+      syncMirrorRef.current(null);
+    } else {
+      syncTableHead(mirrorHeadRef.current, null, lastMirrorHeadKeyRef);
+    }
+    lastMirrorSelectedRef.current = null;
+    lastMirrorHourRef.current = null;
+    lastMirrorSeekRef.current = -1;
+    lastRowCountRef.current = -1;
+    lastMirrorCaptionRef.current = null;
+    lastMirrorHadSourceRowsRef.current = false;
+    mirrorNeedBindRef.current = false;
+    mirrorNeedBindBindingRef.current = -1;
+    mirrorRequestRef.current++;
+    if (accessibleTableRef.current) {
+      accessibleTableRef.current.removeAttribute('aria-rowcount');
+      if (accessibleTableRef.current.caption) accessibleTableRef.current.deleteCaption();
+    }
+    syncTableTabIndex(false);
+    if (el) {
+      el.removeAttribute('data-mirror-hour');
+      holdElement(el, false, MIRROR_HOLD);
+    }
+  }, [mirrorElement, syncTableTabIndex]);
+
+  const commitMirror = useCallback((record: InstalledRecord, force: boolean, seekSeq: number, recordSeek: boolean) => {
+    const el = mirrorElement();
+    if (!el) return;
+    const fields = record.fields;
+    const nextMirror = fields.mirror as MirrorModel | undefined;
+    if (nextMirror === undefined) {
+      const missingInitial = lastMirrorHourRef.current === null;
+      const missingFirstRow = (lastMirrorObjRef.current?.rows.length ?? 0) === 0
+        && !lastMirrorHadSourceRowsRef.current
+        && hasInstalledRows(record);
+      const missingSeek = recordSeek && lastMirrorSeekRef.current !== seekSeq;
+      const canRetry = !mirrorNeedBindRef.current
+        || (mirrorNeedBindBindingRef.current > 0 && record.picture.generation.binding >= mirrorNeedBindBindingRef.current);
+      if ((missingInitial || missingFirstRow || missingSeek) && canRetry) {
+        mirrorNeedBindRef.current = true;
+        mirrorNeedBindBindingRef.current = -1;
+        mirrorRequestRef.current++;
+        queueMicrotask(() => {
+          bindRef.current();
+          if (pipeline && pipe !== null) mirrorNeedBindBindingRef.current = pipeline.binding(pipe);
+        });
+      }
+      holdElement(el, true, MIRROR_HOLD);
+      return;
+    }
+    mirrorNeedBindRef.current = false;
+    mirrorNeedBindBindingRef.current = -1;
+    lastMirrorHadSourceRowsRef.current = hasInstalledRows(record);
+    const toSync = force
+      ? nextMirror
+      : mirrorToSync(nextMirror, lastMirrorObjRef.current, record.selectedKey, lastMirrorSelectedRef.current);
+    if (toSync !== undefined) {
+      lastMirrorObjRef.current = toSync;
+      lastMirrorSelectedRef.current = record.selectedKey;
+      syncMirrorRef.current(toSync);
+    }
+    if ((latestRef.current.adapter.mirror ?? 'none') === 'table') {
+      const table = fields.table as TableOrdinalMetrics | undefined;
+      const tableEl = accessibleTableRef.current;
+      if (table && lastRowCountRef.current !== table.count) {
+        lastRowCountRef.current = table.count;
+        tableEl?.setAttribute('aria-rowcount', String(table.count + 1));
+      }
+      if (tableEl) {
+        const desiredCaption = !latestRef.current.blocked && metaRef.current.mode === 'picture' && !metaRef.current.empty
+          ? (resolveHeaderSummary(metaRef.current)?.spoken ?? null)
+          : null;
+        if (desiredCaption !== null) {
+          const caption = tableEl.caption ?? tableEl.createCaption();
+          if (caption.textContent !== desiredCaption) caption.textContent = desiredCaption;
+        } else if (tableEl.caption) {
+          tableEl.deleteCaption();
+        }
+        lastMirrorCaptionRef.current = desiredCaption;
+      }
+      syncTableTabIndex(Boolean(lastMirrorObjRef.current?.rows.some(r => !r.groupHeader)));
+    }
+    const hour = record.picture.hour;
+    if (lastMirrorHourRef.current !== hour) {
+      lastMirrorHourRef.current = hour;
+      el.setAttribute('data-mirror-hour', String(hour));
+    }
+    if (recordSeek) lastMirrorSeekRef.current = seekSeq;
+    holdElement(el, false, MIRROR_HOLD);
+  }, [mirrorElement, syncTableTabIndex, pipeline, pipe]);
+  const commitMirrorRef = useRef(commitMirror);
+  commitMirrorRef.current = commitMirror;
+  const clearMirrorRef = useRef(clearMirror);
+  clearMirrorRef.current = clearMirror;
 
   const datedNow = useCallback(() => {
     const cur = latestRef.current;
@@ -736,10 +877,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       reducedMotion: cur.reducedMotion,
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
+      ...(focusInsideRef.current ? { focusInside: true } : {}),
       expanded: expansionRef.current,
       audit: auditId !== undefined,
       auditId,
       pauseFlush: pauseFlushRef.current,
+      ...(mirrorRequestRef.current > 0 ? { mirrorRequest: mirrorRequestRef.current } : {}),
       window: rowWindow,
       ...(cur.exportMotion ? { motion: cur.exportMotion } : {}),
     });
@@ -875,6 +1018,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     focusedKeyRef.current = key;
     revealRow(entry);
     if ((latestRef.current.adapter.mirrorFocus ?? 'body') === 'rows') {
+      const record = recordRef.current;
+      if (record?.fields.mirror !== undefined && (lastMirrorHourRef.current !== record.picture.hour || record.fields.mirror !== lastMirrorObjRef.current)) {
+        const snap = runtime.clock.getSnapshot();
+        const settled = !(pipeline && pipe !== null && pipeline.view(pipe)?.dim);
+        commitMirrorRef.current(record, false, snap.seekSequence ?? 0, settled);
+      }
       const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(mirrorRowSelector(key));
       if (tr) {
         for (const sibling of mirrorBodyRef.current!.querySelectorAll<HTMLTableRowElement>('tr[tabindex="0"]')) {
@@ -885,7 +1034,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
     }
     bindRef.current();
-  }, [revealRow]);
+  }, [revealRow, runtime.clock, pipeline, pipe]);
 
   const focusRowByOrdinal = useCallback((ordinal: number, direction: 1 | -1 = 1) => {
     const record = recordRef.current;
@@ -950,7 +1099,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     anchoredWindowRef.current = null;
     inspectedKeyRef.current = null;
     inspectedHitRef.current = null;
-    lastMirrorObjRef.current = null;
+    clearMirrorRef.current();
     publishHoverHour(null);
     publishHoverRow(null);
     publishFocusRow(null);
@@ -966,6 +1115,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     lastExtentRef.current = { width: -1, height: -1 };
     lastRawMetaRef.current = null;
     lastMirrorObjRef.current = null;
+    lastMirrorHeadKeyRef.current = '';
+    lastMirrorHourRef.current = null;
+    lastMirrorSeekRef.current = -1;
+    lastRowCountRef.current = -1;
+    lastMirrorCaptionRef.current = null;
+    lastMirrorHadSourceRowsRef.current = false;
+    mirrorNeedBindRef.current = false;
+    mirrorNeedBindBindingRef.current = -1;
     lastVisibleRef.current = null;
     lastPhasesRef.current = null;
     lastIdentityDemandsRef.current = null;
@@ -979,7 +1136,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       mounted.extent.style.height = '100%';
     }
     surfaceRef.current = mounted;
-    if (latestRef.current.hasChrome) setTargets({ body: node, bodyWrap: bodyWrapRef.current, extent: mounted.extent, mirrorHead: mirrorHeadRef.current });
+    if (latestRef.current.hasChrome) setTargets({ body: node, bodyWrap: bodyWrapRef.current, extent: mounted.extent });
 
     const auditWatch = attachAuditWatch(pipeline, pipe, {
       isAuditable: () => !!latestRef.current.exactReadView && !!latestRef.current.adapter.deriveAuditRows,
@@ -1018,8 +1175,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       if (sameBody && shown.summaryText?.trim() && summaryText?.trim() && !summaryPartial && !shown.summaryPartial && !notes.length) {
         const label = summaryText.trim();
         if (headerSummaryRef.current) headerSummaryRef.current.textContent = label;
-        const caption = accessibleTableRef.current?.caption;
-        if (caption) caption.textContent = label;
         return;
       }
       setMeta(next);
@@ -1078,10 +1233,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         }
         publishFocusKey();
         describe(null);
-        if (lastMirrorObjRef.current !== null) {
-          lastMirrorObjRef.current = null;
-          syncMirrorRef.current(null);
-        }
+        clearMirrorRef.current();
         tooltips.hideIfUnpinned();
         return;
       }
@@ -1201,10 +1353,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const table = fields.table as TableOrdinalMetrics | undefined;
       if (table && table !== lastTableRef.current) {
         lastTableRef.current = table;
-        if (lastRowCountRef.current !== table.count) {
-          lastRowCountRef.current = table.count;
-          accessibleTableRef.current?.setAttribute('aria-rowcount', String(table.count + 1));
-        }
         const hovered = inspectedKeyRef.current;
         if (hovered && !record.nav.some(entry => entry[0] === hovered)) clearHoverRef.current();
       }
@@ -1242,13 +1390,41 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         if (entry && revealRow(entry)) queueMicrotask(() => bindRef.current());
       }
 
-      const mirror = pendingFocused && fields.mirror
-        ? fields.mirror as MirrorModel
-        : mirrorToSync(fields.mirror as MirrorModel | undefined, lastMirrorObjRef.current, record.selectedKey, lastMirrorSelectedRef.current);
-      if (mirror !== undefined) {
-        lastMirrorObjRef.current = mirror;
-        lastMirrorSelectedRef.current = record.selectedKey;
-        syncMirrorRef.current(mirror);
+      const clockSnap = runtime.clock.getSnapshot();
+      const seekSeq = clockSnap.seekSequence ?? 0;
+      const seekChanged = !shown.dim && lastMirrorSeekRef.current !== seekSeq;
+      const incomingMirror = fields.mirror as MirrorModel | undefined;
+      const hostMirrorEmpty = (lastMirrorObjRef.current?.rows.length ?? 0) === 0;
+      const gainedFirstRow =
+        hostMirrorEmpty
+        && ((incomingMirror?.rows.length ?? 0) > 0 || (!lastMirrorHadSourceRowsRef.current && hasInstalledRows(record)));
+      const shouldSyncMirror =
+        !clockSnap.playing
+        || focusInsideRef.current
+        || pendingFocused
+        || seekChanged
+        || lastMirrorHourRef.current === null
+        || gainedFirstRow;
+      if (shouldSyncMirror) {
+        commitMirrorRef.current(record, pendingFocused, seekSeq, !shown.dim);
+      } else {
+        const el = mirrorElement();
+        if (el) {
+          const isTable = (activeAdapter.mirror ?? 'none') === 'table';
+          const nextMirror = incomingMirror ?? null;
+          const desiredCaption = isTable && !latestRef.current.blocked && metaRef.current.mode === 'picture' && !metaRef.current.empty
+            ? (resolveHeaderSummary(metaRef.current)?.spoken ?? null)
+            : null;
+          const stale =
+            lastMirrorHourRef.current !== installedHour
+            || nextMirror !== lastMirrorObjRef.current
+            || record.selectedKey !== lastMirrorSelectedRef.current
+            || (isTable && table !== undefined && table.count !== lastRowCountRef.current)
+            || (isTable && desiredCaption !== lastMirrorCaptionRef.current);
+          if (stale) {
+            holdElement(el, true, MIRROR_HOLD);
+          }
+        }
       }
       if (pendingFocused) {
         if ((activeAdapter.mirrorFocus ?? 'body') === 'rows' && focusedKeyRef.current) {
@@ -1411,8 +1587,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       stopPointer();
       stopInstall();
       auditWatch.dispose();
-      lastMirrorObjRef.current = null;
-      syncMirrorRef.current(null);
+      clearMirrorRef.current();
       recordRef.current = null;
       if (lastInstalledHourRef.current !== null) {
         lastInstalledHourRef.current = null;
@@ -1426,7 +1601,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       reportFamilyShownHour(reportShownRef.current, false, null);
       exportReportRef.current?.(`${widget.id}:${instanceId}`, null);
     };
-  }, [pipeline, pipe, instanceId, widget.id, tooltips, scrollMode, pointerMode, gestureContext, dispatch, gateNow, publishHoverHour, reportWindow]);
+  }, [pipeline, pipe, instanceId, widget.id, tooltips, scrollMode, pointerMode, gestureContext, dispatch, gateNow, publishHoverHour, reportWindow, runtime.clock, mirrorElement]);
 
   useLayoutEffect(() => {
     const node = bodyRef.current;
@@ -1519,10 +1694,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   useFamilyPauseFlush(runtime.clock, () => {
     if (!pipeline || pipe === null) return;
+    const record = recordRef.current;
+    if (record?.fields.mirror !== undefined) {
+      const seekSeq = runtime.clock.getSnapshot().seekSequence ?? 0;
+      commitMirrorRef.current(record, false, seekSeq, !pipeline.view(pipe)?.dim);
+    }
     pauseFlushRef.current++;
     bindRef.current();
-    const mirror = pipeline.view(pipe)?.fields?.mirror as MirrorModel | undefined;
-    if (mirror) syncMirrorRef.current(mirror);
   });
 
   useEffect(() => {
@@ -1667,8 +1845,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         focusedKeyRef.current = navNow()[0]![0];
       }
     }
+    const record = recordRef.current;
+    if (record?.fields.mirror !== undefined) {
+      const seekSeq = runtime.clock.getSnapshot().seekSequence ?? 0;
+      const settled = !(pipeline && pipe !== null && pipeline.view(pipe)?.dim);
+      commitMirrorRef.current(record, true, seekSeq, settled);
+    }
     bindRef.current();
-  }, [refreshFocusAnchor]);
+  }, [refreshFocusAnchor, runtime.clock, pipeline, pipe]);
 
   const onBlur = useCallback(() => {
     focusEpochRef.current++;
@@ -1686,11 +1870,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     focusInsideRef.current = true;
     refreshFocusAnchor();
     const row = (event.target as HTMLElement | null)?.closest<HTMLTableRowElement>('tr[data-row-key]');
-    if (row?.dataset.rowKey && (!wasInside || focusedKeyRef.current !== row.dataset.rowKey)) {
-      focusedKeyRef.current = row.dataset.rowKey;
-      bindRef.current();
+    const keyChanged = !!row?.dataset.rowKey && (!wasInside || focusedKeyRef.current !== row.dataset.rowKey);
+    if (keyChanged) focusedKeyRef.current = row.dataset.rowKey!;
+    const record = recordRef.current;
+    if (record?.fields.mirror !== undefined && (!wasInside || lastMirrorHourRef.current !== record.picture.hour || record.fields.mirror !== lastMirrorObjRef.current)) {
+      const seekSeq = runtime.clock.getSnapshot().seekSequence ?? 0;
+      const settled = !(pipeline && pipe !== null && pipeline.view(pipe)?.dim);
+      commitMirrorRef.current(record, true, seekSeq, settled);
     }
-  }, [refreshFocusAnchor]);
+    if (keyChanged || !wasInside) bindRef.current();
+  }, [refreshFocusAnchor, runtime.clock, pipeline, pipe]);
 
   const onRowBlur = useCallback((event: ReactFocusEvent<HTMLTableElement>) => {
     if (restoringFocusRef.current) return;
@@ -1722,12 +1911,19 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const headerSummary = meta.mode === 'picture' && !meta.empty && !bodyStateNode
     ? resolveHeaderSummary(metaRef.current)
     : null;
-  const summaryNote = headerSummary?.spoken ?? null;
   const rowsFocus = (adapter.mirrorFocus ?? 'body') === 'rows';
   const bodyRole = mirrorKind === 'listbox' ? 'listbox' : adapter.navigation === 'grid' ? 'grid' : 'region';
   const bodyFocus = rowsFocus
     ? {}
     : { tabIndex: blockedState ? -1 : 0, role: bodyRole, 'aria-label': label, onFocus, onBlur, onKeyDown };
+
+  useLayoutEffect(() => {
+    syncTableTabIndex(Boolean(lastMirrorObjRef.current?.rows.some(r => !r.groupHeader)));
+    if (blockedState && accessibleTableRef.current?.caption) {
+      accessibleTableRef.current.deleteCaption();
+      lastMirrorCaptionRef.current = null;
+    }
+  }, [blockedState, rowsFocus, syncTableTabIndex]);
 
   return (
     <div ref={frameRef} className={className ? `fh-frame ${className}` : 'fh-frame'}>
@@ -1770,9 +1966,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           className="fh-sr-only"
           aria-label={label}
           role={adapter.tree ? 'treegrid' : undefined}
-          {...(rowsFocus ? { tabIndex: -1, onFocus: onRowFocus, onBlur: onRowBlur, onKeyDown } : {})}
+          {...(rowsFocus ? { onFocus: onRowFocus, onBlur: onRowBlur, onKeyDown } : {})}
         >
-          {summaryNote ? <caption>{summaryNote}</caption> : null}
           <thead ref={mirrorHeadRef} />
           <tbody ref={mirrorBodyRef} />
         </table>

@@ -800,19 +800,19 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
 
     const rowsA = [{ id: 'GER', v: 20 }, { id: 'FRA', v: 10 }];
     const rowsB = [{ id: 'GER', v: 5 }, { id: 'FRA', v: 30 }];
-    const p1 = paintAt(rowsA, 1000, 1440, 'row:FRA', 'GER');
+    const p1 = paintAt(rowsA, 1000, 1440, 'row:FRA', null);
     assert.deepEqual((p1.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['GER', 'FRA']);
     assert.equal((p1.fields.tooltip!.value as { text: { rowKey: string } }).text.rowKey, 'FRA', 'hover tooltip tracks inspected FRA');
-    assert.equal((p1.fields.focusTooltip?.value as { text: { rowKey: string } } | undefined)?.text.rowKey, 'GER', 'focusTooltip tracks focused GER independently of hover');
 
-    const p2 = paintAt(rowsB, 1100, 1440, 'row:FRA', 'GER');
-    assert.equal(p2.fields.mirror, undefined, 'inside the 1 s window the mirror of changed rows is withheld, never the old rows beside the new picture');
+    const p2 = paintAt(rowsB, 1100, 1440, 'row:FRA', null);
+    assert.equal(p2.fields.mirror, undefined, 'unfocused playback withholds changed mirror rows, never the old rows beside the new picture');
 
     const p3 = paintAt(rowsB, 2100, 1440, 'row:FRA', 'GER');
-    assert.deepEqual((p3.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['FRA', 'GER'], 'dirty mirror flushes when due even without a new model change');
+    assert.deepEqual((p3.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['FRA', 'GER'], 'focusing syncs the mirror immediately during playback');
+    assert.equal((p3.fields.focusTooltip?.value as { text: { rowKey: string } } | undefined)?.text.rowKey, 'GER', 'focusTooltip tracks focused GER independently of hover');
 
-    paintAt(rowsA, 2200, 1440, 'row:FRA', 'GER');
-    const pPause = paintAt(rowsA, 2250, 0, 'row:FRA', 'GER');
+    paintAt(rowsA, 2200, 1440, 'row:FRA', null);
+    const pPause = paintAt(rowsA, 2250, 0, 'row:FRA', null);
     assert.deepEqual((pPause.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['GER', 'FRA'], 'pause immediately flushes pending mirror revision');
     assert.ok(wakes >= 0);
 
@@ -1750,17 +1750,12 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
     const swapped = lane.paint({ label: 'swapped', binding: swappedRows, hour: 2, speed: 24, seek: 1, now: 1050 });
     assert.ok(arrow(), 'the forward swap draws the rank arrow');
     assert.equal(swapped.motion, false, 'rank marker expiry does not hold the 60 FPS motion loop');
-    assert.equal(swapped.fields.mirror, undefined, 'the mirror is withheld until its cadence is due');
-    assert.deepEqual(armed, [950], 'one timer, for the mirror, which is due before the arrow expires');
-    (due as (() => void) | null)?.();
-    const mirrored = lane.paint({ label: 'mirror wake', binding: swappedRows, hour: 2, speed: 24, seek: 1, now: 2000 });
-    assert.ok(mirrored.fields.mirror, 'the mirror wake publishes the mirror');
-    assert.ok(arrow(), 'the arrow survives the earlier mirror wake');
-    assert.deepEqual(armed, [950, 1550], 'then one timer for the arrow’s own deadline');
+    assert.equal(swapped.fields.mirror, undefined, 'unfocused playback withholds the mirror');
+    assert.deepEqual(armed, [2500], 'one timer, solely for the arrow’s own deadline (no mirror cadence timer)');
     (due as (() => void) | null)?.();
     lane.paint({ label: 'arrow expired', binding: swappedRows, hour: 2, speed: 24, seek: 1, now: 3550 });
     assert.equal(arrow(), false, 'the arrow disappears at its own deadline');
-    assert.deepEqual([wakes, armed.length], [2, 2], 'one wake per deadline and no timer after it');
+    assert.deepEqual([wakes, armed.length], [1, 1], 'one wake for the arrow deadline and no timer after it');
     view.unmount?.(1, lane.state);
   } finally {
     recording.restore();
@@ -6046,4 +6041,52 @@ test('fast video export glideDurationMs override keeps gliding hit and repaint, 
   await Promise.resolve();
   assert.equal(tableLane.keepsCanvas!(ctx, detailFrame as never), false, 'settling offscreen detailColumn heading flag invalidates keepsCanvas');
   artCache.dispose();
+});
+
+test('empty table gaining a recording gap as its first visible row during playback publishes the gap mirror immediately', () => {
+  const cols: TableColumnSpec[] = [
+    { key: 'name', label: 'Event', as: 'plain', offered: ['plain'], priority: 0, text: true },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+  registerFamilyProjection({
+    family: 'table',
+    kind: 'test-empty-to-gap',
+    project(readView, options: { readonly gaps: number }): TableModel {
+      const slots: TableModelSlot[] = Array.from({ length: options.gaps }, (_, i) => ({
+        kind: 'gap' as const,
+        key: `gap:${i}`,
+        firstHour: 10 + i * 10,
+        lastHour: 20 + i * 10,
+        reason: `Collector detached ${i}`,
+      }));
+      return { hour: readView.hour, columns: cols, rows: [], slots, unsorted: true, totalRows: 10 };
+    },
+  });
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 400, height: 200, dpr: 1 });
+    const makeBinding = (gaps: number) => ({
+      family: 'table' as const,
+      kind: 'test-empty-to-gap',
+      options: { gaps },
+      settings,
+      sources: NO_SOURCES,
+      width: 400,
+      height: 200,
+      scrollLeft: 0,
+      scrollTop: 0,
+      theme: TEST_THEME,
+      expanded: {},
+    });
+    const empty = lane.paint({ label: 'empty', binding: makeBinding(0), hour: 10, speed: 24, seek: 1 });
+    assert.deepEqual((empty.fields.mirror?.value as { rows: unknown[] } | undefined)?.rows, [], 'initial empty log emits an empty mirror');
+    const firstGap = lane.paint({ label: 'first-gap', binding: makeBinding(1), hour: 20, speed: 24, seek: 1 });
+    const gapRows = (firstGap.fields.mirror?.value as { rows: { name: string }[] } | undefined)?.rows;
+    assert.equal(gapRows?.length, 1, 'empty table gaining a gap row during playback publishes its mirror immediately');
+    assert.match(gapRows![0]!.name, /Collector detached 0/);
+    const secondGap = lane.paint({ label: 'second-gap', binding: makeBinding(2), hour: 30, speed: 24, seek: 1 });
+    assert.equal(secondGap.fields.mirror, undefined, 'subsequent gap additions defer once the mirror has visible rows');
+  } finally {
+    recording.restore();
+  }
 });

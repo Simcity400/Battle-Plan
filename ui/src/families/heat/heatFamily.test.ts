@@ -597,3 +597,48 @@ test('a warm heat lane keeps its spans until its runs or horizontal layout chang
   assert.equal(projectLaneRunsToPixels(runs, 0, 1, 0, 12, 200, pixels).length, 1);
   assert.deepEqual(projectLaneRunsToPixels([], 0, 1, 1, 12, 200, pixels), []);
 });
+
+test('heat matrix publishes its mirror when transitioning from zero rows to its first row during playback', () => {
+  const col: MatrixAxisEntity = { id: 'c0', label: 'Col 0', tag: 'C0' };
+  const rowOf = (i: number): MatrixAxisEntity => ({ id: `r${i}`, label: `Row ${i}`, tag: `R${i}` });
+  const cell: MatrixCell = { kind: 'value', color: '#2eb872', text: '1', value: 1 };
+  registerFamilyProjection({
+    family: 'heat-matrix',
+    kind: 'test-matrix-first-row',
+    project(readView, options: { readonly count: number }): HeatMatrixModel {
+      const rows = Array.from({ length: options.count }, (_, i) => rowOf(i));
+      const columns = options.count > 0 ? [col] : [];
+      const grid = rows.map(() => [cell]);
+      return {
+        hour: readView.hour,
+        rows,
+        columns,
+        cells: gridCells(grid, columns.length || 1),
+      };
+    },
+  });
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(heatMatrixLane, () => {}), recording.canvases, { width: 400, height: 240, dpr: 1 });
+    const makeBinding = (count: number) => ({
+      family: 'heat-matrix' as const,
+      kind: 'test-matrix-first-row',
+      options: { count },
+      sources: {},
+      scrollTop: 0,
+      scrollLeft: 0,
+      theme: THEME,
+      width: 400,
+      height: 240,
+      expanded: {},
+    });
+    const empty = lane.paint({ label: 'empty', binding: makeBinding(0), hour: 1, speed: 24, seek: 1 });
+    assert.deepEqual((empty.fields.mirror?.value as { rows: unknown[] } | undefined)?.rows, [], 'initial empty matrix emits an empty mirror');
+    const first = lane.paint({ label: 'one-row', binding: makeBinding(1), hour: 2, speed: 24, seek: 1 });
+    assert.equal((first.fields.mirror?.value as { rows: unknown[] } | undefined)?.rows.length, 1, 'transition from 0 rows to 1 publishes the matrix mirror during playback');
+    const second = lane.paint({ label: 'two-rows', binding: makeBinding(2), hour: 3, speed: 24, seek: 1 });
+    assert.equal(second.fields.mirror, undefined, 'once populated, subsequent matrix updates defer during unfocused playback');
+  } finally {
+    recording.restore();
+  }
+});

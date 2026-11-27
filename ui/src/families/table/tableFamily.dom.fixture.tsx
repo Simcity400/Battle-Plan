@@ -430,12 +430,15 @@ window.tableFamilyDom = {
       await until(() => (pipeline.view(pipeId)?.h ?? 0) >= pauseHour && !pipeline.view(pipeId)?.dim,
         () => `Live playback did not reach flipped hour ${pauseHour} (at ${pipeline.view(pipeId)?.h})`);
       const beforePauseTop = hostNode?.querySelector('table tbody tr')?.getAttribute('data-row-key') ?? null;
+      const beforePauseHeld = hostNode?.querySelector('table')?.getAttribute('data-held') ?? null;
+      const beforePauseMirrorHour = hostNode?.querySelector('table')?.getAttribute('data-mirror-hour') ?? null;
       const pendingTimersBeforePause = heldTimers.size;
       const timerFiredBeforePause = timerFiredCount;
 
       clock.setPlaying(false);
       const flushedOnPause = await until(
-        () => hostNode?.querySelector('table tbody tr')?.getAttribute('data-row-key') === wantTop,
+        () => hostNode?.querySelector('table tbody tr')?.getAttribute('data-row-key') === wantTop
+          && hostNode?.querySelector('table')?.getAttribute('data-held') === null,
         () => `Mirror did not flush to ${wantTop} on pause (top=${hostNode?.querySelector('table tbody tr')?.getAttribute('data-row-key')})`,
       );
       const timerFiredAfterPause = timerFiredCount;
@@ -450,6 +453,8 @@ window.tableFamilyDom = {
         playingDuringAdvance,
         playingBeforePause,
         beforePauseTop,
+        beforePauseHeld,
+        beforePauseMirrorHour,
         pendingTimersBeforePause,
         pendingTimersAfterPause,
         timerFiredBeforePause,
@@ -515,6 +520,7 @@ window.tableFamilyDom = {
     await until(() => (pipeline.view(pipeId)?.fields?.focusTooltip as { text?: { rowKey?: string } | null } | undefined)?.text?.rowKey === key,
       `the focus tooltip of ${key}`);
     let sent = pipeline.view(pipeId)?.h ?? 0;
+    const startHour = sent;
     const feed = (hour: number) => {
       while (sent < hour + 6) {
         sent++;
@@ -527,14 +533,14 @@ window.tableFamilyDom = {
       holdCadence(performance.now());
       clock.setSpeed(48);
       clock.setPlaying(true);
-      const withheld = await until(() => body.children.length === 0, 'playback with a held cadence to withhold the mirror rows');
-      const parked = document.activeElement === table;
+      const advanced = await until(() => (pipeline.view(pipeId)?.h ?? 0) >= startHour + 6 && body.children.length > 0, 'focused playback to keep mirror live');
+      const stayedFocused = focusedKey() === key && table.getAttribute('data-held') === null;
       clock.setPlaying(false);
-      const returned = await until(() => body.children.length > 0, 'the mirror rows to return on pause');
+      const returned = await until(() => body.children.length > 0, 'the mirror rows to stay present on pause');
       const restored = focusedKey();
       document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
       await until(() => focusedKey() !== null && focusedKey() !== key, `ArrowDown to move focus off ${key}`);
-      return { key, withheld, parked, returned, restored, afterDown: focusedKey() };
+      return { key, withheld: advanced, parked: stayedFocused, returned, restored, afterDown: focusedKey() };
     } finally {
       cadenceHold = false;
       heldTimers.clear();

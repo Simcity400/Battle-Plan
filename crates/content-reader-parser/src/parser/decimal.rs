@@ -4,7 +4,7 @@ use std::io;
 pub const FIXED_SCALE: i64 = 100_000;
 
 fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
+    crate::fields::invalid(message)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
