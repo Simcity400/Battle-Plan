@@ -254,6 +254,7 @@ fn queue_gaps(query: &Query<'_>, out: &mut Vec<(i32, i32, String)>) -> io::Resul
 struct WitnessState {
     built: i64,
     repaired: i64,
+    output_since: Option<i64>,
     new_raw: i64,
     repair_raw: i64,
     output_only: GapKind,
@@ -262,12 +263,18 @@ struct WitnessState {
 fn witnessed_work(
     state: &mut WitnessState,
     hour: i32,
+    since: Option<i64>,
     built: Option<i64>,
     repaired: Option<i64>,
     new_raw: Option<i64>,
     repair_raw: Option<i64>,
     repair_tick: Option<i32>,
 ) -> (GapKind, bool) {
+    if let Some(s) = since && state.output_since != Some(s) {
+        state.output_since = Some(s);
+        state.new_raw = 0;
+        state.repair_raw = 0;
+    }
     let mut kind = GapKind::NEITHER;
     if let Some(v) = built {
         if v > state.built { kind.new = true; }
@@ -293,12 +300,12 @@ fn witnessed_work(
     (kind, repaired_rose)
 }
 
-fn inferred_queue_kind(open: bool, repair_levels: i64, remaining: i64, repair_tick_unresolved: bool) -> GapKind {
+fn inferred_queue_kind(open: bool, repair_levels: Option<i64>, remaining: Option<i64>, repair_tick_unresolved: bool) -> GapKind {
     if !open {
         GapKind::NEITHER
-    } else if repair_levels > 0 {
+    } else if repair_levels.is_some_and(|r| r > 0) {
         GapKind::REPAIR
-    } else if remaining > 0 && !repair_tick_unresolved {
+    } else if repair_levels == Some(0) && remaining.is_some_and(|n| n > 0) && !repair_tick_unresolved {
         GapKind::NEW
     } else {
         GapKind::NEITHER
@@ -310,6 +317,7 @@ struct LineHistory {
     read: Vec<(i32, Option<u8>, bool)>,
     kinds: Vec<(i32, GapKind)>,
     buildings: Vec<(i32, Option<u32>)>,
+    last_run: Option<u32>,
     witness: WitnessState,
     repair_tick_unresolved: bool,
     pending_kind: Option<(i32, GapKind)>,
@@ -327,21 +335,11 @@ impl LineHistory {
     }
 }
 
-struct StepColumns {
-    alone: usize,
-    owner: usize,
-    btype: usize,
-    ended: usize,
-    rem: usize,
-    rep_lvl: usize,
-    built: usize,
-    repaired: usize,
-    new_raw: usize,
-    rep_raw: usize,
-    since: usize,
-    obs: usize,
-    reason: usize,
-    repair: usize,
+struct QueueCoverage {
+    building_reads: Vec<(i32, i32)>,
+    building_complete: Vec<(i32, i32)>,
+    railway_reads: Vec<(i32, i32)>,
+    railway_complete: Vec<(i32, i32)>,
 }
 
 fn read_stretch_steps(
@@ -350,6 +348,7 @@ fn read_stretch_steps(
     ids: &[u128],
     first: i32,
     last: i32,
+    queues: &QueueCoverage,
     into: &mut BTreeMap<u64, SeenLine>,
 ) -> io::Result<HashMap<u64, Option<i32>>> {
     let columns = [
@@ -358,12 +357,12 @@ fn read_stretch_steps(
     ];
     let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(query.replay.recording(), run, TableId::ConstructionProjects, &columns, Keys::These(ids), first, last))?;
     let at = |column: usize| history.columns.binary_search(&column).map_err(|_| dashboard_core::invalid("A construction project column was not read"));
-    let cols = StepColumns {
-        alone: at(col::OUTPUT_ALONE)?, owner: at(col::COUNTRY)?, btype: at(col::BUILDING_TYPE)?, ended: at(col::END)?,
-        rem: at(col::REMAINING)?, rep_lvl: at(col::REPAIR_LEVELS)?, built: at(col::BUILT)?, repaired: at(col::REPAIRED)?,
-        new_raw: at(col::CONSTRUCTION_RAW)?, rep_raw: at(col::REPAIR_RAW)?, since: at(col::OUTPUT_SINCE)?,
-        obs: at(col::OBSERVED_SINCE_CREATION)?, reason: at(col::OUTPUT_REASON)?, repair: at(col::FIRST_REPAIR_TICK)?,
-    };
+    let (alone, owner, btype, ended, rem, rep_lvl, built, repaired, new_raw, rep_raw, since, obs, reason, repair) = (
+        at(col::OUTPUT_ALONE)?, at(col::COUNTRY)?, at(col::BUILDING_TYPE)?, at(col::END)?,
+        at(col::REMAINING)?, at(col::REPAIR_LEVELS)?, at(col::BUILT)?, at(col::REPAIRED)?,
+        at(col::CONSTRUCTION_RAW)?, at(col::REPAIR_RAW)?, at(col::OUTPUT_SINCE)?,
+        at(col::OBSERVED_SINCE_CREATION)?, at(col::OUTPUT_REASON)?, at(col::FIRST_REPAIR_TICK)?,
+    );
     let number = |cells: &[Cell], at: usize| match cells.get(at) { Some(Cell::Number(value)) => Some(*value), _ => None };
     let unknown_owner = replay_data::rows::ConstructionProjectRow::OUTPUT_OWNER_UNKNOWN;
     let unread_output = replay_data::rows::ConstructionProjectRow::OUTPUT_NOT_RECORDED;
@@ -371,58 +370,74 @@ fn read_stretch_steps(
     let mut stretch_first_owner = HashMap::new();
     for (key, steps) in &history.keys {
         let Some(entry) = into.get_mut(&(*key as u64)) else { continue };
+        let (q_reads, q_complete) = if entry.line.railway { (&queues.railway_reads, &queues.railway_complete) } else { (&queues.building_reads, &queues.building_complete) };
         let held = &mut entry.history;
+        if held.last_run != Some(run) {
+            held.last_run = Some(run);
+            held.witness.built = 0;
+            held.witness.repaired = 0;
+            held.witness.output_only = GapKind::NEITHER;
+            held.repair_tick_unresolved = false;
+        }
         let mut first_known: Option<i32> = None;
         for step in steps {
             if let Some((at, next_kind)) = held.pending_kind.take() && at < step.hour {
                 held.push_kind(at, next_kind);
             }
             let Some(cells) = step.cells.as_deref() else { continue };
-            let building = number(cells, cols.btype).and_then(|v| u32::try_from(v).ok());
+            let building = number(cells, btype).and_then(|v| u32::try_from(v).ok());
             if held.buildings.last().is_none_or(|&(_, prev)| prev != building) { held.buildings.push((step.hour, building)); }
-            let is_census = number(cells, cols.alone) == Some(0);
-            let had_output = number(cells, cols.since).is_some();
-            let reason_val = number(cells, cols.reason).and_then(|value| u8::try_from(value).ok());
+            let is_census = number(cells, alone) == Some(0);
+            let since_val = number(cells, since);
+            let had_output = since_val.is_some();
+            let reason_val = number(cells, reason).and_then(|value| u8::try_from(value).ok());
             let known_owner = is_census
                 || match reason_val {
                     Some(r) if r == unknown_owner => false,
-                    Some(r) if r == unread_output => held.last_known_owner.unwrap_or_else(|| number(cells, cols.owner).is_some_and(|v| v != 0)),
+                    Some(r) if r == unread_output => held.last_known_owner.unwrap_or_else(|| number(cells, owner).is_some_and(|v| v != 0)),
                     Some(_) => true,
                     None => false,
                 };
             held.last_known_owner = Some(known_owner);
-            if known_owner {
-                first_known = first_known.or(Some(step.hour));
-            }
+            if known_owner { first_known = first_known.or(Some(step.hour)); }
             let effective_reason = if had_output && !known_owner { Some(unknown_owner) } else { reason_val };
             held.read.push((step.hour, effective_reason, had_output));
-            if held.before_observation.is_none() && had_output && known_owner && number(cells, cols.obs) == Some(0) {
+            if held.before_observation.is_none() && had_output && known_owner && number(cells, obs) == Some(0) {
                 held.before_observation = Some(step.hour);
             }
-            let tick = number(cells, cols.repair).and_then(|value| i32::try_from(value).ok());
+            let tick = number(cells, repair).and_then(|value| i32::try_from(value).ok());
+            let (raw_new, raw_rep) = (number(cells, new_raw), number(cells, rep_raw));
             let (witnessed, repaired_rose) = witnessed_work(
-                &mut held.witness, step.hour, number(cells, cols.built), number(cells, cols.repaired),
-                number(cells, cols.new_raw), number(cells, cols.rep_raw), tick,
+                &mut held.witness, step.hour, since_val, number(cells, built), number(cells, repaired), raw_new, raw_rep, tick,
             );
-            let (rep_now, rem_now) = (number(cells, cols.rep_lvl).unwrap_or(0), number(cells, cols.rem).unwrap_or(0));
+            let (rep_now, rem_now) = (number(cells, rep_lvl), number(cells, rem));
             if !is_census {
-                held.witness.output_only.new |= witnessed.new;
-                held.witness.output_only.repair |= witnessed.repair;
+                held.witness.output_only.new |= witnessed.new || raw_new.is_some_and(|v| v != 0);
+                held.witness.output_only.repair |= witnessed.repair || raw_rep.is_some_and(|v| v != 0);
             }
-            if repaired_rose || rep_now > 0 || witnessed.new {
+            let queue_read = is_census && read_within(q_reads, step.hour, step.hour);
+            let queue_complete = is_census && read_within(q_complete, step.hour, step.hour);
+            if repaired_rose || (queue_read && rep_now.is_some_and(|r| r > 0)) || witnessed.new {
                 held.repair_tick_unresolved = false;
-            } else if witnessed.repair && rep_now == 0 {
+            } else if witnessed.repair && !(queue_read && rep_now.is_some_and(|r| r > 0)) {
                 held.repair_tick_unresolved = true;
             }
-            let inferred = if is_census {
-                inferred_queue_kind(number(cells, cols.ended) == Some(open), rep_now, rem_now, held.repair_tick_unresolved)
-            } else {
-                held.witness.output_only
-            };
-            let kind = if witnessed.new || witnessed.repair { witnessed } else { inferred };
-            held.push_kind(step.hour, kind);
-            if (witnessed.new || witnessed.repair) && is_census && inferred != kind {
-                held.pending_kind = Some((step.hour.saturating_add(1), inferred));
+            let has_witness = witnessed.new || witnessed.repair;
+            if !is_census {
+                let kind = if has_witness { witnessed } else { held.witness.output_only };
+                held.push_kind(step.hour, kind);
+            } else if queue_read {
+                let inferred = inferred_queue_kind(number(cells, ended) == Some(open), rep_now, rem_now, held.repair_tick_unresolved);
+                let kind = if has_witness { witnessed } else { inferred };
+                held.push_kind(step.hour, kind);
+                if has_witness && inferred != kind {
+                    held.pending_kind = Some((step.hour.saturating_add(1), inferred));
+                }
+            } else if has_witness {
+                held.push_kind(step.hour, witnessed);
+                held.pending_kind = Some((step.hour.saturating_add(1), GapKind::NEITHER));
+            } else if !queue_complete {
+                held.push_kind(step.hour, GapKind::NEITHER);
             }
         }
         if let Some((at, next_kind)) = held.pending_kind.take() && at <= last {
@@ -473,6 +488,11 @@ pub(crate) fn place_buildings(spent: &BTreeMap<LeafKey, Vec<SpentStep>>, lines: 
     let mut buildings: HashMap<LeafKey, Option<u32>> = spent.keys().map(|&place| (place, named(place.2))).collect();
     for line in lines {
         let (railway, building, state, to_state) = line.leaf;
+        for repair in [false, true] {
+            if let Some(held) = buildings.get_mut(&(repair, railway, building, state, to_state)) {
+                *held = held.or(line.building);
+            }
+        }
         for &(_, _, _, kind) in &line.gaps {
             for (repair, active) in [(false, kind.new), (true, kind.repair)] {
                 if active {
@@ -543,7 +563,22 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             }
         }
         let ids: Vec<u128> = kept.iter().map(|(line, _)| u128::from(line.id)).collect();
-        let stretch_owners = if ids.is_empty() { HashMap::new() } else { read_stretch_steps(query, stretch.run, &ids, stretch.first, stretch.last, &mut seen)? };
+        let recording = query.replay.recording();
+        let complete_spans = |table: TableId| -> io::Result<Vec<(i32, i32)>> {
+            let statuses = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, stretch.run, table, stretch.first, stretch.last))?;
+            Ok(statuses.iter().filter(|held| replay_recording::columnar_frames::complete(held.status)).map(|held| (held.first, held.last)).collect())
+        };
+        let queues = if ids.is_empty() {
+            QueueCoverage { building_reads: Vec::new(), building_complete: Vec::new(), railway_reads: Vec::new(), railway_complete: Vec::new() }
+        } else {
+            QueueCoverage {
+                building_reads: dashboard_query::cost::storage(|| replay_lanes::lanes::complete_reads(recording, stretch.run, TableId::BuildingConstruction, stretch.first, stretch.last))?,
+                building_complete: complete_spans(TableId::BuildingConstruction)?,
+                railway_reads: dashboard_query::cost::storage(|| replay_lanes::lanes::complete_reads(recording, stretch.run, TableId::RailwayConstruction, stretch.first, stretch.last))?,
+                railway_complete: complete_spans(TableId::RailwayConstruction)?,
+            }
+        };
+        let stretch_owners = if ids.is_empty() { HashMap::new() } else { read_stretch_steps(query, stretch.run, &ids, stretch.first, stretch.last, &queues, &mut seen)? };
         for (line, _) in kept {
             let Some(entry) = seen.get_mut(&line.id) else { continue };
             if let (Some(owner), Some(Some(at))) = (line.country, stretch_owners.get(&line.id)) {
