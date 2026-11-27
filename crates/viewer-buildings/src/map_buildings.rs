@@ -392,6 +392,7 @@ impl BuildingHistory {
     }
 
     pub fn settle(&mut self, settled: bool) {
+        self.dirty |= self.settling != settled;
         self.settling = settled;
     }
 
@@ -405,8 +406,10 @@ impl BuildingHistory {
     ) -> BuildingFrame<'_> {
         let steady = steady || self.settling;
         if self.last_time.is_some_and(|previous| time < previous) {
-            self.clear();
-            self.dirty = true;
+            if !self.settling {
+                self.clear();
+                self.dirty = true;
+            }
             self.last_time = None;
         }
         let delta = self.last_time.map_or(0.0, |previous| time - previous);

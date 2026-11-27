@@ -119,6 +119,9 @@ fn destruction_hysteresis_survives_hide_and_resets_on_seek() {
         2,
         "still destroyed in the band"
     );
+    history.settle(true);
+    assert_eq!(at(&mut history, 50.0, 0.0)[0].0, 2, "a saved frame keeps the latch");
+    history.settle(false);
     history.set(prepared(13, 8_000_001, false), true);
     assert_eq!(at(&mut history, 50.0, 3.0)[0].0, 1);
     assert!(
@@ -159,6 +162,9 @@ fn a_landmark_keeps_its_model_above_the_cutoff_only_once_created_below() {
     assert!(at(&mut history, 500.0, 0.0).is_empty());
     assert_eq!(at(&mut history, 50.0, 1.0)[0].0, 1);
     assert_eq!(at(&mut history, 1500.0, 2.0)[0].0, 1);
+    history.settle(true);
+    assert_eq!(at(&mut history, 1500.0, 0.0)[0].0, 1, "a saved frame keeps the landmark");
+    history.settle(false);
     history.set(prepared(11, 0, true), true);
     let far = at(&mut history, 1500.0, 3.0);
     assert_eq!(far[0].0, 1, "far away the landmark is not rebuilt");
