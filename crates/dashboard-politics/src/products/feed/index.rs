@@ -1009,13 +1009,13 @@ pub fn kept(source: &Source) -> Vec<u64> {
     branches
 }
 
-pub fn warm(source: &Source, branch: u64) -> io::Result<()> {
-    let catalogue = branch_of(source, branch).lock().unwrap_or_else(PoisonError::into_inner).binding.as_ref().and_then(Weak::upgrade);
-    let Some(catalogue) = catalogue else { return Ok(()) };
+pub fn warm(source: &Source, branch: u64, context: &LoadContext) -> io::Result<()> {
+    let Ok(catalogue) = super::resolve_content(source, context) else { return Ok(()) };
     let query = dashboard_base::queries::query(source, branch)?;
     let cancelled = AtomicBool::new(false);
     decisions_for(source, &query, branch, Some(&catalogue), &cancelled)?;
     choices_for(source, &query, branch, Some(&catalogue), &cancelled)?;
+    feed_for(source, &query, branch, context, Some(&catalogue), &cancelled)?;
     Ok(())
 }
 

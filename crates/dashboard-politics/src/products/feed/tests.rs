@@ -456,28 +456,6 @@ fn scripted_text_not_expanded_is_marked_where_it_stood_never_as_an_authored_elli
 }
 
 #[test]
-fn unbound_read_ahead_does_not_fill_or_replace_the_feed_index() {
-    use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-    use replay::campaign::Replay;
-    use std::sync::{Arc, atomic::AtomicBool};
-    let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
-    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let source = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "feed-index-warm".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-    assert!(super::index::kept(&source).is_empty(), "nothing is kept before the open reads ahead");
-    super::index::warm(&source, 1).unwrap();
-    assert!(super::index::kept(&source).is_empty());
-    let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let first = super::index::decisions_for(&source, &query, 1, None, &AtomicBool::new(false)).unwrap();
-    super::index::warm(&source, 1).unwrap();
-    let second = super::index::decisions_for(&source, &query, 1, None, &AtomicBool::new(false)).unwrap();
-    assert!(Arc::ptr_eq(&first, &second));
-    assert_eq!(super::index::kept(&source), [1]);
-    dashboard_base::queries::forget(&source);
-    crate::forget(&source);
-    assert!(super::index::kept(&source).is_empty(), "forgotten with the recording's index");
-}
-
-#[test]
 fn a_family_failing_for_other_than_damage_or_a_refusal_is_read_again_at_the_next_request_and_panel_read() {
     use super::{event_feed_dated_panel, index::{FAULT, Feed, feed_for}};
     use dashboard_base::{products::LoadContext, test_fixtures::{CAMPAIGN, records, source}};

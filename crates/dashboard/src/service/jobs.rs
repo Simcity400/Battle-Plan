@@ -670,7 +670,7 @@ impl Inner {
             crate::answer::open_all(&source).map_err(|error| error.to_string())?;
             read_key_names_ahead(&source, self.content());
             read_naming_ahead(&source);
-            read_feed_scope_ahead(&source);
+            read_feed_scope_ahead(&source, self.content_for(&source, dashboard_base::source::Work::Recorded));
             read_air_observed_ahead(&source);
             source
                 .name_countries(self.content().as_ref())
@@ -765,13 +765,13 @@ fn read_naming_ahead(source: &Arc<Source>) {
     });
 }
 
-fn read_feed_scope_ahead(source: &Arc<Source>) {
+fn read_feed_scope_ahead(source: &Arc<Source>, content: Option<ContentOptions>) {
     let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) else { return };
     let source = Arc::downgrade(source);
     let _ = std::thread::Builder::new().name("feed scope ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            let _ = source.in_scope(|| dashboard_politics::products::feed::index::warm(&source, branch));
+            let _ = source.in_scope(|| dashboard_politics::products::feed::index::warm(&source, branch, &LoadContext { content }));
         })
     });
 }

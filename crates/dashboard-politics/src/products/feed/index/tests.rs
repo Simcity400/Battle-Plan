@@ -1,5 +1,37 @@
 use super::*;
 
+#[test]
+fn content_bound_read_ahead_keeps_all_three_first_log_reads_warm() {
+    use dashboard_base::test_fixtures::{source, source_with_content};
+    let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[]);
+    let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
+    let (source, context) = source_with_content(frames, &folder.0);
+    let unbound = LoadContext { content: None };
+    warm(&source, 1, &unbound).unwrap();
+    assert!(kept(&source).is_empty(), "unavailable content never starts a competing unbound scan");
+    warm(&source, 1, &context).unwrap();
+    assert_eq!(kept(&source), [1], "the source-open warm keeps the branch index");
+    let (scanned, decisions, choices, feed) = {
+        let branch = branch_of(&source, 1);
+        let held = branch.lock().unwrap();
+        (held.scanned.clone().unwrap(), held.decisions.clone().unwrap(), held.choices.clone().unwrap(), held.feed.clone().unwrap())
+    };
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let catalogue = super::super::resolve_content(&source, &context).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let reused = [
+        Arc::ptr_eq(&decisions, &decisions_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
+        Arc::ptr_eq(&choices, &choices_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()),
+        Arc::ptr_eq(&feed, &feed_for(&source, &query, 1, &context, Some(&catalogue), &cancelled).unwrap()),
+    ];
+    assert_eq!(reused.into_iter().filter(|reused| !reused).count(), 0, "index builds on the first log reads after open");
+    warm(&source, 1, &unbound).unwrap();
+    assert!(Arc::ptr_eq(&scanned, &scanned_for(&source, &query, 1, Some(&catalogue), &cancelled).unwrap()));
+    dashboard_base::queries::forget(&source);
+    crate::forget(&source);
+    assert!(kept(&source).is_empty(), "forgotten with the recording's index");
+}
+
 fn brief(sequence: u64, kind: EventFeedKind, hour: i32, opener: Option<u64>, days: Option<i32>) -> Brief {
     Brief {
         at: Locator { run: 1, hour, key: (1u128 << 64) | u128::from(sequence) },
