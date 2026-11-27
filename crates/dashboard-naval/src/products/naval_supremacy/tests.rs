@@ -193,8 +193,6 @@ fn gapped_navy(case: &str) -> (std::sync::Arc<Source>, LoadContext, std::path::P
         set_complete(&mut frame, TableId::NavalSupremacy.index(), tables::NavalSupremacy::wrap(vec![NavalSupremacyRow {
             country: 40, region: 7, current: i64::from(hour + 1), ..Default::default()
         }]));
-        let supremacy = &mut frame.tables[TableId::NavalSupremacy.index()];
-        *supremacy = supremacy.clone().with_sampled_at(Some(hour));
         set_complete(&mut frame, TableId::FactionMembers.index(), tables::FactionMembers::wrap(vec![]));
         set_complete(&mut frame, TableId::Subjects.index(), tables::Subjects::wrap(vec![]));
         set_complete(&mut frame, TableId::WarRelations.index(), tables::WarRelations::wrap(vec![]));
@@ -314,7 +312,7 @@ fn another_panels_ship_lane_does_not_make_an_empty_selection_read_ships() {
     let pinned = gapped_panel(&src, &load);
     let ships = (pinned.exact().unwrap().advance)(0, true, &AtomicBool::new(false), None)
         .lanes.into_iter().find(|lane| lane.table == TableId::Ships.index()).unwrap();
-    let panel = playback::panel(&src, &load, &serde_json::json!({ "branchId": "1", "country": "GER", "regions": [] })).unwrap();
+    let panel = playback::panel(&src, &load, &serde_json::json!({ "branchId": "1", "country": "GER", "regions": [], "pinnedRegions": [7] })).unwrap();
     let exact = panel.exact().unwrap();
     let advance = exact.advance.clone();
     let checked = dashboard_follow::panel::AtHour {
