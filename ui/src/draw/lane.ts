@@ -551,6 +551,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.lost.delete(sub);
     this.limitedSubs.delete(sub);
     this.failedSubs.delete(sub);
+    this.waitingSubs.delete(sub);
     this.prunableNow.delete(sub);
     this.prunableAt.delete(sub);
     for (const [native, ov] of [...this.overflowedSubs]) {
@@ -782,6 +783,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.limitedSubs.delete(subId);
       for (const cell of this.facts.usesOf(subId) ?? []) this.limitedSubs.delete(cell);
       if (!this.failedSubs.has(subId)) this.schedulePrune(subId);
+      this.noteWaiting(subId, false);
     }
     const native = this.natives.get(route);
     if (native !== undefined) for (const [id, from] of this.lost) if (from === native) this.lost.delete(id);

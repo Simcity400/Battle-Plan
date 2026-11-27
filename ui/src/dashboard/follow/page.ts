@@ -767,7 +767,7 @@ export class Page<B extends Bitmap = Bitmap> {
     const widget = this.widgets.get(id);
     if (!widget || !widget.waiting === !waiting) return;
     widget.waiting = waiting;
-    if (!widget.installed) this.tell();
+    if (!widget.installed) { this.touched.add(widget); this.tell(); }
   }
 
   name(id: number, status: 'failed' | 'refused' | 'reading', reason?: string, failureOrigin?: FailureOrigin) {

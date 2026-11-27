@@ -44,7 +44,7 @@ function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; cro
   const subFailures: [number, string][] = [], widgetFailures: [number, string][] = [], waits: [number, boolean][] = [];
   const widgetSubs = new Map<number, number[]>();
   const presented: Presented<Fake>[] = [];
-  const shown = new Map<number, (string | null)[]>();
+  const shown = new Map<number, (string | null)[]>(), changes = new Map<number, number>();
   const lane: Lane<Fake> = new Lane<Fake>({
     lane: 0, lanes: 1,
     views: kind => views[kind] ?? fieldsView(() => (panel => (panel.data as { shape?: string } | undefined)?.shape)),
@@ -65,13 +65,13 @@ function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; cro
     lane.mount(widget, subs.map(sub => sub.id), view);
     const list: (string | null)[] = [];
     shown.set(widget, list);
-    page.mount(widget, { route: ROUTE, lane: 0, offset: timing.offset ?? 0, pin: timing.pin ?? null,
+    page.mount(widget, { route: ROUTE, lane: 0, offset: timing.offset ?? 0, pin: timing.pin ?? null, changed: () => changes.set(widget, (changes.get(widget) ?? 0) + 1),
       surfaces: Array.from({ length: surfaces }, (_, k) => ({ install: (b: Fake) => { list[k] = b.content; }, clear: () => { list[k] = null; } })) });
     lane.bind(widget, { generation: 1, surfaces: Array.from({ length: surfaces }, () => ({ width: 1, height: 1, dpr: 1 })), offset: timing.offset ?? 0, pin: timing.pin ?? null,
       ...timing.dated ? { dated: timing.dated } : {} });
   };
   const step = async (T: number, options: Parameters<Page<Fake>['publish']>[1] = {}) => { page.publish(T, options); await flush(); await flush(); page.frame(); await flush(); };
-  return { page, lane, posted, released, failures, subFailures, widgetFailures, waits, later, hits, presented, shown, mount, step, frames: () => posted.filter((m): m is FrameRequest => m.type === 'frame') };
+  return { page, lane, posted, released, failures, subFailures, widgetFailures, waits, changes, later, hits, presented, shown, mount, step, frames: () => posted.filter((m): m is FrameRequest => m.type === 'frame') };
 }
 
 const rows = (keys: bigint[], values: bigint[], extra: { changed?: boolean } = {}) => ({ keys, columns: 1, values, ...extra });
@@ -120,10 +120,12 @@ test('a stopped panel shows a failure with its reason, a refusal stays a refusal
 });
 
 test('a panel whose latest record is WAITING marks its widget only while it has no picture, and the mark goes with the next reading', async () => {
-  const { page, lane, waits, mount, step } = rig();
+  const { page, lane, waits, changes, mount, step } = rig();
   mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
   lane.bindRoute(3, ROUTE, NATIVE);
+  const before = changes.get(1) ?? 0;
   lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'waiting' }]));
+  assert.equal(changes.get(1), before + 1, 'the widget hears of it at once, without another frame');
   lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'waiting' }]));
   await step(10, { playing: false });
   assert.deepEqual([page.view(1).mode, page.view(1).waiting], ['reading', true], 'nothing to show yet and its reading is due');

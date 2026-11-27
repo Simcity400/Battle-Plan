@@ -434,7 +434,7 @@ export class Pipeline {
       const held = this.byId.get(message.sub);
       if (!held) return;
       held.waiting = message.waiting;
-      for (const id of held.widgets.keys()) this.page.waiting(id, [...(this.widgets.get(id)?.subs.values() ?? [])].some(sub => this.byId.get(sub)?.waiting));
+      for (const id of held.widgets.keys()) { const widget = this.widgets.get(id); if (widget) this.markWaiting(widget); }
       this.flush();
       return;
     }
@@ -698,8 +698,13 @@ export class Pipeline {
     if (!this.holds(sub.route)) { sub.route.told = null; const page = this.nextRoute++; this.page.carry(sub.route.page, page); sub.route.page = page; }
   }
 
+  private markWaiting(widget: WidgetState) {
+    this.page.waiting(widget.id, [...widget.subs.values()].some(sub => this.byId.get(sub)?.waiting));
+  }
+
   private remount(widget: WidgetState) {
     const subs = [...new Set(widget.subs.values())];
+    this.markWaiting(widget);
     const laneFailure = this.laneErrors[widget.lane];
     this.postLane(widget.lane, { type: 'mount', widget: widget.id, subs, view: widget.view, model: widget.wire });
     this.page.rebind(widget.id, { subscription: true });
