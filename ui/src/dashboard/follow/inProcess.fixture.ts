@@ -10,13 +10,15 @@ import type { DashboardClient, DashboardSource } from '../client';
 import type { FromLane, FromPull, ToLane } from '../../draw/laneMessages';
 import type { LaneView } from '../../draw/lane';
 
-export const NATIVE = 3;
+export const NATIVE = 1;
 
 export interface Posted { readonly lane: number; readonly type: ToLane['type']; readonly bytes: number; readonly message: ToLane }
 
 interface Held { hold: ((message: FromLane) => boolean) | null; queue: (() => void)[] }
 
-function lane(views: (kind: string) => LaneView | undefined, onClose?: () => void, posted?: Posted[], held?: Held): LaneWorker & { close(): void } {
+type GateBind = (message: ToLane, dispatch: () => void) => boolean;
+
+function lane(views: (kind: string) => LaneView | undefined, onClose?: () => void, posted?: Posted[], held?: Held, gateBind?: GateBind): LaneWorker & { close(): void } {
   const fields = fieldsView(() => undefined);
   let closed = false;
   let laneNumber = -1;
@@ -32,7 +34,9 @@ function lane(views: (kind: string) => LaneView | undefined, onClose?: () => voi
         lanePort = copy.port;
         (copy.port as MessagePort & { unref?(): void }).unref?.();
       }
-      setImmediate(() => { if (!closed) dispatch(copy); });
+      const deliver = () => { if (!closed) dispatch(copy); };
+      const enqueue = () => { setImmediate(deliver); };
+      if (!gateBind?.(copy, enqueue)) enqueue();
     },
     close() {
       if (closed) return;
@@ -61,11 +65,11 @@ function lane(views: (kind: string) => LaneView | undefined, onClose?: () => voi
   return worker;
 }
 
-export function inProcess({ lanes = 1, views = () => undefined, follow, followClock, gate, session, open }: { lanes?: number; views?: (kind: string) => LaneView | undefined;
+export function inProcess({ lanes = 1, views = () => undefined, follow, followClock, gate, session, open, gateBind }: { lanes?: number; views?: (kind: string) => LaneView | undefined;
   follow?: (id: number, query: Record<string, unknown>) => { available: boolean; reason?: string; route?: number };
   followClock?: (params: Record<string, unknown>) => { available: boolean; reason?: string };
   gate?: (product: string) => Promise<void> | undefined; session?: string;
-  open?: (opened: readonly MessagePort[]) => Promise<string | undefined>; } = {}) {
+  open?: (opened: readonly MessagePort[]) => Promise<string | undefined>; gateBind?: GateBind; } = {}) {
   let ports: readonly MessagePort[] = [];
   let closed = false;
   const asked: { product: string; params: Record<string, unknown> }[] = [];
@@ -93,7 +97,7 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, followCl
       if (request.product === 'follow') {
         const told = follow?.(request.params.id as number, request.params.query as Record<string, unknown>) ?? { available: true };
         if (told.available) followers.add(request.params.id);
-        return { data: told.available ? { available: true, route: told.route ?? NATIVE } : told };
+        return { data: told.available ? { available: true, route: told.route ?? request.params.route ?? NATIVE } : told };
       }
       if (request.product === 'unfollow') followers.delete(request.params.id);
       if (request.product === 'follow-clock') {
@@ -113,7 +117,7 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, followCl
     held.hold = null;
     for (const deliver of held.queue.splice(0)) deliver();
   };
-  const workers = Array.from({ length: lanes }, () => lane(views, undefined, posted, held));
+  const workers = Array.from({ length: lanes }, () => lane(views, undefined, posted, held, gateBind));
   const host: PipelineHost = { lanes: workers, open: list => client.openFollow!(list),
     channel: () => {
       const made = new MessageChannel(), shut = made.port2.close.bind(made.port2);
@@ -144,7 +148,7 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, followCl
       for (const port of target) port.postMessage({ kind: 'failure', reason } satisfies FromPull);
     });
   };
-  return { pipeline, clock, client, send, fail, source, asked, settle, channels, posted, holdBack, release, close: () => { closed = true; pipeline.close(); for (const port of ports) port.close(); ports = []; } };
+  return { pipeline, clock, client, send, fail, source, asked, settle, channels, posted, workers, holdBack, release, close: () => { closed = true; pipeline.close(); for (const port of ports) port.close(); ports = []; } };
 }
 
 export function managedInProcess({ lanes = 1, views = () => undefined, follow, followClock, gate, open }: {
@@ -219,7 +223,7 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
         try {
           const told = follow?.(request.params.id as number, request.params.query as Record<string, unknown>, session) ?? { available: true };
           if (told.available) followers.add(`${session}:${request.params.id}`);
-          return { data: told.available ? { available: true, route: told.route ?? NATIVE } : told };
+          return { data: told.available ? { available: true, route: told.route ?? request.params.route ?? NATIVE } : told };
         } finally {
           queueMicrotask(() => notify('follow'));
         }

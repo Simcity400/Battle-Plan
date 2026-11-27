@@ -626,6 +626,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private retireRoute(route: number) {
     const native = this.natives.get(route);
+    if (native !== undefined) this.dropEarlyBefore(native, Infinity);
     this.natives.delete(route);
     if (native !== undefined && this.routes.get(native) === route) this.routes.delete(native);
     this.offsets.delete(route);
@@ -1070,7 +1071,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private current(item: { native: number; seek: number }): -1 | 0 | 1 | null {
     const route = this.routes.get(item.native);
-    if (route === undefined) return null;
+    if (route === undefined) return -1;
     const seek = this.facts.generation(route).seek;
     return item.seek < seek ? -1 : item.seek > seek ? 1 : 0;
   }

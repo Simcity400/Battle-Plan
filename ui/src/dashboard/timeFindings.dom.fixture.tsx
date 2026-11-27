@@ -46,9 +46,8 @@ const hoursIn = (value: unknown, key = ''): number[] => Array.isArray(value) ? v
   : value !== null && typeof value === 'object' ? Object.entries(value).flatMap(([name, item]) => hoursIn(item, name))
   : typeof value === 'number' && DATED(key) ? [value] : [];
 const follows = new Map<number, string>();
-const ROUTE = 9;
 let ports: readonly MessagePort[] = [];
-const panelFollows = new Map<number, { panel: string; params: Record<string, unknown> }>();
+const panelFollows = new Map<number, { panel: string; params: Record<string, unknown>; route: number }>();
 const pushed = new Map<number, number>();
 const landed = () => {
   if (!pushed.size || clock.getSnapshot().playing) return true;
@@ -58,9 +57,9 @@ const landed = () => {
   const holds = (fields: Readonly<Record<string, unknown>>, id: number) => `model:${id}` in fields || `refused:${id}` in fields || !Object.keys(fields).some(perFollow);
   return [...pushed].every(([id, hour]) => views.some(view => holds(view.fields!, id) && (view.through ?? -Infinity) >= Math.min(hour, view.target)));
 };
-const refusedPanel = (id: number, hour: number, reason: string, seek: number) => {
+const refusedPanel = (id: number, hour: number, reason: string, seek: number, route: number) => {
   const body = new TextEncoder().encode(reason), out = new Uint8Array((40 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);
-  words.set([0x324c4e50, DATED_PANEL_VERSION, 1, 0, ROUTE, seek, id, hour, 0, body.length]);
+  words.set([0x324c4e50, DATED_PANEL_VERSION, 1, 0, route, seek, id, hour, 0, body.length]);
   out.set(body, 40);
   return out;
 };
@@ -70,8 +69,8 @@ const pushPanels = (hour: number, only?: number) => {
     const reply = only === undefined || id === only ? state.replies[held.panel] : undefined;
     if (!reply || state.failures.has(held.panel)) continue;
     let bytes: Uint8Array;
-    try { bytes = datedPanel(id, hour, reply(hour, held.params), seek, ROUTE); }
-    catch (error) { bytes = refusedPanel(id, hour, error instanceof Error ? error.message : String(error), seek); }
+    try { bytes = datedPanel(id, hour, reply(hour, held.params), seek, held.route); }
+    catch (error) { bytes = refusedPanel(id, hour, error instanceof Error ? error.message : String(error), seek, held.route); }
     pushed.set(id, hour);
     const split = splitForLanes(bytes, ports.length);
     split.lanes.forEach((part, lane) => { if (part) ports[lane]!.postMessage(packet('panels', part, undefined), [part.buffer]); });
@@ -116,13 +115,14 @@ const client = {
       followLog.push(`follow ${params?.id}`);
       if (!state.accept) return answer(request, { available: false, reason: 'not followed here' });
       const id = params?.id as number, query = (params?.query ?? {}) as Record<string, unknown>;
+      const route = params?.route as number;
       follows.set(id, JSON.stringify(query));
       if (typeof query.panel === 'string') {
         const { panel, ...asked } = query;
-        panelFollows.set(id, { panel, params: asked });
+        panelFollows.set(id, { panel, params: asked, route });
         queueMicrotask(() => pushPanels(clock.getHour(), id));
       }
-      return answer(request, { available: true, route: ROUTE });
+      return answer(request, { available: true, route });
     }
     const hour = typeof params?.hour === 'number' ? params.hour : null;
     state.asks.push({ product: request.product, hour, hours: hoursIn(params), params });

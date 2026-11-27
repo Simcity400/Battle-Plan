@@ -40,7 +40,7 @@ import type { PagedRows } from '../table/rowSource.ts';
 import type { ArtResolutions } from '../art/provider.ts';
 import '../../styles.css';
 
-const NATIVE = 9;
+const NATIVE = 1;
 
 function followMessage(hour: number, seek: number, answers: { id: number; hour: number; body: Uint8Array }[], reset = false) {
   const out = new Uint8Array(24 + answers.reduce((sum, a) => sum + 16 + a.body.length, 0));

@@ -169,15 +169,19 @@ test('identical panel bytes decode once within the subscription and seek', t => 
   assert.equal(reads.mock.callCount(), 4);
 });
 
-test('records that arrive before their route is known are held and land once it is', async () => {
-  const { page, lane, mount, step } = rig();
+test('unknown and retired native routes refund records without holding them', async () => {
+  const { page, lane, mount, step, released } = rig();
   mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
-  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', data: { shape: 'S' } }]));
+  const packet = panels([{ id: 3, hour: 10, kind: 'data', data: { shape: 'S' } }]);
+  lane.receive('panels', packet);
   await step(10, { playing: false });
   assert.equal(page.view(1).mode, 'reading');
+  assert.equal(released[0], panelCharge(packet));
   lane.bindRoute(3, ROUTE, NATIVE);
-  await step(10);
-  assert.equal(page.view(1).h, 10);
+  assert.equal(lane.facts.latest(3), undefined);
+  lane.unfollow(3);
+  lane.receive('panels', packet);
+  assert.deepEqual(released, [panelCharge(packet), panelCharge(packet)]);
 });
 
 test('changed rows merge onto the followed table and their bytes come back once the target passes them', async () => {
@@ -542,13 +546,13 @@ test('astra 9: a buffered answer replays once with its own confirmation, never e
   assert.deepEqual(failures, []);
 });
 
-test('astra 9: every buffered change of an unbound reading keeps its base; nothing is silently dropped', async () => {
+test('every buffered change for a future seek keeps its base', async () => {
   const { page, lane, mount, step, failures } = rig();
   mount(1, [{ id: 7, channel: 'followed' }]);
-  lane.receive('follow', message(10, [{ id: 7, answer: rows([1n, 2n], [10n, 20n]) }], false, NATIVE));
-  for (let hour = 11; hour <= 20; hour++) lane.receive('follow', message(hour, [{ id: 7, answer: rows([2n], [BigInt(hour)], { changed: true }) }], false, NATIVE));
   lane.bindRoute(7, ROUTE, NATIVE);
-  await step(20, { playing: false });
+  lane.receive('follow', message(10, [{ id: 7, answer: rows([1n, 2n], [10n, 20n]) }], false, NATIVE, 1));
+  for (let hour = 11; hour <= 20; hour++) lane.receive('follow', message(hour, [{ id: 7, answer: rows([2n], [BigInt(hour)], { changed: true }) }], false, NATIVE, 1));
+  await step(20, { playing: false, seek: 1 });
   assert.deepEqual([failures, page.view(1).h, valueOf(page.view(1), 7, 0), valueOf(page.view(1), 7, 1)], [[], 20, 10n, 20n]);
 });
 
@@ -648,16 +652,18 @@ test('changed rows still in flight from before a rewind never merge onto the new
 test('review 4 finding 4: a buffered message replays as native sent it: a limit before its answer still limits it, and a same-batch completion still covers a stepped panel', () => {
   const { lane, mount } = rig();
   mount(1, [{ id: 7, channel: 'followed' }]);
-  const answer = message(40, [{ id: 7, hour: 10, answer: rows([1n], [1n]) }], false, NATIVE);
+  lane.bindRoute(7, ROUTE, NATIVE);
+  const answer = message(40, [{ id: 7, hour: 10, answer: rows([1n], [1n]) }], false, NATIVE, 1);
   const limitFirst = new Uint8Array(answer.length + 16), view = new DataView(limitFirst.buffer);
   limitFirst.set(answer.subarray(0, 24)); limitFirst.set(answer.subarray(24), 40);
   view.setUint32(12, 2, true); view.setUint32(24, 7, true); view.setInt32(28, 10, true);
   lane.receive('follow', limitFirst);
-  lane.bindRoute(7, ROUTE, NATIVE);
+  lane.stream(ROUTE, 1, 10);
   assert.deepEqual([lane.facts.select(7, 40)?.h, lane.facts.select(7, 40)?.c], [10, 10], 'confirmed through its limit of 10, never through the envelope hour 40');
   mount(2, [{ id: 3, channel: 'panel' }]);
-  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }, { id: 0, hour: 40, kind: 'completed' }]));
-  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.bindRoute(3, ROUTE, NATIVE, 1);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }, { id: 0, hour: 40, kind: 'completed' }], 2));
+  lane.stream(ROUTE, 2, 10);
   assert.deepEqual([lane.facts.select(3, 40)?.h, lane.facts.select(3, 40)?.c], [10, 40], 'the completion in its own batch covers the stepped panel');
 });
 
@@ -731,11 +737,11 @@ test('review 5 finding 3: an entry whose crop failed is retired and reported via
   assert.deepEqual(presented.flatMap(p => p.entries), [], 'no failure picture entry is emitted');
 });
 
-test('review 5 finding 5: a limit buffered before its route was bound gives its header back when it lands', () => {
+test('a limit for an unknown route refunds its header immediately', () => {
   const { lane, mount, released } = rig();
   mount(1, [{ id: 5, channel: 'followed' }]);
   lane.receive('follow', withLimits(message(40, [], false, NATIVE), [[5, 30]]));
-  assert.equal(released.reduce((sum, bytes) => sum + bytes, 0), 0, 'held until its route is known');
+  assert.deepEqual(released, [16]);
   lane.bindRoute(5, ROUTE, NATIVE);
   assert.equal(released.reduce((sum, bytes) => sum + bytes, 0), 16);
 });
@@ -785,13 +791,13 @@ test('review 7 E: a followed message that fails to decode releases its charge at
   assert.ok(released.reduce((sum, bytes) => sum + bytes, 0) > 0, 'the refused record was handed back without waiting for another frame');
 });
 
-test('review 8 1: a reset that arrives before its route is bound waits for its seek, so an older one never drops the held records', async () => {
+test('a reset for an old seek cannot drop the held records of a future seek', async () => {
   const { page, lane, mount, step } = rig();
   mount(1, [{ id: 5, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE);
   await step(10, { playing: false, seek: true });
   lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [10n]) }], false, NATIVE, 1));
   lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [1n]) }], true, NATIVE, 0));
-  lane.bindRoute(5, ROUTE, NATIVE, 1);
   await step(10);
   assert.deepEqual([page.view(1).mode, valueOf(page.view(1), 5)], ['picture', 10n]);
 });
@@ -828,8 +834,10 @@ test('review 11: a lane that first binds on a later seek takes the stamped reset
   mount(1, [{ id: 5, channel: 'followed' }]);
   await step(10, { playing: false, seek: true });
   lane.receive('follow', message(10, [], true, NATIVE, 0), 1);
-  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [10n]) }], false, NATIVE, 1), 1);
   lane.bindRoute(5, ROUTE, NATIVE, 1);
+  await step(10);
+  assert.equal(page.generation(ROUTE).reset, 1, 'the pre-bind stamp reaches the page before another answer');
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [10n]) }], false, NATIVE, 1));
   await step(10);
   assert.deepEqual([page.view(1).mode, page.widgets.get(1)!.installed?.gen.reset], ['picture', 1], 'the seek-0 reset counted on another lane is in this lane\'s count too');
 });
@@ -1771,7 +1779,7 @@ test('P9/F4: future-seek overflow delivers failure to an unbound subscription wh
   assert.match(page.view(2).reason ?? '', /overflowed/i);
 });
 
-test('F5: unbound native route drops superseded seek-1 malformed panel when seek-2 healthy panel arrives before bindRoute', async () => {
+test('an unknown route discards both malformed and healthy panel records', async () => {
   const { page, lane, subFailures, released, mount, step } = rig();
   const totalReleased = () => released.reduce((sum, b) => sum + b, 0);
   let totalCharged = 0;
@@ -1782,15 +1790,14 @@ test('F5: unbound native route drops superseded seek-1 malformed panel when seek
   badSeek1[24 + 16] = 0xc1;
   sendPanels(badSeek1);
   sendPanels(panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: { shape: 'healthy2' } }, { id: 0, hour: 20, kind: 'completed' }], 2));
-  assert.equal(totalReleased(), panelCharge(badSeek1), 'superseded seek-1 malformed panel is released before bind');
+  assert.equal(totalReleased(), totalCharged);
 
   lane.bindRoute(3, ROUTE, NATIVE, 1);
   assert.deepEqual(subFailures, [], 'binding at seek 1 must not decode superseded seek-1 malformed panel');
   assert.notEqual(page.view(1).mode, 'failed');
 
   await step(20, { playing: false, seek: 2 });
-  assert.equal(page.view(1).mode, 'picture', 'entering seek 2 replays the healthy held seek-2 panel');
-  assert.equal((page.view(1).fields?.['model:3'] as { structure?: string }).structure, 'healthy2');
+  assert.equal(page.view(1).mode, 'reading');
   assert.equal(totalReleased() + lane.retainedBytes(), totalCharged);
 });
 

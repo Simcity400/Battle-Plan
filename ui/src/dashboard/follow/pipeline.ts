@@ -53,6 +53,7 @@ export type SubStatus = 'pending' | 'followed' | 'refused' | 'failed';
 interface SubState {
   id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string; error?: Failure;
   widgets: Map<number, number>; released: boolean; waiting?: boolean;
+  bind?: (seek: number | null) => void;
 }
 
 interface RouteState {
@@ -248,6 +249,7 @@ export class Pipeline {
     this.page.dispose();
     this.failStrips('Dashboard strip pipeline closed');
     perfLog?.dropGeneration(this.generation);
+    for (const sub of this.subs.values()) sub.bind?.(null);
     this.widgets.clear(); this.shared.clear(); this.subs.clear(); this.byId.clear(); this.routes.clear();
     for (const resolve of this.preparedWaiters) resolve();
     this.preparedWaiters.clear();
@@ -298,8 +300,8 @@ export class Pipeline {
 
   private session: string | undefined;
 
-  private holds(route: RouteState) {
-    for (const sub of this.subs.values()) if (sub.route === route && sub.status === 'followed' && sub.channel !== 'pinned') return true;
+  private holds(route: RouteState, pending = false) {
+    for (const sub of this.subs.values()) if (sub.route === route && sub.channel !== 'pinned' && (sub.status === 'followed' || pending && sub.status === 'pending')) return true;
     return false;
   }
 
@@ -419,17 +421,18 @@ export class Pipeline {
     const routesToCheck = new Set<RouteState>();
     for (const sub of [...this.subs.values()]) {
       if (sub.lane !== lane) continue;
+      if (sub.channel !== 'pinned') routesToCheck.add(sub.route);
+      sub.bind?.(null);
       const wasFollowed = sub.status === 'followed';
       sub.status = 'failed';
       sub.reason = failure.message;
       sub.error = failure;
       if (sub.channel !== 'pinned' && wasFollowed) {
         void this.ask('unfollow', { id: sub.id }, sub.route, new AbortController().signal).catch(() => {});
-        routesToCheck.add(sub.route);
       }
     }
     for (const route of routesToCheck) {
-      if (!this.holds(route)) {
+      if (!this.holds(route, true)) {
         route.told = null;
         const page = this.nextRoute++;
         this.page.carry(route.page, page);
@@ -473,6 +476,11 @@ export class Pipeline {
       this.settlePrepared();
       return;
     }
+    if (message.type === 'route-bound') {
+      const sub = this.byId.get(message.sub);
+      if (sub?.lane === lane && sub.route.page === message.route) sub.bind?.(message.seek);
+      return;
+    }
     if (message.type === 'failure') {
       const routes = new Set<number>();
       for (const widget of this.widgets.values()) if (widget.lane === lane) routes.add(this.page.widgets.get(widget.id)!.route);
@@ -491,7 +499,7 @@ export class Pipeline {
           void this.ask('unfollow', { id: held.id }, held.route, new AbortController().signal).catch(() => {});
         }
         this.fail(held, asFailure(new Error(message.reason)));
-        if (!this.holds(held.route)) {
+        if (!this.holds(held.route, true)) {
           held.route.told = null;
           const page = this.nextRoute++;
           this.page.carry(held.route.page, page);
@@ -768,9 +776,10 @@ export class Pipeline {
     if (--sub.holders > 0) return;
     this.subs.delete(sub.key); this.byId.delete(id);
     sub.released = true;
+    sub.bind?.(null);
     this.postLane(sub.lane, { type: 'unfollow', sub: id });
     if (sub.channel !== 'pinned' && sub.status === 'followed') void this.ask('unfollow', { id }, sub.route, new AbortController().signal).catch(() => {});
-    if (!this.holds(sub.route)) { sub.route.told = null; const page = this.nextRoute++; this.page.carry(sub.route.page, page); sub.route.page = page; }
+    if (!this.holds(sub.route, true)) { sub.route.told = null; const page = this.nextRoute++; this.page.carry(sub.route.page, page); sub.route.page = page; }
   }
 
   private markWaiting(widget: WidgetState) {
@@ -783,7 +792,7 @@ export class Pipeline {
     const laneFailure = this.laneErrors[widget.lane];
     this.postLane(widget.lane, { type: 'mount', widget: widget.id, subs, view: widget.view, model: widget.wire });
     this.page.rebind(widget.id, { subscription: true });
-    const followed = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'followed');
+    const followed = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'followed' || sub?.status === 'pending' && sub.channel !== 'pinned');
     if (followed) this.page.mountRoute(widget.id, followed.route.page);
     widget.binding = this.timed(widget, widget.binding);
     this.postLane(widget.lane, { type: 'bind', widget: widget.id, binding: widget.binding });
@@ -981,23 +990,31 @@ export class Pipeline {
       sub.error = laneFailure;
       return;
     }
-    this.postLane(sub.lane, { type: 'follow', sub: sub.id, channel: sub.channel, ...product !== undefined ? { product } : {} });
-    if (sub.channel === 'pinned') { sub.status = 'followed'; return; }
+    const follow = { type: 'follow' as const, sub: sub.id, channel: sub.channel, ...product !== undefined ? { product } : {} };
+    if (sub.channel === 'pinned') { this.postLane(sub.lane, follow); sub.status = 'followed'; return; }
     if (!this.client.openFollow) { this.refuse(sub, NO_CHANNEL); return; }
-    void this.open().then(() => this.closed || sub.released || sub.status === 'failed' || sub.status === 'refused' || this.laneErrors[sub.lane] ? null
-      : this.ask('follow', { id: sub.id, query, branchId: sub.route.branch, clock: sub.route.offset, lane: sub.lane, lanes: this.lanes }, sub.route))
+    const route = sub.route.page;
+    const bind = () => new Promise<number | null>(resolve => {
+      sub.bind = seek => { delete sub.bind; resolve(seek); };
+      this.postLane(sub.lane, { ...follow, route: { id: route, seek: this.page.seek, offset: sub.route.offset } });
+    });
+    const bound = bind();
+    void this.open().then(async () => {
+      for (let seek = await bound; seek !== null && !this.closed && !sub.released && sub.status === 'pending'; seek = await bind()) {
+        if (seek === this.page.seek) return this.ask('follow', { id: sub.id, query, branchId: sub.route.branch, clock: sub.route.offset, lane: sub.lane, lanes: this.lanes, route }, sub.route);
+      }
+      return null;
+    })
       .then(reply => {
         const data = reply as { available?: boolean; reason?: string; route?: number } | null;
         if (this.closed || sub.released || sub.status === 'failed' || sub.status === 'refused' || this.laneErrors[sub.lane]) {
           if (data?.available === true) void this.ask('unfollow', { id: sub.id }, sub.route, new AbortController().signal).catch(() => {});
           return;
         }
-        if (data?.available !== true || !Number.isInteger(data.route)) { this.refuse(sub, data?.reason ?? 'The service did not say whether it follows this'); return; }
+        if (data?.available !== true || data.route !== route) { this.refuse(sub, data?.reason ?? 'The service did not follow the reserved route'); return; }
         const first = !this.holds(sub.route), moved = sub.route.native !== null && sub.route.native !== data.route;
-        if (moved) sub.route.page = this.nextRoute++;
         sub.status = 'followed';
         sub.route.native = data.route!;
-        this.postLane(sub.lane, { type: 'route', sub: sub.id, route: sub.route.page, native: data.route!, seek: this.page.seek, offset: sub.route.offset });
         for (const widget of sub.widgets.keys()) this.page.mountRoute(widget, sub.route.page);
         if (first || moved) sub.route.told = null;
         this.anchor();
@@ -1011,6 +1028,7 @@ export class Pipeline {
 
   private refuse(sub: SubState, reason: string) {
     if (this.closed) return;
+    this.postLane(sub.lane, { type: 'unfollow', sub: sub.id });
     sub.status = 'refused'; sub.reason = reason; sub.error = undefined;
     for (const widget of sub.widgets.keys()) this.page.name(widget, 'refused', reason);
     this.flush();
@@ -1018,6 +1036,8 @@ export class Pipeline {
 
   private fail(sub: SubState, failure: Failure) {
     if (this.closed) return;
+    this.postLane(sub.lane, { type: 'unfollow', sub: sub.id });
+    sub.bind?.(null);
     sub.status = 'failed'; sub.reason = failure.message; sub.error = failure;
     for (const widget of sub.widgets.keys()) this.page.name(widget, 'failed', failure.message, 'stream');
     this.flush();
@@ -1054,7 +1074,7 @@ export class Pipeline {
         let reason: string | null = null;
         let failure: Failure | undefined;
         try {
-          const data = await this.ask('follow-clock', { branchId: route.branch, clock: route.offset, hour: s.position + route.offset, playing: s.playing, speed: s.hoursPerSecond,
+          const data = await this.ask('follow-clock', { branchId: route.branch, route: page, clock: route.offset, hour: s.position + route.offset, playing: s.playing, speed: s.hoursPerSecond,
             frameRate, seek: s.seekSequence, sought, composedAt, sentAt: performance.timeOrigin + performance.now() }, route) as { available?: boolean; reason?: string } | null;
           if (data?.available !== true) {
             reason = data?.reason ?? 'The followed stream is no longer available';

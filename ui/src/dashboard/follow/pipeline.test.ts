@@ -2,16 +2,200 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { inProcess, managedInProcess, NATIVE } from './inProcess.fixture.ts';
 import { datedStore, heldFor, lanesHost } from './useFollowed.ts';
-import { message } from './messages.fixture.ts';
+import { datedPanel, datedRecord, message } from './messages.fixture.ts';
 import { cellValue, parseAnswer } from './message.ts';
 import type { PageSurface } from './page.ts';
 import type { LaneView } from '../../draw/lane';
+import type { FromLane } from '../../draw/laneMessages';
 import { classifyFailure, ShownError } from '../queryError.ts';
 import { pipelineFor, prepareLanes, restartPipeline, type LaneWorker } from './pipeline.ts';
 import { PlaybackController } from '../playback.ts';
 import { configuredStripPage } from '../strip/driver.ts';
+import { charge } from './split.ts';
 
 const surface = (): PageSurface<ImageBitmap> & { cleared: number } => ({ cleared: 0, install() {}, clear() { this.cleared++; } });
+const acknowledgingLane = (): LaneWorker => ({
+  onmessage: null,
+  postMessage(message) {
+    if (message.type === 'init') message.port.close();
+    if (message.type === 'follow' && message.route) {
+      const data: FromLane = { type: 'route-bound', sub: message.sub, route: message.route.id, seek: message.route.seek };
+      queueMicrotask(() => this.onmessage?.({ data } as MessageEvent<FromLane>));
+    }
+  },
+});
+
+test('a held lane bind cannot start a burst of Occupied states-sized replies', async () => {
+  let held!: (dispatch: () => void) => void;
+  const binding = new Promise<() => void>(resolve => { held = resolve; });
+  let failure!: (reason: string) => void;
+  const failed = new Promise<string>(resolve => { failure = resolve; });
+  const env = inProcess({
+    gateBind: (message, dispatch) => {
+      if (message.type !== 'route' && (message.type !== 'follow' || !('route' in message))) return false;
+      held(dispatch);
+      return true;
+    },
+    follow: id => {
+      const seek = env.clock.getSnapshot().seekSequence;
+      const request = env.asked.find(ask => ask.product === 'follow')!;
+      const route = Number(request.params.route ?? NATIVE);
+      const record = datedPanel(id, 10, { padding: new Uint8Array(209680) }, seek, route);
+      assert.equal(record.byteLength - 24, 209712);
+      const burst = new Uint8Array(24 + 21 * 209712);
+      burst.set(record);
+      new DataView(burst.buffer).setUint32(8, 21, true);
+      for (let at = 1; at < 21; at++) burst.set(record.subarray(24), 24 + at * 209712);
+      env.send(burst);
+      env.send(datedRecord(0, 10, 4, '', seek, route));
+      return { available: true, route };
+    },
+  });
+  try {
+    env.holdBack(message => {
+      if (message.type === 'sub-failed') failure(message.reason);
+      return false;
+    });
+    env.clock.seek(10);
+    const first = env.pipeline.acquire('occupied|0', { offset: 0, pin: null });
+    const query = { panel: 'occupied-states' } as const;
+    const id = env.pipeline.subscribe(first, {}, env.source, '1', 0, query, 'panel', 'occupied-states');
+    const release = await binding;
+    const sent = env.asked.filter(ask => ask.product === 'follow').length;
+    assert.equal(sent === 0 ? null : await failed, null, 'the native producer must still be gated');
+    const second = env.pipeline.acquire('copy|0', { offset: 0, pin: null });
+    assert.equal(env.pipeline.subscribe(second, {}, env.source, '1', 0, query, 'panel', 'occupied-states'), id);
+    release();
+    for (let turn = 0; turn < 32 && [first, second].some(widget => env.pipeline.view(widget)?.mode !== 'picture'); turn++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      env.pipeline.page.frame();
+    }
+    assert.deepEqual([first, second].map(widget => env.pipeline.view(widget)?.mode), ['picture', 'picture'],
+      JSON.stringify({ asked: env.asked.map(ask => ask.product), status: env.pipeline.status(id!), frames: env.pipeline.page.stats,
+        controls: env.posted.map(posted => posted.type) }));
+    assert.equal(env.asked.filter(ask => ask.product === 'follow').length, 1);
+  } finally { env.close(); }
+});
+
+for (const action of ['cancel', 'unmount', 'seek', 'lane error'] as const) {
+  test(`a held lane bind retires cleanly on ${action}`, async () => {
+    const posted: (() => void)[] = [];
+    const env = inProcess({ gateBind: (message, deliver) => {
+      if (!posted.length && !(message.type === 'follow' && message.route)) return false;
+      posted.push(deliver);
+      return true;
+    } });
+    const turn = () => new Promise<void>(resolve => setImmediate(resolve));
+    try {
+      env.clock.seek(10);
+      const widget = env.pipeline.acquire('waiting|0', { offset: 0, pin: null });
+      const token = {}, query = { panel: 'occupied-states' } as const;
+      const sub = env.pipeline.subscribe(widget, token, env.source, '1', 0, query, 'panel')!;
+      assert.ok(posted.length, 'the lane registration is gated');
+      if (action === 'cancel') env.pipeline.unsubscribe(widget, token);
+      if (action === 'unmount') env.pipeline.unmount(widget);
+      if (action === 'seek') env.clock.seek(11);
+      if (action === 'lane error') env.workers[0]!.onerror!({ message: 'worker stopped during bind' } as ErrorEvent);
+      if (action === 'seek') {
+        posted.shift()!();
+        await turn(); await turn();
+        assert.equal(env.asked.length, 0, 'the old seek acknowledgement cannot activate the native reader');
+      }
+      for (const deliver of posted.splice(0)) deliver();
+      await turn(); await turn(); await turn();
+      const follows = env.asked.filter(ask => ask.product === 'follow');
+      assert.equal(follows.length, action === 'seek' ? 1 : 0);
+      if (action === 'lane error') assert.match(env.pipeline.view(widget)?.reason ?? '', /Lane 0 failed: worker stopped during bind/);
+      if (action === 'unmount') assert.equal(env.pipeline.view(widget), null);
+      if (action === 'cancel') assert.equal(env.pipeline.status(sub).status, 'pending');
+    } finally { env.close(); }
+  });
+}
+
+test('a copy joining between the bind acknowledgment and native reply shares the reserved route', async () => {
+  let started!: () => void, finish!: () => void;
+  const request = new Promise<void>(resolve => { started = resolve; });
+  const reply = new Promise<void>(resolve => { finish = resolve; });
+  const env = inProcess({ gate: product => { if (product === 'follow') { started(); return reply; } } });
+  try {
+    const { pipeline, source, clock } = env;
+    clock.seek(10);
+    const one = pipeline.acquire('first|0', { offset: 0, pin: null });
+    const query = { product: 'series-state' } as const;
+    const sub = pipeline.subscribe(one, {}, source, '1', 0, query, 'followed')!;
+    await request;
+    const two = pipeline.acquire('second|0', { offset: 0, pin: null });
+    assert.equal(pipeline.subscribe(two, {}, source, '1', 0, query, 'followed'), sub);
+    const route = Number(env.asked[0]!.params.route);
+    assert.deepEqual([one, two].map(widget => pipeline.page.widgets.get(widget)!.route), [route, route]);
+    const ready = (mode: 'picture' | 'reading') => Promise.all([one, two].map(widget => new Promise<void>(resolve => {
+      const stop = pipeline.onInstall(widget, () => { if (pipeline.view(widget)?.mode === mode) { stop(); resolve(); } });
+    })));
+    const installed = ready('picture');
+    env.send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [7n] } }], false, route, clock.getSnapshot().seekSequence));
+    await installed;
+    const reset = ready('reading');
+    env.send(message(10, [], true, route, clock.getSnapshot().seekSequence));
+    await reset;
+    assert.equal(env.asked.filter(ask => ask.product === 'follow').length, 1);
+  } finally { finish(); env.close(); }
+});
+
+test('a seek after acknowledgment but before transport open requires a new acknowledgment', async () => {
+  let opened!: () => void, acknowledged!: () => void, nextBind!: (deliver: () => void) => void;
+  const open = new Promise<void>(resolve => { opened = resolve; });
+  const ack = new Promise<void>(resolve => { acknowledged = resolve; });
+  const next = new Promise<() => void>(resolve => { nextBind = resolve; });
+  let seek = -1;
+  const env = inProcess({ open: () => open.then(() => undefined), gateBind: (message, deliver) => {
+    if (message.type !== 'follow' || message.route?.seek !== seek) return false;
+    nextBind(deliver);
+    return true;
+  } });
+  try {
+    env.holdBack(message => { if (message.type === 'route-bound') acknowledged(); return false; });
+    env.clock.seek(10);
+    const widget = env.pipeline.acquire('occupied|0', { offset: 0, pin: null });
+    const sub = env.pipeline.subscribe(widget, {}, env.source, '1', 0, { panel: 'occupied-states' }, 'panel')!;
+    await ack;
+    env.clock.seek(11);
+    seek = env.clock.getSnapshot().seekSequence;
+    opened();
+    const release = await next;
+    assert.equal(env.asked.length, 0);
+    release();
+    assert.ok(await env.settle(() => env.pipeline.status(sub).status === 'followed'));
+    assert.equal(env.asked.filter(ask => ask.product === 'follow').length, 1);
+  } finally { opened(); env.close(); }
+});
+
+test('a failed panel retires its route and refunds a late whole live-cell answer', async () => {
+  const env = managedInProcess();
+  try {
+    const { pipeline, source, clock } = env;
+    clock.seek(10);
+    const widget = pipeline.acquire('occupied|0', { offset: 0, pin: null });
+    const followed = env.nextEvent('follow-clock');
+    const sub = pipeline.subscribe(widget, {}, source, '1', 0, { panel: 'occupied-states' }, 'panel')!;
+    await followed;
+    const route = pipeline.page.widgets.get(widget)!.route, seek = clock.getSnapshot().seekSequence, cell = 0x80000001;
+    env.send(datedPanel(sub, 10, { live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: cell }],
+      rows: ['1'], kinds: [{ id: 'v', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] } }, seek, route));
+    env.send(message(10, [{ id: cell, answer: { keys: [1n], columns: 1, values: [2n] } }], false, route, seek));
+    await env.waitView(pipeline, widget, view => view?.mode === 'picture');
+    const unfollowed = env.nextEvent('unfollow');
+    env.send(message(11, [{ id: cell, answer: { keys: [2n], columns: 1, values: [9n], changed: true } }], false, route, seek));
+    await unfollowed;
+    const late = message(12, [{ id: cell, answer: { keys: [1n], columns: 1, values: [3n] } }], false, route, seek);
+    for (let turn = 0; turn < 4; turn++) await new Promise<void>(resolve => setImmediate(resolve));
+    const before = env.credit();
+    env.send(late);
+    for (let turn = 0; turn < 32 && env.credit().credited < before.credited + charge(late); turn++) await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(env.credit().charged - before.charged, charge(late));
+    assert.ok(env.credit().credited - before.credited >= charge(late), JSON.stringify([before, env.credit()]));
+    assert.equal(pipeline.view(widget)?.mode, 'failed');
+  } finally { env.close(); }
+});
 
 test('an in-flight clock command keeps only the newest pending anchor, including its seek', async () => {
   let release!: () => void, started!: () => void, latest!: () => void;
@@ -334,7 +518,7 @@ test('review 6 C: a route nobody follows is sent no clock, so a widget scrolled 
     const again = pipeline.acquire('widget|0', { offset: 0, pin: null });
     const back = pipeline.subscribe(again, {}, source, '1', 0, query, 'followed')!;
     await settle(() => pipeline.status(back).status === 'followed');
-    send(message(11, [{ id: back, answer: { keys: [1n], columns: 1, values: [3n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    send(message(11, [{ id: back, answer: { keys: [1n], columns: 1, values: [3n] } }], false, NATIVE + 1, clock.getSnapshot().seekSequence));
     assert.ok(await settle(() => pipeline.view(again)?.mode === 'picture'), JSON.stringify(pipeline.view(again)));
   } finally { close(); }
 });
@@ -907,7 +1091,7 @@ test('close aborts in-flight follow requests, terminates a pending reader immedi
   } as never;
   const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as never;
   const pendingPipe = new Pipeline(clock, client, {
-    lanes: [{ onmessage: null, postMessage(m) { if (m.type === 'init') m.port.close(); } }],
+    lanes: [acknowledgingLane()],
     open: ports => (client as { openFollow(p: readonly MessagePort[]): unknown }).openFollow(ports) as never,
     channel: () => new MessageChannel(),
     frameRate: () => 60,
@@ -956,7 +1140,7 @@ test('close aborts in-flight follow requests, terminates a pending reader immedi
     },
   } as never;
   const abortPipe = new Pipeline(clock, abortClient, {
-    lanes: [{ onmessage: null, postMessage(m) { if (m.type === 'init') m.port.close(); } }],
+    lanes: [acknowledgingLane()],
     open: ports => (abortClient as { openFollow(p: readonly MessagePort[]): Promise<string> }).openFollow(ports),
     channel: () => new MessageChannel(),
     frameRate: () => 60,
@@ -1032,9 +1216,7 @@ test('F6: a late successful registration reply after sub-failed never overwrites
     const w = p.acquire('f6|0', { offset: 0, pin: null });
     const s = p.subscribe(w, {}, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
     await followStarted;
-    const huge = { keys: Array.from({ length: 12000 }, (_, i) => BigInt(i + 1)), columns: 1, values: Array.from({ length: 12000 }, () => 1n) };
-    const pkt = message(10, [{ id: s, answer: huge }], false, NATIVE, env.clock.getSnapshot().seekSequence);
-    for (let i = 0; i < 20 && p.status(s).status !== 'failed'; i++) env.send(pkt);
+    env.send(message(10, [{ id: s, answer: { keys: [1n], columns: 1, values: [1n], changed: true } }], false, NATIVE, env.clock.getSnapshot().seekSequence));
     await env.waitView(p, w, v => v?.mode === 'failed');
     assert.equal(p.status(s).status, 'failed');
 

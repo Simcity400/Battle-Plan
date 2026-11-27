@@ -11,7 +11,7 @@ export type ToLane =
   | { type: 'init'; lane: number; lanes: number; port: MessagePort; rate: number }
   | { type: 'options'; rate: number }
   | { type: 'prepare'; ask: number; families: readonly string[]; projections: readonly ProjectionKey[] }
-  | { type: 'follow'; sub: number; channel: Channel; product?: string }
+  | { type: 'follow'; sub: number; channel: Channel; product?: string; route?: { id: number; seek: number; offset: number } }
   | { type: 'route'; sub: number; route: number; native: number; seek: number; offset: number }
   | { type: 'unfollow'; sub: number }
   | { type: 'mount'; widget: number; subs: number[]; view: string; model?: unknown }
@@ -31,6 +31,7 @@ export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
   | { type: 'prepared'; lane: number; ask: number }
+  | { type: 'route-bound'; sub: number; route: number; seek: number }
   | { type: 'strip'; receipt: number; held: StripReceipt } | { type: 'strip'; receipt: number; error: string }
   | { type: 'scrubbed'; frame: StripFrame; samples: readonly ScrubSample[] }
   | { type: 'sub-failed'; lane: number; sub: number; reason: string }

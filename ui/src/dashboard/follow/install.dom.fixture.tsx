@@ -3,7 +3,7 @@ import { Pipeline, type PipelineHost } from './pipeline.ts';
 import { packet, resetStamps, splitForLanes } from './split.ts';
 import type { DashboardClient, DashboardSource } from '../client';
 
-const NATIVE = 3, HOURS = 6000, LANES = 2;
+const NATIVE = 1, HOURS = 6000, LANES = 2;
 const valueAt = (sub: number, hour: number) => sub * 100_000 + Math.floor(hour / (11 + sub)) * (11 + sub);
 const changesAt = (sub: number, hour: number) => hour % (11 + sub) === 0;
 
