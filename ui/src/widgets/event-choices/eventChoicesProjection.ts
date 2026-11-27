@@ -31,6 +31,7 @@ import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../eve
   choiceDates,
   choiceNotRecordedText,
   choiceText,
+  FIRING_NOT_RECORDED,
   isOpen,
   noChoiceText,
   optionLetter,
@@ -122,7 +123,7 @@ function buildChoiceRow(
   const detailSubject: EventDetailSubject = {
     key: card.occurrence.id,
     hour: firstRow.hour,
-    firedHour: firstRow.hour,
+    firedHour: card.fired?.row.hour ?? null,
     asOfHour: at.hour,
     title: rawTitle,
     countryTag: card.country,
@@ -132,8 +133,8 @@ function buildChoiceRow(
     item: card.item,
     chosenOrdinal: at.choice?.option ?? null,
     awaiting: open,
-    chosenHour: at.choice?.row.hour ?? null,
-    noChoiceReason: at.choice ? null : (open ? 'No option chosen yet' : notRecordedText),
+    chosenHour: at.choice ? (card.fired ? at.choice.row.hour : at.choice.row.readHour) : null,
+    noChoiceReason: at.choice ? (at.choice.option == null ? 'Chosen option not recorded' : null) : (open ? 'No option chosen yet' : notRecordedText),
   };
 
   const timingBreakHour = page.notRecordedHour !== undefined
@@ -147,7 +148,7 @@ function buildChoiceRow(
       { label: 'Timing', value: knownValue(choiceDates(at, timingBreakHour)) },
     ];
     if (open) out.push({ label: 'Status', value: knownValue(awaitingText(at)) });
-    if (at.choice) out.push({ label: 'Chosen', value: knownValue(formatDateTime(at.choice.row.hour)) });
+    if (detailSubject.chosenHour !== null) out.push({ label: card.fired ? 'Chosen' : 'Chosen by', value: knownValue(formatDateTime(detailSubject.chosenHour)) });
     if (card.item?.token) out.push({ label: 'Content identity', value: knownValue(card.item.token) });
     if (reasons.nameMissing) out.push({ label: 'Title not recorded', value: notRecorded(reasons.nameMissing) });
     out.push(...gapRows(hover, card.occurrence.id, card.item?.gaps, optionLetter), ...unreadRows(hover, card.occurrence.id));
@@ -157,10 +158,12 @@ function buildChoiceRow(
   return {
     key: card.occurrence.id,
     name: safeChoiceText,
-    rowHour: firstRow.hour,
+    rowHour: card.fired ? firstRow.hour : firstRow.readHour,
     live: page.live,
     cells: {
-      date: logDateCell(firstRow.hour),
+      date: card.fired ? logDateCell(card.fired.row.hour) : {
+        value: notRecorded(`${FIRING_NOT_RECORDED}. Chosen by ${formatDateTime(firstRow.readHour)}`),
+      },
       kind: artwork
         ? {
             value: rawTitle !== null ? knownValue(safeChoiceText) : notRecorded(reasons.nameMissing ?? 'Event picture not recorded'),

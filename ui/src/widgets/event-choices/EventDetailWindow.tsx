@@ -5,7 +5,7 @@ import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { EventFeedGap, EventFeedItem } from '../../generated/dashboard';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import type { RefObject } from 'react';
-import { optionLetter } from './eventChoicesData.ts';
+import { FIRING_NOT_RECORDED, optionLetter } from './eventChoicesData.ts';
 import type { EventDetail } from './eventDetail.ts';
 import { gapSummary, gapsForField, plainScripted, reasonsOf, scriptedParts } from '../event-feed/scriptedGaps.ts';
 import './eventDetailWindow.css';
@@ -13,7 +13,7 @@ import './eventDetailWindow.css';
 export interface EventDetailSubject {
   readonly key: string;
   readonly hour: number;
-  readonly firedHour?: number;
+  readonly firedHour: number | null;
   readonly asOfHour?: number;
   readonly title: string | null;
   readonly countryTag: string | null;
@@ -62,7 +62,8 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
   const chosenLetter = chosenIndex >= 0 ? optionLetter(chosenIndex) : null;
 
   const asOfHour = subject ? (subject.asOfHour ?? subject.hour) : null;
-  const firedHour = subject ? (subject.firedHour ?? subject.hour) : null;
+  const firedHour = subject?.firedHour ?? null;
+  const chosenLabel = firedHour === null ? 'Chosen by' : 'Chosen';
 
   return (
     <DetailWindowHost
@@ -89,7 +90,7 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
               ) : (
                 <span className="evd-missing-inline">Country not recorded</span>
               )}
-              <span className="evd-time">{firedHour !== null ? `Fired ${formatDateTime(firedHour)}` : ''}</span>
+              <span className="evd-time">{firedHour !== null ? `Fired ${formatDateTime(firedHour)}` : <span className="evd-missing-inline" title={FIRING_NOT_RECORDED}>Firing date not recorded</span>}</span>
             </div>
 
             <div className="evd-art">
@@ -151,16 +152,16 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
                     ? <ScriptedSpan text={chosenOption.name} gaps={gapsForField(allGaps, 'option', chosenOption.ordinal)} />
                     : 'Option text not recorded'}
                 </span>
-                {subject.chosenHour !== null ? <span className="evd-footer-date">Chosen {dayLabel(subject.chosenHour)}</span> : null}
+                {subject.chosenHour !== null ? <span className="evd-footer-date">{chosenLabel} {dayLabel(subject.chosenHour)}</span> : null}
               </span>
             ) : subject.chosenOrdinal !== null ? (
               <span className="evd-footer-choice">
                 <strong className="evd-footer-letter">{optionLetter(Math.max(0, subject.chosenOrdinal))}</strong>
                 <span className="evd-missing-inline">Option text not recorded</span>
-                {subject.chosenHour !== null ? <span className="evd-footer-date">Chosen {dayLabel(subject.chosenHour)}</span> : null}
+                {subject.chosenHour !== null ? <span className="evd-footer-date">{chosenLabel} {dayLabel(subject.chosenHour)}</span> : null}
               </span>
             ) : (
-              <span className="evd-footer-status">{subject.noChoiceReason ?? 'Choice not recorded'}</span>
+              <span className="evd-footer-status">{subject.noChoiceReason ?? 'Choice not recorded'}{firedHour === null && subject.chosenHour !== null ? ` · ${chosenLabel} ${dayLabel(subject.chosenHour)}` : ''}</span>
             )}
           </footer>
         </div>

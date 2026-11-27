@@ -1161,6 +1161,21 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     assert_eq!(choices.total, "4");
     assert_eq!(choices.rows.iter().map(|row| (row.hour, row.live)).collect::<Vec<_>>(), [(105, true), (101, true), (100, true), (102, false)], "awaiting first, then history, each newest first");
     assert_eq!(choices.counts[0].total, "3");
+    let by_family = |events| EventChoicesTail::load(&replay_source, &ScriptTailParams { events: Some(events), ..cards(106, None, None) }, &context, &cancel).unwrap();
+    use super::tails::ScriptEventKind;
+    assert_eq!(by_family(vec![ScriptEventKind::Country]).total, "2", "an orphan is not known to be a country event");
+    assert_eq!(by_family(vec![ScriptEventKind::News]).total, "1", "an orphan is not known to be a news event");
+    assert_eq!(by_family(vec![ScriptEventKind::Country, ScriptEventKind::News]).total, "3");
+    let unknown = by_family(serde_json::from_value(serde_json::json!(["unknown"])).unwrap());
+    assert_eq!(unknown.total, "1");
+    assert!(!unknown.rows[0].occurrence.as_ref().unwrap().opened);
+    let unknown_panel = event_choices_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-choices-tail", "branchId": "1", "limit": 64, "events": ["unknown"] })).unwrap();
+    let unknown_exact = unknown_panel.exact().unwrap();
+    for hour in [101, 102, 106, 101] {
+        let stepped = (unknown_exact.advance)(hour, true, &cancel, None);
+        assert_eq!(*stepped.value, (unknown_exact.cold)(hour, &cancel), "orphan family stepped vs cold at {hour}");
+        assert_eq!(stepped.value.as_ref().as_ref().unwrap()["total"], if hour < 102 { "0" } else { "1" });
+    }
     let awaiting = EventChoicesTail::load(&replay_source, &cards(106, Some(vec![ScriptStatus::Awaiting]), None), &context, &cancel).unwrap();
     assert_eq!(awaiting.total, "3");
     let decided = |hour: i32, status: ScriptStatus| DecisionsTail::load(&replay_source, &cards(hour, Some(vec![status]), None), &context, &cancel).unwrap().total;

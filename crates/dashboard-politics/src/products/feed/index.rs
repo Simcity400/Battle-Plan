@@ -654,7 +654,11 @@ fn choices(scanned: &Scanned, names: &Names) -> io::Result<Index<Item>> {
         let mut candidates: Vec<i32> = card.edges.iter().map(|edge| edge.at.hour).collect();
         candidates.extend(break_after(&scanned.breaks, head.at.hour));
         let states = transitions(head.at.hour, candidates, |hour| Some(choice_status(&card.edges, head.at.hour, &scanned.breaks, hour)));
-        made.push(card_occurrence(&card, head, names, states));
+        let mut occurrence = card_occurrence(&card, head, names, states);
+        if !card.opened {
+            occurrence.date = occurrence.observed;
+        }
+        made.push(occurrence);
     }
     Index::new(made, scanned.gaps.clone(), &LIVE)
 }

@@ -5,6 +5,7 @@ import type { EventFeedItem, ScriptEdge, ScriptOccurrence } from '../../generate
 
 const TITLE_UNAVAILABLE = 'Title not recorded';
 const OPTION_UNAVAILABLE = 'Option text not recorded';
+export const FIRING_NOT_RECORDED = 'The event firing was not recorded; only its selected option was recorded';
 
 export interface ChoiceCard {
   occurrence: ScriptOccurrence;
@@ -70,7 +71,7 @@ export function optionLines(at: ChoiceAt): OptionLine[] {
 export function choiceDates(at: ChoiceAt, breakHour?: number | null): string {
   const fired = at.card.fired;
   if (at.choice) {
-    if (!fired) return `Chosen ${dayOf(at.choice.row.hour)}`;
+    if (!fired) return `Firing date not recorded: ${FIRING_NOT_RECORDED}. Chosen by ${dayOf(at.choice.row.readHour)}`;
     const days = daysBetween(fired.row.hour, at.choice.row.hour);
     return `${dayOf(fired.row.hour)} → chosen ${dayOf(at.choice.row.hour)} · ${days ? daysText(days) : 'same day'}`;
   }

@@ -79,6 +79,31 @@ fn a_history_that_cannot_be_read_is_one_missing_span_and_no_card_is_open_through
 }
 
 #[test]
+fn an_orphan_choice_is_ordered_and_ranged_at_its_recorded_observation() {
+    use dashboard_query::{identity::Holders, log::occurrence::{Ask, Direction, Order}};
+    let mut orphan = brief(1, EventFeedKind::EventOptionSelected, 137, Some(91), None);
+    orphan.hour = 119;
+    orphan.option = Some(0);
+    let mut scanned = Scanned::refused(100, 200, "unused");
+    scanned.gaps.clear();
+    scanned.breaks.clear();
+    scanned.briefs = vec![orphan, brief(2, EventFeedKind::ScriptEventFired, 128, None, None)];
+    let index = choices(&scanned, &Names { slots: HashMap::new() }).unwrap();
+    let holders = Holders::new(BTreeMap::new(), Vec::new());
+    let ask = Ask { hour: 137, from: Some(130), to: None, gap_end: None, selection: None, subject: None, kinds: None, states: None, search: None,
+        order: Order::Date(Direction::Descending), live_first: false, offset: 0, limit: 1, chips: &[] };
+    let answer = index.ask(&holders, &ask).unwrap();
+    assert_eq!(answer.total, 1);
+    let occurrence = index.get(answer.rows[0].at);
+    assert_eq!((occurrence.date, occurrence.observed, occurrence.kind), (137, 137, kind_code(EventFeedKind::EventOptionSelected)));
+    let first = index.ask(&holders, &Ask { from: None, ..ask }).unwrap();
+    assert_eq!(index.get(first.rows[0].at).date, 137);
+    let next = index.ask(&holders, &Ask { from: None, offset: 1, ..ask }).unwrap();
+    assert_eq!(index.get(next.rows[0].at).date, 128);
+    assert_eq!(index.ask(&holders, &Ask { hour: 136, ..ask }).unwrap().total, 0);
+}
+
+#[test]
 fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by_observation() {
     use dashboard_query::{
         identity::{Country, Holder, HolderRun, Holders},

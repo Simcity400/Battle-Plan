@@ -294,7 +294,7 @@ function buildFeedTableRow(
 
   const viewable = VIEWABLE_KINDS.has(event.kind);
   const chosenOrdinal = parsedOptionOrdinal(event, page.choice);
-  const chosenHour = page.choice?.row.hour ?? (event.kind === 'eventOptionSelected' ? event.hour : null);
+  const chosenHour = page.choice?.row.hour ?? (event.kind === 'eventOptionSelected' ? event.readHour : null);
   let detailSubject: EventDetailSubject | undefined;
   if (viewable) {
     const recipient = event.kind === 'eventOptionSelected'
@@ -305,17 +305,17 @@ function buildFeedTableRow(
     const awaiting = !page.choice && (page.status === 'awaiting' || page.live);
     const noChoiceReason = chosenOrdinal !== null
       ? null
-      : awaiting
-        ? 'No option chosen yet'
-        : page.status === 'notRecorded'
-          ? (page.notRecordedReason !== undefined ? choiceNotRecordedText(page.notRecordedReason) : 'Choice not recorded')
-          : page.choice
-            ? 'Chosen option not recorded'
+      : chosenHour !== null
+        ? 'Chosen option not recorded'
+        : awaiting
+          ? 'No option chosen yet'
+          : page.status === 'notRecorded'
+            ? (page.notRecordedReason !== undefined ? choiceNotRecordedText(page.notRecordedReason) : 'Choice not recorded')
             : 'Event fired';
     detailSubject = {
       key,
       hour: event.hour,
-      firedHour: event.hour,
+      firedHour: event.kind === 'eventOptionSelected' ? null : event.hour,
       asOfHour: displayedHour,
       title: item?.name ?? null,
       countryTag: recipient,
