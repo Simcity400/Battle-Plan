@@ -1198,7 +1198,7 @@ top?: number,
  * One country: its casualties with each opponent instead of the matrix.
  */
 subject?: CountryRef, };
-export type CasualtyMatrixCountry = { tag: string, slot: number, countryId: number,
+export type CasualtyMatrixCountry = { key: string, tag: string, slot: number, countryId: number,
 /**
  * When this holder no longer holds `tag` at the query hour, its latest witnessed hour for reading its name and flag; null while it still holds `tag`.
  */
@@ -1211,16 +1211,13 @@ dealt: string | null,
  * Casualties it took from every opponent.
  */
 taken: string | null, missing: string | null, };
-export type CasualtyMatrixCell = {
-/**
- * Indexes into `countries`: the row dealt the casualties to the column.
- */
-row: number, column: number,
+export type CasualtyMatrixCell = { key: string,
 /**
  * Decimal string; null where not recorded (`missing` says why).
  */
 dealt: string | null, missing: string | null, incomplete: string | null, };
-export type CasualtyOpponent = { country: number,
+export type CasualtyMatrixRow = { key: string, cells: Array<CasualtyMatrixCell>, };
+export type CasualtyOpponent = { key: string,
 /**
  * Casualties the subject dealt to this opponent.
  */
@@ -1231,14 +1228,14 @@ dealt: string | null,
 taken: string | null, missing: string | null, incomplete: string | null, };
 export type CasualtyMatrixReply = { countries: Array<CasualtyMatrixCountry>,
 /**
- * Indexes into `countries`, grouped by faction (by faction name, factionless last), then by casualties dealt.
+ * Country keys grouped by faction (by faction name, factionless last), then by casualties dealt.
  * Rows and columns are the same countries in the same order.
  */
-order: Array<number>,
+order: Array<string>,
 /**
- * Pairs that were at war, by row then column; every other pair dealt none.
+ * Pairs that were at war, keyed by the countries that dealt and took the casualties.
  */
-cells: Array<CasualtyMatrixCell>,
+rows: Array<CasualtyMatrixRow>,
 /**
  * The largest displayed cell, for the colour scale.
  */
@@ -1250,7 +1247,7 @@ largestDealt: string,
 /**
  * With a subject: its opponents, most casualties both ways first; ties by tag.
  */
-subject: number | null, opponents: Array<CasualtyOpponent>,
+subject: string | null, opponents: Array<CasualtyOpponent>,
 /**
  * The largest single side among the opponents, for the bar scale.
  */

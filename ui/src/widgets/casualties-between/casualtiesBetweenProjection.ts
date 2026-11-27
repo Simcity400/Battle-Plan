@@ -12,7 +12,7 @@ import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import { formatCompactScalar, formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
-import type { CasualtyMatrixCountry, CasualtyMatrixReply } from '../../generated/dashboard';
+import type { CasualtyMatrixCell, CasualtyMatrixCountry, CasualtyMatrixReply } from '../../generated/dashboard';
 
 export interface CasualtyMatrixOptions extends DatedMembershipOptions {
   readonly between?: boolean;
@@ -88,13 +88,36 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
   const hour = readView.hour;
   const refused = readView.refused('main');
   if (refused) return blank(hour, { refused });
-  const reply = readView.panel<CasualtyMatrixReply>('main');
-  if (!reply) return blank(hour, { empty: NOT_RECORDED, emptyKind: 'unavailable' });
+  const wire = readView.panel<CasualtyMatrixReply>('main');
+  if (!wire) return blank(hour, { empty: NOT_RECORDED, emptyKind: 'unavailable' });
   const byIdentity = options?.identityMembership != null;
   const group = activeGroupMembers(byIdentity ? { ...options, membership: options.identityMembership } : options, hour);
-  if (group.kind === 'unavailable') return blank(hour, { empty: group.reason, emptyKind: 'unavailable', warnings: reply.warnings });
-  if (group.kind === 'empty') return blank(hour, { empty: group.reason, warnings: reply.warnings });
-  if (reply.missing) return blank(hour, { empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
+  if (group.kind === 'unavailable') return blank(hour, { empty: group.reason, emptyKind: 'unavailable', warnings: wire.warnings });
+  if (group.kind === 'empty') return blank(hour, { empty: group.reason, warnings: wire.warnings });
+  if (wire.missing) return blank(hour, { empty: NOT_RECORDED, emptyDetail: wire.missing, emptyKind: 'unavailable', warnings: wire.warnings });
+  const invalid = (reason: string) => blank(hour, { refused: `Invalid casualty matrix reply: ${reason}` });
+  const countries = new Map(wire.countries.map((country, at) => [country.key, at]));
+  const positions = new Map(wire.order.map((key, at) => [key, at]));
+  if (countries.size !== wire.countries.length || positions.size !== wire.order.length) return invalid('duplicate country key');
+  const order = wire.order.map(key => countries.get(key) ?? -1);
+  if (order.includes(-1) || wire.countries.some(country => country.key !== countryIdentityKey(country))) return invalid('unknown or mismatched country key');
+  const positioned: (CasualtyMatrixCell & { row: number; column: number })[] = [];
+  const rows = new Set<number>();
+  for (const entry of wire.rows) {
+    const row = positions.get(entry.key);
+    if (row === undefined) return invalid('unknown row key');
+    if (rows.has(row)) return invalid('duplicate row key');
+    rows.add(row);
+    const columns = new Set<number>();
+    for (const cell of entry.cells) {
+      const column = positions.get(cell.key);
+      if (column === undefined) return invalid('unknown column key');
+      if (columns.has(column)) return invalid('duplicate column key');
+      columns.add(column);
+      positioned.push({ ...cell, row, column });
+    }
+  }
+  const reply = { ...wire, order, cells: positioned };
   if (!reply.order.length) return blank(hour, { empty: NONE_YET, warnings: reply.warnings });
 
   const memberKey = (country: CasualtyMatrixReply['countries'][number]) => (byIdentity ? countryIdentityKey(country) : country.tag);
@@ -106,7 +129,7 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
   if (group.kind === 'filtered') {
     const active = group.active;
     const keptPositions = new Set<number>();
-    const filteredCells: CasualtyMatrixReply['cells'][number][] = [];
+    const filteredCells: (typeof positioned)[number][] = [];
     for (const cell of reply.cells) {
       const from = memberKey(reply.countries[reply.order[cell.row]!]!);
       const to = memberKey(reply.countries[reply.order[cell.column]!]!);
@@ -170,7 +193,7 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
     };
   });
   const width = entities.length;
-  const byPair = new Map<number, CasualtyMatrixReply['cells'][number]>();
+  const byPair = new Map<number, (typeof positioned)[number]>();
   for (const cell of activeCells) byPair.set(cell.row * width + cell.column, cell);
   const most = Number(BigInt(mostText)) || 1;
   const largest = Number(BigInt(largestText)) || 1;
@@ -283,15 +306,24 @@ export function projectCasualtyOpponents(readView: BoundedReadView): BarsModel {
   const reply = readView.panel<CasualtyMatrixReply>('main');
   if (!reply) return { form: 'two-sided', hour, rows: [], empty: NOT_RECORDED, emptyKind: 'unavailable' };
   if (reply.missing) return { form: 'two-sided', hour, rows: [], empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
+  const invalid = (reason: string): BarsModel => ({ form: 'two-sided', hour, rows: [], empty: `Invalid casualty opponents reply: ${reason}`, emptyKind: 'unavailable' });
+  const countries = new Map(reply.countries.map(country => [country.key, country]));
+  if (countries.size !== reply.countries.length) return invalid('duplicate country key');
+  if (reply.countries.some(country => country.key !== countryIdentityKey(country))) return invalid('mismatched country key');
+  if (reply.subject === null ? reply.opponents.length > 0 : !countries.has(reply.subject)) return invalid('unknown subject key');
   if (!reply.opponents.length || reply.subject === null) return { form: 'two-sided', hour, rows: [], empty: 'No casualties with any opponent yet.', warnings: reply.warnings };
-  const subject = reply.countries[reply.subject]!;
+  const subject = countries.get(reply.subject)!;
   const tagCounts = new Map<string, number>();
+  const keys = new Set(reply.opponents.map(opponent => opponent.key));
+  if (keys.size !== reply.opponents.length || keys.has(reply.subject)) return invalid('duplicate opponent key');
   for (const opponent of reply.opponents) {
-    const tag = reply.countries[opponent.country]!.tag;
+    const country = countries.get(opponent.key);
+    if (!country) return invalid('unknown opponent key');
+    const tag = country.tag;
     tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
   }
   const resolved = reply.opponents.map(opponent => {
-    const country = reply.countries[opponent.country]!;
+    const country = countries.get(opponent.key)!;
     const shown = countryRowPresentation(readView, country.tag, undefined, false, country.shownHour ?? hour);
     return {
       opponent,
