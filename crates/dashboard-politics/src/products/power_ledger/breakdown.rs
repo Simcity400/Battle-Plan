@@ -1,4 +1,4 @@
-use super::{PowerSpendingParams, PowerSpendingReply, SpendCoverage, SpendCurrency, SpendGain, naming, spending_without_balances};
+use super::{PowerSpendingParams, PowerSpendingReply, SpendCoverage, SpendCurrency, SpendGain, naming, spending};
 use dashboard_base::products::breakdown::{self, Amount, Breakdown, BreakdownAmount, Dated, Exact, History, HistoryBuilder, Node};
 use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
 use dashboard_base::Source;
@@ -92,7 +92,7 @@ impl Product for PowerSpendingBreakdown {
         };
         let held = breakdown::held(source, context, span.clone(), || {
             let naming = naming::context(source, context)?;
-            let whole = spending_without_balances(&query, &span, &naming, cancelled)?;
+            let whole = spending(&query, &span, &naming, cancelled)?;
             let spend = unrecorded(&query.timeline, &query.holders, &span.country, &whole.coverage, whole.from, whole.to);
             let gain = unrecorded(&query.timeline, &query.holders, &span.country, &whole.gain_coverage, whole.from, whole.to);
             Ok(index(&whole, &spend, &gain))
