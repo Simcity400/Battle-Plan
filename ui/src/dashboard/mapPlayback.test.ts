@@ -387,7 +387,7 @@ test('MapViewsStore stamps clockId on populated and teardown snapshots and filte
     const requests = mapRequests({ issue: () => ++issued });
     const pin = { follow: false, hour: 140 };
     pinStore.register('map-2', element, (now: ReturnType<typeof pinClock.getSnapshot>) => requests({ sourceId: 'source', path: 'campaign.battleplan', revision: 'rev-1',
-      branchId: '1', playing: pin.follow && now.playing, hoursPerSecond: 24, hour: pin.follow ? now.hour : pin.hour, fraction: 0, seekSequence: pin.follow ? now.seekSequence : undefined }));
+      branchId: '1', playing: pin.follow && now.playing, hoursPerSecond: now.hoursPerSecond, hour: pin.follow ? now.hour : pin.hour, fraction: 0, seekSequence: pin.follow ? now.seekSequence : undefined }));
     const reply = (requestedSequence: number, error: string | null, hour: number | null = null): DashboardMapState => ({ id: 'map-2', clockId: 'page-D', sourceId: 'source',
       revision: 'rev-1', branchId: error ? null : '1', hour, fraction: hour == null ? null : 0, sequence: requestedSequence, requestedSequence, loading: false, error });
     const sentNow = async () => { flushFrames(); await tick(); return sent.at(-1)!.find(view => view.id === 'map-2')!; };
