@@ -253,6 +253,8 @@ fn a_convoy_stride_keeps_changes_that_return_to_the_same_value() {
     let exact = panel.exact().unwrap();
     let advance = exact.advance.clone();
     let cold = exact.cold.clone();
+    let checked_stride = Arc::new(AtomicBool::new(false));
+    let saw_stride = Arc::clone(&checked_stride);
     let checked = dashboard_follow::panel::AtHour {
         advance: Arc::new(move |hour, seed, cancelled, step| {
             let read = advance(hour, seed, cancelled, step);
@@ -260,14 +262,15 @@ fn a_convoy_stride_keeps_changes_that_return_to_the_same_value() {
                 assert_eq!(*read.value, cold(hour, cancelled));
                 assert_eq!(read.value.as_ref().as_ref().unwrap()["regions"][0]["efficiency"],
                     serde_json::json!([[24, 24, 10], [25, 27, 30], [28, 36, 10]]));
+                saw_stride.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             read
         }),
         cold: exact.cold.clone(),
         read: exact.read.clone(),
     };
-    let stepped = dashboard_base::test_fixtures::proven_by_steps(source.replay_ref(), &checked, 12, 36, 24);
-    assert!(stepped.iter().any(|&(hour, _)| hour == 36));
+    dashboard_base::test_fixtures::proven_by_steps(source.replay_ref(), &checked, 12, 36, 24);
+    assert!(checked_stride.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 #[test]
@@ -281,6 +284,42 @@ fn a_held_convoy_day_answers_the_played_hour_including_a_recording_gap() {
     for step in stepped {
         assert_eq!(*step.value, (exact.cold)(step.hour, &cancelled), "hour {}", step.hour);
     }
+}
+
+#[test]
+fn a_convoy_seek_rebuilds_the_reply() {
+    let source = std::sync::Arc::new(gapped());
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    assert!((exact.advance)(41, true, &cancelled, None).value.is_ok());
+    assert_eq!(*(exact.advance)(25, true, &cancelled, None).value, (exact.cold)(25, &cancelled));
+}
+
+#[test]
+fn a_convoy_run_change_uses_the_new_runs_values() {
+    let hours: Vec<_> = (24..=26).chain(40..=42).map(|hour| (hour, true, vec![(17, i64::from(hour))])).collect();
+    let source = std::sync::Arc::new(synthetic("convoy-run", &hours));
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let timeline = dashboard_base::queries::query(&source, 1).unwrap().timeline;
+    assert_ne!(timeline.at(26).unwrap().run, timeline.at(40).unwrap().run);
+    let steps = dashboard_base::test_fixtures::played(source.replay_ref(), exact, 24, 40);
+    let at = steps.iter().find(|step| step.hour == 40).unwrap();
+    assert_eq!(*at.value, (exact.cold)(40, &cancelled));
+    assert_eq!(at.value.as_ref().as_ref().unwrap()["regions"][0]["efficiency"][3], serde_json::json!([40, 40, 40]));
+}
+
+#[test]
+fn a_failed_convoy_read_can_be_rebuilt() {
+    let source = std::sync::Arc::new(gapped());
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    assert!((exact.advance)(24, true, &cancelled, None).value.is_ok());
+    assert!((exact.advance)(25, false, &AtomicBool::new(true), None).value.is_err());
+    assert_eq!(*(exact.advance)(25, false, &cancelled, None).value, (exact.cold)(25, &cancelled));
 }
 
 #[test]

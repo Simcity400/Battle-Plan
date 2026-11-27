@@ -1,6 +1,6 @@
 dashboard_base::register_products! {
     ECONOMY_RESOURCE_MONTHS_RESOURCEMONTHS => crate::products::economy::resource_months::ResourceMonths,
-    CONVOYS_CONVOYHEALTH => crate::products::convoys::ConvoyHealth; day("from", "to", |r| r.valid_through),
+    CONVOYS_CONVOYHEALTH => crate::products::convoys::ConvoyHealth; panel(crate::products::convoys::panel),
     ECONOMY_MARKET_LEDGER_MARKETLEDGERTAIL => crate::products::economy::market::ledger::MarketLedgerTail; panel(crate::products::economy::market::ledger::dated_panel),
     ECONOMY_FUEL_AWARDS_COUNTRYFUELAWARDS => crate::products::economy::fuel::awards::CountryFuelAwards,
     ECONOMY_FUEL_AWARDS_COUNTRYFUELAWARDHISTORY => crate::products::economy::fuel::awards::CountryFuelAwardHistory,
