@@ -11,7 +11,101 @@ use replay_data::{
     war_participation::Factors,
 };
 use replay_frame::frame::TableView;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+
+thread_local! {
+    static WALKS: Cell<usize> = const { Cell::new(0) };
+    static GROUPINGS: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+}
+
+pub(super) fn count_walk() {
+    WALKS.set(WALKS.get() + 1);
+}
+
+pub(super) fn count_grouping(hour: i32) {
+    GROUPINGS.with_borrow_mut(|hours| hours.push(hour));
+}
+
+#[test]
+fn the_views_share_one_walk_and_group_only_at_relevant_changes() {
+    use crate::products::casualties::{CasualtyBreakdown, CasualtyBreakdownParams};
+    use dashboard_base::{SourceKey, test_fixtures::{CAMPAIGN, records}};
+    use replay::campaign::Replay;
+
+    let frames = (120..=124).map(|hour| {
+        let mut frame = recorded(hour);
+        let mut set = |rows: TableRows| {
+            let table = rows.table();
+            frame.tables[table.index()] = TableView::Complete(rows).into();
+        };
+        let countries = ["ONE", "TWO", "THREE", "FOUR", "FIVE"];
+        let slots = 1..=countries.len() as u32;
+        set(TableRows::Countries(slots.clone().zip(countries).map(|(slot, tag)| {
+            rows::CountryRow { id: slot, canonical_slot: slot, tag: tag.as_bytes().to_vec(), ..Default::default() }
+        }).collect()));
+        set(TableRows::CountryLinks(slots.map(|slot| rows::CountryLinkRow { id: slot, canonical_slot: slot }).collect()));
+        let relation = |a, b| rows::WarRelationRow {
+            first_country: a, second_country: b, start_hour: 90, first_was_instigator: 1,
+            first_casualties: if b == 3 { 17 } else { 0 }, ..Default::default()
+        };
+        let mut relations = Vec::new();
+        if hour < 122 {
+            relations.push(relation(1, 2));
+        }
+        relations.push(relation(1, 3));
+        if hour >= 121 {
+            relations.push(relation(4, 5));
+        }
+        set(TableRows::WarRelations(relations));
+        if hour >= 123 {
+            set(TableRows::WarOwnedRelations(vec![
+                WarOwnedRelationRow { owner: 1, ordinal: 1, first_country: 1, second_country: 3, ..Default::default() },
+                WarOwnedRelationRow { owner: 3, ordinal: 0, first_country: 1, second_country: 3, ..Default::default() },
+            ]));
+        }
+        if hour >= 124 {
+            set(TableRows::FactionMembers(vec![rows::FactionMemberRow { country: 3, faction: 23, ordinal: 0 }]));
+        }
+        set(TableRows::WarOverviewCountries((1..=3).map(|country| WarOverviewCountryRow {
+            country, major: 1, score_available: u8::from(hour != 121 || country != 1), ..Default::default()
+        }).collect()));
+        for (table, value) in frame.tables.iter().enumerate() {
+            if matches!(&**value, TableView::Complete(_)) {
+                frame.metrics.table_ns[table] = 1;
+            }
+        }
+        frame
+    }).collect::<Vec<_>>();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let source = Source::from_replay(
+        SourceKey { source_id: "grouping-count".into(), revision: "1".into() },
+        "memory.battleplan".into(), Arc::new(replay), &cancelled,
+    ).unwrap();
+    let context = LoadContext { content: None };
+    let country = Country::from("ONE");
+    let wars = WarsParams { branch_id: "1".into(), viewpoint: Some(country.clone()) };
+    let timeline = WarTimelineParams { branch_id: "1".into(), viewpoint: Some(country.clone()), hour: 124 };
+    let losses = CasualtyBreakdownParams { branch_id: "1".into(), country, hour: 124 };
+    WALKS.set(0);
+    GROUPINGS.with_borrow_mut(Vec::clear);
+    let whole = Wars::load(&source, &wars, &context, &cancelled).unwrap();
+    assert!(whole.available && !whole.wars.is_empty());
+    assert!(Wars::load(&source, &wars, &context, &cancelled).unwrap().available);
+    for (hour, has_representative) in [(120, true), (121, false)] {
+        let params = WarTimelineParams { hour, ..timeline.clone() };
+        let reply = WarTimelineAt::load(&source, &params, &context, &cancelled).unwrap();
+        assert!(reply.available);
+        let observed: Vec<_> = reply.wars.iter().flat_map(|war| &war.observations).filter(|seen| seen.last_hour == hour).collect();
+        assert!(!observed.is_empty() && observed.iter().all(|seen| seen.representative.is_some() == has_representative));
+    }
+    let casualties = CasualtyBreakdown::load(&source, &losses, &context, &cancelled).unwrap();
+    assert!(casualties.breakdown.parts.iter().any(|part| whole.wars.iter().any(|war| part.key == war.id)));
+    assert_eq!(WALKS.get(), 1);
+    assert_eq!(GROUPINGS.with_borrow_mut(std::mem::take), [120, 122, 123, 124]);
+}
 
 fn holders(tags: &[(&str, u32)], first: i32, last: i32) -> Holders {
     Holders::new(
@@ -44,8 +138,9 @@ fn seen(state: &State, held: &Holders, hour: i32) -> Result<(Viewed, Vec<walk::O
         .blobs(read.view)
         .iter()
         .map(|blob| {
-            let named = read.world.representative(blob).map(|p| (p, naming::unknown("Not recorded: no content in this test")));
-            walk::observed(&read.world, (&read.tags, &read.identities), read.view, blob, named, hour)
+            let pairs = read.world.inside(blob);
+            let named = read.world.representative(blob, &pairs).map(|p| (p, naming::unknown("Not recorded: no content in this test")));
+            walk::observed(&read.world, (&read.tags, &read.identities), read.view, (blob, &pairs), named, hour)
         })
         .collect();
     Ok((Viewed { countries: Arc::new(read.countries()), view: read.view }, observed))
