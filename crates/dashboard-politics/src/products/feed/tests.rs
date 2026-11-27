@@ -2209,6 +2209,9 @@ fn a_followed_decisions_tail_carries_the_warnings_the_exact_read_gives_at_each_h
         assert_eq!(art(&held), hour >= 100, "the decision's mod art is named from the hour it is listed, at {hour}");
         assert_eq!(read.fresh, hour != 101, "hour 101 holds the reply read at 100, with its warnings");
     }
+    super::index::forget(&source);
+    assert!(!art(&exact(99)), "a cold exact read before the decision does not credit its art");
+    assert!(art(&exact(100)), "the exact read credits the art once the decision is listed");
 }
 
 #[test]

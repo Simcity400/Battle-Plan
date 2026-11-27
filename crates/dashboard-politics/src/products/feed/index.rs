@@ -6,7 +6,7 @@ use super::{
     fold::{FoldMeta, group_of},
     row::{Columns, FeedEvent, Slot},
 };
-use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals}, products::LoadContext, queries::country_ids::Names};
+use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals, capture_isolated}, products::LoadContext, queries::country_ids::Names};
 use dashboard_query::{
     Query,
     identity::Holder,
@@ -947,7 +947,8 @@ fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, c
     if let Some(found) = &held.scanned {
         return Ok(Arc::clone(found));
     }
-    let made = Arc::new(match scan(source, query, branch, catalogue, cancelled) {
+    let (scanned, _) = capture_isolated(|| scan(source, query, branch, catalogue, cancelled));
+    let made = Arc::new(match scanned {
         Ok(made) => made,
         Err(error) if error.kind() == io::ErrorKind::InvalidData && !cancelled.load(std::sync::atomic::Ordering::Relaxed) => Scanned::refused(query.timeline.first, query.timeline.last, &error.to_string()),
         Err(error) => return Err(error),
