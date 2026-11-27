@@ -160,7 +160,10 @@ impl Follow {
         Box::new(move |step: &Step, lanes: &Lanes<'_>| {
             engine.step(step, lanes);
             let products = lock(&engine.shared.products).clone();
-            if let Some(products) = products { products(step, lanes); }
+            if let Some(products) = products {
+                products(step, lanes);
+                engine.step_added(step, lanes);
+            }
         })
     }
 
@@ -678,7 +681,7 @@ impl Engine {
             self.evaluate(step, lanes, &mut stats);
         }
         self.answer_heads(step, &mut stats);
-        let message = self.send(step, lanes, &mut stats);
+        let message = self.send(step, lanes, step.reset(), &mut stats);
         let held = (changed || step.reset() || self.counters.steps.is_multiple_of(HELD_EVERY)).then(|| self.held());
         stats.ns = start.elapsed().as_nanos() as u64;
         let counters = &mut self.counters;
@@ -696,6 +699,46 @@ impl Engine {
         if let Some(held) = held {
             report.1 = held;
         }
+        drop(report);
+        (self.sink)(&stats, message);
+    }
+
+    fn step_added(&mut self, step: &Step, lanes: &Lanes<'_>) {
+        if lock(&self.shared.control).ops.is_empty() {
+            return;
+        }
+        let start = Instant::now();
+        let mut stats = StepStats { epoch: step.epoch(), first: step.first(), last: step.last(), reset: false, gap: step.gap(), ..StepStats::default() };
+        let (changed, session) = self.apply_ops();
+        stats.session = session;
+        if !changed || step.gap() {
+            return;
+        }
+        self.activate(lanes, &mut stats);
+        self.fill();
+        stats.touched += self.marked.len() as u32;
+        self.evaluate(step, lanes, &mut stats);
+        if self.queue.is_empty() {
+            return;
+        }
+        let message = self.send(step, lanes, false, &mut stats);
+        if message.is_none() {
+            return;
+        }
+        let held = self.held();
+        stats.ns = start.elapsed().as_nanos() as u64;
+        let counters = &mut self.counters;
+        counters.touched += u64::from(stats.touched);
+        counters.evaluated += u64::from(stats.evaluated);
+        counters.changed += u64::from(stats.changed);
+        counters.sent += u64::from(stats.sent);
+        counters.messages += u64::from(stats.messages);
+        counters.bytes += u64::from(stats.bytes);
+        counters.ns += stats.ns;
+        counters.most_ns = counters.most_ns.max(stats.ns);
+        let mut report = lock(&self.shared.report);
+        report.0 = self.counters;
+        report.1 = held;
         drop(report);
         (self.sink)(&stats, message);
     }
@@ -1240,10 +1283,10 @@ impl Engine {
         }
     }
 
-    fn send(&mut self, step: &Step, lanes: &Lanes<'_>, stats: &mut StepStats) -> Option<Message> {
+    fn send(&mut self, step: &Step, lanes: &Lanes<'_>, reset: bool, stats: &mut StepStats) -> Option<Message> {
         let (first_epoch, seek) = *lock(&self.shared.page_seek);
         if step.epoch() < first_epoch { return None; }
-        answer::begin(&mut self.message, self.shared.route, self.shared.clock, step.last(), seek, step.reset());
+        answer::begin(&mut self.message, self.shared.route, self.shared.clock, step.last(), seek, reset);
         if !step.gap() {
             for (&table, index) in &self.tables {
                 let head = lanes.get(table).and_then(Lane::head).unwrap_or(Hour::MIN);
@@ -1286,12 +1329,12 @@ impl Engine {
                 }
             }
         }
-        if stats.sent == 0 && !step.reset() && self.ids.is_empty() {
+        if stats.sent == 0 && !reset && self.ids.is_empty() {
             return None;
         }
         stats.messages = 1;
         stats.bytes = self.message.len() as u32;
-        Some(Message { hour: step.last(), reset: step.reset(), answers: stats.sent, bytes: mem::take(&mut self.message) })
+        Some(Message { hour: step.last(), reset, answers: stats.sent, bytes: mem::take(&mut self.message) })
     }
 
     fn held(&self) -> Held {
