@@ -143,17 +143,26 @@ mod reply {
         for table in states::TABLES {
             assert_eq!(projected(table, &world), projected(table, &[]), "{table:?}: a world whose triggers read nothing of it");
         }
-        assert!(!states::OccupiedStates::clock_dependent(&world, &learning), "triggers whose reads all declare their tables read no hour");
+        assert!(!states::OccupiedStates::clock_dependent(&world, &learning), "occupied states holds to dated boundaries");
         let level = dashboard_declare::field(TableId::StateResistance, "level").unwrap();
         learning.world.lock().unwrap().fields.insert(TableId::StateResistance, 1 << level);
         assert!(projected(TableId::StateResistance, &world).unwrap().contains(&level), "a field the triggers read");
         assert!(!projected(TableId::StateResistance, &[]).unwrap().contains(&level), "and only while they are planned");
-        learning.world.lock().unwrap().ends = true;
-        assert!(states::OccupiedStates::clock_dependent(&world, &learning), "a relation read up to its end hour reads the hour");
-        learning.world.lock().unwrap().ends = false;
+        learning.world.lock().unwrap().ends.insert(TableId::WarRelations);
+        let mut timed = frame();
+        *timed.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(vec![
+            replay_data::rows::WarRelationRow { first_country: 1, second_country: 2, start_hour: 400, end_hour: 512, ..Default::default() },
+        ]));
+        let holders = dashboard_query::identity::Holders::default();
+        let live = Cells::default();
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let at = dashboard_base::products::at_hour::At { owner: None, holders: &holders, hour: 500, context: &learning, cancelled: &cancelled, live: &live };
+        assert_eq!(states::world_valid_through(&timed, &learning.world.lock().unwrap()), 511, "a timed war relation holds until the hour before it ends");
+        assert_eq!(states::OccupiedStates::valid_through(&timed, &params, &at), 500, "an unsettled judgement expires after the hour");
+        learning.world.lock().unwrap().ends.clear();
         learning.world.lock().unwrap().undeclared = true;
         assert_eq!(projected(TableId::States, &world), None, "a read declaring nothing reads every field");
-        assert!(states::OccupiedStates::clock_dependent(&world, &learning) && !states::OccupiedStates::clock_dependent(&[], &learning), "and the hour");
+        assert_eq!(states::world_valid_through(&timed, &learning.world.lock().unwrap()), 500, "an undeclared read expires after the hour");
         let mut moved = frame();
         fn held(frame: &mut DecodedFrame, table: TableId) -> &mut TableRows {
             match &mut *frame.tables[table.index()] { TableView::Complete(rows) => rows, _ => unreachable!() }
@@ -257,8 +266,10 @@ mod reply {
         let at = |hour| { let mut frame = frame(); frame.hour = hour; frame };
         let start = at(500);
         let (_, read) = inputs::capture(&start, || inputs::fields(&start, TableId::ScriptFlags, &["value"]));
+        let mut world_read = super::super::WorldReads::default();
+        world_read.note(&read);
         let content = content();
-        *content.judged.lock().unwrap() = super::super::Judged { at: Some((start.branch, 500)), decisions: [(("law".to_owned(), 1, 2), (Ok(true), read))].into(), carried: false };
+        *content.judged.lock().unwrap() = super::super::Judged { at: Some((start.branch, 500)), inputs_at: 500, stage: 2, through: i32::MAX, read: world_read, decisions: [(("law".to_owned(), 1, 2), (Ok(true), read))].into(), carried: false };
         let edit = |table, fields: &[&str]| {
             let mut edits = Edits::default();
             edits.tables.insert(table, [(7u128, if fields.is_empty() { u64::MAX } else { field_mask(table, fields) })].into());
@@ -271,10 +282,10 @@ mod reply {
         assert!(states::judged_through(&content, &at(524), Some(500), &edit(TableId::ScriptVariables, &["seed"])), "a table no trigger read");
         assert_eq!(judged(), Some(524), "and the laws now stand at the new hour");
         assert!(states::law_stands(&content, &at(524), &edit(TableId::ScriptVariables, &["seed"])), "carried through the edit, the shown laws stand");
-        content.world.lock().unwrap().ends = true;
+        content.judged.lock().unwrap().read.ends.insert(TableId::WarRelations);
         assert!(states::law_stands(&content, &at(524), &Edits::default()), "a relation that ends, the laws carried through the hours");
         assert!(!states::law_stands(&content, &at(548), &Edits::default()), "a relation that ends, the laws not carried to this hour");
-        content.world.lock().unwrap().ends = false;
+        content.judged.lock().unwrap().read.ends.clear();
         assert!(states::judged_through(&content, &at(524), Some(500), &Edits::default()), "asked again within the hour");
         assert!(!states::judged_through(&content, &at(572), Some(548), &Edits::default()), "an hour the laws were not judged through");
         assert_eq!(judged(), Some(524));
@@ -356,5 +367,412 @@ mod reply {
         let reply = states::reply(&old_recording, &content(), &Cells::default()).unwrap();
         assert!(reply.missing.is_none());
         assert!(reply.states[0].garrison_missing.as_deref().is_some_and(|why| why.contains("not recorded")), "{:?}", reply.states[0].garrison_missing);
+    }
+
+    #[test]
+    fn occupied_states_and_occupation_detail_hold_through_moving_numbers_and_refresh_on_structural_changes() {
+        use super::super::detail::OccupationDetail;
+        use dashboard_base::{
+            Source, SourceKey,
+            products::{LoadContext, at_hour::{exact_panel, frame_panel}},
+            test_fixtures::{CAMPAIGN, materialized_frame, played, records, source, streamed},
+        };
+        use replay::campaign::Replay;
+        use replay_data::rows::CountryCollaborationRow;
+        use serde_json::json;
+        use std::sync::{Arc, atomic::AtomicBool};
+
+        let make = |branch: u64, hour: i32, damaged: bool| {
+            let mut f = source(branch, hour, Some(100));
+            let pol_tag = if hour >= 109 { b"PLC".to_vec() } else { b"POL".to_vec() };
+            fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
+                *frame.tables[table.index()] = TableView::Complete(rows);
+            }
+            set(&mut f, TableId::Countries, TableRows::Countries(vec![
+                CountryRow { id: 1, canonical_slot: 1, tag: b"GER".to_vec(), political_power_raw: Some(i64::from(hour) * 10), ..Default::default() },
+                CountryRow { id: 2, canonical_slot: 2, tag: pol_tag, political_power_raw: Some(i64::from(hour)), ..Default::default() },
+                CountryRow { id: 3, canonical_slot: 3, tag: b"ITA".to_vec(), ..Default::default() },
+            ]));
+            set(&mut f, TableId::CountryLinks, TableRows::CountryLinks([1, 2, 3].map(|id| CountryLinkRow { id, canonical_slot: id }).to_vec()));
+            set(&mut f, TableId::States, TableRows::States(vec![
+                StateRow { id: 10, owner: 2, controller: 1, manpower_available: hour * 5, ..Default::default() },
+                StateRow { id: 11, owner: 2, controller: if hour >= 105 { 3 } else { 1 }, ..Default::default() },
+            ]));
+            if damaged {
+                *f.tables[TableId::StateResistance.index()] = TableView::Unavailable { reason: "resistance read failed".into() };
+            } else {
+                set(&mut f, TableId::StateResistance, TableRows::StateResistance(vec![
+                    resistance(10, 2, 1, 1_000_000 + i64::from(hour) * 1000),
+                    resistance(11, 2, 1, 2_000_000 + i64::from(hour) * 1000),
+                ]));
+            }
+            let required = if hour == 104 { -10 } else { 250_000 + i64::from(hour) };
+            set(&mut f, TableId::StateGarrisons, TableRows::StateGarrisons(vec![
+                StateGarrisonRow { controller: 1, state: 10, occupied: 2, required_manpower: 100 + hour, garrison_required: required, equipment: Recorded::Value(GarrisonEquipmentInputs::default()), ..Default::default() },
+            ]));
+            set(&mut f, TableId::GarrisonStrengths, TableRows::GarrisonStrengths(vec![
+                GarrisonStrengthRow { controller: 1, state: 10, strength: Recorded::Value(50_000 + i64::from(hour)), reason: GarrisonStrengthRow::KNOWN },
+            ]));
+            set(&mut f, TableId::StateAssignedManpower, TableRows::StateAssignedManpower(vec![
+                StateAssignedManpowerRow { controller: 1, state: 10, ordinal: 0, occupied: 2, source_country: 1, amount: 30 + (hour % 5) },
+            ]));
+            set(&mut f, TableId::StateOccupationLaws, TableRows::StateOccupationLaws(vec![
+                StateOccupationLawRow { controller: 1, occupied: 2, state: 10, name: if hour >= 106 { b"brutal".to_vec() } else { b"harsh".to_vec() } },
+            ]));
+            set(&mut f, TableId::OccupationSettings, TableRows::OccupationSettings(vec![
+                OccupationSettingsRow { country: 1, default_law_present: 1, law: b"default".to_vec(), group_laws: Recorded::Value(Some(vec![OccupationGroupLaw { occupied: 2, scope_country: Some(2), law: Some(b"group_law".to_vec()) }])), fallback_law: Recorded::Value(Some(b"fallback".to_vec())), ..Default::default() },
+                OccupationSettingsRow { country: 3, default_law_present: 1, law: b"default".to_vec(), group_laws: Recorded::Value(Some(vec![OccupationGroupLaw { occupied: 2, scope_country: Some(2), law: Some(b"group_law".to_vec()) }])), fallback_law: Recorded::Value(Some(b"fallback".to_vec())), ..Default::default() },
+            ]));
+            set(&mut f, TableId::LexicalTokens, TableRows::LexicalTokens(Vec::<LexicalTokenRow>::new()));
+            set(&mut f, TableId::Provinces, TableRows::Provinces(Vec::new()));
+            if damaged {
+                *f.tables[TableId::CountryCollaboration.index()] = TableView::Unavailable { reason: "collab read failed".into() };
+            } else {
+                set(&mut f, TableId::CountryCollaboration, TableRows::CountryCollaboration(vec![
+                    CountryCollaborationRow { source: 2, target: 1, progress: if hour >= 108 { 40_000 } else { 10_000 } },
+                ]));
+            }
+            f
+        };
+
+        let make_writers = || {
+            let current: Vec<usize> = replay_recording::schema::schema().unwrap().iter().map(Vec::len).collect();
+            let mut kept = current.clone();
+            kept[TableId::GarrisonStrengths.index()] = usize::MAX;
+            recorder_derive::writers_within(&kept, &current)
+        };
+        let main_frames: Vec<_> = (100..=114).map(|hour| make(1, hour, (111..=112).contains(&hour))).collect();
+        let replay = Replay::from_records(make_writers(), CAMPAIGN.into(), &[records(1, main_frames.clone())]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(SourceKey { source_id: "occ-played".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let load = LoadContext { content: None };
+
+        let occ_params = json!({"branchId": "1"});
+        let occ_panel = exact_panel::<states::OccupiedStates>(&source, &load, &occ_params).unwrap();
+        let occ_exact = occ_panel.exact().unwrap();
+        let mut occ_whole = frame_panel::<states::OccupiedStates>(&source, &load, &occ_params).unwrap();
+        let steps = played(source.replay_ref(), occ_exact, 100, 114);
+        for step in &steps {
+            let expected = streamed(&materialized_frame(&mut *occ_whole, source.replay_ref(), 1, step.hour), step.fresh);
+            assert_eq!(streamed(&step.value, step.fresh), expected, "occupied-states at {}", step.hour);
+            if matches!(step.hour, 101 | 102 | 103 | 107 | 108 | 110 | 114) {
+                assert_eq!(step.product_calls, 0, "quiet/moving hour {} should not rebuild occupied-states", step.hour);
+            }
+        }
+        let back = (occ_exact.advance)(102, true, &false.into(), None);
+        assert_eq!(*back.value, materialized_frame(&mut *occ_whole, source.replay_ref(), 1, 102), "occupied-states backward seek");
+        let alt_frames: Vec<_> = (105..=108).map(|hour| make(2, hour, false)).collect();
+        let branched = Replay::from_records(make_writers(), CAMPAIGN.into(), &[records(1, main_frames), records(2, alt_frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let branch2 = branched.timelines().unwrap().list.iter().find(|t| t.id != 1).unwrap().id;
+        let alt_source = Source::from_replay(SourceKey { source_id: "occ-branch".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(branched), &AtomicBool::new(false)).unwrap();
+        let alt_panel = exact_panel::<states::OccupiedStates>(&alt_source, &load, &json!({"branchId": branch2.to_string()})).unwrap();
+        let alt_read = (alt_panel.exact().unwrap().advance)(106, true, &false.into(), None);
+        let mut alt_whole = frame_panel::<states::OccupiedStates>(&alt_source, &load, &json!({"branchId": branch2.to_string()})).unwrap();
+        assert_eq!(*alt_read.value, materialized_frame(&mut *alt_whole, alt_source.replay_ref(), branch2, 106), "occupied-states branch switch");
+
+        for det_params in [
+            json!({"branchId": "1", "countries": [], "collaboration": true}),
+            json!({"branchId": "1", "countries": ["GER"], "collaboration": false}),
+        ] {
+            let det_panel = exact_panel::<OccupationDetail>(&source, &load, &det_params).unwrap();
+            let det_exact = det_panel.exact().unwrap();
+            let mut det_whole = frame_panel::<OccupationDetail>(&source, &load, &det_params).unwrap();
+            let steps = played(source.replay_ref(), det_exact, 100, 114);
+            for step in &steps {
+                let expected = streamed(&materialized_frame(&mut *det_whole, source.replay_ref(), 1, step.hour), step.fresh);
+                assert_eq!(streamed(&step.value, step.fresh), expected, "occupation-at {det_params} at {}", step.hour);
+                if matches!(step.hour, 101 | 102 | 103 | 104 | 106 | 107 | 110 | 114) {
+                    assert_eq!(step.product_calls, 0, "quiet hour {} should not rebuild occupation-at", step.hour);
+                }
+            }
+            let back = (det_exact.advance)(103, true, &false.into(), None);
+            assert_eq!(*back.value, materialized_frame(&mut *det_whole, source.replay_ref(), 1, 103), "occupation-at backward seek");
+            let cold = (det_exact.cold)(100, &false.into());
+            let expected_cold = materialized_frame(&mut *det_whole, source.replay_ref(), 1, 100);
+            assert_eq!(cold, expected_cold, "occupation-at {det_params} cold path");
+            let totals = cold.as_ref().unwrap()["live"]["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|group| group["table"] == TableId::OccupierTotals.index())
+                .unwrap()["values"]
+                .as_array()
+                .unwrap();
+            assert!(totals.iter().any(|value| value.as_i64().is_some_and(|n| n > 0)), "cold occupation-at must decode nonzero OccupierTotals live cells: {totals:?}");
+        }
+    }
+
+    #[test]
+    fn occupied_states_reacts_to_newly_discovered_world_edits_and_holds_flag_age_thresholds() {
+        use dashboard_base::{
+            Source, SourceKey,
+            products::at_hour::{exact_panel, frame_panel},
+            test_fixtures::{CAMPAIGN, content_identity, game, materialized_frame, played, records, source, source_with_content, streamed, visual_mods::Machine},
+        };
+        use replay::campaign::Replay;
+        use replay_data::rows::{CompletedFocusRow, CountryAppearanceRow, ScriptFlagRow};
+        use serde_json::json;
+        use std::sync::atomic::AtomicBool;
+
+        game::enter();
+        let machine = Machine::new("occ_law_exact");
+        machine.write(
+            "common/defines/00_defines.lua",
+            b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=7},NInterface={GARRISON_STRENGTH_TO_SHOW_RED=0.5},NResistance={GARRISON_STR_POW_MANPOWER=1,GARRISON_STR_POW_EQUIPMENT=1}}",
+        );
+        machine.write(
+            "common/occupation_laws/test_laws.txt",
+            br#"
+cosmetic_law = {
+    icon = 1
+    visible = { has_cosmetic_tag = test_cosmetic }
+}
+original_law = {
+    icon = 1
+    visible = { original_tag = ROOT }
+}
+focus_law = {
+    icon = 1
+    visible = { has_completed_focus = test_occ_focus }
+}
+flag_age_law = {
+    icon = 1
+    visible = { has_country_flag = { flag = test_occ_flag days > 1 } }
+}
+dynamic_flag_law = {
+    icon = 1
+    visible = { has_country_flag = { flag = dyn_occ_flag_@ROOT days > 1 } }
+}
+plain_law = {
+    icon = 1
+}
+fallback_law = {
+    icon = 1
+    fallback_law = yes
+}
+"#,
+        );
+
+        let h0 = game_model::calendar::HOUR_EPOCH;
+        let frames: Vec<_> = (0..=55)
+            .map(|offset| {
+                let hour = h0 + offset;
+                let mut f = source(1, hour, Some(100));
+                let mut set = |table: TableId, rows: TableRows| *f.tables[table.index()] = TableView::Complete(rows);
+                set(TableId::Countries, TableRows::Countries(vec![
+                    CountryRow { id: 1, canonical_slot: 1, tag: b"GER".to_vec(), ..Default::default() },
+                    CountryRow { id: 2, canonical_slot: 2, tag: b"POL".to_vec(), ..Default::default() },
+                    CountryRow { id: 3, canonical_slot: 3, tag: b"FRA".to_vec(), ..Default::default() },
+                ]));
+                set(TableId::CountryLinks, TableRows::CountryLinks([1, 2, 3].map(|id| CountryLinkRow { id, canonical_slot: id }).to_vec()));
+                set(TableId::States, TableRows::States(vec![
+                    StateRow { id: 10, owner: 2, controller: 1, ..Default::default() },
+                    StateRow { id: 11, owner: 2, controller: 3, ..Default::default() },
+                ]));
+                set(TableId::StateResistance, TableRows::StateResistance(vec![
+                    resistance(10, 2, 1, 1_000_000),
+                    resistance(11, 2, 3, 1_000_000),
+                ]));
+                set(TableId::StateGarrisons, TableRows::StateGarrisons(Vec::new()));
+                set(TableId::GarrisonStrengths, TableRows::GarrisonStrengths(Vec::new()));
+                set(TableId::StateAssignedManpower, TableRows::StateAssignedManpower(Vec::new()));
+                set(TableId::StateOccupationLaws, TableRows::StateOccupationLaws(Vec::new()));
+                let flag_law: &[u8] = if offset <= 52 { b"flag_age_law" } else { b"plain_law" };
+                set(TableId::OccupationSettings, TableRows::OccupationSettings(vec![
+                    OccupationSettingsRow {
+                        country: 1,
+                        default_law_present: 1,
+                        law: b"cosmetic_law".to_vec(),
+                        group_laws: Recorded::Value(Some(vec![OccupationGroupLaw { occupied: 2, scope_country: Some(2), law: None }])),
+                        fallback_law: Recorded::Value(Some(b"fallback_law".to_vec())),
+                        ..Default::default()
+                    },
+                    OccupationSettingsRow {
+                        country: 3,
+                        default_law_present: 1,
+                        law: flag_law.to_vec(),
+                        group_laws: Recorded::Value(Some(vec![OccupationGroupLaw { occupied: 2, scope_country: Some(2), law: None }])),
+                        fallback_law: Recorded::Value(Some(b"fallback_law".to_vec())),
+                        ..Default::default()
+                    },
+                ]));
+                set(TableId::CountryAppearance, TableRows::CountryAppearance(vec![
+                    CountryAppearanceRow {
+                        country: 1,
+                        cosmetic_tag: if offset == 0 { b"test_cosmetic".to_vec() } else { Vec::new() },
+                        original_tag_reference: Recorded::Value(Some(1)),
+                        ..Default::default()
+                    },
+                    CountryAppearanceRow { country: 2, original_tag_reference: Recorded::Value(Some(2)), ..Default::default() },
+                    CountryAppearanceRow { country: 3, original_tag_reference: Recorded::Value(Some(3)), ..Default::default() },
+                ]));
+                set(TableId::LexicalTokens, TableRows::LexicalTokens(vec![
+                    LexicalTokenRow { token: 7, literal: b"test_occ_flag".to_vec() },
+                    LexicalTokenRow { token: 8, literal: b"test_occ_focus".to_vec() },
+                    LexicalTokenRow { token: 9, literal: b"dyn_occ_flag_FRA".to_vec() },
+                ]));
+                set(TableId::ScriptFlags, TableRows::ScriptFlags(vec![
+                    ScriptFlagRow { scope_kind: 1, scope_id: 2, token: 7, set_hour: h0, value: if offset >= 10 { 2 } else { 1 }, remaining_days: 0 },
+                    ScriptFlagRow { scope_kind: 1, scope_id: 3, token: 7, set_hour: h0, value: 1, remaining_days: 0 },
+                    ScriptFlagRow { scope_kind: 1, scope_id: 3, token: 9, set_hour: h0, value: 1, remaining_days: 0 },
+                ]));
+                set(TableId::ScriptVariables, TableRows::ScriptVariables(Vec::new()));
+                set(TableId::CompletedFocuses, TableRows::CompletedFocuses(vec![CompletedFocusRow { country: 3, ordinal: 0, token: b"test_occ_focus".to_vec() }]));
+                set(TableId::Provinces, TableRows::Provinces(Vec::new()));
+                f
+            })
+            .collect();
+
+        let (seeded, load) = source_with_content(vec![frames[0].clone()], &machine.root);
+        let pack = seeded.replay_ref().facts(0).unwrap();
+        let (_, identity) = content_identity(&machine.root);
+        let build_source = |frames: Vec<DecodedFrame>, name: &str| {
+            let mut writers = recorder_derive::writers();
+            writers.define_from(&recorder_derive_framework::framework::Facts::held(std::sync::Arc::new(pack.clone())), &identity);
+            let mut input = records(1, frames);
+            if let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] {
+                session.identity = identity.clone();
+            }
+            let replay = Replay::from_records(writers, CAMPAIGN.into(), &[input]).unwrap();
+            let path = machine.root.join(format!("{name}.battleplan"));
+            std::fs::write(&path, replay.bytes()).unwrap();
+            replay::campaign::writer::revise(
+                &path,
+                replay.recording(),
+                &replay::campaign::writer::Addition { facts: Some(&pack), ..Default::default() },
+                true,
+                3,
+            )
+            .unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            let replay = Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
+            Source::from_replay(
+                SourceKey { source_id: name.into(), revision: "1".into() },
+                path,
+                std::sync::Arc::new(replay),
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        };
+        let source = build_source(frames.clone(), "occ-law-exact");
+        let params = json!({"branchId": "1"});
+        let panel = exact_panel::<states::OccupiedStates>(&source, &load, &params).unwrap();
+        let exact = panel.exact().unwrap();
+        let mut whole = frame_panel::<states::OccupiedStates>(&source, &load, &params).unwrap();
+        let steps = played(source.replay_ref(), exact, h0, h0 + 55);
+        let law_at = |offset: i32, index: usize| {
+            steps[offset as usize].value.as_ref().as_ref().unwrap()["states"][index]["law"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        for step in &steps {
+            let expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
+            assert_eq!(streamed(&step.value, step.fresh), expected, "occupied-states at offset {}", step.hour - h0);
+        }
+        assert_eq!(law_at(0, 0), "cosmetic_law");
+        assert_eq!(law_at(1, 0), "fallback_law", "newly discovered stage-2 table flip must take effect on hour 1");
+        assert_eq!(law_at(0, 1), "fallback_law");
+        assert_eq!(law_at(47, 1), "fallback_law");
+        assert_eq!(law_at(48, 1), "flag_age_law", "flag age > 1 day flips at +48h");
+        assert_eq!(law_at(52, 1), "flag_age_law");
+        assert_eq!(law_at(53, 1), "plain_law");
+        for offset in 2..=47 {
+            assert_eq!(steps[offset as usize].product_calls, 0, "quiet/unrelated-flag hour before flag-age threshold (offset {offset}) should hold");
+        }
+        for offset in 49..=52 {
+            assert_eq!(steps[offset as usize].product_calls, 0, "quiet hour after flag-age threshold (offset {offset}) should hold");
+        }
+        for offset in 54..=55 {
+            assert_eq!(steps[offset as usize].product_calls, 0, "quiet hour after switching off clock law (offset {offset}) should hold");
+        }
+
+        drop(panel);
+        let after_cold = exact_panel::<states::OccupiedStates>(&source, &load, &params).unwrap();
+        let after_cold_exact = after_cold.exact().unwrap();
+        assert_eq!(
+            (after_cold_exact.cold)(h0 + 1, &false.into()),
+            materialized_frame(&mut *whole, source.replay_ref(), 1, h0 + 1),
+            "cold read at offset 1"
+        );
+        let after_cold_steps = played(source.replay_ref(), after_cold_exact, h0 + 1, h0 + 49);
+        for step in &after_cold_steps {
+            let expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
+            assert_eq!(streamed(&step.value, step.fresh), expected, "occupied-states after cold read at offset {}", step.hour - h0);
+        }
+        assert_eq!(after_cold_steps[46].value.as_ref().as_ref().unwrap()["states"][1]["law"], "fallback_law");
+        assert_eq!(after_cold_steps[47].value.as_ref().as_ref().unwrap()["states"][1]["law"], "flag_age_law", "cold read before seed must preserve +48h flag-age deadline");
+        drop(after_cold);
+
+        let mut dynamic_frames = frames[..=49].to_vec();
+        for (offset, frame) in dynamic_frames.iter_mut().enumerate() {
+            *frame.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(vec![
+                ScriptFlagRow { scope_kind: 1, scope_id: 3, token: 7, set_hour: h0, value: 1, remaining_days: 0 },
+                ScriptFlagRow { scope_kind: 1, scope_id: 3, token: 9, set_hour: h0, value: 1, remaining_days: 0 },
+            ]));
+            if offset >= 1 {
+                *frame.tables[TableId::OccupationSettings.index()] = TableView::Complete(TableRows::OccupationSettings(vec![
+                    OccupationSettingsRow {
+                        country: 1,
+                        default_law_present: 1,
+                        law: b"cosmetic_law".to_vec(),
+                        group_laws: Recorded::Value(Some(vec![OccupationGroupLaw { occupied: 2, scope_country: Some(2), law: None }])),
+                        fallback_law: Recorded::Value(Some(b"fallback_law".to_vec())),
+                        ..Default::default()
+                    },
+                    OccupationSettingsRow {
+                        country: 3,
+                        default_law_present: 1,
+                        law: b"dynamic_flag_law".to_vec(),
+                        group_laws: Recorded::Value(Some(vec![OccupationGroupLaw { occupied: 2, scope_country: Some(2), law: None }])),
+                        fallback_law: Recorded::Value(Some(b"fallback_law".to_vec())),
+                        ..Default::default()
+                    },
+                ]));
+            }
+        }
+        let dynamic_source = build_source(dynamic_frames, "occ-law-dynamic-flag");
+        let dynamic_panel = exact_panel::<states::OccupiedStates>(&dynamic_source, &load, &params).unwrap();
+        let dynamic_exact = dynamic_panel.exact().unwrap();
+        let mut dynamic_whole = frame_panel::<states::OccupiedStates>(&dynamic_source, &load, &params).unwrap();
+        let dynamic_steps = played(dynamic_source.replay_ref(), dynamic_exact, h0, h0 + 49);
+        for step in &dynamic_steps {
+            let expected = streamed(&materialized_frame(&mut *dynamic_whole, dynamic_source.replay_ref(), 1, step.hour), step.fresh);
+            assert_eq!(streamed(&step.value, step.fresh), expected, "occupied-states dynamic flag at offset {}", step.hour - h0);
+        }
+        assert_eq!(dynamic_steps[47].value.as_ref().as_ref().unwrap()["states"][1]["law"], "fallback_law");
+        assert_eq!(dynamic_steps[48].value.as_ref().as_ref().unwrap()["states"][1]["law"], "dynamic_flag_law", "switching to @ROOT flag law on already-projected Countries.tag must keep +48h deadline");
+        for offset in 3..=47 {
+            assert_eq!(dynamic_steps[offset].product_calls, 0, "quiet hour after settling dynamic flag law (offset {offset}) should hold");
+        }
+        drop(dynamic_panel);
+
+        let mut retry_frames = frames[..=1].to_vec();
+        *retry_frames[1].tables[TableId::OccupationSettings.index()] = TableView::Complete(TableRows::OccupationSettings(vec![
+            OccupationSettingsRow {
+                country: 1,
+                default_law_present: 1,
+                law: b"original_law".to_vec(),
+                group_laws: Recorded::Value(Some(vec![OccupationGroupLaw { occupied: 2, scope_country: Some(2), law: None }])),
+                fallback_law: Recorded::Value(Some(b"fallback_law".to_vec())),
+                ..Default::default()
+            },
+            OccupationSettingsRow {
+                country: 3,
+                default_law_present: 1,
+                law: b"focus_law".to_vec(),
+                group_laws: Recorded::Value(Some(vec![OccupationGroupLaw { occupied: 2, scope_country: Some(2), law: None }])),
+                fallback_law: Recorded::Value(Some(b"fallback_law".to_vec())),
+                ..Default::default()
+            },
+        ]));
+        let retry_source = build_source(retry_frames, "occ-law-retry");
+        let retry_panel = exact_panel::<states::OccupiedStates>(&retry_source, &load, &params).unwrap();
+        let retry_exact = retry_panel.exact().unwrap();
+        let mut retry_whole = frame_panel::<states::OccupiedStates>(&retry_source, &load, &params).unwrap();
+        assert_eq!(*(retry_exact.advance)(h0, true, &false.into(), None).value, materialized_frame(&mut *retry_whole, retry_source.replay_ref(), 1, h0));
+        let retried = (retry_exact.advance)(h0 + 1, false, &false.into(), None);
+        assert_eq!(*retried.value, materialized_frame(&mut *retry_whole, retry_source.replay_ref(), 1, h0 + 1), "projection retry must re-evaluate newly widened columns afresh");
+        assert_eq!(retried.value.as_ref().as_ref().unwrap()["states"][0]["law"], "original_law");
+        assert_eq!(retried.value.as_ref().as_ref().unwrap()["states"][1]["law"], "focus_law");
     }
 }

@@ -18,8 +18,10 @@ content-reader-defines.workspace = true
 content-reader-key-names.workspace = true
 content-reader-layers.workspace = true
 content-reader-military.workspace = true
+content-reader-parser.workspace = true
 content-reader-politics.workspace = true
 content-reader-script.workspace = true
+game-model.workspace = true
 replay-lanes.workspace = true
 replay-recording.workspace = true
 content-reader-country-names = { workspace = true }
@@ -57,6 +59,8 @@ dashboard-text = { workspace = true, features = ["test-support"] }
 dashboard-wars = { workspace = true, features = ["export-types"] }
 engine-heap = { workspace = true }
 recorder-derive = { workspace = true, features = ["test-support"] }
+recorder-derive-framework = { workspace = true }
+replay-capture-spool = { workspace = true }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 

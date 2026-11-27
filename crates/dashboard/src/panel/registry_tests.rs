@@ -153,11 +153,8 @@ fn each_ui_panel_key_has_one_registered_reader() {
 fn readers_that_can_rebuild_at_each_hour_are_named() {
     let allowed = [
         "casualty-matrix",
-        "country-faction-goals",
         "faction-details",
-        "occupation-at",
         "volunteer-flow", "war-contributions",
-        "wargoals",
     ];
     let actual: Vec<_> = READERS.iter().filter_map(|(&key, reader)| {
         matches!(reader.kind, PanelKind::WholeFrame | PanelKind::DayThroughHour | PanelKind::ExactHourly).then_some(key)
@@ -166,8 +163,6 @@ fn readers_that_can_rebuild_at_each_hour_are_named() {
         PanelKind::ExactHourlyWhen(conditions) => Some((key, conditions)),
         _ => None,
     }).collect();
-    assert_eq!(conditional, [
-        ("occupied-states", ["occupation law reads a timed or undeclared world condition"].as_slice()),
-    ]);
+    assert!(conditional.is_empty(), "{conditional:?}");
     assert_eq!(actual, allowed, "Remove a name when its reader no longer needs whole frames or hourly refreshes");
 }

@@ -1,7 +1,7 @@
 use super::details::{self, DetailContent, FactionDetailParams, FactionDetailReply, FactionDetails};
-use super::goals::FactionGoalDefinition;
+use super::goals::{self, FactionGoalDefinition};
 use dashboard_base::products::Country;
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Owner, Read, ReadsAt}}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Clock, Edits, Held, Owner, Read, ReadsAt, field_columns, warnings_through}}};
 use dashboard_text::metadata::link_slot;
 use replay_data::rows::{CountryLinkRow, FactionMemberRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -78,10 +78,22 @@ pub struct CountryGoal {
     pub unrecognised_status: Option<i32>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Through(i32);
+
+impl PartialEq for Through {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFactionGoalsReply {
+    #[serde(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
+    through: Through,
     #[doc = " The faction the country belongs to at the hour; none when it belongs to none, or when"]
     #[doc = " `membership_missing` says membership is not known."]
     pub faction: Option<String>,
@@ -112,7 +124,7 @@ dashboard_base::reply_warnings!(CountryFactionGoalsReply);
 const MEMBERSHIP: [TableId; 2] = [TableId::FactionMembers, TableId::CountryLinks];
 
 fn blank(missing: Option<String>) -> CountryFactionGoalsReply {
-    CountryFactionGoalsReply { faction: None, goals: Vec::new(), definitions: Vec::new(), goal_reason: None, membership_missing: missing, warnings: Vec::new() }
+    CountryFactionGoalsReply { through: Through(i32::MAX), faction: None, goals: Vec::new(), definitions: Vec::new(), goal_reason: None, membership_missing: missing, warnings: Vec::new() }
 }
 
 pub(super) fn faction_of(members: &[FactionMemberRow], links: &[CountryLinkRow], slot: u32) -> Option<u64> {
@@ -129,11 +141,18 @@ fn detail_params(params: &CountryFactionGoalsParams, faction: u64) -> FactionDet
     FactionDetailParams { branch_id: params.branch_id.clone(), faction: faction.to_string(), viewpoint: Some(params.country.clone()) }
 }
 
+fn scripted_tables() -> Vec<TableId> {
+    let mut tables: Vec<TableId> = goals::text_tables().chain([TableId::LexicalTokens, TableId::Countries, TableId::CountryLinks]).collect();
+    tables.sort_unstable();
+    tables.dedup();
+    tables
+}
+
 impl AtHour for CountryFactionGoals {
     const KEY: &'static str = "country-faction-goals";
     const TITLE: &'static str = "Country faction goals";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: Clock = Clock::Boundaries;
     type Params = CountryFactionGoalsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, goals];
     type Reply = CountryFactionGoalsReply;
@@ -154,27 +173,95 @@ impl AtHour for CountryFactionGoals {
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        let mut tables: Vec<TableId> = details::goal_reads(0).into_iter().map(|read| read.table).chain(super::goals::text_tables()).chain(MEMBERSHIP).collect();
+        let mut tables: Vec<TableId> = details::country_goal_reads(0)
+            .into_iter()
+            .map(|read| read.table)
+            .chain(MEMBERSHIP)
+            .chain([TableId::LexicalTokens])
+            .collect();
         tables.sort_unstable();
         tables.dedup();
         tables
     }
 
-    fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
+    fn reads(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         match (step, owner) {
             (0, Some(_)) => MEMBERSHIP.map(Read::all).into(),
-            (1, Some(owner)) => membership(held, owner).ok().flatten().map(details::goal_reads).unwrap_or_default(),
+            (1, Some(owner)) => match membership(held, owner).ok().flatten() {
+                Some(faction) => details::country_goal_reads(faction),
+                None => [TableId::FactionGoalStatus, TableId::FactionGoalEntries]
+                    .into_iter()
+                    .map(|table| Read::these(table, []))
+                    .collect(),
+            },
+            (2, Some(owner)) => {
+                let tokens = membership(held, owner)
+                    .ok()
+                    .flatten()
+                    .map(|faction| goals::shown_tokens(held, faction, params.goals))
+                    .unwrap_or_default();
+                vec![Read::these(TableId::LexicalTokens, tokens)]
+            }
             _ => Vec::new(),
         }
     }
 
     fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
-        if step != 2 {
-            return Self::reads(params, owner, step, held);
+        if step == 3 {
+            let Some(owner) = owner else { return Vec::new() };
+            let Some(faction) = membership(held, owner).ok().flatten() else { return Vec::new() };
+            if at.context.catalogue().is_ok_and(|cat| goals::needs_lexicon_lookup(held, faction, cat, params.goals)) {
+                return vec![Read::all(TableId::LexicalTokens)];
+            }
+            return Vec::new();
         }
-        let (Some(owner), Ok(cat)) = (owner, at.context.catalogue()) else { return Vec::new() };
-        let Ok(Some(faction)) = membership(held, owner) else { return Vec::new() };
-        details::text_reads(held, faction, cat, &details::goal_reads(faction))
+        Self::reads(params, owner, step, held)
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::FactionMembers => Some(field_columns(table, &["faction"])),
+            TableId::CountryLinks => Some(field_columns(table, &["canonical_slot"])),
+            TableId::FactionGoalStatus => Some(Vec::new()),
+            TableId::FactionGoalEntries => Some(field_columns(table, &["token", "status", "progress_raw"])),
+            _ => None,
+        }
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        match table {
+            TableId::FactionGoalEntries => Some(field_columns(table, &["token", "status"])),
+            _ => Self::columns(table),
+        }
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        let touched = |tables: &[TableId]| edits.replaced.iter().chain(edits.tables.keys()).any(|table| tables.contains(table));
+        match stage {
+            0 => false,
+            1 => touched(&MEMBERSHIP),
+            2 => touched(&[TableId::FactionMembers, TableId::CountryLinks, TableId::FactionGoalEntries]),
+            _ => touched(&[TableId::FactionMembers, TableId::CountryLinks, TableId::FactionGoalEntries, TableId::LexicalTokens]),
+        }
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, data: &mut Held<'_>) -> io::Result<bool> {
+        if !edits.replaced.is_empty() || !edits.tables.keys().all(|table| MEMBERSHIP.contains(table)) || !data["membershipMissing"].is_null() {
+            return Ok(false);
+        }
+        let Some(owner) = at.owner else { return Ok(false) };
+        Ok(match membership(frame, owner) {
+            Ok(Some(faction)) => data["faction"].as_str() == Some(faction.to_string().as_str()),
+            Ok(None) => data["faction"].is_null(),
+            Err(_) => false,
+        })
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        if partial {
+            return frame.hour;
+        }
+        reply.through.0.min(warnings_through(frame.hour, reply.warnings.iter().map(String::as_str).chain(reply.goal_reason.as_deref()).chain(reply.membership_missing.as_deref())))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -187,10 +274,21 @@ impl AtHour for CountryFactionGoals {
             Err(why) => blank(Some(why)),
             Ok(None) => blank(None),
             Ok(Some(faction)) => {
-                let detail = details::goals_only(frame, &detail_params(params, faction), faction, params.goals, at)?;
+                let asked = detail_params(params, faction);
+                let (detail, through) = if at.context.catalogue().is_ok_and(|cat| goals::scripted_for(frame, faction, cat, params.goals)) {
+                    let (detail, through) = at.context.inputs().evaluate_with_reads(frame, &scripted_tables(), at.cancelled, |world| {
+                        (
+                            details::goals_only_in(frame, world, &asked, faction, params.goals, at),
+                            vec![dashboard_text::triggers::inputs::TableRead::fields(TableId::Countries, &["canonical_slot", "tag"])],
+                        )
+                    })?;
+                    (detail?, through)
+                } else {
+                    (details::goals_only_in(frame, frame, &asked, faction, params.goals, at)?, i32::MAX)
+                };
                 let goal_reason = detail.goal_reason.clone();
                 let (goals, definitions, warnings) = shown_goals(detail);
-                CountryFactionGoalsReply { faction: Some(faction.to_string()), goals, definitions, goal_reason, membership_missing: None, warnings }
+                CountryFactionGoalsReply { through: Through(through), faction: Some(faction.to_string()), goals, definitions, goal_reason, membership_missing: None, warnings }
             }
         };
         dashboard_base::products::check_reply_budget(&reply)?;
