@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import suite
 
 
-def _write_shell_folder(folder, revision, *, record_name=suite.SHELL_RECORD, exe_bytes=b"fake-shell-exe", cargo_arguments=None, sha256=None, recorded_bytes=None):
+def _write_shell_folder(folder, revision, *, record_name=suite.SHELL_RECORD, exe_bytes=b"fake-shell-exe", cargo_arguments=None, sha256=None, recorded_bytes=None, compiler=False):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     exe = folder / suite.APP_EXE
@@ -34,6 +34,9 @@ def _write_shell_folder(folder, revision, *, record_name=suite.SHELL_RECORD, exe
         }],
     }
     (folder / record_name).write_text(json.dumps(record), encoding="utf-8")
+    if compiler:
+        for name in suite.SHADER_COMPILER:
+            (folder / name).write_bytes(f"fake-{name}".encode("utf-8"))
     return exe
 
 
@@ -237,34 +240,44 @@ class HostedShellTests(unittest.TestCase):
                 explicit,
             )
 
+    def _install_compiler(self, cmd, names=suite.SHADER_COMPILER):
+        dest = Path(cmd[cmd.index("-Destination") + 1])
+        dest.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (dest / name).write_bytes(f"staged-{name}".encode("utf-8"))
+        return self._result(0)
+
     def test_fetch_shell_reuses_valid_shell_without_calling_gh(self):
         with tempfile.TemporaryDirectory() as tmp:
             gate = Path(tmp) / "gate"
+            captures = Path(tmp) / "captures"
             target = gate / "shared-shell" / self.SHA[:10]
-            _write_shell_folder(target, self.SHA)
+            _write_shell_folder(target, self.SHA, compiler=True)
             calls = []
 
             def runner(cmd, **kwargs):
                 calls.append(cmd)
-                if cmd[0] == "gh":
-                    raise AssertionError("gh must not be called when a verified shell is already present")
+                if cmd[0] in ("gh", "powershell"):
+                    raise AssertionError(f"{cmd[0]} must not be called when a verified shell with compiler is already present")
                 if "rev-parse" in cmd:
                     return self._result(0, stdout=self.SHA + "\n")
                 return self._result(0)
 
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
-                code = suite.run_fetch_shell(commit="origin/main", gate_dir=gate, env={}, runner=runner)
+                code = suite.run_fetch_shell(commit="origin/main", gate_dir=gate, env={"BATTLEPLAN_CAPTURES": str(captures)}, runner=runner)
             self.assertEqual(code, 0)
             self.assertIn(str(target), stdout.getvalue())
-            self.assertFalse(any(cmd[0] == "gh" for cmd in calls))
+            self.assertFalse(any(cmd[0] in ("gh", "powershell") for cmd in calls))
 
     def test_fetch_shell_downloads_verifies_and_ignores_expired_failed_and_foreign_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "out-shell"
+            captures = Path(tmp) / "captures"
             _write_shell_folder(target, self.OTHER_SHA)
             artifact_name = suite.shell_artifact_name(self.SHA)
             downloaded = []
+            installed = []
 
             def runner(cmd, **kwargs):
                 if cmd[0] == "git" and "rev-parse" in cmd:
@@ -290,15 +303,136 @@ class HostedShellTests(unittest.TestCase):
                     dest = Path(cmd[cmd.index("--dir") + 1])
                     _write_shell_folder(dest, self.SHA, exe_bytes=b"new-hosted-shell")
                     return self._result(0)
+                if cmd[0] == "powershell" and any("install-shader-compiler.ps1" in part for part in cmd):
+                    installed.append(cmd)
+                    return self._install_compiler(cmd)
                 raise AssertionError(f"unexpected command: {cmd}")
 
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
-                code = suite.run_fetch_shell(commit=self.SHA, out=target, env={}, runner=runner)
+                code = suite.run_fetch_shell(commit=self.SHA, out=target, env={"BATTLEPLAN_CAPTURES": str(captures)}, runner=runner)
             self.assertEqual(code, 0)
             self.assertEqual(len(downloaded), 1)
-            self.assertEqual(suite.shell_build(target, expected_revision=self.SHA, verify_hash=True)["revision"], self.SHA)
+            self.assertEqual(len(installed), 1)
+            self.assertEqual(suite.shell_build(target, expected_revision=self.SHA, verify_hash=True, require_compiler=True)["revision"], self.SHA)
             self.assertEqual((target / suite.APP_EXE).read_bytes(), b"new-hosted-shell")
+            for name in suite.SHADER_COMPILER:
+                self.assertEqual((target / name).read_bytes(), f"staged-{name}".encode("utf-8"))
+
+            second = Path(tmp) / "second-out-shell"
+            stdout2 = io.StringIO()
+            with contextlib.redirect_stdout(stdout2):
+                code2 = suite.run_fetch_shell(commit=self.SHA, out=second, env={"BATTLEPLAN_CAPTURES": str(captures)}, runner=runner)
+            self.assertEqual(code2, 0)
+            self.assertEqual(len(installed), 1)
+            for name in suite.SHADER_COMPILER:
+                self.assertEqual((second / name).read_bytes(), f"staged-{name}".encode("utf-8"))
+
+    def test_shell_without_shader_compiler_is_not_ready_and_stages_on_reuse_or_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            captures = Path(tmp) / "captures"
+            env = {"BATTLEPLAN_CAPTURES": str(captures)}
+            incomplete = Path(tmp) / "incomplete"
+            _write_shell_folder(incomplete, self.SHA, compiler=False)
+            (incomplete / "dxcompiler.dll").write_bytes(b"only-one")
+
+            with self.assertRaisesRegex(RuntimeError, "dxil.dll"):
+                suite.shell_build(incomplete, expected_revision=self.SHA, verify_hash=True, require_hosted=True, require_compiler=True)
+
+            def failing_installer(cmd, **kwargs):
+                if cmd[0] == "git" and "rev-parse" in cmd:
+                    return self._result(0, stdout=self.SHA + "\n")
+                if cmd[0] == "powershell":
+                    return self._result(1, stderr="download failed")
+                raise AssertionError(f"unexpected command: {cmd}")
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout), self.assertRaisesRegex(RuntimeError, "install-shader-compiler.ps1 failed"):
+                suite.run_fetch_shell(commit=self.SHA, out=incomplete, env=env, runner=failing_installer)
+            self.assertEqual(stdout.getvalue(), "")
+
+            def partial_installer(cmd, **kwargs):
+                if cmd[0] == "git" and "rev-parse" in cmd:
+                    return self._result(0, stdout=self.SHA + "\n")
+                if cmd[0] == "powershell":
+                    return self._install_compiler(cmd, names=("dxcompiler.dll",))
+                raise AssertionError(f"unexpected command: {cmd}")
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout), self.assertRaisesRegex(RuntimeError, "dxil.dll"):
+                suite.run_fetch_shell(commit=self.SHA, out=incomplete, env=env, runner=partial_installer)
+            self.assertEqual(stdout.getvalue(), "")
+
+            partial_cache = captures / "ci" / "e2e" / "shader-compiler"
+            partial_cache.mkdir(parents=True, exist_ok=True)
+            (partial_cache / "dxcompiler.dll").write_bytes(b"truncated-cache")
+
+            installed = []
+
+            def working_installer(cmd, **kwargs):
+                if cmd[0] == "git" and "rev-parse" in cmd:
+                    return self._result(0, stdout=self.SHA + "\n")
+                if cmd[0] == "gh":
+                    raise AssertionError("gh must not be called when only the shader compiler is missing")
+                if cmd[0] == "powershell":
+                    installed.append(cmd)
+                    return self._install_compiler(cmd)
+                raise AssertionError(f"unexpected command: {cmd}")
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = suite.run_fetch_shell(commit=self.SHA, out=incomplete, env=env, runner=working_installer)
+            self.assertEqual(code, 0)
+            self.assertEqual(len(installed), 1)
+            self.assertIn(str(incomplete), stdout.getvalue())
+            self.assertEqual(suite.shell_build(incomplete, expected_revision=self.SHA, verify_hash=True, require_hosted=True, require_compiler=True)["revision"], self.SHA)
+            for name in suite.SHADER_COMPILER:
+                self.assertEqual((partial_cache / name).read_bytes(), f"staged-{name}".encode("utf-8"))
+                self.assertEqual((incomplete / name).read_bytes(), f"staged-{name}".encode("utf-8"))
+
+            retry_captures = Path(tmp) / "retry-captures"
+            retry_env = {"BATTLEPLAN_CAPTURES": str(retry_captures)}
+            retry_cache = retry_captures / "ci" / "e2e" / "shader-compiler"
+            retry_cache.mkdir(parents=True, exist_ok=True)
+            (retry_cache / "dxil.dll").write_bytes(b"damaged-cache-dxil")
+            retry_shell = Path(tmp) / "retry-shell"
+            _write_shell_folder(retry_shell, self.SHA, compiler=False)
+            (retry_shell / "dxil.dll").write_bytes(b"damaged-shell-dxil")
+
+            real_replace = os.replace
+            fail_once = {retry_cache / "dxil.dll", retry_shell / "dxil.dll"}
+
+            def flaky_replace(src, dst):
+                dst_path = Path(dst)
+                if dst_path in fail_once:
+                    fail_once.remove(dst_path)
+                    raise PermissionError(f"locked: {dst_path}")
+                return real_replace(src, dst)
+
+            os.replace = flaky_replace
+            try:
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout), self.assertRaises(PermissionError):
+                    suite.run_fetch_shell(commit=self.SHA, out=retry_shell, env=retry_env, runner=working_installer)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertFalse((retry_cache / "dxcompiler.dll").exists())
+                self.assertFalse((retry_shell / "dxcompiler.dll").exists())
+
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout), self.assertRaises(PermissionError):
+                    suite.run_fetch_shell(commit=self.SHA, out=retry_shell, env=retry_env, runner=working_installer)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertFalse((retry_shell / "dxcompiler.dll").exists())
+
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    code = suite.run_fetch_shell(commit=self.SHA, out=retry_shell, env=retry_env, runner=working_installer)
+                self.assertEqual(code, 0)
+            finally:
+                os.replace = real_replace
+            for name in suite.SHADER_COMPILER:
+                self.assertEqual((retry_cache / name).read_bytes(), f"staged-{name}".encode("utf-8"))
+                self.assertEqual((retry_shell / name).read_bytes(), f"staged-{name}".encode("utf-8"))
 
     def test_fetch_shell_refuses_to_overwrite_unmarked_boat_or_mixed_folder(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -447,20 +581,50 @@ class HostedShellTests(unittest.TestCase):
 
     def test_build_shell_prints_hosted_note_and_shares_cargo_arguments(self):
         with tempfile.TemporaryDirectory() as tmp:
-            args = suite.parse(["build", "--shell", "--out", tmp])
+            root = Path(tmp)
+            shell_out = root / "shell-out"
+            app_out = root / "app-out"
+            captures = root / "captures"
+            env = {"BATTLEPLAN_CAPTURES": str(captures)}
+            args = suite.parse(["build", "--shell", "--out", str(shell_out)])
             self.assertTrue(args.shell)
 
             seen = []
+            installed = []
+
+            def boat_without_dlls(cmd, **kwargs):
+                if cmd[0] == "powershell" and any("install-shader-compiler.ps1" in part for part in cmd):
+                    installed.append(cmd)
+                    return self._install_compiler(cmd)
+                seen.append(cmd)
+                shell_out.mkdir(parents=True, exist_ok=True)
+                return self._result(0)
+
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
-                code = suite.run_build_boat(tmp, shell=True, runner=lambda cmd, cwd=None: seen.append(cmd) or self._result(0))
+                code = suite.run_build_boat(shell_out, shell=True, env=env, runner=boat_without_dlls)
             self.assertEqual(code, 0)
             self.assertEqual(seen[0][-5:], suite.shell_cargo_arguments(shell=True)[1:])
             self.assertIn("suite.py shell", stderr.getvalue())
+            self.assertEqual(len(installed), 1)
+            for name in suite.SHADER_COMPILER:
+                self.assertEqual((shell_out / name).read_bytes(), f"staged-{name}".encode("utf-8"))
+
+            shell_with_dlls = root / "shell-with-dlls"
+
+            def boat_with_dlls(cmd, **kwargs):
+                if cmd[0] == "powershell":
+                    raise AssertionError("installer must not run when Boat already placed the shader compiler")
+                _write_shell_folder(shell_with_dlls, self.SHA, record_name=suite.BOAT_RECORD, compiler=True)
+                return self._result(0)
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                code = suite.run_build_boat(shell_with_dlls, shell=True, runner=boat_with_dlls, env=env)
+            self.assertEqual(code, 0)
 
             stderr_app = io.StringIO()
             with contextlib.redirect_stderr(stderr_app):
-                code = suite.run_build_boat(tmp, shell=False, runner=lambda cmd, cwd=None: self._result(0))
+                code = suite.run_build_boat(app_out, shell=False, runner=lambda cmd, cwd=None: self._result(0))
             self.assertEqual(code, 0)
             self.assertEqual(stderr_app.getvalue(), "")
 

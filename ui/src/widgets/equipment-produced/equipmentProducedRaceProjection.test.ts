@@ -3,9 +3,14 @@ import test from 'node:test';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import { assertBarsModelValid, type BarsDataRow } from '../../families/bars/model.ts';
-import type { IdentityProvider } from '../../families/plan.ts';
+import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
+import { lazyActionKeys } from '../../families/host/adapter.ts';
+import { countryRowFromAction, recordInstalled, resolveHostInput } from '../../families/host/installed.ts';
+import type { FamilyNavTuple } from '../../families/host/keyboard.ts';
+import { parseTimeChartHit, timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
+import type { IdentityProvider, InstalledPicture } from '../../families/plan.ts';
 import type { EquipmentProducedRaceReply } from '../../generated/dashboard';
-import { detailCountry, detailEmptyText, equipmentProducedRaceDeclaration, equipmentProducedRaceProjection, UNKNOWN_WORDS, type EquipmentProducedRaceOptions, type EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
+import { detailCountry, detailEmptyText, detailRowFromAction, equipmentProducedRaceDeclaration, equipmentProducedRaceProjection, UNKNOWN_WORDS, type EquipmentProducedRaceOptions, type EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string; tag?: string }>): IdentityProvider {
   return {
@@ -134,4 +139,73 @@ test('a race row\'s detail asks for the country the row was counted for, also af
   assert.equal(detailEmptyText({ models: [], icTotal: { value: null, reason: 'notRecorded' } }, 300), UNKNOWN_WORDS.notRecorded, 'production not recorded is not "nothing delivered"');
   assert.match(detailEmptyText({ models: [], icTotal: { value: 0, reason: null } }, 300)!, /^Nothing delivered at /);
   assert.equal(detailEmptyText({ models: [{} as never], icTotal: icTotal('windowIncomplete') }, 300), null, 'models are listed, each with its own amount');
+});
+
+test('activating a dated chart plot coordinate does not open the country drawer, while activating a country row does', () => {
+  const basePicture = (owner: string, nav: readonly FamilyNavTuple[]): InstalledPicture => ({
+    id: 1,
+    owner,
+    generation: { seek: 1, reset: 0, binding: 1 },
+    factRevisions: {},
+    validInterval: [0, 1000],
+    through: 1000,
+    hour: displayedHour(500),
+    viewport: { width: 400, height: 200, dpr: 1, scrollLeft: 0, scrollTop: 0 },
+    optionsRevision: '1',
+    themeRevision: '1',
+    actionKeys: lazyActionKeys(nav, displayedHour(500)),
+    accessibleDescription: null,
+  });
+
+  const chartPicture = basePicture('produced:lines', []);
+  const chartRecord = recordInstalled(chartPicture, { meta: { transform: { axisFrom: 0, axisTo: 1000 } } }, null);
+  const plotHit = parseTimeChartHit('plot:320')!;
+  const plotEffect = resolveHostInput(
+    timeChartHostAdapter,
+    'activate',
+    { key: plotHit.key, hit: plotHit, picture: chartPicture },
+    { current: chartRecord, held: false, expired: false },
+    { expansion: {}, takesToggles: false, regions: false, menu: false },
+    () => null,
+  );
+  assert.equal(plotEffect?.kind, 'activate');
+  if (plotEffect?.kind !== 'activate') return;
+  assert.deepEqual(plotEffect.action.target, { kind: 'chart-coordinate', coordinate: 'plot', hour: displayedHour(320) });
+  assert.equal(detailRowFromAction(plotEffect.action), null, 'plot coordinate must not open equipment-produced country drawer');
+  assert.equal(countryRowFromAction(plotEffect.action), null, 'plot coordinate must not open shared country drawer');
+
+  const lineHit = parseTimeChartHit('line:AAA@320')!;
+  const lineEffect = resolveHostInput(
+    timeChartHostAdapter,
+    'activate',
+    { key: lineHit.key, hit: lineHit, picture: chartPicture },
+    { current: chartRecord, held: false, expired: false },
+    { expansion: {}, takesToggles: false, regions: false, menu: false },
+    () => null,
+  );
+  assert.equal(lineEffect?.kind, 'activate');
+  if (lineEffect?.kind !== 'activate') return;
+  assert.equal(detailRowFromAction(lineEffect.action), null, 'chart series line is not a country row');
+  assert.equal(countryRowFromAction(lineEffect.action), null, 'chart series line is not a country row');
+
+  const rowMeta: EquipmentProducedRowMeta = { tag: 'AAA', key: countryKey(7), counted: countryKey(7) };
+  const rowNav: FamilyNavTuple[] = [[rowMeta.key, 'Alpha Republic', 0, -1, '', rowMeta]];
+  const barsPicture = basePicture('produced:race', rowNav);
+  const barsRecord = recordInstalled(barsPicture, { nav: rowNav }, null);
+  const rowHit = barsHostAdapter.parseHit!(`row:${rowMeta.key}`)!;
+  const rowEffect = resolveHostInput(
+    barsHostAdapter,
+    'activate',
+    { key: rowHit.key, hit: rowHit, picture: barsPicture },
+    { current: barsRecord, held: false, expired: false },
+    { expansion: {}, takesToggles: false, regions: false, menu: false },
+    () => null,
+  );
+  assert.equal(rowEffect?.kind, 'activate');
+  if (rowEffect?.kind !== 'activate') return;
+  assert.deepEqual(rowEffect.action.target, { kind: 'row', key: rowMeta.key });
+  assert.deepEqual(detailRowFromAction(rowEffect.action), rowMeta, 'country row opens equipment-produced drawer');
+  assert.deepEqual(countryRowFromAction(rowEffect.action), { tag: 'AAA', key: rowMeta.key }, 'country row opens shared country drawer');
+  assert.equal(detailRowFromAction({ ...plotEffect.action, meta: rowMeta }), null, 'target.kind rejects chart-coordinate even with row-shaped meta');
+  assert.equal(countryRowFromAction({ ...lineEffect.action, meta: rowMeta }), null, 'target.kind rejects chart-series even with row-shaped meta');
 });

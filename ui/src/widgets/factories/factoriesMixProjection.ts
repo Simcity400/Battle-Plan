@@ -10,8 +10,8 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import { formatScalar, formatShare } from '../../families/valueFormat.ts';
-import type { FactoryMixPart, FactoryMixReply, FactoryMixRow } from '../../generated/dashboard';
-import { COUNT_MODES, FACTORY_GROUPS, countMode, type CountMode } from './factoriesData.ts';
+import type { FactoryMixReply, FactoryMixRow } from '../../generated/dashboard';
+import { COUNT_MODES, countMode, mixPartPresentation, type CountMode } from './factoriesData.ts';
 import type { FactoriesRowMeta } from './factoriesProjection.ts';
 
 export interface FactoriesMixOptions {
@@ -59,17 +59,6 @@ export function validateFactoryMixReply(value: unknown): FactoryMixReply {
   return value as unknown as FactoryMixReply;
 }
 
-function groupIndex(group: string): number {
-  const index = FACTORY_GROUPS.findIndex(item => item.value === group);
-  return index >= 0 ? index : 0;
-}
-
-function partLabel(part: FactoryMixPart): string {
-  if (part.name) return part.name;
-  const fallback = FACTORY_GROUPS.find(item => item.value === part.group)?.label ?? part.group;
-  return part.damaged ? `Damaged ${fallback}` : fallback;
-}
-
 function formatWhole(value: number): string {
   return formatScalar(value, { decimals: 0 });
 }
@@ -92,11 +81,14 @@ export const factoriesMixProjection: BarsProjection<FactoriesMixOptions> = regis
       return buildShareRowsModel({ hour, rows: [], unit: 'Factories', empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
     }
 
-    const partInfo = reply.parts.map(part => ({
-      part,
-      label: partLabel(part),
-      color: colour(options.surface, groupIndex(part.group)),
-    }));
+    const partInfo = reply.parts.map(part => {
+      const presentation = mixPartPresentation(part);
+      return {
+        part,
+        label: presentation.label,
+        color: colour(options.surface, presentation.colorIndex),
+      };
+    });
     const usedParts = new Set<number>();
     const rows: ShareRowEntry[] = [];
 

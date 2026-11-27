@@ -44,6 +44,8 @@ import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partia
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, glideCrossing, hasGlideCrossing, hitFamilyTable, NO_GLIDE, tableGlide } from './painter.ts';
+import { combinedPaneRows, resolvePanes } from './panes.ts';
+import { createPlanAuditVerifier } from '../host/auditBinding.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
 import { TREE_CHEVRON_LANE } from './layout.ts';
@@ -6175,4 +6177,258 @@ test('deriveTableMirror and deriveTableTooltip share one date presenter for date
   const zeroMirror = mirror.rows.find(entry => entry.key === 'zero-and-missing')!;
   assert.equal(zeroMirror.cells.find(cell => cell.column === 'date')!.spoken, formatDateHover(0));
   assert.equal(zeroMirror.cells.find(cell => cell.column === 'last')!.spoken, 'Not recorded: Last delivery date not recorded');
+});
+
+test('tableHostAdapter.deriveAuditRows matches the painted lane columns without re-laying out final widths', () => {
+  const cols: TableColumnSpec[] = [
+    { key: 'date', label: 'Date', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'date', minWidth: 70, maxWidth: 70 },
+    { key: 'kind', label: '', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'kind', minWidth: 30, maxWidth: 30 },
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName', 'flag'], priority: 2, minWidth: 68, narrow: 'flag', narrowWidth: 40 },
+    { key: 'entry', label: 'Entry', as: 'plain', offered: ['plain'], priority: 3, cellKind: 'item', text: true, minWidth: 60, narrow: 'primary' },
+    { key: 'place', label: 'Place', as: 'plain', offered: ['plain'], priority: 4, text: true, minWidth: 154, maxWidth: 154, narrow: 'hide' },
+    { key: 'status', label: 'Status', as: 'plain', offered: ['plain'], priority: 5, cellKind: 'status', minWidth: 124, maxWidth: 124, narrowWidth: 104 },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'normal', sort: { column: 'date', direction: 'descending' } });
+  const model: TableModel = {
+    columns: cols,
+    hour: 100,
+    unsorted: true,
+    rows: [{
+      key: 'row-1',
+      name: 'Alpha entry',
+      cells: {
+        date: { value: knownValue(100) },
+        kind: { value: knownValue('award') },
+        country: { value: knownValue('Alpha'), country: 'ALP' },
+        entry: { value: knownValue('Alpha entry') },
+        place: { value: knownValue('Northern Harbor') },
+        status: { value: knownValue('Active') },
+      },
+    }],
+  };
+  const ctx = { ...instrumentedContext().ctx, canvas: { width: 822, height: 200 } } as unknown as OffscreenCanvasRenderingContext2D;
+  const checkAtWidth = (width: number, expectedKeys: readonly string[], expectedCountryDisplay: string, note: string) => {
+    const surface = { width, height: 200, dpr: 1 };
+    const binding = {
+      family: 'table' as const,
+      kind: 'test-audit-columns',
+      options: NO_OPTIONS,
+      settings,
+      sources: NO_SOURCES,
+      width,
+      height: 200,
+      scrollLeft: 0,
+      scrollTop: 0,
+      theme: TEST_THEME,
+      expanded: {},
+    };
+    const layout = tableLane.layout(model, binding as never, surface as never, TEST_THEME, ctx, 100, { previous: null, now: 100, speed: 0 } as never);
+    const frame = {
+      binding,
+      theme: TEST_THEME,
+      model,
+      layout,
+      surface,
+      hour: 100,
+      inspect: null,
+      now: 100,
+      speed: 0,
+      art: new LaneArtCache(),
+      continuity: 1,
+      changedAt: 100,
+      before: null,
+    };
+    const paintedAudit = tableLane.audit!(frame as never) as readonly { key: string; value?: string }[];
+    const structureFields = tableLane.structure!(frame as never);
+    const verifiedAudit = tableHostAdapter.deriveAuditRows!(model, 100, {
+      viewport: { width, height: 200, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null },
+      settings,
+      expanded: {},
+      theme: TEST_THEME,
+      fields: structureFields,
+    });
+    const columnsOf = (rows: readonly { key: string; value?: string }[]) =>
+      (JSON.parse(rows.find(row => row.key === '__table__:columns')!.value!) as { key: [string, string]; display: [string, string] }[])
+        .map(c => ({ key: c.key[1], display: c.display[1] }));
+    const paintedCols = columnsOf(paintedAudit);
+    const verifiedCols = columnsOf(verifiedAudit);
+    assert.deepEqual(paintedCols.map(c => c.key), expectedKeys, `${note}: painted columns`);
+    assert.equal(paintedCols.find(c => c.key === 'country')?.display, expectedCountryDisplay, `${note}: painted country display`);
+    assert.deepEqual(verifiedCols, paintedCols, `${note}: verifier columns equal painted columns`);
+    assert.deepEqual(verifiedAudit, paintedAudit, `${note}: verifier audit equals painted audit`);
+  };
+  checkAtWidth(822, ['date', 'kind', 'country', 'entry', 'place', 'status'], 'flagName', 'wide table');
+  checkAtWidth(420, ['date', 'kind', 'country', 'entry', 'status'], 'flag', 'narrow table');
+});
+
+test('resolvePanes namespaces pane-local headers for paint and exact audit while still rejecting duplicates inside one pane', async () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true, minWidth: 100 },
+    { key: 'share', label: 'Share', as: 'plain', offered: ['plain'], priority: 1, numeric: true, minWidth: 80 },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'compact', barsBehind: 'off', sort: { column: 'share', direction: 'descending' } });
+  const row = (key: string, name: string, share: number, group?: { readonly key: string; readonly label: string }): TableRow => ({
+    key,
+    name,
+    ...(group ? { group } : {}),
+    cells: {
+      name: { value: knownValue(name) },
+      share: { value: knownValue(share), format: 'integer' },
+    },
+  });
+  const sharedGroup = { key: 'side', label: 'Share of the side' } as const;
+  const twoSideModel: TableModel = {
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      {
+        key: 'opposing',
+        title: { name: knownValue('Alpha') },
+        totalRow: row('total:opposing', 'Share of the war', 60),
+        rows: [row('opposing:AAA', 'Alpha', 60, sharedGroup)],
+      },
+      {
+        key: 'viewpoint',
+        title: { name: knownValue('Beta') },
+        totalRow: row('total:viewpoint', 'Share of the war', 40),
+        rows: [row('viewpoint:BBB', 'Beta', 40, sharedGroup)],
+      },
+    ],
+  };
+
+  const panes = resolvePanes(twoSideModel, settings, undefined, 'standard');
+  const paneGroupKeys = panes.map(pane => pane.rows.find(item => item.kind === 'group-header')?.key);
+  assert.deepEqual(paneGroupKeys, ['pane:opposing:group:side', 'pane:viewpoint:group:side'], 'each pane carries its own composite key for the local group header');
+  const flatRows = combinedPaneRows(panes);
+  assert.deepEqual(
+    flatRows.filter(item => item.kind === 'group-header').map(item => item.key),
+    ['pane:opposing', 'pane:opposing:group:side', 'pane:viewpoint', 'pane:viewpoint:group:side'],
+    'combinedPaneRows keeps the pane-qualified group header keys beside each pane header',
+  );
+
+  const projection = registerFamilyProjection({
+    kind: 'test-panes-audit-group-collision',
+    family: 'table',
+    project: () => twoSideModel,
+  });
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 640, height: 240, dpr: 1 });
+    const painted = lane.paint({
+      label: 'two-sided-audit',
+      binding: {
+        family: 'table' as const,
+        kind: projection.kind,
+        options: NO_OPTIONS,
+        settings,
+        sources: NO_SOURCES,
+        width: 640,
+        height: 240,
+        scrollLeft: 0,
+        scrollTop: 0,
+        theme: TEST_THEME,
+        reducedMotion: true,
+        audit: true,
+        auditId: 1,
+      },
+      hour: 100,
+      speed: 0,
+      seek: 1,
+    });
+    const verifier = createPlanAuditVerifier<TableModel, Record<string, never>>();
+    const exact = await verifier(100, {
+      projection,
+      options: NO_OPTIONS,
+      exactReadView: async hour => createBoundedReadView({ hour }),
+      deriveRows: (model, hour, fields) => tableHostAdapter.deriveAuditRows!(model, hour, {
+        settings,
+        expanded: {},
+        viewport: { width: 640, height: 240, scrollLeft: 0, scrollTop: 0, dpr: 1, zoomWindow: null },
+        theme: TEST_THEME,
+        fields: fields ?? {},
+      }),
+    }, 1, Object.fromEntries(Object.entries(painted.fields).map(([k, v]) => [k, v.value])));
+    assert.ok(exact, 'verifier returns an exact map for two panes with the same local group key');
+    assert.ok(exact.values.has('pane:opposing:group:side:group'));
+    assert.ok(exact.values.has('pane:viewpoint:group:side:group'));
+    const auditField = painted.fields.audit?.value as { readonly rows: readonly { readonly row: string; readonly key: string; readonly value?: string }[] } | undefined;
+    assert.ok(auditField, 'painted picture emits audit rows');
+    assert.equal(pictureError('table', auditField.rows, exact), null, 'painted audit matches exact verifier output');
+  } finally {
+    recording.restore();
+  }
+
+  const colonPanes = resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      { key: 'a', title: { name: knownValue('A') }, rows: [row('a:1', 'One', 1, { key: 'b', label: 'B' })] },
+      { key: 'a:group:b', title: { name: knownValue('AB') }, rows: [row('ab:1', 'Two', 2)] },
+    ],
+  }, settings, undefined, 'standard');
+  const colonKeys = combinedPaneRows(colonPanes).filter(item => item.kind === 'group-header').map(item => item.key);
+  assert.equal(new Set(colonKeys).size, colonKeys.length, 'pane keys containing colons never collide with pane-local row keys');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [{
+      key: 'left',
+      title: { name: knownValue('Left') },
+      rows: [row('left:A', 'A1', 10, sharedGroup), row('left:A', 'A2', 5, sharedGroup)],
+    }],
+  }, settings, undefined, 'standard'), /duplicate row key left:A/, 'duplicate data row inside one pane is rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    slots: [
+      { kind: 'loading', key: 'loading:0' },
+      { kind: 'loading', key: 'loading:0' },
+    ],
+    panes: [{
+      key: 'left',
+      title: { name: knownValue('Left') },
+      rows: [],
+    }],
+  }, settings, undefined, 'standard'), /duplicate row key loading:0/, 'duplicate loading slot inside one pane is rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    slots: [
+      { kind: 'data', row: row('x', 'Alpha', 10) },
+      { kind: 'refused', key: 'x', reason: 'Not recorded' },
+    ],
+    panes: [{
+      key: 'left',
+      title: { name: knownValue('Left') },
+      rows: [],
+    }],
+  }, settings, undefined, 'standard'), /duplicate row key x/, 'mixed-kind duplicate local key inside one pane is rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      { key: 'left', title: { name: knownValue('Left') }, rows: [row('shared', 'A', 10)] },
+      { key: 'right', title: { name: knownValue('Right') }, rows: [row('shared', 'B', 5)] },
+    ],
+  }, settings, undefined, 'standard'), /already in another pane/, 'duplicate data row across panes is still rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      { key: 'same', title: { name: knownValue('One') }, rows: [row('one:A', 'A', 10)] },
+      { key: 'same', title: { name: knownValue('Two') }, rows: [row('two:B', 'B', 5)] },
+    ],
+  }, settings, undefined, 'standard'), /duplicate pane key/, 'duplicate pane key across panes is rejected');
 });

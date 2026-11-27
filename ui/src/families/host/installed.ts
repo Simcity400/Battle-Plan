@@ -96,12 +96,25 @@ function actionOf(adapter: FamilyHostAdapter<any, any, any, any>, record: Instal
   return {
     installedId: installed.id,
     owner: installed.owner,
+    target: { kind: 'row', key: hit.key },
     subject: hit.subject ?? target?.subject ?? hit.key,
     hour: displayedHour(hit.hour ?? target?.hour ?? installed.hour),
     ...(toggle || target?.toggle ? { toggle: true } : {}),
     ...(label !== undefined ? { label } : {}),
     ...(meta !== undefined ? { meta } : {}),
   };
+}
+
+export interface CountryRowDetail {
+  readonly tag: string;
+  readonly key: string;
+}
+
+export function countryRowFromAction(action: InstalledAction): CountryRowDetail | null {
+  if (action.target.kind !== 'row') return null;
+  const meta = action.meta as { readonly tag?: unknown; readonly key?: unknown } | null | undefined;
+  if (typeof meta?.tag !== 'string' || typeof meta?.key !== 'string') return null;
+  return { tag: meta.tag, key: meta.key };
 }
 
 export function hoveredSubject(adapter: FamilyHostAdapter<any, any, any, any>, record: InstalledRecord | null, hit: ParsedFamilyHit | null): string | null {

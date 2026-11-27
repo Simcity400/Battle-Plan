@@ -26,8 +26,15 @@ function shownKey(state: DashboardMapState, playing: boolean): string {
     state.behindReason ?? null, state.hour == null, state.notes ?? null, state.closeRequests ?? null, state.keys?.at(-1)?.[0] ?? null, ...(playing ? [] : [state.hour, state.sequence, state.requestedSequence])]);
 }
 
+const EVERY_REQUEST = '*';
+
+function requestKey(view: MapTarget): string {
+  return JSON.stringify([view.sourceId, view.revision, view.branchId, ...(view.playing ? ['playing', view.seekSequence] : [view.hour, view.sequence])]);
+}
+
 export class MapViewsStore {
   private surfaces = new Map<string, Surface>();
+  private failures = new Map<string, string>();
   private states = new Map<string, DashboardMapState>();
   private shown = new Map<string, { key: string; state: DashboardMapState }>();
   private painters = new Map<string, (state: DashboardMapState) => void>();
@@ -135,18 +142,22 @@ export class MapViewsStore {
           && old.sourceId === state.sourceId && old.revision === state.revision) continue;
         errorChanged ||= !old?.error !== !state.error;
         this.states.set(state.id, state);
+        const asked = this.lastViews.get(state.id);
+        if (!state.error) this.failures.delete(state.id);
+        else this.failures.set(state.id, asked?.sequence === state.requestedSequence ? requestKey(asked) : '');
         this.present(state.id);
       }
       this.schedulePaint();
       if (errorChanged) this.retarget();
     }).then((stop) => {
       if (!this.active || this.generation !== generation) stop(); else stopStates = stop;
-    }).catch((cause) => { if (this.active && this.generation === generation) this.fail(errorMessage(cause)); });
+    }).catch((cause) => { if (this.active && this.generation === generation) this.fail(errorMessage(cause), null); });
     this.schedule();
     return () => {
       this.active = false;
       this.states.clear();
       this.shown.clear();
+      this.failures.clear();
       this.paintFrame?.();
       this.paintFrame = null;
       stopClock();
@@ -191,6 +202,7 @@ export class MapViewsStore {
 
   forget(id: string): void {
     if (this.surfaces.has(id)) return;
+    this.failures.delete(id);
     this.states.delete(id);
     this.shown.delete(id);
     this.lastViews.delete(id);
@@ -209,6 +221,7 @@ export class MapViewsStore {
     return () => { this.hiddenListeners.delete(listener); };
   };
   retry(id: string): void {
+    this.failures.delete(id);
     this.states.delete(id);
     this.shown.delete(id);
     this.applied = '';
@@ -275,9 +288,13 @@ export class MapViewsStore {
       }
     });
   }
-  private fail(error: string): void {
+  private fail(error: string, views: readonly DashboardMapView[] | null): void {
     let changed = false;
     for (const id of this.surfaces.keys()) {
+      const view = views?.find(item => item.id === id);
+      const latest = this.lastViews.get(id);
+      if (views && (!view || !latest || requestKey(view) !== requestKey(latest))) continue;
+      this.failures.set(id, view ? requestKey(view) : EVERY_REQUEST);
       const old = this.states.get(id);
       changed ||= old?.error !== error;
       this.states.set(id, old ? { ...old, error } : { id, clockId: this.clock.clockId, sourceId: null, revision: null, branchId: null, hour: null,
@@ -311,9 +328,19 @@ export class MapViewsStore {
     for (const [id, surface] of this.surfaces) {
       const target = surface.target(clock);
       surface.present = target != null;
-      if (!target || !surface.layout || mapHoles.outside(surface.element)) continue;
+      const failure = this.failures.get(id);
+      const owned = failure === EVERY_REQUEST || (failure !== undefined && target != null && failure === requestKey(target));
+      if (failure !== undefined && !owned) {
+        this.failures.delete(id);
+        this.states.delete(id);
+        if (this.shown.delete(id)) this.notify(id);
+      }
+      if (!target || !surface.layout || mapHoles.outside(surface.element)) {
+        this.lastViews.delete(id);
+        continue;
+      }
       const { bounds, clip, onScreen } = surface.layout;
-      const visible = onScreen && !this.hidden && !covered && !document.hidden && !this.states.get(id)?.error && !mapHoles.dimmed(surface.element) && !coveredBy(clip, holes);
+      const visible = onScreen && !this.hidden && !covered && !document.hidden && !(owned && !target.playing) && !mapHoles.dimmed(surface.element) && !coveredBy(clip, holes);
       const view = { id, ...target, composedAt, clockId, options: this.viewOptions(id, target.options), bounds, clip, visible };
       views.push(view);
       this.lastViews.set(id, view);
@@ -333,7 +360,7 @@ export class MapViewsStore {
         const key = viewsKey(snapshot.clockId, snapshot.views);
         if (key === this.applied) continue;
         try { await this.client.setMapViews(snapshot.clockId, snapshot.views); this.applied = key; }
-        catch (cause) { this.applied = ''; this.fail(errorMessage(cause)); }
+        catch (cause) { this.applied = ''; this.fail(errorMessage(cause), snapshot.views); }
       }
     } finally { this.busy = false; }
   }

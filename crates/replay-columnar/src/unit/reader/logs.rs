@@ -1,10 +1,10 @@
 
-use super::{Advanced, Extents, Part, Prefix, SKIP, fetch, inserted_list, numbers};
+use super::{Advanced, Extents, PageEntry, Part, Prefix, SKIP, fetch, inserted_list, numbers};
 use crate::{
     invalid,
     state::Kind,
     store::{TableState, Value},
-    unit::{BLOCK, BlockPage, get_varint, get_wide, restore as held, unzig, unzig_wide},
+    unit::{BLOCK, get_varint, get_wide, restore as held, unzig, unzig_wide},
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -19,8 +19,8 @@ pub enum LogEvent<'a> {
     Named { id: u32, text: &'a [u8] },
 }
 
-pub fn class_of(pages: &[BlockPage], table: usize) -> io::Result<bool> {
-    let mut entries = pages.iter().map(|page| page.tables.get(table).map(|entry| entry.log).ok_or_else(|| invalid(format!("No table {table} in a block page"))));
+pub fn class_of<P: PageEntry>(pages: &[P], table: usize) -> io::Result<bool> {
+    let mut entries = pages.iter().map(|page| page.table_entry(table).map(|entry| entry.log).ok_or_else(|| invalid(format!("No table {table} in a block page"))));
     let Some(first) = entries.next().transpose()? else { return Ok(false) };
     for log in entries {
         if log? != first {
@@ -34,15 +34,15 @@ fn not_a_log(table: usize) -> io::Error {
     invalid(format!("Table {table} holds state: it has no rows by hour to read as a log"))
 }
 
-pub fn log_state(source: &dyn Extents, pages: &[BlockPage], kinds: &[Kind], table: usize, at: usize) -> io::Result<TableState> {
+pub fn log_state<P: PageEntry>(source: &dyn Extents, pages: &[P], kinds: &[Kind], table: usize, at: usize) -> io::Result<TableState> {
     log_state_named(source, pages, kinds, table, at).map(|(state, _)| state)
 }
 
-pub fn log_state_named(source: &dyn Extents, pages: &[BlockPage], kinds: &[Kind], table: usize, at: usize) -> io::Result<(TableState, HashMap<u32, Vec<u8>>)> {
+pub fn log_state_named<P: PageEntry>(source: &dyn Extents, pages: &[P], kinds: &[Kind], table: usize, at: usize) -> io::Result<(TableState, HashMap<u32, Vec<u8>>)> {
     if !class_of(pages.get(..=at).ok_or_else(|| invalid("No such block page"))?, table)? {
         return Err(not_a_log(table));
     }
-    let entry = pages[at].tables[table].restore.as_ref().ok_or_else(|| invalid(format!("Log table {table} has no restore at its block's end")))?;
+    let entry = pages[at].table_entry(table).expect("table entry").restore.as_ref().ok_or_else(|| invalid(format!("Log table {table} has no restore at its block's end")))?;
     let (state, meta) = super::restore(source, entry, kinds, &[])?;
     Ok((state, meta.strings.into_iter().collect()))
 }
@@ -272,12 +272,12 @@ impl<'a> Names<'a> {
         }
     }
 
-    fn block(&mut self, pages: &'a [BlockPage], at: usize) {
+    fn block<P: PageEntry>(&mut self, pages: &'a [P], at: usize) {
         self.listed.clear();
         self.restored = None;
         self.restore = match at {
-            0 => pages[0].tables[self.table].first.as_ref(),
-            at => pages[at - 1].tables[self.table].restore.as_ref(),
+            0 => pages[0].table_entry(self.table).and_then(|entry| entry.first.as_ref()),
+            at => pages[at - 1].table_entry(self.table).and_then(|entry| entry.restore.as_ref()),
         };
     }
 
@@ -313,9 +313,9 @@ impl<'a> Names<'a> {
     }
 }
 
-fn read_block<'a>(
+fn read_block<'a, P: PageEntry>(
     source: &dyn Extents,
-    pages: &'a [BlockPage],
+    pages: &'a [P],
     at: usize,
     kinds: &[Kind],
     table: usize,
@@ -326,12 +326,13 @@ fn read_block<'a>(
     each: &mut dyn FnMut(u16, LogEvent<'_>),
 ) -> io::Result<()> {
     let page = &pages[at];
-    let entry = &page.tables[table];
+    let hours = page.hours();
+    let entry = page.table_entry(table).expect("table entry");
     let Some(last) = entry.parts.iter().rposition(|part| wanted(part.first)) else { return Ok(()) };
     names.block(pages, at);
     let mut cursor = LogCursor::new(kinds, columns, entry.parts[0].first);
     let mut next = 0;
-    let end = entry.parts.get(last + 1).map_or(page.hours - 1, |following| following.first - 1);
+    let end = entry.parts.get(last + 1).map_or(hours - 1, |following| following.first - 1);
     loop {
         let mut failed = None;
         let advanced = cursor.advance(end, &mut |event| {
@@ -355,7 +356,7 @@ fn read_block<'a>(
             Advanced::Reached => return Ok(()),
             Advanced::Missing { .. } => {
                 let Some(part) = entry.parts.get(next) else { return Ok(()) };
-                let part_last = entry.parts.get(next + 1).map_or(page.hours - 1, |following| following.first - 1);
+                let part_last = entry.parts.get(next + 1).map_or(hours - 1, |following| following.first - 1);
                 let mut part = fetch(source, part, part_last, columns, cursor.prefix().as_ref())?;
                 names.part(&mut part);
                 cursor.push(part);
@@ -543,9 +544,9 @@ fn part_rows(part: &mut Part, kinds: &[Kind], columns: &[usize], ordinal: u64, a
     Ok(rows)
 }
 
-fn read_rows<'a>(
+fn read_rows<'a, P: PageEntry>(
     source: &dyn Extents,
-    pages: &'a [BlockPage],
+    pages: &'a [P],
     at: usize,
     kinds: &[Kind],
     table: usize,
@@ -555,14 +556,15 @@ fn read_rows<'a>(
     each: &mut dyn FnMut(LogEvent<'_>),
 ) -> io::Result<u64> {
     let page = &pages[at];
-    let entry = &page.tables[table];
+    let hours = page.hours();
+    let entry = page.table_entry(table).expect("table entry");
     let holding = |ordinal: u64| entry.parts.partition_point(|part| part.ordinal <= ordinal).checked_sub(1);
     let Some(furthest) = asked.last().and_then(holding) else { return Ok(0) };
     names.block(pages, at);
     let (mut prefix, mut handed, mut found) = (None::<Prefix>, 0, Vec::new());
     for index in 0..=furthest {
         let part_entry = &entry.parts[index];
-        let last = entry.parts.get(index + 1).map_or(page.hours - 1, |following| following.first - 1);
+        let last = entry.parts.get(index + 1).map_or(hours - 1, |following| following.first - 1);
         let mut part = fetch(source, part_entry, last, columns, prefix.as_ref())?;
         prefix = Some(part.prefix());
         names.part(&mut part);
@@ -579,13 +581,13 @@ fn read_rows<'a>(
         handed += found.len() as u64;
         if (found.len() as u64) < wanted.len() && index < furthest {
             let missing = wanted.get(found.len()).expect("a row asked");
-            return Err(invalid(format!("Log table {table}'s part {index} of block {} holds no row {missing}, which its ordinals say it holds", page.block)));
+            return Err(invalid(format!("Log table {table}'s part {index} of block {} holds no row {missing}, which its ordinals say it holds", page.block())));
         }
     }
     Ok(handed)
 }
 
-fn rows_of(source: &dyn Extents, pages: &[BlockPage], kinds: &[Kind], table: usize, columns: &[usize], asked: Asked<'_>, each: &mut dyn FnMut(LogEvent<'_>)) -> io::Result<()> {
+fn rows_of<P: PageEntry>(source: &dyn Extents, pages: &[P], kinds: &[Kind], table: usize, columns: &[usize], asked: Asked<'_>, each: &mut dyn FnMut(LogEvent<'_>)) -> io::Result<()> {
     let exact = matches!(asked, Asked::At(_));
     let absent = |ordinal: u64| invalid(format!("Log table {table} appended no row {ordinal} in this run"));
     let mut names = Names::new(source, kinds, table, columns);
@@ -593,12 +595,12 @@ fn rows_of(source: &dyn Extents, pages: &[BlockPage], kinds: &[Kind], table: usi
         Asked::At(ordinals) => Asked::At(ordinals),
         Asked::Run(from, to) => Asked::Run(from, to.max(from)),
     };
-    if exact && let Some(first) = asked.get(0) && pages.first().is_none_or(|page| first < page.tables[table].count) {
+    if exact && let Some(first) = asked.get(0) && pages.first().is_none_or(|page| first < page.table_entry(table).expect("table entry").count) {
         return Err(absent(first));
     }
     for index in 0..pages.len() {
-        let start = pages[index].tables[table].count;
-        let end = pages.get(index + 1).map_or(u64::MAX, |next| next.tables[table].count);
+        let start = pages[index].table_entry(table).expect("table entry").count;
+        let end = pages.get(index + 1).map_or(u64::MAX, |next| next.table_entry(table).expect("table entry").count);
         let block = asked.within(start, end);
         if block.len() == 0 {
             continue;
@@ -613,14 +615,14 @@ fn rows_of(source: &dyn Extents, pages: &[BlockPage], kinds: &[Kind], table: usi
     Ok(())
 }
 
-pub fn log_rows(source: &dyn Extents, pages: &[BlockPage], kinds: &[Kind], table: usize, columns: &[usize], ordinals: Range<u64>, each: &mut dyn FnMut(LogEvent<'_>)) -> io::Result<()> {
+pub fn log_rows<P: PageEntry>(source: &dyn Extents, pages: &[P], kinds: &[Kind], table: usize, columns: &[usize], ordinals: Range<u64>, each: &mut dyn FnMut(LogEvent<'_>)) -> io::Result<()> {
     if !class_of(pages, table)? {
         return Err(not_a_log(table));
     }
     rows_of(source, pages, kinds, table, columns, Asked::Run(ordinals.start, ordinals.end), each)
 }
 
-pub fn log_rows_at(source: &dyn Extents, pages: &[BlockPage], kinds: &[Kind], table: usize, columns: &[usize], ordinals: &[u64], each: &mut dyn FnMut(LogEvent<'_>)) -> io::Result<()> {
+pub fn log_rows_at<P: PageEntry>(source: &dyn Extents, pages: &[P], kinds: &[Kind], table: usize, columns: &[usize], ordinals: &[u64], each: &mut dyn FnMut(LogEvent<'_>)) -> io::Result<()> {
     if !class_of(pages, table)? {
         return Err(not_a_log(table));
     }
@@ -630,14 +632,14 @@ pub fn log_rows_at(source: &dyn Extents, pages: &[BlockPage], kinds: &[Kind], ta
     rows_of(source, pages, kinds, table, columns, Asked::At(ordinals), each)
 }
 
-pub fn log_span(source: &dyn Extents, pages: &[BlockPage], kinds: &[Kind], table: usize, columns: &[usize], run_first: i32, hours: RangeInclusive<i32>, each: &mut dyn FnMut(i32, LogEvent<'_>)) -> io::Result<()> {
+pub fn log_span<P: PageEntry>(source: &dyn Extents, pages: &[P], kinds: &[Kind], table: usize, columns: &[usize], run_first: i32, hours: RangeInclusive<i32>, each: &mut dyn FnMut(i32, LogEvent<'_>)) -> io::Result<()> {
     if !class_of(pages, table)? {
         return Err(not_a_log(table));
     }
     let mut names = Names::new(source, kinds, table, columns);
     for (index, page) in pages.iter().enumerate() {
-        let first = run_first + (page.block * BLOCK) as i32;
-        if first > *hours.end() || first + i32::from(page.hours) <= *hours.start() {
+        let first = run_first + (page.block() * BLOCK) as i32;
+        if first > *hours.end() || first + i32::from(page.hours()) <= *hours.start() {
             continue;
         }
         let wanted = |hour: u16| first + i32::from(hour) <= *hours.end();

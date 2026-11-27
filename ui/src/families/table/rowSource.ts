@@ -49,11 +49,14 @@ export interface TailReply<TRow extends DatedLogRow = LogReplyRow> {
   readonly offset: number;
   readonly baseOrdinal: number;
   readonly firstOrdinal: number;
-  readonly rows: readonly TRow[];
+  readonly rows: readonly (TRow | null)[];
+  readonly rowRefusals?: ReadonlyMap<number, string>;
   readonly facetTotals: ReadonlyMap<string, number>;
   readonly facetMissing?: ReadonlyMap<string, string>;
   readonly missing: readonly PlacedSpan[];
 }
+
+export type TailValidator<TRow extends DatedLogRow = DatedLogRow> = (raw: unknown, readAt?: number) => TailReply<TRow>;
 
 export type LogRowSlot<TRow extends DatedLogRow> =
   | { readonly kind: 'data'; readonly ordinal: number; readonly readAt: number; readonly row: TRow }
@@ -118,7 +121,7 @@ const isSpan = (value: unknown): value is MissingSpan => isObject(value)
 
 export function validateRowTailReply<TRow extends DatedLogRow>(
   value: unknown,
-  mapRow: (row: Record<string, unknown>, columns: readonly string[]) => TRow,
+  mapRow: (row: Record<string, unknown>, columns: readonly string[], readAt?: number) => TRow,
   readAt?: number,
 ): TailReply<TRow> {
   const malformed = () => new Error('The log tail reply is malformed.');
@@ -150,15 +153,23 @@ export function validateRowTailReply<TRow extends DatedLogRow>(
     if (reason !== null) facetMissing.set(entry.key, reason);
     else facetTotals.set(entry.key, count);
   }
-  const rows = (value.rows as unknown[]).map((raw): TRow => {
+  const rows: (TRow | null)[] = [];
+  const rowRefusals = new Map<number, string>();
+  for (let index = 0; index < value.rows.length; index++) {
+    const raw = (value.rows as unknown[])[index];
     if (!isObject(raw) || typeof raw.key !== 'string' || !Number.isSafeInteger(raw.hour)) {
       throw malformed();
     }
     const hour = raw.hour as number;
     if (readAt !== undefined && hour > readAt) throw new Error(`The log tail reply contained a row from hour ${hour} after displayed hour ${readAt}.`);
-    return mapRow(raw, columns);
-  });
-  return { total, offset, baseOrdinal, firstOrdinal, rows, facetTotals, ...(facetMissing.size ? { facetMissing } : {}), missing };
+    try {
+      rows.push(mapRow(raw, columns, readAt));
+    } catch (error) {
+      rows.push(null);
+      rowRefusals.set(index, error instanceof Error && error.message.trim().length > 0 ? error.message : 'The log row is malformed.');
+    }
+  }
+  return { total, offset, baseOrdinal, firstOrdinal, rows, ...(rowRefusals.size ? { rowRefusals } : {}), facetTotals, ...(facetMissing.size ? { facetMissing } : {}), missing };
 }
 
 export function validateGenericTailReply(value: unknown, readAt?: number): TailReply<DatedLogRow> {
@@ -249,15 +260,16 @@ export function frozenAnswer<TRow extends DatedLogRow>(pages: SnapshotPages<TRow
   return held.find((page): page is Extract<SnapshotPage<TRow>, { reply: unknown }> => 'reply' in page);
 }
 
-export function buildRowSourceFromHead(
+export function buildRowSourceFromHead<TRow extends DatedLogRow = DatedLogRow>(
   identity: string,
   headRaw: unknown,
   headRefused: string | undefined,
   hour: number,
-  pages: SnapshotPages = NO_PAGES,
-): TableRowSource<DatedLogRow> | null {
+  pages: SnapshotPages<TRow> = NO_PAGES as SnapshotPages<TRow>,
+  validate: TailValidator<TRow> = validateGenericTailReply as TailValidator<TRow>,
+): TableRowSource<TRow> | null {
   const held = Object.values(pages);
-  const shown = held.length > 0 && held.every(page => page.hour <= hour) ? pages : NO_PAGES;
+  const shown = held.length > 0 && held.every(page => page.hour <= hour) ? pages : NO_PAGES as SnapshotPages<TRow>;
   const answered = frozenAnswer(shown, hour);
   if (answered) {
     const { reply, hour: at, limit } = answered;
@@ -271,11 +283,14 @@ export function buildRowSourceFromHead(
       facetTotals: reply.facetTotals,
       ...(reply.facetMissing ? { facetMissing: reply.facetMissing } : {}),
       rawHead: answered.raw,
-      sliceAt: (reqHour, first, count) => sliceSlots(reqHour, first, count, reply.total, ordinal => {
+      sliceAt: (reqHour, first, count) => sliceSlots<TRow>(reqHour, first, count, reply.total, ordinal => {
         const page = pageAt(shown, ordinal, limit);
         if (!page || page.hour !== at) return { kind: 'loading', ordinal, readAt: reqHour };
         if ('refused' in page) return { kind: 'refused', ordinal, readAt: reqHour, reason: page.refused };
-        const row = page.reply.rows[ordinal - page.offset];
+        const index = ordinal - page.offset;
+        const refusedRow = page.reply.rowRefusals?.get(index);
+        if (refusedRow !== undefined) return { kind: 'refused', ordinal, readAt: reqHour, reason: refusedRow };
+        const row = page.reply.rows[index];
         return row ? { kind: 'data', ordinal, readAt: reqHour, row } : { kind: 'loading', ordinal, readAt: reqHour };
       }),
     };
@@ -293,7 +308,7 @@ export function buildRowSourceFromHead(
     };
   }
   if (!isTailReplyLike(headRaw)) return null;
-  const head = validateGenericTailReply(headRaw, hour);
+  const head = validate(headRaw, hour);
   return {
     identity,
     total: head.total,
@@ -303,8 +318,11 @@ export function buildRowSourceFromHead(
     facetTotals: head.facetTotals,
     ...(head.facetMissing ? { facetMissing: head.facetMissing } : {}),
     rawHead: headRaw,
-    sliceAt: (reqHour, first, count) => sliceSlots(reqHour, first, count, head.total, ordinal => {
-      const row = head.rows[ordinal];
+    sliceAt: (reqHour, first, count) => sliceSlots<TRow>(reqHour, first, count, head.total, ordinal => {
+      const index = ordinal - head.offset;
+      const refusedRow = head.rowRefusals?.get(index);
+      if (refusedRow !== undefined) return { kind: 'refused', ordinal, readAt: reqHour, reason: refusedRow };
+      const row = head.rows[index];
       if (row) return { kind: 'data', ordinal, readAt: reqHour, row };
       const refusal = refusedAt(ordinal);
       if (!refusal || !('refused' in refusal)) return { kind: 'loading', ordinal, readAt: reqHour };

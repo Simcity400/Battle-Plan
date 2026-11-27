@@ -8,13 +8,12 @@ import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
+import { countryRowFromAction } from '../../families/host/installed.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
-import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
-import type { FactoryPartsReply } from '../../generated/dashboard';
-import { countMode, partRows, validateFactoryParts } from './factoriesData.ts';
-import type { FactoriesRowMeta } from './factoriesProjection.ts';
+import type { FactoryGroupsReply, FactoryPartsReply } from '../../generated/dashboard';
+import { countMode, partRows, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
 
 function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
   tag: string; hour: GatedHour; types: readonly string[]; mode: ReturnType<typeof countMode>;
@@ -26,16 +25,20 @@ function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pic
     product: 'factory-parts',
     params: { branchId: track.branch.id, country: countryFromKey(tag), hour },
   }) : null;
+  const groupsRequest = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'factory-groups', params: { branchId: track.branch.id } }) : null;
   const parts = useProduct<FactoryPartsReply>(runtime.client, request, active, validateFactoryParts, track?.source);
+  const groups = useProduct<FactoryGroupsReply>(runtime.client, groupsRequest, active, validateFactoryGroups, track?.source);
   if (parts.error) return <WidgetState kind="error" failure={parts.error} onRetry={parts.retry} />;
-  if (!parts.data) return <WidgetState kind="loading" label="Loading factory breakdown…" />;
-  const rows = partRows(parts.data, types, mode);
+  if (!parts.data || (!groups.data && !groups.error)) return <WidgetState kind="loading" label="Loading factory breakdown…" />;
+  const groupNames = groups.data ?? { groups: [], missing: groups.error!.message, warnings: [] };
+  const rows = partRows(parts.data, types, mode, groupNames);
   return (
     <div className="detail-list">
       <p>{tag}, {formatDateOnly(hour)}</p>
+      {groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
       {rows.map((row, index) => (
         <div key={`${row.label}:${index}`} className="detail-row">
-          <span>{row.strong ? <strong>{row.label}</strong> : row.label}</span>
+          <span title={row.detail}>{row.strong ? <strong>{row.label}</strong> : row.label}</span>
           <span>{row.strong ? <strong>{row.value ?? ''}</strong> : (row.value ?? '')}</span>
         </div>
       ))}
@@ -56,12 +59,12 @@ export default function FactoriesWidget(props: FamilyViewProps) {
   const gate = useGate(runtime, widget, SPEC, active);
 
   const onActivate = useCallback((action: InstalledAction) => {
-    if (isLines && parseChartInspect(action.subject) !== null) return;
+    const row = countryRowFromAction(action);
+    if (!row) return;
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
-    const rowMeta = action.meta as FactoriesRowMeta | null | undefined;
-    setDetail({ tag: rowMeta?.tag ?? action.subject, key: rowMeta?.key ?? action.subject, hour: gated });
-  }, [gate, isLines]);
+    setDetail({ ...row, hour: gated });
+  }, [gate]);
 
   if (!manifestDeclaration) return null;
 
@@ -72,8 +75,7 @@ export default function FactoriesWidget(props: FamilyViewProps) {
         family={manifestDeclaration.family}
         view={view}
         declaration={manifestDeclaration}
-        {...(isLines ? {} : { selectedKey: detail?.key ?? null })}
-        onActivate={onActivate}
+        {...(isLines ? {} : { selectedKey: detail?.key ?? null, onActivate })}
       />
       <DetailWindowHost
         open={detail !== null}

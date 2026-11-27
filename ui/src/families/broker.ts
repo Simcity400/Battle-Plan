@@ -714,7 +714,7 @@ async function readEntryExact(
         answered.forEach((page, i) => {
           pages[page.offset] = { hour: page.hour, offset: page.offset, limit: page.limit, raw: raws[i], reply: validate(raws[i], page.hour) };
         });
-        const rowSource = buildRowSourceFromHead(identity, undefined, undefined, recorded, pages);
+        const rowSource = buildRowSourceFromHead(identity, undefined, undefined, recorded, pages, read.validate);
         return { name: entry.name, hour: recorded, panel: raws[0], ...(rowSource ? { rows: rowSource } : {}) };
       }
       const params = tailQueryParams(read.tailQuery, recorded, 0, read.tailQuery.limit);
@@ -725,7 +725,7 @@ async function readEntryExact(
         params,
       });
       const raw = await fetchRaw(request);
-      const rowSource = buildRowSourceFromHead(identity, raw, undefined, recorded, pages);
+      const rowSource = buildRowSourceFromHead(identity, raw, undefined, recorded, pages, read.validate);
       return { name: entry.name, hour: recorded, panel: raw, ...(rowSource ? { rows: rowSource } : {}) };
     }
     const frozenHour = options.snapshotHour?.(entry.name) ?? null;
@@ -738,7 +738,7 @@ async function readEntryExact(
       const raws = await Promise.all(asks.map(ask => fetchRaw(buildTailPageRequest(entry, ask)!)));
       const pages: Record<number, SnapshotPage> = {};
       asks.forEach((ask, i) => { pages[ask.offset] = { ...ask, raw: raws[i], reply: validate(raws[i], at) }; });
-      const rowSource = buildRowSourceFromHead(identity, undefined, undefined, recorded, pages);
+      const rowSource = buildRowSourceFromHead(identity, undefined, undefined, recorded, pages, read.validate);
       return { name: entry.name, hour: recorded, panel: raws[0], ...(rowSource ? { rows: rowSource } : {}) };
     }
     const params = tailQueryParams(read.tailQuery, recorded, 0, read.tailQuery.limit);
@@ -749,7 +749,7 @@ async function readEntryExact(
       params,
     });
     const raw = await fetchRaw(request);
-    const rowSource = buildRowSourceFromHead(identity, raw, undefined, recorded);
+    const rowSource = buildRowSourceFromHead(identity, raw, undefined, recorded, undefined, read.validate);
     return { name: entry.name, hour: recorded, panel: raw, ...(rowSource ? { rows: rowSource } : {}) };
   }
 

@@ -10,14 +10,23 @@ const optional = (value: unknown): value is number | null | undefined => value =
 const costs = (value: unknown): boolean => value == null || (Array.isArray(value)
   && value.every(cost => object(cost) && typeof cost.currency === 'string' && CURRENCIES.has(cost.currency) && typeof cost.amount === 'string' && RAW.test(cost.amount)));
 
-export function validateOccurrence(value: unknown): ScriptOccurrence {
-  if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || typeof value.opened !== 'boolean' || !Array.isArray(value.edges)
-    || value.edges.length === 0 || !value.edges.every(edge => object(edge) && optional(edge.option) && optional(edge.lifecycle) && optional(edge.days) && costs(edge.costs)
-      && (edge.costsUnread === undefined || (Array.isArray(edge.costsUnread) && edge.costsUnread.every(currency => typeof currency === 'string' && CURRENCIES.has(currency)))))) {
+export function validateScriptEdge(value: unknown, readAt?: number): ScriptEdge {
+  if (!object(value) || !optional(value.option) || !optional(value.lifecycle) || !optional(value.days) || !costs(value.costs)
+    || (value.costsUnread !== undefined && (!Array.isArray(value.costsUnread) || !value.costsUnread.every(currency => typeof currency === 'string' && CURRENCIES.has(currency))))) {
     throw new Error('The occurrence card is malformed.');
   }
-  const edges = (value.edges as Record<string, unknown>[]).map(edge => ({ ...(edge as unknown as ScriptEdge), row: validateFeedRow(edge.row) }));
-  return { id: value.id, opened: value.opened, edges };
+  const row = validateFeedRow(value.row);
+  if (readAt !== undefined && row.readHour > readAt) {
+    throw new Error(`Event ${row.id} was read at hour ${row.readHour} after displayed hour ${readAt}.`);
+  }
+  return { ...(value as unknown as ScriptEdge), row };
+}
+
+export function validateOccurrence(value: unknown, readAt?: number): ScriptOccurrence {
+  if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || typeof value.opened !== 'boolean' || !Array.isArray(value.edges) || value.edges.length === 0) {
+    throw new Error('The occurrence card is malformed.');
+  }
+  return { id: value.id, opened: value.opened, edges: value.edges.map(edge => validateScriptEdge(edge, readAt)) };
 }
 
 export function occurrenceItem(occurrence: ScriptOccurrence): EventFeedItem | null {

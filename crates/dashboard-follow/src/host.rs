@@ -11,11 +11,7 @@ use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
 use playhead::{
     Declared, Playhead, Reader, Watcher,
-    pages::{Pages, Run},
-};
-use replay_columnar::{
-    manifest::Status,
-    unit::{BLOCK, reader},
+    pages::Pages,
 };
 use replay_data::Hour;
 use std::{
@@ -79,29 +75,7 @@ impl WaitGate {
 }
 
 pub fn held_tables(pages: &dyn Pages, tables: usize) -> Vec<bool> {
-    (0..tables)
-        .map(|table| {
-            let unwithheld = pages.kinds(table).is_some_and(|kinds| !kinds.is_empty())
-                && pages.runs().iter().enumerate().any(|(run, held)| pages.withheld_at(run, table, held.last_hour()).is_none());
-            let restored = pages.runs().iter().all(|run| run.pages.iter().filter_map(|page| page.tables.get(table)).any(|entry| entry.first.is_some() || entry.restore.is_some()));
-            unwithheld && restored && pages.runs().iter().any(|run| recorded(run, table))
-        })
-        .collect()
-}
-
-fn recorded(run: &Run, table: usize) -> bool {
-    run.pages.iter().enumerate().any(|(block, page)| {
-        let Some(entry) = page.tables.get(table) else { return false };
-        let first = run.first_hour + (block as u32 * BLOCK) as Hour;
-        let mut hour = 0;
-        loop {
-            match reader::status(entry, hour, first) {
-                Ok((status, ..)) if status != Status::NotRecorded => return true,
-                Ok((_, _, _, Some(next))) if next > hour => hour = next,
-                _ => return false,
-            }
-        }
-    })
+    pages.held_tables(tables)
 }
 
 struct Shown {

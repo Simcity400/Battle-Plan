@@ -773,6 +773,7 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
       widths: Object.fromEntries([...allLayouts.filter(col => col.shown), ...columns.columns].map(col => [col.key, col.width])),
       visible: columns.columns.map(col => col.key),
       totals: columns.columns.filter(col => col.narrow === 'total' && !col.headerGroup).map(col => col.key),
+      narrowed: columns.narrowed,
       totalWidth: paneGeom ? width + Math.max(0, columns.totalWidth - paneGeom.width) : columns.totalWidth,
       scrollable: columns.scrollable,
       pinnedCount: columns.pinnedCount,

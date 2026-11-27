@@ -317,7 +317,7 @@ fn no_rows(step: &Step) -> bool {
 #[test]
 fn a_missing_part_stalls_its_table_and_the_next_step_takes_it_up() {
     let (pages, states) = recording(Writing { cap: 64, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
-    let parts = &pages.runs[0].pages[0].tables[0].parts;
+    let parts = &pages.runs[0].held_pages().unwrap()[0].tables[0].parts;
     let held = parts.iter().position(|part| part.first > 200).expect("a part past the seek's read-ahead");
     let frames = &parts[held].frames;
     let from = frames.iter().map(|frame| frame.offset).min().unwrap();
@@ -2986,7 +2986,7 @@ fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
     let (bytes, run, _) = record_log(Writing { cap: 256, ..Writing::at(3) }, 0, 2 * BLOCK);
     let gated = gated(bytes);
     let pages = Arc::new(Runs { extents: vec![gated], runs: vec![run], kinds: vec![LOG.to_vec()] });
-    let second_page_from = pages.runs[0].pages[1].tables[0].parts.iter()
+    let second_page_from = pages.runs[0].held_pages().unwrap()[1].tables[0].parts.iter()
         .flat_map(|part| part.frames.iter().map(|frame| frame.offset))
         .min()
         .unwrap();
@@ -3220,7 +3220,7 @@ fn paused_gap_seek_column_expansion_clears_join_without_stalling() {
 #[test]
 fn paused_gap_entry_with_stalled_lane_clears_column_expansion_via_seek() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
-    let parts = &pages.runs[0].pages[0].tables[0].parts;
+    let parts = &pages.runs[0].held_pages().unwrap()[0].tables[0].parts;
     let held = parts.iter().position(|part| part.first > 200).expect("a part past initial read-ahead");
     let frames = &parts[held].frames;
     let from = frames.iter().map(|frame| frame.offset).min().unwrap();
@@ -3281,7 +3281,7 @@ fn paused_gap_entry_with_stalled_lane_clears_column_expansion_via_seek() {
 #[test]
 fn paused_seed_hold_allows_stalled_slot_catch_up_at_head() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
-    let parts = &pages.runs[0].pages[0].tables[0].parts;
+    let parts = &pages.runs[0].held_pages().unwrap()[0].tables[0].parts;
     let held = parts.iter().position(|part| part.first > 200).expect("a part past initial read-ahead");
     let frames = &parts[held].frames;
     let from = frames.iter().map(|frame| frame.offset).min().unwrap();

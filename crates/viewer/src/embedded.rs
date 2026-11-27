@@ -1744,6 +1744,22 @@ mod tests {
             self.inner.runs()
         }
 
+        fn table_entry(&self, run: usize, block: usize, table: usize) -> std::io::Result<playhead::pages::EntryRef> {
+            self.inner.table_entry(run, block, table)
+        }
+
+        fn held_tables(&self, tables: usize) -> Vec<bool> {
+            self.inner.held_tables(tables)
+        }
+
+        fn written_tables(&self, runs: &[usize], tables: usize) -> Vec<playhead::pages::TableWritten> {
+            self.inner.written_tables(runs, tables)
+        }
+
+        fn table_has_activity(&self, table: usize) -> bool {
+            self.inner.table_has_activity(table)
+        }
+
         fn kinds(&self, table: usize) -> Option<&[replay_columnar::state::Kind]> {
             self.inner.kinds(table)
         }

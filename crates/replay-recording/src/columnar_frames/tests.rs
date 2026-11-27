@@ -810,3 +810,41 @@ fn a_pool_let_go_last_on_its_own_thread_ends() {
     release.send(()).unwrap();
     end.recv().unwrap();
 }
+
+#[test]
+fn file_opens_share_one_page_owner_and_keep_distinct_live_pages() {
+    let (bytes, _) = fixtures::churned(recorder_derive::writers(), &[(1, 100, envelope::SPAN_BLOCKS + 1), (2, 20_000, 1)]);
+    let disk = Saved::new(&bytes);
+    let first = disk.open();
+    let second = disk.open();
+    let selected = second.selecting(&TableId::ALL).unwrap();
+    assert_eq!(first.pages_id(), second.pages_id(), "two opens of one file share one page owner");
+    assert_eq!(first.pages_id(), selected.pages_id(), "selecting shares the same page owner");
+    assert_eq!(first.live_page_counts(), crate::columnar_frames::PageCounts::default());
+
+    let closed_a = first.table_entry(0, 0, TableId::Countries.index()).unwrap();
+    let closed_b = second.table_entry(0, 5, TableId::Countries.index()).unwrap();
+    let closed_c = selected.table_entry(0, 10, TableId::Countries.index()).unwrap();
+    assert_eq!(first.live_page_counts().spans, 1, "one span directory loaded across all openers");
+    assert_eq!(first.live_page_counts().span_rows, 1, "one span row shared across all three handles");
+
+    let open_a = first.table_entry(0, envelope::SPAN_BLOCKS, TableId::Countries.index()).unwrap();
+    let open_b = second.table_entry(0, envelope::SPAN_BLOCKS, TableId::WorldTension.index()).unwrap();
+    let open_c = selected.table_entry(0, envelope::SPAN_BLOCKS, TableId::Countries.index()).unwrap();
+    assert_eq!(first.live_page_counts().open_blocks, 1, "one live open block shared across all three handles");
+
+    let open_r1 = first.table_entry(1, 0, TableId::Countries.index()).unwrap();
+    assert_eq!(first.live_page_counts().open_blocks, 2, "two distinct open blocks held across openers");
+    drop((closed_a, closed_b, closed_c, open_a, open_b, open_c, open_r1));
+
+    let clean = opened(bytes.clone());
+    let mut damaged_bytes = bytes;
+    let extent = clean.run(1).unwrap().directory().open[0];
+    let byte = (extent.offset + extent.stored / 2) as usize;
+    damaged_bytes[byte] ^= 0xff;
+    let damaged = opened(damaged_bytes);
+    assert_ne!(clean.pages_id(), damaged.pages_id(), "in-memory opens do not share a page owner");
+    let _ok = clean.table_entry(1, 0, TableId::Countries.index()).unwrap();
+    let error = damaged.table_entry(1, 0, TableId::Countries.index()).unwrap_err();
+    assert_eq!(Damage::of(&error).unwrap().scope, DamageScope::Extent(extent));
+}

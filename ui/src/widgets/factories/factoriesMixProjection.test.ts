@@ -119,3 +119,40 @@ test('factoriesMixProjection sends group selection to Rust, keys rows by recorde
   assert.deepEqual(sentParams.group, { type: 'faction', id: '42', membership: 'hour' }, 'group selection sent to Rust');
   assert.deepEqual(sentParams.countries, []);
 });
+
+test('factoriesMixProjection matches the shared missing-name labels when part names are absent or unnamed', () => {
+  const reply: FactoryMixReply = {
+    hour: 300,
+    mode: 'built',
+    parts: [
+      { key: 'military', name: null, damaged: false, group: 'military' },
+      { key: 'damaged:military', name: null, damaged: true, group: 'military' },
+      { key: 'civilian', name: 'Building name unavailable', damaged: false, group: 'civilian' },
+      { key: 'damaged:civilian', name: 'Damaged Building name unavailable', damaged: true, group: 'civilian' },
+    ],
+    rows: [
+      { country: 7, tag: 'AAA', total: 20, values: [8, 2, 7, 3], shares: [0.4, 0.1, 0.35, 0.15], missing: null, partsMissing: null },
+    ],
+    missing: null,
+    warnings: [],
+  };
+  const view = createBoundedReadView({
+    hour: displayedHour(300),
+    panels: new Map([['main', reply]]),
+    identity: fakeIdentity({ [countryKey(7)]: { name: 'Alpha Republic', color: '#6b7280', tag: 'AAA' } }),
+  });
+  const model = factoriesMixProjection.project(view, { ...OPTS, top: null });
+  const row = model.rows[0] as BarsDataRow;
+  assert.deepEqual(row.segments?.map(s => s.label), [
+    'Name not recorded',
+    'Damaged (Name not recorded)',
+    'Building name unavailable',
+    'Damaged Building name unavailable',
+  ]);
+  assert.deepEqual(model.legend?.map(item => item.label), [
+    'Name not recorded',
+    'Damaged (Name not recorded)',
+    'Building name unavailable',
+    'Damaged Building name unavailable',
+  ]);
+});

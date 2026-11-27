@@ -119,6 +119,8 @@ export function formatApmOperands(value: ApmValue, confirmed = false): string | 
   return `${formatScalar(orders, 'integer')} ${orders === 1n ? 'action' : 'actions'} in ${minutes}`;
 }
 
+export const APM_NOT_RECORDED = 'Player orders were not recorded in this campaign.';
+export const APM_EMPTY = 'No eAPM is available for these countries, players and dates.';
 export const APM_EXPLANATION = 'Effective actions per minute (eAPM): accepted player-issued gameplay orders per unpaused real minute. Paused orders and paused time never affect eAPM. Camera movement, selections and unsaved interface edits do not count. Automatic battle-plan execution does not add orders.';
 export const GAPS_NOTE = 'Part of this period was not recorded; its orders and minutes are both left out.';
 function rateNote(value: ApmValue): string {

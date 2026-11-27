@@ -66,6 +66,9 @@ async function drawnState(s, view, after, test, timeout) {
   }
 }
 
+export const MAP_MODE_CAPABILITIES = Object.freeze({ supply: 'refuses-by-name' });
+export const mapModeCapability = token => (Object.hasOwn(MAP_MODE_CAPABILITIES, token) ? MAP_MODE_CAPABILITIES[token] : 'available');
+
 export async function mapModes(s, dpr) {
   const { view } = await mapArea(s, dpr);
   const modes = await s.app.evaluate(`__e2e.mapModes[${JSON.stringify(view)}] ?? null`);
@@ -78,14 +81,21 @@ export async function mapModes(s, dpr) {
   const ordered = [...modes.filter(mode => mode.token !== active), ...modes.filter(mode => mode.token === active)];
   for (const mode of ordered) {
     const item = `mode: ${mode.token}`;
-    if (mode.unavailable) { await s.record({ area: 'map', item, label: mode.label, pass: false, reasons: [`the recording cannot draw it: ${mode.unavailable}`], ms: null, unavailable: mode.unavailable, screenshot: false }); continue; }
+    if (mode.unavailable != null) {
+      const reason = typeof mode.unavailable === 'string' ? mode.unavailable.trim() : '';
+      const expected = mapModeCapability(mode.token) === 'refuses-by-name';
+      const pass = expected && Boolean(reason);
+      const reasons = pass ? [] : [expected ? 'refused by name without a stated reason' : `unexpected refusal: ${reason || 'no reason stated'}`];
+      await s.record({ area: 'map', item, label: mode.label, pass, ...(pass ? { verdict: 'refuses by name' } : {}), reasons, ms: null, unavailable: reason || mode.unavailable, screenshot: false });
+      continue;
+    }
     await s.watch();
     const sent = Date.now();
     await send(views.map(entry => entry.id === view ? { ...entry, options: { ...entry.options, mapMode: mode.token } } : entry));
     const state = await drawnState(s, view, sent, `x => x.mapMode === ${JSON.stringify(mode.token)} && !x.loading`, 8000);
-    const ms = state ? state.drawnAt - sent : null;
-    const reasons = [...(state ? [] : ['the viewer never drew a frame in this mode within 8 s']), ...await s.unwatch()];
-    await s.record({ area: 'map', item, label: mode.label, ms, sent, drawnAt: state?.drawnAt ?? null, pass: true, reasons, screenshot: false });
+    const drawn = state && !state.error ? state : null;
+    const reasons = [...(!state ? ['the viewer never drew a frame in this mode within 8 s'] : state.error ? [`the viewer reported a map error: ${state.error}`] : []), ...await s.unwatch()];
+    await s.record({ area: 'map', item, label: mode.label, ms: drawn ? drawn.drawnAt - sent : null, sent, drawnAt: drawn?.drawnAt ?? null, pass: reasons.length === 0, reasons, screenshot: false });
   }
   await send(views);
 }
@@ -164,15 +174,20 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
   await s.openPage('Overview');
 }
 
-export async function hover(s, input, dpr) {
+export async function hover(s, input, dpr, { scanTimeoutMs = 400, timeoutMs = 4000, neutralPauseMs = 200 } = {}) {
   const area = await mapArea(s, dpr);
   const from = Date.now();
   const seen = new Map();
   const at = async (x, y) => {
     const [px, py] = area.px(x, y);
     const [posted] = (await input.ask({ op: 'move', points: [[px, py]], interval_ms: 0 })).posted;
-    const state = await drawnState(s, area.view, posted, 'x => true', 400);
+    const state = await drawnState(s, area.view, posted, 'x => true', scanTimeoutMs);
     return { posted, state, point: [px, py] };
+  };
+  const recordSeen = (candidate, x, y, point) => {
+    if (!candidate) return;
+    for (const hoverCase of HOVER_CASES) if (!seen.has(hoverCase.id) && hoverCase.match(candidate[hoverCase.field] ?? null))
+      seen.set(hoverCase.id, { x, y, hovered: candidate[hoverCase.field], point });
   };
   const points = [];
   for (let row = 0; row < 12; row++) for (let column = 0; column < 20; column++)
@@ -181,35 +196,60 @@ export async function hover(s, input, dpr) {
   let neutral = null;
   for (const [x, y] of points) {
     if (HOVER_CASES.every(hoverCase => seen.has(hoverCase.id)) && neutral) break;
-    const { state, point } = await at(x, y);
+    const { posted, state, point } = await at(x, y);
+    recordSeen(state, x, y, point);
+    const waitMs = (state?.tooltipDelayMs ?? 0) + neutralPauseMs;
+    let after = state?.drawnAt ?? posted;
+    let end = null;
+    let settledNeutral = false;
     if (state && !state.hover && !state.tooltip && !neutral) {
-      await sleep((state.tooltipDelayMs ?? 0) + 200);
-      const now = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
-      if (now && !now.hover && !now.tooltip) neutral = [x, y];
+      end = Date.now() + waitMs;
+      const appeared = await drawnState(s, area.view, posted, 'x => Boolean(x.hover || x.tooltip)', waitMs);
+      if (appeared) { recordSeen(appeared, x, y, point); after = appeared.drawnAt ?? after; }
+      else {
+        const now = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
+        recordSeen(now, x, y, point);
+        if (now && !now.hover && !now.tooltip) neutral = [x, y];
+        settledNeutral = true;
+      }
     }
-    for (const hoverCase of HOVER_CASES) if (!seen.has(hoverCase.id) && hoverCase.match(state?.[hoverCase.field] ?? null))
-      seen.set(hoverCase.id, { x, y, hovered: state[hoverCase.field], point });
+    if (state && !settledNeutral) {
+      while (true) {
+        const unseen = HOVER_CASES.filter(hoverCase => !seen.has(hoverCase.id));
+        if (!unseen.length) break;
+        const wait = unseen.some(hoverCase => hoverCase.field === 'tooltip') ? waitMs : neutralPauseMs;
+        end ??= Date.now() + wait;
+        const predicate = `x => ${unseen.map(hoverCase => `(${hoverCase.match.toString()})(x.${hoverCase.field} ?? null)`).join(' || ')}`;
+        const next = await drawnState(s, area.view, after, predicate, Math.max(0, end - Date.now()));
+        if (!next) break;
+        recordSeen(next, x, y, point);
+        after = next.drawnAt ?? after;
+      }
+    }
   }
   for (const hoverCase of HOVER_CASES) {
     const target = seen.get(hoverCase.id);
-    if (!target) { await s.fail('map', `hover: ${hoverCase.id}`, null, `no ${hoverCase.id} under any of ${points.length} points over the map`); continue; }
-    if (!neutral) { await s.fail('map', `hover: ${hoverCase.id}`, null, `no point over the map drew without a highlight or tooltip, so its appearance cannot be timed`); continue; }
+    if (!target) {
+      await s.fail('map', `hover presence: ${hoverCase.id}`, null, `no ${hoverCase.id} under any of ${points.length} points over the map`);
+      await s.fail('map', `hover: ${hoverCase.id}`, null, `cannot time ${hoverCase.id}: it was never observed`);
+      continue;
+    }
+    await s.record({ area: 'map', item: `hover presence: ${hoverCase.id}`, label: target.hovered, ms: null, pass: true, reasons: [], screenshot: false });
+    if (!neutral) { await s.fail('map', `hover: ${hoverCase.id}`, target.hovered, 'no point over the map drew without a highlight or tooltip, so its appearance cannot be timed'); continue; }
     const cleared = await at(...neutral);
     if (!cleared.state || cleared.state.hover || cleared.state.tooltip) {
-      const gone = await drawnState(s, area.view, cleared.posted, 'x => !x.hover && !x.tooltip', 4000);
-      if (!gone) { await s.fail('map', `hover: ${hoverCase.id}`, null, 'its highlight or tooltip never cleared away from it, so its appearance cannot be timed'); continue; }
+      const gone = await drawnState(s, area.view, cleared.posted, 'x => !x.hover && !x.tooltip', timeoutMs);
+      if (!gone) { await s.fail('map', `hover: ${hoverCase.id}`, target.hovered, 'its highlight or tooltip never cleared away from it, so its appearance cannot be timed'); continue; }
     }
     const [px, py] = target.point;
     await s.watch();
     const [posted] = (await input.ask({ op: 'move', points: [[px, py]], interval_ms: 0 })).posted;
-    const state = await drawnState(s, area.view, posted, `x => x.${hoverCase.field} === ${JSON.stringify(target.hovered)}`, 4000);
+    const state = await drawnState(s, area.view, posted, `x => x.${hoverCase.field} === ${JSON.stringify(target.hovered)}`, timeoutMs);
     const flashed = await s.unwatch();
     const delay = hoverCase.field === 'tooltip' ? state?.tooltipDelayMs ?? null : 0;
     const ms = state ? state.drawnAt - posted - (delay ?? 0) : null;
-    const reasons = !state ? [`never ${hoverCase.field === 'tooltip' ? 'showed its tooltip' : 'highlighted'} within 4 s`]
-      : delay === null ? ['the viewer reported no tooltip delay'] : [];
-    reasons.push(...flashed);
-    await s.record({ area: 'map', item: `hover: ${hoverCase.id}`, label: target.hovered, ms, posted, delay, drawnAt: state?.drawnAt ?? null, pass: true, reasons, screenshot: false });
+    const reasons = [...(!state ? [`never ${hoverCase.field === 'tooltip' ? 'showed its tooltip' : 'highlighted'} within 4 s`] : delay === null ? ['the viewer reported no tooltip delay'] : []), ...flashed];
+    await s.record({ area: 'map', item: `hover: ${hoverCase.id}`, label: target.hovered, ms, posted, delay, drawnAt: state?.drawnAt ?? null, pass: reasons.length === 0, reasons, screenshot: false });
   }
   await input.ask({ op: 'move', points: [area.px(area.left + 2, area.top + 2)], interval_ms: 0 }).catch(() => {});
   await s.record({ area: 'map', item: 'interaction: hover', label: 'paused', pass: true, reasons: [], from, to: Date.now(), screenshot: false });

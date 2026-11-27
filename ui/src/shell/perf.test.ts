@@ -228,7 +228,7 @@ test('perf audit keys include pipeline generation and unregistering live readers
   await recorder.beginAudit();
   recordPicture(sample('w-gen1-stale', 1, 'gen1-val'));
   const afterDrop = await recorder.auditPicturesBatch(10);
-  assert.equal(afterDrop.results[0]?.error, 'Displayed rows or exact read missing',
+  assert.equal(afterDrop.results[0]?.error, 'Exact reader absent',
     'disposed generation readers are removed from live registrations before later audits');
   await capturePictures(false);
   await capturePicturesBatch(100);
@@ -713,7 +713,7 @@ test('unaudited painted pictures fail audit explicitly and reader(null) unregist
     reset: 0, binding: 0, inspect: null, tooltip: false, rows: [{ row: 'A', key: 'A:v', value: 'ok' }],
   });
   const second = await recorder.auditPicturesBatch(10);
-  assert.equal(second.results[0]!.error, 'Displayed rows or exact read missing', 'subsequent audit sees unregistered reader removed');
+  assert.equal(second.results[0]!.error, 'Exact reader absent', 'subsequent audit sees unregistered reader removed');
   await capturePictures(false);
   await capturePicturesBatch(100);
 });
@@ -871,4 +871,64 @@ test('F3 & P4: captured picture snapshots stay pinned across >512 store creates 
   assert.equal(store.get(pinnedId), undefined, 'F3 & P4: pinned stale snapshot is freed once verification drains');
   await capturePictures(false);
   await capturePicturesBatch(100);
+});
+
+test('R15: pictureError distinguishes absent reader, empty displayed rows, extra keys, missing keys, order changes, and a visible prefix with index, both keys, and both lengths', () => {
+  const row = (id: string, value = '1') => ({ row: id, key: `${id}:v`, value });
+  const exactMap = (...ids: string[]) => new Map(ids.map(id => [`${id}:v`, '1'] as const));
+
+  assert.equal(pictureError('table', [row('A')], undefined), 'Exact reader absent');
+  assert.equal(pictureError('table', [row('A')], null), 'Exact read absent');
+  assert.equal(
+    pictureError('table', [], { values: exactMap('A', 'B', 'C'), ordered: true }),
+    'Displayed 0 of 3 rows (row 0: displayed none, expected A:v)',
+  );
+  assert.equal(pictureError('table', [], { values: new Map(), ordered: true }), null, 'two empty row sets still match');
+
+  assert.equal(
+    pictureError('table', [row('A'), row('X'), row('B')], { values: exactMap('A', 'B'), ordered: true }),
+    'Extra key at row 1 (shown 3, exact 2): displayed X:v, expected B:v',
+  );
+  assert.equal(
+    pictureError('table', [row('B'), row('A'), row('X')], { values: exactMap('A', 'B'), ordered: true }),
+    'Extra key (X:v), first diff at row 0 (shown 3, exact 2): displayed B:v, expected A:v',
+  );
+  assert.equal(
+    pictureError('table', [row('A'), row('C')], { values: exactMap('A', 'B', 'C'), ordered: true }),
+    'Key not shown at row 1 (shown 2, exact 3): displayed C:v, expected B:v',
+  );
+  assert.equal(
+    pictureError('table', [row('B'), row('A')], { values: exactMap('A', 'B', 'C'), ordered: true }),
+    'Key not shown (C:v), first diff at row 0 (shown 2, exact 3): displayed B:v, expected A:v',
+  );
+  assert.equal(
+    pictureError('table', [row('A'), row('X')], { values: exactMap('B', 'A'), ordered: true }),
+    'Key not shown at row 0 (shown 2, exact 2): displayed A:v, expected B:v',
+  );
+  assert.equal(
+    pictureError('table', [row('A'), row('A')], { values: exactMap('A', 'B'), ordered: true }),
+    'A:v is shown twice at row 1 (shown 2, exact 2): displayed A:v, expected B:v',
+  );
+  assert.equal(
+    pictureError('table', [row('B'), row('B')], { values: exactMap('A', 'B'), ordered: true }),
+    'B:v is shown twice (row 1), first diff at row 0 (shown 2, exact 2): displayed B:v, expected A:v',
+  );
+  assert.equal(
+    pictureError('table', [row('B'), row('A')], { values: exactMap('A', 'B'), ordered: true }),
+    'Row order differs at row 0 (shown 2, exact 2): displayed B:v, expected A:v',
+  );
+  assert.equal(
+    pictureError('table', [{ row: '2', key: 'B:v', value: '1' }, { row: '1', key: 'A:v', value: '1' }], {
+      values: new Map([['1:A:v', '1'], ['2:B:v', '1']]),
+      ranked: true,
+    }),
+    'Row order differs at row 0 (shown 2, exact 2): displayed 2:B:v, expected 1:A:v',
+  );
+
+  const all42 = Array.from({ length: 42 }, (_, i) => `C${String(i).padStart(2, '0')}`);
+  const first12 = all42.slice(0, 12).map(id => row(id));
+  assert.equal(
+    pictureError('bars', first12, { values: exactMap(...all42), ordered: true }),
+    'Key not shown at row 12 (shown 12, exact 42): displayed none, expected C12:v',
+  );
 });

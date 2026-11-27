@@ -33,7 +33,7 @@ export default function NavyManagement({ runtime, track, tag, hour, active }: Na
       <summary>Repairs, refits and reinforcement</summary>
       {open ? (
         <div className="navy-management-content">
-          {error ? <WidgetState kind="error" failure={error} onRetry={retry} />
+          {error ? <WidgetState kind="error" what="naval management" failure={error} onRetry={retry} />
             : !data ? <WidgetState kind="loading" label="Loading naval orders…" />
               : (
                 <>

@@ -4,6 +4,7 @@ import type { GameWindowRegion, GameWindowRequest, GameWindowScroll } from './cl
 import {
   accessibleRegions,
   fitGameWindowSize,
+  formatGameWindowText,
   followGameWindowRender,
   gameWindowRequestKey,
   gameWindowSubjectKey,
@@ -311,4 +312,40 @@ test('claimGameWindowSlot enforces one pop-up per kind and preserves position ac
   releaseGameWindowSlot('equipmentDesigner', 'widget-b');
   assert.equal(claimGameWindowSlot('equipmentDesigner', 'widget-a', () => { closedA++; }), null);
   releaseGameWindowSlot('equipmentDesigner', 'widget-a');
+});
+
+test('hitTestScroll selects the horizontal axis when horizontal wheel is requested on a 2D viewport', () => {
+  const mk = (list: string, vertical: boolean): GameWindowRegion => ({
+    path: list,
+    rect: [0, 0, 200, 200],
+    clip: null,
+    disabled: false,
+    close: false,
+    passthrough: true,
+    tooltip: null,
+    scroll: { list, vertical, position: 0, range: 120, step: 40, page: 100, control: { kind: 'list' } },
+  });
+  const regions = [mk('tree/scroll:h', false), mk('tree/scroll:v', true)];
+  assert.equal(hitTestScroll(regions, 50, 50, false)?.path, 'tree/scroll:v');
+  assert.equal(hitTestScroll(regions, 50, 50, true)?.path, 'tree/scroll:h');
+  const reversed = [mk('tree/scroll:v', true), mk('tree/scroll:h', false)];
+  assert.equal(hitTestScroll(reversed, 50, 50, false)?.path, 'tree/scroll:v');
+  assert.equal(hitTestScroll(reversed, 50, 50, true)?.path, 'tree/scroll:h');
+  assert.equal(hitTestScroll([mk('only/v', true)], 50, 50, true)?.path, 'only/v');
+  assert.equal(hitTestScroll([mk('only/h', false)], 50, 50, false)?.path, 'only/h');
+});
+
+test('formatGameWindowText formats visible values and unread missing reasons for screen readers', () => {
+  assert.equal(
+    formatGameWindowText({ path: 'production:0', label: 'Synthetic Cruiser', value: 'Light Hull — Units produced: 14', missing: null }),
+    'Synthetic Cruiser: Light Hull — Units produced: 14',
+  );
+  assert.equal(
+    formatGameWindowText({ path: 'history:0', label: 'Designed equipment', value: null, missing: 'design dates not recorded' }),
+    'Designed equipment: not recorded (design dates not recorded)',
+  );
+  assert.equal(
+    formatGameWindowText({ path: 'policy:0', label: 'Policy', value: null, missing: null }),
+    'Policy: not recorded (no reason given)',
+  );
 });

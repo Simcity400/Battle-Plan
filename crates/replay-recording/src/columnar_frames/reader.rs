@@ -11,15 +11,17 @@ use replay_columnar::{
     envelope::{self, Extent, Kind, SPAN_BLOCKS, UNIT_ORDINALS},
     lane::{Clock, ClockHour},
     pages::{Block, BlockHead, Entry, RunDirectory, SpanDirectory, SpanRow},
-    unit::{BlockPage, FrameEntry, TableEntry, reader::Extents},
+    unit::{BlockPage, FrameEntry, TableEntry, reader::{Extents, PageEntry}},
 };
 use std::{
     collections::HashMap,
     fmt,
     fs::File,
     io,
-    path::Path,
-    sync::{Arc, Mutex, PoisonError},
+    ops::Deref,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock, PoisonError, Weak},
+    time::SystemTime,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,16 +122,109 @@ impl Run {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PageCounts {
+    pub open_blocks: usize,
+    pub spans: usize,
+    pub span_rows: usize,
+}
+
+#[derive(Clone)]
+enum EntryOwner {
+    Open(Arc<Block>),
+    Span(Arc<SpanRow>),
+}
+
+#[derive(Clone)]
+pub struct SharedEntry {
+    owner: EntryOwner,
+    index: usize,
+}
+
+impl Deref for SharedEntry {
+    type Target = Entry;
+
+    fn deref(&self) -> &Entry {
+        match &self.owner {
+            EntryOwner::Open(block) => &block.tables[self.index],
+            EntryOwner::Span(row) => &row.blocks[self.index],
+        }
+    }
+}
+
+impl fmt::Debug for SharedEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
+#[derive(Clone)]
+pub struct TablePage {
+    pub block: u32,
+    pub hours: u16,
+    pub table: usize,
+    pub entry: SharedEntry,
+}
+
+impl PageEntry for TablePage {
+    fn block(&self) -> u32 {
+        self.block
+    }
+
+    fn hours(&self) -> u16 {
+        self.hours
+    }
+
+    fn table_entry(&self, table: usize) -> Option<&TableEntry> {
+        (table == self.table).then_some(&self.entry.unit)
+    }
+}
+
+struct PageSlot<T>(Arc<T>);
+
+impl<T> PageSlot<T> {
+    fn new(value: &Arc<T>) -> Self {
+        Self(Arc::clone(value))
+    }
+
+    fn upgrade(&self) -> Option<Arc<T>> {
+        Some(Arc::clone(&self.0))
+    }
+
+    fn is_live(&self) -> bool {
+        true
+    }
+}
+
 struct SpanHeld {
     directory: SpanDirectory,
     index: Extent,
-    rows: Mutex<Vec<Option<Arc<SpanRow>>>>,
+    rows: Mutex<Vec<Option<PageSlot<SpanRow>>>>,
 }
 
 #[derive(Default)]
 struct Pages {
     spans: Mutex<HashMap<(u32, u32), Arc<SpanHeld>, foldhash::fast::RandomState>>,
-    open: Mutex<HashMap<(u32, u32), Arc<Block>, foldhash::fast::RandomState>>,
+    open: Mutex<HashMap<(u32, u32), PageSlot<Block>, foldhash::fast::RandomState>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FileKey {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    revision: (u64, u64, [u8; 16]),
+}
+
+fn shared_pages(key: FileKey) -> Arc<Pages> {
+    static SHARED: OnceLock<Mutex<HashMap<FileKey, Weak<Pages>>>> = OnceLock::new();
+    let mut held = locked(SHARED.get_or_init(|| Mutex::new(HashMap::new())));
+    if let Some(pages) = held.get(&key).and_then(Weak::upgrade) {
+        return pages;
+    }
+    held.retain(|_, pages| pages.strong_count() > 0);
+    let pages = Arc::new(Pages::default());
+    held.insert(key, Arc::downgrade(&pages));
+    pages
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -208,7 +303,7 @@ pub struct Recording {
 
 impl Recording {
     pub fn open(bytes: Vec<u8>) -> io::Result<Self> {
-        Self::read(Held::Memory(bytes), Open::Saved)
+        Self::read(Held::Memory(bytes), Open::Saved, None)
     }
 
     pub fn open_path(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -216,18 +311,22 @@ impl Recording {
     }
 
     pub fn open_path_as(path: impl AsRef<Path>, open: Open) -> io::Result<Self> {
-        Self::read(Held::File(File::open(path)?), open)
+        let path = path.as_ref();
+        let file = File::open(path)?;
+        let modified = file.metadata().ok().and_then(|meta| meta.modified().ok());
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        Self::read(Held::File(file), open, Some((canonical, modified)))
     }
 
     pub fn open_file(file: File, open: Open) -> io::Result<Self> {
-        Self::read(Held::File(file), open)
+        Self::read(Held::File(file), open, None)
     }
 
     pub fn open_as(bytes: Vec<u8>, open: Open) -> io::Result<Self> {
-        Self::read(Held::Memory(bytes), open)
+        Self::read(Held::Memory(bytes), open, None)
     }
 
-    fn read(held: Held, open: Open) -> io::Result<Self> {
+    fn read(held: Held, open: Open, file_id: Option<(PathBuf, Option<SystemTime>)>) -> io::Result<Self> {
         let unlocated = |error: io::Error| Damage::wrap(DamageScope::Unlocated, error);
         let (source, root_extent) = Source::open(held, open).map_err(unlocated)?;
         let root = Root::read(&container::decompress(&source.stored(&root_extent).map_err(unlocated)?, None).map_err(unlocated)?).map_err(unlocated)?;
@@ -235,6 +334,10 @@ impl Recording {
         let saved = match root.saved {
             Saved::Yes => Some(revision),
             Saved::No(before) => before,
+        };
+        let pages = match file_id {
+            Some((path, modified)) => shared_pages(FileKey { path, modified, revision: (revision.number, revision.length, revision.root) }),
+            None => Arc::default(),
         };
         let mut recording = Self {
             source: Arc::new(source),
@@ -255,7 +358,7 @@ impl Recording {
             damage: Box::default(),
             selected: [true; TABLE_COUNT],
             projected: None,
-            pages: Arc::default(),
+            pages,
         };
         recording.records = recording.section(SectionKey::RECORDS, sections_schema::RECORDS).map_err(unlocated)?.into();
         recording.facts = recording.section(SectionKey::FACTS, sections_schema::FACTS).map_err(unlocated)?.into();
@@ -669,7 +772,7 @@ impl Recording {
             if pages.index.stored != pages.index.raw {
                 return Err(invalid("A span index is stored compressed"));
             }
-            Ok(SpanHeld { directory, index: pages.index, rows: Mutex::new(vec![None; self.tables]) })
+            Ok(SpanHeld { directory, index: pages.index, rows: Mutex::new((0..self.tables).map(|_| None).collect()) })
         };
         let held = Arc::new(read().map_err(|error| Damage::wrap(scope, error))?);
         Ok(Arc::clone(locked(&self.pages.spans).entry((run, span)).or_insert(held)))
@@ -677,8 +780,8 @@ impl Recording {
 
     fn span_row(&self, run: u32, span: u32, held: &SpanHeld, table: usize) -> io::Result<Arc<SpanRow>> {
         self.holds(table)?;
-        if let Some(row) = locked(&held.rows).get(table).and_then(Option::as_ref) {
-            return Ok(Arc::clone(row));
+        if let Some(row) = locked(&held.rows).get(table).and_then(Option::as_ref).and_then(PageSlot::upgrade) {
+            return Ok(row);
         }
         let parse = || -> io::Result<SpanRow> {
             let place = held.directory.rows.get(table).ok_or_else(|| invalid(format!("A span names no table {table}")))?;
@@ -691,18 +794,50 @@ impl Recording {
         };
         let row = Arc::new(parse().map_err(|error| Damage::wrap(DamageScope::Table { run, block: span * SPAN_BLOCKS, table: table as u32 }, error))?);
         let mut rows = locked(&held.rows);
-        Ok(Arc::clone(rows[table].get_or_insert(row)))
+        if let Some(existing) = rows[table].as_ref().and_then(PageSlot::upgrade) {
+            return Ok(existing);
+        }
+        rows[table] = Some(PageSlot::new(&row));
+        Ok(row)
     }
 
     fn open_block(&self, run: u32, block: u32) -> io::Result<Arc<Block>> {
-        if let Some(held) = locked(&self.pages.open).get(&(run, block)) {
-            return Ok(Arc::clone(held));
+        if let Some(held) = locked(&self.pages.open).get(&(run, block)).and_then(PageSlot::upgrade) {
+            return Ok(held);
         }
         let directory = &self.run(run)?.directory;
         let page = directory.open.get((block - directory.spans.len() as u32 * SPAN_BLOCKS) as usize).ok_or_else(|| invalid(format!("Run {run} holds no block {block}")))?;
         let read = Block::read(&self.raw(page)?, page, self.tables).map_err(|error| Damage::wrap(DamageScope::Page { run, block }, error))?;
         let held = Arc::new(read);
-        Ok(Arc::clone(locked(&self.pages.open).entry((run, block)).or_insert(held)))
+        let mut open = locked(&self.pages.open);
+        if let Some(existing) = open.get(&(run, block)).and_then(PageSlot::upgrade) {
+            return Ok(existing);
+        }
+        open.insert((run, block), PageSlot::new(&held));
+        Ok(held)
+    }
+
+    pub fn open_block_shared(&self, run: u32, block: u32) -> io::Result<Option<Arc<Block>>> {
+        self.check_block(run, block)?;
+        if self.closed(run, block)? {
+            return Ok(None);
+        }
+        self.open_block(run, block).map(Some)
+    }
+
+    pub fn pages_id(&self) -> usize {
+        Arc::as_ptr(&self.pages) as usize
+    }
+
+    pub fn live_page_counts(&self) -> PageCounts {
+        let open_blocks = locked(&self.pages.open).values().filter(|slot| slot.is_live()).count();
+        let spans_guard = locked(&self.pages.spans);
+        let spans = spans_guard.len();
+        let span_rows = spans_guard
+            .values()
+            .map(|held| locked(&held.rows).iter().filter(|slot| slot.as_ref().is_some_and(PageSlot::is_live)).count())
+            .sum();
+        PageCounts { open_blocks, spans, span_rows }
     }
 
     fn check_block(&self, run: u32, block: u32) -> io::Result<()> {
@@ -739,15 +874,20 @@ impl Recording {
         Ok(self.span(run, block / SPAN_BLOCKS)?.directory.blocks[(block % SPAN_BLOCKS) as usize].clone())
     }
 
-    pub fn table_entry(&self, run: u32, block: u32, table: usize) -> io::Result<Entry> {
+    pub fn table_entry(&self, run: u32, block: u32, table: usize) -> io::Result<SharedEntry> {
         self.holds(table)?;
         self.check_block(run, block)?;
         if !self.closed(run, block)? {
-            return self.open_block(run, block)?.tables.get(table).cloned().ok_or_else(|| invalid(format!("A block names no table {table}")));
+            let held = self.open_block(run, block)?;
+            if table >= held.tables.len() {
+                return Err(invalid(format!("A block names no table {table}")));
+            }
+            return Ok(SharedEntry { owner: EntryOwner::Open(held), index: table });
         }
         let span = block / SPAN_BLOCKS;
         let held = self.span(run, span)?;
-        Ok(self.span_row(run, span, &held, table)?.blocks[(block % SPAN_BLOCKS) as usize].clone())
+        let row = self.span_row(run, span, &held, table)?;
+        Ok(SharedEntry { owner: EntryOwner::Span(row), index: (block % SPAN_BLOCKS) as usize })
     }
 
     pub fn block_of(&self, run: u32, block: usize, table: usize) -> io::Result<Option<Extent>> {
@@ -785,14 +925,12 @@ impl Recording {
         (from..to).map(|block| self.block(run, block).map(|block| block.unit_page())).collect()
     }
 
-    pub fn table_pages(&self, run: u32, table: usize, from: u32, to: u32) -> io::Result<Vec<BlockPage>> {
+    pub fn table_pages(&self, run: u32, table: usize, from: u32, to: u32) -> io::Result<Vec<TablePage>> {
         let held = self.run(run)?;
         let mut pages = Vec::with_capacity(to.saturating_sub(from) as usize);
         for block in from..to {
-            let entry = self.table_entry(run, block, table)?.unit;
-            let mut tables = vec![TableEntry::default(); self.tables];
-            tables[table] = entry;
-            pages.push(BlockPage { block, hours: held.block(block as usize).1 as u16, tables });
+            let entry = self.table_entry(run, block, table)?;
+            pages.push(TablePage { block, hours: held.block(block as usize).1 as u16, table, entry });
         }
         Ok(pages)
     }

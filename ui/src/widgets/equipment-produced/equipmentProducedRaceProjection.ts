@@ -6,7 +6,9 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
+import { countryRowFromAction } from '../../families/host/installed.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
+import type { InstalledAction } from '../../families/plan.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import { formatDateOnly, formatScalar, type ValueFormat } from '../../families/valueFormat.ts';
@@ -30,6 +32,13 @@ export interface EquipmentProducedRowMeta {
 
 export function detailCountry(meta: EquipmentProducedRowMeta): CountryRef {
   return countryFromKey(meta.counted);
+}
+
+export function detailRowFromAction(action: InstalledAction): EquipmentProducedRowMeta | null {
+  const row = countryRowFromAction(action);
+  if (!row) return null;
+  const counted = (action.meta as { readonly counted?: unknown } | null | undefined)?.counted;
+  return typeof counted === 'string' ? { ...row, counted } : null;
 }
 
 export function detailEmptyText(reply: Pick<ProducedAtReply, 'models' | 'icTotal'>, hour: number): string | null {

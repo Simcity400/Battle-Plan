@@ -153,10 +153,17 @@ export default function WidgetState(props: WidgetStateProps) {
     }
     case 'error': {
       const classified = classifyFailure(props.failure);
-      const subject = props.what ?? frame?.subject;
+      const ownSubject = classified?.kind === 'refused' ? classified.subject : undefined;
+      const subject = ownSubject ?? props.what ?? frame?.subject;
       if (classified?.kind === 'refused') {
-        const headline = subject ? `${capitaliseSubject(subject)} isn’t in this recording.` : 'Not in this recording.';
-        const secondLine = classified.cause ? notInRecordingSentence(classified.cause, subject) : UNKNOWN_REASON_FALLBACK;
+        const headline = ownSubject && !classified.cause
+          ? `${capitaliseSubject(ownSubject)} can’t be shown.`
+          : subject ? `${capitaliseSubject(subject)} isn’t in this recording.` : 'Not in this recording.';
+        const secondLine = classified.cause
+          ? notInRecordingSentence(classified.cause, subject)
+          : ownSubject
+            ? (classified.reason.trim() || UNKNOWN_REASON_FALLBACK)
+            : UNKNOWN_REASON_FALLBACK;
         return <StateBox scale={scale} state="unavailable" icon="info" title={headline} secondLine={secondLine}
           detailAttr={classified.detail}
           actions={classified.detail ? <DetailsAction technical={classified.detail} /> : undefined} />;

@@ -3,9 +3,9 @@ import type { FamilyViewProps } from '../../dashboard/definitions';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { DetailWindowHost } from '../../families/host/index.ts';
+import { countryRowFromAction } from '../../families/host/installed.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
-import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import NavyManagement from './NavyManagement';
 
 export default function NavySizeWidget(props: FamilyViewProps) {
@@ -17,12 +17,12 @@ export default function NavySizeWidget(props: FamilyViewProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
 
   const onActivate = useCallback((action: InstalledAction) => {
-    if (isLines && parseChartInspect(action.subject) !== null) return;
+    const row = countryRowFromAction(action);
+    if (!row) return;
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
-    const meta = action.meta as { readonly tag?: string; readonly key?: string } | null | undefined;
-    setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, hour: gated });
-  }, [gate, isLines]);
+    setDetail({ ...row, hour: gated });
+  }, [gate]);
 
   return (
     <div ref={anchorRef} className="fh-frame">
@@ -32,8 +32,7 @@ export default function NavySizeWidget(props: FamilyViewProps) {
           family={manifestDeclaration.family}
           view={view}
           declaration={manifestDeclaration}
-          {...(isLines ? {} : { selectedKey: detail?.key ?? null })}
-          onActivate={onActivate}
+          {...(isLines ? {} : { selectedKey: detail?.key ?? null, onActivate })}
         />
       ) : null}
       <DetailWindowHost

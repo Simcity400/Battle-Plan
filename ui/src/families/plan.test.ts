@@ -770,6 +770,7 @@ test('held reply during a resize maps stationary client clicks through installed
   assert.deepEqual(action, {
     installedId: 7,
     owner: 'country:GER',
+    target: { kind: 'row', key: 'SOV' },
     subject: 'SOV',
     hour: 100,
     label: 'Soviet Union',

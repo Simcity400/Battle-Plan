@@ -1,5 +1,9 @@
 import type { TooltipContent } from '../charts/tooltip.ts';
-import type { GameWindowPlaceholder, GameWindowRegion, GameWindowRequest, GameWindowScroll } from './client.ts';
+import type { GameWindowPlaceholder, GameWindowRegion, GameWindowRequest, GameWindowScroll, GameWindowText } from './client.ts';
+
+export function formatGameWindowText(entry: GameWindowText): string {
+  return `${entry.label}: ${entry.value ?? `not recorded (${entry.missing ?? 'no reason given'})`}`;
+}
 
 export function normalizeScale(dpr: number): number {
   if (!Number.isFinite(dpr) || dpr <= 0) return 1;
@@ -197,12 +201,16 @@ export function hitTestScroll(
   regions: readonly GameWindowRegion[],
   x: number,
   y: number,
+  horizontal = false,
 ): GameWindowRegion | null {
+  let fallback: GameWindowRegion | null = null;
   for (let index = regions.length - 1; index >= 0; index--) {
     const region = regions[index];
-    if (region.scroll && region.scroll.range > 0 && contains(region, x, y)) return region;
+    if (!region.scroll || region.scroll.range <= 0 || !contains(region, x, y)) continue;
+    if (region.scroll.vertical !== horizontal) return region;
+    fallback ??= region;
   }
-  return null;
+  return fallback;
 }
 
 export type ListInput =

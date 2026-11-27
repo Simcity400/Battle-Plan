@@ -331,9 +331,17 @@ export interface InstalledActionTarget {
   readonly meta?: unknown;
 }
 
+export type ActionTarget =
+  | { readonly kind: 'row'; readonly key: string }
+  | { readonly kind: 'chart-coordinate'; readonly coordinate: 'plot' | 'gap' | 'fold' | 'marker'; readonly hour: DisplayedHour }
+  | { readonly kind: 'chart-series'; readonly part: 'line' | 'label'; readonly seriesId: string; readonly hour: DisplayedHour }
+  | { readonly kind: 'chart-month'; readonly index: number; readonly hour: DisplayedHour }
+  | { readonly kind: 'cell'; readonly key: string };
+
 export interface InstalledAction {
   readonly installedId: number;
   readonly owner: string;
+  readonly target: ActionTarget;
   readonly subject: string;
   readonly hour: DisplayedHour;
   readonly toggle?: boolean;

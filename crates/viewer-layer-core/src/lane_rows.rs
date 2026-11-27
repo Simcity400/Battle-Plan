@@ -138,20 +138,20 @@ where
         if self.block != Some(block) {
             self.block = Some(block);
             let run = &self.pages.runs()[self.run];
-            let Some(page) = run.pages.get(block as usize) else { return Ok(true) };
-            let entry = &page.tables[T::ID.index()];
-            let mut busy = vec![0u64; usize::from(page.hours).div_ceil(64)];
+            let Some(hours) = run.block_hours(block as usize) else { return Ok(true) };
+            let entry = self.pages.table_entry(self.run, block as usize, T::ID.index())?;
+            let mut busy = vec![0u64; usize::from(hours).div_ceil(64)];
             let mut set = |hour: u16| busy[usize::from(hour) / 64] |= 1 << (hour % 64);
             for (at, part) in entry.parts.iter().enumerate() {
                 if part.frames.iter().any(|frame| frame.streams.iter().any(|stream| self.streams.contains(stream))) {
-                    let end = entry.parts.get(at + 1).map_or(page.hours, |next| next.first);
+                    let end = entry.parts.get(at + 1).map_or(hours, |next| next.first);
                     (part.first..end).for_each(&mut set);
                 }
             }
             let first = run.first_hour + (block * BLOCK) as Hour;
             let mut hour = 0;
-            while let (_, _, _, Some(change)) = reader::status(entry, hour, first)? {
-                if change <= hour || change >= page.hours {
+            while let (_, _, _, Some(change)) = reader::status(&entry, hour, first)? {
+                if change <= hour || change >= hours {
                     break;
                 }
                 set(change);

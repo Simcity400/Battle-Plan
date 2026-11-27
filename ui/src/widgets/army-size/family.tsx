@@ -9,9 +9,9 @@ import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { forcePartLabel, validateForceAtReply } from '../../families/bars/forceAtRace.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
+import { countryRowFromAction } from '../../families/host/installed.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
-import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { ArmyAttribution, ForceAtReply } from '../../generated/dashboard';
 import { armyMetadataParams, measureChoices, validateArmyMetadata, type ArmyMetadataReply } from './armySizeMeta.ts';
@@ -80,12 +80,12 @@ function ArmySizeFamilyWidget(props: FamilyViewProps) {
   const gate = useGate(runtime, widget, SPEC, active);
 
   const onActivate = useCallback((action: InstalledAction) => {
-    if (isLines && parseChartInspect(action.subject) !== null) return;
+    const row = countryRowFromAction(action);
+    if (!row) return;
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
-    const meta = action.meta as { readonly tag?: string; readonly key?: string } | null | undefined;
-    setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, hour: gated });
-  }, [gate, isLines]);
+    setDetail({ ...row, hour: gated });
+  }, [gate]);
 
   return (
     <div ref={anchorRef} className="fh-frame">
@@ -95,8 +95,7 @@ function ArmySizeFamilyWidget(props: FamilyViewProps) {
           family={manifestDeclaration.family}
           view={view}
           declaration={manifestDeclaration}
-          {...(isLines ? {} : { selectedKey: detail?.key ?? null })}
-          onActivate={onActivate}
+          {...(isLines ? {} : { selectedKey: detail?.key ?? null, onActivate })}
         />
       ) : null}
       <DetailWindowHost
