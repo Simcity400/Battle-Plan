@@ -261,6 +261,10 @@ fn a_branch_or_a_backwards_clock_starts_cold() {
     assert_eq!(saved(&mut popping, 0.0), Some(1.0), "a saved frame draws buildings settled");
     popping.settle(false);
     assert_eq!(saved(&mut popping, 0.2), Some(1.0));
+    let mut fresh = BuildingHistory::default();
+    fresh.set(prepared(10, 10_000_000, false), true);
+    fresh.settle(true);
+    assert_eq!(saved(&mut fresh, 0.0), Some(1.0), "a saved frame places past the mesh budget");
 }
 
 #[test]
