@@ -58,6 +58,14 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   const row = project(true);
   assert.equal(row.cells.action?.actionLabel, 'Watch', 'a battle with live hours offers Watch');
   assert.equal((row.meta as NavalBattleSubject).row.key, 'combat:9:10');
+  const named = buildRowSourceFromHead('branch', { ...head, rows: head.rows.map(each => ({ ...each, countries: [[1], [2]] as [number[], number[]] })) }, undefined, 18)!;
+  const unreadFlags = createBoundedReadView({ hour: 18, rows: new Map([['main', named]]),
+    identity: { resolve: (kind, key, at) => ({ kind, key, holder: { status: 'ready', value: key }, name: { status: 'ready', value: 'Recorded country' },
+      flagChoice: { status: 'ready', value: 'recorded_flag' }, validInterval: [at, at] as const, nextChangeAt: Infinity }) },
+    art: { resolve: () => ({ status: 'failed', reason: 'flag file unreadable', retryable: true, retry: () => undefined }) as never } });
+  for (const each of navalBattlesProjection.project(unreadFlags, { scope: 'test', following: true, byDate: true }).rows) {
+    assert.doesNotThrow(() => structuredClone(each.meta), 'a row’s subject crosses the lane worker boundary, so it carries no art callbacks');
+  }
   assert.equal(model(true).rows[2]!.cells.action?.actionLabel, 'Watch', 'a battle held only as a result offers Watch on its result window');
   assert.match(model(true).columns.find(column => column.key === 'shipsSunk')!.partialReason!, /lower bound/);
   assert.match(model(true).columns.find(column => column.key === 'icLost')!.partialReason!, /lower bound/);

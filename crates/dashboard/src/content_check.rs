@@ -421,7 +421,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             content.catalogue()?;
             Ok("Building type names localise the token spellings recorded in LexicalTokens through the recorded buildings; icons and the repair marker are the construction queue's line entry art; state names are the recorded states' name keys. Lines, totals and endings are the recorded ConstructionProjects and ConstructionSpend rows.".into())
         }
-        naval::battles::tail::NavalBattlesTail::KEY => {
+        naval::battles::tail::NavalBattlesTail::KEY | naval::battles::tail::NavalBattleCourse::KEY => {
             Ok("No content dependency: battles, sides and results are the recorded naval combat, result and battle tables; places use the recorded place-name runs.".into())
         }
         naval::sunk::tail::ShipsSunkTail::KEY | naval::battles::NavalBattleDetails::KEY => {
