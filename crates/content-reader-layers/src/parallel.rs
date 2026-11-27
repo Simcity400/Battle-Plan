@@ -205,6 +205,7 @@ struct PoolState {
     active_helpers: usize,
     spawned_helpers: usize,
     batches: Vec<Arc<BatchEntry>>,
+    parent_links: Vec<(u64, u64)>,
     closed: bool,
 }
 
@@ -227,7 +228,15 @@ impl PoolInner {
                 .iter()
                 .find(|entry| entry.meta.batch_id == batch_id)
                 .and_then(|entry| entry.meta.parent_batch_id)
+                .or_else(|| {
+                    state
+                        .parent_links
+                        .iter()
+                        .rev()
+                        .find_map(|&(child, parent)| (child == batch_id).then_some(parent))
+                })
         };
+        let max_depth = state.batches.len() + state.parent_links.len();
         for entry in state.batches.iter().rev() {
             if entry.closed.load(Ordering::Acquire) || entry.is_cancelled() {
                 continue;
@@ -236,7 +245,7 @@ impl PoolInner {
                 && !is_strictly_nested_child_of_same_root(
                     entry.meta,
                     waiting,
-                    state.batches.len(),
+                    max_depth,
                     parent_of,
                 )
             {
@@ -249,6 +258,24 @@ impl PoolInner {
             return Some(Arc::clone(entry));
         }
         None
+    }
+}
+
+struct ParentLinkGuard<'a> {
+    pool: &'a Pool,
+    child: u64,
+}
+
+impl Drop for ParentLinkGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = lock(&self.pool.inner.state);
+        if let Some(at) = state
+            .parent_links
+            .iter()
+            .rposition(|&(child, _)| child == self.child)
+        {
+            state.parent_links.remove(at);
+        }
     }
 }
 
@@ -268,6 +295,7 @@ impl Pool {
                     active_helpers: 0,
                     spawned_helpers: 0,
                     batches: Vec::new(),
+                    parent_links: Vec::new(),
                     closed: false,
                 }),
                 changed: Condvar::new(),
@@ -328,6 +356,11 @@ impl Pool {
             previous,
             _thread: PhantomData,
         }
+    }
+
+    fn link_parent(&self, child: u64, parent: u64) -> ParentLinkGuard<'_> {
+        lock(&self.inner.state).parent_links.push((child, parent));
+        ParentLinkGuard { pool: self, child }
     }
 
     pub(crate) fn register_batch(
@@ -523,6 +556,12 @@ impl Pool {
         let root = self.enter_root();
         let alive = current_alive();
         let batch = Arc::new(ScopeBatch::new(self, root.root_id));
+        let scope = Scope {
+            pool: self,
+            batch: Arc::clone(&batch),
+            _scope: PhantomData,
+            _env: PhantomData,
+        };
         let registration = self.register_batch(
             root.root_id,
             alive.clone(),
@@ -531,44 +570,51 @@ impl Pool {
         );
         let meta = registration.meta();
         lock(&batch.state).meta = meta;
-        let scope = Scope {
-            pool: self,
-            batch: Arc::clone(&batch),
-            _scope: PhantomData,
-            _env: PhantomData,
-        };
         let result = catch_unwind(AssertUnwindSafe(|| {
             let _active = self.enter_batch(meta);
             work(&scope)
         }));
         let mut cancelling = result.is_err() || is_root_cancelled(alive.as_ref());
+        let mut skipped_by_cancel = false;
+        let mut drop_panic: Option<Box<dyn Any + Send>> = None;
         loop {
             if cancelling {
                 registration.entry.closed.store(true, Ordering::Release);
-                batch.cancel_pending();
+                let (cancelled, panic) = batch.cancel_pending();
+                if cancelled > 0 {
+                    skipped_by_cancel = true;
+                }
+                if drop_panic.is_none() {
+                    drop_panic = panic;
+                }
             } else {
-                let _active = self.enter_batch(meta);
                 batch.drain_pending_on_caller();
                 if is_root_cancelled(alive.as_ref()) {
                     cancelling = true;
                     continue;
                 }
             }
-            if registration.in_flight() == 0 && !batch.has_claimable() {
+            if batch.unfinished() == 0 && registration.in_flight() == 0 {
                 break;
             }
             self.wait_until(meta, || {
-                batch.has_claimable() || registration.in_flight() == 0
+                batch.has_claimable()
+                    || (batch.unfinished() == 0 && registration.in_flight() == 0)
             });
         }
         drop(registration);
         match result {
             Ok(value) => {
                 batch.credit_remaining_refusals();
-                if let Some(panic) =
-                    batch.take_unobserved_panic(is_root_cancelled(alive.as_ref()))
-                {
+                let (child_panic, child_cancelled) = batch.take_unobserved_panic();
+                if let Some(panic) = child_panic {
                     resume_unwind(panic);
+                }
+                if let Some(panic) = drop_panic {
+                    resume_unwind(panic);
+                }
+                if (skipped_by_cancel || child_cancelled) && is_root_cancelled(alive.as_ref()) {
+                    resume_unwind(Box::new(RootCancelled));
                 }
                 value
             }
@@ -859,10 +905,25 @@ const TASK_RUNNING: u8 = 1;
 const TASK_DONE: u8 = 2;
 const TASK_CANCELLED: u8 = 3;
 
+type ErasedTask = Box<dyn FnOnce() + Send + 'static>;
+
+fn drop_erased_tasks(tasks: Vec<ErasedTask>) -> Option<Box<dyn Any + Send>> {
+    let mut first_panic = None;
+    for task in tasks {
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| drop(task)))
+            && first_panic.is_none()
+        {
+            first_panic = Some(panic);
+        }
+    }
+    first_panic
+}
+
 struct ScopeTask {
+    batch_id: u64,
     state: AtomicU8,
     context: CarriedContext,
-    work: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
+    work: Mutex<Option<ErasedTask>>,
     panic: Arc<Mutex<Option<Box<dyn Any + Send>>>>,
     refusals: Mutex<BTreeSet<String>>,
 }
@@ -879,22 +940,16 @@ impl ScopeTask {
             .is_ok()
     }
 
-    fn cancel_if_pending(&self) -> bool {
-        if self
-            .state
+    fn cancel_if_pending(&self) -> Option<Option<ErasedTask>> {
+        self.state
             .compare_exchange(
                 TASK_PENDING,
                 TASK_CANCELLED,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
-            .is_ok()
-        {
-            lock(&self.work).take();
-            true
-        } else {
-            false
-        }
+            .ok()
+            .map(|_| lock(&self.work).take())
     }
 
     fn is_terminal(&self) -> bool {
@@ -913,7 +968,19 @@ impl ScopeTask {
         {
             lock(&self.refusals).extend(refusals);
         }
-        self.state.store(TASK_DONE, Ordering::Release);
+    }
+}
+
+struct TaskFinishGuard<'a> {
+    batch: &'a ScopeBatch,
+    task: &'a ScopeTask,
+}
+
+impl Drop for TaskFinishGuard<'_> {
+    fn drop(&mut self) {
+        self.task.state.store(TASK_DONE, Ordering::Release);
+        self.batch.unfinished.fetch_sub(1, Ordering::AcqRel);
+        self.batch.pool().notify_all();
     }
 }
 
@@ -928,6 +995,7 @@ struct ScopeBatch {
     pool: *const Pool,
     state: Mutex<ScopeState>,
     has_pending: AtomicBool,
+    unfinished: AtomicUsize,
 }
 
 // SAFETY: `ScopeBatch` is owned by `Pool::scope` and unregistered before `Pool::scope` returns;
@@ -951,6 +1019,7 @@ impl ScopeBatch {
                 pending: 0,
             }),
             has_pending: AtomicBool::new(false),
+            unfinished: AtomicUsize::new(0),
         }
     }
 
@@ -959,9 +1028,14 @@ impl ScopeBatch {
         unsafe { &*self.pool }
     }
 
+    fn unfinished(&self) -> usize {
+        self.unfinished.load(Ordering::Acquire)
+    }
+
     fn push_task(&self, task: Arc<ScopeTask>) {
         let pending = {
             let mut state = lock(&self.state);
+            self.unfinished.fetch_add(1, Ordering::AcqRel);
             state.tasks.push(Arc::clone(&task));
             state.queue.push_back(task);
             state.pending += 1;
@@ -983,18 +1057,22 @@ impl ScopeBatch {
     }
 
     fn cancel_specific(&self, task: &ScopeTask) {
-        let cancelled = {
+        let dropped = {
             let mut state = lock(&self.state);
-            if task.cancel_if_pending() {
+            if let Some(work) = task.cancel_if_pending() {
                 state.pending -= 1;
+                self.unfinished.fetch_sub(1, Ordering::AcqRel);
                 self.has_pending.store(state.pending > 0, Ordering::Release);
-                true
+                Some(work)
             } else {
-                false
+                None
             }
         };
-        if cancelled {
+        if let Some(work) = dropped {
             self.pool().notify_all();
+            if let Some(work) = work {
+                let _ = catch_unwind(AssertUnwindSafe(|| drop(work)));
+            }
         }
     }
 
@@ -1011,31 +1089,50 @@ impl ScopeBatch {
         None
     }
 
-    fn cancel_pending(&self) {
-        let cancelled = {
+    fn cancel_pending(&self) -> (usize, Option<Box<dyn Any + Send>>) {
+        let (cancelled, dropped) = {
             let mut state = lock(&self.state);
             let mut cancelled = 0usize;
+            let mut dropped = Vec::new();
             for task in &state.tasks {
-                if task.cancel_if_pending() {
+                if let Some(work) = task.cancel_if_pending() {
                     cancelled += 1;
+                    if let Some(work) = work {
+                        dropped.push(work);
+                    }
                 }
             }
             state.pending -= cancelled;
+            self.unfinished.fetch_sub(cancelled, Ordering::AcqRel);
             state.queue.clear();
             self.has_pending.store(false, Ordering::Release);
-            cancelled
+            (cancelled, dropped)
         };
         if cancelled > 0 {
             self.pool().notify_all();
         }
+        let drop_panic = drop_erased_tasks(dropped);
+        (cancelled, drop_panic)
+    }
+
+    fn run_task(&self, task: &ScopeTask) {
+        let _finish = TaskFinishGuard { batch: self, task };
+        let scope_meta = lock(&self.state).meta;
+        let task_meta = BatchMeta {
+            root_id: scope_meta.root_id,
+            batch_id: task.batch_id,
+            parent_batch_id: Some(scope_meta.batch_id),
+        };
+        let _link = self.pool().link_parent(task.batch_id, scope_meta.batch_id);
+        let _active = self.pool().enter_batch(task_meta);
+        task.run_claimed();
     }
 
     fn drain_pending_on_caller(&self) {
         while !is_root_cancelled(current_alive().as_ref())
             && let Some(task) = self.claim_next()
         {
-            task.run_claimed();
-            self.pool().notify_all();
+            self.run_task(&task);
         }
     }
 
@@ -1049,17 +1146,20 @@ impl ScopeBatch {
         }
     }
 
-    fn take_unobserved_panic(&self, ignore_cancelled: bool) -> Option<Box<dyn Any + Send>> {
+    fn take_unobserved_panic(&self) -> (Option<Box<dyn Any + Send>>, bool) {
         let tasks = std::mem::take(&mut lock(&self.state).tasks);
+        let mut first_panic = None;
+        let mut any_cancelled = false;
         for task in tasks {
             if let Some(panic) = lock(&task.panic).take() {
-                if ignore_cancelled && is_root_cancelled_panic(&*panic) {
-                    continue;
+                if is_root_cancelled_panic(&*panic) {
+                    any_cancelled = true;
+                } else if first_panic.is_none() {
+                    first_panic = Some(panic);
                 }
-                return Some(panic);
             }
         }
-        None
+        (first_panic, any_cancelled)
     }
 }
 
@@ -1072,8 +1172,7 @@ impl WorkBatch for ScopeBatch {
         let Some(task) = self.claim_next() else {
             return;
         };
-        task.run_claimed();
-        self.pool().notify_all();
+        self.run_task(&task);
     }
 }
 
@@ -1099,16 +1198,14 @@ impl<'scope, 'env> Scope<'scope, 'env> {
                 Err(panic) => *lock(&output_panic) = Some(panic),
             }
         });
-        // SAFETY: `Pool::scope` keeps `'scope` invariant, waits until every running task in
-        // `ScopeBatch` finishes, and drops all pending closures before returning, so `'scope`
-        // outlives every execution.
-        let erased: Box<dyn FnOnce() + Send + 'static> = unsafe {
-            std::mem::transmute::<
-                Box<dyn FnOnce() + Send + 'scope>,
-                Box<dyn FnOnce() + Send + 'static>,
-            >(boxed)
+        // SAFETY: `Pool::scope` keeps `'scope` invariant, keeps `scope` alive until every running
+        // task in `ScopeBatch` finishes, and cancels/drops pending closures before returning, so
+        // `'scope` outlives every execution.
+        let erased: ErasedTask = unsafe {
+            std::mem::transmute::<Box<dyn FnOnce() + Send + 'scope>, ErasedTask>(boxed)
         };
         let task = Arc::new(ScopeTask {
+            batch_id: NEXT_BATCH_ID.fetch_add(1, Ordering::Relaxed),
             state: AtomicU8::new(TASK_PENDING),
             context: CarriedContext::capture(),
             work: Mutex::new(Some(erased)),
@@ -1136,17 +1233,20 @@ pub struct ScopedHandle<'scope, T> {
 
 impl<T> ScopedHandle<'_, T> {
     pub fn join(self) -> std::thread::Result<T> {
-        let meta = lock(&self.batch.state).meta;
+        let scope_meta = lock(&self.batch.state).meta;
         if is_root_cancelled(current_alive().as_ref()) {
             self.batch.cancel_specific(&self.task);
             resume_unwind(Box::new(RootCancelled));
         }
         if self.batch.claim_specific(&self.task) {
-            let _active = self.pool.enter_batch(meta);
-            self.task.run_claimed();
-            self.pool.notify_all();
+            self.batch.run_task(&self.task);
         } else {
-            self.pool.wait_until(meta, || self.task.is_terminal());
+            let task_meta = BatchMeta {
+                root_id: scope_meta.root_id,
+                batch_id: self.task.batch_id,
+                parent_batch_id: Some(scope_meta.batch_id),
+            };
+            self.pool.wait_until(task_meta, || self.task.is_terminal());
         }
         crate::content::credit_overlay_observers(&std::mem::take(&mut *lock(&self.task.refusals)));
         if let Some(panic) = lock(&self.task.panic).take() {
@@ -1396,6 +1496,44 @@ mod tests {
             !map_b_threads.into_inner().unwrap().contains(&job_a_id),
             "sibling DAG job A waiting on its map must not steal sibling job B's higher-ID map"
         );
+
+        let scope_pool = Pool::with_budget(3);
+        let running_started = Barrier::new(2);
+        let map_item_0_ready = Barrier::new(2);
+        let map_item_1_done = Barrier::new(2);
+        let item_lock = Mutex::new(());
+        let item_1_thread = Mutex::new(None::<ThreadId>);
+        let scope_caller = std::thread::current().id();
+        scope_pool.scope(|scope| {
+            let started_ref = &running_started;
+            let item_1_done_ref = &map_item_1_done;
+            let running = scope.spawn(move || {
+                started_ref.wait();
+                item_1_done_ref.wait();
+                77usize
+            });
+            running_started.wait();
+            let running_slot = Mutex::new(Some(running));
+            let out = scope_pool.map(&[0usize, 1], |&index| {
+                if index == 0 {
+                    let _held = item_lock.lock().unwrap();
+                    map_item_0_ready.wait();
+                    let handle = running_slot.lock().unwrap().take().unwrap();
+                    handle.join().unwrap()
+                } else {
+                    map_item_0_ready.wait();
+                    let current = std::thread::current().id();
+                    *item_1_thread.lock().unwrap() = Some(current);
+                    if current == scope_caller {
+                        let _would_deadlock = item_lock.lock().unwrap();
+                    }
+                    map_item_1_done.wait();
+                    88usize
+                }
+            });
+            assert_eq!(out, [77, 88]);
+        });
+        assert_ne!(item_1_thread.into_inner().unwrap().unwrap(), scope_caller);
     }
 
     #[test]
@@ -1740,6 +1878,51 @@ mod tests {
         });
         assert!(grandchild_ran.load(Ordering::Acquire));
 
+        let drop_ran = AtomicBool::new(false);
+        let child_finished = AtomicBool::new(false);
+        let child_in_scope = Barrier::new(2);
+        let drop_panic_result = catch_unwind(AssertUnwindSafe(|| {
+            pool.scope(|scope| {
+                let child_in = &child_in_scope;
+                let drop_seen = &drop_ran;
+                let done_flag = &child_finished;
+                let _running = scope.spawn(move || {
+                    child_in.wait();
+                    while !drop_seen.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                    let _late = scope.spawn(|| 1usize);
+                    done_flag.store(true, Ordering::Release);
+                });
+                child_in_scope.wait();
+                let other_pending = scope.spawn(|| 2usize);
+                struct DropJoinAndPanic<'a, 's> {
+                    other: Option<ScopedHandle<'s, usize>>,
+                    drop_ran: &'a AtomicBool,
+                }
+                impl Drop for DropJoinAndPanic<'_, '_> {
+                    fn drop(&mut self) {
+                        if let Some(handle) = self.other.take() {
+                            let _ = handle.join();
+                        }
+                        self.drop_ran.store(true, Ordering::Release);
+                        panic!("cancelled closure drop boom");
+                    }
+                }
+                let bomb = DropJoinAndPanic {
+                    other: Some(other_pending),
+                    drop_ran: &drop_ran,
+                };
+                let _doomed = scope.spawn(move || {
+                    let _keep = bomb;
+                });
+                panic!("trigger cancel drop");
+            });
+        }));
+        assert!(drop_panic_result.is_err());
+        assert!(drop_ran.load(Ordering::Acquire));
+        assert!(child_finished.load(Ordering::Acquire));
+
         let still_concurrent = Barrier::new(2);
         let recovered = pool.map(&[10usize, 20], |&value| {
             still_concurrent.wait();
@@ -1809,6 +1992,22 @@ mod tests {
         });
         assert!(inline_outcome.is_none());
         assert_eq!(inline_worked.load(Ordering::Acquire), 1);
+
+        let scope_alive = Arc::new(AtomicBool::new(true));
+        let unjoined_ran = AtomicBool::new(false);
+        let scope_outcome = with_alive(Arc::clone(&scope_alive), || {
+            inline_pool.scope(|scope| {
+                let flag = &unjoined_ran;
+                let _unjoined = scope.spawn(move || {
+                    flag.store(true, Ordering::Release);
+                });
+                scope_alive.store(false, Ordering::Release);
+                123usize
+            })
+        });
+        assert!(scope_outcome.is_none());
+        assert!(!unjoined_ran.load(Ordering::Acquire));
+        assert_eq!(inline_pool.queued_batches(), 0);
 
         let nested_alive = Arc::new(AtomicBool::new(true));
         let mut nested_dag = super::dag::Dag::default();
