@@ -1,13 +1,11 @@
 import { TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import { partsRaceOptions } from '../../charts/race/partsRaceOptions.ts';
-import { breakdownOption, breakdownVariants } from '../../charts/drill/drillState.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { COUNT_MODES } from './factoriesData.ts';
 
 export const OPTIONS: readonly OptionField[] = [
-  ...partsRaceOptions('type').map(field => field.key === 'show'
-    ? breakdownOption([{ id: 'breakdown', label: 'Factory types' }], 'Factories') : field),
+  ...partsRaceOptions('type'),
   { key: 'count', section: 'options', label: 'Count', hint: 'Available after damage and other commitments.', kind: 'choice', default: 'free',
     choices: COUNT_MODES.map(mode => ({ value: mode.value, label: mode.label })) },
   { key: 'types', section: 'options', label: 'Factory types', kind: 'content-set', automatic: 'All types', default: '' },
@@ -21,5 +19,5 @@ export const definition = {
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,
-  variants: [...raceViewVariants('Factories', OPTIONS), ...breakdownVariants('Factories', OPTIONS)],
+  variants: raceViewVariants('Factories', OPTIONS),
 } as const satisfies WidgetMeta;

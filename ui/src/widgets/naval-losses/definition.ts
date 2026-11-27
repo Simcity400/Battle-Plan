@@ -1,6 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { breakdownVariants } from '../../charts/drill/drillState.ts';
 import { TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import { partsRaceOptions } from '../../charts/race/partsRaceOptions.ts';
 
@@ -11,7 +10,7 @@ export const OPTIONS: readonly OptionField[] = [
     choices: [{ value: 'lost', label: 'Lost' }, { value: 'sunkBy', label: 'Sunk by' }] },
   { key: 'period', section: 'options', label: 'Period', kind: 'choice', default: 'running',
     choices: [{ value: 'running', label: 'Running total' }, { value: 'month', label: 'Per month' }] },
-  ...partsRaceOptions('kind', 'Ships and convoys breakdown'),
+  ...partsRaceOptions('kind'),
 ];
 
 export const definition = {
@@ -20,5 +19,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES, options: OPTIONS,
-  variants: [...raceViewVariants('Naval losses', OPTIONS), ...breakdownVariants('Naval losses', OPTIONS)],
+  variants: [...raceViewVariants('Naval losses', OPTIONS)],
 } as const satisfies WidgetMeta;

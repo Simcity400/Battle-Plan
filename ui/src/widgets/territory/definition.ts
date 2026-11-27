@@ -2,7 +2,6 @@ import { RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, TOP_COUNTRIES, ra
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { MEASURES, RULES } from '../../dashboard/territoryMeasure.ts';
-import { factionMemberChoice, factionMemberOptions } from '../../charts/race/factionMembersOptions.ts';
 
 const linesOnly = (option: OptionField): OptionField => ({ ...option,
   visibleWhen: options => options.view === 'lines' && (option.visibleWhen?.(options) ?? true) });
@@ -14,7 +13,6 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true, visibleWhen: options => options.view === 'lines' },
   ...RACE_TIME_OPTIONS.map(linesOnly),
   ...RACE_AXIS_OPTIONS.map(linesOnly),
-  ...factionMemberOptions.map(option => ({ ...option, visibleWhen: (_options: Readonly<Record<string, unknown>>, countries?: Parameters<typeof factionMemberChoice>[0]) => factionMemberChoice(countries) })),
 ];
 
 export const definition = {

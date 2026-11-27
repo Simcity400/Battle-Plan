@@ -4,8 +4,6 @@ import type { OptionField } from '../../dashboard/options';
 import { choiceVariants } from '../../dashboard/options.ts';
 import { MEASURES as TERRITORY_MEASURES } from '../../dashboard/territoryMeasure.ts';
 import { COUNT_MODES, MEASURES } from './factionStrengthData.ts';
-import { factionMemberChoice, factionMemberOptions } from '../../charts/race/factionMembersOptions.ts';
-import { breakdownVariants } from '../../charts/drill/drillState.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   raceViewOption(),
@@ -19,7 +17,6 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true, visibleWhen: options => options.view === 'lines' },
   ...RACE_TIME_OPTIONS,
   ...RACE_AXIS_OPTIONS,
-  ...factionMemberOptions.map(option => ({ ...option, visibleWhen: (_options: Readonly<Record<string, unknown>>, countries?: Parameters<typeof factionMemberChoice>[0]) => factionMemberChoice(countries) })),
 ];
 
 export const definition = {
@@ -31,6 +28,6 @@ export const definition = {
   factionColours: true,
   defaultCountries: { kind: 'factions', count: Number.MAX_SAFE_INTEGER, membership: 'hour' },
   options: OPTIONS,
-  variants: [...raceViewVariants('Faction strength', OPTIONS), ...breakdownVariants('Faction strength', OPTIONS),
+  variants: [...raceViewVariants('Faction strength', OPTIONS),
     ...choiceVariants(OPTIONS.find(field => field.key === 'measure'), () => 'Faction territory', ['territory'])],
 } as const satisfies WidgetMeta;
