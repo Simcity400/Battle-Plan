@@ -121,6 +121,165 @@ mod fuel {
         assert!(unread["readHour"].is_null());
         assert!(unread["missing"].as_str().unwrap().starts_with("Fuel consumers are not recorded at this hour"), "unknown is a named reason, never no consumers");
     }
+
+    #[test]
+    fn country_fuel_follows_an_older_recording_without_fuel_days_and_reports_the_missing_day() {
+        use crate::products::economy::fuel::CountryFuel;
+        use replay_data::rows::CountryFuelRow;
+
+        let frames: Vec<DecodedFrame> = (FIRST..=FIRST + 8)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                let level = if hour >= FIRST + 4 { 420_000 } else { 250_000 };
+                set::<tables::CountryFuel>(&mut frame, vec![CountryFuelRow {
+                    country: GER,
+                    current_raw: level,
+                    maximum_raw: 900_000,
+                    lend_lease_gain_raw: 12_000,
+                    ..Default::default()
+                }]);
+                frame
+            })
+            .collect();
+        let current: Vec<usize> = TableId::ALL.into_iter().map(TableId::field_count).collect();
+        let mut without_fuel_days = current.clone();
+        without_fuel_days[TableId::FuelDays.index()] = 0;
+        let writers = recorder_derive::writers_within(&without_fuel_days, &current);
+        let replay = Replay::from_records(writers, CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Arc::new(Source::from_replay(
+            dashboard_base::SourceKey { source_id: "older-fuel".into(), revision: "1".into() },
+            "older-fuel.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        ).unwrap());
+        let params = json!({ "branchId": "1", "country": "GER" });
+        let mut request = params.clone();
+        request["panel"] = json!(CountryFuel::KEY);
+        let panel = (crate::registrations::ECONOMY_FUEL_COUNTRYFUEL.panel.unwrap().open)(&source, &load(), &request).unwrap();
+        let exact = panel.exact().expect("country-fuel must follow without whole-frame FuelDays");
+        let reads = dashboard_base::test_fixtures::played(source.replay_ref(), exact, FIRST, FIRST + 8);
+        assert_eq!(reads.len(), 9);
+        for read in reads {
+            assert!(!read.pending);
+            let pinned = asked::<CountryFuel>(&source, params.clone(), read.hour).unwrap();
+            assert_eq!(*read.value, Ok(pinned.clone()), "hour {}", read.hour);
+            let expected_fuel = if read.hour >= FIRST + 4 { "420000" } else { "250000" };
+            assert_eq!(pinned["read"]["fuelRaw"], json!(expected_fuel));
+            assert_eq!(pinned["read"]["capacityRaw"], json!("900000"));
+            assert_eq!(pinned["read"]["lendLeaseRaw"], json!("12000"));
+            assert!(pinned["read"]["day"].is_null());
+            assert_eq!(pinned["read"]["leftOut"], json!("notRecorded"));
+            let why = pinned["read"]["awardsReason"].as_str().unwrap();
+            assert!(why.starts_with("Fuel days are not recorded at this hour:"), "{why}");
+            assert!(why.contains("FuelDays"), "{why}");
+            assert!(pinned["consumption"].is_object());
+            assert!(pinned["consumptionMissing"].is_null());
+        }
+    }
+
+    #[test]
+    fn country_fuel_follows_its_used_columns_across_seeks_branches_and_damage() {
+        use crate::products::economy::fuel::CountryFuel;
+        use dashboard_base::products::at_hour::frame_panel;
+        use dashboard_base::test_fixtures::{materialized_frame, played};
+        use replay_data::rows::{CountryFuelRow, CountryRow, FuelDemandHour, FuelDemandRead, FuelDemandUnit, Recorded, StateRow, TableRows};
+
+        const FRA: u32 = 44;
+        let make_frame = |branch: u64, hour: i32| {
+            let mut frame = source(branch, hour, Some(1));
+            if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
+                rows.push(CountryRow { id: FRA, canonical_slot: 8, tag: b"FRA".to_vec(), ..CountryRow::default() });
+                rows.sort_by_key(|row| row.id);
+            }
+            let mut states = vec![StateRow { id: 1, owner: GER, ..Default::default() }];
+            if hour >= 102 {
+                states.push(StateRow { id: 2, owner: FRA, ..Default::default() });
+            }
+            set::<tables::States>(&mut frame, states);
+            if (114..=115).contains(&hour) {
+                *frame.tables[TableId::CountryFuel.index()] = TableView::Unavailable { reason: "fuel table damaged".into() };
+                return frame;
+            }
+            let sampled = [100, 105, 107, 109, 111, 116, 117, 118].contains(&hour);
+            if sampled {
+                frame.metrics.table_ns[TableId::CountryFuel.index()] = 1;
+            }
+            let base = if branch == 2 { 500_000 } else { 200_000 };
+            let current_raw = base + if hour >= 105 { 75_000 } else { 0 };
+            let maximum_raw = 1_000_000 + if hour >= 107 { 200_000 } else { 0 };
+            let lend_lease_gain_raw = 5_000 + if hour >= 109 { 3_000 } else { 0 };
+            let demand_hour = if hour >= 111 { 111 } else { 100 };
+            let rate = if hour >= 111 { 900 } else { 400 };
+            let demand = Recorded::Value(FuelDemandRead {
+                hour: FuelDemandHour::Stamped(demand_hour),
+                country_instance: Some(0),
+                divisions: vec![FuelDemandUnit { reference: 1, rate_raw: Some(rate), ..Default::default() }],
+                ..Default::default()
+            });
+            let award_day = Recorded::Value(replay_data::rows::FuelAwardDay {
+                country_instance: 0,
+                continuity_start_hour: Some(100),
+                ..Default::default()
+            });
+            let ger = CountryFuelRow {
+                country: GER,
+                current_raw,
+                maximum_raw,
+                lend_lease_gain_raw,
+                ring_gain_raw: 500_000,
+                ring_consumed_raw: 100_000,
+                demand,
+                award_day,
+                ..Default::default()
+            };
+            let fra_level = if hour >= 105 { 105_000 } else { 100_000 };
+            let fra = CountryFuelRow { country: FRA, current_raw: fra_level, maximum_raw: 800_000, ..Default::default() };
+            if hour == 117 {
+                *frame.tables[TableId::CountryFuel.index()] = TableView::Truncated { rows: TableRows::CountryFuel(vec![fra, ger]), missing: 2 };
+            } else {
+                set::<tables::CountryFuel>(&mut frame, vec![fra, ger]);
+            }
+            frame
+        };
+        let multi = Replay::from_records(
+            recorder_derive::writers(),
+            CAMPAIGN.into(),
+            &[
+                records(1, (100..=120).map(|h| make_frame(1, h)).collect()),
+                records(2, (100..=120).map(|h| make_frame(2, h)).collect()),
+            ],
+        ).unwrap().into_timelines(&Default::default()).unwrap();
+        let multi = Arc::new(Source::from_replay(
+            dashboard_base::SourceKey { source_id: "fuel-multi".into(), revision: "1".into() },
+            "fuel-multi.battleplan".into(),
+            Arc::new(multi),
+            &AtomicBool::new(false),
+        ).unwrap());
+        for branch in [1u64, 2] {
+            let request = json!({ "panel": CountryFuel::KEY, "branchId": branch.to_string(), "country": "GER" });
+            let panel = (crate::registrations::ECONOMY_FUEL_COUNTRYFUEL.panel.unwrap().open)(&multi, &load(), &request).unwrap();
+            let mut original = frame_panel::<CountryFuel>(&multi, &load(), &request).unwrap();
+            let exact = panel.exact().unwrap();
+            for hour in [100, 105, 114, 115, 117, 100] {
+                let read = (exact.advance)(hour, true, &AtomicBool::new(false), None);
+                assert_eq!(*read.value, materialized_frame(&mut *original, multi.replay_ref(), branch, hour), "branch {branch} hour {hour}");
+            }
+        }
+        let single = Arc::new(open((100..=120).map(|h| make_frame(1, h)).collect()));
+        let request = json!({ "panel": CountryFuel::KEY, "branchId": "1", "country": "GER" });
+        let panel = (crate::registrations::ECONOMY_FUEL_COUNTRYFUEL.panel.unwrap().open)(&single, &load(), &request).unwrap();
+        let mut original = frame_panel::<CountryFuel>(&single, &load(), &request).unwrap();
+        let mut quiet_zero_calls = 0;
+        for read in played(single.replay_ref(), panel.exact().unwrap(), 100, 120) {
+            let expected = materialized_frame(&mut *original, single.replay_ref(), 1, read.hour);
+            assert_eq!(*read.value, expected, "hour {}", read.hour);
+            if [101, 102, 103, 104, 106, 108, 110, 112, 113, 119, 120].contains(&read.hour) {
+                assert_eq!(read.product_calls, 0, "quiet hour {} must not rebuild", read.hour);
+                quiet_zero_calls += 1;
+            }
+        }
+        assert!(quiet_zero_calls >= 10);
+    }
 }
 
 mod resources {
@@ -238,6 +397,230 @@ mod resources {
         assert_eq!(deals_through(&index, GER, 122), (vec![6, 8], 140));
         assert_eq!(deals_through(&index, GER, 141), (vec![8], 200));
         assert_eq!(deals_through(&index, GER, 201), (vec![], i32::MAX), "with no deal begun or to begin, nothing expires");
+    }
+
+    #[test]
+    fn resource_balance_follows_its_pools_deals_live_cells_and_handles_seeks_branches_and_damage() {
+        use dashboard_base::products::at_hour::frame_panel;
+        use dashboard_base::test_fixtures::{materialized_frame, played, streamed};
+        use replay_data::rows::TableRows;
+
+        const ITA: u32 = 55;
+        let make_frame = |branch: u64, hour: i32| {
+            let mut frame = source(branch, hour, Some(1));
+            if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
+                rows.push(CountryRow { id: FRA, canonical_slot: 8, tag: b"FRA".to_vec(), political_power_raw: Some(i64::from(hour) * 100), ..CountryRow::default() });
+                rows.push(CountryRow { id: ITA, canonical_slot: 9, tag: b"ITA".to_vec(), political_power_raw: Some(i64::from(hour) * 50), ..CountryRow::default() });
+                rows.sort_by_key(|row| row.id);
+            }
+            let mut defs = vec![
+                ResourceDefinitionRow { id: 1, token: 70, active: 1, factory_cost: i64::from(hour) },
+                ResourceDefinitionRow { id: 2, token: 71, active: 1, factory_cost: i64::from(hour) },
+                ResourceDefinitionRow { id: 3, token: 72, active: 1, factory_cost: i64::from(hour) },
+            ];
+            let mut tokens = vec![
+                LexicalTokenRow { token: 70, literal: b"ore_a".to_vec() },
+                LexicalTokenRow { token: 71, literal: b"ore_b".to_vec() },
+                LexicalTokenRow { token: 72, literal: b"ore_c".to_vec() },
+            ];
+            if hour >= 119 {
+                defs.push(ResourceDefinitionRow { id: 4, token: 73, active: 1, factory_cost: 0 });
+                tokens.push(LexicalTokenRow { token: 73, literal: b"ore_d".to_vec() });
+            }
+            set::<tables::ResourceDefinitions>(&mut frame, defs);
+            set::<tables::LexicalTokens>(&mut frame, tokens);
+            let produced = if branch == 2 { 900_000 } else if hour >= 105 { 400_000 } else { 200_000 };
+            let ger_pools = vec![
+                pools(FRA, 1, i64::from(hour) * 10),
+                CountryResourceRow { country: GER, resource: 1, produced, used: produced, special_total: produced, production_demand: -3, base_export: i64::from(hour) * 7, exported: i64::from(hour) * 11, ..Default::default() },
+                CountryResourceRow { country: GER, resource: 2, base_export: i64::from(hour), exported: i64::from(hour) * 3, ..Default::default() },
+                pools(GER, 3, 500_000),
+            ];
+            if hour == 117 {
+                *frame.tables[TableId::CountryResources.index()] = TableView::Truncated { rows: TableRows::CountryResources(ger_pools), missing: 1 };
+            } else {
+                set::<tables::CountryResources>(&mut frame, ger_pools);
+            }
+            if (114..=115).contains(&hour) {
+                *frame.tables[TableId::ResourceExchanges.index()] = TableView::Unavailable { reason: "deals damaged".into() };
+            } else {
+                let d5 = if hour >= 108 { 900_000 } else { 150_000 };
+                let d6 = 300_000 + i64::from(hour) * 1_000;
+                let mut deals = vec![
+                    ResourceExchangeRow { efficiency_a: i64::from(hour), ..deal(5, GER, FRA, 1, d5) },
+                    ResourceExchangeRow { efficiency_a: i64::from(hour) * 2, ..deal(6, FRA, GER, 3, d6) },
+                    deal(7, FRA, ITA, 1, i64::from(hour) * 5_000),
+                ];
+                if (110..=111).contains(&hour) {
+                    deals.push(deal(8, ITA, GER, 1, 100_000));
+                }
+                set::<tables::ResourceExchanges>(&mut frame, deals);
+            }
+            frame
+        };
+        let multi = Replay::from_records(
+            recorder_derive::writers(),
+            CAMPAIGN.into(),
+            &[
+                records(1, (100..=120).map(|h| make_frame(1, h)).collect()),
+                records(2, (100..=120).map(|h| make_frame(2, h)).collect()),
+            ],
+        ).unwrap().into_timelines(&Default::default()).unwrap();
+        let multi = Arc::new(Source::from_replay(
+            dashboard_base::SourceKey { source_id: "res-multi".into(), revision: "1".into() },
+            "res-multi.battleplan".into(),
+            Arc::new(multi),
+            &AtomicBool::new(false),
+        ).unwrap());
+        for branch in [1u64, 2] {
+            let request = json!({ "panel": ResourceBalance::KEY, "branchId": branch.to_string(), "country": "GER" });
+            let panel = (crate::registrations::ECONOMY_RESOURCES_RESOURCEBALANCE.panel.unwrap().open)(&multi, &load(), &request).unwrap();
+            let mut original = frame_panel::<ResourceBalance>(&multi, &load(), &request).unwrap();
+            let exact = panel.exact().unwrap();
+            for hour in [100, 108, 110, 114, 115, 117, 100] {
+                let read = (exact.advance)(hour, true, &AtomicBool::new(false), None);
+                assert_eq!(*read.value, materialized_frame(&mut *original, multi.replay_ref(), branch, hour), "branch {branch} hour {hour}");
+            }
+        }
+        let single = Arc::new(open((100..=120).map(|h| make_frame(1, h)).collect()));
+        for hide_empty in [false, true] {
+            let request = json!({ "panel": ResourceBalance::KEY, "branchId": "1", "country": "GER", "hideEmpty": hide_empty });
+            let panel = (crate::registrations::ECONOMY_RESOURCES_RESOURCEBALANCE.panel.unwrap().open)(&single, &load(), &request).unwrap();
+            let mut original = frame_panel::<ResourceBalance>(&single, &load(), &request).unwrap();
+            let mut previous = None;
+            let mut quiet_zero_calls = 0;
+            for read in played(single.replay_ref(), panel.exact().unwrap(), 100, 120) {
+                let expected = materialized_frame(&mut *original, single.replay_ref(), 1, read.hour);
+                assert_eq!(streamed(&read.value, read.fresh), streamed(&expected, read.fresh), "hide_empty={hide_empty} hour {}", read.hour);
+                let structure = streamed(&expected, false);
+                if read.hour > 100
+                    && let Some(prev) = &previous
+                    && prev == &structure
+                    && ![110, 112, 114, 115, 116, 117, 118].contains(&read.hour)
+                {
+                    assert_eq!(read.product_calls, 0, "hide_empty={hide_empty} quiet hour {} rebuilt", read.hour);
+                    quiet_zero_calls += 1;
+                }
+                previous = Some(structure);
+            }
+            assert!(quiet_zero_calls >= 9, "hide_empty={hide_empty} had {quiet_zero_calls} quiet hours");
+        }
+    }
+}
+
+mod trade_flows_follow {
+    use super::*;
+    use crate::products::trade_flow::TradeFlow;
+    use dashboard_base::products::at_hour::frame_panel;
+    use dashboard_base::test_fixtures::{materialized_frame, played};
+    use replay_data::rows::{CountryLinkRow, CountryRow, LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow, TableRows, tables};
+
+    const FRA: u32 = 44;
+    const FRA_ALT: u32 = 45;
+    const ITA: u32 = 55;
+    const SOV: u32 = 66;
+
+    fn deal(id: u64, exporter: u32, importer: u32, resource: u32, delivered: i64, convoys: i32) -> ResourceExchangeRow {
+        ResourceExchangeRow { id, exporter, importer, resource, delivered, assigned_factories: convoys, convoys_assigned: convoys, convoys_required: convoys, ..Default::default() }
+    }
+
+    fn make_frame(branch: u64, hour: i32) -> DecodedFrame {
+        let mut frame = source(branch, hour, Some(1));
+        let fra_id = if hour >= 119 { FRA_ALT } else { FRA };
+        if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
+            rows.push(CountryRow { id: fra_id, canonical_slot: 8, tag: b"FRA".to_vec(), ..CountryRow::default() });
+            rows.push(CountryRow { id: ITA, canonical_slot: 9, tag: b"ITA".to_vec(), ..CountryRow::default() });
+            rows.push(CountryRow { id: SOV, canonical_slot: 10, tag: b"SOV".to_vec(), ..CountryRow::default() });
+            rows.sort_by_key(|row| row.id);
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *frame.tables[TableId::CountryLinks.index()] {
+            rows.push(CountryLinkRow { id: fra_id, canonical_slot: 8 });
+            rows.push(CountryLinkRow { id: ITA, canonical_slot: 9 });
+            rows.push(CountryLinkRow { id: SOV, canonical_slot: 10 });
+            rows.sort_by_key(|row| row.id);
+        }
+        let mut defs = vec![
+            ResourceDefinitionRow { id: 1, token: 70, active: 1, factory_cost: i64::from(hour) },
+            ResourceDefinitionRow { id: 2, token: 71, active: 1, factory_cost: i64::from(hour) },
+        ];
+        let mut tokens = vec![
+            LexicalTokenRow { token: 70, literal: b"ore_a".to_vec() },
+            LexicalTokenRow { token: 71, literal: b"ore_b".to_vec() },
+        ];
+        if hour >= 112 {
+            defs.push(ResourceDefinitionRow { id: 3, token: 72, active: 1, factory_cost: 0 });
+            tokens.push(LexicalTokenRow { token: 72, literal: b"ore_c".to_vec() });
+        }
+        if hour == 117 {
+            *frame.tables[TableId::ResourceDefinitions.index()] = TableView::Truncated { rows: TableRows::ResourceDefinitions(defs), missing: 1 };
+        } else {
+            set::<tables::ResourceDefinitions>(&mut frame, defs);
+        }
+        set::<tables::LexicalTokens>(&mut frame, tokens);
+        if (114..=115).contains(&hour) {
+            *frame.tables[TableId::ResourceExchanges.index()] = TableView::Unavailable { reason: "exchanges damaged".into() };
+            return frame;
+        }
+        let scale = if branch == 2 { 2 } else { 1 };
+        let ger_to_fra = (if hour >= 105 { 300_000 } else { 100_000 }) * scale;
+        let fra_to_ger = (if hour >= 107 { 400_000 } else { 200_000 }) * scale;
+        let mut deals = vec![
+            deal(1, GER, fra_id, 1, ger_to_fra, hour - 99),
+            deal(2, fra_id, GER, 2, fra_to_ger, hour - 99),
+            deal(3, ITA, SOV, 1, i64::from(hour) * 10_000, 1),
+            deal(4, GER, GER, 1, i64::from(hour) * 5_000, 1),
+        ];
+        if (109..=110).contains(&hour) {
+            deals.push(deal(5, ITA, SOV, 99, 50_000, 1));
+        }
+        set::<tables::ResourceExchanges>(&mut frame, deals);
+        frame
+    }
+
+    #[test]
+    fn trade_flow_follows_relevant_deals_across_variants_seeks_branches_and_damage() {
+        let multi = Replay::from_records(
+            recorder_derive::writers(),
+            CAMPAIGN.into(),
+            &[
+                records(1, (100..=120).map(|h| make_frame(1, h)).collect()),
+                records(2, (100..=120).map(|h| make_frame(2, h)).collect()),
+            ],
+        ).unwrap().into_timelines(&Default::default()).unwrap();
+        let multi = Arc::new(Source::from_replay(
+            dashboard_base::SourceKey { source_id: "trade-multi".into(), revision: "1".into() },
+            "trade-multi.battleplan".into(),
+            Arc::new(multi),
+            &AtomicBool::new(false),
+        ).unwrap());
+        for branch in [1u64, 2] {
+            let request = json!({ "panel": TradeFlow::KEY, "branchId": branch.to_string(), "subject": "GER", "table": true });
+            let panel = (crate::registrations::TRADE_FLOW_TRADEFLOW.panel.unwrap().open)(&multi, &load(), &request).unwrap();
+            let mut original = frame_panel::<TradeFlow>(&multi, &load(), &request).unwrap();
+            let exact = panel.exact().unwrap();
+            for hour in [100, 105, 109, 114, 115, 117, 100] {
+                let read = (exact.advance)(hour, true, &AtomicBool::new(false), None);
+                assert_eq!(*read.value, materialized_frame(&mut *original, multi.replay_ref(), branch, hour), "branch {branch} hour {hour}");
+            }
+        }
+        let single = Arc::new(open((100..=120).map(|h| make_frame(1, h)).collect()));
+        let variants = [
+            ("subject", json!({ "panel": TradeFlow::KEY, "branchId": "1", "subject": "GER", "table": true }), &[101, 102, 103, 104, 106, 108, 110, 113, 120][..]),
+            ("subject-resource", json!({ "panel": TradeFlow::KEY, "branchId": "1", "subject": "GER", "resource": 1, "table": true }), &[101, 102, 103, 104, 106, 107, 108, 110, 113, 120][..]),
+            ("between", json!({ "panel": TradeFlow::KEY, "branchId": "1", "countries": ["GER", "FRA"], "between": true }), &[101, 102, 103, 104, 106, 108, 110, 113, 120][..]),
+            ("world", json!({ "panel": TradeFlow::KEY, "branchId": "1", "countries": [], "between": false }), &[][..]),
+        ];
+        for (label, request, quiet_hours) in variants {
+            let panel = (crate::registrations::TRADE_FLOW_TRADEFLOW.panel.unwrap().open)(&single, &load(), &request).unwrap();
+            let mut original = frame_panel::<TradeFlow>(&single, &load(), &request).unwrap();
+            for read in played(single.replay_ref(), panel.exact().unwrap(), 100, 120) {
+                let expected = materialized_frame(&mut *original, single.replay_ref(), 1, read.hour);
+                assert_eq!(*read.value, expected, "{label} hour {}", read.hour);
+                if quiet_hours.contains(&read.hour) {
+                    assert_eq!(read.product_calls, 0, "{label} quiet hour {} rebuilt", read.hour);
+                }
+            }
+        }
     }
 }
 

@@ -153,11 +153,9 @@ fn each_ui_panel_key_has_one_registered_reader() {
 fn readers_that_can_rebuild_at_each_hour_are_named() {
     let allowed = [
         "casualty-matrix",
-        "country-faction-goals", "country-fuel",
+        "country-faction-goals",
         "faction-details",
         "occupation-at",
-        "resource-balance",
-        "trade-flow",
         "volunteer-flow", "war-contributions",
         "wargoals",
     ];
