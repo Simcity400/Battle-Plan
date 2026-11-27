@@ -12,6 +12,37 @@ import { PlaybackController } from '../playback.ts';
 
 const surface = (): PageSurface<ImageBitmap> & { cleared: number } => ({ cleared: 0, install() {}, clear() { this.cleared++; } });
 
+test('an in-flight clock command keeps only the newest pending anchor, including its seek', async () => {
+  let release!: () => void, started!: () => void, latest!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const first = new Promise<void>(resolve => { started = resolve; });
+  const second = new Promise<void>(resolve => { latest = resolve; });
+  const requests: Record<string, unknown>[] = [];
+  const env = managedInProcess({ gate: (product, params) => {
+    if (product !== 'follow-clock') return;
+    requests.push(params);
+    if (requests.length === 1) { started(); return held; }
+    latest();
+  } });
+  try {
+    const { clock, pipeline, source } = env;
+    const id = pipeline.acquire('queue|0', { offset: 0, pin: null });
+    pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state' }, 'followed');
+    await first;
+    for (let hour = 1; hour <= 50; hour++) clock.seek(hour);
+    clock.setSpeed(24);
+    assert.equal(requests.length, 1, 'there is only one in flight');
+    const completed = env.nextEvent('follow-clock');
+    release();
+    await completed; await second;
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1]!.hour, 50);
+    assert.equal(requests[1]!.speed, 24);
+    assert.equal(requests[1]!.seek, clock.getSnapshot().seekSequence);
+    assert.equal(requests[1]!.sought, true, 'the speed update keeps the seek whose pending command it replaces');
+  } finally { release(); env.close(); }
+});
+
 test('closing a pipeline closes every lane channel, though no follow ever opened them', () => {
   const { channels, close } = inProcess({ lanes: 2 });
   assert.deepEqual([...channels.values()], [false, false]);
