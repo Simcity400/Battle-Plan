@@ -40,6 +40,7 @@ export function openedItem(product: DetailProduct, data: unknown): EventDetail {
   if (!first) return { pending: false, missing: NOT_IN_LOG, item: null };
   try {
     if (product === 'event-feed-tail') {
+      if (first.line !== 'event') throw new Error('The event feed row is malformed.');
       const row = validateFeedRow(first.row);
       const item = effectiveEventItem(row, (first.choice as ScriptEdge | null | undefined) ?? null);
       return { pending: false, missing: null, item, own: row.item, ...(effectsMissing.length ? { effectsMissing } : {}) };

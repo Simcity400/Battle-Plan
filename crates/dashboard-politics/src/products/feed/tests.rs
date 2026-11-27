@@ -831,12 +831,29 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         limit: 64,
         categories: vec![EventFeedCategory::WarsPeace, EventFeedCategory::Diplomacy, EventFeedCategory::Politics, EventFeedCategory::Milestones],
         exclude: None,
+        expanded: None,
+        full: None,
     };
     let cards_at = |hour: i32| ScriptTailParams { branch_id: "1".into(), hour: Some(hour), from: Some(100), to: None, countries: None, group: None, search: None, row: None, sort: None, offset: None, limit: 64, events: None, statuses: None };
 
-    let feed_b1 = EventFeedTail::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
+    let feed_b1_folded = EventFeedTail::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
+    let fold_key = match &feed_b1_folded.rows[0] {
+        super::EventFeedLine::Fold(fold) => {
+            assert_eq!(fold.count, "9");
+            fold.key.clone()
+        }
+        other => panic!("expected 9 consecutive GER decisions on day 4 to fold, got {other:?}"),
+    };
+    let feed_b1 = EventFeedTail::load(&replay_source, &EventFeedTailParams { expanded: Some(vec![fold_key]), ..ask("1") }, &context, &cancel).unwrap();
     let state_of = |page: &super::EventFeedTailReply, id: &str| {
-        page.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == id).and_then(|row| row.decision_state.clone())
+        page.rows
+            .iter()
+            .filter_map(|line| match line {
+                super::EventFeedLine::Event(row) => row.row.as_ref(),
+                _ => None,
+            })
+            .find(|row| row.id == id)
+            .and_then(|row| row.decision_state.clone())
     };
     assert_eq!(state_of(&feed_b1, "native:1:10"), Some(DecisionLifecycleState::Completed));
     assert_eq!(state_of(&feed_b1, "native:1:11"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
@@ -1053,6 +1070,8 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         limit: 64,
         categories: vec![EventFeedCategory::Politics],
         exclude: None,
+        expanded: None,
+        full: None,
     };
     let cards = |hour: i32, statuses: Option<Vec<ScriptStatus>>, countries: Option<Vec<Country>>| ScriptTailParams {
         branch_id: "1".into(),
@@ -1069,7 +1088,17 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         events: None,
         statuses,
     };
-    let hours = |reply: &super::EventFeedTailReply| reply.rows.iter().map(|row| row.hour).collect::<Vec<_>>();
+    let hours = |reply: &super::EventFeedTailReply| {
+        reply
+            .rows
+            .iter()
+            .map(|line| match line {
+                super::EventFeedLine::Event(row) => row.hour,
+                super::EventFeedLine::Fold(fold) => fold.hour,
+                super::EventFeedLine::More(more) => more.hour,
+            })
+            .collect::<Vec<_>>()
+    };
 
     let at_106 = EventFeedTail::load(&replay_source, &feed(106, None, None), &context, &cancel).unwrap();
     assert_eq!(at_106.total, "6");
@@ -1145,8 +1174,15 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     let lost_choices = EventChoicesTail::load(&replay_source, &cards(110, Some(vec![ScriptStatus::NotRecorded]), None), &context, &cancel).unwrap();
     assert!(lost_choices.rows.iter().all(|row| row.not_recorded_reason.as_deref() == Some("event feed read in part")));
     let lost_feed = EventFeedTail::load(&replay_source, &feed(110, None, None), &context, &cancel).unwrap();
-    let lost_feed_reasons: Vec<_> = lost_feed.rows.iter().filter(|row| row.status == Some(ScriptStatus::NotRecorded)).map(|row| row.not_recorded_reason.as_deref()).collect();
-    assert_eq!(lost_feed_reasons, vec![Some("event feed read in part"); 3]);
+    let lost_feed_reasons: Vec<_> = lost_feed
+        .rows
+        .iter()
+        .filter_map(|line| match line {
+            super::EventFeedLine::Event(row) if row.status == Some(ScriptStatus::NotRecorded) => Some(row.not_recorded_reason.as_deref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lost_feed_reasons, [Some("event feed read in part"); 3]);
 
     let choice_panel = event_choices_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-choices-tail", "branchId": "1", "limit": 64, "countries": ["GER"] })).unwrap();
     let choice_exact = choice_panel.exact().unwrap();
@@ -1280,6 +1316,8 @@ fn choice_not_recorded_reason_keeps_first_break_before_later_pause() {
                 limit: 16,
                 categories: vec![EventFeedCategory::Politics],
                 exclude: None,
+                expanded: None,
+                full: None,
             },
             &context,
             &cancel,
@@ -1293,7 +1331,12 @@ fn choice_not_recorded_reason_keeps_first_break_before_later_pause() {
         (Some("event feed read in part"), Some(110)),
         "a later pause must not replace the earlier partial-read cause or hour"
     );
-    assert_eq!(feed_at(115).rows[0].not_recorded_reason.as_deref(), Some("event feed read in part"));
+    let feed_115 = feed_at(115);
+    let feed_reason = match &feed_115.rows[0] {
+        super::EventFeedLine::Event(row) => row.not_recorded_reason.as_deref(),
+        other => panic!("expected event line, got {other:?}"),
+    };
+    assert_eq!(feed_reason, Some("event feed read in part"));
 }
 
 #[test]
@@ -1362,13 +1405,30 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
         limit: 64,
         categories: vec![EventFeedCategory::Diplomacy],
         exclude: None,
+        expanded: None,
+        full: None,
     };
     let at = |hour: i32| EventFeedTail::load(&replay_source, &ask(hour), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     let early = at(101);
     assert!(!early.warnings.iter().any(|warning| warning.contains("template token 77")), "a refusal first read at 103 is not in the reply at 101: {:?}", early.warnings);
-    let joined_key = early.rows.iter().find(|row| row.row.as_ref().is_some_and(|row| row.kind == EventFeedKind::FactionJoined)).map(|row| row.key.clone()).expect("faction join listed at 101");
+    let joined_key = early
+        .rows
+        .iter()
+        .find_map(|line| match line {
+            super::EventFeedLine::Event(row) if row.row.as_ref().is_some_and(|row| row.kind == EventFeedKind::FactionJoined) => Some(row.key.clone()),
+            _ => None,
+        })
+        .expect("faction join listed at 101");
     let opened = |hour: i32| EventFeedTail::load(&replay_source, &EventFeedTailParams { row: Some(joined_key.clone()), limit: 1, ..ask(hour) }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
-    assert_eq!(opened(104).rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(), [joined_key.as_str()], "a family row opens by its key");
+    let opened_keys: Vec<_> = opened(104)
+        .rows
+        .into_iter()
+        .map(|line| match line {
+            super::EventFeedLine::Event(row) => row.key,
+            other => panic!("expected event line, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(opened_keys, [joined_key.as_str()], "a family row opens by its key");
     assert!(opened(100).rows.is_empty(), "and is not in the log before it was observed");
     assert!(early.next_change.is_some_and(|next| next <= 103));
     assert!(at(104).warnings.iter().any(|warning| warning.contains("template token 77")));
@@ -1654,10 +1714,26 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
         limit: 64,
         categories: vec![EventFeedCategory::Politics],
         exclude: None,
+        expanded: None,
+        full: None,
     };
 
+    fn event_item<'a>(reply: &'a super::EventFeedTailReply, id: &str) -> &'a super::EventFeedItem {
+        reply
+            .rows
+            .iter()
+            .filter_map(|line| match line {
+                super::EventFeedLine::Event(row) => row.row.as_ref(),
+                _ => None,
+            })
+            .find(|row| row.id == id)
+            .unwrap()
+            .item
+            .as_ref()
+            .unwrap()
+    }
     let listed = EventFeedTail::load(&replay_source, &ask(None), &context, &AtomicBool::new(false)).unwrap();
-    let ev_listed = listed.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == "native:1:1").unwrap().item.as_ref().unwrap();
+    let ev_listed = event_item(&listed, "native:1:1");
     assert_eq!(ev_listed.name.as_deref(), Some(format!("Synthland summit of 1939: {SCRIPTED_GAP} and {SCRIPTED_GAP}").as_str()));
     assert_eq!(ev_listed.gaps.len(), 2, "listed row keeps both title gaps");
     assert_eq!(ev_listed.gaps[0].key, "ROOT.GetLeader");
@@ -1665,7 +1741,7 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
     assert!(ev_listed.gaps[1].reason.contains("9999"));
 
     let opened = EventFeedTail::load(&replay_source, &ask(Some("native:1:1")), &context, &AtomicBool::new(false)).unwrap();
-    let ev_open = opened.rows[0].row.as_ref().unwrap().item.as_ref().unwrap();
+    let ev_open = event_item(&opened, "native:1:1");
     assert_eq!(ev_open.gaps.len(), 6, "opened row carries title (2) + body (2) + option 0 (1) + option 1 (1) gaps");
     assert_eq!(
         ev_open.gaps.iter().map(|gap| (gap.field, gap.ordinal, gap.key.as_str())).collect::<Vec<_>>(),
@@ -1683,7 +1759,7 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
     assert!(body.contains("0: Back [not recorded: ROOT.GetLeader:"), "{body}");
     assert!(body.contains("1: Ask [not recorded: FROM.GetName:"), "{body}");
 
-    let dec_listed = listed.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == "native:1:2").unwrap().item.as_ref().unwrap();
+    let dec_listed = event_item(&listed, "native:1:2");
     assert_eq!(dec_listed.name.as_deref(), Some(format!("Build in {SCRIPTED_GAP} ({SCRIPTED_GAP}) for Synthland (1939)").as_str()), "missing={:?}", dec_listed.name_missing);
     assert_eq!(dec_listed.gaps.len(), 2);
     assert_eq!(dec_listed.gaps[0].field, EventFeedGapField::Title);
@@ -1692,11 +1768,11 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
     assert_eq!(dec_listed.gaps[1].key, "FROM.ROOT.GetName");
     assert!(dec_listed.gaps[1].reason.contains("targeted decision country has no exact occurrence-hour slot"), "{:?}", dec_listed.gaps[1]);
 
-    let trade_listed = listed.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == "native:1:3").unwrap().item.as_ref().unwrap();
+    let trade_listed = event_item(&listed, "native:1:3");
     assert_eq!(trade_listed.name.as_deref(), Some("Trade with Neighboria (Neighboria) from Synthland (1939)"), "missing={:?}", trade_listed.name_missing);
     assert!(trade_listed.gaps.is_empty(), "{:?}", trade_listed.gaps);
 
-    let orders_listed = listed.rows.iter().filter_map(|row| row.row.as_ref()).find(|row| row.id == "native:1:4").unwrap().item.as_ref().unwrap();
+    let orders_listed = event_item(&listed, "native:1:4");
     assert_eq!(orders_listed.name.as_deref(), Some(format!("Orders for Synthland in 1939 ({SCRIPTED_GAP})").as_str()), "missing={:?}", orders_listed.name_missing);
     assert_eq!(orders_listed.gaps.len(), 1);
     assert_eq!(orders_listed.gaps[0].key, "FROM.GetName");
@@ -1898,5 +1974,283 @@ fn a_followed_decisions_tail_carries_the_warnings_the_exact_read_gives_at_each_h
         assert_eq!(warnings(&(followed.cold)(hour, &cancelled).unwrap()), held, "and so does its cold read");
         assert_eq!(art(&held), hour >= 100, "the decision's mod art is named from the hour it is listed, at {hour}");
         assert_eq!(read.fresh, hour != 101, "hour 101 holds the reply read at 100, with its warnings");
+    }
+}
+
+#[test]
+fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_and_breaks() {
+    use super::{EventFeedCategory, EventFeedLine, EventFeedTail, EventFeedTailParams, event_feed_dated_panel};
+    use dashboard_base::{
+        products::{LoadContext, Product, occurrences::OccurrenceSort},
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use dashboard_query::log::occurrence::Direction;
+    use replay::campaign::Replay;
+    use replay_data::{
+        event_feed_rows::{
+            EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript, EventPresentation, EventWindows,
+        },
+        rows::{Recorded, TableId, TableRows},
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let ger = EventFeedCountry { reference: 9001, id: 9001, instance: 1 };
+    let missing = EventFeedCountry::default();
+    let tokens = b"fold_dec";
+    let ev = |sequence: u64, hour: i32, src: EventFeedSource, actor: EventFeedCountry| EventFeedEvent {
+        sequence,
+        generation: 1,
+        hour,
+        source: src,
+        actor,
+        target: EventFeedCountry::default(),
+        cause: Recorded::NotRecorded,
+        script: Some(EventFeedScript {
+            token_start: 0,
+            token_len: tokens.len() as u32,
+            scope_unrecorded: true,
+            ..EventFeedScript::default()
+        }),
+    };
+    let win = |instance: u32, native_hour: Option<i32>| EventPresentation {
+        native_hour,
+        instance,
+        actor: 9001,
+        shown: Some(true),
+        ..EventPresentation::default()
+    };
+    let pack = |read_hour: i32, events: Vec<EventFeedEvent>, presentations: Vec<EventPresentation>| {
+        let count = events.len() as u64;
+        EventFeedHistoryRow {
+            generation: 1,
+            read_hour,
+            coverage: EventFeedCoverage::Complete,
+            counts: Some(EventFeedCounts { acquired: count, settled: count, failed: 0, rejected: 0 }),
+            outstanding: 0,
+            failure: None,
+            script_refusals: 0,
+            events,
+            script_tokens: tokens.to_vec(),
+            script_scopes: Vec::new(),
+            windows: Recorded::Value(EventWindows { verdicts: Ok(Vec::new()), presentations, presentations_unrecorded: None }),
+        }
+    };
+    let frames: Vec<_> = (96..=170)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+            *frame.tables[TableId::EventFeedHistory.index()] = match hour {
+                103..=104 => TableView::Unavailable { reason: "recording paused".into() },
+                148 => TableView::Unavailable { reason: "gap mid-day".into() },
+                _ => {
+                    let events = match hour {
+                        96 => vec![ev(1, 96, EventFeedSource::DecisionSelected, ger)],
+                        97 => vec![ev(2, 97, EventFeedSource::DecisionSelected, ger)],
+                        98 => vec![ev(3, 98, EventFeedSource::DecisionSelected, ger)],
+                        99 => vec![ev(4, 99, EventFeedSource::DecisionSelected, ger)],
+                        100 => vec![ev(5, 100, EventFeedSource::DecisionActivated, ger)],
+                        101 => vec![ev(6, 101, EventFeedSource::DecisionActivated, ger)],
+                        105 => vec![ev(7, 105, EventFeedSource::ScriptEvent, ger)],
+                        120 => (0..35u64).map(|i| ev(100 + i, 120, EventFeedSource::DecisionSelected, ger)).collect(),
+                        144 => (0..3u64).map(|i| ev(200 + i, 144, EventFeedSource::DecisionSelected, ger)).collect(),
+                        145 => vec![ev(203, 145, EventFeedSource::DecisionSelected, missing)],
+                        146 => (0..3u64).map(|i| ev(204 + i, 146, EventFeedSource::DecisionSelected, ger)).collect(),
+                        147 => (0..3u64).map(|i| ev(210 + i, 147, EventFeedSource::ScriptEvent, ger)).collect(),
+                        149 => (0..3u64).map(|i| ev(213 + i, 149, EventFeedSource::ScriptEvent, ger)).collect(),
+                        _ => Vec::new(),
+                    };
+                    let presentations = match hour {
+                        168 => vec![win(1, Some(167)), win(2, Some(167)), win(3, Some(167)), win(4, Some(167)), win(5, Some(168))],
+                        170 => vec![win(10, Some(170)), win(11, Some(170)), win(12, Some(170)), win(13, None), win(14, Some(170)), win(15, Some(170)), win(16, Some(170))],
+                        _ => Vec::new(),
+                    };
+                    TableView::Complete(TableRows::EventFeedHistory(vec![pack(hour, events, presentations)]))
+                }
+            };
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let replay_source = Arc::new(
+        dashboard_base::Source::from_replay(
+            dashboard_base::SourceKey { source_id: "feed-folding".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    let cancel = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let ask = |hour: i32| EventFeedTailParams {
+        branch_id: "1".into(),
+        hour: Some(hour),
+        from: None,
+        to: None,
+        countries: None,
+        group: None,
+        search: None,
+        row: None,
+        sort: None,
+        offset: None,
+        limit: 64,
+        categories: vec![EventFeedCategory::Politics],
+        exclude: None,
+        expanded: None,
+        full: None,
+    };
+
+    let at_99 = EventFeedTail::load(&replay_source, &ask(99), &context, &cancel).unwrap();
+    assert_eq!(at_99.total, "4");
+    assert!(at_99.rows.iter().all(|line| matches!(line, EventFeedLine::Event(_))), "4 events stay unfolded");
+
+    let at_100 = EventFeedTail::load(&replay_source, &ask(100), &context, &cancel).unwrap();
+    assert_eq!(at_100.total, "1");
+    let day4_key = match &at_100.rows[0] {
+        EventFeedLine::Fold(fold) => {
+            assert_eq!((fold.count.as_str(), fold.country.as_str(), fold.kind, fold.hour), ("5", "GER", EventFeedKind::DecisionActivated, 100));
+            assert!(fold.first_row.is_some());
+            fold.key.clone()
+        }
+        other => panic!("expected fold at 5th event, got {other:?}"),
+    };
+
+    let at_101 = EventFeedTail::load(&replay_source, &EventFeedTailParams { limit: 3, ..ask(101) }, &context, &cancel).unwrap();
+    assert_eq!(at_101.total, "1");
+    match &at_101.rows[0] {
+        EventFeedLine::Fold(fold) => {
+            assert_eq!(fold.key, day4_key, "a newer event joining the run keeps the fold key stable");
+            assert_eq!((fold.count.as_str(), fold.hour), ("6", 101));
+        }
+        other => panic!("expected fold at 101, got {other:?}"),
+    }
+
+    let filtered = EventFeedTail::load(&replay_source, &EventFeedTailParams { exclude: Some(vec!["decisionActivated".into()]), ..ask(101) }, &context, &cancel).unwrap();
+    assert_eq!(filtered.total, "4", "filtering runs before folding: 6 reduced to 4 stays unfolded");
+    assert!(filtered.rows.iter().all(|line| matches!(line, EventFeedLine::Event(_))));
+
+    let detail = EventFeedTail::load(&replay_source, &EventFeedTailParams { row: Some("native:1:2".into()), limit: 1, ..ask(101) }, &context, &cancel).unwrap();
+    match &detail.rows[0] {
+        EventFeedLine::Event(row) => assert_eq!(row.key, "native:1:2"),
+        other => panic!("expected single opened event from inside a fold, got {other:?}"),
+    }
+
+    let detail_before = EventFeedTail::load(&replay_source, &EventFeedTailParams { row: Some("native:1:7".into()), limit: 1, ..ask(100) }, &context, &cancel).unwrap();
+    assert!(detail_before.rows.is_empty());
+    assert_eq!(detail_before.next_change, Some(105), "keyed row before observation reports its observation hour as next_change");
+
+    let detail_live = EventFeedTail::load(&replay_source, &EventFeedTailParams { row: Some("native:1:7".into()), limit: 1, ..ask(105) }, &context, &cancel).unwrap();
+    assert_eq!((detail_live.rows.len(), detail_live.live.as_str()), (1, "1"));
+
+    let at_105 = EventFeedTail::load(&replay_source, &ask(105), &context, &cancel).unwrap();
+    assert_eq!(at_105.total, "2");
+    assert_eq!(at_105.missing.len(), 1);
+    assert_eq!(at_105.missing[0].before, "1", "gap before count uses folded lines");
+
+    let at_105_open = EventFeedTail::load(&replay_source, &EventFeedTailParams { expanded: Some(vec![day4_key.clone()]), ..ask(105) }, &context, &cancel).unwrap();
+    assert_eq!(at_105_open.total, "8");
+    assert_eq!(at_105_open.missing[0].before, "1");
+    assert_eq!(
+        at_105_open.unavailable.iter().find(|item| item.kind == "scriptEventScope").and_then(|item| item.count),
+        Some(7),
+        "expanded fold header and first child present the shared event once without double-counting notices"
+    );
+    assert!(matches!(&at_105_open.rows[1], EventFeedLine::Fold(fold) if fold.key == day4_key && fold.ordinal == "1"));
+    for (idx, line) in at_105_open.rows[2..8].iter().enumerate() {
+        match line {
+            EventFeedLine::Event(row) => {
+                assert_eq!(row.parent.as_deref(), Some(day4_key.as_str()));
+                assert_eq!(row.ordinal, (2 + idx).to_string());
+            }
+            other => panic!("expected expanded child event, got {other:?}"),
+        }
+    }
+
+    let at_120 = EventFeedTail::load(&replay_source, &ask(120), &context, &cancel).unwrap();
+    assert_eq!(at_120.total, "3");
+    assert_eq!(at_120.missing[0].before, "2");
+    let day5_key = match &at_120.rows[0] {
+        EventFeedLine::Fold(fold) => {
+            assert_eq!(fold.count, "35");
+            fold.key.clone()
+        }
+        other => panic!("expected day 5 fold, got {other:?}"),
+    };
+    let at_120_open = EventFeedTail::load(&replay_source, &EventFeedTailParams { expanded: Some(vec![day5_key.clone()]), offset: Some("31".into()), limit: 5, ..ask(120) }, &context, &cancel).unwrap();
+    assert_eq!(at_120_open.total, "36");
+    assert_eq!(at_120_open.missing[0].before, "35");
+    assert_eq!(at_120_open.rows.len(), 5);
+    assert!(matches!(&at_120_open.rows[0], EventFeedLine::Event(row) if row.ordinal == "31" && row.parent.as_deref() == Some(day5_key.as_str())));
+    assert!(matches!(&at_120_open.rows[1], EventFeedLine::Event(row) if row.ordinal == "32" && row.parent.as_deref() == Some(day5_key.as_str())));
+    assert!(matches!(&at_120_open.rows[2], EventFeedLine::More(more) if more.parent == day5_key && more.ordinal == "33" && more.total == "35" && more.remaining == "3"));
+    assert!(matches!(&at_120_open.rows[3], EventFeedLine::Event(row) if row.ordinal == "34" && row.parent.is_none()));
+    assert!(matches!(&at_120_open.rows[4], EventFeedLine::Fold(fold) if fold.key == day4_key && fold.ordinal == "35"));
+
+    let at_120_full = EventFeedTail::load(
+        &replay_source,
+        &EventFeedTailParams { expanded: Some(vec![day5_key.clone()]), full: Some(vec![day5_key.clone()]), offset: Some("35".into()), limit: 4, ..ask(120) },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(at_120_full.total, "39");
+    assert_eq!(at_120_full.missing[0].before, "38");
+    assert!(matches!(&at_120_full.rows[0], EventFeedLine::Event(row) if row.ordinal == "35" && row.parent.as_deref() == Some(day5_key.as_str())));
+    assert!(matches!(&at_120_full.rows[1], EventFeedLine::More(more) if more.parent == day5_key && more.ordinal == "36" && more.total == "35" && more.remaining == "0"));
+
+    let asc_open = EventFeedTail::load(
+        &replay_source,
+        &EventFeedTailParams {
+            sort: Some(OccurrenceSort { column: "date".into(), direction: Direction::Ascending }),
+            expanded: Some(vec![day5_key.clone()]),
+            offset: Some("2".into()),
+            limit: 35,
+            ..ask(120)
+        },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    assert!(matches!(&asc_open.rows[0], EventFeedLine::Fold(fold) if fold.key == day5_key));
+    let asc_child_keys: Vec<&str> = asc_open.rows[1..33]
+        .iter()
+        .map(|line| match line {
+            EventFeedLine::Event(row) => row.key.as_str(),
+            other => panic!("expected child event, got {other:?}"),
+        })
+        .collect();
+    assert_eq!((asc_child_keys[0], asc_child_keys[31]), ("native:1:103", "native:1:134"), "ascending capped expansion shows the newest 32 children");
+    assert!(matches!(&asc_open.rows[33], EventFeedLine::More(more) if more.parent == day5_key && more.remaining == "3"));
+
+    let day6 = EventFeedTail::load(&replay_source, &EventFeedTailParams { from: Some(144), ..ask(149) }, &context, &cancel).unwrap();
+    assert_eq!(day6.total, "13", "missing-country row and mid-day gap each break a run");
+    assert!(day6.rows.iter().all(|line| matches!(line, EventFeedLine::Event(_))));
+    assert!(day6.rows.iter().any(|line| matches!(line, EventFeedLine::Event(row) if row.key == "native:1:203")), "missing-country event is never swallowed");
+    assert_eq!(day6.missing.len(), 1);
+    assert_eq!(day6.missing[0].before, "3");
+
+    let windows_split = EventFeedTail::load(&replay_source, &EventFeedTailParams { from: Some(167), ..ask(168) }, &context, &cancel).unwrap();
+    assert_eq!(windows_split.total, "5", "4 windows at hour 167 and 1 at hour 168 read at 168 span two days and do not fold");
+    assert!(windows_split.rows.iter().all(|line| matches!(line, EventFeedLine::Event(_))));
+
+    let windows_unclocked = EventFeedTail::load(&replay_source, &EventFeedTailParams { from: Some(169), ..ask(170) }, &context, &cancel).unwrap();
+    assert_eq!(windows_unclocked.total, "7", "a presented window with no native clock stays standalone and breaks the run");
+    assert!(windows_unclocked.rows.iter().all(|line| matches!(line, EventFeedLine::Event(_))));
+
+    let panel = event_feed_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-feed-tail", "branchId": "1", "limit": 64, "categories": ["politics"] })).unwrap();
+    let exact = panel.exact().unwrap();
+    for (idx, hour) in [96, 97, 98, 99, 100, 101, 102, 103, 105, 120, 144, 146, 149, 100, 99, 101].into_iter().enumerate() {
+        let stepped = (exact.advance)(hour, idx == 0, &cancel, None);
+        if hour == 102 {
+            assert!(!stepped.fresh, "quiet hour 102 reuses cached reply");
+        }
+        if idx == 4 {
+            assert!(stepped.fresh, "5th event at hour 100 triggers fresh folded reply");
+        }
+        assert_eq!(*stepped.value, (exact.cold)(hour, &cancel), "stepped vs cold at step {idx} hour {hour}");
     }
 }

@@ -3,6 +3,7 @@ mod cards;
 mod cause;
 pub(crate) mod decision_state;
 mod families;
+mod fold;
 pub mod index;
 mod nuclear;
 mod row;
@@ -14,7 +15,7 @@ mod window;
 
 pub use index::ScriptStatus;
 pub use tails::{
-    DecisionsTail, EventChoicesTail, EventFeedActivity, EventFeedActivityReply, EventFeedKinds, EventFeedKindsReply, EventFeedPageRow, EventFeedTail, EventFeedTailParams, EventFeedTailReply, ScriptEventKind, ScriptOccurrenceTailReply, ScriptPageRow, ScriptTailParams,
+    DecisionsTail, EventChoicesTail, EventFeedActivity, EventFeedActivityReply, EventFeedFoldRow, EventFeedKinds, EventFeedKindsReply, EventFeedLine, EventFeedMoreRow, EventFeedPageRow, EventFeedTail, EventFeedTailParams, EventFeedTailReply, ScriptEventKind, ScriptOccurrenceTailReply, ScriptPageRow, ScriptTailParams,
     decisions_dated_panel, event_choices_dated_panel, event_feed_dated_panel,
 };
 pub use decision_state::{

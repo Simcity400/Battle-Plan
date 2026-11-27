@@ -5,9 +5,12 @@ import { tooltipRowOffsets, tooltipRowWindow } from '../../charts/tooltipScroll.
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
-import { deriveRowTooltip, type TableRow } from '../../families/table/model.ts';
+import { buildColumnLayouts, selectVisibleColumns } from '../../families/table/layout.ts';
+import { deriveRowTooltip, deriveTableAudit, deriveTableMirror, resolveTableRows, type TableRow } from '../../families/table/model.ts';
+import { LOG_TABLE_BASE } from '../../families/table/logHelpers.ts';
+import { tableSettingsOf } from '../../families/table/settings.ts';
 import { validateFeedRow } from './eventFeedData.ts';
-import { eventFeedProjection } from './eventFeedProjection.ts';
+import { eventFeedDeclaration, eventFeedProjection } from './eventFeedProjection.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import type { EventFeedRow } from '../../generated/dashboard';
 
@@ -37,7 +40,7 @@ test('nuclear strike and decision state validation reject mismatched kinds', () 
   assert.throws(() => validateFeedRow(row('warDeclared', 100, ['GER', 'POL'], { decisionState: { kind: 'failed', observedHour: 100 } })), /malformed/);
 });
 
-test('event feed projection preserves selected option ordinal, keeps null recipient distinct from sender, restores nuclear strike effects, and folds five-row runs', () => {
+test('event feed projection preserves selected option ordinal, keeps null recipient distinct from sender, restores nuclear strike effects, and projects server-folded lines', () => {
   const chosenRow = row('eventOptionSelected', 100, ['GER'], {
     category: 'politics',
     participants: ['GER', null],
@@ -54,30 +57,46 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
     participants: ['USA', 'JAP'],
     strike: { province: 1, state: null, buildingLevels: null, warSupport: -15, units: 2, manpowerLost: 1234.6, equipmentLost: null, notRecorded: ['equipment: writers not forwarded'] },
   });
-  const repeated = Array.from({ length: 5 }, (_, i) => row('warJoined', 48 + i, ['GER', 'SOV'], {
+  const firstRepeated = row('warJoined', 52, ['GER', 'SOV'], {
     category: 'warsPeace',
     participants: ['GER', 'SOV'],
-  }));
-  const all = [chosenRow, unknownRecipient, strikeRow, ...repeated];
+  });
   const head = {
     branchId: '1',
-    log: 'feed-events',
-    columns: [],
-    baseOrdinal: '0',
-    firstOrdinal: '0',
     offset: '0',
-    total: String(all.length),
-    rows: all.map((r, i) => ({ hour: r.hour, key: `k${i}`, ordinal: String(i), cells: [], row: r })),
-    facetTotals: [],
+    total: '4',
+    live: '0',
+    counts: [],
+    rows: [
+      { line: 'event', hour: chosenRow.hour, observed: chosenRow.hour, key: 'k0', ordinal: '0', live: false, row: chosenRow, choice: null },
+      { line: 'event', hour: unknownRecipient.hour, observed: unknownRecipient.hour, key: 'k1', ordinal: '1', live: false, row: unknownRecipient, choice: null },
+      { line: 'event', hour: strikeRow.hour, observed: strikeRow.hour, key: 'k2', ordinal: '2', live: false, row: strikeRow, choice: null },
+      { line: 'fold', hour: firstRepeated.hour, observed: firstRepeated.hour, key: 'fold:2:GER:warJoined:1', ordinal: '3', count: '5', kind: 'warJoined', country: 'GER', firstRow: firstRepeated },
+    ],
     missing: [],
+    nextChange: null,
     unavailable: [],
     warnings: [],
   };
-  const source = buildRowSourceFromHead('test:feed', head, undefined, 120)!;
-  const readView = createBoundedReadView({ hour: 120, rows: new Map([['main', source]]) });
+  const source = buildRowSourceFromHead('test:feed', head, undefined, 120, undefined, eventFeedProjection.validateTail)!;
+  const readView = createBoundedReadView({
+    hour: 120,
+    rows: new Map([['main', source]]),
+    identity: {
+      resolve: (kind, key) => ({
+        kind,
+        key,
+        holder: { status: 'ready', value: key },
+        name: { status: 'ready', value: key === 'GER' ? 'Synthland' : key },
+        validInterval: [0, 1000] as const,
+        nextChangeAt: Infinity,
+      }),
+    },
+  });
   const model = eventFeedProjection.project(readView, {
     categories: ['warsPeace', 'diplomacy', 'politics', 'milestones'],
     artwork: true,
+    expanded: [],
   });
   assert.equal(model.rowHeightMode, undefined, 'event feed uses standard 36px rows');
   const chosenOut = model.rows.find(r => r.key === 'k0')!;
@@ -106,10 +125,95 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   assert.deepEqual(envoyTip({ key: 'k1', description: 'An envoy arrives.', gaps: null, options: ['Accept', null], missing: null }),
     ['Description: An envoy arrives.', 'Option A: Accept', 'Option B: not recorded: Option text not recorded'], 'the hovered row brings its description and every option it offers');
   assert.deepEqual(envoyTip({ key: 'k1', description: null, gaps: null, options: null, missing: 'This event is not in the log at the hour it was read' }), ['Description: not recorded: This event is not in the log at the hour it was read']);
-  const foldRow = model.rows.find(r => r.key.startsWith('fold:'))!;
+  const foldRow = model.rows.find(r => r.key === 'group:fold:2:GER:warJoined:1')!;
   assert.equal(foldRow.name, '5 events');
-  assert.equal(foldRow.children?.length, 5);
-  assert.equal(foldRow.initiallyOpen, false);
+  assert.deepEqual(foldRow.pageGroup, { members: 5, open: false });
+  assert.equal(foldRow.children, undefined, 'folding lives on the server, never in client-attached children');
+
+  const settings = tableSettingsOf(undefined, model.columns, LOG_TABLE_BASE);
+  const flatClosed = resolveTableRows(model, settings);
+  const mirrorClosed = deriveTableMirror(flatClosed, model.columns, false);
+  const mirrorFold = mirrorClosed.rows.find(r => r.key === 'group:fold:2:GER:warJoined:1')!;
+  assert.equal(mirrorFold.group, true);
+  assert.equal(mirrorFold.open, false);
+  const spokenOf = (col: string) => mirrorFold.cells.find(c => c.column === col)?.spoken;
+  assert.equal(spokenOf('item'), '5 events');
+  assert.equal(spokenOf('kind'), 'Joined a war');
+  assert.ok(spokenOf('country')?.includes('Synthland'), 'fold screen-reader row names its country');
+
+  const noArtModel = eventFeedProjection.project(readView, {
+    categories: ['warsPeace', 'diplomacy', 'politics', 'milestones'],
+    artwork: false,
+    expanded: [],
+  });
+  const noArtMirror = deriveTableMirror(resolveTableRows(noArtModel, settings), noArtModel.columns, false).rows.find(r => r.key === 'group:fold:2:GER:warJoined:1')!;
+  assert.equal(noArtMirror.cells.find(c => c.column === 'kind')?.spoken, 'Joined a war', 'screen-reader kind stays spoken even when artwork is hidden');
+
+  const visibleCols = selectVisibleColumns(buildColumnLayouts(model.columns, settings), false);
+  const auditClosed = deriveTableAudit({ model, flatRows: flatClosed, visibleColumns: visibleCols, rankShown: false });
+  assert.ok(auditClosed.some(entry => entry.key === 'group:fold:2:GER:warJoined:1:item' && String(entry.value).includes('5 events')), 'exact audit compares folded lines');
+});
+
+test('expanded event-feed folds project children with pageParent, detail meta, more toggle, and declaration sources', () => {
+  const foldKey = 'fold:4:GER:script-event:10';
+  const child = row('scriptEventFired', 100, ['GER', 'FRA'], {
+    category: 'politics',
+    participants: ['GER', 'FRA'],
+    item: { token: 'ev.50', name: 'Treaty Offer', icon: null, description: null, options: [{ ordinal: 0, name: 'Sign' }] },
+  });
+  const head = {
+    branchId: '1',
+    offset: '0',
+    total: '3',
+    live: '0',
+    counts: [],
+    rows: [
+      { line: 'fold', key: foldKey, hour: 100, observed: 100, ordinal: '0', count: '35', kind: 'scriptEventFired', country: 'GER', firstRow: child },
+      { line: 'event', key: 'native:1:50', hour: 100, observed: 100, ordinal: '1', live: false, row: child, choice: null, parent: foldKey },
+      { line: 'more', key: `more:${foldKey}`, parent: foldKey, hour: 100, ordinal: '2', total: '35', remaining: '3' },
+    ],
+    missing: [],
+    nextChange: null,
+    unavailable: [],
+    warnings: [],
+  };
+  const source = buildRowSourceFromHead('test:feed-expanded', head, undefined, 120, undefined, eventFeedProjection.validateTail)!;
+  const model = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', source]]) }),
+    { categories: ['politics'], artwork: true, expanded: [`group:${foldKey}`] },
+  );
+  assert.deepEqual(model.rows[0]!.pageGroup, { members: 35, open: true });
+  assert.equal(model.rows[1]!.key, 'native:1:50');
+  assert.equal(model.rows[1]!.pageParent, `group:${foldKey}`);
+  assert.equal((model.rows[1]!.meta as EventDetailSubject).key, 'native:1:50', 'expanded child still opens the detail window');
+  assert.equal(model.rows[2]!.key, `all:group:${foldKey}`);
+  assert.equal(model.rows[2]!.pageParent, `group:${foldKey}`);
+  assert.equal(model.rows[2]!.name, 'Show all 35 events · 3 more');
+
+  const fullHead = {
+    ...head,
+    total: '1',
+    rows: [{ line: 'more', key: `more:${foldKey}`, parent: foldKey, hour: 100, ordinal: '0', total: '35', remaining: '0' }],
+  };
+  const fullSource = buildRowSourceFromHead('test:feed-full', fullHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
+  const fullModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', fullSource]]) }),
+    { categories: ['politics'], artwork: true, expanded: [`group:${foldKey}`] },
+  );
+  assert.equal(fullModel.rows[0]!.name, 'Show fewer events');
+
+  const plan = eventFeedDeclaration.sources({
+    track: { id: 't1', source: { id: 's1', revision: 'r1' }, branch: { id: '1', firstHour: 0, lastHour: 200 }, axisOffset: 0 },
+    branch: { id: '1', firstHour: 0, lastHour: 200 },
+    widget: { id: 'w1', kind: 'event-feed', time: { mode: 'follow' }, countries: { kind: 'all' } },
+    countries: { all: true, tags: [] },
+    options: { politics: true, expanded: `group:${foldKey}`, full: `group:${foldKey}` },
+    following: true,
+    gateSpan: (first: number, last: number) => ({ firstHour: first, lastHour: last }),
+  } as never, {} as never);
+  const ask = (plan.entries[0]!.read as { tailQuery: { ask: Record<string, unknown> } }).tailQuery.ask;
+  assert.deepEqual(ask.expanded, [foldKey]);
+  assert.deepEqual(ask.full, [foldKey]);
 });
 
 test('event feed projection renders merged choice letter and text, awaiting choice, paused choice, and unrecorded choice ordinal from page rows', () => {
@@ -154,10 +258,10 @@ test('event feed projection renders merged choice letter and text, awaiting choi
     live: '1',
     counts: [],
     rows: [
-      { key: 'm-chosen', hour: 100, observed: 100, ordinal: '0', live: false, status: 'chosen', row: firedChosen, choice: choiceEdge },
-      { key: 'm-await', hour: 104, observed: 104, ordinal: '1', live: true, status: 'awaiting', row: firedAwaiting, choice: null },
-      { key: 'm-paused', hour: 96, observed: 96, ordinal: '2', live: false, status: 'notRecorded', row: firedPaused, choice: null },
-      { key: 'm-null-opt', hour: 92, observed: 92, ordinal: '3', live: false, status: 'chosen', row: firedUnknownOption, choice: missingOptionEdge },
+      { line: 'event', key: 'm-chosen', hour: 100, observed: 100, ordinal: '0', live: false, status: 'chosen', row: firedChosen, choice: choiceEdge },
+      { line: 'event', key: 'm-await', hour: 104, observed: 104, ordinal: '1', live: true, status: 'awaiting', row: firedAwaiting, choice: null },
+      { line: 'event', key: 'm-paused', hour: 96, observed: 96, ordinal: '2', live: false, status: 'notRecorded', row: firedPaused, choice: null },
+      { line: 'event', key: 'm-null-opt', hour: 92, observed: 92, ordinal: '3', live: false, status: 'chosen', row: firedUnknownOption, choice: missingOptionEdge },
     ],
     missing: [],
     nextChange: null,
@@ -218,7 +322,7 @@ test('a firing whose options come only from its choice lists them from the choic
   const options = (hour: number, picked: typeof choice | null) => {
     const head = {
       branchId: '1', offset: '0', total: '1', live: '0', counts: [],
-      rows: [{ key: 'm-envoy', hour: 100, observed: 100, ordinal: '0', live: false, status: picked ? 'chosen' : 'awaiting', row: fired, choice: picked }],
+      rows: [{ line: 'event', key: 'm-envoy', hour: 100, observed: 100, ordinal: '0', live: false, status: picked ? 'chosen' : 'awaiting', row: fired, choice: picked }],
       missing: [], nextChange: null, unavailable: [], warnings: [],
     };
     const source = buildRowSourceFromHead(`test:feed-envoy-${hour}`, head, undefined, hour)!;
@@ -239,7 +343,7 @@ test('a witnessed cessation or guarantee with an unidentified country keeps its 
   const all = [ceased, guarantee];
   const head = {
     branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: String(all.length),
-    rows: all.map((r, i) => ({ hour: r.hour, key: `k${i}`, ordinal: String(i), cells: [], row: r })),
+    rows: all.map((r, i) => ({ line: 'event', hour: r.hour, observed: r.hour, key: `k${i}`, ordinal: String(i), live: false, row: r, choice: null })),
     facetTotals: [], missing: [], unavailable: [], warnings: [],
   };
   const source = buildRowSourceFromHead('test:feed', head, undefined, 120)!;
@@ -295,7 +399,7 @@ test('a finished project with an unidentified owner keeps its row and carries it
   const all = [firstUnknown, secondUnknown, known];
   const head = {
     branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: String(all.length),
-    rows: all.map((r, i) => ({ hour: r.hour, key: `p${i}`, ordinal: String(i), cells: [], row: r })),
+    rows: all.map((r, i) => ({ line: 'event', hour: r.hour, observed: r.hour, key: `p${i}`, ordinal: String(i), live: false, row: r, choice: null })),
     facetTotals: [], missing: [], unavailable: [], warnings: [],
   };
   const source = buildRowSourceFromHead('test:project-finished', head, undefined, 120)!;
@@ -345,7 +449,7 @@ test('event feed projection shows each scripted gap in place with its own reason
     firstOrdinal: '0',
     offset: '0',
     total: '1',
-    rows: [{ hour: gapped.hour, key: 'k-gap', ordinal: '0', cells: [], row: gapped, choice }],
+    rows: [{ line: 'event', hour: gapped.hour, observed: gapped.hour, key: 'k-gap', ordinal: '0', live: false, row: gapped, choice }],
     facetTotals: [],
     missing: [],
     unavailable: [],
@@ -445,8 +549,8 @@ test('S3: a malformed event feed row becomes a refused slot with its reason inst
     live: '0',
     counts: [],
     rows: [
-      { key: 'ok', hour: 100, observed: 100, ordinal: '0', live: false, row: good, choice: null },
-      { key: 'bad', hour: 100, observed: 100, ordinal: '1', live: false, row: bad, choice: null },
+      { line: 'event', key: 'ok', hour: 100, observed: 100, ordinal: '0', live: false, row: good, choice: null },
+      { line: 'event', key: 'bad', hour: 100, observed: 100, ordinal: '1', live: false, row: bad, choice: null },
     ],
     missing: [],
     nextChange: null,
@@ -469,7 +573,7 @@ test('S3: a malformed event feed row becomes a refused slot with its reason inst
   const onlyBadHead = {
     ...mixedHead,
     total: '1',
-    rows: [{ key: 'bad', hour: 100, observed: 100, ordinal: '0', live: false, row: bad, choice: null }],
+    rows: [{ line: 'event', key: 'bad', hour: 100, observed: 100, ordinal: '0', live: false, row: bad, choice: null }],
   };
   const onlyBadSource = buildRowSourceFromHead('test:feed-only-bad', onlyBadHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
   const onlyBadModel = eventFeedProjection.project(
@@ -484,7 +588,7 @@ test('S3: a malformed event feed row becomes a refused slot with its reason inst
   const badChoiceHead = {
     ...mixedHead,
     total: '1',
-    rows: [{ key: 'bad-choice', hour: 100, observed: 100, ordinal: '0', live: false, row: good, choice: { row: bad, option: 0 } }],
+    rows: [{ line: 'event', key: 'bad-choice', hour: 100, observed: 100, ordinal: '0', live: false, row: good, choice: { row: bad, option: 0 } }],
   };
   const badChoiceSource = buildRowSourceFromHead('test:feed-bad-choice', badChoiceHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
   const badChoiceModel = eventFeedProjection.project(
@@ -497,10 +601,11 @@ test('S3: a malformed event feed row becomes a refused slot with its reason inst
 
   const nullAndFutureNameHead = {
     ...mixedHead,
-    total: '2',
+    total: '3',
     rows: [
-      { key: 'null-row', hour: 100, observed: 100, ordinal: '0', live: false, row: null, choice: null },
-      { key: 'future-name', hour: 100, observed: 100, ordinal: '1', live: false, row: { ...good, readHour: 100, nameHour: 101 }, choice: null },
+      { line: 'event', key: 'null-row', hour: 100, observed: 100, ordinal: '0', live: false, row: null, choice: null },
+      { line: 'event', key: 'future-name', hour: 100, observed: 100, ordinal: '1', live: false, row: { ...good, readHour: 100, nameHour: 101 }, choice: null },
+      { line: 'fold', key: 'fold:4:GER:warDeclared:1', hour: 100, observed: 100, ordinal: '2', count: '5', kind: 'warDeclared', country: 'GER', firstRow: null },
     ],
   };
   const nullAndFutureSource = buildRowSourceFromHead('test:feed-null-and-name-hour', nullAndFutureNameHead, undefined, 100, undefined, eventFeedProjection.validateTail)!;
@@ -511,5 +616,6 @@ test('S3: a malformed event feed row becomes a refused slot with its reason inst
   assert.deepEqual(nullAndFutureModel.slots, [
     { kind: 'refused', key: 'refused:0', reason: 'Event was not recorded.' },
     { kind: 'refused', key: 'refused:1', reason: 'The event feed row is malformed.' },
+    { kind: 'refused', key: 'refused:2', reason: 'Event was not recorded.' },
   ]);
 });

@@ -280,6 +280,14 @@ pub struct Answer {
     pub next_change: Option<i32>,
 }
 
+pub struct DatedRows<'a> {
+    pub rows: &'a [u32],
+    pub gaps: &'a [PlacedGap],
+    pub live: u64,
+    pub unattributed: u64,
+    pub until: Option<i32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Signature {
     from: Option<i32>,
@@ -760,6 +768,31 @@ impl<P> Index<P> {
         self.window(holders, ask, Some(&visible))
     }
 
+    pub fn with_dated<R>(&self, holders: &Holders, ask: &Ask<'_>, visit: impl FnOnce(DatedRows<'_>) -> R) -> io::Result<R> {
+        if !matches!(ask.order, Order::Date(_)) {
+            return Err(invalid("Dated rows require date order"));
+        }
+        let filtered = self.filtered(holders, ask);
+        let gap_end = ask.gap_end.unwrap_or(i32::MAX).min(ask.to.unwrap_or(i32::MAX));
+        let order = self.dated_order(&filtered, ask, gap_end);
+        Ok(visit(DatedRows { rows: &order.ordered, gaps: &order.gaps, live: order.live, unattributed: order.unattributed, until: order.until }))
+    }
+
+    fn dated_order(&self, filtered: &Filtered, ask: &Ask<'_>, gap_end: i32) -> Arc<PageOrder> {
+        let view = self.view(filtered, ask, gap_end);
+        let next = view.changes.get(view.changes.partition_point(|&at| at <= ask.hour)).copied();
+        let mut kept = view.dated.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(order) = kept.as_ref()
+            && order.hour <= ask.hour && order.until.is_none_or(|until| ask.hour < until)
+        {
+            Arc::clone(order)
+        } else {
+            let order = Arc::new(self.order(filtered, ask, gap_end, None, next));
+            *kept = Some(Arc::clone(&order));
+            order
+        }
+    }
+
     fn window(&self, holders: &Holders, ask: &Ask<'_>, visible: Option<&dyn Fn(&P) -> bool>) -> io::Result<Answer> {
         if ask.limit == 0 {
             return Err(invalid("An occurrence window holds one row or more"));
@@ -773,23 +806,12 @@ impl<P> Index<P> {
         let gap_end = ask.gap_end.unwrap_or(i32::MAX).min(ask.to.unwrap_or(i32::MAX));
         let order = if visible.is_some() {
             Arc::new(self.order(&filtered, ask, gap_end, visible, None))
+        } else if matches!(ask.order, Order::Date(_)) {
+            self.dated_order(&filtered, ask, gap_end)
         } else {
             let view = self.view(&filtered, ask, gap_end);
             let next = view.changes.get(view.changes.partition_point(|&at| at <= ask.hour)).copied();
-            if matches!(ask.order, Order::Date(_)) {
-                let mut kept = view.dated.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some(order) = kept.as_ref()
-                    && order.hour <= ask.hour && order.until.is_none_or(|until| ask.hour < until)
-                {
-                    Arc::clone(order)
-                } else {
-                    let order = Arc::new(self.order(&filtered, ask, gap_end, None, next));
-                    *kept = Some(Arc::clone(&order));
-                    order
-                }
-            } else {
-                Arc::new(self.order(&filtered, ask, gap_end, None, next))
-            }
+            Arc::new(self.order(&filtered, ask, gap_end, None, next))
         };
         let offset = ask.offset.min(order.total);
         let start = (offset as usize).min(order.ordered.len());
