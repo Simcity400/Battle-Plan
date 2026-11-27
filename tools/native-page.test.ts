@@ -9,9 +9,9 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { browserStage } from './canvas-page.ts';
-import { builtServer, devServer, formatFixtureLoadError, loadFixture, runFixtureLoadStage, type BrowserNetworkFailure, type ServerFailure } from './native-page.ts';
+import { builtServer, devServer, formatFixtureLoadError, loadFixture, navigate, runFixtureLoadStage, type BrowserNetworkFailure, type ServerFailure } from './native-page.ts';
 
-function wsServer(onClient: (send: (payload: unknown) => void, onMessage: (handler: (message: Record<string, unknown>) => void) => void) => void) {
+function wsServer(onClient: (send: (payload: unknown) => void, onMessage: (handler: (message: Record<string, unknown>) => void) => void, closeSocket: () => void) => void) {
   const server = createServer();
   server.on('upgrade', (request, socket) => {
     const key = request.headers['sec-websocket-key'];
@@ -50,7 +50,7 @@ function wsServer(onClient: (send: (payload: unknown) => void, onMessage: (handl
         if (opcode === 1) handler?.(JSON.parse(payload.toString('utf8')));
       }
     });
-    onClient(send, next => { handler = next; });
+    onClient(send, next => { handler = next; }, () => { socket.write(Buffer.from([0x88, 0x00])); socket.end(); });
   });
   return new Promise<{ url: string; close(): Promise<void> }>(done => {
     server.listen(0, '127.0.0.1', () => {
@@ -429,4 +429,47 @@ test('loadFixture and runFixtureLoadStage report server and browser fetch failur
   const formatted = formatFixtureLoadError('/entry.tsx', 'TypeError: Failed to fetch', [], [{ url: 'http://127.0.0.1:1/entry.tsx', reason: 'net::ERR_EMPTY_RESPONSE' }]);
   assert.ok(!(formatted instanceof assert.AssertionError));
   assert.match(formatted.message, /fixture could not be loaded \(\/entry\.tsx\): browser net::ERR_EMPTY_RESPONSE/);
+});
+
+test('navigate disables cache on reload and waits for the matching loader load event', async () => {
+  const seen: { method: string; params: unknown }[] = [];
+  const cdp = await wsServer((send, onMessage) => {
+    onMessage(message => {
+      seen.push({ method: String(message.method), params: message.params });
+      if (message.method === 'Page.navigate') {
+        send({ method: 'Page.lifecycleEvent', params: { name: 'load', loaderId: 'stale-loader' } });
+        send({ id: message.id, result: { loaderId: 'fresh-loader' } });
+        send({ method: 'Page.lifecycleEvent', params: { name: 'load', loaderId: 'fresh-loader' } });
+        return;
+      }
+      send({ id: message.id, result: {} });
+    });
+  });
+  try {
+    await navigate(cdp.url, 'http://127.0.0.1:1/icon-menu-page', new AbortController().signal, true);
+    assert.deepEqual(seen.map(entry => entry.method), ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Network.enable', 'Network.setCacheDisabled', 'Page.navigate']);
+    assert.deepEqual(seen.find(entry => entry.method === 'Network.setCacheDisabled')?.params, { cacheDisabled: true });
+  } finally {
+    await cdp.close();
+  }
+
+  const staleOnly = await wsServer((send, onMessage, closeSocket) => {
+    onMessage(message => {
+      if (message.method === 'Page.navigate') {
+        send({ id: message.id, result: { loaderId: 'fresh-loader' } });
+        send({ method: 'Page.lifecycleEvent', params: { name: 'load', loaderId: 'stale-loader' } });
+        closeSocket();
+        return;
+      }
+      send({ id: message.id, result: {} });
+    });
+  });
+  try {
+    await assert.rejects(
+      () => navigate(staleOnly.url, 'http://127.0.0.1:1/icon-menu-page', new AbortController().signal, true),
+      /Page\.navigate connection closed before the page loaded/,
+    );
+  } finally {
+    await staleOnly.close();
+  }
 });

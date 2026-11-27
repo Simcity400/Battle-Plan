@@ -31,26 +31,33 @@ function cdp(endpoint: string, method: string, params: Record<string, unknown> =
   });
 }
 
-function navigate(endpoint: string, url: string, signal: AbortSignal) {
+export function navigate(endpoint: string, url: string, signal: AbortSignal, ignoreCache = false) {
   signal.throwIfAborted();
   return new Promise<void>((done, reject) => {
     const socket = new WebSocket(endpoint);
-    const methods = ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Page.navigate'];
+    const calls = [
+      { id: 1, method: 'Page.enable' },
+      { id: 2, method: 'Page.setLifecycleEventsEnabled', params: { enabled: true } },
+      ...(ignoreCache ? [{ id: 3, method: 'Network.enable' }, { id: 4, method: 'Network.setCacheDisabled', params: { cacheDisabled: true } }] : []),
+      { id: ignoreCache ? 5 : 3, method: 'Page.navigate', params: { url } },
+    ];
+    const navigateId = calls.at(-1)!.id;
     const loaded = new Set<string>();
-    let loader: string | undefined;
-    const finish = (error?: unknown) => { signal.removeEventListener('abort', abort); socket.close(); if (error) reject(error); else done(); };
+    let loader: string | undefined, settled = false;
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', abort); socket.close();
+      if (error) reject(error); else done();
+    };
     const abort = () => finish(signal.reason);
     signal.addEventListener('abort', abort, { once: true });
-    socket.addEventListener('open', () => {
-      socket.send(JSON.stringify({ id: 1, method: methods[0] }));
-      socket.send(JSON.stringify({ id: 2, method: methods[1], params: { enabled: true } }));
-      socket.send(JSON.stringify({ id: 3, method: methods[2], params: { url } }));
-    });
+    socket.addEventListener('open', () => { for (const call of calls) socket.send(JSON.stringify(call)); });
     socket.addEventListener('message', event => {
       const message = JSON.parse(String(event.data));
-      if (message.error) finish(new Error(`${methods[message.id - 1]}: ${JSON.stringify(message.error)}`));
-      else if (message.id === 3 && message.result.errorText) finish(new Error(`Page.navigate to ${url}: ${message.result.errorText}`));
-      else if (message.id === 3) {
+      if (message.error) finish(new Error(`${calls[message.id - 1]?.method ?? 'CDP'}: ${JSON.stringify(message.error)}`));
+      else if (message.id === navigateId && message.result.errorText) finish(new Error(`Page.navigate to ${url}: ${message.result.errorText}`));
+      else if (message.id === navigateId) {
         loader = message.result.loaderId;
         if (loader !== undefined && loaded.has(loader)) finish();
       } else if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') {
@@ -90,6 +97,7 @@ export type NativeKey = keyof typeof KEY_CODES;
 export interface NativePage {
   evaluate<T = any>(expression: string): Promise<T>;
   press(key: NativeKey, shift?: boolean): Promise<void>;
+  reload(): Promise<void>;
   page: string;
   stage<T>(label: string, run: (signal: AbortSignal) => Promise<T>, timeout?: number): Promise<T>;
 }
@@ -610,23 +618,30 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
     const owned = browser;
     const stage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) =>
       browserStage(owned, label, signal => guard.run(signal, () => work(signal)), timeout);
-    await runFixtureLoadStage(stage, `${name} page load`, served, async (signal, networkFailures) => {
-      const onAbort = () => readyAbort.abort(signal.reason);
-      signal.addEventListener('abort', onAbort, { once: true });
-      try {
-        const readyError = await ready;
-        if (readyError) throw readyError;
-      } finally {
-        signal.removeEventListener('abort', onAbort);
-      }
-      await navigate(target, `http://127.0.0.1:${address.port}${route}`, signal);
-      await loadFixture(target, served, signal, networkFailures);
-    }, PAGE_LOAD_MS);
+    const pageUrl = `http://127.0.0.1:${address.port}${route}`;
+    const loadPage = (label: string, ignoreCache = false, waitReady = false) =>
+      runFixtureLoadStage(stage, label, served, async (signal, networkFailures) => {
+        if (waitReady) {
+          const onAbort = () => readyAbort.abort(signal.reason);
+          signal.addEventListener('abort', onAbort, { once: true });
+          try {
+            const readyError = await ready;
+            if (readyError) throw readyError;
+          } finally {
+            signal.removeEventListener('abort', onAbort);
+          }
+        }
+        await navigate(target, pageUrl, signal, ignoreCache);
+        await loadFixture(target, served, signal, networkFailures);
+      }, PAGE_LOAD_MS);
+    await loadPage(`${name} page load`, false, true);
+    const reload = () => loadPage(`${name} page reload`, true);
     const press = async (key: NativeKey, shift = false) => {
-      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0 }, guard.getStore());
+      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0,
+        ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) }, guard.getStore());
       await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 }, guard.getStore());
     };
-    await run({ evaluate, press, page: target, stage });
+    await run({ evaluate, press, reload, page: target, stage });
   } finally {
     readyAbort.abort();
     try {
