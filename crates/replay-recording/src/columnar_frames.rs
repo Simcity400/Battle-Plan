@@ -9,7 +9,7 @@ use std::{io, sync::Arc, time::Instant};
 mod input;
 mod reader;
 pub use input::{NotSaved, Source, is_not_saved};
-pub use reader::{Damage, DamageScope, Recording, Run, TableCoverage, strings_of, table_name};
+pub use reader::{Damage, DamageScope, PageCounts, Recording, Run, SharedEntry, TableCoverage, TablePage, strings_of, table_name};
 pub use replay_columnar::container::Open;
 
 #[cfg(any(test, feature = "test-support"))]
