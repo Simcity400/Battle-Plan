@@ -1,5 +1,5 @@
 import { canvasMeasureText } from '../../charts/textWidth.ts';
-import { collectArtUrls } from '../art/provider.ts';
+import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import type { BreakdownViewOptions } from './declaration.ts';
@@ -9,7 +9,7 @@ import {
   type BreakdownModel,
   type ResolvedBreakdownLevel,
 } from './model.ts';
-import { hitTestBreakdown, layoutBreakdown, type BreakdownLayout } from './layout.ts';
+import { firstRowFrom, hitTestBreakdown, layoutBreakdown, type BreakdownLayout } from './layout.ts';
 import { drawBreakdown } from './painter.ts';
 import { deriveBreakdownAudit, deriveBreakdownMirror, deriveBreakdownNav } from './structure.ts';
 
@@ -27,15 +27,25 @@ interface BreakdownFrameLayout {
   readonly nav: readonly FamilyNavTuple[];
 }
 
-const drawnArt = new WeakMap<BreakdownFrameLayout, readonly string[]>();
+const drawnArt = new WeakMap<BreakdownFrameLayout, { readonly scrollTop: number; readonly urls: readonly string[] }>();
 
-function drawnArtOf(frame: BreakdownFrameLayout): readonly string[] {
-  let urls = drawnArt.get(frame);
-  if (!urls) {
-    const { layout } = frame;
-    urls = layout.view === 'parts' ? collectArtUrls(layout.rows.filter(row => row.depth < 2).map(row => row.part.flagArt)) : [];
-    drawnArt.set(frame, urls);
+function drawnArtOf(frame: BreakdownFrameLayout, scrollTop: number): readonly string[] {
+  const held = drawnArt.get(frame);
+  if (held && held.scrollTop === scrollTop) return held.urls;
+  const { layout } = frame;
+  let urls: readonly string[] = [];
+  if (layout.view === 'parts' && !layout.narrow && layout.height > layout.bodyTop) {
+    const viewTop = layout.bodyTop;
+    const shown: ArtUrlInput[] = [];
+    for (let at = firstRowFrom(layout.rows, scrollTop); at < layout.rows.length; at++) {
+      const row = layout.rows[at]!;
+      const sy = viewTop + row.y - scrollTop;
+      if (sy >= layout.height) break;
+      if (row.depth < 2 && row.part.flagArt) shown.push(row.part.flagArt);
+    }
+    urls = collectArtUrls(shown);
   }
+  drawnArt.set(frame, { scrollTop, urls });
   return urls;
 }
 
@@ -98,5 +108,5 @@ export const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, B
   },
   mirror: frame => deriveBreakdownMirror(frame.layout.layout, frame.layout.level.total),
   audit: frame => deriveBreakdownAudit(frame.model, frame.layout.layout),
-  visibleArt: frame => drawnArtOf(frame.layout),
+  visibleArt: frame => drawnArtOf(frame.layout, frame.binding.scrollTop),
 };
