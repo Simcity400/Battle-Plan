@@ -2722,6 +2722,7 @@ test('the plan inputs name the read a widget waits for, show a failed read as fa
   assert.equal(failed?.kind, 'failed', 'a failed input wins over one still pending');
   if (failed?.kind === 'failed') { assert.equal(failed.failure, failure); failed.onRetry?.(); }
   assert.equal(retried, 1, 'the failure carries the input’s own retry');
+  assert.equal(inputsStatus([inputOf('the chart history', { retry }), inputOf('command power', { error: failure, retry })])?.kind, 'failed', 'a failed value read is not hidden behind chart tiles still loading');
   const held = inputOf('the party history', { data: { parties: [] }, error: failure, retry });
   assert.equal(held.state, 'ready', 'a held answer stays ready through a later failure');
   assert.equal(inputsStatus([country, held]), null);

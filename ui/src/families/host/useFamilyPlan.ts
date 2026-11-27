@@ -1153,7 +1153,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     }
 
     if (compiledFollow.refused) return { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused };
-    const waiting = inputsStatus([...planInputs, ...tileInputs]);
+    const waiting = inputsStatus(planInputs);
     if (waiting) return waiting;
 
     if (isFilter) {
@@ -1186,7 +1186,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if (tileUnrecorded?.reason) return { kind: 'not-recorded', reason: tileUnrecorded.reason };
     }
     if (following && compiledFollow.unavailable) return { kind: 'refused', reason: compiledFollow.unavailable };
-    const reading = inputsStatus(unitInputs);
+    const reading = inputsStatus([...tileInputs, ...unitInputs]);
     if (reading) return reading;
     if (following) return view.kind === 'outside' ? { kind: 'outside' } : { kind: 'ready' };
     if (pixelBinnedKey) return atTime ? { kind: 'ready' } : { kind: 'outside' };
