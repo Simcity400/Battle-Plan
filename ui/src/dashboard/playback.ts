@@ -49,12 +49,16 @@ export class PlaybackController {
   private stepTask: EngineTask | null = null;
   private issued = 0;
   private paintTask: EngineTask | null = null;
+  private scrubPosition: number | null = null;
+  private scrubListeners = new Set<() => void>();
 
   constructor(frames: FrameEngine = engine, clockId: string = PAGE_CLOCK_ID) { this.engine = frames; this.clockId = clockId; }
 
   get frameAt(): number { return this.framing; }
 
   getSnapshot = () => this.snapshot;
+  getScrubPosition = () => this.scrubPosition;
+  subscribeScrub = (listener: () => void) => { this.scrubListeners.add(listener); return () => { this.scrubListeners.delete(listener); }; };
   issue = (): number => ++this.issued;
   positionAt = (now: number = performance.now()) => {
     const { playing, position, hoursPerSecond, bounds } = this.snapshot;
@@ -78,6 +82,7 @@ export class PlaybackController {
   setBounds(bounds: HourWindow | null, reset = false): void {
     const previous = this.snapshot.bounds;
     if (!reset && previous?.firstHour === bounds?.firstHour && previous?.lastHour === bounds?.lastHour) return;
+    this.endScrub();
     const position = !bounds ? 0 : reset || !previous ? bounds.firstHour
       : Math.max(bounds.firstHour, Math.min(bounds.lastHour, this.snapshot.position));
     this.halts += 1;
@@ -92,6 +97,22 @@ export class PlaybackController {
     this.halts += 1;
     this.publish({ ...this.snapshot, position: target, playing: false, forwardSeek: target > this.positionAt() }, true);
     this.syncTimer();
+  }
+
+  scrub(position: number): void {
+    const bounds = this.snapshot.bounds;
+    if (!bounds || !Number.isFinite(position)) return;
+    if (this.snapshot.playing) this.setPlaying(false);
+    const target = Math.max(bounds.firstHour, Math.min(bounds.lastHour, position));
+    if (target === this.scrubPosition) return;
+    this.scrubPosition = target;
+    for (const listener of this.scrubListeners) listener();
+  }
+
+  endScrub(): void {
+    if (this.scrubPosition === null) return;
+    this.scrubPosition = null;
+    for (const listener of this.scrubListeners) listener();
   }
 
   step(direction: -1 | 1): void {

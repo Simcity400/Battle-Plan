@@ -4,6 +4,76 @@ import { PlaybackController, MAX_PLAYBACK_SPEED, MIN_PLAYBACK_SPEED } from './pl
 import { WidgetFrames, pageClock } from './widgetClock.ts';
 import { pipelineFor, type PipelineHost } from './follow/pipeline.ts';
 import type { DashboardClient, DashboardSource } from './client';
+import { FrameEngine } from '../engine/frame.ts';
+
+test('fifty scrub moves hold the clock and its pictures until one release seek', () => {
+  const clock = new PlaybackController();
+  clock.setBounds({ firstHour: 10, lastHour: 100 });
+  clock.seek(80);
+  const before = clock.getSnapshot();
+  const calls = { published: 0, anchored: 0, discarded: 0, changed: 0, framed: 0 };
+  clock.onPublish(() => calls.published++);
+  clock.onAnchor(() => calls.anchored++);
+  clock.onDiscard(() => calls.discarded++);
+  clock.subscribe(() => calls.changed++);
+  clock.subscribeFrame(() => calls.framed++);
+  const positions: (number | null)[] = [];
+  const stop = clock.subscribeScrub(() => positions.push(clock.getScrubPosition()));
+  for (let hour = 60; hour > 10; hour--) clock.scrub(hour);
+  assert.equal(clock.getSnapshot(), before);
+  assert.deepEqual(calls, { published: 0, anchored: 0, discarded: 0, changed: 0, framed: 0 });
+  assert.equal(positions.length, 50);
+  clock.seek(clock.getScrubPosition()!);
+  clock.endScrub();
+  assert.equal(clock.getSnapshot().seekSequence - before.seekSequence, 1);
+  assert.equal(clock.getHour(), 11);
+  assert.equal(positions.at(-1), null);
+  stop();
+  clock.scrub(200);
+  assert.equal(clock.getScrubPosition(), 100);
+  clock.scrub(-1);
+  assert.equal(clock.getScrubPosition(), 10);
+  clock.scrub(NaN);
+  assert.equal(clock.getScrubPosition(), 10);
+  assert.equal(positions.length, 51);
+  clock.setBounds(null);
+  assert.equal(clock.getScrubPosition(), null);
+});
+
+test('a playing scrub pauses once without seeking and leaves independent clocks and export alone', t => {
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  const frames = new FrameEngine({ request() {} });
+  const clock = new PlaybackController(frames);
+  const other = new PlaybackController(frames, 'battle-viewer');
+  for (const controller of [clock, other]) {
+    controller.setBounds({ firstHour: 10, lastHour: 100 });
+    controller.setPlaying(true);
+    t.after(() => controller.stop());
+  }
+  const seek = clock.getSnapshot().seekSequence;
+  let anchors = 0;
+  clock.onAnchor(() => anchors++);
+  now += 500;
+  clock.scrub(30);
+  const paused = clock.getSnapshot();
+  assert.equal(paused.position, 10.5);
+  for (let hour = 31; hour <= 80; hour++) clock.scrub(hour);
+  assert.equal(clock.getSnapshot(), paused);
+  assert.equal(anchors, 1);
+  assert.equal(paused.seekSequence, seek);
+  assert.equal(other.getSnapshot().playing, true);
+  assert.equal(other.getScrubPosition(), null);
+  clock.seek(80);
+  clock.endScrub();
+  assert.equal(clock.getSnapshot().seekSequence, seek + 1);
+  assert.equal(clock.getSnapshot().playing, false);
+  other.stepExport(40.25, 24, false);
+  assert.equal(other.getSnapshot().position, 40.25);
+  assert.equal(other.getSnapshot().hoursPerSecond, 24);
+  assert.equal(other.getSnapshot().playing, false);
+  assert.equal(other.getSnapshot().seekSequence, seek);
+});
 
 test('visible widgets on one page share native subscriptions through their individual frame signals', () => {
   const clock = new PlaybackController();

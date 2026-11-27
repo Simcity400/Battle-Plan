@@ -55,7 +55,11 @@ interface SubState {
 
 interface RouteState {
   page: number; native: number | null; key: string; source: DashboardSource; branch: string; offset: number;
-  serial: Promise<unknown>; told: string | null; error?: { seek: number; failure: Failure };
+  sending: boolean; pending: RouteAnchor | null; last: RouteAnchor | null; told: string | null; error?: { seek: number; failure: Failure };
+}
+
+interface RouteAnchor {
+  snapshot: PlaybackSnapshot; page: number; command: number; composedAt: number; frameRate: number; initial: boolean;
 }
 
 interface WidgetState {
@@ -645,7 +649,7 @@ export class Pipeline {
   private routeOf(source: DashboardSource, branch: string, offset: number): RouteState {
     const key = JSON.stringify([source.id, source.revision, branch, offset]);
     let route = this.routes.get(key);
-    if (!route) this.routes.set(key, route = { page: this.nextRoute++, native: null, key, source, branch, offset, serial: Promise.resolve(), told: null });
+    if (!route) this.routes.set(key, route = { page: this.nextRoute++, native: null, key, source, branch, offset, sending: false, pending: null, last: null, told: null });
     return route;
   }
 
@@ -953,27 +957,40 @@ export class Pipeline {
     const s = this.clock.getSnapshot();
     const held = new Set([...this.subs.values()].filter(sub => sub.status === 'followed' && sub.channel !== 'pinned').map(sub => sub.route));
     for (const route of this.routes.values()) {
-      if (route.native === null || !held.has(route)) { route.told = null; continue; }
+      if (route.native === null || !held.has(route)) { route.told = null; route.pending = null; continue; }
       const told = JSON.stringify([s.playing, s.hoursPerSecond, s.seekSequence, s.playing ? null : s.hour, this.host.frameRate()]);
       if (route.told === told) continue;
-      const sought = route.told === null || JSON.parse(route.told)[2] !== s.seekSequence || !s.playing && JSON.parse(route.told)[3] !== s.hour;
+      route.pending = { snapshot: s, page: route.page, command: this.page.command(route.page),
+        composedAt: performance.timeOrigin + (s.composedAt ?? performance.now()), frameRate: this.host.frameRate(), initial: route.told === null || route.pending?.initial === true };
       route.told = told;
-      const command = this.page.command(route.page);
-      const composedAt = performance.timeOrigin + (s.composedAt ?? performance.now());
-      const page = route.page;
-      route.serial = route.serial.then(async () => {
-        if (this.closed || !this.holds(route) || route.page !== page) return;
+      void this.sendAnchors(route);
+    }
+  }
+
+  private async sendAnchors(route: RouteState) {
+    if (route.sending) return;
+    route.sending = true;
+    try {
+      while (route.pending !== null) {
+        const target = route.pending;
+        route.pending = null;
+        const { snapshot: s, page, command, composedAt, frameRate } = target;
+        if (this.closed || !this.holds(route) || route.page !== page) continue;
+        const last = route.last;
+        const sought = target.initial || !last || last.page !== page || last.snapshot.seekSequence !== s.seekSequence
+          || !s.playing && (last.snapshot.playing || last.snapshot.hour !== s.hour);
+        route.last = target;
         let reason: string | null = null;
         let failure: Failure | undefined;
         try {
           const data = await this.ask('follow-clock', { branchId: route.branch, clock: route.offset, hour: s.position + route.offset, playing: s.playing, speed: s.hoursPerSecond,
-            frameRate: this.host.frameRate(), seek: s.seekSequence, sought, composedAt, sentAt: performance.timeOrigin + performance.now() }, route) as { available?: boolean; reason?: string } | null;
+            frameRate, seek: s.seekSequence, sought, composedAt, sentAt: performance.timeOrigin + performance.now() }, route) as { available?: boolean; reason?: string } | null;
           if (data?.available !== true) {
             reason = data?.reason ?? 'The followed stream is no longer available';
             failure = asFailure(new Error(reason));
           }
         } catch (error) {
-          if (route.page === page) route.told = null;
+          if (route.page === page && route.pending === null) route.told = null;
           failure = asFailure(error);
           reason = failure.message;
         }
@@ -983,8 +1000,8 @@ export class Pipeline {
             this.flush();
           }
         }
-      });
-    }
+      }
+    } finally { route.sending = false; }
   }
 }
 

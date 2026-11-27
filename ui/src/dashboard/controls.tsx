@@ -129,7 +129,10 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   const gaps = useMemo(() => reference && bounds ? timelineGaps(reference.branch.gaps ?? [], reference.axisOffset, bounds.firstHour, bounds.lastHour) : [], [reference, bounds]);
   const axisOffset = reference?.axisOffset;
   const liveDate = useMemo(() => axisOffset == null ? undefined
-    : { read: () => clock.getHour() + axisOffset, subscribe: clock.subscribeFrame, settled: clock.subscribe }, [clock, axisOffset]);
+    : { read: () => (clock.getScrubPosition() ?? clock.getHour()) + axisOffset, subscribe: (changed: () => void) => {
+      const stops = [clock.subscribeFrame(changed), clock.subscribeScrub(changed)];
+      return () => { for (const stop of stops) stop(); };
+    }, settled: clock.subscribe }, [clock, axisOffset]);
   const timeline = useRef<HTMLInputElement>(null);
   const previous = useRef<HTMLButtonElement>(null);
   const play = useRef<HTMLButtonElement>(null);
@@ -142,13 +145,14 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   const place = useRef(() => {});
   place.current = () => {
     const { playing, hoursPerSecond, bounds, seekSequence, position } = clock.getSnapshot();
-    const key = `${playing}:${hoursPerSecond}:${seekSequence}:${bounds?.firstHour}:${bounds?.lastHour}:${playing ? '' : position}`;
+    const scrub = clock.getScrubPosition();
+    const key = `${scrub}:${playing}:${hoursPerSecond}:${seekSequence}:${bounds?.firstHour}:${bounds?.lastHour}:${playing ? '' : position}`;
     if (key === placed.current || !fill.current || !knob.current) return;
     placed.current = key;
     for (const animation of moving.current) animation.cancel();
     moving.current = [];
     const span = bounds ? bounds.lastHour - bounds.firstHour : 0;
-    const at = clock.positionAt();
+    const at = scrub ?? clock.positionAt();
     const from = bounds && span > 0 ? Math.min(1, Math.max(0, (at - bounds.firstHour) / span)) : 0;
     const frames = (progress: number) => [{ transform: `scaleX(${progress})` }, { transform: `translateX(${(progress - 1) * 100}%)` }] as const;
     const [fillFrom, knobFrom] = frames(from);
@@ -161,10 +165,11 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   };
   const settle = useRef((_anchor?: boolean) => {});
   settle.current = (anchor = false) => {
-    const { hour, bounds, playing } = clock.getSnapshot();
-    if (previous.current) previous.current.disabled = !bounds || hour <= bounds.firstHour;
-    if (play.current) play.current.disabled = !bounds || hour >= bounds.lastHour;
-    if (next.current) next.current.disabled = !bounds || hour >= bounds.lastHour;
+    const { hour: head, bounds, playing } = clock.getSnapshot();
+    const hour = clock.getScrubPosition() ?? head;
+    if (previous.current) previous.current.disabled = !bounds || head <= bounds.firstHour;
+    if (play.current) play.current.disabled = !bounds || head >= bounds.lastHour;
+    if (next.current) next.current.disabled = !bounds || head >= bounds.lastHour;
     const input = timeline.current;
     if (!input || playing && !anchor && document.activeElement !== input) return;
     const key = `${hour}:${bounds?.firstHour}:${bounds?.lastHour}:${referenceKey}`;
@@ -177,22 +182,61 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   };
   useLayoutEffect(() => { painted.current = ''; settle.current(true); place.current(); });
   useLayoutEffect(() => {
-    const stops = [clock.subscribeFrame(() => settle.current()), clock.subscribe(() => { settle.current(true); place.current(); })];
+    const update = () => { settle.current(true); place.current(); };
+    const stops = [clock.subscribeFrame(() => settle.current()), clock.subscribe(update), clock.subscribeScrub(update)];
     return () => { for (const stop of stops) stop(); for (const animation of moving.current) animation.cancel(); };
   }, [clock]);
-  const pointer = useRef<{ pressed: boolean; hour: number | null }>({ pressed: false, hour: null });
+  const pointer = useRef<{ id: number; hour: number; committedHour: number | null } | null>(null);
+  const dwell = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearDwell = () => { if (dwell.current !== null) clearTimeout(dwell.current); dwell.current = null; };
+  const commitScrub = () => {
+    const drag = pointer.current;
+    const position = clock.getScrubPosition();
+    const bounds = clock.getSnapshot().bounds;
+    if (!drag || position === null || !bounds) return;
+    const hour = Math.max(bounds.firstHour, Math.min(bounds.lastHour, Math.floor(position)));
+    if (drag.committedHour === hour) return;
+    drag.committedHour = hour;
+    clock.seek(hour);
+  };
+  const scrub = (hour: number) => {
+    if (draft !== null) setDraft(null);
+    clock.scrub(hour);
+    clearDwell();
+    dwell.current = setTimeout(() => {
+      dwell.current = null;
+      commitScrub();
+    }, 150);
+  };
+  useLayoutEffect(() => () => {
+    clearDwell(); pointer.current = null; clock.endScrub();
+  }, [clock]);
   const pointerAt = (event: PointerEvent<HTMLInputElement>) => {
     if (!bounds || span <= 0) return null;
-    const at = timelineHourAt(event.clientX, event.currentTarget.getBoundingClientRect(), bounds.firstHour, bounds.lastHour);
-    pointer.current.hour = at.hour;
-    return at;
+    return timelineHourAt(event.clientX, event.currentTarget.getBoundingClientRect(), bounds.firstHour, bounds.lastHour);
   };
   const trackHover = (event: PointerEvent<HTMLInputElement>) => {
+    const drag = pointer.current;
+    if (drag && drag.id !== event.pointerId) return;
     const at = pointerAt(event);
+    if (at && drag) { drag.hour = at.hour; scrub(at.hour); }
     if (at && reference) setHover({ left: at.left, hour: at.hour + reference.axisOffset, flipped: at.left > event.currentTarget.clientWidth - 140 });
   };
-  const press = (event: PointerEvent<HTMLInputElement>) => { pointer.current.pressed = true; pointerAt(event); };
-  const release = () => { pointer.current.pressed = false; };
+  const press = (event: PointerEvent<HTMLInputElement>) => {
+    if (event.button !== 0 || pointer.current) return;
+    const at = pointerAt(event);
+    if (!at) return;
+    pointer.current = { id: event.pointerId, hour: at.hour, committedHour: null };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const release = (event: PointerEvent<HTMLInputElement>) => {
+    if (pointer.current?.id !== event.pointerId) return;
+    clearDwell();
+    commitScrub();
+    pointer.current = null;
+    clock.endScrub();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
   return <>
     <section className="header-playback" aria-label="Playback" data-empty={!reference || undefined}>
       <div className={`header-date${draft != null ? ' has-date-draft' : ''}`}>
@@ -214,8 +258,12 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
       <div className="timeline-track">
         <input ref={timeline} className="header-timeline" type="range" aria-label="Campaign timeline" disabled={!bounds || span <= 0}
           min={bounds?.firstHour ?? 0} max={bounds?.lastHour ?? 1} step={1}
-          onPointerMove={trackHover} onPointerLeave={() => setHover(null)} onPointerDown={press} onPointerUp={release} onPointerCancel={release}
-          onChange={(event) => { setDraft(null); clock.seek(pointer.current.pressed && pointer.current.hour !== null ? pointer.current.hour : Number(event.currentTarget.value)); }} />
+          onPointerMove={trackHover} onPointerLeave={() => setHover(null)} onPointerDown={press} onPointerUp={release} onPointerCancel={release} onLostPointerCapture={release}
+          onChange={(event) => {
+            const drag = pointer.current;
+            if (drag) scrub(drag.hour);
+            else { setDraft(null); clock.seek(Number(event.currentTarget.value)); }
+          }} />
         <div className="timeline-progress" aria-hidden="true"><span ref={fill} className="timeline-fill" /><span ref={knob} className="timeline-knob" /></div>
         <div className="timeline-gap-markers">{gaps.map((gap, index) => <span key={index} className="timeline-gap" style={{ left: `${gap.left}%`, width: `${gap.width}%` }}
           data-tooltip={gapText(gap)} />)}</div>
