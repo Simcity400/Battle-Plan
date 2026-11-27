@@ -85,10 +85,10 @@ impl dyn DecodedSource + '_ {
         self.decoded_frame().complete::<T>()
     }
     pub fn row_gap(&self, table: TableId) -> String {
-        super::undeclared::reading(0, || OperandStatus::of(self.view(table.index())).gap())
+        super::undeclared::status(|| OperandStatus::of(self.view(table.index())).gap())
     }
     pub fn complete_status(&self, table: TableId) -> io::Result<()> {
-        super::undeclared::reading(0, || OperandStatus::of(self.view(table.index())).complete(self.hour(), table))
+        super::undeclared::status(|| OperandStatus::of(self.view(table.index())).complete(self.hour(), table))
     }
     pub fn character_rows(&self) -> Rows<'_, replay_data::rows::CharacterRow> {
         characters::rows(self.view(TableId::Characters.index()))
@@ -117,7 +117,7 @@ impl RecordedSource for DecodedFrame {
         self.branch
     }
     fn status(&self, table: TableId) -> OperandStatus<'_> {
-        super::undeclared::reading(0, || OperandStatus::for_table(&self.tables[table.index()], table))
+        super::undeclared::status(|| OperandStatus::for_table(&self.tables[table.index()], table))
     }
     fn sampled_at(&self, index: usize) -> Option<Hour> {
         self.tables[index].sampled_at()

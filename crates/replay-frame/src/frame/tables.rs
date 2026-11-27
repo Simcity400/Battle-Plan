@@ -275,7 +275,7 @@ impl Tables for DecodedFrame {
     }
 
     fn table_status(&self, table: TableId) -> OperandStatus<'_> {
-        OperandStatus::for_table(&self.tables[table.index()], table)
+        super::undeclared::status(|| OperandStatus::for_table(&self.tables[table.index()], table))
     }
 
     fn table_sampled_at(&self, table: TableId) -> Option<Hour> {

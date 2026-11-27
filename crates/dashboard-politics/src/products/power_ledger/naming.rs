@@ -18,7 +18,7 @@ use dashboard_text::{
 };
 use content_reader_country_names::country_names::CountryNames;
 use replay_data::rows::*;
-use replay_frame::frame::{DecodedFrame, HourFrame, Rowset, Tables};
+use replay_frame::frame::{DecodedFrame, HourFrame, Rowset, Tables, discovering_projections, not_declared};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -36,7 +36,6 @@ const WHOLE: &[TableId] = &[
     TableId::Politics,
     TableId::ReservedCountryNaming,
     TableId::Autonomy,
-    TableId::LexicalTokens,
 ];
 
 const LITERAL: u64 = mask::<LexicalTokenRow>(&["literal"]);
@@ -131,11 +130,12 @@ pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, ic
     for ((_, hour), items) in wanted {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let rows: Vec<&PowerItemRow> = items.iter().map(|&at| asked[at].row).collect();
-        let light = readable(read_frame(&mut frames, hour, &rows, false))?;
+        let whole_countries = rows.iter().any(|row| row.object_kind == PowerObjectKind::Organisation);
+        let light = readable(read_frame(&mut frames, hour, &rows, None))?;
         let mut named_here = Vec::with_capacity(items.len());
         let mut scripted_rows = Vec::new();
         for &at in &items {
-            let ((named, image), noted) = catalogue::capture(|| named_item(light.as_ref(), asked[at].row, context, false));
+            let ((named, image), noted) = catalogue::capture(|| named_item(light.as_ref(), asked[at].row, context, None));
             if light.is_some() && named.unknown.as_deref().is_some_and(|why| why.contains(FRAME_UNREAD)) {
                 scripted_rows.push(at);
             } else {
@@ -144,11 +144,16 @@ pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, ic
         }
         if !scripted_rows.is_empty() {
             let rows: Vec<&PowerItemRow> = scripted_rows.iter().map(|&at| asked[at].row).collect();
-            let full = readable(read_frame(&mut frames, hour, &rows, true))?;
-            for &at in &scripted_rows {
-                let ((named, image), noted) = catalogue::capture(|| named_item(full.as_ref(), asked[at].row, context, true));
-                named_here.push((at, named, image, noted));
-            }
+            let event = readable(read_frame(&mut frames, hour, &rows, light.as_ref()))?;
+            let evaluate = |event: Option<&DecodedFrame>, world: Option<&DecodedFrame>| scripted_rows.iter().map(|&at| {
+                let ((named, image), noted) = catalogue::capture(|| named_item(event, asked[at].row, context, world));
+                (at, named, image, noted)
+            }).collect::<Vec<_>>();
+            let named = match event.as_ref() {
+                Some(event) => in_scripted_world(query, event, whole_countries, cancelled, |world| evaluate(Some(event), Some(world)))?,
+                None => None,
+            };
+            named_here.extend(named.unwrap_or_else(|| evaluate(None, None)));
         }
         for (_, named, image, noted) in &named_here {
             catalogue::credit(noted);
@@ -167,6 +172,7 @@ pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, ic
 }
 
 const FRAME_UNREAD: &str = "frame is unavailable";
+const TITLE: &str = "Politics spending item";
 
 fn readable(frame: io::Result<DecodedFrame>) -> io::Result<Option<DecodedFrame>> {
     match frame {
@@ -176,7 +182,7 @@ fn readable(frame: io::Result<DecodedFrame>) -> io::Result<Option<DecodedFrame>>
     }
 }
 
-fn naming_columns(table: TableId) -> Option<Vec<usize>> {
+fn naming_fields(table: TableId) -> Option<u64> {
     let fields = match table {
         TableId::Countries => COUNTRY,
         TableId::CountryLinks => LINK,
@@ -185,14 +191,14 @@ fn naming_columns(table: TableId) -> Option<Vec<usize>> {
         table if WHOLE.contains(&table) => 0,
         _ => return None,
     } | content_reader_country_names::country_names::fields(table);
-    Some((0..u64::BITS as usize).filter(|column| fields >> column & 1 == 1).collect())
+    Some(fields)
 }
 
-fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow], scripted: bool) -> io::Result<DecodedFrame> {
-    let mut whole: BTreeSet<TableId> = WHOLE.iter().copied().collect();
-    if scripted {
-        whole.extend(dashboard_text::scripted_text::TABLES.iter().copied());
-    }
+fn naming_columns(table: TableId) -> Option<Vec<usize>> {
+    naming_fields(table).map(|fields| (0..u64::BITS as usize).filter(|column| fields >> column & 1 == 1).collect())
+}
+
+fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow], countries: Option<&DecodedFrame>) -> io::Result<DecodedFrame> {
     let mut keyed: BTreeMap<TableId, Vec<u128>> = BTreeMap::new();
     for row in rows {
         if let Some(character) = row.character {
@@ -209,12 +215,12 @@ fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow
         if row.component == Some(PowerDailyCostKind::PoliticalPowerCostModifier as u32) {
             keyed.entry(TableId::ModifierDefinitions).or_default().push(COST_MODIFIER_INDEX);
         }
-    }
-    let mut reads: Vec<at_hour::Read> = whole.iter().map(|&table| at_hour::Read::all(table)).collect();
-    for (table, keys) in keyed {
-        if whole.contains(&table) {
-            continue;
+        if countries.is_some() && let Some(state) = row.target_state.filter(|&state| state > 0) {
+            keyed.entry(TableId::States).or_default().push(u128::from(state));
         }
+    }
+    let mut reads: Vec<_> = if countries.is_none() { WHOLE.iter().copied().map(at_hour::Read::all).collect() } else { Vec::new() };
+    for (table, keys) in keyed {
         if table == TableId::AdvisorRoles {
             let owners: BTreeSet<u128> = keys.iter().map(|key| key >> 32).collect();
             reads.push(match owners.iter().next() {
@@ -228,10 +234,81 @@ fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow
         }
         reads.push(at_hour::Read::these(table, keys));
     }
-    if scripted || rows.iter().any(|row| row.object_kind == PowerObjectKind::Organisation) {
-        return frames.frame(hour, &reads, "Politics spending item");
+    let organisation = rows.iter().any(|row| row.object_kind == PowerObjectKind::Organisation);
+    let mut frame = if organisation {
+        frames.frame(hour, &reads, TITLE)?
+    } else {
+        frames.frame_with(hour, &reads, naming_columns, TITLE)?
+    };
+    if let Some(countries) = countries {
+        for &table in WHOLE {
+            frame.tables[table.index()] = countries.tables[table.index()].clone();
+            frame.metrics.table_ns[table.index()] = countries.metrics.table_ns[table.index()];
+        }
     }
-    frames.frame_with(hour, &reads, naming_columns, "Politics spending item")
+    let mut tokens = BTreeSet::new();
+    tokens.extend(rows.iter().filter(|row| row.item_key.is_empty()).filter_map(|row| row.item_token));
+    if let Ok(characters) = frame.complete::<tables::Characters>() {
+        for character in characters {
+            tokens.extend(u32::try_from(character.name_token_id).ok());
+            if character.template_present != 0 {
+                tokens.insert(character.template_tag);
+            }
+        }
+    }
+    if let Ok(organisations) = frame.complete::<tables::IndustrialOrganisations>() {
+        tokens.extend(organisations.iter().map(|row| row.token));
+    }
+    if !tokens.is_empty() || organisation {
+        let lexicon = frames.frame_with(hour, &[at_hour::Read::these(TableId::LexicalTokens, tokens.into_iter().map(u128::from))], naming_columns, TITLE)?;
+        frame.tables[TableId::LexicalTokens.index()] = lexicon.tables[TableId::LexicalTokens.index()].clone();
+    }
+    Ok(frame)
+}
+
+fn in_scripted_world<T>(query: &Query<'_>, event: &DecodedFrame, whole_countries: bool, cancelled: &AtomicBool, evaluate: impl Fn(&DecodedFrame) -> T) -> io::Result<Option<T>> {
+    let mut frames = at_hour::Frames::new(query)?;
+    let mut world = event.clone();
+    for &table in dashboard_text::scripted_text::TABLES {
+        if !WHOLE.contains(&table) {
+            world.tables[table.index()] = not_declared(table);
+        } else if !whole_countries && let Some(fields) = naming_fields(table) {
+            world.tables[table.index()] = world.tables[table.index()].clone().with_fields(fields);
+        }
+    }
+    loop {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let ((_, missing), _) = catalogue::capture_isolated(|| discovering_projections(|| drop(evaluate(&world))));
+        if missing.is_empty() {
+            return Ok(Some(evaluate(&world)));
+        }
+        let mut fields = BTreeMap::new();
+        let reads: Vec<_> = missing.into_iter().map(|(table, asked)| {
+            fields.insert(table, asked.map(|asked| asked | world.tables[table.index()].fields().unwrap_or(0)));
+            match asked {
+                Some(_) => at_hour::Read::all(table),
+                None => at_hour::Read::these(table, []),
+            }
+        }).collect();
+        let columns = |table: TableId| match fields[&table] {
+            Some(mask) if mask & table.full_mask() == table.full_mask() => None,
+            Some(mask) => Some((0..u64::BITS as usize).filter(|column| mask >> column & 1 == 1).collect()),
+            None => Some(Vec::new()),
+        };
+        let Some(patch) = readable(frames.frame_with(event.hour, &reads, columns, TITLE))? else {
+            return Ok(None);
+        };
+        for (table, fields) in fields {
+            let index = table.index();
+            let view = patch.tables[index].clone();
+            world.tables[index] = match fields {
+                Some(mask) if mask & table.full_mask() == table.full_mask() => view,
+                Some(mask) => view.with_fields(mask),
+                None => view.status_only(),
+            };
+            world.metrics.table_ns[index] = patch.metrics.table_ns[index];
+        }
+    }
 }
 
 fn complete<'f, T: TableSchema>(frame: &'f DecodedFrame, mask: u64) -> Option<Rowset<'f, T::Row>> {
@@ -556,13 +633,14 @@ pub(super) fn category_of(row: &PowerItemRow, token: Option<&str>, content: Opti
 struct Scripted<'a> {
     content: &'a PoliticsContent,
     frame: &'a DecodedFrame,
+    event: &'a DecodedFrame,
     roots: std::cell::RefCell<BTreeMap<u32, std::rc::Rc<ScriptedText<'a>>>>,
     world: std::cell::OnceCell<Result<dashboard_text::triggers::World<'a>, String>>,
 }
 
 impl<'a> Scripted<'a> {
-    fn new(content: &'a PoliticsContent, frame: &'a DecodedFrame) -> Self {
-        Self { content, frame, roots: Default::default(), world: Default::default() }
+    fn new(content: &'a PoliticsContent, frame: &'a DecodedFrame, event: &'a DecodedFrame) -> Self {
+        Self { content, frame, event, roots: Default::default(), world: Default::default() }
     }
 
     fn root(&self, root: u32) -> Result<std::rc::Rc<ScriptedText<'a>>, String> {
@@ -615,7 +693,7 @@ fn localise_at(scripted: Option<&Scripted<'_>>, content: &PoliticsContent, key: 
         let mut scopes = EventScopes::new(vec![root]);
         let mut unknown_seeds = BTreeSet::from([0]);
         if let Some(raw) = row.target_country {
-            match linked(scripted.frame, raw) {
+            match linked(scripted.event, raw) {
                 Some(target) => {
                     scopes.scopes[0].from = Link::Scope(1);
                     let mut from = EventScope::of(EventObject::Country(target));
@@ -628,7 +706,7 @@ fn localise_at(scripted: Option<&Scripted<'_>>, content: &PoliticsContent, key: 
                 None => scopes.scopes[0].from = Link::Unknown,
             }
         } else if let Some(state) = row.target_state {
-            let present = state > 0 && scripted.frame.rows::<tables::States>(0).is_some_and(|states| states.contains(u128::from(state)));
+            let present = state > 0 && scripted.event.rows::<tables::States>(0).is_some_and(|states| states.contains(u128::from(state)));
             if present {
                 scopes.scopes[0].from = Link::Scope(1);
                 let mut from = EventScope::of(EventObject::State(state));
@@ -774,7 +852,7 @@ fn item_text(own: Option<&NamedCountry>, row: &PowerItemRow, token: Option<&str>
     None
 }
 
-fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Context, scripted: bool) -> (NamedItem, Option<String>) {
+fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Context, world: Option<&DecodedFrame>) -> (NamedItem, Option<String>) {
     let content = context.content.as_ref().ok().map(Arc::as_ref);
     let facts = facts(frame, row);
     let token = facts.token.clone().or_else(|| (!row.item_key.is_empty()).then(|| std::str::from_utf8(&row.item_key).ok().map(str::to_owned)).flatten());
@@ -800,7 +878,7 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
     match content {
         None => item.unknown = Some(context.content.as_ref().err().cloned().unwrap_or_else(|| NO_CONTENT.into())),
         Some(content) => {
-            let scripted = frame.filter(|_| scripted).map(|frame| Scripted::new(content, frame));
+            let scripted = world.zip(frame).map(|(world, event)| Scripted::new(content, world, event));
             if matches!(row.cause, PowerCause::Idea | PowerCause::Advisor | PowerCause::AdvisorRemoval) {
                 if let Some(token) = token.as_deref() {
                     if let Some(own) = own.as_ref() {

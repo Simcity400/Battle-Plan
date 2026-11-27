@@ -37,7 +37,7 @@ pub use source::{
 pub mod recorded;
 pub use recorded::{FrameSource, IntoRecordedFrame, RecordedFrame, RecordedTables};
 mod undeclared;
-pub use undeclared::{NOT_DECLARED, discovering, discovering_fields, discovering_within, not_declared, outside_reads, reading, undeclared_reads};
+pub use undeclared::{Discovery, NOT_DECLARED, discovering, discovering_fields, discovering_projections, discovering_within, not_declared, outside_reads, reading, undeclared_reads};
 mod wire;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -156,14 +156,21 @@ pub struct SharedView(
     Option<Hour>,
     Option<Arc<ChangeFacts>>,
     Option<Arc<FieldStamp>>,
-    Option<u64>,
+    Option<Projection>,
     Option<Arc<Keys>>,
 );
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+enum Projection {
+    Status,
+    Fields(u64),
+}
 
 impl SharedView {
     pub fn sampled_at(&self) -> Option<Hour> {
         if undeclared::is(&self.0) {
-            undeclared::read(&self.0);
+            undeclared::status(|| undeclared::read(&self.0));
         }
         view_reads::note_sample(self);
         self.1
@@ -182,11 +189,18 @@ impl SharedView {
     }
 
     pub fn with_fields(self, fields: u64) -> Self {
-        Self(self.0, self.1, self.2, self.3, Some(fields), self.5)
+        Self(self.0, self.1, self.2, self.3, Some(Projection::Fields(fields)), self.5)
+    }
+
+    pub fn status_only(self) -> Self {
+        Self(self.0, self.1, self.2, self.3, Some(Projection::Status), self.5)
     }
 
     pub fn fields(&self) -> Option<u64> {
-        self.4
+        self.4.map(|projection| match projection {
+            Projection::Status => 0,
+            Projection::Fields(fields) => fields,
+        })
     }
 
     pub fn with_keys(self, keys: Option<Arc<Keys>>) -> Self {

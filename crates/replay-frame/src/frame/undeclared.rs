@@ -1,5 +1,5 @@
 
-use super::{SharedView, TableView};
+use super::{Projection, SharedView, TableView};
 use crate::rows::TableId;
 use std::{
     cell::{Cell, RefCell},
@@ -22,10 +22,12 @@ static HIGH: AtomicUsize = AtomicUsize::new(0);
 static READS: AtomicU64 = AtomicU64::new(0);
 static OUTSIDE: AtomicU64 = AtomicU64::new(0);
 
+type Projections = Vec<(TableId, Option<u64>)>;
+
 thread_local! {
-    static DISCOVERING: RefCell<Vec<Vec<(TableId, u64)>>> = const { RefCell::new(Vec::new()) };
+    static DISCOVERING: RefCell<Vec<Projections>> = const { RefCell::new(Vec::new()) };
     static DEPTH: Cell<u32> = const { Cell::new(0) };
-    static READING: Cell<u64> = const { Cell::new(u64::MAX) };
+    static READING: Cell<Option<u64>> = const { Cell::new(Some(u64::MAX)) };
     static HELD_ROWS: RefCell<Vec<(usize, usize, TableId, u64)>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -53,7 +55,15 @@ pub fn outside_reads() -> u64 {
 }
 
 pub fn reading<T>(fields: u64, read: impl FnOnce() -> T) -> T {
-    struct Restore(u64);
+    access(Some(fields), read)
+}
+
+pub(super) fn status<T>(read: impl FnOnce() -> T) -> T {
+    access(None, read)
+}
+
+fn access<T>(fields: Option<u64>, read: impl FnOnce() -> T) -> T {
+    struct Restore(Option<u64>);
     impl Drop for Restore {
         fn drop(&mut self) {
             READING.with(|reading| reading.set(self.0));
@@ -76,6 +86,11 @@ pub fn discovering_within<T>(read: impl FnOnce() -> T) -> (T, Vec<TableId>) {
 }
 
 pub fn discovering_fields<T>(read: impl FnOnce() -> T) -> (T, Vec<(TableId, u64)>) {
+    let (value, found) = discovering_projections(read);
+    (value, found.into_iter().map(|(table, fields)| (table, fields.unwrap_or(0))).collect())
+}
+
+pub fn discovering_projections<T>(read: impl FnOnce() -> T) -> (T, Projections) {
     struct Leave;
     impl Drop for Leave {
         fn drop(&mut self) {
@@ -98,6 +113,22 @@ pub fn discovering_fields<T>(read: impl FnOnce() -> T) -> (T, Vec<(TableId, u64)
     (value, found)
 }
 
+pub struct Discovery(bool);
+
+impl Discovery {
+    pub fn current() -> Self {
+        Self(DEPTH.with(Cell::get) > 0)
+    }
+
+    pub fn run<T>(self, read: impl FnOnce() -> T) -> (T, Projections) {
+        if self.0 { discovering_projections(read) } else { (read(), Vec::new()) }
+    }
+
+    pub fn credit(found: Projections) {
+        for (table, fields) in found { note(table, fields); }
+    }
+}
+
 #[inline]
 fn address(view: &Arc<TableView>) -> usize {
     Arc::as_ptr(view) as usize
@@ -115,11 +146,13 @@ fn table(at: usize) -> Option<TableId> {
     sorted.binary_search_by_key(&at, |(address, _)| *address).ok().map(|found| sorted[found].1)
 }
 
-fn note(table: TableId, fields: u64) {
+fn note(table: TableId, fields: Option<u64>) {
     DISCOVERING.with(|found| {
         for found in found.borrow_mut().iter_mut() {
             match found.iter_mut().find(|(held, _)| *held == table) {
-                Some((_, held)) => *held |= fields,
+                Some((_, held)) => {
+                    if let Some(fields) = fields { *held = Some(held.unwrap_or(0) | fields); }
+                }
                 None => found.push((table, fields)),
             }
         }
@@ -158,20 +191,23 @@ pub fn column_read(at: usize, column: usize) {
         && held & (1 << column) == 0
     {
         OUTSIDE.fetch_add(1, Ordering::Relaxed);
-        note(table, 1 << column);
+        note(table, Some(1 << column));
     }
 }
 
 #[cold]
-pub(super) fn outside(table: TableId, held: u64) -> Option<&'static TableView> {
-    let asked = READING.with(Cell::get);
-    let missing = asked & !held;
-    if missing == 0 {
+pub(super) fn outside(table: TableId, held: Projection) -> Option<&'static TableView> {
+    let asked = READING.with(Cell::get)?;
+    let missing = match held {
+        Projection::Status => asked,
+        Projection::Fields(held) => asked & !held,
+    };
+    if missing == 0 && matches!(held, Projection::Fields(_)) {
         return None;
     }
     OUTSIDE.fetch_add(1, Ordering::Relaxed);
     if DEPTH.with(Cell::get) > 0 {
-        note(table, asked);
+        note(table, Some(asked));
     } else if cfg!(debug_assertions) {
         let names: Vec<&str> = (0..64).filter(|bit| missing & (1 << bit) != 0).filter_map(|bit| table.field_name(bit)).collect();
         panic!("a reader of rows at the head read {table:?}'s {names:?}, outside the columns it declared");
@@ -210,6 +246,31 @@ mod tests {
         assert_eq!(sampled, None);
         assert_eq!(found, vec![TableId::NavalSupremacy]);
         assert!(undeclared_reads() > before);
+    }
+
+    #[test]
+    fn a_status_projection_can_be_read_without_rows_and_upgraded_on_a_worker() {
+        use crate::frame::OperandStatus;
+        use crate::rows::TableRows;
+
+        let table = TableId::States;
+        let missing = not_declared(table);
+        let (_, requested) = discovering_projections(|| status(|| OperandStatus::for_table(&missing, table)));
+        assert_eq!(requested, [(table, None)]);
+
+        let held = SharedView::from(TableView::Complete(TableRows::empty(table))).status_only();
+        let ((state, membership), requested) = discovering_projections(|| {
+            let state = status(|| OperandStatus::for_table(&held, table));
+            let discovery = Discovery::current();
+            let (membership, requested) = std::thread::scope(|worker| {
+                worker.spawn(|| discovery.run(|| reading(0, || OperandStatus::for_table(&held, table)))).join().unwrap()
+            });
+            Discovery::credit(requested);
+            (state, membership)
+        });
+        assert_eq!(state, OperandStatus::Complete);
+        assert!(matches!(membership, OperandStatus::Unavailable(_)));
+        assert_eq!(requested, [(table, Some(0))]);
     }
 
     #[test]

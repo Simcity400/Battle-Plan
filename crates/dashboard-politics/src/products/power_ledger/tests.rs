@@ -1440,3 +1440,15 @@ fn naming_reads_the_country_tables_with_only_the_columns_it_names_by() {
     let organisation = PowerItemRow { ordinal: 1, object_kind: PowerObjectKind::Organisation, object_reference: Some(1), ..decision };
     assert_eq!(columns(organisation), whole, "an organisation's name reads whole country rows");
 }
+
+#[test]
+fn naming_does_not_read_the_lexicon_for_an_item_with_its_own_key() {
+    let source = recording();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let context = naming::context(&source, &LoadContext { content: None }).unwrap();
+    let row = PowerItemRow { holder: SLOT, first_read: 120, item_key: b"fixture_decision".to_vec(), item_token: Some(9), cause: PowerCause::Decision, ..Default::default() };
+    let (_, counts) = replay_recording::cells::count_reads(|| {
+        naming::name(&query, &[naming::Asked { run: 1, row: &row }], &context, &mut Default::default(), &AtomicBool::new(false)).unwrap()
+    });
+    assert!(!counts.contains_key(&TableId::LexicalTokens));
+}
