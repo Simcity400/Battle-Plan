@@ -159,6 +159,12 @@ impl DagBatch {
                     self.ready_count.store(0, Ordering::Release);
                 }
             }
+            Err(panic) if super::is_root_cancelled_panic(panic.as_ref()) => {
+                state.cancelled = true;
+                state.ready.clear();
+                self.ready_count.store(0, Ordering::Release);
+                self.finished.store(true, Ordering::Release);
+            }
             Err(panic) => {
                 state.failed = true;
                 state.ready.clear();
@@ -283,7 +289,10 @@ impl<'a> Dag<'a> {
         );
         let meta = registration.meta();
         loop {
-            while batch.run_one() {}
+            {
+                let _active = pool.enter_batch(meta);
+                while batch.run_one() {}
+            }
             if batch.finished.load(Ordering::Acquire) && registration.in_flight() == 0 {
                 break;
             }
@@ -302,9 +311,8 @@ impl<'a> Dag<'a> {
         }
         if state.cancelled {
             for node in &mut state.nodes {
-                if node.work.take().is_some()
-                    && let Some(cancel) = node.cancel.take()
-                {
+                node.work.take();
+                if let Some(cancel) = node.cancel.take() {
                     cancel();
                 }
             }

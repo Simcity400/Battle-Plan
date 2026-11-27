@@ -1,15 +1,16 @@
 use std::{
     cell::RefCell,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    thread::ThreadId,
 };
 
 #[derive(Default)]
 struct Totals {
     ns: AtomicU64,
-    threads: AtomicU64,
+    seen: Mutex<Vec<ThreadId>>,
     missing: AtomicU64,
 }
 
@@ -42,7 +43,11 @@ impl Measurement {
         Sample {
             ns: (totals.missing.load(Ordering::Relaxed) == 0)
                 .then(|| totals.ns.load(Ordering::Relaxed)),
-            threads: totals.threads.load(Ordering::Relaxed),
+            threads: totals
+                .seen
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len() as u64,
         }
     }
 }
@@ -92,7 +97,15 @@ impl Drop for Scope {
         if self.counted
             && let Some(totals) = &self.totals
         {
-            totals.threads.fetch_add(1, Ordering::Relaxed);
+            let id = std::thread::current().id();
+            let mut seen = totals
+                .seen
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if !seen.contains(&id) {
+                seen.push(id);
+            }
+            drop(seen);
             match self
                 .started
                 .zip(current())

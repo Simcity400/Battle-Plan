@@ -967,6 +967,7 @@ impl DashboardMaps {
                             .map(|scene| (document, scene))
                             .map_err(|error| error.to_string())
                     })
+                    .unwrap_or_else(|| Err("Native map scene creation was cancelled".into()))
                 }))
                 .unwrap_or_else(|_| Err("Native map scene creation panicked".into()));
                 if job_alive.load(Ordering::Acquire) {
@@ -1051,6 +1052,7 @@ impl DashboardMaps {
                         drop(playback);
                         Ok(content)
                     })
+                    .unwrap_or_else(|| Err("Map asset loading was cancelled".into()))
                 }))
                 .unwrap_or_else(|_| Err("Native map asset loading panicked".into()));
                 if job_alive.load(Ordering::Acquire) {
