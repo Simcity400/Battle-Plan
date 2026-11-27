@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../boundedView.ts';
 import type { CountryFlowReply, FlowEndpoint, FlowLink, FlowSide } from '../../generated/dashboard';
-import { projectCountryFlow, type CountryFlowText } from './countryFlow.ts';
+import { foldedFlowMembers, projectCountryFlow, type CountryFlowText } from './countryFlow.ts';
 import { deriveFlowAudit, deriveFlowMirror, deriveFlowNav, findFlowTooltip } from './model.ts';
 import { drawFlow, hitFlow, layoutFlow } from './painter.ts';
 import { assertFreshPaint, assertQuietFrames, assertTooltipDated, installRecordingCanvas, LANE_THEME } from '../laneRuntime.fixture.ts';
@@ -10,7 +10,6 @@ import { registerFamilyProjection } from '../registry.ts';
 import { flowLane } from './laneView.ts';
 import { projectTradeMatrix, projectTradeTable } from '../../widgets/trade-flows/tradeFlowsProjection.ts';
 import { createLaneView } from '../laneRuntime.ts';
-import { flowPerSide } from './countryFlowPlan.ts';
 import { barsLabelText } from '../bars/model.ts';
 import { knownValue } from '../value.ts';
 import { buildTooltipContent } from '../host/tooltips.ts';
@@ -191,7 +190,7 @@ test('licences from distinct unlinked givers stay distinct partners, a combined 
 
 test('a side whose order is not proven says the asked Top N is not applied', () => {
   const model = projectCountryFlow(view({ ...centred, incoming: { ...centred.incoming, unranked: 'not recorded' } }), TEXT);
-  assert.ok(model.notes?.includes('Top countries not applied, every partner shown: not recorded'));
+  assert.ok(model.notes?.includes('Top countries not applied: not recorded'));
 });
 
 test('a partial reply never says there is none: emptiness needs both sides proven', () => {
@@ -351,6 +350,24 @@ test('the other partners band is one neutral band, its parts kept for the toolti
   assert.equal(findFlowTooltip(model, `ribbon:${others.key}`)?.items?.[0]?.label, 'Oil');
 });
 
+test('an opened flow group uses the exact ranked suffix, with every member accounted for', () => {
+  const size = 1_500;
+  const endpoints = Array.from({ length: size + 2 }, (_, index) => endpoint(index, null));
+  endpoints[size] = endpoint(null, null, 'Partner identity not recorded', 5);
+  const ranked = endpoints.slice(1, size + 1).map((_, index) => link(index + 1, 0, [[0, size - index]]));
+  const held = link(size + 1, 0, [[0, null]]);
+  const fold = { side: 'left' as const, count: size - 3, total: amount((size - 3) * (size - 2) / 2) };
+  const all = { ...base, endpoints, incoming: side([...ranked, held], null), senders: side([...ranked, held], null) };
+  for (const subject of [0, null]) {
+    const members = foldedFlowMembers({ ...all, subject }, fold);
+    assert.ok(members);
+    assert.equal(members.length, fold.count);
+    assert.equal(members[0]?.endpoint.key, 's4');
+    assert.deepEqual(members.at(-1), { endpoint: endpoints[size], total: amount(1) });
+    assert.equal(foldedFlowMembers({ ...all, subject }, { ...fold, total: amount(1) }), null, 'a mismatched group is withheld');
+  }
+});
+
 test('every flow widget offers Top countries, and the choice reaches its product as the explicit top beside the viewport fold', async () => {
   const { createServer } = await import('vite');
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
@@ -368,15 +385,30 @@ test('every flow widget offers Top countries, and the choice reaches its product
     countries: { all: top === null, top, tags: [] },
     widget: { countries: top === null ? { kind: 'all' } : { kind: 'group', group: { type: 'top', count: top }, membership: 'hour', aggregate: false } },
   }) as never;
-  const view = { following: true, staticSpan: null, height: 360 };
+  const viewport = { following: true, staticSpan: null, height: 360 };
   for (const [definition, declaration] of declarations) {
     assert.ok(groupKinds(undefined, definition.countries).some(kind => kind.value === 'top'), `${definition.kind} offers Top countries`);
-    const plan = (top: number | null) => declaration.sources(ctx(top), view);
+    const plan = (top: number | null) => declaration.sources(ctx(top), viewport);
     const params = (top: number | null) => (plan(top).entries[0]!.read as unknown as { params: { limit?: number; top?: number } }).params;
-    assert.deepEqual([params(10).top, params(10).limit], [10, flowPerSide(view)], `${definition.kind}: Top 10 is its own request field; the viewport fold stays`);
+    assert.deepEqual([params(10).top, params(10).limit], [10, params(null).limit], `${definition.kind}: Top 10 is its own request field; the viewport fold stays`);
     assert.equal(params(3).top, 3);
     assert.equal(params(null).top, undefined);
     assert.notEqual(plan(10).owner, plan(null).owner, 'Top 10 and All are different requests');
+    const exact = declaration.sources(ctx(null), { ...viewport, following: false }).entries[0]!.read;
+    const followed = declaration.sources(ctx(null), viewport).entries[0]!.read;
+    assert.deepEqual(exact, followed, `${definition.kind}: the exact and follow requests agree`);
+    const small = declaration.sources(ctx(null), { ...viewport, height: 140 }).entries[0]!.read;
+    const tall = declaration.sources(ctx(null), { ...viewport, height: 560 }).entries[0]!.read;
+    assert.ok(small.shape === 'point' && followed.shape === 'point' && tall.shape === 'point');
+    assert.deepEqual([small.params?.limit, followed.params?.limit, tall.params?.limit],
+      definition.kind === 'production-licences' ? [5, 16, 26] : [3, 14, 24],
+      `${definition.kind}: fit the plot, including six names with no fold in the short licence view`);
+    const projected = declaration.projection.project(view(centred), declaration.projectionOptions(ctx(10)));
+    const meta = deriveFlowNav(projected).find(entry => entry[0] === 'node:left:others')?.[5];
+    assert.deepEqual(meta, {
+      read: { product: followed.product, sourceId: 's', revision: '1', params: { branchId: '1', countries: [], between: false, sideTotalsOnly: true } },
+      side: 'left', count: 14, total: amount(14), title: projected.left[1]?.fold?.title,
+    }, `${definition.kind}: opening the Other node preserves the selection and removes the picture budget and explicit top`);
   }
 });
 

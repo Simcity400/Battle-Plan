@@ -18,6 +18,7 @@ export const FLOW_HEADER_HEIGHT = 16;
 export const FLOW_CENTRE_LABEL_HEIGHT = 16;
 export const FLOW_NODE_GAP = 6;
 export const FLOW_LABEL_MIN = 14;
+export const FLOW_BODY_GAP = 4;
 export const FLOW_MISSING_HEIGHT = 6;
 const SAMPLES = 20;
 const FLOW_OTHERS_ALPHA = 0.45;
@@ -110,7 +111,7 @@ export function layoutFlow(model: FlowModel, width: number, height: number): Flo
   const headerTop = legendHeight;
   const hasHeader = Boolean(model.leftHeader || model.rightHeader || model.unitNote);
   const centred = model.mode === 'centred' && model.centre !== undefined;
-  const bodyTop = headerTop + (hasHeader ? FLOW_HEADER_HEIGHT : 0) + 4 + (centred ? FLOW_CENTRE_LABEL_HEIGHT : 0);
+  const bodyTop = headerTop + (hasHeader ? FLOW_HEADER_HEIGHT : 0) + FLOW_BODY_GAP + (centred ? FLOW_CENTRE_LABEL_HEIGHT : 0);
   const viewport = Math.max(20, h - bodyTop - FLOW_PAD / 2);
   const labelWidth = Math.max(70, Math.min(210, Math.round(w * 0.22)));
   const leftBarX = FLOW_PAD + labelWidth;
