@@ -2212,6 +2212,9 @@ impl<'a> Walk<'a> {
         let path = &element.path;
         let bound = self.bound(element);
         let name = made(bound, name, self.resources).map_or(name, |(sprite, _)| sprite);
+        if self.background_index.is_some() && name.is_empty() {
+            return Ok(None);
+        }
         let texture = bound.and_then(|bound| bound.texture);
         let stretch = bound.and_then(|bound| bound.stretch);
         let bound_frame = bound.and_then(|bound| bound.frame);

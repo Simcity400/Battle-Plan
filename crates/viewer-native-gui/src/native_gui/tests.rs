@@ -1424,11 +1424,15 @@ fn backgrounds_draw_under_the_content() {
         "size = { width = 40 height = 30 } margin = { left = 5 top = 5 } \
          background = { spriteType = \"GFX_even\" position = { x = 1 y = 2 } frame = 1 \
          orientation = center centerPosition = yes scale = 3 } \
+         background = { name = \"unset_backdrop\" } \
+         background = { name = \"empty_backdrop\" spriteType = \"\" } \
          iconType = { name = \"i\" spriteType = \"GFX_odd\" }",
         None,
     )
     .unwrap()
     .unwrap();
+    assert_eq!(layout.parts.len(), 2);
+    assert!(layout.diagnostics.is_empty());
     assert_eq!(layout.parts[0].child, None);
     assert_eq!(rect(&layout.parts[0].kind), [1.0, 2.0, 20.0, 10.0]);
     assert_eq!(layout.parts[0].clip, None);
@@ -1444,6 +1448,32 @@ fn backgrounds_draw_under_the_content() {
     .unwrap();
     assert_eq!(rect(&moved.parts[0].kind), [4.0, 3.0, 20.0, 10.0]);
     assert_eq!(moved.parts[1].clip, None);
+}
+
+#[test]
+fn background_art_uses_its_bound_sprite_and_retains_named_lookup_failures() {
+    content_reader_script::test_game::enter();
+    let body = "size = { width = 38 height = 25 } \
+                background = { name = \"runtime_backdrop\" } \
+                background = { name = \"unknown_backdrop\" spriteType = \"GFX_synthetic_absent\" }";
+    let bound = laid_bound(body, None, |window, bindings| {
+        let background = window.path_named("runtime_backdrop").unwrap();
+        bindings.bind(background).sprite = Some(b"GFX_even".to_vec());
+    }).unwrap().unwrap();
+    assert_eq!(bound.parts.len(), 2);
+    assert!(matches!(&bound.parts[0].kind, PartKind::Sprite { sprite, .. } if sprite == b"GFX_even"));
+    assert!(matches!(&bound.parts[1].kind, PartKind::Sprite { sprite, .. } if sprite == FALLBACK_SPRITE));
+
+    let gui = gui(body);
+    let mut resources = fixture();
+    resources.sprites.remove("GFX_default_fallback_texture");
+    let missing = layout(gui.template("w").unwrap(), None, &resources, &Bindings::default()).unwrap().unwrap();
+    assert!(missing.parts.is_empty());
+    assert_eq!(missing.diagnostics.len(), 1);
+    let diagnostic = &missing.diagnostics[0];
+    assert_eq!(diagnostic.kind, DiagnosticKind::MissingFallback);
+    assert!(diagnostic.path.ends_with("unknown_backdrop"));
+    assert!(diagnostic.detail.contains("GFX_synthetic_absent"));
 }
 
 #[test]
