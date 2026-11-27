@@ -124,13 +124,11 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, followCl
   const stamp = resetStamps();
   const send = (bytes: Uint8Array) => {
     const resets = stamp(bytes), split = splitForLanes(bytes, lanes);
-    if (split.kind !== 'failure') {
-      const target = ports;
-      setImmediate(() => {
-        if (closed || ports !== target) return;
-        split.lanes.forEach((part, index) => { if (part) target[index]?.postMessage(packet(split.kind, part, resets)); });
-      });
-    }
+    const target = ports;
+    setImmediate(() => {
+      if (closed || ports !== target) return;
+      split.lanes.forEach((part, index) => { if (part) target[index]?.postMessage(packet(split.kind, part, resets)); });
+    });
   };
   const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as unknown as DashboardSource;
   const settle = async (done: () => boolean, rounds = 200) => {

@@ -259,7 +259,6 @@ export class RecordedClient implements DashboardClient {
   private send(mapped: Uint8Array) {
     const resets = this.stamp(mapped);
     const split = splitForLanes(mapped.slice(), this.ports.length);
-    if (split.kind === 'failure') { for (const port of this.ports) port.postMessage({ kind: 'failure', reason: split.reason }); return; }
     split.lanes.forEach((bytes, lane) => { if (bytes) this.ports[lane]!.postMessage(packet(split.kind, bytes, resets), [bytes.buffer]); });
   }
 

@@ -933,7 +933,7 @@ fn a_message_past_a_frame_part_reaches_the_reader_whole() {
 
 #[test]
 fn a_failed_write_stops_the_pushed_answers_by_name() {
-    use crate::push::{FAILURE, Push, failure};
+    use crate::push::Push;
     struct Gone;
     impl std::io::Write for Gone {
         fn write(&mut self, _: &[u8]) -> io::Result<usize> {
@@ -953,9 +953,6 @@ fn a_failed_write_stops_the_pushed_answers_by_name() {
     assert_eq!((push.counters().written, push.counters().unwritten), (0, 2));
     push.offer(one(7, 72, 3));
     assert_eq!(push.counters().offered, 2, "nothing is queued once stopped");
-    let notice = failure(&failed);
-    assert_eq!(u32::from_le_bytes(notice[..4].try_into().unwrap()), FAILURE);
-    assert_eq!(std::str::from_utf8(&notice[4..]).unwrap(), failed);
 }
 
 #[test]
@@ -1770,7 +1767,7 @@ fn passed_panel_messages_coalesce_with_waiting_and_interleaved_steps() {
 }
 
 #[test]
-fn panel_budget_overflow_refuses_only_the_offending_panel() {
+fn a_panel_past_the_budget_is_sent_whole_and_never_refused() {
     use crate::panel::dated;
     use crate::push::{PANEL, Push};
     let mut batch = dated::ProductBatch::new((0, 0, 0));
@@ -1780,23 +1777,25 @@ fn panel_budget_overflow_refuses_only_the_offending_panel() {
     let packet = batch.finish(Some(40));
     let budget = playhead::ByteBudget::new(2048);
     let push = Push::with_budget(budget.clone());
+    let session = push.session();
     push.offer_kind(PANEL, packet);
     assert!(push.failed().is_none());
-    assert!(budget.used() <= 2048);
+    assert!(budget.full(), "the queue is charged past the budget, which holds read-ahead back");
     let (kind, sent, ..) = push.try_take().unwrap();
     assert_eq!(kind, PANEL);
     let records = dated::records(&sent).unwrap();
     assert_eq!(records.len(), 4);
     assert_eq!((records[0].id, records[0].kind, records[0].body), (1, dated::DATA, &b"small-one"[..]));
-    assert_eq!((records[1].id, records[1].kind, records[1].stepped()), (2, dated::REFUSED, true));
-    assert!(std::str::from_utf8(records[1].body).unwrap().contains("byte payload limit"));
+    assert_eq!((records[1].id, records[1].kind, records[1].body.len()), (2, dated::DATA, 2048), "capacity never turns a reading into the recording's refusal");
     assert_eq!((records[2].id, records[2].kind, records[2].body), (3, dated::DATA, &b"small-three"[..]));
     assert_eq!((records[3].id, records[3].kind, records[3].hour), (0, dated::COMPLETED, 40));
     let mut next = dated::ProductBatch::new((0, 0, 0));
     next.changed(1, 50, dated::DATA, b"still-alive");
     push.offer_kind(PANEL, next.finish(Some(50)));
     assert!(push.failed().is_none());
-    assert!(push.try_take().is_some());
+    assert!(push.try_take().is_none(), "the next panel the clock has not reached waits for the page's credit");
+    push.credit(session, crate::answer::charge(&sent) as u64);
+    assert!(push.try_take().is_some(), "and leaves once the page releases the first");
 }
 
 #[test]
@@ -1911,7 +1910,7 @@ fn routed(route: u32, hour: Hour, value: i64, held: u32) -> Vec<u8> {
 }
 
 #[test]
-fn a_changed_answer_reserves_the_table_it_lands_on_when_queued_so_sending_it_never_exceeds_the_budget() {
+fn a_changed_answer_reserves_the_table_it_lands_on_when_queued() {
     use crate::push::Push;
     let small = routed(0, 5, 1, 0);
     let budget = playhead::ByteBudget::new(small.len() * 10);
@@ -1920,8 +1919,8 @@ fn a_changed_answer_reserves_the_table_it_lands_on_when_queued_so_sending_it_nev
     assert!(push.try_take().is_some());
     push.head(0, 0, 100);
     push.offer(routed(0, 10, 2, (small.len() * 12) as u32));
-    assert!(push.failed().is_some_and(|reason| reason.contains("byte payload limit")), "a table past the budget is refused by name when it is queued");
-    assert!(push.try_take().is_some(), "the drain thread takes the failure notice and never panics");
+    assert!(push.failed().is_none() && budget.full(), "a table past the budget is queued and charged, never refused");
+    assert!(push.try_take().is_some());
     let push = Push::with_budget(budget);
     push.offer(routed(0, 10, 2, (small.len() * 4) as u32));
     assert_eq!(push.in_flight(), 0);
@@ -1967,6 +1966,64 @@ fn an_answer_is_charged_at_the_size_its_lane_holds_and_merges_keep_that_size() {
 }
 
 #[test]
+fn reached_answers_wait_for_credit_once_the_budget_is_full_and_merge_while_they_wait() {
+    use crate::push::Push;
+    let first = rows_message(10, false, &[(1, 1)]);
+    let one = crate::answer::charge(&first);
+    let budget = playhead::ByteBudget::new(one * 2);
+    let push = Push::with_budget(budget.clone());
+    push.offer(first);
+    assert!(push.try_take().is_some(), "the first answer goes out; the page never credits it");
+    for hour in 11..200 {
+        push.head(0, 0, hour);
+        push.offer(rows_message(hour, false, &[(1, i64::from(hour))]));
+        while push.try_take().is_some() {}
+    }
+    assert!(push.in_flight() <= one * 2, "{} in flight under a budget of {}: reached answers kept leaving without credit", push.in_flight(), one * 2);
+    assert!(budget.used() <= one * 4, "{} held under a budget of {}: the passed hours did not merge while they waited", budget.used(), one * 2);
+    assert!(push.failed().is_none());
+}
+
+#[test]
+fn under_pressure_a_shown_replacement_is_itself_replaced_once_the_picture_before_it_is_released() {
+    use crate::push::Push;
+    let first = rows_message(10, false, &[(1, 1)]);
+    let one = crate::answer::charge(&first);
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 2));
+    let session = push.session();
+    push.offer(first);
+    assert!(push.try_take().is_some(), "the first picture goes out");
+    push.head(0, 0, 11);
+    push.offer(rows_message(11, false, &[(1, 2)]));
+    assert!(push.try_take().is_some(), "its replacement goes out past credit while the budget is full");
+    push.credit(session, one as u64);
+    push.head(0, 0, 12);
+    push.offer(rows_message(12, false, &[(1, 3)]));
+    assert!(push.try_take().is_some(), "once the first is released, the shown replacement can be replaced too");
+}
+
+#[test]
+fn under_pressure_a_pinned_picture_never_blocks_the_replacement_of_another() {
+    use crate::push::Push;
+    let pinned = rows_message(9, false, &[(1, 1)]);
+    let one = crate::answer::charge(&pinned);
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
+    let session = push.session();
+    push.head(0, 0, 10);
+    push.offer(pinned);
+    assert!(push.try_take().is_some(), "a picture the page will keep pinned");
+    push.offer(rows_message(10, false, &[(1, 2)]));
+    assert!(push.try_take().is_some(), "a reached picture while the budget has room");
+    push.head(0, 0, 11);
+    push.offer(rows_message(11, false, &[(1, 3)]));
+    assert!(push.try_take().is_some(), "its replacement goes out past credit while the budget is full");
+    push.credit(session, one as u64);
+    push.head(0, 0, 12);
+    push.offer(rows_message(12, false, &[(1, 4)]));
+    assert!(push.try_take().is_some(), "the page released the replaced picture, so the next replacement goes out though the pinned one is still held");
+}
+
+#[test]
 fn only_hours_the_clock_has_passed_merge_into_one_answer() {
     use crate::push::Push;
     let push = Push::default();
@@ -1991,8 +2048,9 @@ fn pressure_never_merges_ahead_of_the_clock() {
     push.offer(rows_message(20, false, &[(1, 1)]));
     push.offer(rows_message(30, false, &[(1, 2)]));
     push.offer(rows_message(40, false, &[(1, 3)]));
-    assert_eq!(push.counters().pressure_merges, 0);
-    assert!(push.failed().is_some_and(|reason| reason.contains("byte payload limit")), "past the budget ahead of the clock is a named failure, never a lost hour");
+    assert_eq!(push.counters().pressure_merges, 0, "never merged ahead of the clock");
+    assert!(push.failed().is_none(), "past the budget ahead of the clock every hour stays queued");
+    assert_eq!(push.counters().unwritten, 0);
 }
 
 #[test]
@@ -2041,10 +2099,10 @@ fn review_7_e_native_work_is_bound_to_its_session_and_seek() {
     crate::answer::begin(&mut huge, 0, 0, 6, 0, false);
     crate::answer::push_held(&mut huge, 7, 6, &body(7, 1), 1 << 20);
     push.offer(huge);
-    assert!(push.failed().is_some() && push.try_take().is_some(), "past the budget the stream fails by name");
+    assert!(push.failed().is_none() && push.try_take().is_some(), "past the budget the answer is still sent");
     push.restart();
     push.offer(small);
-    assert!(push.failed().is_none() && push.try_take().is_some(), "a new page after an overflow plays again, with its drain still taking messages");
+    assert!(push.failed().is_none() && push.try_take().is_some(), "a new page plays, with its drain still taking messages");
 }
 
 #[test]
@@ -2813,6 +2871,108 @@ mod paused_reset {
         let push = Arc::new(Push::default());
         host.show_panels(Arc::new(NoRows), Arc::clone(&push));
         (playhead, host, push)
+    }
+
+    #[test]
+    fn a_stopped_reader_says_so_as_a_failure_and_recovers_and_never_says_not_recorded() {
+        use replay_frame::frame::{DecodedFrame, Metrics};
+        #[derive(Default)]
+        struct Feed {
+            frame: Option<Arc<DecodedFrame>>,
+            wake: Option<crate::panel::Wake>,
+            stopped: Option<(Hour, String)>,
+        }
+        struct FeedRows {
+            playhead: Arc<Playhead>,
+            feed: Arc<Mutex<Feed>>,
+        }
+        impl FeedRows {
+            fn set(&self, change: impl FnOnce(&mut Feed)) {
+                let wake = {
+                    let mut feed = self.feed.lock().unwrap();
+                    change(&mut feed);
+                    feed.wake.clone()
+                };
+                if let Some(wake) = wake {
+                    wake();
+                }
+            }
+            fn frame(hour: Hour) -> Arc<DecodedFrame> {
+                Arc::new(DecodedFrame { branch: 1, hour, tables: std::array::from_fn(|_| replay_frame::frame::not_selected()), metrics: Metrics::default() })
+            }
+            fn publish(&self, hour: Hour) {
+                self.set(|feed| feed.frame = Some(Self::frame(hour)));
+            }
+        }
+        struct FeedReader {
+            playhead: Arc<Playhead>,
+            feed: Arc<Mutex<Feed>>,
+        }
+        impl crate::panel::PanelReader for FeedReader {
+            fn frame(&self) -> Option<Arc<DecodedFrame>> {
+                self.feed.lock().unwrap().frame.clone()
+            }
+            fn through_seek(&self, frame: &Arc<DecodedFrame>) -> Option<(Hour, u64)> {
+                Some((frame.hour, self.playhead.epoch()))
+            }
+            fn stopped(&self) -> Option<(Hour, String)> {
+                self.feed.lock().unwrap().stopped.clone()
+            }
+        }
+        impl PanelRows for FeedRows {
+            fn reader(&self, _tables: &[TableId]) -> io::Result<Box<dyn crate::panel::PanelReader>> {
+                Ok(Box::new(FeedReader { playhead: Arc::clone(&self.playhead), feed: Arc::clone(&self.feed) }))
+            }
+            fn on_publish(&self, wake: crate::panel::Wake) {
+                self.feed.lock().unwrap().wake = Some(wake);
+            }
+        }
+        struct Hourly;
+        impl crate::panel::Panel for Hourly {
+            fn tables(&self) -> &[TableId] { &[] }
+            fn data(&mut self, frame: &DecodedFrame) -> crate::panel::PanelData {
+                Ok(serde_json::json!({ "hour": frame.hour }))
+            }
+        }
+        fn next_record(push: &Push, id: u32) -> (Hour, u8, Vec<u8>) {
+            loop {
+                let (kind, bytes, session) = push.take_sent().expect("panel packet");
+                push.credit(session, u64::MAX);
+                if kind != PANEL {
+                    continue;
+                }
+                if let Some(r) = dated::records(&bytes).unwrap().into_iter().find(|r| r.id == id && [dated::DATA, dated::REFUSED, dated::STOPPED].contains(&r.kind)) {
+                    return (r.hour, r.kind, r.body.to_vec());
+                }
+            }
+        }
+
+        let pages = record(quiet);
+        let timeline = Timeline::new(&*pages, vec![playhead::Piece { run: 0, first: 0, last: 12 }]).unwrap();
+        let follow = Follow::new(0);
+        let hook = follow.hook(Box::new(|_, _| {}));
+        let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 32, ring: 1, speed: 1.0, rate: 60.0, ..Settings::default() };
+        let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, timeline, settings, Some(hook)).unwrap());
+        let held = crate::host::held_tables(&*pages, pages.kinds.len());
+        let host = PlayheadHost::new(Arc::clone(&playhead), |p| p, anchored, follow, held).unwrap();
+        let rows = Arc::new(FeedRows { playhead: Arc::clone(&playhead), feed: Arc::default() });
+        let push = Arc::new(Push::default());
+        host.show_panels(Arc::clone(&rows) as Arc<dyn PanelRows>, Arc::clone(&push));
+        host.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+        playhead.wait_newest(0).unwrap();
+
+        host.prepare_panel(Box::new(Hourly)).unwrap()(42, 1).unwrap();
+        rows.publish(0);
+        assert_eq!(next_record(&push, 42).1, dated::DATA);
+
+        rows.set(|feed| feed.stopped = Some((0, "the recording file was closed".into())));
+        let (_, kind, body) = next_record(&push, 42);
+        assert_eq!(kind, dated::STOPPED, "a stopped playhead is a failure, never a refusal by the recording");
+        assert_eq!(std::str::from_utf8(&body).unwrap(), "the recording file was closed", "the reason as the playhead gave it");
+
+        rows.set(|feed| (feed.stopped, feed.frame) = (None, Some(FeedRows::frame(1))));
+        let (hour, kind, _) = next_record(&push, 42);
+        assert_eq!((hour, kind), (1, dated::DATA), "the panel reads again once the playhead plays again");
     }
 
     #[test]

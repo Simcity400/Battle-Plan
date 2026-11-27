@@ -19,13 +19,13 @@ interface Fake extends Bitmap { content: string; closed: boolean }
 const NATIVE = 9, ROUTE = 1;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
-type PanelRow = { id: number; hour: number; kind: 'data' | 'stands' | 'waiting' | 'completed'; data?: unknown; stepped?: boolean };
+type PanelRow = { id: number; hour: number; kind: 'data' | 'stands' | 'waiting' | 'completed' | 'refused' | 'stopped'; data?: unknown; text?: string; stepped?: boolean };
 function panels(records: PanelRow[], seek = 0): Uint8Array {
   const parts = records.map(record => {
-    const body = record.kind === 'data' ? encode(record.data) : new Uint8Array();
+    const body = record.kind === 'data' ? encode(record.data) : new TextEncoder().encode(record.text ?? '');
     const out = new Uint8Array((16 + body.length + 7) & ~7), view = new DataView(out.buffer);
     view.setUint32(0, record.kind === 'completed' ? 0 : record.id, true); view.setInt32(4, record.hour, true);
-    view.setUint8(8, { data: 1, stands: 3, completed: 4, waiting: 5 }[record.kind]); view.setUint8(9, record.stepped ? 1 : 0);
+    view.setUint8(8, { refused: 0, data: 1, stands: 3, completed: 4, waiting: 5, stopped: 7 }[record.kind]); view.setUint8(9, record.stepped ? 1 : 0);
     view.setUint32(12, body.length, true); out.set(body, 16);
     return out;
   });
@@ -97,6 +97,25 @@ test('a panel installs its model and live values whole, dated from the actual ta
   lane.receive('panels', panels([{ id: 3, hour: 16, kind: 'data', stepped: true, data: { shape: 'A', n: 2 } }, { id: 0, hour: 20, kind: 'completed' }]));
   await step(17);
   assert.deepEqual([page.view(1).h, (page.view(1).fields?.['model:3'] as { structure?: string }).structure], [16, 'A'], 'an equal structure keeps the installed model; its date moves on');
+});
+
+test('a stopped panel shows a failure with its reason, a refusal stays a refusal, and the next reading clears it', async () => {
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  const at = (row: PanelRow) => panels([row, { id: 0, hour: 20, kind: 'completed' }]);
+  lane.receive('panels', at({ id: 3, hour: 10, kind: 'data', stepped: true, data: { shape: 'A' } }));
+  await step(15, { playing: false });
+  assert.equal(page.view(1).mode, 'picture');
+  lane.receive('panels', at({ id: 3, hour: 16, kind: 'stopped', stepped: true, text: 'the recording file was closed' }));
+  await step(16);
+  assert.deepEqual([page.view(1).mode, page.view(1).reason], ['failed', 'the recording file was closed'], 'a stopped playhead is a failure, never not recorded');
+  lane.receive('panels', at({ id: 3, hour: 17, kind: 'data', stepped: true, data: { shape: 'B' } }));
+  await step(17);
+  assert.equal(page.view(1).mode, 'picture', 'the next reading clears it');
+  lane.receive('panels', at({ id: 3, hour: 18, kind: 'refused', stepped: true, text: 'Countries was not recorded at this hour' }));
+  await step(18);
+  assert.deepEqual([page.view(1).mode, page.view(1).reason], ['refused', 'Countries was not recorded at this hour'], 'a refusal by the recording stays a refusal');
 });
 
 test('identical panel bytes decode once within the subscription and seek', t => {
@@ -434,7 +453,7 @@ test('astra 4: a lane bound after an earlier reset dates its entries with the re
   }) });
   for (let index = 0; index < 2; index++) lanes.push(new Lane<Fake>({ lane: index, lanes: 2, views: () => fieldsView(() => undefined), crop: async () => [],
     present: presentation => page.offer(presentation), release: () => {}, fail: () => {}, later: () => {} }));
-  const send = (bytes: Uint8Array) => { const split = splitForLanes(bytes, 2); if (split.kind !== 'failure') split.lanes.forEach((part, index) => { if (part) lanes[index]!.receive('follow', part); }); };
+  const send = (bytes: Uint8Array) => { const split = splitForLanes(bytes, 2); split.lanes.forEach((part, index) => { if (part) lanes[index]!.receive('follow', part); }); };
   const step = async (T: number) => { page.publish(T, { playing: false }); await flush(); await flush(); page.frame(); await flush(); };
   for (const [widget, sub, index] of [[1, 4, 0], [2, 5, 1]] as const) {
     lanes[index]!.follow(sub, 'followed');

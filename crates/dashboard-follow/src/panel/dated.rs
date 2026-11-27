@@ -3,7 +3,7 @@ use replay_data::Hour;
 use std::{collections::BTreeMap, io};
 
 pub const MAGIC: &[u8; 4] = b"PNL2";
-const VERSION: u16 = 7;
+const VERSION: u16 = 8;
 const HEAD: usize = 24;
 const PANEL_HEAD: usize = 16;
 pub const REFUSED: u8 = 0;
@@ -12,6 +12,7 @@ pub const STANDS: u8 = 3;
 pub const COMPLETED: u8 = 4;
 pub const WAITING: u8 = 5;
 pub const AGAIN: u8 = 6;
+pub const STOPPED: u8 = 7;
 
 pub struct ProductBatch {
     bytes: Vec<u8>,
@@ -43,6 +44,7 @@ impl ProductBatch {
 pub enum Update<'a> {
     Data(u32, Hour, &'a PanelData),
     Stands(u32, Hour),
+    Stopped(u32, Hour, &'a str),
 }
 
 pub fn encoded(clock: i32, route: u32, seek: u32, id: u32, hour: Hour, kind: u8, body: &[u8]) -> Vec<u8> {
@@ -66,6 +68,7 @@ pub fn message(clock: i32, route: u32, seek: u32, updates: &[Update<'_>]) -> Vec
         match *update {
             Update::Data(id, hour, data) => reading(&mut out, id, hour, data),
             Update::Stands(id, hour) => record(&mut out, id, hour, STANDS, &[]),
+            Update::Stopped(id, hour, reason) => record(&mut out, id, hour, STOPPED, reason.as_bytes()),
         }
     }
     out
@@ -126,29 +129,6 @@ impl Record<'_> {
     }
 }
 
-pub fn refused_record_len(reason: &str) -> usize {
-    (PANEL_HEAD + reason.len()).next_multiple_of(8)
-}
-
-pub fn refuse_panel(bytes: &[u8], panel_id: u32, reason: &str) -> io::Result<Option<Vec<u8>>> {
-    let stamp = stamp(bytes).ok_or_else(|| crate::invalid("A panel message does not start with PNL2"))?;
-    let list = records(bytes)?;
-    if !list.iter().any(|r| r.id == panel_id && r.kind == DATA) {
-        return Ok(None);
-    }
-    let mut out = head(list.len(), clock(bytes), stamp);
-    for r in list {
-        if r.id == panel_id && r.kind == DATA {
-            let offset = out.len();
-            record(&mut out, r.id, r.hour, REFUSED, reason.as_bytes());
-            out[offset + 9] = r.bytes[9];
-        } else {
-            out.extend_from_slice(r.bytes);
-        }
-    }
-    Ok(Some(out))
-}
-
 fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
 }
@@ -201,7 +181,7 @@ struct PanelState<'a> {
 impl<'a> PanelState<'a> {
     fn push(&mut self, r: Record<'a>) {
         match r.kind {
-            DATA | REFUSED => {
+            DATA | REFUSED | STOPPED => {
                 if self.wait_before.is_none() {
                     self.stands_before = None;
                 }
@@ -256,7 +236,7 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     for r in records(older)?.into_iter().chain(records(newer)?) {
         count += 1;
         match r.kind {
-            DATA | REFUSED | STANDS | WAITING | AGAIN => panels.entry(r.id).or_default().push(r),
+            DATA | REFUSED | STOPPED | STANDS | WAITING | AGAIN => panels.entry(r.id).or_default().push(r),
             COMPLETED => {
                 if completed.is_none_or(|c| r.hour >= c.hour) {
                     completed = Some(r);

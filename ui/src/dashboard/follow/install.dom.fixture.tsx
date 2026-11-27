@@ -31,7 +31,7 @@ const subs = new Set<number>();
 const stamp = resetStamps();
 const send = (bytes: Uint8Array) => {
   const resets = stamp(bytes), split = splitForLanes(bytes, LANES);
-  if (split.kind !== 'failure') split.lanes.forEach((part, lane) => { if (part) ports[lane]!.postMessage(packet('follow', part, resets), [part.buffer]); });
+  split.lanes.forEach((part, lane) => { if (part) ports[lane]!.postMessage(packet('follow', part, resets), [part.buffer]); });
 };
 const native = (to: number) => {
   while (emitted < Math.min(HOURS - 1, to)) { emitted++; const changed = [...subs].filter(sub => changesAt(sub, emitted)); send(message(emitted, seek, false, changed)); }

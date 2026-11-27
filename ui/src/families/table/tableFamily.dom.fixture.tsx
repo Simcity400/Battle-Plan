@@ -53,11 +53,9 @@ const stamp = resetStamps();
 const send = (bytes: Uint8Array) => {
   const resets = stamp(bytes);
   const split = splitForLanes(bytes, ports.length);
-  if (split.kind !== 'failure') {
-    split.lanes.forEach((part, lane) => {
-      if (part) ports[lane]!.postMessage(packet('follow', part, resets), [part.buffer]);
-    });
-  }
+  split.lanes.forEach((part, lane) => {
+    if (part) ports[lane]!.postMessage(packet('follow', part, resets), [part.buffer]);
+  });
 };
 
 const source = {

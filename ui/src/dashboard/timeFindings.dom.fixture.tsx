@@ -74,7 +74,7 @@ const pushPanels = (hour: number, only?: number) => {
     catch (error) { bytes = refusedPanel(id, hour, error instanceof Error ? error.message : String(error), seek); }
     pushed.set(id, hour);
     const split = splitForLanes(bytes, ports.length);
-    if (split.kind !== 'failure') split.lanes.forEach((part, lane) => { if (part) ports[lane]!.postMessage(packet('panels', part, undefined), [part.buffer]); });
+    split.lanes.forEach((part, lane) => { if (part) ports[lane]!.postMessage(packet('panels', part, undefined), [part.buffer]); });
   }
 };
 const followLog: string[] = [];

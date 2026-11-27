@@ -82,7 +82,7 @@ struct Shown {
     panel: Box<dyn Panel>,
     reader: Box<dyn PanelReader>,
     frame: Option<Arc<DecodedFrame>>,
-    data: Option<PanelData>,
+    stopped: Option<(String, u64)>,
     pushed: Option<Hour>,
     version: (u64, u64),
     class: (u32, u32),
@@ -90,7 +90,7 @@ struct Shown {
 
 impl Shown {
     fn new(panel: Box<dyn Panel>, reader: Box<dyn PanelReader>, class: (u32, u32)) -> Self {
-        Self { panel, reader, frame: None, data: None, pushed: None, version: (0, 0), class }
+        Self { panel, reader, frame: None, stopped: None, pushed: None, version: (0, 0), class }
     }
 }
 
@@ -534,28 +534,26 @@ fn evaluate(id: u32, shown: &mut Shown, stamp: (i32, u32, u32), epoch: u64, vers
     if shown.version != (version, epoch) {
         if shown.version.0 != version || shown.pushed.is_none_or(|pushed| current_head().is_none_or(|(_, head)| head != pushed)) {
             shown.frame = None;
-            shown.data = None;
             shown.pushed = None;
         }
         shown.version = (version, epoch);
     }
     if let Some((hour, reason)) = shown.reader.stopped() {
-        let data = Err(reason);
-        if shown.data.as_ref() != Some(&data) {
-            let packet = dated::message(clock, route, seek, &[Update::Data(id, hour, &data)]);
+        if shown.stopped.as_ref().is_none_or(|(held, at)| *held != reason || *at != epoch) {
+            let packet = dated::message(clock, route, seek, &[Update::Stopped(id, hour, &reason)]);
             let mut reads = active.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(now_epoch) = live_epoch(hour).filter(|_| reads.seek == seek) else { return };
             if let Some(mut cells) = reads.cells.remove(&id) { release(&mut cells, reads.host.as_ref()); }
             push.offer_from(session, PANEL, packet);
-            shown.data = Some(data);
+            (shown.stopped, shown.frame, shown.pushed) = (Some((reason, epoch)), None, None);
             shown.version = (version, now_epoch);
         }
         return;
     }
+    shown.stopped = None;
     let Some(frame) = shown.reader.frame() else { return };
     let Some((through, _)) = shown.reader.through_seek(&frame).filter(|&(_, at)| at == epoch) else { return };
     let mut data = None;
-    let mut pending_data = None;
     let same_frame = shown.frame.as_ref().is_some_and(|last| {
         Arc::ptr_eq(last, &frame)
             || (last.branch == frame.branch
@@ -592,9 +590,8 @@ fn evaluate(id: u32, shown: &mut Shown, stamp: (i32, u32, u32), epoch: u64, vers
         if !bound.is_empty() { reads.cells.insert(id, bound); }
         drop(reads);
         data = Some(made_cells);
-        pending_data = Some(made);
     }
-    let pushed = if pending_data.is_some() { Some(frame.hour) } else { shown.pushed };
+    let pushed = if data.is_some() { Some(frame.hour) } else { shown.pushed };
     let want_stands = pushed.is_some_and(|last| through > last);
     let data_packet = data.as_ref().map(|data| dated::message(clock, route, seek, &[Update::Data(id, frame.hour, data)]));
     let stands_packet = (want_stands && live_epoch(frame.hour) == Some(epoch)).then(|| match data.as_ref() {
@@ -611,8 +608,7 @@ fn evaluate(id: u32, shown: &mut Shown, stamp: (i32, u32, u32), epoch: u64, vers
             };
             if let Some(packet) = packet {
                 push.offer_from(session, PANEL, packet);
-                if let Some(made) = pending_data {
-                    shown.data = Some(made);
+                if data.is_some() {
                     shown.frame = Some(frame.clone());
                 }
                 shown.pushed = next_pushed;

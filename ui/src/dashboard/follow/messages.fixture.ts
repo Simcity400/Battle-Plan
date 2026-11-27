@@ -72,6 +72,14 @@ export function message(hour: number, answers: { id: number; hour?: number; answ
   return new Uint8Array(out.bytes);
 }
 
+export function datedRecord(id: number, hour: number, kind: number, text = '', seek = 1, route = 9) {
+  const body = new TextEncoder().encode(text);
+  const out = new Uint8Array((40 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);
+  words.set([0x324c4e50, DATED_PANEL_VERSION, 1, 0, route, seek, id, hour, kind, body.length]);
+  out.set(body, 40);
+  return out;
+}
+
 export function datedPanel(id: number, hour: number, data?: unknown, seek = 1, route = 9) {
   const body = data === undefined ? new Uint8Array() : encode(data);
   const out = new Uint8Array((40 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);

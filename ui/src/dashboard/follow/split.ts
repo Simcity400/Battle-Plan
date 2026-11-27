@@ -1,12 +1,10 @@
-import { DATED_FOLLOW, DATED_PANEL, DATED_PANEL_VERSION, followFailure, wireKind } from './message.ts';
+import { DATED_FOLLOW, DATED_PANEL, DATED_PANEL_VERSION, wireKind } from './message.ts';
 import type { FromPull } from '../../draw/laneMessages';
 
 export const CELL_BIT = 0x8000_0000;
 export const laneOf = (id: number, lanes: number) => ((id & ~CELL_BIT) >>> 0) % lanes;
 
-export type Split =
-  | { kind: 'failure'; reason: string }
-  | { kind: 'follow' | 'panels'; lanes: (Uint8Array | null)[]; owned: number[]; header: number };
+export type Split = { kind: 'follow' | 'panels'; lanes: (Uint8Array | null)[]; owned: number[]; header: number };
 
 const aligned = (at: number) => (at + 7) & ~7;
 
@@ -43,8 +41,6 @@ export function resetStamps() {
 
 export function splitForLanes(input: Uint8Array | ArrayBuffer, lanes: number, stats?: { recordVisits: number }): Split {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  const failure = followFailure(bytes);
-  if (failure !== null) return { kind: 'failure', reason: failure };
   const kind = wireKind(bytes);
   if (kind !== DATED_FOLLOW && kind !== DATED_PANEL) throw new Error(`No followed message kind ${kind.toString(16)}.`);
   const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

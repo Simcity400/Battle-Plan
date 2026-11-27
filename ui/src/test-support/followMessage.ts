@@ -63,7 +63,7 @@ export function parseDatedPanels(bytes: Uint8Array) {
   for (let i = 0; i < count; i++) {
     const id = data.getUint32(at, true), hour = data.getInt32(at + 4, true), kind = data.getUint8(at + 8);
     const length = data.getUint32(at + 12, true), end = at + 16 + length;
-    if (end > bytes.length || ![0, 1, 3, 4, 5, 6].includes(kind) || (kind >= 3 && length)) throw new Error('Invalid dated panel record.');
+    if (end > bytes.length || ![0, 1, 3, 4, 5, 6, 7].includes(kind) || (kind >= 3 && kind !== 7 && length)) throw new Error('Invalid dated panel record.');
     if (kind === 4) {
       if (id !== 0 || i !== count - 1) throw new Error('Invalid completed product step.');
       completed = hour;

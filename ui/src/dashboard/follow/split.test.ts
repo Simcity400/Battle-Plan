@@ -35,11 +35,6 @@ test('a completed step goes to every lane and is credited at once', () => {
   assert.deepEqual(copy, panel);
 });
 
-test('a failure is not split', () => {
-  const bytes = new Uint8Array([0x46, 0x45, 0x4e, 0x31, 0x6e, 0x6f]);
-  assert.deepEqual(splitForLanes(bytes, 3), { kind: 'failure', reason: 'no' });
-});
-
 test('should-fix d: dated panels of a version the page does not read are refused by name, never split as if they were', () => {
   const bytes = datedPanel(3, 10, { rows: [1] });
   new DataView(bytes.buffer).setUint16(4, 5, true);

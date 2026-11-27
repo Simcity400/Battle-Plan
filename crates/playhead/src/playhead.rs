@@ -692,6 +692,9 @@ impl Shared {
             control.newest = None;
             control.caught_up_at = None;
             control.seed_paused = false;
+            if !control.stop {
+                control.error = None;
+            }
         });
     }
 
@@ -2098,9 +2101,17 @@ impl Stepper {
                 (seek, std::mem::take(&mut control.done), readers, std::mem::take(&mut control.lands))
             };
             if self.failed {
-                done.into_iter().for_each(|done| self.discard(done));
-                idle = true;
-                continue;
+                if seek.is_none() {
+                    if let Some(readers) = readers {
+                        self.selection = union(readers);
+                        self.selection_applied = false;
+                    }
+                    done.into_iter().for_each(|done| self.discard(done));
+                    idle = true;
+                    continue;
+                }
+                self.failed = false;
+                self.shared.nudge(|control| control.error = None);
             }
             if self.lent.reap() > 0 {
                 let (busy, pending) = {
@@ -2179,9 +2190,15 @@ impl Stepper {
                 }
                 Ok::<(), io::Error>(())
             })();
-            if let Err(error) = outcome {
+            if let Err(error) = outcome
+                && self.current()
+            {
                 self.failed = true;
-                self.shared.nudge(|control| control.error = Some(error.to_string()));
+                self.shared.nudge(|control| {
+                    if self.current() {
+                        control.error = Some(error.to_string());
+                    }
+                });
                 self.shared.notify_control();
             }
             self.publish_joins();
@@ -2955,9 +2972,9 @@ impl Stepper {
                 }
                 steps.push(Arc::new(step));
             }
-            ring.give(reader, position, &steps)?;
+            ring.give(reader, position, &steps);
         }
-        let replaced = ring.complete(shared)?;
+        let replaced = ring.complete(shared);
         drop(ring);
         self.retire_changes(replaced);
         self.counters.joins_at_head += ready.len() as u64;
@@ -3304,11 +3321,11 @@ impl Stepper {
         for (consumer, reader, mut step) in steps {
             step.seq = before;
             match consumer {
-                Some(id) => ring.jump(id, Arc::new(step))?,
+                Some(id) => ring.jump(id, Arc::new(step)),
                 None => {
                     let tables = step.tables.iter().map(Changes::table).collect();
                     let step = Arc::new(step);
-                    ring.give(reader, before, &[Arc::clone(&step)])?;
+                    ring.give(reader, before, &[Arc::clone(&step)]);
                     self.given.push(Given { reader, tables, step, hour: newest, stood: self.stood, read: false });
                 }
             }
@@ -3442,7 +3459,7 @@ impl Stepper {
             tables.push(changes);
         }
         let step = Arc::new(Step { epoch: self.epoch, first: catch.from + 1, last: catch.from, piece: catch.piece, tables, states: Mutex::new(standing.states), ..Step::default() });
-        let landed = lock(&self.shared.ring).land_standing(catch.id, catch.from, step, &standing.revoke)?;
+        let landed = lock(&self.shared.ring).land_standing(catch.id, catch.from, step, &standing.revoke);
         if let Err(step) = landed {
             if let Some(given) = self.given.iter_mut().find(|given| Arc::ptr_eq(&given.step, &standing.revoke)) {
                 given.read = false;
@@ -3631,7 +3648,7 @@ impl Stepper {
             }
             let at = catch.at;
             let (id, steps) = (self.catching[index].id, std::mem::take(&mut self.catching[index].steps));
-            let landed = lock(&self.shared.ring).land_at(id, at, steps)?;
+            let landed = lock(&self.shared.ring).land_at(id, at, steps);
             match landed {
                 Ok(()) => {
                     let catch = self.catching.swap_remove(index);
@@ -3671,7 +3688,7 @@ impl Stepper {
             self.hidden = None;
         }
         let last = step.last;
-        let held = lock(&self.shared.ring).publish(step)?;
+        let held = lock(&self.shared.ring).publish(step);
         match held {
             Ok(()) => {
                 self.release();

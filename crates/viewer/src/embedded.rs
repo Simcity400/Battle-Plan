@@ -618,8 +618,8 @@ impl dashboard_follow::panel::PanelReader for FollowRowReader {
     fn stopped(&self) -> Option<(replay_data::Hour, String)> {
         let playhead = self.entry.playhead();
         let error = playhead.error()?;
-        let hour = self.reader.frame().map_or_else(|| playhead.head(std::time::Instant::now()), |frame| frame.hour);
-        Some((hour, format!("The rows at the head stopped: {error}")))
+        let head = playhead.head(std::time::Instant::now());
+        Some((self.reader.frame().map_or(head, |frame| frame.hour.min(head)), error))
     }
 }
 
@@ -1797,7 +1797,7 @@ mod tests {
         assert!(error.contains(FAILURE), "the playhead's error: {error}");
         let (hour, reason) = panel.stopped().expect("a stopped playhead stops the panel");
         assert_eq!(hour, 1, "the hour of the last rows the panel was given");
-        assert!(reason.starts_with("The rows at the head stopped: ") && reason.contains(FAILURE), "the reason: {reason}");
+        assert_eq!(reason, error, "the playhead's own error, with nothing added that could read as the recording's");
 
         let declarations = entry.playhead().declarations();
         drop(panel);
