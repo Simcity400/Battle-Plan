@@ -149,7 +149,7 @@ ImageBitmapRenderingContext.prototype.transferFromImageBitmap = function (this: 
     copy.getContext('2d')!.drawImage(bitmap, 0, 0);
     shown.get(canvas)?.bitmap.close();
     shown.set(canvas, { width: bitmap.width, height: bitmap.height, bitmap: copy.transferToImageBitmap(), text: bitmapText.get(bitmap) ?? [] });
-  } else shown.delete(canvas);
+  } else { shown.get(canvas)?.bitmap.close(); shown.delete(canvas); }
   transfer.call(this, bitmap);
 };
 
@@ -292,7 +292,7 @@ const tableProjection = declareTableProjection<{ rows: { id: string; name: strin
   rowKey: row => row.id,
   rowName: row => row.name,
 });
-const tableRows = Array.from({ length: 40 }, (_, i) => ({ id: `C${i}`, name: `Country number ${i + 1}`, factories: 400 - i * 7, divisions: 120 - i * 2 }));
+const tableRows = Array.from({ length: 30 }, (_, i) => ({ id: `C${i}`, name: `Country number ${i + 1}`, factories: 400 - i * 7, divisions: 120 - i * 2 }));
 const tableSettings = tableSettingsOf(undefined, [
   { key: 'name', label: 'Country', as: 'plain', offered: ['plain'] },
   { key: 'factories', label: 'Factories', as: 'plain', offered: ['plain'] },
