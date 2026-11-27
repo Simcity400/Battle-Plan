@@ -6,8 +6,11 @@ import { heldCoverage, occupationMean, totalsOf, validateOccupationDetail } from
 import { occupationHoverItems } from './occupationLinesProjection.ts';
 import type { OccupationDetailReply } from '../../generated/dashboard';
 
-const cells = (rows: Record<string, Record<string, number>>) => valuesOf(new Map(Object.entries(rows).flatMap(([tag, columns]) =>
-  Object.entries(columns).map(([column, value]) => [liveKey(tag, column), value] as const))), 'Not recorded at this hour');
+const cells = (rows: Record<string, Record<string, number>>) => {
+  const values = valuesOf(new Map(Object.entries(rows).flatMap(([tag, columns]) =>
+    Object.entries(columns).map(([column, value]) => [liveKey(tag, column), value] as const))), 'Not recorded at this hour');
+  return { ...values, raw: (key: string) => Number.isSafeInteger(values.get(key)) ? BigInt(values.get(key)!) : undefined };
+};
 const reply: OccupationDetailReply = { occupiers: [{ country: 'GER', missing: null, collaboration: [{ slot: 4, tag: 'POL', progressRaw: '25000' }, { slot: 9, tag: null, progressRaw: null }] },
   { country: 'ITA', missing: null, collaboration: [] }, { country: 'SOV', missing: 'No country holds this tag at this hour', collaboration: [] }], collaborationMissing: null, warnings: [] };
 const values = cells({
@@ -16,9 +19,9 @@ const values = cells({
 });
 
 test('the means truncate the fixed5 sum over the states as the game does, and none without states', () => {
-  assert.equal(occupationMean(3000001, 3), '1000000');
-  assert.equal(occupationMean(-7, 2), '-3');
-  assert.equal(occupationMean(5, 0), null);
+  assert.equal(occupationMean(3000001n, 3n), '1000000');
+  assert.equal(occupationMean(-7n, 2n), '-3');
+  assert.equal(occupationMean(5n, 0n), null);
   const totals = totalsOf(values, 'GER')!;
   assert.deepEqual([totals.resistanceRaw, totals.complianceRaw, heldCoverage(totals)], ['1000000', '300000', '3/4 states']);
   assert.equal(heldCoverage(totalsOf(values, 'ITA')!), '1 states; total unknown');
@@ -40,4 +43,24 @@ test('the lines hover lists every drawn occupier in the chart order, both measur
 test('the detail reply is checked whole', () => {
   assert.equal(validateOccupationDetail(reply).occupiers.length, 3);
   assert.throws(() => validateOccupationDetail({ ...reply, occupiers: [{ country: 'GER', missing: null, collaboration: [{ slot: 'x', tag: null, progressRaw: null }] }] }));
+});
+
+test('occupation hover retains exact large sums for both measures and shared lines and mix details', () => {
+  const sums = { resistanceSum: (1n << 60n) + 7n, complianceSum: (1n << 63n) - 2n, states: 2n, heldStates: 3n, heldComplete: 1n };
+  const exact = new Map(Object.entries(sums).map(([column, value]) => [liveKey('GER', column), value]));
+  const large = { get: (key: string) => exact.has(key) ? Number(exact.get(key)) : undefined,
+    raw: (key: string) => exact.get(key), missing: () => 'Not recorded at this hour' };
+  const totals = totalsOf(large, 'GER')!;
+  assert.deepEqual([totals.resistanceRaw, totals.complianceRaw], ['576460752303423491', '4611686018427387903']);
+  const items = occupationHoverItems(reply, large, [{ tag: 'GER', name: 'Name GER', color: '#000' }],
+    { shown: 'both', rank: 'resistance', collaboration: false, digits: 5 }, tag => tag);
+  assert.deepEqual(items.map(item => item.value), ['5,764,607,523,034.23491%', '46,116,860,184,273.87903%', '2/3 states']);
+});
+
+test('an inexact occupation operand is unavailable with the reason for that operand', () => {
+  const unsafe = cells({ GER: { resistanceSum: Number((1n << 60n) + 7n), complianceSum: 4, states: 2 } });
+  const items = occupationHoverItems(reply, unsafe, [{ tag: 'GER', name: 'Name GER', color: '#000' }],
+    { shown: 'both', rank: 'resistance', collaboration: false, digits: 5 }, tag => tag);
+  assert.equal(items[0]!.value, 'Not recorded');
+  assert.match(items[0]!.missingReason!, /Resistance sum.*exact integer/);
 });

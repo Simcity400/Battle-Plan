@@ -504,7 +504,7 @@ pub static SERIES: &[Series] = &[
             count("heldComplete", "held_complete"),
             Measure {
                 name: "resistance",
-                column: Column::Computed { id: 0, inputs: &["resistance_sum", "states"], value: occupation_resistance },
+                column: Column::Computed { id: 2, inputs: &["resistance_sum", "states"], value: occupation_resistance },
                 decimals: 5,
                 aggregates: 0,
                 carry: Carry::None,
@@ -513,7 +513,7 @@ pub static SERIES: &[Series] = &[
             },
             Measure {
                 name: "compliance",
-                column: Column::Computed { id: 1, inputs: &["compliance_sum", "states"], value: occupation_compliance },
+                column: Column::Computed { id: 3, inputs: &["compliance_sum", "states"], value: occupation_compliance },
                 decimals: 5,
                 aggregates: 0,
                 carry: Carry::None,
@@ -933,11 +933,10 @@ const COMPLIANCE_SUM: usize = 1;
 const OCCUPIED_STATES: usize = 2;
 
 fn occupation_mean(sum: i64, count: i64) -> Option<i64> {
-    let finite = (sum as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd;
-    if count <= 0 || !finite {
+    if count <= 0 || sum <= i64::MIN + 1 || sum == i64::MAX {
         return None;
     }
-    sum.wrapping_mul(100_000).checked_div(count.checked_mul(100_000)?)
+    sum.checked_div(count)
 }
 
 fn occupation_resistance(cells: &dyn Cells, slot: u32) -> Computed {
@@ -1595,6 +1594,11 @@ mod tests {
         assert_eq!((field(TableId::CasualtyTotals, "dealt").unwrap(), field(TableId::CasualtyTotals, "taken").unwrap()), (DEALT, TAKEN));
         assert_eq!(occupation_mean(250_000, 3), Some(83_333));
         assert_eq!(occupation_mean(-250_000, 3), Some(-83_333));
+        for (sum, count, expected) in [(1 << 60, 2, 1 << 59), (i64::MAX - 1, 2, (i64::MAX - 1) / 2), (-((1 << 60) + 7), 2, -((1 << 59) + 3)), (7, i64::MAX, 0)] {
+            let row = Row([Some(sum), Some(sum), Some(count)]);
+            assert_eq!(occupation_resistance(&row, 0), Computed::Value(expected));
+            assert_eq!(occupation_compliance(&row, 0), Computed::Value(expected));
+        }
         assert_eq!(occupation_mean(1, 0), None);
         assert_eq!(occupation_mean(i64::MAX, 1), None, "a saturated sum has no mean");
         assert_eq!(Key::Holder.of(7, 9), 7u128 << 32 | 9);
