@@ -71,14 +71,9 @@ fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
             let _ = exiting.app.set(handle.clone());
-            if let Ok(settings) = replay_settings::recorder_settings::RecorderSettings::load() {
-                for root in std::iter::once(worker::save_folder(&settings)).chain(settings.earlier_save_folders.iter().cloned()) {
-                    jobs.take_up(&root, &settings);
-                }
-            }
+            tray::create(&handle, Arc::clone(&recorder))?;
             let changed = handle.clone();
             jobs.serve(move || worker::recordings_changed(&changed))?;
-            tray::create(&handle, Arc::clone(&recorder))?;
             app_update::prepare(
                 &handle,
                 app_update::Role::Recorder,

@@ -352,7 +352,7 @@ impl Jobs {
         state.unavailable = Some(reason);
     }
 
-    pub fn take_up(&self, root: &Path, settings: &RecorderSettings) {
+    fn take_up(&self, root: &Path, settings: &RecorderSettings) {
         let saved = crate::recordings::saved_files(root, true).0;
         for folder in crate::recordings::recording_folders(root) {
             let recordings = saved.iter().filter(|path| path.parent() == Some(folder.as_path()));
@@ -383,6 +383,11 @@ impl Jobs {
         std::thread::Builder::new()
             .name("recording-compress".into())
             .spawn(move || {
+                if let Ok(settings) = RecorderSettings::load() {
+                    for root in std::iter::once(crate::worker::save_folder(&settings)).chain(settings.earlier_save_folders.iter().cloned()) {
+                        jobs.take_up(&root, &settings);
+                    }
+                }
                 match Bound::new() {
                     Ok(bound) => jobs.lock().bound = Some(bound),
                     Err(error) => {
