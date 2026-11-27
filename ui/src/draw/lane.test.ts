@@ -137,6 +137,12 @@ test('a panel whose latest record is WAITING marks its widget only while it has 
   lane.receive('panels', panels([{ id: 3, hour: 11, kind: 'waiting' }]));
   await step(11);
   assert.equal(page.view(1).waiting, undefined, 'a widget showing a picture is not marked');
+  mount(2, [{ id: 4, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(4, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 4, hour: 12, kind: 'waiting' }]));
+  lane.receive('panels', panels([{ id: 4, hour: 12, kind: 'stopped', stepped: true, text: 'the recording file was closed' }, { id: 0, hour: 20, kind: 'completed' }]));
+  await step(12);
+  assert.deepEqual([page.view(2).mode, page.view(2).waiting], ['failed', undefined], 'a stopped reading ends the wait: it shows the failure, not Reading');
 });
 
 test('identical panel bytes decode once within the subscription and seek', t => {
