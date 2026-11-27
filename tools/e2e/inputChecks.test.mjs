@@ -207,3 +207,47 @@ test('browser widget classifier expression delegates directly to classifyWidgetS
     { outcome: 'error', detail: 'still loading' },
   );
 });
+
+test('playback unsettled probe ignores hidden screen-reader aria-busy mirrors while flagging visible loading widgets', () => {
+  const start = source.indexOf('const unsettled = `(() => {');
+  const end = source.indexOf('})()`;', start);
+  const expr = source.slice(start + 'const unsettled = `'.length, end + '})()'.length).replace(/\\\\/g, '\\');
+  const makeNode = ({ tag = 'div', classes = [], attrs = {}, rect = { top: 10, bottom: 50, left: 10, right: 110, width: 100 }, style = { overflowY: 'visible' }, children = [] } = {}) => {
+    const matchOne = p => (p === '[data-state="loading"]' ? attrs['data-state'] === 'loading'
+      : p === '[aria-busy="true"]' ? attrs['aria-busy'] === 'true'
+      : p === '[data-placement]' ? Object.hasOwn(attrs, 'data-placement')
+      : p === 'article.dash-widget' ? tag === 'article' && classes.includes('dash-widget')
+      : p.startsWith('.') ? classes.includes(p.slice(1)) : false);
+    const node = {
+      classList: { contains: name => classes.includes(name) }, textContent: '', dataset: { widget: attrs['data-widget'] ?? '' },
+      parentElement: null, __style: style, __children: [], children: [],
+      checkVisibility: () => true, getBoundingClientRect: () => rect,
+      getAttribute: name => (Object.hasOwn(attrs, name) ? attrs[name] : null),
+      matches: sel => sel.split(',').some(p => matchOne(p.trim())),
+      closest(sel) { for (let c = this; c; c = c.parentElement) if (c.matches(sel)) return c; return null; },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] ?? null; },
+      querySelectorAll(sel) { const o = []; const w = e => { for (const c of e.__children) { if (c.matches(sel)) o.push(c); w(c); } }; w(this); return o; },
+    };
+    for (const c of children) { c.parentElement = node; node.__children.push(c); node.children.push(c); }
+    return node;
+  };
+  const srMirror = makeNode({
+    tag: 'table', classes: ['fh-sr-only'], attrs: { 'aria-busy': 'true' },
+    rect: { top: 10, bottom: 11, left: 10, right: 11, width: 1 },
+    style: { position: 'absolute', overflowY: 'hidden', clip: 'rect(0px, 0px, 0px, 0px)', clipPath: 'inset(50%)' },
+  });
+  const hiddenAncestor = makeNode({
+    classes: ['sr-only'], rect: { top: 10, bottom: 11, left: 10, right: 11, width: 1 },
+    style: { position: 'absolute', overflowY: 'hidden', clip: 'rect(0px, 0px, 0px, 0px)' },
+    children: [makeNode({ tag: 'span', attrs: { 'aria-busy': 'true' } })],
+  });
+  const okWidget = makeNode({ tag: 'article', classes: ['dash-widget'], attrs: { 'aria-label': 'Occupied states', 'data-widget': 'w1' }, children: [makeNode({ tag: 'canvas', attrs: { 'data-placement': '1' } }), srMirror, hiddenAncestor] });
+  const stuckWidget = makeNode({ tag: 'article', classes: ['dash-widget'], attrs: { 'aria-label': 'Fuel', 'data-widget': 'w2' }, children: [makeNode({ tag: 'canvas', attrs: { 'data-placement': '2' } }), makeNode({ attrs: { 'data-state': 'loading' } })] });
+  const grid = makeNode({ classes: ['dash-grid-scroll'], rect: { top: 0, bottom: 720, left: 0, right: 1280, width: 1280 }, children: [okWidget, stuckWidget] });
+  const runUnsettled = new Function('document', 'getComputedStyle', '__e2e', `return (${expr});`);
+  const probeStub = { visuallyHidden: el => el.classList.contains('fh-sr-only') || el.classList.contains('sr-only') };
+  assert.deepEqual(
+    runUnsettled({ querySelector: sel => (sel === '.dash-grid-scroll' ? grid : null) }, el => el?.__style ?? { overflowY: 'visible' }, probeStub),
+    [{ widget: 'Fuel', reason: 'loading' }],
+  );
+});

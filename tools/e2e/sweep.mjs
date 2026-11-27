@@ -502,10 +502,13 @@ async function playbackInputs() {
     const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
     const visible = node => {
       if (!node.checkVisibility({ visibilityProperty: true, opacityProperty: true })) return false;
+      if (__e2e.visuallyHidden(node)) return false;
       const box = node.getBoundingClientRect();
       let top = Math.max(box.top, viewport.top), bottom = Math.min(box.bottom, viewport.bottom);
       for (let p = node.parentElement; p && p !== grid; p = p.parentElement) {
-        if (getComputedStyle(p).overflowY === 'visible') continue;
+        const style = getComputedStyle(p);
+        if (__e2e.visuallyHidden(p, style)) return false;
+        if (style.overflowY === 'visible') continue;
         const clip = p.getBoundingClientRect(); top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
       }
       return box.width > 0 && top < bottom;
