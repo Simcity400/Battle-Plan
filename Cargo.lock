@@ -12068,7 +12068,6 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
- "shader-pipeline",
  "tauri",
  "tauri-build",
  "test-unify",

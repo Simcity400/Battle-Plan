@@ -566,7 +566,6 @@ fn main() {
     if let Some(prefix) = perf::map_prefix() {
         viewer::host::log_map_frames(prefix);
     }
-    shader_pipeline::artwork::warm();
     if let Err(error) = dashboard_text::artwork::configure_desktop() {
         eprintln!("{error}");
     }
