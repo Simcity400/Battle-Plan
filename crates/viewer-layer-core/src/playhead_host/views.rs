@@ -358,7 +358,7 @@ impl Columns {
         };
         let started = Instant::now();
         let patched = held.and_then(|held| self.patch(table, columns, held, touched, from, &mut made));
-        if let Some(previous) = previous {
+        if let Some(previous) = previous && patched.is_ok() {
             self.keep(previous, touched);
         }
         match patched {
