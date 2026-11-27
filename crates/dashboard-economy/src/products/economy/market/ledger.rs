@@ -3,6 +3,7 @@ use dashboard_base::{
     catalogue::{self, Catalogue},
     products::{
         LoadContext, Product,
+        equipment_icon::IconContent,
         occurrences::{self, OccurrenceCount, OccurrenceReply, OccurrenceSort},
     },
     queries::country_ids::{Names, RunLinks},
@@ -555,6 +556,20 @@ impl Lines {
 
 type TermsKey = (i32, u32, u64, u8);
 
+type DesignAnswer = (Option<String>, Option<Arc<str>>);
+
+struct NamedDesigns {
+    answers: BTreeMap<u64, DesignAnswer>,
+    refusals: catalogue::OwnRefusals,
+}
+
+#[derive(Default)]
+struct DatedNames {
+    artwork: Option<Arc<IconContent>>,
+    hours: HashMap<(u32, i32), NamedDesigns>,
+    icons: HashMap<String, Arc<str>>,
+}
+
 struct Ledger {
     contracts: Vec<Placed>,
     by_key: HashMap<u128, u32>,
@@ -563,6 +578,7 @@ struct Ledger {
     closed: Arc<Lines>,
     opened: Mutex<Option<(Opening, Arc<Lines>)>>,
     terms: Mutex<HashMap<TermsKey, Option<Arc<Terms>>>>,
+    names: Mutex<DatedNames>,
 }
 
 impl Ledger {
@@ -932,7 +948,7 @@ fn scan(source: &Source, query: &Query<'_>, catalogue: Option<&Arc<Catalogue>>, 
             return Err(invalid("Two market contracts share one key"));
         }
     }
-    let mut ledger = Ledger { contracts, by_key, unread, untold, closed: Arc::new(Lines { index: Index::new(Vec::new(), Vec::new(), &LIVE)?, reads: None }), opened: Mutex::default(), terms: Mutex::default() };
+    let mut ledger = Ledger { contracts, by_key, unread, untold, closed: Arc::new(Lines { index: Index::new(Vec::new(), Vec::new(), &LIVE)?, reads: None }), opened: Mutex::default(), terms: Mutex::default(), names: Mutex::default() };
     sort_keys(source, query, catalogue, &mut ledger, cancelled)?;
     ledger.closed = Arc::new(lines(&ledger.contracts, &Opening::default(), ledger.unread.gaps.clone())?);
     Ok(ledger)
@@ -953,13 +969,12 @@ fn still_open(open: &Opened, made: &[(Contract, u32, u128)], at: (Option<i64>, u
     open.get(&at).copied().filter(|&found| made[found].0.ended.is_none())
 }
 
-fn ledger(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Ledger>> {
+fn ledger(source: &Source, query: &Query<'_>, branch: u64, binding: Option<&Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<Ledger>> {
     let kept = source.state::<Kept>();
-    let binding = load.content.as_ref().map(|options| catalogue::catalogue(source, options)).transpose()?;
     let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
-    if held.binding.as_ref().map(Arc::as_ptr) != binding.as_ref().map(Arc::as_ptr) { *held = Kept { binding: binding.clone(), branches: HashMap::new() }; }
+    if held.binding.as_ref().map(Arc::as_ptr) != binding.map(Arc::as_ptr) { *held = Kept { binding: binding.cloned(), branches: HashMap::new() }; }
     if let Some(found) = held.branches.get(&branch) { return Ok(Arc::clone(found)); }
-    let made = Arc::new(scan(source, query, binding.as_ref(), cancelled)?);
+    let made = Arc::new(scan(source, query, binding, cancelled)?);
     held.branches.insert(branch, Arc::clone(&made));
     Ok(made)
 }
@@ -1039,34 +1054,57 @@ fn variant_names(
     context: &names::Context,
     wanted: BTreeMap<(u32, i32), BTreeSet<u64>>,
     cancelled: &AtomicBool,
-    artwork: bool,
-) -> io::Result<HashMap<(i32, u64), (Option<String>, Option<String>)>> {
+    pictured: Option<&Ledger>,
+) -> io::Result<HashMap<(i32, u64), DesignAnswer>> {
     let mut out = HashMap::new();
-    if context.is_err() {
-        return Ok(out);
-    }
-    let mut icons: HashMap<String, String> = HashMap::new();
+    let Ok(content) = context else { return Ok(out) };
+    let keep = content.icons.is_ok();
+    let mut kept = pictured.map(|ledger| {
+        let mut held = ledger.names.lock().unwrap_or_else(PoisonError::into_inner);
+        let artwork = content.icons.as_ref().ok();
+        if held.artwork.as_ref().map(Arc::as_ptr) != artwork.map(Arc::as_ptr) {
+            *held = DatedNames { artwork: artwork.cloned(), ..DatedNames::default() };
+        }
+        held
+    });
     let mut sessions: BTreeMap<u32, names::NamingSession<'_>> = BTreeMap::new();
     for ((run, hour), variants) in wanted {
         dashboard_text::metadata::check_cancel(cancelled)?;
+        if keep
+            && let Some(saved) = kept.as_ref().and_then(|held| held.hours.get(&(run, hour)))
+            && saved.answers.keys().eq(&variants)
+        {
+            catalogue::credit(&saved.refusals);
+            out.extend(saved.answers.iter().map(|(&variant, answer)| ((hour, variant), answer.clone())));
+            continue;
+        }
         let session = match sessions.entry(run) {
             std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
             std::collections::btree_map::Entry::Vacant(slot) => slot.insert(namings.get(&run).ok_or_else(|| invalid(format!("Run {run} has no design names")))?.session()),
         };
         let variants: Vec<u64> = variants.into_iter().collect();
-        if !artwork {
+        let Some(kept) = kept.as_mut() else {
             let plain = session.plain_variant_names(query.replay.recording(), hour, &variants, context)?;
             out.extend(plain.into_iter().map(|(variant, name)| ((hour, variant), (name, None))));
             continue;
-        }
+        };
         let mut named = Named::default();
-        session.name_variants(query.replay.recording(), hour, &variants, context, &mut named)?;
-        for icon in named.icons() {
-            icons.insert(icon.key, icon.image);
+        let (read, refusals) = catalogue::capture(|| session.name_variants(query.replay.recording(), hour, &variants, context, &mut named));
+        read?;
+        for (key, image) in named.icons {
+            kept.icons.entry(key).or_insert_with(|| Arc::from(image));
         }
+        let mut answers = BTreeMap::new();
         for &variant in &variants {
-            let entry = named.variants.get(&variant);
-            out.insert((hour, variant), (entry.and_then(|held| held.name.clone()), entry.and_then(|held| held.icon.as_ref()).and_then(|key| icons.get(key)).cloned()));
+            let answer = named.variants.remove(&variant).map_or((None, None), |held| {
+                let icon = held.icon.as_ref().and_then(|key| kept.icons.get(key)).cloned();
+                (held.name, icon)
+            });
+            out.insert((hour, variant), answer.clone());
+            answers.insert(variant, answer);
+        }
+        if keep {
+            kept.hours.insert((run, hour), NamedDesigns { answers, refusals });
         }
     }
     Ok(out)
@@ -1097,7 +1135,7 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, 
     let selection = dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
     let context = names::context(source, load)?;
     let namings = if context.is_ok() { namings(source, query)? } else { BTreeMap::new() };
-    let ledger = ledger(source, query, branch, load, cancelled)?;
+    let ledger = ledger(source, query, branch, context.as_ref().ok().map(|content| &content.catalogue), cancelled)?;
     let opening = ledger.opening(params);
     let full = opening.full.clone();
     let index = ledger.index(opening, cancelled)?;
@@ -1123,7 +1161,7 @@ fn sort_keys(source: &Source, query: &Query<'_>, catalogue: Option<&Arc<Catalogu
     }
     let context = catalogue.cloned().map(names::Content::from_catalogue).ok_or_else(|| UNNAMED.to_owned());
     let naming = if context.is_ok() { namings(source, query)? } else { BTreeMap::new() };
-    let named = variant_names(query, &naming, &context, variants, cancelled, false)?;
+    let named = variant_names(query, &naming, &context, variants, cancelled, None)?;
     let name_of = |at, variant| (named.get(&(at, variant)).and_then(|(name, _)| name.clone()), None, None);
     let mut made = Vec::with_capacity(ledger.contracts.len());
     for placed in &ledger.contracts {
@@ -1317,14 +1355,14 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
             variants_wanted.entry((run, when)).or_default().extend(found.equipment.iter().chain(&found.prices).map(|&(variant, _)| variant));
         }
     }
-    let named = variant_names(query, &prepared.namings, &prepared.context, variants_wanted, cancelled, true)?;
+    let named = variant_names(query, &prepared.namings, &prepared.context, variants_wanted, cancelled, Some(ledger))?;
     let name_of = |when: i32, variant: u64| -> (Option<String>, Option<String>, Option<String>) {
         if let Err(why) = prepared.context.as_ref() {
             return (None, None, Some(why.clone()));
         }
         match named.get(&(when, variant)) {
-            Some((Some(name), icon)) => (Some(name.clone()), icon.clone(), None),
-            Some((None, icon)) => (None, icon.clone(), Some(UNNAMED.into())),
+            Some((Some(name), icon)) => (Some(name.clone()), icon.as_deref().map(str::to_owned), None),
+            Some((None, icon)) => (None, icon.as_deref().map(str::to_owned), Some(UNNAMED.into())),
             None => (None, None, Some(UNNAMED.into())),
         }
     };

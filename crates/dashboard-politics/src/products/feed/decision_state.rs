@@ -7,7 +7,7 @@ use replay_data::{
     },
     rows::{TableId, tables},
 };
-use replay_lanes::at::{Keys, Read, Seeker};
+use replay_lanes::at::{Cursor, Keys, Read, Readers};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
 #[cfg(any(test, feature = "export-types"))]
@@ -150,7 +150,7 @@ pub(crate) fn resolve_in_pack(event: &FeedEvent, pack: &EventFeedHistoryRow) -> 
     decode(change.container, lifecycle, event.read_hour)
 }
 
-pub(crate) fn resolve_all(query: &Query<'_>, events: &[&FeedEvent]) -> io::Result<Vec<Option<DecisionLifecycleState>>> {
+pub(crate) fn resolve_all(query: &Query<'_>, events: &[&FeedEvent], readers: &mut Option<Readers>) -> io::Result<Vec<Option<DecisionLifecycleState>>> {
     let mut out: Vec<Option<DecisionLifecycleState>> = vec![None; events.len()];
     let mut wanted: BTreeMap<(u32, i32), Vec<usize>> = BTreeMap::new();
     let recording = query.replay.recording();
@@ -173,14 +173,14 @@ pub(crate) fn resolve_all(query: &Query<'_>, events: &[&FeedEvent]) -> io::Resul
     if wanted.is_empty() {
         return Ok(out);
     }
-    let mut seeker = Seeker::new(recording)?;
     let read = [Read {
         table: TableId::EventFeedHistory,
         columns: None,
         keys: Keys::These(&[0]),
     }];
+    let mut cursor = Cursor::resume(recording, &read, readers.take())?;
     for ((run, read_hour), indices) in wanted {
-        let frame = dashboard_query::cost::storage(|| seeker.frame(run, read_hour, &read))?;
+        let frame = dashboard_query::cost::storage(|| cursor.frame(run, read_hour))?;
         let sampled = frame.tables[TableId::EventFeedHistory.index()].sampled_at() == Some(read_hour);
         let pack = sampled
             .then(|| frame.complete::<tables::EventFeedHistory>().ok().and_then(|rows| rows.first()))
@@ -192,6 +192,7 @@ pub(crate) fn resolve_all(query: &Query<'_>, events: &[&FeedEvent]) -> io::Resul
             });
         }
     }
+    *readers = cursor.into_readers();
     Ok(out)
 }
 

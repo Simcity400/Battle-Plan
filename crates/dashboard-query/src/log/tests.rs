@@ -111,6 +111,8 @@ fn a_pass_over_a_run_gives_each_row_it_inserted_once_as_a_read_does() {
     let wanted = reader.inserted(run, &[(first as i32, last as i32)]).unwrap();
     assert!(!wanted.is_empty());
     assert_eq!(got, wanted);
+    let selected = reader.inserted_matching(run, &[(first as i32, last as i32)], |key| key == event_key).unwrap();
+    assert_eq!(selected, wanted.into_iter().filter(|row| row.key == event_key).collect::<Vec<_>>());
 }
 
 #[test]

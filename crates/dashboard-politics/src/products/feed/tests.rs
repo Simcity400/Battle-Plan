@@ -1032,7 +1032,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     bare_instant.sequence = 9;
     bare_instant.actor = party(9001, Slot::Of(7));
     assert_eq!(
-        resolve_all(&query_b3, &[&bare_timed_out, &bare_instant]).unwrap(),
+        resolve_all(&query_b3, &[&bare_timed_out, &bare_instant], &mut None).unwrap(),
         vec![
             Some(DecisionLifecycleState::NotRecorded { reason: EVENT_FEED_HISTORY_NOT_RECORDED.to_owned() }),
             Some(DecisionLifecycleState::NotRecorded { reason: EVENT_FEED_HISTORY_NOT_RECORDED.to_owned() }),
