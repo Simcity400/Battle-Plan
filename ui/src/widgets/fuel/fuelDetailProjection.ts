@@ -11,13 +11,13 @@ import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../fami
 import type { ChartExactRational, ChartGap, ChartHoverDetail, ChartLegendEntry, ChartStackBand, ChartStackModel, TimeChartModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../../families/value.ts';
+import { formatExactRational, formatRational } from '../../families/valueFormat.ts';
 import type { CountryFuelReply, FuelAwardPart, FuelDemandPart, FuelDemandReply, HourSpan } from '../../generated/dashboard';
 import { siteLevel } from './fuelConsumption.ts';
 import {
   BURN_PARTS,
   COUNTRY_FUEL,
   FAMILY_MEASURES,
-  formatFuelPart,
   FUEL_DAYS,
   FUEL_DEMAND_TOTALS,
   fuelParts,
@@ -108,7 +108,7 @@ export function buildFuelAccountingTableModel(
           amount: raw === null
             ? { value: notRecorded(reason), bar: null }
             : {
-                value: BigInt(raw) === 0n ? zeroValue() : knownValue(formatFuelPart(BigInt(raw), GAIN_BIG, options.digits)),
+                value: BigInt(raw) === 0n ? zeroValue() : knownValue(formatRational(BigInt(raw), GAIN_BIG, { maxDecimals: options.digits })),
                 sortValue: knownValue(val!),
                 bar: maxVal > 0 ? { fraction: knownValue(Math.abs(val!) / maxVal) } : null,
               },
@@ -134,7 +134,7 @@ export function buildFuelAccountingTableModel(
     }
     const transfer = values.transfer;
     const qScale = BigInt(reply.quantityScale);
-    const text = formatFuelPart(transfer.raw, qScale, options.digits);
+    const text = formatRational(transfer.raw, qScale, { maxDecimals: options.digits });
     return {
       ...base,
       hideHeader: true,
@@ -159,7 +159,7 @@ export function buildFuelAccountingTableModel(
   const maxAbs = values.parts.reduce((best, part) => Math.max(best, Math.abs(Number(part.raw) / scaleNum)), 0);
   const rows: TableRow[] = values.parts.map(part => {
     const val = Number(part.raw) / scaleNum;
-    const formatted = formatFuelPart(part.raw, values.scale, options.digits);
+    const formatted = formatRational(part.raw, values.scale, { maxDecimals: options.digits });
     const share = fuelPartShare(part.raw, values.total);
     const clickable = measure === 'burn' && part.consumer !== undefined && !!reply.read?.day?.awards;
     return {
@@ -189,7 +189,7 @@ export function buildFuelAccountingTableModel(
     };
   });
   const totalLabel = measure === 'gain' ? 'Fuel gained (own production)' : 'Fuel burned';
-  const totalText = formatFuelPart(values.total, values.scale, options.digits);
+  const totalText = formatRational(values.total, values.scale, { maxDecimals: options.digits });
   const totalRow: TableRow = {
     key: '__total__',
     name: totalLabel,
@@ -298,7 +298,7 @@ export function buildRecipientsTableModel(
       cells: {
         part: { value: knownValue(label), ...(part.recordedName === null ? { tone: 'muted' } : {}), ...(part.nameReason ? { subtext: part.nameReason } : {}) },
         amount: {
-          value: raw === 0n ? zeroValue() : knownValue(formatFuelPart(raw, gainScale)),
+          value: raw === 0n ? zeroValue() : knownValue(formatExactRational(raw, gainScale)),
           sortValue: knownValue(val),
           bar: maxVal > 0 && val > 0 ? { fraction: knownValue(val / maxVal) } : null,
         },
@@ -317,7 +317,7 @@ export function buildRecipientsTableModel(
       cells: {
         part: { value: knownValue('Other'), tone: 'muted' },
         amount: {
-          value: knownValue(formatFuelPart(remainder, gainScale)),
+          value: knownValue(formatExactRational(remainder, gainScale)),
           sortValue: knownValue(val),
           ...(val < 0 ? { tone: 'negative' } : {}),
           bar: maxVal > 0 && val > 0 ? { fraction: knownValue(val / maxVal) } : null,
@@ -332,7 +332,7 @@ export function buildRecipientsTableModel(
     name: consumerName,
     cells: {
       part: { value: knownValue(consumerName), strong: true },
-      amount: { value: knownValue(formatFuelPart(consumerTotal, gainScale, digits)), strong: true, bar: null },
+      amount: { value: knownValue(formatRational(consumerTotal, gainScale, { maxDecimals: digits })), strong: true, bar: null },
       share: { value: notApplicable('Total row'), strong: true },
     },
   };
@@ -379,7 +379,7 @@ export function buildConsumersTableModel(
         amount: raw === null
           ? { value: notRecorded(part.reason ?? 'Consumption unavailable'), bar: null }
           : {
-              value: raw === 0n ? zeroValue() : knownValue(`${formatFuelPart(raw, GAIN_BIG)} per day`),
+              value: raw === 0n ? zeroValue() : knownValue(`${formatExactRational(raw, GAIN_BIG)} per day`),
               sortValue: knownValue(val!),
               bar: maxVal > 0 && val! > 0 ? { fraction: knownValue(val! / maxVal) } : null,
             },
@@ -393,8 +393,8 @@ export function buildConsumersTableModel(
   const totalValue = !complete && !hasAnyKnown
     ? notRecorded('Unavailable')
     : !complete
-      ? partialValue(formatFuelPart(total, GAIN_BIG, digits), 'Some consumers have unrecorded demand')
-      : knownValue(formatFuelPart(total, GAIN_BIG, digits));
+      ? partialValue(formatRational(total, GAIN_BIG, { maxDecimals: digits }), 'Some consumers have unrecorded demand')
+      : knownValue(formatRational(total, GAIN_BIG, { maxDecimals: digits }));
   const totalRow: TableRow = {
     key: '__total__',
     name: totalLabel,
@@ -782,7 +782,7 @@ function fuelSeriesHoverDetail(
       if (raw === null) {
         return { label, swatch: def.color, missingReason: reason ?? 'Not recorded', tone: 'muted' };
       }
-      const value = formatFuelPart(BigInt(raw), GAIN_BIG, options.digits);
+      const value = formatRational(BigInt(raw), GAIN_BIG, { maxDecimals: options.digits });
       return reason
         ? { label, swatch: def.color, value, partialReason: reason, tone: 'muted' }
         : { label, swatch: def.color, value };
@@ -803,7 +803,7 @@ function fuelSeriesHoverDetail(
     return {
       hour: hover.hour,
       items: [transfer
-        ? { label: transfer.label, swatch: def.color, value: formatFuelPart(transfer.raw, BigInt(reply.quantityScale), options.digits) }
+        ? { label: transfer.label, swatch: def.color, value: formatRational(transfer.raw, BigInt(reply.quantityScale), { maxDecimals: options.digits }) }
         : { label: def.name, swatch: def.color, missingReason: 'Not recorded', tone: 'muted' }],
       replacesSeries: true,
     };
@@ -811,7 +811,7 @@ function fuelSeriesHoverDetail(
   const items: TooltipListItem[] = partDefs.map(def => {
     const found = values.parts.find(item => item.id === def.id);
     return found
-      ? { label: found.label, swatch: def.color, value: formatFuelPart(found.raw, values.scale, options.digits) }
+      ? { label: found.label, swatch: def.color, value: formatRational(found.raw, values.scale, { maxDecimals: options.digits }) }
       : { label: def.name, swatch: def.color, missingReason: 'Not recorded', tone: 'muted' };
   });
   return { hour: hover.hour, items, replacesSeries: true };

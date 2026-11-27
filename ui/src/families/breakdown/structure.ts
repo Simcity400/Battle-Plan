@@ -41,14 +41,14 @@ export function deriveBreakdownMirror(layout: BreakdownLayout, total: BreakdownT
 function stated(total: BreakdownTotal): string {
   if (total.value === null) return `notRecorded:${total.reason ?? 'Not recorded'}`;
   const text = total.exact ?? total.text;
-  return total.atLeast ? `atLeast:${text}` : total.partial ? `partial:${text}` : text;
+  return total.atLeast || total.partial ? `${total.atLeast ? 'atLeast' : 'partial'}:${text}:${total.reason ?? 'Not recorded'}` : text;
 }
 
 function drawn(item: DrawnItem): string {
   const { part } = item;
   if (part.notRecorded || part.value === null) return `notRecorded:${part.missingReason ?? 'Not recorded'}`;
   const text = part.exact ?? part.text;
-  return `${part.atLeast ? 'atLeast:' : part.partial ? 'partial:' : ''}${text}${item.shareText ? `|${item.shareText}` : ''}`;
+  return `${part.atLeast ? 'atLeast:' : part.partial ? 'partial:' : ''}${text}${part.atLeast || part.partial ? `:${part.partialReason ?? 'Not recorded'}` : ''}${item.shareText ? `|${item.shareText}` : ''}`;
 }
 
 export function deriveBreakdownAudit(model: BreakdownModel, layout: BreakdownLayout | null): readonly FamilyAuditRow[] {

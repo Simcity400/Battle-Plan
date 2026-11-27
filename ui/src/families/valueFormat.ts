@@ -123,6 +123,22 @@ export function formatRational(
   );
 }
 
+export function formatExactRational(
+  raw: bigint,
+  scale: bigint,
+  options?: Pick<RationalFormatOptions, 'signed' | 'percent' | 'unit'>,
+): string {
+  if (scale <= 0n) throw new InvalidFamilyValueError(`formatExactRational: non-positive denominator (${scale}) is not valid`);
+  let denominator = scale, twos = 0, fives = 0;
+  while (denominator % 2n === 0n) { denominator /= 2n; twos++; }
+  while (denominator % 5n === 0n) { denominator /= 5n; fives++; }
+  if (denominator !== 1n) {
+    const sign = raw < 0n ? '\u2212' : options?.signed && raw > 0n ? '+' : '';
+    return `${sign}${raw < 0n ? -raw : raw}/${scale}${options?.percent ? '%' : ''}${options?.unit ? ` ${options.unit}` : ''}`;
+  }
+  return formatRational(raw, scale, { ...options, maxDecimals: Math.max(twos, fives) });
+}
+
 export function formatScaledPercent(raw: bigint, scale: bigint, options?: { readonly signed?: boolean }): string {
   const decimals = scale > 1n ? (scale - 1n).toString().length : 0;
   return formatRationalCut(raw, scale, decimals, false, options?.signed === true, true, '');

@@ -10,7 +10,7 @@ import {
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, type Value } from '../../families/value.ts';
-import { formatDateOnly, formatScaledPercent } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatExactRational, formatScaledPercent } from '../../families/valueFormat.ts';
 import type { TensionStackEvent, WorldTensionStackReply } from '../../generated/dashboard';
 import { EVENTS_TABLE_BASE } from './definition.ts';
 import { validateWorldTensionStack } from './worldTensionProjection.ts';
@@ -40,9 +40,11 @@ function parseEvents(raw: unknown): ParsedEvents {
   };
 }
 
-function formatAddedPercent(raw: string, scale: number): Value<string> {
+function formatAddedPercent(raw: string, scale: number, inspect = false): Value<string> {
   if (!/^-?\d+$/.test(raw) || !Number.isSafeInteger(scale) || scale <= 0) return notRecorded('Tension amount not recorded');
-  return knownValue(formatScaledPercent(BigInt(raw), BigInt(scale), { signed: true }));
+  return knownValue(inspect
+    ? formatExactRational(BigInt(raw), BigInt(scale), { signed: true, percent: true })
+    : formatScaledPercent(BigInt(raw), BigInt(scale), { signed: true }));
 }
 
 export function worldTensionEventsColumns(): readonly TableColumnSpec[] {
@@ -86,6 +88,7 @@ export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOpt
             country: 'tag',
             lookHour: (row, hour) => Math.min(row.firstRead, hour),
             value: row => formatAddedPercent(row.addedRaw, parsed.scale),
+            extra: row => ({ tooltipRows: [{ label: spec.label, value: formatAddedPercent(row.addedRaw, parsed.scale, true) }] }),
             sortValue: row => {
               const num = Number(row.addedRaw);
               return Number.isFinite(num) && parsed.scale > 0 ? knownValue(num / parsed.scale) : notRecorded('Tension amount not recorded');

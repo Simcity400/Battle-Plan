@@ -18,6 +18,7 @@ import { buildTooltipContent } from '../host/tooltips.ts';
 import { tooltipText } from '../../charts/tooltip.ts';
 import {
   assertBarsModelValid,
+  formatBarsValueField,
   countryRowPresentation,
   deriveBarsAudit,
   deriveBarsMirror,
@@ -26,6 +27,21 @@ import {
   InvalidBarsModelError,
   type BarsModel, type BarsProjection,
 } from './model.ts';
+
+test('R3-S5: both sides of a bars tooltip retain exact partial values and reasons', () => {
+  const left = { value: partialValue(17.2468, 'Left coverage missing'), format: 'decimal1' as const };
+  const right = { value: partialValue(31.8642, 'Right coverage missing'), format: 'decimal1' as const };
+  const model: BarsModel = { form: 'two-sided', hour: 7, rows: [{ kind: 'data', key: 'A01', label: knownValue('A01'),
+    left: { value: left, numeric: 17.2468 }, right: { value: right, numeric: 31.8642 } }] };
+  assert.equal(formatBarsValueField(left).text, '17.2');
+  assert.equal(formatBarsValueField(right).text, '31.8');
+  const items = deriveBarsTooltip(model, 'A01')!.items!;
+  assert.deepEqual(items.map(item => [item.value, item.partialReason]), [
+    ['17.2468', 'Left coverage missing'], ['31.8642', 'Right coverage missing'],
+  ]);
+  assert.match(tooltipText(buildTooltipContent(deriveBarsTooltip(model, 'A01')!)), /Left coverage missing/);
+  assert.match(tooltipText(buildTooltipContent(deriveBarsTooltip(model, 'A01')!)), /Right coverage missing/);
+});
 import { axisCeiling, barsScrollHeight, layoutFamilyBars, visibleBarsRange } from './layout.ts';
 import { barsHostAdapter } from './hostAdapter.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';

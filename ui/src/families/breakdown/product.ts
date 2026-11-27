@@ -1,5 +1,5 @@
 import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart } from '../../generated/dashboard';
-import { formatRational, formatScalar } from '../valueFormat.ts';
+import { formatExactRational, formatScalar } from '../valueFormat.ts';
 import { PATH, type BreakdownPart, type BreakdownTotal } from './model.ts';
 
 export interface BreakdownWords {
@@ -12,14 +12,12 @@ function sentence(text: string | null): string | undefined {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : undefined;
 }
 
-const EXACT_DECIMALS = 7;
-
 function amount(wire: BreakdownAmount | null, words: BreakdownWords): { readonly value: number; readonly text: string; readonly exact?: string } | null {
   if (wire === null) return null;
   const numerator = BigInt(wire.numerator);
   const denominator = BigInt(wire.denominator);
   const text = words.format(numerator, denominator);
-  const exact = formatRational(numerator, denominator, { maxDecimals: EXACT_DECIMALS });
+  const exact = formatExactRational(numerator, denominator);
   return { value: Number(numerator) / Number(denominator), text, ...(exact !== text ? { exact } : {}) };
 }
 

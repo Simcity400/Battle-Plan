@@ -16,7 +16,8 @@ import type { InstalledAction } from '../../families/plan.ts';
 import { productRequest } from '../../dashboard/request.ts';
 import { dayLabel } from '../../charts/draw.ts';
 import type { CountryFuelReply, FuelAwardHistoryReply, FuelAwardPart, FuelAwardsReply } from '../../generated/dashboard';
-import { COUNTRY_FUEL, formatFuelPart, LEFT_OUT, validateCountryFuel, validateFuelAwardHistory, validateFuelAwards } from './fuelData';
+import { COUNTRY_FUEL, LEFT_OUT, validateCountryFuel, validateFuelAwardHistory, validateFuelAwards } from './fuelData';
+import { formatExactRational } from '../../families/valueFormat.ts';
 import { detailWindows, followedHistoryAnchor, fuelRecipientFor, intersectSpans, joinedRuns, readBasis, selectFuelRecipient, type FuelBasis, type FuelRecipientSelection } from './fuelDrill';
 import {
   buildRecipientsTableModel,
@@ -508,7 +509,7 @@ function RecipientHistory({
       ? 'Outside the selected group membership'
       : current?.amountRaw == null
         ? current?.reason ?? 'History unavailable'
-        : formatFuelPart(BigInt(current.amountRaw), 100000n);
+        : formatExactRational(BigInt(current.amountRaw), 100000n);
 
   const chartWidget = useMemo<WidgetBase>(() => ({
     ...widget,

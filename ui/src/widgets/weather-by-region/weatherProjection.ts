@@ -17,7 +17,7 @@ import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { noRegionsBody, regionLanes } from '../../families/regions/regionRows.ts';
-import { formatDateOnly, formatDateParts, formatRational } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatDateParts, formatExactRational, formatRational } from '../../families/valueFormat.ts';
 import type {
   RegionalWeatherColumn,
   RegionalWeatherColumnRegion,
@@ -147,7 +147,9 @@ function valueCell(
     ? signedRampColour(mean, low, high, colours.track, colours.cold, colours.warm)
     : signedRampColour(mean, -Math.max(Math.abs(low), Math.abs(high)), Math.max(Math.abs(low), Math.abs(high)), colours.track, colours.ramp, colours.ramp);
   if (!inspect) return { key: `v:${color}`, cell: { kind: 'solid', color } };
-  const text = show === 'temperature' ? temperatureText : modifierText;
+  const text = (sum: bigint, days = 1n) => show === 'temperature'
+    ? formatExactRational(sum, days * WEATHER_SCALE, { unit: '°C' })
+    : formatExactRational(sum * 100n, days * WEATHER_SCALE, { percent: true, signed: true });
   const label = show === 'temperature' ? 'Temperature' : reply.modifiers.find(item => item.id === modifier)?.name ?? 'Modifier';
   const meanText = text(BigInt(stats[1]), BigInt(days));
   const value = days > 1 ? `${meanText} (${text(BigInt(stats[0]))} to ${text(BigInt(stats[2]))})` : meanText;
@@ -177,7 +179,10 @@ function readoutOf(readout: WeatherReadout | undefined, show: WeatherShow, modif
     ? signedRampColour(raw, low, high, colours.track, colours.cold, colours.warm)
     : signedRampColour(raw, -Math.max(Math.abs(low), Math.abs(high)), Math.max(Math.abs(low), Math.abs(high)), colours.track, colours.ramp, colours.ramp);
   const secondary = show === 'temperature' ? 'Average' : reply.modifiers.find(item => item.id === modifier)?.name ?? 'Modifier';
-  return { kind: 'value', form: 'value', primary: text, secondary, swatch };
+  const audit = show === 'temperature'
+    ? formatExactRational(rawFixed, WEATHER_SCALE, { unit: '°C' })
+    : formatExactRational(rawFixed * 100n, WEATHER_SCALE, { percent: true, signed: true });
+  return { kind: 'value', form: 'value', primary: text, secondary, swatch, audit };
 }
 
 function columnCell(
