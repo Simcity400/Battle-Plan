@@ -414,6 +414,13 @@ export default function GameWindowView({
   >{body}</div>;
 
   if (error) {
+    if (error.message === 'Request cancelled') return shell(
+      <WidgetState kind="nothing-chosen" prompt="Rendering cancelled." actionLabel="Retry" onChoose={active ? () => {
+        if (flight.current) return;
+        setFailed(null);
+        launch(stableRequest, requestKey, subjectKey, generation);
+      } : undefined} />,
+    );
     const failure = error instanceof RefusedError && !error.subject?.trim()
       ? new RefusedError(error.text, error.causeKind, label)
       : error;

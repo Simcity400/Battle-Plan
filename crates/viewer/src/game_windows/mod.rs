@@ -2196,24 +2196,38 @@ impl Service {
         cache.renders.get(key)
     }
 
-    fn store_render(
+    fn finish_render(
         &self,
-        key: RenderFrameKey,
+        source_id: &str,
+        key: Option<&RenderFrameKey>,
         expected_gen: (u64, u64),
-        render: &GameWindowRender,
-    ) {
+        layers: &ResolvedLayers,
+        render: GameWindowRender,
+        from_cache: bool,
+    ) -> Result<GameWindowRender, GameWindowError> {
+        let store = key.filter(|_| !from_cache).map(|key| (key.clone(), render.clone()));
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         let current = (
             cache
                 .source_generations
-                .get(&key.window.source_id)
+                .get(source_id)
                 .copied()
                 .unwrap_or(0),
             cache.global_generation,
         );
         if current == expected_gen {
-            cache.renders.insert(key, render.clone());
+            if layers.generation_is_current() {
+                if let Some((key, frame)) = store {
+                    cache.renders.insert(key, frame);
+                }
+                return Ok(render);
+            }
+            if from_cache && let Some(key) = key {
+                cache.renders.order.retain(|entry| entry != key);
+                cache.renders.entries.remove(key);
+            }
         }
+        Err(GameWindowError::Cancelled)
     }
 
     pub fn frame_at(
@@ -2468,7 +2482,7 @@ impl Service {
         if let Some(frame_key) = &frame_key
             && let Some(hit) = self.cached_render(frame_key, expected_gen)
         {
-            return Ok(hit);
+            return self.finish_render(&key.source_id, Some(frame_key), expected_gen, layers, hit, true);
         }
 
         let load_req = WindowLoadRequest {
@@ -2713,10 +2727,7 @@ impl Service {
             text,
             placeholders,
         };
-        if let Some(frame_key) = frame_key {
-            self.store_render(frame_key, expected_gen, &render);
-        }
-        Ok(render)
+        self.finish_render(&key.source_id, frame_key.as_ref(), expected_gen, layers, render, false)
     }
 
     pub fn render_from_source_at_generation(
