@@ -2293,3 +2293,602 @@ fn a_followed_top_of_chosen_countries_is_not_recorded_where_their_holders_are_no
     assert_eq!(answer.not_recorded.as_deref(), Some(wanted.as_str()), "never a successful empty ranking");
     assert_eq!(answer, harness.fresh(&chosen, hour), "the incremental ranking and the answer at the hour agree");
 }
+
+mod paused_reset {
+    use super::*;
+    use crate::{
+        host::PlayheadHost,
+        live::{CellValue, Cells, GroupState, Source},
+        panel::{AtHour, ExactReader, PanelRows, ProductRead, ProductReader, dated},
+        push::{PANEL, Push},
+        registry::{Anchor, Hosted},
+    };
+
+    struct NoRows;
+    impl PanelRows for NoRows {
+        fn reader(&self, _tables: &[TableId]) -> io::Result<Box<dyn crate::panel::PanelReader>> {
+            Err(io::Error::other("unused"))
+        }
+    }
+
+    struct SinkGate {
+        state: Mutex<(Option<Hour>, bool, bool)>,
+        cv: std::sync::Condvar,
+    }
+
+    impl SinkGate {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { state: Mutex::new((None, false, false)), cv: std::sync::Condvar::new() })
+        }
+        fn arm(&self, hour: Hour) {
+            *self.state.lock().unwrap() = (Some(hour), false, false);
+        }
+        fn hit(&self, hour: Hour) {
+            let mut s = self.state.lock().unwrap();
+            if s.0 == Some(hour) && !s.2 {
+                s.1 = true;
+                self.cv.notify_all();
+                while !s.2 {
+                    s = self.cv.wait(s).unwrap();
+                }
+                s.0 = None;
+            }
+        }
+        fn wait_entered(&self) {
+            let mut s = self.state.lock().unwrap();
+            while !s.1 {
+                s = self.cv.wait(s).unwrap();
+            }
+        }
+        fn release(&self) {
+            let mut s = self.state.lock().unwrap();
+            s.2 = true;
+            self.cv.notify_all();
+        }
+    }
+
+    fn product(advance: ProductReader) -> Box<AtHour> {
+        let cold: ExactReader = Arc::new(|_, _| unreachable!("the incremental reader supplies the seed"));
+        Box::new(AtHour { read: cold.clone(), cold, advance })
+    }
+
+    fn live_cell(column: usize, key: u128, value: i64) -> (Arc<crate::live::Live>, Arc<crate::panel::PanelData>) {
+        let cells = Cells::default();
+        cells.value("r", "v", Source { table: TableId::ALL[TABLE], column, key }, 1.0);
+        let live = Arc::new(cells.finish());
+        let json = serde_json::json!({ "live": live.json(&[GroupState::Values(vec![CellValue::Number(value)])]) });
+        (live, Arc::new(Ok(json)))
+    }
+
+    fn take_panel_data(
+        seen: &mut Vec<(u32, Hour, u8, Option<serde_json::Value>)>,
+        push: &Push,
+        target_id: u32,
+        target_hour: Hour,
+    ) -> serde_json::Value {
+        take_panel_data_at_epoch(seen, push, None, target_id, target_hour)
+    }
+
+    fn take_panel_data_at_epoch(
+        seen: &mut Vec<(u32, Hour, u8, Option<serde_json::Value>)>,
+        push: &Push,
+        expected_epoch: Option<(&Playhead, u64)>,
+        target_id: u32,
+        target_hour: Hour,
+    ) -> serde_json::Value {
+        loop {
+            if let Some(at) = seen.iter().position(|(id, hour, kind, _)| *id == target_id && *hour == target_hour && *kind == dated::DATA) {
+                return seen.remove(at).3.expect("panel data");
+            }
+            if let Some((playhead, epoch)) = expected_epoch {
+                assert_eq!(playhead.epoch(), epoch, "playhead reset while waiting for panel {target_id} hour {target_hour}");
+            }
+            let (kind, bytes, session) = push.take_sent().expect("panel packet");
+            push.credit(session, u64::MAX);
+            if kind != PANEL {
+                continue;
+            }
+            for r in dated::records(&bytes).unwrap() {
+                let value = (r.kind == dated::DATA).then(|| rmp_serde::from_slice(r.body).expect("panel value"));
+                seen.push((r.id, r.hour, r.kind, value));
+            }
+        }
+    }
+
+    fn anchored(playhead: &Playhead, anchor: Anchor) {
+        playhead.frame_rate(anchor.frame_rate);
+        playhead.pace(anchor.speed);
+        if anchor.sought {
+            playhead.seek(anchor.hour);
+        }
+        if !anchor.playing {
+            playhead.pause();
+        }
+    }
+
+    fn open_host(
+        pages: &Arc<Recording>,
+        pieces: Vec<playhead::Piece>,
+        hook_fn: impl FnMut(&StepStats, Option<Message>) + Send + 'static,
+    ) -> (Arc<Playhead>, Arc<PlayheadHost<Playhead>>, Arc<Push>) {
+        let timeline = Timeline::new(&**pages, pieces).unwrap();
+        let follow = Follow::new(0);
+        let hook = follow.hook(Box::new(hook_fn));
+        let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 32, ring: 1, speed: 1.0, rate: 60.0, ..Settings::default() };
+        let playhead = Arc::new(Playhead::new(Arc::clone(pages) as Arc<dyn Pages>, timeline, settings, Some(hook)).unwrap());
+        let held = crate::host::held_tables(&**pages, pages.kinds.len());
+        let host = PlayheadHost::new(Arc::clone(&playhead), |p| p, anchored, follow, held).unwrap();
+        let push = Arc::new(Push::default());
+        host.show_panels(Arc::new(NoRows), Arc::clone(&push));
+        (playhead, host, push)
+    }
+
+    #[test]
+    fn paused_cells_dropping_across_a_gap_do_not_reset_the_playhead() {
+        let pages = record(quiet);
+        let (playhead, host, push) = open_host(
+            &pages,
+            vec![playhead::Piece { run: 0, first: 0, last: 3 }, playhead::Piece { run: 0, first: 5, last: 24 }],
+            |_, _| {},
+        );
+        let mut seen = Vec::new();
+        host.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+        playhead.wait_newest(0).unwrap();
+
+        host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+            if hour == 4 {
+                ProductRead { value: Arc::new(Ok(serde_json::json!({ "gap": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+            } else {
+                let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
+                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            }
+        }))).unwrap()(10, 1).unwrap();
+
+        let seeded = take_panel_data(&mut seen, &push, 10, 0);
+        assert_eq!(seeded["live"]["groups"][0]["seedHour"], 0);
+        assert!(seeded["live"]["groups"][0]["follow"].is_u64());
+        playhead.wait_declarations().unwrap();
+        let epoch_after_settle = playhead.epoch();
+        playhead.pace(16.0);
+
+        let returned = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_after_settle)), 10, 5);
+        assert!(returned["live"]["groups"][0]["follow"].is_u64(), "returning cell group after gap receives a follow id");
+        assert_eq!(playhead.epoch(), epoch_after_settle, "cells returning after a gap must not reset the paused playhead");
+        playhead.wait_newest(8).unwrap();
+        playhead.wait_declarations().unwrap();
+        assert_eq!(playhead.epoch(), epoch_after_settle, "cells dropping at the gap and returning after it must cause 0 resets after first settle");
+        assert_eq!(playhead.held().2.joins_open, 0);
+    }
+
+    #[test]
+    fn paused_catch_up_returning_cells_across_gap_do_not_reset_playhead() {
+        let pages = record(quiet);
+        let (playhead, host, push) = open_host(
+            &pages,
+            vec![playhead::Piece { run: 0, first: 0, last: 3 }, playhead::Piece { run: 0, first: 5, last: 24 }],
+            |_, _| {},
+        );
+        let mut seen = Vec::new();
+        host.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+        playhead.wait_newest(0).unwrap();
+
+        host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+            let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }))).unwrap()(10, 1).unwrap();
+        let _ = take_panel_data(&mut seen, &push, 10, 0);
+        playhead.wait_declarations().unwrap();
+        let epoch_after_settle = playhead.epoch();
+
+        let (seed_entered_tx, seed_entered_rx) = mpsc::channel();
+        let (seed_release_tx, seed_release_rx) = mpsc::channel();
+        let seed_release_rx = Mutex::new(seed_release_rx);
+        let catch_up_hour_5 = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let catch_up_hour_5_read = Arc::clone(&catch_up_hour_5);
+        host.prepare_panel(product(Arc::new(move |hour, _, _, step| {
+            if hour == 0 && step.is_none() {
+                let _ = seed_entered_tx.send(());
+                let _ = seed_release_rx.lock().unwrap().recv();
+                return ProductRead { value: Arc::new(Ok(serde_json::json!({ "init": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() };
+            }
+            if hour == 4 {
+                return ProductRead { value: Arc::new(Ok(serde_json::json!({ "gap": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() };
+            }
+            if hour == 5 && step.is_none() {
+                catch_up_hour_5_read.store(true, std::sync::atomic::Ordering::Release);
+            }
+            let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }))).unwrap()(11, 1).unwrap();
+
+        seed_entered_rx.recv().unwrap();
+        playhead.pace(16.0);
+        playhead.wait_newest(8).unwrap();
+        seed_release_tx.send(()).unwrap();
+
+        let _ = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_after_settle)), 11, 0);
+        let returned = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_after_settle)), 11, 5);
+        assert!(returned["live"]["groups"][0]["follow"].is_u64(), "returning cell group in catch-up receives a follow id");
+        loop {
+            if seen.iter().any(|(id, hour, kind, _)| *id == 11 && *hour == 8 && (*kind == dated::DATA || *kind == dated::STANDS)) {
+                break;
+            }
+            assert_eq!(playhead.epoch(), epoch_after_settle, "playhead reset while waiting for panel 11 catch-up hour 8");
+            let (kind, bytes, session) = push.take_sent().expect("panel packet");
+            push.credit(session, u64::MAX);
+            if kind != PANEL {
+                continue;
+            }
+            for r in dated::records(&bytes).unwrap() {
+                let value = (r.kind == dated::DATA).then(|| rmp_serde::from_slice(r.body).expect("panel value"));
+                seen.push((r.id, r.hour, r.kind, value));
+            }
+        }
+        playhead.wait_declarations().unwrap();
+        assert!(catch_up_hour_5.load(std::sync::atomic::Ordering::Acquire), "hour 5 ran on PanelRead::CatchUp (step = None)");
+        assert_eq!(playhead.epoch(), epoch_after_settle, "catch-up registering a cell on an already-retained column must cause 0 paused resets");
+    }
+
+    #[test]
+    fn replaced_panel_request_replaces_retained_lanes_and_unpanel_clears_them() {
+        let pages = record(quiet);
+        let (playhead, host, push) = open_host(
+            &pages,
+            vec![playhead::Piece { run: 0, first: 0, last: 12 }],
+            |_, _| {},
+        );
+        let mut seen = Vec::new();
+        host.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+        playhead.wait_newest(0).unwrap();
+
+        host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+            let (live, value) = live_cell(3, 105, i64::from(hour));
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }))).unwrap()(40, 1).unwrap();
+        let _ = take_panel_data(&mut seen, &push, 40, 0);
+        playhead.wait_declarations().unwrap();
+        assert_eq!(
+            host.follow().declared().unwrap(),
+            [playhead::Declared { table: TABLE, columns: vec![3], keyed: false, passing: false, hourly: false }],
+            "initial panel retains its live-cell column"
+        );
+
+        seen.clear();
+        host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+            let (live, value) = live_cell(0, 100, i64::from(hour));
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }))).unwrap()(40, 1).unwrap();
+        let _ = take_panel_data(&mut seen, &push, 40, 0);
+        playhead.wait_declarations().unwrap();
+        assert_eq!(
+            host.follow().declared().unwrap(),
+            [playhead::Declared { table: TABLE, columns: vec![0], keyed: false, passing: false, hourly: false }],
+            "replacing the request on the same panel id replaces its retained lanes instead of merging into old ones"
+        );
+
+        host.unpanel(40);
+        playhead.wait_declarations().unwrap();
+        assert!(host.follow().declared().unwrap().is_empty(), "removing the panel clears its retained lanes");
+    }
+
+    #[test]
+    fn shown_panel_retains_cell_lanes_replaces_on_reinstall_and_clears_on_unpanel() {
+        use replay_frame::frame::{DecodedFrame, Metrics};
+        struct FeedRows {
+            playhead: Arc<Playhead>,
+            state: Arc<Mutex<(Option<Arc<DecodedFrame>>, Option<crate::panel::Wake>)>>,
+        }
+        impl FeedRows {
+            fn publish(&self, hour: Hour) {
+                let frame = Arc::new(DecodedFrame {
+                    branch: 1,
+                    hour,
+                    tables: std::array::from_fn(|_| replay_frame::frame::not_selected()),
+                    metrics: Metrics::default(),
+                });
+                let wake = {
+                    let mut guard = self.state.lock().unwrap();
+                    guard.0 = Some(frame);
+                    guard.1.clone()
+                };
+                if let Some(wake) = wake {
+                    wake();
+                }
+            }
+        }
+        struct FeedReader {
+            playhead: Arc<Playhead>,
+            state: Arc<Mutex<(Option<Arc<DecodedFrame>>, Option<crate::panel::Wake>)>>,
+        }
+        impl crate::panel::PanelReader for FeedReader {
+            fn frame(&self) -> Option<Arc<DecodedFrame>> {
+                self.state.lock().unwrap().0.clone()
+            }
+            fn through_seek(&self, frame: &Arc<DecodedFrame>) -> Option<(Hour, u64)> {
+                Some((frame.hour, self.playhead.epoch()))
+            }
+        }
+        impl PanelRows for FeedRows {
+            fn reader(&self, _tables: &[TableId]) -> io::Result<Box<dyn crate::panel::PanelReader>> {
+                Ok(Box::new(FeedReader { playhead: Arc::clone(&self.playhead), state: Arc::clone(&self.state) }))
+            }
+            fn on_publish(&self, wake: crate::panel::Wake) {
+                self.state.lock().unwrap().1 = Some(wake);
+            }
+        }
+        struct ShownCellPanel {
+            column: usize,
+            key: u128,
+            drop_at: Option<Hour>,
+            live: Option<crate::live::Live>,
+        }
+        impl crate::panel::Panel for ShownCellPanel {
+            fn tables(&self) -> &[TableId] { &[] }
+            fn data(&mut self, frame: &DecodedFrame) -> crate::panel::PanelData {
+                if self.drop_at == Some(frame.hour) {
+                    self.live = None;
+                    return Ok(serde_json::json!({ "gap": true }));
+                }
+                let cells = Cells::default();
+                cells.value("r", "v", Source { table: TableId::ALL[TABLE], column: self.column, key: self.key }, 1.0);
+                self.live = Some(cells.finish());
+                Ok(serde_json::json!({ "ok": true }))
+            }
+            fn live(&self) -> Option<&crate::live::Live> {
+                self.live.as_ref()
+            }
+        }
+
+        let pages = record(quiet);
+        let timeline = Timeline::new(&*pages, vec![playhead::Piece { run: 0, first: 0, last: 12 }]).unwrap();
+        let follow = Follow::new(0);
+        let hook = follow.hook(Box::new(|_, _| {}));
+        let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 32, ring: 1, speed: 1.0, rate: 60.0, ..Settings::default() };
+        let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, timeline, settings, Some(hook)).unwrap());
+        let held = crate::host::held_tables(&*pages, pages.kinds.len());
+        let host = PlayheadHost::new(Arc::clone(&playhead), |p| p, anchored, follow, held).unwrap();
+        let rows = Arc::new(FeedRows { playhead: Arc::clone(&playhead), state: Arc::new(Mutex::new((None, None))) });
+        let push = Arc::new(Push::default());
+        host.show_panels(Arc::clone(&rows) as Arc<dyn PanelRows>, Arc::clone(&push));
+
+        let mut seen = Vec::new();
+        host.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+        playhead.wait_newest(0).unwrap();
+
+        host.prepare_panel(Box::new(ShownCellPanel { column: 3, key: 105, drop_at: Some(1), live: None })).unwrap()(41, 1).unwrap();
+        rows.publish(0);
+        let _ = take_panel_data(&mut seen, &push, 41, 0);
+        playhead.wait_declarations().unwrap();
+        assert_eq!(
+            host.follow().declared().unwrap(),
+            [playhead::Declared { table: TABLE, columns: vec![3], keyed: false, passing: false, hourly: false }],
+            "shown panel retains its live-cell column"
+        );
+
+        rows.publish(1);
+        let _ = take_panel_data(&mut seen, &push, 41, 1);
+        playhead.wait_declarations().unwrap();
+        assert_eq!(
+            host.follow().declared().unwrap(),
+            [playhead::Declared { table: TABLE, columns: vec![3], keyed: false, passing: false, hourly: false }],
+            "shown panel keeps its retained cell column when a frame has no live cells"
+        );
+
+        seen.clear();
+        host.prepare_panel(Box::new(ShownCellPanel { column: 0, key: 100, drop_at: None, live: None })).unwrap()(41, 1).unwrap();
+        rows.publish(2);
+        let _ = take_panel_data(&mut seen, &push, 41, 2);
+        playhead.wait_declarations().unwrap();
+        assert_eq!(
+            host.follow().declared().unwrap(),
+            [playhead::Declared { table: TABLE, columns: vec![0], keyed: false, passing: false, hourly: false }],
+            "re-installing a shown panel on the same id replaces its retained cell lanes"
+        );
+
+        host.unpanel(41);
+        playhead.wait_declarations().unwrap();
+        assert!(host.follow().declared().unwrap().is_empty(), "unpanel clears retained lanes for a shown panel");
+    }
+
+    #[test]
+    fn paused_cross_piece_table_join_and_shrink_seek_once() {
+        let pages = record(quiet);
+        let (playhead, host, push) = open_host(
+            &pages,
+            vec![playhead::Piece { run: 0, first: 0, last: 3 }, playhead::Piece { run: 0, first: 5, last: 24 }],
+            |_, _| {},
+        );
+        let mut seen = Vec::new();
+        host.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+        playhead.wait_newest(0).unwrap();
+        host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+            let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }))).unwrap()(10, 1).unwrap();
+        let _ = take_panel_data(&mut seen, &push, 10, 0);
+        playhead.wait_declarations().unwrap();
+        playhead.pace(16.0);
+        playhead.wait_newest(8).unwrap();
+        playhead.wait_declarations().unwrap();
+
+        let epoch_before_cross_piece = playhead.epoch();
+        host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+            if hour < 5 {
+                ProductRead { value: Arc::new(Ok(serde_json::json!({ "empty": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+            } else {
+                let (live, value) = live_cell(3, 105, i64::from(hour));
+                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            }
+        }))).unwrap()(11, 1).unwrap();
+        let joined = take_panel_data(&mut seen, &push, 11, 5);
+        assert!(joined["live"]["groups"][0]["follow"].is_u64());
+        playhead.wait_newest(8).unwrap();
+        playhead.wait_declarations().unwrap();
+        assert_eq!(playhead.epoch(), epoch_before_cross_piece + 1, "a new cross-piece column join takes exactly one clean seek and terminates");
+        assert_eq!(playhead.held().2.joins_open, 0);
+        drop(host);
+
+        let (playhead2, host2, push2) = open_host(
+            &pages,
+            vec![playhead::Piece { run: 0, first: 0, last: 3 }, playhead::Piece { run: 0, first: 5, last: 12 }],
+            |_, _| {},
+        );
+        let mut seen2 = Vec::new();
+        host2.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+        playhead2.wait_newest(0).unwrap();
+        host2.prepare_panel(product(Arc::new(|hour, _, _, _| {
+            if hour < 5 {
+                ProductRead { value: Arc::new(Ok(serde_json::json!({ "before": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+            } else {
+                let (live, value) = live_cell(3, 105, i64::from(hour));
+                ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+            }
+        }))).unwrap()(20, 1).unwrap();
+        let _ = take_panel_data(&mut seen2, &push2, 20, 0);
+        let epoch_before_boundary = playhead2.epoch();
+        assert!(playhead2.newest().is_some_and(|n| n < 5), "panel is installed before read-ahead crosses the gap");
+        playhead2.pace(24.0);
+        let boundary_joined = take_panel_data(&mut seen2, &push2, 20, 5);
+        assert!(boundary_joined["live"]["groups"][0]["follow"].is_u64());
+        playhead2.wait_newest(8).unwrap();
+        playhead2.wait_declarations().unwrap();
+        assert_eq!(playhead2.epoch(), epoch_before_boundary + 1, "a column first declared right at the piece boundary takes exactly one clean seek and settles");
+        assert_eq!(playhead2.held().2.joins_open, 0);
+        drop(host2);
+
+        let gate3 = SinkGate::new();
+        let gate3_hook = Arc::clone(&gate3);
+        let (playhead3, host3, push3) = open_host(
+            &pages,
+            vec![playhead::Piece { run: 0, first: 0, last: 3 }, playhead::Piece { run: 0, first: 5, last: 12 }],
+            move |stats, _| gate3_hook.hit(stats.last),
+        );
+        let mut seen3 = Vec::new();
+        host3.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+        playhead3.wait_newest(0).unwrap();
+        host3.prepare_panel(product(Arc::new(|hour, _, _, _| {
+            let (live, value) = live_cell(0, 100, i64::from(hour));
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }))).unwrap()(30, 1).unwrap();
+        host3.prepare_panel(product(Arc::new(|hour, _, _, _| {
+            let (live, value) = live_cell(3, 105, i64::from(hour));
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }))).unwrap()(31, 1).unwrap();
+        let _ = take_panel_data(&mut seen3, &push3, 30, 0);
+        let _ = take_panel_data(&mut seen3, &push3, 31, 0);
+        playhead3.wait_declarations().unwrap();
+        gate3.arm(5);
+        playhead3.pace(10.0);
+        gate3.wait_entered();
+        let epoch_at_piece1 = playhead3.epoch();
+        host3.unpanel(31);
+        gate3.release();
+        playhead3.wait_declarations().unwrap();
+        playhead3.wait_newest(5).unwrap();
+        assert_eq!(playhead3.epoch(), epoch_at_piece1 + 1, "shrinking a retained table as piece 1 fills the ring wakes the driver and settles cleanly");
+        assert_eq!(playhead3.held().2.joins_open, 0);
+    }
+
+    #[test]
+    fn external_paused_follow_still_seeds_at_paused_hour_without_redundant_resets() {
+        let pages = record(quiet);
+        let (follow_tx, follow_rx) = mpsc::channel();
+        let (playhead, host, push) = open_host(
+            &pages,
+            vec![playhead::Piece { run: 0, first: 0, last: 3 }, playhead::Piece { run: 0, first: 5, last: 24 }],
+            move |_, message| {
+                if let Some(message) = message {
+                    let _ = follow_tx.send(message.bytes);
+                }
+            },
+        );
+        let mut seen = Vec::new();
+        host.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+        playhead.wait_newest(0).unwrap();
+        host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+            let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }))).unwrap()(10, 1).unwrap();
+        let _ = take_panel_data(&mut seen, &push, 10, 0);
+        playhead.wait_declarations().unwrap();
+        playhead.pace(16.0);
+        playhead.wait_newest(8).unwrap();
+        playhead.wait_declarations().unwrap();
+
+        let epoch_before_external = playhead.epoch();
+        host.follow().follow(99, Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Keys(vec![100]) }).unwrap();
+        let seeded_answer = loop {
+            let bytes = follow_rx.recv().expect("follow message");
+            let decoded = decode(&bytes).expect("valid follow message");
+            if let Some((_, _, body)) = decoded.answers.into_iter().find(|&(id, hour, _)| id == 99 && hour == 0) {
+                break Answer::parse(body).expect("valid answer");
+            }
+        };
+        assert!(playhead.epoch() > epoch_before_external, "a real new subscriber while paused still triggers its paused seed");
+        assert_eq!(seeded_answer.values, vec![0]);
+        drop(host);
+
+        let gate4 = SinkGate::new();
+        let gate4_hook = Arc::clone(&gate4);
+        let (follow_tx4, follow_rx4) = mpsc::channel();
+        let (playhead4, host4, _push4) = open_host(
+            &pages,
+            vec![playhead::Piece { run: 0, first: 0, last: 12 }],
+            move |stats, message| {
+                if let Some(message) = message {
+                    let _ = follow_tx4.send(message.bytes);
+                }
+                gate4_hook.hit(stats.last);
+            },
+        );
+        host4.follow().follow(1, Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Keys(vec![100]) }).unwrap();
+        gate4.arm(1);
+        host4.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+        loop {
+            let bytes = follow_rx4.recv().expect("initial follow message");
+            if decode(&bytes).unwrap().answers.iter().any(|&(id, hour, _)| id == 1 && hour == 0) {
+                break;
+            }
+        }
+        playhead4.pace(4.0);
+        gate4.wait_entered();
+        playhead4.seek(0);
+        let held_epoch = playhead4.epoch();
+        assert_eq!(playhead4.holding(), Some(held_epoch));
+        host4.follow().follow(2, Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Keys(vec![100]) }).unwrap();
+        assert_eq!(playhead4.epoch(), held_epoch, "registration during a held seek does not seek before the held reset runs");
+        gate4.release();
+        let held_answer = loop {
+            let bytes = follow_rx4.recv().expect("held reset follow message");
+            let decoded = decode(&bytes).expect("valid follow message");
+            if let Some((_, _, body)) = decoded.answers.into_iter().find(|&(id, hour, _)| id == 2 && hour == 0) {
+                break Answer::parse(body).expect("valid answer");
+            }
+        };
+        assert_eq!(held_answer.values, vec![0]);
+        playhead4.pace(16.0);
+        playhead4.wait_newest(3).unwrap();
+        playhead4.wait_declarations().unwrap();
+        assert_eq!(playhead4.epoch(), held_epoch, "once the held reset satisfies the subscriber, advancing read-ahead causes 0 redundant resets");
+
+        gate4.arm(0);
+        playhead4.pace(1.0);
+        playhead4.seek(0);
+        let reset_sink_epoch = playhead4.epoch();
+        gate4.wait_entered();
+        host4.follow().follow(3, Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Keys(vec![100]) }).unwrap();
+        gate4.release();
+        let rehook_answer = loop {
+            let bytes = follow_rx4.recv().expect("rehook follow message");
+            let decoded = decode(&bytes).expect("valid follow message");
+            if let Some((_, _, body)) = decoded.answers.into_iter().find(|&(id, hour, _)| id == 3 && hour == 0) {
+                break Answer::parse(body).expect("valid answer");
+            }
+        };
+        assert_eq!(rehook_answer.values, vec![0]);
+        playhead4.pace(16.0);
+        playhead4.wait_newest(3).unwrap();
+        playhead4.wait_declarations().unwrap();
+        assert_eq!(playhead4.epoch(), reset_sink_epoch, "a subscriber registered during the reset sink and answered on the next hook causes 0 redundant resets");
+    }
+}
