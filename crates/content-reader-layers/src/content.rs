@@ -4060,7 +4060,13 @@ impl ResolvedLayers {
         self.shows_visual_mods()
             && self
                 .layer_index(relative)
-                .is_some_and(|layer| self.layers[layer].overlay.is_some())
+                .is_some_and(|layer| self.is_overlay_layer(layer))
+    }
+
+    pub fn is_overlay_layer(&self, layer: usize) -> bool {
+        self.layers
+            .get(layer)
+            .is_some_and(|layer| layer.overlay.is_some())
     }
 
     pub fn shows_visual_mods(&self) -> bool {
@@ -4309,6 +4315,35 @@ impl ResolvedLayers {
 
     pub fn read_uncovered_path(&self, relative: &[u8]) -> io::Result<Bytes> {
         self.shared_read(relative, true)
+    }
+
+    pub fn locate_uncovered_path(&self, relative: &[u8]) -> io::Result<Option<usize>> {
+        let Some(path) = sanitize(relative) else {
+            if self.tracing_reads() {
+                self.trace_read(relative, None, ReadOutcome::Probe(false));
+            }
+            return Ok(None);
+        };
+        let result = self.resolved_file(&path, true).map(|hit| {
+            hit.as_ref().as_ref().map(|file| {
+                file.release_handles();
+                file.layer
+            })
+        });
+        let layer = result.as_ref().ok().copied().flatten();
+        self.note_uncovered_attempt(&path, layer);
+        if self.tracing_reads() {
+            let outcome = match &result {
+                Ok(found) => ReadOutcome::Probe(found.is_some()),
+                Err(error) => ReadFailure::from(io::Error::new(
+                    error.kind(),
+                    error.to_string(),
+                ))
+                .outcome(),
+            };
+            self.trace_read(&path, layer, outcome);
+        }
+        result
     }
 
     fn scan_uncovered(

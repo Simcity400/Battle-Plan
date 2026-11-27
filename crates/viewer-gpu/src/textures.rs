@@ -168,6 +168,18 @@ fn sixteen_bit_texels(format: dds::TextureFormat, data: &[u8]) -> Option<Vec<u8>
 }
 
 pub type Read<'a, B = content_reader_layers::content::Bytes> = &'a dyn Fn(&[u8]) -> io::Result<B>;
+pub type Locate<'a> = &'a dyn Fn(&[u8]) -> io::Result<Option<usize>>;
+
+pub fn locate_file(name: &str, locate: Locate<'_>) -> io::Result<(String, usize)> {
+    match content_reader_layers::textures::locate_texture(name.as_bytes(), locate)? {
+        Ok(found) => Ok(found),
+        Err(NoTexture::Missing(tried)) => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{name}: no layer holds any of {tried:?}"),
+        )),
+        Err(reason) => Err(invalid(format!("{name}: {reason}"))),
+    }
+}
 
 pub fn load_file<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<dds::Texture> {
     match resources::texture(name.as_bytes(), read, decode)? {

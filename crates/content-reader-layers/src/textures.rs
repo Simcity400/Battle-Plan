@@ -98,6 +98,40 @@ fn vfs_path(candidate: &[u8]) -> Vec<u8> {
         .join(&b'/')
 }
 
+pub fn locate_texture(
+    name: &[u8],
+    locate: &dyn Fn(&[u8]) -> io::Result<Option<usize>>,
+) -> io::Result<Result<(String, usize), NoTexture>> {
+    let name = content_reader_parser::parser::c_string(name);
+    if name.is_empty() {
+        return Ok(Err(NoTexture::Empty));
+    }
+    let candidates = texture_candidates(name);
+    if candidates.is_empty() {
+        return Ok(Err(NoTexture::NoExtension(name.to_vec())));
+    }
+    let mut tried = Vec::with_capacity(candidates.len());
+    for candidate in &candidates {
+        let bytes_path = vfs_path(candidate);
+        let path = String::from_utf8_lossy(&bytes_path).into_owned();
+        tried.push(String::from_utf8_lossy(candidate).into_owned());
+        match locate(&bytes_path) {
+            Ok(Some(layer)) => return Ok(Ok((path, layer))),
+            Ok(None) => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(Err(NoTexture::Missing(tried)))
+}
+
 pub fn texture<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<Bytes>>(
     name: &[u8],
     read: &dyn Fn(&[u8]) -> io::Result<B>,
@@ -175,4 +209,46 @@ pub fn texture_within<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<Byt
         });
     }
     Ok(Err(NoTexture::Missing(tried)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NoTexture, locate_texture};
+    use std::io;
+
+    #[test]
+    fn locate_texture_follows_candidate_order_and_errors() {
+        assert_eq!(locate_texture(b"", &|_| Ok(Some(0))).unwrap(), Err(NoTexture::Empty));
+        assert_eq!(
+            locate_texture(b"gfx/models/plain", &|_| Ok(Some(0))).unwrap(),
+            Err(NoTexture::NoExtension(b"gfx/models/plain".to_vec()))
+        );
+        assert_eq!(
+            locate_texture(b"gfx\\models\\unit.tga", &|path| {
+                Ok((path == b"gfx/models/unit.dds").then_some(2))
+            })
+            .unwrap(),
+            Ok(("gfx/models/unit.dds".to_owned(), 2))
+        );
+        assert_eq!(
+            locate_texture(b"gfx/models/unit.png", &|path| {
+                Ok((path == b"gfx/models/unit.tga").then_some(1))
+            })
+            .unwrap(),
+            Ok(("gfx/models/unit.tga".to_owned(), 1))
+        );
+        assert_eq!(
+            locate_texture(b"gfx/models/absent.dds", &|_| Ok(None)).unwrap(),
+            Err(NoTexture::Missing(vec![
+                "gfx/models/absent.dds".to_owned(),
+                "gfx/models/absent.tga".to_owned(),
+                "gfx/models/absent.dds".to_owned(),
+            ]))
+        );
+        let error = locate_texture(b"gfx/models/unit.dds", &|_| {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
 }
