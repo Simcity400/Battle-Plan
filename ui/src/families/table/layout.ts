@@ -45,6 +45,7 @@ export interface FamilyColumnLayout extends TableColumnLayout {
 
 export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
   readonly columns: FamilyColumnLayout[];
+  readonly narrowed: boolean;
 }
 
 export const SHARE_TRACK_WIDTH = 56;
@@ -305,6 +306,24 @@ function growColumns(shown: readonly FamilyColumnLayout[], spare: number): Famil
   return out;
 }
 
+export function selectVisibleColumns(
+  columns: readonly FamilyColumnLayout[],
+  narrowed: boolean,
+): FamilyColumnLayout[] {
+  const visible = columns.filter(col => col.shown);
+  if (!narrowed) return visible;
+  const kept = visible.filter(col => col.narrow !== 'hide');
+  const primary = kept.findIndex(col => col.narrow === 'primary');
+  const inlineFlags: string[] = [];
+  for (let i = primary + 1; primary >= 0 && kept[i]?.narrow === 'flag'; i++) inlineFlags.push(kept[i]!.key);
+  return kept.map(col => {
+    if (col.narrow === 'primary') return { ...col, inlineFlags, width: Math.min(col.width, col.minWidth ?? col.width), narrowed: true };
+    if (col.narrow === 'total') return { ...col, headerGroup: undefined, width: col.minWidth ?? col.width, narrowed: true };
+    if (col.narrow === 'flag') return { ...col, display: 'flag', width: inlineFlags.includes(col.key) ? 0 : col.narrowWidth ?? col.minWidth ?? 40, grow: 0, narrowed: true };
+    return col.narrowWidth === undefined ? { ...col, narrowed: true } : { ...col, width: col.narrowWidth, narrowed: true };
+  });
+}
+
 export function layoutFamilyTable(
   columns: readonly FamilyColumnLayout[],
   available: number,
@@ -316,21 +335,10 @@ export function layoutFamilyTable(
 ): FamilyTableLayout {
   const rank = options.rankShown ? (options.rankWidth ?? 36) : 0;
   const inner = columnInset(options.rhythm);
-  let visible = columns.filter(col => col.shown);
+  const visible = columns.filter(col => col.shown);
   const wanted = rank + 2 * ROW_MARGIN_X + visible.reduce((sum, col) => sum + col.width, 0) + 2 * inner * Math.max(0, visible.length - 1);
-  if (visible.some(col => col.narrow || col.narrowWidth !== undefined) && wanted > available) {
-    visible = visible.filter(col => col.narrow !== 'hide');
-    const primary = visible.findIndex(col => col.narrow === 'primary');
-    const inlineFlags: string[] = [];
-    for (let i = primary + 1; primary >= 0 && visible[i]?.narrow === 'flag'; i++) inlineFlags.push(visible[i]!.key);
-    visible = visible.map(col => {
-      if (col.narrow === 'primary') return { ...col, inlineFlags, width: Math.min(col.width, col.minWidth ?? col.width), narrowed: true };
-      if (col.narrow === 'total') return { ...col, headerGroup: undefined, width: col.minWidth ?? col.width, narrowed: true };
-      if (col.narrow === 'flag') return { ...col, display: 'flag', width: inlineFlags.includes(col.key) ? 0 : col.narrowWidth ?? col.minWidth ?? 40, grow: 0, narrowed: true };
-      return col.narrowWidth === undefined ? { ...col, narrowed: true } : { ...col, width: col.narrowWidth, narrowed: true };
-    });
-  }
-  const shown = withEdgeInsets(visible, inner);
+  const narrowed = visible.some(col => col.narrow || col.narrowWidth !== undefined) && wanted > available;
+  const shown = withEdgeInsets(selectVisibleColumns(visible, narrowed), inner);
   let pinnedCount = 0;
   for (let i = 0; i < shown.length; i++) {
     if (shown[i]!.pinned === true) pinnedCount = i + 1;
@@ -341,9 +349,9 @@ export function layoutFamilyTable(
   const rawTotal = rank + shown.reduce((sum, col) => sum + col.width, 0);
   if (rawTotal < available && shown.length > 0) {
     const expanded = growColumns(shown, available - rawTotal);
-    return { columns: expanded, totalWidth: available, scrollable: false, pinnedWidth: pinnedWidthOf(expanded), pinnedCount };
+    return { columns: expanded, totalWidth: available, scrollable: false, pinnedWidth: pinnedWidthOf(expanded), pinnedCount, narrowed };
   }
-  return { columns: shown, totalWidth: rawTotal, scrollable: rawTotal > available, pinnedWidth: pinnedWidthOf(shown), pinnedCount };
+  return { columns: shown, totalWidth: rawTotal, scrollable: rawTotal > available, pinnedWidth: pinnedWidthOf(shown), pinnedCount, narrowed };
 }
 
 const GROUP_HEADER_HEIGHT = 30;

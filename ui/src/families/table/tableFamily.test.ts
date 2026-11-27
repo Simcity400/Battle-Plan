@@ -6176,3 +6176,85 @@ test('deriveTableMirror and deriveTableTooltip share one date presenter for date
   assert.equal(zeroMirror.cells.find(cell => cell.column === 'date')!.spoken, formatDateHover(0));
   assert.equal(zeroMirror.cells.find(cell => cell.column === 'last')!.spoken, 'Not recorded: Last delivery date not recorded');
 });
+
+test('tableHostAdapter.deriveAuditRows matches the painted lane columns without re-laying out final widths', () => {
+  const cols: TableColumnSpec[] = [
+    { key: 'date', label: 'Date', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'date', minWidth: 70, maxWidth: 70 },
+    { key: 'kind', label: '', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'kind', minWidth: 30, maxWidth: 30 },
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName', 'flag'], priority: 2, minWidth: 68, narrow: 'flag', narrowWidth: 40 },
+    { key: 'entry', label: 'Entry', as: 'plain', offered: ['plain'], priority: 3, cellKind: 'item', text: true, minWidth: 60, narrow: 'primary' },
+    { key: 'place', label: 'Place', as: 'plain', offered: ['plain'], priority: 4, text: true, minWidth: 154, maxWidth: 154, narrow: 'hide' },
+    { key: 'status', label: 'Status', as: 'plain', offered: ['plain'], priority: 5, cellKind: 'status', minWidth: 124, maxWidth: 124, narrowWidth: 104 },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'normal', sort: { column: 'date', direction: 'descending' } });
+  const model: TableModel = {
+    columns: cols,
+    hour: 100,
+    unsorted: true,
+    rows: [{
+      key: 'row-1',
+      name: 'Alpha entry',
+      cells: {
+        date: { value: knownValue(100) },
+        kind: { value: knownValue('award') },
+        country: { value: knownValue('Alpha'), country: 'ALP' },
+        entry: { value: knownValue('Alpha entry') },
+        place: { value: knownValue('Northern Harbor') },
+        status: { value: knownValue('Active') },
+      },
+    }],
+  };
+  const ctx = { ...instrumentedContext().ctx, canvas: { width: 822, height: 200 } } as unknown as OffscreenCanvasRenderingContext2D;
+  const checkAtWidth = (width: number, expectedKeys: readonly string[], expectedCountryDisplay: string, note: string) => {
+    const surface = { width, height: 200, dpr: 1 };
+    const binding = {
+      family: 'table' as const,
+      kind: 'test-audit-columns',
+      options: NO_OPTIONS,
+      settings,
+      sources: NO_SOURCES,
+      width,
+      height: 200,
+      scrollLeft: 0,
+      scrollTop: 0,
+      theme: TEST_THEME,
+      expanded: {},
+    };
+    const layout = tableLane.layout(model, binding as never, surface as never, TEST_THEME, ctx, 100, { previous: null, now: 100, speed: 0 } as never);
+    const frame = {
+      binding,
+      theme: TEST_THEME,
+      model,
+      layout,
+      surface,
+      hour: 100,
+      inspect: null,
+      now: 100,
+      speed: 0,
+      art: new LaneArtCache(),
+      continuity: 1,
+      changedAt: 100,
+      before: null,
+    };
+    const paintedAudit = tableLane.audit!(frame as never) as readonly { key: string; value?: string }[];
+    const structureFields = tableLane.structure!(frame as never);
+    const verifiedAudit = tableHostAdapter.deriveAuditRows!(model, 100, {
+      viewport: { width, height: 200, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null },
+      settings,
+      expanded: {},
+      theme: TEST_THEME,
+      fields: structureFields,
+    });
+    const columnsOf = (rows: readonly { key: string; value?: string }[]) =>
+      (JSON.parse(rows.find(row => row.key === '__table__:columns')!.value!) as { key: [string, string]; display: [string, string] }[])
+        .map(c => ({ key: c.key[1], display: c.display[1] }));
+    const paintedCols = columnsOf(paintedAudit);
+    const verifiedCols = columnsOf(verifiedAudit);
+    assert.deepEqual(paintedCols.map(c => c.key), expectedKeys, `${note}: painted columns`);
+    assert.equal(paintedCols.find(c => c.key === 'country')?.display, expectedCountryDisplay, `${note}: painted country display`);
+    assert.deepEqual(verifiedCols, paintedCols, `${note}: verifier columns equal painted columns`);
+    assert.deepEqual(verifiedAudit, paintedAudit, `${note}: verifier audit equals painted audit`);
+  };
+  checkAtWidth(822, ['date', 'kind', 'country', 'entry', 'place', 'status'], 'flagName', 'wide table');
+  checkAtWidth(420, ['date', 'kind', 'country', 'entry', 'status'], 'flag', 'narrow table');
+});

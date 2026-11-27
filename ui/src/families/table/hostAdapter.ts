@@ -2,15 +2,15 @@ import type { FamilyPlanContext } from '../plan.ts';
 import type { FamilyHostAdapter, FamilyRowWindow, FamilySettingsPolicy, ParsedFamilyHit } from '../host/adapter.ts';
 import type { AnyTableWidgetDeclaration } from './declaration.ts';
 import type { FamilyTableBinding } from './laneView.ts';
-import { buildColumnLayouts, extentsRowWindow, layoutFamilyTable, type RowExtents } from './layout.ts';
+import { buildColumnLayouts, extentsRowWindow, selectVisibleColumns, type RowExtents } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, tableRank, type TableColumnSpec, type TableModel } from './model.ts';
-import { combinedPaneRows, paneGeometry, resolvePanes } from './panes.ts';
+import { combinedPaneRows, resolvePanes } from './panes.ts';
 import { displayWindowToData } from './rowSource.ts';
 import { SubjectFigures } from './subjectFigures.ts';
 import { encodeTableSettings, MEDIA_ROW_HEIGHT, ROW_HEIGHT, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
 
 interface TableWidthsField {
-  readonly widths: Readonly<Record<string, number>>;
+  readonly narrowed?: boolean;
   readonly totalWidth: number;
 }
 
@@ -100,23 +100,18 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
     const data = displayWindowToData(win, gapBefore, Number.isFinite(count) ? Math.max(0, count - gapBefore.length) : undefined);
     return { ...win, dataFirst: data.first, dataCount: data.count };
   },
-  deriveAuditRows: (model, _hour, { settings, expanded, viewport, fields }) => {
+  deriveAuditRows: (model, _hour, { settings, expanded, fields }) => {
     if (!settings) return [];
-    const measured = (fields.widths as TableWidthsField | undefined)?.widths ?? {};
+    const narrowed = (fields.widths as TableWidthsField | undefined)?.narrowed === true;
     const mode = model.rowHeightMode ?? 'standard';
     const panes = model.panes ? resolvePanes(model, settings, expanded, mode) : null;
     const flatRows = panes ? combinedPaneRows(panes) : resolveTableRows(model, settings, expanded);
-    const { shown: rankShown, width: rankWidth } = tableRank(model, settings);
-    const layoutWidth = panes ? paneGeometry(viewport.width, panes.length).width : viewport.width;
-    const layout = layoutFamilyTable(buildColumnLayouts(model.columns, settings, measured), Math.max(1, layoutWidth), {
-      rankShown,
-      rankWidth,
-      rhythm: model.rhythm,
-    });
+    const { shown: rankShown } = tableRank(model, settings);
+    const visibleColumns = selectVisibleColumns(buildColumnLayouts(model.columns, settings), narrowed);
     return deriveTableAudit({
       model,
       flatRows,
-      visibleColumns: layout.columns,
+      visibleColumns,
       rankShown,
       ...(fields.range ? { window: fields.range as FamilyRowWindow } : {}),
     });
