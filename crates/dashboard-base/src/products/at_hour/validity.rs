@@ -5,6 +5,19 @@ use replay_data::rows::TableId;
 use replay_lanes::lanes::{Cell, Keys, Step};
 use std::{collections::BTreeMap, io, sync::{Arc, Mutex, atomic::AtomicBool}};
 
+thread_local! {
+    static READ_DATES: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+pub(super) fn without_read_dates<T>(read: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { READ_DATES.set(self.0); }
+    }
+    let _restore = Restore(READ_DATES.replace(false));
+    read()
+}
+
 pub fn row_change_hours(steps: &[Step], end_column: Option<usize>, last: i32) -> impl Iterator<Item = i32> + '_ {
     steps.iter().enumerate().flat_map(move |(index, step)| {
         let end = end_column.and_then(|column| {
@@ -120,6 +133,10 @@ impl ScriptedInputs {
             return Err(io::Error::other("Scripted text hour is not recorded"));
         };
         let ((value, mut watched), inputs) = dashboard_text::triggers::inputs::capture(&recorded, || evaluate(&recorded));
+        if !READ_DATES.get() {
+            check_cancel(cancelled)?;
+            return Ok((value, frame.hour));
+        }
         let through = match inputs.footprint() {
             None => frame.hour,
             Some([]) if watched.is_empty() => i32::MAX,

@@ -287,7 +287,9 @@ fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, po
         answer.read(reads, &mut read_frame)?;
     }
     let cells = Cells::default();
-    let reply = P::reply(&answer.frame, params, &At { owner, holders: &query.holders, hour, context, cancelled, live: &cells })?;
+    let reply = validity::without_read_dates(|| {
+        P::reply(&answer.frame, params, &At { owner, holders: &query.holders, hour, context, cancelled, live: &cells })
+    })?;
     let live = answer.live(&cells.finish(), &mut read_frame)?;
     Ok((reply, live))
 }
