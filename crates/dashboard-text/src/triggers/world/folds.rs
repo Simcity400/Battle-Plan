@@ -1,25 +1,28 @@
 
 use crate::triggers::{Failure, refusal::refused};
+use replay_data::rows::LexicalTokenRow;
 use std::collections::BTreeMap;
 
 const EMPTY: u32 = u32::MAX;
 
-struct Fold {
-    hash: u64,
-    start: usize,
-    len: usize,
-    token: u32,
+#[cfg(test)]
+thread_local! {
+    pub(super) static BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-pub(in crate::triggers) struct Folds {
-    text: Vec<u8>,
-    folds: Vec<Fold>,
-    index: Vec<u32>,
+#[derive(Clone, Copy)]
+struct Slot {
+    hash: u32,
+    row: u32,
+}
+
+pub(super) struct Folds {
+    slots: Box<[Slot]>,
     shift: u32,
-    refused: BTreeMap<u32, Failure>,
+    ambiguous: BTreeMap<u32, u32>,
 }
 
-pub(super) fn several(literal: &[u8]) -> Failure {
+fn several(literal: &[u8]) -> Failure {
     refused(format!(
         "{} names several lexer tokens",
         String::from_utf8_lossy(literal)
@@ -35,61 +38,51 @@ fn hash(literal: &[u8]) -> u64 {
 }
 
 impl Folds {
-    pub(super) fn read<'a>(
-        len: usize,
-        rows: impl Iterator<Item = Result<(u32, &'a [u8]), Failure>>,
-    ) -> Result<Self, Failure> {
-        let slots = (len * 2).max(2).next_power_of_two();
+    pub(super) fn read(rows: &[LexicalTokenRow]) -> Self {
+        #[cfg(test)]
+        BUILDS.with(|builds| builds.set(builds.get() + 1));
+        let slots = (rows.len() * 2).max(2).next_power_of_two();
         let mut folds = Self {
-            text: Vec::new(),
-            folds: Vec::with_capacity(len),
-            index: vec![EMPTY; slots],
+            slots: vec![Slot { hash: 0, row: EMPTY }; slots].into_boxed_slice(),
             shift: 64 - slots.trailing_zeros(),
-            refused: BTreeMap::new(),
+            ambiguous: BTreeMap::new(),
         };
-        for row in rows {
-            let (token, literal) = row?;
-            let hash = hash(literal);
-            match folds.find(hash, literal) {
-                Ok(at) => {
-                    folds.refused.insert(at, several(literal));
+        for (at, row) in rows.iter().enumerate() {
+            let hash = hash(&row.literal);
+            match folds.find(rows, hash, &row.literal) {
+                Ok(first) => {
+                    folds.ambiguous.insert(first, at as u32);
                 }
                 Err(slot) => {
-                    folds.index[slot] = folds.folds.len() as u32;
-                    folds.folds.push(Fold {
-                        hash,
-                        start: folds.text.len(),
-                        len: literal.len(),
-                        token,
-                    });
-                    folds.text.extend(literal.iter().map(u8::to_ascii_lowercase));
+                    folds.slots[slot] = Slot { hash: hash as u32, row: at as u32 };
                 }
             }
         }
-        Ok(folds)
+        folds
     }
 
-    pub(super) fn get(&self, name: &[u8]) -> Option<Result<u32, &Failure>> {
-        let at = self.find(hash(name), name).ok()?;
-        Some(match self.refused.get(&at) {
-            Some(reason) => Err(reason),
-            None => Ok(self.folds[at as usize].token),
-        })
+    pub(super) fn get(&self, rows: &[LexicalTokenRow], name: &[u8]) -> Result<Option<u32>, Failure> {
+        let Ok(at) = self.find(rows, hash(name), name) else {
+            return Ok(None);
+        };
+        match self.ambiguous.get(&at) {
+            Some(&last) => Err(several(&rows[last as usize].literal)),
+            None => Ok(Some(rows[at as usize].token)),
+        }
     }
 
-    fn find(&self, hash: u64, literal: &[u8]) -> Result<u32, usize> {
-        let mask = self.index.len() - 1;
+    fn find(&self, rows: &[LexicalTokenRow], hash: u64, literal: &[u8]) -> Result<u32, usize> {
+        let mask = self.slots.len() - 1;
         let mut slot = (hash.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> self.shift) as usize;
         loop {
-            let at = self.index[slot];
-            if at == EMPTY {
+            let entry = self.slots[slot];
+            if entry.row == EMPTY {
                 return Err(slot);
             }
-            let fold = &self.folds[at as usize];
-            if fold.hash == hash
-                && self.text[fold.start..fold.start + fold.len].eq_ignore_ascii_case(literal)
+            if entry.hash == hash as u32
+                && rows[entry.row as usize].literal.eq_ignore_ascii_case(literal)
             {
-                return Ok(at);
+                return Ok(entry.row);
             }
             slot = (slot + 1) & mask;
         }
