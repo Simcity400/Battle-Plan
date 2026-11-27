@@ -3,6 +3,7 @@ use dashboard_base::{
     catalogue::{self, Catalogue},
     products::{
         LoadContext, Product,
+        equipment_icon::IconContent,
         occurrences::{self, OccurrenceCount, OccurrenceReply, OccurrenceSort},
     },
     queries::country_ids::{Names, RunLinks},
@@ -564,6 +565,7 @@ struct NamedDesigns {
 
 #[derive(Default)]
 struct DatedNames {
+    artwork: Option<Arc<IconContent>>,
     hours: HashMap<(u32, i32), NamedDesigns>,
     icons: HashMap<String, Arc<str>>,
 }
@@ -1057,7 +1059,14 @@ fn variant_names(
     let mut out = HashMap::new();
     let Ok(content) = context else { return Ok(out) };
     let keep = content.icons.is_ok();
-    let mut kept = pictured.map(|ledger| ledger.names.lock().unwrap_or_else(PoisonError::into_inner));
+    let mut kept = pictured.map(|ledger| {
+        let mut held = ledger.names.lock().unwrap_or_else(PoisonError::into_inner);
+        let artwork = content.icons.as_ref().ok();
+        if held.artwork.as_ref().map(Arc::as_ptr) != artwork.map(Arc::as_ptr) {
+            *held = DatedNames { artwork: artwork.cloned(), ..DatedNames::default() };
+        }
+        held
+    });
     let mut sessions: BTreeMap<u32, names::NamingSession<'_>> = BTreeMap::new();
     for ((run, hour), variants) in wanted {
         dashboard_text::metadata::check_cancel(cancelled)?;
