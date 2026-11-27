@@ -10,8 +10,12 @@ const TAGS: [(&str, u32); 4] = [("ENG", 1), ("FRA", 2), ("GER", 3), ("USA", 4)];
 #[test]
 fn side_choices_distinguish_peace_from_unread_war_membership() {
     use dashboard_base::test_fixtures::{replay, source};
-    let ask = |wars| {
+    let ask = |wars, country_present: bool| {
         let mut frame = source(1, 100, Some(1));
+        if !country_present {
+            *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![]));
+            *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![]));
+        }
         *frame.tables[TableId::WarRelations.index()] = wars;
         *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![]));
         *frame.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(vec![]));
@@ -19,12 +23,16 @@ fn side_choices_distinguish_peace_from_unread_war_membership() {
         let source = Source::from_replay(dashboard_base::SourceKey { source_id: "air-side-choices".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
         AirSuperiorityChoices::load(&source, &BranchParams { branch_id: "1".into() }, &LoadContext { content: None }, &false.into()).unwrap()
     };
-    let empty = ask(TableView::Complete(TableRows::WarRelations(vec![])));
+    let peace = || TableView::Complete(TableRows::WarRelations(vec![]));
+    let empty = ask(peace(), false);
     assert!(empty.sides.is_empty());
     assert_eq!(serde_json::to_value(&empty).unwrap().get("sidesMissing"), Some(&serde_json::Value::Null));
-    let unread = ask(TableView::Unavailable { reason: "fixture war membership failed".into() });
+    let independent = ask(peace(), true);
+    assert_eq!(independent.sides.iter().map(|side| side.key.as_str()).collect::<Vec<_>>(), ["c:GER"]);
+    assert!(independent.sides_missing.is_none());
+    let unread = ask(TableView::Unavailable { reason: "fixture war membership failed".into() }, true);
     assert!(unread.sides.is_empty());
-    assert_eq!(unread.countries, empty.countries);
+    assert_eq!(unread.countries, independent.countries);
     assert!(serde_json::to_value(&unread).unwrap()["sidesMissing"].as_str().is_some_and(|reason| reason.contains("fixture war membership failed")));
 }
 

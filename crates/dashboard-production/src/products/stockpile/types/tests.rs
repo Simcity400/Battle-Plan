@@ -26,9 +26,11 @@ fn stockpile_type_list_distinguishes_empty_from_unread_stock_and_keeps_witnesses
     use replay_frame::frame::TableView;
     let hour = slot_hour(TableId::Stockpiles) + 24;
     let ask = |stock: &[(u64, i64)], lines: Option<&[(u64, i64, i64, u8)]>, logistics| {
+        let mut baseline = stockpile_frame(hour - 1, true, &[], Some(&[]));
+        *baseline.tables[TableId::LogisticsEquipment.index()] = TableView::Complete(TableRows::LogisticsEquipment(vec![]));
         let mut frame = stockpile_frame(hour, true, stock, lines);
         *frame.tables[TableId::LogisticsEquipment.index()] = logistics;
-        let replay = replay(vec![frame]).into_timelines(&Default::default()).unwrap();
+        let replay = replay(vec![baseline, frame]).into_timelines(&Default::default()).unwrap();
         let source = super::Source::from_replay(dashboard_base::SourceKey { source_id: "stockpile-types".into(), revision: "1".into() }, "synthetic.battleplan".into(), std::sync::Arc::new(replay), &false.into()).unwrap();
         super::load(&source, &super::StockpileTypesParams { branch_id: "1".into(), country: super::Country::Slot(7), hour }, &super::LoadContext { content: None }, &false.into()).unwrap()
     };

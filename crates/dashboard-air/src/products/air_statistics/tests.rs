@@ -4,12 +4,15 @@ use replay_frame::frame::{Metrics, TableView, not_selected};
 
 #[test]
 fn region_choices_keep_witnessed_regions_and_name_unread_statistics() {
-    use dashboard_base::test_fixtures::{replay, source};
+    use dashboard_base::test_fixtures::{replay, slot_hour, source};
     use replay_data::rows::TableRows;
     let ask = |statistics| {
-        let mut frame = source(1, 100, Some(1));
+        let hour = slot_hour(TableId::AirStatistics);
+        let mut baseline = source(1, hour - 1, Some(1));
+        *baseline.tables[TableId::AirStatistics.index()] = TableView::Complete(TableRows::AirStatistics(vec![]));
+        let mut frame = source(1, hour, Some(1));
         *frame.tables[TableId::AirStatistics.index()] = statistics;
-        let replay = replay(vec![frame]).into_timelines(&Default::default()).unwrap();
+        let replay = replay(vec![baseline, frame]).into_timelines(&Default::default()).unwrap();
         let source = Source::from_replay(dashboard_base::SourceKey { source_id: "air-statistics-regions".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
         AirStatisticsRegions::load(&source, &AirStatisticsRegionsParams { branch_id: "1".into(), country: Country::Slot(7) }, &LoadContext { content: None }, &false.into()).unwrap()
     };
