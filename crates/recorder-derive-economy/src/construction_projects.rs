@@ -611,12 +611,27 @@ impl ConstructionProjects {
         Ok(())
     }
 
-    fn output_of(line: &mut Line, output: &ConstructionLineOutputRow, hour: i32) {
-        if line.since.is_some_and(|since| since != output.since_hour) || output.railway != (line.row.kind == P::RAILWAY) {
+    fn output_of(line: &mut Line, output: &ConstructionLineOutputRow, hour: &Hour<'_>) {
+        let same_kind = output.railway == (line.row.kind == P::RAILWAY);
+        if line.since.is_some_and(|since| since != output.since_hour) || !same_kind {
             line.restarted = true;
         }
         line.since = Some(output.since_hour);
-        let reason = if line.row.output_alone && recorded(&output.country).is_none() {
+        let country = recorded(&output.country);
+        if line.row.output_alone && same_kind {
+            line.row.country = country.unwrap_or(0);
+            if output.railway {
+                line.row.building_type = Some(RAILWAY_TEMPLATE_TOKEN);
+                line.row.target_state = Self::state_of(hour, recorded(&output.route_first));
+                line.row.to_state = Self::state_of(hour, recorded(&output.route_last));
+            } else {
+                let province = recorded(&output.target_flags).is_some_and(|flags| flags & PROVINCE_FLAG != 0);
+                line.row.building_type = recorded(&output.building_type);
+                line.row.target_state = recorded(&output.target_state).filter(|&state| state != 0);
+                line.row.province = if province { recorded(&output.target_location) } else { None };
+            }
+        }
+        let reason = if line.row.output_alone && country.is_none() {
             P::OUTPUT_OWNER_UNKNOWN
         } else if line.restarted {
             P::OUTPUT_RESTARTED
@@ -634,7 +649,7 @@ impl ConstructionProjects {
         line.row.construction_raw = if known { Recorded::Value(output.construction_raw) } else { Recorded::NotRecorded };
         line.row.repair_raw = if known { Recorded::Value(output.repair_raw) } else { Recorded::NotRecorded };
         if output.repair_ticks > 0 && line.row.first_repair_tick.is_none() {
-            line.row.first_repair_tick = Some(hour);
+            line.row.first_repair_tick = Some(hour.hour);
         }
         if output.ended {
             let completion = match &output.completion {
@@ -666,28 +681,17 @@ impl ConstructionProjects {
                 if output.exact && !output.linked && output.construction_raw == 0 && output.repair_raw == 0 && !output.ended {
                     continue;
                 }
-                let province = recorded(&output.target_flags).is_some_and(|flags| flags & PROVINCE_FLAG != 0);
-                let (target_state, to_state) = if output.railway {
-                    (Self::state_of(hour, recorded(&output.route_first)), Self::state_of(hour, recorded(&output.route_last)))
-                } else {
-                    (recorded(&output.target_state).filter(|&state| state != 0), None)
-                };
                 let row = P {
                     line: id,
                     kind: if output.railway { P::RAILWAY } else { P::BUILDING },
                     output_alone: true,
-                    country: recorded(&output.country).unwrap_or(0),
-                    building_type: if output.railway { Some(RAILWAY_TEMPLATE_TOKEN) } else { recorded(&output.building_type) },
-                    target_state,
-                    to_state,
-                    province: if province { recorded(&output.target_location) } else { None },
                     first_read: hour.hour,
                     ..Default::default()
                 };
                 vacant.insert(Line { row, open: None, run: None, since: None, restarted: false, ended: None });
             }
             let line = self.lines.get_mut(&id).expect("line");
-            Self::output_of(line, &output, hour.hour);
+            Self::output_of(line, &output, hour);
             self.dirty.insert(id);
             let gone = line.open.is_none() && (line.row.output_alone || line.row.end != P::OPEN);
             if output.ended && gone && !self.closing.contains(&id) {
