@@ -122,13 +122,14 @@ test('each day takes the viewer colour of its own hour, and a hit names its own 
   assert.equal(deriveLanesTooltip(model, 0, 55)!.hour, 60, 'the last day is the readout and is read at its own hour');
 });
 
-test('shares follows today alone, and the timeline follows its history as well', () => {
+test('shares and timeline both follow today and only timeline asks for history', () => {
   const branch = { id: '1', firstHour: 0, lastHour: 24 * 100 };
   const ctx = { track: { source: { id: 'src' }, axisOffset: 0 }, branch, options: {}, countryTag: 'GER' } as never;
   for (const declaration of [supremacyTimelineDeclaration, supremacySharesDeclaration]) {
     const plan = declaration.sources(ctx, { following: true, staticSpan: null } as never);
     assert.deepEqual(plan.entries.map(entry => entry.name), declaration === supremacySharesDeclaration ? ['now'] : ['now', 'tile:0', 'tile:1']);
-    assert.ok(plan.entries.every(({ read }) => read.shape === 'point' && read.followQuery?.panel === 'naval-supremacy'));
+    assert.ok(plan.entries.every(({ name, read }) => read.shape === 'point' &&
+      (name === 'now' ? read.followQuery?.panel === 'naval-supremacy' : read.followQuery === null)));
   }
 });
 
