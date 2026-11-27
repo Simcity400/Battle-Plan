@@ -897,6 +897,7 @@ pub fn fold_range(replay: &Replay, country: Country, timeline: &Timeline, branch
     (shared, total_ns.saturating_sub(fold_ns), fold_ns, failed)
 }
 
+pub mod cursor;
 pub mod lanes;
 
 #[cfg(test)]
