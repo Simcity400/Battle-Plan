@@ -163,7 +163,7 @@ impl viewer_layer_core::playhead_host::Overlaying<crate::map_open::Products> for
     fn missed(&self) -> &[replay_data::rows::TableId] {
         &[]
     }
-    fn wants_turn(&mut self) -> bool {
+    fn wants_turn(&self) -> bool {
         let held = self.0.lock().unwrap();
         held.answer != held.joined
     }

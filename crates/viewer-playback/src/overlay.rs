@@ -266,10 +266,6 @@ fn joins_on(whole: bool, answered: bool, out: bool) -> bool {
     whole && !answered && !out
 }
 
-fn turns(blocked: bool, pending: bool, laid: Option<(bool, bool)>, answered_anew: bool, owed: bool) -> bool {
-    blocked || (!pending && (laid.is_some_and(|(made, later)| made || later) || answered_anew || owed))
-}
-
 fn stands(hour: Option<Hour>, missed: usize, head: Hour) -> bool {
     hour.is_some_and(|hour| hour >= head) && missed == 0
 }
@@ -425,7 +421,6 @@ struct Held {
     laid_out: Option<LaidOut>,
     answered: u64,
     failed: bool,
-    tables_only: bool,
     loading: Vec<String>,
     missed: Vec<TableId>,
 }
@@ -433,7 +428,7 @@ struct Held {
 struct Shared {
     held: Mutex<Held>,
     signal: Condvar,
-    answers: AtomicU64,
+    published: AtomicU64,
 }
 
 pub struct Lend<'a> {
@@ -471,10 +466,11 @@ pub struct Overlay {
     hour: Option<Hour>,
     loading: Vec<String>,
     missed: Vec<TableId>,
-    answer: (bool, Vec<String>),
     refused: bool,
-    seen: u64,
+    joined: u64,
     art: u64,
+    posted: bool,
+    suppressed: bool,
     maker: timeline::Maker,
 }
 
@@ -483,7 +479,7 @@ impl Overlay {
         Self {
             content,
             ask: None,
-            shared: Arc::new(Shared { held: Mutex::new(Held::default()), signal: Condvar::new(), answers: AtomicU64::new(0) }),
+            shared: Arc::new(Shared { held: Mutex::new(Held::default()), signal: Condvar::new(), published: AtomicU64::new(0) }),
             worker: None,
             generation: 0,
             stamp: 0,
@@ -497,10 +493,11 @@ impl Overlay {
             hour: None,
             loading: Vec::new(),
             missed: Vec::new(),
-            answer: (false, Vec::new()),
             refused: false,
-            seen: 0,
+            joined: 0,
             art: 0,
+            posted: false,
+            suppressed: false,
             maker: timeline::maker("overlay"),
         }
     }
@@ -568,6 +565,7 @@ impl Overlay {
 
     pub fn ask_step(&mut self, lend: Lend<'_>) -> bool {
         let Lend { views, applied, branch, perspective, vision, engaged, draws_labels, lay_ins, keys, published, draws, left, moved, whole, lay } = lend;
+        (self.art, self.posted) = (self.content.icons.lazy.version(), false);
         self.loading.clear();
         let built = lock(&self.shared.held).built.take();
         if let Some(built) = built {
@@ -576,7 +574,7 @@ impl Overlay {
         if !lay {
             self.made = None;
         }
-        let shared = &self.shared;
+        let (shared, asked_lay) = (&self.shared, lay);
         let lay = self.lay_owed.lays(lay, whole, self.made.is_some(), || {
             let held = lock(&shared.held);
             (held.answered, held.laid_out.is_some())
@@ -605,7 +603,7 @@ impl Overlay {
         };
         post(&mut lock(&self.shared.held).want, want);
         self.shared.signal.notify_all();
-        self.art = self.content.icons.lazy.version();
+        (self.posted, self.suppressed) = (true, asked_lay && !lay);
         self.lay_owed.asked(lay, whole, self.stamp);
         self.asked = Some(Asked { stamp: self.stamp, hour, lay });
         timeline::mark(self.maker, Mark::Asked);
@@ -633,6 +631,7 @@ impl Overlay {
             lay_ins: Arc::default(),
             lay_in_keys: LayInKeys::default(),
             carried: Carried::default(),
+            said: Said::default(),
             marks: self.maker,
         };
         let started = std::thread::Builder::new().name("map overlay".into()).spawn(move || {
@@ -649,42 +648,27 @@ impl Overlay {
         }
     }
 
-    pub fn wants_turn(&mut self) -> bool {
-        let answers = self.shared.answers.load(Ordering::Acquire);
-        let art = self.stamp > 0 && self.content.icons.lazy.version() != self.art;
-        if answers == self.seen && self.missed.is_empty() && !art {
-            return false;
-        }
-        let held = lock(&self.shared.held);
-        let blocked = held.built.is_some() && held.want.is_some();
-        let laid = held.laid_out.as_ref().filter(|laid| installs((laid.generation, laid.hour), self.generation, self.hour)).map(|laid| (laid.made.is_some(), Some(laid.hour) != self.hour));
-        let anew = (held.failed, &held.loading, &held.missed) != (self.answer.0, &self.answer.1, &self.missed);
-        let pending = held.answered < self.stamp;
-        let turns = turns(blocked, pending, laid, anew, art || held.tables_only || !held.missed.is_empty());
-        drop(held);
-        if !turns && !pending {
-            self.seen = answers;
-        }
-        turns
+    pub fn wants_turn(&self) -> bool {
+        let owed = self.posted && (self.suppressed || !self.missed.is_empty() || self.content.icons.lazy.version() != self.art);
+        self.shared.published.load(Ordering::Acquire) != self.joined || (owed && lock(&self.shared.held).answered >= self.stamp)
     }
 
     pub fn refused(&self) -> bool {
         self.refused
     }
 
-    fn joined(&mut self, held: &Held) {
-        self.seen = self.shared.answers.load(Ordering::Acquire);
-        self.answer = (held.failed, held.loading.clone());
-        self.refused = held.failed && held.missed.is_empty();
+    fn joined(&mut self, published: u64, held: &Held) {
+        (self.joined, self.refused) = (published, held.failed && held.missed.is_empty());
         if self.missed != held.missed {
             self.missed.clone_from(&held.missed);
         }
     }
 
     pub fn join(&mut self, settling: Settling) -> bool {
+        let published = self.shared.published.load(Ordering::Acquire);
         let Some(Asked { stamp, hour, lay }) = self.asked else {
             let shared = Arc::clone(&self.shared);
-            self.joined(&lock(&shared.held));
+            self.joined(published, &lock(&shared.held));
             return false;
         };
         let began = Instant::now();
@@ -708,7 +692,7 @@ impl Overlay {
         timeline::mark(self.maker, Mark::Waited);
         let failed = fails(settling.strict(), held.answered, stamp, held.failed);
         self.loading.extend(held.loading.iter().cloned());
-        self.joined(&held);
+        self.joined(published, &held);
         drop(held);
         shared.signal.notify_all();
         timeline::mark(self.maker, Mark::Joined);
@@ -745,7 +729,7 @@ impl Overlay {
         }
         self.hour = Some(laid.hour);
         if let Some(made) = laid.made {
-            self.made = Some(made);
+            (self.made, self.refused) = (Some(made), false);
         }
     }
 
@@ -785,7 +769,16 @@ struct Maker {
     lay_ins: Arc<LayIns>,
     lay_in_keys: LayInKeys,
     carried: Carried,
+    said: Said,
     marks: timeline::Maker,
+}
+
+#[derive(Default, PartialEq)]
+struct Said {
+    hour: Option<Hour>,
+    failed: bool,
+    loading: Vec<String>,
+    missed: Vec<TableId>,
 }
 
 impl Maker {
@@ -793,7 +786,7 @@ impl Maker {
         loop {
             let want = {
                 let shared = Arc::clone(&self.shared);
-                let mut held = lock(&shared.held);
+                let (mut held, mut told) = (lock(&shared.held), false);
                 loop {
                     if held.stop {
                         return;
@@ -801,6 +794,9 @@ impl Maker {
                     let published = held.built.is_some();
                     if let Some(want) = next_ask(&mut held.want, published) {
                         break want;
+                    }
+                    if published && held.want.is_some() && !std::mem::replace(&mut told, true) {
+                        shared.published.fetch_add(1, Ordering::AcqRel);
                     }
                     held = shared.signal.wait_timeout(held, LOOK).unwrap_or_else(std::sync::PoisonError::into_inner).0;
                 }
@@ -1121,13 +1117,18 @@ impl Maker {
     }
 
     fn answered(&mut self, want: &Wanted, laid: Option<(Hour, Option<Made>)>, loading: Vec<String>, failed: bool) {
+        let (hour, made) = (laid.as_ref().map(|(stands, _)| *stands).or(self.said.hour), laid.as_ref().is_some_and(|(_, made)| made.is_some()));
         if let Some((stands, made)) = laid {
             self.publish_layout(want, stands, made);
         }
         let mut held = lock(&self.shared.held);
+        let said = Said { hour, failed, loading: loading.clone(), missed: held.missed.clone() };
+        if made || said != self.said {
+            self.shared.published.fetch_add(1, Ordering::AcqRel);
+        }
+        self.said = said;
         held.loading = loading;
-        (held.answered, held.failed, held.tables_only) = (want.stamp, failed, !want.lay);
-        self.shared.answers.fetch_add(1, Ordering::AcqRel);
+        (held.answered, held.failed) = (want.stamp, failed);
         drop(held);
         self.shared.signal.notify_all();
     }
@@ -1192,7 +1193,7 @@ impl Overlaying<Products> for Overlay {
         Overlay::missed(self)
     }
 
-    fn wants_turn(&mut self) -> bool {
+    fn wants_turn(&self) -> bool {
         Overlay::wants_turn(self)
     }
 
@@ -1353,18 +1354,6 @@ mod tests {
             assert!(stands(hour, 0, head), "hour {head}: the frame is given its picture");
             assert_eq!(untaken.take(), laid, "hour {head}");
         }
-    }
-
-    #[test]
-    fn the_side_turns_for_an_answer_it_has_not_joined_and_never_for_one_it_has() {
-        assert!(!turns(false, true, Some((true, true)), true, true), "its latest ask is unanswered: the side waits for the answer");
-        assert!(turns(true, true, None, false, false), "tables published and a newer ask queued: the maker waits on the side");
-        assert!(turns(false, false, Some((true, false)), false, false), "a layout to hand over");
-        assert!(turns(false, false, Some((false, true)), false, false), "the same layout standing at a later hour");
-        assert!(!turns(false, false, Some((false, false)), false, false), "the same layout at the same hour: nothing new");
-        assert!(turns(false, false, None, true, false), "an answer unlike the one joined, a refusal among them, is shown once");
-        assert!(!turns(false, false, None, false, false), "the answer already joined, a refusal among them, is not shown again");
-        assert!(turns(false, false, None, false, true), "a layout still owed (tables alone, tables missed, newer art) is asked for again");
     }
 
     #[test]

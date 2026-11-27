@@ -651,7 +651,7 @@ pub trait Overlaying<P: PlaybackProducts>: Send {
     fn hour(&self) -> Option<Hour>;
     fn loading(&self) -> &[String];
     fn missed(&self) -> &[TableId];
-    fn wants_turn(&mut self) -> bool;
+    fn wants_turn(&self) -> bool;
     fn refused(&self) -> bool;
 }
 
@@ -2242,7 +2242,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         self.mode.as_ref()
     }
 
-    pub fn unsettled(&mut self, view: &View, head: Hour) -> bool {
+    pub fn unsettled(&self, view: &View, head: Hour) -> bool {
         #[cfg(any(test, feature = "test-support"))]
         if self.settles_held.load(Ordering::Acquire) {
             return true;
@@ -2254,8 +2254,8 @@ impl<P: PlaybackProducts> MapSide<P> {
             || self.answers_waiting()
     }
 
-    pub fn answers_waiting(&mut self) -> bool {
-        self.views.demand() != self.demand || self.epoch != self.entry.playhead.epoch() || self.overlay.as_deref_mut().is_some_and(Overlaying::wants_turn) || self.combat.wants_turn()
+    pub fn answers_waiting(&self) -> bool {
+        self.views.demand() != self.demand || self.epoch != self.entry.playhead.epoch() || self.overlay.as_deref().is_some_and(Overlaying::wants_turn) || self.combat.wants_turn()
     }
 }
 

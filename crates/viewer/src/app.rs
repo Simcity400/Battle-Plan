@@ -4499,6 +4499,9 @@ impl Viewer {
                 if let Some(why) = side.take_refusal() {
                     unsettled = Some(format!("A saved frame draws its own hour whole: {why}"));
                 }
+                if side.products().missed.is_some() {
+                    ui.ctx().request_repaint();
+                }
             }
             if withdrawn {
                 self.forget_overlay();
