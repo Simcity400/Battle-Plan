@@ -2,7 +2,7 @@
 use dashboard_base::products::Country;
 use dashboard_base::products::{LoadContext, Product, check_reply_budget, validate_country, idea_format::{self, LocalisedText, ModifierFormat}, politics_content::{PoliticsContent, politics_content}};
 use dashboard_core::dto::Artwork;
-use dashboard_base::Source;
+use dashboard_base::{Source, catalogue};
 use dashboard_text::metadata::check_cancel;
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, cost, identity::Holder};
@@ -1002,7 +1002,7 @@ type Looked = (IdeaLook, Option<String>);
 pub(crate) struct Read {
     pub ideas: Ideas,
     pub naming: Vec<NamingCountry>,
-    looks: Mutex<(Weak<PoliticsContent>, Vec<Option<Looked>>)>,
+    looks: Mutex<(Weak<PoliticsContent>, Vec<Option<(Looked, catalogue::OwnRefusals)>>)>,
 }
 
 impl Read {
@@ -1011,15 +1011,16 @@ impl Read {
         if !kept.0.upgrade().is_some_and(|held| Arc::ptr_eq(&held, content)) {
             *kept = (Arc::downgrade(content), vec![None; self.ideas.spans.len()]);
         }
-        kept.1[run]
+        let (looked, noted) = kept.1[run]
             .get_or_insert_with(|| {
                 let span = &self.ideas.spans[run];
                 let unnamed = NamingCountry::default();
                 let identity = self.ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1);
                 let named = identity.and_then(|identity| self.naming.get(identity)).unwrap_or(&unnamed);
-                look(content, span, self.ideas.templates.get(&run), named.for_tag(tag))
-            })
-            .clone()
+                catalogue::capture(|| look(content, span, self.ideas.templates.get(&run), named.for_tag(tag)))
+            });
+        catalogue::credit(noted);
+        looked.clone()
     }
 }
 
