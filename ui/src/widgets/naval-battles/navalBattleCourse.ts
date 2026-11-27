@@ -36,7 +36,7 @@ function readAt(course: NavalBattleCourseReply, at: number): NavalCourseRead | u
 
 export function navalCourseFigures(course: NavalBattleCourseReply, at: number): [NavalSideFigures, NavalSideFigures] {
   const read = readAt(course, at);
-  const gap = course.missing.find(span => span.firstHour <= at && at <= span.lastHour);
+  const gap = read?.resulted ? undefined : course.missing.find(span => span.firstHour <= at && at <= span.lastHour);
   const side = (index: 0 | 1): NavalSideFigures => {
     if (!read || gap) {
       const missing = { missing: gap?.reason ?? NOT_AT_THIS_HOUR };

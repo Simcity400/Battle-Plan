@@ -806,10 +806,11 @@ fn course(scanned: &Scanned, key: &str, branch_last: i32) -> Option<(Vec<NavalCo
         })
         .collect();
     let first = entry.date.min(reads.first().map_or(entry.date, |read| read.hour));
-    let last = match reads.last() {
-        Some(read) if read.result == NavalBattleStatus::Ongoing => branch_last.max(read.hour),
-        Some(read) => read.hour,
-        None => first,
+    let last = match (reads.iter().find(|read| read.resulted), reads.last()) {
+        (Some(result), _) => result.hour - 1,
+        (None, Some(read)) if read.result == NavalBattleStatus::Ongoing => branch_last.max(read.hour),
+        (None, Some(read)) => read.hour,
+        (None, None) => first,
     };
     let missing = scanned
         .live_gaps
@@ -939,6 +940,7 @@ mod tests {
                 vec![
                     entry(0, "combat:7:100", vec![(100, read(NavalBattleStatus::Ongoing))]),
                     entry(1, "combat:8:100", vec![(100, read(NavalBattleStatus::Ongoing)), (105, read(NavalBattleStatus::Unknown))]),
+                    entry(2, "combat:6:100", vec![(100, read(NavalBattleStatus::Ongoing)), (111, Snapshot { result_id: Some(61), ..read(NavalBattleStatus::AttackerWon) })]),
                 ],
                 Vec::new(),
                 &[NavalBattleStatus::Ongoing as u8],
@@ -950,6 +952,8 @@ mod tests {
         assert_eq!(live, [gap(110, 112), gap(118, 120)], "a live battle's gaps run to the branch end, past its last change");
         let (_, ended) = course(&scanned, "combat:8:100", 120).unwrap();
         assert!(ended.is_empty(), "an ended battle's gaps stop at its last reading");
+        let (_, resulted) = course(&scanned, "combat:6:100", 120).unwrap();
+        assert_eq!(resulted, [gap(110, 110)], "census gaps stop where the battle's result is recorded");
         assert!(course(&scanned, "combat:9:100", 120).is_none());
     }
 

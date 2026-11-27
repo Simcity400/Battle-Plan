@@ -25,6 +25,9 @@ test('the sides band reads each side at the hour shown, with losses marked as co
   assert.deepEqual(settled.sunk, { value: 2, soFar: false }, 'after the result the losses are final');
   assert.deepEqual(navalCourseGaps(course, HOUR, HOUR + 4), [{ first: HOUR + 3, last: HOUR + 4 }]);
   assert.deepEqual(navalCourseGaps(course, HOUR + 6, HOUR + 9), []);
+  const resultOnly = validateNavalBattleCourse({ branchId: '1', warnings: [], missing: [{ firstHour: HOUR, lastHour: HOUR + 9, reason: 'Naval battle census incomplete' }],
+    reads: [read(HOUR + 2, { result: 'attackerWon', resulted: true })] });
+  assert.deepEqual(navalCourseFigures(resultOnly, HOUR + 3)[1].sunk, { value: 3, soFar: false }, 'a recorded result is shown even where the census was not read');
 });
 
 test('a malformed course is refused', () => {
