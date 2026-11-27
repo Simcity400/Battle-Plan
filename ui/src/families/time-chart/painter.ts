@@ -13,6 +13,7 @@ import {
   drawTimeAxis,
   fitLegendStrip,
   resolveKitTokens,
+  snapCanvasText,
   type LegendFit,
   type LegendMeasure,
   type LegendStripSpec,
@@ -1665,14 +1666,14 @@ function drawTimeChartBackdrop(
       ctx.fillStyle = label.valueMuted ? theme.muted : textSecondary;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(label.name, cursorX, label.y + 0.5);
+      ctx.fillText(label.name, cursorX, label.y);
       cursorX += (label.nameWidth !== undefined && label.nameFont === labelNameFont ? label.nameWidth : measureCanvasText(ctx, label.name, labelNameFont)) + 6;
     }
     ctx.font = labelValueFont;
     ctx.fillStyle = label.valueMuted ? theme.muted : label.negative ? tokens.shortage : (label.valueColor ?? theme.text);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(label.value, cursorX, label.y + 0.5);
+    ctx.fillText(label.value, cursorX, label.y);
     ctx.restore();
   }
 
@@ -1826,6 +1827,7 @@ export function drawTimeChart(
           const offCtx = off.getContext('2d', colorSpace !== 'srgb' ? { colorSpace } : undefined);
           const offSpace = offCtx ? (backdropColorSpaceOf(offCtx) ?? null) : null;
           if (offCtx && offSpace === colorSpace) {
+            snapCanvasText(offCtx);
             entry.canvas = off;
             entry.ctx = offCtx;
             offCtx.save();

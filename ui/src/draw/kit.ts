@@ -34,6 +34,23 @@ import { timeChartCacheState } from '../families/time-chart/cacheControl.ts';
 
 export type RowDensity = 'compact' | 'normal' | 'comfortable';
 
+export function snapCanvasText(ctx: Canvas2D): void {
+  const fill = ctx.fillText;
+  ctx.fillText = (text, x, y, maxWidth) => {
+    const t = ctx.getTransform();
+    const px = t.a * x + t.c * y + t.e;
+    const py = t.b * x + t.d * y + t.f;
+    const dx = Math.round(px) - px, dy = Math.round(py) - py;
+    const determinant = t.a * t.d - t.b * t.c;
+    if (determinant !== 0) {
+      x += (t.d * dx - t.c * dy) / determinant;
+      y += (t.a * dy - t.b * dx) / determinant;
+    }
+    if (maxWidth === undefined) fill.call(ctx, text, x, y);
+    else fill.call(ctx, text, x, y, maxWidth);
+  };
+}
+
 export const BEHIND_BAR_HEIGHT: Readonly<Record<RowDensity, number>> = {
   compact: 18,
   normal: 22,
@@ -484,7 +501,7 @@ function drawSlotMark(
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(ellipsise(label, Math.max(1, width - 2), s => textWidth(ctx, s)), x + width / 2, y + height / 2 + 0.5);
+      ctx.fillText(ellipsise(label, Math.max(1, width - 2), s => textWidth(ctx, s)), x + width / 2, y + height / 2);
     }
     return;
   }
@@ -1322,7 +1339,7 @@ export function drawDateTab(
   ctx.fillStyle = variant === 'playhead' ? tokens.dateTabText : tokens.hoverTabText;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, x + width / 2, y + height / 2 + 0.5);
+  ctx.fillText(text, x + width / 2, y + height / 2);
   ctx.restore();
   return { x, y, width, height };
 }
@@ -1468,7 +1485,7 @@ export function drawTimelineBar(ctx: Canvas2D, options: TimelineBarOptions): Tim
         ctx.fillStyle = contrastInkForFill(fill, theme);
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText(fitted.text, cursor, y + height / 2 + 0.5);
+        ctx.fillText(fitted.text, cursor, y + height / 2);
         label = fitted;
       }
     }
@@ -2528,7 +2545,7 @@ export function drawRowRemoveButton(ctx: Canvas2D, right: number, middleY: numbe
   ctx.font = `500 10px ${theme.font}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('\u00d7', box.x + box.width / 2, middleY + 0.5);
+  ctx.fillText('\u00d7', box.x + box.width / 2, middleY);
   ctx.restore();
 }
 

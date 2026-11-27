@@ -10,7 +10,7 @@ import { boundTiledSeries, BoundedSeriesCursor, displayedHour } from '../bounded
 import type { ArtHandle, FamilyTheme, IdentityResult } from '../contract.ts';
 import { projectScene } from '../scene.ts';
 import { knownValue } from '../value.ts';
-import { drawGapBand, drawPlayheadLine, drawSeriesMissingStrip, drawTimeAxis, resolveKitTokens } from '../../draw/kit.ts';
+import { drawGapBand, drawPlayheadLine, drawSeriesMissingStrip, drawTimeAxis, resolveKitTokens, snapCanvasText } from '../../draw/kit.ts';
 import { DEFAULT_SEEDS, deriveColors, type ThemeMode } from '../../shell/appearance/themes.ts';
 import { timeChartCacheState } from './cacheControl.ts';
 import { chartNavStops, timeChartLane } from './laneView.ts';
@@ -424,6 +424,7 @@ async function runParitySuite(): Promise<{ readonly checked: number; readonly fa
 
   const cachedCanvas = new OffscreenCanvas(720, 320);
   const cachedCtx = cachedCanvas.getContext('2d', { willReadFrequently: true })!;
+  snapCanvasText(cachedCtx);
   const cachedMeasure = canvasMeasureText(cachedCtx);
 
   const cachedResults: {
@@ -472,6 +473,7 @@ async function runParitySuite(): Promise<{ readonly checked: number; readonly fa
       const bh = Math.round(step.height * step.dpr);
       const refCanvas = new OffscreenCanvas(bw, bh);
       const refCtx = refCanvas.getContext('2d', { willReadFrequently: true })!;
+      snapCanvasText(refCtx);
       clearTextWidthCache();
       const refMeasure = (text: string, font: string) => {
         const prev = refCtx.font;
@@ -922,8 +924,10 @@ async function runParitySuite(): Promise<{ readonly checked: number; readonly fa
     const bh = Math.round(320 * hoverDpr);
     const cachedHoverC = new OffscreenCanvas(bw, bh);
     const cachedHoverCtx = cachedHoverC.getContext('2d', { willReadFrequently: true })!;
+    snapCanvasText(cachedHoverCtx);
     const refHoverC = new OffscreenCanvas(bw, bh);
     const refHoverCtx = refHoverC.getContext('2d', { willReadFrequently: true })!;
+    snapCanvasText(refHoverCtx);
     let drawImages = 0;
     let backdropStrokes = 0;
     const origDrawImage = cachedHoverCtx.drawImage.bind(cachedHoverCtx);
@@ -1073,6 +1077,8 @@ async function runParitySuite(): Promise<{ readonly checked: number; readonly fa
         const rC = new OffscreenCanvas(bw, bh);
         const rCtx = rC.getContext('2d', opts);
         if (!dCtx || !rCtx) continue;
+        snapCanvasText(dCtx);
+        snapCanvasText(rCtx);
         drawTimeChart(dCtx, hoverModel, hoverLayBase, darkTheme, `plot:${H0 + 40 * 24}`, hoverDpr, hoverFit, undefined, { cacheBackdrop: true });
         drawTimeChart(dCtx, hoverModel, hoverLayBase, darkTheme, `plot:${H0 + 90 * 24}`, hoverDpr, hoverFit, undefined, { cacheBackdrop: true });
         timeChartCacheState.enabled = false;

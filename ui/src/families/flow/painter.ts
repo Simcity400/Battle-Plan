@@ -281,11 +281,11 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
     ctx.textAlign = 'right';
     ctx.font = `${VALUE_WEIGHT} ${fontSize}px ${theme.font}`;
     ctx.fillStyle = node.numeric === null ? theme.muted : theme.text;
-    if (figure) ctx.fillText(figure, cursor, middle + 0.5);
+    if (figure) ctx.fillText(figure, cursor, middle);
     cursor -= figureW + (figure ? 6 : 0);
     ctx.font = `${highlighted ? VALUE_WEIGHT : LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
     ctx.fillStyle = nameColour;
-    ctx.fillText(name, cursor, middle + 0.5);
+    ctx.fillText(name, cursor, middle);
     cursor -= nameW + FLAG_GAP;
     if (flagW) drawFlagSlot(ctx, cursor - FLAG_SLOT_WIDTH, Math.round(middle - FLAG_SLOT_HEIGHT / 2), flagState(node.flag, node.tag, artCache), theme);
   } else if (node.side === 'right') {
@@ -297,11 +297,11 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
     ctx.textAlign = 'left';
     ctx.font = `${highlighted ? VALUE_WEIGHT : LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
     ctx.fillStyle = nameColour;
-    ctx.fillText(name, cursor, middle + 0.5);
+    ctx.fillText(name, cursor, middle);
     cursor += nameW + 6;
     ctx.font = `${VALUE_WEIGHT} ${fontSize}px ${theme.font}`;
     ctx.fillStyle = node.numeric === null ? theme.muted : theme.text;
-    if (figure) ctx.fillText(figure, cursor, middle + 0.5);
+    if (figure) ctx.fillText(figure, cursor, middle);
   } else {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';

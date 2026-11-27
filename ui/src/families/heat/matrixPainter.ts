@@ -77,7 +77,7 @@ function drawCellText(ctx: Canvas2D, text: string, x: number, y: number, w: numb
     ctx.fillStyle = color;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, x + w / 2, y + h / 2 + 0.5);
+    ctx.fillText(text, x + w / 2, y + h / 2);
     return;
   }
 }
@@ -124,7 +124,7 @@ function drawMarginColumn(
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(item.label, layout.width - MATRIX_PAD, middle + 0.5);
+      ctx.fillText(item.label, layout.width - MATRIX_PAD, middle);
       continue;
     }
     drawBar(ctx, barLeft, Math.round(middle - barHeight / 2), Math.max(2, barMax * Math.max(0, Math.min(1, item.fraction))), barHeight, item.color ?? rampColour(theme, model.ramp, 1), 'right');
@@ -132,7 +132,7 @@ function drawMarginColumn(
     ctx.fillStyle = theme.text;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(ellipsise(item.text, figureWidth, s => textWidth(ctx, s)), layout.width - MATRIX_PAD, middle + 0.5);
+    ctx.fillText(ellipsise(item.text, figureWidth, s => textWidth(ctx, s)), layout.width - MATRIX_PAD, middle);
   }
   ctx.restore();
 }
@@ -311,7 +311,7 @@ export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void 
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(trailing, tx, y + ch / 2 + 0.5);
+      ctx.fillText(trailing, tx, y + ch / 2);
     }
   }
 

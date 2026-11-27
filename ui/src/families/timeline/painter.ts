@@ -252,7 +252,7 @@ function drawSides(
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(extraText, px + pillW / 2, mid + 0.5);
+    ctx.fillText(extraText, px + pillW / 2, mid);
     ctx.restore();
   }
 }

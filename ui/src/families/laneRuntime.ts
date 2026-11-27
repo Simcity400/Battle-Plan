@@ -3,6 +3,7 @@ import type { FollowedAnswer } from '../dashboard/follow/message';
 import { sameRevision, type Revisions } from '../dashboard/follow/payloads.ts';
 import type { LaneView, Painted, PaintInput, Scene, Surface, Value as LaneValue } from '../draw/lane.ts';
 import { markCanvasPainted } from '../draw/laneDispatch.ts';
+import { snapCanvasText } from '../draw/kit.ts';
 import { LaneArtCache, LaneArtPool, type LaneArtFetcher } from './art/laneCache.ts';
 import { createLaneArtProvider, type ArtResolutions } from './art/provider.ts';
 import { TrailingFlushScheduler, type CadenceTimers } from './cadence.ts';
@@ -472,6 +473,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Could not acquire 2D canvas context');
+    snapCanvasText(ctx);
     const art = new LaneArtCache({
       ...(options?.artMaxEntries !== undefined ? { maxEntries: options.artMaxEntries } : {}),
       pool: artPool,

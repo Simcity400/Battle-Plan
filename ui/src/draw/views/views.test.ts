@@ -34,6 +34,7 @@ test('lazy projection arriving after first next wakes the lane and reports its t
       return {
         setTransform() {}, clearRect() {}, fillRect() {}, strokeRect() {}, beginPath() {}, roundRect() {},
         fill() {}, stroke() {}, rect() {}, clip() {}, save() {}, restore() {}, fillText() {},
+        getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
         measureText: (t: string) => ({ width: t.length * 7 }),
         createLinearGradient: () => ({ addColorStop() {} }),
         font: '', fillStyle: '', strokeStyle: '', globalAlpha: 1, lineWidth: 1, textAlign: 'left', textBaseline: 'middle',

@@ -139,6 +139,7 @@ function instrumentedContext() {
     lineWidth: 1,
     textAlign: 'left',
     textBaseline: 'alphabetic',
+    getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
     save() {},
     restore() {},
     beginPath() {},
@@ -1800,7 +1801,7 @@ function gridContext(width: number, height: number) {
     measureText: (text: string) => ({ width: String(text).length * 7 }),
     createLinearGradient: () => ({ addColorStop() {} }),
     createPattern: () => null,
-    getTransform: () => ({ a: 1, d: 1 }),
+    getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
   };
   const ctx = new Proxy(target, { get: (t, k) => (k in t ? t[k as string] : () => {}) });
   return { ctx, marks };
@@ -5823,6 +5824,7 @@ test('tableLane.visibleArt follows frame-specific gliding rows and never pins al
             save() {},
             restore() {},
             setTransform() {},
+            getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
             clearRect() {},
             beginPath() {},
             rect() {},
