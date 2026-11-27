@@ -69,6 +69,12 @@ test('a coalition battle identifies every participant on both sides in the row a
   const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
   const view = createBoundedReadView({ hour: 18, identity, rows: new Map([['main', source]]) });
   const model = landBattlesProjection.project(view, { byDate: true });
+  const unreadFlags = createBoundedReadView({ hour: 18, rows: new Map([['main', source]]),
+    identity: { resolve: (kind, key, at) => ({ ...identity.resolve(kind, key, at), flagChoice: { status: 'ready', value: 'recorded_flag' } }) },
+    art: { resolve: () => ({ status: 'failed', reason: 'flag file unreadable', retryable: true, retry: () => undefined }) as never } });
+  for (const row of landBattlesProjection.project(unreadFlags, { byDate: true }).rows) {
+    assert.doesNotThrow(() => structuredClone(row.meta), 'a row’s subject crosses the lane worker boundary, so it carries no art callbacks');
+  }
   const [coalition, unresolved] = model.rows as [TableRow, TableRow];
   assert.deepEqual(
     coalition.cells.country!.flags?.map(flag => [flag.tag, flag.separator === true]),
