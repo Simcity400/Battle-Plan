@@ -810,13 +810,15 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         }
         _ => None,
     };
-    let wings_whole = dashboard_query::coverage::population::<tables::AirRegionWings>(frame, &replay_frame::frame::Keys::All).err();
-    let wings: Option<BTreeMap<u32, i64>> = match dashboard_text::metadata::recorded_rows::<tables::AirRegionWings>(frame)? {
-        dashboard_text::metadata::RecordedRows::Complete(rows) | dashboard_text::metadata::RecordedRows::Truncated { rows, .. } => {
-            Some(rows.iter().map(|row| (row.region, row.wings)).collect())
-        }
-        dashboard_text::metadata::RecordedRows::Unavailable { .. } | dashboard_text::metadata::RecordedRows::NotRecorded { .. } => None,
-    };
+    let (wings, wings_whole): (Option<BTreeMap<u32, i64>>, Option<String>) =
+        match dashboard_text::metadata::recorded_rows::<tables::AirRegionWings>(frame)?.into_rows(TableId::AirRegionWings, hour) {
+            Ok((rows, None)) => (
+                Some(rows.iter().map(|row| (row.region, row.wings)).collect()),
+                dashboard_query::coverage::population::<tables::AirRegionWings>(frame, &replay_frame::frame::Keys::All).err(),
+            ),
+            Ok((rows, Some(why))) => (Some(rows.iter().map(|row| (row.region, row.wings)).collect()), Some(why)),
+            Err(why) => (None, Some(why)),
+        };
     let unlisted = dashboard_query::coverage::population::<tables::RaidAirScores>(frame, &replay_frame::frame::Keys::All).err().or_else(|| wings_whole.clone());
     let pinned: Vec<u32> = {
         let mut seen = HashSet::new();

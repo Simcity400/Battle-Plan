@@ -108,3 +108,77 @@ fn temp_measures_at(days: &[Day]) -> Vec<(String, Daily)> {
     let at = |value| { let mut values = vec![None; days.len()]; values[days.len() - 1] = Some(value); values };
     vec![("temp".to_owned(), [(1, at(-200_000)), (2, at(900_000))].into())]
 }
+
+#[test]
+fn unavailable_and_truncated_weather_days_carry_their_reasons() {
+    use dashboard_base::{Source, SourceKey, test_fixtures::{CAMPAIGN, recorded_mod_defines, records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
+
+    let (_machine, cat_source, load) = recorded_mod_defines("", "", &[]);
+    let cat = catalogue::catalogue(&cat_source, load.content().unwrap()).unwrap();
+    let weather = Weather {
+        members: BTreeMap::new(),
+        names: [(1, Ok("Region One".into())), (2, Ok("Region Two".into()))].into(),
+        pass: Err("no pass".into()),
+        cat,
+        warnings: Vec::new(),
+    };
+    let make_row = |id: u32, rain: u8, det: i64| WeatherRegionRow {
+        id,
+        light_rain: rain,
+        air_detection: Recorded::Value(Some(Some(det))),
+        ..Default::default()
+    };
+    let mut frames = Vec::new();
+    for hour in 0..(3 * DAY) {
+        let mut frame = source(1, hour, Some(i64::from(hour)));
+        *frame.tables[TableId::WeatherRegions.index()] = if hour < DAY {
+            TableView::Complete(TableRows::WeatherRegions(vec![make_row(1, 0, 1), make_row(2, 0, 2)]))
+        } else if hour < 2 * DAY {
+            TableView::Unavailable { reason: "weather sensor failed".into() }
+        } else {
+            TableView::Truncated { rows: TableRows::WeatherRegions(vec![make_row(1, 1, 5)]), missing: 2 }
+        };
+        frames.push(frame);
+    }
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(SourceKey { source_id: "weather-test".into(), revision: "1".into() }, "weather.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let params = |show, last_hour| RegionalWeatherParams {
+        branch_id: "1".into(),
+        first_hour: Some(0),
+        window_days: None,
+        last_hour,
+        width: 10,
+        show,
+        modifier: Some("air_detection".into()),
+        regions: None,
+        pinned_regions: Some(vec![1, 2]),
+        hidden_regions: None,
+        top: Some(5),
+    };
+
+    for show in [Show::Conditions, Show::Modifier] {
+        let unavailable = history(&query, &params(show, 2 * DAY - 1), &weather, &AtomicBool::new(false)).unwrap();
+        assert_eq!(unavailable.columns.columns.last().unwrap().recorded, 0);
+        assert!(unavailable.warnings.iter().any(|why| why.contains("weather sensor failed")), "{show:?}: {:?}", unavailable.warnings);
+        assert!(unavailable.rank_missing.as_deref().is_some_and(|why| why.contains("weather sensor failed")), "{show:?}: {:?}", unavailable.rank_missing);
+        let r1 = unavailable.columns.regions.iter().find(|region| region.id == "1").unwrap();
+        assert!(matches!(&r1.readout, Some(WeatherReadout::NotRecorded { reason }) if reason.contains("weather sensor failed")), "{show:?}: {:?}", r1.readout);
+
+        let truncated = history(&query, &params(show, 3 * DAY - 1), &weather, &AtomicBool::new(false)).unwrap();
+        assert!(truncated.warnings.iter().any(|why| why.contains("2 rows not read")), "{show:?}: {:?}", truncated.warnings);
+        assert!(truncated.warnings.iter().any(|why| why.contains("weather sensor failed")), "{show:?}: {:?}", truncated.warnings);
+        assert!(truncated.rank_missing.as_deref().is_some_and(|why| why.contains("2 rows not read")), "{show:?}: {:?}", truncated.rank_missing);
+        let r1 = truncated.columns.regions.iter().find(|region| region.id == "1").unwrap();
+        match show {
+            Show::Conditions => assert!(matches!(&r1.readout, Some(WeatherReadout::Condition { id, .. }) if id == "light_rain"), "{:?}", r1.readout),
+            Show::Modifier => assert!(matches!(&r1.readout, Some(WeatherReadout::Value { value, .. }) if value == "5"), "{:?}", r1.readout),
+            Show::Temperature => unreachable!(),
+        }
+        let r2 = truncated.columns.regions.iter().find(|region| region.id == "2").unwrap();
+        assert!(matches!(&r2.readout, Some(WeatherReadout::NotRecorded { reason }) if reason.contains("2 rows not read")), "{show:?}: {:?}", r2.readout);
+    }
+}

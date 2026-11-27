@@ -625,6 +625,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     let mut warnings = weather.warnings.clone();
     let mut known: Vec<(u32, i32, i32)> = Vec::new();
     let mut complete: Vec<(i32, i32)> = Vec::new();
+    let mut status_runs: Vec<(Vec<replay_lanes::lanes::StatusRun>, HashMap<u32, String>)> = Vec::new();
     let mut terminal_failure: Option<String> = None;
     let mut terminal_reason: Option<String> = None;
     let mut reads: Vec<(i32, i32)> = Vec::new();
@@ -634,10 +635,24 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
         let (from, to) = (stretch.first.max(first), stretch.last.min(last));
         let whole = |status| if params.show == Show::Temperature { replay_recording::columnar_frames::complete(status) } else { replay_recording::columnar_frames::available(status) };
         let statuses = read::statuses(recording, stretch.run, sampled, from, to)?;
+        let reasons = read::status_reasons(recording, stretch.run, sampled, &statuses)?;
         complete.extend(statuses.iter().filter(|run| replay_recording::columnar_frames::complete(run.status)).map(|run| (run.first, run.last)));
-        known.extend(statuses.into_iter().filter(|run| whole(run.status)).map(|run| (stretch.run, run.first, run.last)));
+        known.extend(statuses.iter().filter(|run| whole(run.status)).map(|run| (stretch.run, run.first, run.last)));
+        status_runs.push((statuses, reasons));
         reads.extend(dashboard_query::cost::storage(|| replay_lanes::lanes::reads(recording, stretch.run, sampled, from, to))?);
     }
+    let day_missing = |from: i32, to: i32| -> Option<(i32, String)> {
+        status_runs.iter().rev().find_map(|(runs, reasons)| {
+            runs.iter()
+                .rev()
+                .find(|run| run.first <= to && run.last >= from && !replay_recording::columnar_frames::complete(run.status))
+                .and_then(|run| {
+                    let hour = run.last.min(to);
+                    let why = crate::products::status_rows(run.status, reasons, query.replay.capture_mode).missing_reason(sampled, hour)?;
+                    Some((hour, why))
+                })
+        })
+    };
     let mut days = days(first, last, &known, &reads);
     let days_len = days.len();
     let wanted: Option<BTreeSet<u32>> = params.regions.as_ref().map(|ids| ids.iter().filter_map(|id| id.parse().ok()).collect());
@@ -651,10 +666,19 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
             let mut seeker = replay_lanes::at::Seeker::new(recording)?;
             for (index, day) in days.iter_mut().enumerate() {
                 dashboard_text::metadata::check_cancel(cancelled)?;
-                let Some((run, at)) = day.at else { continue };
+                let Some((run, at)) = day.at else {
+                    if let Some((at, why)) = day_missing(day.first, day.last) {
+                        if index + 1 == days_len {
+                            terminal_failure = Some(format!("Weather was not available at this hour ({why}), so the most active regions are not known"));
+                            terminal_reason = Some(why.clone());
+                        }
+                        refused.note(why, format!("hour {at}"));
+                    }
+                    continue;
+                };
                 let frame = dashboard_query::cost::storage(|| seeker.frame(run, at, &[replay_lanes::at::Read::all(TableId::WeatherRegions)]))?;
                 match dashboard_text::metadata::recorded_rows::<tables::WeatherRegions>(&frame)?.into_rows(TableId::WeatherRegions, at) {
-                    Ok((held, _)) => {
+                    Ok((held, incomplete)) => {
                         for row in held {
                             rows.insert(row.id);
                             if !keeps(row.id) {
@@ -664,6 +688,22 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                             for (daily_flag, value) in daily.iter_mut().zip(flags) {
                                 daily_flag.entry(row.id).or_insert_with(|| vec![None; days_len])[index] = Some(i128::from(value));
                             }
+                        }
+                        if let Some(why) = incomplete {
+                            if index + 1 == days_len {
+                                terminal_reason = Some(why.clone());
+                                if at == day.last {
+                                    terminal_failure = Some(format!("Weather was read only in part at this hour ({why}), so the most active regions are not known"));
+                                }
+                            }
+                            refused.note(why, format!("hour {at}"));
+                        }
+                        if index + 1 == days_len
+                            && at < day.last
+                            && let Some((miss_at, why)) = day_missing(day.last, day.last)
+                        {
+                            terminal_failure = Some(format!("Weather was not available at this hour ({why}), so the most active regions are not known"));
+                            refused.note(why, format!("hour {miss_at}"));
                         }
                     }
                     Err(why) => {
@@ -689,11 +729,20 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
             let mut seeker = replay_lanes::at::Seeker::new(recording)?;
             for (index, day) in days.iter_mut().enumerate() {
                 dashboard_text::metadata::check_cancel(cancelled)?;
-                let Some((run, at)) = day.at else { continue };
+                let Some((run, at)) = day.at else {
+                    if let Some((at, why)) = day_missing(day.first, day.last) {
+                        if index + 1 == days_len {
+                            terminal_failure = Some(format!("Weather was not available at this hour ({why}), so the most active regions are not known"));
+                            terminal_reason = Some(why.clone());
+                        }
+                        refused.note(why, format!("hour {at}"));
+                    }
+                    continue;
+                };
                 let frame = dashboard_query::cost::storage(|| seeker.frame(run, at, &[replay_lanes::at::Read::all(sampled)]))?;
                 if params.show == Show::Modifier {
                     match dashboard_text::metadata::recorded_rows::<tables::WeatherRegions>(&frame)?.into_rows(TableId::WeatherRegions, at) {
-                        Ok((held, _)) => {
+                        Ok((held, incomplete)) => {
                             for row in held {
                                 rows.insert(row.id);
                                 if keeps(row.id)
@@ -701,6 +750,22 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                                 {
                                     daily.entry(row.id).or_insert_with(|| vec![None; days_len])[index] = Some(value);
                                 }
+                            }
+                            if let Some(why) = incomplete {
+                                if index + 1 == days_len {
+                                    terminal_reason = Some(why.clone());
+                                    if at == day.last {
+                                        terminal_failure = Some(format!("Weather was read only in part at this hour ({why}), so the most active regions are not known"));
+                                    }
+                                }
+                                refused.note(why, format!("hour {at}"));
+                            }
+                            if index + 1 == days_len
+                                && at < day.last
+                                && let Some((miss_at, why)) = day_missing(day.last, day.last)
+                            {
+                                terminal_failure = Some(format!("Weather was not available at this hour ({why}), so the most active regions are not known"));
+                                refused.note(why, format!("hour {miss_at}"));
                             }
                         }
                         Err(why) => {
@@ -729,6 +794,13 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                             if let Some(value) = mean(members, states) {
                                 daily.entry(region).or_insert_with(|| vec![None; days_len])[index] = Some(value);
                             }
+                        }
+                        if index + 1 == days_len
+                            && at < day.last
+                            && let Some((miss_at, why)) = day_missing(day.last, day.last)
+                        {
+                            terminal_failure = Some(format!("Temperature was not known at this hour ({why}), so the most active regions are not known"));
+                            refused.note(why, format!("hour {miss_at}"));
                         }
                     }
                 }
@@ -814,7 +886,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
             });
             entry.pinned = pinned;
             entry.readout = Some(match (region_readout(region, &days, &measures, params.show, &flags, &temperature), &terminal_reason) {
-                (WeatherReadout::NotRecorded { .. }, Some(reason)) => WeatherReadout::NotRecorded { reason: reason.clone() },
+                (WeatherReadout::NotRecorded { .. }, Some(reason)) if params.show != Show::Temperature || temperature == "available" => WeatherReadout::NotRecorded { reason: reason.clone() },
                 (readout, _) => readout,
             });
             entry

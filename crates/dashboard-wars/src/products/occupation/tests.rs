@@ -304,9 +304,40 @@ mod reply {
 
         let mut no_assigned = frame();
         *no_assigned.tables[TableId::StateAssignedManpower.index()] = TableView::Unavailable { reason: "manpower table damaged".into() };
+        *no_assigned.tables[TableId::GarrisonStrengths.index()] = TableView::Complete(TableRows::GarrisonStrengths(vec![
+            GarrisonStrengthRow { controller: 1, state: 10, strength: Recorded::NotRecorded, reason: GarrisonStrengthRow::ASSIGNED },
+        ]));
         let reply = states::reply(&no_assigned, &content(), &Cells::default()).unwrap();
         assert!(!reply.states[0].assigned_known);
         assert!(reply.states[0].garrison_missing.as_deref().is_some_and(|why| why.contains("manpower table damaged")), "{:?}", reply.states[0].garrison_missing);
+
+        let mut truncated_strengths = frame();
+        *truncated_strengths.tables[TableId::StateGarrisons.index()] = TableView::Complete(TableRows::StateGarrisons(vec![
+            StateGarrisonRow { controller: 1, state: 10, occupied: 2, required_manpower: 100, garrison_required: 250_000, equipment: Recorded::Value(GarrisonEquipmentInputs::default()), ..Default::default() },
+            StateGarrisonRow { controller: 1, state: 11, occupied: 2, required_manpower: 100, garrison_required: 250_000, equipment: Recorded::Value(GarrisonEquipmentInputs::default()), ..Default::default() },
+        ]));
+        *truncated_strengths.tables[TableId::GarrisonStrengths.index()] = TableView::Truncated {
+            rows: TableRows::GarrisonStrengths(vec![GarrisonStrengthRow { controller: 1, state: 10, strength: Recorded::Value(62_500), reason: GarrisonStrengthRow::KNOWN }]),
+            missing: 2,
+        };
+        let cells = Cells::default();
+        let reply = states::reply(&truncated_strengths, &content(), &cells).unwrap();
+        assert_eq!(reply.states[0].garrison_missing, None, "a witnessed garrison strength keeps its live cell when another row was truncated");
+        assert!(reply.states[1].garrison_missing.as_deref().is_some_and(|why| why.contains("2 rows not read")), "{:?}", reply.states[1].garrison_missing);
+        let live = cells.finish();
+        let json = live.json(&live.values(&truncated_strengths).into_iter().map(GroupState::Values).collect::<Vec<_>>());
+        let strength = json["groups"].as_array().unwrap().iter().find(|group| group["table"] == TableId::GarrisonStrengths.index()).unwrap();
+        assert_eq!(strength["values"], serde_json::json!([62_500]));
+
+        let mut truncated_resistance = frame();
+        *truncated_resistance.tables[TableId::StateResistance.index()] = TableView::Truncated {
+            rows: TableRows::StateResistance(vec![resistance(10, 9, 1, 2_500_000)]),
+            missing: 3,
+        };
+        let reply = states::reply(&truncated_resistance, &content(), &Cells::default()).unwrap();
+        assert!(!reply.complete);
+        assert_eq!(reply.states.iter().map(|state| state.state).collect::<Vec<_>>(), [10]);
+        assert!(reply.warnings.iter().any(|why| why.contains("3 rows not read")), "{:?}", reply.warnings);
 
         let mut no_overrides = frame();
         *no_overrides.tables[TableId::StateOccupationLaws.index()] = TableView::Unavailable { reason: "law overrides damaged".into() };

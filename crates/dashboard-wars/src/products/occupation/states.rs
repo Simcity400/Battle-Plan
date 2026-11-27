@@ -205,10 +205,8 @@ impl<'f> Joins<'f> {
                 }
             }
         }
-        let (strengths, strengths_missing) = match recorded_rows::<tables::GarrisonStrengths>(frame)? {
-            RecordedRows::Complete(rows) => (rows.iter().map(|row| (GarrisonStrengthRow::key_of(row.controller, row.state), row)).collect(), None),
-            other => (HashMap::new(), other.missing_reason(TableId::GarrisonStrengths, frame.hour)),
-        };
+        let (strength_rows, strengths_missing) = present_rows::<tables::GarrisonStrengths>(frame)?;
+        let strengths = strength_rows.iter().map(|row| (GarrisonStrengthRow::key_of(row.controller, row.state), row)).collect();
         Ok(Self {
             garrisons,
             garrisons_missing,
@@ -453,10 +451,12 @@ struct Garrison {
     missing: Option<String>,
 }
 
-fn not_recorded(row: &StateGarrisonRow, reason: u8) -> String {
+fn not_recorded(row: &StateGarrisonRow, reason: u8, assigned_missing: Option<&str>) -> String {
     match reason {
         GarrisonStrengthRow::UNRESOLVED => "The controller or occupied-country link is unresolved; the garrison's assigned manpower cannot be joined".into(),
-        GarrisonStrengthRow::ASSIGNED => "state assigned manpower is incomplete or unresolved at this read".into(),
+        GarrisonStrengthRow::ASSIGNED => assigned_missing
+            .map(str::to_owned)
+            .unwrap_or_else(|| "state assigned manpower is incomplete or unresolved at this read".into()),
         GarrisonStrengthRow::OPERANDS => "This recording lacks the garrison equipment strength operands".into(),
         GarrisonStrengthRow::FAILED => match &row.equipment {
             Recorded::Value(inputs) if inputs.failure.is_some() => String::from_utf8_lossy(inputs.failure.as_deref().unwrap_or_default()).into_owned(),
@@ -467,13 +467,13 @@ fn not_recorded(row: &StateGarrisonRow, reason: u8) -> String {
 }
 
 fn strength(frame: &DecodedFrame, content: &Content, joins: &Joins<'_>, row: &StateGarrisonRow, assigned: Option<i32>) -> Result<u128, String> {
-    if let Some(why) = &joins.strengths_missing {
-        return Err(format!("Garrison strength is not recorded at this read: {why}"));
-    }
     let key = GarrisonStrengthRow::key_of(row.controller, row.state);
-    let derived = joins.strengths.get(&key).ok_or_else(|| "No garrison strength was derived for this garrison at this read".to_owned())?;
+    let derived = joins.strengths.get(&key).ok_or_else(|| match &joins.strengths_missing {
+        Some(why) => format!("Garrison strength is not recorded at this read: {why}"),
+        None => "No garrison strength was derived for this garrison at this read".to_owned(),
+    })?;
     if derived.strength == Recorded::NotRecorded {
-        return Err(not_recorded(row, derived.reason));
+        return Err(not_recorded(row, derived.reason, joins.assigned_missing.as_deref()));
     }
     if let Recorded::Value(inputs) = &row.equipment
         && row.serialized_flag == 0
@@ -578,11 +578,16 @@ pub(super) fn reply(frame: &DecodedFrame, content: &Content, live: &Cells) -> io
     let amount = dashboard_declare::field(TableId::StateAssignedManpower, "amount")?;
     let strength_field = dashboard_declare::field(TableId::GarrisonStrengths, "strength")?;
     let mut admission = Admission::new(frame, content, links);
-    let (resistance_rows, mut complete) = match recorded_rows::<tables::StateResistance>(frame)? {
-        RecordedRows::Complete(rows) => (rows, true),
-        RecordedRows::Truncated { rows, .. } => (rows, false),
-        other @ (RecordedRows::Unavailable { .. } | RecordedRows::NotRecorded { .. }) => {
-            reply.missing = other.missing_reason(TableId::StateResistance, frame.hour);
+    let (resistance_rows, mut complete) = match recorded_rows::<tables::StateResistance>(frame)?.into_rows(TableId::StateResistance, frame.hour) {
+        Ok((rows, incomplete)) => {
+            let complete = incomplete.is_none();
+            if let Some(why) = incomplete {
+                reply.warnings.push(why);
+            }
+            (rows, complete)
+        }
+        Err(why) => {
+            reply.missing = Some(why);
             return Ok(reply);
         }
     };

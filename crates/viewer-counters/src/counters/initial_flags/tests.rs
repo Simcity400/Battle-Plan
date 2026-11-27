@@ -540,7 +540,7 @@ fn ideology_groups_preserve_unavailable_table_reasons() {
     let groups = ideology_groups(&no_politics, &country_rows).unwrap();
     assert!(groups[&1].as_ref().unwrap_err().contains("politics damaged"));
 
-    let mut no_countries = base;
+    let mut no_countries = base.clone();
     *no_countries.tables[TableId::Countries.index()] = TableView::Unavailable {
         reason: "countries damaged".into(),
     };

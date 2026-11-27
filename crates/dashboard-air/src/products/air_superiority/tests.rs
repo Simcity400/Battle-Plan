@@ -141,6 +141,11 @@ fn scores_not_known_are_unknown_sides_never_zero() {
     assert_eq!(reply.regions.iter().find(|region| region.id == 10).map(|region| region.wings), Some(AirWings::Unknown));
     assert!(reply.unlisted.as_deref().is_some_and(|why| why.contains("wings damaged")), "{:?}", reply.unlisted);
     assert!(reply.warnings.iter().any(|why| why.contains("wings damaged")), "{:?}", reply.warnings);
+    *no_wings.tables[TableId::AirRegionWings.index()] = TableView::NotRecorded { mode: replay_data::scope::CaptureMode::Full };
+    let (reply, _) = moment_of(&no_wings, &params(AirMode::Sides));
+    assert_eq!(reply.regions.iter().find(|region| region.id == 10).map(|region| region.wings), Some(AirWings::Unknown));
+    assert!(reply.unlisted.as_deref().is_some_and(|why| why.contains("full recording")), "{:?}", reply.unlisted);
+    assert!(reply.warnings.iter().any(|why| why.contains("full recording")), "{:?}", reply.warnings);
 }
 
 #[test]
