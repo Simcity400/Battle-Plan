@@ -670,9 +670,8 @@ struct Reading {
     keyed: Vec<Keyed>,
     frame_keys: Vec<(usize, Arc<BTreeSet<u64>>)>,
     keyed_views: Vec<(usize, u64, u64, Arc<BTreeSet<u64>>, SharedView, Option<view::HeadFailure>)>,
-    frame: Option<Arc<DecodedFrame>>,
-    failures: Arc<[view::HeadFailure]>,
-    stands: Option<(Hour, u64)>,
+    frame: viewer_runtime::landed::PublishedKeyed<(Hour, u64, u64), (Arc<DecodedFrame>, Arc<[view::HeadFailure]>, (Hour, u64))>,
+    schema_ver: u64,
     published: u64,
     told: Option<Telling>,
     arriving: Vec<TableId>,
@@ -692,8 +691,20 @@ struct Marks {
 }
 
 impl Reading {
+    fn frame(&self) -> Option<&Arc<DecodedFrame>> {
+        self.frame.as_ref().map(|(frame, ..)| frame)
+    }
+
+    fn failures(&self) -> Option<&Arc<[view::HeadFailure]>> {
+        self.frame.as_ref().map(|(_, failures, _)| failures)
+    }
+
+    fn stands(&self) -> Option<(Hour, u64)> {
+        self.frame.as_ref().map(|(_, _, stands)| *stands)
+    }
+
     fn due(&self, now: Instant, epoch: u64) -> bool {
-        let anew = self.frame.is_none() || self.stands.is_none_or(|(_, at)| at != epoch);
+        let anew = self.frame().is_none() || self.stands().is_none_or(|(_, at)| at != epoch);
         match (self.pace, self.due_at) {
             (Pace::Ready, _) => self.ready || anew,
             (_, Some(due)) => now >= due || anew,
@@ -948,7 +959,7 @@ impl Store {
             }
             queue.push(Job { table, columns, waits: from..waiting.len() });
         }
-        let ready: Vec<usize> = places.iter().copied().filter(|&place| left[place] == 0 && (readers[place].stands != Some((hour, epoch)) || readers[place].keys_moved())).collect();
+        let ready: Vec<usize> = places.iter().copied().filter(|&place| left[place] == 0 && (readers[place].stands() != Some((hour, epoch)) || readers[place].keys_moved())).collect();
         for &place in &places {
             if left[place] > 0 || ready.contains(&place) {
                 readers[place].posted = Some(now);
@@ -1185,9 +1196,8 @@ fn register(shared: &Shared, id: u64, name: &'static str, told: bool, pace: Pace
         keyed: Vec::new(),
         frame_keys: Vec::new(),
         keyed_views: Vec::new(),
-        frame: None,
-        failures: Arc::from([]),
-        stands: None,
+        frame: Default::default(),
+        schema_ver: 0,
         published: 0,
         told: told.then(Telling::default),
         arriving: Vec::new(),
@@ -1548,14 +1558,13 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
         let frame = DecodedFrame { branch, hour, tables, metrics: Metrics::default() };
         told(&mut readers, kept, &mut made);
         let reading = &mut readers[place];
-        if let (Some(older), Some(was), Some((_, seek))) = (reading.older.as_mut(), reading.frame.take(), reading.stands) {
+        if let (Some(older), Some(was)) = (reading.older.as_mut(), reading.frame.take()) {
+            let (was, _, (_, seek)) = was.into_inner();
             older.push_front((was, seek));
             older.truncate(FRAMES_KEPT);
         }
-        reading.frame = Some(Arc::new(frame));
+        reading.frame.publish((hour, epoch, reading.schema_ver), (Arc::new(frame), Arc::from(failures), (hour, epoch)));
         published = true;
-        reading.failures = Arc::from(failures);
-        reading.stands = Some((hour, epoch));
         reading.published += 1;
         reading.due_at = reading.pace.interval().map(|interval| Instant::now() + interval);
         reading.ready = false;
@@ -1670,13 +1679,13 @@ impl Reader {
 
     pub fn frame(&self) -> Option<Arc<DecodedFrame>> {
         let readers = lock(&self.shared.readers);
-        readers.get(Self::place(&readers, self.id)?)?.frame.clone()
+        readers.get(Self::place(&readers, self.id)?)?.frame().cloned()
     }
 
     pub fn frame_with_failures(&self) -> Option<(Arc<DecodedFrame>, Arc<[view::HeadFailure]>)> {
         let readers = lock(&self.shared.readers);
         let reading = readers.get(Self::place(&readers, self.id)?)?;
-        Some((reading.frame.clone()?, Arc::clone(&reading.failures)))
+        Some((reading.frame()?.clone(), Arc::clone(reading.failures()?)))
     }
 
     pub fn frame_now_through(&self, hour: Hour) -> Option<Arc<DecodedFrame>> {
@@ -1695,7 +1704,7 @@ impl Reader {
     fn through_in(&self, readers: &[Reading], hour: Hour) -> Option<Arc<DecodedFrame>> {
         let reading = readers.get(Self::place(readers, self.id)?)?;
         let seek = self.seek();
-        let newest = reading.frame.iter().filter(|_| reading.stands.is_some_and(|(_, at)| at == seek));
+        let newest = reading.frame().into_iter().filter(|_| reading.stands().is_some_and(|(_, at)| at == seek));
         newest.chain(reading.older.iter().flatten().filter(|&&(_, at)| at == seek).map(|(frame, _)| frame)).find(|frame| frame.hour <= hour).cloned()
     }
 
@@ -1703,7 +1712,7 @@ impl Reader {
         let readers = lock(&self.shared.readers);
         let reading = readers.get(Self::place(&readers, self.id)?)?;
         let seek = self.seek();
-        let newest = reading.frame.iter().filter(|_| reading.stands.is_some_and(|(_, at)| at == seek));
+        let newest = reading.frame().into_iter().filter(|_| reading.stands().is_some_and(|(_, at)| at == seek));
         newest.chain(reading.older.iter().flatten().filter(|&&(_, at)| at == seek).map(|(frame, _)| frame)).find(|frame| frame.hour == hour).cloned()
     }
 
@@ -1717,19 +1726,19 @@ impl Reader {
             }
         };
         let reading = readers.get(Self::place(&readers, self.id)?)?;
-        reading.frame.clone().filter(|_| reading.stands.is_some_and(|(_, at)| at == self.seek()))
+        reading.frame().cloned().filter(|_| reading.stands().is_some_and(|(_, at)| at == self.seek()))
     }
 
     pub fn newest(&self) -> Option<(Arc<DecodedFrame>, u64)> {
         let readers = lock(&self.shared.readers);
         let reading = readers.get(Self::place(&readers, self.id)?)?;
-        Some((reading.frame.clone()?, reading.published))
+        Some((reading.frame()?.clone(), reading.published))
     }
 
     pub fn newest_seek(&self) -> Option<(Arc<DecodedFrame>, u64, u64)> {
         let readers = lock(&self.shared.readers);
         let reading = readers.get(Self::place(&readers, self.id)?)?;
-        Some((reading.frame.clone()?, reading.published, reading.stands?.1))
+        Some((reading.frame()?.clone(), reading.published, reading.stands()?.1))
     }
 
     pub fn seek(&self) -> u64 {
@@ -1743,7 +1752,7 @@ impl Reader {
     pub fn through_seek(&self, frame: *const DecodedFrame) -> Option<(Hour, u64)> {
         let readers = lock(&self.shared.readers);
         let reading = readers.get(Self::place(&readers, self.id)?)?;
-        reading.frame.as_ref().filter(|held| std::ptr::eq(Arc::as_ptr(held), frame)).and_then(|_| reading.stands)
+        reading.frame().filter(|held| std::ptr::eq(Arc::as_ptr(held), frame)).and_then(|_| reading.stands())
     }
 
     pub fn arriving(&self) -> Vec<TableId> {
@@ -1812,7 +1821,7 @@ impl Reader {
         let mut readers = lock(&self.shared.readers);
         loop {
             if let Some(at) = Self::place(&readers, self.id)
-                && let Some(frame) = readers[at].frame.clone().filter(|frame| ready(frame))
+                && let Some(frame) = readers[at].frame().cloned().filter(|frame| ready(frame))
             {
                 return Ok(frame);
             }
@@ -1829,14 +1838,14 @@ impl Reader {
     pub fn frame_keyed(&self) -> Option<(Arc<DecodedFrame>, HeldKeys)> {
         let readers = lock(&self.shared.readers);
         let reading = readers.get(Self::place(&readers, self.id)?)?;
-        Some((reading.frame.clone()?, HeldKeys::of_tables(reading.frame_keys.clone())))
+        Some((reading.frame()?.clone(), HeldKeys::of_tables(reading.frame_keys.clone())))
     }
 
     pub fn take_keyed(&self) -> Option<(Arc<DecodedFrame>, Told, HeldKeys)> {
         let mut readers = lock(&self.shared.readers);
         let at = Self::place(&readers, self.id)?;
         let reading = &mut readers[at];
-        let frame = reading.frame.clone()?;
+        let frame = reading.frame()?.clone();
         let told = reading.told.as_mut().map(|telling| std::mem::take(&mut telling.unread)).unwrap_or_default();
         Some((frame, told, HeldKeys::of_tables(reading.frame_keys.clone())))
     }
@@ -1856,6 +1865,7 @@ impl Reader {
                 true
             }
         };
+        readers[at].schema_ver += 1;
         let needs = readers[at].declared.clone();
         drop(readers);
         if joined {
@@ -1916,8 +1926,8 @@ fn declare(shared: &Arc<Shared>, id: u64, needs: &[Need], republishes: bool) {
                 }
             }
             if readers[at].tables != tables {
-                (readers[at].frame, readers[at].stands) = (None, None);
-                readers[at].failures = Arc::from([]);
+                readers[at].frame.clear();
+                readers[at].schema_ver += 1;
                 readers[at].frame_keys.clear();
                 readers[at].keyed_views.clear();
             }
@@ -2118,8 +2128,7 @@ fn close(shared: &Arc<Shared>, id: u64) {
     let mut readers = lock(&shared.readers);
     if let Some(at) = Reader::place(&readers, id) {
         readers[at].open = false;
-        (readers[at].frame, readers[at].stands) = (None, None);
-        readers[at].failures = Arc::from([]);
+        readers[at].frame.clear();
     }
     drop(readers);
     declare(shared, id, &[], true);

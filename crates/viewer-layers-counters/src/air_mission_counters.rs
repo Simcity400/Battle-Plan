@@ -127,7 +127,7 @@ struct Asker {
 
 #[derive(Default)]
 struct Answers {
-    given: HashMap<(BranchId, Hour, u32), Result<bool, String>>,
+    given: viewer_runtime::landed::Published<HashMap<(BranchId, Hour, u32), Result<bool, String>>>,
     asked: BTreeSet<(BranchId, Hour, u32)>,
 }
 
@@ -564,7 +564,7 @@ impl AirMissionCounters {
     fn known_answer(&self, pass: Hour, ours: u32) -> Option<Result<bool, String>> {
         let (_, branch) = lock(&self.passes).clone()?;
         let asker = self.asker.as_ref()?;
-        lock(&asker.shared.0).given.get(&(branch, pass, ours)).cloned()
+        lock(&asker.shared.0).given.get_entry(&(branch, pass, ours)).cloned()
     }
 
     fn ask(&mut self, pass: Hour, ours: u32, region: u32) {

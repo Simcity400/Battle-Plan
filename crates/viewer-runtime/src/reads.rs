@@ -1,4 +1,5 @@
 
+use crate::landed::{Landed, Published};
 use job_priority::SpawnCarried;
 use replay_data::rows::TableId;
 use std::{
@@ -13,8 +14,8 @@ type Trash = Box<dyn Send>;
 struct State<K, T> {
     queued: Option<(K, Job<T>)>,
     running: Option<K>,
-    done: Option<(K, T)>,
-    missed: Vec<TableId>,
+    done: Published<Option<(K, T)>>,
+    missed: Published<Vec<TableId>>,
     timing: Option<Vec<u64>>,
     trash: Vec<Trash>,
     stop: bool,
@@ -34,7 +35,7 @@ pub struct Reads<K, T> {
 
 impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
     pub fn new(name: &'static str) -> Self {
-        let state = State { queued: None, running: None, done: None, missed: Vec::new(), timing: None, trash: Vec::new(), stop: false };
+        let state = State { queued: None, running: None, done: Published::default(), missed: Published::default(), timing: None, trash: Vec::new(), stop: false };
         Self { shared: Arc::new((Mutex::new(state), Condvar::new())), worker: None, name }
     }
 
@@ -63,16 +64,25 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
         }
     }
 
-    pub fn latest(&self, keep: impl FnOnce(&K) -> bool) -> Option<(K, T)>
+    pub fn latest(&self, keep: impl FnOnce(&K) -> bool) -> Option<(K, Landed<T>)>
     where
         T: Clone,
     {
-        lock(&self.shared).done.as_ref().filter(|(key, _)| keep(key)).cloned()
+        let state = lock(&self.shared);
+        let (key, _) = state.done.as_ref().filter(|(key, _)| keep(key))?;
+        let key = key.clone();
+        let landed = state.done.landed_clone()?.map(|(_, value)| value);
+        Some((key, landed))
     }
 
-    pub fn take(&mut self, keep: impl FnOnce(&K) -> bool) -> Option<(K, T)> {
+    pub fn take(&mut self, keep: impl FnOnce(&K) -> bool) -> Option<(K, Landed<T>)> {
         let mut state = lock(&self.shared);
-        if state.done.as_ref().is_some_and(|(key, _)| keep(key)) { state.done.take() } else { None }
+        if state.done.as_ref().is_some_and(|(key, _)| keep(key)) {
+            let (key, value) = state.done.take()?.split();
+            Some((key.into_inner(), value))
+        } else {
+            None
+        }
     }
 
     pub fn wait(&self, keep: impl Fn(&K) -> bool, limit: Duration) -> bool {
@@ -112,7 +122,7 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
     }
 
     pub fn take_missed(&mut self) -> Vec<TableId> {
-        std::mem::take(&mut lock(&self.shared).missed)
+        lock(&self.shared).missed.take_all().map(Landed::into_inner).unwrap_or_default()
     }
 }
 
@@ -154,13 +164,10 @@ fn run<K: Clone, T>(shared: &Shared<K, T>, wake: impl Fn()) {
             timing.push(spent);
         }
         if missed.is_empty() {
-            state.done = Some((key, value));
+            state.done.set_some((key, value));
         } else {
-            for table in missed {
-                if !state.missed.contains(&table) {
-                    state.missed.push(table);
-                }
-            }
+            let novel: Vec<TableId> = missed.into_iter().filter(|table| !state.missed.get().contains(table)).collect();
+            state.missed.extend_nonempty(novel);
         }
         drop(state);
         shared.1.notify_all();
@@ -178,24 +185,28 @@ mod tests {
         let mut reads: Reads<u32, u32> = Reads::new("reads test");
         let (done, wait) = mpsc::channel();
         let next = || wait.recv_timeout(Duration::from_secs(60)).expect("the worker answers");
+        let before = crate::landed::count();
         reads.ask(1, || 10, move || {
             let _ = done.send(());
         });
         next();
-        assert_eq!(reads.latest(|key| *key == 1), Some((1, 10)));
+        assert!(crate::landed::count() > before, "publishing a result moves the landed count");
+        assert_eq!(reads.latest(|key| *key == 1).map(|(k, v)| (k, v.into_inner())), Some((1, 10)));
         reads.ask(1, || panic!("a key made already is not made again"), || {});
         assert!(!reads.busy(), "nothing is queued for it");
         assert_eq!(reads.latest(|key| *key == 2), None, "another key's result is not this one's");
         reads.ask(2, || 20, || {});
         next();
-        assert_eq!(reads.take(|key| *key == 2), Some((2, 20)));
+        assert_eq!(reads.take(|key| *key == 2).map(|(k, v)| (k, v.into_inner())), Some((2, 20)));
         assert_eq!(reads.take(|_| true), None, "taken once");
+        let before_missed = crate::landed::count();
         let undeclared = replay_frame::frame::not_declared(TableId::Countries);
         reads.ask(3, move || {
             let _ = &*undeclared;
             30
         }, || {});
         next();
+        assert!(crate::landed::count() > before_missed, "publishing missed tables moves the landed count");
         assert_eq!(reads.latest(|_| true), None, "a read over an undeclared table is void");
         assert_eq!(reads.take_missed(), [TableId::Countries]);
         assert!(reads.take_missed().is_empty());

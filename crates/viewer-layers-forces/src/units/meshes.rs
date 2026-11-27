@@ -94,10 +94,10 @@ struct Held {
     asks: Vec<Ask>,
     clear: bool,
     epoch: u64,
-    made: Vec<Product>,
-    hour: Option<Hour>,
-    answered: Option<Hour>,
-    refused: Option<String>,
+    made: viewer_runtime::landed::Published<Vec<Product>>,
+    hour: viewer_runtime::landed::Published<Option<Hour>>,
+    answered: viewer_runtime::landed::Published<Option<Hour>>,
+    refused: viewer_runtime::landed::Published<Option<String>>,
     owed: bool,
     tables: Vec<TableId>,
     counts: Counts,
@@ -125,9 +125,9 @@ impl Shared {
     fn stood(&self, stands: Hour) {
         let mut held = self.lock();
         if held.hour.is_some() {
-            held.hour = held.hour.max(Some(stands));
+            held.hour.advance(stands);
         }
-        held.answered = held.answered.max(Some(stands));
+        held.answered.advance(stands);
         drop(held);
         self.done.notify_all();
     }
@@ -202,7 +202,8 @@ impl Meshes {
     pub fn clear(&mut self) {
         let mut held = self.shared.lock();
         held.asks.clear();
-        (held.clear, held.epoch, held.answered) = (true, held.epoch + 1, None);
+        (held.clear, held.epoch) = (true, held.epoch + 1);
+        held.answered.clear();
     }
 
     pub fn ask(&mut self, ours: u32, asks: Vec<Ask>) {
@@ -219,7 +220,7 @@ impl Meshes {
         let mut changed = false;
         loop {
             changed |= self.take();
-            if self.shared.lock().answered.is_some_and(|at| at >= applied) && (!strict || self.stand()) {
+            if self.shared.lock().answered.as_ref().is_some_and(|&at| at >= applied) && (!strict || self.stand()) {
                 return changed | self.take();
             }
             if Instant::now() >= until {
@@ -232,7 +233,7 @@ impl Meshes {
     fn take(&mut self) -> bool {
         let (made, hour, refused) = {
             let mut held = self.shared.lock();
-            (std::mem::take(&mut held.made), held.hour, held.refused.clone())
+            (held.made.take_all().map(viewer_runtime::landed::Landed::into_inner).unwrap_or_default(), held.hour.as_ref().copied(), held.refused.as_ref().cloned())
         };
         let mut changed = false;
         for product in made {
@@ -272,7 +273,7 @@ impl Meshes {
 
     pub fn stand(&self) -> bool {
         let held = self.shared.lock();
-        held.refused.is_some() || (!held.owed && !held.clear && held.asks.iter().all(|ask| matches!(ask, Ask::Gone(_))))
+        held.refused.as_ref().is_some() || (!held.owed && !held.clear && held.asks.iter().all(|ask| matches!(ask, Ask::Gone(_))))
     }
 
     pub fn take_counts(&self) -> Counts {
@@ -304,9 +305,9 @@ impl Meshes {
             held.waiting,
             held.owed,
             held.clear,
-            held.hour,
-            held.answered,
-            held.refused
+            held.hour.as_ref(),
+            held.answered.as_ref(),
+            held.refused.as_ref()
         )
     }
 
@@ -540,11 +541,11 @@ impl Run {
         }
         viewer_runtime::view_record::add("units", "choices_looked_up", looked_up);
         viewer_runtime::view_record::add("units", "choices_made_new", made.selections as u64);
-        held.refused = refused;
+        held.refused.set_if_changed(refused);
         if !self.again && held.refused.is_none() {
-            held.hour = Some(frame.hour);
+            held.hour.set_if_changed(Some(frame.hour));
         }
-        held.answered = held.answered.max(Some(frame.hour));
+        held.answered.advance(frame.hour);
         held.made.push(Product { clear, meshes });
     }
 

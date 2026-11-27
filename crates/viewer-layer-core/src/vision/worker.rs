@@ -377,7 +377,7 @@ fn superseded(next: Option<&Job>, epoch: u64, due: &Due) -> bool {
     }
 }
 
-fn run(content: Arc<Content>, jobs: Receiver<Job>, made: Sender<Made>, due: Due) {
+fn run(content: Arc<Content>, jobs: Receiver<Job>, made: viewer_runtime::landed::Sender<Made>, due: Due) {
     let mut work: Option<Work> = None;
     let mut epoch = 0;
     while let Ok(job) = jobs.recv() {
@@ -412,7 +412,7 @@ fn run(content: Arc<Content>, jobs: Receiver<Job>, made: Sender<Made>, due: Due)
 pub(super) struct Folder {
     content: Arc<Content>,
     jobs: Option<Sender<Job>>,
-    made: Option<Receiver<Made>>,
+    made: Option<viewer_runtime::landed::Receiver<Made>>,
     shapes: Vec<Shape>,
     epoch: u64,
     fed: Fed<Made>,
@@ -473,7 +473,7 @@ impl Folder {
     pub(super) fn reset(&mut self, mirrors: &Mirrors, columns: &Columns, choice: &Choice) {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = viewer_runtime::landed::channel();
             let (content, due) = (Arc::clone(&self.content), self.fed.due());
             if std::thread::Builder::new().name("vision fold".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();
@@ -564,7 +564,7 @@ impl Folder {
             }
         }
         let mut due = Vec::new();
-        self.fed.take(|made| due.push(made));
+        self.fed.take(|made| due.push(made.into_inner()));
         for made in due {
             self.take(made);
         }

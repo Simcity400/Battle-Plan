@@ -15,7 +15,7 @@ fn the_marker_hovers_and_the_byte_check_take_the_engaged_index_from_the_engageme
     sought(&mut side, 4);
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
     viewer.playhead = Some(Playhead { branch: 3, hour: 4, fraction: 0.0 });
-    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side, Arc::new(|| {})).unwrap();
     side.driven(|_| ());
     viewer.playhead_map = Some(side);
     let taken = viewer.layer_engaged();
@@ -36,7 +36,7 @@ fn the_combat_window_stands_at_the_hour_the_map_shows_not_the_hour_the_side_appl
     side.set_branch(3);
     sought(&mut side, 4);
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
-    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side, Arc::new(|| {})).unwrap();
     side.driven(|_| ());
     assert_eq!((side.applied(), side.branch()), (Some(4), Some(3)), "the side applied hour 4");
     let (views, branch) = (side.views().clone(), 3);

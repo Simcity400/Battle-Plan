@@ -410,13 +410,13 @@ fn compose_away(away: &mut Away) {
 
 struct Worker {
     jobs: Sender<Job>,
-    done: Receiver<Box<Away>>,
+    done: viewer_runtime::landed::Receiver<Box<Away>>,
 }
 
 impl Worker {
     fn new() -> io::Result<Self> {
         let (jobs, receive) = mpsc::channel::<Job>();
-        let (send, done) = mpsc::channel();
+        let (send, done) = viewer_runtime::landed::channel();
         std::thread::Builder::new().name("playhead host worker".into()).spawn(move || {
             viewer_runtime::worker_priority::enter(COMPOSE_CLASS);
             for job in receive {
@@ -645,7 +645,7 @@ pub trait Overlaying<P: PlaybackProducts>: Send {
     fn join(&mut self, layers: &[Box<dyn Layer>], perspective: &viewer_foundation::perspective::Choice, branch: Option<replay_data::BranchId>, settling: Settling) -> bool;
     fn stepped(&mut self);
     fn stands_at(&self, hour: Hour) -> bool;
-    fn take(&mut self) -> Option<P::OverlayMade>;
+    fn take(&mut self) -> Option<viewer_runtime::landed::Landed<P::OverlayMade>>;
     fn reset(&mut self);
     fn generation(&self) -> u64;
     fn hour(&self) -> Option<Hour>;
@@ -707,7 +707,7 @@ impl OverlayStep<'_> {
         self.layers.engaged()
     }
 
-    pub fn vision(&mut self, whole: bool) -> Result<Arc<viewer_foundation::perspective::Vision>, String> {
+    pub fn vision(&mut self, whole: bool) -> Result<viewer_runtime::landed::Landed<Arc<viewer_foundation::perspective::Vision>>, String> {
         if whole {
             let home = self.layers.mirrors.is_some() && !self.layers.composing && !self.layers.superseded;
             let layer = self.layers.vision_layer();
@@ -773,6 +773,9 @@ pub struct MapSide<P: PlaybackProducts = NoProducts> {
     epoch: u64,
     cancel: Arc<AtomicBool>,
     superseded: bool,
+    demand: u64,
+    landed: u64,
+    whole: bool,
     fresh: Vec<bool>,
     reset_shown: bool,
     judged_shown: Vec<Option<Hour>>,
@@ -813,7 +816,7 @@ impl MapSide<NoProducts> {
 }
 
 impl<P: PlaybackProducts> MapSide<P> {
-    pub fn lay_overlay_again(&mut self) -> Result<P::OverlayMade, String> {
+    pub fn lay_overlay_again(&mut self) -> Result<viewer_runtime::landed::Landed<P::OverlayMade>, String> {
         let until = Instant::now() + HANDS_BACK;
         while !self.ask_overlay_step(true, true, Arc::default()) {
             if Instant::now() >= until {
@@ -926,6 +929,9 @@ impl<P: PlaybackProducts> MapSide<P> {
             epoch: 0,
             cancel: Arc::default(),
             superseded: false,
+            demand: 0,
+            landed: 0,
+            whole: false,
             fresh: Vec::new(),
             reset_shown: false,
             judged_shown: Vec::new(),
@@ -975,7 +981,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         self.overlay.as_deref()
     }
 
-    pub fn vision(&self) -> Result<Arc<viewer_foundation::perspective::Vision>, String> {
+    pub fn vision(&self) -> Result<viewer_runtime::landed::Landed<Arc<viewer_foundation::perspective::Vision>>, String> {
         self.vision.kept_for(&self.view_shown.perspective)
     }
 
@@ -989,7 +995,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         }
     }
 
-    pub fn take_overlay(&mut self) -> Option<P::OverlayMade> {
+    pub fn take_overlay(&mut self) -> Option<viewer_runtime::landed::Landed<P::OverlayMade>> {
         let made = self.overlay.as_deref_mut().and_then(Overlaying::take);
         let made = made.filter(|_| self.vision_refused().is_none());
         if let Some(made) = &made {
@@ -1002,7 +1008,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         self.combat.ask(asking);
     }
 
-    pub fn take_combat(&mut self) -> Option<<P::Combat as combat::Asking>::Made> {
+    pub fn take_combat(&mut self) -> Option<viewer_runtime::landed::Landed<<P::Combat as combat::Asking>::Made>> {
         self.combat.take()
     }
 
@@ -1245,6 +1251,8 @@ impl<P: PlaybackProducts> MapSide<P> {
 
     fn frame_step(&mut self, head: Hour, settling: crate::layers::Settling, lay: bool, wait_compose: bool) -> io::Result<Frame> {
         self.frame += 1;
+        (self.demand, self.landed) = (self.views.demand(), viewer_runtime::landed::count());
+        self.vision.take_made();
         let stepping = Instant::now();
         let doing = Arc::clone(&self.doing);
         let mut watch = Watch::new(&doing);
@@ -1268,11 +1276,11 @@ impl<P: PlaybackProducts> MapSide<P> {
             match received {
                 Ok(away) if away.cancel.load(Ordering::Acquire) => {
                     frame.superseded = true;
-                    self.take_home(*away);
+                    self.take_home(*away.into_inner());
                 }
                 Ok(away) => {
                     frame.swapped = Some(away.results.iter().map(|(_, ns, _)| *ns).collect());
-                    self.swap_in(*away)?;
+                    self.swap_in(*away.into_inner())?;
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => return Err(io::Error::other("The playhead host's worker stopped")),
@@ -1637,6 +1645,7 @@ impl<P: PlaybackProducts> MapSide<P> {
                 None => whole = false,
             }
         }
+        self.whole = whole;
         if whole {
             self.drawn = if drawn == 0 { self.applied } else { oldest };
             self.oldest = match (self.drawn, every) {
@@ -2232,6 +2241,25 @@ impl<P: PlaybackProducts> MapSide<P> {
 
     pub fn mode_on_screen(&self) -> Option<&viewer_map_modes::map_mode::MapMode> {
         self.mode.as_ref()
+    }
+
+    pub fn unsettled(&self, view: &View, head: Hour) -> bool {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.settles_held.load(Ordering::Acquire) {
+            return true;
+        }
+        self.view_shown != *view
+            || self.mode.as_ref() != Some(&view.map_mode)
+            || !self.whole
+            || !self.on_screen().is_some_and(|on| on.settled && on.drawn == Some(head))
+            || self.answers_waiting()
+    }
+
+    pub fn answers_waiting(&self) -> bool {
+        self.views.demand() != self.demand
+            || self.epoch != self.entry.playhead.epoch()
+            || viewer_runtime::landed::count() != self.landed
+            || (self.failure.is_none() && self.entry.playhead.error().is_some())
     }
 }
 

@@ -406,7 +406,7 @@ impl Units {
         self
     }
 
-    pub fn prepared(&self) -> Option<&Arc<viewer_unit_models::unit_models::PreparedModels>> {
+    pub fn prepared(&self) -> Option<&viewer_runtime::landed::Landed<Arc<viewer_unit_models::unit_models::PreparedModels>>> {
         self.models.as_ref()?.prepared.as_ref().map(|(_, prepared)| prepared)
     }
 
@@ -1807,7 +1807,7 @@ pub fn of(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_cor
     layers.iter().find_map(|layer| layer.any().downcast_ref::<Units>())
 }
 
-pub fn prepared(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<&Arc<viewer_unit_models::unit_models::PreparedModels>> {
+pub fn prepared(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<&viewer_runtime::landed::Landed<Arc<viewer_unit_models::unit_models::PreparedModels>>> {
     of(side).and_then(Units::prepared)
 }
 

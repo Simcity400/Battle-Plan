@@ -16,6 +16,7 @@ use viewer_engagements::engagement_history::History;
 use viewer_unit_reads::counter_move::MovedHours;
 use viewer_gpu::camera::Camera;
 use viewer_foundation::perspective::{Choice, Vision};
+use viewer_runtime::landed::{Landed, Published, PublishedKeyed};
 
 const WHOLE: Duration = Duration::from_secs(120);
 
@@ -417,8 +418,8 @@ struct LaidOut {
 struct Held {
     stop: bool,
     want: Option<Wanted>,
-    built: Option<Built>,
-    laid_out: Option<LaidOut>,
+    built: Published<Option<Built>>,
+    laid_out: PublishedKeyed<(u64, Hour), LaidOut>,
     answered: u64,
     failed: bool,
     loading: Vec<String>,
@@ -460,7 +461,7 @@ pub struct Overlay {
     tables_for: Option<Choice>,
     stands: Option<Hour>,
     taken: u64,
-    made: Option<Made>,
+    made: Option<Landed<Made>>,
     lay_owed: Owed,
     hour: Option<Hour>,
     loading: Vec<String>,
@@ -499,15 +500,15 @@ impl Overlay {
         self.generation += 1;
         let mut held = lock(&self.shared.held);
         held.want = None;
-        held.built = None;
-        held.laid_out = None;
+        held.built.clear();
+        held.laid_out.clear();
         drop(held);
         self.shared.signal.notify_all();
         (self.tables, self.tables_for, self.stands, self.asked, self.lay_owed) = (None, None, None, None, Owed::default());
         (self.made, self.hour) = (None, None);
     }
 
-    pub fn take(&mut self) -> Option<Made> {
+    pub fn take(&mut self) -> Option<Landed<Made>> {
         let laid = lock(&self.shared.held).laid_out.take();
         if let Some(laid) = laid {
             self.install_layout(laid);
@@ -557,7 +558,7 @@ impl Overlay {
         self.loading.clear();
         let built = lock(&self.shared.held).built.take();
         if let Some(built) = built {
-            self.install(built);
+            self.install(built.into_inner());
         }
         if !lay {
             self.made = None;
@@ -612,6 +613,7 @@ impl Overlay {
             tables: None,
             tabled: None,
             tabled_count: 0,
+            published_tables: None,
             laying: None,
             laid: None,
             left_out: Kinds::default(),
@@ -643,7 +645,7 @@ impl Overlay {
         let mut held = lock(&shared.held);
         loop {
             if let Some(built) = held.built.take() {
-                self.install(built);
+                self.install(built.into_inner());
             }
             if let Some(laid) = held.laid_out.take() {
                 self.install_layout(laid);
@@ -690,12 +692,13 @@ impl Overlay {
         self.stands = Some(built.hour);
     }
 
-    fn install_layout(&mut self, laid: LaidOut) {
-        if !installs((laid.generation, laid.hour), self.generation, self.hour) {
+    fn install_layout(&mut self, laid: Landed<LaidOut>) {
+        let (generation, hour) = (laid.generation, laid.hour);
+        if !installs((generation, hour), self.generation, self.hour) {
             return;
         }
-        self.hour = Some(laid.hour);
-        if let Some(made) = laid.made {
+        self.hour = Some(hour);
+        if let Some(made) = laid.map(|laid| laid.made).transpose() {
             self.made = Some(made);
         }
     }
@@ -730,6 +733,7 @@ struct Maker {
     tables: Option<OverlayTables>,
     tabled: Option<Tabled>,
     tabled_count: u64,
+    published_tables: Option<(u64, u64, Hour, Choice)>,
     laying: Option<(usize, Arc<Presentation>)>,
     laid: Option<Laid>,
     left_out: Kinds,
@@ -762,7 +766,7 @@ impl Maker {
 
     fn cycle(&mut self, mut want: Wanted) {
         if self.carried.take(&mut want) {
-            (self.tables, self.tabled, self.laid) = (None, None, None);
+            (self.tables, self.tabled, self.published_tables, self.laid) = (None, None, None, None);
         }
         let mut loading = Vec::new();
         let made = self.make(&want, &mut loading);
@@ -800,7 +804,7 @@ impl Maker {
             left_out: self.left_out,
             labels: want.labels,
             need: want.ask.need(&self.content.counters.defines),
-            raids: want.lay_ins.raids.as_ref().map(|icons| Arc::as_ptr(icons) as usize),
+            raids: want.lay_ins.raids.as_deref().map(|icons| Arc::as_ptr(icons) as usize),
         };
         let made = self.tabled.as_ref() == Some(&tabled) || self.make_tables(want, &rows, &tabled, loading);
         if !made || self.tables.is_none() {
@@ -909,7 +913,7 @@ impl Maker {
 
     fn make_tables(&mut self, want: &Wanted, rows: &Arc<DecodedFrame>, tabled: &Tabled, loading: &mut Vec<String>) -> bool {
         let at = crate::document::Hour::new(&self.content, rows, 0.0).with_air_rosters(Some(Arc::clone(&want.ask.rosters)));
-        let raids = want.lay_ins.raids.clone().unwrap_or_default();
+        let raids = want.lay_ins.raids.as_deref().cloned().unwrap_or_default();
         let mut spans = viewer_runtime::profiling::BuilderSpans::new(replay_frame::cpu::enabled());
         let engaged = want.engaged.as_deref();
         let (made, missed) = replay_frame::frame::discovering(|| {
@@ -1047,8 +1051,13 @@ impl Maker {
         if want.generation != self.carried.generation {
             return;
         }
+        let key = (want.generation, self.tabled_count, stands, want.perspective.clone());
+        if self.published_tables.as_ref() == Some(&key) {
+            return;
+        }
+        self.published_tables = Some(key);
         let mut held = lock(&self.shared.held);
-        held.built = Some(Built {
+        held.built.set_some(Built {
             stamp: want.stamp,
             generation: want.generation,
             hour: stands,
@@ -1065,7 +1074,13 @@ impl Maker {
             return;
         }
         let mut held = lock(&self.shared.held);
-        held.laid_out = Some(LaidOut { generation: want.generation, hour: stands, made });
+        let fresh = made.is_some();
+        let laid = LaidOut { generation: want.generation, hour: stands, made };
+        if fresh {
+            held.laid_out.publish_new((want.generation, stands), laid);
+        } else {
+            held.laid_out.publish((want.generation, stands), laid);
+        }
         drop(held);
         self.shared.signal.notify_all();
     }
@@ -1091,7 +1106,7 @@ impl Overlaying<Products> for Overlay {
         let left = viewer_layers_political::left_to_layers::LeftToLayers::of(Some(side.layers));
         let draws_labels = side.layers.draws("labels");
         let engaged = side.engaged();
-        let vision = side.vision(whole);
+        let vision = side.vision(whole).map(Landed::into_inner);
         let (applied, branch) = (side.applied, side.branch);
         let (perspective, views) = (side.perspective, side.views);
         Overlay::ask_step(self, Lend { views, applied, branch, perspective, vision, engaged, draws_labels, lay_ins, keys, published, draws, left, moved, whole, lay })
@@ -1117,7 +1132,7 @@ impl Overlaying<Products> for Overlay {
         Overlay::stands_at(self, hour)
     }
 
-    fn take(&mut self) -> Option<Made> {
+    fn take(&mut self) -> Option<Landed<Made>> {
         Overlay::take(self)
     }
 

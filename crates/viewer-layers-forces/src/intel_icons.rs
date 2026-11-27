@@ -45,7 +45,7 @@ pub struct FailedView {
 }
 
 struct Installed {
-    shown: (Arc<IntelIcons>, Hour),
+    shown: (viewer_runtime::landed::Landed<Arc<IntelIcons>>, Hour),
     failures: Arc<[FailedView]>,
 }
 
@@ -74,7 +74,7 @@ struct Done {
 struct Open {
     reader: ViewReader,
     jobs: mpsc::Sender<Work>,
-    done: mpsc::Receiver<Done>,
+    done: viewer_runtime::landed::Receiver<Done>,
     busy: bool,
     seen: Option<(Arc<DecodedFrame>, Arc<[HeadFailure]>)>,
     handed: bool,
@@ -84,7 +84,7 @@ impl Open {
     fn new(views: &Views, tables: &[TableId], pace: Pace, evaluate: &Arc<dyn Evaluate>) -> io::Result<Self> {
         let reader = views.reader_at(NAME, &tables.iter().copied().map(Need::every).collect::<Vec<Need>>(), pace);
         let (jobs, receive) = mpsc::channel::<Work>();
-        let (send, done) = mpsc::channel();
+        let (send, done) = viewer_runtime::landed::channel();
         let evaluate = Arc::clone(evaluate);
         std::thread::Builder::new().name("intel icons".into()).spawn(move || {
             viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
@@ -208,20 +208,26 @@ impl Icons {
         Self { evaluate, views: None, pace, shown: false, choice: perspective::Choice::default(), tables: CORE.to_vec(), open: None, icons: None, stands: None, epoch: 0, applied: None, stats: Stats::default(), installs: Installs::default() }
     }
 
-    pub fn icons(&self) -> Option<&(Arc<IntelIcons>, Hour)> {
-        self.icons.as_ref().map(|installed| &installed.shown)
+    pub fn icons(&self) -> Option<(&Arc<IntelIcons>, Hour)> {
+        self.icons.as_ref().map(|installed| (&*installed.shown.0, installed.shown.1))
+    }
+
+    pub fn landed_icons(&self) -> Option<viewer_runtime::landed::Landed<Arc<IntelIcons>>> {
+        self.icons.as_ref().map(|installed| installed.shown.0.clone())
     }
 
     pub fn icons_with_failures(&self) -> Option<(&Arc<IntelIcons>, Hour, &[FailedView])> {
         self.icons
             .as_ref()
-            .map(|installed| (&installed.shown.0, installed.shown.1, &*installed.failures))
+            .map(|installed| (&*installed.shown.0, installed.shown.1, &*installed.failures))
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn install_for_test(&mut self, icons: IntelIcons, hour: Hour, failures: Vec<FailedView>) {
+        let (send, receive) = viewer_runtime::landed::channel();
+        send.send(Arc::new(icons)).unwrap();
         self.show(Some(Installed {
-            shown: (Arc::new(icons), hour),
+            shown: (receive.try_recv().unwrap(), hour),
             failures: Arc::from(failures),
         }));
     }
@@ -287,7 +293,7 @@ impl Icons {
         }
     }
 
-    fn take(&mut self, done: Done) -> bool {
+    fn take(&mut self, done: viewer_runtime::landed::Landed<Done>) -> bool {
         let Some(open) = &mut self.open else { return false };
         open.busy = false;
         if done.epoch != self.epoch {
@@ -295,17 +301,18 @@ impl Icons {
             return false;
         }
         *self.stats.evaluations.entry((done.ns / 100_000) as u32).or_default() += 1;
-        match done.icons {
+        let (hour, frame, failures, missed) = (done.hour, done.frame.clone(), Arc::clone(&done.failures), done.missed.clone());
+        match done.map(|done| done.icons).transpose() {
             Some(icons) => {
                 self.show(Some(Installed {
-                    shown: (Arc::new(icons), done.hour),
-                    failures: done.failures,
+                    shown: (icons.map(Arc::new), hour),
+                    failures,
                 }));
-                self.stands = Some(Stands::at(done.frame, done.hour));
+                self.stands = Some(Stands::at(frame, hour));
             }
             None => {
                 self.stats.learning += 1;
-                self.tables.extend(done.missed);
+                self.tables.extend(missed);
                 self.tables.sort_unstable_by_key(|table| table.index());
                 self.tables.dedup();
                 open.reader.declare_only(&self.tables);
@@ -489,12 +496,12 @@ impl Layer for Icons {
     }
 }
 
-pub fn drawn(side: viewer_layer_core::playhead_host::LayerParts<'_>) -> Option<Arc<IntelIcons>> {
+pub fn drawn(side: viewer_layer_core::playhead_host::LayerParts<'_>) -> Option<viewer_runtime::landed::Landed<Arc<IntelIcons>>> {
     if !side.draws(NAME) {
         return None;
     }
     let layer = side.parts()?.1.iter().find_map(|layer| layer.any().downcast_ref::<Icons>())?;
-    layer.icons().map(|(icons, _)| Arc::clone(icons))
+    layer.landed_icons()
 }
 
 pub fn summary(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Value {

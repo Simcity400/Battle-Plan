@@ -83,14 +83,14 @@ struct Asked {
     wanted: Vec<(u64, Hour)>,
     known: Vec<u64>,
     decided: Decided,
-    answers: Vec<(u64, Arc<Roster>)>,
-    answered: Option<Hour>,
+    answers: viewer_runtime::landed::Published<Vec<(u64, Arc<Roster>)>>,
+    answered: viewer_runtime::landed::Published<Option<Hour>>,
     building: Vec<(u64, Hour)>,
     answered_at: Option<Instant>,
     tables: Vec<TableId>,
     builds: Vec<u64>,
-    error: Option<String>,
-    refused: Option<String>,
+    error: viewer_runtime::landed::Published<Option<String>>,
+    refused: viewer_runtime::landed::Published<Option<String>>,
     woken: bool,
     let_go: bool,
     loading: bool,
@@ -119,7 +119,7 @@ pub struct Rosters {
 impl Rosters {
     fn new(naval: Arc<dyn Naval>) -> io::Result<Self> {
         let shared = Arc::new(Shared {
-            asked: Mutex::new(Asked { source: None, open: false, stop: false, head: None, seek: None, wanted: Vec::new(), known: Vec::new(), decided: Decided::new(), answers: Vec::new(), answered: None, building: Vec::new(), answered_at: None, views: None, let_go: false, tables: ROSTER_TABLES.to_vec(), builds: Vec::new(), error: None, refused: None, loading: false, woken: false,
+            asked: Mutex::new(Asked { source: None, open: false, stop: false, head: None, seek: None, wanted: Vec::new(), known: Vec::new(), decided: Decided::new(), answers: Default::default(), answered: Default::default(), building: Vec::new(), answered_at: None, views: None, let_go: false, tables: ROSTER_TABLES.to_vec(), builds: Vec::new(), error: Default::default(), refused: Default::default(), loading: false, woken: false,
                 #[cfg(any(test, feature = "test-support"))]
                 looks: 0,
             }),
@@ -201,11 +201,11 @@ impl Rosters {
     }
 
     fn take(&self) -> Vec<(u64, Arc<Roster>)> {
-        std::mem::take(&mut self.shared.lock().answers)
+        self.shared.lock().answers.take_all().map(viewer_runtime::landed::Landed::into_inner).unwrap_or_default()
     }
 
     fn answered(&self) -> Option<Hour> {
-        self.shared.lock().answered
+        self.shared.lock().answered.as_ref().copied()
     }
 
     fn owed(&self) -> Vec<(u64, Hour)> {
@@ -222,17 +222,17 @@ impl Rosters {
         }
         let (mut slices, mut timeouts) = (0_u64, 0_u64);
         loop {
-            if let Some(error) = &asked.error {
+            if let Some(error) = asked.error.as_ref() {
                 return Err(io::Error::other(format!("The ship rosters' worker stopped: {error}")));
             }
-            if asked.wanted.is_empty() && asked.answered == Some(hour) {
+            if asked.wanted.is_empty() && asked.answered.as_ref() == Some(&hour) {
                 waited_for(began, asked.answered_at, slices, timeouts, true);
                 return Ok(());
             }
             let now = Instant::now();
             if now >= until {
                 waited_for(began, asked.answered_at, slices, timeouts, false);
-                return Err(io::Error::other(format!("The ship rosters were not answered at hour {hour} in {limit:?} (rows at {:?}, {} asked, loading {})", asked.answered, asked.wanted.len(), asked.loading)));
+                return Err(io::Error::other(format!("The ship rosters were not answered at hour {hour} in {limit:?} (rows at {:?}, {} asked, loading {})", asked.answered.as_ref(), asked.wanted.len(), asked.loading)));
             }
             let (held, ended) = self.shared.answered.wait_timeout(asked, (until - now).min(Duration::from_millis(50))).unwrap_or_else(std::sync::PoisonError::into_inner);
             asked = held;
@@ -316,7 +316,7 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
             }
             continue;
         }
-        if let Some(why) = asked.refused.clone() {
+        if let Some(why) = asked.refused.as_ref().cloned() {
             if let Some(held) = reader.take() {
                 held.declare_only(&[]);
                 asked.views = Some(held);
@@ -325,9 +325,9 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
             asked.loading = false;
             let forces = std::mem::take(&mut asked.wanted);
             let refused = !forces.is_empty();
-            asked.answers.extend(forces.into_iter().map(|(force, _)| (force, Arc::new(Some(Err(why.clone()))))));
-            if let Some(head) = asked.head.filter(|&head| refused || asked.answered != Some(head)) {
-                asked.answered = Some(head);
+            asked.answers.extend_nonempty(forces.into_iter().map(|(force, _)| (force, Arc::new(Some(Err(why.clone()))))));
+            if let Some(head) = asked.head.filter(|&head| refused || asked.answered.as_ref() != Some(&head)) {
+                asked.answered.set_if_changed(Some(head));
                 asked.answered_at = Some(Instant::now());
                 timeline::mark(maker, Mark::Published);
                 shared.answered.notify_all();
@@ -388,15 +388,15 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
         let mut forces: Vec<u64> = batch.iter().map(|&(force, _)| force).collect();
         if forces.is_empty() {
             if newer {
-                asked.answered = Some(frame.hour);
+                asked.answered.set_if_changed(Some(frame.hour));
                 asked.answered_at = Some(Instant::now());
                 last = Some(frame);
                 timeline::mark(maker, Mark::Published);
                 shared.answered.notify_all();
             } else if let Some(stands) = reader.as_ref().and_then(|reader| reader.through(Arc::as_ptr(&frame)))
-                && asked.answered.is_some_and(|answered| answered < stands)
+                && asked.answered.as_ref().is_some_and(|&answered| answered < stands)
             {
-                asked.answered = Some(stands);
+                asked.answered.advance(stands);
                 asked.answered_at = Some(Instant::now());
                 timeline::mark(maker, Mark::Published);
                 shared.answered.notify_all();
@@ -438,7 +438,7 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
             asked.wanted.extend(batch);
             let absent = asked.source.as_ref().map_or_else(Vec::new, |(entry, _)| viewer_layer_core::rebuilt::absent(entry, &missed));
             if !absent.is_empty() {
-                asked.refused = Some(viewer_layer_core::rebuilt::refusal("the ships' rosters", &absent));
+                asked.refused.set_if_changed(Some(viewer_layer_core::rebuilt::refusal("the ships' rosters", &absent)));
                 continue;
             }
             asked.tables.extend(missed);
@@ -464,8 +464,8 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
         asked.known.extend(forces);
         asked.known.sort_unstable();
         asked.known.dedup();
-        asked.answers.extend(answers);
-        asked.answered = Some(frame.hour);
+        asked.answers.extend_nonempty(answers);
+        asked.answered.set_if_changed(Some(frame.hour));
         asked.answered_at = Some(Instant::now());
         last = Some(frame);
         drop(asked);
@@ -675,7 +675,7 @@ impl Ships {
             return Ok(());
         }
         let absent = viewer_layer_core::rebuilt::absent(&entry, &asked.tables);
-        asked.refused = (!absent.is_empty()).then(|| viewer_layer_core::rebuilt::refusal("the ships' rosters", &absent));
+        asked.refused.set_if_changed((!absent.is_empty()).then(|| viewer_layer_core::rebuilt::refusal("the ships' rosters", &absent)));
         asked.source = Some((entry, recording));
         asked.woken = true;
         drop(asked);

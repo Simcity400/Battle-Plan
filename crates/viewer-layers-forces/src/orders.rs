@@ -96,9 +96,9 @@ struct Made {
 struct Held {
     asked: Option<(u32, bool)>,
     generation: u64,
-    made: Option<Made>,
+    made: viewer_runtime::landed::PublishedKeyed<(u64, u64, Hour), Made>,
     published: u64,
-    stopped: Option<String>,
+    stopped: viewer_runtime::landed::Published<Option<String>>,
     marked: [u64; 3],
     stop: bool,
 }
@@ -147,6 +147,7 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
     let mut built: Option<(TableKey, (u32, bool))> = None;
     let mut handled: Option<(u64, (u32, bool))> = None;
     let mut generation = 0;
+    let mut build_seq = 0u64;
     loop {
         let (asked, want) = {
             let held = shared.lock();
@@ -185,17 +186,13 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
         let key = (TableKey::of(&*newest, &declared), asked);
         if built.as_ref() == Some(&key) {
             let mut held = shared.lock();
-            let stamp = held.published + 1;
-            let moved = held.generation == generation
-                && held.made.as_mut().is_some_and(|made| {
-                    if made.generation != generation {
-                        return false;
-                    }
-                    (made.stands, made.frame, made.stamp) = (made.stands.max(stands), Some(Arc::clone(&newest)), stamp);
-                    true
-                });
-            if moved {
+            if held.generation == generation
+                && let Some(mut made) = held.made.as_ref().filter(|made| made.generation == generation && stands > made.stands).cloned()
+            {
+                let stamp = held.published + 1;
                 held.published = stamp;
+                (made.stands, made.frame, made.stamp) = (stands, Some(Arc::clone(&newest)), stamp);
+                held.made.publish((generation, build_seq, made.stands), made);
             }
             drop(held);
             shared.done.notify_all();
@@ -234,17 +231,21 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
         held.marked[0] += 1;
         let stamp = held.published + 1;
         held.published = stamp;
+        build_seq += 1;
         built = Some(key);
-        held.made = Some(Made {
-            generation,
-            stamp,
-            hour: frame.hour,
-            ours,
-            stands,
-            frame: Some(frame),
-            plan: plan.map(Arc::new).map_err(|error| format!("The orders layer cannot make the plan: {error}")),
-            notes: plan_notes(own.map_err(|error| error.to_string())),
-        });
+        held.made.publish(
+            (generation, build_seq, stands),
+            Made {
+                generation,
+                stamp,
+                hour: frame.hour,
+                ours,
+                stands,
+                frame: Some(frame),
+                plan: plan.map(Arc::new).map_err(|error| format!("The orders layer cannot make the plan: {error}")),
+                notes: plan_notes(own.map_err(|error| error.to_string())),
+            },
+        );
         drop(held);
         shared.done.notify_all();
     }
@@ -261,7 +262,7 @@ pub struct Orders {
     window: bool,
     show_allied: bool,
     head: Option<Hour>,
-    made: Option<Made>,
+    made: Option<viewer_runtime::landed::Landed<Made>>,
     generation: u64,
     refused: Option<String>,
     marked: [u64; 3],
@@ -298,7 +299,7 @@ impl Orders {
         });
         match worker {
             Ok(worker) => *self.worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(worker),
-            Err(error) => self.shared.lock().stopped = Some(format!("The orders layer is refused: its worker cannot start: {error}")),
+            Err(error) => self.shared.lock().stopped.set_some(format!("The orders layer is refused: its worker cannot start: {error}")),
         }
         Ok(())
     }
@@ -322,6 +323,13 @@ impl Orders {
 
     pub fn plan(&self) -> Option<(Hour, &Arc<OrderField>)> {
         self.shown().and_then(|made| made.plan.as_ref().ok().map(|plan| (made.hour, plan)))
+    }
+
+    pub fn landed_plan(&self) -> Option<viewer_runtime::landed::Landed<(Hour, Arc<OrderField>)>> {
+        let made = self.shown_landed()?;
+        let hour = made.hour;
+        let plan = made.plan.as_ref().ok().cloned()?;
+        Some(made.as_ref().map(|_| (hour, plan)))
     }
 
     pub fn refused(&self) -> Option<&str> {
@@ -403,7 +411,7 @@ impl Orders {
             held.published,
             held.made.as_ref().map(|made| (made.generation, made.hour, made.stands)),
             held.asked,
-            held.stopped,
+            held.stopped.as_ref(),
             newest.as_ref().map(|(frame, published)| (*published, frame.hour)),
             standing,
             reader.as_ref().map(|reader| reader.seek()),
@@ -427,7 +435,7 @@ impl Orders {
         {
             let held = self.shared.lock();
             self.marked = held.marked;
-            if let Some(why) = &held.stopped {
+            if let Some(why) = held.stopped.as_ref() {
                 self.refused = Some(why.clone());
             }
             if let Some(made) = held.made.as_ref().filter(|made| made.generation == self.generation)
@@ -439,22 +447,33 @@ impl Orders {
                         viewer_runtime::view_record::add("arrows", "steps_over_an_hour", 1);
                     }
                 }
-                self.made = Some(made.clone());
+                self.made = held.made.landed_clone();
             }
         }
         let reader = self.rows.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-        if let Some(made) = &mut self.made
-            && let Some(frame) = &made.frame
-        {
-            match reader.and_then(|reader| reader.through(Arc::as_ptr(frame))) {
-                Some(through) => made.stands = made.stands.max(through),
-                None => made.frame = None,
-            }
+        if let Some(made) = self.made.take() {
+            let made = if let Some(frame) = &made.frame {
+                let through = reader.and_then(|reader| reader.through(Arc::as_ptr(frame)));
+                made.map(|mut made| {
+                    match through {
+                        Some(through) => made.stands = made.stands.max(through),
+                        None => made.frame = None,
+                    }
+                    made
+                })
+            } else {
+                made
+            };
+            self.made = Some(made);
         }
     }
 
-    fn shown(&self) -> Option<&Made> {
+    fn shown_landed(&self) -> Option<&viewer_runtime::landed::Landed<Made>> {
         self.made.as_ref().filter(|made| self.vision.as_ref().is_some_and(|&(_, ours)| ours == made.ours))
+    }
+
+    fn shown(&self) -> Option<&Made> {
+        self.shown_landed().map(|made| &**made)
     }
 
     fn take_vision(&mut self) {

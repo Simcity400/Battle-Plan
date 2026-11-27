@@ -1,13 +1,14 @@
 use replay_data::Hour;
 use std::{sync::Arc, time::Instant};
 use viewer_foundation::perspective::{Choice, Vision};
+use viewer_runtime::landed::{self, Landed};
 
 #[derive(Default)]
 pub struct ShownVision {
-    held: Option<(VisionKey, Instant, Result<Arc<Vision>, String>)>,
+    held: Option<(VisionKey, Instant, Result<Landed<Arc<Vision>>, String>)>,
     making: Option<(VisionKey, Instant, u64)>,
     forgotten: u64,
-    maker: Option<(std::sync::mpsc::Sender<crate::vision::SeenCopy>, std::sync::mpsc::Receiver<Arc<Vision>>)>,
+    maker: Option<(std::sync::mpsc::Sender<crate::vision::SeenCopy>, landed::Receiver<Arc<Vision>>)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -19,7 +20,7 @@ struct VisionKey {
 }
 
 impl ShownVision {
-    pub fn shown(&mut self, layer: Option<&crate::vision::Vision>, applied: Option<Hour>, parts_home: bool, exact: bool) -> Result<Arc<Vision>, String> {
+    pub fn shown(&mut self, layer: Option<&crate::vision::Vision>, applied: Option<Hour>, parts_home: bool, exact: bool) -> Result<Landed<Arc<Vision>>, String> {
         use crate::layers::Layer as _;
         self.take_made();
         let layer = match (parts_home, layer) {
@@ -49,7 +50,7 @@ impl ShownVision {
     fn make(&mut self, key: VisionKey, at: Instant, copy: crate::vision::SeenCopy) {
         if self.maker.is_none() {
             let (jobs, receive) = std::sync::mpsc::channel::<crate::vision::SeenCopy>();
-            let (send, made) = std::sync::mpsc::channel();
+            let (send, made) = landed::channel();
             let started = std::thread::Builder::new().name("shown vision".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();
                 let mut before = None;
@@ -71,7 +72,7 @@ impl ShownVision {
         }
     }
 
-    fn take_made(&mut self) {
+    pub(super) fn take_made(&mut self) {
         let Some((_, made)) = &self.maker else { return };
         while let Ok(vision) = made.try_recv() {
             if let Some((key, at, forgotten)) = self.making.take()
@@ -82,11 +83,11 @@ impl ShownVision {
         }
     }
 
-    pub fn kept(&self) -> Result<Arc<Vision>, String> {
+    pub fn kept(&self) -> Result<Landed<Arc<Vision>>, String> {
         self.held.as_ref().map_or_else(|| Err("the vision is being made".into()), |(_, _, held)| held.clone())
     }
 
-    pub fn kept_for(&self, choice: &Choice) -> Result<Arc<Vision>, String> {
+    pub fn kept_for(&self, choice: &Choice) -> Result<Landed<Arc<Vision>>, String> {
         match &self.held {
             Some((key, _, held)) if key.choice == *choice => held.clone(),
             Some(_) => Err("the vision of this perspective is still being copied".into()),
@@ -108,13 +109,13 @@ pub(crate) mod test_support {
         pub shown: ShownVision,
         now: fn() -> Instant,
         sent: std::sync::mpsc::Receiver<crate::vision::SeenCopy>,
-        made: std::sync::mpsc::Sender<Arc<Vision>>,
+        made: landed::Sender<Arc<Vision>>,
     }
 
     impl Making {
         pub fn new(now: fn() -> Instant) -> Self {
             let (jobs, sent) = std::sync::mpsc::channel();
-            let (made, receive) = std::sync::mpsc::channel();
+            let (made, receive) = landed::channel();
             Self { shown: ShownVision { maker: Some((jobs, receive)), ..ShownVision::default() }, now, sent, made }
         }
 

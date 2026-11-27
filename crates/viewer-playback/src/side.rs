@@ -7,10 +7,13 @@ use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError},
     time::{Duration, Instant},
 };
+use viewer_runtime::landed::Landed;
 
 pub const THREAD: &str = "map side";
 
 const IDLE: Duration = Duration::from_millis(2);
+
+const REST: Duration = Duration::from_millis(16);
 
 const UNTIL_DUE: Duration = Duration::from_micros(200);
 
@@ -25,6 +28,23 @@ struct Ask {
     overlay: Option<overlay::Ask>,
     combat: Option<viewer_combat::Asking>,
     serial: u64,
+}
+
+impl Ask {
+    fn same(&self, other: &Self) -> bool {
+        self.view == other.view
+            && self.at == other.at
+            && self.combat.as_ref().map(viewer_combat::Asking::key) == other.combat.as_ref().map(viewer_combat::Asking::key)
+            && match (&self.overlay, &other.overlay) {
+                (Some(a), Some(b)) => {
+                    (a.camera, a.target, a.pixels, a.ui_scale.to_bits()) == (b.camera, b.target, b.pixels, b.ui_scale.to_bits())
+                        && a.view == b.view
+                        && Arc::ptr_eq(&a.rosters, &b.rosters)
+                }
+                (None, None) => true,
+                _ => false,
+            }
+    }
 }
 
 #[derive(Debug)]
@@ -65,6 +85,7 @@ const PICTURES_HELD: usize = 8;
 struct Turn {
     side: MapSide,
     framed: bool,
+    answered: Option<(u64, Hour)>,
     ready: Option<Ready>,
     published: Option<Instant>,
     reached: Option<Duration>,
@@ -77,6 +98,7 @@ struct Shared {
     held: Mutex<Turn>,
     ask: Mutex<Option<Ask>>,
     signal: Condvar,
+    wake: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl Shared {
@@ -104,7 +126,7 @@ pub struct SideThread {
 }
 
 impl SideThread {
-    pub fn new(mut side: MapSide) -> io::Result<Self> {
+    pub fn new(mut side: MapSide, wake: Arc<dyn Fn() + Send + Sync>) -> io::Result<Self> {
         let (entry, sight, views) = (Arc::clone(side.entry()), side.sight().cloned(), side.views().handle());
         let doing = Arc::clone(side.doing());
         let composed = Arc::clone(side.composed());
@@ -112,9 +134,10 @@ impl SideThread {
         let products = Products { branch: side.branch(), ..Products::default() };
         let tables = sight.as_ref().and_then(|content| content.tables);
         let shared = Arc::new(Shared {
-            held: Mutex::new(Turn { side, framed: true, ready: None, published: None, reached: None, looks: 0, stop: false, refused: None }),
+            held: Mutex::new(Turn { side, framed: true, answered: None, ready: None, published: None, reached: None, looks: 0, stop: false, refused: None }),
             ask: Mutex::new(None),
             signal: Condvar::new(),
+            wake,
         });
         let thread = std::thread::Builder::new().name(THREAD.into()).spawn({
             let shared = Arc::clone(&shared);
@@ -131,8 +154,12 @@ impl SideThread {
 
     pub fn ask(&self, view: View, at: Head, overlay: Option<overlay::Ask>, combat: Option<viewer_combat::Asking>) {
         let mut ask = lock(&self.shared.ask);
-        let serial = ask.as_ref().map_or(0, |ask| ask.serial + 1);
-        *ask = Some(Ask { view, at, overlay, combat, serial });
+        let next = Ask { view, at, overlay, combat, serial: 0 };
+        if !matches!(next.at, Head::Stepped(_)) && ask.as_ref().is_some_and(|held| held.same(&next)) {
+            return;
+        }
+        let serial = ask.as_ref().map_or(0, |held| held.serial + 1);
+        *ask = Some(Ask { serial, ..next });
         drop(ask);
         self.shared.signal.notify_all();
     }
@@ -244,7 +271,7 @@ impl SideThread {
         self.refused.take()
     }
 
-    pub fn lay_overlay_again(&mut self) -> Result<overlay::Made, String> {
+    pub fn lay_overlay_again(&mut self) -> Result<Landed<overlay::Made>, String> {
         let mut turn = lock(&self.shared.held);
         if let Some(failure) = turn.side.failure() {
             return Err(failure.to_owned());
@@ -421,11 +448,11 @@ impl Window<'_> {
         }
     }
 
-    pub fn take_overlay(&mut self) -> Option<overlay::Made> {
+    pub fn take_overlay(&mut self) -> Option<Landed<overlay::Made>> {
         self.products.overlay.take()
     }
 
-    pub fn take_combat(&mut self) -> Option<viewer_combat::Product> {
+    pub fn take_combat(&mut self) -> Option<Landed<viewer_combat::Product>> {
         self.turn.side.take_combat()
     }
 
@@ -447,6 +474,14 @@ impl Drop for Window<'_> {
         self.turn.framed = true;
         self.signal.notify_all();
     }
+}
+
+fn rests(turn: &Turn, ask: &Ask, head: Hour, moving: bool, viewpoint: bool) -> bool {
+    !moving
+        && !viewpoint
+        && !turn.side.hurrying()
+        && turn.answered == Some((ask.serial, head))
+        && !turn.side.unsettled(&ask.view, head)
 }
 
 fn advance(shared: &Shared) {
@@ -488,13 +523,6 @@ fn advance(shared: &Shared) {
             at => {
                 let (now, interval) = (Instant::now(), rate::interval());
                 let viewpoint = ask.view.perspective != turn.side.view().perspective;
-                let Some(late) = pace.late(now).or((viewpoint || turn.side.hurrying()).then_some(std::time::Duration::ZERO)) else {
-                    turn = waiting(shared, turn, pace.until(now).max(UNTIL_DUE).min(IDLE));
-                    continue;
-                };
-                if let Some(reached) = turn.reached.take() {
-                    reach.took(reached, interval);
-                }
                 let asked = match at {
                     Head::Clock => turn.side.head(now),
                     Head::Paced(hour) | Head::Stepped(hour) => hour,
@@ -502,6 +530,18 @@ fn advance(shared: &Shared) {
                 let ahead = reach.ahead(interval) + interval;
                 let moving = turn.side.head_from(asked, ahead);
                 let head = moving.unwrap_or(asked);
+                if rests(&turn, &ask, head, moving.is_some(), viewpoint) {
+                    turn = waiting(shared, turn, REST);
+                    continue;
+                }
+                let urgent = viewpoint || turn.side.hurrying() || turn.answered != Some((ask.serial, head)) || turn.side.answers_waiting();
+                let Some(late) = pace.late(now).or(urgent.then_some(std::time::Duration::ZERO)) else {
+                    turn = waiting(shared, turn, pace.until(now).max(UNTIL_DUE).min(IDLE));
+                    continue;
+                };
+                if let Some(reached) = turn.reached.take() {
+                    reach.took(reached, interval);
+                }
                 if moving.is_some() && late < interval && !viewpoint && !turn.side.reaches(head) {
                     let since = Instant::now();
                     turn = waiting(shared, turn, UNTIL_DUE);
@@ -518,7 +558,11 @@ fn advance(shared: &Shared) {
                 if let Err(error) = toward(&mut turn.side, &ask, head, made) {
                     turn.side.fail(format!("The map's playhead stopped: {error}"));
                 }
+                turn.answered = Some((ask.serial, head));
+                drop(turn);
+                (shared.wake)();
                 shared.signal.notify_all();
+                turn = lock(&shared.held);
             }
         }
     }
@@ -560,8 +604,8 @@ fn toward(side: &mut MapSide, ask: &Ask, head: Hour, made: Made) -> io::Result<(
 #[derive(Default)]
 pub struct LayIns {
     pub labels: Option<(Arc<map_display_data::landscape::Labels>, u32)>,
-    pub intel: Option<Arc<viewer_raids::map::intel_icons::IntelIcons>>,
-    pub raids: Option<Arc<viewer_raids::map::raids::RaidIcons>>,
+    pub intel: Option<Landed<Arc<viewer_raids::map::intel_icons::IntelIcons>>>,
+    pub raids: Option<Landed<Arc<viewer_raids::map::raids::RaidIcons>>>,
     resources: Option<(viewer_map_icons::resource_icons::HourIcons, u64)>,
     occupation: Option<(viewer_map_icons::occupation_icons::Marks, u64)>,
 }
@@ -656,16 +700,16 @@ pub struct Products {
     pub mode: Option<viewer_map_modes::map_mode::MapMode>,
     pub frame: Frame,
     pub branch: Option<replay_data::BranchId>,
-    pub battles: Option<Option<Arc<viewer_audio::battle::Battles>>>,
+    pub battles: Option<Landed<Option<Arc<viewer_audio::battle::Battles>>>>,
     pub radar: Option<Arc<viewer_aircraft::radar_symbols::Field>>,
-    pub plan: Option<(Hour, Arc<viewer_gpu::ribbon_content::OrderField>)>,
-    pub routes: Option<(u64, Arc<viewer_unit_models::trade_routes::TradeRoutes>)>,
+    pub plan: Option<Landed<(Hour, Arc<viewer_gpu::ribbon_content::OrderField>)>>,
+    pub routes: Option<Landed<(u64, Arc<viewer_unit_models::trade_routes::TradeRoutes>)>>,
     pub labels: Option<viewer_layers_political::labels::Stamped>,
     pub left: viewer_layers_political::left_to_layers::LeftToLayers,
-    pub placements: Option<Arc<viewer_runtime::name_draw::Placements>>,
+    pub placements: Option<Landed<Arc<viewer_runtime::name_draw::Placements>>>,
     pub counters: viewer_counters::counters::layered::Layered,
     pub counter_kinds: viewer_counter_kit::Kinds,
-    pub units: Option<Arc<viewer_unit_models::unit_models::PreparedModels>>,
+    pub units: Option<Landed<Arc<viewer_unit_models::unit_models::PreparedModels>>>,
     pub movement: Vec<(viewer_runtime::unit_handle::Unit, viewer_unit_reads::counter_move::Position, f32, f32)>,
     movement_of: Option<u64>,
     pub pick_divisions: std::collections::HashMap<u32, Vec<viewer_layers_forces::units::PickDivision>>,
@@ -674,17 +718,17 @@ pub struct Products {
     pub highlight: Option<(u64, crate::highlight::Over<Arc<crate::highlight::Picture>>)>,
     pub highlight_hour: Option<Hour>,
     pictures: std::collections::VecDeque<(Hour, u64, Arc<crate::highlight::Picture>)>,
-    pub snow: Option<map_display_data::Summary>,
-    pub music: Option<Arc<viewer_audio::Chances>>,
+    pub snow: Option<Landed<map_display_data::Summary>>,
+    pub music: Option<Landed<Arc<viewer_audio::Chances>>>,
     pub lines: Option<Lines>,
-    pub overlay: Option<overlay::Made>,
+    pub overlay: Option<Landed<overlay::Made>>,
     overlay_withdrawn: bool,
     pub vision_refused: Option<String>,
     pub overlay_generation: Option<u64>,
     pub overlay_hour: Option<Hour>,
     pub overlay_loading: Vec<String>,
     pub overlay_missed: Vec<replay_data::rows::TableId>,
-    pub vision: Result<Arc<viewer_foundation::perspective::Vision>, String>,
+    pub vision: Result<Landed<Arc<viewer_foundation::perspective::Vision>>, String>,
     pub combat_loading: Vec<String>,
     pub combat_whole: Option<Result<(), String>>,
 }
@@ -752,7 +796,7 @@ impl LayInKeys {
     pub fn of(side: LayerParts<'_>) -> Self {
         Self {
             labels: viewer_layers_political::labels::drawn(side).map(|(labels, ours)| (Arc::as_ptr(&labels) as usize, ours)),
-            intel: viewer_layers_forces::intel_icons::drawn(side).map(|icons| Arc::as_ptr(&icons) as usize),
+            intel: viewer_layers_forces::intel_icons::drawn(side).map(|icons| Arc::as_ptr(&*icons) as usize),
             resources: viewer_layers_political::resource_icons::drawn(side).map(viewer_layers_political::resource_icons::ResourceIcons::version),
             occupation: viewer_layers_political::occupation_marks::drawn(side).map(viewer_layers_political::occupation_marks::OccupationMarks::version),
         }
@@ -824,13 +868,13 @@ impl Products {
         self.branch = side.branch();
         self.battles = viewer_layers_infrastructure::sounds::drawn(side);
         self.radar = drawn::<viewer_layers_infrastructure::radar::Radar>(side, "radar").and_then(viewer_layers_infrastructure::radar::Radar::field);
-        self.plan = drawn::<viewer_layers_forces::orders::Orders>(side, "orders").and_then(|orders| orders.plan().map(|(hour, plan)| (hour, Arc::clone(plan))));
+        self.plan = drawn::<viewer_layers_forces::orders::Orders>(side, "orders").and_then(viewer_layers_forces::orders::Orders::landed_plan);
         self.routes = side.draws("units").then(|| drawn::<viewer_layers_forces::convoys::Convoys>(side, "convoys")).flatten().and_then(viewer_layers_forces::convoys::Convoys::shown);
         self.left = viewer_layers_political::left_to_layers::LeftToLayers::of(Some(side.layer_parts()));
         self.placements = viewer_layers_political::names::drawn(side);
         self.counters = viewer_layers_counters::counter_kinds::published(side.layer_parts());
         self.counter_kinds = viewer_layers_counters::counter_kinds::draws(side.layer_parts());
-        self.units = viewer_layers_forces::units::prepared(side).map(Arc::clone);
+        self.units = viewer_layers_forces::units::prepared(side).cloned();
         let made = side.last_frame().made;
         if self.movement_of != Some(made) {
             self.movement_of = Some(made);
@@ -844,7 +888,7 @@ impl Products {
         self.ours = viewer_layer_core::vision::drawn(side.layer_parts()).and_then(viewer_layer_core::vision::Vision::ours);
         self.engaged = drawn::<viewer_layer_core::engagements::Engagements>(side, "engagements").and_then(viewer_layer_core::engagements::Engagements::history).map(Arc::clone);
         self.take_highlight(side, wants.highlight);
-        self.snow = drawn::<viewer_layers_infrastructure::snow::Snow>(side, "snow").and_then(viewer_layers_infrastructure::snow::Snow::summary);
+        self.snow = drawn::<viewer_layers_infrastructure::snow::Snow>(side, "snow").and_then(viewer_layers_infrastructure::snow::Snow::landed_summary);
         self.music = viewer_layers_political::scripts::music(side);
         self.lines = wants.warnings.then(|| {
             let [limitations, reports] = crate::presentation::map_lines(side);

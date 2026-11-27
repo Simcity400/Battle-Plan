@@ -18,6 +18,7 @@ use std::{
 use viewer_foundation::{perspective, tables::core};
 use viewer_foundation::trigger_content::TriggerContent;
 use viewer_raids::map::raids::{HourLayer, IconCache, RaidAssets, RaidIcons, RaidReport, cycle::Cycle, paths::HourPaths};
+use viewer_runtime::landed::{self, Landed};
 
 pub const NAME: &str = "scripts at the head";
 
@@ -133,7 +134,7 @@ struct Chain {
 struct Open {
     reader: ViewReader,
     jobs: mpsc::Sender<Work>,
-    done: mpsc::Receiver<Done>,
+    done: landed::Receiver<Done>,
     busy: bool,
     seen: Option<Arc<DecodedFrame>>,
     handed: bool,
@@ -145,7 +146,7 @@ impl Open {
     fn new(views: &Views, needs: &[Need]) -> io::Result<Self> {
         let reader = views.reader_at(NAME, needs, Pace::Ready);
         let (jobs, receive) = mpsc::channel::<Work>();
-        let (send, done) = mpsc::channel();
+        let (send, done) = landed::channel();
         std::thread::Builder::new().name(NAME.into()).spawn(move || {
             viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             let mut evaluating = Evaluating::default();
@@ -374,7 +375,7 @@ pub struct Scripts {
     choice: perspective::Choice,
     needs: Vec<Need>,
     open: Option<Open>,
-    product: Option<Product>,
+    product: Option<Landed<Product>>,
     applied: Option<Hour>,
     asked_at: Option<Duration>,
     pub clock: Clock,
@@ -421,14 +422,16 @@ impl Scripts {
     }
 
     pub fn product(&self) -> Option<&Product> {
-        self.product.as_ref()
+        self.product.as_deref()
     }
 
-    pub fn raids(&self, branch: replay_data::BranchId, ours: u32) -> Option<Arc<RaidIcons>> {
-        self.product.as_ref()?.raids.clone().filter(|icons| match icons.built_for {
+    pub fn raids(&self, branch: replay_data::BranchId, ours: u32) -> Option<Landed<Arc<RaidIcons>>> {
+        let product = self.product.as_ref()?;
+        let icons = product.raids.clone().filter(|icons| match icons.built_for {
             Some((built, _, country)) => (built, country) == (branch, ours),
             None => icons.report.worker_failed,
-        })
+        })?;
+        Some(product.as_ref().map(|_| icons))
     }
 
     pub fn notes(&self, ours: u32) -> Option<Arc<Vec<String>>> {
@@ -437,6 +440,12 @@ impl Scripts {
 
     pub fn music_at(&self) -> Option<(Hour, Arc<viewer_audio::Chances>)> {
         self.product.as_ref()?.music.clone()
+    }
+
+    pub fn landed_music(&self) -> Option<Landed<Arc<viewer_audio::Chances>>> {
+        let product = self.product.as_ref()?;
+        let (_, music) = product.music.as_ref()?;
+        Some(product.as_ref().map(|_| Arc::clone(music)))
     }
 
     pub fn stats(&self) -> &Stats {
@@ -461,7 +470,7 @@ impl Scripts {
         closing
     }
 
-    fn show(&mut self, product: Option<Product>) {
+    fn show(&mut self, product: Option<Landed<Product>>) {
         if let Some(old) = std::mem::replace(&mut self.product, product) {
             match &self.open {
                 Some(open) => open.free(old),
@@ -490,7 +499,7 @@ impl Scripts {
         }
     }
 
-    fn take(&mut self, done: Done) -> bool {
+    fn take(&mut self, done: Landed<Done>) -> bool {
         let Some(open) = &mut self.open else { return false };
         (open.busy, open.evaluating) = (false, None);
         if done.epoch != self.epoch {
@@ -498,22 +507,19 @@ impl Scripts {
             return false;
         }
         let tenths = (done.ns / 100_000) as u32;
-        match done.product {
-            Some(product) => {
-                *self.stats.evaluations.entry(tenths).or_default() += 1;
-                self.show(Some(product));
-            }
-            None => {
-                *self.stats.evaluations.entry(tenths).or_default() += 1;
-                self.stats.learning += 1;
-                joined(&mut self.needs, done.missed);
-                open.reader.declare_only_needs(&self.needs);
-                open.see(None);
-                (open.handed, open.handed_whole) = (false, false);
-                return true;
-            }
+        if done.product.is_some() {
+            *self.stats.evaluations.entry(tenths).or_default() += 1;
+            self.show(Some(done.map(|done| done.product.expect("checked"))));
+            return false;
         }
-        false
+        let done = done.into_inner();
+        *self.stats.evaluations.entry(tenths).or_default() += 1;
+        self.stats.learning += 1;
+        joined(&mut self.needs, done.missed);
+        open.reader.declare_only_needs(&self.needs);
+        open.see(None);
+        (open.handed, open.handed_whole) = (false, false);
+        true
     }
 
     fn ask_rows(&mut self) {
@@ -725,7 +731,7 @@ impl Layer for Scripts {
     }
 
     fn carried(&self) -> Carried {
-        Carried::default()
+        Carried { entities: usize::from(self.open.is_some() && self.product.as_ref().is_some_and(|product| !product.complete)) }
     }
 
     fn published(&self) -> Published {
@@ -759,7 +765,7 @@ pub fn drawn<'a>(side: viewer_layer_core::playhead_host::LayerParts<'a>) -> Opti
     side.drawn::<Scripts>(NAME)
 }
 
-pub fn raids(side: viewer_layer_core::playhead_host::LayerParts<'_>, branch: replay_data::BranchId, ours: u32) -> Option<Arc<RaidIcons>> {
+pub fn raids(side: viewer_layer_core::playhead_host::LayerParts<'_>, branch: replay_data::BranchId, ours: u32) -> Option<Landed<Arc<RaidIcons>>> {
     drawn(side)?.raids(branch, ours)
 }
 
@@ -767,8 +773,8 @@ pub fn notes(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProdu
     drawn(side.layer_parts())?.notes(ours)
 }
 
-pub fn music(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<Arc<viewer_audio::Chances>> {
-    drawn(side.layer_parts())?.music_at().map(|(_, music)| music)
+pub fn music(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<Landed<Arc<viewer_audio::Chances>>> {
+    drawn(side.layer_parts())?.landed_music()
 }
 
 pub fn summary(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Value {

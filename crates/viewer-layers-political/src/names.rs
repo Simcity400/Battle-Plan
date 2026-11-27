@@ -16,7 +16,7 @@ use std::{
     thread,
     time::Instant,
 };
-use viewer_runtime::name_draw::next_generation;
+use viewer_runtime::{landed::{self, Landed}, name_draw::next_generation};
 use viewer_map_modes::map_mode::{MapMode, NameLayer, NameLayers};
 use viewer_map_text::name_pass::{self, AreaText};
 
@@ -836,7 +836,7 @@ fn superseded(next: Option<&Job>, epoch: u64, due: &Due) -> bool {
     }
 }
 
-fn run(content: Arc<dyn Atlas>, jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, due: Due) {
+fn run(content: Arc<dyn Atlas>, jobs: mpsc::Receiver<Job>, made: landed::Sender<Made>, due: Due) {
     let placers = Placers::new(&content);
     let mut model: Option<Model> = None;
     let mut epoch = 0;
@@ -883,13 +883,15 @@ pub struct Names {
     areas: BTreeMap<u32, Area>,
     warned: Option<Vec<String>>,
     jobs: Option<mpsc::Sender<Job>>,
-    made: Option<mpsc::Receiver<Made>>,
+    made: Option<landed::Receiver<Made>>,
     epoch: u64,
     fed: Fed<Made>,
     applied_at: VecDeque<(Hour, u64)>,
     latency: Latency,
     worker_held: usize,
     drawn: Arc<Placements>,
+    landed_drawn: Option<Landed<Arc<Placements>>>,
+    made_token: Option<Landed<()>>,
     drawn_stale: bool,
     sent: Option<u64>,
     unsent: VecDeque<u32>,
@@ -901,8 +903,8 @@ pub struct Names {
     restart: bool,
     placing: bool,
     modes: Option<Whole<ModeNames>>,
-    whole_shown: Option<Arc<Built<Arc<Placements>>>>,
-    whole_pending: Option<Arc<Placements>>,
+    whole_shown: Option<Landed<Arc<Built<Arc<Placements>>>>>,
+    whole_pending: Option<Landed<Arc<Placements>>>,
     kept: VecDeque<Arc<Step>>,
     last_epoch: u64,
 }
@@ -931,6 +933,8 @@ impl Names {
             latency: Latency::default(),
             worker_held: 0,
             drawn: Arc::default(),
+            landed_drawn: None,
+            made_token: None,
             drawn_stale: true,
             warned: None,
             sent: None,
@@ -969,7 +973,7 @@ impl Names {
     fn leave(&mut self) {
         (self.areas, self.unsent, self.unsent_held, self.applied_at) = Default::default();
         self.warned = None;
-        (self.drawn, self.drawn_stale, self.sent, self.worker_held) = (nothing(), false, None, 0);
+        (self.drawn, self.landed_drawn, self.made_token, self.drawn_stale, self.sent, self.worker_held) = (nothing(), None, None, false, None, 0);
         self.epoch += 1;
         self.fed.compose(None);
         (self.whole_shown, self.whole_pending) = (None, None);
@@ -979,7 +983,7 @@ impl Names {
         let columns = self.columns.expect("the names layer is declared before it starts");
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = landed::channel();
             let (content, due) = (Arc::clone(&self.content), self.fed.due());
             thread::Builder::new().name("names fold".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();
@@ -1006,28 +1010,28 @@ impl Names {
 
     fn take_whole(&mut self) {
         let Some(built) = self.modes.as_ref().and_then(Whole::product) else { return };
-        if self.whole_shown.as_ref().is_some_and(|shown| Arc::ptr_eq(shown, built)) {
+        if self.whole_shown.as_ref().is_some_and(|shown| Arc::ptr_eq(&**shown, &**built)) {
             return;
         }
-        self.whole_pending = Some(match &built.product {
+        self.whole_pending = Some(built.as_ref().map(|built| match &built.product {
             Ok(placements) => Arc::clone(placements),
             Err(why) => Arc::new(Placements { warnings: vec![format!("names: {why}")], generation: next_generation(), ..Placements::default() }),
-        });
-        self.whole_shown = Some(Arc::clone(built));
+        }));
+        self.whole_shown = Some(built.clone());
     }
 
     fn push_any(&mut self, target: &mut dyn Target) -> io::Result<()> {
         match self.kind {
             Kind::Countries => self.push(target),
             Kind::Whole => {
-                if self.whole_pending.is_none() && !target.holds(&self.drawn) {
-                    self.whole_pending = Some(Arc::clone(&self.drawn));
-                }
-                if self.whole_pending.is_some() {
-                    let placements = self.whole_pending.take().expect("held");
+                if let Some(placements) = self.whole_pending.take() {
                     viewer_runtime::view_record::add("names layer", "installs", 1);
                     target.install(&placements)?;
-                    self.drawn = placements;
+                    self.drawn = Arc::clone(&*placements);
+                    self.landed_drawn = Some(placements);
+                } else if !target.holds(&self.drawn) {
+                    viewer_runtime::view_record::add("names layer", "installs", 1);
+                    target.install(&self.drawn)?;
                 }
                 Ok(())
             }
@@ -1115,7 +1119,9 @@ impl Names {
         }
         if self.sent != Some(self.drawn.generation) || (self.drawn_stale && self.unsent.is_empty()) {
             let warnings = if self.unsent.is_empty() { self.warnings_held() } else { self.drawn.warnings.clone() };
-            self.drawn = Arc::new(Placements { country: Vec::new(), warnings, generation: self.sent.unwrap_or_default(), near: None });
+            let drawn = Arc::new(Placements { country: Vec::new(), warnings, generation: self.sent.unwrap_or_default(), near: None });
+            self.drawn = Arc::clone(&drawn);
+            self.landed_drawn = self.made_token.as_ref().map(|token| token.as_ref().map(|_| drawn));
             self.drawn_stale = !self.unsent.is_empty();
         }
         Ok(())
@@ -1138,7 +1144,9 @@ impl Names {
         }
     }
 
-    fn take(&mut self, made: Made) {
+    fn take(&mut self, made: Landed<Made>) {
+        self.made_token = Some(made.as_ref().map(|_| ()));
+        let made = made.into_inner();
         if made.whole {
             self.areas = made.areas.into_iter().filter_map(|(slot, area)| Some((slot, area?))).collect();
             (self.drawn_stale, self.sent, self.warned) = (true, None, None);
@@ -1433,12 +1441,12 @@ impl Layer for Names {
     }
 }
 
-pub fn drawn(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<Arc<Placements>> {
+pub fn drawn(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<Landed<Arc<Placements>>> {
     if !side.draws("names") {
         return None;
     }
     let layer = side.parts()?.1.iter().find_map(|layer| layer.any().downcast_ref::<Names>())?;
-    Some(Arc::clone(&layer.drawn))
+    layer.landed_drawn.clone()
 }
 
 pub fn summary(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> serde_json::Value {

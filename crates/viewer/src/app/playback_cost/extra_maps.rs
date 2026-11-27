@@ -98,7 +98,7 @@ impl Extras {
             let first = units.timeline.first();
             let entry = playhead_host::open(units, playhead_host::settings())?;
             entry.set_capture(document.capture_mode());
-            let side = SideThread::new(MapSide::with_products(Arc::clone(&entry), Self::layers(document), main.map(|side| side.view().clone()).unwrap_or_default())?)?;
+            let side = SideThread::new(MapSide::with_products(Arc::clone(&entry), Self::layers(document), main.map(|side| side.view().clone()).unwrap_or_default())?, Arc::new(|| {}))?;
             entry.anchor(first, true, speed, true);
             extras.other = Some(side);
         }
@@ -182,7 +182,7 @@ impl Extras {
             match self.pending[at].opening.poll() {
                 Some(made) => {
                     let pending = self.pending.remove(at);
-                    if let Ok(side) = made.and_then(SideThread::new) {
+                    if let Ok(side) = made.and_then(|side| SideThread::new(side, Arc::new(|| {}))) {
                         if pending.shown {
                             self.shown.arrived = Some(index);
                         }

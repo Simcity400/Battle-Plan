@@ -1828,7 +1828,7 @@ struct Ahead {
     fed: crate::layers::Fed<Summed>,
     epoch: u64,
     jobs: Option<mpsc::Sender<Fold>>,
-    made: Option<mpsc::Receiver<Summed>>,
+    made: Option<viewer_runtime::landed::Receiver<Summed>>,
     permits: Permits,
     done: AheadDone,
     shown: Option<Summed>,
@@ -1853,7 +1853,7 @@ impl Ahead {
         }
     }
 
-    fn run(jobs: mpsc::Receiver<Fold>, made: mpsc::Sender<Summed>, permits: Permits, state: AheadDone) {
+    fn run(jobs: mpsc::Receiver<Fold>, made: viewer_runtime::landed::Sender<Summed>, permits: Permits, state: AheadDone) {
         let _stop = AheadStop(Arc::clone(&state));
         let (mut values, mut epoch, mut stamp): (Vec<Option<i32>>, u64, Option<i32>) = (Vec::new(), 0, None);
         for job in jobs {
@@ -1917,6 +1917,7 @@ impl Ahead {
         }
         let (mut shown, mut changed) = (self.shown, Vec::new());
         self.fed.take(|made| {
+            let made = made.into_inner();
             shown = Some(made);
             changed.extend(made.1);
         });
@@ -1947,7 +1948,7 @@ impl Layer for Ahead {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = viewer_runtime::landed::channel();
             let permits = Arc::clone(&self.permits);
             let done = Arc::clone(&self.done);
             std::thread::Builder::new().name("ahead test fold".into()).spawn(move || Ahead::run(receive, send, permits, done))?;

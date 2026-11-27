@@ -138,7 +138,7 @@ fn applied_held(side: &mut MapSide, gate: &AtomicBool, hour: Hour, seek: bool) {
 }
 
 fn viewer(hour: Hour, side: MapSide) -> Viewer {
-    let mut side = SideThread::new(side).unwrap();
+    let mut side = SideThread::new(side, Arc::new(|| {})).unwrap();
     side.driven(|_| ());
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
     let at = Playhead { branch: BRANCH, hour, fraction: 0.0 };
@@ -190,6 +190,7 @@ fn after_a_seek_the_report_loads_until_every_drawn_layer_shows_the_head() {
     viewer.playhead_map.as_mut().unwrap().driven(|side| side.frame(8)).unwrap();
     assert!(viewer.map_state(&target(8, false)).loading, "the layers show hour 8, the overlay nothing");
     viewer.overlay_hour = Some(8);
+    viewer.overlay_view = Some(viewer_playback::map_views::CounterView::default());
     let state = viewer.map_state(&target(8, false));
     assert_eq!(state.clock_id, "page-1");
     assert!(!state.loading, "the frame every part shows hour 8 stops the loading: {state:?}");
@@ -248,7 +249,7 @@ fn a_seek_no_reader_took_is_owed_until_one_does_and_play_runs_from_it() {
         viewer.anchor_playback(head(sought), false, 1.0, true, None, at(10), 11);
         viewer.anchor_playback(head(sought), true, 1.0, false, None, at(1_010), 11);
         let (back, _) = joins(&entry);
-        viewer.playhead_map = Some(SideThread::new(back).unwrap());
+        viewer.playhead_map = Some(SideThread::new(back, Arc::new(|| {})).unwrap());
         viewer.anchor_playback(head(sought), true, 1.0, false, None, at(1_020), 11);
         assert_eq!(entry.playhead().head(Instant::now()), sought, "the map seeks to {sought}, never plays on from {stood}");
         assert!(!entry.paused(), "and plays from the hour sought");
@@ -256,7 +257,7 @@ fn a_seek_no_reader_took_is_owed_until_one_does_and_play_runs_from_it() {
         viewer.close_playhead();
         viewer.anchor_playback(head(stood), false, 1.0, true, None, at(1_040), 11);
         let (back, _) = joins(&entry);
-        viewer.side_opened(SideThread::new(back).unwrap());
+        viewer.side_opened(SideThread::new(back, Arc::new(|| {})).unwrap());
         assert_eq!(entry.playhead().head(Instant::now()), stood, "the reader that opens takes the seek owed");
         assert!(entry.paused(), "and stands there");
         for (hour, playing, speed, seek) in [(stood, false, 24.0, false), (stood, true, 24.0, false), (stood, false, 1.0, false), (sought, false, 1.0, true), (sought + 1, false, 1.0, false)] {

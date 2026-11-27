@@ -407,7 +407,7 @@ pub struct Fed<P> {
     handed: Option<Hour>,
     applied: Option<Hour>,
     composed: Option<Hour>,
-    early: VecDeque<(Option<Hour>, P)>,
+    early: VecDeque<(Option<Hour>, viewer_runtime::landed::Landed<P>)>,
     taken: bool,
     stamp: Option<Hour>,
     due: Due,
@@ -478,11 +478,11 @@ impl<P> Fed<P> {
         self.due.set(self.applied);
     }
 
-    pub fn receive(&mut self, stamp: Option<Hour>, product: P) {
+    pub fn receive(&mut self, stamp: Option<Hour>, product: viewer_runtime::landed::Landed<P>) {
         self.early.push_back((stamp, product));
     }
 
-    pub fn take(&mut self, mut each: impl FnMut(P)) {
+    pub fn take(&mut self, mut each: impl FnMut(viewer_runtime::landed::Landed<P>)) {
         while self.early.front().is_some_and(|(stamp, _)| *stamp <= self.applied) {
             let (stamp, product) = self.early.pop_front().expect("held");
             (self.taken, self.stamp) = (true, self.stamp.max(stamp));

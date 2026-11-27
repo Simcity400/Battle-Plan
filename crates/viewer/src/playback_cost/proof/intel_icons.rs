@@ -367,7 +367,7 @@ pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &viewer_la
     let (Some((icons, hour)), Some(rows)) = (layer.icons(), layer.newest_rows()) else {
         return Ok(Compared { notes: json!({"skipped": "no icons or no rows yet"}), ..Compared::default() });
     };
-    if rows.hour != *hour {
+    if rows.hour != hour {
         return Ok(Compared { notes: json!({"skipped": format!("the rows are at {}, the icons of {hour}", rows.hour)}), ..Compared::default() });
     }
     let again = layer.evaluate(&rows);

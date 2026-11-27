@@ -428,7 +428,7 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
     const REFUSED: i32 = 16;
     let asked = Arc::new(Asked(std::sync::Mutex::new(Vec::new())));
     let (entry, layers) = viewing_world_and(&asked, |at, _| if at == REFUSED as u32 { vec![(TableId::Countries, Status::NotRecorded)] } else { Vec::new() });
-    let mut side = SideThread::new(crate::map_open::MapSide::with_products(entry, layers, View::default()).unwrap()).unwrap();
+    let mut side = SideThread::new(crate::map_open::MapSide::with_products(entry, layers, View::default()).unwrap(), Arc::new(|| {})).unwrap();
     side.anchor(HOUR, false, 0.0, true);
     let chosen = View { perspective: Choice { country: Country::Tag("text 1".into()), ..Choice::default() }, ..View::default() };
     let refused = View { perspective: Choice { country: Country::Tag("text 0".into()), ..Choice::default() }, ..View::default() };

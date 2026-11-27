@@ -18,7 +18,7 @@ impl viewer_counters_naval::air_missions::AirPasses for AirRosters {
 
 pub struct Playback {
     replay: Arc<Replay>,
-    rosters: std::sync::Mutex<Option<(Arc<Sampler>, bool)>>,
+    rosters: std::sync::Mutex<Option<(Arc<Sampler>, Arc<AirRosters>, bool)>>,
     branch: BranchId,
     hour: Hour,
     current: Current,
@@ -156,31 +156,37 @@ impl Playback {
     }
 
     pub fn air_rosters(&self) -> Arc<AirRosters> {
-        Arc::new(AirRosters(RosterHistory::of(self.roster_sampler())))
+        self.rosters_entry().1
     }
 
     pub fn roster_sampler(&self) -> Arc<Sampler> {
+        self.rosters_entry().0
+    }
+
+    fn rosters_entry(&self) -> (Arc<Sampler>, Arc<AirRosters>) {
         let source = self.air_roster_source();
         let mut held = self
             .rosters
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((sampler, _)) = held.as_ref().filter(|(sampler, lanes)| {
+        if let Some((sampler, rosters, _)) = held.as_ref().filter(|(sampler, _, lanes)| {
             *lanes || sampler.columnar().map(Arc::as_ptr) == source.as_ref().map(Arc::as_ptr)
         }) {
-            return Arc::clone(sampler);
+            return (Arc::clone(sampler), Arc::clone(rosters));
         }
         let sampler = Arc::new(Sampler::today(Arc::clone(&self.replay), source));
-        *held = Some((Arc::clone(&sampler), false));
-        sampler
+        let rosters = Arc::new(AirRosters(RosterHistory::of(Arc::clone(&sampler))));
+        *held = Some((Arc::clone(&sampler), Arc::clone(&rosters), false));
+        (sampler, rosters)
     }
 
     pub fn read_rosters_of(&self, entry: &viewer_layer_core::playhead_host::Entry) {
         if let Some(sampler) = entry.rosters(&self.replay) {
+            let rosters = Arc::new(AirRosters(RosterHistory::of(Arc::clone(&sampler))));
             *self
                 .rosters
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((sampler, true));
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((sampler, rosters, true));
         }
     }
 
@@ -751,6 +757,7 @@ pub mod tests {
         }
         campaign.read_rosters_of(&entry);
         assert!(Arc::ptr_eq(&campaign.roster_sampler(), &lanes), "a reopened reader keeps the one sampler");
+        assert!(Arc::ptr_eq(&campaign.air_rosters(), &campaign.air_rosters()), "unchanged sampler keeps the same air rosters wrapper");
         assert!(Arc::ptr_eq(&entry.rosters(&replay).unwrap(), &lanes), "one sampler a recording and timeline");
     }
     }

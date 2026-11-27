@@ -10,6 +10,7 @@ use std::{
     thread,
 };
 use viewer_audio::battle::{self, Battles};
+use viewer_runtime::landed::{self, Landed};
 
 #[expect(clippy::large_enum_variant, reason = "frames are the channel's traffic and move whole into the worker; boxing them would allocate for every frame")]
 enum Job {
@@ -46,12 +47,12 @@ impl Work {
 
     fn made(&mut self, epoch: u64, stamp: Option<Hour>, answers: usize) -> Made {
         let held = self.model.held() + self.mirrors.iter().map(Mirror::bytes).sum::<usize>();
-        let battles = self.model.published.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let battles = self.model.published.lock().unwrap_or_else(|p| p.into_inner()).as_ref().cloned();
         Made { epoch, stamp, answers, battles, marked: self.model.marked, made: self.model.made, scoped: std::mem::take(&mut self.model.scoped), held }
     }
 }
 
-fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
+fn run(jobs: mpsc::Receiver<Job>, made: landed::Sender<Made>) {
     let mut work: Option<Work> = None;
     let mut epoch = 0;
     let mut next = None;
@@ -100,13 +101,13 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
 pub struct SoundsFed {
     spec: Sounds,
     jobs: Option<mpsc::Sender<Job>>,
-    made: Option<mpsc::Receiver<Made>>,
+    made: Option<landed::Receiver<Made>>,
     epoch: u64,
     owed: usize,
     products: Products<Made>,
     waiting: VecDeque<Arc<Step>>,
     declared: bool,
-    battles: Option<Arc<Battles>>,
+    battles: Option<Landed<Option<Arc<Battles>>>>,
     marked: [usize; 3],
     made_battles: u64,
     scoped: Scoped,
@@ -135,7 +136,11 @@ impl SoundsFed {
     }
 
     pub fn battles(&self) -> Option<&Arc<Battles>> {
-        self.battles.as_ref()
+        self.battles.as_deref().and_then(Option::as_ref)
+    }
+
+    pub fn landed_battles(&self) -> Option<Landed<Option<Arc<Battles>>>> {
+        self.battles.clone()
     }
 
     pub fn marked(&self) -> [usize; 3] {
@@ -180,7 +185,9 @@ impl SoundsFed {
         let mut due = Vec::new();
         self.products.take(|made| due.push(made));
         for made in due {
-            (self.battles, self.marked, self.made_battles, self.worker_held) = (made.battles, made.marked, made.made, made.held);
+            self.battles = Some(made.as_ref().map(|made| made.battles.clone()));
+            let made = made.into_inner();
+            (self.marked, self.made_battles, self.worker_held) = (made.marked, made.made, made.held);
             self.scoped.extend(made.scoped);
         }
         if self.stopped {
@@ -206,7 +213,7 @@ impl Layer for SoundsFed {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
-            let (send, made) = mpsc::channel();
+            let (send, made) = landed::channel();
             thread::Builder::new().name("battle sounds".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();
                 run(receive, send)

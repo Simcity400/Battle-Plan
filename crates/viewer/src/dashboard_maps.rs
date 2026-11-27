@@ -958,21 +958,23 @@ impl DashboardMaps {
             let alive = Arc::new(AtomicBool::new(true));
             let job_alive = Arc::clone(&alive);
             let workers = self.pool.workers();
-            if self.pool.try_submit(Box::new(move || {
-                if !job_alive.load(Ordering::Acquire) {
-                    return;
-                }
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    load_scene(&device, &queue, &document, graphics, &workers)
-                        .map(|scene| (document, scene))
-                        .map_err(|error| error.to_string())
-                }))
-                .unwrap_or_else(|_| Err("Native map scene creation panicked".into()));
-                if job_alive.load(Ordering::Acquire) {
-                    let _ = sender.send(result);
-                }
-                viewer_runtime::worker_priority::at_least(Some(0), || wake.request_repaint());
-            })) {
+            if self.pool.try_submit(
+                Box::new(move || {
+                    if !job_alive.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        load_scene(&device, &queue, &document, graphics, &workers)
+                            .map(|scene| (document, scene))
+                            .map_err(|error| error.to_string())
+                    }))
+                    .unwrap_or_else(|_| Err("Native map scene creation panicked".into()));
+                    if job_alive.load(Ordering::Acquire) {
+                        let _ = sender.send(result);
+                    }
+                }),
+                move || viewer_runtime::worker_priority::at_least(Some(0), || wake.request_repaint()),
+            ) {
                 view.loading = Some(SceneLoad {
                     samples: graphics.samples,
                     content: Arc::downgrade(content),

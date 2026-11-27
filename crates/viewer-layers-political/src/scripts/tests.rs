@@ -359,7 +359,7 @@ fn the_script_readers_read_rows_at_the_head_learning_their_tables_and_close_with
     assert!(fixture.held().is_empty(), "no reader is left, so the store keeps no view: {:?}", fixture.held());
     let mut stopped = fixture.scripts(&primed.iter().map(|&table| Need::every(table)).collect::<Vec<Need>>());
     stopped.ensure_open();
-    let (dead_send, dead_done) = std::sync::mpsc::channel();
+    let (dead_send, dead_done) = viewer_runtime::landed::channel();
     drop(dead_send);
     if let Some(open) = stopped.open.as_mut() {
         open.done = dead_done;

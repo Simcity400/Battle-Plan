@@ -42,7 +42,7 @@ fn the_hovers_read_the_vision_the_maps_vision_layer_shows_and_are_loading_by_nam
     let side = MapSide::with_products(Arc::clone(&entry), vec![Box::new(vision::Vision::new(vision_content()))], View::default()).unwrap();
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
     viewer.playhead = Some(Playhead { branch: 0, hour: 2, fraction: 0.0 });
-    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side, Arc::new(|| {})).unwrap();
     side.driven(|_| ());
     viewer.playhead_map = Some(side);
     let before = viewer.shown_vision().err();

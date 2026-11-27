@@ -310,15 +310,25 @@ pub struct CounterView {
 
 impl CounterView {
     pub fn set_mode(&mut self, mode: &viewer_map_modes::map_mode::MapMode) {
+        (self.visibility, self.operatives, self.occupation) = Self::of_mode(mode);
+    }
+
+    pub fn matches_mode(&self, mode: &viewer_map_modes::map_mode::MapMode) -> bool {
+        (self.visibility, self.operatives, self.occupation) == Self::of_mode(mode)
+    }
+
+    fn of_mode(mode: &viewer_map_modes::map_mode::MapMode) -> (viewer_foundation::mode_visibility::Visibility, bool, Option<viewer_map_icons::occupation_icons::Mode>) {
         use viewer_map_modes::map_mode::{MapMode, Stock};
         use viewer_map_icons::occupation_icons::Mode;
-        self.visibility = viewer_map_modes::map_mode::visibility::of(mode);
-        self.operatives = matches!(mode, MapMode::Stock(Stock::Operatives));
-        self.occupation = match mode {
-            MapMode::Stock(Stock::Resistance) => Some(Mode::Resistance),
-            MapMode::Stock(Stock::Compliance) => Some(Mode::Compliance),
-            _ => None,
-        };
+        (
+            viewer_map_modes::map_mode::visibility::of(mode),
+            matches!(mode, MapMode::Stock(Stock::Operatives)),
+            match mode {
+                MapMode::Stock(Stock::Resistance) => Some(Mode::Resistance),
+                MapMode::Stock(Stock::Compliance) => Some(Mode::Compliance),
+                _ => None,
+            },
+        )
     }
 
     pub fn new(settings: CounterSettings) -> Self {

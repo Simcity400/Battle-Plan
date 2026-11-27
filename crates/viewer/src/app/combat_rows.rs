@@ -79,7 +79,7 @@ impl<T: Clone + Send + 'static> Hover<T> {
     }
 
     fn latest(&self, target: [u64; 3]) -> Option<T> {
-        self.reads.as_ref()?.latest(|done| done.target == target).map(|(_, done)| done)
+        self.reads.as_ref()?.latest(|done| done.target == target).map(|(_, done)| done.into_inner())
     }
 
     fn end_frame(&mut self) {

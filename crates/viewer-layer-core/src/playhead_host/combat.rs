@@ -9,7 +9,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use viewer_runtime::reads::Reads;
+use viewer_runtime::{landed::Landed, reads::Reads};
 use viewer_engagements::engagement_history::History;
 
 const WHOLE: Duration = Duration::from_secs(120);
@@ -54,8 +54,14 @@ struct Key<K> {
     read: K,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RowsError {
+    Passed(String),
+    TimedOut(String),
+}
+
 struct Maker<A: Asking> {
-    reads: Reads<Key<A::Key>, Result<A::Made, String>>,
+    reads: Reads<Key<A::Key>, Result<A::Made, RowsError>>,
     rows: Arc<views::Reader>,
     declared: Vec<TableId>,
     last: Option<Key<A::Key>>,
@@ -70,7 +76,7 @@ pub struct Combat<A: Asking> {
     generation: u64,
     asked: Option<Key<A::Key>>,
     handed: Option<Key<A::Key>>,
-    made: Option<A::Made>,
+    made: Option<Landed<A::Made>>,
     loading: Vec<String>,
 }
 
@@ -145,19 +151,23 @@ impl<A: Asking> Combat<A> {
             maker.declare(&self.learned);
         }
         let mut made = false;
-        match maker.reads.take(|done| *done == key) {
-            Some((_, Ok(read))) => {
+        match maker.reads.take(|done| *done == key).map(|(_, read)| read.transpose()) {
+            Some(Ok(read)) => {
                 (self.made, self.handed) = (Some(read), Some(key));
                 made = true;
             }
-            Some((_, Err(why))) => self.loading.push(why),
+            Some(Err(RowsError::Passed(why))) => {
+                self.loading.push(why);
+                self.handed = Some(key);
+            }
+            Some(Err(RowsError::TimedOut(why))) => self.loading.push(why),
             None if answered => self.loading.push(format!("its read of hour {}", key.hour)),
             None => {}
         }
         Joined { answered, made }
     }
 
-    pub fn take(&mut self) -> Option<A::Made> {
+    pub fn take(&mut self) -> Option<Landed<A::Made>> {
         self.made.take()
     }
 
@@ -203,8 +213,12 @@ impl<A: Asking> Drop for Maker<A> {
     }
 }
 
-fn rows_at(rows: &views::Reader, hour: Hour, epoch: u64, newest: &AtomicU64, stamp: u64) -> Result<Arc<DecodedFrame>, String> {
-    let until = Instant::now() + WHOLE;
+fn rows_at(rows: &views::Reader, hour: Hour, epoch: u64, newest: &AtomicU64, stamp: u64) -> Result<Arc<DecodedFrame>, RowsError> {
+    rows_at_within(rows, hour, epoch, newest, stamp, WHOLE)
+}
+
+fn rows_at_within(rows: &views::Reader, hour: Hour, epoch: u64, newest: &AtomicU64, stamp: u64, limit: Duration) -> Result<Arc<DecodedFrame>, RowsError> {
+    let until = Instant::now() + limit;
     loop {
         let seen = rows.published();
         if let Some((frame, _, seek)) = rows.newest_seek()
@@ -214,14 +228,14 @@ fn rows_at(rows: &views::Reader, hour: Hour, epoch: u64, newest: &AtomicU64, sta
                 return Ok(frame);
             }
             if frame.hour > hour {
-                return Err(format!("its rows of hour {hour}, which the side's steps have passed"));
+                return Err(RowsError::Passed(format!("its rows of hour {hour}, which the side's steps have passed")));
             }
         }
         if newest.load(Ordering::Acquire) != stamp {
-            return Err(format!("its rows of hour {hour}, passed over for a newer hour"));
+            return Err(RowsError::TimedOut(format!("its rows of hour {hour}, passed over for a newer hour")));
         }
         if Instant::now() >= until {
-            return Err(format!("its rows of hour {hour}, which did not come (waiting for {:?})", rows.arriving()));
+            return Err(RowsError::TimedOut(format!("its rows of hour {hour}, which did not come (waiting for {:?})", rows.arriving())));
         }
         rows.wait_newer(seen, LOOK);
     }
@@ -280,7 +294,7 @@ mod tests {
         assert_eq!(read(), 1);
         finish.send(()).unwrap();
         assert!(combat.join(Settling::still(), interval).answered);
-        assert_eq!(combat.take(), Some(1), "the head standing still waits for its hour's read");
+        assert_eq!(combat.take().map(Landed::into_inner), Some(1), "the head standing still waits for its hour's read");
         assert!(!combat.ask_step(fed.store(), Some(1), branch, epoch, None), "the frame holds hour 1's read: nothing is read again");
 
         assert!(combat.ask_step(fed.store(), Some(2), branch, epoch, None));
@@ -296,7 +310,7 @@ mod tests {
         assert_eq!(read(), 3, "hour 3's read follows hour 2's");
         finish.send(()).unwrap();
         assert!(combat.join(Settling::still(), interval).answered);
-        assert_eq!(combat.take(), Some(3), "hour 3's publication hands hour 3's read, never hour 2's");
+        assert_eq!(combat.take().map(Landed::into_inner), Some(3), "hour 3's publication hands hour 3's read, never hour 2's");
     }
 
     #[test]
@@ -317,7 +331,8 @@ mod tests {
         assert_eq!(combat.join(Settling::still(), Duration::ZERO), Joined { answered: true, made: true });
         assert!(combat.ask_step(fed.store(), Some(0), branch, epoch, None), "hour 1's read is not taken yet: hour 0 is asked");
         assert_eq!(combat.join(Settling::still(), Duration::ZERO), Joined { answered: true, made: false }, "hour 0's rows are passed: this join took nothing");
-        assert_eq!(combat.take(), Some(1), "hour 1's read is still the frame's to take");
+        assert!(!combat.ask_step(fed.store(), Some(0), branch, epoch, None), "a passed hour is handed so a paused turn does not retry it forever");
+        assert_eq!(combat.take().map(Landed::into_inner), Some(1), "hour 1's read is still the frame's to take");
     }
 
     #[test]
@@ -332,6 +347,8 @@ mod tests {
         let before = entry.playhead().epoch();
         let (asked, newer) = (AtomicU64::new(0), AtomicU64::new(1));
         assert_eq!(rows_at(&rows, 1, before, &asked, 0).map(|frame| frame.hour), Ok(1), "the rows of hour 1 at the seek they were posted at");
-        assert!(rows_at(&rows, 1, before + 1, &newer, 0).is_err(), "a read asked after the seek waits for its own rows, never taking these");
+        assert!(matches!(rows_at(&rows, 1, before + 1, &newer, 0), Err(RowsError::TimedOut(_))), "a read asked after the seek waits for its own rows, never taking these");
+        assert!(matches!(rows_at_within(&rows, 2, before, &asked, 0, Duration::ZERO), Err(RowsError::TimedOut(_))), "a timeout stays retryable rather than handed");
+        assert!(matches!(rows_at_within(&rows, 0, before, &asked, 0, Duration::ZERO), Err(RowsError::Passed(_))), "a passed hour is distinguished from a timeout");
     }
 }

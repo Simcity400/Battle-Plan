@@ -72,7 +72,7 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
         Ok(built) => built,
         Err(why) => {
             if let Some(stopped) = layer.rebuilt().stopped() {
-                note(&mut compared, stopped);
+                note(&mut compared, stopped.into_inner());
                 return Ok(compared);
             }
             return Ok(loading(format!("the mode fill is not built at hour {hour}, awaiting the rows of {:?}: {why}", layer.rebuilt().awaiting())));
@@ -107,7 +107,7 @@ pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &viewer_la
     }
     let Some(built) = layer.product() else {
         if let Some(stopped) = layer.rebuilt().stopped() {
-            note(&mut compared, stopped);
+            note(&mut compared, stopped.into_inner());
             return Ok(compared);
         }
         return Ok(loading(format!("the mode fill is not built yet, awaiting the rows of {:?}", layer.rebuilt().awaiting())));
