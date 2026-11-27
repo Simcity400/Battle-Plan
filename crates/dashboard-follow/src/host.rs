@@ -663,11 +663,11 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         let panels = Arc::new(Mutex::new(Panels { stamp: (follow.clock(), follow.route(), playhead.epoch() as u32, 0), cells: Some(HostCells { follow: follow.clone(), held: held.clone() }), ..Panels::default() }));
         let weak = Arc::downgrade(&panels);
         let reads = Arc::new(Mutex::new(ProductReads { host: Some(HostCells { follow: follow.clone(), held: held.clone() }), ..Default::default() }));
-        let active = reads.clone();
+        let active = Arc::downgrade(&reads);
         let product_owner = Arc::downgrade(&owner);
         let wake = follow.rehooker();
         follow.product_hook(Arc::new(move |step, lanes| {
-            let (Some(panels), Some(owner)) = (weak.upgrade(), product_owner.upgrade()) else { return };
+            let (Some(panels), Some(owner), Some(active)) = (weak.upgrade(), product_owner.upgrade(), active.upgrade()) else { return };
             let epoch = step.epoch();
             let (stamp, session, push, due, resend) = {
                 let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1037,6 +1037,7 @@ impl<E: Send + Sync + 'static> Drop for PlayheadHost<E> {
         self.driver_gate.stop();
         self.panel_gate.stop();
         for token in self.reads.lock().unwrap_or_else(PoisonError::into_inner).tokens.values() { token.store(true, Ordering::Release); }
+        self.follow.retire();
         if let Some(driver) = self.driver.lock().unwrap_or_else(PoisonError::into_inner).take() {
             let _ = driver.join();
         }

@@ -769,6 +769,7 @@ pub struct Catalogue {
     findings: Option<Mutex<BTreeSet<Finding>>>,
     effect_describer: Option<EffectDescriberFactory>,
     scripted: Once<Result<crate::scripted_text::ScriptedContent, String>>,
+    events: std::sync::OnceLock<content_reader_events::events::LazyEvents>,
     defines: Arc<LayerDefines>,
     war_names: Once<Result<content_reader_wargoals::wargoals::Names, String>>,
     pub state_content: Arc<Once<Result<crate::scripted_text::StateContent, String>>>,
@@ -910,6 +911,7 @@ impl Catalogue {
             findings: None,
             effect_describer,
             scripted: Once::new(),
+            events: Default::default(),
             war_names: Once::new(),
             state_content: Arc::new(Once::new()),
             recorded: Once::new(),
@@ -1044,6 +1046,12 @@ impl Catalogue {
 
     pub fn localised(&self, key: &str, view: View) -> Option<String> {
         self.localised_with(key, &[], view)
+    }
+
+    pub fn event_index(&self) -> &content_reader_events::events::LazyEvents {
+        self.events.get_or_init(|| {
+            content_reader_events::events::LazyEvents::from_content(Arc::clone(&self.content))
+        })
     }
 
     pub fn scripted_content(&self) -> Result<&crate::scripted_text::ScriptedContent, String> {
@@ -2484,6 +2492,7 @@ pub mod tests {
             findings: None,
             effect_describer: None,
             scripted: Once::new(),
+            events: Default::default(),
             war_names: Once::new(),
             state_content: Arc::new(Once::new()),
             recorded: Once::new(),

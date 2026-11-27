@@ -160,9 +160,11 @@ impl Follow {
         let mut engine = Engine::new(Arc::clone(&self.shared), sink);
         Box::new(move |step: &Step, lanes: &Lanes<'_>| {
             engine.step(step, lanes);
-            let products = lock(&engine.shared.products).clone();
-            if let Some(products) = products {
+            let stepped_products = lock(&engine.shared.products).as_ref().is_some_and(|products| {
                 products(step, lanes);
+                true
+            });
+            if stepped_products {
                 engine.step_added(step, lanes);
             }
         })
@@ -178,6 +180,12 @@ impl Follow {
 
     pub(crate) fn product_hook(&self, hook: ProductHook) {
         *lock(&self.shared.products) = Some(hook);
+    }
+
+    pub(crate) fn retire(&self) {
+        let hook = lock(&self.shared.products).take();
+        let declare = lock(&self.shared.control).declare.take();
+        drop((hook, declare));
     }
 
     pub(crate) fn rehooker(&self) -> crate::panel::Wake {
