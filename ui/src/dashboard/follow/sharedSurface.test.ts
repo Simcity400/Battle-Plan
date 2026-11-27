@@ -1238,6 +1238,9 @@ test('direct-surface rules: dirty slot without kept picture stays blank while lo
     let failRestore = false;
     const h = makeDirectHarness('test-rule-no-kept-and-restore-failure');
     h.lane.bind(1, { generation: 1, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 10, c: 20 } });
+    h.surface.ctx.fillStyle = 'pixel:stale-unaccepted';
+    h.surface.ctx.fillRect(40, 20, 300, 200);
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:stale-unaccepted');
     h.page.publish(1, { playing: false, seek: 1, speed: 0, step: 0 });
     await h.drainLane();
     assert.equal(h.page.view(1).mode, 'reading');
@@ -1373,5 +1376,138 @@ test('R4-5: lazy lane creation builds zero workers for an empty page and one wor
   } finally {
     if (navDesc) Object.defineProperty(globalThis, 'navigator', navDesc);
     else delete (globalThis as { navigator?: unknown }).navigator;
+  }
+});
+
+test('direct-surface rules: cancelled seek during sibling crop wait clears unaccepted pixels without kept picture, restores kept picture when present, and repaints on return to cancelled hour', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number; height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) { this.width = w; this.height = h; this.ctx = fakeContext2D().ctx; }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+  try {
+    for (const mode of ['shared', 'glass'] as const) {
+      for (const withKept of [false, true]) {
+        const kind = `test-rule-cancelled-seek-${mode}-${withKept ? 'kept' : 'empty'}`;
+        registerFamilyProjection({
+          family: 'bars',
+          kind,
+          project(v) { return { hour: v.hour }; },
+        }, 'main');
+        const directFamily: LaneFamily<LaneBinding, { readonly hour: number }, { readonly hour: number }> = {
+          family: 'bars',
+          boundary: (_m, hour) => hour + 1,
+          redraw: () => Infinity,
+          status: () => 'picture',
+          view: [],
+          layout: m => ({ hour: m.hour }),
+          paint(ctx, frame) {
+            ctx.fillStyle = `pixel:h${frame.hour}`;
+            ctx.fillRect(0, 0, frame.surface.width, frame.surface.height);
+            return false;
+          },
+          hit: () => null, tooltip: () => null, structure: () => ({}), mirror: null, audit: () => [], visibleArt: () => [],
+        };
+        const directView: LaneView = createLaneView(directFamily, () => {});
+        const bitmapView: LaneView = {
+          paint(input, _state, content) {
+            return {
+              surfaces: [{ source: { width: 10, height: 10 }, content: content() }],
+              fields: {},
+              motion: false,
+              nextChangeAt: input.hour + 1,
+            };
+          },
+        };
+
+        let releaseCrop: (() => void) | null = null;
+        let cropStarted = false;
+        const presented: Parameters<Page<Bitmapped & { close(): void }>['offer']>[0][] = [];
+        const lane = new Lane<Bitmapped & { close(): void }>({
+          lane: 0,
+          lanes: 1,
+          views: k => (k === 'bitmap' ? bitmapView : directView),
+          crop(sources) {
+            cropStarted = true;
+            return new Promise(resolve => {
+              releaseCrop = () => resolve(sources.map(s => ({ width: s.width, height: s.height, close() {} })));
+            });
+          },
+          present(p) { presented.push(p); },
+          release() {},
+          fail(r) { throw new Error(r); },
+          later() {},
+          clock: () => 0,
+          budget: Infinity,
+        });
+
+        const sharedCanvas = pixelCanvas(800, 300);
+        const glassCanvas = pixelCanvas(300, 200);
+        if (mode === 'shared') {
+          lane.setLaneSurface(sharedCanvas.canvas, true);
+          lane.setLaneSlots({
+            width: 800, height: 300, dpr: 1, scrollTop: 0, scrollLeft: 0, originX: 0, originY: 0,
+            surfaceColor: TEST_THEME.surface, clipPathFallback: false,
+            slots: [{ widget: 1, x: 40, y: 20, w: 300, h: 200, visible: true }],
+          });
+        } else {
+          lane.setCanvas(1, glassCanvas.canvas, false);
+        }
+        const readPixel = () => (mode === 'shared' ? sharedCanvas.pixelAt(80, 60) : glassCanvas.pixelAt(80, 60));
+        const expectedClear = mode === 'shared' ? TEST_THEME.surface : 'cleared';
+
+        lane.follow(10, 'followed');
+        lane.bindRoute(10, 1, 1, 1, 0);
+        lane.mount(1, [], 'bars', {
+          family: 'bars', kind, view: 'main', options: {}, revisions: {}, sources: {}, scrollTop: 0, theme: TEST_THEME,
+        } satisfies LaneBinding);
+        lane.mount(2, [], 'bitmap');
+        lane.bind(1, { generation: 1, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: withKept ? 1 : 20, c: 25 } });
+        lane.bind(2, { generation: 1, surfaces: [{ width: 10, height: 10, dpr: 1 }], offset: 0, pin: null, dated: { h: 20, c: 25 } });
+
+        const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+        if (withKept) {
+          lane.frame({ type: 'frame', serial: 1, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+          await flush();
+          assert.equal(readPixel(), 'pixel:h1');
+          const ack1 = presented.splice(0).flatMap(p => p.entries.map(e => ({ id: e.id, widget: e.widget, binding: e.binding })));
+          lane.frame({ type: 'frame', serial: 2, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: ack1, refused: [] });
+          await flush();
+        }
+
+        presented.length = 0;
+        cropStarted = false;
+        lane.frame({ type: 'frame', serial: 3, seek: 1, target: 20, now: 20, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+        await flush();
+        assert.equal(cropStarted, true);
+        assert.equal(readPixel(), 'pixel:h20');
+        assert.equal(presented.length, 0);
+
+        lane.bind(1, { generation: 1, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 20, c: 25 } });
+        lane.follow(11, 'followed');
+        lane.bindRoute(11, 1, 1, 2, 0);
+        releaseCrop!();
+        await flush();
+        assert.equal(presented.length, 0);
+
+        lane.frame({ type: 'frame', serial: 4, seek: 2, target: 10, now: 10, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+        await flush();
+        assert.equal(readPixel(), withKept ? 'pixel:h1' : expectedClear);
+
+        lane.frame({ type: 'frame', serial: 5, seek: 2, target: 20, now: 20, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+        await flush();
+        releaseCrop!();
+        await flush();
+        assert.equal(readPixel(), 'pixel:h20');
+        assert.ok(presented.some(p => p.entries.some(e => e.widget === 1 && e.lo === 20)));
+      }
+    }
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
   }
 });

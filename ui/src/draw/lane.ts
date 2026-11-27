@@ -2057,6 +2057,30 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return kept.owner !== undefined && widget.binding.owner !== undefined && kept.owner !== widget.binding.owner ? null : kept;
   }
 
+  private clearDirectSlot(shared: SharedLaneCanvas | null, slot: SharedSurfaceSlot | undefined, wc: WorkerCanvasInfo | undefined) {
+    if (shared && slot && slot.visible && shared.width > 0 && shared.height > 0) {
+      const dpr = shared.dpr > 0 ? shared.dpr : 1;
+      shared.ctx.save();
+      shared.rawSetTransform(1, 0, 0, 1, 0, 0);
+      const x = Math.floor(slot.x * dpr), y = Math.floor(slot.y * dpr), w = Math.ceil(slot.w * dpr), h = Math.ceil(slot.h * dpr);
+      if (shared.surfaceColor) {
+        shared.ctx.fillStyle = shared.surfaceColor;
+        shared.ctx.fillRect(x, y, w, h);
+      } else {
+        shared.ctx.clearRect(x, y, w, h);
+      }
+      shared.ctx.restore();
+    } else if (wc) {
+      const ctx = wc.canvas.getContext('2d', wc.opaque ? { alpha: false } : undefined);
+      if (ctx) {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, wc.canvas.width, wc.canvas.height);
+        ctx.restore();
+      }
+    }
+  }
+
   private restoreDirtyDirectSlots(request: FrameRequest, now: number) {
     const shared = this.sharedSurface;
     const sharedReady = shared !== null && shared.width > 0 && shared.height > 0;
@@ -2066,13 +2090,17 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const wid of this.dirtyWidgets) if (this.widgets.get(wid)?.forceFull && this.isDirectTarget(wid)) dirty.add(wid);
     for (const wid of dirty) {
       const widget = this.widgets.get(wid);
-      if (!widget || widget.halted === widget.binding.generation || this.failedWidgets.has(wid)) continue;
-      const kept = this.keptPicture(widget);
-      if (!kept) continue;
+      if (!widget) continue;
       const wc = this.activeWorkerCanvas(wid);
       const slot = sharedReady ? shared.slots.get(wid) : undefined;
       const sharedArg = sharedReady && slot?.visible ? { lane: shared, slot, dirty: true } : undefined;
       if (!sharedArg && !wc) continue;
+      const halted = widget.halted === widget.binding.generation || this.failedWidgets.has(wid);
+      const kept = halted ? null : this.keptPicture(widget);
+      if (!kept) {
+        this.clearDirectSlot(sharedArg ? shared : null, sharedArg?.slot, sharedArg ? undefined : wc);
+        continue;
+      }
       try {
         this.host.views(widget.view).paint({
           widget: wid, subs: kept.subsSnapshot, pictures: kept.pictures, model: kept.model,
@@ -2343,228 +2371,236 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const entries: Entry<B>[] = [], surfaces: (B | typeof SAME | null)[][] = [], sources: Bitmapped[] = [], slots: [number, number, number][] = [];
     const made: { widget: Widget; selected: Selected }[] = [];
     const shared = new Map<string, number>();
+    const unpresentedDirect = new Set<number>();
     let tried = 0;
     let deferred = false;
-    for (let i = 0; i < due.length; i++) {
-      const { widget, selected, motion, target } = due[i]!;
-      const elapsed = this.time() - began;
-      if (tried > 0 && elapsed + widget.cost > budget) {
-        deferred = true;
-        widget.deferrals++;
-        this.dirtyWidgets.add(widget.id);
-        if (elapsed >= budget) {
-          for (let j = i + 1; j < due.length; j++) {
-            due[j]!.widget.deferrals++;
-            this.dirtyWidgets.add(due[j]!.widget.id);
-          }
-          break;
-        }
-        continue;
-      }
-      tried++;
-      widget.deferrals = 0;
-      const start = this.time();
-      widget.served = this.requests;
-      const initialOpen = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
-      const slotDirty = this.isDirectSlotDirty(widget.id);
-      if (!motion && !widget.motion && !widget.forceFull && !slotDirty && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.supply, widget.inspect, request.seek)) {
-        const redated = this.redateEntry(widget, widget.installed, selected, request.seek, initialOpen);
-        entries.push(redated);
-        made.push({ widget, selected });
-        surfaces.push([...redated.surfaces]);
-        continue;
-      }
-      const view = this.host.views(widget.view);
-      if (this.isDirectTarget(widget.id) && this.willPageRefuseDirect(widget, selected, target, request)) continue;
-      let activeSelected = selected;
-      let painted: Painted = { surfaces: [], fields: {}, motion: false };
-      let mode: Entry['mode'] = 'picture', reason: string | undefined, failureOrigin: FailureOrigin | undefined;
-      let failedLocally = false;
-      for (let pass = 0; pass < 4; pass++) {
-        try {
-          const stops = activeSelected.pictures.map(stopOf).filter(stop => stop !== null);
-          if (stops.length) {
-            painted = { surfaces: [], fields: {}, motion: false };
-            mode = 'failed'; reason = [...new Set(stops)].join('; '); failureOrigin = 'stream';
+    try {
+      for (let i = 0; i < due.length; i++) {
+        const { widget, selected, motion, target } = due[i]!;
+        const elapsed = this.time() - began;
+        if (tried > 0 && elapsed + widget.cost > budget) {
+          deferred = true;
+          widget.deferrals++;
+          this.dirtyWidgets.add(widget.id);
+          if (elapsed >= budget) {
+            for (let j = i + 1; j < due.length; j++) {
+              due[j]!.widget.deferrals++;
+              this.dirtyWidgets.add(due[j]!.widget.id);
+            }
             break;
           }
-          const wc = this.activeWorkerCanvas(widget.id);
-          const shared = this.sharedSurface;
-          const sharedSlot = shared && shared.width > 0 && shared.height > 0 ? shared.slots.get(widget.id) : undefined;
-          const sharedArg = shared && sharedSlot && sharedSlot.visible
-            ? { lane: shared, slot: sharedSlot, dirty: shared.dirtySlots.has(widget.id) }
-            : undefined;
-          painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: activeSelected.pictures, model: widget.model, ...widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {},
-            hour: activeSelected.window[0], seek: request.seek, speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start,
-            ...(wc && !sharedArg ? { workerCanvas: this.dirtyWorkerCanvases.has(widget.id) ? { ...wc, dirty: true } : wc } : {}),
-            ...(sharedArg ? { sharedSurface: sharedArg } : {}) }, widget.state, this.content);
-          if (sharedArg && shared) shared.dirtySlots.delete(widget.id);
-          if (wc && !sharedArg) this.dirtyWorkerCanvases.delete(widget.id);
-          mode = painted.mode ?? 'picture'; reason = painted.reason; failureOrigin = undefined;
-          const refusals = activeSelected.pictures.map(refusalOf);
-          if (painted.mode === undefined && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = [...new Set(refusals)].join('; '); }
-          else if (mode === 'picture' && refusals.some(refusal => refusal !== null))
-            painted = { ...painted, fields: { ...painted.fields, ...Object.fromEntries(refusals.flatMap((refusal, at) => refusal === null ? [] : [[`refused:${widget.subs[at]}`, { content: refusal, value: refusal }]])) } };
-        } catch (error) {
-          const message = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
-          if (this.host.failWidget) {
-            this.failWidget(widget, message, widget.supplied.stamp);
-            failedLocally = true;
-          } else {
-            painted = { surfaces: [], fields: {}, motion: false };
-            mode = 'failed'; reason = message; failureOrigin = 'local';
+          continue;
+        }
+        tried++;
+        widget.deferrals = 0;
+        const start = this.time();
+        widget.served = this.requests;
+        const initialOpen = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
+        const slotDirty = this.isDirectSlotDirty(widget.id);
+        if (!motion && !widget.motion && !widget.forceFull && !slotDirty && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.supply, widget.inspect, request.seek)) {
+          const redated = this.redateEntry(widget, widget.installed, selected, request.seek, initialOpen);
+          entries.push(redated);
+          made.push({ widget, selected });
+          surfaces.push([...redated.surfaces]);
+          continue;
+        }
+        const view = this.host.views(widget.view);
+        if (this.isDirectTarget(widget.id) && this.willPageRefuseDirect(widget, selected, target, request)) continue;
+        let activeSelected = selected;
+        let painted: Painted = { surfaces: [], fields: {}, motion: false };
+        let mode: Entry['mode'] = 'picture', reason: string | undefined, failureOrigin: FailureOrigin | undefined;
+        let failedLocally = false;
+        for (let pass = 0; pass < 4; pass++) {
+          try {
+            const stops = activeSelected.pictures.map(stopOf).filter(stop => stop !== null);
+            if (stops.length) {
+              painted = { surfaces: [], fields: {}, motion: false };
+              mode = 'failed'; reason = [...new Set(stops)].join('; '); failureOrigin = 'stream';
+              break;
+            }
+            const wc = this.activeWorkerCanvas(widget.id);
+            const shared = this.sharedSurface;
+            const sharedSlot = shared && shared.width > 0 && shared.height > 0 ? shared.slots.get(widget.id) : undefined;
+            const sharedArg = shared && sharedSlot && sharedSlot.visible
+              ? { lane: shared, slot: sharedSlot, dirty: shared.dirtySlots.has(widget.id) }
+              : undefined;
+            if (sharedArg || wc) unpresentedDirect.add(widget.id);
+            painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: activeSelected.pictures, model: widget.model, ...widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {},
+              hour: activeSelected.window[0], seek: request.seek, speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start,
+              ...(wc && !sharedArg ? { workerCanvas: this.dirtyWorkerCanvases.has(widget.id) ? { ...wc, dirty: true } : wc } : {}),
+              ...(sharedArg ? { sharedSurface: sharedArg } : {}) }, widget.state, this.content);
+            if (sharedArg && shared) shared.dirtySlots.delete(widget.id);
+            if (wc && !sharedArg) this.dirtyWorkerCanvases.delete(widget.id);
+            mode = painted.mode ?? 'picture'; reason = painted.reason; failureOrigin = undefined;
+            const refusals = activeSelected.pictures.map(refusalOf);
+            if (painted.mode === undefined && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = [...new Set(refusals)].join('; '); }
+            else if (mode === 'picture' && refusals.some(refusal => refusal !== null))
+              painted = { ...painted, fields: { ...painted.fields, ...Object.fromEntries(refusals.flatMap((refusal, at) => refusal === null ? [] : [[`refused:${widget.subs[at]}`, { content: refusal, value: refusal }]])) } };
+          } catch (error) {
+            const message = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
+            if (this.host.failWidget) {
+              this.failWidget(widget, message, widget.supplied.stamp);
+              failedLocally = true;
+            } else {
+              painted = { surfaces: [], fields: {}, motion: false };
+              mode = 'failed'; reason = message; failureOrigin = 'local';
+            }
+            break;
+          }
+          if (painted.nextChangeAt !== undefined && painted.nextChangeAt > activeSelected.window[0] && (painted.nextChangeAt <= activeSelected.c || request.speed === 0)) {
+            const clampedHi = Math.min(activeSelected.window[1], painted.nextChangeAt - 1);
+            if (clampedHi < activeSelected.window[1]) {
+              activeSelected = { ...activeSelected, window: [activeSelected.window[0], clampedHi] };
+            }
+            if (target > activeSelected.window[1] && pass < 3) {
+              const nextSelected = this.select(widget, target);
+              if (nextSelected && nextSelected.window[0] > activeSelected.window[0]) {
+                activeSelected = nextSelected;
+                continue;
+              }
+            }
           }
           break;
         }
-        if (painted.nextChangeAt !== undefined && painted.nextChangeAt > activeSelected.window[0] && (painted.nextChangeAt <= activeSelected.c || request.speed === 0)) {
-          const clampedHi = Math.min(activeSelected.window[1], painted.nextChangeAt - 1);
-          if (clampedHi < activeSelected.window[1]) {
-            activeSelected = { ...activeSelected, window: [activeSelected.window[0], clampedHi] };
-          }
-          if (target > activeSelected.window[1] && pass < 3) {
-            const nextSelected = this.select(widget, target);
-            if (nextSelected && nextSelected.window[0] > activeSelected.window[0]) {
-              activeSelected = nextSelected;
-              continue;
-            }
-          }
-        }
-        break;
-      }
-      if (failedLocally) continue;
-      if (painted.waiting) {
-        widget.validWindow = null;
-        widget.motion = false;
-        this.motionWidgets.delete(widget.id);
-        this.syncWindowTracking(widget);
-        continue;
-      }
-      widget.validWindow = activeSelected.window;
-      const paintMs = this.time() - start;
-      widget.motion = painted.motion;
-      if (widget.motion) this.motionWidgets.add(widget.id); else this.motionWidgets.delete(widget.id);
-      widget.cost = widget.cost * 0.8 + paintMs * 0.2;
-      widget.served = this.requests + Math.min(4, Math.floor(paintMs / budget));
-      if (motion) this.stats.motion++;
-      if (this.targetOf(widget, request.now) > activeSelected.window[1]) {
-        if (this.isDirectTarget(widget.id)) this.markDirectDirty(widget.id);
-        this.syncWindowTracking(widget);
-        continue;
-      }
-      const open = mode === 'failed' ? undefined : this.isOpenFollowed(widget, activeSelected) ? 'followed' : this.isOpenPanel(widget, activeSelected) ? 'panel' : undefined;
-      const parts: (B | typeof SAME | null)[] = [];
-      const emitted = mode === 'picture' ? painted : { ...painted, surfaces: [] };
-      const entry = this.entry(widget, activeSelected, emitted, mode, reason, parts, request.seek, paintMs, open, failureOrigin);
-      if (mode === 'picture') {
-        painted.surfaces.forEach((surface, k) => {
-          if (!surface || parts[k] === SAME) return;
-          let source = shared.get(surface.content);
-          if (source === undefined) { source = sources.push(surface.source) - 1; shared.set(surface.content, source); }
-          slots.push([entries.length, k, source]);
-        });
-      }
-      entries.push(entry);
-      made.push({ widget, selected: activeSelected });
-      surfaces.push(parts);
-    }
-    const resets: [number, number][] = [];
-    const toldMoved: [number, number | undefined][] = [];
-    let moved = false;
-    for (const [route, native] of this.natives) {
-      const count = this.resets.get(native) ?? 0;
-      const prev = this.told.get(route);
-      if (prev !== count) { moved = true; toldMoved.push([route, prev]); this.told.set(route, count); }
-      resets.push([route, count]);
-    }
-    const confirmed: [number, 'followed' | 'panel', number, number, number][] = [];
-    for (const [route, hour] of this.routeConfirmedFollowed) {
-      if (this.toldConfirmedFollowed.get(route) !== hour) {
-        this.toldConfirmedFollowed.set(route, hour);
-        const native = this.natives.get(route);
-        const seek = this.facts.generation(route).seek;
-        const reset = native === undefined ? 0 : this.applied.get(native) ?? this.resets.get(native) ?? 0;
-        confirmed.push([route, 'followed', hour, seek, reset]);
-        moved = true;
-      }
-    }
-    for (const [route, hour] of this.routeConfirmedPanel) {
-      if (this.toldConfirmedPanel.get(route) !== hour) {
-        this.toldConfirmedPanel.set(route, hour);
-        const native = this.natives.get(route);
-        const seek = this.facts.generation(route).seek;
-        const reset = native === undefined ? 0 : this.applied.get(native) ?? this.resets.get(native) ?? 0;
-        confirmed.push([route, 'panel', hour, seek, reset]);
-        moved = true;
-      }
-    }
-    const closed = this.pendingClosed.size ? [...this.pendingClosed].map(([widget, [lo, hi]]): [number, number, number] => [widget, lo, hi]) : undefined;
-    if (closed) { this.pendingClosed.clear(); moved = true; }
-    const withdrawn = this.pendingWithdrawn.size ? [...this.pendingWithdrawn].map(([widget, binding]): [number, number] => [widget, binding]) : undefined;
-    if (withdrawn) { this.pendingWithdrawn.clear(); moved = true; }
-    let crops: B[] = [];
-    let failedEntries: Set<number> | null = null;
-    try { crops = slots.length ? await this.host.crop(slots.map(([, , source]) => sources[source]!)) : []; }
-    catch (error) {
-      const reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
-      if (this.host.failWidget) {
-        failedEntries = new Set(slots.map(([e]) => e));
-        for (const e of failedEntries) {
-          const { widget } = made[e]!;
-          const orig = entries[e]!;
-          this.presented.delete(orig.id);
-          const route = this.routeOf(widget);
-          const stillCurrent = this.widgets.get(widget.id) === widget && widget.binding.generation === orig.binding && (route === null || this.facts.generation(route).seek === orig.gen.seek);
-          if (stillCurrent) this.failWidget(widget, reason, orig.stamp);
-          else if (widget.inflight?.id === orig.id) { widget.inflight = null; this.syncWindowTracking(widget); }
-        }
-      } else {
-        for (const e of new Set(slots.map(([e]) => e))) {
-          const { widget, selected } = made[e]!;
-          this.presented.delete(entries[e]!.id);
-          widget.sent = { ...widget.installed?.contents ?? {} };
-          entries[e] = this.entry(widget, selected, { surfaces: [], fields: {}, motion: false }, 'failed', reason, [], request.seek, 0, undefined, 'local');
-          surfaces[e] = [];
-        }
-      }
-      slots.length = 0;
-    }
-    if (this.seekSuperseded(request.seek)) {
-      for (const crop of crops) crop.close();
-      for (let e = 0; e < entries.length; e++) {
-        const orig = entries[e]!;
-        const { widget } = made[e]!;
-        this.presented.delete(orig.id);
-        if (this.widgets.get(widget.id) === widget) {
-          if (widget.inflight?.id === orig.id) widget.inflight = null;
-          if (widget.binding.generation === orig.binding) { widget.forceFull = true; widget.sent = {}; }
-          this.dirtyWidgets.add(widget.id);
+        if (failedLocally) continue;
+        if (painted.waiting) {
+          widget.validWindow = null;
+          widget.motion = false;
+          this.motionWidgets.delete(widget.id);
           this.syncWindowTracking(widget);
+          continue;
+        }
+        widget.validWindow = activeSelected.window;
+        const paintMs = this.time() - start;
+        widget.motion = painted.motion;
+        if (widget.motion) this.motionWidgets.add(widget.id); else this.motionWidgets.delete(widget.id);
+        widget.cost = widget.cost * 0.8 + paintMs * 0.2;
+        widget.served = this.requests + Math.min(4, Math.floor(paintMs / budget));
+        if (motion) this.stats.motion++;
+        if (this.targetOf(widget, request.now) > activeSelected.window[1]) {
+          this.syncWindowTracking(widget);
+          continue;
+        }
+        const open = mode === 'failed' ? undefined : this.isOpenFollowed(widget, activeSelected) ? 'followed' : this.isOpenPanel(widget, activeSelected) ? 'panel' : undefined;
+        const parts: (B | typeof SAME | null)[] = [];
+        const emitted = mode === 'picture' ? painted : { ...painted, surfaces: [] };
+        const entry = this.entry(widget, activeSelected, emitted, mode, reason, parts, request.seek, paintMs, open, failureOrigin);
+        if (mode === 'picture') {
+          painted.surfaces.forEach((surface, k) => {
+            if (!surface || parts[k] === SAME) return;
+            let source = shared.get(surface.content);
+            if (source === undefined) { source = sources.push(surface.source) - 1; shared.set(surface.content, source); }
+            slots.push([entries.length, k, source]);
+          });
+        }
+        entries.push(entry);
+        made.push({ widget, selected: activeSelected });
+        surfaces.push(parts);
+      }
+      const resets: [number, number][] = [];
+      const toldMoved: [number, number | undefined][] = [];
+      let moved = false;
+      for (const [route, native] of this.natives) {
+        const count = this.resets.get(native) ?? 0;
+        const prev = this.told.get(route);
+        if (prev !== count) { moved = true; toldMoved.push([route, prev]); this.told.set(route, count); }
+        resets.push([route, count]);
+      }
+      const confirmed: [number, 'followed' | 'panel', number, number, number][] = [];
+      for (const [route, hour] of this.routeConfirmedFollowed) {
+        if (this.toldConfirmedFollowed.get(route) !== hour) {
+          this.toldConfirmedFollowed.set(route, hour);
+          const native = this.natives.get(route);
+          const seek = this.facts.generation(route).seek;
+          const reset = native === undefined ? 0 : this.applied.get(native) ?? this.resets.get(native) ?? 0;
+          confirmed.push([route, 'followed', hour, seek, reset]);
+          moved = true;
         }
       }
-      if (closed) for (const [wid, lo, hi] of closed) if (this.widgets.has(wid)) this.noteClosed(wid, lo, hi);
-      if (withdrawn) for (const [wid, binding] of withdrawn) {
-        if (this.widgets.has(wid) && (this.pendingWithdrawn.get(wid) ?? -1) < binding) this.pendingWithdrawn.set(wid, binding);
+      for (const [route, hour] of this.routeConfirmedPanel) {
+        if (this.toldConfirmedPanel.get(route) !== hour) {
+          this.toldConfirmedPanel.set(route, hour);
+          const native = this.natives.get(route);
+          const seek = this.facts.generation(route).seek;
+          const reset = native === undefined ? 0 : this.applied.get(native) ?? this.resets.get(native) ?? 0;
+          confirmed.push([route, 'panel', hour, seek, reset]);
+          moved = true;
+        }
       }
-      for (const [route, prev] of toldMoved) {
-        if (!this.natives.has(route)) continue;
-        if (prev === undefined) this.told.delete(route);
-        else this.told.set(route, prev);
+      const closed = this.pendingClosed.size ? [...this.pendingClosed].map(([widget, [lo, hi]]): [number, number, number] => [widget, lo, hi]) : undefined;
+      if (closed) { this.pendingClosed.clear(); moved = true; }
+      const withdrawn = this.pendingWithdrawn.size ? [...this.pendingWithdrawn].map(([widget, binding]): [number, number] => [widget, binding]) : undefined;
+      if (withdrawn) { this.pendingWithdrawn.clear(); moved = true; }
+      let crops: B[] = [];
+      let failedEntries: Set<number> | null = null;
+      try { crops = slots.length ? await this.host.crop(slots.map(([, , source]) => sources[source]!)) : []; }
+      catch (error) {
+        const reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
+        if (this.host.failWidget) {
+          failedEntries = new Set(slots.map(([e]) => e));
+          for (const e of failedEntries) {
+            const { widget } = made[e]!;
+            const orig = entries[e]!;
+            this.presented.delete(orig.id);
+            const route = this.routeOf(widget);
+            const stillCurrent = this.widgets.get(widget.id) === widget && widget.binding.generation === orig.binding && (route === null || this.facts.generation(route).seek === orig.gen.seek);
+            if (stillCurrent) this.failWidget(widget, reason, orig.stamp);
+            else if (widget.inflight?.id === orig.id) { widget.inflight = null; this.syncWindowTracking(widget); }
+          }
+        } else {
+          for (const e of new Set(slots.map(([e]) => e))) {
+            const { widget, selected } = made[e]!;
+            this.presented.delete(entries[e]!.id);
+            widget.sent = { ...widget.installed?.contents ?? {} };
+            entries[e] = this.entry(widget, selected, { surfaces: [], fields: {}, motion: false }, 'failed', reason, [], request.seek, 0, undefined, 'local');
+            surfaces[e] = [];
+          }
+        }
+        slots.length = 0;
       }
-      for (const id of this.facts.drain()) this.gone.add(id);
-      const bytes = this.freed + this.releasedFacts();
-      this.freed = 0;
-      if (bytes) this.host.release(bytes);
-      this.host.stretch?.(this.time() - began);
-      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began, cancelled: true });
-      return;
+      if (this.seekSuperseded(request.seek)) {
+        for (const crop of crops) crop.close();
+        for (let e = 0; e < entries.length; e++) {
+          const orig = entries[e]!;
+          const { widget } = made[e]!;
+          this.presented.delete(orig.id);
+          if (this.widgets.get(widget.id) === widget) {
+            if (widget.inflight?.id === orig.id) widget.inflight = null;
+            if (widget.binding.generation === orig.binding) { widget.forceFull = true; widget.sent = {}; }
+            this.dirtyWidgets.add(widget.id);
+            this.syncWindowTracking(widget);
+          }
+        }
+        if (closed) for (const [wid, lo, hi] of closed) if (this.widgets.has(wid)) this.noteClosed(wid, lo, hi);
+        if (withdrawn) for (const [wid, binding] of withdrawn) {
+          if (this.widgets.has(wid) && (this.pendingWithdrawn.get(wid) ?? -1) < binding) this.pendingWithdrawn.set(wid, binding);
+        }
+        for (const [route, prev] of toldMoved) {
+          if (!this.natives.has(route)) continue;
+          if (prev === undefined) this.told.delete(route);
+          else this.told.set(route, prev);
+        }
+        for (const id of this.facts.drain()) this.gone.add(id);
+        const bytes = this.freed + this.releasedFacts();
+        this.freed = 0;
+        if (bytes) this.host.release(bytes);
+        this.host.stretch?.(this.time() - began);
+        this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began, cancelled: true });
+        return;
+      }
+      this.stats.crops += crops.length;
+      slots.forEach(([e, k], at) => { surfaces[e]![k] = crops[at]!; });
+      const presentEntries = failedEntries ? entries.filter((_, e) => !failedEntries.has(e)) : entries;
+      if (presentEntries.length || moved) {
+        this.host.present({ lane: this.host.lane, serial: request.serial, resets, ...closed ? { closed } : {}, ...withdrawn ? { withdrawn } : {}, ...confirmed.length ? { confirmed } : {}, entries: presentEntries }, crops);
+      }
+      for (const entry of presentEntries) unpresentedDirect.delete(entry.widget);
+      this.stats.entries += presentEntries.length;
+    } finally {
+      for (const wid of unpresentedDirect) {
+        if (this.isDirectTarget(wid)) this.markDirectDirty(wid);
+      }
     }
-    this.stats.crops += crops.length;
-    slots.forEach(([e, k], at) => { surfaces[e]![k] = crops[at]!; });
-    const presentEntries = failedEntries ? entries.filter((_, e) => !failedEntries.has(e)) : entries;
-    if (presentEntries.length || moved) {
-      this.host.present({ lane: this.host.lane, serial: request.serial, resets, ...closed ? { closed } : {}, ...withdrawn ? { withdrawn } : {}, ...confirmed.length ? { confirmed } : {}, entries: presentEntries }, crops);
-    }
-    this.stats.entries += presentEntries.length;
     this.prune(request.now);
     for (const id of this.facts.drain()) this.gone.add(id);
     const bytes = this.freed + this.releasedFacts();
