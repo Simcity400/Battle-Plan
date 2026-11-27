@@ -257,7 +257,7 @@ struct WitnessState {
     output_since: Option<i64>,
     new_raw: i64,
     repair_raw: i64,
-    output_only: GapKind,
+    observation: GapKind,
 }
 
 fn witnessed_work(
@@ -274,6 +274,7 @@ fn witnessed_work(
         state.output_since = Some(s);
         state.new_raw = 0;
         state.repair_raw = 0;
+        state.observation = GapKind::NEITHER;
     }
     let mut kind = GapKind::NEITHER;
     if let Some(v) = built {
@@ -282,6 +283,7 @@ fn witnessed_work(
     }
     if let Some(v) = new_raw {
         if v != state.new_raw { kind.new = true; }
+        if v != 0 { state.observation.new = true; }
         state.new_raw = v;
     }
     let mut repaired_rose = false;
@@ -294,10 +296,19 @@ fn witnessed_work(
     }
     if let Some(v) = repair_raw {
         if v != state.repair_raw { kind.repair = true; }
+        if v != 0 { state.observation.repair = true; }
         state.repair_raw = v;
     }
-    if repair_tick == Some(hour) { kind.repair = true; }
+    if repair_tick == Some(hour) {
+        kind.repair = true;
+        if since.is_some() { state.observation.repair = true; }
+    }
     (kind, repaired_rose)
+}
+
+fn next_read_after(reads: &[(i32, i32)], after: i32) -> Option<i32> {
+    let at = reads.partition_point(|&(_, end)| end <= after);
+    reads.get(at).map(|&(start, _)| start.max(after.saturating_add(1)))
 }
 
 fn inferred_queue_kind(open: bool, repair_levels: Option<i64>, remaining: Option<i64>, repair_tick_unresolved: bool) -> GapKind {
@@ -320,7 +331,7 @@ struct LineHistory {
     last_run: Option<u32>,
     witness: WitnessState,
     repair_tick_unresolved: bool,
-    pending_kind: Option<(i32, GapKind)>,
+    pending_kinds: Vec<(i32, GapKind)>,
     last_known_owner: Option<bool>,
     before_observation: Option<i32>,
 }
@@ -331,6 +342,14 @@ impl LineHistory {
             last.1 = kind;
         } else if self.kinds.last().is_none_or(|&(_, prev)| prev != kind) {
             self.kinds.push((hour, kind));
+        }
+    }
+
+    fn schedule_kind(&mut self, hour: i32, kind: GapKind) {
+        if let Some(last) = self.pending_kinds.last_mut() && last.0 == hour {
+            last.1 = kind;
+        } else {
+            self.pending_kinds.push((hour, kind));
         }
     }
 }
@@ -376,13 +395,14 @@ fn read_stretch_steps(
             held.last_run = Some(run);
             held.witness.built = 0;
             held.witness.repaired = 0;
-            held.witness.output_only = GapKind::NEITHER;
             held.repair_tick_unresolved = false;
         }
         let mut first_known: Option<i32> = None;
         for step in steps {
-            if let Some((at, next_kind)) = held.pending_kind.take() && at < step.hour {
-                held.push_kind(at, next_kind);
+            for (at, next_kind) in std::mem::take(&mut held.pending_kinds) {
+                if at < step.hour || (at == step.hour && step.cells.is_some()) {
+                    held.push_kind(at, next_kind);
+                }
             }
             let Some(cells) = step.cells.as_deref() else { continue };
             let building = number(cells, btype).and_then(|v| u32::try_from(v).ok());
@@ -406,15 +426,10 @@ fn read_stretch_steps(
                 held.before_observation = Some(step.hour);
             }
             let tick = number(cells, repair).and_then(|value| i32::try_from(value).ok());
-            let (raw_new, raw_rep) = (number(cells, new_raw), number(cells, rep_raw));
             let (witnessed, repaired_rose) = witnessed_work(
-                &mut held.witness, step.hour, since_val, number(cells, built), number(cells, repaired), raw_new, raw_rep, tick,
+                &mut held.witness, step.hour, since_val, number(cells, built), number(cells, repaired), number(cells, new_raw), number(cells, rep_raw), tick,
             );
             let (rep_now, rem_now) = (number(cells, rep_lvl), number(cells, rem));
-            if !is_census {
-                held.witness.output_only.new |= witnessed.new || raw_new.is_some_and(|v| v != 0);
-                held.witness.output_only.repair |= witnessed.repair || raw_rep.is_some_and(|v| v != 0);
-            }
             let queue_read = is_census && read_within(q_reads, step.hour, step.hour);
             let queue_complete = is_census && read_within(q_complete, step.hour, step.hour);
             if repaired_rose || (queue_read && rep_now.is_some_and(|r| r > 0)) || witnessed.new {
@@ -423,25 +438,38 @@ fn read_stretch_steps(
                 held.repair_tick_unresolved = true;
             }
             let has_witness = witnessed.new || witnessed.repair;
+            let inferred = inferred_queue_kind(number(cells, ended) == Some(open), rep_now, rem_now, held.repair_tick_unresolved);
             if !is_census {
-                let kind = if has_witness { witnessed } else { held.witness.output_only };
+                let kind = if has_witness { witnessed } else { held.witness.observation };
                 held.push_kind(step.hour, kind);
             } else if queue_read {
-                let inferred = inferred_queue_kind(number(cells, ended) == Some(open), rep_now, rem_now, held.repair_tick_unresolved);
                 let kind = if has_witness { witnessed } else { inferred };
                 held.push_kind(step.hour, kind);
                 if has_witness && inferred != kind {
-                    held.pending_kind = Some((step.hour.saturating_add(1), inferred));
+                    held.schedule_kind(step.hour.saturating_add(1), inferred);
                 }
             } else if has_witness {
                 held.push_kind(step.hour, witnessed);
-                held.pending_kind = Some((step.hour.saturating_add(1), GapKind::NEITHER));
+                held.schedule_kind(step.hour.saturating_add(1), GapKind::NEITHER);
+                if let Some(resume) = next_read_after(q_reads, step.hour) {
+                    held.schedule_kind(resume, inferred);
+                }
             } else if !queue_complete {
                 held.push_kind(step.hour, GapKind::NEITHER);
+                if let Some(resume) = next_read_after(q_reads, step.hour) {
+                    held.schedule_kind(resume, inferred);
+                }
+            } else if held.kinds.last().is_some_and(|&(_, k)| k == GapKind::NEITHER)
+                && inferred != GapKind::NEITHER
+                && let Some(resume) = next_read_after(q_reads, step.hour)
+            {
+                held.schedule_kind(resume, inferred);
             }
         }
-        if let Some((at, next_kind)) = held.pending_kind.take() && at <= last {
-            held.push_kind(at, next_kind);
+        for (at, next_kind) in std::mem::take(&mut held.pending_kinds) {
+            if at <= last {
+                held.push_kind(at, next_kind);
+            }
         }
         stretch_first_owner.insert(*key as u64, first_known);
     }
