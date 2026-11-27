@@ -782,7 +782,7 @@ impl Lane {
     }
 
     pub(crate) fn clear_texts(&mut self) {
-        self.texts.clear();
+        self.texts = Texts::default();
     }
 
     pub(crate) fn texts_into(&mut self, out: &mut Changes) {
