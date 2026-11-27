@@ -418,7 +418,7 @@ enum OutcomeKey {
 }
 
 enum Outcome {
-    Laid { hour: Hour, made: Option<Made> },
+    Laid { hour: Hour, made: Option<Box<Made>> },
     TablesOnly,
     MissingTables { missed: Vec<TableId>, notes: Vec<String> },
     Refused { reasons: Vec<String> },
@@ -916,7 +916,7 @@ impl Overlay {
                 _ => unreachable!(),
             };
             let made = answer.map(|answer| match answer.outcome {
-                Outcome::Laid { made: Some(made), .. } => made,
+                Outcome::Laid { made: Some(made), .. } => *made,
                 _ => unreachable!(),
             });
             if installs((made.generation, hour), self.generation, self.hour()) {
@@ -1003,7 +1003,7 @@ enum Gave {
 }
 
 enum LayOutcome {
-    Laid(Option<Made>),
+    Laid(Option<Box<Made>>),
     MissingTables(Vec<TableId>),
     Refused(String),
 }
@@ -1328,7 +1328,7 @@ impl Maker {
         viewer_runtime::redraws::note("made.full", 1);
         note_us("overlay.layout_us", started);
         self.laid = Some(laid);
-        LayOutcome::Laid(Some(Made {
+        LayOutcome::Laid(Some(Box::new(Made {
             generation: want.generation,
             hour: stands,
             branch: rows.branch,
@@ -1345,7 +1345,7 @@ impl Maker {
             left: want.left,
             lay_ins,
             moved: Arc::clone(&want.moved),
-        }))
+        })))
     }
 
     fn publish_tables(&mut self, want: &Wanted, stands: Hour) {
