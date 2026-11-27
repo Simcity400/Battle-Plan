@@ -1,6 +1,6 @@
 import { artworkUrlValue } from '../../dashboard/payload.ts';
 import type { Value } from '../../families/value.ts';
-import type { OccupiedState as RepliedState, OccupiedStatesWireReply as Replied } from '../../generated/dashboard';
+import type { OccupiedState as RepliedState, OccupiedStatesReply as Replied } from '../../generated/dashboard';
 
 export type OccupiedState = Omit<RepliedState, 'garrisonStrengthRaw' | 'garrisonRed'>;
 export type OccupiedStatesReply = Omit<Replied, 'states'> & { states: OccupiedState[]; garrisonRedRaw: string | null };

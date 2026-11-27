@@ -86,7 +86,7 @@ mod reply {
         assert!(reply.warnings.iter().any(|warning| warning.contains("absent from States")));
         let live = cells.finish();
         let json = live.json(&live.values(&frame).into_iter().map(GroupState::Values).collect::<Vec<_>>());
-        assert_eq!(json["cellsByRow"].as_object().unwrap().keys().map(String::as_str).collect::<Vec<_>>(), ["10", "11"]);
+        assert_eq!(json["rows"], serde_json::json!(["10", "11"]));
         let group = |table: TableId| json["groups"].as_array().unwrap().iter().find(|group| group["table"] == table.index()).unwrap().clone();
         let numbers = |group: &serde_json::Value| -> Vec<i64> {
             let mut values: Vec<i64> = group["values"].as_array().unwrap().iter().map(|value| value.as_i64().unwrap()).collect();
