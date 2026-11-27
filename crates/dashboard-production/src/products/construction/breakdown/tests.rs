@@ -71,8 +71,8 @@ fn an_empty_queue_read_in_full_certifies_only_itself() {
 #[test]
 fn an_output_gap_is_dated_at_the_read_that_shows_it_and_stays() {
     let mut held = facts();
-    held.lines.push(LineFacts { leaf: (false, 7, 1, NONE), building: Some(7), new_from: Some(5), repair_from: None, purpose: Vec::new(), gaps: vec![(12, i32::MAX, SpendingGap::InexactOutput), (40, i32::MAX, SpendingGap::FinalOutputMissing)], before_first_read: Some(5) });
-    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), purpose: Vec::new(), gaps: vec![(61, 69, SpendingGap::LinkedOutput), (80, i32::MAX, SpendingGap::InexactOutput)], before_first_read: None });
+    held.lines.push(LineFacts { leaf: (false, 7, 1, NONE), building: Some(7), new_from: Some(5), repair_from: None, gaps: vec![(12, i32::MAX, SpendingGap::InexactOutput), (40, i32::MAX, SpendingGap::FinalOutputMissing)], before_first_read: Some(5) });
+    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), gaps: vec![(61, 69, SpendingGap::LinkedOutput), (80, i32::MAX, SpendingGap::InexactOutput)], before_first_read: None });
     held.unattributed.push(35);
     let index = index(&held);
     let state_of = |hour: i32| index.at(hour).breakdown.parts[0].children.iter().find(|part| part.name == "Workshop").map(|part| part.state);
@@ -231,7 +231,6 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
                 building: Some(7),
                 new_from: Some(120),
                 repair_from: Some(115),
-                purpose: Vec::new(),
                 gaps: vec![(105, i32::MAX, SpendingGap::LinkedOutput)],
                 before_first_read: None,
             },
@@ -240,7 +239,6 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
                 building: Some(8),
                 new_from: None,
                 repair_from: None,
-                purpose: Vec::new(),
                 gaps: vec![(118, i32::MAX, SpendingGap::InexactOutput)],
                 before_first_read: None,
             },
@@ -249,7 +247,6 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
                 building: Some(9),
                 new_from: Some(120),
                 repair_from: None,
-                purpose: Vec::new(),
                 gaps: vec![(105, 109, SpendingGap::InexactOutput)],
                 before_first_read: None,
             },
@@ -337,211 +334,6 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     assert!(reply.breakdown.parts.iter().all(|part| part.key != "new"), "new work first seen at 120 must not receive the gap at 105");
     let repair = reply.breakdown.parts.iter().find(|part| part.key == "repair").expect("repair part carries the gap");
     assert_eq!(repair.state, BreakdownState::Partial);
-
-    let tick_frames = (100..=118)
-        .map(|hour| {
-            let mut frame = source(1, hour, Some(1));
-            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
-                id: 2, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95,
-                amount: match hour { ..=114 => 1, 115 => 2, _ => 3 }, repair_levels: 0, ..Default::default()
-            }]))
-            .into();
-            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
-            frame.tables[TableId::StateBuildings.index()] = TableView::Complete(TableRows::StateBuildings(Vec::new())).into();
-            frame.tables[TableId::ProvinceBuildings.index()] = TableView::Complete(TableRows::ProvinceBuildings(Vec::new())).into();
-            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
-            let outputs = if hour >= 115 {
-                vec![ConstructionLineOutputRow {
-                    line: 2, since_hour: 100, exact: false, repair_ticks: 1,
-                    country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(7)), target_state: Recorded::Value(Some(12)), ..Default::default()
-                }]
-            } else {
-                Vec::new()
-            };
-            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(outputs)).into();
-            for table in [
-                TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::StateBuildings, TableId::ProvinceBuildings, TableId::ConstructionLineOutput,
-            ] {
-                frame.metrics.table_ns[table.index()] = 1;
-            }
-            frame
-        })
-        .collect();
-    let tick_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, tick_frames)])
-        .unwrap()
-        .into_timelines(&Default::default())
-        .unwrap();
-    let tick_source = Source::from_replay(
-        SourceKey { source_id: "construction-repair-tick-vs-queue".into(), revision: "1".into() },
-        "synthetic.battleplan".into(),
-        Arc::new(tick_replay),
-        &cancel,
-    )
-    .unwrap();
-    let tick_reply = ConstructionBreakdown::load(
-        &tick_source,
-        &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 116 },
-        &LoadContext { content: None },
-        &cancel,
-    )
-    .unwrap();
-    assert!(tick_reply.breakdown.parts.iter().all(|part| part.key != "new"), "queued new level must not steal an inexact first-repair-tick gap");
-    assert_eq!(tick_reply.breakdown.parts.iter().find(|part| part.key == "repair").map(|part| part.state), Some(BreakdownState::Partial));
-
-    let finish_repair_frames = (118..=123)
-        .map(|hour| {
-            let mut frame = source(1, hour, Some(1));
-            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
-                id: 3, country: 9001, building_type: 7, target_state: 12, target_location: 12, cost: 500_000, created_hour: 95,
-                amount: 1, repair_levels: i32::from(hour < 120), ..Default::default()
-            }]))
-            .into();
-            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
-            frame.tables[TableId::StateBuildings.index()] = TableView::Complete(TableRows::StateBuildings(vec![replay_data::rows::BuildingRow {
-                location: 12, building_type: 7, country: 9001, level: 2, healthy_level: if hour >= 120 { 2 } else { 1 }, active: true, ..Default::default()
-            }]))
-            .into();
-            frame.tables[TableId::ProvinceBuildings.index()] = TableView::Complete(TableRows::ProvinceBuildings(Vec::new())).into();
-            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
-            let outputs = if hour >= 121 {
-                vec![ConstructionLineOutputRow {
-                    line: 3, since_hour: 118, exact: false,
-                    country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(7)), target_state: Recorded::Value(Some(12)), ..Default::default()
-                }]
-            } else {
-                Vec::new()
-            };
-            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(outputs)).into();
-            for table in [
-                TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::StateBuildings, TableId::ProvinceBuildings, TableId::ConstructionLineOutput,
-            ] {
-                frame.metrics.table_ns[table.index()] = 1;
-            }
-            frame
-        })
-        .collect();
-    let finish_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, finish_repair_frames)])
-        .unwrap()
-        .into_timelines(&Default::default())
-        .unwrap();
-    let rep_hist = replay_lanes::lanes::history(finish_replay.recording(), 0, TableId::ConstructionProjects, &[super::super::col::REPAIRED], replay_lanes::lanes::Keys::These(&[3]), 118, 120).unwrap();
-    assert!(
-        rep_hist.keys[0].1.iter().any(|step| step.hour == 120 && matches!(step.cells.as_deref(), Some([replay_lanes::lanes::Cell::Number(1)]))),
-        "fixture must record a derived repaired completion at hour 120"
-    );
-    let finish_source = Source::from_replay(
-        SourceKey { source_id: "construction-repair-finish-to-new".into(), revision: "1".into() },
-        "synthetic.battleplan".into(),
-        Arc::new(finish_replay),
-        &cancel,
-    )
-    .unwrap();
-    let finish_reply = ConstructionBreakdown::load(
-        &finish_source,
-        &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 122 },
-        &LoadContext { content: None },
-        &cancel,
-    )
-    .unwrap();
-    assert!(finish_reply.breakdown.parts.iter().all(|part| part.key != "repair"), "gap starting at 121 after repairs finished at 120 belongs to new buildings");
-    assert_eq!(finish_reply.breakdown.parts.iter().find(|part| part.key == "new").map(|part| part.state), Some(BreakdownState::Partial));
-
-    let continuous_frames = (118..=123)
-        .map(|hour| {
-            let mut frame = source(1, hour, Some(1));
-            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
-                id: 4, country: 9001, building_type: 7, target_state: 12, target_location: 12, cost: 500_000, created_hour: 95,
-                amount: 1, repair_levels: i32::from(hour < 120), ..Default::default()
-            }]))
-            .into();
-            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
-            frame.tables[TableId::StateBuildings.index()] = TableView::Complete(TableRows::StateBuildings(vec![replay_data::rows::BuildingRow {
-                location: 12, building_type: 7, country: 9001, level: 2, healthy_level: if hour >= 120 { 2 } else { 1 }, active: true, ..Default::default()
-            }]))
-            .into();
-            frame.tables[TableId::ProvinceBuildings.index()] = TableView::Complete(TableRows::ProvinceBuildings(Vec::new())).into();
-            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
-            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(vec![ConstructionLineOutputRow {
-                line: 4, since_hour: 118, exact: false,
-                country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(7)), target_state: Recorded::Value(Some(12)), ..Default::default()
-            }]))
-            .into();
-            for table in [
-                TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::StateBuildings, TableId::ProvinceBuildings, TableId::ConstructionLineOutput,
-            ] {
-                frame.metrics.table_ns[table.index()] = 1;
-            }
-            frame
-        })
-        .collect();
-    let continuous_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, continuous_frames)])
-        .unwrap()
-        .into_timelines(&Default::default())
-        .unwrap();
-    let continuous_source = Source::from_replay(
-        SourceKey { source_id: "construction-continuous-repair-to-new".into(), revision: "1".into() },
-        "synthetic.battleplan".into(),
-        Arc::new(continuous_replay),
-        &cancel,
-    )
-    .unwrap();
-    let at_120 = ConstructionBreakdown::load(
-        &continuous_source,
-        &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 120 },
-        &LoadContext { content: None },
-        &cancel,
-    )
-    .unwrap();
-    assert_eq!(at_120.breakdown.parts.iter().find(|part| part.key == "repair").map(|part| part.state), Some(BreakdownState::Partial));
-    assert!(at_120.breakdown.parts.iter().all(|part| part.key != "new"), "continuous gap stays under repairs through the completion hour 120");
-    let at_121 = ConstructionBreakdown::load(
-        &continuous_source,
-        &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 121 },
-        &LoadContext { content: None },
-        &cancel,
-    )
-    .unwrap();
-    assert_eq!(at_121.breakdown.parts.iter().find(|part| part.key == "repair").map(|part| part.state), Some(BreakdownState::Partial));
-    assert_eq!(at_121.breakdown.parts.iter().find(|part| part.key == "new").map(|part| part.state), Some(BreakdownState::Partial));
-
-    let signed_frames = (100..=102)
-        .map(|hour| {
-            let mut frame = source(1, hour, Some(1));
-            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(Vec::new())).into();
-            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
-            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
-            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(vec![ConstructionLineOutputRow {
-                line: 5, since_hour: 100, construction_raw: -25, exact: hour < 102,
-                country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(7)), target_state: Recorded::Value(Some(12)), ..Default::default()
-            }]))
-            .into();
-            for table in [TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
-                frame.metrics.table_ns[table.index()] = 1;
-            }
-            frame
-        })
-        .collect();
-    let signed_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, signed_frames)])
-        .unwrap()
-        .into_timelines(&Default::default())
-        .unwrap();
-    let signed_source = Source::from_replay(
-        SourceKey { source_id: "construction-signed-output".into(), revision: "1".into() },
-        "synthetic.battleplan".into(),
-        Arc::new(signed_replay),
-        &cancel,
-    )
-    .unwrap();
-    let signed_reply = ConstructionBreakdown::load(
-        &signed_source,
-        &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 102 },
-        &LoadContext { content: None },
-        &cancel,
-    )
-    .unwrap();
-    let signed_new = signed_reply.breakdown.parts.iter().find(|part| part.key == "new").expect("negative output establishes new-building purpose");
-    assert_eq!(signed_new.state, BreakdownState::Partial);
-    assert_eq!(signed_new.children.iter().find(|child| child.key == "type:7").map(|child| child.state), Some(BreakdownState::Partial));
 }
 
 #[test]
