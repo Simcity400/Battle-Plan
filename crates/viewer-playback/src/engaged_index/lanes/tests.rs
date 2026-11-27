@@ -423,6 +423,9 @@ fn lanes_fold_reads_format_145_recording_without_refresh_witness_table() {
         fn runs(&self) -> &[Run] {
             self.inner.runs()
         }
+        fn table_entry(&self, run: usize, block: usize, table: usize) -> std::io::Result<playhead::pages::EntryRef> {
+            self.inner.table_entry(run, block, table)
+        }
         fn kinds(&self, table: usize) -> Option<&[Kind]> {
             (table != self.omitted).then(|| self.inner.kinds(table)).flatten()
         }

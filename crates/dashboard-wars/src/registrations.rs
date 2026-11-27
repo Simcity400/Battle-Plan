@@ -15,14 +15,14 @@ dashboard_base::register_products! {
     @hourly
     FACTIONS_FACTIONTOTALSAT => exact<crate::products::factions::FactionTotalsAt>,
     DIPLOMACY_DIPLOMATICRELATIONS => exact<crate::products::diplomacy::DiplomaticRelations>,
-    VOLUNTEERS_VOLUNTEERFLOW => whole_frame<crate::products::volunteers::VolunteerFlow>,
-    CASUALTY_MATRIX_CASUALTYMATRIX => whole_frame<crate::products::casualty_matrix::CasualtyMatrix>,
+    VOLUNTEERS_VOLUNTEERFLOW => exact<crate::products::volunteers::VolunteerFlow>,
+    CASUALTY_MATRIX_CASUALTYMATRIX => exact<crate::products::casualty_matrix::CasualtyMatrix>,
     WARGOALS_WARGOALS => exact<crate::products::wargoals::Wargoals>,
     OCCUPATION_RESERVE_OCCUPATIONRESERVE => exact<crate::products::occupation_reserve::OccupationReserve>,
     OCCUPATION_STATES_OCCUPIEDSTATES => exact<crate::products::occupation::states::OccupiedStates>,
     OCCUPATION_DETAIL_OCCUPATIONDETAIL => exact<crate::products::occupation::detail::OccupationDetail>,
     FACTION_STATE_COUNTRY_GOALS_COUNTRYFACTIONGOALS => exact<crate::products::faction_state::country_goals::CountryFactionGoals>,
-    FACTION_STATE_DETAILS_FACTIONDETAILS => whole_frame<crate::products::faction_state::details::FactionDetails>,
+    FACTION_STATE_DETAILS_FACTIONDETAILS => exact<crate::products::faction_state::details::FactionDetails>,
     FACTION_STATE_POOLS_FACTIONPOOLS => exact<crate::products::faction_state::pools::FactionPools>,
-    WARS_CONTRIBUTIONS_WARCONTRIBUTIONS => whole_frame<crate::products::wars::contributions::WarContributions>,
+    WARS_CONTRIBUTIONS_WARCONTRIBUTIONS => exact<crate::products::wars::contributions::WarContributions>,
 }

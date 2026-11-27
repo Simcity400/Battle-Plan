@@ -29,6 +29,7 @@ import {
 } from './gameWindowLogic';
 import type { ListInput } from './gameWindowLogic';
 import type { ShownWindow } from './gameWindows';
+import { RefusedError } from './queryError';
 import './gameWindow.css';
 
 function useViewportSize(): { width: number; height: number } {
@@ -413,7 +414,10 @@ export default function GameWindowView({
   >{body}</div>;
 
   if (error) {
-    return shell(<WidgetState kind="error" failure={error} />);
+    const failure = error instanceof RefusedError && !error.subject?.trim()
+      ? new RefusedError(error.text, error.causeKind, label)
+      : error;
+    return shell(<WidgetState kind="error" what={label} failure={failure} />);
   }
   if (!render) {
     const heldSize = previousLogicalSize

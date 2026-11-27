@@ -47,6 +47,7 @@ export class PlaybackController {
   private readonly engine: FrameEngine;
   readonly clockId: string;
   private stepTask: EngineTask | null = null;
+  private issued = 0;
   private paintTask: EngineTask | null = null;
 
   constructor(frames: FrameEngine = engine, clockId: string = PAGE_CLOCK_ID) { this.engine = frames; this.clockId = clockId; }
@@ -54,6 +55,7 @@ export class PlaybackController {
   get frameAt(): number { return this.framing; }
 
   getSnapshot = () => this.snapshot;
+  issue = (): number => ++this.issued;
   positionAt = (now: number = performance.now()) => {
     const { playing, position, hoursPerSecond, bounds } = this.snapshot;
     if (!playing || !bounds) return position;
@@ -178,7 +180,7 @@ export class PlaybackController {
     const hourChanged = hour !== this.snapshot.hour;
     const anchor = !forward || next.playing !== this.snapshot.playing;
     this.snapshot = { ...next, hour, composedAt: next.playing ? this.lastTime : performance.now(), fraction: next.position - hour,
-      sequence: this.snapshot.sequence + (hourChanged || discontinuity ? 1 : 0),
+      sequence: hourChanged || discontinuity ? this.issue() : this.snapshot.sequence,
       seekSequence: this.snapshot.seekSequence + (discontinuity ? 1 : 0) };
     if (next.playing !== previous.playing) setPlaybackActive(this, next.playing);
     perfLog?.clock(this.snapshot.position, this.snapshot.playing, this.snapshot.hoursPerSecond, this.snapshot.sequence, this.snapshot.seekSequence, this.snapshot.composedAt);

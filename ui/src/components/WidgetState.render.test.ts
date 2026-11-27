@@ -75,6 +75,60 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     }
 
     const { WidgetFrameContext } = await vite.ssrLoadModule('/ui/src/dashboard/widgetFrame.tsx') as typeof import('../dashboard/widgetFrame');
+    const designFrame = {
+      title: 'Equipment designs', subject: 'equipment designs', things: 'equipment designs', timeMode: 'follow' as const, pinned: false,
+      bounds: { firstHour: 43800000, lastHour: 43800024 }, hasSubject: true,
+      reportState() {}, announce() {}, clearAnnouncement() {}, setDynamicViewSwitch() {}, skeleton: 'table' as const, setSkeleton() {},
+    };
+    const windowRefusalText = 'Cannot determine which designer \'sample_equipment_1\' uses: the design has no recorded equipment category.';
+    const windowRefusal = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
+      value: designFrame,
+    }, createElement(WidgetState as never, {
+      kind: 'error',
+      failure: new RefusedError(windowRefusalText, undefined, 'equipment designer'),
+    } as never)));
+    const windowRefusalVisible = windowRefusal.replace(/<[^>]*>/g, ' ');
+    assert.match(windowRefusal, /data-state="unavailable"/);
+    assert.match(windowRefusalVisible, /Equipment designer can’t be shown\./);
+    assert.match(windowRefusalVisible, /Cannot determine which designer &#x27;sample_equipment_1&#x27; uses: the design has no recorded equipment category\./);
+    assert.doesNotMatch(windowRefusalVisible, /equipment designs/i, 'a game-window refusal must not substitute the parent widget subject');
+    assert.doesNotMatch(windowRefusalVisible, /isn’t in this recording/);
+    assert.doesNotMatch(windowRefusalVisible, /BattlePlan couldn’t tell why/);
+    assert.match(windowRefusal, />Details</);
+    assert.doesNotMatch(windowRefusal, /Retry|is-error|role="alert"/);
+
+    const subWindowRetryable = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
+      value: designFrame,
+    }, createElement(WidgetState as never, {
+      kind: 'error',
+      what: 'equipment designer',
+      failure: new Error('Off-screen graphics device lost'),
+    } as never)));
+    const subWindowVisible = subWindowRetryable.replace(/<[^>]*>/g, ' ');
+    assert.match(subWindowVisible, /Couldn’t load equipment designer\./);
+    assert.doesNotMatch(subWindowVisible, /equipment designs/i);
+
+    const recordingRefusal = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
+      value: designFrame,
+    }, createElement(WidgetState as never, {
+      kind: 'error',
+      failure: queryFailure({ kind: 'refused', text: 'SampleTable is not in this recording format' }),
+    } as never)));
+    const recordingRefusalVisible = recordingRefusal.replace(/<[^>]*>/g, ' ');
+    assert.match(recordingRefusalVisible, /Equipment designs isn’t in this recording\./);
+    assert.match(recordingRefusalVisible, /BattlePlan couldn’t tell why\. Details has the technical reason\./);
+
+    const causeWithOwnSubject = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
+      value: designFrame,
+    }, createElement(WidgetState as never, {
+      kind: 'error',
+      failure: new RefusedError('Map recording only', { kind: 'capture-mode', mode: 'Map' }, 'equipment designer'),
+    } as never)));
+    const causeVisible = causeWithOwnSubject.replace(/<[^>]*>/g, ' ');
+    assert.match(causeVisible, /Equipment designer isn’t in this recording\./);
+    assert.match(causeVisible, /This is a Map recording, which holds the campaign map and battle windows only\./);
+    assert.doesNotMatch(causeVisible, /equipment designs/i);
+
     const outsideWithBounds = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
       value: {
         title: 'Factories', subject: 'factories', things: 'factories', timeMode: 'pin', pinned: true,

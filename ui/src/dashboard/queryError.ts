@@ -38,11 +38,13 @@ export function notInRecordingSentence(cause: NotInRecordingCause, subject?: str
 export class RefusedError extends Error {
   readonly text: string;
   readonly causeKind?: NotInRecordingCause;
-  constructor(text: string, causeKind?: NotInRecordingCause) {
+  readonly subject?: string;
+  constructor(text: string, causeKind?: NotInRecordingCause, subject?: string) {
     super(text);
     this.name = 'RefusedError';
     this.text = text;
     this.causeKind = causeKind;
+    this.subject = subject;
   }
 }
 
@@ -58,14 +60,15 @@ export class ShownError extends Error {
 export type Failure = Error;
 
 export type ClassifiedFailure =
-  | { kind: 'refused'; cause?: NotInRecordingCause; reason: string; detail: string }
+  | { kind: 'refused'; cause?: NotInRecordingCause; subject?: string; reason: string; detail: string }
   | { kind: 'retryable'; reason?: string; detail: string };
 
 export function classifyFailure(error: Failure | null | undefined): ClassifiedFailure | null {
   if (!error) return null;
   if (error instanceof RefusedError) {
-    const plain = plainFailure(error.text);
-    return { kind: 'refused', cause: error.causeKind, reason: plain.text, detail: error.message };
+    const subject = error.subject?.trim() || undefined;
+    const reason = subject ? error.text : plainFailure(error.text).text;
+    return { kind: 'refused', cause: error.causeKind, subject, reason, detail: error.message };
   }
   if (error instanceof ShownError) {
     return { kind: 'retryable', reason: error.text, detail: error.message };

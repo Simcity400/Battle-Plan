@@ -791,11 +791,11 @@ mod tests {
                 }
                 frame.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit })
             }).unwrap();
-            let entry = |block| clean.recording().table_entry(0, block, table.index()).unwrap().unit;
+            let entry = |block| clean.recording().table_entry(0, block, table.index()).unwrap();
             let damaged_entry = entry(damaged_block);
-            assert!(damaged_entry.restore.is_none() && entry(restore_block).restore.is_some());
+            assert!(damaged_entry.unit.restore.is_none() && entry(restore_block).unit.restore.is_some());
             let units = unit::column_stream(dashboard_declare::field(table, "units").unwrap());
-            let frame = damaged_entry.parts.iter().flat_map(|part| &part.frames).find(|frame| frame.streams.contains(&units)).unwrap();
+            let frame = damaged_entry.unit.parts.iter().flat_map(|part| &part.frames).find(|frame| frame.streams.contains(&units)).unwrap();
             let mut bytes = clean.bytes().to_vec();
             bytes[(frame.offset + u64::from(frame.stored / 2)) as usize] ^= 0x40;
             (clean, Replay::open(bytes).unwrap())

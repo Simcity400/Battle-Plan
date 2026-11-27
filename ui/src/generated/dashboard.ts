@@ -1193,7 +1193,11 @@ top?: number,
  * One country: its casualties with each opponent instead of the matrix.
  */
 subject?: CountryRef, };
-export type CasualtyMatrixCountry = { tag: string, factionId: string | null, factionName: string | null, factionNameMissing: string | null,
+export type CasualtyMatrixCountry = { tag: string, slot: number, countryId: number,
+/**
+ * When this holder no longer holds `tag` at the query hour, its latest witnessed hour for reading its name and flag; null while it still holds `tag`.
+ */
+shownHour: number | null, factionId: string | null, factionName: string | null, factionNameMissing: string | null,
 /**
  * Casualties it dealt to every opponent at the hour, as a decimal string; null where a pair is not recorded.
  */
@@ -3760,6 +3764,9 @@ staticText?: Array<Artwork>,
  */
 continuousStaticText: Array<Artwork>, warnings: Array<string>, };
 export type FocusMissing = { firstHour: number, lastHour: number, reason: string, };
+export type NavalBattleCourseParams = { branchId: string, key: string, };
+export type NavalCourseRead = { hour: number, result: NavalBattleStatus, ships: [number | null, number | null], convoys: [number | null, number | null], shipsSunk: [number | null, number | null], convoysSunk: [number | null, number | null], icLost: [number | null, number | null], resulted: boolean, };
+export type NavalBattleCourseReply = { branchId: string, reads: Array<NavalCourseRead>, missing: Array<MissingSpan>, warnings: Array<string>, };
 export type NavalBattleDetailsParams = { branchId: string, battles: Array<NavalBattleDetailRequest>, };
 export type NavalBattleDetailsReply = { rows: Array<NavalBattleDetail>, warnings: Array<string>, };
 export type NavalBattleDetailRequest = { id: string, hour: number, };
@@ -6543,6 +6550,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "military-air-ledger": { "fromHour": "start" },
   "minefields": { "hour": "read" },
   "national-focus": {},
+  "naval-battle-course": {},
   "naval-battle-details": { "battles[].hour": "read" },
   "naval-battles-tail": { "hour": "read", "from": "start", "to": "end" },
   "naval-losses-at": { "hour": "read" },
@@ -6715,6 +6723,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "military-air-ledger": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "family": "leaf", "fromHour": "leaf", "regions": "node", "regions[]": "leaf", "top": "node", "top.count": "leaf", "top.metric": "leaf", "window": "leaf" },
   "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "hour": "leaf", "order": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf" },
   "national-focus": { "branchId": "leaf", "country": "any" },
+  "naval-battle-course": { "branchId": "leaf", "key": "leaf" },
   "naval-battle-details": { "battles": "node", "battles[]": "node", "battles[].hour": "leaf", "battles[].id": "leaf", "branchId": "leaf" },
   "naval-battles-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "to": "leaf" },
   "naval-losses-at": { "attribution": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "kind": "leaf", "period": "leaf", "top": "leaf" },
@@ -6887,6 +6896,7 @@ export type RequestParams<E, B> = {
   "military-air-ledger": { readonly [key: string]: unknown; readonly "fromHour"?: B | null };
   "minefields": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "national-focus": {};
+  "naval-battle-course": {};
   "naval-battle-details": { readonly [key: string]: unknown; readonly "battles"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null };
   "naval-battles-tail": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "to"?: B | null };
   "naval-losses-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };

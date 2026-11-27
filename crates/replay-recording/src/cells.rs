@@ -1,14 +1,13 @@
 
-use crate::columnar_frames::{Damage, DamageScope, Recording};
+use crate::columnar_frames::{Damage, DamageScope, Recording, SharedEntry};
 use replay_data::rows::TableId;
 use replay_columnar::{
     manifest::Status,
     state::Kind,
     store::{Strings, TableState, TableView, Value},
     unit::{
-        self, BLOCK, TableEntry, lists,
+        self, BLOCK, lists,
         reader::{Advanced, Cursor, Event, Lives, LogCursor, LogEvent, Part},
-        restore::RestoreEntry,
     },
 };
 #[cfg(any(test, feature = "test-support"))]
@@ -207,7 +206,7 @@ pub struct TableReader {
     witnessed_before: Vec<u32>,
     ordinal: Option<u32>,
     block: u32,
-    entry: TableEntry,
+    entry: Option<SharedEntry>,
     next_part: usize,
     cursor: Cursor,
     changes: Changes,
@@ -270,7 +269,7 @@ impl TableReader {
             witnessed_before: Vec::new(),
             ordinal: None,
             block: 0,
-            entry: TableEntry::default(),
+            entry: None,
             next_part: 0,
             lives: Lives::default(),
             marks: (Vec::new(), Vec::new()),
@@ -293,7 +292,7 @@ impl TableReader {
     }
 
     pub fn packs_on_step(&self) -> bool {
-        self.log.is_none() && self.entry.packed && self.ordinal.is_some_and(|ordinal| (ordinal + 1) % BLOCK == 0)
+        self.log.is_none() && self.entry.as_ref().is_some_and(|entry| entry.unit.packed) && self.ordinal.is_some_and(|ordinal| (ordinal + 1) % BLOCK == 0)
     }
 
     pub fn slot(&self, key: u128) -> Option<u32> {
@@ -405,14 +404,20 @@ impl TableReader {
         }
         let (block, hour) = (ordinal / BLOCK, (ordinal % BLOCK) as u16);
         let (restored, entry, first) = self.restore_before(recording, block)?;
+        let restore = if first {
+            entry.unit.first.as_ref().ok_or_else(|| self.damaged(0, invalid("The run's first block holds no first restore")))?
+        } else {
+            entry.unit.restore.as_ref().ok_or_else(|| self.damaged(restored, invalid("The block holds no restore")))?
+        };
         let source = recording.extents();
         let restoring = label("reader: restored cells");
         let (cells, meta) = if self.keyed {
-            unit::reader::restore_keyed(source, &entry, &self.kinds[..self.held], &self.columns)
+            unit::reader::restore_keyed(source, restore, &self.kinds[..self.held], &self.columns)
         } else {
-            unit::reader::restore(source, &entry, &self.kinds[..self.held], &self.columns)
+            unit::reader::restore(source, restore, &self.kinds[..self.held], &self.columns)
         }
         .map_err(|error| self.damaged(restored, error))?;
+        drop(entry);
         self.cells = cells;
         self.restores += 1;
         #[cfg(any(test, feature = "test-support"))]
@@ -427,7 +432,7 @@ impl TableReader {
             self.open_block(recording, at, start_of(at, first, restored, start))?;
             let last = self.block_hours(at) - 1;
             self.advance_to(recording, last, BLOCK as u16)?;
-            if self.entry.packed {
+            if self.entry.as_ref().is_some_and(|entry| entry.unit.packed) {
                 self.cells.pack()?;
                 if self.keyed {
                     self.cells.try_index_keys()?;
@@ -480,7 +485,7 @@ impl TableReader {
             return Ok(true);
         }
         if block != self.block {
-            if self.entry.packed {
+            if self.entry.as_ref().is_some_and(|entry| entry.unit.packed) {
                 self.cells.pack()?;
                 if self.keyed {
                     self.cells.try_index_keys()?;
@@ -572,7 +577,7 @@ impl TableReader {
         while self.block < block {
             let last = self.block_hours(self.block) - 1;
             self.advance_to(recording, last, BLOCK as u16)?;
-            if self.entry.packed {
+            if self.entry.as_ref().is_some_and(|entry| entry.unit.packed) {
                 self.cells.pack()?;
                 if self.keyed {
                     self.cells.try_index_keys()?;
@@ -619,7 +624,7 @@ impl TableReader {
             return Ok(Stretch { block, block_first: self.first_hour + (block * BLOCK) as i32, from, to: last, statuses, ..Stretch::default() });
         }
         if from == 0 {
-            if self.entry.packed {
+            if self.entry.as_ref().is_some_and(|entry| entry.unit.packed) {
                 self.cells.pack()?;
                 if self.keyed {
                     self.cells.try_index_keys()?;
@@ -642,8 +647,9 @@ impl TableReader {
         self.advance_by(recording, last, BLOCK as u16, Some((from, last, &mut tapped)))?;
         let block_first = self.first_hour + (block * BLOCK) as i32;
         let mut statuses = Vec::with_capacity(usize::from(last - from) + 1);
+        let entry = &self.entry.as_ref().expect("opened block").unit;
         for hour in from..=last {
-            statuses.push(unit::reader::status(&self.entry, hour, block_first).map_err(|error| self.damaged(block, error))?.0);
+            statuses.push(unit::reader::status(entry, hour, block_first).map_err(|error| self.damaged(block, error))?.0);
         }
         let Tapped { events, mut read } = tapped;
         if !statuses.iter().any(|status| matches!(status, Status::Truncated { .. })) {
@@ -669,22 +675,26 @@ impl TableReader {
         Ok(stretch)
     }
 
-    fn restore_before(&self, recording: &Recording, block: u32) -> io::Result<(u32, RestoreEntry, bool)> {
+    fn restore_before(&self, recording: &Recording, block: u32) -> io::Result<(u32, SharedEntry, bool)> {
         let mut at = block;
         while at > 0 {
             at -= 1;
-            let entry = recording.table_entry(self.run, at, self.table)?.unit;
-            if let Some(restore) = entry.restore {
-                return Ok((at, restore, false));
+            let entry = recording.table_entry(self.run, at, self.table)?;
+            if entry.unit.restore.is_some() {
+                return Ok((at, entry, false));
             }
             if at == 0 {
-                let first = entry.first.ok_or_else(|| self.damaged(0, invalid("The run's first block holds no first restore")))?;
-                return Ok((0, first, true));
+                if entry.unit.first.is_none() {
+                    return Err(self.damaged(0, invalid("The run's first block holds no first restore")));
+                }
+                return Ok((0, entry, true));
             }
         }
-        let entry = recording.table_entry(self.run, 0, self.table)?.unit;
-        let first = entry.first.ok_or_else(|| self.damaged(0, invalid("The run's first block holds no first restore")))?;
-        Ok((0, first, true))
+        let entry = recording.table_entry(self.run, 0, self.table)?;
+        if entry.unit.first.is_none() {
+            return Err(self.damaged(0, invalid("The run's first block holds no first restore")));
+        }
+        Ok((0, entry, true))
     }
 
     fn stand_absent(&mut self, ordinal: u32) {
@@ -698,7 +708,7 @@ impl TableReader {
     }
 
     fn open_block(&mut self, recording: &Recording, block: u32, start: u16) -> io::Result<()> {
-        self.entry = recording.table_entry(self.run, block, self.table)?.unit;
+        self.entry = Some(recording.table_entry(self.run, block, self.table)?);
         self.block = block;
         self.next_part = 0;
         self.pending.clear();
@@ -724,8 +734,9 @@ impl TableReader {
             match advanced {
                 Advanced::Reached => return Ok(()),
                 Advanced::Missing { .. } => {
-                    let Some(part) = self.entry.parts.get(self.next_part) else { return Ok(()) };
-                    let last = self.entry.parts.get(self.next_part + 1).map_or(hours - 1, |next| next.first - 1);
+                    let entry = &self.entry.as_ref().expect("opened block").unit;
+                    let Some(part) = entry.parts.get(self.next_part) else { return Ok(()) };
+                    let last = entry.parts.get(self.next_part + 1).map_or(hours - 1, |next| next.first - 1);
                     let _parts = label("reader: fetched parts");
                     let fetched = unit::reader::fetch(recording.extents(), part, last, &self.columns, self.cursor.prefix().as_ref()).map_err(|error| self.damaged(self.block, error))?;
                     for (id, text) in fetched.strings() {
@@ -743,7 +754,8 @@ impl TableReader {
 
     fn settle(&mut self, hour: u16) -> io::Result<()> {
         let block_first = self.first_hour + (self.block * BLOCK) as i32;
-        let (status, read, sampled, _) = unit::reader::status(&self.entry, hour, block_first).map_err(|error| self.damaged(self.block, error))?;
+        let entry = &self.entry.as_ref().expect("opened block").unit;
+        let (status, read, sampled, _) = unit::reader::status(entry, hour, block_first).map_err(|error| self.damaged(self.block, error))?;
         self.status = status;
         self.read = read;
         self.sampled = sampled;
@@ -778,9 +790,15 @@ impl TableReader {
     fn seek_log(&mut self, recording: &Recording, ordinal: u32) -> io::Result<()> {
         let (block, hour) = (ordinal / BLOCK, (ordinal % BLOCK) as u16);
         let (restored, entry, first) = self.restore_before(recording, block)?;
+        let restore = if first {
+            entry.unit.first.as_ref().ok_or_else(|| self.damaged(0, invalid("The run's first block holds no first restore")))?
+        } else {
+            entry.unit.restore.as_ref().ok_or_else(|| self.damaged(restored, invalid("The block holds no restore")))?
+        };
         let source = recording.extents();
         let restoring = label("reader: restored cells");
-        let (state, meta) = unit::reader::restore(source, &entry, &self.kinds[..self.held], &[]).map_err(|error| self.damaged(restored, error))?;
+        let (state, meta) = unit::reader::restore(source, restore, &self.kinds[..self.held], &[]).map_err(|error| self.damaged(restored, error))?;
+        drop(entry);
         self.restores += 1;
         let listed: Vec<u64> = state.listed().ok_or_else(|| self.damaged(restored, invalid("A log's restore holds no live set")))?.ones().collect();
         self.cells = TableState::new(&self.kinds[..self.held]);
@@ -884,8 +902,9 @@ impl TableReader {
             match advanced {
                 Advanced::Reached => break,
                 Advanced::Missing { .. } => {
-                    let Some(part) = self.entry.parts.get(self.next_part) else { break };
-                    let last = self.entry.parts.get(self.next_part + 1).map_or(hours - 1, |next| next.first - 1);
+                    let entry = &self.entry.as_ref().expect("opened block").unit;
+                    let Some(part) = entry.parts.get(self.next_part) else { break };
+                    let last = entry.parts.get(self.next_part + 1).map_or(hours - 1, |next| next.first - 1);
                     let _parts = label("reader: fetched parts");
                     let fetched = unit::reader::fetch(recording.extents(), part, last, &self.columns, log.cursor.prefix().as_ref()).map_err(damaged)?;
                     for (id, text) in fetched.strings() {

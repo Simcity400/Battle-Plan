@@ -245,7 +245,7 @@ pub(crate) fn busy(at: u32, changes: &mut TableChanges<'_>) {
 #[test]
 fn a_step_crossing_a_part_boundary_names_each_slot_once() {
     let (recording, states) = record(Settings { cap: 64, ..Settings::at(3) }, 1, busy);
-    assert!(recording.runs[0].pages[0].tables[0].parts.len() > 10);
+    assert!(recording.runs[0].held_pages().unwrap()[0].tables[0].parts.len() > 10);
     let mut steps = 0;
     step_through(&recording, &states, 24, |lane, changes, state| {
         assert_each_once(changes);
@@ -309,7 +309,7 @@ fn a_packed_block_end_renumbers_from_the_live_bits() {
             }
         }
     });
-    assert!(recording.runs[0].pages[0].tables[0].packed);
+    assert!(recording.runs[0].held_pages().unwrap()[0].tables[0].packed);
     let mut lane = lane(&recording);
     let mut changes = Changes::default();
     lane.seek(0).unwrap();
@@ -348,7 +348,7 @@ fn a_keyed_lanes_view_finds_rows_by_key_and_names_their_strings() {
             changes.delete(at - 100).unwrap();
         }
     });
-    assert!(recording.runs[0].pages[0].tables[0].packed);
+    assert!(recording.runs[0].held_pages().unwrap()[0].tables[0].packed);
     let read = |lane: &Lane, head: usize| {
         let view = lane.view();
         assert!(lane.cells().bytes().index > 0, "hour {head}: the key index is kept");
@@ -432,7 +432,7 @@ fn a_mirror_kept_from_change_sets_equals_the_cells() {
 #[test]
 fn a_step_waits_at_a_missing_part_and_goes_on_when_given_it() {
     let (recording, states) = record(Settings { cap: 64, ..Settings::at(3) }, 1, busy);
-    let parts = &recording.runs[0].pages[0].tables[0].parts;
+    let parts = &recording.runs[0].held_pages().unwrap()[0].tables[0].parts;
     let mut lane = lane(&recording);
     lane.seek(0).unwrap();
     let mut changes = Changes::default();
@@ -452,7 +452,7 @@ fn a_step_waits_at_a_missing_part_and_goes_on_when_given_it() {
 #[test]
 fn a_lane_reads_ahead_by_hours_and_lets_passed_parts_go() {
     let (recording, _) = record(Settings { cap: 64, ..Settings::at(3) }, 1, busy);
-    let parts = &recording.runs[0].pages[0].tables[0].parts;
+    let parts = &recording.runs[0].held_pages().unwrap()[0].tables[0].parts;
     let mut lane = lane(&recording);
     lane.seek(0).unwrap();
     assert_eq!(lane.held().parts, 1, "the seek reads the part under the head and nothing more");
@@ -645,7 +645,7 @@ fn read_rows_changed_signals_swapped_truncated_witnesses_with_zero_complete_comp
 fn a_seek_equals_stepping_to_the_same_hour() {
     let settings = Settings { restore_blocks: 1, ..Settings::at(3) };
     let (recording, states) = record_hours(settings, 2 * BLOCK + 27, busy);
-    assert_eq!(recording.runs[0].pages.len(), 3);
+    assert_eq!(recording.runs[0].blocks(), 3);
     for hour in [0, 1, 300, BLOCK - 1, BLOCK, BLOCK + 400, 2 * BLOCK - 1, 2 * BLOCK, 2 * BLOCK + 26] {
         let mut lane = lane(&recording);
         lane.seek(hour as i32).unwrap();
@@ -717,7 +717,7 @@ fn passing_of(changes: &Changes) -> Vec<Passed> {
 #[test]
 fn a_passing_lane_gives_every_row_born_and_gone_in_a_step_with_its_last_cells() {
     let (recording, states) = record(Settings { cap: 64, ..Settings::at(3) }, 2, events);
-    assert!(recording.runs[0].pages[0].tables[0].parts.len() > 5);
+    assert!(recording.runs[0].held_pages().unwrap()[0].tables[0].parts.len() > 5);
     for step in [24_u32, 7, 100] {
         let mut lane = lane(&recording);
         lane.set_passing(true);

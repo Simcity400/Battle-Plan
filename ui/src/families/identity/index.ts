@@ -848,6 +848,83 @@ export class IdentityIndex {
     return { tag: run.tag, countryId: run.countryId ?? 0, valid };
   }
 
+  private identitiesBounds(at: number): { readonly bounds: HourInterval } | { readonly reason: string; readonly interval: HourInterval } {
+    const unk = enclosingGap(this.identitiesUnknown, at, this.branchBounds);
+    if (unk.inside) {
+      const missing = this.identities!.unknown.find(span => span.firstHour <= at && at <= span.lastHour);
+      return { reason: missing?.reason || 'Country identities were not recorded at this hour', interval: unk.interval };
+    }
+    if (this.identitiesKnown) {
+      const known = enclosingGap(this.identitiesKnown, at, unk.interval);
+      if (!known.inside) return { reason: 'Country identities were not recorded at this hour', interval: known.interval };
+      return { bounds: known.interval };
+    }
+    return { bounds: unk.interval };
+  }
+
+  countryHolderAt(key: string, hour: number): { readonly holder: CountryHolder | null; readonly valid: HourInterval; readonly reason?: string } {
+    const at = Math.floor(hour);
+    if (!this.identities) return { holder: null, valid: this.branchBounds };
+    const ref = countryFromKey(key);
+    if (typeof ref === 'number') {
+      const covered = this.identitiesBounds(at);
+      if ('reason' in covered) return { holder: null, valid: covered.interval, reason: covered.reason };
+      const runs = this.slotRuns.get(ref) ?? [];
+      const idx = findRunBeforeOrAt(runs, at, run => run.firstHour);
+      const run = idx >= 0 ? runs[idx] : undefined;
+      if (run && run.firstHour <= at && at <= run.lastHour) {
+        return { holder: { slot: ref, countryId: run.countryId ?? 0, tag: run.tag }, valid: intersectIntervals(covered.bounds, [run.firstHour, run.lastHour]) };
+      }
+      const prev = idx >= 0 ? runs[idx] : undefined;
+      const next = idx + 1 < runs.length ? runs[idx + 1] : undefined;
+      return {
+        holder: null,
+        valid: [prev ? Math.max(covered.bounds[0], prev.lastHour + 1) : covered.bounds[0], next ? Math.min(covered.bounds[1], next.firstHour - 1) : covered.bounds[1]],
+        reason: NOT_A_COUNTRY,
+      };
+    }
+    const resolved = this.holderForTag(ref, at);
+    return resolved.field.kind === 'known'
+      ? { holder: resolved.field.value, valid: resolved.interval }
+      : { holder: null, valid: resolved.interval, ...(resolved.field.kind === 'missing' ? { reason: resolved.field.reason } : {}) };
+  }
+
+  countryHolderByIdAt(countryId: number, hour: number): { readonly holder: CountryHolder | null; readonly valid: HourInterval; readonly reason?: string } {
+    const at = Math.floor(hour);
+    if (!this.identities) return { holder: null, valid: this.branchBounds };
+    const covered = this.identitiesBounds(at);
+    if ('reason' in covered) return { holder: null, valid: covered.interval, reason: covered.reason };
+    const runs = this.identities.countries
+      .flatMap(entry => entry.identities.filter(item => item.countryId === countryId).map(item => ({ tag: entry.tag, slot: item.slot, firstHour: item.firstHour, lastHour: item.lastHour })))
+      .sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
+    const idx = findRunBeforeOrAt(runs, at, run => run.firstHour);
+    const hit = idx >= 0 ? runs[idx] : undefined;
+    if (hit && hit.firstHour <= at && at <= hit.lastHour) {
+      return { holder: { slot: hit.slot, countryId, tag: hit.tag }, valid: intersectIntervals(covered.bounds, [hit.firstHour, hit.lastHour]) };
+    }
+    const prev = idx >= 0 ? runs[idx] : undefined;
+    const next = idx + 1 < runs.length ? runs[idx + 1] : undefined;
+    const gapBounds: HourInterval = [
+      prev ? Math.max(covered.bounds[0], prev.lastHour + 1) : covered.bounds[0],
+      next ? Math.min(covered.bounds[1], next.firstHour - 1) : covered.bounds[1],
+    ];
+    const mergedUnresolved: HourSpan[] = [];
+    for (const span of sortedHourSpans([...this.tagUnresolved.values()].flat())) {
+      const last = mergedUnresolved[mergedUnresolved.length - 1];
+      if (last && last.lastHour + 1 >= span.firstHour) {
+        if (span.lastHour > last.lastHour) mergedUnresolved[mergedUnresolved.length - 1] = { firstHour: last.firstHour, lastHour: span.lastHour };
+      } else {
+        mergedUnresolved.push(span);
+      }
+    }
+    const unres = enclosingGap(mergedUnresolved, at, gapBounds);
+    return {
+      holder: null,
+      valid: unres.interval,
+      reason: unres.inside ? 'Country identity unresolved at this hour' : NOT_A_COUNTRY,
+    };
+  }
+
   private cacheFor(kind: IdentityKey['kind']): LookupCache {
     let held = this.caches.get(kind);
     if (held) return held;
@@ -1008,19 +1085,11 @@ export class IdentityIndex {
       if (this.identitiesFailure) return { field: { kind: 'failed', failure: this.identitiesFailure }, interval: this.branchBounds };
       return { field: { kind: 'pending' }, interval: this.branchBounds };
     }
-    const unk = enclosingGap(this.identitiesUnknown, at, this.branchBounds);
-    if (unk.inside) {
-      const missing = this.identities.unknown.find(span => span.firstHour <= at && at <= span.lastHour);
-      return { field: { kind: 'missing', reason: missing?.reason || 'Country identities were not recorded at this hour' }, interval: unk.interval };
+    const covered = this.identitiesBounds(at);
+    if ('reason' in covered) {
+      return { field: { kind: 'missing', reason: covered.reason }, interval: covered.interval };
     }
-    let bounds = unk.interval;
-    if (this.identitiesKnown) {
-      const known = enclosingGap(this.identitiesKnown, at, bounds);
-      if (!known.inside) {
-        return { field: { kind: 'missing', reason: 'Country identities were not recorded at this hour' }, interval: known.interval };
-      }
-      bounds = known.interval;
-    }
+    const bounds = covered.bounds;
     const runs = this.tagIdentities.get(tag) ?? [];
     const idx = findRunBeforeOrAt(runs, at, run => run.firstHour);
     const hit = idx >= 0 ? runs[idx] : undefined;
@@ -1045,15 +1114,13 @@ export class IdentityIndex {
       if (!this.identities) {
         return this.identitiesFailure ? { kind: 'failed', failure: this.identitiesFailure } : { kind: 'pending' };
       }
-      const unk = enclosingGap(this.identitiesUnknown, at, this.branchBounds);
-      if (unk.inside) {
-        const missing = this.identities.unknown.find(span => span.firstHour <= at && at <= span.lastHour);
-        const reason = missing?.reason || 'Country identities were not recorded at this hour';
-        const field: IdentityField<never> = { kind: 'missing', reason };
+      const covered = this.identitiesBounds(at);
+      if ('reason' in covered) {
+        const field: IdentityField<never> = { kind: 'missing', reason: covered.reason };
         return {
           kind: 'known',
-          valid: unk.interval,
-          nextBoundary: nextBoundaryOf(unk.interval[1]),
+          valid: covered.interval,
+          nextBoundary: nextBoundaryOf(covered.interval[1]),
           holder: field,
           tag: field,
           name: field,
@@ -1062,25 +1129,7 @@ export class IdentityIndex {
           warnings: this.identities.warnings,
         };
       }
-      let bounds = unk.interval;
-      if (this.identitiesKnown) {
-        const known = enclosingGap(this.identitiesKnown, at, bounds);
-        if (!known.inside) {
-          const field: IdentityField<never> = { kind: 'missing', reason: 'Country identities were not recorded at this hour' };
-          return {
-            kind: 'known',
-            valid: known.interval,
-            nextBoundary: nextBoundaryOf(known.interval[1]),
-            holder: field,
-            tag: field,
-            name: field,
-            color: field,
-            flagChoice: field,
-            warnings: this.identities.warnings,
-          };
-        }
-        bounds = known.interval;
-      }
+      const bounds = covered.bounds;
       const allRuns = this.slotRuns.get(key.slot) ?? [];
       const runs = key.by === 'holder' ? allRuns.filter(run => run.countryId === key.countryId) : allRuns;
       const idx = findRunBeforeOrAt(runs, at, run => run.firstHour);

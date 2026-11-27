@@ -17,7 +17,6 @@ const LEAST_SHARE = 0.03;
 export interface NavalBattleSubject {
   readonly row: NavalBattleLogRow;
   readonly title: string;
-  readonly sides: ReturnType<typeof resolveIdentity>[][];
 }
 
 export interface NavalBattleClock {
@@ -132,7 +131,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
   const icLost = logPairCell(row.icLost, 'IC lost', colors, lowerBound);
   const ships = vesselPairCell(row.ships, row.convoys, 'Ships', 'Convoys');
   return {
-    key: row.key, name: title, rowHour: row.hour, live, meta: { row, title, sides } satisfies NavalBattleSubject,
+    key: row.key, name: title, rowHour: row.hour, live, meta: { row, title } satisfies NavalBattleSubject,
     ...(row.result === 'unknown' ? { tooltipNote: 'The game keeps a winner only for battles a player takes part in' } : {}),
     tooltipExtra: () => sides.flatMap((side, i): TooltipExtraRow[] => {
       const convoyCount = row.convoys[i];

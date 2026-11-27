@@ -389,7 +389,7 @@ export interface DeclaredCountryState {
   readonly membership: Readonly<Record<string, HourRanges>> | null;
   readonly cumulativeMembership?: Readonly<Record<string, HourRanges>> | null;
   readonly membershipRuns: readonly { readonly tag: string; readonly firstHour: number; readonly lastHour: number }[] | null;
-  readonly ambiguousHolders?: Readonly<Record<string, HourRanges>> | null;
+  readonly identityMembership?: Readonly<Record<string, HourRanges>> | null;
   readonly unobserved: HourRanges;
   readonly filter: DeclaredCountryFilter;
   readonly factions: readonly FamilyFactionRun[] | null;

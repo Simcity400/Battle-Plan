@@ -282,3 +282,91 @@ fn a_chosen_viewpoint_whose_holder_is_not_known_is_not_recorded_with_the_recorde
     assert_eq!(refused, Some(format!("Who holds ONE is not known: {reason}")), "never \"not in this recording\"");
     assert!(Hour::build(&state, &Resolved { links: &link, names: &names, holders: &held, hour: 100 }, Some(&viewpoint)).is_ok(), "where its holder is known the viewpoint is read");
 }
+
+#[test]
+fn war_contributions_holds_quiet_hours_with_dated_reply_and_refreshes_on_edits() {
+    use super::contributions::WarContributions;
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{LoadContext, at_hour::{exact_panel, frame_panel}},
+        test_fixtures::{CAMPAIGN, materialized_frame, played, records, source, streamed},
+    };
+    use replay::campaign::Replay;
+    use serde_json::json;
+    use std::sync::atomic::AtomicBool;
+
+    let frames: Vec<_> = (100..=106)
+        .map(|hour| {
+            let mut f = source(1, hour, None);
+            let one_tag = if hour >= 105 { b"UNO".to_vec() } else { b"ONE".to_vec() };
+            *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+                rows::CountryRow { id: 1, canonical_slot: 1, tag: one_tag, ..Default::default() },
+                rows::CountryRow { id: 2, canonical_slot: 2, tag: b"TWO".to_vec(), ..Default::default() },
+            ]));
+            *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+                rows::CountryLinkRow { id: 1, canonical_slot: 1 },
+                rows::CountryLinkRow { id: 2, canonical_slot: 2 },
+            ]));
+            *f.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(vec![
+                rows::WarRelationRow { first_country: 1, second_country: 2, start_hour: 90, ..Default::default() },
+            ]));
+            *f.tables[TableId::WarOwnedRelations.index()] = TableView::Complete(TableRows::WarOwnedRelations(vec![
+                WarOwnedRelationRow { owner: 1, ordinal: 0, first_country: 1, second_country: 2, ..Default::default() },
+                WarOwnedRelationRow { owner: 2, ordinal: 0, first_country: 1, second_country: 2, ..Default::default() },
+            ]));
+            *f.tables[TableId::WarOverviewCountries.index()] = TableView::Complete(TableRows::WarOverviewCountries(vec![
+                WarOverviewCountryRow { country: 1, major: 1, score_available: 1, ..Default::default() },
+                WarOverviewCountryRow { country: 2, major: 1, score_available: 1, ..Default::default() },
+            ]));
+            *f.tables[TableId::WarNameRules.index()] = TableView::Complete(TableRows::WarNameRules(vec![
+                rows::WarNameRuleRow { index: 0, prefix: b"NATIVE".to_vec(), viewpoint: 1 },
+            ]));
+            *f.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(Vec::new()));
+            *f.tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(vec![
+                LocalPlayerRow { country: 1, observer_country: 0 },
+            ]));
+            let damage = if hour >= 103 { 250_000 } else { 100_000 };
+            *f.tables[TableId::WarParticipation.index()] = TableView::Complete(TableRows::WarParticipation(vec![
+                rows::WarParticipationRow { war_first: 1, war_second: 2, direction: 0, first_country: 1, second_country: 2, equipment_damage: damage, ..Default::default() },
+                rows::WarParticipationRow { war_first: 1, war_second: 2, direction: 1, first_country: 2, second_country: 1, equipment_damage: 100_000, ..Default::default() },
+            ]));
+            *f.tables[TableId::WarLendLeaseHistories.index()] = TableView::Complete(TableRows::WarLendLeaseHistories(Vec::new()));
+            f
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Source::from_replay(
+        SourceKey { source_id: "wc-exact".into(), revision: "1".into() },
+        "memory.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let params = json!({"branchId": "1", "viewpoint": null});
+    let panel = exact_panel::<WarContributions>(&source, &load, &params).unwrap();
+    let exact = panel.exact().unwrap();
+    let mut whole = frame_panel::<WarContributions>(&source, &load, &params).unwrap();
+    let steps = played(source.replay_ref(), exact, 100, 106);
+    for step in &steps {
+        let mut expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
+        if !step.fresh && let (Ok(actual), Ok(exp)) = (step.value.as_ref(), &mut expected) {
+            exp["hour"] = actual["hour"].clone();
+        }
+        assert_eq!(streamed(&step.value, step.fresh), expected, "war-contributions at hour {}", step.hour);
+    }
+    for hour in [101, 102, 104, 106] {
+        assert_eq!(steps[(hour - 100) as usize].product_calls, 0, "quiet hour {hour} should hold");
+    }
+    assert_eq!(steps[5].value.as_ref().as_ref().unwrap()["contributions"][0]["viewpointSide"][0], "UNO");
+    let dated_panel = exact_panel::<WarContributions>(&source, &load, &params).unwrap();
+    let dated_exact = dated_panel.exact().unwrap();
+    let _ = (dated_exact.advance)(100, true, &AtomicBool::new(false), None);
+    let held_dated = (dated_exact.advance)(101, true, &AtomicBool::new(false), None);
+    assert_eq!(*held_dated.value, materialized_frame(&mut *whole, source.replay_ref(), 1, 101));
+    assert_eq!(held_dated.value.as_ref().as_ref().unwrap()["hour"], 101);
+    assert_eq!((exact.cold)(103, &AtomicBool::new(false)), materialized_frame(&mut *whole, source.replay_ref(), 1, 103));
+}

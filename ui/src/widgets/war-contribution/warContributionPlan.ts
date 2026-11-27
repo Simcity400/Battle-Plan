@@ -14,7 +14,7 @@ export interface WarChoiceOptions {
 }
 
 export type ChosenGroup =
-  | { readonly kind: 'shown'; readonly war: WarTimeline; readonly reply: WarContributionsReply; readonly observation: WarObservation; readonly group: WarContributionGroup; readonly sides: readonly [WarSide, WarSide] }
+  | { readonly kind: 'shown'; readonly war: WarTimeline; readonly reply: WarContributionsReply; readonly asOf: number; readonly observation: WarObservation; readonly group: WarContributionGroup; readonly sides: readonly [WarSide, WarSide] }
   | { readonly kind: 'loading' }
   | { readonly kind: 'blank'; readonly empty: string; readonly emptyKind: 'empty' | 'unavailable' };
 
@@ -44,12 +44,13 @@ export function sideCountries(group: WarContributionGroup, side: WarSide): strin
   return [...new Set(side === 'viewpoint' ? group.viewpointSide : group.opposingSide)];
 }
 
-function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): WarContributionsReply | undefined {
+function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): { readonly reply: WarContributionsReply; readonly asOf: number } | undefined {
   const going = observationAt(war, hour) !== null;
   const raw = readView.panel(going ? 'live' : 'ended');
   if (raw === undefined) return undefined;
   const reply = validateWarContributions(raw);
-  return reply.hour >= war.firstHour && reply.hour <= war.lastHour && reply.hour <= hour ? reply : undefined;
+  const asOf = going ? hour : reply.hour;
+  return reply.hour <= hour && asOf >= war.firstHour && asOf <= war.lastHour ? { reply, asOf } : undefined;
 }
 
 export function warContributionNextChange(hour: number, options: WarChoiceOptions): number {
@@ -71,12 +72,13 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
   if (!observationAt(war, readHourFor(war, hour))) {
     return { kind: 'blank', empty: 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
   }
-  const reply = replyFor(readView, war, hour);
-  if (!reply) return { kind: 'loading' };
-  const observation = observationAt(war, reply.hour);
+  const found = replyFor(readView, war, hour);
+  if (!found) return { kind: 'loading' };
+  const { reply, asOf } = found;
+  const observation = observationAt(war, asOf);
   const group = observation ? warContributions(reply.contributions, observation) : null;
   if (!observation || !group || (group.reason && !group.measures.length)) return { kind: 'blank', empty: group?.reason ?? 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
-  return { kind: 'shown', war, reply, observation, group, sides: attackersFirst<WarSide>(observation, 'viewpoint', 'opposing') };
+  return { kind: 'shown', war, reply, asOf, observation, group, sides: attackersFirst<WarSide>(observation, 'viewpoint', 'opposing') };
 }
 
 function endedRead(wars: WarsReply | undefined, saved: string | null, hour: number): { readonly at: number | null; readonly valid: readonly [number, number] } {

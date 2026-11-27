@@ -520,8 +520,8 @@ pub(crate) fn table_statuses(recording: &Recording, run: u32, table: TableId) ->
     let held = recording.run(run)?;
     let mut out = Vec::new();
     for block in 0..held.pages() as u32 {
-        let entry = recording.table_entry(run, block, table.index())?.unit;
-        replay_columnar::unit::reader::statuses(&entry, held.block(block as usize).1 as u16, held.block_first_hour(block), &mut |first, last, status| {
+        let entry = recording.table_entry(run, block, table.index())?;
+        replay_columnar::unit::reader::statuses(&entry.unit, held.block(block as usize).1 as u16, held.block_first_hour(block), &mut |first, last, status| {
             push_status(&mut out, first, last, status);
         })?;
     }
@@ -639,8 +639,8 @@ fn read<L: Look>(
                     let skip_first = held.first_hour + (at + 1) as i32;
                     let skip_last = held.first_hour + next_at as i32;
                     for skipped in block..resume {
-                        let entry = recording.table_entry(run, skipped, table.index())?.unit;
-                        replay_columnar::unit::reader::statuses(&entry, held.block(skipped as usize).1 as u16, held.block_first_hour(skipped), &mut |start, end, status| {
+                        let entry = recording.table_entry(run, skipped, table.index())?;
+                        replay_columnar::unit::reader::statuses(&entry.unit, held.block(skipped as usize).1 as u16, held.block_first_hour(skipped), &mut |start, end, status| {
                             push_status(out, start.max(skip_first), end.min(skip_last), status);
                         })?;
                     }

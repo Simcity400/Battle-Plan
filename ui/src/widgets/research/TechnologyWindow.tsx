@@ -39,7 +39,7 @@ export function TechnologyEffects({ token, databaseIndex, ...shown }: Shown & { 
   const refusals = Object.entries(data?.refusals ?? {});
   return <GameArtFor runtime={runtime} widget={widget} active={active}><section className="dossier-section" ref={effects.root}>
     <h4>Effects</h4>
-    {error ? <WidgetState kind="error" failure={error} onRetry={retry} />
+    {error ? <WidgetState kind="error" what="technology effects" failure={error} onRetry={retry} />
       : !data ? <p className="dossier-missing">Loading effects…</p>
         : <>
           {data.unavailable && <p className="dossier-missing">{data.unavailable}</p>}

@@ -1206,8 +1206,9 @@ type LogRow = (u128, Hour, Vec<(i64, State)>);
 
 fn log_read_directly(pages: &Recording, columns: &[usize]) -> (Vec<(u64, LogRow)>, Vec<(Hour, u64)>) {
     let run = &pages.runs[0];
+    let table_pages = pages.table_pages(0, TABLE, 0, run.blocks()).unwrap();
     let (mut appended, mut forgotten) = (Vec::new(), Vec::new());
-    replay_columnar::unit::reader::log_span(&pages.bytes, &run.pages, &LOG, TABLE, columns, run.first_hour, Hour::MIN..=Hour::MAX, &mut |hour, event| match event {
+    replay_columnar::unit::reader::log_span(&pages.bytes, &table_pages, &LOG, TABLE, columns, run.first_hour, Hour::MIN..=Hour::MAX, &mut |hour, event| match event {
         replay_columnar::unit::reader::LogEvent::Appended { ordinal, key, rows, at, .. } => {
             appended.push((ordinal, (key, hour, columns.iter().map(|&column| crate::evaluate::number(rows.value(column, at))).collect())));
         }

@@ -767,7 +767,7 @@ struct Shared {
     display: std::sync::atomic::AtomicI64,
     next: AtomicU64,
     kinds: Vec<Vec<Kind>>,
-    written: Vec<bool>,
+    written: Vec<playhead::pages::TableWritten>,
     unwritten: Vec<std::sync::OnceLock<SharedView>>,
     entry: Arc<Entry>,
     learned: Mutex<BTreeMap<(&'static str, usize), (Option<Hour>, u64)>>,
@@ -834,7 +834,7 @@ impl Store {
             display: std::sync::atomic::AtomicI64::new(NOT_SHOWN),
             next: AtomicU64::new(0),
             kinds: entry.kinds().to_vec(),
-            written: (0..TABLE_COUNT).map(|table| super::written(entry, table)).collect(),
+            written: entry.pages.written_tables(&crate::playhead_host::timeline_runs(entry), TABLE_COUNT),
             unwritten: (0..TABLE_COUNT).map(|_| std::sync::OnceLock::new()).collect(),
             entry: Arc::clone(entry),
             learned: Mutex::default(),
@@ -903,7 +903,10 @@ impl Store {
         let mut wanted: Vec<(usize, usize, u64, u64)> = Vec::new();
         for (order, &place) in places.iter().enumerate() {
             for &(table, columns) in &readers[place].tables {
-                if self.shared.written[table] && kept[table].as_ref().is_none_or(|held| held.stale(columns)) && !wanted.iter().any(|&(_, held, set, _)| (held, set) == (table, columns)) {
+                if matches!(self.shared.written[table], playhead::pages::TableWritten::Written)
+                    && kept[table].as_ref().is_none_or(|held| held.stale(columns))
+                    && !wanted.iter().any(|&(_, held, set, _)| (held, set) == (table, columns))
+                {
                     let cost = kept[table].as_ref().map_or(FIRST_MAKE_NS, |held| held.costing(columns));
                     wanted.push((order, table, columns, cost));
                 }
@@ -1416,7 +1419,8 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
     let mut published = false;
     for &place in places {
         let Some(reading) = readers.get(place) else { continue };
-        let home = |&(table, columns): &(usize, u64)| !shared.written[table] || kept[table].as_ref().is_some_and(|kept| kept.answers(columns, mirrors.get(TableId::ALL[table]), hour));
+        let is_written = |table: usize| matches!(shared.written[table], playhead::pages::TableWritten::Written);
+        let home = |&(table, columns): &(usize, u64)| !is_written(table) || kept[table].as_ref().is_some_and(|kept| kept.answers(columns, mirrors.get(TableId::ALL[table]), hour));
         let waiting: Vec<TableId> = reading
             .tables
             .iter()
@@ -1431,20 +1435,35 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             continue;
         }
         let mut held: Vec<Option<(SharedView, Option<view::HeadFailure>)>> = vec![None; TABLE_COUNT];
-        let unwritten = |table: usize| -> SharedView {
-            shared.unwritten[table]
-                .get_or_init(|| {
-                    match shared.entry.capture.get() {
-                        Some(&mode) => TableView::NotRecorded { mode },
-                        None => TableView::Unavailable { reason: format!("{:?} is not recorded here, in a recording whose capture mode the playhead was not given", TableId::ALL[table]) },
-                    }
-                    .into()
-                })
-                .clone()
+        let not_written = |table: usize| -> (SharedView, Option<view::HeadFailure>) {
+            match &shared.written[table] {
+                playhead::pages::TableWritten::Damaged(reason) => {
+                    let view = shared.unwritten[table]
+                        .get_or_init(|| TableView::Unavailable { reason: reason.clone() }.into())
+                        .clone();
+                    let failure = view::HeadFailure {
+                        table: TableId::ALL[table],
+                        kind: view::HeadFailureKind::BuildError(reason.clone()),
+                    };
+                    (view, Some(failure))
+                }
+                playhead::pages::TableWritten::Unwritten | playhead::pages::TableWritten::Written => {
+                    let view = shared.unwritten[table]
+                        .get_or_init(|| {
+                            match shared.entry.capture.get() {
+                                Some(&mode) => TableView::NotRecorded { mode },
+                                None => TableView::Unavailable { reason: format!("{:?} is not recorded here, in a recording whose capture mode the playhead was not given", TableId::ALL[table]) },
+                            }
+                            .into()
+                        })
+                        .clone();
+                    (view, None)
+                }
+            }
         };
         for &(table, columns) in &reading.tables {
-            if !shared.written[table] {
-                held[table] = Some((unwritten(table), None));
+            if !is_written(table) {
+                held[table] = Some(not_written(table));
             } else if let Some(kept) = kept[table].as_ref() {
                 held[table] = Some(kept.view_with_failure(table, columns, mirrors.get(TableId::ALL[table]), &mut order, &mut made));
             }
@@ -1453,8 +1472,8 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
         let before = std::mem::take(&mut readers[place].keyed_views);
         let (mut views, mut keys) = (Vec::with_capacity(keyed.len()), Vec::with_capacity(keyed.len()));
         for keyed in &keyed {
-            if !shared.written[keyed.table] {
-                held[keyed.table] = Some((unwritten(keyed.table), None));
+            if !is_written(keyed.table) {
+                held[keyed.table] = Some(not_written(keyed.table));
                 continue;
             }
             let Some(kept) = kept[keyed.table].as_ref() else { continue };

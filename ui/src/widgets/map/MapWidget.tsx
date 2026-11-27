@@ -7,7 +7,7 @@ import type { MapTarget } from '../../dashboard/geometry';
 import { resolveWindow } from '../../dashboard/model';
 import type { PlaybackController } from '../../dashboard/playback';
 import { useExportSurface } from '../../export/exportMotion';
-import { mapFrameOnScreen, mapPresentationMatches } from './presentation';
+import { mapFrameOnScreen, mapPresentationMatches, mapRequests } from './presentation';
 
 export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) {
   const exportSurface = useExportSurface();
@@ -18,21 +18,21 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
   }, [runtime.clock, widget.time.mode]);
   useSyncExternalStore(runtime.clock.subscribe, anchor, anchor);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const staticSequence = useMemo(() => runtime.clock.getSnapshot().sequence, [runtime.clock, widget, track]);
+  const request = useMemo(() => mapRequests(runtime.clock), [runtime.clock]);
   const target = useCallback((clock: ReturnType<PlaybackController['getSnapshot']>): MapTarget | null => {
     if (!track) return null;
     const window = resolveWindow(widget, track, runtime.tracks, clock.position);
     if (!window || window.lastHour < track.branch.firstHour || window.lastHour > track.branch.lastHour) return null;
     const pinned = widget.countries.kind === 'tags';
     const country = widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : track.selectedTag;
-    return { options: { fog: mapOptions.fog, country, countrySlot: pinned ? null : track.selectedSlot ?? null, countryPinned: pinned,
+    return request({ options: { fog: mapOptions.fog, country, countrySlot: pinned ? null : track.selectedSlot ?? null, countryPinned: pinned,
       observed: pinned ? null : track.observed?.[widget.id] ?? null }, sourceId: track.source.id, path: track.source.path, revision: track.source.revision, branchId: track.branch.id,
       seekSequence: widget.time.mode === 'follow' ? clock.seekSequence : undefined,
       playing: widget.time.mode === 'follow' && clock.playing,
       hoursPerSecond: clock.hoursPerSecond,
       hour: window.lastHour, fraction: widget.time.mode === 'follow' ? clock.fraction : 0,
-      sequence: widget.time.mode === 'follow' ? clock.sequence : staticSequence };
-  }, [track, widget, runtime.tracks, staticSequence, mapOptions]);
+    });
+  }, [track, widget, runtime.tracks, request, mapOptions]);
   useLayoutEffect(() => {
     if (exportSurface.active || !body.current) return undefined;
     return runtime.maps.register(widget.id, body.current, target);

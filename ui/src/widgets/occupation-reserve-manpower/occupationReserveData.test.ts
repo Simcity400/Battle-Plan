@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
-import { reserveHistoryProof, segmentParts, sourceTagAt, validateOccupationReserve, validateReserveHistory } from './occupationReserveData.ts';
+import { reserveHistoryProof, segmentParts, segmentTotal, sourceTagAt, UNADMITTED_RESERVE_REASON, validateOccupationReserve, validateReserveHistory } from './occupationReserveData.ts';
 
 const country = (id: number, tag: string | null = `T${id}`) => ({ id, tag });
 const reply: OccupationReserveReply = {
@@ -39,9 +39,32 @@ const history: ReserveHistoryReply = {
 test('reserve history helpers validate bounded segments, prove intervals to nextChange, and resolve dated source tags', () => {
   assert.equal(validateReserveHistory(history), history);
   const sources = [9, 8];
-  assert.deepEqual(segmentParts(history.segments[0]!, sources), [0, 100]);
-  assert.deepEqual(segmentParts(history.segments[1]!, sources), [400, 100]);
-  assert.deepEqual(segmentParts(history.segments[2]!, sources), [undefined, undefined]);
+  const parts0 = segmentParts(history.segments[0]!, sources);
+  const parts1 = segmentParts(history.segments[1]!, sources);
+  const parts2 = segmentParts(history.segments[2]!, sources);
+  assert.deepEqual(parts0, [{ kind: 'zero', value: 0 }, { kind: 'known', value: 100 }]);
+  assert.deepEqual(segmentTotal(history.segments[0]!, parts0), { kind: 'known', value: 100 });
+  assert.deepEqual(parts1, [{ kind: 'known', value: 400 }, { kind: 'known', value: 100 }]);
+  assert.deepEqual(segmentTotal(history.segments[1]!, parts1), { kind: 'known', value: 500 });
+  assert.deepEqual(parts2, [
+    { kind: 'notRecorded', reason: 'The reserve was not recorded at these hours' },
+    { kind: 'notRecorded', reason: 'The reserve was not recorded at these hours' },
+  ]);
+  assert.deepEqual(segmentTotal(history.segments[2]!, parts2), { kind: 'notRecorded', reason: 'The reserve was not recorded at these hours' });
+  const unadmitted = { firstHour: 30, lastHour: 39, admitted: false, entries: [{ source: 9, amount: 250 }], unknown: null };
+  const unadmittedParts = segmentParts(unadmitted, sources);
+  assert.deepEqual(unadmittedParts, [
+    { kind: 'known', value: 250 },
+    { kind: 'notRecorded', reason: UNADMITTED_RESERVE_REASON },
+  ]);
+  assert.deepEqual(segmentTotal(unadmitted, unadmittedParts), { kind: 'notRecorded', reason: UNADMITTED_RESERVE_REASON });
+  const negWitnessed = { firstHour: 30, lastHour: 39, admitted: false, entries: [{ source: 9, amount: 250 }, { source: 8, amount: -20 }], unknown: null };
+  const negParts = segmentParts(negWitnessed, sources);
+  assert.deepEqual(negParts, [{ kind: 'known', value: 250 }, { kind: 'zero', value: 0 }]);
+  assert.deepEqual(segmentTotal(negWitnessed, negParts), { kind: 'known', value: 250 });
+  assert.equal(sourceTagAt(history, 8, 55), 'AAA', 'proven interval extends tag covering reply hour through nextChange - 1');
+  assert.equal(sourceTagAt(history, 9, 55), null, 'tag run ending before reply hour does not extend');
+  assert.equal(sourceTagAt(history, 8, 60), null, 'proven interval stops before nextChange');
   assert.equal(sourceTagAt(history, 9, 12), null);
   assert.equal(sourceTagAt(history, 9, 16), 'BBB');
   assert.deepEqual(reserveHistoryProof(history, [0, 49], 55), [49, 59]);

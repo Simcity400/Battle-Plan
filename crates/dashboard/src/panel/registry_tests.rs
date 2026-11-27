@@ -151,11 +151,7 @@ fn each_ui_panel_key_has_one_registered_reader() {
 
 #[test]
 fn readers_that_can_rebuild_at_each_hour_are_named() {
-    let allowed = [
-        "casualty-matrix",
-        "faction-details",
-        "volunteer-flow", "war-contributions",
-    ];
+    let allowed: [&str; 0] = [];
     let actual: Vec<_> = READERS.iter().filter_map(|(&key, reader)| {
         matches!(reader.kind, PanelKind::WholeFrame | PanelKind::DayThroughHour | PanelKind::ExactHourly).then_some(key)
     }).collect();
