@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { deriveRowTooltip } from '../../families/table/model.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import type { AirAce, AirAcesReply } from '../../generated/dashboard';
 import { acesProjection } from './acesProjection.ts';
@@ -22,6 +23,9 @@ test('an ace shows its wing, when it became an ace, and its portrait as missing 
   const model = project(reply([ace('1', 'GER', { wing: '5', wingName: 'Jagdgeschwader 52' }), ace('2', 'CHI', { firstSeen: null })]));
   const [first, second] = model.rows;
   assert.deepEqual(first!.cells.wing!.value, knownValue('Jagdgeschwader 52'));
+  assert.deepEqual(first!.cells.country!.value, { kind: 'pending', reason: 'Name is loading' });
+  const tip = deriveRowTooltip({ kind: 'data', key: first!.key, name: first!.name, rank: 1, level: 1, parent: null, childCount: 0, isTreeGroup: false, isOpen: false, isTotal: false, row: first! }, model.columns);
+  assert.deepEqual(tip.rows.find(entry => entry.label === 'Country')?.rawValue, { kind: 'pending', reason: 'Name is loading' });
   assert.equal(first!.cells.since!.value.kind, 'known', 'a first sighting shows its date');
   assert.deepEqual([first!.cells.portrait!.artShape, first!.cells.portrait!.art?.status, first!.cells.ace!.subtext], ['portrait', 'unavailable', '“Bubi”']);
   assert.deepEqual(first!.cells.portrait!.value, notRecorded('Ace portrait culture not recorded'));

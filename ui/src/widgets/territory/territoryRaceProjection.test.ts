@@ -157,8 +157,72 @@ test('territoryRaceProjection renders faction totals in factions mode using slot
   const model = territoryRaceProjection.project(view, baseOptions({ mode: 'factions' }));
   assertBarsModelValid(model, 300);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
-  assert.equal(rows[0]!.label, 'Axis');
+  assert.deepEqual(rows[0]!.label, { kind: 'known', value: 'Axis' });
   assert.equal(rows[0]!.numeric, 75);
-  assert.equal(rows[1]!.label, 'Allies');
+  assert.deepEqual(rows[1]!.label, { kind: 'known', value: 'Allies' });
   assert.equal(rows[1]!.value?.value.kind, 'notRecorded');
+
+  const mixedReply: FactionTotalsAtReply = {
+    hour: 300,
+    kind: 'territory',
+    measure: 'controlledStates',
+    rows: [{ id: '100', members: [], memberCountries: [1, 9], total: 10, missing: null }],
+    missing: null,
+    warnings: [],
+  };
+  const mixedIdentity = {
+    resolve(kind: string, key: string, atHour: number) {
+      if (kind === 'faction') {
+        return { kind, key, atHour, holder: { status: 'ready', value: key }, name: { status: 'ready', value: 'Axis' }, validInterval: [0, 1000], nextChangeAt: Infinity };
+      }
+      return {
+        kind,
+        key,
+        atHour,
+        holder: { status: 'absent', reason: 'none' },
+        tag: { status: 'absent', reason: 'none' },
+        name: key === countryKey(1) ? { status: 'pending' } : { status: 'absent', reason: 'Country name unavailable' },
+        validInterval: [0, 1000],
+        nextChangeAt: Infinity,
+      };
+    },
+  } as never;
+  const mixedModel = territoryRaceProjection.project(
+    createBoundedReadView({ hour: displayedHour(300), panels: new Map([['main', mixedReply]]), identity: mixedIdentity }),
+    baseOptions({ mode: 'factions' }),
+  );
+  const memberItem = (mixedModel.rows[0] as BarsDataRow).tooltip?.items?.find(item => item.label === 'Members (2)');
+  assert.deepEqual(memberItem, { label: 'Members (2)', pendingReason: 'Name is loading; Country name unavailable' });
+
+  const nineReply: FactionTotalsAtReply = {
+    hour: 300,
+    kind: 'territory',
+    measure: 'controlledStates',
+    rows: [{ id: '100', members: [], memberCountries: [1, 2, 3, 4, 5, 6, 7, 8, 9], total: 10, missing: null }],
+    missing: null,
+    warnings: [],
+  };
+  const nineIdentity = {
+    resolve(kind: string, key: string, atHour: number) {
+      if (kind === 'faction') {
+        return { kind, key, atHour, holder: { status: 'ready', value: key }, name: { status: 'ready', value: 'Axis' }, validInterval: [0, 1000], nextChangeAt: Infinity };
+      }
+      return {
+        kind,
+        key,
+        atHour,
+        holder: { status: 'absent', reason: 'none' },
+        tag: { status: 'absent', reason: 'none' },
+        name: key === countryKey(9) ? { status: 'ready', value: 'Italy' } : { status: 'absent', reason: 'Country name unavailable' },
+        validInterval: [0, 1000],
+        nextChangeAt: Infinity,
+      };
+    },
+  } as never;
+  const nineModel = territoryRaceProjection.project(
+    createBoundedReadView({ hour: displayedHour(300), panels: new Map([['main', nineReply]]), identity: nineIdentity }),
+    baseOptions({ mode: 'factions' }),
+  );
+  const nineMemberItem = (nineModel.rows[0] as BarsDataRow).tooltip?.items?.find(item => item.label === 'Members (9)');
+  assert.deepEqual(nineMemberItem, { label: 'Members (9)', value: 'Italy', partialReason: 'Country name unavailable' });
 });

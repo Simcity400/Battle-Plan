@@ -1,10 +1,12 @@
 import { REGION_ADD_KEY } from '../regions/regionRows.ts';
 import type { ActiveRegions } from '../../generated/dashboard';
 import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
+import { canonicalAuditValue } from '../audit.ts';
 import type { ArtResult } from '../art/types.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
-import { formatDateOnly, formatShare } from '../valueFormat.ts';
+import type { Value } from '../value.ts';
+import { formatDateOnly, formatShare, formatValueState } from '../valueFormat.ts';
 import type { HeatPart } from './scale.ts';
 
 export type HeatLaneCell =
@@ -68,6 +70,7 @@ export type HeatLaneReadout =
 export interface HeatLaneRow {
   readonly id: string;
   readonly label: string;
+  readonly labelValue?: Value<string>;
   readonly nameMissing?: string;
   readonly tag?: string;
   readonly flag?: ArtResult;
@@ -222,6 +225,13 @@ export function laneCellTooltip(title: string, hour: number, cell: HeatLaneCell)
   };
 }
 
+function withPendingLaneLabel(row: HeatLaneRow, tip: FamilyTooltipPayload | null): FamilyTooltipPayload | null {
+  if (!tip || row.labelValue?.kind !== 'pending') return tip;
+  const items = tip.items ?? [];
+  if (items.some(item => item.label === 'Name' && item.pendingReason !== undefined)) return tip;
+  return { ...tip, items: [{ label: 'Name', pendingReason: row.labelValue.reason }, ...items] };
+}
+
 export function deriveLanesTooltip(
   model: HeatLanesModel,
   rowIndex: number,
@@ -229,14 +239,14 @@ export function deriveLanesTooltip(
 ): FamilyTooltipPayload | null {
   const row = model.rows[rowIndex];
   if (!row) return null;
-  if (hour === null) return readoutTooltip(row, model.hour);
+  if (hour === null) return withPendingLaneLabel(row, readoutTooltip(row, model.hour));
   const at = Math.min(hour, model.hour);
   const gap = model.gaps?.find(g => g.firstHour <= at && at <= Math.min(g.lastHour, model.hour));
-  if (gap) return { title: row.label, hour: at, missingReason: gap.reason ?? 'Recording gap' };
+  if (gap) return withPendingLaneLabel(row, { title: row.label, hour: at, missingReason: gap.reason ?? 'Recording gap' });
   const own = model.inspect?.(rowIndex, at);
-  if (own) return own;
+  if (own) return withPendingLaneLabel(row, own);
   const run = findRunAtHour(row.runs, at, model.hour);
-  return run ? laneCellTooltip(row.label, at, run.cell) : { title: row.label, hour: at, missingReason: 'Not recorded at this hour' };
+  return withPendingLaneLabel(row, run ? laneCellTooltip(row.label, at, run.cell) : { title: row.label, hour: at, missingReason: 'Not recorded at this hour' });
 }
 
 function cellAuditText(cell: HeatLaneCell): string {
@@ -266,6 +276,7 @@ export function deriveLanesAudit(
   const out: FamilyAuditRow[] = [];
   for (let i = first; i < end; i++) {
     const row = model.rows[i]!;
+    if (row.labelValue) out.push(auditCell(row.id, 'label', canonicalAuditValue(row.labelValue)));
     out.push(auditCell(row.id, 'readout', row.audit ?? readoutAuditText(row.readout)));
     out.push(auditCell(row.id, 'lane', laneAuditText(row, model.hour)));
   }
@@ -286,12 +297,13 @@ export function deriveLanesMirror(
   const rows: MirrorRow[] = [];
   for (let i = r0; i < Math.min(r1, model.rows.length); i++) {
     const row = model.rows[i]!;
+    const spokenName = row.labelValue ? formatValueState(row.labelValue, undefined, { figure: 'Name' }).spoken : row.label;
     rows.push({
       key: row.id,
-      name: row.label,
+      name: spokenName,
       rowIndex: i,
       cells: [
-        { column: 'Name', spoken: row.label },
+        { column: 'Name', spoken: spokenName },
         ...(regions ? [{ column: 'Group', spoken: row.pinned ? regions.pickedHeading : regions.automaticHeading }] : []),
         {
           column: formatDateOnly(model.hour),

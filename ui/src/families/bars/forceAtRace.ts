@@ -7,7 +7,7 @@ import { knownValue, notRecorded, partialValue, type Value } from '../value.ts';
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForceAtRow, ForcePart, NavalLossesAtReply } from '../../generated/dashboard';
 import { partColours } from './partColour.ts';
-import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsSegment, type CountryRowPresentation } from './model.ts';
+import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel, type BarsSegment, type CountryRowPresentation } from './model.ts';
 import type { SeriesRaceBaseOptions } from './seriesRace.ts';
 
 
@@ -81,7 +81,7 @@ export function forceRowIdentity(readView: BoundedReadView, row: ForceAtRow): Fo
   const pres = countryRowPresentation(readView, key);
   const identity = readView.who('country', key);
   const tag = identity.tag?.status === 'ready' ? identity.tag.value : row.tag;
-  return { key, tag, pres: pres.labelMissing ? { ...pres, label: row.tag } : pres };
+  return { key, tag, pres };
 }
 
 export interface ForceAtProjectConfig {
@@ -271,14 +271,13 @@ export function projectForceAtReply(
       key,
       subject: displayTag,
       label: pres.label,
-      labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
       media: pres.media,
       ...(pres.color ? { color: pres.color } : {}),
       value: { value, format: config.valueFormat, label: config.valueLabel },
       numeric,
       ...(segments ? { segments } : {}),
       tooltip: {
-        title: pres.labelMissing ? 'Name not recorded' : pres.label,
+        title: barsLabelText(pres.label),
         hour,
         items: tooltipItems,
         ...(config.note ? { note: config.note } : {}),

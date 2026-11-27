@@ -489,14 +489,14 @@ export function drawFamilyTable(
   const computeLook = (item: Extract<FlatTableRow, { kind: 'data' }>, column: FamilyColumnLayout) => {
     const cell = item.row.cells[column.key];
     const paintModel = resolveCellPaintModel(cell, column, maxima);
-    const formatted = formatValueState(paintModel.value, paintModel.format, cell?.loading ? { loading: true } : cell?.missingFigure ? { figure: cell.missingFigure } : undefined);
+    const formatted = formatValueState(paintModel.value, paintModel.format, cell?.missingFigure ? { figure: cell.missingFigure } : undefined);
     const span = barPixelSpan(column, dpr);
     const pixels = barPixels(paintModel.bar.fraction, span);
     const fraction = paintModel.bar.fraction === null ? null : pixels / span;
     const fill = paintModel.bar.alert ? theme.red : colorOf(theme, paintModel.tone ?? undefined, paintModel.countryColor, fraction);
     const art = artStateOf(paintModel.art);
     const treeKey = `${item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : ''}${treeTextStart(item.level, treeLevels)}`;
-    const textVal = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
+    const textVal = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending' ? formatted.label : formatted.text;
     const secVal = cell?.secondaryValue ? (cell.secondaryValue.kind === 'known' || cell.secondaryValue.kind === 'zero' ? String(cell.secondaryValue.value) : cell.secondaryValue.kind) : '';
     const pair = cell?.pair?.map(value => formatValueState(value, paintModel.format).spoken).join('|') ?? '';
     const unitArt = artStateOf(cell?.unitArt);
@@ -1392,7 +1392,7 @@ export function collectVisibleTableArt(
           const badgeArt = cell?.art ?? col.skillIcon;
           if (cell && badgeArt) {
             const formatted = formatValueState(cell.value, cell.format ?? col.valueFormat);
-            if (formatted.kind !== 'notRecorded' && formatted.kind !== 'notApplicable') {
+            if (formatted.kind !== 'notRecorded' && formatted.kind !== 'notApplicable' && formatted.kind !== 'pending') {
               const badge = col.key === 'skill' || col.key === 'level';
               const iconW = badge ? 18 : 24;
               const iconH = badge ? 26 : 22;
@@ -1424,7 +1424,7 @@ export function collectVisibleTableArt(
             const missing = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable';
             const textW = missing
               ? missingMarkWidth(room, measure, markTheme, { figure: cell?.missingFigure })
-              : inlineRunsWidth((col.narrowed ? cell?.narrowText : undefined) ?? formatted.text, room, prefixFont, measure);
+              : inlineRunsWidth((col.narrowed ? cell?.narrowText : undefined) ?? (formatted.kind === 'pending' ? formatted.label : formatted.text), room, prefixFont, measure);
             let at = left + textW + gap;
             const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
             for (const mark of marks) {
@@ -1560,7 +1560,7 @@ export function collectVisibleTableArt(
         }
         if (cell.unitArt && col.numeric && col.cellKind !== 'outOf') {
           const formatted = formatValueState(cell.value, cell.format ?? col.valueFormat);
-          if (formatted.kind !== 'notRecorded' && formatted.kind !== 'notApplicable') {
+          if (formatted.kind !== 'notRecorded' && formatted.kind !== 'notApplicable' && formatted.kind !== 'pending') {
             const hasSplit = Boolean(cell.splitBar?.length) && !(col.narrowed && col.narrow === 'total');
             const textMid = hasSplit ? middle - 3 : middle;
             const avail = Math.max(0, right - left);

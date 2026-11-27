@@ -7,7 +7,7 @@ import type { Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { LaneBinding, LaneFamily, LaneFrame, LaneStep } from '../laneRuntime.ts';
 import { sameFieldValue } from '../laneRuntime.ts';
-import { formatScalar } from '../valueFormat.ts';
+import { formatScalar, valueStateProps } from '../valueFormat.ts';
 import { treeLevelsOf } from './cellPainters.ts';
 import { buildColumnLayouts, computeRowLayout, END_NOTE_HEIGHT, extentTop, layoutFamilyTable, measureFixedColumnWidths, rowExtents, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowExtents, type RowLayoutGeometry } from './layout.ts';
 import {
@@ -568,7 +568,7 @@ function sameRightClippedFigure(
   if (hideHeader || !col.numeric || col.headerGroup || col.display === 'track' || col.display === 'meterAfter' || col.display === 'meterBefore') return false;
   if (col.cellKind && col.cellKind !== 'numeric' && col.cellKind !== 'standard') return false;
   if (a.value.kind !== 'known' || b.value.kind !== 'known') return false;
-  if (a.unitSuffix || b.unitSuffix || a.unitArt || b.unitArt || a.splitBar?.length || b.splitBar?.length || a.blank || b.blank || a.loading || b.loading) return false;
+  if (a.unitSuffix || b.unitSuffix || a.unitArt || b.unitArt || a.splitBar?.length || b.splitBar?.length || a.blank || b.blank) return false;
   const right = colStart + col.width - CELL_INSET - (col.trailInset ?? 0);
   if (right <= vpW) return false;
   if (!sameOtherCellFields(a, b)) return false;
@@ -809,7 +809,7 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
       gutter: paneGeom.gutter,
       xs: paneGeom.xs,
       tableWidth: columns.totalWidth,
-      titles: panes.map(pane => ({ key: pane.key, name: paneTitleText(pane.title), missing: pane.title.name.kind === 'notRecorded', flag: pane.title.flag ?? null, flagPending: pane.title.flagPending === true, country: pane.title.country ?? null })),
+      titles: panes.map(pane => ({ key: pane.key, name: paneTitleText(pane.title), nameState: valueStateProps(pane.title.name), missing: pane.title.name.kind === 'notRecorded', flag: pane.title.flag ?? null, flagPending: pane.title.flagPending === true, country: pane.title.country ?? null })),
     };
   }
   shapeFieldCache.set(shape, { width, fields });

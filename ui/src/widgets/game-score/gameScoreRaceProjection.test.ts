@@ -4,6 +4,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import { assertBarsModelValid, type BarsDataRow } from '../../families/bars/model.ts';
 import { createBoundedReadView, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
+import { knownValue } from '../../families/value.ts';
 import type { SeriesRankReply } from '../../generated/dashboard';
 import { gameScoreRaceDeclaration, gameScoreRaceProjection, type GameScoreRaceOptions } from './gameScoreRaceProjection.ts';
 
@@ -50,7 +51,9 @@ test('game-score race keeps the product order, keys rows by recorded slot, and s
   assertBarsModelValid(model, 500);
   const rows = model.rows.filter((row): row is BarsDataRow => row.kind === 'data');
   assert.deepEqual(rows.map(row => [row.key, row.label, row.numeric]), [
-    [countryKey(1), 'United States', 4000], [countryKey(2), 'German Reich', 3500], [countryKey(3), 'United Kingdom', 2500],
+    [countryKey(1), knownValue('United States'), 4000],
+    [countryKey(2), knownValue('German Reich'), 3500],
+    [countryKey(3), knownValue('United Kingdom'), 2500],
   ]);
   assert.deepEqual(rows[0]!.segments?.map(segment => [segment.key, Math.round(segment.share * 100)]), [['army', 38], ['navy', 38], ['air', 25]]);
   assert.equal(rows[1]!.segments, undefined, 'a missing part leaves the bar whole: the known parts are never stretched to fill it');

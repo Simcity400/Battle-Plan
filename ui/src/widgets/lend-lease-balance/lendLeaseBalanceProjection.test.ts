@@ -42,7 +42,7 @@ test('the product\'s order is kept, received is the left side and sent the right
   assert.equal(model.leftHeader, 'Industry received');
   assert.equal(model.rightHeader, 'Industry sent');
   const rows = model.rows as BarsDataRow[];
-  assert.deepEqual(rows.map(row => row.label), ['Soviet Union', 'Ethiopia'], 'no client reordering');
+  assert.deepEqual(rows.map(row => row.label), [{ kind: 'known', value: 'Soviet Union' }, { kind: 'known', value: 'Ethiopia' }], 'no client reordering');
   assert.deepEqual(sides(rows[0]!), [{ kind: 'known', value: 391200n }, { kind: 'known', value: 552700n }]);
   assert.deepEqual(sides(rows[1]!), [{ kind: 'known', value: 678150n }, { kind: 'zero', value: 0n }]);
   assert.deepEqual([formatBarsValueField(rows[0]!.left!.value).text, formatBarsValueField(rows[1]!.left!.value).text], ['3,912', '6,781.5']);
@@ -78,7 +78,11 @@ test('a chosen country the reply does not hold is not recorded and comes last; a
     { slot: 3, tag: 'SOV', values: ['0', '0', '0', '0'] },
   ])), { ...TOP, chosen: ['SOV', 'MOD', '\u00004'] });
   const rows = model.rows as BarsDataRow[];
-  assert.deepEqual(rows.map(row => [row.key, row.labelMissing === true]), [['\u00004', true], ['\u00003', false], ['MOD', false]]);
+  assert.deepEqual(rows.map(row => [row.key, row.label]), [
+    ['\u00004', { kind: 'notRecorded', reason: 'Country not recorded' }],
+    ['\u00003', { kind: 'known', value: 'Soviet Union' }],
+    ['MOD', { kind: 'known', value: 'Modland' }],
+  ]);
   assert.equal(rows[2]!.left?.value.value.kind, 'notRecorded');
   assert.equal(rows[2]!.left?.numeric, null);
   assert.deepEqual(sides(rows[1]!), [{ kind: 'zero', value: 0n }, { kind: 'zero', value: 0n }]);

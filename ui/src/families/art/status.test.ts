@@ -174,7 +174,7 @@ test('one art status travels from the product reply to the painted slot and the 
 
       const bars: BarsModel = {
         form: 'ordered', hour: 300, scaleMax: 10, showAxis: false,
-        rows: [{ kind: 'data', key: 'r', label: 'Sample Country', media: flag ? { kind: 'flag', art, tag: 'QQA' } : { kind: 'art', art, resolvedName: 'Heavy Tank' }, color: '#888888', value: { value: knownValue(5), format: 'integer' }, numeric: 5 }],
+        rows: [{ kind: 'data', key: 'r', label: knownValue('Sample Country'), media: flag ? { kind: 'flag', art, tag: 'QQA' } : { kind: 'art', art, resolvedName: 'Heavy Tank' }, color: '#888888', value: { value: knownValue(5), format: 'integer' }, numeric: 5 }],
       };
       const barsDraw = recorder();
       drawFamilyBars(barsDraw.ctx, { model: bars, layout: layoutFamilyBars(bars, 540, 200, THEME), theme: THEME, scrollTop: 0, now: 0, glideDuration: 0, artCache: cache });

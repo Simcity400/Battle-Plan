@@ -61,14 +61,14 @@ function dataRow(readView: BoundedReadView, row: LendLeaseRow, measure: LendLeas
   const key = countryKey(row.slot);
   if (row.tag === null) {
     return {
-      kind: 'data', key, label: 'Name not recorded', labelMissing: true,
+      kind: 'data', key, label: notRecorded('Country not recorded'),
       left: { value: received.field, numeric: received.numeric },
       right: { value: sent.field, numeric: sent.numeric },
     };
   }
   const pres = countryRowPresentation(readView, row.tag);
   return {
-    kind: 'data', key, subject: row.tag, label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media,
+    kind: 'data', key, subject: row.tag, label: pres.label, media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
     left: { value: received.field, numeric: received.numeric },
     right: { value: sent.field, numeric: sent.numeric },
@@ -78,11 +78,11 @@ function dataRow(readView: BoundedReadView, row: LendLeaseRow, measure: LendLeas
 function missingRow(readView: BoundedReadView, key: string, reason: string): BarsDataRow {
   const value: Value = notRecorded(reason);
   if (isSlotKey(key)) {
-    return { kind: 'data', key, label: 'Name not recorded', labelMissing: true, left: { value: { value }, numeric: null }, right: { value: { value }, numeric: null } };
+    return { kind: 'data', key, label: notRecorded('Country not recorded'), left: { value: { value }, numeric: null }, right: { value: { value }, numeric: null } };
   }
   const pres = countryRowPresentation(readView, key);
   return {
-    kind: 'data', key, subject: key, label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media,
+    kind: 'data', key, subject: key, label: pres.label, media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
     left: { value: { value }, numeric: null },
     right: { value: { value }, numeric: null },

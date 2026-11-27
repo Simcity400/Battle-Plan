@@ -57,7 +57,7 @@ function project(readView: BoundedReadView, options: AirStatisticsOptions): Bars
     const enemy = live?.raw?.(enemyKey) ?? (live?.get(enemyKey) as number | undefined);
     const shown = options.ratio ? ratio(ours, enemy) : null;
     return {
-      kind: 'data', key: region.region, subject: region.region, label: named.label, labelMissing: named.nameMissing !== undefined,
+      kind: 'data', key: region.region, subject: region.region, label: named.value,
       ...(colour ? { color: colour } : {}),
       left: side(ours, live?.missing(oursKey) ?? NOT_READ, channel),
       right: side(enemy, live?.missing(enemyKey) ?? NOT_READ, channel),

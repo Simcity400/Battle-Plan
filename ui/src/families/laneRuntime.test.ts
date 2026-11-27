@@ -1119,7 +1119,7 @@ test('non-hover frames deduplicate structure, mirror, and audit fields structura
 });
 
 test('unrelated flag batch and non-country entity settlements reuse the 1,500-country index with zero projections, rebuilds, identity lookups, or flag lookups', async () => {
-  const { countryRowPresentation } = await import('./bars/model.ts');
+  const { barsLabelText, countryRowPresentation } = await import('./bars/model.ts');
   reset();
   const recording = installRecordingCanvas();
   const countryCount = 1500;
@@ -1133,7 +1133,7 @@ test('unrelated flag batch and non-country entity settlements reuse the 1,500-co
       let first = '';
       for (let i = 0; i < tags.length; i++) {
         const pres = countryRowPresentation(view, tags[i]!);
-        if (i === 0) first = pres.label;
+        if (i === 0) first = barsLabelText(pres.label);
       }
       return { hour: view.hour, bucket: 0, rows: [{ key: 'A', v: 1 }], name: first };
     },

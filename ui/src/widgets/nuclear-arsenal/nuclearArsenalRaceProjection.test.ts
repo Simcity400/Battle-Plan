@@ -59,8 +59,8 @@ test('nuclear-arsenal race preserves Rust top order, builds weapon-type segments
   assertBarsModelValid(model, 500);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => [r.key, r.label, r.numeric]), [
-    ['USA', 'United States', 10],
-    ['SOV', 'Soviet Union', 3],
+    ['USA', { kind: 'known', value: 'United States' }, 10],
+    ['SOV', { kind: 'known', value: 'Soviet Union' }, 3],
   ]);
   assert.deepEqual(rows[0]!.segments?.map(s => [s.key, s.label, Math.round(s.share * 100)]), [
     ['0', 'Nuclear Bomb', 60],

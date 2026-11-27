@@ -2,7 +2,7 @@ import { subjectHandle } from '../../dashboard/chosen.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { artKindCell, LOADING_NAME, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logDateCell, logStatusCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TableSubjectPicture } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
@@ -21,13 +21,13 @@ const base = { columns: SERVICE_COLUMNS, hideHeader: true, unsorted: true, dateG
 const blank: TableCell = { value: notApplicable('Does not apply to this entry'), blank: true };
 const BATTLE_ART = { kind: 'sprite', key: 'GFX_landbattle_strip', frame: 0 } as const;
 
-function kindCell(view: BoundedReadView, row: ServiceEntry, sprite: string | null, name: string): TableCell {
+function kindCell(view: BoundedReadView, row: ServiceEntry, sprite: string | null, name: string | null): TableCell {
   if (row.kind === 'award') {
     const icon = row.medal?.icon;
     return artKindCell(view, icon ? { kind: 'sprite', key: icon.key, frame: icon.frame } : null, 'drawn', row.medal?.name ?? name,
       row.medal?.iconMissing ?? 'Medal artwork not recorded');
   }
-  if (row.kind === 'battle' || row.kind === 'career') return artKindCell(view, BATTLE_ART, 'square', name, 'Land battle artwork not in your installation');
+  if (row.kind === 'battle' || row.kind === 'career') return artKindCell(view, BATTLE_ART, 'square', name ?? 'Land battle', 'Land battle artwork not in your installation');
   return artKindCell(view, sprite ? { kind: 'sprite', key: sprite, frame: 0 } : null, 'drawn', name, 'Division artwork not recorded');
 }
 
@@ -41,14 +41,15 @@ function serviceRow(view: BoundedReadView, row: ServiceEntry, sprite: string | n
   const place = row.province !== null && row.placeHour !== null
     ? resolveName(view, 'province', String(row.province), { atHour: row.placeHour, boundary }).value : undefined;
   const title = row.kind === 'battle' && place?.kind === 'known' ? `Battle of ${place.value}` : created ? 'First seen' : removed ? 'Division removed' : row.title;
-  const name = title ?? (award ? 'Medal name not recorded' : 'Entry description not recorded');
+  const battlePending = row.kind === 'battle' && title === null && place?.kind === 'pending';
+  const name = title ?? (battlePending ? LOADING_NAME : award ? 'Medal name not recorded' : 'Entry description not recorded');
   return {
     key: row.key, name, rowHour: row.hour, meta: row.hour,
     cells: {
       date: logDateCell(row.hour),
-      kind: kindCell(view, row, sprite, name),
+      kind: kindCell(view, row, sprite, battlePending ? null : name),
       country: logCountryCell(view, countries, row.observed, boundary),
-      item: { value: title ? knownValue(title) : notRecorded(name), missingFigure: award ? 'Medal' : 'Entry' },
+      item: { value: title ? knownValue(title) : battlePending ? place : notRecorded(name), missingFigure: award ? 'Medal' : 'Entry' },
       place: place ? { value: place }
         : award ? blank : { value: notRecorded('Place not recorded'), missingFigure: 'Place' },
       status: status ? logStatusCell(status, removed ? 'ended' : 'finished') : removed ? { value: notRecorded('Removal cause not recorded') } : blank,

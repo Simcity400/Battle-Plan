@@ -293,7 +293,13 @@ export function projectCasualtyOpponents(readView: BoundedReadView): BarsModel {
   const resolved = reply.opponents.map(opponent => {
     const country = reply.countries[opponent.country]!;
     const shown = countryRowPresentation(readView, country.tag, undefined, false, country.shownHour ?? hour);
-    return { opponent, country, shown, label: shown.label, loading: shown.labelLoading };
+    return {
+      opponent,
+      country,
+      shown,
+      label: shown.label.kind === 'known' ? shown.label.value : '',
+      loading: shown.label.kind !== 'known',
+    };
   });
   const labels = disambiguateLabels(resolved);
   const rows: BarsDataRow[] = resolved.map(({ opponent, country, shown }, at) => {
@@ -305,8 +311,7 @@ export function projectCasualtyOpponents(readView: BoundedReadView): BarsModel {
       kind: 'data',
       key,
       subject: tag,
-      label: labels[at]!,
-      labelMissing: shown.labelMissing,
+      label: shown.label.kind === 'known' ? knownValue(labels[at]!) : shown.label,
       media: shown.media,
       ...(shown.color ? { color: shown.color } : {}),
       left: { value: { value: left.value, format: 'integer', compact: true }, numeric: left.numeric },

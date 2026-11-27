@@ -1,6 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsDataRow, BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { countryRowPresentation } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation } from '../../families/bars/model.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { activeGroupMembers, nextDatedMembershipChange, type DatedMembershipOptions } from '../../families/groupFilter.ts';
@@ -9,7 +9,7 @@ import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixA
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import { knownValue } from '../../families/value.ts';
+import { knownValue, notRecorded, partialValue, pendingValue, type Value } from '../../families/value.ts';
 import type { Operative, OperativeMatrixForm, OperativeMatrixReply } from '../../generated/dashboard';
 
 export type OperativeMatrixOptions = DatedMembershipOptions;
@@ -309,13 +309,32 @@ export function projectOperativePairs(readView: BoundedReadView, options?: Opera
     const count = pair.operatives.length;
     scaleMax = Math.max(scaleMax, count);
     if (pair.target === null) {
-      const ownerLabel = shownSpy.labelMissing ? spy : shownSpy.label;
       const missingReason = pair.targetMissing ?? TARGET_NOT_RECORDED;
+      if (shownSpy.label.kind === 'pending') {
+        return {
+          kind: 'data',
+          key: `${spy}:unknown-target`,
+          subject: spy,
+          label: pendingValue(shownSpy.label.reason),
+          muted: true,
+          media: shownSpy.media,
+          ...(shownSpy.color ? { color: shownSpy.color } : {}),
+          value: { value: knownValue(count), format: 'integer' },
+          numeric: count,
+          tooltip: {
+            title: barsLabelText(shownSpy.label),
+            hour: readHour,
+            missingReason,
+            items: [{ label: 'Spy', pendingReason: shownSpy.label.reason }, ...operativeItems(pair.operatives)],
+          },
+        };
+      }
+      const ownerLabel = shownSpy.label.kind === 'known' ? shownSpy.label.value : spy;
       return {
         kind: 'data',
         key: `${spy}:unknown-target`,
         subject: spy,
-        label: `${ownerLabel} → Target not recorded`,
+        label: knownValue(`${ownerLabel} → Target not recorded`),
         muted: true,
         media: shownSpy.media,
         ...(shownSpy.color ? { color: shownSpy.color } : {}),
@@ -331,18 +350,42 @@ export function projectOperativePairs(readView: BoundedReadView, options?: Opera
     }
     const target = reply.countries[pair.target]!.tag;
     const shownTarget = countryRowPresentation(readView, target);
-    const label = `${shownSpy.label} → ${shownTarget.label}`;
+    const spyLabel = shownSpy.label;
+    const targetLabel = shownTarget.label;
+    let label: Value<string>;
+    let tooltipTitle: string;
+    const pendingItems: TooltipListItem[] = [];
+    if (spyLabel.kind === 'known' && targetLabel.kind === 'known') {
+      label = knownValue(`${spyLabel.value} → ${targetLabel.value}`);
+      tooltipTitle = `${spyLabel.value} has ${operativesLabel(count)} in ${targetLabel.value}`;
+    } else if (spyLabel.kind === 'known') {
+      const reason = 'reason' in targetLabel ? targetLabel.reason : 'Country not recorded';
+      label = partialValue(`From ${spyLabel.value}`, reason);
+      tooltipTitle = barsLabelText(label);
+      if (targetLabel.kind === 'pending') pendingItems.push({ label: 'Target', pendingReason: targetLabel.reason });
+    } else if (targetLabel.kind === 'known') {
+      const reason = 'reason' in spyLabel ? spyLabel.reason : 'Country not recorded';
+      label = partialValue(`In ${targetLabel.value}`, reason);
+      tooltipTitle = barsLabelText(label);
+      if (spyLabel.kind === 'pending') pendingItems.push({ label: 'Spy', pendingReason: spyLabel.reason });
+    } else {
+      const reasons = [...new Set([
+        'reason' in spyLabel ? spyLabel.reason : 'Country not recorded',
+        'reason' in targetLabel ? targetLabel.reason : 'Country not recorded',
+      ])].join('; ');
+      label = spyLabel.kind === 'pending' || targetLabel.kind === 'pending' ? pendingValue(reasons) : notRecorded(reasons);
+      tooltipTitle = barsLabelText(label);
+    }
     return {
       kind: 'data',
       key: `${spy}>${target}`,
       subject: spy,
       label,
-      labelMissing: shownSpy.labelMissing || shownTarget.labelMissing,
       media: shownSpy.media,
       ...(shownSpy.color ? { color: shownSpy.color } : {}),
       value: { value: knownValue(count), format: 'integer' },
       numeric: count,
-      tooltip: { title: `${shownSpy.label} has ${operativesLabel(count)} in ${shownTarget.label}`, hour: readHour, items: operativeItems(pair.operatives) },
+      tooltip: { title: tooltipTitle, hour: readHour, items: [...pendingItems, ...operativeItems(pair.operatives)] },
     };
   });
   return {

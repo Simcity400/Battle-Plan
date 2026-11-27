@@ -56,7 +56,8 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
     const where = row.battleProvince === null ? null : resolveName(view, 'province', String(row.battleProvince), { atHour: row.hour, boundary }).value;
     const named = where?.kind === 'known' ? `Battle of ${where.value}` : null;
     const killer = killerBeside(cause);
-    const tooltipRows = [{ label: 'Battle', value: named ? knownValue(named) : notRecorded('Naval battle recorded, battle name not recorded') }, ...sunkBy(cause)];
+    const battleValue = named ? knownValue(named) : where?.kind === 'pending' ? where : notRecorded('Naval battle recorded, battle name not recorded');
+    const tooltipRows = [{ label: 'Battle', value: battleValue }, ...sunkBy(cause)];
     loss = { value: knownValue(named ?? 'Battle'), strong: true, narrowText: 'Battle', tooltipRows, ...(killer ? { inlineSubtext: killer } : {}) };
   } else {
     loss = cause.kind === 'notRecorded' ? { value: notRecorded(cause.reason), missingFigure: 'Cause' }

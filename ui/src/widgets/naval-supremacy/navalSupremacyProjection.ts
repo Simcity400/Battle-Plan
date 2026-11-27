@@ -90,8 +90,8 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
   if (!reply || !options.surface || reply.lastHour > hour) return emptyBars(hour);
   const look = lookOf(readView, reply, options);
   const entry = (region: SupremacyRegion): ShareRowEntry => {
-    const named = regionLabel(readView, region.id, region.name);
-    const base = { key: region.id, subject: region.id, region: Number(region.id), label: named.label, ...(named.nameMissing ? { labelMissing: true } : {}), countText: shipsText(region.ownShips, region.enemyShips) };
+    const named = regionLabel(readView, region.id, null);
+    const base = { key: region.id, subject: region.id, region: Number(region.id), label: named.value, countText: shipsText(region.ownShips, region.enemyShips) };
     const readout = region.readout;
     if (!readout || readout.kind === 'notRecorded') {
       const reason = readout?.reason ?? 'Naval region control was not recorded';
@@ -269,7 +269,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
   windows.set(options, current);
   const lastDay = Math.floor((through - now.firstDayHour) / now.dayHours);
   const rows: HeatLaneRow[] = now.regions.map(region => {
-    const named = regionLabel(readView, region.id, region.name);
+    const named = regionLabel(readView, region.id, null);
     const old = previous?.get(region.id);
     const parts = lanes.map(({ reply, regions, tile, extend }, i) => {
       const source = regions.get(region.id);
@@ -307,7 +307,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
         ? { kind: 'value', form: 'value', primary: '', secondary: 'Contested', swatch: color, audit: 'Contested' }
         : { kind: 'value', form: 'value', primary, secondary: readout.control > 0 ? look.friendlyLabel : look.enemyLabel, swatch: color };
     }
-    return { id: region.id, label: named.label, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, region: Number(region.id), runs, ...(shown ? { readout: shown } : {}) };
+    return { id: region.id, label: named.label, labelValue: named.value, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, region: Number(region.id), runs, ...(shown ? { readout: shown } : {}) };
   });
   const gaps = new Map<string, { firstHour: number; lastHour: number; reason: string }>();
   for (const reply of pieces) for (const gap of reply.gaps) gaps.set(`${gap.firstHour}:${gap.lastHour}`, { firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' });

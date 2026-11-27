@@ -47,4 +47,22 @@ test('a treaty counts once when expanded, its transfers show the former owner at
   const terms = peaceDealsProjection.project(unnamed, { expanded: [key] }).rows[1]?.cells.terms?.value;
   assert.deepEqual(terms?.kind === 'partial' && terms.reason, 'BBB: Name not in the recording', 'a recipient whose name was not read keeps that reason in the terms the tooltip reads');
   assert.ok(reads.includes('state 7 at 32'));
+  const pendingHead: PeaceDealsTailReply = {
+    ...head,
+    total: '2',
+    rows: [
+      head.rows[1]!,
+      { key: 'items-only', hour: 32, parent: key, detail: { kind: 'terms', items: [{ kind: 'state', state: 7, tag: 'AAA', at: 28 }] }, last: true },
+    ],
+  };
+  const pendingSource = buildRowSourceFromHead('branch', pendingHead, undefined, 40)!;
+  const pendingView = createBoundedReadView({ hour: 40, rows: new Map([['main', pendingSource]]), identity: {
+    resolve: (kind, id, hour) => ({ kind, key: id, atHour: hour,
+      name: id === '7' ? { status: 'pending' } : { status: 'ready', value: `${kind} ${id}` },
+      holder: { status: 'absent', reason: 'fixture' }, validInterval: [hour, hour], nextChangeAt: Infinity }),
+  } });
+  const pendingRows = peaceDealsProjection.project(pendingView, { expanded: [key] }).rows;
+  assert.equal(pendingRows[0]?.cells.terms?.value.kind, 'partial', 'a recipient row with a pending state term is partial, never known');
+  assert.deepEqual(pendingRows[1]?.cells.terms?.value, { kind: 'pending', reason: 'Name is loading' }, 'a sole pending peace term stays pending');
+  assert.equal(pendingRows[1]?.cells.terms?.flags?.[0]?.label, 'Loading…', 'expanded pending peace terms use the shared pending label');
 });

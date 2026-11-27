@@ -205,7 +205,7 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   const missingLeftTip = barsLane.tooltip({ model: rightLonger } as never, 'row:opposing:AAA', false);
   assert.equal(missingLeftTip?.hour, endedAt, 'missing-member left-side tooltip stamps the supplying read hour');
   assert.equal(missingLeftTip?.payload?.hour, endedAt);
-  assert.deepEqual(missingLeftTip?.payload?.items, [{ label: 'Flag', missingReason: 'Loading' }], 'missing-member left-side tooltip preserves default art status items');
+  assert.deepEqual(missingLeftTip?.payload?.items, [{ label: 'Name', pendingReason: 'Name is loading' }, { label: 'Flag', missingReason: 'Loading' }], 'missing-member left-side tooltip preserves default name and art status items');
   assert.equal(barsLane.tooltip({ model: rightLonger } as never, 'row:opposing:none:1', false), null, 'empty synthetic left half on a right-longer roster emits no tooltip');
 });
 

@@ -460,7 +460,8 @@
   color: var(--text);
 }
 
-.tf-th-identity-name.is-missing {
+.tf-th-identity-name.is-missing,
+.tf-th-identity-name.is-pending {
   color: var(--muted);
   font-weight: 500;
 }
