@@ -7,7 +7,7 @@ import { Page, type PageMessage, type PageSurface, type RebindChange, type Widge
 import type { Channel } from './facts';
 import type { Binding, Dated, Supply } from '../../draw/lane';
 import { PayloadSender } from './payloads.ts';
-import type { FromLane, ProjectionKey, ToLane } from '../../draw/laneMessages';
+import type { FromLane, LaneSlotsPayload, ProjectionKey, ToLane } from '../../draw/laneMessages';
 import { auditing, noteFrame, recordPicture } from '../pulled.ts';
 import { perfLog } from '../../shell/perf.ts';
 import type { AuditRow } from '../../draw/notifications';
@@ -81,7 +81,7 @@ export interface SupplyChange {
   readonly dated?: Dated | null;
 }
 
-export interface MountOptions { offset: number; pin: number | null; owner?: string; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string; kind?: string }
+export interface MountOptions { offset: number; pin: number | null; owner?: string; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string; kind?: string; preferredLane?: number }
 
 export interface PointerHitMeta {
   readonly installedId?: number;
@@ -220,6 +220,25 @@ export class Pipeline {
   }
 
   get lanes() { return this.host.lanes.length; }
+
+  get laneCount() { return this.host.lanes.length; }
+
+  transferCanvas(id: number, canvas: OffscreenCanvas, opaque: boolean) {
+    if (this.closed) return;
+    const widget = this.widgets.get(id);
+    if (!widget) return;
+    this.postLane(widget.lane, { type: 'canvas', widget: id, canvas, opaque }, [canvas]);
+  }
+
+  transferLaneSurface(lane: number, canvas: OffscreenCanvas, opaque: boolean) {
+    if (this.closed || lane < 0 || lane >= this.host.lanes.length) return;
+    this.postLane(lane, { type: 'lane-surface', canvas, opaque }, [canvas]);
+  }
+
+  sendLaneSlots(lane: number, payload: LaneSlotsPayload) {
+    if (this.closed || lane < 0 || lane >= this.host.lanes.length) return;
+    this.postLane(lane, { type: 'lane-slots', ...payload });
+  }
 
   prepare(families: readonly string[], projections: readonly ProjectionKey[]) {
     if (this.closed) return;
@@ -573,13 +592,17 @@ export class Pipeline {
     engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); const pictures = this.page.takePictures(); if (perfLog && this.page.playing) perfLog.pictures(pictures, this.expiredNames()); for (const [id, stamp] of this.page.takeFailures()) this.failedLocally(id, stamp, asFailure(new Error('drawing failed'))); this.flush(); if (auditing()) this.sample(this.page.seek); });
   }
 
-  private place(key: string | undefined, kind: string | undefined): { lane: number; cost: number } {
+  private place(key: string | undefined, kind: string | undefined, preferredLane?: number): { lane: number; cost: number } {
     const cost = (kind !== undefined ? this.kindCost.get(kind) : undefined) ?? DEFAULT_COST;
     const healthy: number[] = [];
     for (let at = 0; at < this.costLoads.length; at++) {
       if (!this.laneErrors[at]) healthy.push(at);
     }
     if (!healthy.length) return { lane: 0, cost };
+    if (preferredLane !== undefined && preferredLane >= 0 && preferredLane < this.costLoads.length && !this.laneErrors[preferredLane]) {
+      if (key !== undefined) this.placed.set(key, preferredLane);
+      return { lane: preferredLane, cost };
+    }
     let total = 0;
     for (const at of healthy) total += this.costLoads[at]!;
     const average = total / healthy.length;
@@ -597,7 +620,7 @@ export class Pipeline {
 
   mount(options: MountOptions) {
     const kind = options.kind;
-    const { lane, cost } = this.place(options.key, kind);
+    const { lane, cost } = this.place(options.key, kind, options.preferredLane);
     const id = this.nextWidget++;
     this.loads[lane]!++;
     this.costLoads[lane]! += cost;

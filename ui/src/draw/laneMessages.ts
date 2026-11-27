@@ -7,6 +7,26 @@ import type { StripReceipt, StripUpdate } from '../dashboard/strip/store.ts';
 
 export type ProjectionKey = readonly [family: string, kind: string, view: string];
 
+export interface SharedSurfaceSlot {
+  readonly widget: number;
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+  readonly visible: boolean;
+}
+
+export interface LaneSlotsPayload {
+  readonly width: number;
+  readonly height: number;
+  readonly dpr: number;
+  readonly scrollTop: number;
+  readonly scrollLeft: number;
+  readonly surfaceColor: string;
+  readonly clipPathFallback: boolean;
+  readonly slots: readonly SharedSurfaceSlot[];
+}
+
 export type ToLane =
   | { type: 'init'; lane: number; lanes: number; port: MessagePort; rate: number }
   | { type: 'options'; rate: number }
@@ -25,6 +45,9 @@ export type ToLane =
   | { type: 'stream'; route: number; seek: number; target: number }
   | { type: 'fail'; route: number; seek: number; command: number; reason: string }
   | { type: 'pointer'; widget: number; surface: number; point: [number, number] | null; installed?: number }
+  | { type: 'canvas'; widget: number; canvas: OffscreenCanvas; opaque: boolean }
+  | { type: 'lane-surface'; canvas: OffscreenCanvas; opaque: boolean }
+  | ({ type: 'lane-slots' } & LaneSlotsPayload)
   | FrameRequest;
 
 export type FromLane =

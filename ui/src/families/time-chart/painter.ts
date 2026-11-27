@@ -791,10 +791,12 @@ interface TimeChartBackdropEntry {
   artSnapshot: BackdropArtSnapshot[];
 }
 
-const backdropCache = new WeakMap<Canvas2D, TimeChartBackdropEntry>();
+const backdropCache = new WeakMap<object, TimeChartBackdropEntry>();
+const tcCacheKey = (ctx: Canvas2D): object =>
+  (ctx as unknown as { __bpWidgetKey?: object }).__bpWidgetKey ?? ctx;
 
 export function clearTimeChartBackdrop(ctx: Canvas2D): void {
-  backdropCache.delete(ctx);
+  backdropCache.delete(tcCacheKey(ctx));
 }
 
 function backdropThemeKey(theme: FamilyTheme): string {
@@ -1779,7 +1781,7 @@ export function drawTimeChart(
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, layout.width, layout.height);
   if (layout.rows) {
-    backdropCache.delete(ctx);
+    backdropCache.delete(tcCacheKey(ctx));
     drawChartRows(ctx, model, layout.rows, theme, parseRowsInspect(inspectKey), artCache);
     return;
   }
@@ -1794,9 +1796,10 @@ export function drawTimeChart(
     && typeof (ctx as { readonly drawImage?: unknown }).drawImage === 'function'
   ) {
     const colorSpace = backdropColorSpaceOf(ctx);
+    const slotMeta = ctx as unknown as { readonly __bpSlotBw?: number; readonly __bpSlotBh?: number };
     const canvas = (ctx as { readonly canvas?: { readonly width?: number; readonly height?: number } }).canvas;
-    const bw = canvas && typeof canvas.width === 'number' ? canvas.width : 0;
-    const bh = canvas && typeof canvas.height === 'number' ? canvas.height : 0;
+    const bw = typeof slotMeta.__bpSlotBw === 'number' ? slotMeta.__bpSlotBw : (canvas && typeof canvas.width === 'number' ? canvas.width : 0);
+    const bh = typeof slotMeta.__bpSlotBh === 'number' ? slotMeta.__bpSlotBh : (canvas && typeof canvas.height === 'number' ? canvas.height : 0);
     if (
       colorSpace !== null
       && bw > 0
@@ -1808,7 +1811,8 @@ export function drawTimeChart(
       const themeKey = backdropThemeKey(theme);
       const textRev = textWidthRevision();
       const normLegendFit = legendFit ?? null;
-      let entry = backdropCache.get(ctx);
+      const cacheKey = tcCacheKey(ctx);
+      let entry = backdropCache.get(cacheKey);
       const sameKey = entry !== undefined
         && entry.bw === bw
         && entry.bh === bh
@@ -1862,7 +1866,7 @@ export function drawTimeChart(
             textRev,
             artSnapshot,
           };
-          backdropCache.set(ctx, entry);
+          backdropCache.set(cacheKey, entry);
         } else {
           entry.canvas = null;
           entry.ctx = null;
@@ -1882,7 +1886,7 @@ export function drawTimeChart(
     }
   }
   if (!usedBackdrop) {
-    if (!trackedBackdrop) backdropCache.delete(ctx);
+    if (!trackedBackdrop) backdropCache.delete(tcCacheKey(ctx));
     drawTimeChartBackdrop(ctx, model, layout, theme, tokens, parsedInspect, hoveredSeriesId, legendFit, artCache);
   }
 

@@ -11,6 +11,18 @@
   outline: none;
 }
 
+.fh-frame[data-shared-surface='1'] {
+  background: transparent;
+}
+
+.fh-frame[data-shared-surface='1'] > :not(.fh-body-wrap) {
+  background: var(--surface);
+}
+
+.fh-frame[data-shared-surface='1'] .fh-canvas {
+  visibility: hidden;
+}
+
 .fh-body-wrap {
   position: relative;
   flex: 1 1 auto;

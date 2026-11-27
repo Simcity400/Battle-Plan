@@ -89,6 +89,7 @@ export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readonly before: LaneDrawn<TBinding, TModel, TLayout> | null;
   readonly changedAt: number;
   readonly continuity: number;
+  readonly fullRepaint?: boolean;
   readNow(): BoundedReadView;
 }
 
@@ -146,8 +147,13 @@ interface Painting {
 }
 
 interface Held<TBinding extends LaneBinding, TModel, TLayout> {
-  readonly canvas: OffscreenCanvas;
-  readonly ctx: OffscreenCanvasRenderingContext2D;
+  readonly widgetKey: object;
+  canvas: OffscreenCanvas;
+  ctx: OffscreenCanvasRenderingContext2D;
+  workerCanvas: OffscreenCanvas | null;
+  sharedPainted: boolean;
+  opaque: boolean;
+  surfaceColor: string;
   readonly art: LaneArtCache;
   wake: () => void;
   artRevision: number;
@@ -473,18 +479,49 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     artRevision: held.artRevision,
   });
 
-  function create(surface: Surface, widget: number): Held<TBinding, TModel, TLayout> {
-    const [width, height] = backing(surface);
-    const canvas = new OffscreenCanvas(width, height);
-    const ctx = canvas.getContext('2d');
+  function configureContext(
+    canvas: OffscreenCanvas,
+    opaque: boolean,
+    getSurfaceColor: () => string,
+  ): OffscreenCanvasRenderingContext2D {
+    const ctx = canvas.getContext('2d', opaque ? { alpha: false } : undefined);
     if (!ctx) throw new Error('Could not acquire 2D canvas context');
     snapCanvasText(ctx);
+    if (opaque) {
+      const rawClearRect = ctx.clearRect.bind(ctx);
+      ctx.clearRect = (x: number, y: number, w: number, h: number) => {
+        const color = getSurfaceColor();
+        if (!color) { rawClearRect(x, y, w, h); return; }
+        const prev = ctx.fillStyle;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, w, h);
+        ctx.fillStyle = prev;
+      };
+    }
+    return ctx;
+  }
+
+  function create(surface: Surface, widget: number, workerCanvas?: PaintInput['workerCanvas']): Held<TBinding, TModel, TLayout> {
+    const [width, height] = backing(surface);
+    const opaque = workerCanvas?.opaque ?? false;
+    const canvas = workerCanvas ? workerCanvas.canvas : new OffscreenCanvas(width, height);
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
     const art = new LaneArtCache({
       ...(options?.artMaxEntries !== undefined ? { maxEntries: options.artMaxEntries } : {}),
       pool: artPool,
     });
     const held: Held<TBinding, TModel, TLayout> = {
-      canvas, ctx, art,
+      widgetKey: {},
+      canvas,
+      ctx: null as unknown as OffscreenCanvasRenderingContext2D,
+      workerCanvas: workerCanvas ? workerCanvas.canvas : null,
+      sharedPainted: false,
+      opaque,
+      surfaceColor: '',
+      art,
       wake: wakerOf(widget),
       artRevision: 0,
       readers: null, snapshot: null, artResolutions: undefined, index: null, identity: undefined,
@@ -505,6 +542,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       auditKey: [], auditField: null,
       tiles: new SceneTiles(),
     };
+    held.ctx = configureContext(canvas, opaque, () => held.surfaceColor);
     art.setOnSettle(() => {
       held.artRevision++;
       held.wake();
@@ -593,13 +631,24 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
 
       let held = existing;
       if (!held) {
-        held = create(surface, input.widget);
+        held = create(surface, input.widget, input.workerCanvas);
         state.set(stateKey, held);
       }
       const keep = held;
+      let canvasSwitched = false;
+      if (input.workerCanvas && keep.workerCanvas !== input.workerCanvas.canvas) {
+        keep.workerCanvas = input.workerCanvas.canvas;
+        keep.canvas = input.workerCanvas.canvas;
+        keep.opaque = input.workerCanvas.opaque;
+        keep.ctx = configureContext(keep.canvas, keep.opaque, () => keep.surfaceColor);
+        keep.drawKey = [];
+        keep.sharedPainted = false;
+        canvasSwitched = true;
+      }
       keep.wake = wakerOf(input.widget);
 
       const [width, height, dpr] = backing(surface);
+      keep.surfaceColor = theme.surface;
       if (keep.canvas.width !== width || keep.canvas.height !== height) {
         keep.canvas.width = width;
         keep.canvas.height = height;
@@ -723,6 +772,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const layout = keep.layout;
       const tLayout = timed ? performance.now() : 0;
       let readNow: BoundedReadView | null = null;
+      const shared = input.sharedSurface;
+      const slotDirty = canvasSwitched || (shared ? (shared.dirty || !keep.sharedPainted) : false);
       const frame: LaneFrame<TBinding, TModel, TLayout> = {
         binding, theme, model, layout, surface,
         hour: drawn,
@@ -737,15 +788,18 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         before: keep.before,
         changedAt: keep.changedAt,
         continuity: keep.continuity,
+        ...(slotDirty ? { fullRepaint: true } : {}),
         readNow: () => readNow ??= sceneReadView(projected.scene, projection.validateTail ? { ...binding, validateTail: projection.validateTail } : binding, drawn, readers),
       };
 
       const drawKey = [layout, keep.continuity, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.artRevision, width, height];
       const speedChanged = effectiveSpeed !== keep.speed;
       if (speedChanged) family.onSpeed?.(layout, effectiveSpeed, keep.continuity);
-      const speedRedraw = speedChanged && keep.content !== '' && family.keepsCanvas?.(keep.ctx, frame) === false;
+      const speedRedraw = speedChanged && keep.content !== '' && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame) === false;
       keep.speed = effectiveSpeed;
-      if (keep.motion || effectiveNow >= keep.expiry || speedRedraw || !sameKey(keep.drawKey, drawKey)) {
+      const shouldPaint = slotDirty || keep.motion || effectiveNow >= keep.expiry || speedRedraw || !sameKey(keep.drawKey, drawKey);
+      let repainted = false;
+      if (shouldPaint) {
         const shown = [...family.visibleArt(frame)];
         const shownKey = shown.join('\u0000');
         let offscreenChanged = false;
@@ -763,15 +817,50 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           keep.art.requestVisible(shown, keep.artUrls ?? projected.artUrls);
         }
         const drawCanvas = () => {
+          if (shared) {
+            const { lane: sharedLane, slot } = shared;
+            const sctx = sharedLane.ctx;
+            const sdpr = sharedLane.dpr > 0 ? sharedLane.dpr : dpr;
+            sharedLane.activeSlot.ox = Math.round(slot.x * sdpr);
+            sharedLane.activeSlot.oy = Math.round(slot.y * sdpr);
+            sharedLane.activeSlot.w = slot.w;
+            sharedLane.activeSlot.h = slot.h;
+            sharedLane.activeSlot.dpr = sdpr;
+            sharedLane.activeSlot.surfaceColor = theme.surface;
+            sharedLane.activeSlot.widgetKey = keep.widgetKey;
+            const tagged = sctx as unknown as { __bpWidgetKey?: object; __bpSlotBw?: number; __bpSlotBh?: number };
+            tagged.__bpWidgetKey = keep.widgetKey;
+            tagged.__bpSlotBw = Math.max(1, Math.round(slot.w * sdpr));
+            tagged.__bpSlotBh = Math.max(1, Math.round(slot.h * sdpr));
+            sctx.save();
+            sctx.setTransform(sdpr, 0, 0, sdpr, 0, 0);
+            sctx.beginPath();
+            sctx.rect(0, 0, slot.w, slot.h);
+            sctx.clip();
+            if (sharedLane.opaque && family.family !== 'table') {
+              sctx.fillStyle = theme.surface;
+              sctx.fillRect(0, 0, slot.w, slot.h);
+            }
+            const result = family.paint(sctx, frame);
+            sctx.restore();
+            keep.sharedPainted = true;
+            return result;
+          }
           keep.ctx.save();
           keep.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          if (keep.opaque && family.family !== 'table') {
+            keep.ctx.fillStyle = theme.surface;
+            keep.ctx.fillRect(0, 0, surface.width, surface.height);
+          }
           const result = family.paint(keep.ctx, frame);
           keep.ctx.restore();
           return result;
         };
-        const painted = keep.content && family.keepsCanvas?.(keep.ctx, frame) ? { drew: false, next: false } : drawCanvas();
+        const canKeep = !slotDirty && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame);
+        const painted = canKeep ? { drew: false, next: false } : drawCanvas();
         const incremental = typeof painted === 'object';
-        if (!incremental) markCanvasPainted(keep.canvas, drawCanvas);
+        repainted = !incremental || painted.drew;
+        if (!incremental && !keep.workerCanvas && !shared) markCanvasPainted(keep.canvas, drawCanvas);
         const next = incremental ? painted.next : painted;
         keep.motion = next === true;
         keep.expiry = typeof next === 'number' ? next : Infinity;
@@ -880,9 +969,10 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         ...(status === 'picture' ? { mode: 'picture' as const } : {}),
         ...nextChangeAt,
         viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: binding.scrollLeft ?? 0, scrollTop: binding.scrollTop },
-        surfaces: [{ source: keep.canvas, content: keep.content }],
+        surfaces: keep.workerCanvas || shared ? [] : [{ source: keep.canvas, content: keep.content }],
         fields,
         motion: keep.motion,
+        repainted,
         ...(keep.motion || Number.isFinite(keep.expiry) ? { ephemeral: true } : {}),
         hit: keep.hit,
       };

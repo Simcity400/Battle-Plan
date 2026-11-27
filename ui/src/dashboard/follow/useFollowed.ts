@@ -16,7 +16,7 @@ import type { FromLane } from '../../draw/laneMessages';
 import type { ModelField, LiveMap } from '../../draw/views/fields';
 import type { Live, LiveValues } from '../../charts/live';
 
-export const laneCount = () => Math.max(1, Math.min(4, (globalThis.navigator?.hardwareConcurrency || 2) - 2));
+export const laneCount = () => Math.max(1, (globalThis.navigator?.hardwareConcurrency || 2) - 2);
 
 const weakCpu = () => Number((globalThis as { __weakCpu?: number }).__weakCpu) || 1;
 

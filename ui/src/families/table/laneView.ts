@@ -123,13 +123,16 @@ interface PaintedTable {
   dpr?: number;
 }
 
-const pictures = new WeakMap<OffscreenCanvasRenderingContext2D, PaintedTable>();
+const pictures = new WeakMap<object, PaintedTable>();
+const tableCacheKey = (ctx: OffscreenCanvasRenderingContext2D): object =>
+  (ctx as unknown as { __bpWidgetKey?: object }).__bpWidgetKey ?? ctx;
 
 function picturesFor(ctx: OffscreenCanvasRenderingContext2D, surface: Surface, art: number): PaintedTable {
   const width = surface.width * surface.dpr;
   const height = surface.height * surface.dpr;
-  let held = pictures.get(ctx);
-  if (!held || held.width !== width || held.height !== height) pictures.set(ctx, held = { width, height, art, list: [] });
+  const key = tableCacheKey(ctx);
+  let held = pictures.get(key);
+  if (!held || held.width !== width || held.height !== height) pictures.set(key, held = { width, height, art, list: [] });
   else held.art = art;
   return held;
 }
@@ -885,7 +888,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     mm.glideEnd = -Infinity;
   },
   keepsCanvas(ctx, frame) {
-    const last = pictures.get(ctx);
+    const last = pictures.get(tableCacheKey(ctx));
     if (!last?.still || last.dpr !== frame.surface.dpr ||
         last.inspect !== frame.inspect || last.selected !== frame.binding.selectedKey || last.focused !== frame.binding.focusedKey ||
         (last.art !== frame.art.version && !sameVisibleArtStates(last.artStates, frame.art)) ||
@@ -935,6 +938,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       for (let p = 0; p < shape.panes.length; p++) {
         const pane = shape.panes[p]!;
         const picture = list[p] ?? (list[p] = createTablePicture());
+        if (frame.fullRepaint) picture.frame = null;
         ctx.save();
         ctx.translate(shape.paneGeom.xs[p]!, 0);
         ctx.beginPath();
@@ -959,6 +963,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       if (drew) drawPaneFrame(ctx, shape.paneGeom, shape.columns, scroll, layout.height, theme);
     } else {
       const picture = list[0] ?? (list[0] = createTablePicture());
+      if (frame.fullRepaint) picture.frame = null;
       drew = drawFamilyTable(ctx, {
         ...common,
         rows: shape.flatRows,

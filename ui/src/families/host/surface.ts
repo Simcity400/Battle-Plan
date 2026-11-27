@@ -6,6 +6,7 @@ import { useElement, useFollowedWidget, usePipeline, useSurfaceLabel } from '../
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import { useWidgetFrame } from '../../dashboard/widgetFrame.tsx';
 import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
+import { isImageBackdropActive } from '../../dashboard/follow/sharedSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
 import { AuditSnapshotStore, auditRowsOf, isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import type { FamilySourceSubscription } from '../contract.ts';
@@ -106,6 +107,7 @@ export interface FamilyPlacementOptions {
   readonly bounds?: readonly [number, number] | null;
   readonly frameRef: { readonly current: HTMLElement | null };
   readonly surfaceLabel?: string;
+  readonly preferredLane?: number;
 }
 
 export interface FamilyPlacementHandle {
@@ -139,6 +141,7 @@ export function useFamilyPlacement(options: FamilyPlacementOptions): FamilyPlace
     bounds,
     frameRef,
     surfaceLabel = family,
+    preferredLane,
   } = options;
 
   const instanceId = useFamilyInstanceId();
@@ -153,6 +156,7 @@ export function useFamilyPlacement(options: FamilyPlacementOptions): FamilyPlace
     widget: widgetKey,
     kind: `${widgetKind}:${declarationKind}`,
     key: `${widgetId}|${declarationKind}|${instanceId}`,
+    ...(preferredLane !== undefined ? { preferredLane } : {}),
   });
 
   const frameElement = useElement(frameRef);
@@ -233,8 +237,14 @@ export interface MountedFamilyCanvas {
   readonly canvas: HTMLCanvasElement;
   readonly extent: HTMLDivElement;
   readonly surface: ReturnType<typeof bitmapSurface>;
+  readonly workerPresented?: boolean;
   readonly unmount: () => void;
 }
+
+const NOOP_SURFACE: ReturnType<typeof bitmapSurface> = {
+  install() {},
+  clear() {},
+};
 
 export function mountFamilyCanvas(
   bodyNode: HTMLElement,
@@ -243,27 +253,43 @@ export function mountFamilyCanvas(
   surfaceKind: string,
   canvasClassName: string,
   extentClassName: string,
+  useSharedSurface = false,
 ): MountedFamilyCanvas {
   const extent = document.createElement('div');
-  const drawn = pipeline.held(pipe, surfaceKind, () => {
+  const transparentFallback = !useSharedSurface && isImageBackdropActive();
+  const holdKey = useSharedSurface ? `${surfaceKind}:shared` : transparentFallback ? `${surfaceKind}:glass` : surfaceKind;
+  const drawn = pipeline.held(pipe, holdKey, () => {
     const canvas = document.createElement('canvas');
     canvas.className = canvasClassName;
     canvas.style.display = 'block';
     canvas.setAttribute('aria-hidden', 'true');
     canvas.dataset.surface = surfaceKind;
     canvas.dataset.placement = String(pipe);
-    return { canvas, surface: bitmapSurface(canvas) };
+    if (useSharedSurface) {
+      canvas.width = 1;
+      canvas.height = 1;
+      canvas.dataset.workerPresented = 'shared';
+      return { canvas, surface: NOOP_SURFACE, workerPresented: true };
+    }
+    if (transparentFallback && typeof canvas.transferControlToOffscreen === 'function') {
+      const offscreen = canvas.transferControlToOffscreen();
+      canvas.dataset.workerPresented = '1';
+      pipeline.transferCanvas(pipe, offscreen, false);
+      return { canvas, surface: NOOP_SURFACE, workerPresented: true };
+    }
+    return { canvas, surface: bitmapSurface(canvas), workerPresented: false };
   })!;
   extent.className = extentClassName;
   extent.append(drawn.canvas);
   bodyNode.append(extent);
-  const stopAlign = alignCanvas(drawn.canvas);
+  const stopAlign = useSharedSurface ? null : alignCanvas(drawn.canvas);
   return {
     canvas: drawn.canvas,
     extent,
     surface: drawn.surface,
+    workerPresented: drawn.workerPresented,
     unmount: () => {
-      stopAlign();
+      stopAlign?.();
       extent.remove();
     },
   };

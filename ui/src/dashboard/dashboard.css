@@ -207,9 +207,11 @@
   background: var(--overlay-glass); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-lg);
   font-size: 0.8125rem; font-weight: 500; animation: rise var(--t-slow) var(--ease-spring) both; }
 .layout-saved svg { width: 15px; height: 15px; color: var(--positive); }
-.dash-grid-scroll, .dash-prepare-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 6px 2px 12px 6px; transition: background-color var(--t) var(--ease); }
+.dash-grid-scroll, .dash-prepare-scroll { position: relative; flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 6px 2px 12px 6px; transition: background-color var(--t) var(--ease); }
 .dash-grid-scroll.is-editing { background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--text) 13%, transparent) 1px, transparent 0); background-size: 22px 22px; background-attachment: local; }
-.dash-grid { min-width: 0; }
+.dash-shared-layer { position: sticky; top: 0; left: 0; height: 0; overflow: visible; z-index: 0; pointer-events: none; }
+.dash-shared-canvas { position: absolute; display: none; pointer-events: none; }
+.dash-grid { position: relative; z-index: 1; min-width: 0; }
 .dash-grid .react-grid-item { transition: none; }
 .dash-grid-cell { contain: strict; will-change: transform; }
 .dash-grid .react-grid-item.react-grid-placeholder { background: var(--accent-soft); opacity: 1; border: 1.5px dashed var(--accent-line); border-radius: var(--r-lg); transition-duration: 120ms; }
@@ -224,6 +226,8 @@
   display: flex; flex-direction: column; height: 100%; min-width: 0; min-height: 0; overflow: hidden; border-radius: var(--r-md); background: var(--panel);
   box-shadow: inset 0 0 0 1px var(--line); transition: box-shadow var(--t) var(--ease);
 }
+.dash-widget:has(.fh-frame[data-shared-surface='1']) { background: transparent; }
+.dash-widget:has(.fh-frame[data-shared-surface='1']) > :not(.dash-widget-content) { background: var(--panel); }
 [data-backdrop='image'] .dash-widget { -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.2); backdrop-filter: blur(var(--glass-blur)) saturate(1.2); }
 .is-editing .dash-widget:hover { box-shadow: inset 0 0 0 1px var(--line-strong); }
 .is-editing .dash-widget { box-shadow: inset 0 0 0 1px var(--accent-line); }

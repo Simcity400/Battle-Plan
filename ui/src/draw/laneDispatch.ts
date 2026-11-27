@@ -213,6 +213,9 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       case 'stream': lane.stream(m.route, m.seek, m.target); break;
       case 'fail': lane.fail(m.route); break;
       case 'pointer': lane.pointer(m.widget, m.surface, m.point, m.installed); break;
+      case 'canvas': lane.setCanvas(m.widget, m.canvas, m.opaque); break;
+      case 'lane-surface': lane.setLaneSurface(m.canvas, m.opaque); break;
+      case 'lane-slots': lane.setLaneSlots(m); break;
       case 'frame': lane.frame(m); break;
     }
   };

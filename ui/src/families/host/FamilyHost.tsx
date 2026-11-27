@@ -1,9 +1,10 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { deviceFit, watchDevicePixelRatio, windowRatio } from '../../charts/surface.ts';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
+import { SharedSurfaceContext, SpatialLaneContext } from '../../dashboard/follow/sharedSurface.ts';
 import type { WidgetBase } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import { StripPageContext, type StripWidget } from '../../dashboard/strip/driver.ts';
@@ -343,7 +344,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   className = '',
 }: FamilyHostComponentProps<TModel, TOptions, TBinding, TSettings>) {
   const prepared = useContext(PreparingPage);
+  const sharedHost = useContext(SharedSurfaceContext);
+  const spatialLanes = useContext(SpatialLaneContext);
+  const sharedSubscribe = useCallback((cb: () => void) => (sharedHost ? sharedHost.subscribe(cb) : () => {}), [sharedHost]);
+  const sharedRead = useCallback(() => Boolean(sharedHost?.enabled), [sharedHost]);
+  const sharedEnabled = useSyncExternalStore(sharedSubscribe, sharedRead, sharedRead);
   const exportSurface = useExportSurface();
+  const useShared = !prepared && !exportSurface.active && sharedEnabled;
+  const preferredLane = spatialLanes?.get(widget.id);
   const exportReportRef = useRef(exportSurface.reportWidget);
   exportReportRef.current = exportSurface.reportWidget;
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
@@ -476,6 +484,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     bounds,
     frameRef,
     surfaceLabel: adapter.family,
+    ...(preferredLane !== undefined ? { preferredLane } : {}),
   });
   const { pipeline, pipe, sourceIdsRef, subsReady, instanceId, tooltipOwner, dataContextKey, retryStream, retryLocal } = placement;
   const strips = useContext(StripPageContext);
@@ -937,7 +946,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       else sizeCanvas(mounted.canvas, w, h);
     }
     pipeline.present(pipe, curAdapter.family);
-    pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }] }, {}, binding);
+    pipeline.bind(pipe, mounted.workerPresented ? [] : [mounted.surface], { surfaces: [{ width: w, height: h, dpr }] }, {}, binding);
     const boundView = pipeline.view(pipe);
     const bound = boundView?.binding;
     if (bound !== undefined) selectionsRef.current.bound(bound, cur.selectedKey);
@@ -1171,12 +1180,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     lastViewportReportRef.current = '';
 
     const mountAdapter = latestRef.current.adapter;
-    const mounted = mountFamilyCanvas(node, pipeline, pipe, mountAdapter.family, 'fh-canvas', 'fh-extent');
+    const mounted = mountFamilyCanvas(node, pipeline, pipe, mountAdapter.family, 'fh-canvas', 'fh-extent', useShared);
     if ((mountAdapter.scroll ?? 'none') === 'none') {
       mounted.extent.style.width = '100%';
       mounted.extent.style.height = '100%';
     }
     surfaceRef.current = mounted;
+    const unregisterShared = useShared && sharedHost && frameRef.current
+      ? sharedHost.register(pipe, pipeline.lane(pipe), node, frameRef.current)
+      : null;
     if (latestRef.current.hasChrome) setTargets({ body: node, bodyWrap: bodyWrapRef.current, extent: mounted.extent });
 
     const auditWatch = attachAuditWatch(pipeline, pipe, {
@@ -1636,13 +1648,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
       publishHoverHour(null);
       publishFocusKey();
+      unregisterShared?.();
       mounted.unmount();
       surfaceRef.current = null;
       holdElement(frameRef.current, false);
       reportFamilyShownHour(reportShownRef.current, false, null);
       exportReportRef.current?.(`${widget.id}:${instanceId}`, null);
     };
-  }, [pipeline, pipe, instanceId, widget.id, tooltips, scrollMode, pointerMode, gestureContext, dispatch, gateNow, publishHoverHour, reportWindow, runtime.clock, mirrorElement]);
+  }, [pipeline, pipe, instanceId, widget.id, tooltips, scrollMode, pointerMode, gestureContext, dispatch, gateNow, publishHoverHour, reportWindow, runtime.clock, mirrorElement, sharedHost, useShared]);
 
   useLayoutEffect(() => {
     const node = bodyRef.current;
@@ -1662,6 +1675,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       anchoredWindowRef.current = null;
       if (latestRef.current.hasChrome) setChromeWidth(fit.width);
       notifyViewportChange();
+      sharedHost?.scheduleSync();
       bindRef.current();
     };
     measure();
@@ -1678,7 +1692,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       stopRatio();
       observer.disconnect();
     };
-  }, [notifyViewportChange, refreshFocusAnchor]);
+  }, [notifyViewportChange, refreshFocusAnchor, sharedHost]);
 
   useLayoutEffect(() => {
     pendingOrdinalRef.current = null;
@@ -1949,6 +1963,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     onRetryLocal,
     emptyAction: typeof emptyAction === 'function' ? emptyAction(openRegionsAt) : emptyAction,
   });
+
+  const hasBodyState = Boolean(bodyStateNode);
+  useLayoutEffect(() => {
+    if (useShared && sharedHost && pipe !== null) {
+      sharedHost.setActive(pipe, !hasBodyState);
+    }
+  }, [useShared, sharedHost, pipe, hasBodyState]);
 
   const headerSummary = meta.mode === 'picture' && !meta.empty && !bodyStateNode
     ? resolveHeaderSummary(metaRef.current)
