@@ -145,7 +145,7 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, retu
   return <BattleViewer subject={row.key} title={subject.title} day={day} closeLabel="Close battle viewer" anchor={anchor}
     returnFocus={returnFocus ?? mirrorRowSelector(row.key)} runtime={runtime} track={track} province={row.province} span={span} unplayable={unplayable}
     gaps={gaps} fallbackHour={first} startHour={opened.start} onClose={onClose}
-    details={() => <Details runtime={runtime} track={track} battle={row.detailId} hour={row.detailHour ?? row.readHour} />}
+    details={() => <Details runtime={runtime} track={track} battle={row.detailId} hour={row.detailHour ?? opened.hour} />}
     sides={hour => {
       const figures = figuresAt(hour);
       return <div className="bv-sides">

@@ -792,17 +792,16 @@ pub struct NavalBattleCourseReply {
 
 dashboard_base::reply_warnings!(NavalBattleCourseReply);
 
-fn entry<'a>(scanned: &'a Scanned, key: &str) -> Option<&'a Occurrence<Line>> {
+fn entry<'a>(scanned: &'a Scanned, key: &str, hour: i32) -> Option<&'a Occurrence<Line>> {
     let index = &scanned.index;
     let entries = || (0..index.len()).map(|at| index.get(at as u32));
     let joined = super::parse_result_id(key).and_then(|id| {
-        entries().find(|entry| entry.payload.key.starts_with("combat:") && entry.payload.reads.iter().any(|(_, read)| read.result_id == Some(id)))
+        entries().find(|entry| entry.payload.key.starts_with("combat:") && entry.payload.reads.iter().any(|(at, read)| *at <= hour && read.result_id == Some(id)))
     });
     joined.or_else(|| entries().find(|entry| entry.payload.key == key))
 }
 
-fn course(scanned: &Scanned, key: &str, branch_last: i32) -> Option<(Vec<NavalCourseRead>, Vec<MissingSpan>)> {
-    let entry = entry(scanned, key)?;
+fn course(scanned: &Scanned, entry: &Occurrence<Line>, branch_last: i32) -> (Vec<NavalCourseRead>, Vec<MissingSpan>) {
     let reads: Vec<_> = entry
         .payload
         .reads
@@ -832,7 +831,7 @@ fn course(scanned: &Scanned, key: &str, branch_last: i32) -> Option<(Vec<NavalCo
         .map(|gap| MissingSpan { first_hour: gap.first_hour.max(first), last_hour: gap.last_hour.min(last), reason: gap.reason.clone() })
         .filter(|gap| gap.first_hour <= gap.last_hour)
         .collect();
-    Some((reads, missing))
+    (reads, missing)
 }
 
 pub struct NavalBattleCourse;
@@ -859,11 +858,10 @@ impl Product for NavalBattleCourse {
         let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let query = dashboard_base::queries::query(source, branch)?;
         let scanned = scanned(source, &query, cancelled)?;
-        let (reads, missing) = course(&scanned, &params.key, query.timeline.last).ok_or_else(|| dashboard_core::invalid("No naval battle with this key in the branch"))?;
-        let row = match params.hour {
-            Some(hour) => entry(&scanned, &params.key).and_then(|entry| log_row(entry, occurrences::cutoff(&query, Some(hour)).ok()?)).map(|(row, _)| row),
-            None => None,
-        };
+        let hour = occurrences::cutoff(&query, params.hour)?;
+        let found = entry(&scanned, &params.key, hour).ok_or_else(|| dashboard_core::invalid("No naval battle with this key in the branch"))?;
+        let (reads, missing) = course(&scanned, found, query.timeline.last);
+        let row = params.hour.and_then(|_| log_row(found, hour)).map(|(row, _)| row);
         let reply = NavalBattleCourseReply { branch_id: params.branch_id.clone(), reads, missing, row, warnings: Vec::new() };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
@@ -968,17 +966,19 @@ mod tests {
             .unwrap(),
             live_gaps: vec![gap(90, 95), gap(110, 112), gap(118, 140)],
         };
-        let (_, live) = course(&scanned, "combat:7:100", 120).unwrap();
+        let course_of = |key: &str| super::entry(&scanned, key, 120).map(|found| course(&scanned, found, 120));
+        let (_, live) = course_of("combat:7:100").unwrap();
         assert_eq!(live, [gap(110, 112), gap(118, 120)], "a live battle's gaps run to the branch end, past its last change");
-        let (_, ended) = course(&scanned, "combat:8:100", 120).unwrap();
+        let (_, ended) = course_of("combat:8:100").unwrap();
         assert!(ended.is_empty(), "an ended battle's gaps stop at its last reading");
-        let (_, resulted) = course(&scanned, "combat:6:100", 120).unwrap();
+        let (_, resulted) = course_of("combat:6:100").unwrap();
         assert_eq!(resulted, [gap(110, 110)], "census gaps stop where the battle's result is recorded");
-        let (reads, only) = course(&scanned, "result:62", 120).unwrap();
+        let (reads, only) = course_of("result:62").unwrap();
         assert_eq!((reads.len(), reads[0].hour, only.len()), (1, 111, 0), "a battle held only as a result has no hours before it for a gap to cover");
-        assert!(course(&scanned, "combat:9:100", 120).is_none());
-        assert_eq!(super::entry(&scanned, "result:61").map(|found| found.payload.key.as_str()), Some("combat:6:100"), "a result the table joined to its battle opens as that battle");
-        assert_eq!(super::entry(&scanned, "result:62").map(|found| found.payload.key.as_str()), Some("result:62"));
+        assert!(course_of("combat:9:100").is_none());
+        assert_eq!(super::entry(&scanned, "result:61", 111).map(|found| found.payload.key.as_str()), Some("combat:6:100"), "a result the table joined to its battle opens as that battle");
+        assert_eq!(super::entry(&scanned, "result:61", 110).map(|found| found.payload.key.as_str()), Some("result:61"), "before the table joins the result it is still the result's own battle");
+        assert_eq!(super::entry(&scanned, "result:62", 120).map(|found| found.payload.key.as_str()), Some("result:62"));
     }
 
     fn step(hour: i32, cells: Option<&[i64]>) -> Step {
