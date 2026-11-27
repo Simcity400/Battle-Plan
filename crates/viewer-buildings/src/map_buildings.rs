@@ -300,6 +300,7 @@ pub struct BuildingHistory {
     last_view: Option<(Camera, [u32; 2])>,
     collected: Option<Option<[f32; 4]>>,
     dirty: bool,
+    growing: bool,
     changed: bool,
     candidates: Vec<u32>,
     admitted_against: viewer_gpu::camera::Hold,
@@ -381,7 +382,12 @@ impl BuildingHistory {
         self.near.clear();
         self.settled.fill(false);
         self.settled_steady = None;
+        self.growing = false;
         self.changed = true;
+    }
+
+    pub fn growing(&self) -> bool {
+        self.growing
     }
 
     pub fn frame(
@@ -398,6 +404,7 @@ impl BuildingHistory {
         }
         let delta = self.last_time.map_or(0.0, |previous| time - previous);
         self.last_time = Some(time);
+        self.growing = false;
         let active = enabled && (self.dirty || self.last_view != Some((camera, viewport)));
         if enabled {
             self.last_view = Some((camera, viewport));
@@ -619,6 +626,7 @@ impl BuildingHistory {
                     viewer_runtime::view_record::add("map buildings", "growing", 1);
                 }
                 self.dirty |= instance.scale < 1.0;
+                self.growing |= instance.scale < 1.0 && prepared.popup_speed > 0.0;
                 settled &= instance.scale >= 1.0 && prepared.popup_speed >= 0.0;
             }
             place(

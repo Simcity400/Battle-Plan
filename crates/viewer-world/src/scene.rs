@@ -287,6 +287,7 @@ pub struct Scene {
     arena: shader_pipeline::gpu::Arena,
     pub post: PostPass,
     pub last_animation_time: Option<f32>,
+    last_transition_time: Option<f32>,
     actor_motion: viewer_scene_base::actor_motion::Motion,
     poses: viewer_models::poses::Worker,
     pose_jobs: viewer_models::poses::Jobs,
@@ -371,6 +372,7 @@ pub struct Request<'a> {
     pub day_night: DayNight,
     pub animation_time: f32,
     pub map_time: f32,
+    pub transition_time: Option<f32>,
     pub postfx: bool,
     pub no_water: bool,
     pub no_shadows: bool,
@@ -949,6 +951,7 @@ impl Scene {
             sky: None,
             arena: shader_pipeline::gpu::Arena::new(device),
             last_animation_time: None,
+            last_transition_time: None,
             interaction_hour: None,
             surface_view: None,
             actor_motion: Default::default(),
@@ -2701,19 +2704,27 @@ impl Scene {
             day_night,
             animation_time,
             map_time,
+            transition_time,
             postfx,
             no_water,
             no_shadows,
             overlay,
             no_trees,
         } = request;
+        let transition_clock = transition_time.unwrap_or(animation_time);
+        let transition_delta = self
+            .last_transition_time
+            .map_or(0.0, |last| (transition_clock - last).max(0.0));
+        let transition_reset = self
+            .last_transition_time
+            .is_some_and(|last| transition_clock < last);
         let no_trees = no_trees || !self.graphics.trees;
         let no_shadows = no_shadows || !self.graphics.shadows;
         camera.validate()?;
-        let weather_delta = self.snow_render_delta.advance(animation_time);
+        let weather_delta = self.snow_render_delta.advance(transition_clock);
         if self
             .snow_presentation
-            .advance(animation_time, weather_delta)?
+            .advance(transition_clock, weather_delta)?
         {
             Self::upload_snow(
                 device,
@@ -2738,13 +2749,15 @@ impl Scene {
         let clock = profiling().then(Instant::now);
         self.detail_laps.start(clock);
         self.detail_laps.record_walls();
-        let rail_alpha = self.rail_fade.update(&camera, animation_time);
-        let rail_target = f32::from(u8::from(camera.height < camera.defines.railway_cutoff));
-        if self.snow_presentation.changing()
-            || (self.railways.is_some()
-                && rail_alpha != rail_target
-                && camera.defines.railway_cutoff_speed > 0.0)
-        {
+        let rail_alpha = step_rail_fade(
+            &mut self.rail_fade,
+            &camera,
+            self.railways.is_some(),
+            animation_time,
+            transition_time,
+            arena,
+        );
+        if self.snow_presentation.changing() {
             arena.request_frame();
         }
         let rails_shown = self.rail_fade.trains_visible();
@@ -2887,7 +2900,10 @@ impl Scene {
             missile_clock: &mut self.missile_clock,
             map_frame: self.native_map_frame.as_mut(),
             ambient: self.ambient.as_mut(),
-            last_animation_time: self.last_animation_time,
+            transition_time: transition_clock,
+            transition_delta,
+            transition_reset,
+            scale_delta: transition_time.map(|_| transition_delta),
             province_frame: province_frame.as_ref().map(|(frame, _)| frame),
             pose_tick,
         }
@@ -4441,6 +4457,7 @@ impl Scene {
         }
         mark(&mut encoder, "post");
         self.last_animation_time = Some(animation_time);
+        self.last_transition_time = Some(transition_clock);
         self.sprite_pass.draw(&mut encoder, targets);
         #[cfg(any(test, feature = "test-support"))]
         faults.draw_sentinel(device, &mut encoder, targets);
@@ -4759,6 +4776,8 @@ impl Scene {
     pub fn needs_frame(&self) -> bool {
         self.arena.needs_frame()
             || self.unit_history.carrying_figures()
+            || (self.graphics.unit_figures() && self.unit_history.scaling_figures())
+            || (self.graphics.buildings && self.building_history.growing())
             || self
                 .targets
                 .as_ref()
@@ -4919,6 +4938,25 @@ fn replace(
     }
     *slot = data_texture(device, queue, label, size, format, data)?;
     Ok(true)
+}
+
+pub fn step_rail_fade(
+    rail_fade: &mut viewer_rail::railways::RailFade,
+    camera: &Camera,
+    has_railways: bool,
+    animation_time: f32,
+    transition_time: Option<f32>,
+    arena: &shader_pipeline::gpu::Arena,
+) -> f32 {
+    let rail_alpha = rail_fade.update(camera, transition_time.unwrap_or(animation_time));
+    let rail_target = f32::from(u8::from(camera.height < camera.defines.railway_cutoff));
+    if has_railways
+        && rail_alpha != rail_target
+        && camera.defines.railway_cutoff_speed > 0.0
+    {
+        arena.request_frame();
+    }
+    rail_alpha
 }
 
 pub fn world_size(size: [u32; 2], full_resolution: bool) -> [u32; 2] {

@@ -186,6 +186,21 @@ impl Entity {
             (part.target.mesh, instance)
         })
     }
+
+    fn scaling(&self, frame: Frame) -> bool {
+        if frame.steady {
+            return false;
+        }
+        if self.shrinking {
+            let speed = match self.kind {
+                Kind::Land => frame.gates.scale_down,
+                Kind::Ship => frame.gates.ship_scale_down,
+            };
+            self.scale <= 0.0 || speed > 0.0
+        } else {
+            self.scale < 1.0 && frame.gates.scale_up > 0.0
+        }
+    }
 }
 
 const MOTION_SLACK: f32 = 1e-3;
@@ -193,6 +208,7 @@ const MOTION_SLACK: f32 = 1e-3;
 #[derive(Clone, Copy)]
 struct Frame {
     delta: f32,
+    scale_delta: f32,
     gates: Gates,
     shown: [bool; 2],
     arrows: bool,
@@ -276,10 +292,10 @@ impl Province {
                 return frame.shown[kind] && placed(slot);
             }
             if !frame.shown[kind] {
-                return (!was[kind] || entity.shrink(frame.delta, frame.gates))
-                    && entity.shrink(frame.delta, frame.gates);
+                return (!was[kind] || entity.shrink(frame.scale_delta, frame.gates))
+                    && entity.shrink(frame.scale_delta, frame.gates);
             }
-            placed(slot) || (!was[kind] && entity.shrink(frame.delta, frame.gates))
+            placed(slot) || (!was[kind] && entity.shrink(frame.scale_delta, frame.gates))
         });
         viewer_runtime::view_record::add("unit models", "history_destroyed", (before - self.entities.len()) as u64);
         for (&slot, parts) in targets.into_iter().flatten() {
@@ -300,7 +316,7 @@ impl Province {
                     entity.scale = if frame.steady {
                         1.0
                     } else {
-                        (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+                        (entity.scale + frame.scale_delta * frame.gates.scale_up).min(1.0)
                     };
                 }
                 continue;
@@ -335,7 +351,7 @@ impl Province {
             entity.scale = if frame.steady {
                 1.0
             } else {
-                (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+                (entity.scale + frame.scale_delta * frame.gates.scale_up).min(1.0)
             };
         }
         for formation in formations {
@@ -357,7 +373,7 @@ impl Province {
             entity.scale = if frame.steady {
                 1.0
             } else {
-                (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+                (entity.scale + frame.scale_delta * frame.gates.scale_up).min(1.0)
             };
         }
         self.arrows = frame.arrows;
@@ -641,6 +657,8 @@ pub struct History {
     moving: Vec<(usize, MovementDelta)>,
     was_moving: Vec<usize>,
     movement_delta: Option<f32>,
+    scale_delta: Option<f32>,
+    building_time: Option<f32>,
     naval: naval::History,
     combats: naval_combat::History,
     provinces: Provinces,
@@ -661,6 +679,7 @@ pub struct History {
     checks: u64,
     held_slots: usize,
     held_walks: u32,
+    scaling_figures: bool,
     unbudgeted: bool,
     raids: Vec<(usize, ModelInstance)>,
     raid_epoch: u32,
@@ -868,6 +887,11 @@ impl History {
         self.steady = true;
     }
 
+    pub fn set_transition_step(&mut self, scale_delta: Option<f32>, building_time: Option<f32>) {
+        self.scale_delta = scale_delta;
+        self.building_time = building_time;
+    }
+
     pub fn field_replaced(&mut self) {
         self.standing_owed = true;
     }
@@ -881,6 +905,9 @@ impl History {
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
         self.land_changed();
         (self.held_slots, self.held_walks, self.unbudgeted) = (0, 0, true);
+        if provinces.is_none() {
+            self.scaling_figures = false;
+        }
         self.naval.reset(provinces);
         self.combats.reset(provinces);
         self.schedule
@@ -914,6 +941,10 @@ impl History {
 
     pub fn carrying_figures(&self) -> bool {
         self.held_slots != 0
+    }
+
+    pub fn scaling_figures(&self) -> bool {
+        self.scaling_figures
     }
 
     pub fn take_province_frame(&self, time: f32) -> Option<(ProvinceFrame, FrameRestore)> {
@@ -983,7 +1014,8 @@ impl History {
         let _update_span = viewer_runtime::profiling::span("step_update_models");
         let admission = std::cell::LazyCell::new(|| Admission::new(camera, viewport));
         let bounds = Arc::clone(&self.bounds);
-        let mut buildings = buildings.frame(camera, viewport, time, buildings_enabled, self.steady);
+        let building_time = self.building_time.take().unwrap_or(time);
+        let mut buildings = buildings.frame(camera, viewport, building_time, buildings_enabled, self.steady);
         use viewer_runtime::frame_budget;
         let deadline = frame_budget::deadline(frame_budget::Mark::Actors);
         if let (Some(spent), Some(room)) = (frame_budget::spent(), frame_budget::room(frame_budget::Mark::Actors)) {
@@ -1113,8 +1145,14 @@ impl History {
         if self.last.is_some_and(|previous| time < previous) {
             self.reset(None);
         }
+        let delta = self.last.map_or(0.0, |previous| (time - previous).max(0.0));
+        let scale_delta = match (self.last, self.scale_delta.take()) {
+            (Some(_), Some(scale_delta)) => scale_delta,
+            _ => delta,
+        };
         let frame = Frame {
-            delta: self.last.map_or(0.0, |previous| (time - previous).max(0.0)),
+            delta,
+            scale_delta,
             gates,
             shown,
             arrows,
@@ -1152,6 +1190,7 @@ impl History {
         let land_pass = frame.shown[Kind::Land as usize];
         let dense = &mut self.provinces;
         let mut at = 0;
+        let mut scaling_figures = false;
         #[cfg(test)]
         self.left_alone.clear();
         for &(id, update) in &self.updates {
@@ -1216,6 +1255,10 @@ impl History {
                         budget,
                     );
                     province.finalize_shown(frame, budget);
+                    scaling_figures |= province
+                        .entities
+                        .values()
+                        .any(|entity| entity.scaling(frame));
                     if let Some(deadline) = deadline
                         && !budget.is_cut()
                         && self.queued.len() > queued_before
@@ -1264,8 +1307,14 @@ impl History {
                 .entities
                 .values()
                 .all(|entity| entity.scale >= 1.0 && !entity.shrinking);
+            scaling_figures |= record
+                .province
+                .entities
+                .values()
+                .any(|entity| entity.scaling(frame));
         }
         drop(deferred_span);
+        self.scaling_figures = scaling_figures;
         if judged {
             for (at, before) in &judged_before {
                 counts.judge(before, &self.provinces.records[*at].province);
@@ -1547,10 +1596,10 @@ pub mod tests {
                     return frame.shown[kind] && placed(slot);
                 }
                 if !frame.shown[kind] {
-                    return (!was[kind] || entity.shrink(frame.delta, frame.gates))
-                        && entity.shrink(frame.delta, frame.gates);
+                    return (!was[kind] || entity.shrink(frame.scale_delta, frame.gates))
+                        && entity.shrink(frame.scale_delta, frame.gates);
                 }
-                placed(slot) || (!was[kind] && entity.shrink(frame.delta, frame.gates))
+                placed(slot) || (!was[kind] && entity.shrink(frame.scale_delta, frame.gates))
             });
             for (&slot, parts) in targets.into_iter().flatten() {
                 let kind = slot.0 as usize;
@@ -1570,7 +1619,7 @@ pub mod tests {
                         entity.scale = if frame.steady {
                             1.0
                         } else {
-                            (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+                            (entity.scale + frame.scale_delta * frame.gates.scale_up).min(1.0)
                         };
                     }
                     continue;
@@ -1605,7 +1654,7 @@ pub mod tests {
                 entity.scale = if frame.steady {
                     1.0
                 } else {
-                    (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+                    (entity.scale + frame.scale_delta * frame.gates.scale_up).min(1.0)
                 };
             }
             for formation in formations {
@@ -1627,7 +1676,7 @@ pub mod tests {
                 entity.scale = if frame.steady {
                     1.0
                 } else {
-                    (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+                    (entity.scale + frame.scale_delta * frame.gates.scale_up).min(1.0)
                 };
             }
             self.arrows = frame.arrows;
@@ -1753,8 +1802,10 @@ pub mod tests {
                     })
                     .collect::<Vec<_>>(),
             );
+            let delta = if number % 29 == 0 { 0.0 } else { 0.125 };
             let frame = Frame {
-                delta: if number % 29 == 0 { 0.0 } else { 0.125 },
+                delta,
+                scale_delta: delta,
                 gates: GATES,
                 shown: [number % 37 < 25, number % 31 < 21],
                 arrows: number % 19 < 10,
@@ -1876,8 +1927,10 @@ pub mod tests {
             for province in [&mut eager, &mut lazy] {
                 province.lands = Arc::clone(&prepared.lands);
             }
+            let delta = if number % 7 == 0 { 0.0 } else { 1.0 / 60.0 };
             let frame = Frame {
-                delta: if number % 7 == 0 { 0.0 } else { 1.0 / 60.0 },
+                delta,
+                scale_delta: delta,
                 gates: GATES,
                 shown: [number % 211 < 180, number % 307 < 280],
                 arrows: number % 401 < 380,

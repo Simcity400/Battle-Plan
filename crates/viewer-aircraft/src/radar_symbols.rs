@@ -430,9 +430,9 @@ impl Pass {
                 );
                 retained.bind_vertex(0, 24, bytemuck::cast_slice(&QUAD).into());
             }
-            if self.program.reads_time || (symbol.angle.is_none() && self.step != 0) {
-                arena.request_frame();
-            }
+            arena.check_motion(|| {
+                self.program.reads_time || (symbol.angle.is_none() && self.step != 0)
+            });
             draws.push(bound);
         }
         if draws.is_empty() {

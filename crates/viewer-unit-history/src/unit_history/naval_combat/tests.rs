@@ -107,6 +107,7 @@ fn battle(id: u64, stamp: i32) -> Battle {
 fn frame(steady: bool) -> Frame {
     Frame {
         delta: 0.0,
+        scale_delta: 0.0,
         gates: Gates::OFF,
         shown: [true, false],
         arrows: false,

@@ -419,3 +419,52 @@ fn a_lost_device_is_reported_and_dropped() {
     control.step_at(now);
     assert!(control.output.is_some());
 }
+
+#[test]
+fn owner_wake_suppression_silences_restarting_voice_wakes_until_re_enabled() {
+    let (_stack, source) = source("audio_system_wake_suppression");
+    let status = Arc::new(Mutex::new(Status::default()));
+    let (sender, receiver) = mpsc::channel();
+    let system = Arc::new(System {
+        commands: Mutex::new(sender),
+        owner: AtomicU64::new(0),
+        next: AtomicU64::new(1),
+        status: Arc::clone(&status),
+    });
+    let mut control = Control::new(status, None, true);
+    let relay = relay(&mut control);
+    let (send, wakes) = mpsc::channel();
+    let mut owner = system.owner();
+    owner.set_wake(move || send.send(()).unwrap());
+    owner.claim();
+    owner.set_wake_enabled(false);
+    let mut repeating = frame("shot", 1);
+    repeating.emitters[0].restart = true;
+    owner.frame(&source, repeating);
+    while let Ok(command) = receiver.try_recv() {
+        control.apply(command);
+    }
+    receive_load(&mut control, &relay);
+    play_until(&mut control, |control| !control.engine.active());
+    hold(&mut control);
+    assert_eq!(
+        wakes.try_iter().count(),
+        0,
+        "a paused widget with wake disabled is not woken by a restarting voice"
+    );
+
+    owner.set_wake_enabled(true);
+    let mut repeating = frame("shot", 2);
+    repeating.emitters[0].restart = true;
+    owner.frame(&source, repeating);
+    while let Ok(command) = receiver.try_recv() {
+        control.apply(command);
+    }
+    play_until(&mut control, |control| !control.engine.active());
+    hold(&mut control);
+    assert_eq!(
+        wakes.try_iter().count(),
+        1,
+        "re-enabling wakes restores the owner wakeup"
+    );
+}

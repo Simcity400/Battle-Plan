@@ -746,6 +746,7 @@ pub struct Viewer {
     last_step: Instant,
     profile_playback: profile_playback::Clock,
     started: Instant,
+    ambient_clock: AmbientClock,
     opened: Option<Instant>,
     postfx: bool,
     pub(crate) graphics: dashboard_core::protocol::MapGraphics,
@@ -1376,6 +1377,7 @@ impl Viewer {
             last_step: Instant::now(),
             profile_playback: Default::default(),
             started: Instant::now(),
+            ambient_clock: Default::default(),
             opened: None,
             playhead: None,
             frame_head: Default::default(),
@@ -1529,6 +1531,7 @@ impl Viewer {
         self.clock_anchor = None;
         self.playhead = None;
         self.day_night = Default::default();
+        self.ambient_clock = Default::default();
         self.take_game_options(&document.game_options);
         self.unit_selection = Default::default();
         self.air_selection = Default::default();
@@ -2929,6 +2932,9 @@ impl Viewer {
             if let Some(target) = self.shown_tooltip() {
                 ui.weak(format!("Tooltip: {target}"));
             }
+        }
+        if self.paused_motion() == PausedMotion::Held {
+            ui.weak("Ambient animation: held while paused");
         }
         if let Some(limit) = viewer_runtime::frame_limit::limit() {
             ui.weak(format!("Frame rate limit: {limit:.0} a second"));
@@ -4678,11 +4684,14 @@ impl Viewer {
                 self.fleet_selection.clear();
             }
         }
-        let animation_time = self
+        let paused_motion = self.paused_motion();
+        let presentation_time = self
             .capture
             .as_ref()
             .and_then(|capture| capture.time)
-            .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
+            .map_or_else(|| self.started.elapsed().as_secs_f64(), f64::from);
+        let animation_time = presentation_time as f32;
+        let ambient_time = self.ambient_time_at(presentation_time);
         let prepared = self.combat_prepared().map_err(|error| error.to_string())?;
         let combat_geometry = self
             .combat
@@ -5244,9 +5253,16 @@ impl Viewer {
             let chosen = self.map_cursor(document, point.filter(|_| !free_mode || interface), over_combat, shift);
             let cursors = &document.content.cursors;
             if let Ok(cursor) = cursors.get(chosen).or_else(|_| cursors.get(MapCursor::Normal)) {
-                let (image, next) = cursor.at(self.started.elapsed().as_secs_f64());
+                let cursor_time = if self.dashboard_map {
+                    f64::from(ambient_time)
+                } else {
+                    self.started.elapsed().as_secs_f64()
+                };
+                let (image, next) = cursor.at(cursor_time);
                 ui.ctx().output_mut(|output| output.cursor_image = Some(image.clone()));
-                if let Some(delay) = next {
+                if let Some(delay) = next
+                    && paused_motion != PausedMotion::Held
+                {
                     ui.ctx().request_repaint_after(Duration::from_secs_f64(delay));
                 }
             }
@@ -5297,15 +5313,10 @@ impl Viewer {
         {
             let heights = document.content.heights();
             let mut units = prepared.raid_units(&document.unit_models, Some((&heights, tick)));
-            let time = self
-                .capture
-                .as_ref()
-                .and_then(|capture| capture.time)
-                .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
             self.convoy_refused.clear();
             units.extend(prepared.convoy_units(
                 &document.unit_models,
-                time,
+                ambient_time,
                 &|x, z| heights.surface_height(x, z),
                 convoys_shown,
                 &mut self.convoy_refused,
@@ -6549,7 +6560,7 @@ impl Viewer {
         let layered_radar = self.playhead_map.as_ref().and_then(|side| side.products().radar.clone());
         let layered = self.layered_orders();
         let scene = self.scene.as_mut().unwrap();
-        scene.track_paused_motion((!self.playing && self.capture.is_none()).then_some(shown_hour));
+        scene.track_paused_motion((paused_motion == PausedMotion::Live).then_some(shown_hour));
         let (device, queue) = (&state.device, &state.queue);
         if let Some(field) = layered_radar.as_deref().or(self.prepared_overlay.as_ref().map(|prepared| &*prepared.radar)) {
             scene
@@ -6658,7 +6669,7 @@ impl Viewer {
             .apply(
                 &state.device,
                 &state.queue,
-                SceneInput::CutProvinceFrame(animation_time),
+                SceneInput::CutProvinceFrame(ambient_time),
             )
             .map_err(|error| error.to_string())?;
         let overlay = if self.looks.is_some() {
@@ -6680,8 +6691,9 @@ impl Viewer {
                     size: pixels,
                     camera,
                     day_night,
-                    animation_time,
-                    map_time: animation_time,
+                    animation_time: ambient_time,
+                    map_time: ambient_time,
+                    transition_time: Some(animation_time),
                     postfx: self.postfx,
                     no_water: false,
                     no_shadows: false,
@@ -6706,26 +6718,28 @@ impl Viewer {
             crate::perf_log::gpu_times(scene.gpu_frame_times(&state.device));
         }
         rendered.map_err(|e| e.to_string())?;
-        if scene.needs_frame() {
-            request_animation_frame(ui.ctx(), map_timer.elapsed());
-        } else if !self.playing && self.capture.is_none() {
-            let view = viewer_models::motion_view::MotionView::new(&camera, pixels);
-            let mut delay = scene.next_arrival(&camera, pixels, &view, animation_time);
-            if sailing
-                && camera.height - viewer_models::WATER_HEIGHT < camera.defines.map_objects_cutoff
-                && let Some(prepared) = &posed
-            {
-                let heights = document.content.heights();
-                delay = delay.min(prepared.next_convoy_arrival(
-                    &document.unit_models,
-                    &view,
-                    &|x, z| heights.surface_height(x, z),
-                ));
-            }
-            if let Ok(delay) = Duration::try_from_secs_f32(delay) {
-                request_frame_after(ui.ctx(), delay, map_timer.elapsed());
-            }
-        }
+        schedule_after_render(
+            ui.ctx(),
+            map_timer.elapsed(),
+            scene.needs_frame(),
+            paused_motion,
+            || {
+                let view = viewer_models::motion_view::MotionView::new(&camera, pixels);
+                let mut delay = scene.next_arrival(&camera, pixels, &view, ambient_time);
+                if sailing
+                    && camera.height - viewer_models::WATER_HEIGHT < camera.defines.map_objects_cutoff
+                    && let Some(prepared) = &posed
+                {
+                    let heights = document.content.heights();
+                    delay = delay.min(prepared.next_convoy_arrival(
+                        &document.unit_models,
+                        &view,
+                        &|x, z| heights.surface_height(x, z),
+                    ));
+                }
+                delay
+            },
+        );
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.after-render", Some("other"));
         let shown_stamp = presentation::shown_stamp(profiling(), || {
@@ -6746,6 +6760,7 @@ impl Viewer {
                 document,
                 scene,
                 &camera,
+                paused_motion != PausedMotion::Held,
                 AudioInputs {
                     volumes: self.volumes,
                     muted: self.muted,
@@ -7262,6 +7277,76 @@ impl InterfaceSound {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PausedMotion {
+    Off,
+    Live,
+    Held,
+}
+
+#[derive(Default)]
+struct AmbientClock {
+    last: Option<(f64, bool)>,
+    value: Option<f64>,
+}
+
+impl AmbientClock {
+    fn sample(&mut self, now: f64, hold: bool) -> f32 {
+        let value = match (self.last, self.value) {
+            (Some((last, false)), Some(value)) if !hold => {
+                let next = value + (now - last).max(0.0);
+                self.value = Some(next);
+                next
+            }
+            (Some(_), Some(value)) => value,
+            (_, None) if hold => {
+                self.value = Some(now);
+                now
+            }
+            _ => now,
+        };
+        self.last = Some((now, hold));
+        value as f32
+    }
+}
+
+impl Viewer {
+    fn paused_motion(&self) -> PausedMotion {
+        if self.playing || self.capture.is_some() {
+            PausedMotion::Off
+        } else if self.dashboard_map {
+            PausedMotion::Held
+        } else {
+            PausedMotion::Live
+        }
+    }
+
+    fn ambient_time_at(&mut self, presentation_time: f64) -> f32 {
+        match self.capture.as_ref().and_then(|capture| capture.time) {
+            Some(time) => time,
+            None => self
+                .ambient_clock
+                .sample(presentation_time, !self.playing && self.dashboard_map),
+        }
+    }
+}
+
+fn schedule_after_render(
+    ctx: &egui::Context,
+    elapsed: Duration,
+    needs_frame: bool,
+    paused_motion: PausedMotion,
+    next_arrival: impl FnOnce() -> f32,
+) {
+    if needs_frame {
+        request_animation_frame(ctx, elapsed);
+    } else if paused_motion == PausedMotion::Live
+        && let Ok(delay) = Duration::try_from_secs_f32(next_arrival())
+    {
+        request_frame_after(ctx, delay, elapsed);
+    }
+}
+
 fn request_animation_frame(ctx: &egui::Context, elapsed: Duration) {
     request_frame_after(ctx, Duration::ZERO, elapsed);
 }
@@ -7358,6 +7443,7 @@ fn present_audio(
     document: &Document,
     scene: &Scene,
     camera: &Camera,
+    wake: bool,
     inputs: AudioInputs<'_>,
 ) {
     let Some(source) = &document.audio else {
@@ -7375,6 +7461,7 @@ fn present_audio(
         owner.set_wake(move || request_animation_frame(&ctx, Duration::ZERO));
         owner
     });
+    owner.set_wake_enabled(wake);
     owner.claim();
     owner.frame(source, frame);
 }
@@ -10013,5 +10100,436 @@ pub(crate) mod tests {
                 .iter()
                 .any(|line| line.contains("injected projection failure"))
         );
+    }
+
+    #[test]
+    fn paused_dashboard_widget_holds_ambient_animation_while_full_map_stays_live() {
+        let tables = content_reader_script::test_game::executable().build();
+        engine_executable::executable_tables::scope(Some(tables), || {
+        use content_reader_gui::pdxshader::program::Stage;
+        use shader_pipeline::{Buffer, Compiled, ScalarKind, Shader, VertexInput, binding};
+        use viewer_gpu::gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, SeaBed, Targets, read_texture};
+        use viewer_terrain::water_shader::{Inputs as WaterInputs, Water};
+
+        let (_guard, device, queue) = viewer_gpu::test_support::gpu::device();
+        let source = content_reader_gui::pdxshader::program::read_with(b"water.shader", &|path| {
+            Some(if path == b"water.shader" {
+                b"Effect water { }".to_vec()
+            } else {
+                Vec::new()
+            })
+        })
+        .unwrap();
+        let time_binding = binding(3, Stage::Pixel);
+        let vertex = Shader {
+            wgsl: "@vertex fn main(@location(0) pos: vec2<i32>) -> @builtin(position) vec4<f32> {
+                return vec4f(f32(pos.x) * 2.0 - 1.0, f32(pos.y) * 2.0 - 1.0, 0.0, 1.0);
+            }"
+            .into(),
+            buffers: Vec::new(),
+            clock: Default::default(),
+            independent_draws: false,
+            textures: Vec::new(),
+            samplers: Vec::new(),
+            inputs: vec![VertexInput {
+                semantic: "POSITION0".into(),
+                kind: ScalarKind::Sint,
+                components: 2,
+                location: 0,
+            }],
+            sampling_pairs: Vec::new(),
+        };
+        let pixel = Shader {
+            wgsl: format!(
+                "@group(0) @binding({time_binding}) var<uniform> clock: vec4<f32>;
+                @fragment fn main() -> @location(0) vec4<f32> {{
+                    let phase = fract(clock.x * 0.25);
+                    return vec4f(phase, 0.25, 0.75, 1.0);
+                }}"
+            ),
+            buffers: vec![Buffer {
+                binding: time_binding,
+                size: 16,
+                reads: std::iter::once(0..4).collect(),
+            }],
+            clock: Default::default(),
+            independent_draws: false,
+            textures: Vec::new(),
+            samplers: Vec::new(),
+            inputs: Vec::new(),
+            sampling_pairs: Vec::new(),
+        };
+        let effect = Arc::new(shader_pipeline::library::Effect::from_compiled(
+            Arc::new(source),
+            Vec::new(),
+            vec![Ok(Arc::new(Compiled { vertex, pixel }))],
+        ));
+        let water = Water::new(&device, &effect, [1, 1], 1, SCENE_FORMAT, DEPTH_FORMAT, "water").unwrap();
+
+        let mut train_assets = viewer_rail::trains::test_support::assets();
+        train_assets.library.index.insert("car".into(), 0);
+        let train_mesh_camera = Placement::map([200.0, 0.0], 80.0).on(
+            MapSize { width: 1024, height: 512 },
+            viewer_gpu::camera::MapDefines::test(),
+        );
+        let motion_view = viewer_models::motion_view::MotionView::new(&train_mesh_camera, [64, 64]);
+
+        struct Harness<'a> {
+            viewer: Viewer,
+            ctx: egui::Context,
+            targets: Targets,
+            arena: shader_pipeline::gpu::Arena,
+            plan: viewer_rail::trains::TrainPlan,
+            rail_fade: viewer_rail::railways::RailFade,
+            unit_history: viewer_unit_history::unit_history::History,
+            building_history: viewer_buildings::map_buildings::BuildingHistory,
+            standing: Vec<(usize, viewer_models::ModelInstance)>,
+            last_transition_time: Option<f32>,
+            water: &'a Water,
+            train_assets: &'a viewer_rail::trains::TrainAssets,
+            motion_view: &'a viewer_models::motion_view::MotionView,
+            camera: Camera,
+        }
+
+        impl<'a> Harness<'a> {
+            fn new(
+                device: &wgpu::Device,
+                dashboard_map: bool,
+                water: &'a Water,
+                train_assets: &'a viewer_rail::trains::TrainAssets,
+                motion_view: &'a viewer_models::motion_view::MotionView,
+                camera: Camera,
+            ) -> Self {
+                let mut viewer = Viewer::create(
+                    Config::default(),
+                    Options::default(),
+                    None,
+                    Arc::default(),
+                    None,
+                    None,
+                );
+                viewer.dashboard_map = dashboard_map;
+                viewer.playhead = Some(Playhead { branch: 1, hour: 10, fraction: 0.0 });
+                let ctx = egui::Context::default();
+                for step in 0..2 {
+                    let mut warm = ctx.run_ui(
+                        egui::RawInput {
+                            time: Some(step as f64),
+                            ..Default::default()
+                        },
+                        |_| {},
+                    );
+                    warm.textures_delta.clear();
+                }
+                let mut unit_history = viewer_unit_history::unit_history::History::default();
+                let bounds = std::collections::BTreeMap::from([(1u32, [199.0, -1.0, 201.0, 1.0])]);
+                unit_history.set(
+                    vec![viewer_unit_history::unit_history::Target {
+                        province: 1,
+                        identity: 1,
+                        part: 0,
+                        order: 0,
+                        occupant: 1,
+                        kind: viewer_unit_history::unit_history::Kind::Land,
+                        mesh: 0,
+                        instance: viewer_models::ModelInstance {
+                            position: [200.0, 0.0, 0.0],
+                            scale: 1.0,
+                            ..Default::default()
+                        },
+                        origin: [200.0, 0.0, 0.0],
+                    }],
+                    Arc::new(bounds),
+                    false,
+                );
+                Self {
+                    viewer,
+                    ctx,
+                    targets: Targets::new(device, [8, 8], [8, 8], 1, SeaBed::Full),
+                    arena: shader_pipeline::gpu::Arena::new(device),
+                    plan: viewer_rail::trains::test_support::plan(),
+                    rail_fade: viewer_rail::railways::RailFade::default(),
+                    unit_history,
+                    building_history: Default::default(),
+                    standing: Vec::new(),
+                    last_transition_time: None,
+                    water,
+                    train_assets,
+                    motion_view,
+                    camera,
+                }
+            }
+
+            fn present(
+                &mut self,
+                device: &wgpu::Device,
+                queue: &wgpu::Queue,
+                clock_s: f64,
+            ) -> (Duration, Vec<u8>, [f32; 3], f32) {
+                let paused_motion = self.viewer.paused_motion();
+                let ambient_time = self.viewer.ambient_time_at(clock_s);
+                let transition_time = clock_s as f32;
+                let transition_delta = self
+                    .last_transition_time
+                    .map_or(0.0, |last| (transition_time - last).max(0.0));
+                self.last_transition_time = Some(transition_time);
+                let tracking = paused_motion == PausedMotion::Live;
+                self.arena.reset();
+                self.arena.track_motion(tracking);
+                let rail_alpha = viewer_world::scene::step_rail_fade(
+                    &mut self.rail_fade,
+                    &self.camera,
+                    true,
+                    ambient_time,
+                    Some(transition_time),
+                    &self.arena,
+                );
+                let gates = viewer_unit_reads::model_admission::Gates {
+                    units: self.camera.defines.railway_cutoff,
+                    ships: self.camera.defines.railway_cutoff,
+                    arrows: self.camera.defines.railway_cutoff,
+                    scale_up: 4.0,
+                    scale_down: 4.0,
+                    ship_scale_down: 4.0,
+                    ..viewer_unit_reads::model_admission::Gates::OFF
+                };
+                self.unit_history
+                    .set_transition_step(Some(transition_delta), Some(transition_time));
+                let models = self.unit_history.update_models(
+                    self.camera,
+                    [64, 64],
+                    ambient_time,
+                    gates,
+                    i32::MAX,
+                    &mut self.building_history,
+                    true,
+                );
+                if let Some(standing) = models.units.standing {
+                    self.standing = standing;
+                }
+                let field = self.plan.field(self.train_assets, ambient_time);
+                assert!(!field.instances.is_empty(), "a recorded supply train is active on the route");
+                let train_pos = field.instances[0].position;
+                self.arena.check_motion(|| true);
+                if tracking {
+                    self.arena.request_frame();
+                }
+
+                self.targets.surface_motion.begin(device, false, 1, tracking);
+                let mut encoder = device.create_command_encoder(&Default::default());
+                let texture = &self.targets.refraction_view;
+                self.water
+                    .draw(
+                        &self.arena,
+                        &mut encoder,
+                        &self.targets,
+                        WaterInputs {
+                            fog: false,
+                            animated_sea_bed: false,
+                            retained: None,
+                            frames: &[&[0; 416]],
+                            time: ambient_time,
+                            size: [8, 8],
+                            retained_pixel_b2:
+                                viewer_scene_base::shader_constants::WorldPixelConstants::LightGrid(
+                                    [0.0; 4],
+                                ),
+                            textures: [texture; 16],
+                        },
+                    )
+                    .unwrap();
+                self.targets.surface_motion.finish(&mut encoder);
+                self.arena.flush(queue);
+                queue.submit([encoder.finish()]);
+                self.targets.surface_motion.submitted();
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                self.targets.surface_motion.begin(device, false, 1, tracking);
+
+                let needs_frame = self.arena.needs_frame()
+                    || self.unit_history.carrying_figures()
+                    || self.unit_history.scaling_figures()
+                    || self.building_history.growing()
+                    || self.targets.surface_motion.live();
+                let mut output = self.ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(clock_s),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        if self.viewer.playing {
+                            ui.ctx().request_repaint();
+                        }
+                        super::schedule_after_render(
+                            ui.ctx(),
+                            Duration::ZERO,
+                            needs_frame,
+                            paused_motion,
+                            || self.plan.next_arrival(self.train_assets, self.motion_view, ambient_time),
+                        );
+                    },
+                );
+                output.textures_delta.clear();
+                let repaint_delay = output
+                    .viewport_output
+                    .get(&egui::ViewportId::ROOT)
+                    .expect("root viewport output")
+                    .repaint_delay;
+                let water_pixels =
+                    read_texture(device, queue, self.targets.scene_texture(), 8).unwrap();
+                (repaint_delay, water_pixels, train_pos, rail_alpha)
+            }
+        }
+
+        let diagnostics_mentions_held = |viewer: &mut Viewer| -> bool {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    viewer.diagnostics_ui(ui, 200.0);
+                });
+            });
+            output.textures_delta.clear();
+            output.shapes.iter().any(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => text
+                    .galley
+                    .text()
+                    .contains("Ambient animation: held while paused"),
+                _ => false,
+            })
+        };
+
+        let far_camera = Placement::map(
+            [200.0, 0.0],
+            train_mesh_camera.defines.railway_cutoff + 20.0,
+        )
+        .on(
+            MapSize { width: 1024, height: 512 },
+            viewer_gpu::camera::MapDefines::test(),
+        );
+        let mut widget = Harness::new(&device, true, &water, &train_assets, &motion_view, far_camera);
+        let mut full_map = Harness::new(&device, false, &water, &train_assets, &motion_view, train_mesh_camera);
+        assert!(diagnostics_mentions_held(&mut widget.viewer));
+        assert!(!diagnostics_mentions_held(&mut full_map.viewer));
+
+        let (initial_delay, _, _, initial_alpha) = widget.present(&device, &queue, 45.0);
+        assert_eq!(initial_alpha, 0.0);
+        assert_eq!(initial_delay, Duration::MAX);
+
+        widget.camera = train_mesh_camera;
+        let (fade_start_delay, _, _, fade_start_alpha) = widget.present(&device, &queue, 45.1);
+        assert!(fade_start_alpha > 0.0 && fade_start_alpha < 1.0, "{fade_start_alpha}");
+        assert!(widget.arena.needs_frame(), "step_rail_fade itself requests a frame while rail fade is progressing");
+        assert!(
+            fade_start_delay < Duration::MAX,
+            "a live rail fade still requests frames while paused"
+        );
+        let (paused_delay, paused_water, paused_train, settled_alpha) =
+            widget.present(&device, &queue, 46.0);
+        assert_eq!(settled_alpha, 1.0);
+        assert_eq!(widget.standing.len(), 1);
+        assert_eq!(widget.standing[0].1.scale, 1.0);
+        assert_eq!(
+            paused_delay,
+            Duration::MAX,
+            "a settled paused dashboard widget requests neither immediate nor delayed ambient repaints"
+        );
+        assert!(!widget.arena.needs_frame());
+        assert!(!widget.unit_history.scaling_figures());
+        assert!(!widget.targets.surface_motion.live());
+
+        let (input_delay, hover_water, hover_train, _) = widget.present(&device, &queue, 47.0);
+        assert_eq!(input_delay, Duration::MAX, "an input redraw at the same hour stays quiet after settling");
+        assert_eq!(hover_water, paused_water, "redrawing for input preserves the frozen water phase");
+        assert_eq!(hover_train, paused_train, "redrawing for input preserves the frozen train position");
+
+        let seek_at = widget.viewer.started;
+        widget.viewer.anchor_playback(
+            Playhead { branch: 1, hour: 15, fraction: 0.0 },
+            false,
+            24.0,
+            true,
+            None,
+            seek_at,
+            100,
+        );
+        assert_eq!(widget.viewer.playhead.map(|head| head.hour), Some(15));
+        let (seek_delay, seek_water, seek_train, _) = widget.present(&device, &queue, 48.0);
+        assert_eq!(seek_delay, Duration::MAX);
+        assert_eq!(seek_water, paused_water, "seeking while paused preserves the frozen water phase");
+        assert_eq!(seek_train, paused_train, "seeking while paused preserves the frozen train position");
+
+        let untimed_capture = || Capture {
+            path: PathBuf::new(),
+            remaining: 0,
+            pinned: None,
+            exit: false,
+            time: None,
+            step: 0.0,
+            frames: 1,
+            index: 0,
+            paced: false,
+            export: None,
+            video: None,
+        };
+        widget.viewer.capture = Some(untimed_capture());
+        let (_, export_water_1, export_train_1, _) = widget.present(&device, &queue, 60.0);
+        assert_eq!(export_water_1, paused_water);
+        assert_eq!(export_train_1, paused_train);
+        assert_eq!(widget.standing.len(), 1);
+        assert_eq!(widget.standing[0].1.scale, 1.0);
+        widget.viewer.capture = None;
+        let (after_capture_delay_1, after_capture_water_1, after_capture_train_1, _) =
+            widget.present(&device, &queue, 61.0);
+        assert_eq!(after_capture_delay_1, Duration::MAX);
+        assert_eq!(after_capture_water_1, paused_water);
+        assert_eq!(after_capture_train_1, paused_train);
+        assert_eq!(widget.standing.len(), 1);
+        assert_eq!(widget.standing[0].1.scale, 1.0);
+        assert!(!widget.unit_history.scaling_figures());
+
+        widget.viewer.capture = Some(untimed_capture());
+        let (_, export_water_2, export_train_2, _) = widget.present(&device, &queue, 75.0);
+        assert_eq!(export_water_2, export_water_1);
+        assert_eq!(export_train_2, export_train_1);
+        assert_eq!(widget.standing.len(), 1);
+        assert_eq!(widget.standing[0].1.scale, 1.0);
+        widget.viewer.capture = None;
+        let (after_capture_delay_2, after_capture_water_2, after_capture_train_2, _) =
+            widget.present(&device, &queue, 76.0);
+        assert_eq!(after_capture_delay_2, Duration::MAX);
+        assert_eq!(after_capture_water_2, paused_water);
+        assert_eq!(after_capture_train_2, paused_train);
+        assert_eq!(widget.standing.len(), 1);
+        assert_eq!(widget.standing[0].1.scale, 1.0);
+        assert!(!widget.unit_history.scaling_figures());
+
+        widget.viewer.playing = true;
+        assert!(!diagnostics_mentions_held(&mut widget.viewer));
+        let (play_start_delay, _, _, _) = widget.present(&device, &queue, 77.0);
+        assert!(play_start_delay < Duration::MAX, "playing wakes the widget immediately");
+        let (playing_delay, playing_water, playing_train, _) = widget.present(&device, &queue, 78.0);
+        assert!(playing_delay < Duration::MAX, "playing keeps advancing frames");
+        assert_ne!(playing_water, paused_water, "playing advances the water phase");
+        assert_ne!(playing_train, paused_train, "playing advances the train position");
+
+        widget.viewer.capture = Some(untimed_capture());
+        let (_, play_export_water, play_export_train, _) = widget.present(&device, &queue, 79.0);
+        assert_ne!(play_export_water, playing_water, "untimed export during playback keeps advancing water");
+        assert_ne!(play_export_train, playing_train, "untimed export during playback keeps advancing trains");
+        widget.viewer.capture = None;
+        let (_, after_play_export_water, after_play_export_train, _) =
+            widget.present(&device, &queue, 80.0);
+        assert_ne!(after_play_export_water, play_export_water);
+        assert_ne!(after_play_export_train, play_export_train);
+        assert_eq!(widget.standing.len(), 1);
+        assert_eq!(widget.standing[0].1.scale, 1.0);
+
+        let (full_delay_1, full_water_1, full_train_1, _) = full_map.present(&device, &queue, 45.0);
+        assert!(full_delay_1 < Duration::MAX, "the same paused scene on the full map keeps requesting frames");
+        assert!(full_map.targets.surface_motion.live());
+        let (full_delay_2, full_water_2, full_train_2, _) = full_map.present(&device, &queue, 46.0);
+        assert!(full_delay_2 < Duration::MAX);
+        assert_ne!(full_water_2, full_water_1, "paused full map keeps animating water");
+        assert_ne!(full_train_2, full_train_1, "paused full map keeps moving trains");
+        });
     }
 }

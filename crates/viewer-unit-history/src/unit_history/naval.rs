@@ -28,6 +28,7 @@ impl Sources {
         history.install(self.clone());
         let frame = Frame {
             delta: 0.0,
+            scale_delta: 0.0,
             gates,
             shown: [true; 2],
             arrows: true,
@@ -502,6 +503,7 @@ mod tests {
     fn frame(delta: f32) -> Frame {
         Frame {
             delta,
+            scale_delta: delta,
             gates: super::super::test_support::GATES,
             shown: [true; 2],
             arrows: false,

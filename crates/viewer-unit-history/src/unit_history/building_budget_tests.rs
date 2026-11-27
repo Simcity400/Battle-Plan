@@ -243,3 +243,65 @@ fn building_file_order_and_settled_dump_ignore_interactive_budget() {
             .all(|p| p.1.scale == 1.0)
     );
 }
+
+#[test]
+fn paused_transition_clock_grows_buildings_and_reports_figure_scaling_until_settled() {
+    use crate::unit_history::{Kind, test_support::{GATES, target}};
+    let mut buildings = budget_buildings(&[(10, 1)]);
+    let mut units = budget_units(vec![target(10, Kind::Land)], false);
+    let near = camera([0.0, 0.0], 50.0);
+    let far = camera([0.0, 0.0], 2000.0);
+    let away = camera([2500.0, 0.0], 50.0);
+    let ambient = 10.0;
+
+    units.set_transition_step(Some(0.0), Some(10.0));
+    units.update_models(far, [1024, 768], ambient, GATES, i32::MAX, &mut buildings, true);
+    assert!(!buildings.growing());
+    assert!(!units.scaling_figures());
+
+    units.set_transition_step(Some(0.0), Some(10.0));
+    let first = units.update_models(near, [1024, 768], ambient, GATES, i32::MAX, &mut buildings, true);
+    assert_eq!(buildings.collect(None, 0.0)[0].1.scale, 0.0);
+    assert_eq!(units.drawn(&first.units)[0].1.scale, 0.0);
+    assert!(buildings.growing());
+    assert!(units.scaling_figures());
+
+    units.set_transition_step(Some(0.05), Some(10.05));
+    let mid = units.update_models(near, [1024, 768], ambient, GATES, i32::MAX, &mut buildings, true);
+    let mid_building = buildings.collect(None, 0.0)[0].1.scale;
+    let mid_unit = units.drawn(&mid.units)[0].1.scale;
+    assert!(mid_building > 0.0 && mid_building < 1.0, "{mid_building}");
+    assert!(mid_unit > 0.0 && mid_unit < 1.0, "{mid_unit}");
+    assert!(buildings.growing());
+    assert!(units.scaling_figures());
+
+    units.set_transition_step(Some(1.0), Some(11.05));
+    let settled = units.update_models(near, [1024, 768], ambient, GATES, i32::MAX, &mut buildings, true);
+    assert_eq!(buildings.collect(None, 0.0)[0].1.scale, 1.0);
+    assert_eq!(units.drawn(&settled.units)[0].1.scale, 1.0);
+    assert!(!buildings.growing());
+    assert!(!units.scaling_figures());
+
+    units.set_transition_step(Some(0.05), Some(11.10));
+    units.update_models(far, [1024, 768], ambient, GATES, i32::MAX, &mut buildings, true);
+    assert!(units.scaling_figures());
+
+    units.set_transition_step(Some(1.0), Some(12.10));
+    units.update_models(far, [1024, 768], ambient, GATES, i32::MAX, &mut buildings, true);
+    assert!(units.scaling_figures());
+
+    units.set_transition_step(Some(0.1), Some(12.20));
+    let gone = units.update_models(far, [1024, 768], ambient, GATES, i32::MAX, &mut buildings, true);
+    assert!(units.drawn(&gone.units).is_empty());
+    assert!(!units.scaling_figures());
+
+    units.set_transition_step(Some(0.0), Some(12.20));
+    units.update_models(near, [1024, 768], ambient, GATES, i32::MAX, &mut buildings, true);
+    assert!(buildings.growing());
+    assert!(units.scaling_figures());
+
+    units.set_transition_step(Some(0.05), Some(12.25));
+    units.update_models(away, [1024, 768], ambient, GATES, i32::MAX, &mut buildings, true);
+    assert!(!buildings.growing());
+    assert!(!units.scaling_figures());
+}
