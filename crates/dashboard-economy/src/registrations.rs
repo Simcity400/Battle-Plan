@@ -8,10 +8,10 @@ dashboard_base::register_products! {
     ECONOMY_FUEL_DEMAND_COUNTRYFUELDEMANDHISTORY => crate::products::economy::fuel::demand::CountryFuelDemandHistory,
 
     @hourly
-    TRADE_FLOW_TRADEFLOW => whole_frame<crate::products::trade_flow::TradeFlow>,
+    TRADE_FLOW_TRADEFLOW => exact<crate::products::trade_flow::TradeFlow>,
     ECONOMY_FUEL_BRANCHES_FUELBRANCHES => exact<crate::products::economy::fuel_branches::FuelBranches>,
-    ECONOMY_RESOURCES_RESOURCEBALANCE => whole_frame<crate::products::economy::resources::ResourceBalance>,
+    ECONOMY_RESOURCES_RESOURCEBALANCE => exact<crate::products::economy::resources::ResourceBalance>,
     ECONOMY_LEND_LEASE_BALANCE_LENDLEASEBALANCE => exact<crate::products::economy::lend_lease_balance::LendLeaseBalance>,
     ECONOMY_MARKET_MARKETLENDLEASE => exact<crate::products::economy::market::MarketLendLease>,
-    ECONOMY_FUEL_COUNTRYFUEL => whole_frame<crate::products::economy::fuel::CountryFuel>,
+    ECONOMY_FUEL_COUNTRYFUEL => exact<crate::products::economy::fuel::CountryFuel>,
 }
