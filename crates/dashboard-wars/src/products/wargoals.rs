@@ -1,4 +1,4 @@
-use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Edits, Held, Keys, Owner, Read, ReadsAt, field_columns, field_mask}};
+use dashboard_base::products::{LoadContext, at_hour::{self, At, AtHour, Edits, Held, Keys, Owner, Read, ReadsAt, field_columns, field_mask}};
 use dashboard_base::Source;
 use super::wargoal_dates::{self, Incarnation, Incarnations};
 use dashboard_follow::live::Source as Cell;
@@ -6,12 +6,13 @@ use dashboard_base::{
     catalogue::{self, Catalogue, View},
     products::{Country, check_reply_budget, validate_country},
 };
+use dashboard_query::{coverage::{Witness, witnessed}, identity::{Holder, Holders}};
 use dashboard_text::metadata::{TaggedCountry, tagged_country};
 use replay_data::rows::{self, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, hash_map::Entry},
     io,
     sync::Arc,
 };
@@ -183,70 +184,88 @@ struct RemovedName {
 
 type Removals = (Vec<(Incarnation, RemovedName)>, Vec<(i32, String)>);
 
-fn removed_names(source: &Source, branch: u64, cat: Option<&Catalogue>, dates: &Incarnations, country: &Country) -> io::Result<Removals> {
-    let query = dashboard_base::queries::query(source, branch)?;
+fn removed_names(
+    holders: &Holders,
+    cat: Option<&Catalogue>,
+    dates: &Incarnations,
+    country: &Country,
+    mut frame_at: impl FnMut(i32, &[Read]) -> io::Result<DecodedFrame>,
+) -> Removals {
     let held = cat.map(|cat| cat.content.layers.derived::<content_reader_layers::content::diagnostics::Once<Result<content_reader_wargoals::wargoals::Database, String>>>());
     let definitions = match (cat, held.as_ref()) {
         (Some(cat), Some(held)) => held.get_or_init(|| content_reader_wargoals::wargoals::read(&cat.content.layers).map_err(|why| why.to_string())).as_ref().ok(),
         _ => None,
     };
-    let mut tables: Vec<TableId> = vec![TableId::CountryLinks, TableId::LexicalTokens];
-    tables.extend(content_reader_country_names::country_names::TABLES);
-    tables.sort_unstable();
-    tables.dedup();
-    let reads: Vec<dashboard_base::products::at_hour::Read> = tables.into_iter().map(dashboard_base::products::at_hour::Read::all).collect();
-    let mut frames: HashMap<i32, Arc<DecodedFrame>> = HashMap::new();
+    let mut reads = content_reader_country_names::country_names::TABLES.map(Read::all).to_vec();
+    reads.push(Read::all(TableId::LexicalTokens));
+    reads.sort_unstable_by_key(|read| read.table);
+    let mut keys = HashMap::<i32, Vec<u128>>::new();
+    for incarnation in dates.removed() {
+        keys.entry(incarnation.last_seen).or_default().push(u128::from(incarnation.country));
+    }
+    let mut link_frames = HashMap::new();
+    let mut frames = HashMap::new();
     let mut out: Vec<(Incarnation, RemovedName)> = Vec::new();
     let mut unattributed: Vec<(i32, String)> = Vec::new();
     for incarnation in dates.removed() {
         let hour = incarnation.last_seen;
         let removed = incarnation.removed.unwrap_or(hour);
-        let Some(slot) = query.holders.slot_at(country, hour) else {
-            let unresolved = query.holders.at(country, hour).is_some_and(|run| run.holder == dashboard_query::identity::Holder::Unresolved);
-            if let Some(why) = query.holders.not_known(country, hour).or_else(|| unresolved.then(|| "Who held the country at a removed war goal's last hour was not recorded".to_owned())) {
+        let Some(slot) = holders.slot_at(country, hour) else {
+            let unresolved = holders.at(country, hour).is_some_and(|run| run.holder == Holder::Unresolved);
+            if let Some(why) = holders.not_known(country, hour).or_else(|| unresolved.then(|| "Who held the country at a removed war goal's last hour was not recorded".to_owned())) {
                 unattributed.push((removed, why));
             }
             continue;
         };
-        let frame = match frames.get(&hour) {
-            Some(frame) => Arc::clone(frame),
-            None => match dashboard_base::products::at_hour::frame(&query, hour, &reads, "War goals") {
-                Ok(frame) => {
-                    let frame = Arc::new(frame);
-                    frames.insert(hour, Arc::clone(&frame));
-                    frame
-                }
+        let owner_key = u128::from(incarnation.country);
+        let links = link_frames.entry(hour).or_insert_with(|| {
+            let read = Read::these(TableId::CountryLinks, keys[&hour].iter().copied());
+            frame_at(hour, &[read])
+        });
+        if links.as_ref().is_ok_and(|frame| matches!(
+            witnessed::<tables::CountryLinks>(frame, owner_key),
+            Witness::Row(row) if row.canonical_slot != slot
+        )) {
+            continue;
+        }
+        let unread = |why| (removed, format!("Who held a removed war goal was not read at its last hour: {why}"));
+        let frame = match frames.entry(hour) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => match frame_at(hour, &reads) {
+                Ok(frame) => entry.insert(frame),
                 Err(why) => {
-                    unattributed.push((removed, format!("Who held a removed war goal was not read at its last hour: {why}")));
+                    unattributed.push(unread(why.to_string()));
                     continue;
                 }
             },
         };
-        let read = dashboard_query::coverage::witnessed_rows::<tables::CountryLinks>(&frame);
-        let links: BTreeMap<u32, u32> = read.rows.iter().map(|row| (row.id, row.canonical_slot)).collect();
-        match (links.get(&incarnation.country), &read.missing) {
-            (Some(held), _) if *held == slot => {}
-            (Some(_), _) | (None, None) => continue,
-            (None, Some(why)) => {
-                unattributed.push((removed, format!("Who held a removed war goal was not read at its last hour: {why}")));
+        match witnessed::<tables::CountryLinks>(frame, owner_key) {
+            Witness::Row(row) if row.canonical_slot == slot => {}
+            Witness::Row(_) | Witness::Absent => continue,
+            Witness::NotRecorded(why) => {
+                unattributed.push(unread(why));
                 continue;
             }
         }
         let raw = |value: Option<i64>| value.and_then(|raw| u32::try_from(raw).ok());
-        let recipient = raw(incarnation.recipient).and_then(|recipient| links.get(&recipient).copied());
-        let actor = raw(incarnation.actor).and_then(|actor| links.get(&actor).copied());
-        let literal = raw(incarnation.goal_type).and_then(|token| frame.complete::<tables::LexicalTokens>().ok()?.iter().find(|row| row.token == token).map(|row| row.literal.clone()));
+        let linked = |key| match witnessed::<tables::CountryLinks>(frame, u128::from(raw(key)?)) {
+            Witness::Row(row) => Some(row.canonical_slot),
+            _ => None,
+        };
+        let recipient = linked(incarnation.recipient);
+        let actor = linked(incarnation.actor);
+        let literal = raw(incarnation.goal_type).and_then(|token| frame.complete::<tables::LexicalTokens>().ok()?.iter().find(|row| row.token == token).map(|row| row.literal.as_slice()));
         let name = match (literal, actor, recipient, cat) {
             (Some(literal), Some(actor), Some(recipient), Some(cat)) => definitions
-                .and_then(|db| db.find(&literal).ok().flatten())
-                .and_then(|definition| localised_goal_name(&frame, &cat.localisation, definition, actor, recipient).ok()),
+                .and_then(|db| db.find(literal).ok().flatten())
+                .and_then(|definition| localised_goal_name(frame, &cat.localisation, definition, actor, recipient).ok()),
             _ => None,
         };
         out.push((incarnation.clone(), RemovedName { name, recipient }));
     }
     out.sort_by_key(|(incarnation, _)| incarnation.removed);
     unattributed.sort_by_key(|(removed, _)| *removed);
-    Ok((out, unattributed))
+    (out, unattributed)
 }
 
 fn linked_ids(held: &DecodedFrame, slot: u32) -> Option<Vec<u32>> {
@@ -502,7 +521,12 @@ impl AtHour for Wargoals {
         let branch = params.branch_id.parse::<u64>().map_err(|_| "Invalid branch".to_owned());
         let dates = branch.clone().and_then(|branch| wargoal_dates::follow(source, branch).map_err(|why| format!("War-goal dates refused: {why}")));
         let (removals, unattributed) = match (&dates, branch) {
-            (Ok(dates), Ok(branch)) => removed_names(source, branch, catalogue.as_deref().ok(), dates, &params.country)?,
+            (Ok(dates), Ok(branch)) => {
+                let query = dashboard_base::queries::query(source, branch)?;
+                removed_names(&query.holders, catalogue.as_deref().ok(), dates, &params.country, |hour, reads| {
+                    at_hour::frame(&query, hour, reads, Self::TITLE)
+                })
+            }
             _ => (Vec::new(), Vec::new()),
         };
         Ok(WargoalContent { catalogue, dates, removals, unattributed })
@@ -1436,7 +1460,12 @@ mod tests {
                 rows::CountryRow { id: 2, canonical_slot: 2, tag: b"TWO".to_vec(), political_power_raw: Some(i64::from(offset) * 10), ..Default::default() },
                 rows::CountryRow { id: 3, canonical_slot: 3, tag: b"THR".to_vec(), political_power_raw: Some(i64::from(offset) * 20), ..Default::default() },
             ]));
-            set(&mut f, TableId::CountryLinks, TableRows::CountryLinks([1, 2, 3].map(|id| rows::CountryLinkRow { id, canonical_slot: id }).to_vec()));
+            set(&mut f, TableId::CountryLinks, TableRows::CountryLinks(vec![
+                rows::CountryLinkRow { id: 1, canonical_slot: 1 },
+                rows::CountryLinkRow { id: 2, canonical_slot: 2 },
+                rows::CountryLinkRow { id: 3, canonical_slot: 3 },
+                rows::CountryLinkRow { id: 4, canonical_slot: 3 },
+            ]));
             set(&mut f, TableId::CountryAppearance, TableRows::CountryAppearance([1, 2, 3].map(|country| rows::CountryAppearanceRow { country, ..Default::default() }).to_vec()));
             set(&mut f, TableId::Politics, TableRows::Politics([1, 2, 3].map(|country| rows::PoliticsRow { country, ..Default::default() }).to_vec()));
             set(&mut f, TableId::PoliticalParties, TableRows::PoliticalParties(Vec::new()));
@@ -1500,6 +1529,43 @@ mod tests {
         let main_frames: Vec<_> = (base..=base + 15).map(|hour| make(1, hour)).collect();
         let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, main_frames.clone())]).unwrap().into_timelines(&Default::default()).unwrap();
         let source = Source::from_replay(SourceKey { source_id: "wg-played".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let dates = wargoal_dates::follow(&source, 1).unwrap();
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let read = |hour, reads: &[Read]| at_hour::frame(&query, hour, reads, Wargoals::TITLE);
+        let ((removals, unattributed), rows) = dashboard_base::products::at_hour::counted(|| {
+            removed_names(&query.holders, None, &dates, &Country::Slot(3), read)
+        });
+        assert!(removals.is_empty() && unattributed.is_empty());
+        assert!(rows <= dates.removed().count() as u64, "foreign removals read {rows} rows to check ownership");
+        let one = Incarnations::new(dates.removed().filter(|row| row.country == 1).cloned().collect());
+        let naming_error = "Who held a removed war goal was not read at its last hour: row key exceeds native width";
+        let read_with_damage = |hour, reads: &[Read]| {
+            if reads.iter().any(|read| read.table == TableId::LexicalTokens && read.keys == Keys::All) {
+                TableId::LexicalTokens.rows_from_wire_fields(&[42, 1 << 32], TableId::LexicalTokens.full_mask(), &mut |_, _| {
+                    Ok(rows::Field::Bytes(b"custom_goal"))
+                })?;
+            }
+            read(hour, reads)
+        };
+        let (own, unread) = removed_names(&query.holders, None, &one, &Country::Slot(1), read_with_damage);
+        assert!(own.is_empty());
+        assert_eq!(unread, [(base + 8, naming_error.into())]);
+        let (foreign, unread) = removed_names(&query.holders, None, &one, &Country::Slot(3), read_with_damage);
+        assert!(foreign.is_empty() && unread.is_empty());
+        let unlinked = Incarnations::new(one.removed().map(|row| Incarnation { country: 99, ..row.clone() }).collect());
+        let (unproven, unread) = removed_names(&query.holders, None, &unlinked, &Country::Slot(1), read_with_damage);
+        assert!(unproven.is_empty());
+        assert_eq!(unread, [(base + 8, naming_error.into())]);
+        let (own, unread) = removed_names(&query.holders, None, &one, &Country::Slot(1), |hour, reads| {
+            let mut frame = read(hour, reads)?;
+            frame.tables[TableId::CountryLinks.index()] = TableView::Truncated {
+                rows: TableRows::CountryLinks(Vec::new()),
+                missing: 3,
+            }.into();
+            Ok(frame)
+        });
+        assert!(own.is_empty());
+        assert_eq!(unread, [(base + 8, "Who held a removed war goal was not read at its last hour: Country links read only in part at this hour (3 rows not read)".into())]);
         let load = LoadContext { content: None };
         let params = json!({"branchId": "1", "country": "ONE"});
         let panel = exact_panel::<Wargoals>(&source, &load, &params).unwrap();
