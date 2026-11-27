@@ -862,3 +862,94 @@ fn file_opens_share_one_page_owner_and_keep_distinct_live_pages() {
     let error = damaged.table_entry(1, 0, TableId::Countries.index()).unwrap_err();
     assert_eq!(Damage::of(&error).unwrap().scope, DamageScope::Extent(extent));
 }
+
+#[test]
+fn plain_frame_builds_no_recorded_update_copy_and_alternates_cleanly_with_frame_recorded() {
+    let (bytes, _) = fixtures::churned(recorder_derive::writers(), &[(1, 100, 2)]);
+    let file = opened(bytes);
+    let assert_same_frame = |got: &DecodedFrame, want: &DecodedFrame, context: &str| {
+        assert_eq!(got.tables, want.tables, "{context}: tables");
+        let got_sampled: Vec<_> = got.tables.iter().map(SharedView::sampled_at).collect();
+        let want_sampled: Vec<_> = want.tables.iter().map(SharedView::sampled_at).collect();
+        assert_eq!(got_sampled, want_sampled, "{context}: sampled_at");
+    };
+    let assert_same_recorded = |got: &RecordedFrame, want: &RecordedFrame, context: &str| {
+        assert_eq!(got.keyframe, want.keyframe, "{context}: keyframe");
+        assert_eq!(
+            got.tables.iter().collect::<Vec<_>>(),
+            want.tables.iter().collect::<Vec<_>>(),
+            "{context}: recorded updates",
+        );
+    };
+    let mut plain = Frames::new(&file, &WATCHED).unwrap();
+    let mut recorded = Frames::new(&file, &WATCHED).unwrap();
+    for ordinal in 0..10 {
+        plain.go_to(0, ordinal).unwrap();
+        recorded.go_to(0, ordinal).unwrap();
+        let got = plain.frame(1).unwrap();
+        let (want, want_recorded) = recorded.frame_recorded(1).unwrap();
+        assert_same_frame(&got, &want, &format!("ordinal {ordinal}"));
+        assert!(plain.slots.iter().all(|slot| slot.update.is_none()), "ordinal {ordinal}: plain frame retains no update");
+        if ordinal == 0 {
+            let bytes: usize = want_recorded.tables.iter().map(replay_frame::frame::recorded::update_bytes).sum();
+            assert!(bytes > 0, "frame_recorded holds snapshot update bytes at keyframe");
+        }
+    }
+    assert!(total(&plain).patched > 0 && total(&plain).in_place == total(&plain).patched && total(&plain).snapshots_patched == 0);
+
+    plain.go_to(0, 10).unwrap();
+    recorded.go_to(0, 10).unwrap();
+    let got = plain.frame(1).unwrap();
+    let (want, _) = recorded.frame_recorded(1).unwrap();
+    assert_same_frame(&got, &want, "same-ordinal first plain");
+    assert!(plain.slots.iter().all(|slot| slot.update.is_none()));
+
+    let (got, got_recorded) = plain.frame_recorded(1).unwrap();
+    let (want, want_recorded) = recorded.frame_recorded(1).unwrap();
+    assert_same_frame(&got, &want, "same-ordinal switch to recorded");
+    assert_same_recorded(&got_recorded, &want_recorded, "same-ordinal switch to recorded");
+    assert!(plain.slots.iter().all(|slot| slot.update.is_some()));
+
+    let got = plain.frame(1).unwrap();
+    let (want, _) = recorded.frame_recorded(1).unwrap();
+    assert_same_frame(&got, &want, "same-ordinal return to plain");
+    assert!(plain.slots.iter().all(|slot| slot.update.is_none()), "returning to plain frame drops retained updates");
+
+    plain.keyframe();
+    recorded.keyframe();
+    let got = plain.frame(1).unwrap();
+    let (want, _) = recorded.frame_recorded(1).unwrap();
+    assert_same_frame(&got, &want, "same-ordinal keyframe plain");
+    assert!(plain.slots.iter().all(|slot| slot.update.is_none()));
+
+    let (got, got_recorded) = plain.frame_recorded(1).unwrap();
+    let (want, want_recorded) = recorded.frame_recorded(1).unwrap();
+    assert_same_frame(&got, &want, "same-ordinal after keyframe recorded");
+    assert_same_recorded(&got_recorded, &want_recorded, "same-ordinal after keyframe recorded");
+    assert!(plain.slots.iter().all(|slot| slot.update.is_some()));
+
+    plain.go_to(0, 11).unwrap();
+    recorded.go_to(0, 11).unwrap();
+    let (got, got_recorded) = plain.frame_recorded(1).unwrap();
+    let (want, want_recorded) = recorded.frame_recorded(1).unwrap();
+    assert_same_frame(&got, &want, "next ordinal recorded");
+    assert_same_recorded(&got_recorded, &want_recorded, "next ordinal recorded");
+
+    plain.go_to(0, 12).unwrap();
+    recorded.go_to(0, 12).unwrap();
+    let got = plain.frame(1).unwrap();
+    let (want, _) = recorded.frame_recorded(1).unwrap();
+    assert_same_frame(&got, &want, "advancing return to plain");
+    assert!(plain.slots.iter().all(|slot| slot.update.is_none()), "advancing to plain frame drops retained updates");
+
+    plain.go_to(0, 13).unwrap();
+    recorded.go_to(0, 13).unwrap();
+    plain.keyframe();
+    recorded.keyframe();
+    let (got, got_recorded) = plain.frame_recorded(1).unwrap();
+    let (want, want_recorded) = recorded.frame_recorded(1).unwrap();
+    assert_same_frame(&got, &want, "advancing plain to recorded keyframe");
+    assert_same_recorded(&got_recorded, &want_recorded, "advancing plain to recorded keyframe");
+    assert!(got_recorded.keyframe);
+    assert!(plain.slots.iter().all(|slot| slot.update.is_some()));
+}
