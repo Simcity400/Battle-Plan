@@ -1119,11 +1119,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const atTime = pinHour !== null || !!window;
   const tilesWait = !following && atTime && (!currentTiled || (!Object.keys(currentTiled.series).length && !currentTiled.topRefused));
-  const unitsWait = !hasStaticBundle && view.kind !== 'outside' && (following || !pixelBinnedKey || atTime)
-    && (view.kind !== 'none' || (!following && !pixelBinnedKey && !allowEmpty && pinHour !== null));
+  const unitsWait = !hasStaticBundle && view.kind !== 'outside' && view.kind !== 'none' && (following || !pixelBinnedKey || atTime);
+  const tileInputs: PlanInput[] = [];
+  if (pixelBinnedKey && currentTiled?.error) tileInputs.push({ name: 'the chart history', state: 'failed', failure: asFailure(currentTiled.error), retry: retryTiles });
+  else if (pixelBinnedKey && tilesWait) tileInputs.push({ name: 'the chart history', state: 'pending' });
   const unitInputs: PlanInput[] = [];
-  if (pixelBinnedKey && currentTiled?.error) unitInputs.push({ name: 'the chart history', state: 'failed', failure: asFailure(currentTiled.error), retry: retryTiles });
-  else if (pixelBinnedKey && tilesWait) unitInputs.push({ name: 'the chart history', state: 'pending' });
   if (view.failure) unitInputs.push({ name: subject, state: 'failed', failure: view.failure.failure, retry: retryUnits });
   else if (unitsWait) unitInputs.push({ name: subject, state: 'pending' });
 
@@ -1153,7 +1153,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     }
 
     if (compiledFollow.refused) return { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused };
-    const waiting = inputsStatus([...planInputs, ...unitInputs]);
+    const waiting = inputsStatus([...planInputs, ...tileInputs]);
     if (waiting) return waiting;
 
     if (isFilter) {
@@ -1185,12 +1185,12 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if (currentTiled?.topRefused) return { kind: 'not-recorded', reason: currentTiled.topRefused };
       if (tileUnrecorded?.reason) return { kind: 'not-recorded', reason: tileUnrecorded.reason };
     }
-    if (following) {
-      if (compiledFollow.unavailable) return { kind: 'refused', reason: compiledFollow.unavailable };
-      return view.kind === 'outside' ? { kind: 'outside' } : { kind: 'ready' };
-    }
+    if (following && compiledFollow.unavailable) return { kind: 'refused', reason: compiledFollow.unavailable };
+    const reading = inputsStatus(unitInputs);
+    if (reading) return reading;
+    if (following) return view.kind === 'outside' ? { kind: 'outside' } : { kind: 'ready' };
     if (pixelBinnedKey) return atTime ? { kind: 'ready' } : { kind: 'outside' };
-    if (view.kind === 'none') return allowEmpty || pinHour !== null ? { kind: 'ready' } : { kind: 'outside' };
+    if (view.kind === 'none') return allowEmpty ? { kind: 'ready' } : pinHour === null ? { kind: 'outside' } : { kind: 'loading', label: loadingLabel };
     return view.kind === 'outside' ? { kind: 'outside' } : { kind: 'ready' };
   })();
 
