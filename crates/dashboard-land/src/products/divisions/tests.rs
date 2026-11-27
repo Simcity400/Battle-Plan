@@ -526,3 +526,26 @@ fn a_service_record_reads_lexical_changes_only_for_its_award_tokens() {
     let renamed = ask(105);
     assert_eq!(renamed.medals.iter().map(|medal| medal.key.as_str()).collect::<Vec<_>>(), ["medal_b"]);
 }
+
+#[test]
+fn cached_division_icons_keep_their_overlay_notes() {
+    use dashboard_base::{catalogue, products::LoadContext, test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select}};
+
+    let machine = Machine::new("division_icon_notes");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_unit_fixture_unit_icon_medium textureFile=gfx/fixture_unit.png}}");
+    machine.write("gfx/fixture_unit.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_unit.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["fixture_art"]);
+    let content = super::Content::load(&source, &LoadContext { content: Some(options) });
+    let read = || {
+        let (image, noted) = catalogue::capture(|| content.icon(7, -1, b"fixture_unit").unwrap());
+        let mut warnings = Vec::new();
+        noted.diagnostics().append_to(&mut warnings);
+        (first_pixel(&image), warnings)
+    };
+    let first = read();
+    assert_eq!(first.0, BLUE);
+    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert_eq!(read(), first);
+}

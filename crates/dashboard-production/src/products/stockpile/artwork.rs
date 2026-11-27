@@ -78,7 +78,7 @@ dashboard_base::reply_warnings!(StockpileArtworkReply);
 struct Held {
     catalogue: Option<Arc<Catalogue>>,
     icons: Option<Result<Arc<IconContent>, String>>,
-    drawn: BTreeMap<IconChoice, Result<Option<String>, String>>,
+    drawn: BTreeMap<IconChoice, (Result<Option<String>, String>, catalogue::OwnRefusals)>,
 }
 
 pub struct ArtContext {
@@ -151,10 +151,11 @@ fn best_variants(frame: &DecodedFrame, units: &content_reader_key_names::equipme
 }
 
 fn picture(catalogue: &Arc<Catalogue>, state: &Mutex<Held>, choice: IconChoice, id: u64) -> Result<Option<String>, String> {
-    if let Some(drawn) = state.lock().unwrap_or_else(PoisonError::into_inner).drawn.get(&choice) {
+    if let Some((drawn, noted)) = state.lock().unwrap_or_else(PoisonError::into_inner).drawn.get(&choice) {
+        catalogue::credit(noted);
         return drawn.clone();
     }
-    let made = catalogue::draw(
+    let (made, noted) = catalogue::capture(|| catalogue::draw(
         || format!("equipment icon of design {id}"),
         catalogue,
         |shown| match choice.shown(shown)? {
@@ -163,8 +164,9 @@ fn picture(catalogue: &Arc<Catalogue>, state: &Mutex<Held>, choice: IconChoice, 
         },
     )
     .get()
-    .clone();
-    state.lock().unwrap_or_else(PoisonError::into_inner).drawn.insert(choice, made.clone());
+    .clone());
+    catalogue::credit(&noted);
+    state.lock().unwrap_or_else(PoisonError::into_inner).drawn.insert(choice, (made.clone(), noted));
     made
 }
 
@@ -382,4 +384,32 @@ impl AtHour for StockpileArtwork {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Stockpile artwork country is unavailable at this hour"))?;
         reply(frame, params, at.holders.name(&params.country, at.hour), owner, at.context, at.cancelled)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn cached_stockpile_pictures_keep_their_overlay_notes() {
+    use dashboard_base::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
+
+    let machine = Machine::new("stockpile_picture_notes");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_stockpile textureFile=gfx/fixture_stockpile.png}}");
+    machine.write("gfx/fixture_stockpile.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_stockpile.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["fixture_art"]);
+    let catalogue = catalogue::catalogue(&source, &options).unwrap();
+    let state = held(&source, &catalogue);
+    let choice: IconChoice = serde_json::from_value(serde_json::json!({
+        "branches":[{"assignment":[], "probes":[{"Sprite":"GFX_fixture_stockpile"}], "otherwise":{"Ok":null}}], "reasons":[],
+    })).unwrap();
+    let read = || {
+        let (image, noted) = catalogue::capture(|| picture(&catalogue, &state, choice.clone(), 17).unwrap().unwrap());
+        let mut warnings = Vec::new();
+        noted.diagnostics().append_to(&mut warnings);
+        (first_pixel(&image), warnings)
+    };
+    let first = read();
+    assert_eq!(first.0, BLUE);
+    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert_eq!(read(), first);
 }

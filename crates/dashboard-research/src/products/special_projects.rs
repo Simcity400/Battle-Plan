@@ -2,7 +2,7 @@
 use dashboard_base::products::{Country, validate_country};
 use dashboard_base::{products::{LoadContext, Product, at_hour::{self, Read}, character_portraits::{portrait_png, recorded_portrait_in}, politics_content::{PoliticsContent, politics_content}}, queries::country_ids::{self, RunLinks}};
 use dashboard_world::products::identities::CountryIdentityRun;
-use dashboard_base::{Source, catalogue::{Refusals, View}, span::HourSpan};
+use dashboard_base::{Source, catalogue::{self, OwnRefusals, Refusals, View}, span::HourSpan};
 use dashboard_query::{Query, identity::Holder};
 use content_reader_military::special_projects::{Catalog, Project};
 use content_reader_localisation::localisation::Argument;
@@ -281,7 +281,7 @@ dashboard_base::reply_warnings!(SpecialProjectsReply);
 pub(crate) struct ProjectContent {
     pub politics: Arc<PoliticsContent>,
     pub definitions: Arc<Catalog>,
-    icons: Mutex<HashMap<String, Result<String, String>>>,
+    icons: Mutex<HashMap<String, (Result<String, String>, OwnRefusals)>>,
 }
 
 #[derive(Default)]
@@ -364,17 +364,18 @@ impl<'c> Naming<'c> {
 
     fn icon(&mut self, key: &str) -> Result<String, String> {
         let content: &'c ProjectContent = self.content;
-        let drawn = content
+        let (drawn, noted) = content
             .icons
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .entry(key.to_owned())
-            .or_insert_with(|| match content.politics.sprite_png_sized(key, ICON_EDGE) {
+            .or_insert_with(|| catalogue::capture(|| match content.politics.sprite_png_sized(key, ICON_EDGE) {
                 Ok(Some(icon)) => Ok(icon),
                 Ok(None) => Err(format!("Content has no sprite {key}.")),
                 Err(error) => Err(format!("Sprite {key} could not be drawn: {error}")),
-            })
+            }))
             .clone();
+        catalogue::credit(&noted);
         if let Err(reason) = &drawn {
             *self.art.entry(reason.clone()).or_default() += 1;
         }

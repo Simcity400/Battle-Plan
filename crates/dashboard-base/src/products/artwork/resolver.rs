@@ -338,7 +338,36 @@ pub fn art_scope_key(layers: &ResolvedLayers, language: &str) -> ArtScopeKey {
 
 #[derive(Default)]
 struct ResolvedArtCache {
-    entries: Mutex<BTreeMap<(ArtScopeKey, ArtTarget, ArtRenderVariant), ArtResolution>>,
+    entries: Mutex<BTreeMap<(ArtScopeKey, ArtTarget, ArtRenderVariant), (ArtResolution, catalogue::OwnRefusals)>>,
+}
+
+#[cfg(test)]
+#[test]
+fn cached_art_resolutions_keep_overlay_reads_and_refusals() {
+    use crate::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
+
+    for refused in [false, true] {
+        let machine = Machine::new(if refused { "resolved_art_refused_notes" } else { "resolved_art_notes" });
+        machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_resolved textureFile=gfx/fixture_resolved.png}}");
+        machine.write("gfx/fixture_resolved.png", &png(RED));
+        machine.write_mod("fixture_art", "gfx/fixture_resolved.png", &if refused { b"invalid fixture image".to_vec() } else { png(BLUE) });
+        let (source, mut options) = machine.open();
+        select(&source, &mut options, &["fixture_art"]);
+        let catalogue = crate::catalogue::catalogue(&source, &options).unwrap();
+        let read = || {
+            let (resolution, noted) = catalogue::capture(|| resolve_sprite(&catalogue, "GFX_fixture_resolved", 0, 48));
+            let image = resolution.into_result().unwrap().unwrap();
+            let mut warnings = Vec::new();
+            noted.diagnostics().append_to(&mut warnings);
+            warnings.extend(noted.fallback_line());
+            (first_pixel(&image), warnings)
+        };
+        let first = read();
+        assert_eq!(first.0, if refused { RED } else { BLUE });
+        assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods")), "{first:?}");
+        if !refused { assert!(first.1.iter().any(|line| line.contains("fixture_art"))); }
+        assert_eq!(read(), first);
+    }
 }
 
 impl ResolvedArtCache {
@@ -347,21 +376,23 @@ impl ResolvedArtCache {
         key: (ArtScopeKey, ArtTarget, ArtRenderVariant),
         resolve: impl FnOnce() -> ArtResolution,
     ) -> ArtResolution {
-        if let Some(cached) = self
+        if let Some((cached, noted)) = self
             .entries
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .get(&key)
             .cloned()
         {
+            catalogue::credit(&noted);
             return cached;
         }
-        let result = resolve();
+        let (result, noted) = catalogue::capture(resolve);
+        catalogue::credit(&noted);
         if !matches!(result, ArtResolution::Failed { retryable: true, .. }) {
             self.entries
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .insert(key, result.clone());
+                .insert(key, (result.clone(), noted));
         }
         result
     }

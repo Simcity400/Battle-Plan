@@ -1069,3 +1069,28 @@ mod exact_playback {
         }
     }
 }
+
+#[test]
+fn cached_operative_art_keeps_its_overlay_notes() {
+    use super::operative_content::{Art, content};
+    use dashboard_base::{catalogue, products::LoadContext, test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select}};
+
+    let machine = Machine::new("operative_art_notes");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_operative textureFile=gfx/fixture_operative.png}}");
+    machine.write("gfx/fixture_operative.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_operative.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["fixture_art"]);
+    let content = content(&source, &LoadContext { content: Some(options) }).unwrap();
+    let read = || {
+        let (image, noted) = catalogue::capture(|| content.draw(&Art::Sprite("GFX_fixture_operative".into())).unwrap());
+        let mut warnings = Vec::new();
+        noted.diagnostics().append_to(&mut warnings);
+        (first_pixel(&image), warnings)
+    };
+    let first = read();
+    assert_eq!(first.0, BLUE);
+    assert!(first.1.iter().any(|line| line.starts_with("Artwork from visual mods") && line.contains("fixture_art")), "{first:?}");
+    assert_eq!(read(), first);
+}
