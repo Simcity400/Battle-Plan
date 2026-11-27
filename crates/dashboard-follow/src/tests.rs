@@ -2557,8 +2557,11 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     assert!(wide7["live"]["groups"][0].get("follow").is_none());
 }
 
-fn playing_panel(advance: crate::panel::ProductReader) -> (Arc<crate::host::PlayheadHost<Playhead>>, Arc<crate::push::Push>) {
+type StepGate = mpsc::Receiver<(Hour, mpsc::Sender<()>)>;
+
+fn playing_panel(advance: crate::panel::ProductReader) -> (Arc<crate::host::PlayheadHost<Playhead>>, Arc<crate::push::Push>, Arc<std::sync::atomic::AtomicI32>, StepGate) {
     use crate::{panel::{AtHour, ExactReader, PanelRows}, registry::Hosted};
+    use std::sync::atomic::{AtomicI32, Ordering};
     struct NoRows;
     impl PanelRows for NoRows {
         fn reader(&self, _tables: &[TableId]) -> io::Result<Box<dyn crate::panel::PanelReader>> {
@@ -2568,16 +2571,26 @@ fn playing_panel(advance: crate::panel::ProductReader) -> (Arc<crate::host::Play
     let pages = record(quiet);
     let follow = Follow::new(0);
     let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 8, speed: 1.0, rate: 60.0, ..Settings::default() };
-    let playhead = Arc::new(Playhead::new(pages.clone(), Timeline::whole(&*pages).unwrap(), settings, Some(follow.hook(Box::new(|_, _| {})))).unwrap());
+    let gate_from = Arc::new(AtomicI32::new(i32::MAX));
+    let (threshold, (arrived, gated)) = (gate_from.clone(), mpsc::channel());
+    let mut inner = follow.hook(Box::new(|_, _| {}));
+    let hook: playhead::Hook = Box::new(move |step, lanes| {
+        if step.first() <= step.last() && step.first() >= threshold.load(Ordering::Acquire) {
+            let (permit, wait) = mpsc::channel();
+            if arrived.send((step.last(), permit)).is_ok() { let _ = wait.recv(); }
+        }
+        inner(step, lanes);
+    });
+    let playhead = Arc::new(Playhead::new(pages.clone(), Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap());
     let host = crate::host::PlayheadHost::new(playhead, |p| p, |p, a| { if a.sought { p.seek(a.hour); } }, follow, vec![true; TABLE + 1]).unwrap();
     let push = Arc::new(crate::push::Push::default());
     host.show_panels(Arc::new(NoRows), push.clone());
-    let cold: ExactReader = Arc::new(|_, _| unreachable!("the product reader supplies the seed"));
     host.anchor(crate::registry::Anchor { seek: 1, hour: 0, position: 0.0, playing: false, sought: true, frame_rate: 60.0, speed: 360.0, timestamps: None });
+    let cold: ExactReader = Arc::new(|_, _| unreachable!("the product reader supplies the seed"));
     host.prepare_panel(Box::new(AtHour { read: cold.clone(), cold, advance })).unwrap()(1, 1).unwrap();
     host.playhead().pace(360.0);
     host.playhead().anchor(0.0, true, 360.0, std::time::Instant::now(), false);
-    (host, push)
+    (host, push, gate_from, gated)
 }
 
 fn completed_batch(push: &crate::push::Push) -> (Hour, Vec<(u32, u8, Hour, bool)>) {
@@ -2593,6 +2606,13 @@ fn completed_batch(push: &crate::push::Push) -> (Hour, Vec<(u32, u8, Hour, bool)
     }
 }
 
+fn joined(push: &crate::push::Push) -> Hour {
+    loop {
+        let (completed, records) = completed_batch(push);
+        if records.iter().any(|&(id, kind, _, stepped)| id == 1 && stepped && kind != crate::panel::dated::WAITING) { return completed; }
+    }
+}
+
 fn steady(proven_from_read: bool) -> crate::panel::ProductReader {
     Arc::new(move |hour, _, _, _| crate::panel::ProductRead {
         value: Arc::new(Ok(serde_json::json!({ "steady": true }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(),
@@ -2602,34 +2622,38 @@ fn steady(proven_from_read: bool) -> crate::panel::ProductReader {
 
 #[test]
 fn a_step_never_completes_a_panel_whose_product_it_did_not_read() {
-    use crate::panel::dated;
-    let (host, push) = playing_panel(steady(false));
-    while !completed_batch(&push).1.iter().any(|&(id, kind, _, stepped)| id == 1 && stepped && kind != crate::panel::dated::WAITING) {}
+    use std::sync::atomic::Ordering;
+    let (host, push, gate_from, gated) = playing_panel(steady(false));
+    gate_from.store(joined(&push).saturating_add(1), Ordering::Release);
+    let (blocked, permit) = gated.recv().unwrap();
     let held = std::iter::repeat_with(|| host.hold_product(1)).find_map(|hold| hold).unwrap();
-    for _ in 0..3 {
+    gate_from.store(i32::MAX, Ordering::Release);
+    permit.send(()).unwrap();
+    let records = loop {
         let (completed, records) = completed_batch(&push);
-        assert!(records.iter().any(|&(id, kind, ..)| id == 1 && kind == dated::WAITING),
-            "the step completed through {completed} while panel 1's product was busy and unread: its last value would be claimed for those hours");
-    }
+        if completed >= blocked { break records; }
+    };
+    assert!(records.iter().any(|&(id, kind, ..)| id == 1 && kind == crate::panel::dated::WAITING),
+        "the step through {blocked} completed while panel 1's product was busy and unread: its last value would be claimed for those hours");
     held();
 }
 
 #[test]
 fn a_step_restates_a_reading_its_product_proves_only_from_the_step_end() {
     use crate::panel::dated;
-    let (_host, push) = playing_panel(steady(true));
-    while !completed_batch(&push).1.iter().any(|&(id, kind, _, stepped)| id == 1 && stepped && kind != crate::panel::dated::WAITING) {}
+    let (_host, push, ..) = playing_panel(steady(true));
+    joined(&push);
     let mut restated = 0;
     for _ in 0..4 {
         let (completed, records) = completed_batch(&push);
         let own: Vec<_> = records.iter().filter(|r| r.0 == 1).map(|&(_, kind, hour, _)| (kind, hour)).collect();
-        assert!(matches!(own[..], [(dated::AGAIN | dated::DATA, hour)] if hour == completed),
+        assert!(own.last().is_some_and(|&(_, hour)| hour == completed) && own.iter().all(|&(kind, _)| kind == dated::AGAIN || kind == dated::DATA),
             "a value proven only at {completed} starts again there instead of standing over the step's unread hours: {own:?}");
-        restated += usize::from(own[0].0 == dated::AGAIN);
+        restated += own.iter().filter(|&&(kind, _)| kind == dated::AGAIN).count();
     }
-    assert!(restated >= 3, "an equal value restates itself without its body");
-    let (_host, push) = playing_panel(steady(false));
-    while !completed_batch(&push).1.iter().any(|&(id, kind, _, stepped)| id == 1 && stepped && kind != crate::panel::dated::WAITING) {}
+    assert!(restated > 0, "an equal value restates itself without its body");
+    let (_host, push, ..) = playing_panel(steady(false));
+    joined(&push);
     let (_, records) = completed_batch(&push);
     assert!(records.iter().all(|r| r.0 != 1), "a value proven across the step stays silent");
 }

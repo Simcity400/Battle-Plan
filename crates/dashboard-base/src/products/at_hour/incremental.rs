@@ -14,6 +14,7 @@ pub(super) struct Projection {
     validity: u64,
     selection: Option<Arc<Keys>>,
     at: Option<i32>,
+    passing: bool,
 }
 
 #[derive(Default)]
@@ -80,7 +81,8 @@ impl Projection {
         physical.retain(|&column| column < recorded);
         physical.sort_unstable();
         physical.dedup();
-        Ok(Self { run: input.run, columns: physical, format: recording.format(), fields, validity, selection: None, at: None })
+        let passing = !playhead::lane::log::is_log(&**pages, table.index()).unwrap_or(true);
+        Ok(Self { run: input.run, columns: physical, format: recording.format(), fields, validity, selection: None, at: None, passing })
     }
 
     fn lane<'s>(&self, table: TableId, hour: i32, step: ProductStep<'s>) -> Option<(&'s Step, &'s Lane, &'s Changes)> {
@@ -128,7 +130,7 @@ impl Projection {
     pub(super) fn from_lane(&mut self, read: &Read, sample: bool, view: &mut SharedView, edits: &mut Edits, count: &mut u64, lane: &Lane, step: Option<(&Step, &Changes)>, mode: CaptureMode) -> io::Result<bool> {
         let table = read.table;
         let continues = |step: &Step, change: &Changes| self.at.is_some_and(|at| at.checked_add(1) == Some(step.first())) && !change.reset();
-        let proven = step.is_some_and(|(step, change)| continues(step, change));
+        let proven = step.is_some_and(|(step, change)| continues(step, change) && (step.first() == step.last() || lane.passing()));
         let (status, sampled) = lane.status();
         let other = match status {
             Status::Complete | Status::Truncated { .. } => None,
@@ -140,20 +142,20 @@ impl Projection {
                 *view = made.into();
                 edits.replaced.insert(table);
             }
-            return Ok(proven);
+            return Ok(proven && step.is_some_and(|(_, change)| change.status().is_none() && change.status_left().is_none()));
         }
         let cells = lane.view();
         if let (TableView::Truncated { missing, .. }, Status::Truncated { missing: still }, Some((step, change))) = (view.held(), status, step)
             && *missing == still && continues(step, change) && !change.read_rows_changed() && change.renumber().is_none()
             && change.inserted().is_empty() && change.deleted().is_empty() && change.columns().iter().all(|written| written.is_empty()) {
-            return Ok(true);
+            return Ok(proven && change.passing().is_empty());
         }
         let (held, change) = match (view.held(), step) {
             (TableView::Complete(held), Some((step, change))) if status == Status::Complete && continues(step, change) => (held, change),
             _ => return self.whole(read, &cells, status, lane.read_rows(), sampled, sample, view, edits, count).map(|()| false),
         };
         let mut dirty: BTreeMap<u128, u64> = BTreeMap::new();
-        for &key in change.deleted().keys().into_iter().flatten().chain(change.inserted().keys().into_iter().flatten()) {
+        for &key in change.deleted().keys().into_iter().flatten().chain(change.inserted().keys().into_iter().flatten()).chain(change.passing().keys().into_iter().flatten()) {
             if read.keys.contains(key) { dirty.insert(key, u64::MAX); }
         }
         let renumber = change.renumber();
@@ -177,7 +179,7 @@ impl Projection {
                 *view = view.clone().with_sampled_at(sampled);
                 if sample { edits.replaced.insert(table); }
             }
-            return Ok(true);
+            return Ok(proven);
         }
         let mut keyed = Vec::new();
         let mut deleted = Vec::new();
@@ -197,7 +199,7 @@ impl Projection {
         }
         *view = view.clone().with_sampled_at(sampled);
         edits.record(table, dirty);
-        Ok(true)
+        Ok(proven)
     }
 
     #[expect(clippy::too_many_arguments, reason = "one table's cells at an hour and the reply's edits")]
@@ -369,7 +371,8 @@ struct Stream {
 impl Stream {
     fn lanes(&self) -> Vec<Declared> {
         let declared = |(&table, projection): (&TableId, &Result<Projection, TableView>)| {
-            Some(Declared { table: table.index(), columns: projection.as_ref().ok()?.columns.clone(), keyed: true, passing: false, hourly: false })
+            let projection = projection.as_ref().ok()?;
+            Some(Declared { table: table.index(), columns: projection.columns.clone(), keyed: true, passing: projection.passing, hourly: false })
         };
         let mut lanes: Vec<_> = self.tables.iter().filter_map(declared).collect();
         for extra in self.extra.tables.iter().filter_map(declared) {
@@ -377,6 +380,7 @@ impl Stream {
                 main.columns.extend(extra.columns);
                 main.columns.sort_unstable();
                 main.columns.dedup();
+                main.passing |= extra.passing;
             } else {
                 lanes.push(extra);
             }
@@ -419,6 +423,7 @@ fn current_values<P: AtHour>(state: &mut Stream, input: &mut Input<'_>) -> io::R
         }
         if let Some(date) = P::DATE_HELD_REPLY && let Ok(data) = Arc::make_mut(&mut state.data) {
             date(data, input.hour);
+            state.from = input.hour;
         }
         state.values_at = Some(input.hour);
     }

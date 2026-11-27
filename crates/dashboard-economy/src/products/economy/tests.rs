@@ -870,6 +870,10 @@ mod market {
             let mut terms = frame.complete::<tables::MarketContractTerms>().unwrap().to_vec();
             terms.retain(|row| row.kind != 0 || brief.contains(&hour));
             set::<tables::MarketContractTerms>(&mut frame, terms);
+            if let Ok(purchases) = frame.complete::<tables::PurchaseContracts>() {
+                let steady = purchases.iter().map(|row| PurchaseContractRow { collected_raw: 5_000, ..row.clone() }).collect();
+                set::<tables::PurchaseContracts>(&mut frame, steady);
+            }
             frame
         }).collect());
         let panel = dashboard_base::products::at_hour::exact_panel::<MarketLendLease>(&source, &load(), &json!({ "panel": MarketLendLease::KEY, "branchId": "1", "countries": [], "only": "requests" })).unwrap();

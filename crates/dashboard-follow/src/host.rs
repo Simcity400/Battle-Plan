@@ -411,9 +411,10 @@ impl StepProduct {
             self.resend = true;
             return (hour, Some((hour, panel::dated::WAITING, Vec::new())), None);
         };
-        let start = unread_from.map_or(from, |next| from.max(next)).min(hour);
+        let change = change.map(|(kind, body)| (kind, body.to_vec()));
+        let start = if self.followed.is_some() { hour } else { unread_from.map_or(from, |next| from.max(next)).min(hour) };
         let change = match change {
-            Some((kind, body)) => Some((start, kind, body.to_vec())),
+            Some((kind, body)) => Some((start, kind, body)),
             None if unread_from.is_some_and(|next| from > next) => Some((start, panel::dated::AGAIN, Vec::new())),
             None => joining.then(|| (hour, panel::dated::STANDS, Vec::new())),
         };

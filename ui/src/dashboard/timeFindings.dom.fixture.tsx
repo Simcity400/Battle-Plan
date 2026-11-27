@@ -20,6 +20,7 @@ import { dayLabel } from '../charts/draw';
 import { contentKey } from './options';
 import { forgetProducts } from './products';
 import { datedPanel } from './follow/messages.fixture.ts';
+import { DATED_PANEL_VERSION } from './follow/message.ts';
 import { packet, splitForLanes } from './follow/split.ts';
 import { pipelineFor } from './follow/pipeline.ts';
 import { pageClock } from './widgetClock.ts';
@@ -59,7 +60,7 @@ const landed = () => {
 };
 const refusedPanel = (id: number, hour: number, reason: string, seek: number) => {
   const body = new TextEncoder().encode(reason), out = new Uint8Array((40 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);
-  words.set([0x324c4e50, 6, 1, 0, ROUTE, seek, id, hour, 0, body.length]);
+  words.set([0x324c4e50, DATED_PANEL_VERSION, 1, 0, ROUTE, seek, id, hour, 0, body.length]);
   out.set(body, 40);
   return out;
 };

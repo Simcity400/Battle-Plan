@@ -446,7 +446,9 @@ fn dated_interval(
     let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _| {
         let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !seed && let Some((interval, value, rows)) = &mut *held && interval.contains(&hour) {
+            let undated = value.clone();
             date(value, hour);
+            if !Arc::ptr_eq(&undated, value) { *interval = hour..=*interval.end(); }
             return ProductRead { value: value.clone(), rows: *rows, fresh: false, pending: false, live: None, lanes: Vec::new(), from: *interval.start() };
         }
         let (value, rows, from) = match read(hour, cancelled) {
