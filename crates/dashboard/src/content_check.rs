@@ -343,9 +343,9 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, "native war naming content", findings);
             Ok("Native war naming content loaded through the recorded stack; viewpoint groups, first-goal tokens, naming operands and continuity require recorded rows.".into())
         }
-        <wars::contributions::WarContributions as at_hour::AtHour>::KEY => {
+        <wars::contributions::WarContributions as at_hour::AtHour>::KEY | wars::history::WarContributionHistory::KEY => {
             content.catalogue()?.war_participation_factors()?;
-            findings.push(Finding::new(Kind::Offline, "war-contributions", "participation ledgers and delivery histories need recorded WarParticipation and WarLendLeaseHistories rows; unavailable offline"));
+            findings.push(Finding::new(Kind::Offline, key, "participation ledgers and delivery histories need recorded WarParticipation and WarLendLeaseHistories rows; unavailable offline"));
             Ok("Lend-lease participation factors read from the recorded stack's defines.".into())
         }
         key if key == <economy::fuel_branches::FuelBranches as at_hour::AtHour>::KEY => {

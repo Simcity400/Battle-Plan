@@ -35,6 +35,8 @@ export function isWarsReply(value: unknown): value is WarsReply {
       && text(observation.viewpointTag) && list(observation.viewpointSide, text) && list(observation.opposingSide, text)
       && (observation.attackersAreViewpoint === null || typeof observation.attackersAreViewpoint === 'boolean')
       && (observation.representative === null || (Array.isArray(observation.representative) && observation.representative.length === 2 && observation.representative.every(text)))
+      && (observation.contributionGroup === undefined || (Array.isArray(observation.contributionGroup)
+        && observation.contributionGroup.length === 2 && observation.contributionGroup.every(tags => list(tags, text))))
       && object(observation.name) && text(observation.name.text) && typeof observation.name.known === 'boolean'
       && (observation.name.reason === null || text(observation.name.reason)) && (observation.name.key === null || text(observation.name.key)))
       && (war.observations as WarObservation[]).length > 0 && ordered(war.observations as WarObservation[])
@@ -72,16 +74,8 @@ export function validateWarContributions(value: unknown): WarContributionsReply 
 export function warContributions(groups: readonly WarContributionGroup[] | undefined, observation: WarObservation | null): WarContributionGroup | null {
   if (!groups || !observation) return null;
   const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((tag, index) => tag === b[index]);
-  const exact = groups.find(group => same(group.viewpointSide, observation.viewpointSide) && same(group.opposingSide, observation.opposingSide));
-  if (exact) return exact;
-  const viewpoint = new Set(observation.viewpointSide), opposing = new Set(observation.opposingSide);
-  let best: WarContributionGroup | null = null;
-  for (const group of groups) {
-    if (!group.viewpointSide.every(tag => viewpoint.has(tag)) || !group.opposingSide.every(tag => opposing.has(tag))) continue;
-    const size = group.viewpointSide.length + group.opposingSide.length;
-    if (!best || size > best.viewpointSide.length + best.opposingSide.length) best = group;
-  }
-  return best;
+  const [viewpoint, opposing] = observation.contributionGroup ?? [observation.viewpointSide, observation.opposingSide];
+  return groups.find(group => same(group.viewpointSide, viewpoint) && same(group.opposingSide, opposing)) ?? null;
 }
 
 export function observationAt(war: WarTimeline, at: number): WarObservation | null {

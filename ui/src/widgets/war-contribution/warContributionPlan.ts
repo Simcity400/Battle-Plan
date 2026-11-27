@@ -46,7 +46,7 @@ export function sideCountries(group: WarContributionGroup, side: WarSide): strin
   return [...new Set(side === 'viewpoint' ? group.viewpointSide : group.opposingSide)];
 }
 
-function groupCoverageReason(observation: WarObservation, viewpoint: readonly string[], opposing: readonly string[]): string | undefined {
+export function groupCoverageReason(observation: WarObservation, viewpoint: readonly string[], opposing: readonly string[]): string | undefined {
   const listed = new Set([...viewpoint, ...opposing]);
   const outside = new Set([...observation.viewpointSide, ...observation.opposingSide].filter(tag => !listed.has(tag))).size;
   return outside ? `Partial. Figures cover only the countries listed in the recorded group. ${outside} ${outside === 1 ? 'country on the war roster is' : 'countries on the war roster are'} outside this group.` : undefined;

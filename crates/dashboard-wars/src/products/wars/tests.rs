@@ -324,6 +324,107 @@ fn contributions_without_their_histories_name_why_instead_of_counting_zero() {
     assert_eq!(group.reason.as_deref(), Some("no content"));
 }
 
+#[test]
+fn contribution_history_keeps_joins_departures_capitulation_and_unread_inputs_distinct() {
+    use super::history;
+    use dashboard_base::{SourceKey, test_fixtures::{CAMPAIGN, records}};
+    use replay::campaign::Replay;
+
+    let frames: Vec<_> = (100..=112).filter(|hour| ![109, 111].contains(hour)).map(|hour| {
+        let mut frame = participation();
+        frame.hour = hour;
+        let mut put = |rows: TableRows| {
+            let table = rows.table();
+            *frame.tables[table.index()] = TableView::Complete(rows);
+            frame.metrics.table_ns[table.index()] = 1;
+        };
+        put(TableRows::Clock(vec![rows::ClockRow { hour, ..Default::default() }]));
+        let joins = (102..=105).contains(&hour);
+        let state = at_war(if joins { &[2, 3] } else { &[2] });
+        put(TableRows::WarOwnedRelations(state.owned.into_values().collect()));
+        put(TableRows::WarRelations(state.relations.into_keys().map(|key| rows::WarRelationRow {
+            first_country: (key >> 32) as u32, second_country: key as u32, start_hour: 90, first_was_instigator: 1, ..Default::default()
+        }).collect()));
+        put(TableRows::Capitulation(if hour >= 103 {
+            vec![rows::CapitulationRow { country: 3, capitulated: 1, capitulated_hour: 103, ..Default::default() }]
+        } else { Vec::new() }));
+        let mut ledgers = participation().complete::<rows::tables::WarParticipation>().unwrap().to_vec();
+        ledgers.retain(|row| (joins || row.war_second == 2) && (hour != 105 || row.direction != 0));
+        if hour >= 103 {
+            for row in &mut ledgers {
+                if row.war_second == 3 && row.direction == 1 {
+                    row.casualties = 137;
+                    row.unknown_casualties = 11;
+                }
+            }
+        }
+        put(TableRows::WarParticipation(ledgers));
+        if hour == 104 {
+            *frame.tables[TableId::WarLendLeaseHistories.index()] = TableView::Unavailable { reason: "Fixture delivery histories unread".into() };
+        }
+        if hour == 107 {
+            *frame.tables[TableId::FactionMembers.index()] = TableView::Unavailable { reason: "Fixture faction membership unread".into() };
+        }
+        if hour == 110 {
+            *frame.tables[TableId::WarRelations.index()] = TableView::Truncated { rows: TableRows::WarRelations(Vec::new()), missing: 1 };
+        }
+        for (table, view) in frame.tables.iter().enumerate() {
+            if matches!(&**view, TableView::Complete(_) | TableView::Truncated { .. } | TableView::Unavailable { .. }) {
+                frame.metrics.table_ns[table] = 1;
+            }
+        }
+        frame
+    }).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames.clone())])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let source = Source::from_replay(
+        SourceKey { source_id: "contribution-history".into(), revision: "1".into() },
+        "memory.battleplan".into(), Arc::new(replay), &cancelled,
+    ).unwrap();
+    let wars = walked(&source, 1, None, None, &cancelled).unwrap();
+    let war = &wars.wars[0];
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let reply = history::read(&source, &query, &wars, war, 106, Ok(FACTORS), &cancelled).unwrap();
+    let three = reply.contributors.iter().find(|member| member.slot == 3).unwrap();
+    assert_eq!(three.membership, [(102, 105, 1, "THREE".into())]);
+    assert_eq!(reply.war.capitulations, [WarCapitulation { tag: "THREE".into(), hour: 103 }]);
+    assert_eq!(three.partial_casualties, [HourSpan { first_hour: 103, last_hour: 103 }, HourSpan { first_hour: 105, last_hour: 105 }]);
+    assert_eq!(reply.sides[0].missing[0].first_hour, 104);
+    assert!(reply.sides[0].missing[0].reason.contains("Fixture delivery histories unread"));
+    assert_eq!(reply.sides[1].missing.len(), 1);
+    assert_eq!(reply.sides[0].missing[1].reason, "Directional participation ledger not recorded");
+    assert_eq!(reply.war.last_hour, 106);
+    let missing = history::read(&source, &query, &wars, war, 102, Err("Fixture defines unavailable".into()), &cancelled).unwrap();
+    assert!(missing.sides.iter().all(|side| side.missing[0].reason == "Fixture defines unavailable"));
+    assert!(missing.war.capitulations.is_empty());
+
+    let held = holders(&[("ONE", 1), ("TWO", 2), ("THREE", 3)], 100, 108);
+    for frame in &frames[..7] {
+        let snapshot = contributions::groups(frame, &held, None, Ok(FACTORS)).unwrap().remove(0);
+        history::assert_snapshot(&reply, frame.hour, &snapshot);
+    }
+    assert!(contributions::groups(&frames[7], &held, None, Ok(FACTORS)).unwrap_err().contains("Fixture faction membership unread"));
+    let unread = history::read(&source, &query, &wars, war, 107, Ok(FACTORS), &cancelled).unwrap();
+    assert_eq!(unread.war.last_hour, 106);
+    assert_eq!(unread.gaps, [dashboard_query::series::MissingSpan {
+        first_hour: 107, last_hour: 107, reason: "War membership not recorded".into(),
+    }]);
+    let interrupted = wars.wars.iter().find(|war| war.first_hour == 108).unwrap();
+    let truncated = frames.iter().find(|frame| frame.hour == 110).unwrap();
+    assert!(contributions::groups(truncated, &held, None, Ok(FACTORS)).is_err());
+    let paused = history::read(&source, &query, &wars, interrupted, 111, Ok(FACTORS), &cancelled).unwrap();
+    assert_eq!(paused.war.last_hour, 108);
+    assert!(paused.war.ended_by, "the war was last seen and its end is unproved");
+    let gaps: Vec<_> = paused.gaps.iter().map(|span| (span.first_hour, span.last_hour, span.reason.as_str())).collect();
+    assert_eq!(gaps, [
+        (109, 109, query.timeline.reason(109).as_str()),
+        (110, 110, "War membership is partial because a recorded relation table was truncated"),
+        (111, 111, query.timeline.reason(111).as_str()),
+    ]);
+    assert!(paused.contributors.iter().flat_map(|member| &member.membership).all(|run| run.1 == 108));
+}
+
 fn naming_frame(hour: i32) -> replay_frame::frame::DecodedFrame {
     let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(1_000));
     let goal = |side: u32, ordinal: u32, token: u32| rows::WarRelationGoalRow { owner: 1, side, ordinal, resolved: 1, type_token: token, state_count: 1, first_state: 5, ..Default::default() };

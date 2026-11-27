@@ -9,6 +9,7 @@ dashboard_base::register_products! {
     FACTION_STATE_HISTORY_FACTIONSTATE => crate::products::faction_state::history::FactionState,
     WARS_WARS => crate::products::wars::Wars,
     WARS_WARTIMELINEAT => crate::products::wars::WarTimelineAt,
+    WARS_CONTRIBUTION_HISTORY => crate::products::wars::history::WarContributionHistory,
     SCOREBOARD_SCOREBOARDCOLUMNS => crate::products::scoreboard::ScoreboardColumns,
     SCOREBOARD_SCOREBOARD => crate::products::scoreboard::Scoreboard,
 

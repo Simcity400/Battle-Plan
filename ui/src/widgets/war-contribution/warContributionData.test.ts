@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarContributionGroup, WarMeasureSide, WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
+import { refusedHours } from '../../dashboard/regionTime.ts';
 import { warContributions } from '../wars/warsData.ts';
 import { chosenWar, createWarChipTracker, createWarMenuTracker, readHourFor, warChipLeaderHour, warChipStateAt, warChoicesAt, warEligibilityAt } from './warContributionData.ts';
 
@@ -12,6 +13,13 @@ const war = (id: string, first: number, last: number, sides: [string[], string[]
   id, firstHour: first, lastHour: last, startedBy: false, endedBy: false, observations: [observation(first, last, ...sides)],
   participants: [], capitulations: [],
 } as unknown as WarTimeline);
+
+test('contributor history can end inside an unread recording span', () => {
+  const branch = { firstHour: 100, lastHour: 110, gaps: [{ firstHour: 104, lastHour: 106, reason: 'Fixture pause' }] };
+  const request = { branchId: '1', warId: '0', viewpoint: null, throughHour: 105 };
+  assert.equal(refusedHours('war-contribution-history', request, branch), null);
+  assert.match(refusedHours('war-contribution-history', { ...request, throughHour: 111 }, branch)!, /outside branch/);
+});
 
 test('the saved war wins while it exists, else the war with most participants going on at the hour', () => {
   const reply = { wars: [war('1', 0, 100, [['A'], ['B']]), war('2', 10, 500, [['A', 'C'], ['B', 'D', 'E']]), war('3', 600, 900, [['A'], ['F']])] } as unknown as WarsReply;
@@ -37,7 +45,8 @@ test('the saved war wins while it exists, else the war with most participants go
   const groups = [{ viewpointSide: ['A'], opposingSide: ['B'], participants: [], measures: [], reason: null },
     { viewpointSide: ['A'], opposingSide: ['C', 'D'], participants: [], measures: [], reason: null },
     { viewpointSide: ['A', 'C'], opposingSide: ['B'], participants: [], measures: [], reason: null }];
-  assert.equal(warContributions(groups, joined), groups[0]);
+  assert.equal(warContributions(groups, joined), null);
+  assert.equal(warContributions(groups, { ...joined, contributionGroup: [['A'], ['B']] }), groups[0]);
   const changing = { ...reply, wars: [{ ...reply.wars[0]!, observations: [
     observation(0, 49, ['A'], ['B']), { ...observation(50, 100, ['A'], ['B']), attackersAreViewpoint: false },
   ] }] };
@@ -76,7 +85,8 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   assert.deepEqual(model.panes?.map(pane => pane.key), ['opposing', 'viewpoint'], 'the attackers are the left pane');
   const [left, right] = model.panes!;
   assert.deepEqual(left!.rows.map(row => row.key), ['opposing:CCC', 'opposing:AAA'], 'members in the product’s order');
-  const widerObservation = { ...war.observations[0]!, viewpointSide: ['BBB', 'DDD'], opposingSide: ['AAA', 'CCC', 'EEE'] };
+  const widerObservation = { ...war.observations[0]!, viewpointSide: ['BBB', 'DDD'], opposingSide: ['AAA', 'CCC', 'EEE'],
+    contributionGroup: [group.viewpointSide, group.opposingSide] } satisfies WarTimeline['observations'][number];
   const widerWars = { ...wars, wars: [{ ...war, observations: [widerObservation] }] };
   const groupRead = createBoundedReadView({ hour: 100, panels: new Map([['live', reply]]) });
   const partial = 'Partial. Figures cover only the countries listed in the recorded group. 2 countries on the war roster are outside this group.';
@@ -146,14 +156,16 @@ test('the Sides view draws the product’s shares in two panes: share of the war
     measures: [{ ...casualties, viewpoint: { total: null, partial: false, members: [], shareOfWar: null },
       opposing: { ...casualties.opposing, shareOfWar: null, members: [casualties.opposing.members[0]!, partialZero] } }] };
   const read = createBoundedReadView({ hour: 100, panels: new Map([['live', { ...reply, contributions: [oneSide] }]]) });
-  const table = warContributionSidesProjection.project(read, { wars, saved: null });
+  const oneSideSeen = { ...wars.wars[0]!.observations[0]!, viewpointSide: oneSide.viewpointSide };
+  const oneSideWars = { ...wars, wars: [{ ...wars.wars[0]!, observations: [oneSideSeen] }] };
+  const table = warContributionSidesProjection.project(read, { wars: oneSideWars, saved: null });
   assert.deepEqual(table.panes![1]!.rows.map(row => row.key), ['viewpoint:BBB']);
   assert.deepEqual(table.panes![1]!.rows[0]!.cells.casualties!.value, { kind: 'notRecorded', reason: missing });
   const witnessed = table.panes![0]!.rows[1]!;
   assert.equal(witnessed.cells.casualties!.value.kind, 'partial');
   const amounts = typeof witnessed.tooltipExtra === 'function' ? witnessed.tooltipExtra() : witnessed.tooltipExtra;
   assert.deepEqual(amounts?.[0]?.value, { kind: 'partial', value: 0n, reason: 'Part of this side’s casualties contribution is not attributed to a country' });
-  const byMeasure = warContributionMeasureProjection.project(read, { wars, saved: null, measure: 'casualties' });
+  const byMeasure = warContributionMeasureProjection.project(read, { wars: oneSideWars, saved: null, measure: 'casualties' });
   const [first, second] = byMeasure.rows.filter(row => row.kind === 'data');
   assert.deepEqual(first!.rightSide!.value.value, { kind: 'notRecorded', reason: missing });
   assert.equal(second!.rightSide, undefined);
@@ -207,7 +219,7 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   const barsAudit = deriveBarsAudit(endedMeasure);
   assert.equal(barsAudit.find(r => r.key === '__bars__:dataHours')?.value, JSON.stringify([endedAt]), 'By measure audit records the supplying read hour');
 
-  const endedMissingSide = warContributionMeasureProjection.project(createBoundedReadView({ hour: shownAt, panels: new Map([['ended', { ...reply, hour: endedAt, contributions: [oneSide] }]]) }), { wars, saved: null, measure: 'casualties' });
+  const endedMissingSide = warContributionMeasureProjection.project(createBoundedReadView({ hour: shownAt, panels: new Map([['ended', { ...reply, hour: endedAt, contributions: [oneSide] }]]) }), { wars: oneSideWars, saved: null, measure: 'casualties' });
   const missingRightTip = barsLane.tooltip({ model: endedMissingSide } as never, 'right:viewpoint:BBB', false);
   assert.equal(missingRightTip?.hour, endedAt, 'missing-member right-side tooltip stamps the supplying read hour');
   assert.equal(missingRightTip?.payload?.hour, endedAt);

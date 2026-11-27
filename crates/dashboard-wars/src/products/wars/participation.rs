@@ -137,10 +137,11 @@ pub(crate) fn contributions(
                     });
                     scores.push(derive::breakdown(directional, deliveries, *factors));
                 }
-                for (&country, score) in own.iter().zip(&scores) {
+                let denominator = derive::share_denominator(scores.iter().map(|score| score.total(false)));
+                for (&country, score) in own.iter().zip(scores) {
                     group.participants.push(country_view(
-                        tags[&country].clone(), side, *score,
-                        derive::share(score.total(false), scores.iter().map(|s| s.total(false))),
+                        tags[&country].clone(), side, score,
+                        derive::share_of(score.total(false), denominator),
                     ));
                 }
             }

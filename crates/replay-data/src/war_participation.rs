@@ -51,9 +51,16 @@ pub fn breakdown(
 }
 
 pub fn share(selected: i64, scores: impl IntoIterator<Item = i64>) -> i64 {
-    let denominator = scores
+    share_of(selected, share_denominator(scores))
+}
+
+pub fn share_denominator(scores: impl IntoIterator<Item = i64>) -> i64 {
+    scores
         .into_iter()
-        .fold(0_i64, |sum, score| sum.wrapping_add(fixed5_to_q15(score)));
+        .fold(0_i64, |sum, score| sum.wrapping_add(fixed5_to_q15(score)))
+}
+
+pub fn share_of(selected: i64, denominator: i64) -> i64 {
     let ratio = if denominator == 0 {
         0
     } else {
@@ -73,6 +80,21 @@ mod tests {
         assert_ne!(share(1, [1, 4]), 100_000 / 5);
         assert_eq!(share(100_000, [100_000, 100_000]), 50_000);
         assert_eq!(share(0, [0, 0]), 0);
+    }
+
+    #[test]
+    fn the_side_denominator_can_be_shared_between_contributors() {
+        for (scores, expected) in [
+            ([0, 0, 0], [0, 0, 0]),
+            ([1, 4, 0], [0, 100_000, 0]),
+            ([100_000, 100_000, 0], [50_000, 50_000, 0]),
+        ] {
+            let denominator = share_denominator(scores);
+            for (selected, expected) in scores.into_iter().zip(expected) {
+                assert_eq!(share_of(selected, denominator), expected);
+                assert_eq!(share(selected, scores), expected);
+            }
+        }
     }
     #[test]
     fn participation_breakdown_sums_fuel_before_integer_truncation_and_keeps_native_maximum() {
