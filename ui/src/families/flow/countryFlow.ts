@@ -30,6 +30,7 @@ export function scaledAmount(amount: string, decimals: number): number {
 interface FlowEndpointPresentation {
   readonly key: string;
   readonly label: Value<string>;
+  readonly placeholder?: string;
   readonly subject?: string;
   readonly tag?: string;
   readonly flag?: ArtResult;
@@ -49,13 +50,13 @@ export function presentFlowEndpoint(readView: BoundedReadView, endpoint: FlowEnd
   const key = flowEndpointKey(endpoint);
   if (endpoint.slot === null) {
     const label = unknownEndpointLabel(endpoint);
-    return { key, label: knownValue(label), unknown: endpoint.unknown ?? label };
+    return { key, label: notRecorded(endpoint.unknown ?? label), placeholder: label, unknown: endpoint.unknown ?? label };
   }
   const subject = countryKey(endpoint.slot);
   const shown = countryRowPresentation(readView, subject);
   return {
     key,
-    label: shown.label,
+    label: shown.label.kind === 'notRecorded' && endpoint.unknown ? notRecorded(endpoint.unknown) : shown.label,
     subject,
     ...(endpoint.tag ? { tag: endpoint.tag } : {}),
     ...(endpoint.unknown ? { unknown: endpoint.unknown } : {}),
@@ -119,14 +120,14 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     const said = link.amounts.map(amount => `${partSaid(parts[amount.part])}: ${amount.amount === null ? `Not recorded (${link.missing ?? text.notRecorded})` : exact(amount.amount)}`);
     return `${exact(link.total)} · ${said.join('; ')}`;
   };
-  const identity = (...ends: readonly Pick<FlowNode, 'label' | 'unknown'>[]): TooltipListItem[] =>
-    ends.flatMap(end => [
-      ...(end.label.kind === 'pending' ? [{ label: 'Name', pendingReason: end.label.reason }] : []),
-      ...(end.label.kind === 'notRecorded' ? [{ label: 'Name', missingReason: end.label.reason }] : []),
-      ...(end.unknown ? [{ label: barsLabelText(end.label), missingReason: end.unknown }] : []),
-    ]);
-  const identityAudit = (...ends: readonly Pick<FlowNode, 'label' | 'unknown'>[]) =>
-    ends.flatMap(end => (end.unknown ? [` · ${barsLabelText(end.label)}: ${end.unknown}`] : [])).join('');
+  const identity = (end: Pick<FlowNode, 'label' | 'placeholder' | 'unknown'>, label = 'Name'): TooltipListItem[] =>
+    [
+      ...(end.label.kind === 'pending' ? [{ label, pendingReason: end.label.reason }] : []),
+      ...(end.label.kind === 'notRecorded' ? [{ label: end.placeholder ?? label, missingReason: end.label.reason }] : []),
+      ...(end.unknown && end.label.kind !== 'notRecorded' ? [{ label: barsLabelText(end.label), missingReason: end.unknown }] : []),
+    ];
+  const identityAudit = (...ends: readonly Pick<FlowNode, 'label' | 'placeholder' | 'unknown'>[]) =>
+    ends.flatMap(end => (end.unknown ? [` · ${barsLabelText(end.label, 'Name', end.placeholder)}: ${end.unknown}`] : [])).join('');
   const named = (end: Pick<FlowNode, 'label' | 'tag'>) => `${barsLabelSpoken(end.label)}${end.tag ? ` [${end.tag}]` : ''}`;
   const bands = (link: FlowLink): FlowBand[] => link.amounts.filter(amount => amount.amount !== null).map(amount => ({ part: amount.part, numeric: scaledAmount(amount.amount!, decimals) }));
   const endpoints = reply.endpoints.map(endpoint => presentFlowEndpoint(readView, endpoint));
@@ -161,6 +162,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       key,
       side,
       label: shown.label,
+      ...(shown.placeholder ? { placeholder: shown.placeholder } : {}),
       ...(shown.tag ? { tag: shown.tag } : {}),
       ...(shown.flag ? { flag: shown.flag } : {}),
       ...(shown.unknown ? { unknown: shown.unknown } : {}),
@@ -169,7 +171,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       spoken: `${barsLabelSpoken(shown.label)}: ${detail(link)}${missingReason && link.missing === null ? ` (${missingReason})` : ''}`,
       audit: `${named(shown)} · ${detail(link)}${identityAudit(shown)}`,
       ...(shown.subject ? { subject: shown.subject } : {}),
-      tooltip: { title: barsLabelText(shown.label, 'Name', shown.tag), hour, items: [...items(link), ...identity(shown)], ...(missingReason ? { missingReason } : {}) },
+      tooltip: { title: barsLabelText(shown.label, 'Name', shown.placeholder ?? shown.tag), hour, items: [...items(link), ...identity(shown).filter(item => !missingReason || item.missingReason !== missingReason)], ...(missingReason ? { missingReason } : {}) },
     };
   };
 
@@ -182,7 +184,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     ...(from.others !== undefined || to.others !== undefined ? { others: true } : {}),
     numeric: value(link.total),
     audit: `${detail(link)}${identityAudit(from, to)}`,
-    tooltip: { title: text.ribbonTitle(barsLabelText(from.label, 'Name', from.tag), barsLabelText(to.label, 'Name', to.tag)), hour, items: [...items(link), ...identity(from, to)], ...(link.missing ? { missingReason: link.missing } : {}) },
+    tooltip: { title: text.ribbonTitle(barsLabelText(from.label, 'Name', from.placeholder ?? from.tag), barsLabelText(to.label, 'Name', to.placeholder ?? to.tag)), hour, items: [...items(link), ...identity(from, 'From name'), ...identity(to, 'To name')], ...(link.missing ? { missingReason: link.missing } : {}) },
   });
 
   const unproven = (sides: readonly ReplySide[]) => blank(hour, {
@@ -205,6 +207,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       key: keyOf(reply.subject, 'centre'),
       side: 'centre',
       label: subject.label,
+      ...(subject.placeholder ? { placeholder: subject.placeholder } : {}),
       ...(subject.tag ? { tag: subject.tag } : {}),
       ...(subject.flag ? { flag: subject.flag } : {}),
       ...(subject.unknown ? { unknown: subject.unknown } : {}),
@@ -212,7 +215,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       figure: '',
       spoken: `${barsLabelSpoken(subject.label)}: ${centreAudit}`,
       audit: `${named(subject)} · ${centreAudit}`,
-      tooltip: { title: barsLabelText(subject.label, 'Name', subject.tag), hour, items: identity(subject) },
+      ...(subject.label.kind === 'known' ? {} : { tooltip: { title: barsLabelText(subject.label, 'Name', subject.placeholder ?? subject.tag), hour, items: identity(subject) } }),
       ...(subject.subject ? { subject: subject.subject } : {}),
     };
     const left = incoming.links.map(link => node(link.from, 'left', link, link.others ?? undefined));

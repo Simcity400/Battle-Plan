@@ -13,6 +13,7 @@ import { createLaneView } from '../laneRuntime.ts';
 import { flowPerSide } from './countryFlowPlan.ts';
 import { barsLabelText } from '../bars/model.ts';
 import { knownValue } from '../value.ts';
+import { buildTooltipContent } from '../host/tooltips.ts';
 
 const HOUR = 60_810_000;
 const TEXT: CountryFlowText = {
@@ -76,6 +77,7 @@ test('pending flow names paint, mirror, audit and hover as loading rather than u
   assert.ok(findFlowTooltip(model, 'node:left:s2')?.items?.some(item => item.pendingReason === 'Name is loading'));
   assert.ok(findFlowTooltip(model, 'node:centre:s1')?.items?.some(item => item.pendingReason === 'Name is loading'));
   assert.ok(findFlowTooltip(model, 'ribbon:left:s2>centre:s1')?.items?.some(item => item.pendingReason === 'Name is loading'));
+  assert.deepEqual(findFlowTooltip(model, 'ribbon:left:s2>centre:s1')?.items?.filter(item => item.pendingReason).map(item => item.label), ['From name', 'To name']);
   const recording = installRecordingCanvas();
   try {
     const canvas = new OffscreenCanvas(846, 360);
@@ -89,6 +91,12 @@ test('pending flow names paint, mirror, audit and hover as loading rather than u
         identity: { resolve: (kind, key, hour) => ({ ...pending.who(kind, key, hour), name }) } }), TEXT);
       const label = resolved.left[0]!.label;
       assert.deepEqual(label, name.status === 'ready' ? knownValue('Loading…') : { kind: 'notRecorded', reason: name.reason });
+      if (name.status === 'ready') assert.equal(findFlowTooltip(resolved, 'node:centre:s1'), null);
+      const traded = { ...centred, table: [{ partner: 1, cells: ['8', '0'], net: '8' }] };
+      const table = projectTradeTable(createBoundedReadView({ hour: HOUR, panels: new Map([['main', traded]]),
+        identity: { resolve: (kind, key, hour) => ({ ...pending.who(kind, key, hour), name }) } }));
+      assert.equal(table.rows[0]!.name, name.status === 'ready' ? 'Loading…' : 'HOL');
+      assert.equal(table.rows[0]!.tooltipTitle, name.status === 'ready' ? 'Loading… and Loading…' : 'HOL and USA');
       assert.notEqual(deriveFlowAudit(resolved).find(row => row.key === 'node:left:s2:label')?.value, '["pending","Name is loading"]');
       const next = new OffscreenCanvas(846, 360);
       drawFlow(next.getContext('2d')!, { model: resolved, layout: layoutFlow(resolved, 846, 360), theme: LANE_THEME, inspected: null, focused: null });
@@ -159,11 +167,13 @@ test('licences from distinct unlinked givers stay distinct partners, a combined 
     largestLink: '1',
   };
   const model = projectCountryFlow(view(reply), TEXT);
-  assert.deepEqual(model.left.map(node => [node.key, barsLabelText(node.label)]), [
+  assert.deepEqual(model.left.map(node => [node.key, barsLabelText(node.label, 'Name', node.placeholder ?? node.tag)]), [
     ['left:s8', 'Loading…'], ['left:r77', 'Unknown country'], ['left:r78', 'Unknown country'], ['left:collective', 'Unknown countries, combined'], ['left:s9', 'Loading…'],
   ], '"Unknown country" is a label, not a key');
   assert.equal(model.left[1]!.unknown, reason);
   assert.equal(findFlowTooltip(model, 'node:left:r77')?.missingReason, reason);
+  assert.equal(buildTooltipContent(findFlowTooltip(model, 'node:left:r77')!).rows.filter(row => row.detail === reason).length, 1);
+  assert.equal(deriveFlowAudit(model).find(row => row.key === 'node:left:r77:label')?.value, JSON.stringify(['notRecorded', reason]));
   assert.equal(model.left[1]!.subject, undefined, 'an unknown partner is no country to open');
   assert.equal(model.left[4]!.unknown, unnamed, 'a recorded slot that cannot be named keeps its reason');
   const ribbon = model.ribbons.find(item => item.from === 'left:collective')!;

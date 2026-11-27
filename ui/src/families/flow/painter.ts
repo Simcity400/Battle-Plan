@@ -272,9 +272,9 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
   const flagW = node.others !== undefined || node.unknown !== undefined ? 0 : FLAG_SLOT_WIDTH;
   const room = Math.max(10, layout.labelWidth - figureW - (flagW ? flagW + FLAG_GAP : 0) - 12);
   ctx.font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
-  const name = ellipsise(barsLabelText(node.label, 'Name', node.tag), room, s => textWidth(ctx, s));
+  const name = ellipsise(barsLabelText(node.label, 'Name', node.placeholder ?? node.tag), room, s => textWidth(ctx, s));
   const nameW = textWidth(ctx, name);
-  const muted = barsLabelMuted(node.label) || node.unknown !== undefined || node.others !== undefined;
+  const muted = barsLabelMuted(node.label) || node.others !== undefined;
   const nameColour = muted ? theme.muted : theme.text;
   if (node.side === 'left') {
     let cursor = box.x - 6;
@@ -308,7 +308,7 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
     ctx.font = `${VALUE_WEIGHT} ${fontSize}px ${theme.font}`;
     ctx.fillStyle = nameColour;
     const centreRoom = Math.max(40, layout.rightBarX - layout.leftBarX - 20);
-    ctx.fillText(ellipsise(barsLabelText(node.label, 'Name', node.tag), centreRoom, s => textWidth(ctx, s)), box.x + FLOW_CENTRE_WIDTH / 2, box.y - 3);
+    ctx.fillText(ellipsise(barsLabelText(node.label, 'Name', node.placeholder ?? node.tag), centreRoom, s => textWidth(ctx, s)), box.x + FLOW_CENTRE_WIDTH / 2, box.y - 3);
   }
 }
 

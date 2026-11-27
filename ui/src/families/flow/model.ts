@@ -19,6 +19,7 @@ export interface FlowNode {
   readonly key: string;
   readonly side: FlowSide;
   readonly label: Value<string>;
+  readonly placeholder?: string;
   readonly tag?: string;
   readonly flag?: ArtResult;
   readonly numeric: number | null;

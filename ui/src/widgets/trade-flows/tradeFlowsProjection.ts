@@ -94,12 +94,11 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
   const subject = presentFlowEndpoint(readView, reply.endpoints[reply.subject]!);
   const rows: TableRow[] = reply.table.map(row => {
     const partner = presentFlowEndpoint(readView, reply.endpoints[row.partner]!);
-    const name = partner.subject ? partner.label : notRecorded(partner.unknown ?? 'Country name not recorded at this date');
     const flags = partner.unknown || !partner.flag ? {} : {
       flags: [{ tag: partner.tag ?? barsLabelText(partner.label), art: partner.flag, ...(partner.flagKey ? { artKey: partner.flagKey } : {}) }],
     };
     const cells: Record<string, TableRow['cells'][string]> = {
-      partner: { value: name, ...flags },
+      partner: { value: partner.label, ...flags },
       net: { value: signed(row.net, 'An amount with this partner was not recorded'), format: signedCellFormat },
     };
     reply.parts.forEach((part, at) => {
@@ -110,7 +109,8 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
         ? { value, blank: true }
         : { value, format: signedCellFormat };
     });
-    return { key: partner.key, name: barsLabelText(partner.label), cells, tooltipTitle: `${barsLabelText(partner.label)} and ${barsLabelText(subject.label)}` };
+    return { key: partner.key, name: barsLabelText(partner.label, 'Name', partner.placeholder ?? partner.tag), cells,
+      tooltipTitle: `${barsLabelText(partner.label, 'Name', partner.placeholder ?? partner.tag)} and ${barsLabelText(subject.label, 'Name', subject.placeholder ?? subject.tag)}` };
   });
   return {
     hour,
