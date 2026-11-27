@@ -439,7 +439,7 @@ class State:
             atomic_json(self.pool / (vmid + ".json"), {**self.entry(vmid), **fields})
 
 
-def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0, rebuilds=lambda vmid: (0, 0)):
+def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0, rebuilds=lambda vmid: (0, 0), cloned_for=lambda vmid: None):
     """Usable VMs, best first: running before stopped, hydrated before not, then the fewest crates to compile anew and to take from the cache, the lane's own, the right size, the least recently used."""
     ranked = []
     for vmid in registered:
@@ -447,7 +447,7 @@ def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0, rebuil
         if not vm or vm.get("state") not in USABLE or cooling(vmid):
             continue
         stopped = vm["state"] == "stopped"
-        if size == "large" and vm.get("type") != "large" and not stopped:
+        if vm.get("type") != size and not (size == "large" and stopped) and not (vm.get("type") == "large" and cloned_for(vmid) == size):
             continue
         ranked.append((stopped, not stopped and (vm["state"] not in STARTED or vm.get("hydrated") is False), rebuilds(vmid), vmid != lane_vm, vm.get("type") != size, used(vmid), vmid))
     return [row[-1] for row in sorted(ranked)]
@@ -689,7 +689,7 @@ def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
         reconcile(state, states)
         now = time.time()
         registered = [vmid for vmid in state.registered() if vmid not in passed]
-        for vmid in rank(registered, states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now), lambda vmid: state.entry(vmid).get("used", 0), rebuilds):
+        for vmid in rank(registered, states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now), lambda vmid: state.entry(vmid).get("used", 0), rebuilds, lambda vmid: state.entry(vmid).get("cloned_for")):
             if states[vmid]["state"] == "stopped" and state.wake_under_way(lane):
                 break
             try:
@@ -717,6 +717,7 @@ def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
 
 def clone(state, lane, size, allocator):
     """Clones a VM from SNAPSHOT, releasing the allocator before each spaced creation; returns (vmid, its lock, its size)."""
+    requested = size
     for size in dict.fromkeys((size, "large")):
         allocator = allocator or state.allocator()
         now = time.time()
@@ -733,13 +734,14 @@ def clone(state, lane, size, allocator):
         if vmid or size == "large" or "does not fit" not in reason:
             break
         say(f"{SNAPSHOT} does not fit a {size} VM ({reason}); cloning a large one")
+    entry = {"id": vmid, "snapshot": SNAPSHOT, **({"cloned_for": requested} if size != requested else {})}
     if creation.returncode or not vmid:
         if vmid:
             boat("extend", vmid, "--ttl", str(IDLE_SECONDS), check=False)
-            atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
+            atomic_json(state.pool / (vmid + ".json"), entry)
         raise Failure(f"Boat could not clone {SNAPSHOT} as a {size} VM ({creation.returncode}), sandbox {vmid}: {reason}")
     lock = state.lock(vmid)
-    atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
+    atomic_json(state.pool / (vmid + ".json"), entry)
     return vmid, lock, size
 
 
@@ -758,7 +760,7 @@ def wake(state, lane, size, rebuilds=lambda vmid: (0, 0), begun=None):
             return None, "a run of this worktree ended since the wake began"
         states = listing()
         now = time.time()
-        for vmid in rank(state.registered(), states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now), lambda vmid: state.entry(vmid).get("used", 0), rebuilds):
+        for vmid in rank(state.registered(), states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now), lambda vmid: state.entry(vmid).get("used", 0), rebuilds, lambda vmid: state.entry(vmid).get("cloned_for")):
             try:
                 state.lock(vmid).close()
             except OSError:
@@ -889,6 +891,8 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0), chan
                         tree = json.loads(manifest)
                         if not isinstance(tree, dict):
                             raise ValueError(f"the claim answered {manifest[:100]!r}, not the VM's source manifest")
+                        if size == "default" and vm.get("type") == "large":
+                            say(f"{entry.get('snapshot') or SNAPSHOT} does not fit a default VM; running on large VM {vmid}")
                         return vmid, lock, lease, tree
                 except (Failure, ValueError, TypeError) as error:
                     status, manifest = None, str(error)
@@ -1339,7 +1343,7 @@ def make_snapshot(state, worktree, revision, source):
     """Saves SNAPSHOT from a VM of its own that compiled this clean worktree as builders do (WARM)."""
     if git(worktree, "status", "--porcelain"):
         raise Failure("Refusing to save the image from a dirty worktree")
-    size = machine_size("snapshot", [])
+    size = machine_size("snapshot")
     creation, events = boat("new", "--from", source, "--type", size, "--name", "battleplan-image-" + SNAPSHOT, "--ttl", str(LEASE_SECONDS), "--no-env", check=False)
     vmid = next((event["id"] for event in events if event.get("event") == "created"), None)
     if not vmid:
@@ -1469,13 +1473,12 @@ def parse(argv):
     return mode, rest if mode == "test" else [mode, *rest], outdir, run
 
 
-def machine_size(mode, cargo):
+def machine_size(mode):
     if os.environ.get("BOAT_MACHINE_TYPE"):
         if os.environ["BOAT_MACHINE_TYPE"] not in {"default", "large"}:
             raise Failure("BOAT_MACHINE_TYPE must be default or large")
         return os.environ["BOAT_MACHINE_TYPE"]
-    packages = sum(arg in {"-p", "--package"} or arg.startswith("--package=") or (arg.startswith("-p") and len(arg) > 2) for arg in cargo)
-    return "default" if mode in {"ui", "snapshot"} or (mode in {"check", "clippy"} and packages == 1 and "--workspace" not in cargo) else "large"
+    return "large" if mode == "build" else "default"
 
 
 def wake_command(argv):
@@ -1492,7 +1495,7 @@ def wake_command(argv):
     lane = hashlib.sha256(os.path.normcase(str(worktree)).encode()).hexdigest()
     try:
         cargo = member_features(worktree, cargo)
-        size = machine_size(mode, cargo)
+        size = machine_size(mode)
     except Failure as error:
         raise Refused(str(error)) from None
     plan = Plan(worktree, source_manifest(worktree), cargo) if mode != "ui" else None
@@ -1557,7 +1560,7 @@ def run(argv):
         plan = Plan(worktree, manifest, cargo) if mode != "ui" else None
         rebuilds = (lambda vmid: plan.rebuilds(state.entry(vmid))) if plan else (lambda vmid: (0, 0))
         active = state.running(lane, token)
-        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record, rebuilds, toolchain_channel(worktree) if mode != "ui" else "")
+        vmid, lock, lease, old = acquire(state, lane, machine_size(mode), token, record, rebuilds, toolchain_channel(worktree) if mode != "ui" else "")
         record["rebuilds"] = rebuilds(vmid)
         claimed = True
         enter("sync")
