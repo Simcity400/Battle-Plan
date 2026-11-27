@@ -7,6 +7,8 @@ import { ART_STATUS_ROW, deriveRowTooltip, deriveTableMirror } from '../../famil
 import { navalBattleClock, navalBattlesProjection, type NavalBattleSubject } from './navalBattlesProjection.ts';
 import type { NavalBattleDetail, NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/dashboard';
 
+const UNREAD = 'Country roster was not recorded';
+const TRUNCATED = 'Country roster is truncated';
 const detail: NavalBattleDetail = { id: 'result:15', hour: 43, rosterHour: 8,
   fleets: [{ names: ['Recorded fleet'], unknown: null }, { names: [], unknown: 'Fleet name not recorded' }],
   namedShips: [{ sinkHour: 9, knownAt: 19, name: 'Recorded ship', className: 'Mod ship class', sinkingCause: { kind: 'notRecorded', reason: 'sinking cause was not recorded' } }], shipRead: 43, unavailable: null };
@@ -47,7 +49,7 @@ test('all recorded fleet and ship names remain in tooltip content without a chos
 });
 
 test('the followed naval table shows the supplying read, partial sinkings and IC lost, unrecorded sides and an ended battle without its winner', () => {
-  const live: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
+  const live: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10], countriesMissing: [UNREAD, UNREAD],
     readHour: 15, detailId: 'combat:9:10', detailHour: null, resultHour: null, lastLiveHour: null, endSeen: false, shipsSunk: [2, null], convoysSunk: [0, 0], icLost: [1992.5, null], ships: [3, 0], convoys: [0, 0], result: 'ongoing' };
   const head: NavalBattlesTailReply = { branchId: '1', total: '3', offset: '0', missing: [], warnings: [], nextChange: null,
     rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }, { ...live, key: 'result:4', hour: 8, detailId: 'result:4', detailHour: 10, resultHour: 10, result: 'attackerWon' }] };
@@ -59,7 +61,7 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   assert.equal(row.cells.item?.value.kind, 'pending');
   assert.equal(row.cells.action?.actionLabel, 'Watch', 'a battle with live hours offers Watch');
   assert.equal((row.meta as NavalBattleSubject).row.key, 'combat:9:10');
-  const named = buildRowSourceFromHead('branch', { ...head, rows: head.rows.map(each => ({ ...each, countries: [[1], [2]] as [number[], number[]] })) }, undefined, 18)!;
+  const named = buildRowSourceFromHead('branch', { ...head, rows: head.rows.map(each => ({ ...each, countries: [[1], []], countriesMissing: [TRUNCATED, null] })) }, undefined, 18)!;
   const unreadFlags = createBoundedReadView({ hour: 18, rows: new Map([['main', named]]),
     identity: { resolve: (kind, key, at) => ({ kind, key, holder: { status: 'ready', value: key }, name: kind === 'battle' && at < 10 ? { status: 'pending' } : { status: 'ready', value: kind === 'battle' ? 'Second Battle of Shale Strait' : 'Recorded country' },
       flagChoice: { status: 'ready', value: 'recorded_flag' }, validInterval: [at, at] as const, nextChangeAt: Infinity }) },
@@ -67,6 +69,14 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   for (const each of navalBattlesProjection.project(unreadFlags, { scope: 'test', following: true, byDate: true }).rows) {
     assert.doesNotThrow(() => structuredClone(each.meta), 'a row’s subject crosses the lane worker boundary, so it carries no art callbacks');
     assert.deepEqual(each.cells.item?.value, { kind: 'known', value: 'Second Battle of Shale Strait' });
+    assert.deepEqual(each.cells.country?.value, { kind: 'partial', value: 'Recorded country', reason: TRUNCATED });
+    const found = { kind: 'data', key: each.key, name: each.name, row: each, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
+    const columns = model(true).columns;
+    assert.deepEqual(deriveRowTooltip(found, columns).rows.filter(line => line.label === 'Attackers' || line.label === 'Defenders').map(line => line.rawValue), [
+      { kind: 'partial', value: 'Recorded country', reason: TRUNCATED }, { kind: 'known', value: 'No countries on this side' },
+    ]);
+    const mirror = deriveTableMirror([found], columns, false);
+    assert.match(mirror.rows[0]!.cells.find(cell => cell.column === 'country')!.spoken, /Recorded country.*Country roster is truncated/);
   }
   assert.equal(model(true).rows[2]!.cells.action?.actionLabel, 'Watch', 'a battle held only as a result offers Watch on its result window');
   assert.match(model(true).columns.find(column => column.key === 'shipsSunk')!.partialReason!, /lower bound/);
@@ -90,13 +100,14 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   assert.equal(row.cells.ships!.value.kind, 'known');
   assert.equal(row.cells.ships!.pair![1].kind, 'zero');
   assert.deepEqual(row.cells.country!.flags!.map(flag => flag.tag), ['?', '?']);
+  assert.deepEqual(row.cells.country!.value, { kind: 'notRecorded', reason: UNREAD });
   assert.equal(row.live, true);
   assert.deepEqual(JSON.parse(row.tooltipScrollId!), ['test', 'combat:9:10', 15]);
   assert.deepEqual(JSON.parse(project(false).tooltipScrollId!), ['test', 'combat:9:10', 18]);
 });
 
 test('a naval battle plays its live hours, then its result window from the hour the result was first read, or an end note when no result was recorded', () => {
-  const row: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
+  const row: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10], countriesMissing: [null, null],
     readHour: 10, detailId: 'result:5', detailHour: 10, resultHour: 10, lastLiveHour: 10, endSeen: false, shipsSunk: [1, 0], convoysSunk: [0, 0], icLost: [5, 0], ships: [3, 2], convoys: [0, 0], result: 'attackerWon' };
   assert.deepEqual(navalBattleClock(row, 10, 0, 10), { liveEnd: 10, live: [[10, 10]], result: { handle: '5', from: 10 }, span: { first: 10, last: 10 }, noteFrom: null });
   assert.deepEqual(navalBattleClock({ ...row, detailHour: 25, resultHour: 20, lastLiveHour: 19 }, 40, 0, 40),
@@ -112,17 +123,17 @@ test('a naval battle plays its live hours, then its result window from the hour 
 
 test('convoy-only sides show convoy counts and live zero sinkings stay qualified as partial lower bounds', () => {
   const raid: NavalBattleLogRow = {
-    key: 'combat:12:20', hour: 20, province: null, countries: [[], []], countriesHour: [20, 20],
+    key: 'combat:12:20', hour: 20, province: null, countries: [[], []], countriesHour: [20, 20], countriesMissing: [UNREAD, UNREAD],
     readHour: 22, detailId: 'combat:12:20', detailHour: null, resultHour: null, lastLiveHour: null, endSeen: false,
     ships: [6, 0], convoys: [0, 4], shipsSunk: [0, 0], convoysSunk: [0, 2], icLost: [0, 0], result: 'ongoing',
   };
   const escorted: NavalBattleLogRow = {
-    key: 'result:42', hour: 15, province: null, countries: [[], []], countriesHour: [15, 15],
+    key: 'result:42', hour: 15, province: null, countries: [[], []], countriesHour: [15, 15], countriesMissing: [null, null],
     readHour: 18, detailId: 'result:42', detailHour: 18, resultHour: 18, lastLiveHour: null, endSeen: false,
     ships: [4, 2], convoys: [0, 5], shipsSunk: [0, 0], convoysSunk: [0, 0], icLost: [0, 0], result: 'attackerWon',
   };
   const depletedConvoys: NavalBattleLogRow = {
-    key: 'combat:13:19', hour: 19, province: null, countries: [[], []], countriesHour: [19, 19],
+    key: 'combat:13:19', hour: 19, province: null, countries: [[], []], countriesHour: [19, 19], countriesMissing: [UNREAD, UNREAD],
     readHour: 22, detailId: 'combat:13:19', detailHour: null, resultHour: null, lastLiveHour: null, endSeen: false,
     ships: [4, 0], convoys: [0, 0], shipsSunk: [0, null], convoysSunk: [0, 2], icLost: [0, null], result: 'ongoing',
   };
@@ -181,8 +192,8 @@ test('convoy-only sides show convoy counts and live zero sinkings stay qualified
   const mixedHead: NavalBattlesTailReply = {
     branchId: '1', total: '2', offset: '0', missing: [], warnings: [], nextChange: null,
     rows: [
-      { ...raid, key: 'combat:15:20', countries: [[1, 2], [3]] },
-      { ...raid, key: 'combat:16:20', countries: [[1], [2]] },
+      { ...raid, key: 'combat:15:20', countries: [[1, 2], [3]], countriesMissing: [null, null] },
+      { ...raid, key: 'combat:16:20', countries: [[1], [2]], countriesMissing: [null, null] },
     ],
   };
   const mixedView = createBoundedReadView({

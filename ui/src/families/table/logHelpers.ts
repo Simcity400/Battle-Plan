@@ -204,7 +204,7 @@ export function logStatusCell(label: string, statusKind: StatusMarkKind, tone?: 
 
 export function logCountryCell(
   readView: BoundedReadView,
-  entries: readonly { readonly tag: string | null; readonly dimmed?: boolean; readonly missingLabel?: string; readonly atHour?: number; readonly role?: string }[],
+  entries: readonly { readonly tag: string | null; readonly dimmed?: boolean; readonly missingLabel?: string; readonly partialReason?: string; readonly atHour?: number; readonly role?: string }[],
   atHour: number,
   boundary?: IdentityBoundary,
 ): TableCell {
@@ -221,6 +221,7 @@ export function logCountryCell(
       pushReason(reason);
       if (entry.role) roles.push({ label: entry.role, value: notRecorded(reason) });
     } else {
+      if (entry.partialReason) pushReason(entry.partialReason);
       const hour = entry.atHour ?? atHour;
       const who = resolveIdentity(readView, 'country', entry.tag, { atHour: hour, boundary });
       flags.push({

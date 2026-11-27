@@ -81,6 +81,7 @@ pub struct NavalBattleLogRow {
     pub province: Option<u32>,
     pub countries: [Vec<u32>; 2],
     pub countries_hour: [i32; 2],
+    pub countries_missing: [Option<&'static str>; 2],
     pub read_hour: i32,
     pub ships_sunk: [Option<u32>; 2],
     pub convoys_sunk: [Option<u32>; 2],
@@ -139,6 +140,7 @@ struct Snapshot {
     province: Option<u32>,
     countries: [Vec<u32>; 2],
     countries_hour: [Option<i32>; 2],
+    countries_missing: [Option<&'static str>; 2],
     ships: [Option<u32>; 2],
     convoys: [Option<u32>; 2],
     sunk: [Option<u32>; 2],
@@ -228,16 +230,26 @@ fn edges(steps: &[Step], first: i32, last: i32, hours: &mut Vec<i32>) {
     hours.extend(steps[from..].iter().take_while(|s| s.hour <= last).map(|s| s.hour));
 }
 
-fn complete(history: &History, hour: i32) -> bool {
+fn status_at(history: &History, hour: i32) -> Status {
     let at = history.statuses.partition_point(|span| span.last < hour);
-    history.statuses.get(at).is_some_and(|s| s.first <= hour && s.status == Status::Complete)
+    history.statuses.get(at).filter(|s| s.first <= hour).map_or(Status::NotRecorded, |s| s.status)
 }
 
-fn country(countries: &mut Vec<u32>, slot: Option<u32>) {
-    if let Some(slot) = slot
-        && !countries.contains(&slot)
-    {
+fn country(countries: &mut Vec<u32>, slot: Option<u32>) -> bool {
+    let Some(slot) = slot else { return false };
+    if !countries.contains(&slot) {
         countries.push(slot);
+    }
+    true
+}
+
+fn country_gap(status: Status, unresolved: bool) -> Option<&'static str> {
+    match (status, unresolved) {
+        (Status::Complete, false) => None,
+        (Status::Complete, true) => Some("A recorded owner has no country link"),
+        (Status::Truncated { .. }, false) => Some("Country roster is truncated"),
+        (Status::Truncated { .. }, true) => Some("Country roster is truncated and a recorded owner has no country link"),
+        _ => Some("Country roster was not recorded"),
     }
 }
 
@@ -314,9 +326,11 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
             hours.dedup();
             let lost = lost_by.entry(first_hour).or_default();
             for hour in hours {
-                let mut ships = [complete(participants, hour).then_some(0); 2];
-                let mut convoys = [complete(participants, hour).then_some(0); 2];
+                let status = status_at(participants, hour);
+                let mut ships = [(status == Status::Complete).then_some(0); 2];
+                let mut convoys = ships;
                 let mut countries = [Vec::new(), Vec::new()];
+                let mut unresolved = [false; 2];
                 for (key, reads) in roster {
                     let Some(cells) = at(reads, hour) else {
                         continue;
@@ -338,7 +352,7 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                             convoys[side] = None;
                         }
                     }
-                    country(&mut countries[side], count(cells, 1).and_then(|raw| links.slot_at(raw, hour)));
+                    unresolved[side] |= !country(&mut countries[side], count(cells, 1).and_then(|raw| links.slot_at(raw, hour)));
                     if sunk_ship(cells) {
                         lost.entry(*key).or_insert_with(|| prices.of(*key, hour));
                     }
@@ -354,6 +368,7 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                         convoys,
                         countries,
                         countries_hour: [None; 2],
+                        countries_missing: unresolved.map(|missing| country_gap(status, missing)),
                         sunk,
                         convoys_sunk,
                         ic: ic_lost(lost, sunk),
@@ -368,7 +383,7 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                 );
             }
             if last < last_hour && !next_battle.and_then(|s| s.cells.as_deref()).is_some_and(|c| number(c, 0) == Some(i64::from(first_hour))) {
-                line.end_live(last + 1, last < span.last && complete(battles, last + 1));
+                line.end_live(last + 1, last < span.last && status_at(battles, last + 1) == Status::Complete);
             }
         }
     }
@@ -395,6 +410,8 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
             for (_, reads) in lists {
                 edges(reads, first, last, &mut hours);
             }
+            let i = countries.statuses.partition_point(|s| s.last < first);
+            hours.extend(countries.statuses[i..].iter().take_while(|s| s.first <= last).map(|s| s.first.max(first)));
             hours.sort_unstable();
             hours.dedup();
             for hour in hours {
@@ -414,17 +431,20 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                 let battle = linked.unwrap_or(result);
                 let named_at = |when: i32| {
                     let mut sides = [Vec::new(), Vec::new()];
+                    let mut unresolved = [false; 2];
                     for (key, reads) in lists {
                         let side = ((key >> 32) & 255) as usize;
                         if let Some(list) = sides.get_mut(side)
                             && at(reads, hour).is_some()
                         {
-                            country(list, links.slot_at(*key as u32, when));
+                            unresolved[side] |= !country(list, links.slot_at(*key as u32, when));
                         }
                     }
-                    sides
+                    (sides, unresolved)
                 };
-                let mut sides = named_at(date);
+                let (mut sides, unresolved) = named_at(date);
+                let coverage = status_at(countries, hour);
+                let mut countries_missing = unresolved.map(|missing| country_gap(coverage, missing));
                 let result_hour = [&battle, &result]
                     .into_iter()
                     .filter_map(|of| lines.get(of))
@@ -442,13 +462,15 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                     }
                     if let Some((at, prior)) = line.reads.iter().rev().find(|(_, read)| !read.countries[i].is_empty()) {
                         sides[i].clone_from(&prior.countries[i]);
+                        countries_missing[i] = countries_missing[i].or(prior.countries_missing[i]);
                         return prior.countries_hour[i].or(Some(*at));
                     }
                     if named == date {
                         return None;
                     }
-                    let found: &[Vec<u32>; 2] = late.get_or_insert_with(|| named_at(named));
+                    let (found, unresolved) = late.get_or_insert_with(|| named_at(named));
                     sides[i].clone_from(&found[i]);
+                    countries_missing[i] = country_gap(coverage, unresolved[i]);
                     (!sides[i].is_empty()).then_some(named)
                 });
                 let sunk = [count(obs, 6), count(obs, 10)];
@@ -476,6 +498,7 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                         province: count(cells, 0),
                         countries: sides,
                         countries_hour,
+                        countries_missing,
                         ships: [count(obs, 4), count(obs, 8)],
                         convoys: [count(obs, 5), count(obs, 9)],
                         sunk,
@@ -770,6 +793,7 @@ fn log_row(entry: &Occurrence<Line>, hour: i32) -> Option<(NavalBattleLogRow, Op
         convoys: read.convoys,
         countries: read.countries.clone(),
         countries_hour: read.countries_hour.map(|h| h.unwrap_or(*at)),
+        countries_missing: read.countries_missing,
         read_hour: *at,
     };
     Some((row, line.reads.get(partition).map(|step| step.0)))
@@ -982,6 +1006,7 @@ mod tests {
             province: None,
             countries: [Vec::new(), Vec::new()],
             countries_hour: [None; 2],
+            countries_missing: [None; 2],
             ships: [Some(2), Some(1)],
             convoys: [Some(0); 2],
             sunk: [Some(0); 2],
@@ -1079,6 +1104,7 @@ mod tests {
             province: None,
             countries: [Vec::new(), Vec::new()],
             countries_hour: [None; 2],
+            countries_missing: [None; 2],
             ships: [Some(5); 2],
             convoys: [Some(0); 2],
             sunk: sunk.map(Some),

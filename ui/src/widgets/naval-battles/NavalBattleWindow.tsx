@@ -3,6 +3,7 @@ import { BattleGameWindow, BattleViewer } from '../../components/BattleViewer.ts
 import { BattleTitleHeading } from '../../components/BattleTitleHeading.tsx';
 import type { BattleClock } from '../../components/battleClock.ts';
 import { CountryFlagUrl } from '../../components/CountryFlag';
+import { ValueState } from '../../components/ValueState.tsx';
 import { formatDateRange, formatDateTime, formatDay } from '../../dashboard/calendar';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -16,7 +17,7 @@ import { mirrorRowSelector } from '../../families/host/mirror.ts';
 import { formatExactScalar, formatScalar } from '../../families/valueFormat.ts';
 import { navalCourseFigures, navalCourseGaps, validateNavalBattleCourse, type NavalFigure, type NavalSideFigures } from './navalBattleCourse.ts';
 import { navalDetailTooltip, validateNavalBattleDetails } from './navalBattleDetails.ts';
-import { navalBattleClock, type NavalBattleSubject } from './navalBattlesProjection.ts';
+import { navalBattleClock, NO_COUNTRIES, type NavalBattleSubject } from './navalBattlesProjection.ts';
 import './navalBattles.css';
 
 export interface OpenedNavalBattle {
@@ -46,12 +47,13 @@ function FigureItem({ label, figure, exact }: { readonly label: string; readonly
   </div>;
 }
 
-function Side({ runtime, track, index, slots, hour, figures }: {
+function Side({ runtime, track, index, slots, hour, missing, figures }: {
   readonly runtime: WidgetRuntime;
   readonly track: BoundTrack;
   readonly index: 0 | 1;
   readonly slots: readonly number[];
   readonly hour: number;
+  readonly missing: string | null;
   readonly figures: NavalSideFigures | Figure;
 }) {
   const shown = (pick: (side: NavalSideFigures) => NavalFigure): Figure => typeof figures === 'object' && 'ships' in figures ? pick(figures) : figures;
@@ -67,8 +69,8 @@ function Side({ runtime, track, index, slots, hour, figures }: {
             : who.known === undefined ? <span className="bv-skeleton" role="status" aria-label="Name loading" />
             : <i className="bv-name-missing" data-tooltip="Name not recorded" aria-label="Name not recorded" />}
         </li>)}
-        {labels.length === 0 && <li className="bv-countries-missing">
-          <span className="bv-missing" data-tooltip="The recording does not name this side's countries." tabIndex={0}><i className="bv-hatch" aria-hidden="true" />Countries not recorded</span>
+        {(missing || slots.length === 0) && <li className="bv-countries-missing" tabIndex={missing ? 0 : undefined} data-tooltip={missing ?? undefined}>
+          <ValueState kind={missing ? slots.length ? 'partial' : 'missing' : 'known'} reason={missing ?? undefined} text={missing ? 'Countries' : NO_COUNTRIES} />
         </li>}
       </ul>
       <span className="bv-role">{ROLES[index]}</span>
@@ -150,7 +152,7 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, retu
     sides={hour => {
       const figures = figuresAt(hour);
       return <div className="bv-sides">
-        {([0, 1] as const).map(index => <Side key={index} runtime={runtime} track={track} index={index} slots={row.countries[index]} hour={row.countriesHour[index]} figures={figures[index]!} />)}
+        {([0, 1] as const).map(index => <Side key={index} runtime={runtime} track={track} index={index} slots={row.countries[index]} hour={row.countriesHour[index]} missing={row.countriesMissing[index]} figures={figures[index]!} />)}
         {failed && classifyFailure(course.error)?.kind === 'retryable' && <button type="button" className="button small" onClick={course.retry}>Try again</button>}
       </div>;
     }}

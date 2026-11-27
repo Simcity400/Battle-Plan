@@ -14,6 +14,7 @@ import type { NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/d
 import { NAVAL_BATTLES_COLUMNS } from './definition.ts';
 
 const LEAST_SHARE = 0.03;
+export const NO_COUNTRIES = 'No countries on this side';
 
 export interface NavalBattleSubject {
   readonly row: NavalBattleLogRow;
@@ -108,10 +109,10 @@ function vesselPairCell(
   };
 }
 
-function sideNames(side: readonly ReturnType<typeof resolveIdentity>[]): Value<string> {
-  if (!side.length) return notRecorded('Country not recorded');
+function sideNames(side: readonly ReturnType<typeof resolveIdentity>[], missing: string | null): Value<string> {
+  if (!side.length) return missing ? notRecorded(missing) : knownValue(NO_COUNTRIES);
   const known: string[] = [];
-  const reasons: string[] = [];
+  const reasons: string[] = missing ? [missing] : [];
   let hasPending = false;
   for (const who of side) {
     if (who.value.kind === 'known') known.push(who.value.value);
@@ -133,7 +134,10 @@ function sideNames(side: readonly ReturnType<typeof resolveIdentity>[]): Value<s
 function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: IdentityBoundary, options: Options): TableRow {
   const name = resolveName(view, 'battle', row.key, { boundary }).value;
   const sides = row.countries.map((slots, i) => slots.map(slot => resolveIdentity(view, 'country', countryKey(slot), { atHour: row.countriesHour[i], boundary })));
-  const flags = row.countries.map((slots, i) => ({ tag: slots.length ? countryKey(slots[0]!) : null, atHour: row.countriesHour[i] }));
+  const flags = row.countries.flatMap((slots, i) => {
+    const reason = row.countriesMissing[i] ?? undefined;
+    return slots.length || reason ? [{ tag: slots.length ? countryKey(slots[0]!) : null, atHour: row.countriesHour[i], missingLabel: reason, partialReason: reason }] : [];
+  });
   const title = battleTitleText(name);
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
@@ -153,7 +157,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
       const showConvoys = convoyCount !== 0 || convoySunkCount !== 0;
       const rows: TooltipExtraRow[] = [
         { label: i === 0 ? 'Attackers' : 'Defenders', divider: true,
-          value: sideNames(side) },
+          value: sideNames(side, row.countriesMissing[i]!) },
         { label: 'Ships', value: countValue(row.ships[i], 'Ships'), indent: true },
       ];
       if (showConvoys) rows.push({ label: 'Convoys', value: countValue(convoyCount, 'Convoys'), indent: true });
