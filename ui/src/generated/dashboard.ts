@@ -162,7 +162,7 @@ interface: number,
  */
 voice: number,
 /**
- * The music player; `music_volume`.
+ * The music player; off until the user turns it up, never taken from the game.
  */
 music: number, };
 export type MapGraphics = { samples: number, textureQuality: number,

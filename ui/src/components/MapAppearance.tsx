@@ -205,8 +205,8 @@ export default function MapAppearance({ source, client, global = false, viewId, 
   const setAudio = (key: keyof MapAudio, value: number | null) => { if (draft) change({ ...draft, audio: { ...draft.audio, [key]: value } }); };
   const pending = !available ? 'No campaign' : error ? 'Unavailable' : 'Loading…';
   const unknown = (label: string) => <span className="map-option-unknown" role="img" aria-label={`${label}: ${draft ? 'not known yet' : pending}`}>—</span>;
-  const reset = (label: string, onClick: () => void) => {
-    const text = `Reset ${sentence(label)} to ${parentLabel}`;
+  const reset = (label: string, onClick: () => void, to = parentLabel) => {
+    const text = `Reset ${sentence(label)} to ${to}`;
     return <button type="button" className="icon-button small map-option-inherit" disabled={!enabled} data-tooltip-side="left" aria-label={text} data-tooltip={text} onClick={onClick}><Icon name="refresh" /></button>;
   };
   const switchRow = (key: Switch, label: string, part = false) => {
@@ -297,7 +297,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     const own = draft?.audio[key];
     return <div className="map-option-row" key={key} data-overridden={isSet(own) || undefined} {...applied(`audio.${key}`, isSet(own) ? own : inherited?.audio[key])}><span>{label}{unsavedMark(`audio.${key}`)}</span>
       <span className="map-option-control">
-        {isSet(own) && reset(label, () => setAudio(key, null))}
+        {isSet(own) && reset(label, () => setAudio(key, null), global && key === 'music' ? 'off' : parentLabel)}
         <Volume label={label} value={isSet(own) ? own : inherited?.audio[key]} disabled={!enabled} onCommit={value => setAudio(key, value)} />
       </span>
     </div>;
@@ -355,10 +355,10 @@ export default function MapAppearance({ source, client, global = false, viewId, 
       <section className="settings-block" id="graphics-defaults" aria-label="Game settings">
         <div className="settings-group">
           {reverting && custom ? <ConfirmRow title="Revert to your game settings?" action="Revert" onCancel={cancelRevert}
-            detail={`${changedText} you changed here follow your game settings again. Campaign and map widget overrides and visual mods stay.`}
+            detail={`${changedText} you changed here follow your game settings again, and music returns to off. Campaign and map widget overrides and visual mods stay.`}
             onConfirm={() => { setReverting(false); if (graphicsCustom) change(inheritingAll(draft!)); if (videoCustom) video.reset(); }} />
             : <div className="settings-row"><span className="settings-row-text"><strong>Game settings</strong>
-            <small>{custom ? 'Some settings here differ from your game settings.' : 'Every setting follows your game settings until you change it here.'} Campaigns and map widgets can override each one.</small></span>
+            <small>{custom ? 'Some settings here differ from your game settings.' : 'Every setting follows your game settings until you change it here, except music, which starts off.'} Campaigns and map widgets can override each one.</small></span>
             {custom ? <button ref={revertTrigger} type="button" className="button small" disabled={busy} onClick={() => setReverting(true)}>
               <Icon name="refresh" />Revert to game settings</button>
               : draft && <span className="settings-value">Following the game</span>}

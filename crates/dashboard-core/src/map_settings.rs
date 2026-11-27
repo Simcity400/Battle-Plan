@@ -329,7 +329,7 @@ pub fn game_audio(keys: &content_reader_settings::settings::SettingsKeys) -> Map
         combat: volume("sound_fx_volume", defaults.combat),
         interface: volume("sound_fx_volume", defaults.interface),
         voice: volume("voice_volume", defaults.voice),
-        music: volume("music_volume", defaults.music),
+        music: defaults.music,
     }
 }
 
@@ -727,7 +727,7 @@ mod tests {
                 game.audio.voice,
                 game.audio.music
             ],
-            [80.0, 50.4, 25.0, 25.0, 0.0, 49.6]
+            [80.0, 50.4, 25.0, 25.0, 0.0, 0.0]
         );
         let keys = content_reader_settings::settings::SettingsKeys::read(b"dev_master_volume=25.000000");
         assert_eq!(game_dev_master(&keys), 0.25);

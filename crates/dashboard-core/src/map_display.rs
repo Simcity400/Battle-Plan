@@ -293,8 +293,8 @@ inheritable! {
         interface: f32 = 100.0,
         #[doc = " `voice_volume`."]
         voice: f32 = 100.0,
-        #[doc = " The music player; `music_volume`."]
-        music: f32 = 75.0,
+        #[doc = " The music player; off until the user turns it up, never taken from the game."]
+        music: f32 = 0.0,
     }
 }
 
