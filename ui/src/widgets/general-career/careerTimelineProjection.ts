@@ -137,6 +137,7 @@ function buildHeader(
   hourReply: LeaderHourReply | undefined,
   career: LeaderCareerReply,
   reference: string,
+  partial: boolean,
 ): TimelineHeader {
   const hour = readView.hour;
   const role = hourReply?.role ?? career.runs.at(-1)?.role ?? null;
@@ -154,7 +155,7 @@ function buildHeader(
   const lost = hourReply?.lost ?? career.battles.filter(b => b.won === false).length;
   const decided = won + lost;
   const unresolved = Math.max(0, fought - decided);
-  const winRate = decided ? formatShare(won / decided) : '—';
+  const winRate = partial ? 'Not recorded' : decided ? formatShare(won / decided) : '—';
   const portraitHour = hourReply?.firstSeenHour ?? career.portraitHour ?? hour;
 
   return {
@@ -245,7 +246,9 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
     }
 
     const serving = hourReply?.missing === null ? hourReply : undefined;
-    const header = buildHeader(readView, serving, career, reference);
+    const partial = (serving?.battlesPartialFrom !== null && serving?.battlesPartialFrom !== undefined && serving.battlesPartialFrom <= hour)
+      || (career.battlesPartialFrom !== null && career.battlesPartialFrom <= hour);
+    const header = buildHeader(readView, serving, career, reference, partial);
     const meters = buildMeters(readView, serving);
 
     const commandSpans: TimelineSpan[] = career.commands
@@ -339,8 +342,6 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
 
     const notes: string[] = [];
     if (hourReply?.missing) notes.push(hourReply.missing);
-    const partial = (serving?.battlesPartialFrom !== null && serving?.battlesPartialFrom !== undefined && serving.battlesPartialFrom <= hour)
-      || (career.battlesPartialFrom !== null && career.battlesPartialFrom <= hour);
     if (partial) notes.push(PARTIAL);
     const roleKind = serving?.role?.kind ?? career.runs.at(-1)?.role.kind;
     if (roleKind === 2) notes.push(FLEET_NOTE);

@@ -82,7 +82,8 @@ function header(readView: Parameters<CardProjection['project']>[0], reply: Leade
   const rank = role.rank ?? `Rank ${role.category}`;
   const skill = reply.skill === null ? 'skill not recorded' : `★ ${reply.skill}${role.maximumSkill === null ? '' : ` / ${role.maximumSkill}`}`;
   const decided = reply.won + reply.lost;
-  const record = `${reply.won} won · ${reply.lost} lost · ${decided ? formatShare(reply.won / decided) : 'no results'}`;
+  const counts = `${reply.won} won · ${reply.lost} lost`;
+  const record = partial ? counts : `${counts} · ${decided ? formatShare(reply.won / decided) : 'no results'}`;
   const names = role.attributeNames.map(item => item ?? 'Name not recorded');
   const ownerName = owner ? (owner.name.kind === 'known' ? owner.name.value : owner.name.kind === 'pending' ? 'Loading…' : 'Country name not recorded') : 'Owner not recorded';
   const countryItem: TooltipListItem = !owner
@@ -127,7 +128,7 @@ function recordRow(reply: LeaderHourReply, partial: boolean): CardRow {
     key: 'record',
     label: 'Record',
     ...(partial ? { figure: { value: partialValue(`${reply.won} won · ${reply.lost} lost`, PARTIAL), figure: 'Recorded results' } } : {}),
-    bar: {
+    bar: partial ? { kind: 'meter', fraction: notRecorded(PARTIAL) } : {
       kind: 'share',
       segments: [
         { share: reply.won / decided, tone: 'positive', label: `${reply.won} won`, shortLabel: String(reply.won) },
