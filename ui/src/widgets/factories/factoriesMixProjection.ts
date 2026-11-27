@@ -2,7 +2,7 @@ import { colour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { contentSet } from '../../dashboard/options.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import { countryRowPresentation, type BarsLegendItem, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation, type BarsLegendItem, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
@@ -112,13 +112,12 @@ export const factoriesMixProjection: BarsProjection<FactoriesMixOptions> = regis
           key,
           subject: subjectTag,
           label: pres.label,
-          labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
           media: pres.media,
           segments: [],
           missing: notRecorded(reason),
           format: { decimals: 0 },
           tooltip: {
-            title: pres.labelMissing ? 'Name not recorded' : pres.label,
+            title: barsLabelText(pres.label),
             hour,
             missingReason: reason,
             items: tooltipItems,
@@ -136,11 +135,10 @@ export const factoriesMixProjection: BarsProjection<FactoriesMixOptions> = regis
           key,
           subject: subjectTag,
           label: pres.label,
-          labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
           media: pres.media,
           segments: [],
           countText,
-          tooltip: { title: pres.labelMissing ? 'Name not recorded' : pres.label, hour, items: tooltipItems },
+          tooltip: { title: barsLabelText(pres.label), hour, items: tooltipItems },
           meta,
         });
         continue;
@@ -189,13 +187,12 @@ export const factoriesMixProjection: BarsProjection<FactoriesMixOptions> = regis
           key,
           subject: subjectTag,
           label: pres.label,
-          labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
           media: pres.media,
           segments,
           countText,
           missing: notRecorded(partReason),
           format: { decimals: 0 },
-          tooltip: { title: pres.labelMissing ? 'Name not recorded' : pres.label, hour, missingReason: partReason, items: tooltipItems },
+          tooltip: { title: barsLabelText(pres.label), hour, missingReason: partReason, items: tooltipItems },
           meta,
         });
         continue;
@@ -205,11 +202,10 @@ export const factoriesMixProjection: BarsProjection<FactoriesMixOptions> = regis
         key,
         subject: subjectTag,
         label: pres.label,
-        labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         segments,
         countText,
-        tooltip: { title: pres.labelMissing ? 'Name not recorded' : pres.label, hour, items: tooltipItems },
+        tooltip: { title: barsLabelText(pres.label), hour, items: tooltipItems },
         meta,
       });
     }

@@ -1,6 +1,7 @@
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { CountryFlowReply, FlowEndpoint, FlowLink, FlowSide as ReplySide } from '../../generated/dashboard';
 import { countryRowPresentation } from '../bars/model.ts';
+import { LOADING_NAME } from '../table/identityCell.ts';
 import type { ArtResult, BoundedReadView } from '../contract.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { formatCompactScalar, formatScalar, type ValueFormat } from '../valueFormat.ts';
@@ -54,12 +55,13 @@ export function presentFlowEndpoint(readView: BoundedReadView, endpoint: FlowEnd
   }
   const subject = countryKey(endpoint.slot);
   const shown = countryRowPresentation(readView, subject);
-  const named = shown.label !== subject;
+  const labelLoading = shown.label.kind === 'pending';
+  const labelMissing = shown.label.kind !== 'known' && !labelLoading;
   return {
     key,
-    label: named ? shown.label : endpoint.tag ?? UNKNOWN_COUNTRY,
-    labelMissing: shown.labelMissing || !named,
-    ...(shown.labelLoading ? { labelLoading: true as const } : {}),
+    label: shown.label.kind === 'known' ? shown.label.value : labelLoading ? LOADING_NAME : endpoint.tag ?? UNKNOWN_COUNTRY,
+    labelMissing,
+    ...(labelLoading ? { labelLoading: true as const } : {}),
     subject,
     ...(endpoint.tag ? { tag: endpoint.tag } : {}),
     ...(endpoint.unknown ? { unknown: endpoint.unknown } : {}),

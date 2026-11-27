@@ -10,7 +10,7 @@ import { PINS, readHistory } from './coverage.mjs';
 import { Visual } from './visual.mjs';
 import { NativeInput, hover, interactions, mapModes, mapPictures, zoomedMapPicture } from './map.mjs';
 import { classifyWidgetSnapshot, pageShown } from './verdicts.mjs';
-import { buildWidgetClassifierExpr, createOutcomeWatcher, measureIdleCost, mergeWidgetOutcomes, runThrottled } from './sweepHelpers.mjs';
+import { buildWidgetClassifierExpr, catalogueItemKey, createOutcomeWatcher, describeUncleanCataloguePage, finishCatalogueCard, measureIdleCost, mergeWidgetOutcomes, runThrottled, selectQuickCatalogueCards } from './sweepHelpers.mjs';
 import { TRACE_MARKS, describeNodes, startTrace, summariseTrace, summaryNodes } from './trace.mjs';
 import { ReplyRecorder } from './replies.mjs';
 import { allWidgetPages, costPages, HEAVIEST, HEAVIEST_COUNT, SCREEN, SHELL_HEADER_HEIGHT, VIEWS, screenMetrics, tallViewportHeight } from './allWidgets.mjs';
@@ -38,17 +38,18 @@ if (!PINS.includes(pin)) throw new Error(`--pin takes ${PINS.join(' or ')}, not 
 const only = flag('--cases')?.split(',') ?? null;
 const onlyPages = flag('--pages')?.split(',') ?? null;
 const onlyKinds = flag('--kinds')?.split(',').filter(Boolean) ?? null;
+const allViews = process.argv.includes('--all-views');
 const costsFile = flag('--costs');
 const heaviestCount = flag('--heaviest') === null ? HEAVIEST_COUNT : Number(flag('--heaviest'));
 if (!(heaviestCount >= 1 && Number.isInteger(heaviestCount))) throw new Error(`--heaviest takes a positive integer, not ${flag('--heaviest')}`);
 const coresCount = flag('--cores-count') === null ? null : Number(flag('--cores-count'));
 if (coresCount !== null && !(coresCount >= 1 && Number.isInteger(coresCount))) throw new Error(`--cores-count takes a positive integer, not ${flag('--cores-count')}`);
 const runningCosts = phases.includes('widget-costs');
-const costFixture = runningCosts ? await costPages(onlyKinds) : null;
+const costFixture = runningCosts ? await costPages(onlyKinds, { allViews }) : null;
 const loadedCosts = costsFile ? JSON.parse(await readFile(costsFile, 'utf8')) : null;
 if (onlyPages?.includes(HEAVIEST) && !loadedCosts) throw new Error('--pages Heaviest requires --costs <widget-costs.json>');
 const fixture = !costFixture && onlyPages?.some(name => Object.hasOwn(VIEWS, name))
-  ? await allWidgetPages({ costs: loadedCosts, heaviestCount }) : null;
+  ? await allWidgetPages({ costs: loadedCosts, heaviestCount, allViews }) : null;
 const pageOf = name => fixture && Object.hasOwn(VIEWS, name) ? VIEWS[name].page : name;
 const pagesAt = flag('--pages-at') === null ? null : Number(flag('--pages-at'));
 const recordReplies = flag('--record-replies');
@@ -67,9 +68,12 @@ if (!(rate >= 1 && Number.isFinite(rate) && PLAY_SECONDS > 0 && Number.isFinite(
 const TRACE_SPEED = 1440;
 const TRACE_SECONDS = 4;
 const CATALOGUE_PAGE = 'Intelligence';
+const visibleControl = selector => `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return !!el && el.checkVisibility({ visibilityProperty: true }); })()`;
 const discardLayout = async () => {
   await s.click('button[aria-label="Discard layout changes"]');
-  if (await s.until(`document.querySelector('.layout-discard-menu:popover-open')`, 1500)) await s.click('.layout-discard-menu:popover-open button.is-danger');
+  const confirm = '.layout-discard-menu:popover-open button.is-danger';
+  await s.until(`${visibleControl(confirm)} || !!document.querySelector('button[aria-label="Edit layout"]')`, 1500);
+  if (await s.holds(visibleControl(confirm))) await s.click(confirm);
 };
 
 const app = await connect(port);
@@ -85,7 +89,7 @@ if (activeFixture) {
   await loaded;
   await applyConfinement();
   if (fixture) for (const entry of Object.values(fixture.pages)) log('fixture', `${entry.label}: ${entry.widgets.length} widgets, ${entry.rows} rows`);
-  if (costFixture) log('fixture', `widget-costs: ${costFixture.kinds.length} widget kinds plus empty baseline`);
+  if (costFixture) log('fixture', `widget-costs: ${costFixture.kinds.length} widget placements plus empty baseline`);
 }
 const replies = recordReplies ? await ReplyRecorder.start(app, recordReplies,
   { pid: appPid, revision: flag('--app-revision'), root: path.resolve(import.meta.dirname, '../..') }) : null;
@@ -501,10 +505,13 @@ async function playbackInputs() {
     const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
     const visible = node => {
       if (!node.checkVisibility({ visibilityProperty: true, opacityProperty: true })) return false;
+      if (__e2e.visuallyHidden(node)) return false;
       const box = node.getBoundingClientRect();
       let top = Math.max(box.top, viewport.top), bottom = Math.min(box.bottom, viewport.bottom);
       for (let p = node.parentElement; p && p !== grid; p = p.parentElement) {
-        if (getComputedStyle(p).overflowY === 'visible') continue;
+        const style = getComputedStyle(p);
+        if (__e2e.visuallyHidden(p, style)) return false;
+        if (style.overflowY === 'visible') continue;
         const clip = p.getBoundingClientRect(); top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
       }
       return box.width > 0 && top < bottom;
@@ -902,7 +909,7 @@ await phase('widget-costs', async () => {
     await app.evaluate('window.__perf.flush()', 60_000).catch(() => {});
     return warmupReasons;
   };
-  const measureOne = async ({ kind, title, label, widget, isEmpty, sampleLabel = null, extraReasons = [] }) => {
+  const measureOne = async ({ kind, view = null, isDefaultView = true, title, label, widget, isEmpty, sampleLabel = null, extraReasons = [] }) => {
     let from = null, to = null, seekStart = null, audit = [], outcome = isEmpty ? 'empty' : 'content', detail = null, surfaces = [], playingAtSnap = null;
     const reasons = [...extraReasons];
     try {
@@ -954,15 +961,16 @@ await phase('widget-costs', async () => {
       await throttle(1).catch(() => {});
       await app.evaluate('window.__perf.flush()', 60_000).catch(() => {});
     }
-    await s.record({ area: 'widget-costs', item: sampleLabel ? `${kind}/${sampleLabel}` : kind, label, kind, title, widget, isEmpty, sampleLabel, from, to, seekStart, seconds: COST_SECONDS,
+    const itemName = sampleLabel ? `${kind}/${sampleLabel}` : !isDefaultView && view ? `${kind}/${view}` : kind;
+    await s.record({ area: 'widget-costs', item: itemName, label, kind, ...(view ? { view } : {}), title, widget, isEmpty, sampleLabel, from, to, seekStart, seconds: COST_SECONDS,
       playingAtSnap, outcome, detail, surfaces, audit, complete: reasons.length === 0, pass: reasons.length === 0, reasons, screenshot: false });
   };
   const warmupReasons = await warmEmptyBaseline();
   await measureOne({ kind: '__empty__', title: 'Empty page (start)', label: costFixture.empty.label, widget: null, isEmpty: true, sampleLabel: 'start', extraReasons: warmupReasons });
   for (let index = 0; index < costFixture.kinds.length; index++) {
     const entry = costFixture.kinds[index];
-    log('widget-cost', `${index + 1}/${costFixture.kinds.length}`, entry.kind);
-    await measureOne({ kind: entry.kind, title: entry.title, label: entry.label, widget: entry.widget, isEmpty: false });
+    log('widget-cost', `${index + 1}/${costFixture.kinds.length}`, !entry.isDefaultView && entry.view ? `${entry.kind}/${entry.view}` : entry.kind);
+    await measureOne({ kind: entry.kind, view: entry.view, isDefaultView: entry.isDefaultView, title: entry.title, label: entry.label, widget: entry.widget, isEmpty: false });
     if ((index + 1) % 15 === 0) await save();
   }
   await measureOne({ kind: '__empty__', title: 'Empty page (end)', label: costFixture.empty.label, widget: null, isEmpty: true, sampleLabel: 'end' });
@@ -978,8 +986,46 @@ await phase('catalogue', async () => {
   if (await app.evaluate(`document.querySelectorAll('article.dash-widget').length`)) throw new Error('a new page is not empty');
   await seekTo(PICTURE_SEEK[1]);
   const editing = `document.querySelector('button[aria-label="Done editing"]')`;
+  const notEditing = `document.querySelector('button[aria-label="Edit layout"]')`;
   const catalogueOpen = `document.querySelector('.widget-catalogue:popover-open')`;
+  const saveConfirm = '.layout-save-menu:popover-open .layout-save-actions button.primary';
+  const removeButton = ':is(.widget-settings-menu, .map-controls-menu):popover-open button[aria-label="Delete widget"]';
   const empty = `document.querySelectorAll('article.dash-widget').length === 0`;
+  const dirty = `document.querySelector('.toolbar-save.is-dirty')`;
+  const closePopovers = async () => {
+    for (let tries = 0; tries < 3 && await s.holds(`document.querySelector(':popover-open:not(.app-tooltip)')`); tries++) await s.escape();
+  };
+  const readPageState = () => app.evaluate(`({ widgets: document.querySelectorAll('article.dash-widget').length, dirty: !!document.querySelector('.toolbar-save.is-dirty'),
+    editing: !!document.querySelector('button[aria-label="Done editing"]'),
+    popovers: [...document.querySelectorAll(':popover-open:not(.app-tooltip)')].map(el => el.className?.toString?.().trim() || el.tagName) })`);
+  const openSaveConfirm = async (fromEditing = true) => {
+    if (await s.holds(visibleControl(saveConfirm))) return;
+    await s.click(fromEditing ? 'button[aria-label="Done editing"]' : 'button[aria-label="Save layout"]');
+    if (!await s.until(visibleControl(saveConfirm), 3000)) throw new Error('the Save layout confirm button did not become visible within 3 s');
+  };
+  const leaveEditing = async (stepArea, stepItem, stepLabel, options = {}) => {
+    const isDirty = await s.holds(dirty);
+    if (isDirty) await openSaveConfirm(true);
+    return s.step(stepArea, stepItem, stepLabel, () => s.click(isDirty ? saveConfirm : 'button[aria-label="Done editing"]'), options);
+  };
+  const recoverCleanPage = async () => {
+    for (let tries = 0; tries < 6; tries++) {
+      await closePopovers();
+      const state = await readPageState();
+      if (!describeUncleanCataloguePage(state)) return;
+      if (state.widgets > 0) {
+        if (!state.editing) { await s.click('button[aria-label="Edit layout"]').catch(() => {}); await s.until(editing, 3000); }
+        await s.click('article.dash-widget :is([data-widget-settings], button[aria-label="Map settings"])').catch(() => {});
+        if (await s.until(visibleControl(removeButton), 2000)) {
+          await s.click(removeButton).catch(() => {});
+          await s.until(`document.querySelectorAll('article.dash-widget').length < ${state.widgets}`, 3000);
+        } else if (state.dirty) { await closePopovers(); await discardLayout().catch(() => {}); await s.until(notEditing, 3000); }
+      } else if (state.dirty) {
+        await openSaveConfirm(state.editing).catch(() => {});
+        if (await s.holds(visibleControl(saveConfirm))) { await s.click(saveConfirm).catch(() => {}); await s.until(`!(${dirty})`, 3000); }
+      }
+    }
+  };
   let openedThisEdit = false;
   const edit = card => { openedThisEdit = false; return s.step('catalogue', 'setup', 'edit', () => s.click('button[aria-label="Edit layout"]'), { done: editing, extra: { card } }); };
   const open = async card => {
@@ -996,11 +1042,11 @@ await phase('catalogue', async () => {
     title: c.querySelector('.widget-card-text strong')?.textContent.trim(), view: c.hasAttribute('data-variant'),
     unavailable: c.querySelector('.widget-card-add')?.disabled ? (c.querySelector('.widget-card-text small')?.textContent.trim() || 'cannot be added') : null }))`);
   meta.catalogue = cards;
-  const slowest = quick ? new Set(history?.slowest ?? []) : null;
-  if (slowest && !slowest.size) throw new Error('no record of the slowest catalogue cards: a full run with --history writes them');
+  const selection = quick ? selectQuickCatalogueCards(cards, history) : null;
+  if (selection?.source === 'default') log('catalogue', `no matching slowest cards in history: sampling ${selection.indices.size} default cards across the catalogue`);
   for (const [index, card] of cards.entries()) {
-    const item = `${card.view ? 'view' : 'widget'}/${card.title}`;
-    if (slowest && !slowest.has(item)) continue;
+    const item = catalogueItemKey(card);
+    if (selection && !selection.indices.has(index)) continue;
     if (card.unavailable) { await s.fail('catalogue', item, 'add', `cannot be added to this recording: ${card.unavailable}`); continue; }
     if (!await s.holds(editing)) await edit(item);
     if (!await s.holds(catalogueOpen)) await open(item);
@@ -1013,40 +1059,49 @@ await phase('catalogue', async () => {
     added.view = card.view;
     added.widget = await app.evaluate(`document.querySelector('article.dash-widget')?.dataset.widget ?? null`);
     added.hour = (await s.timeline()).value;
-    await s.escape();
+    await closePopovers();
     const map = await s.holds(`document.querySelector('article.dash-widget.kind-map')`);
     if (map && added.widget) {
-      const shown = await s.step('catalogue', item, 'show map', () => s.click('button[aria-label="Done editing"]'),
-        { done: `__e2e.mapState(${JSON.stringify(added.widget)}, __e2e.t0Epoch, x => !x.loading && !x.error && x.hour === ${added.hour})`, timeout: 10_000, quiet: 300 });
-      shown.drawnAt = await app.evaluate(`__e2e.mapState(${JSON.stringify(added.widget)}, __e2e.t0Epoch, x => !x.loading && !x.error && x.hour === ${added.hour})?.drawnAt ?? null`);
-      added.shownFrom = shown.input;
+      try {
+        const shown = await leaveEditing('catalogue', item, 'show map',
+          { done: `__e2e.mapState(${JSON.stringify(added.widget)}, __e2e.t0Epoch, x => !x.loading && !x.error && x.hour === ${added.hour})`, timeout: 10_000, quiet: 300 });
+        shown.drawnAt = await app.evaluate(`__e2e.mapState(${JSON.stringify(added.widget)}, __e2e.t0Epoch, x => !x.loading && !x.error && x.hour === ${added.hour})?.drawnAt ?? null`);
+        added.shownFrom = shown.input;
+      } catch (error) {
+        await s.fail('catalogue', item, 'show map', error.message);
+      }
     }
     if (!quick) await visual.capture(`catalogue/${String(index).padStart(3, '0')} ${card.title}`, 'catalogue', 'article.dash-widget');
     const extra = { card: item };
-    if (map) {
-      if (!await s.holds(editing)) await edit(item);
-      await s.click('article.dash-widget :is([data-widget-settings], button[aria-label="Map settings"])');
-      const mapRemove = ':is(.widget-settings-menu, .map-controls-menu):popover-open button[aria-label="Delete widget"]';
-      await s.until(`document.querySelector(${JSON.stringify(mapRemove)})`, 3000);
-      await s.step('catalogue', 'setup', 'delete', () => s.click(mapRemove), { done: empty, extra });
-      await s.step('catalogue', 'setup', 'done', () => s.click('button[aria-label="Done editing"]'),
-        { done: `${empty} && document.querySelector('button[aria-label="Edit layout"]')`, extra });
-    } else {
-      const remove = ':is(.widget-settings-menu, .map-controls-menu):popover-open button[aria-label="Delete widget"]';
-      let offered = false;
-      if (!s.everFailed('catalogue', item, 'discard')) {
-        await s.click('article.dash-widget [data-widget-settings], article.dash-widget button[aria-label="Map settings"]');
-        offered = await s.until(`document.querySelector(${JSON.stringify(remove)})`, 3000);
-        if (!offered) await s.escape();
-      }
-      if (offered) await s.step('catalogue', 'setup', 'delete', () => s.click(remove), { done: `${empty} && ${editing}`, extra });
-      else await s.step('catalogue', 'setup', 'discard', () => discardLayout(),
-        { done: `${empty} && document.querySelector('button[aria-label="Edit layout"]')`, extra });
-    }
+    await finishCatalogueCard(item, {
+      cleanup: async () => {
+        await closePopovers();
+        if (!await app.evaluate(`document.querySelectorAll('article.dash-widget').length`)) return;
+        if (map) {
+          if (!await s.holds(editing)) await edit(item);
+          await s.click('article.dash-widget :is([data-widget-settings], button[aria-label="Map settings"])');
+          if (!await s.until(visibleControl(removeButton), 3000)) throw new Error('the Delete widget button did not become visible within 3 s');
+          await s.step('catalogue', 'setup', 'delete', () => s.click(removeButton), { done: empty, extra });
+          await leaveEditing('catalogue', 'setup', 'done', { done: `${empty} && ${notEditing}`, extra });
+        } else {
+          let offered = false;
+          if (!s.everFailed('catalogue', item, 'discard')) {
+            await s.click('article.dash-widget [data-widget-settings], article.dash-widget button[aria-label="Map settings"]');
+            offered = await s.until(visibleControl(removeButton), 3000);
+            if (!offered) await closePopovers();
+          }
+          if (offered) await s.step('catalogue', 'setup', 'delete', () => s.click(removeButton), { done: `${empty} && ${editing}`, extra });
+          else await s.step('catalogue', 'setup', 'discard', () => discardLayout(),
+            { from: 'last', done: `${empty} && ${notEditing}`, extra });
+        }
+      },
+      readState: readPageState,
+      recover: recoverCleanPage,
+      fail: (cardItem, label, reason) => s.fail('catalogue', cardItem, label, reason),
+    });
     if ((index + 1) % 10 === 0) await save();
   }
-  if (await s.holds(editing)) await s.step('catalogue', 'setup', 'done', () => s.click('button[aria-label="Done editing"]'),
-    { done: `${empty} && document.querySelector('button[aria-label="Edit layout"]')` });
+  if (await s.holds(editing)) await leaveEditing('catalogue', 'setup', 'done', { done: `${empty} && ${notEditing}` });
 });
 
 await phase('controls', async () => {

@@ -1330,12 +1330,19 @@ fn current_special_projects_names_the_unknown_holder_reason_at_the_requested_hou
     let load = LoadContext { content: Some(options.clone()) };
     let cancelled = AtomicBool::new(false);
     for (country, subject) in [(Country::Tag("GER".into()), "GER"), (Country::Slot(7), "country slot 7")] {
+        let product = |at: i32| {
+            let asked = serde_json::json!({ "branchId": "1", "country": country, "current": true, "hour": at });
+            crate::registrations::SPECIAL_PROJECTS_SPECIALPROJECTS.answer(&source, asked, &load, &cancelled).unwrap()["warnings"].clone()
+        };
+        product(24);
+        let warned: Vec<_> = [24, 25, 26, 27, 28].map(product).into();
         let asked = serde_json::json!({ "panel": "special-projects", "branchId": "1", "country": country, "current": true });
         let panel = dated_panel(&source, &load, &asked).unwrap();
         let exact = panel.exact().unwrap();
-        for at in [24, 25, 26, 27, 28] {
+        for (at, warned) in [24, 25, 26, 27, 28].into_iter().zip(warned) {
             let followed = (exact.advance)(at, at == 24, &cancelled, None).value.as_ref().as_ref().unwrap().clone();
             let direct = (exact.cold)(at, &cancelled).unwrap();
+            assert_eq!(followed["warnings"], warned, "the followed reply warns as the product read does at hour {at} for {country:?}");
             assert_eq!(materialized_at(followed, at), direct, "followed matches direct at hour {at} for {country:?}");
             if at == 25 {
                 let why = direct["unavailable"].as_str().expect("unknown holder hour must explain why Current is unavailable");

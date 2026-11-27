@@ -2,7 +2,7 @@ import { colour } from '../../charts/palette.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { GROUP_EMPTY } from '../../families/bars/forceAtRace.ts';
 import { seriesRaceSelection, seriesRaceUnavailable, seriesRaceWarnings, type SeriesRaceBaseOptions } from '../../families/bars/seriesRace.ts';
-import { type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
+import { barsLabelText, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
@@ -65,14 +65,13 @@ function makeRow(
     key,
     subject: key,
     label: pres.label,
-    labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
     media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
     value: { value, format: { decimals: 0 }, label: 'Nuclear stockpile' },
     numeric: row.total,
     ...(segments ? { segments } : {}),
     tooltip: {
-      title: pres.labelMissing ? 'Name not recorded' : pres.label,
+      title: barsLabelText(pres.label),
       hour: readView.hour,
       items: tooltipItems,
     },

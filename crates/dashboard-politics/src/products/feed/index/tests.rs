@@ -77,3 +77,66 @@ fn a_history_that_cannot_be_read_is_one_missing_span_and_no_card_is_open_through
     assert_eq!(gaps, [(100, 200, "The event history could not be read: damaged")]);
     assert_eq!(scanned.decision_breaks, [(100, 200)]);
 }
+
+#[test]
+fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by_observation() {
+    use dashboard_query::{
+        identity::{Country, Holder, HolderRun, Holders},
+        log::{CountrySpan, occurrence::{Ask, Direction, Order, Selection}},
+    };
+    let held = |slot: u32| vec![HolderRun { first: 0, last: 1_000, holder: Holder::Found { slot, id: slot }, starts_segment: true }];
+    let holders = Holders::new([("GER".to_owned(), held(7)), ("POL".to_owned(), held(8))].into_iter().collect(), Vec::new());
+    let opener = brief(1, EventFeedKind::DecisionSelected, 100, None, Some(30));
+    let later = Brief {
+        at: Locator { run: 1, hour: 110, key: (1u128 << 64) | 2 },
+        kind: EventFeedKind::DecisionDurationChanged,
+        generation: 1,
+        sequence: 2,
+        hour: 105,
+        opener: Some(1),
+        slots: [Some(7), Some(8), None],
+        option: None,
+        days: Some(40),
+        token: Some("mission_b".into()),
+    };
+    let scanned = Scanned {
+        briefs: vec![opener, later],
+        native: Vec::new(),
+        incomplete: Vec::new(),
+        windows_unrecorded: Vec::new(),
+        states: HashMap::new(),
+        resolved: Mutex::default(),
+        presented: Mutex::default(),
+        breaks: Vec::new(),
+        choice_breaks: Vec::new(),
+        decision_breaks: Vec::new(),
+        partial_reads: Vec::new(),
+        gaps: Vec::new(),
+    };
+    let index = decisions(&scanned, &Names::new(&holders)).unwrap();
+    let ask_at = |hour: i32| Ask { hour, from: None, to: None, gap_end: None, selection: None, subject: None, kinds: None, states: None, search: None, order: Order::Date(Direction::Descending), live_first: false, offset: 0, limit: 10, chips: &[] };
+    let poland = |first_hour: i32, last_hour: i32| Selection {
+        membership: vec![CountrySpan { country: Country::Tag("POL".into()), first_hour, last_hour }],
+        unobserved: Vec::new(),
+        unknown: Vec::new(),
+    };
+    let member_at_105 = poland(100, 108);
+    let at_105 = index.ask(&holders, &Ask { selection: Some(&member_at_105), ..ask_at(105) }).unwrap();
+    assert_eq!((at_105.total, at_105.next_change), (0, Some(110)), "later edge dated 105 and read at 110 does not admit at 105");
+    let at_110 = index.ask(&holders, &Ask { selection: Some(&member_at_105), ..ask_at(110) }).unwrap();
+    assert_eq!(at_110.total, 1, "admitted at 110 using effective-hour 105 membership");
+    let joined_at_108 = poland(108, 200);
+    assert_eq!(index.ask(&holders, &Ask { selection: Some(&joined_at_108), ..ask_at(110) }).unwrap().total, 0, "later membership at 110 does not admit an edge dated 105");
+    let search_before = index.ask(&holders, &Ask { search: Some("POL"), ..ask_at(109) }).unwrap();
+    assert_eq!((search_before.total, search_before.next_change), (0, Some(110)), "target tag from edge read at 110 is not searchable before 110");
+    assert_eq!(index.ask(&holders, &Ask { search: Some("POL"), ..ask_at(110) }).unwrap().total, 1);
+    assert_eq!(index.ask(&holders, &Ask { search: Some("mission_b"), ..ask_at(109) }).unwrap().total, 0);
+    assert_eq!(index.ask(&holders, &Ask { search: Some("mission_b"), ..ask_at(110) }).unwrap().total, 1);
+    assert_eq!(index.ask(&holders, &Ask { search: Some("mission_a"), ..ask_at(100) }).unwrap().total, 1);
+
+    let mut swapped = brief(3, EventFeedKind::DecisionSelected, 100, None, None);
+    swapped.slots = [Some(8), Some(7), None];
+    let swapped_scanned = Scanned { briefs: vec![swapped], ..scanned };
+    let swapped_index = decisions(&swapped_scanned, &Names::new(&holders)).unwrap();
+    assert_eq!(swapped_index.ask(&holders, &Ask { search: Some("GER POL"), ..ask_at(100) }).unwrap().total, 1, "tags observed together keep sorted order in search text");
+}

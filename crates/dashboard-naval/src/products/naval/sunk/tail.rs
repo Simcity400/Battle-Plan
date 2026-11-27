@@ -308,11 +308,11 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
             date: hour,
             observed,
             kind,
-            roles: [Role { slot: victim, at: hour }, Role { slot: attacker, at: hour }].into(),
+            roles: [Role::dated(victim, hour, observed), Role::dated(attacker, hour, observed)].into(),
             subjects: Box::default(),
             sort_keys: Box::default(),
             states: Box::default(),
-            text: Box::default(),
+            text: Default::default(),
             payload: SinkingRow {
                 key: id.to_string(),
                 hour,
@@ -488,9 +488,10 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     ShipsSunkTail::validate(&params)?;
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let prepared = prepare(source, &query, load, &params, &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, ShipsSunkTail::CONTENT_DEPENDENT, || prepare(source, &query, load, &params, &AtomicBool::new(false)));
+    let prepared = prepared.map_err(|error| error.to_string())?;
     let (first, last, holders) = (query.timeline.first, query.timeline.last, query.holders);
-    Ok(occurrences::occurrence_panel(source.tables(), move |hour, cancelled| {
+    Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         check_cancel(cancelled)?;
         if hour < first {
             return Err(dashboard_core::invalid("The hour asked is before the branch"));

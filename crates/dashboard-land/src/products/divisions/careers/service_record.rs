@@ -228,7 +228,7 @@ fn occurrence(id: u32, subject: u128, date: i32, states: Box<[(i32, u8)]>, kind:
         subjects: Box::new([subject]),
         states,
         sort_keys: Box::new([]),
-        text: Box::default(),
+        text: Default::default(),
         payload,
     }
 }
@@ -1065,10 +1065,10 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     DivisionServiceRecordTail::validate(&params)?;
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let prepared = prepare(source, &query, load, params.countries.as_deref(), params.group.as_ref(), &AtomicBool::new(false))
-        .map_err(|error| error.to_string())?;
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, DivisionServiceRecordTail::CONTENT_DEPENDENT, || prepare(source, &query, load, params.countries.as_deref(), params.group.as_ref(), &AtomicBool::new(false)));
+    let prepared = prepared.map_err(|error| error.to_string())?;
     let (timeline, holders, replay) = (query.timeline, query.holders, source.replay());
-    Ok(occurrences::occurrence_panel(source.tables(), move |hour, cancelled| {
+    Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         let query = Query { timeline: Arc::clone(&timeline), holders: Arc::clone(&holders), replay: &replay };
         reply(&prepared, &query, &params, occurrences::cutoff(&query, Some(hour))?, cancelled)
     }))

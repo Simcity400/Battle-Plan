@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { navalDetailTooltip, validateNavalBattleDetails } from './navalBattleDetails.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
-import { ART_STATUS_ROW, deriveRowTooltip } from '../../families/table/model.ts';
+import { ART_STATUS_ROW, deriveRowTooltip, deriveTableMirror } from '../../families/table/model.ts';
 import { navalBattleClock, navalBattlesProjection, type NavalBattleSubject } from './navalBattlesProjection.ts';
 import type { NavalBattleDetail, NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/dashboard';
 
@@ -58,6 +58,14 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   const row = project(true);
   assert.equal(row.cells.action?.actionLabel, 'Watch', 'a battle with live hours offers Watch');
   assert.equal((row.meta as NavalBattleSubject).row.key, 'combat:9:10');
+  const named = buildRowSourceFromHead('branch', { ...head, rows: head.rows.map(each => ({ ...each, countries: [[1], [2]] as [number[], number[]] })) }, undefined, 18)!;
+  const unreadFlags = createBoundedReadView({ hour: 18, rows: new Map([['main', named]]),
+    identity: { resolve: (kind, key, at) => ({ kind, key, holder: { status: 'ready', value: key }, name: { status: 'ready', value: 'Recorded country' },
+      flagChoice: { status: 'ready', value: 'recorded_flag' }, validInterval: [at, at] as const, nextChangeAt: Infinity }) },
+    art: { resolve: () => ({ status: 'failed', reason: 'flag file unreadable', retryable: true, retry: () => undefined }) as never } });
+  for (const each of navalBattlesProjection.project(unreadFlags, { scope: 'test', following: true, byDate: true }).rows) {
+    assert.doesNotThrow(() => structuredClone(each.meta), 'a row’s subject crosses the lane worker boundary, so it carries no art callbacks');
+  }
   assert.equal(model(true).rows[2]!.cells.action?.actionLabel, 'Watch', 'a battle held only as a result offers Watch on its result window');
   assert.match(model(true).columns.find(column => column.key === 'shipsSunk')!.partialReason!, /lower bound/);
   assert.match(model(true).columns.find(column => column.key === 'icLost')!.partialReason!, /lower bound/);
@@ -168,4 +176,34 @@ test('convoy-only sides show convoy counts and live zero sinkings stay qualified
       ['IC lost', 'notRecorded', null],
     ],
   );
+  const mixedHead: NavalBattlesTailReply = {
+    branchId: '1', total: '2', offset: '0', missing: [], warnings: [], nextChange: null,
+    rows: [
+      { ...raid, key: 'combat:15:20', countries: [[1, 2], [3]] },
+      { ...raid, key: 'combat:16:20', countries: [[1], [2]] },
+    ],
+  };
+  const mixedView = createBoundedReadView({
+    hour: 22,
+    rows: new Map([['main', buildRowSourceFromHead('branch', mixedHead, undefined, 22)!]]),
+    identity: {
+      resolve(kind, key) {
+        const name = key === '\u00001'
+          ? { status: 'pending' as const }
+          : key === '\u00002'
+            ? { status: 'absent' as const, reason: 'Country name unavailable' }
+            : { status: 'ready' as const, value: 'Bravo' };
+        return { kind, key, holder: { status: 'ready', value: key }, name, colour: { status: 'absent', reason: 'none' }, flagChoice: { status: 'absent', reason: 'none' }, validInterval: [0, Infinity] as const, nextChangeAt: Infinity };
+      },
+    },
+  });
+  const mixedModel = navalBattlesProjection.project(mixedView, { scope: 'test', following: true, byDate: true });
+  const [mixedRow, pendingAbsentRow] = mixedModel.rows;
+  const mixedFound = { kind: 'data', key: mixedRow!.key, name: mixedRow!.name, row: mixedRow!, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
+  const mixedTip = deriveRowTooltip(mixedFound, mixedModel.columns).rows;
+  assert.deepEqual(mixedTip.find(line => line.label === 'Attackers')?.rawValue, { kind: 'pending', reason: 'Name is loading; Country name unavailable' });
+  assert.equal(JSON.stringify(mixedTip).includes('\u0000'), false);
+  assert.deepEqual(pendingAbsentRow!.cells.country!.value, { kind: 'pending', reason: 'Name is loading; Country name unavailable' });
+  const pendingAbsentMirror = deriveTableMirror([{ kind: 'data', key: pendingAbsentRow!.key, name: pendingAbsentRow!.name, row: pendingAbsentRow!, rank: 1, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 }], mixedModel.columns, false);
+  assert.equal(pendingAbsentMirror.rows[0]!.cells.find(cell => cell.column === 'country')?.spoken, 'Loading: Name is loading; Country name unavailable');
 });

@@ -93,8 +93,8 @@ test('factoriesMixProjection sends group selection to Rust, keys rows by recorde
   assertBarsModelValid(model, 300);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => r.key), [countryKey(7), countryKey(9), countryKey(12), countryKey(14)], 'rows keyed by recorded slot, never collapsed on reassigned tag');
-  assert.equal(rows[0]!.label, 'German Reich');
-  assert.equal(rows[1]!.label, 'West Germany');
+  assert.deepEqual(rows[0]!.label, { kind: 'known', value: 'German Reich' });
+  assert.deepEqual(rows[1]!.label, { kind: 'known', value: 'West Germany' });
   assert.equal(rows[0]!.segments?.length, 3);
   assert.equal(rows[0]!.segments?.[0]!.share, 0.4);
   assert.equal(rows[0]!.segments?.[2]!.hatched, true);

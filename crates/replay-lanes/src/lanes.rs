@@ -436,9 +436,8 @@ fn cell_number(kind: Kind, bits: u64) -> i64 {
 fn resolve_log_reasons(
     recording: &Recording,
     held: &replay_recording::columnar_frames::Run,
-    pages: &[unit::BlockPage],
+    pages: &[replay_recording::columnar_frames::TablePage],
     kinds: &[Kind],
-    table: usize,
     to: i32,
     needed: &[(usize, Vec<u32>)],
 ) -> io::Result<HashMap<u32, String>> {
@@ -451,7 +450,7 @@ fn resolve_log_reasons(
         }
         let page = &pages[*page_idx];
         let block_first = held.block_first_hour(page.block);
-        let entry = &page.tables[table];
+        let entry = &page.entry.unit;
         if let Some(last) = entry.parts.iter().rposition(|part| block_first + i32::from(part.first) <= to) {
             let mut prefix = None;
             for part_idx in 0..=last {
@@ -470,7 +469,7 @@ fn resolve_log_reasons(
             }
         }
         if !missing.iter().all(|id| reasons.contains_key(id)) {
-            let prior = if *page_idx == 0 { entry.first.as_ref() } else { pages[*page_idx - 1].tables[table].restore.as_ref() };
+            let prior = if *page_idx == 0 { entry.first.as_ref() } else { pages[*page_idx - 1].entry.unit.restore.as_ref() };
             for restore in [prior, entry.restore.as_ref()].into_iter().flatten() {
                 let (_, meta) = unit::reader::restore(source, restore, kinds, &[])?;
                 for (id, bytes) in meta.strings {
@@ -534,7 +533,7 @@ pub fn log_span(
             continue;
         }
         let mut page_reasons = Vec::new();
-        unit::reader::statuses(&page.tables[index], page.hours, held.block_first_hour(page.block), &mut |start, end, status| {
+        unit::reader::statuses(&page.entry.unit, page.hours, held.block_first_hour(page.block), &mut |start, end, status| {
             let (a, b) = (start.max(from), end.min(to));
             if a > b {
                 return;
@@ -556,7 +555,7 @@ pub fn log_span(
     let reasons = if needed_reasons.is_empty() {
         HashMap::new()
     } else {
-        resolve_log_reasons(recording, held, &pages, &kinds[..recorded], index, to, &needed_reasons)?
+        resolve_log_reasons(recording, held, &pages, &kinds[..recorded], to, &needed_reasons)?
     };
     let mut gaps: Vec<LogGap> = Vec::new();
     let mut available_runs: Vec<(i32, i32)> = Vec::new();
@@ -761,9 +760,9 @@ pub fn reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32
     let found = blocks
         .into_par_iter()
         .map(|block| -> io::Result<Vec<(i32, i32)>> {
-            let entry = recording.table_entry(run, block, table.index())?.unit;
+            let entry = recording.table_entry(run, block, table.index())?;
             let mut runs = Vec::new();
-            unit::reader::reads(&entry, held.block(block as usize).1 as u16, held.block_first_hour(block), &mut |start, end| {
+            unit::reader::reads(&entry.unit, held.block(block as usize).1 as u16, held.block_first_hour(block), &mut |start, end| {
                 let (start, end) = (start.max(from), end.min(to));
                 if start <= end {
                     runs.push((start, end));
@@ -839,9 +838,9 @@ pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: 
     }
     let blocks = held.place(first).0..held.place(last).0 + 1;
     let read_block = |block: u32| -> io::Result<Vec<StatusRun>> {
-        let entry = recording.table_entry(run, block, table.index())?.unit;
+        let entry = recording.table_entry(run, block, table.index())?;
         let mut runs = Vec::new();
-        unit::reader::statuses(&entry, held.block(block as usize).1 as u16, held.block_first_hour(block), &mut |start, end, status| {
+        unit::reader::statuses(&entry.unit, held.block(block as usize).1 as u16, held.block_first_hour(block), &mut |start, end, status| {
             let (first, last) = (start.max(from), end.min(to));
             if first <= last {
                 runs.push(StatusRun { first, last, status });
@@ -909,7 +908,7 @@ pub fn status_reasons(recording: &Recording, run: u32, table: TableId, runs: &[S
             needed.push((page_idx, ids));
         }
     }
-    let mut reasons = resolve_log_reasons(recording, held, &pages, &kinds[..recorded], index, max_to, &needed)?;
+    let mut reasons = resolve_log_reasons(recording, held, &pages, &kinds[..recorded], max_to, &needed)?;
     let mut unresolved: Vec<(i32, u32)> = unavailable
         .iter()
         .filter(|&&(_, _, reason)| !reasons.contains_key(&reason))

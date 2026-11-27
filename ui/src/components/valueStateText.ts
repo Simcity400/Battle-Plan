@@ -1,4 +1,4 @@
-export type ValueStateKind = 'known' | 'zero' | 'missing' | 'notApplicable' | 'partial';
+export type ValueStateKind = 'known' | 'zero' | 'missing' | 'notApplicable' | 'partial' | 'pending';
 
 export interface ValueStateProps {
   kind: ValueStateKind;
@@ -25,5 +25,7 @@ export function valueStateText({ kind, text, unit, reason }: Pick<ValueStateProp
       const figure = unit ? `${text ?? ''} ${unit}` : (text ?? '');
       return reason ? `${figure}, partial: ${reason}` : `${figure}, partial`;
     }
+    case 'pending':
+      return reason ? `Loading: ${reason}` : 'Loading…';
   }
 }

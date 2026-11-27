@@ -177,7 +177,7 @@ fn reader_alone(log: &Log) -> io::Result<(u64, u64)> {
     let (kinds, run) = (&log.kinds[0], &log.runs[0]);
     let columns: Vec<usize> = (0..kinds.len()).collect();
     let (mut ns, mut rows) = (0, 0);
-    for page in &run.pages {
+    for page in run.held_pages().expect("held log pages") {
         let entry = &page.tables[0];
         let mut parts = Vec::new();
         for (index, part) in entry.parts.iter().enumerate() {

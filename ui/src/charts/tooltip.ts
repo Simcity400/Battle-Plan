@@ -171,7 +171,9 @@ export function tooltipRowHeight(row: TooltipRow, metrics: TooltipMetrics | null
   const displayValue = row.valueState
     ? (row.valueState.kind === 'missing'
       ? 'Not recorded'
-      : row.valueState.kind === 'notApplicable'
+      : row.valueState.kind === 'pending'
+        ? 'Loading…'
+        : row.valueState.kind === 'notApplicable'
         ? '\u2014'
         : row.valueState.kind === 'partial'
           ? `${row.valueState.text ?? ''} partial`

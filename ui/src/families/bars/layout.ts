@@ -2,7 +2,7 @@ import { linearTicks } from '../../charts/valueAxis.ts';
 import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { ValueFormat } from '../valueFormat.ts';
-import type { BarsDataRow, BarsForm, BarsModel, BarsTwoSidedLayout } from './model.ts';
+import { barsLabelText, type BarsDataRow, type BarsForm, type BarsModel, type BarsTwoSidedLayout } from './model.ts';
 
 export const BARS_PAD_X = 12;
 export const BARS_PAD_TOP = 6;
@@ -221,7 +221,7 @@ function layoutBarsBody(
     for (let i = 0; i < model.rows.length; i++) {
       const row = model.rows[i]!;
       if (row.kind === 'data') {
-        maxMeasuredLabel = Math.max(maxMeasuredLabel, measure(row.label));
+        maxMeasuredLabel = Math.max(maxMeasuredLabel, measure(barsLabelText(row.label)));
       }
     }
   }
@@ -267,7 +267,7 @@ function layoutBarsBody(
     plotRight = Math.max(plotLeft + 40, readoutX - (showReadout ? 10 : 0));
     centerX = Math.round((plotLeft + plotRight) / 2);
   } else if (form === 'stacked') {
-    const hasLabels = model.rows.some(r => r.kind === 'data' && r.label.trim().length > 0);
+    const hasLabels = model.rows.some(r => r.kind === 'data' && barsLabelText(r.label).trim().length > 0);
     const hasReadout = w >= 360 && model.rows.some(r => r.kind === 'data' && Boolean(r.readout));
     showReadout = hasReadout;
     nameWidth = hasLabels ? (w < 380 ? 88 : Math.min(150, Math.round(w * 0.24))) : 0;

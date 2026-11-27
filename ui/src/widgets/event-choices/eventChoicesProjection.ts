@@ -16,11 +16,11 @@ import {
 } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
+import { DEFAULT_TAIL_PAGE_SIZE, validateRowTailReply, type DatedLogRow, type TailReply } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import type { ScriptEventKind, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
+import type { ScriptEventKind, ScriptPageRow } from '../../generated/dashboard';
 import { gapRows, hasTooltipGaps, hoverTextOf, unreadRows, type TooltipTexts } from '../event-feed/hoverText.ts';
 import { gapsForField, reasonsOf, scriptedValue } from '../event-feed/scriptedGaps.ts';
 import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
@@ -29,6 +29,7 @@ import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../eve
   choiceAt,
   choiceCard,
   choiceDates,
+  choiceNotRecordedText,
   choiceText,
   isOpen,
   noChoiceText,
@@ -53,7 +54,8 @@ const nonBlank = (value: string | null | undefined): string | null => (value && 
 interface ChoicePageInfo {
   readonly open: boolean;
   readonly live: boolean;
-  readonly notRecorded: boolean;
+  readonly notRecordedReason?: string;
+  readonly notRecordedHour?: number;
 }
 
 function buildChoiceRow(
@@ -80,6 +82,12 @@ function buildChoiceRow(
   ];
   if (card.sender) countryEntries.push({ tag: card.sender });
 
+  const notRecordedText = page.notRecordedReason !== undefined
+    ? choiceNotRecordedText(page.notRecordedReason)
+    : at.pause
+      ? noChoiceText(at)
+      : 'Choice not recorded';
+
   let choiceCell: TableCell;
   if (open) {
     choiceCell = logStatusCell('Awaiting choice', 'waiting');
@@ -101,7 +109,7 @@ function buildChoiceRow(
     }
   } else {
     choiceCell = {
-      value: notRecorded(at.pause ? 'Choice not recorded (recording paused)' : 'Choice not recorded'),
+      value: notRecorded(notRecordedText),
       missingFigure: 'Choice',
     };
   }
@@ -125,12 +133,18 @@ function buildChoiceRow(
     chosenOrdinal: at.choice?.option ?? null,
     awaiting: open,
     chosenHour: at.choice?.row.hour ?? null,
-    noChoiceReason: at.choice ? null : (page.notRecorded ? 'No choice recorded' : noChoiceText(at)),
+    noChoiceReason: at.choice ? null : (open ? 'No option chosen yet' : notRecordedText),
   };
+
+  const timingBreakHour = page.notRecordedHour !== undefined
+    ? page.notRecordedHour
+    : page.notRecordedReason !== undefined
+      ? null
+      : undefined;
 
   const tooltipExtra = (): TooltipExtraRow[] => {
     const out: TooltipExtraRow[] = [
-      { label: 'Timing', value: knownValue(choiceDates(at)) },
+      { label: 'Timing', value: knownValue(choiceDates(at, timingBreakHour)) },
     ];
     if (open) out.push({ label: 'Status', value: knownValue(awaitingText(at)) });
     if (at.choice) out.push({ label: 'Chosen', value: knownValue(formatDateTime(at.choice.row.hour)) });
@@ -171,9 +185,30 @@ function buildChoiceRow(
   };
 }
 
+function validateEventChoicesTail(raw: unknown, readAt?: number): TailReply<ScriptPageRow & DatedLogRow> {
+  return validateRowTailReply(raw, (row, _columns, at): ScriptPageRow & DatedLogRow => {
+    if (row.occurrence === null) throw new Error('Event choice was not recorded.');
+    if (row.notRecordedReason !== undefined && typeof row.notRecordedReason !== 'string') {
+      throw new Error('The occurrence card is malformed.');
+    }
+    if (row.notRecordedHour !== undefined) {
+      if (typeof row.notRecordedHour !== 'number' || !Number.isInteger(row.notRecordedHour)) {
+        throw new Error('The occurrence card is malformed.');
+      }
+      if (at !== undefined && row.notRecordedHour > at) {
+        throw new Error(`Event choice break at hour ${row.notRecordedHour} is after displayed hour ${at}.`);
+      }
+    }
+    const occurrence = validateOccurrence(row.occurrence, at);
+    if (!choiceCard(occurrence)) throw new Error('The occurrence card is malformed.');
+    return { ...(row as unknown as ScriptPageRow & DatedLogRow), occurrence };
+  }, readAt);
+}
+
 export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptions> = registerFamilyProjection({
   kind: 'event-choices',
   family: 'table',
+  validateTail: validateEventChoicesTail,
   project(readView, options): TableModel {
     const hour = readView.hour;
     if (!options.events.length) {
@@ -206,23 +241,16 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       readAt,
       readView.rowWindow,
       rawRow => {
-        if (!rawRow.occurrence) return null;
-        let occ: ScriptOccurrence;
-        try {
-          occ = validateOccurrence(rawRow.occurrence);
-        } catch {
-          return null;
-        }
-        const card = choiceCard(occ);
-        const resolved = choiceAt(
-          card,
-          readAt,
-          options.breaks,
-        );
-        if (!resolved) return null;
+        const resolved = choiceAt(choiceCard(rawRow.occurrence), readAt, options.breaks);
+        if (!resolved) throw new Error('Event choice row was not validated by the tail decoder.');
         const open = rawRow.status != null ? rawRow.status === 'awaiting' : isOpen(resolved);
         const live = typeof rawRow.live === 'boolean' ? rawRow.live : open;
-        const page: ChoicePageInfo = { open, live, notRecorded: rawRow.status === 'notRecorded' };
+        const page: ChoicePageInfo = {
+          open,
+          live,
+          ...(rawRow.notRecordedReason !== undefined ? { notRecordedReason: rawRow.notRecordedReason } : {}),
+          ...(rawRow.notRecordedHour !== undefined ? { notRecordedHour: rawRow.notRecordedHour } : {}),
+        };
         if (open && !source.frozen) {
           const nextDay = (Math.floor(readAt / 24) + 1) * 24;
           if (nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
@@ -305,6 +333,7 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
+          validateEventChoicesTail,
         ),
       ],
     };

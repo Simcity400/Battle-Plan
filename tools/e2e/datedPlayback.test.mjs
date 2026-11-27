@@ -687,6 +687,12 @@ test('per-widget cost ranking combines net main-thread p95 and drawing-lane serv
   assert.equal(report.widgets[2].detail, 'No table 44 in the schema');
   assert.deepEqual(rankWidgetCosts([report.widgets[2], report.widgets[1], report.widgets[0]]).map(w => w.kind),
     ['worker-heavy', 'main-heavy', 'refused-widget']);
+
+  const multiView = summarizeWidgetCosts([
+    { kind: 'naval-supremacy', view: 'shares', title: 'Naval supremacy', widget: 'page-cost-naval-supremacy-naval-supremacy', from: 3000, to: 5000, seconds: 2, outcome: 'content', audit: [], complete: true },
+    { kind: 'naval-supremacy', view: 'timeline', title: 'Naval supremacy', widget: 'page-cost-naval-supremacy--timeline-w', from: 6000, to: 8000, seconds: 2, outcome: 'content', audit: [], complete: true },
+  ], records, { baselines: [emptyStart, emptyEnd] });
+  assert.deepEqual(multiView.widgets.map(w => [w.kind, w.view]), [['naval-supremacy', 'shares'], ['naval-supremacy', 'timeline']]);
 });
 
 test('cost summary rejects unstable, missing, or stopped-clock windows and preserves negative deltas without clamping', () => {

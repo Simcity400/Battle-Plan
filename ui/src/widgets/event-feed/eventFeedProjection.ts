@@ -16,17 +16,18 @@ import {
 } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableModelSlot, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
+import { DEFAULT_TAIL_PAGE_SIZE, validateRowTailReply, type DatedLogRow, type TailReply } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
 import type { EventFeedItem, EventFeedPageRow, EventFeedRow, ScriptEdge, ScriptStatus } from '../../generated/dashboard';
-import { optionLetter } from '../event-choices/eventChoicesData.ts';
+import { choiceNotRecordedText, optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
 import { effectiveEventItem, validateFeedRow } from './eventFeedData.ts';
 import { descriptionRows, gapRows, hasTooltipGaps, hoverTextOf, optionLines, optionRows, type TooltipTexts } from './hoverText.ts';
 import { gapsForField, plainScripted, reasonsOf, scriptedValue } from './scriptedGaps.ts';
+import { validateScriptEdge } from './scriptOccurrences.ts';
 
 export interface EventFeedProjectionOptions {
   readonly categories: readonly string[];
@@ -65,6 +66,7 @@ const KIND_SPRITES: Readonly<Record<string, string>> = {
 interface FeedPageInfo {
   readonly choice: ScriptEdge | null;
   readonly status?: ScriptStatus;
+  readonly notRecordedReason?: string;
   readonly live: boolean;
 }
 
@@ -102,7 +104,8 @@ function scriptEventDetailCell(item: EventFeedItem | null, chosenOrdinal: number
     return logStatusCell('Awaiting choice', 'waiting');
   }
   if (page.status === 'notRecorded') {
-    return { value: notRecorded('Choice not recorded'), missingFigure: 'Choice' };
+    const reason = page.notRecordedReason !== undefined ? choiceNotRecordedText(page.notRecordedReason) : 'Choice not recorded';
+    return { value: notRecorded(reason), missingFigure: 'Choice' };
   }
   return { value: knownValue('Fired') };
 }
@@ -383,7 +386,7 @@ function buildFeedTableRow(
       : awaiting
         ? 'No option chosen yet'
         : page.status === 'notRecorded'
-          ? 'No choice recorded'
+          ? (page.notRecordedReason !== undefined ? choiceNotRecordedText(page.notRecordedReason) : 'Choice not recorded')
           : page.choice
             ? 'Chosen option not recorded'
             : 'Event fired';
@@ -476,16 +479,34 @@ function buildFeedTableRow(
   };
 }
 
+type ValidatedEventFeedPageRow = Omit<EventFeedPageRow, 'row'> & { readonly row: EventFeedRow } & DatedLogRow;
+
+function validateEventFeedTail(raw: unknown, readAt?: number): TailReply<ValidatedEventFeedPageRow> {
+  return validateRowTailReply(raw, (row, _columns, at): ValidatedEventFeedPageRow => {
+    if (row.row === null) throw new Error('Event was not recorded.');
+    if (row.notRecordedReason !== undefined && typeof row.notRecordedReason !== 'string') {
+      throw new Error('The event feed row is malformed.');
+    }
+    const valid = validateFeedRow(row.row);
+    if (at !== undefined && valid.readHour > at) {
+      throw new Error(`Event ${valid.id} was read at hour ${valid.readHour} after displayed hour ${at}.`);
+    }
+    const choice = row.choice == null ? null : validateScriptEdge(row.choice, at);
+    return { ...(row as unknown as EventFeedPageRow & DatedLogRow), row: valid, choice };
+  }, readAt);
+}
+
 export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = registerFamilyProjection({
   kind: 'event-feed',
   family: 'table',
+  validateTail: validateEventFeedTail,
   project(readView, options): TableModel {
     const hour = readView.hour;
     const empty = { columns: EVENT_FEED_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true } as const;
     if (!options.categories.length) return { ...empty, empty: 'No recorded events match these settings.' };
     const refused = readView.refused('main');
     if (refused !== undefined) return { ...empty, refused };
-    const source = readView.rows<EventFeedPageRow & DatedLogRow>('main');
+    const source = readView.rows<ValidatedEventFeedPageRow>('main');
     if (!source) return empty;
     if (source.refused) return { ...empty, refused: source.refused };
 
@@ -496,19 +517,13 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
       hour,
       readView.rowWindow,
       rawRow => {
-        if (!rawRow.row) return null;
-        let valid: EventFeedRow;
-        try {
-          valid = validateFeedRow(rawRow.row);
-        } catch {
-          return null;
-        }
         const page: FeedPageInfo = {
           choice: rawRow.choice ?? null,
           status: rawRow.status,
+          ...(rawRow.notRecordedReason !== undefined ? { notRecordedReason: rawRow.notRecordedReason } : {}),
           live: rawRow.live === true,
         };
-        const built = buildFeedTableRow(readView, valid, page, rawRow.key, options.artwork, source.at ?? hour, boundary, options.hover ?? []);
+        const built = buildFeedTableRow(readView, rawRow.row, page, rawRow.key, options.artwork, source.at ?? hour, boundary, options.hover ?? []);
         foldByKey.set(built.row.key, built.fold);
         return built.row;
       },
@@ -573,6 +588,7 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
+          validateEventFeedTail,
         ),
       ],
     };

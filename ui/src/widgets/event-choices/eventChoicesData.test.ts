@@ -32,12 +32,16 @@ test('a card is dated by its firing, opens at its read, and shows its choice onl
   assert.match(choiceDates(done), /→ chosen .* · 2 days/);
 });
 
-test('a break after the firing with no choice recorded is a pause, never a choice', () => {
+test('a break after the firing with no choice recorded reports the gap reason, never inventing a pause', () => {
   const fired = day(3, 3);
   const card = choiceCard(occurrence([fire(fired)]));
-  const paused = choiceAt(card, day(4, 1), [{ firstHour: fired + 10, lastHour: fired + 20 }])!;
-  assert.deepEqual([isOpen(paused), noChoiceText(paused)], [false, 'No choice recorded']);
-  assert.match(choiceDates(paused), /not chosen by/);
+  const overflow = choiceAt(card, day(4, 1), [{ firstHour: fired + 10, lastHour: fired + 20, reason: 'collector queue overflow' }])!;
+  assert.deepEqual([isOpen(overflow), noChoiceText(overflow)], [false, 'Choice not recorded (collector queue overflow)']);
+  assert.match(choiceDates(overflow), /not chosen by/);
+  const unrecordedReason = choiceAt(card, day(4, 1), [{ firstHour: fired + 10, lastHour: fired + 20 }])!;
+  assert.deepEqual([isOpen(unrecordedReason), noChoiceText(unrecordedReason)], [false, 'Choice not recorded (gap reason not recorded)']);
+  const paused = choiceAt(card, day(4, 1), [{ firstHour: fired + 10, lastHour: fired + 20, reason: 'recording paused' }])!;
+  assert.deepEqual([isOpen(paused), noChoiceText(paused)], [false, 'Choice not recorded (recording paused)']);
 });
 
 test('a choice whose firing was not recorded is its own card, and immediate effects alone are none', () => {
@@ -144,12 +148,89 @@ test('event choices projection turns blank authored title or option text into no
 
   const pausedModel = eventChoicesProjection.project(
     createBoundedReadView({ hour: atHour, rows: new Map([['main', productSource]]) }),
-    { events: ['country'], awaiting: true, artwork: false, breaks: [{ firstHour: fired + 4, lastHour: fired + 8 }] },
+    { events: ['country'], awaiting: true, artwork: false, breaks: [{ firstHour: fired + 4, lastHour: fired + 8, reason: 'Recording paused' }] },
   );
   assert.deepEqual(
     pausedModel.rows[1]?.cells.choice?.value,
     { kind: 'notRecorded', reason: 'Choice not recorded (recording paused)' },
-    'a recording break after firing retains the recording-paused reason',
+    'a break marked as a pause uses the recording-paused wording',
+  );
+  assert.equal((pausedModel.rows[1]?.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded (recording paused)');
+
+  const overflowModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', productSource]]) }),
+    { events: ['country'], awaiting: true, artwork: false, breaks: [{ firstHour: fired + 4, lastHour: fired + 8, reason: 'collector queue overflow' }] },
+  );
+  assert.deepEqual(
+    overflowModel.rows[1]?.cells.choice?.value,
+    { kind: 'notRecorded', reason: 'Choice not recorded (collector queue overflow)' },
+    'a non-pause gap reports its own recorded reason instead of claiming recording paused',
+  );
+  assert.equal((overflowModel.rows[1]?.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded (collector queue overflow)');
+
+  const blankReasonModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', productSource]]) }),
+    { events: ['country'], awaiting: true, artwork: false, breaks: [{ firstHour: fired + 4, lastHour: fired + 8 }] },
+  );
+  assert.deepEqual(
+    blankReasonModel.rows[1]?.cells.choice?.value,
+    { kind: 'notRecorded', reason: 'Choice not recorded (gap reason not recorded)' },
+    'a break with no recorded reason says the gap reason is not recorded',
+  );
+  assert.equal((blankReasonModel.rows[1]?.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded (gap reason not recorded)');
+
+  const afterBreaks = fired + 120;
+  const serverReasonSource = buildRowSourceFromHead('test:choices:server-reason', {
+    ...head,
+    total: '2',
+    counts: [{ key: 'awaiting', total: '1' }],
+    rows: [
+      { hour: fired, key: openOcc.id, ordinal: '0', live: true, status: 'awaiting', occurrence: openOcc },
+      { hour: fired, key: blankOcc.id, ordinal: '1', live: false, status: 'notRecorded', notRecordedReason: 'event feed read in part', notRecordedHour: fired + 48, occurrence: occurrence([fire(fired, 'ITA', 'GER')]) },
+    ],
+  }, undefined, afterBreaks)!;
+  const serverReasonModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: afterBreaks, rows: new Map([['main', serverReasonSource]]) }),
+    { events: ['country'], awaiting: true, artwork: false, breaks: [{ firstHour: fired + 96, lastHour: fired + 120, reason: 'Recording paused' }] },
+  );
+  assert.deepEqual(
+    serverReasonModel.rows[1]?.cells.choice?.value,
+    { kind: 'notRecorded', reason: 'Choice not recorded (event feed read in part)' },
+    'a later pause does not overwrite the earlier break reason reported by the server',
+  );
+  assert.equal((serverReasonModel.rows[1]?.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded (event feed read in part)');
+  const serverTiming = serverReasonModel.rows[1]?.tooltipExtra;
+  const serverTimingRows = (typeof serverTiming === 'function' ? serverTiming() : serverTiming) ?? [];
+  assert.deepEqual(
+    serverTimingRows.find(row => row.label === 'Timing')?.value,
+    { kind: 'known', value: '3 Mar 1938 · not chosen by 4 Mar 1938' },
+    'timing tooltip uses the first-break hour before the later pause',
+  );
+  const futureBreak = eventChoicesProjection.validateTail!({
+    ...head,
+    total: '1',
+    rows: [
+      { hour: fired, key: blankOcc.id, ordinal: '0', live: false, status: 'notRecorded', notRecordedReason: 'event feed read in part', notRecordedHour: fired + 48, occurrence: occurrence([fire(fired, 'ITA', 'GER')]) },
+    ],
+  }, fired + 24);
+  assert.match(futureBreak.rowRefusals?.get(0) ?? '', /after displayed hour/, 'a break hour past the displayed hour is rejected');
+
+  const lossAtReadModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', productSource]]) }),
+    { events: ['country'], awaiting: true, artwork: false, breaks: [{ firstHour: fired - 2, lastHour: fired, reason: 'The recorder was detached.' }] },
+  );
+  assert.deepEqual(
+    lossAtReadModel.rows[1]?.cells.choice?.value,
+    { kind: 'notRecorded', reason: 'Choice not recorded (The recorder was detached.)' },
+    'a firing read at the ending hour of an event-loss interval reports that detachment reason',
+  );
+  assert.equal((lossAtReadModel.rows[1]?.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded (The recorder was detached.)');
+  const lossTiming = lossAtReadModel.rows[1]?.tooltipExtra;
+  const lossTimingRows = (typeof lossTiming === 'function' ? lossTiming() : lossTiming) ?? [];
+  assert.deepEqual(
+    lossTimingRows.find(row => row.label === 'Timing')?.value,
+    { kind: 'known', value: '3 Mar 1938' },
+    'a loss ending at the firing hour does not claim the choice stayed open through that hour',
   );
 });
 
@@ -189,4 +270,78 @@ test('an awaiting choice on a page frozen at an earlier hour counts its days ope
   const futureModel = eventChoicesProjection.project(createBoundedReadView({ hour: shownAt, rows: new Map([['main', futureSource]]) }), { events: ['country'], awaiting: false, artwork: false, breaks: [] });
   assert.equal((futureModel.slots ?? []).filter(s => s.kind === 'gap').length, 0);
   assert.equal(futureModel.titleSummaryPartial, undefined, 'a frozen page with only future gaps does not mark its count partial');
+});
+
+test('S3: a malformed event choice row becomes a refused slot with its reason instead of disappearing or reporting no matches', () => {
+  const fired = day(3, 3);
+  const atHour = fired + 12;
+  const goodOcc = occurrence([fire(fired, 'POL', 'GER')]);
+  const badOcc = { id: 'bad:1', opened: true, edges: [] };
+  const mixedHead = {
+    branchId: '1',
+    total: '2',
+    offset: '0',
+    live: '1',
+    counts: [{ key: 'awaiting', total: '2' }],
+    rows: [
+      { hour: fired, key: goodOcc.id, observed: fired, ordinal: '0', live: true, status: 'awaiting', occurrence: goodOcc },
+      { hour: fired, key: 'bad:1', observed: fired, ordinal: '1', live: false, status: 'awaiting', occurrence: badOcc },
+    ],
+    missing: [],
+    nextChange: null,
+    unavailable: [],
+    warnings: [],
+  };
+  const mixedSource = buildRowSourceFromHead('test:choices-mixed-bad', mixedHead, undefined, atHour, undefined, eventChoicesProjection.validateTail)!;
+  const mixedModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', mixedSource]]) }),
+    { events: ['country'], awaiting: false, artwork: false, breaks: [] },
+  );
+  assert.equal(mixedModel.rows.length, 1);
+  assert.equal(mixedModel.rows[0]?.key, goodOcc.id);
+  assert.equal(mixedModel.slots?.length, 2);
+  assert.equal(mixedModel.slots?.[0]?.kind, 'data');
+  assert.deepEqual(mixedModel.slots?.[1], { kind: 'refused', key: 'refused:1', reason: 'The occurrence card is malformed.' });
+  assert.equal(mixedModel.titleSummary, '2 events');
+  assert.equal(mixedModel.totalRows, 2);
+  assert.equal(mixedModel.empty, undefined);
+
+  const onlyBadHead = {
+    ...mixedHead,
+    total: '1',
+    counts: [{ key: 'awaiting', total: '1' }],
+    rows: [{ hour: fired, key: 'bad:1', observed: fired, ordinal: '0', live: false, status: 'awaiting', occurrence: badOcc }],
+  };
+  const onlyBadSource = buildRowSourceFromHead('test:choices-only-bad', onlyBadHead, undefined, atHour, undefined, eventChoicesProjection.validateTail)!;
+  const onlyBadModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', onlyBadSource]]) }),
+    { events: ['country'], awaiting: false, artwork: false, breaks: [] },
+  );
+  assert.equal(onlyBadModel.rows.length, 0);
+  assert.deepEqual(onlyBadModel.slots, [{ kind: 'refused', key: 'refused:0', reason: 'The occurrence card is malformed.' }]);
+  assert.equal(onlyBadModel.titleSummary, '1 event');
+  assert.equal(onlyBadModel.totalRows, 1);
+  assert.equal(onlyBadModel.empty, undefined, 'a tail with one malformed row never claims no events matched');
+
+  const nullAndFutureEdgeOcc = occurrence([
+    edge('scriptEventFired', fired, ['GER', 'POL'], { item: null }),
+    choose(atHour + 5, 0, 'POL'),
+  ]);
+  const nullAndFutureSource = buildRowSourceFromHead('test:choices-null-and-future-edge', {
+    ...mixedHead,
+    total: '2',
+    counts: [],
+    rows: [
+      { hour: fired, key: 'null:choice', observed: fired, ordinal: '0', live: false, status: null, occurrence: null },
+      { hour: fired, key: nullAndFutureEdgeOcc.id, observed: fired, ordinal: '1', live: false, status: 'awaiting', occurrence: nullAndFutureEdgeOcc },
+    ],
+  }, undefined, atHour, undefined, eventChoicesProjection.validateTail)!;
+  const nullAndFutureModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', nullAndFutureSource]]) }),
+    { events: ['country'], awaiting: false, artwork: false, breaks: [] },
+  );
+  assert.equal(nullAndFutureModel.slots?.length, 2);
+  assert.deepEqual(nullAndFutureModel.slots?.[0], { kind: 'refused', key: 'refused:0', reason: 'Event choice was not recorded.' });
+  assert.equal(nullAndFutureModel.slots?.[1]?.kind, 'refused');
+  assert.match(nullAndFutureModel.slots?.[1]?.kind === 'refused' ? nullAndFutureModel.slots[1].reason : '', /after displayed hour/);
 });

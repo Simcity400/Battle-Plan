@@ -627,6 +627,7 @@ function sameHeadValue(a: Value | undefined, b: Value | undefined): boolean {
       return Object.is(a.value, (b as typeof a).value);
     case 'notRecorded':
     case 'notApplicable':
+    case 'pending':
       return a.reason === (b as typeof a).reason;
     case 'partial':
       return Object.is(a.value, (b as typeof a).value) && a.reason === (b as typeof a).reason && a.atLeast === (b as typeof a).atLeast;

@@ -128,10 +128,10 @@ test('bars draw every colour from the theme or the palette for its surface', () 
     const model: BarsModel = {
       form: 'ordered', hour: 100, scaleMax: 300, scaleUnit: 'Factories', showAxis: true,
       rows: [
-        { kind: 'data', key: 'A', label: 'Alpha', media: { kind: 'none', art: NO_ART }, color: colour(theme.surface, 0), value: { value: knownValue(290), format: 'integer' }, numeric: 290 },
-        { kind: 'data', key: 'B', label: 'Beta', media: { kind: 'none', art: NO_ART }, color: colour(theme.surface, 1), value: { value: partialValue(120, 'A state unread'), format: 'integer' }, numeric: 120 },
-        { kind: 'data', key: 'C', label: 'Gamma', media: { kind: 'none', art: NO_ART }, color: colour(theme.surface, 2), value: { value: zeroValue(0), format: 'integer' }, numeric: 0 },
-        { kind: 'data', key: 'D', label: 'Delta', media: { kind: 'none', art: NO_ART }, color: colour(theme.surface, 3), value: { value: notRecorded('Country unread') }, numeric: null },
+        { kind: 'data', key: 'A', label: knownValue('Alpha'), media: { kind: 'none', art: NO_ART }, color: colour(theme.surface, 0), value: { value: knownValue(290), format: 'integer' }, numeric: 290 },
+        { kind: 'data', key: 'B', label: knownValue('Beta'), media: { kind: 'none', art: NO_ART }, color: colour(theme.surface, 1), value: { value: partialValue(120, 'A state unread'), format: 'integer' }, numeric: 120 },
+        { kind: 'data', key: 'C', label: knownValue('Gamma'), media: { kind: 'none', art: NO_ART }, color: colour(theme.surface, 2), value: { value: zeroValue(0), format: 'integer' }, numeric: 0 },
+        { kind: 'data', key: 'D', label: knownValue('Delta'), media: { kind: 'none', art: NO_ART }, color: colour(theme.surface, 3), value: { value: notRecorded('Country unread') }, numeric: null },
       ],
     };
     drawFamilyBars(ctx, { model, layout: layoutFamilyBars(model, 540, 260, theme), theme, scrollTop: 0, now: 0, glideDuration: 0 });

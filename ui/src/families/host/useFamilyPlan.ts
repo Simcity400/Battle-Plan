@@ -11,7 +11,7 @@ import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, EVER_UNRECORDED, everBounds, everStateAt, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
-import { ambiguousHolderRanges, cumulativeEverMembership, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
+import { cumulativeEverMembership, datedIdentityMembership, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -43,6 +43,7 @@ import {
   stabilizeCanvasDimension,
 } from '../broker.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
+import { allReady, familyBodyStatus, inputOf, type PlanInput } from './planInputs.ts';
 import { displayedHoverKeys, type DrawnKeys } from './installed.ts';
 import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources, watchPlanValid } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
@@ -458,9 +459,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return resolveSelectedCountryRefs(widget.countries, selectedFallback, identities);
   }, [isFilter, isMulti, widget.countries, selectedFallback, groups.data]);
 
-  const ambiguousHolders = useMemo(
-    () => (datedAtHour && fetchGroups ? ambiguousHolderRanges(groups.data?.countryIdentities) : null),
-    [datedAtHour, fetchGroups, groups.data],
+  const identityMembership = useMemo(
+    () => (datedAtHour && fetchGroups ? datedIdentityMembership(widget.countries, groups.data, lastHour) : null),
+    [datedAtHour, fetchGroups, widget.countries, groups.data, lastHour],
   );
 
   const countriesState = useMemo<DeclaredCountryState>(() => ({
@@ -473,7 +474,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     membership,
     cumulativeMembership,
     membershipRuns,
-    ambiguousHolders,
+    identityMembership,
     unobserved,
     filter,
     factions: factionData.runs,
@@ -483,7 +484,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     reason: filterMatch?.reason ?? effectiveMulti?.reason ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
     unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
-  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, cumulativeMembership, membershipRuns, ambiguousHolders, unobserved, filter, factionData, filterMatch?.reason]);
+  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, cumulativeMembership, membershipRuns, identityMembership, unobserved, filter, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
     () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),
@@ -521,19 +522,23 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     };
   }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countrySubject, countryName, countriesState, gate.span, planHour]);
 
-  const inputsReady = !!baseCtx
-    && (!isSingle || (gate.open && countryTag !== null))
-    && (!isFilter || (!!filterMatch?.ready && !filterMatch.reason && !!groups.data))
-    && (!auxEnabled || auxResult.data !== undefined)
-    && (!isMulti || (!countriesState.reason && (!needsGroups || !!groups.data) && (!needsSlots || !!slots)));
+  const gateStage = isSingle && !gate.open ? gate.stage : null;
+  const planInputs: PlanInput[] = [];
+  if (gateStage?.stage === 'failed') planInputs.push({ name: 'the country', state: 'failed', failure: gateStage.failure, retry: gateStage.retry });
+  else if (gateStage?.stage === 'loading') planInputs.push({ name: 'the country', state: 'pending' });
+  if (needsGroups) planInputs.push(isFilter && groups.data && !filterMatch?.ready ? { name: 'the country groups', state: 'pending' } : inputOf('the country groups', groups));
+  if (needsSlots) planInputs.push(inputOf('the country holders', { data: slots, error: slotState.failure, retry: slotState.retry }));
+  if (auxSpec && auxEnabled) planInputs.push(inputOf(auxSpec.label, auxResult));
+  const planReady = !!baseCtx && (!isSingle || gate.open) && allReady(planInputs)
+    && !(isFilter && filterMatch?.reason) && !(isMulti && countriesState.reason);
 
   const planAtSize = useCallback((size: { width?: number; height?: number }) => {
     if (!baseCtx) return null;
-    return planFamilySources(baseCtx, window, inputsReady, buildSources, {
+    return planFamilySources(baseCtx, window, planReady, buildSources, {
       following,
       ...size,
     });
-  }, [baseCtx, window, inputsReady, buildSources, following]);
+  }, [baseCtx, window, planReady, buildSources, following]);
   const planned = useMemo(() => planAtSize(measuredViewport.current), [planAtSize, viewportRevision]);
   const measureViewport = useCallback((width: number, height?: number) => {
     const prev = measuredViewport.current;
@@ -1112,24 +1117,29 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [incompleteKind, following],
   );
 
-  const bodyStatus = useMemo<FamilyBodyStatus>(() => {
+  const atTime = pinHour !== null || !!window;
+  const tilesWait = !following && atTime && (!currentTiled || (!Object.keys(currentTiled.series).length && !currentTiled.topRefused));
+  const unitsWait = !hasStaticBundle && view.kind !== 'outside' && view.kind !== 'none' && (following || !pixelBinnedKey || atTime);
+  const tileInputs: PlanInput[] = [];
+  if (pixelBinnedKey && currentTiled?.error) tileInputs.push({ name: 'the chart history', state: 'failed', failure: asFailure(currentTiled.error), retry: retryTiles });
+  else if (pixelBinnedKey && tilesWait) tileInputs.push({ name: 'the chart history', state: 'pending' });
+  const unitInputs: PlanInput[] = [];
+  if (view.failure) unitInputs.push({ name: subject, state: 'failed', failure: view.failure.failure, retry: retryUnits });
+  else if (unitsWait) unitInputs.push({ name: subject, state: 'pending' });
+
+  const early = ((): FamilyBodyStatus | null => {
     if (!track) return { kind: 'unbound', message: emptyCampaign };
-    if (isSingle) {
-      if (!gate.open) {
-        const s = gate.stage;
-        if (s.stage === 'outside') {
-          return { kind: 'outside', outside: s.outside };
-        }
-        if (s.stage === 'choose') return { kind: 'choose', message: (policy.mode === 'single' ? policy.choose : undefined) ?? `Choose a country to see its ${subject}.` };
-        if (s.stage === 'holders') return { kind: 'holders', tag: singleCountry?.chosen ?? null, holders: s.holders, pick: s.pick };
-        if (s.stage === 'absent') {
-          const msg = nameFailureDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`;
-          return { kind: 'absent', message: s.reason ?? msg, detail: nameFailureDetail };
-        }
-        if (s.stage === 'failed') return { kind: 'failed', failure: s.failure, origin: 'local', onRetry: s.retry };
-        return { kind: 'loading', label: loadingLabel };
+    if (gateStage) {
+      const s = gateStage;
+      if (s.stage === 'outside') return { kind: 'outside', outside: s.outside };
+      if (s.stage === 'choose') return { kind: 'choose', message: (policy.mode === 'single' ? policy.choose : undefined) ?? `Choose a country to see its ${subject}.` };
+      if (s.stage === 'holders') return { kind: 'holders', tag: singleCountry?.chosen ?? null, holders: s.holders, pick: s.pick };
+      if (s.stage === 'absent') {
+        const msg = nameFailureDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`;
+        return { kind: 'absent', message: s.reason ?? msg, detail: nameFailureDetail };
       }
-    } else if (coverage.outside) {
+      if (s.stage === 'no-members') return { kind: 'no-members', reason: s.reason };
+    } else if (!isSingle && coverage.outside) {
       return {
         kind: 'outside',
         outside: {
@@ -1142,24 +1152,16 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       };
     }
 
-    if (compiledFollow.refused) return { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused };
-    if (auxEnabled && auxResult.error) return { kind: 'failed', failure: auxResult.error, origin: 'local', onRetry: auxResult.retry };
-    if (needsGroups && groups.error && !groups.data) return { kind: 'failed', failure: groups.error, origin: 'local', onRetry: groups.retry };
-
+    return compiledFollow.refused ? { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused } : null;
+  })();
+  const outcome = ((): FamilyBodyStatus | null => {
     if (isFilter) {
       if (filterMatch?.reason) return { kind: 'refused', reason: filterMatch.reason };
       if (countriesState.reason) return { kind: 'refused', reason: countriesState.reason };
-      if (!filterMatch?.ready || !groups.data) return { kind: 'loading', label: loadingLabel };
       if (everBody) return everBody;
     }
 
     if (isMulti) {
-      if (needsSlots && slotState.failure && !slots) {
-        return { kind: 'failed', failure: slotState.failure, origin: 'local', onRetry: slotState.retry };
-      }
-      if ((needsGroups && !groups.data) || (needsSlots && !slots)) {
-        return { kind: 'loading', label: loadingLabel };
-      }
       if (incompleteBody) return incompleteBody;
       if (countriesState.reason) return { kind: 'empty', message: countriesState.reason };
       if (everBody) return everBody;
@@ -1178,88 +1180,19 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
     }
 
-    if (auxEnabled && auxResult.data === undefined) return { kind: 'loading', label: loadingLabel };
-
     if (pixelBinnedKey) {
-      if (currentTiled?.error) {
-        return { kind: 'failed', failure: asFailure(currentTiled.error), origin: 'local', onRetry: retryTiles };
-      }
-      if (currentTiled?.topRefused) {
-        return { kind: 'not-recorded', reason: currentTiled.topRefused };
-      }
-      if (tileUnrecorded?.reason) {
-        return { kind: 'not-recorded', reason: tileUnrecorded.reason };
-      }
+      if (currentTiled?.topRefused) return { kind: 'not-recorded', reason: currentTiled.topRefused };
+      if (tileUnrecorded?.reason) return { kind: 'not-recorded', reason: tileUnrecorded.reason };
     }
-
-    const unitState = (): FamilyBodyStatus => {
-      if (view.failure) return { kind: 'failed', failure: view.failure.failure, origin: 'local', onRetry: retryUnits };
-      if (view.kind === 'outside') return { kind: 'outside' };
-      return hasStaticBundle ? { kind: 'ready' } : { kind: 'loading', label: loadingLabel };
-    };
-
-    if (following) {
-      if (compiledFollow.unavailable) return { kind: 'refused', reason: compiledFollow.unavailable };
-      return view.kind === 'none' ? { kind: 'ready' } : unitState();
-    }
-
-    if (pixelBinnedKey) {
-      if (pinHour === null && !window) return { kind: 'outside' };
-      if (!currentTiled || !Object.keys(currentTiled.series).length) return { kind: 'loading', label: loadingLabel };
-      return view.kind === 'none' || view.kind === 'outside' ? { kind: 'ready' } : unitState();
-    }
+    return following && compiledFollow.unavailable ? { kind: 'refused', reason: compiledFollow.unavailable } : null;
+  })();
+  const settled = ((): FamilyBodyStatus => {
+    if (following) return view.kind === 'outside' ? { kind: 'outside' } : { kind: 'ready' };
+    if (pixelBinnedKey) return atTime ? { kind: 'ready' } : { kind: 'outside' };
     if (view.kind === 'none') return allowEmpty ? { kind: 'ready' } : pinHour === null ? { kind: 'outside' } : { kind: 'loading', label: loadingLabel };
-    return unitState();
-  }, [
-    track,
-    emptyCampaign,
-    isSingle,
-    gate.open,
-    gate.stage,
-    policy,
-    subject,
-    countryName,
-    nameFailureDetail,
-    loadingLabel,
-    coverage,
-    compiledFollow.refused,
-    compiledFollow.unavailable,
-    auxEnabled,
-    auxResult.error,
-    auxResult.retry,
-    auxResult.data,
-    needsGroups,
-    groups.error,
-    groups.data,
-    groups.retry,
-    isFilter,
-    filterMatch,
-    countriesState,
-    isMulti,
-    datedAtHour,
-    needsSlots,
-    slotState.failure,
-    slotState.retry,
-    slots,
-    effectiveMulti,
-    membership,
-    following,
-    widget.countries,
-    moment,
-    everBody,
-    incompleteBody,
-    lastHour,
-    window,
-    pinHour,
-    pixelBinnedKey,
-    currentTiled,
-    tileUnrecorded,
-    retryTiles,
-    hasStaticBundle,
-    allowEmpty,
-    view,
-    retryUnits,
-  ]);
+    return view.kind === 'outside' ? { kind: 'outside' } : { kind: 'ready' };
+  })();
+  const bodyStatus = familyBodyStatus({ early, plan: planInputs, outcome, tiles: tileInputs, units: unitInputs, settled });
 
   const bannerFailure: BannerFailureInfo | null = (isSingle && singleCountry?.chosen && singleCountry.error && singleCountry.historyHeld)
     ? { failure: singleCountry.error, retry: singleCountry.retry }

@@ -85,7 +85,7 @@ interface Who {
 }
 
 function who(readView: BoundedReadView, tag: string, hour: number): Who {
-  const { value: name, name: shownName, loading, who: identity } = resolveName(readView, 'country', tag, { atHour: hour });
+  const { value: name, name: shownName, who: identity } = resolveName(readView, 'country', tag, { atHour: hour });
   const handle = identity.flagChoice?.status === 'ready' ? flagArtHandle(identity.flagChoice.value, 'small') : null;
   const flagArt = handle ? readView.art(handle) : flagChoiceArt(readView, identity.flagChoice, 'small');
   const artKey = handle ? artHandleKey(handle) : undefined;
@@ -93,7 +93,7 @@ function who(readView: BoundedReadView, tag: string, hour: number): Who {
   const flagPending = flagArt.status === 'pending';
   const colour = identity.colour?.status === 'ready' ? identity.colour.value : undefined;
   return {
-    cell: { value: name, iconSlot: true, country: tag, art: flagArt, ...(artKey ? { artKey } : {}), ...(loading ? { loading: true } : {}), ...(colour ? { countryColor: colour } : {}) },
+    cell: { value: name, iconSlot: true, country: tag, art: flagArt, ...(artKey ? { artKey } : {}), ...(colour ? { countryColor: colour } : {}) },
     title: { name, country: tag, ...(flag ? { flag } : {}), ...(flagPending ? { flagPending: true } : {}) },
     name: shownName,
   };
@@ -152,14 +152,14 @@ export const warContributionSidesProjection: TableProjection<SidesOptions> = reg
     const chosen = chosenGroup(readView, options);
     if (chosen.kind === 'loading') return { hour, columns: columnsOf(null), rows: [] };
     if (chosen.kind === 'blank') return { hour, columns: columnsOf(null), rows: [], empty: chosen.empty, emptyKind: chosen.emptyKind };
-    const { group, reply, sides: [left, right] } = chosen;
-    const heldFromEarlier = reply.hour !== hour;
+    const { group, reply, asOf, sides: [left, right] } = chosen;
+    const heldFromEarlier = asOf !== hour;
     return {
       hour,
-      ...(heldFromEarlier ? { tooltipHour: reply.hour, titleSummary: `As of ${formatDateOnly(reply.hour)}` } : {}),
+      ...(heldFromEarlier ? { tooltipHour: asOf, titleSummary: `As of ${formatDateOnly(asOf)}` } : {}),
       columns: columnsOf(group.measures),
       rows: [],
-      panes: [paneOf(readView, group, left, leadOf(group, left), reply.hour), paneOf(readView, group, right, leadOf(group, right), reply.hour)],
+      panes: [paneOf(readView, group, left, leadOf(group, left), asOf), paneOf(readView, group, right, leadOf(group, right), asOf)],
       ...(reply.warnings.length ? { warnings: reply.warnings } : {}),
     };
   },

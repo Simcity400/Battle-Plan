@@ -27,6 +27,63 @@ fn invalid(what: impl Into<String>) -> io::Error {
 pub struct Role {
     pub slot: Option<u32>,
     pub at: i32,
+    pub observed: i32,
+}
+
+impl Role {
+    pub const fn at(slot: Option<u32>, hour: i32) -> Self { Self { slot, at: hour, observed: hour } }
+    pub const fn dated(slot: Option<u32>, at: i32, observed: i32) -> Self { Self { slot, at, observed } }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SearchText {
+    Static(Box<str>),
+    Dated(Box<[(i32, Box<str>)]>),
+}
+
+impl Default for SearchText {
+    fn default() -> Self { Self::Static(Box::default()) }
+}
+impl From<Box<str>> for SearchText {
+    fn from(text: Box<str>) -> Self { Self::Static(text) }
+}
+impl From<String> for SearchText {
+    fn from(text: String) -> Self { Self::Static(text.into_boxed_str()) }
+}
+impl From<&str> for SearchText {
+    fn from(text: &str) -> Self { Self::Static(text.into()) }
+}
+
+impl SearchText {
+    pub fn dated(steps: impl IntoIterator<Item = (i32, Box<str>)>) -> Self {
+        let mut steps: Vec<(i32, String)> = steps.into_iter().filter(|(_, t)| !t.is_empty()).map(|(at, t)| (at, t.into_string())).collect();
+        steps.sort_by_key(|(at, _)| *at);
+        let mut merged: Vec<(i32, String)> = Vec::with_capacity(steps.len());
+        for (at, text) in steps {
+            match merged.last_mut() {
+                Some((held, existing)) if *held == at => { existing.push(' '); existing.push_str(&text); }
+                _ => merged.push((at, text)),
+            }
+        }
+        Self::Dated(merged.into_iter().map(|(at, text)| (at, text.into_boxed_str())).collect())
+    }
+
+    pub fn matched_from(&self, needle: &str, observed: i32) -> Option<i32> {
+        match self {
+            Self::Static(text) => text.to_lowercase().contains(needle).then_some(observed),
+            Self::Dated(steps) => {
+                let mut combined = String::new();
+                for (at, part) in steps {
+                    if !part.is_empty() {
+                        if !combined.is_empty() { combined.push(' '); }
+                        combined.push_str(&part.to_lowercase());
+                    }
+                    if combined.contains(needle) { return Some((*at).max(observed)); }
+                }
+                None
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,12 +177,15 @@ pub struct Occurrence<P> {
     pub subjects: Box<[u128]>,
     pub states: Box<[(i32, u8)]>,
     pub sort_keys: Box<[SortKey]>,
-    pub text: Box<str>,
+    pub text: SearchText,
     pub payload: P,
 }
 
 #[cfg(test)]
-thread_local! { static STATE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+thread_local! {
+    static STATE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static BIN_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 impl<P> Occurrence<P> {
     pub fn state_at(&self, hour: i32) -> Option<u8> {
@@ -266,9 +326,62 @@ impl<K: PartialEq, V> Recent<K, V> {
     }
 }
 
+const BIN_BLOCK: usize = 64;
+
+struct AdmittedTree {
+    cap: usize,
+    blocks: usize,
+    nodes: Vec<(i32, i32)>,
+}
+
+impl AdmittedTree {
+    fn build(display: &[(u32, i32)]) -> Self {
+        let blocks = display.len().div_ceil(BIN_BLOCK);
+        if blocks == 0 { return Self { cap: 0, blocks: 0, nodes: Vec::new() }; }
+        let cap = blocks.next_power_of_two();
+        let mut nodes = vec![(i32::MAX, i32::MIN); cap * 2];
+        for (block, chunk) in display.chunks(BIN_BLOCK).enumerate() {
+            nodes[cap + block] = chunk.iter().fold((i32::MAX, i32::MIN), |(lo, hi), &(_, a)| (lo.min(a), hi.max(a)));
+        }
+        for at in (1..cap).rev() {
+            nodes[at] = (nodes[at * 2].0.min(nodes[at * 2 + 1].0), nodes[at * 2].1.max(nodes[at * 2 + 1].1));
+        }
+        Self { cap, blocks, nodes }
+    }
+
+    fn count_from(&self, display: &[(u32, i32)], start: usize, hour: i32) -> u64 {
+        if start >= display.len() { return 0; }
+        let first_block = start.div_ceil(BIN_BLOCK);
+        let head = &display[start..(first_block * BIN_BLOCK).min(display.len())];
+        #[cfg(test)]
+        BIN_SCANS.set(BIN_SCANS.get() + head.len());
+        let mut count = head.iter().filter(|&&(_, a)| a <= hour).count() as u64;
+        if first_block < self.blocks { count += self.query(display, 1, 0, self.cap, first_block, hour); }
+        count
+    }
+
+    fn query(&self, display: &[(u32, i32)], node: usize, lo: usize, hi: usize, from_block: usize, hour: i32) -> u64 {
+        if hi <= from_block || lo >= self.blocks { return 0; }
+        if lo >= from_block {
+            let (min_a, max_a) = self.nodes[node];
+            if max_a <= hour { return ((hi.min(self.blocks) * BIN_BLOCK).min(display.len()) - lo * BIN_BLOCK) as u64; }
+            if min_a > hour { return 0; }
+            if lo + 1 == hi {
+                let slice = &display[lo * BIN_BLOCK..(hi * BIN_BLOCK).min(display.len())];
+                #[cfg(test)]
+                BIN_SCANS.set(BIN_SCANS.get() + slice.len());
+                return slice.iter().filter(|&&(_, a)| a <= hour).count() as u64;
+            }
+        }
+        let mid = (lo + hi) / 2;
+        self.query(display, node * 2, lo, mid, from_block, hour) + self.query(display, node * 2 + 1, mid, hi, from_block, hour)
+    }
+}
+
 struct Filtered {
     display: Vec<(u32, i32)>,
-    unattributed_rows: Vec<u32>,
+    admitted: AdmittedTree,
+    unattributed_rows: Vec<(u32, i32, Option<i32>)>,
     unknown: Vec<MissingSpan>,
     views: Mutex<Recent<PageShape, View>>,
 }
@@ -337,7 +450,6 @@ enum Admit {
     Yes(i32),
     No,
     Unknown,
-    Unattributed,
 }
 
 struct Members {
@@ -393,26 +505,31 @@ impl Members {
         Self { slots, unknown, unknown_hours }
     }
 
-    fn admits(&self, roles: &[Role], observed: i32) -> Admit {
+    fn admits(&self, roles: &[Role], observed: i32) -> (Admit, Option<Option<i32>>) {
         let mut unknown = false;
-        let mut named = false;
+        let mut first_named: Option<i32> = None;
         let mut admitted: Option<i32> = None;
         for role in roles {
             let Some(slot) = role.slot else { continue };
-            named = true;
+            let known = role.observed.max(observed);
+            first_named = Some(first_named.map_or(known, |held| held.min(known)));
             if self.slots.get(&slot).is_some_and(|spans| within(spans, role.at)) {
-                let known = role.at.max(observed);
                 admitted = Some(admitted.map_or(known, |held| held.min(known)));
                 continue;
             }
             unknown |= within(&self.unknown_hours, role.at);
         }
-        match (admitted, unknown, named) {
-            (Some(hour), ..) => Admit::Yes(hour),
-            (None, true, _) => Admit::Unknown,
-            (None, false, false) => Admit::Unattributed,
-            (None, false, true) => Admit::No,
-        }
+        let unattributed = match first_named {
+            None => Some(None),
+            Some(until) if until > observed => Some(Some(until)),
+            Some(_) => None,
+        };
+        let admit = match (admitted, unknown) {
+            (Some(hour), _) => Admit::Yes(hour),
+            (None, true) => Admit::Unknown,
+            (None, false) => Admit::No,
+        };
+        (admit, unattributed)
     }
 }
 
@@ -425,6 +542,14 @@ impl<P> Index<P> {
             }
             if entry.states.first().is_some_and(|&(from, _)| from != entry.observed) || entry.states.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
                 return Err(invalid(format!("Occurrence {} has states out of order", entry.id)));
+            }
+            if entry.roles.iter().any(|role| role.at > role.observed) {
+                return Err(invalid(format!("Occurrence {} has a role dated after it was observed", entry.id)));
+            }
+            if let SearchText::Dated(steps) = &entry.text
+                && steps.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+            {
+                return Err(invalid(format!("Occurrence {} has dated search text out of order", entry.id)));
             }
             if entry.sort_keys.len() != expected_keys {
                 return Err(invalid(format!("Occurrence {} has {} sort keys, expected {}", entry.id, entry.sort_keys.len(), expected_keys)));
@@ -533,13 +658,21 @@ impl<P> Index<P> {
             if entry.date < from || entry.date > to || signature.kinds.as_ref().is_some_and(|kinds| kinds.binary_search(&entry.kind).is_err()) {
                 return;
             }
-            if signature.search.as_ref().is_some_and(|needle| !entry.text.to_lowercase().contains(needle.as_str())) {
-                return;
+            let search_from = match signature.search.as_deref() {
+                Some(needle) => match entry.text.matched_from(needle, entry.observed) {
+                    Some(from) => from,
+                    None => return,
+                },
+                None => entry.observed,
+            };
+            let (admit, unattributed) = members.as_ref().map_or((Admit::Yes(entry.observed), None), |members| members.admits(&entry.roles, entry.observed));
+            if let Admit::Yes(from) = admit {
+                display.push((at as u32, from.max(search_from)));
             }
-            match members.as_ref().map_or(Admit::Yes(entry.observed), |members| members.admits(&entry.roles, entry.observed)) {
-                Admit::Yes(from) => display.push((at as u32, from)),
-                Admit::Unattributed => unattributed_rows.push(at as u32),
-                Admit::No | Admit::Unknown => {}
+            if let Some(until) = unattributed
+                && until.is_none_or(|end| search_from < end)
+            {
+                unattributed_rows.push((at as u32, search_from, until));
             }
         };
         if let Some(subject) = signature.subject {
@@ -558,7 +691,8 @@ impl<P> Index<P> {
             unknown.extend_from_slice(spans);
         }
         let rows = display.len() + unattributed_rows.len();
-        let made = Filtered { display, unattributed_rows, unknown, views: Mutex::new(Recent::new()) };
+        let admitted = AdmittedTree::build(&display);
+        let made = Filtered { display, admitted, unattributed_rows, unknown, views: Mutex::new(Recent::new()) };
         self.filtered.lock().unwrap_or_else(PoisonError::into_inner).insert(signature, made, rows, self.entries.len())
     }
 
@@ -571,9 +705,16 @@ impl<P> Index<P> {
         for &(at, admitted) in &filtered.display {
             self.changes(self.get(at), admitted, ask, true, |hour| changes.push(hour));
         }
-        for &at in &filtered.unattributed_rows {
+        for &(at, admitted, until) in &filtered.unattributed_rows {
             let entry = self.get(at);
-            self.changes(entry, entry.observed, ask, false, |hour| changes.push(hour));
+            self.changes(entry, admitted, ask, false, |hour| {
+                if until.is_none_or(|end| hour < end) { changes.push(hour); }
+            });
+            if let Some(end) = until
+                && ask.states.is_none_or(|states| entry.state_at(end.saturating_sub(1)).is_some_and(|state| states.contains(&state)))
+            {
+                changes.push(end);
+            }
         }
         changes.sort_unstable();
         changes.dedup();
@@ -777,14 +918,20 @@ impl<P> Index<P> {
                 PlacedGap { first_hour: gap.first_hour, last_hour: gap.last_hour, reason: gap.reason, before: (live_total + before).to_string() }
             })
             .collect();
-        let unattributed = filtered.unattributed_rows.iter().filter(|&&at| {
+        let unattributed = filtered.unattributed_rows.iter().filter(|&&(at, admitted, until)| {
             let entry = self.get(at);
             if visible.is_some() {
-                self.changes(entry, entry.observed, ask, false, |at| {
-                    if at > hour { next = Some(next.map_or(at, |held| held.min(at))); }
+                self.changes(entry, admitted, ask, false, |at| {
+                    if at > hour && until.is_none_or(|end| at < end) { next = Some(next.map_or(at, |held| held.min(at))); }
                 });
+                if let Some(end) = until
+                    && end > hour
+                    && state_ok(entry.state_at(end.saturating_sub(1)))
+                {
+                    next = Some(next.map_or(end, |held| held.min(end)));
+                }
             }
-            entry.observed <= hour && state_ok(entry.state_at(hour))
+            admitted <= hour && until.is_none_or(|end| hour < end) && state_ok(entry.state_at(hour))
         }).count() as u64;
         if live_rows.is_empty() {
             live_rows = history;
@@ -832,20 +979,27 @@ impl<P> Index<P> {
         }
         let filtered = self.filtered(holders, ask);
         let first_bin = i64::from(first).div_euclid(bin_hours) * bin_hours;
-        let mut before = 0u64;
         let mut bins: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
         let start = filtered.display.partition_point(|&(at, _)| self.entries[at as usize].date > last.min(ask.hour));
-        for &(at, from) in &filtered.display[start..] {
+        let mid = start + filtered.display[start..].partition_point(|&(at, _)| self.entries[at as usize].date >= first);
+        for &(at, from) in &filtered.display[start..mid] {
+            #[cfg(test)]
+            BIN_SCANS.set(BIN_SCANS.get() + 1);
             let entry = &self.entries[at as usize];
             if from > ask.hour || ask.states.is_some_and(|states| entry.state_at(ask.hour).is_none_or(|state| !states.contains(&state))) {
                 continue;
             }
-            if entry.date < first {
-                before += 1;
-            } else {
-                *bins.entry(((i64::from(entry.date) - first_bin).div_euclid(bin_hours)) as u32).or_default() += 1;
-            }
+            *bins.entry(((i64::from(entry.date) - first_bin).div_euclid(bin_hours)) as u32).or_default() += 1;
         }
+        let before = if let Some(states) = ask.states {
+            filtered.display[mid..].iter().filter(|&&(at, from)| {
+                #[cfg(test)]
+                BIN_SCANS.set(BIN_SCANS.get() + 1);
+                from <= ask.hour && self.entries[at as usize].state_at(ask.hour).is_some_and(|state| states.contains(&state))
+            }).count() as u64
+        } else {
+            filtered.admitted.count_from(&filtered.display, mid, ask.hour)
+        };
         Ok((before, bins.into_iter().collect()))
     }
 

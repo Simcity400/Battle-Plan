@@ -25,10 +25,11 @@ import {
   type LogTailQuery,
   type PlacedSpan,
   type TableRowSource,
+  type TailValidator,
 } from './rowSource.ts';
 import { OFFERED, type TableBase } from './settings.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, type Value } from '../value.ts';
 
 export const LOG_TABLE_BASE: TableBase = {
   density: 'normal',
@@ -203,16 +204,16 @@ export function logCountryCell(
   boundary?: IdentityBoundary,
 ): TableCell {
   const flags: TableCellFlag[] = [];
-  const names: string[] = [];
+  const known: string[] = [];
   const roles: TooltipExtraRow[] = [];
-  const missing: string[] = [];
-  let loading = false;
+  const reasons: string[] = [];
+  let hasPending = false;
+  const pushReason = (reason: string) => { if (!reasons.includes(reason)) reasons.push(reason); };
   for (const entry of entries) {
     if (entry.tag === null) {
       const reason = entry.missingLabel ?? 'Country not recorded';
       flags.push({ tag: '?', art: unavailableArt(reason), ...(entry.dimmed ? { dimmed: true } : {}) });
-      names.push(reason);
-      missing.push(reason);
+      pushReason(reason);
       if (entry.role) roles.push({ label: entry.role, value: notRecorded(reason) });
     } else {
       const hour = entry.atHour ?? atHour;
@@ -223,23 +224,28 @@ export function logCountryCell(
         ...(who.artKey ? { artKey: who.artKey } : {}),
         ...(entry.dimmed ? { dimmed: true } : {}),
       });
-      names.push(who.name);
-      if (who.value.kind !== 'known') {
-        missing.push(who.value.kind === 'notRecorded' ? `${entry.tag}: ${who.value.reason}` : `${entry.tag}: Name not recorded`);
-        loading ||= who.loading;
+      if (who.value.kind === 'known') {
+        known.push(who.value.value);
+      } else if (who.value.kind === 'pending') {
+        hasPending = true;
+        pushReason(who.value.reason);
+      } else {
+        const reason = who.value.kind === 'notRecorded' ? who.value.reason : 'Name not recorded';
+        pushReason(entry.tag.startsWith('\u0000') ? reason : `${entry.tag}: ${reason}`);
       }
-      if (entry.role) roles.push({ label: entry.role, value: who.value.kind === 'notRecorded' && !who.loading ? partialValue(entry.tag, who.value.reason) : who.value });
+      if (entry.role) roles.push({ label: entry.role, value: who.value.kind === 'notRecorded' ? (entry.tag.startsWith('\u0000') ? who.value : partialValue(entry.tag, who.value.reason)) : who.value });
     }
   }
-  const joined = names.join(' · ');
-  const value: Value = !names.length
+  const value: Value = !entries.length
     ? notApplicable('No country')
-    : !missing.length
-      ? knownValue(joined)
-      : entries.every(entry => entry.tag === null)
-        ? notRecorded(missing.join('; '))
-        : partialValue(joined, missing.join('; '));
-  return { value, flags, ...(roles.length ? { tooltipRows: roles } : {}), ...(loading ? { loading: true } : {}) };
+    : !known.length
+      ? hasPending
+        ? pendingValue(reasons.join('; '))
+        : notRecorded(reasons.join('; ') || 'Country not recorded')
+      : reasons.length
+        ? partialValue(known.join(' · '), reasons.join('; '))
+        : knownValue(known.join(' · '));
+  return { value, flags, ...(roles.length ? { tooltipRows: roles } : {}) };
 }
 
 export function tailFollowParams(query: LogTailQuery): FollowRequest {
@@ -314,6 +320,7 @@ export function pagedTailEntry(
   tailQuery: LogTailQuery,
   following: boolean,
   pageSize = DEFAULT_TAIL_PAGE_SIZE,
+  validate?: TailValidator,
 ): SourceEntry {
   return {
     name,
@@ -325,6 +332,7 @@ export function pagedTailEntry(
       tailQuery,
       pageSize,
       followQuery: following ? tailFollowParams(tailQuery) : null,
+      ...(validate ? { validate } : {}),
     },
   };
 }
@@ -333,7 +341,7 @@ export function projectPagedSlots<TRow extends DatedLogRow>(
   source: TableRowSource<TRow>,
   hour: number,
   window: { readonly first: number; readonly count: number } | undefined,
-  mapRow: (row: TRow, ordinal: number) => TableRow | null,
+  mapRow: (row: TRow, ordinal: number) => TableRow,
   extraMissing?: readonly MissingSpan[],
 ): {
   readonly slots: TableModelSlot[];
@@ -382,10 +390,8 @@ export function projectPagedSlots<TRow extends DatedLogRow>(
       if (!slot) continue;
       if (slot.kind === 'data') {
         const built = mapRow(slot.row, slot.ordinal);
-        if (built) {
-          slots.push({ kind: 'data', row: built });
-          rows.push(built);
-        }
+        slots.push({ kind: 'data', row: built });
+        rows.push(built);
       } else if (slot.kind === 'refused') {
         slots.push({ kind: 'refused', key: `refused:${slot.ordinal}`, reason: slot.reason });
       } else if (slot.kind === 'loading') {
@@ -408,10 +414,8 @@ export function projectPagedSlots<TRow extends DatedLogRow>(
   for (const slot of navigable) {
     if (slot.kind === 'data') {
       const built = mapRow(slot.row, slot.ordinal);
-      if (built) {
-        slots.push({ kind: 'data', row: built });
-        rows.push(built);
-      }
+      slots.push({ kind: 'data', row: built });
+      rows.push(built);
     } else if (slot.kind === 'gap') {
       slots.push({ kind: 'gap', key: slot.key, firstHour: slot.firstHour, lastHour: slot.lastHour, reason: slot.reason });
     } else if (slot.kind === 'refused') {

@@ -124,7 +124,7 @@ test('resources pool preserves product order, exact fixed-point amounts, art han
   assert.equal(rows[0]!.media?.kind, 'art');
   assert.equal(rows[0]!.media?.art.status === 'ready' ? rows[0]!.media.art.url : null, ICON);
   assert.equal(rows[1]!.media?.art.status, 'unavailable');
-  assert.equal(rows[2]!.labelMissing, true);
+  assert.equal(rows[2]!.label?.kind, 'notRecorded');
   assert.equal(rows[2]!.readout?.tone, 'muted');
 });
 
@@ -141,10 +141,10 @@ test('manpower, research and doctrine pools resolve recorded slots and honest st
   }));
   assert.equal(manpower.summaryText, '500 manpower');
   const mpRows = manpower.rows as BarsDataRow[];
-  assert.equal(mpRows[0]!.label, 'German Reich');
+  assert.deepEqual(mpRows[0]!.label, { kind: 'known', value: 'German Reich' });
   assert.equal(mpRows[0]!.readout?.primary, '400');
   assert.equal(mpRows[0]!.tooltip?.items?.find(item => item.label === 'Share of the pool')?.value, '80%');
-  assert.equal(mpRows[1]!.labelMissing, true);
+  assert.equal(mpRows[1]!.label?.kind, 'notRecorded');
 
   const research = await project('research', baseReply({
     pool: 'research',
@@ -158,19 +158,29 @@ test('manpower, research and doctrine pools resolve recorded slots and honest st
   }));
   assert.equal(research.summaryText, '2 sharing');
   const resRows = research.rows as BarsDataRow[];
-  assert.equal(resRows[0]!.label, 'Scientist base');
+  assert.deepEqual(resRows[0]!.label, { kind: 'known', value: 'Scientist base' });
   assert.equal(resRows[0]!.readout?.primary, '1.25');
-  assert.equal(resRows[1]!.label, 'German Reich');
-  assert.equal(resRows[2]!.label, 'Italy');
+  assert.deepEqual(resRows[1]!.label, { kind: 'known', value: 'German Reich' });
+  assert.deepEqual(resRows[2]!.label, { kind: 'known', value: 'Italy' });
 
   const doctrine = await project('doctrine', baseReply({
     pool: 'doctrine',
     decimals: 0,
     resources: [],
-    doctrines: [{ ordinal: 0, token: 'land_doctrine', name: 'Land Doctrine', reason: null }],
+    doctrines: [
+      { ordinal: 0, token: 'land_doctrine', name: 'Land Doctrine', reason: null },
+      { ordinal: 1, token: 'blank_doctrine', name: '   ', reason: null },
+    ],
   }));
-  assert.equal(doctrine.summaryText, '1 doctrine');
-  assert.equal((doctrine.rows[0] as BarsDataRow).label, 'Land Doctrine');
+  assert.equal(doctrine.summaryText, '2 doctrines');
+  assert.deepEqual((doctrine.rows[0] as BarsDataRow).label, { kind: 'known', value: 'Land Doctrine' });
+  assert.deepEqual((doctrine.rows[1] as BarsDataRow).label, { kind: 'notRecorded', reason: 'Doctrine name not recorded' });
+
+  const blankResource = await project('resources', baseReply({
+    resources: [{ ordinal: 0, token: 'steel', name: '   ', icon: null, amount: '500000', nameReason: null, iconReason: null, missing: null }],
+  }));
+  assert.deepEqual((blankResource.rows[0] as BarsDataRow).label, { kind: 'notRecorded', reason: 'Resource name not recorded' });
+  assert.equal((blankResource.rows[0] as BarsDataRow).readout?.primary, '5');
 
   const unrecorded = await project('resources', baseReply({ status: 'poolNotRecorded', reason: 'Resources unread', resources: [] }));
   assert.equal(unrecorded.emptyKind, 'unavailable');

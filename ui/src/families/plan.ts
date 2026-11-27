@@ -331,9 +331,17 @@ export interface InstalledActionTarget {
   readonly meta?: unknown;
 }
 
+export type ActionTarget =
+  | { readonly kind: 'row'; readonly key: string }
+  | { readonly kind: 'chart-coordinate'; readonly coordinate: 'plot' | 'gap' | 'fold' | 'marker'; readonly hour: DisplayedHour }
+  | { readonly kind: 'chart-series'; readonly part: 'line' | 'label'; readonly seriesId: string; readonly hour: DisplayedHour }
+  | { readonly kind: 'chart-month'; readonly index: number; readonly hour: DisplayedHour }
+  | { readonly kind: 'cell'; readonly key: string };
+
 export interface InstalledAction {
   readonly installedId: number;
   readonly owner: string;
+  readonly target: ActionTarget;
   readonly subject: string;
   readonly hour: DisplayedHour;
   readonly toggle?: boolean;
@@ -381,7 +389,7 @@ export interface DeclaredCountryState {
   readonly membership: Readonly<Record<string, HourRanges>> | null;
   readonly cumulativeMembership?: Readonly<Record<string, HourRanges>> | null;
   readonly membershipRuns: readonly { readonly tag: string; readonly firstHour: number; readonly lastHour: number }[] | null;
-  readonly ambiguousHolders?: Readonly<Record<string, HourRanges>> | null;
+  readonly identityMembership?: Readonly<Record<string, HourRanges>> | null;
   readonly unobserved: HourRanges;
   readonly filter: DeclaredCountryFilter;
   readonly factions: readonly FamilyFactionRun[] | null;
@@ -409,6 +417,7 @@ export type CountryPolicy =
 
 export interface AuxProductSpec<TAux = unknown> {
   readonly product: DeclaredProduct;
+  readonly label: string;
   readonly params: (
     track: BoundTrack,
     options: Readonly<Record<string, OptionValue>>,

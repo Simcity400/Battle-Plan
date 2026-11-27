@@ -123,7 +123,7 @@ impl Product for LogTail {
     }
 }
 
-pub fn dated_panel(source: &Source, _load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
     let mut request = asked.clone();
     request.as_object_mut().ok_or("Invalid log-tail panel")?.remove("panel");
     let params: LogTailParams = dashboard_query::named::named(&request).map_err(|error| format!("Invalid log-tail panel: {error}"))?;
@@ -150,6 +150,7 @@ pub fn dated_panel(source: &Source, _load: &LoadContext, asked: &serde_json::Val
     let q_caches = caches.clone();
     Ok(dated_tail_panel(
         executable,
+        dashboard_base::products::Finish::new(source, load, LogTail::CONTENT_DEPENDENT),
         move |prev_hour, hour, cancelled| {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let query = Query { replay: &q_replay, timeline: q_timeline.clone(), holders: q_holders.clone() };

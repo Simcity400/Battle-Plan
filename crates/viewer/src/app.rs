@@ -2132,6 +2132,7 @@ impl Viewer {
             return Ok(false);
         }
         let named = self.options.combat.is_some();
+        if self.combat.loading_art() { return Ok(false); }
         if self.combat.selection.is_some() && self.combat.is_loading() {
             return match live_of(&self.playhead_map).and_then(|side| side.products().combat_whole.clone()) {
                 Some(Err(why)) => Err(format!("its read was not made: {why}")),
@@ -2824,6 +2825,8 @@ impl Viewer {
         let mut warnings: Vec<_> = refused.into_iter().chain(tooltip_warning_lines(&self.tooltip_refused)).collect();
         warnings.extend(self.counter_report.combat_gap_lines());
         warnings.extend(self.combat.warnings(&document.icons.combat.warnings));
+        warnings.extend(document.icons.combat.gui.window_warnings());
+        warnings.extend(document.icons.counters.gui.window_warnings());
         warnings.extend(
             self.picker_error
                 .iter()
@@ -4284,6 +4287,7 @@ impl Viewer {
     ) -> Result<(), String> {
         let _other_cost = replay_frame::cpu::scope("frame.refresh", Some("other"));
         let whole = self.options.window_dump || self.capture.as_ref().is_some_and(|capture| !capture.paced);
+        let _art = whole.then(viewer_native_gui::native_resources::SynchronousWindowArt::enter);
         let _budget = viewer_runtime::frame_budget::begin(!whole);
         let map_timer = Instant::now();
         self.drew_frame = false;
@@ -5552,6 +5556,7 @@ impl Viewer {
                 }
             }
         }
+        let window_misses = document.icons.combat.gui.window_art_misses();
         let (overlay_ms, additions, combat_out, combat_art) = 'overlay: {
             let Some((rows, tables)) = held.clone() else {
                 break 'overlay (0.0, Batch::default(), Some("the frame drew no overlay to draw it in".to_owned()), None);
@@ -5793,7 +5798,14 @@ impl Viewer {
                         if !pending.is_empty() {
                             viewer_runtime::redraws::note("made.icons_pending", pending.iter().map(|retry| retry.requests as u64).sum());
                         }
-                        document.icons.lazy.settle();
+                        if self.capture.as_ref().is_some_and(|capture| !capture.paced) {
+                            document.icons.lazy.settle();
+                        } else {
+                            document.icons.lazy.settle_on_frame();
+                            if !prepared.is_stale(&held) && (document.icons.counters.gui.loading_window_art() || document.icons.combat.gui.loading_window_art()) {
+                                break;
+                            }
+                        }
                         if !prepared.is_stale(&held) && !document.icons.lazy.has_pending() {
                             break;
                         }
@@ -6083,6 +6095,7 @@ impl Viewer {
             laps.lap("combat_draw");
             drop(_combat_cost);
             let _picker_cost = replay_frame::cpu::scope("frame.interface.picker", Some("other"));
+            let picker_misses = document.icons.combat.gui.window_art_misses();
             let picker_drawn = match self.draw_picker(
                 document,
                 extent,
@@ -6097,11 +6110,13 @@ impl Viewer {
                     None
                 }
                 None => None,
-            };
+            }.filter(|_| picker_misses == document.icons.combat.gui.window_art_misses());
             if self.picker.pointing() {
                 ui.ctx().request_repaint();
             }
-            let confirmation_drawn = self.draw_confirmation(document, extent, animation_time, confirmation_input);
+            let confirmation_misses = document.icons.combat.gui.window_art_misses();
+            let confirmation_drawn = self.draw_confirmation(document, extent, animation_time, confirmation_input)
+                .filter(|_| confirmation_misses == document.icons.combat.gui.window_art_misses());
             if self.confirmation_pointing() {
                 ui.ctx().request_repaint();
             }
@@ -6409,6 +6424,7 @@ impl Viewer {
             }
             self.shown_tooltip = None;
             let mut additions = Batch::default();
+            let tooltip_misses = document.icons.counters.gui.window_art_misses();
             let tooltip_time = Instant::now();
             if let Some((text, anchor)) = self.combat.tooltip(
                 drawn.as_ref(),
@@ -6493,6 +6509,9 @@ impl Viewer {
                 None => Some("its quads were not drawn into this frame".to_owned()),
                 Some(drawn) => drawn.missing(),
             };
+            if tooltip_misses != document.icons.counters.gui.window_art_misses() {
+                additions.quads.clear();
+            }
             if let Some(drawn) = drawn {
                 additions.quads.extend(drawn.batch.quads);
             }
@@ -6887,7 +6906,7 @@ impl Viewer {
                 }
             };
             let waiting = waiting
-                .or_else(|| document.icons.lazy.has_pending().then(|| "flags and portraits it drew were still decoding".to_owned()))
+                .or_else(|| document.icons.lazy.has_pending().then(|| "its window art, flags or portraits were still decoding".to_owned()))
                 .or_else(|| {
                     (!combat).then(|| match &self.combat_rows.pending {
                         Some(selector) => format!("the combat it names ({selector:?}) was not found in its rows yet"),
@@ -6958,6 +6977,15 @@ impl Viewer {
         if let Some((drag, stroke)) = box_stroke {
             ui.painter().with_clip_rect(rect).rect_stroke(drag, 0.0, stroke, egui::StrokeKind::Middle);
         }
+        let loading_art = if self.combat.loading_art() {
+            Some("Loading combat window art...")
+        } else if document.icons.counters.gui.loading_window_art() {
+            Some("Loading map counter art...")
+        } else if window_misses != document.icons.combat.gui.window_art_misses() {
+            Some("Loading map window art...")
+        } else {
+            None
+        };
         let software = is_software(&state.adapter);
         let diagnostics = self.diagnostics && self.embedded.is_some() && !self.dashboard_map;
         let partial = document.playback.replay().is_partial()
@@ -6965,13 +6993,14 @@ impl Viewer {
             && !self.dashboard_map;
         let scoped = replay_data::scope::omits(document.capture_mode()).is_some();
         let vision_refused = self.vision_refusal_line();
-        if software || diagnostics || partial || scoped || vision_refused.is_some() {
+        if loading_art.is_some() || software || diagnostics || partial || scoped || vision_refused.is_some() {
             map_overlay(
                 ui,
                 rect.intersect(ui.clip_rect()),
                 "diagnostics",
                 self.interface_points,
                 |ui, height| {
+                    if let Some(loading) = loading_art { ui.label(loading); }
                     if let Some(refused) = &vision_refused {
                         ui.colored_label(egui::Color32::YELLOW, refused);
                     }

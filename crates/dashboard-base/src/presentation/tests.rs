@@ -248,10 +248,10 @@ fn each_source_shows_its_own_visual_mods_and_recorded_facts_stay_recorded() {
         "recorded"
     );
     let mut warnings = Vec::new();
-    styled.append_presentation_warnings(&mut warnings, Some(&options));
+    if let Some(held) = styled.presentation_refusals(&options) { held.append_to(&mut warnings); }
     assert!(warnings.is_empty(), "{warnings:?}");
     let mut warnings = Vec::new();
-    plain.append_presentation_warnings(&mut warnings, Some(&plain_options));
+    if let Some(held) = plain.presentation_refusals(&plain_options) { held.append_to(&mut warnings); }
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
@@ -290,7 +290,7 @@ fn selection_changes_updates_and_removals_rebind_the_catalogue() {
     let removed = catalogue::catalogue(&source, &options).unwrap();
     assert_eq!(drawn(&removed, "GFX_icon").0, RED);
     let mut warnings = Vec::new();
-    source.append_presentation_warnings(&mut warnings, Some(&options));
+    if let Some(held) = source.presentation_refusals(&options) { held.append_to(&mut warnings); }
     assert!(
         warnings
             .iter()
@@ -612,7 +612,7 @@ fn a_reply_names_the_presentation_it_was_admitted_under() {
     install(&machine.root, "other.mod", "Other", &other);
     let notes = |options: &ContentOptions| {
         let mut warnings = Vec::new();
-        source.append_presentation_warnings(&mut warnings, Some(options));
+        if let Some(held) = source.presentation_refusals(options) { held.append_to(&mut warnings); }
         warnings
     };
     let switch_five_times = |options: &mut ContentOptions| {
@@ -790,7 +790,7 @@ fn every_content_reply_names_and_draws_its_admitted_mount() {
     install(&machine.root, "other.mod", "Other", &other);
     let notes = |options: &ContentOptions| {
         let mut warnings = Vec::new();
-        source.append_presentation_warnings(&mut warnings, Some(options));
+        if let Some(held) = source.presentation_refusals(options) { held.append_to(&mut warnings); }
         warnings
     };
     assert!(present(
@@ -1074,7 +1074,7 @@ fn preparation_never_mounts_the_selected_visual_mods() {
         "nothing mounted the selected visual mods"
     );
     let mut warnings = Vec::new();
-    source.append_presentation_warnings(&mut warnings, Some(&preparation));
+    if let Some(held) = source.presentation_refusals(&preparation) { held.append_to(&mut warnings); }
     assert!(warnings.is_empty());
     assert!(source.binding().unwrap().mount.get().is_none());
 }

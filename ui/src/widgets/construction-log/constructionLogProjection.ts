@@ -8,7 +8,7 @@ import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { cellArt, newIdentityBoundary } from '../../families/table/identityCell.ts';
+import { cellArt, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
 import {
   LOG_TABLE_BASE,
   logCountryCell,
@@ -23,7 +23,7 @@ import type { LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ConstructionLogRow, ConstructionStatus, ConstructionTypeChip } from '../../generated/dashboard';
 import { CONSTRUCTION_LOG_COLUMNS } from './definition.ts';
@@ -75,72 +75,72 @@ export function constructionTypeFilterItems(
   });
 }
 
-function resolveStateLabel(
-  readView: BoundedReadView,
-  stateId: number,
-  atHour: number,
-): { readonly label: string | null; readonly reason: string | null } {
-  const res = readView.who('state', String(stateId), atHour);
-  if (res.name.status === 'ready' && res.name.value.trim()) {
-    return { label: res.name.value, reason: null };
+function combinePlaceValues(endpoints: readonly Value<string>[], fallbackMissing: string): Value<string> {
+  const known: string[] = [];
+  const reasons: string[] = [];
+  let hasPending = false;
+  for (const value of endpoints) {
+    if (value.kind === 'known') {
+      known.push(value.value);
+    } else if (value.kind === 'pending') {
+      hasPending = true;
+      if (!reasons.includes(value.reason)) reasons.push(value.reason);
+    } else if (value.kind === 'notRecorded') {
+      if (!reasons.includes(value.reason)) reasons.push(value.reason);
+    }
   }
-  if (res.name.status === 'pending') {
-    return { label: `State ${stateId}`, reason: null };
+  if (!known.length) {
+    if (hasPending) return pendingValue(reasons.join('; '));
+    return notRecorded(reasons.join('; ') || fallbackMissing);
   }
-  return { label: null, reason: res.name.status === 'ready' ? 'State name not recorded' : res.name.reason };
+  const text = known.join(' – ');
+  return reasons.length ? partialValue(text, reasons.join('; ')) : knownValue(text);
 }
 
 function resolvePlace(
   readView: BoundedReadView,
   row: ConstructionLogRow,
-): { readonly cell: TableCell; readonly label: string | null } {
+  boundary: ReturnType<typeof newIdentityBoundary>,
+): { readonly cell: TableCell; readonly value: Value<string> | null } {
   const place = row.place;
   if (!place) {
     return {
       cell: { value: notRecorded(row.placeMissing ?? 'Construction place was not recorded'), missingFigure: 'Place' },
-      label: null,
+      value: null,
     };
   }
   if (place.kind === 'railway') {
-    const from = place.state !== null ? resolveStateLabel(readView, place.state, place.atHour) : null;
-    const to = place.toState !== null && place.toState !== place.state
-      ? resolveStateLabel(readView, place.toState, place.atHour)
-      : null;
-    if (from?.label && to?.label) {
-      const label = `${from.label} – ${to.label}`;
-      return { cell: { value: knownValue(label) }, label };
+    if (place.state === null && place.toState === null) {
+      const value = notRecorded(row.placeMissing ?? 'Railway route was not recorded');
+      return { cell: { value, missingFigure: 'Place' }, value };
     }
-    const single = from?.label ?? to?.label ?? null;
-    if (single) {
-      return { cell: { value: knownValue(single) }, label: single };
+    const endpointMissing = row.placeMissing ?? 'Railway endpoint was not recorded';
+    const endpoints: Value<string>[] = [
+      place.state !== null
+        ? resolveName(readView, 'state', String(place.state), { atHour: place.atHour, boundary }).value
+        : notRecorded(endpointMissing),
+    ];
+    if (place.toState !== place.state) {
+      endpoints.push(
+        place.toState !== null
+          ? resolveName(readView, 'state', String(place.toState), { atHour: place.atHour, boundary }).value
+          : notRecorded(endpointMissing),
+      );
     }
-    const reason = from?.reason ?? to?.reason ?? row.placeMissing ?? 'Railway route was not recorded';
-    return { cell: { value: notRecorded(reason), missingFigure: 'Place' }, label: null };
+    const value = combinePlaceValues(endpoints, row.placeMissing ?? 'Railway route was not recorded');
+    return { cell: { value, ...(value.kind === 'notRecorded' ? { missingFigure: 'Place' } : {}) }, value };
   }
   if (place.state !== null) {
-    const resolved = resolveStateLabel(readView, place.state, place.atHour);
-    if (resolved.label) {
-      return { cell: { value: knownValue(resolved.label) }, label: resolved.label };
-    }
-    return { cell: { value: notRecorded(resolved.reason ?? 'State name not recorded'), missingFigure: 'Place' }, label: null };
+    const value = resolveName(readView, 'state', String(place.state), { atHour: place.atHour, boundary }).value;
+    return { cell: { value, ...(value.kind === 'notRecorded' ? { missingFigure: 'Place' } : {}) }, value };
   }
   if (place.province !== null) {
-    const res = readView.who('province', String(place.province), place.atHour);
-    if (res.name.status === 'ready' && res.name.value.trim()) {
-      return { cell: { value: knownValue(res.name.value) }, label: res.name.value };
-    }
-    if (res.name.status === 'pending') {
-      const label = `Province ${place.province}`;
-      return { cell: { value: knownValue(label) }, label };
-    }
-    return {
-      cell: { value: notRecorded(res.name.status === 'ready' ? 'Province name not recorded' : res.name.reason), missingFigure: 'Place' },
-      label: null,
-    };
+    const value = resolveName(readView, 'province', String(place.province), { atHour: place.atHour, boundary }).value;
+    return { cell: { value, ...(value.kind === 'notRecorded' ? { missingFigure: 'Place' } : {}) }, value };
   }
   return {
     cell: { value: notRecorded(row.placeMissing ?? 'Construction place was not recorded'), missingFigure: 'Place' },
-    label: null,
+    value: null,
   };
 }
 
@@ -267,7 +267,7 @@ function buildConstructionRow(
         }
     : { value: notApplicable('Game artwork hidden'), blank: true };
 
-  const place = resolvePlace(readView, row);
+  const place = resolvePlace(readView, row, boundary);
   const levels = levelsCell(row);
   const rowCap = lineCap(row, cap);
   const factories = factoriesCell(readView, row, rowCap, artwork);
@@ -277,7 +277,7 @@ function buildConstructionRow(
     const out: TooltipExtraRow[] = [
       { label: 'Status', value: knownValue(status.label) },
     ];
-    if (place.label) out.push({ label: 'Place', value: knownValue(place.label) });
+    if (place.value && place.value.kind !== 'notRecorded') out.push({ label: 'Place', value: place.value });
     else if (row.placeMissing) out.push({ label: 'Place', value: notRecorded(row.placeMissing) });
     if (levels.text) out.push({ label: 'Levels', value: knownValue(levels.text) });
     else if (row.levelsMissing) out.push({ label: 'Levels', value: notRecorded(row.levelsMissing) });

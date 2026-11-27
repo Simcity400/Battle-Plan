@@ -13,6 +13,8 @@ import type { FamilyTheme, InstalledAction, InstalledPicture, MirrorModel } from
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { familyBinding, lazyActionKeys, nextReportedRowWindow, reconcileInstalledRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
+import { allReady, familyBodyStatus, inputOf } from './planInputs.ts';
+import type { FamilyBodyStatus } from '../plan.ts';
 import { BoundSelections, displayedHoverKeys, focusedSubject, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { hoverAsks, readPlanExact } from '../broker.ts';
@@ -842,7 +844,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
       onDragEnd: () => dragEvents.push('end'),
       onDoubleClick: () => { doubleClicks++; return true; },
     },
-    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
+    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, target: { kind: 'row', key }, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
   });
 
   body.dispatch('pointerdown', { button: 0, clientX: 110, clientY: 70, pointerId: 1 });
@@ -1111,7 +1113,7 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
     getInstalled: () => installed,
     getViewportHeight: () => 800,
     parseHit: hit => parseDefaultRowHit(hit),
-    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
+    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, target: { kind: 'row', key }, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
     onContextMenu: key => { menus.push(key); return true; },
   });
 
@@ -2707,4 +2709,29 @@ test('R5: exact audit verifier uses the installed frame art resolutions for indi
   assert.equal(verifiedPending?.values.get('resolved:art'), 'art::Badge:pending');
   assert.equal(verifiedPending?.values.get('waiting:art'), 'art::Pending:pending');
   laneCache.dispose();
+});
+
+test('the body names the read a widget waits for, shows a failed read as failed with its retry, never hides a failure behind a pending read, and keeps a known outcome ahead of a static read', () => {
+  let retried = '';
+  const retry = (name: string) => () => { retried = name; };
+  const failure = { kind: 'local', message: 'value read broke' } as never;
+  const ready: FamilyBodyStatus = { kind: 'ready' };
+  const refused: FamilyBodyStatus = { kind: 'refused', reason: 'No members in this group' };
+  const none = { early: null, plan: [], outcome: null, tiles: [], units: [], settled: ready };
+  const history = inputOf('the party history', { retry: retry('history') });
+  assert.deepEqual(familyBodyStatus({ ...none, plan: [inputOf('the country', { data: 7, retry: retry('country') }), history] }),
+    { kind: 'loading', label: 'Reading the party history…' }, 'a plan read that never answers is named');
+  assert.equal(allReady([history]), false);
+  assert.equal(familyBodyStatus({ ...none, plan: [history], outcome: refused }).kind, 'loading', 'an outcome waits for the plan inputs it is decided from');
+  const tiles = inputOf('the chart history', { retry: retry('tiles') });
+  const value = inputOf('command power', { error: failure, retry: retry('value') });
+  const failed = familyBodyStatus({ ...none, tiles: [tiles], units: [value] });
+  assert.equal(failed.kind, 'failed', 'a failed value read is not hidden behind chart tiles still loading');
+  if (failed.kind === 'failed') { assert.equal(failed.failure, failure); failed.onRetry?.(); }
+  assert.equal(retried, 'value', 'the failure carries its own read’s retry');
+  assert.deepEqual(familyBodyStatus({ ...none, outcome: refused, units: [inputOf('command power', { retry: retry('value') })] }), refused, 'a refused selection is not hidden behind a static read');
+  assert.deepEqual(familyBodyStatus({ ...none, early: { kind: 'choose', message: 'Choose a country' }, plan: [history] }).kind, 'choose');
+  const held = inputOf('the party history', { data: { parties: [] }, error: failure, retry: retry('history') });
+  assert.equal(held.state, 'ready', 'a held answer stays ready through a later failure');
+  assert.equal(familyBodyStatus({ ...none, plan: [held], tiles: [inputOf('the chart history', { data: 1, retry: retry('tiles') })] }), ready);
 });

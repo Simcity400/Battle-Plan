@@ -3,7 +3,7 @@ import { colour } from '../../charts/palette.ts';
 import { validateRankReply } from '../../charts/race/measureRaceData.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { contentSet } from '../../dashboard/options.ts';
-import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
+import { barsLabelText, countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
@@ -184,7 +184,6 @@ function makeRow(
     key,
     subject: displayTag,
     label: pres.label,
-    labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
     media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
     value: {
@@ -195,7 +194,7 @@ function makeRow(
     numeric,
     ...(parts.segments ? { segments: parts.segments } : {}),
     tooltip: {
-      title: pres.labelMissing ? 'Name not recorded' : pres.label,
+      title: barsLabelText(pres.label),
       hour: readView.hour,
       items: [totalItem, ...parts.tooltipItems],
     },
@@ -282,6 +281,7 @@ export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOpti
   },
   aux: {
     product: 'factory-groups',
+    label: 'the factory groups',
     params: track => ({ branchId: track.branch.id }),
     validate: validateFactoryGroups,
   },

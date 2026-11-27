@@ -1,6 +1,6 @@
 ﻿import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allWidgetPages, costPages, FIXTURE, HEAVIEST, heaviestKinds, LEGIBLE, LEGIBLE_ROWS, REBUILT, REBUILT_ALONE, REBUILT_KINDS, SCREEN, selectHeaviestKinds, VIEWS, legible, pack, screenMetrics, tallViewportHeight, tightest } from './allWidgets.mjs';
+import { allWidgetPages, costPages, enumerateWidgetPlacements, FIXTURE, HEAVIEST, heaviestKinds, LEGIBLE, LEGIBLE_ROWS, REBUILT, REBUILT_ALONE, REBUILT_KINDS, SCREEN, selectHeaviestKinds, VIEWS, legible, pack, screenMetrics, tallViewportHeight, tightest } from './allWidgets.mjs';
 
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 const resting = (item, all) => item.y === 0 || all.some(other => other !== item && other.y + other.h === item.y && other.x < item.x + item.w && item.x < other.x + other.w);
@@ -151,6 +151,18 @@ test('costPages builds an empty page and one default-size page per requested kin
   assert.equal(acknowledged.excludedByNoise.length, 1);
   assert.match(acknowledged.warning, /occupied-states/);
   assert.deepEqual(heaviestKinds(noiseExcluded, 2, { allowBelowNoiseCutoff: true }), ['scoreboard', 'research']);
+  const multiViewNoiseExcluded = { widgets: [
+    { kind: 'scoreboard', costScoreMs: 12, mainDelta: { p50: 4, p95: 10 }, worker: { p95: 2, mean: 1 }, belowBaselineNoise: false },
+    { kind: 'research', costScoreMs: 5, mainDelta: { p50: 2, p95: 5 }, worker: { p95: 0, mean: 0 }, belowBaselineNoise: false },
+    { kind: 'naval-supremacy', view: 'shares', costScoreMs: 4, mainDelta: { p50: 1, p95: 4 }, worker: { p95: 0, mean: 0 }, belowBaselineNoise: false },
+    { kind: 'naval-supremacy', view: 'timeline', costScoreMs: 3, mainDelta: { p50: -1, p95: -3 }, worker: { p95: 6, mean: 4 }, belowBaselineNoise: true },
+    { kind: 'naval-supremacy', view: 'alt', costScoreMs: 2.5, mainDelta: { p50: -1, p95: -3 }, worker: { p95: 5.5, mean: 3 }, belowBaselineNoise: true },
+  ] };
+  assert.throws(() => heaviestKinds(multiViewNoiseExcluded, 2), /below baseline noise.*naval-supremacy\/timeline/);
+  const multiViewNoiseSelection = selectHeaviestKinds(multiViewNoiseExcluded, 2);
+  assert.equal(multiViewNoiseSelection.excludedByNoise.length, 1);
+  assert.equal(multiViewNoiseSelection.excludedByNoise[0].kind, 'naval-supremacy');
+  assert.equal(multiViewNoiseSelection.excludedByNoise[0].view, 'timeline');
   const unambiguousNegativeCutoff = { widgets: [
     { kind: 'scoreboard', costScoreMs: 12, mainDelta: { p50: 4, p95: 10 }, worker: { p95: 2, mean: 1 }, belowBaselineNoise: false },
     { kind: 'occupied-states', costScoreMs: 4.8, mainDelta: { p50: 0, p95: -0.2 }, worker: { p95: 5.0, mean: 3 }, belowBaselineNoise: true },
@@ -166,4 +178,76 @@ test('costPages builds an empty page and one default-size page per requested kin
   const withHeaviest = await allWidgetPages({ costs, heaviestCount: 2 });
   assert.ok(withHeaviest.pages[HEAVIEST]);
   assert.deepEqual(withHeaviest.pages[HEAVIEST].widgets.map(w => w.kind).sort(), ['occupied-states', 'scoreboard']);
+});
+
+test('the manifest enumerator yields every registered view exactly once and drives both allWidgetPages and costPages', async () => {
+  const [{ widgetMetas }, familyManifest, manifest, families, storage, pages] = await Promise.all([
+    import('../../ui/src/widgets/definitions.ts'),
+    import('../../ui/src/widgets/familyManifest.ts'),
+    import('../../ui/src/widgets/manifest.ts'),
+    import('../../ui/src/families/manifest.ts'),
+    import('../../ui/src/dashboard/storage.ts'),
+    import('../../ui/src/dashboard/pages.ts'),
+  ]);
+  const expectedPairs = [
+    ...familyManifest.FAMILY_VIEWS.map(entry => `${entry.kind}\0${families.normalizeView(entry.view)}`),
+    ...manifest.NATIVE_WIDGETS.map(entry => `${entry.kind}\0${families.DEFAULT_VIEW}`),
+  ].sort();
+  assert.equal(new Set(expectedPairs).size, expectedPairs.length, 'manifest registers unique (kind, view) pairs');
+
+  const allPlacements = await enumerateWidgetPlacements({ mode: 'all-views' });
+  const actualPairs = allPlacements.map(entry => `${entry.kind}\0${entry.view}`);
+  assert.equal(new Set(actualPairs).size, actualPairs.length, 'enumerator yields each registered view at most once');
+  assert.deepEqual([...actualPairs].sort(), expectedPairs, 'enumerator yields every registered family view plus native widgets exactly once');
+  for (const placement of allPlacements) {
+    const resolved = manifest.resolveWidgetActiveView(placement.kind, placement.options, placement.meta);
+    assert.equal(resolved, placement.view, `${placement.kind}/${placement.view} options resolve to its registered view`);
+    if (placement.isDefaultView) assert.equal(placement.options, undefined, `${placement.kind} default view needs no stored option override`);
+  }
+
+  const defaultPlacements = await enumerateWidgetPlacements();
+  assert.equal(defaultPlacements.length, widgetMetas.length);
+  assert.deepEqual(defaultPlacements.map(entry => entry.kind), widgetMetas.map(meta => meta.kind));
+  assert.ok(defaultPlacements.every(entry => entry.isDefaultView && entry.options === undefined));
+
+  const everyViewFixture = await allWidgetPages({ allViews: true });
+  const savedAll = new Map(everyViewFixture.entries);
+  const readAll = { getItem: key => savedAll.get(key) ?? null, setItem: () => { throw new Error('read only'); } };
+  for (const label of [FIXTURE, LEGIBLE]) {
+    const page = everyViewFixture.pages[label];
+    const { library, warning } = storage.loadLayouts(readAll, page.id);
+    assert.equal(warning, null, `${label} every-view page restores cleanly`);
+    const widgets = library.layouts[0].template.widgets;
+    const restoredPairs = widgets.map(widget => `${widget.kind}\0${manifest.resolveWidgetActiveView(widget.kind, widget.options)}`).sort();
+    assert.deepEqual(restoredPairs, expectedPairs, `${label} places every registered view once`);
+  }
+
+  const everyViewCosts = await costPages(null, { allViews: true });
+  assert.equal(everyViewCosts.kinds.length, expectedPairs.length);
+  const savedCost = new Map(everyViewCosts.entries);
+  const readCost = { getItem: key => savedCost.get(key) ?? null, setItem: () => { throw new Error('read only'); } };
+  const costPageList = pages.loadPages(readCost);
+  assert.equal(costPageList.length, expectedPairs.length + 1, 'costPages every-view builds CostEmpty plus one page per registered view');
+  const costPairs = [];
+  for (const entry of everyViewCosts.kinds) {
+    const { library, warning } = storage.loadLayouts(readCost, entry.id);
+    assert.equal(warning, null, `${entry.label} restores cleanly`);
+    const widget = library.layouts[0].template.widgets[0];
+    costPairs.push(`${widget.kind}\0${manifest.resolveWidgetActiveView(widget.kind, widget.options)}`);
+  }
+  assert.deepEqual(costPairs.sort(), expectedPairs, 'costPages every-view covers every registered view once');
+
+  const multiViewCosts = { widgets: [
+    { kind: 'naval-supremacy', view: 'shares', costScoreMs: 4, mainDelta: { p50: 1 }, worker: { mean: 0 }, outcome: 'content' },
+    { kind: 'naval-supremacy', view: 'timeline', costScoreMs: 18, mainDelta: { p50: 6 }, worker: { mean: 2 }, outcome: 'content' },
+    { kind: 'scoreboard', costScoreMs: 10, mainDelta: { p50: 3 }, worker: { mean: 1 }, outcome: 'content' },
+  ] };
+  const heaviest = await allWidgetPages({ costs: multiViewCosts, heaviestCount: 2 });
+  const savedHeaviest = new Map(heaviest.entries);
+  const readHeaviest = { getItem: key => savedHeaviest.get(key) ?? null, setItem: () => { throw new Error('read only'); } };
+  const heaviestWidgets = storage.loadLayouts(readHeaviest, heaviest.pages[HEAVIEST].id).library.layouts[0].template.widgets;
+  const naval = heaviestWidgets.find(widget => widget.kind === 'naval-supremacy');
+  const score = heaviestWidgets.find(widget => widget.kind === 'scoreboard');
+  assert.equal(manifest.resolveWidgetActiveView(naval.kind, naval.options), 'timeline', 'Heaviest mounts the winning secondary view');
+  assert.equal(score.options, undefined, 'Heaviest keeps default placement when cost row omits view');
 });

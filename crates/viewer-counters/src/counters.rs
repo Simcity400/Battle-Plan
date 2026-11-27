@@ -2606,32 +2606,23 @@ pub fn gui_assets(
 }
 
 impl CounterAssets {
-    pub fn load_gui(
+    pub fn defer_window_art(
         &mut self,
         layers: &ResolvedLayers,
         localisation: &content_reader_localisation::localisation::Localisation,
         tooltip_assets: Assets,
-        images: &mut Vec<dds::Texture>,
-    ) -> io::Result<Vec<String>> {
+        textures: &Arc<LazyTextures>,
+    ) -> Vec<String> {
         let assets = gui_assets(
             &self.windows,
             self.gui.registry(),
             localisation,
             tooltip_assets,
         );
-        self.gui.load(layers, &assets, images)?;
+        self.gui.defer_window_art(layers, &assets, textures);
         self.gui_assets = assets;
-        Ok(self
-            .gui
-            .missing_textures()
-            .into_iter()
-            .map(|(texture, why)| {
-                format!(
-                    "{texture} does not load for the map-icon windows ({why}); what shows it \
-                     draws nothing, as the game draws nothing."
-                )
-            })
-            .chain(self.gui.uncovered_note("Map-icon windows"))
-            .collect())
+        self.gui.missing_textures().into_iter().map(|(texture, why)| {
+            format!("{texture} does not load for the map-icon windows ({why}); what shows it draws nothing, as the game draws nothing.")
+        }).chain(self.gui.uncovered_note("Map-icon windows")).collect()
     }
 }

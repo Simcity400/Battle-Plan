@@ -1050,6 +1050,21 @@ class Run(Harness):
         self.assertEqual(fake.synced, [])
         tracked.write_text("fn trial() {}")
         self.assertEqual(bt.main(["check", "-p", "x"]), 0)
+        crate_src = self.repo / "crates" / "a" / "src"
+        crate_src.mkdir(parents=True)
+        (crate_src / "lib.rs").write_text("#[cfg(test)]\nmod tests;\n")
+        (crate_src / "tests.rs").write_text("const VANILLA: i32 = 5;\n")
+        (self.repo / ".gitignore").write_text("*.dds\n*.ogg\ncrates/a/examples/\n")
+        examples = self.repo / "crates" / "a" / "examples"
+        examples.mkdir(parents=True)
+        (examples / "local.rs").write_text('#[path = "../src/tests.rs"]\nmod tests;\n')
+        before = list(fake.remote_calls)
+        self.assertEqual(bt.main(["check", "-p", "x"]), 2)
+        self.assertEqual(fake.remote_calls, before)
+        (crate_src / "tests.rs").write_text("const FIXTURE: i32 = 5;\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "crates/a/src/lib.rs", "crates/a/src/tests.rs"], check=True)
+        (crate_src / "tests.rs").write_text("const VANILLA: i32 = 5;\n")
+        self.assertEqual(bt.main(["check", "-p", "x"]), 2)
 
     def test_a_small_source_goes_up_in_commands_and_a_large_one_in_one_push(self):
         fake = self.use(FakeBoat([vm("a", type="default")]))

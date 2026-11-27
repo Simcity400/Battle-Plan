@@ -358,7 +358,7 @@ impl Tail {
                     subjects: Box::new([]),
                     states: ep.states.clone(),
                     sort_keys: Box::new([ep.sort_start.clone(), ep.sort_prep.clone()]),
-                    text: ep.text.clone(),
+                    text: ep.text.clone().into(),
                     payload: at,
                 }
             })
@@ -837,11 +837,11 @@ fn scan(
     for raw in raw_episodes {
         let kind = raw.token.as_ref().and_then(|t| tokens.binary_search(t).ok()).map_or(0, |at| at as u16 + 1);
         let (owner_role, target_role) = if let Some(first_step) = raw.steps.first() {
-            (Role { slot: first_step.owner_slot, at: first_step.hour }, Role { slot: first_step.target_slot, at: first_step.hour })
+            (Role::at(first_step.owner_slot, first_step.hour), Role::at(first_step.target_slot, first_step.hour))
         } else if let Some(comp) = &raw.completion {
-            (Role { slot: comp.owner_slot, at: comp.observed_hour }, Role { slot: comp.target_slot, at: comp.observed_hour })
+            (Role::at(comp.owner_slot, comp.observed_hour), Role::at(comp.target_slot, comp.observed_hour))
         } else {
-            (Role { slot: None, at: raw.appear_hour }, Role { slot: None, at: raw.appear_hour })
+            (Role::at(None, raw.appear_hour), Role::at(None, raw.appear_hour))
         };
 
         let mut changes: Vec<i32> = Vec::new();
@@ -1321,9 +1321,10 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     EspionageLogTail::validate(&params)?;
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let prepared = prepare(source, &query, branch, load, &params, &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, EspionageLogTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, &params, &AtomicBool::new(false)));
+    let prepared = prepared.map_err(|error| error.to_string())?;
     let owned = Owned { replay: source.replay(), timeline: Arc::clone(&query.timeline), holders: Arc::clone(&query.holders) };
-    Ok(occurrences::occurrence_panel(source.tables(), move |hour, cancelled| {
+    Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let query = Query { replay: &owned.replay, timeline: Arc::clone(&owned.timeline), holders: Arc::clone(&owned.holders) };
         let hour = occurrences::cutoff(&query, Some(hour))?;

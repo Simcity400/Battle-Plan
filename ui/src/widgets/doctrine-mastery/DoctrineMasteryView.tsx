@@ -83,7 +83,7 @@ export default function DoctrineMasteryView(props: FamilyViewProps) {
         <div className="dossier">
           <div className="dossier-body">
             <p className="dossier-missing">{shown.meta.folderTitle}</p>
-            {rewards.error && <WidgetState kind="error" scale="section" failure={rewards.error} onRetry={rewards.retry} />}
+            {rewards.error && <WidgetState kind="error" scale="section" what="doctrine rewards" failure={rewards.error} onRetry={rewards.retry} />}
             <section className="dossier-section">
               <h4>{shown.meta.rewardsUnknown === null
                 ? `Steps (${shown.meta.unlocked} of ${shown.meta.rewards.length} unlocked)`

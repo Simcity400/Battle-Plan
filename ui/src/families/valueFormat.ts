@@ -177,7 +177,6 @@ export interface FormatValueOptions {
   readonly figure?: string;
   readonly gameWindow?: boolean;
   readonly compact?: boolean;
-  readonly loading?: boolean;
 }
 
 export type FormattedValue =
@@ -185,7 +184,8 @@ export type FormattedValue =
   | { readonly kind: 'zero'; readonly text: string; readonly exact: string; readonly spoken: string; readonly audit: string }
   | { readonly kind: 'notRecorded'; readonly label: string; readonly reason: string; readonly gameWindow?: boolean; readonly spoken: string; readonly audit: string }
   | { readonly kind: 'notApplicable'; readonly label: '\u2014'; readonly reason: string; readonly spoken: string; readonly audit: string }
-  | { readonly kind: 'partial'; readonly text: string; readonly exact: string; readonly reason: string; readonly spoken: string; readonly audit: string };
+  | { readonly kind: 'partial'; readonly text: string; readonly exact: string; readonly reason: string; readonly spoken: string; readonly audit: string }
+  | { readonly kind: 'pending'; readonly label: string; readonly reason: string; readonly spoken: string; readonly audit: string };
 
 export const NOT_RECORDED_LABEL = 'Not recorded';
 export const NOT_APPLICABLE_LABEL = '\u2014';
@@ -419,8 +419,8 @@ export function formatValueState(value: Value, format?: ValueFormat, options?: F
       return { kind: 'zero', text, exact: text, spoken: text, audit: text };
     }
     case 'notRecorded': {
-      const label = options?.loading ? LOADING_LABEL : options?.gameWindow ? GAME_WINDOW_MISSING_LABEL : notRecordedLabel(options?.figure);
-      const lead = options?.loading ? 'Loading' : options?.figure?.trim() ? `${options.figure.trim()} not recorded` : NOT_RECORDED_LABEL;
+      const label = options?.gameWindow ? GAME_WINDOW_MISSING_LABEL : notRecordedLabel(options?.figure);
+      const lead = options?.figure?.trim() ? `${options.figure.trim()} not recorded` : NOT_RECORDED_LABEL;
       const spoken = `${lead}: ${value.reason}`;
       return {
         kind: 'notRecorded',
@@ -447,6 +447,10 @@ export function formatValueState(value: Value, format?: ValueFormat, options?: F
         spoken,
         audit: spoken,
       };
+    }
+    case 'pending': {
+      const spoken = `Loading: ${value.reason}`;
+      return { kind: 'pending', label: LOADING_LABEL, reason: value.reason, spoken, audit: spoken };
     }
   }
 }
@@ -498,6 +502,8 @@ export function valueStateProps(value: Value, format?: ValueFormat, narrow = fal
         reason: formatted.reason,
         ...(narrow ? { narrow: true } : {}),
       };
+    case 'pending':
+      return { kind: 'pending', reason: formatted.reason, ...(narrow ? { narrow: true } : {}) };
   }
 }
 

@@ -7,12 +7,12 @@ import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
+import { countryRowFromAction } from '../../families/host/installed.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { OccupationReserveReply } from '../../generated/dashboard';
 import { persons, validateOccupationReserve } from './occupationReserveData';
-import type { OccupationReserveRowMeta } from './occupationReserveRaceProjection.ts';
 import './occupationReserve.css';
 
 function HolderSourcesDetail({ runtime, trackId, tag, hour, active }: {
@@ -68,10 +68,11 @@ function OccupationReserveFamilyWidget(props: FamilyViewProps) {
   const gate = useGate(runtime, widget, SPEC, active);
 
   const onActivate = useCallback((action: InstalledAction) => {
+    const row = countryRowFromAction(action);
+    if (!row) return;
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
-    const meta = action.meta as OccupationReserveRowMeta | null | undefined;
-    setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, hour: gated });
+    setDetail({ ...row, hour: gated });
   }, [gate]);
 
   if (!manifestDeclaration) return null;

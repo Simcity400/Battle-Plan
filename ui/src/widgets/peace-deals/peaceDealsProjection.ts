@@ -3,12 +3,12 @@ import { contentSet } from '../../dashboard/options.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, newIdentityBoundary, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { artKindCell, NAME_LOADING, newIdentityBoundary, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logDateCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../../families/value.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, type Value } from '../../families/value.ts';
+import { formatScalar, formatValueState } from '../../families/valueFormat.ts';
 import type { PeaceDealsRow, PeaceDealsTailReply, PeaceTermCount, PeaceTermKind } from '../../generated/dashboard';
 import { PEACE_DEALS_COLUMNS } from './definition.ts';
 
@@ -64,17 +64,23 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
     return { ...common, key: `all:${row.parent}`, name, muted: true, pageParent: row.parent ?? undefined, detailColumn: 'terms', ...(row.last ? { detailEnd: true } : {}),
       cells: { date: blank, kind: blank, country: blank, terms: cell, action: blank } };
   }
+  const unnamedSet = new Set<string>();
+  let pendingItems = 0;
   const flags = d.items.map(term => {
     const flag = logCountryCell(view, [{ tag: term.tag, missingLabel: term.kind === 'state' ? 'Former owner not recorded' : 'Country not recorded' }], term.at, boundary).flags![0]!;
     const name = term.kind === 'state'
       ? term.state === null ? null : resolveName(view, 'state', String(term.state), { atHour: row.hour, boundary }).value
       : term.tag === null ? null : resolveName(view, 'country', term.tag, { atHour: term.at, boundary }).value;
     const known = name?.kind === 'known';
-    const label = known ? String(name.value) : term.kind === 'state' ? 'State name not recorded' : 'Country name not recorded';
+    const pending = name?.kind === 'pending';
+    const pendingLabel = pending ? (formatValueState(name) as { readonly label: string }).label : '';
+    const label = known ? String(name.value) : pending ? pendingLabel : term.kind === 'state' ? 'State name not recorded' : 'Country name not recorded';
+    if (pending) pendingItems++;
+    else if (!known) unnamedSet.add(label);
     return { ...flag, label, ...(known ? {} : { muted: true }), ...(term.kind === 'state' ? {} : { note: labels[term.kind][0] }) };
   });
   const list = flags.map(f => f.note ? `${f.label} \u00b7 ${f.note}` : f.label);
-  const unnamed = [...new Set(flags.filter(f => f.muted).map(f => f.label))];
+  const unnamed = [...unnamedSet];
   let name: string;
   let cell: TableCell;
   if (d.kind === 'recipient') {
@@ -84,18 +90,28 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
       ? notRecorded('Recipient not recorded')
       : shown.kind === 'known'
         ? knownValue(String(shown.value))
-        : shown.kind === 'partial'
-          ? partialValue(String(shown.value), shown.reason)
-          : notRecorded(shown.kind === 'notRecorded' ? shown.reason : 'Recipient not recorded');
+        : shown.kind === 'pending'
+          ? shown
+          : shown.kind === 'partial'
+            ? partialValue(String(shown.value), shown.reason)
+            : notRecorded(shown.kind === 'notRecorded' ? shown.reason : 'Recipient not recorded');
     const note = summary(d.terms.map(quantity));
-    name = [text.kind === 'known' || text.kind === 'partial' ? String(text.value) : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
+    name = [text.kind === 'known' || text.kind === 'partial' ? String(text.value) : text.kind === 'pending' ? (formatValueState(text) as { readonly label: string }).label : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
     const joined = [name, ...list].join(', ');
-    const reasons = [...(text.kind === 'known' ? [] : [text.kind === 'partial' || text.kind === 'notRecorded' ? text.reason : 'Recipient not recorded']), ...unnamed];
-    const value = reasons.length ? partialValue(joined, reasons.join('; ')) : knownValue(joined);
+    const allPending = text.kind === 'pending' && pendingItems === d.items.length && !note;
+    const reasons = [
+      ...(text.kind === 'known' ? [] : [text.kind === 'pending' || text.kind === 'partial' || text.kind === 'notRecorded' ? text.reason : 'Recipient not recorded']),
+      ...unnamed,
+      ...(pendingItems > 0 && text.kind !== 'pending' ? [NAME_LOADING] : []),
+    ];
+    const value = allPending ? pendingValue(NAME_LOADING) : reasons.length ? partialValue(joined, reasons.join('; ')) : knownValue(joined);
     cell = { value, heading: { flag: recipient.flags![0]!, text, ...(note ? { note } : {}) }, ...(flags.length ? { flags } : {}) };
   } else {
     name = list.length > 1 ? `${list[0]} \u2013 ${list[list.length - 1]}` : (list[0] ?? 'Terms');
-    cell = { value: unnamed.length ? partialValue(list.join(', '), unnamed.join('; ')) : knownValue(list.join(', ')), flags };
+    const allPending = d.items.length > 0 && pendingItems === d.items.length;
+    const reasons = pendingItems > 0 ? [...unnamed, NAME_LOADING] : unnamed;
+    const value = allPending ? pendingValue(NAME_LOADING) : reasons.length ? partialValue(list.join(', '), reasons.join('; ')) : knownValue(list.join(', '));
+    cell = { value, flags };
   }
   return {
     ...common, key: `child:${row.key}`, name, pageParent: row.parent ?? undefined, detailColumn: 'terms', ...(row.last ? { detailEnd: true } : {}),

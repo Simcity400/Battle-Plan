@@ -322,7 +322,6 @@ impl AtHour for ResourceBalance {
     const KEY: &'static str = "resource-balance";
     const TITLE: &'static str = "Resource balance";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = ResourceBalanceParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hideEmpty];
     type Reply = ResourceBalanceReply;

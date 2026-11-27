@@ -2,7 +2,7 @@
 use crate::{
     changes::{Changes, Passing, Texts, Written},
     invalid,
-    pages::{Pages, Run},
+    pages::{EntryRef, Pages},
 };
 use replay_columnar::{
     manifest::Status,
@@ -66,7 +66,7 @@ pub struct Given {
 
 #[derive(Default)]
 pub struct Chain {
-    next: Option<(usize, usize)>,
+    next: Option<(usize, usize, Hour)>,
     prefix: Option<(usize, Prefix)>,
 }
 
@@ -100,8 +100,7 @@ impl Fetch {
     }
 
     pub fn first_hour(&self) -> Hour {
-        let run = &self.pages.runs()[self.run];
-        self.chain.next.map_or(Hour::MAX, |(block, index)| part_hour(run, self.table, block, index))
+        self.chain.next.map_or(Hour::MAX, |(_, _, hour)| hour)
     }
 
     pub fn run(self) -> io::Result<Fetched> {
@@ -109,39 +108,55 @@ impl Fetch {
         let held = &pages.runs()[run];
         let started = Instant::now();
         let (mut given, mut tracks, mut stored, mut decompressed) = (Vec::new(), 0, 0, 0);
-        while let Some((block, index)) = chain.next {
-            if !given.is_empty() && part_hour(held, table, block, index) > through {
+        let mut cached: Option<(usize, EntryRef)> = None;
+        while let Some((block, index, hour)) = chain.next {
+            if !given.is_empty() && hour > through {
                 break;
             }
-            let page = &held.pages[block];
-            let parts = &page.tables[table].parts;
-            let last = parts.get(index + 1).map_or(page.hours - 1, |following| following.first - 1);
+            let entry = match &cached {
+                Some((at, entry)) if *at == block => entry.clone(),
+                _ => {
+                    let entry = pages.table_entry(run, block, table)?;
+                    cached = Some((block, entry.clone()));
+                    entry
+                }
+            };
+            let hours = held.block_hours(block).ok_or_else(|| invalid(format!("Run {run} holds no block {block}")))?;
+            let parts = &entry.parts;
+            let last = parts.get(index + 1).map_or(hours - 1, |following| following.first - 1);
             let previous = chain.prefix.as_ref().filter(|(at, _)| *at == block && index > 0).map(|(_, prefix)| prefix);
             let part = reader::fetch(pages.extents(run), &parts[index], last, &columns, previous)?;
             tracks += part.track_count();
             stored += part.stored;
             decompressed += part.decompressed;
-            chain.next = next_part(held, table, block, index + 1);
-            chain.prefix = chain.next.filter(|&(next, _)| next == block).map(|_| (block, part.prefix()));
+            chain.next = next_part(&*pages, run, table, block, index + 1, Some((block, &entry)))?;
+            chain.prefix = chain.next.filter(|&(next, _, _)| next == block).map(|_| (block, part.prefix()));
             given.push(Given { block, index, part });
         }
         Ok(Fetched { given, chain, tracks, stored, decompressed, ns: started.elapsed().as_nanos() as u64 })
     }
 }
 
-fn part_hour(run: &Run, table: usize, block: usize, index: usize) -> Hour {
-    run.first_hour + (block as u32 * BLOCK + u32::from(run.pages[block].tables[table].parts[index].first)) as Hour
-}
-
-fn next_part(run: &Run, table: usize, mut block: usize, mut index: usize) -> Option<(usize, usize)> {
-    while let Some(page) = run.pages.get(block) {
-        if index < page.tables[table].parts.len() {
-            return Some((block, index));
+fn next_part(pages: &dyn Pages, run: usize, table: usize, mut block: usize, mut index: usize, cached: Option<(usize, &EntryRef)>) -> io::Result<Option<(usize, usize, Hour)>> {
+    let held = &pages.runs()[run];
+    let blocks = held.blocks();
+    while block < blocks {
+        let owned;
+        let entry: &EntryRef = match cached {
+            Some((at, entry)) if at == block => entry,
+            _ => {
+                owned = pages.table_entry(run, block, table)?;
+                &owned
+            }
+        };
+        if let Some(part) = entry.parts.get(index) {
+            let hour = held.first_hour + (block as u32 * BLOCK + u32::from(part.first)) as Hour;
+            return Ok(Some((block, index, hour)));
         }
         block += 1;
         index = 0;
     }
-    None
+    Ok(None)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -314,6 +329,7 @@ pub struct Lane {
     columns: Arc<[usize]>,
     keyed: bool,
     cells: TableState,
+    block_entry: Option<(usize, EntryRef)>,
     under: Option<Under>,
     ahead: VecDeque<Given>,
     next: Option<u32>,
@@ -347,15 +363,17 @@ impl Lane {
     pub fn new(pages: Arc<dyn Pages>, run: usize, table: usize, columns: &[usize], keyed: bool) -> io::Result<Self> {
         let held_run = pages.runs().get(run).ok_or_else(|| invalid(format!("No run {run}")))?;
         let kinds = pages.kinds(table).ok_or_else(|| invalid(format!("No table {table} in the schema")))?.to_vec();
-        if held_run.pages.first().is_none_or(|page| page.tables.len() <= table) {
+        if held_run.blocks() == 0 {
             return Err(invalid(format!("Run {run} holds no table {table}")));
         }
+        let first_entry = pages.table_entry(run, 0, table)?;
         for (at, &column) in columns.iter().enumerate() {
             if column >= kinds.len() || columns[..at].contains(&column) {
                 return Err(invalid(format!("Column {column} of table {table} is selected twice or not in it")));
             }
         }
-        let log = reader::class_of(&held_run.pages, table)?.then(Box::default);
+        let log = first_entry.log.then(Box::default);
+        drop(first_entry);
         let kinds = kinds[..pages.held(table).min(kinds.len())].to_vec();
         let read: Arc<[usize]> = columns.iter().copied().filter(|&column| column < kinds.len()).collect();
         Ok(Self {
@@ -363,6 +381,7 @@ impl Lane {
             run,
             table,
             cells: TableState::new(&kinds),
+            block_entry: None,
             kinds,
             declared: columns.into(),
             written: vec![Vec::new(); read.len()],
@@ -517,9 +536,23 @@ impl Lane {
         self.pages.runs()[self.run].first_hour + run_hour as Hour
     }
 
+    pub(super) fn entry_at(&mut self, block: usize) -> io::Result<EntryRef> {
+        if let Some((at, entry)) = &self.block_entry
+            && *at == block
+        {
+            return Ok(entry.clone());
+        }
+        let entry = self.pages.table_entry(self.run, block, self.table)?;
+        if entry.log != self.log.is_some() {
+            return Err(invalid(format!("Table {} is a log in one block of its run and holds state in another", self.table)));
+        }
+        self.block_entry = Some((block, entry.clone()));
+        Ok(entry)
+    }
+
     pub fn want(&mut self, through: Hour) -> Option<Fetch> {
-        let (block, index) = self.chain.as_ref()?.next?;
-        if !self.ahead.is_empty() && part_hour(&self.pages.runs()[self.run], self.table, block, index) > through {
+        let (_, _, hour) = self.chain.as_ref()?.next?;
+        if !self.ahead.is_empty() && hour > through {
             return None;
         }
         let chain = self.chain.take()?;
@@ -527,7 +560,7 @@ impl Lane {
     }
 
     pub(crate) fn holds_through(&self, through: Hour) -> bool {
-        self.chain.as_ref().is_some_and(|chain| chain.next.is_none_or(|(block, index)| part_hour(&self.pages.runs()[self.run], self.table, block, index) > through))
+        self.chain.as_ref().is_some_and(|chain| chain.next.is_none_or(|(_, _, hour)| hour > through))
     }
 
     pub fn give(&mut self, fetched: Fetched) -> io::Result<()> {
@@ -563,15 +596,37 @@ impl Lane {
         let hours = run.hours();
         let target = (i64::from(hour) - i64::from(run.first_hour)).clamp(0, i64::from(hours) - 1) as u32;
         let block = (target / BLOCK) as usize;
-        let truncated = matches!(reader::status(&run.pages[block].tables[self.table], (target % BLOCK) as u16, self.game(block as u32 * BLOCK))?.0, Status::Truncated { .. });
-        let ends_block = !truncated && target + 1 == block as u32 * BLOCK + u32::from(run.pages[block].hours);
+        let block_hours = run.block_hours(block).ok_or_else(|| invalid(format!("Run {} holds no block {block}", self.run)))?;
+        let target_entry = self.entry_at(block)?;
+        let truncated = matches!(reader::status(&target_entry, (target % BLOCK) as u16, self.game(block as u32 * BLOCK))?.0, Status::Truncated { .. });
+        let ends_block = !truncated && target + 1 == block as u32 * BLOCK + u32::from(block_hours);
         let at = if ends_block { Some(block) } else { block.checked_sub(1) };
         let refused = || invalid(format!("No restore of table {} is written", self.table));
-        let (restored, entry) = match at {
-            Some(at) => reader::restored_before(&run.pages, self.table, at).ok_or_else(refused)?,
-            None => (0, run.pages[0].tables[self.table].first.as_ref().ok_or_else(refused)?),
+        let (restored, restore_entry, from_first) = match at {
+            Some(at) => {
+                let mut found = None;
+                for index in (0..=at).rev() {
+                    let entry = if index == block { target_entry.clone() } else { pages.table_entry(self.run, index, self.table)? };
+                    if entry.restore.is_some() {
+                        found = Some((index, entry, false));
+                        break;
+                    }
+                    if entry.first.is_some() {
+                        found = Some((index, entry, true));
+                        break;
+                    }
+                }
+                found.ok_or_else(refused)?
+            }
+            None => {
+                let entry = if block == 0 { target_entry.clone() } else { pages.table_entry(self.run, 0, self.table)? };
+                if entry.first.is_none() {
+                    return Err(refused());
+                }
+                (0, entry, true)
+            }
         };
-        let from_first = at.is_none() || run.pages[restored].tables[self.table].restore.is_none();
+        let entry = if from_first { restore_entry.first.as_ref().ok_or_else(refused)? } else { restore_entry.restore.as_ref().ok_or_else(refused)? };
         let started = Instant::now();
         #[cfg(test)]
         {
@@ -582,6 +637,7 @@ impl Lane {
         } else {
             reader::restore(pages.extents(self.run), entry, &self.kinds, &self.columns)?
         };
+        drop(restore_entry);
         let restore_ns = started.elapsed().as_nanos() as u64;
         if let Some(under) = self.under.take() {
             add(&mut self.spent, &under.cursor.spent);
@@ -604,9 +660,13 @@ impl Lane {
         if let Some(passage) = &mut self.passage {
             passage.live = None;
         }
-        let next = if from_first { 1 } else { restored as u32 * BLOCK + u32::from(run.pages[restored].hours) };
+        let restored_hours = run.block_hours(restored).ok_or_else(|| invalid(format!("Run {} holds no block {restored}", self.run)))?;
+        let next = if from_first { 1 } else { restored as u32 * BLOCK + u32::from(restored_hours) };
         self.next = Some(next);
-        self.chain = Some(Chain { next: next_part(run, self.table, (next / BLOCK) as usize, 0), prefix: None });
+        let next_block = (next / BLOCK) as usize;
+        let cached = (next_block == block).then_some((block, &target_entry));
+        self.chain = Some(Chain { next: next_part(&*pages, self.run, self.table, next_block, 0, cached)?, prefix: None });
+        drop(target_entry);
         self.status_until = 0;
         let mut sought = Sought { restore_ns, restored: (!from_first).then_some(restored), blocks: (target + 1).div_ceil(BLOCK).saturating_sub(next / BLOCK), ..Sought::default() };
         let replaying = Instant::now();
@@ -706,10 +766,10 @@ impl Lane {
         let mut next = self.next.expect("sought");
         while next <= target {
             let block = (next / BLOCK) as usize;
-            let page = &run.pages[block];
+            let block_hours = run.block_hours(block).ok_or_else(|| invalid(format!("Run {} holds no block {block}", self.run)))?;
             let start = block as u32 * BLOCK;
-            let end = target.min(start + u32::from(page.hours) - 1);
-            let entry = &page.tables[self.table];
+            let end = target.min(start + u32::from(block_hours) - 1);
+            let entry = self.entry_at(block)?;
             let hour = (next - start) as u16;
             if self.under.as_ref().is_some_and(|under| under.block != block || under.last < hour) {
                 self.pass()?;
@@ -786,7 +846,7 @@ impl Lane {
                 self.read.clear();
                 next = end + 1;
             }
-            if next == start + u32::from(page.hours) && entry.packed {
+            if next == start + u32::from(block_hours) && entry.packed {
                 self.next = Some(next);
                 if collect {
                     return Ok(Stop::Packed);
@@ -800,9 +860,8 @@ impl Lane {
 
     fn note_read(&mut self, block: usize, hour: u16) -> io::Result<()> {
         self.read.clear();
-        let pages = Arc::clone(&self.pages);
-        let entry = &pages.runs()[self.run].pages[block].tables[self.table];
-        if !matches!(reader::status(entry, hour, self.game(block as u32 * BLOCK))?.0, Status::Truncated { .. }) {
+        let entry = self.entry_at(block)?;
+        if !matches!(reader::status(&entry, hour, self.game(block as u32 * BLOCK))?.0, Status::Truncated { .. }) {
             return Ok(());
         }
         let Some(under) = &self.under else { return Ok(()) };
@@ -903,13 +962,17 @@ impl Lane {
         let mut hour = self.status_until;
         while hour <= head {
             let block = (hour / BLOCK) as usize;
-            let page = &self.pages.runs()[self.run].pages[block];
+            let block_hours = self.pages.runs()[self.run].block_hours(block).ok_or_else(|| invalid(format!("Run {} holds no block {block}", self.run)))?;
+            let entry = match &self.block_entry {
+                Some((at, entry)) if *at == block => entry.clone(),
+                _ => self.pages.table_entry(self.run, block, self.table)?,
+            };
             let start = block as u32 * BLOCK;
-            let (status, _, _, change) = reader::status(&page.tables[self.table], (hour - start) as u16, self.game(start))?;
+            let (status, _, _, change) = reader::status(&entry, (hour - start) as u16, self.game(start))?;
             if status != held {
                 return Ok(Some(self.game(hour)));
             }
-            hour = start + u32::from(change.unwrap_or(page.hours));
+            hour = start + u32::from(change.unwrap_or(block_hours));
         }
         Ok(None)
     }
@@ -956,15 +1019,15 @@ impl Lane {
             return Ok(());
         }
         let block = (head / BLOCK) as usize;
-        let page = &self.pages.runs()[self.run].pages[block];
-        let entry = &page.tables[self.table];
+        let block_hours = self.pages.runs()[self.run].block_hours(block).ok_or_else(|| invalid(format!("Run {} holds no block {block}", self.run)))?;
+        let entry = self.entry_at(block)?;
         let start = block as u32 * BLOCK;
         let first = self.game(start);
         let hour = (head - start) as u16;
-        let (status, _, sampled, change) = reader::status(entry, hour, first)?;
-        let until = change.map_or(page.hours, |change| change);
+        let (status, _, sampled, change) = reader::status(&entry, hour, first)?;
+        let until = change.map_or(block_hours, |change| change);
         let last = until - 1;
-        self.status_moving = sampled == Some(first + Hour::from(hour)) && last > hour && reader::status(entry, last, first)?.2 == Some(first + Hour::from(last));
+        self.status_moving = sampled == Some(first + Hour::from(hour)) && last > hour && reader::status(&entry, last, first)?.2 == Some(first + Hour::from(last));
         self.status_until = start + u32::from(until);
         self.status = (status, sampled);
         Ok(())

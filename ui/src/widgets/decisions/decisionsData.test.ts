@@ -382,3 +382,135 @@ test('a decision cost read in one currency keeps it, partial, when the other cur
   assert.deepEqual(read.rows[0]?.cells.cost?.value, { kind: 'partial', value: '50', reason: 'Part of the decision cost was not recorded' },
     'a selection whose cost was not read keeps the one that was, partial');
 });
+
+test('S3: a malformed decision row becomes a refused slot with its reason instead of disappearing or reporting no matches', () => {
+  const start = day(3, 1);
+  const hour = start + 10;
+  const goodOcc = card([edge('decisionSelected', start, { days: 10 })]);
+  const badOcc = { id: 'bad:dec', opened: true, edges: [] };
+  const mixedHead = {
+    branchId: '1',
+    total: '2',
+    offset: '0',
+    live: '1',
+    counts: [{ key: 'running', total: '2' }],
+    rows: [
+      { hour: start, key: goodOcc.id, observed: start, ordinal: '0', live: true, status: 'active', occurrence: goodOcc },
+      { hour: start, key: 'bad:dec', observed: start, ordinal: '1', live: false, status: 'active', occurrence: badOcc },
+    ],
+    missing: [],
+    nextChange: null,
+    unavailable: [],
+    warnings: [],
+  };
+  const mixedSource = buildRowSourceFromHead('test:decisions-mixed-bad', mixedHead, undefined, hour, undefined, decisionsProjection.validateTail)!;
+  const mixedModel = decisionsProjection.project(
+    createBoundedReadView({ hour, rows: new Map([['main', mixedSource]]) }),
+    { artwork: false, breaks: [] },
+  );
+  assert.equal(mixedModel.rows.length, 1);
+  assert.equal(mixedModel.rows[0]?.key, goodOcc.id);
+  assert.equal(mixedModel.slots?.length, 2);
+  assert.equal(mixedModel.slots?.[0]?.kind, 'data');
+  assert.deepEqual(mixedModel.slots?.[1], { kind: 'refused', key: 'refused:1', reason: 'The occurrence card is malformed.' });
+  assert.equal(mixedModel.titleSummary, '2 running');
+  assert.equal(mixedModel.totalRows, 2);
+  assert.equal(mixedModel.empty, undefined);
+
+  const onlyBadHead = {
+    ...mixedHead,
+    total: '1',
+    counts: [{ key: 'running', total: '1' }],
+    rows: [{ hour: start, key: 'bad:dec', observed: start, ordinal: '0', live: false, status: 'active', occurrence: badOcc }],
+  };
+  const onlyBadSource = buildRowSourceFromHead('test:decisions-only-bad', onlyBadHead, undefined, hour, undefined, decisionsProjection.validateTail)!;
+  const onlyBadModel = decisionsProjection.project(
+    createBoundedReadView({ hour, rows: new Map([['main', onlyBadSource]]) }),
+    { artwork: false, breaks: [] },
+  );
+  assert.equal(onlyBadModel.rows.length, 0);
+  assert.deepEqual(onlyBadModel.slots, [{ kind: 'refused', key: 'refused:0', reason: 'The occurrence card is malformed.' }]);
+  assert.equal(onlyBadModel.titleSummary, '1 running');
+  assert.equal(onlyBadModel.totalRows, 1);
+  assert.equal(onlyBadModel.empty, undefined, 'a tail with one malformed decision never claims no decisions matched');
+
+  const futureLaterEdgeOcc = card([
+    { ...edge('decisionSelected', start), row: { ...edge('decisionSelected', start).row, item: null } },
+    edge('decisionCompleted', hour + 5),
+  ]);
+  const nullAndFutureSource = buildRowSourceFromHead('test:decisions-null-and-future-edge', {
+    ...mixedHead,
+    total: '2',
+    counts: [],
+    rows: [
+      { hour: start, key: 'null:dec', observed: start, ordinal: '0', live: false, status: null, occurrence: null },
+      { hour: start, key: futureLaterEdgeOcc.id, observed: start, ordinal: '1', live: false, status: 'active', occurrence: futureLaterEdgeOcc },
+    ],
+  }, undefined, hour, undefined, decisionsProjection.validateTail)!;
+  const nullAndFutureModel = decisionsProjection.project(
+    createBoundedReadView({ hour, rows: new Map([['main', nullAndFutureSource]]) }),
+    { artwork: false, breaks: [] },
+  );
+  assert.equal(nullAndFutureModel.slots?.length, 2);
+  assert.deepEqual(nullAndFutureModel.slots?.[0], { kind: 'refused', key: 'refused:0', reason: 'Decision was not recorded.' });
+  assert.equal(nullAndFutureModel.slots?.[1]?.kind, 'refused');
+  assert.match(nullAndFutureModel.slots?.[1]?.kind === 'refused' ? nullAndFutureModel.slots[1].reason : '', /after displayed hour/);
+
+  const inconsistentTimedOutSource = buildRowSourceFromHead('test:decisions-timed-out-no-end', {
+    ...mixedHead,
+    total: '2',
+    counts: [],
+    rows: [
+      { hour: start, key: goodOcc.id, observed: start, ordinal: '0', live: true, status: 'active', occurrence: goodOcc },
+      { hour: start, key: 'bad:timedout', observed: start, ordinal: '1', live: false, status: 'timedOut', occurrence: card([edge('decisionSelected', start)]) },
+    ],
+  }, undefined, hour, undefined, decisionsProjection.validateTail)!;
+  const inconsistentModel = decisionsProjection.project(
+    createBoundedReadView({ hour, rows: new Map([['main', inconsistentTimedOutSource]]) }),
+    { artwork: false, breaks: [] },
+  );
+  assert.equal(inconsistentModel.rows.length, 1);
+  assert.equal(inconsistentModel.rows[0]?.key, goodOcc.id);
+  assert.deepEqual(inconsistentModel.slots?.[1], { kind: 'refused', key: 'refused:1', reason: 'The decision row is malformed.' });
+
+  for (const declaration of [decisionsDeclaration, eventChoicesDeclaration, eventFeedDeclaration]) {
+    const entry = declaration.sources({
+      track: { source: { id: 's1', revision: 'r1', metadata: { playerCountryId: '9' } }, axisOffset: 0, selectedSlot: 7 },
+      branch: { id: '1', firstHour: 0, lastHour: 200, gaps: [] },
+      widget: { id: 'w1', kind: declaration.kind, countries: { kind: 'all' }, time: { mode: 'follow' } },
+      options: { warsPeace: true },
+      following: true,
+      countries: { all: true, tags: [], filter: { passing: null, unrecorded: [], bounds: [] } },
+      gateSpan: (firstHour: number, lastHour: number) => ({ firstHour, lastHour }),
+    } as unknown as FamilyPlanContext<unknown>, { following: true, staticSpan: null }).entries[0]!;
+    assert.equal(entry.read.shape === 'paged-rows' ? entry.read.validate : undefined, declaration.projection.validateTail, `${declaration.kind}: pagedTailEntry carries its product tail validator`);
+  }
+});
+
+test('a decision targeting a state whose name is still loading keeps pending in the Place cell instead of emitting State N', () => {
+  const start = day(3, 1);
+  const stateEdge = edge('decisionSelected', start);
+  const occ = card([{ ...stateEdge, row: { ...stateEdge.row, cause: { state: 77, notes: [], targetRecorded: false } } }]);
+  const source = buildRowSourceFromHead('test:decisions-pending-state', {
+    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', counts: [],
+    rows: [{ hour: start, key: 'k-state', ordinal: '0', cells: [], occurrence: occ }],
+    facetTotals: [], missing: [], unavailable: [], warnings: [],
+  }, undefined, start + 1)!;
+  const pendingIdentity = {
+    resolve(kind: string, key: string, atHour: number) {
+      return {
+        kind,
+        key,
+        holder: { status: 'absent', reason: 'not set' },
+        name: kind === 'state' ? { status: 'pending' } : { status: 'ready', value: key },
+        validInterval: [atHour, atHour],
+        nextChangeAt: Infinity,
+      };
+    },
+  } as never;
+  const model = decisionsProjection.project(
+    createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]), identity: pendingIdentity }),
+    { artwork: false, breaks: [] },
+  );
+  assert.deepEqual(model.rows[0]?.cells.place?.value, { kind: 'pending', reason: 'Name is loading' });
+});

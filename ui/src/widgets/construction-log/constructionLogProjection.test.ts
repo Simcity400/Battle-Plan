@@ -247,3 +247,44 @@ test('a line shows its factories of the recorded most a line takes, and the coun
   assert.equal(idleTip.find(entry => entry.label === 'Most factories')?.value.kind, 'notRecorded');
   assert.deepEqual(project({ factoryCap: 15, factoryCapMissing: null }, false, sampleRow({ key: '4', hour: 100, live: true, kind: 'building', factories: 0, status: 'waiting' })).cells.factories?.value, { kind: 'known', value: '0 / 15' }, 'a building line always takes the define');
 });
+
+test('pending state or province lookup stays pending in construction place cell, railway endpoints, and Place hover', () => {
+  const pendingIdentity: IdentityProvider = {
+    resolve(kind: EntityKind, key: string, atHour: DisplayedHour): IdentityResult {
+      if (kind === 'state' && key === '10') {
+        return { kind, key, holder: { status: 'absent', reason: 'not set' }, name: { status: 'ready', value: 'Illinois' }, validInterval: [atHour, atHour], nextChangeAt: Infinity };
+      }
+      return {
+        kind,
+        key,
+        holder: { status: 'absent', reason: 'not set' },
+        name: kind === 'state' || kind === 'province' ? { status: 'pending' } : { status: 'ready', value: key },
+        validInterval: [atHour, atHour],
+        nextChangeAt: Infinity,
+      };
+    },
+  };
+  const rows: ConstructionLogRow[] = [
+    sampleRow({ key: 'p-state', ordinal: '0', place: { kind: 'building', state: 77, toState: null, province: null, atHour: 100 } }),
+    sampleRow({ key: 'p-rail-both', ordinal: '1', kind: 'railway', place: { kind: 'railway', state: 77, toState: 88, province: null, atHour: 100 } }),
+    sampleRow({ key: 'p-rail-mixed', ordinal: '2', kind: 'railway', place: { kind: 'railway', state: 10, toState: 88, province: null, atHour: 100 } }),
+    sampleRow({ key: 'p-rail-half-null', ordinal: '3', kind: 'railway', place: { kind: 'railway', state: 10, toState: null, province: null, atHour: 100 } }),
+  ];
+  const source = buildRowSourceFromHead('test:construction:pending-place', sampleReply(rows), undefined, 100)!;
+  const model = constructionLogProjection.project(
+    createBoundedReadView({ hour: 100, rows: new Map([['main', source]]), identity: pendingIdentity }),
+    { artwork: false, selected: [] },
+  );
+  const tipOf = (idx: number) => {
+    const extra = model.rows[idx]!.tooltipExtra;
+    return (typeof extra === 'function' ? extra() : extra) ?? [];
+  };
+  assert.deepEqual(model.rows[0]!.cells.place?.value, { kind: 'pending', reason: 'Name is loading' });
+  assert.deepEqual(tipOf(0).find(item => item.label === 'Place')?.value, { kind: 'pending', reason: 'Name is loading' });
+  assert.deepEqual(model.rows[1]!.cells.place?.value, { kind: 'pending', reason: 'Name is loading' });
+  assert.deepEqual(tipOf(1).find(item => item.label === 'Place')?.value, { kind: 'pending', reason: 'Name is loading' });
+  assert.deepEqual(model.rows[2]!.cells.place?.value, { kind: 'partial', value: 'Illinois', reason: 'Name is loading' });
+  assert.deepEqual(tipOf(2).find(item => item.label === 'Place')?.value, { kind: 'partial', value: 'Illinois', reason: 'Name is loading' });
+  assert.deepEqual(model.rows[3]!.cells.place?.value, { kind: 'partial', value: 'Illinois', reason: 'Railway endpoint was not recorded' });
+  assert.deepEqual(tipOf(3).find(item => item.label === 'Place')?.value, { kind: 'partial', value: 'Illinois', reason: 'Railway endpoint was not recorded' });
+});

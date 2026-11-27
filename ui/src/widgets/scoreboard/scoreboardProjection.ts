@@ -134,7 +134,7 @@ interface ScoreboardIncCache {
 
 const scoreboardIncCache = new WeakMap<ScoreboardProjectionOptions, ScoreboardIncCache>();
 
-const nameOf = (cell: TableCell, tag: string): string => (cell.value.kind === 'known' ? String(cell.value.value) : cell.loading ? LOADING_NAME : tag);
+const nameOf = (cell: TableCell, tag: string): string => (cell.value.kind === 'known' ? String(cell.value.value) : cell.value.kind === 'pending' ? LOADING_NAME : tag);
 
 function captureScoreboardIdentities(
   readView: BoundedReadView,
@@ -651,6 +651,7 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
   },
   aux: {
     product: 'scoreboard-columns',
+    label: 'the scoreboard columns',
     params: track => ({ branchId: track.branch.id }),
     validate: validateColumnsReply,
   },

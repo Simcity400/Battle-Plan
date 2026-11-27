@@ -17,6 +17,13 @@ impl SupplyThresholds {
             show: value("SUPPLY_UNIT_COUNTER_SHOW_THRESHOLD")?,
         })
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub const FIXTURE: Self = Self {
+        very_low: 17_000,
+        low: 33_000,
+        show: 57_000,
+    };
 }
 
 pub const MAXIMUM_FLOOR: i64 = 100;
@@ -325,11 +332,7 @@ mod tests {
         assert_eq!(effective_supply(0, FIXED, remaining, 4), 0);
     }
 
-    const VANILLA_SUPPLY: SupplyThresholds = SupplyThresholds {
-        very_low: 20_000,
-        low: 35_000,
-        show: 50_000,
-    };
+    const FIXTURE_SUPPLY: SupplyThresholds = SupplyThresholds::FIXTURE;
 
     fn member(supply: i64) -> Member {
         Member {
@@ -371,7 +374,7 @@ mod tests {
 
     #[test]
     fn the_supply_crate_steps_through_the_three_defines() {
-        let limits = VANILLA_SUPPLY;
+        let limits = FIXTURE_SUPPLY;
         assert_eq!(supply_frame(FIXED, limits), None);
         assert_eq!(supply_frame(limits.show, limits), None);
         assert_eq!(supply_frame(limits.show - 1, limits), Some(0));
@@ -418,43 +421,43 @@ mod tests {
             ..member(80_000)
         };
         assert_eq!(
-            stack_supply_frame(&[unknown_low], VANILLA_SUPPLY),
+            stack_supply_frame(&[unknown_low], FIXTURE_SUPPLY),
             SupplyFrame::Uncertain
         );
         assert_eq!(
-            stack_supply_frame(&[unknown_full], VANILLA_SUPPLY),
+            stack_supply_frame(&[unknown_full], FIXTURE_SUPPLY),
             SupplyFrame::Hidden
         );
         assert_eq!(
-            stack_supply_frame(&[unknown_low, member(10_000)], VANILLA_SUPPLY),
+            stack_supply_frame(&[unknown_low, member(10_000)], FIXTURE_SUPPLY),
             SupplyFrame::Frame(2)
         );
         assert_eq!(
-            stack_supply_frame(&[member(10_000), unknown_low], VANILLA_SUPPLY),
+            stack_supply_frame(&[member(10_000), unknown_low], FIXTURE_SUPPLY),
             SupplyFrame::Frame(2)
         );
         assert_eq!(
-            stack_supply_frame(&[member(80_000), unknown_low], VANILLA_SUPPLY),
+            stack_supply_frame(&[member(80_000), unknown_low], FIXTURE_SUPPLY),
             SupplyFrame::Uncertain
         );
         assert_eq!(
-            glyphs(&[at_sea], Some(VANILLA_SUPPLY)).supply,
+            glyphs(&[at_sea], Some(FIXTURE_SUPPLY)).supply,
             SupplyFrame::Hidden
         );
     }
 
     #[test]
-    fn supply_frame_interval_proves_every_vanilla_step_and_flags_straddling_mod_thresholds() {
+    fn supply_frame_interval_proves_every_on_grid_step_and_flags_straddling_mod_thresholds() {
         use replay_data::rows::DivisionStatusRow;
         for step in -2..=105 {
             let shown = step * 1_000;
             let bounds = DivisionStatusRow::SUPPLY_RATIO_STEP.toward_zero_bounds(shown);
-            let expected = match supply_frame(shown, VANILLA_SUPPLY) {
+            let expected = match supply_frame(shown, FIXTURE_SUPPLY) {
                 Some(frame) => SupplyFrame::Frame(frame),
                 None => SupplyFrame::Hidden,
             };
             assert_eq!(
-                supply_frame_interval(bounds, VANILLA_SUPPLY),
+                supply_frame_interval(bounds, FIXTURE_SUPPLY),
                 expected,
                 "{shown} -> {bounds:?}"
             );
@@ -487,7 +490,7 @@ mod tests {
         let shadowed = SupplyThresholds {
             very_low: 40_000,
             low: 35_500,
-            show: 50_000,
+            show: FIXTURE_SUPPLY.show,
         };
         assert_eq!(
             supply_frame_interval([35_000, 35_999], shadowed),
@@ -495,15 +498,15 @@ mod tests {
         );
         let zero_boundary = SupplyThresholds {
             very_low: 0,
-            low: 35_000,
-            show: 50_000,
+            low: FIXTURE_SUPPLY.low,
+            show: FIXTURE_SUPPLY.show,
         };
         assert_eq!(
             supply_frame_interval([-999, 999], zero_boundary),
             SupplyFrame::Uncertain
         );
         assert_eq!(
-            supply_frame_for(SupplyRatio::Missing, VANILLA_SUPPLY),
+            supply_frame_for(SupplyRatio::Missing, FIXTURE_SUPPLY),
             SupplyFrame::Uncertain
         );
     }
@@ -542,7 +545,7 @@ mod tests {
             has_order: Some(false),
             ..member(FIXED)
         };
-        let out = glyphs(&[quiet, busy], Some(VANILLA_SUPPLY));
+        let out = glyphs(&[quiet, busy], Some(FIXTURE_SUPPLY));
         assert!(out.attrition);
         assert_eq!(out.training, Some(true));
         assert_eq!(out.no_orders, Some(true));
@@ -553,7 +556,7 @@ mod tests {
         );
         assert_eq!(out.digin, None);
         assert_eq!(
-            glyphs(&[quiet], Some(VANILLA_SUPPLY)).supply,
+            glyphs(&[quiet], Some(FIXTURE_SUPPLY)).supply,
             SupplyFrame::Hidden
         );
         let calm = glyphs(
@@ -561,7 +564,7 @@ mod tests {
                 exercising: Some(false),
                 ..busy
             }],
-            Some(VANILLA_SUPPLY),
+            Some(FIXTURE_SUPPLY),
         );
         assert_eq!(calm.digin, Some(1));
         assert_eq!(calm.training, Some(false));
@@ -583,7 +586,7 @@ mod tests {
         assert_eq!(stack_training(&[known(false), known(false)]), Some(false));
         assert_eq!(stack_training(&[unknown, known(true)]), Some(true));
         assert_eq!(stack_training(&[known(false), unknown]), None);
-        let unsure = glyphs(&[known(false), unknown], Some(VANILLA_SUPPLY));
+        let unsure = glyphs(&[known(false), unknown], Some(FIXTURE_SUPPLY));
         assert_eq!((unsure.training, unsure.digin), (None, None));
     }
 

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { fitTooltip, handleActiveTooltipKey, handleActiveTooltipWheel, hideTooltip, measureTooltipScroll, showTooltip, tooltipStore, tooltipText } from '../../charts/tooltip.ts';
 import { tooltipRowOffsets, tooltipRowWindow } from '../../charts/tooltipScroll.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import { deriveRowTooltip, type TableRow } from '../../families/table/model.ts';
 import { validateFeedRow } from './eventFeedData.ts';
@@ -182,9 +183,25 @@ test('event feed projection renders merged choice letter and text, awaiting choi
   assert.equal((awaitingRow.meta as EventDetailSubject).awaiting, true);
 
   const pausedRow = model.rows.find(r => r.key === 'm-paused')!;
-  assert.equal(pausedRow.cells.detail?.value.kind, 'notRecorded');
+  assert.deepEqual(pausedRow.cells.detail?.value, { kind: 'notRecorded', reason: 'Choice not recorded' });
   assert.equal(pausedRow.cells.detail?.missingFigure, 'Choice');
   assert.equal((pausedRow.meta as EventDetailSubject).awaiting, false);
+  assert.equal((pausedRow.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded');
+
+  const reasonedHead = {
+    ...head,
+    rows: [
+      { ...head.rows[2]!, notRecordedReason: 'event feed read in part' },
+    ],
+  };
+  const reasonedSource = buildRowSourceFromHead('test:feed-reason', reasonedHead, undefined, 120)!;
+  const reasonedModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', reasonedSource]]) }),
+    { categories: ['politics'], artwork: true },
+  );
+  const reasonedRow = reasonedModel.rows.find(r => r.key === 'm-paused')!;
+  assert.deepEqual(reasonedRow.cells.detail?.value, { kind: 'notRecorded', reason: 'Choice not recorded (event feed read in part)' });
+  assert.equal((reasonedRow.meta as EventDetailSubject).noChoiceReason, 'Choice not recorded (event feed read in part)');
 
   const nullOptRow = model.rows.find(r => r.key === 'm-null-opt')!;
   assert.equal(nullOptRow.cells.detail?.value.kind, 'notRecorded');
@@ -226,12 +243,16 @@ test('a witnessed cessation or guarantee with an unidentified country keeps its 
     facetTotals: [], missing: [], unavailable: [], warnings: [],
   };
   const source = buildRowSourceFromHead('test:feed', head, undefined, 120)!;
-  const readView = createBoundedReadView({ hour: 120, rows: new Map([['main', source]]) });
+  const readView = createBoundedReadView({
+    hour: 120,
+    identity: datedIdentity({ NOR: [{ from: 0, name: 'Norway' }] }),
+    rows: new Map([['main', source]]),
+  });
   const model = eventFeedProjection.project(readView, { categories: ['warsPeace', 'diplomacy', 'politics', 'milestones'], artwork: false });
   const country = (key: string) => model.rows.find(r => r.key === key)!.cells.country!;
   assert.deepEqual(country('k0').value, { kind: 'notRecorded', reason: 'Country not identified' }, 'one country, and it is missing, never a known string');
   assert.deepEqual(country('k0').flags?.map(flag => flag.tag), ['?']);
-  assert.equal(country('k1').value.kind, 'partial', 'the guaranteed country is missing beside the guarantor');
+  assert.deepEqual(country('k1').value, { kind: 'partial', value: 'Norway', reason: 'Country not identified' }, 'the guaranteed country is missing beside the guarantor');
   assert.deepEqual(country('k1').flags?.map(flag => flag.tag), ['NOR', '?']);
   const tip = (key: string) => {
     const extra = model.rows.find(r => r.key === key)!.tooltipExtra;
@@ -412,4 +433,83 @@ test('event feed projection shows each scripted gap in place with its own reason
   const afterScroll = tooltipRowWindow(offsets, tooltipStore.get()!.scrollTop!, viewport);
   assert.ok(twelfthIndex >= afterScroll.first && twelfthIndex < afterScroll.last, 'scrolling brings the twelfth gap into view');
   hideTooltip('event-feed-test');
+});
+
+test('S3: a malformed event feed row becomes a refused slot with its reason instead of disappearing or reporting no matches', () => {
+  const good = row('warDeclared', 100, ['GER', 'POL']);
+  const bad = { ...good, participants: ['GER', 'ITA'] };
+  const mixedHead = {
+    branchId: '1',
+    total: '2',
+    offset: '0',
+    live: '0',
+    counts: [],
+    rows: [
+      { key: 'ok', hour: 100, observed: 100, ordinal: '0', live: false, row: good, choice: null },
+      { key: 'bad', hour: 100, observed: 100, ordinal: '1', live: false, row: bad, choice: null },
+    ],
+    missing: [],
+    nextChange: null,
+    unavailable: [],
+    warnings: [],
+  };
+  const mixedSource = buildRowSourceFromHead('test:feed-mixed-bad', mixedHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
+  const mixedModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', mixedSource]]) }),
+    { categories: ['warsPeace'], artwork: false },
+  );
+  assert.equal(mixedModel.rows.length, 1);
+  assert.equal(mixedModel.rows[0]?.key, 'ok');
+  assert.equal(mixedModel.slots?.length, 2);
+  assert.equal(mixedModel.slots?.[0]?.kind, 'data');
+  assert.deepEqual(mixedModel.slots?.[1], { kind: 'refused', key: 'refused:1', reason: 'The event feed row is malformed.' });
+  assert.equal(mixedModel.totalRows, 2);
+  assert.equal(mixedModel.empty, undefined);
+
+  const onlyBadHead = {
+    ...mixedHead,
+    total: '1',
+    rows: [{ key: 'bad', hour: 100, observed: 100, ordinal: '0', live: false, row: bad, choice: null }],
+  };
+  const onlyBadSource = buildRowSourceFromHead('test:feed-only-bad', onlyBadHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
+  const onlyBadModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', onlyBadSource]]) }),
+    { categories: ['warsPeace'], artwork: false },
+  );
+  assert.equal(onlyBadModel.rows.length, 0);
+  assert.deepEqual(onlyBadModel.slots, [{ kind: 'refused', key: 'refused:0', reason: 'The event feed row is malformed.' }]);
+  assert.equal(onlyBadModel.totalRows, 1);
+  assert.equal(onlyBadModel.empty, undefined, 'a tail with one malformed feed row never claims no events matched');
+
+  const badChoiceHead = {
+    ...mixedHead,
+    total: '1',
+    rows: [{ key: 'bad-choice', hour: 100, observed: 100, ordinal: '0', live: false, row: good, choice: { row: bad, option: 0 } }],
+  };
+  const badChoiceSource = buildRowSourceFromHead('test:feed-bad-choice', badChoiceHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
+  const badChoiceModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', badChoiceSource]]) }),
+    { categories: ['warsPeace'], artwork: false },
+  );
+  assert.equal(badChoiceModel.rows.length, 0);
+  assert.deepEqual(badChoiceModel.slots, [{ kind: 'refused', key: 'refused:0', reason: 'The event feed row is malformed.' }]);
+  assert.equal(badChoiceModel.empty, undefined);
+
+  const nullAndFutureNameHead = {
+    ...mixedHead,
+    total: '2',
+    rows: [
+      { key: 'null-row', hour: 100, observed: 100, ordinal: '0', live: false, row: null, choice: null },
+      { key: 'future-name', hour: 100, observed: 100, ordinal: '1', live: false, row: { ...good, readHour: 100, nameHour: 101 }, choice: null },
+    ],
+  };
+  const nullAndFutureSource = buildRowSourceFromHead('test:feed-null-and-name-hour', nullAndFutureNameHead, undefined, 100, undefined, eventFeedProjection.validateTail)!;
+  const nullAndFutureModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 100, rows: new Map([['main', nullAndFutureSource]]) }),
+    { categories: ['warsPeace'], artwork: false },
+  );
+  assert.deepEqual(nullAndFutureModel.slots, [
+    { kind: 'refused', key: 'refused:0', reason: 'Event was not recorded.' },
+    { kind: 'refused', key: 'refused:1', reason: 'The event feed row is malformed.' },
+  ]);
 });

@@ -36,6 +36,11 @@ pub fn reloaded(base: Hour) -> Replay {
     Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &segments).unwrap().into_timelines(&Default::default()).unwrap()
 }
 
+pub fn single_run(base: Hour) -> Replay {
+    let segments = [segment(1, base..=base + 5)];
+    Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &segments).unwrap().into_timelines(&Default::default()).unwrap()
+}
+
 pub fn segment_of(base: Hour, branch: BranchId, hour: Hour) -> BranchId {
     match (branch, hour - base) {
         (1, _) | (2, ..=2) => 1,

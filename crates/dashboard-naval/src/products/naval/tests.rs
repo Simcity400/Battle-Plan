@@ -215,6 +215,19 @@ mod details {
             "branchId":"1","hour":107,"limit":1,"countries":[2],"sort":{"column":"ships","direction":"descending"}
         })).unwrap(), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
         assert_eq!(filtered.rows[0].key, "combat:7:100");
+        use super::super::battles::tail::NavalBattleCourse;
+        let course = |key: &str| NavalBattleCourse::load(&source, &serde_json::from_value(serde_json::json!({"branchId":"1","key":key})).unwrap(), &LoadContext { content: None }, &AtomicBool::new(false));
+        let reads = course("combat:7:100").unwrap().reads;
+        let at = |hour: i32| reads.iter().rev().find(|read| read.hour <= hour).unwrap();
+        assert_eq!((at(103).ships, at(104).ships), ([Some(2), Some(1)], [None, None]), "the course holds the same readings as the battle's row at each hour");
+        assert_eq!((at(107).hour, at(107).result), (107, super::super::battles::tail::NavalBattleStatus::DefenderWon));
+        assert!(course("combat:9:100").is_err(), "a key with no battle in the branch is refused");
+        assert!(course("combat:7:100").unwrap().row.is_none(), "a course asked without an hour carries no row");
+        let at = |hour: i32| NavalBattleCourse::load(&source, &serde_json::from_value(serde_json::json!({"branchId":"1","key":"combat:7:100","hour":hour})).unwrap(), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap().row.unwrap();
+        let (shown, listed) = (at(107), row(107));
+        assert_eq!((shown.detail_id, shown.result, shown.countries, shown.read_hour), (listed.detail_id, listed.result, listed.countries, listed.read_hour), "the course's row at an hour is the table's row then");
+        assert_eq!(at(103).ships, [Some(2), Some(1)]);
+        assert!(NavalBattleCourse::validate(&serde_json::from_value(serde_json::json!({"branchId":"1","key":"province:7"})).unwrap()).is_err());
     }
 
     #[test]

@@ -15,6 +15,7 @@ export interface TooltipListItem {
   readonly strong?: boolean;
   readonly divider?: boolean;
   readonly missingReason?: string;
+  readonly pendingReason?: string;
   readonly partialReason?: string;
 }
 
@@ -63,9 +64,11 @@ export function buildTooltipContent(payload: FamilyTooltipPayload): TooltipConte
         label: item.label,
         ...(item.missingReason
           ? { valueState: { kind: 'missing', reason: item.missingReason }, detail: item.missingReason }
-          : item.partialReason && item.value !== undefined
-            ? { valueState: { kind: 'partial', text: item.value, reason: item.partialReason }, detail: item.partialReason }
-            : item.value !== undefined ? { value: item.value } : {}),
+          : item.pendingReason
+            ? { valueState: { kind: 'pending', reason: item.pendingReason }, detail: item.pendingReason }
+            : item.partialReason && item.value !== undefined
+              ? { valueState: { kind: 'partial', text: item.value, reason: item.partialReason }, detail: item.partialReason }
+              : item.value !== undefined ? { value: item.value } : {}),
         ...(item.swatch ? { swatch: item.swatch } : {}),
         ...(item.icon ? { icon: item.icon } : {}),
         ...(item.countryFlag ? { countryFlag: item.countryFlag } : {}),

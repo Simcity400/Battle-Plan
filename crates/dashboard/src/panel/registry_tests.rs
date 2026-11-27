@@ -148,21 +148,3 @@ fn each_ui_panel_key_has_one_registered_reader() {
     let keys: Vec<String> = serde_json::from_str(keys.strip_suffix(" as const;").unwrap()).unwrap();
     assert_eq!(keys, READERS.keys().copied().collect::<Vec<_>>());
 }
-
-#[test]
-fn readers_that_can_rebuild_at_each_hour_are_named() {
-    let allowed = [
-        "casualty-matrix",
-        "faction-details",
-        "volunteer-flow", "war-contributions",
-    ];
-    let actual: Vec<_> = READERS.iter().filter_map(|(&key, reader)| {
-        matches!(reader.kind, PanelKind::WholeFrame | PanelKind::DayThroughHour | PanelKind::ExactHourly).then_some(key)
-    }).collect();
-    let conditional: Vec<_> = READERS.iter().filter_map(|(&key, reader)| match reader.kind {
-        PanelKind::ExactHourlyWhen(conditions) => Some((key, conditions)),
-        _ => None,
-    }).collect();
-    assert!(conditional.is_empty(), "{conditional:?}");
-    assert_eq!(actual, allowed, "Remove a name when its reader no longer needs whole frames or hourly refreshes");
-}

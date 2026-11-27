@@ -1,9 +1,6 @@
 
-use super::{LoadContext, PanelKind, PanelReader, Registered, ReplyWarnings};
-use crate::{
-    Source,
-    catalogue::{OwnRefusals, own_refusals},
-};
+use super::{Finish, LoadContext, PanelReader, Registered, ReplyWarnings};
+use crate::Source;
 use dashboard_follow::{
     live::{Cells, Group, GroupState, Live},
     panel::{Declared, Panel, PanelData},
@@ -19,9 +16,11 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    marker::PhantomData,
+    ops::RangeInclusive,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "test-support"))]
+use std::marker::PhantomData;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -83,13 +82,6 @@ pub struct ReadsAt<'a, C> {
     pub since: Option<i32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Clock {
-    InputsOnly,
-    Boundaries,
-    EveryHour(&'static str),
-}
-
 pub trait AtHour: 'static {
     const KEY: &'static str;
     const TITLE: &'static str;
@@ -144,9 +136,6 @@ pub trait AtHour: 'static {
 
     fn compares_previous(_table: TableId) -> bool { false }
 
-
-    const CLOCK: Clock;
-
     const DATE_HELD_REPLY: Option<fn(&mut Value, i32)> = None;
 
     fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
@@ -164,10 +153,6 @@ pub trait AtHour: 'static {
     const RESEED_ON_SEEK: bool = false;
 
     fn context_revision(_context: &Self::Context) -> u64 { 0 }
-
-    fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool {
-        matches!(Self::CLOCK, Clock::EveryHour(_))
-    }
 
     fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, _edits: &Edits, _live: &Live, _data: &mut Held<'_>) -> io::Result<bool> {
         Ok(false)
@@ -287,7 +272,7 @@ fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, po
     let context = held.borrow();
     let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
     let mut count = 0;
-    let mut input = incremental::Input { pool, run: read_run, hour, mode: incremental::capture_mode(&pool.pages)?, count: &mut count, step: None, placed: None };
+    let mut input = incremental::Input { pool, run: read_run, hour, mode: incremental::capture_mode(&pool.pages)?, count: &mut count, step: None, placed: None, gap: false };
     let mut answer = AnswerFrame::new(query.timeline.id, hour);
     let mut read_frame = |reads: &[Read]| dashboard_query::cost::storage(|| input.frame(reads, P::columns, query.timeline.id));
     for step in 0.. {
@@ -366,21 +351,6 @@ impl<R: ReplyWarnings> ReplyWarnings for WithLive<R> {
     }
 }
 
-fn finish(warnings: &mut Vec<String>, own: &OwnRefusals, content: &[String]) {
-    own.diagnostics().append_to(warnings);
-    warnings.extend(content.iter().cloned());
-    warnings.extend(own.fallback_line());
-}
-
-fn content_warnings<P: AtHour>(source: &Source, load: &LoadContext) -> Vec<String> {
-    let mut warnings = Vec::new();
-    if P::CONTENT_DEPENDENT {
-        source.append_changed_warnings(&mut warnings, load.content.as_ref());
-    }
-    source.append_presentation_warnings(&mut warnings, load.content.as_ref());
-    warnings
-}
-
 fn request_hour(request: &mut Value) -> Option<i32> {
     let hour = request.as_object_mut()?.remove("hour")?;
     i32::try_from(hour.as_i64()?).ok()
@@ -405,33 +375,31 @@ where P::Params: Sync, P::Context: Sync {
     P::validate(&params)?;
     let branch = dashboard_query::branch(asked).map_err(|e| e.to_string())?;
     let query = crate::queries::query(source, branch).map_err(|e| e.to_string())?;
-    let context = Arc::new(P::context_for(source, load, &params).map_err(|e| e.to_string())?);
+    let (finish, context) = Finish::open(source, load, P::CONTENT_DEPENDENT, || P::context_for(source, load, &params));
+    let context = Arc::new(context.map_err(|e| e.to_string())?);
     let params = Arc::new(params);
-    let warnings = content_warnings::<P>(source, load);
     let pool = placed::Pool::of(source).map_err(|e| e.to_string())?;
-    let advance = shared_reader(source, load, P::KEY, asked, || incremental::reader::<P>(source, pool.clone(), params.clone(), context.clone(), Query { replay: query.replay, holders: query.holders.clone(), timeline: query.timeline.clone() }, warnings.clone()));
+    let advance = shared_reader(source, load, P::KEY, asked, || incremental::reader::<P>(source, pool.clone(), params.clone(), context.clone(), Query { replay: query.replay, holders: query.holders.clone(), timeline: query.timeline.clone() }, finish.clone()));
     let (replay, holders, timeline, executable) = (source.replay(), query.holders, query.timeline, source.tables());
     let cold: dashboard_follow::panel::ExactReader = Arc::new(move |hour, cancelled| {
         let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
-        let mut own = OwnRefusals::default();
-        let (mut reply, live) = engine_executable::executable_tables::scope(executable, || own_refusals(&mut own, ||
-            answered::<P, _>(&query, &pool, &params, hour, || Ok(context.as_ref()), cancelled))).map_err(|e| e.to_string())?;
-        finish(reply.warnings_mut(), &own, &warnings);
-        serde_json::to_value(WithLive { reply, live }).map_err(|e| e.to_string())
+        let reply = engine_executable::executable_tables::scope(executable, || finish.reply(||
+            answered::<P, _>(&query, &pool, &params, hour, || Ok(context.as_ref()), cancelled).map(|(reply, live)| WithLive { reply, live }))).map_err(|e| e.to_string())?;
+        serde_json::to_value(reply).map_err(|e| e.to_string())
     });
     Ok(product_panel(advance, cold))
 }
 
 pub fn interval_panel(
     executable: Option<engine_executable::executable_tables::Tables>,
-    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, i32, u64)> + Send + Sync + 'static,
+    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, RangeInclusive<i32>, u64)> + Send + Sync + 'static,
 ) -> Box<dyn Panel> {
     dated_interval(executable, read, |_, _| {})
 }
 
 fn dated_interval(
     executable: Option<engine_executable::executable_tables::Tables>,
-    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, i32, u64)> + Send + Sync + 'static,
+    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, RangeInclusive<i32>, u64)> + Send + Sync + 'static,
     date: impl Fn(&mut Arc<PanelData>, i32) + Send + Sync + 'static,
 ) -> Box<dyn Panel> {
     use dashboard_follow::panel::{ExactReader, ProductRead, ProductReader};
@@ -441,25 +409,29 @@ fn dated_interval(
     });
     let cold_read = Arc::clone(&read);
     let cold: ExactReader = Arc::new(move |hour, cancelled| cold_read(hour, cancelled).map(|(data, _, _)| data));
-    let held = Mutex::new(None::<(std::ops::RangeInclusive<i32>, Arc<PanelData>, u64)>);
+    let held = Mutex::new(None::<(RangeInclusive<i32>, Arc<PanelData>, u64)>);
     let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _| {
         let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !seed && let Some((interval, value, rows)) = &mut *held && interval.contains(&hour) {
+            let undated = value.clone();
             date(value, hour);
-            return ProductRead { value: value.clone(), rows: *rows, fresh: false, pending: false, live: None, lanes: Vec::new() };
+            if !Arc::ptr_eq(&undated, value) { *interval = hour..=*interval.end(); }
+            return ProductRead { value: value.clone(), rows: *rows, fresh: false, pending: false, live: None, lanes: Vec::new(), from: *interval.start() };
         }
-        let (value, rows) = match read(hour, cancelled) {
-            Ok((reply, through, rows)) => {
+        let (value, rows, from) = match read(hour, cancelled) {
+            Ok((reply, proven, rows)) => {
                 let value = Arc::new(Ok(reply));
-                *held = Some((hour..=through, value.clone(), rows));
-                (value, rows)
+                let holds = *proven.end() >= hour;
+                let from = if holds { (*proven.start()).min(hour) } else { hour };
+                *held = holds.then(|| (from..=*proven.end(), value.clone(), rows));
+                (value, rows, from)
             }
             Err(error) => {
                 *held = None;
-                (Arc::new(Err(error)), 0)
+                (Arc::new(Err(error)), 0, hour)
             }
         };
-        ProductRead { value, rows, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        ProductRead { value, rows, fresh: true, pending: false, live: None, lanes: Vec::new(), from }
     });
     product_panel(advance, cold)
 }
@@ -508,7 +480,7 @@ pub fn dated_day_panel<P: super::Product>(
     Ok(interval_panel(source.tables(), move |hour, cancelled| {
         let today = day_start(hour);
         if today <= tile_first {
-            return Ok((Value::Null, day_start(tile_first).saturating_add(23), 0));
+            return Ok((Value::Null, hour..=day_start(tile_first).saturating_add(23), 0));
         }
         let mut request = params.clone();
         let last = tile_last.min(today.saturating_sub(1));
@@ -517,7 +489,7 @@ pub fn dated_day_panel<P: super::Product>(
             crate::metadata::check_cancel(cancelled)?;
             super::register::<P>().answer(&source, request, &load, cancelled)
         });
-        Ok((reply?, if last == tile_last { i32::MAX } else { today.saturating_add(23) }, rows))
+        Ok((reply?, hour..=if last == tile_last { i32::MAX } else { today.saturating_add(23) }, rows))
     }))
 }
 
@@ -539,24 +511,18 @@ pub fn dated_product<P: super::Product>(
     params.as_object_mut().ok_or("Expected panel parameters")?.remove("panel");
     let source = Arc::clone(source);
     let load = LoadContext { content: load.content.clone() };
-    let mut warnings = Vec::new();
-    if P::CONTENT_DEPENDENT {
-        source.append_changed_warnings(&mut warnings, load.content.as_ref());
-    }
-    source.append_presentation_warnings(&mut warnings, load.content.as_ref());
+    let finish = Finish::new(&source, &load, P::CONTENT_DEPENDENT);
     Ok(dated_interval(source.tables(), move |hour, cancelled| {
         let mut request = params.clone();
         date(&mut request, hour);
         let params = dashboard_query::named::named::<P::Params>(&request)?;
         P::validate(&params).map_err(dashboard_core::invalid)?;
-        let mut own = OwnRefusals::default();
         #[cfg(any(test, feature = "test-support"))]
         crate::test_fixtures::product_called();
-        let (reply, rows) = counted(|| own_refusals(&mut own, || P::load(&source, &params, &load, cancelled)));
-        let mut reply = reply?;
-        finish(reply.warnings_mut(), &own, &warnings);
+        let (reply, rows) = counted(|| finish.reply(|| P::load(&source, &params, &load, cancelled)));
+        let reply = reply?;
         let through = valid_through(&params, &reply);
-        Ok((serde_json::to_value(reply)?, through, rows))
+        Ok((serde_json::to_value(reply)?, hour..=through, rows))
     }, date_held))
 }
 
@@ -582,17 +548,19 @@ pub fn shared_reader(source: &Source, load: &LoadContext, product: &str, params:
     reader
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct Followed<P: AtHour> {
     params: P::Params,
     tables: Vec<TableId>,
     holders: Arc<Holders>,
     context: P::Context,
-    content_warnings: Vec<String>,
+    finish: Finish,
     live: Option<Live>,
     executable: Option<engine_executable::executable_tables::Tables>,
     product: PhantomData<fn() -> P>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl<P: AtHour> Panel for Followed<P> {
     fn tables(&self) -> &[TableId] {
         &self.tables
@@ -600,17 +568,15 @@ impl<P: AtHour> Panel for Followed<P> {
 
     fn data(&mut self, frame: &DecodedFrame) -> PanelData {
         let cancelled = AtomicBool::new(false);
-        let mut own = OwnRefusals::default();
         let cells = Cells::default();
         self.live = None;
         let made = engine_executable::executable_tables::scope(self.executable, || {
-            own_refusals(&mut own, || {
+            self.finish.reply(|| {
                 let owner = holder::<P>(&self.holders, &self.params, frame.hour)?;
                 P::reply(frame, &self.params, &At { owner, holders: &self.holders, hour: frame.hour, context: &self.context, cancelled: &cancelled, live: &cells })
             })
         });
-        let mut reply = made.map_err(|error| error.to_string())?;
-        finish(reply.warnings_mut(), &own, &self.content_warnings);
+        let reply = made.map_err(|error| error.to_string())?;
         self.live = Some(cells.finish()).filter(|live| !live.is_empty());
         serde_json::to_value(&reply).map_err(|error| error.to_string())
     }
@@ -620,6 +586,7 @@ impl<P: AtHour> Panel for Followed<P> {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn frame_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
     let mut asked = asked.clone();
     if let Some(fields) = asked.as_object_mut() {
@@ -629,8 +596,9 @@ pub fn frame_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value
     P::validate(&params).map_err(str::to_owned)?;
     let branch = dashboard_query::branch(&asked).map_err(|error| error.to_string())?;
     let holders = Arc::clone(&crate::queries::query(source, branch).map_err(|error| error.to_string())?.holders);
-    let context = P::context_for(source, load, &params).map_err(|error| error.to_string())?;
-    Ok(Box::new(Followed::<P> { tables: P::tables(&params), params, holders, context, content_warnings: content_warnings::<P>(source, load), live: None, executable: source.tables(), product: PhantomData }))
+    let (finish, context) = Finish::open(source, load, P::CONTENT_DEPENDENT, || P::context_for(source, load, &params));
+    let context = context.map_err(|error| error.to_string())?;
+    Ok(Box::new(Followed::<P> { tables: P::tables(&params), params, holders, context, finish, live: None, executable: source.tables(), product: PhantomData }))
 }
 
 #[cfg(any(test, feature = "export-types"))]
@@ -644,17 +612,9 @@ where
     out
 }
 
-pub const fn whole_frame<P: AtHour>() -> PanelReader {
-    PanelReader {
-        kind: PanelKind::WholeFrame,
-        open: |source, load, asked| frame_panel::<P>(source, load, asked),
-    }
-}
-
 pub const fn exact<P: AtHour>() -> PanelReader
 where P::Params: Sync, P::Context: Sync {
-    let kind = if matches!(P::CLOCK, Clock::EveryHour(_)) { PanelKind::ExactHourly } else { PanelKind::Exact };
-    PanelReader { kind, open: |source, load, asked| exact_panel::<P>(source, load, asked) }
+    PanelReader { open: |source, load, asked| exact_panel::<P>(source, load, asked) }
 }
 
 pub const fn entry<P: AtHour>() -> Registered {

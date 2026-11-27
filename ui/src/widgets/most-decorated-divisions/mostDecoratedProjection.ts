@@ -1,8 +1,8 @@
 import { productIconArt } from '../../families/art/provider.ts';
 import { unavailableArt, type ArtResult } from '../../families/art/types.ts';
-import { countryRowPresentation } from '../../families/bars/model.ts';
 import { nextChangeAfter } from '../../families/holders.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { resolveIdentity } from '../../families/table/identityCell.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableCellIconItem, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView, FamilyViewportRequest } from '../../families/plan.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -58,11 +58,11 @@ export function validateDecoratedDivisions(value: unknown): DecoratedDivisionsRe
 
 function countryOf(tag: string | null, readView: BoundedReadView): { readonly flag: ArtResult; readonly flagKey?: string; readonly country: Value<string> } {
   if (tag === null) return { flag: unavailableArt('Country not recorded'), country: notRecorded('Country not recorded') };
-  const shown = countryRowPresentation(readView, tag);
+  const shown = resolveIdentity(readView, 'country', tag);
   return {
-    flag: shown.media.art,
-    ...(shown.flagKey ? { flagKey: shown.flagKey } : {}),
-    country: shown.labelMissing ? notRecorded('Country name not recorded') : textValue(shown.label, 'Country name not recorded'),
+    flag: shown.art!,
+    ...(shown.artKey ? { flagKey: shown.artKey } : {}),
+    country: shown.value,
   };
 }
 

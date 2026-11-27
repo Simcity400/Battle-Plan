@@ -27,7 +27,7 @@ impl Default for Content {
             defines: GroupDefines {
                 state_huge: 40.0,
                 strategic_area_huge: 100.0,
-                ..GroupDefines::VANILLA
+                ..GroupDefines::FIXTURE
             },
             width: 200.0,
         }

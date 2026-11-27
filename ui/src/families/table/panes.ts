@@ -46,7 +46,15 @@ export function paneModel(model: TableModel, pane: TablePane): TableModel {
 
 export function paneTitleText(title: TablePaneTitle): string {
   const formatted = formatValueState(title.name);
-  return formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
+  return formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' || formatted.kind === 'pending' ? formatted.label : formatted.text;
+}
+
+function paneHeaderKey(paneKey: string): string {
+  return `pane:${encodeURIComponent(paneKey)}`;
+}
+
+function paneRowKey(paneKey: string, localKey: string): string {
+  return `pane:${encodeURIComponent(paneKey)}:${localKey}`;
 }
 
 export function resolvePanes(
@@ -56,14 +64,26 @@ export function resolvePanes(
   rowHeightMode: 'standard' | 'media',
 ): ResolvedPane[] {
   const panes = model.panes ?? [];
+  const seenPanes = new Set<string>();
   const seen = new Set<string>();
   return panes.map(pane => {
-    const rows = resolveTableRows(paneModel(model, pane), settings, expanded);
-    for (let i = 0; i < rows.length; i++) {
-      const item = rows[i]!;
-      if (item.kind === 'group-header' || item.kind === 'loading') continue;
-      if (seen.has(item.key)) throw new Error(`table pane ${pane.key}: row key ${item.key} is already in another pane`);
-      seen.add(item.key);
+    if (seenPanes.has(pane.key)) throw new Error(`table pane ${pane.key}: duplicate pane key`);
+    seenPanes.add(pane.key);
+    const headerKey = paneHeaderKey(pane.key);
+    if (seen.has(headerKey)) throw new Error(`table pane ${pane.key}: header key ${headerKey} is already in another pane`);
+    seen.add(headerKey);
+    const paneSeen = new Set<string>([headerKey]);
+    const raw = resolveTableRows(paneModel(model, pane), settings, expanded);
+    const rows: FlatTableRow[] = new Array(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+      const item = raw[i]!;
+      const resolved = item.kind === 'data' ? item : { ...item, key: paneRowKey(pane.key, item.key) };
+      if (paneSeen.has(item.key) || paneSeen.has(resolved.key)) throw new Error(`table pane ${pane.key}: duplicate row key ${item.key}`);
+      if (seen.has(resolved.key)) throw new Error(`table pane ${pane.key}: row key ${item.key} is already in another pane`);
+      paneSeen.add(item.key);
+      paneSeen.add(resolved.key);
+      seen.add(resolved.key);
+      rows[i] = resolved;
     }
     return { key: pane.key, title: pane.title, rows, geom: computeRowLayout(rows, settings.density, rowHeightMode) };
   });
@@ -74,7 +94,7 @@ export function combinedPaneRows(panes: readonly ResolvedPane[]): FlatTableRow[]
   for (const pane of panes) {
     let count = 0;
     for (const item of pane.rows) if (item.kind === 'data' && !item.isTotal) count++;
-    out.push({ kind: 'group-header', key: `pane:${pane.key}`, label: paneTitleText(pane.title), count });
+    out.push({ kind: 'group-header', key: paneHeaderKey(pane.key), label: paneTitleText(pane.title), titleValue: pane.title.name, count });
     for (const item of pane.rows) out.push(item);
   }
   return out;

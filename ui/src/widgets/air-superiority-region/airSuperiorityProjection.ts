@@ -110,7 +110,6 @@ function projectRegion(
   const live = readView.live('main');
   const named = regionLabel(readView, region.id, region.name);
   const name = named.label;
-  const labelMissing = named.nameMissing !== undefined;
   const wings = wingsText(region, live);
   const cell = region.cell;
   const baseTooltip: TooltipListItem[] = [];
@@ -121,8 +120,7 @@ function projectRegion(
     return {
       key: String(region.id),
       subject: String(region.id),
-      label: name,
-      labelMissing,
+      label: named.value,
       segments: [],
       countText: wings.text,
       missing,
@@ -159,8 +157,7 @@ function projectRegion(
       return {
         key: String(region.id),
         subject: String(region.id),
-        label: name,
-        labelMissing,
+        label: named.value,
         segments: [],
         countText: wings.text,
         tooltip: {
@@ -182,8 +179,7 @@ function projectRegion(
       return {
         key: String(region.id),
         subject: String(region.id),
-        label: name,
-        labelMissing,
+        label: named.value,
         segments: [],
         countText: wings.text,
         missing: notRecorded(reason),
@@ -203,8 +199,7 @@ function projectRegion(
       return {
         key: String(region.id),
         subject: String(region.id),
-        label: name,
-        labelMissing,
+        label: named.value,
         segments: [],
         countText: wings.text,
         tooltip: {
@@ -244,8 +239,7 @@ function projectRegion(
     return {
       key: String(region.id),
       subject: String(region.id),
-      label: name,
-      labelMissing,
+      label: named.value,
       segments,
       countText: wings.text,
       tooltip: {
@@ -266,8 +260,7 @@ function projectRegion(
     return {
       key: String(region.id),
       subject: String(region.id),
-      label: name,
-      labelMissing,
+      label: named.value,
       segments: [],
       countText: wings.text,
       missing: notRecorded(reason),
@@ -288,8 +281,7 @@ function projectRegion(
     return {
       key: String(region.id),
       subject: String(region.id),
-      label: name,
-      labelMissing,
+      label: named.value,
       segments: [],
       countText: wings.text,
       ...(isNoAir ? { missing: notApplicable('No air data') } : {}),
@@ -310,8 +302,7 @@ function projectRegion(
     return {
       key: String(region.id),
       subject: String(region.id),
-      label: name,
-      labelMissing,
+      label: named.value,
       segments: [],
       countText: wings.text,
       missing: notRecorded(reason),
@@ -332,8 +323,7 @@ function projectRegion(
       return {
         key: String(region.id),
         subject: String(region.id),
-        label: name,
-        labelMissing,
+        label: named.value,
         segments: [],
         countText: wings.text,
         missing: notRecorded(reason),
@@ -374,8 +364,7 @@ function projectRegion(
   return {
     key: String(region.id),
     subject: String(region.id),
-    label: name,
-    labelMissing,
+    label: named.value,
     segments,
     countText: wings.text,
     tooltip: {

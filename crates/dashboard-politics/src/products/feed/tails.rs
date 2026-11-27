@@ -242,6 +242,9 @@ pub struct EventFeedPageRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub status: Option<ScriptStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub not_recorded_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -284,6 +287,12 @@ pub struct ScriptPageRow {
     #[doc = " The card's status at the hour asked."]
     pub status: Option<ScriptStatus>,
     pub occurrence: Option<ScriptOccurrence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub not_recorded_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub not_recorded_hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -486,6 +495,10 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                     }
                 }
             }
+            let status = shown.state.and_then(ScriptStatus::of_code);
+            let not_recorded_reason = (status == Some(ScriptStatus::NotRecorded))
+                .then(|| prepared.scanned.choice_break(occurrence.observed, hour).map(|(_, reason)| reason.to_owned()))
+                .flatten();
             EventFeedPageRow {
                 key,
                 hour: occurrence.date,
@@ -494,7 +507,8 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                 live: shown.live,
                 row,
                 choice,
-                status: shown.state.and_then(ScriptStatus::of_code),
+                status,
+                not_recorded_reason,
             }
         })
         .collect();
@@ -679,14 +693,20 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         }
         let Item::Log { head, .. } = &occurrence.payload else { return Err(invalid("A card holds no feed rows")) };
         let id = read.get(&head.key).map(FeedEvent::id).ok_or_else(|| invalid("A card's head was not read back"))?;
+        let status = shown.state.and_then(ScriptStatus::of_code);
+        let not_recorded = (list == List::EventChoices && status == Some(ScriptStatus::NotRecorded))
+            .then(|| prepared.scanned.choice_break(occurrence.observed, hour))
+            .flatten();
         rows.push(ScriptPageRow {
             key: id.clone(),
             hour: occurrence.date,
             observed: occurrence.observed,
             ordinal: shown.ordinal.to_string(),
             live: shown.live,
-            status: shown.state.and_then(ScriptStatus::of_code),
+            status,
             occurrence: (!edges.is_empty()).then(|| ScriptOccurrence { id, opened, edges }),
+            not_recorded_reason: not_recorded.map(|(_, reason)| reason.to_owned()),
+            not_recorded_hour: not_recorded.map(|(at, _)| at),
         });
     }
     content_refusals(&presenter, &mut notices)?;
@@ -776,27 +796,28 @@ pub fn event_feed_dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &
     EventFeedTail::validate(&params)?;
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let prepared = prepare(source, &query, branch, load, None, (params.countries.as_deref(), params.group.as_ref()), &AtomicBool::new(false)).map_err(|error| error.to_string())?;
-    let held = Mutex::new(Arc::new(prepared));
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, None, (params.countries.as_deref(), params.group.as_ref()), &AtomicBool::new(false)));
+    let held = Mutex::new((finish, Arc::new(prepared.map_err(|error| error.to_string())?)));
     let owned = Owned::of(&query, source.replay());
     let (shared, load) = (Arc::clone(source), LoadContext { content: load.content.clone() });
     Ok(dashboard_base::products::at_hour::interval_panel(source.tables(), move |hour, cancelled| {
         let query = owned.query();
         let hour = occurrences::cutoff(&query, Some(hour))?;
-        let prepared = {
+        let (finish, prepared) = {
             let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if held.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
-                *held = Arc::new(prepare(&shared, &query, branch, &load, None, (params.countries.as_deref(), params.group.as_ref()), cancelled)?);
+            if held.1.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
+                let (finish, prepared) = dashboard_base::products::Finish::open(&shared, &load, EventFeedTail::CONTENT_DEPENDENT, || prepare(&shared, &query, branch, &load, None, (params.countries.as_deref(), params.group.as_ref()), cancelled));
+                *held = (finish, Arc::new(prepared.map_err(|error| dashboard_core::duplicate(&error))?));
             }
-            Arc::clone(&held)
+            (held.0.clone(), Arc::clone(&held.1))
         };
-        let reply = load_feed_at(&prepared, &query, &params, hour, cancelled)?;
+        let reply = finish.reply(|| load_feed_at(&prepared, &query, &params, hour, cancelled))?;
         let through = match prepared.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
             true => hour.saturating_sub(1),
             false => reply.next_change().map_or(i32::MAX, |next| next.saturating_sub(1)),
         };
         let rows = reply.row_count() as u64;
-        Ok((serde_json::to_value(reply)?, through, rows))
+        Ok((serde_json::to_value(reply)?, hour..=through, rows))
     }))
 }
 
@@ -808,14 +829,15 @@ fn cards_load(list: List, source: &Source, params: &ScriptTailParams, context: &
     load_cards_at(list, &prepared, &query, params, hour, cancelled)
 }
 
-fn cards_dated_panel(list: List, name: &str, source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
-    let params: ScriptTailParams = parse(name, asked)?;
+fn cards_dated_panel<P: Product>(list: List, source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+    let params: ScriptTailParams = parse(P::KEY, asked)?;
     branch(&params.branch_id)?;
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let prepared = prepare(source, &query, branch, load, Some(list), (params.countries.as_deref(), params.group.as_ref()), &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, P::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, Some(list), (params.countries.as_deref(), params.group.as_ref()), &AtomicBool::new(false)));
+    let prepared = prepared.map_err(|error| error.to_string())?;
     let owned = Owned::of(&query, source.replay());
-    Ok(occurrences::occurrence_panel(source.tables(), move |hour, cancelled| {
+    Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         let query = owned.query();
         let hour = occurrences::cutoff(&query, Some(hour))?;
         load_cards_at(list, &prepared, &query, &params, hour, cancelled)
@@ -933,7 +955,7 @@ impl Product for EventChoicesTail {
 }
 
 pub fn event_choices_dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
-    cards_dated_panel(List::EventChoices, EventChoicesTail::KEY, source, load, asked)
+    cards_dated_panel::<EventChoicesTail>(List::EventChoices, source, load, asked)
 }
 
 pub struct DecisionsTail;
@@ -961,5 +983,5 @@ impl Product for DecisionsTail {
 }
 
 pub fn decisions_dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
-    cards_dated_panel(List::Decisions, DecisionsTail::KEY, source, load, asked)
+    cards_dated_panel::<DecisionsTail>(List::Decisions, source, load, asked)
 }

@@ -11,6 +11,7 @@ import type { FamilyTheme } from '../../families/contract.ts';
 import { createLaneView } from '../../families/laneRuntime.ts';
 import { assertQuietFrames } from '../../families/laneRuntime.fixture.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
+import { knownValue } from '../../families/value.ts';
 import type { FuelBranchesReply } from '../../generated/dashboard';
 import {
   fuelBranchesDeclaration,
@@ -82,7 +83,7 @@ test('fuel by branch projects branch insignia, need targets, dashed shortfall, a
   assert.equal(model.form, 'ordered');
   assert.equal(model.showAxis, false);
   const rows = model.rows as readonly BarsDataRow[];
-  assert.deepEqual(rows.map(r => r.label), ['Army', 'Air', 'Navy']);
+  assert.deepEqual(rows.map(r => r.label), [knownValue('Army'), knownValue('Air'), knownValue('Navy')]);
   assert.equal(rows[0]!.readout?.primary, '191');
   assert.equal(rows[0]!.readout?.secondary, '/ 191 a day');
   assert.equal(rows[0]!.readout?.shortfall, undefined);
@@ -119,6 +120,14 @@ test('missing consumers, zero requests, and unavailable icons stay honest', () =
   assert.equal(row.readout?.primary, '0');
   assert.equal(row.media?.art.status, 'unavailable');
   assert.equal(row.readout?.icon?.status, 'unavailable');
+
+  const blank = project(sampleReply({
+    consumerNames: ['   ', 'Air', 'Navy'],
+    consumers: [{ index: 0, requested: '100000', received: '100000', priority: 1 }],
+  }));
+  const blankRow = blank.rows[0] as BarsDataRow;
+  assert.deepEqual(blankRow.label, { kind: 'notRecorded', reason: 'Branch name not recorded' });
+  assert.equal(blankRow.numeric, 1);
 });
 
 test('source plan keys by recorded country slot and withholds while unresolved', () => {

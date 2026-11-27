@@ -358,7 +358,6 @@ impl AtHour for OperativeMatrix {
     const KEY: &'static str = "operative-matrix";
     const TITLE: &'static str = "Operative matrix";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = OperativeMatrixParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", top, form];
     type Reply = OperativeMatrixReply;

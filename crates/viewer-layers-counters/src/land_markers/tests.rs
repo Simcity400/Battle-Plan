@@ -22,7 +22,7 @@ impl Front for Bare {
     }
 
     fn defines(&self) -> LandCombatDefines {
-        LandCombatDefines::VANILLA
+        LandCombatDefines::FIXTURE
     }
 
     fn cutoff(&self) -> f32 {

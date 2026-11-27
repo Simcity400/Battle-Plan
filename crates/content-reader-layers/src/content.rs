@@ -245,14 +245,24 @@ thread_local! {
     static STRICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-pub fn strict<T>(run: impl FnOnce() -> T) -> T {
-    struct Exit(bool);
-    impl Drop for Exit {
-        fn drop(&mut self) {
-            STRICT.with(|strict| strict.set(self.0));
-        }
+#[must_use]
+pub(crate) struct StrictGuard(bool, std::marker::PhantomData<std::rc::Rc<()>>);
+
+impl Drop for StrictGuard {
+    fn drop(&mut self) {
+        STRICT.with(|strict| strict.set(self.0));
     }
-    let _exit = Exit(STRICT.with(|strict| strict.replace(true)));
+}
+
+pub(crate) fn enter_strict(value: bool) -> StrictGuard {
+    StrictGuard(
+        STRICT.with(|strict| strict.replace(value)),
+        std::marker::PhantomData,
+    )
+}
+
+pub fn strict<T>(run: impl FnOnce() -> T) -> T {
+    let _exit = enter_strict(true);
     run()
 }
 

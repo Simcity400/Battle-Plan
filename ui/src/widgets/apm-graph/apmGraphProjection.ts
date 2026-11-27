@@ -540,6 +540,7 @@ export const apmGraphDeclaration: TimeChartWidgetDeclaration<ApmGraphOptions, Ap
   },
   aux: {
     product: 'player-apm',
+    label: 'the player activity',
     params: track => ({
       branchId: track.branch.id,
       group: 'player',

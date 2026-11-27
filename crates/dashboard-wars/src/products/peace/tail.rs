@@ -356,7 +356,7 @@ impl Tail {
                     .chain(groups.iter().flat_map(|(tag, terms)| {
                         tag.iter().map(|tag| (tag, hour)).chain(terms.iter().filter_map(|term| Some((term.tag.as_ref()?, term.at))))
                     }))
-                    .map(|(tag, at)| Role { slot: holders.slot_at(&Country::Tag(tag.clone()), at), at })
+                    .map(|(tag, at)| Role::at(holders.slot_at(&Country::Tag(tag.clone()), at), at))
                     .collect();
             roles.sort_unstable_by_key(|role| (role.slot, role.at));
             roles.dedup();
@@ -371,7 +371,7 @@ impl Tail {
                     subjects: Box::default(),
                     states: Box::default(),
                     sort_keys: Box::default(),
-                    text: Box::default(),
+                    text: Default::default(),
                     payload: Line { row: PeaceDealsRow { key, parent, hour, detail, last: false }, ordinal, place, recipient },
                 });
             };
@@ -599,9 +599,10 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     PeaceDealsTail::validate(&params)?;
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let prepared = prepare(source, &query, load, &params, &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, PeaceDealsTail::CONTENT_DEPENDENT, || prepare(source, &query, load, &params, &AtomicBool::new(false)));
+    let prepared = prepared.map_err(|error| error.to_string())?;
     let (first, last, holders) = (query.timeline.first, query.timeline.last, query.holders);
-    Ok(occurrences::occurrence_panel(source.tables(), move |hour, cancelled| {
+    Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         check_cancel(cancelled)?;
         if hour < first {
             return Err(dashboard_core::invalid("The hour asked is before the branch"));

@@ -4,7 +4,7 @@ use playhead::{
     lane::Lane,
     pages::{Pages, WorldPages},
 };
-use replay_columnar::unit::{BLOCK, reader};
+use replay_columnar::unit::BLOCK;
 use replay_data::Hour;
 use std::{
     collections::{HashMap, HashSet},
@@ -132,7 +132,7 @@ impl Taken {
             Some(at) if columns.iter().all(|column| placed.lanes[at].requested().contains(column)) => at,
             _ => {
                 let run = pages.runs().get(placed.run).ok_or_else(|| invalid(format!("No run {}", placed.run)))?;
-                if reader::class_of(&run.pages, table)? {
+                if run.blocks() > 0 && pages.table_entry(placed.run, 0, table)?.log {
                     return Err(invalid(format!("Table {table} is a log: its rows are read by ordinal, never at an hour")));
                 }
                 let mut wide = found.map_or_else(Vec::new, |at| placed.lanes[at].requested().to_vec());

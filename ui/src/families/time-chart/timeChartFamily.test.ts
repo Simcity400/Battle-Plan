@@ -3617,4 +3617,36 @@ describe('time-chart selectedHour pinned day marker', () => {
       Intl.Segmenter.prototype.segment = origSegment;
     }
   });
+
+  it('resolveHitAction types dated chart coordinates distinctly from country rows', () => {
+    const installed = {
+      id: 1,
+      owner: 'owner:lines',
+      generation: { seek: 1, reset: 0, binding: 1 },
+      factRevisions: {},
+      validInterval: [0, 1000] as readonly [number, number],
+      through: 1000,
+      hour: displayedHour(500),
+      viewport: { width: 400, height: 200, dpr: 1, scrollLeft: 0, scrollTop: 0 },
+      optionsRevision: '1',
+      themeRevision: '1',
+      actionKeys: new Map(),
+      accessibleDescription: null,
+    };
+    const plotHit = parseTimeChartHit('plot:320')!;
+    const plotAction = timeChartHostAdapter.resolveHitAction!(plotHit, installed, {})!;
+    assert.deepEqual(plotAction.target, { kind: 'chart-coordinate', coordinate: 'plot', hour: displayedHour(320) });
+
+    const lineHit = parseTimeChartHit('line:AAA@320')!;
+    const lineAction = timeChartHostAdapter.resolveHitAction!(lineHit, installed, {})!;
+    assert.deepEqual(lineAction.target, { kind: 'chart-series', part: 'line', seriesId: 'AAA', hour: displayedHour(320) });
+
+    const labelHit = parseTimeChartHit('label:AAA')!;
+    const labelAction = timeChartHostAdapter.resolveHitAction!(labelHit, installed, {})!;
+    assert.deepEqual(labelAction.target, { kind: 'chart-series', part: 'label', seriesId: 'AAA', hour: displayedHour(500) });
+
+    const monthHit = parseTimeChartHit('month:3@320')!;
+    const monthAction = timeChartHostAdapter.resolveHitAction!(monthHit, installed, {})!;
+    assert.deepEqual(monthAction.target, { kind: 'chart-month', index: 3, hour: displayedHour(500) });
+  });
 });

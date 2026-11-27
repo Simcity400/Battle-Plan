@@ -75,6 +75,60 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     }
 
     const { WidgetFrameContext } = await vite.ssrLoadModule('/ui/src/dashboard/widgetFrame.tsx') as typeof import('../dashboard/widgetFrame');
+    const designFrame = {
+      title: 'Equipment designs', subject: 'equipment designs', things: 'equipment designs', timeMode: 'follow' as const, pinned: false,
+      bounds: { firstHour: 43800000, lastHour: 43800024 }, hasSubject: true,
+      reportState() {}, announce() {}, clearAnnouncement() {}, setDynamicViewSwitch() {}, skeleton: 'table' as const, setSkeleton() {},
+    };
+    const windowRefusalText = 'Cannot determine which designer \'sample_equipment_1\' uses: the design has no recorded equipment category.';
+    const windowRefusal = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
+      value: designFrame,
+    }, createElement(WidgetState as never, {
+      kind: 'error',
+      failure: new RefusedError(windowRefusalText, undefined, 'equipment designer'),
+    } as never)));
+    const windowRefusalVisible = windowRefusal.replace(/<[^>]*>/g, ' ');
+    assert.match(windowRefusal, /data-state="unavailable"/);
+    assert.match(windowRefusalVisible, /Equipment designer can’t be shown\./);
+    assert.match(windowRefusalVisible, /Cannot determine which designer &#x27;sample_equipment_1&#x27; uses: the design has no recorded equipment category\./);
+    assert.doesNotMatch(windowRefusalVisible, /equipment designs/i, 'a game-window refusal must not substitute the parent widget subject');
+    assert.doesNotMatch(windowRefusalVisible, /isn’t in this recording/);
+    assert.doesNotMatch(windowRefusalVisible, /BattlePlan couldn’t tell why/);
+    assert.match(windowRefusal, />Details</);
+    assert.doesNotMatch(windowRefusal, /Retry|is-error|role="alert"/);
+
+    const subWindowRetryable = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
+      value: designFrame,
+    }, createElement(WidgetState as never, {
+      kind: 'error',
+      what: 'equipment designer',
+      failure: new Error('Off-screen graphics device lost'),
+    } as never)));
+    const subWindowVisible = subWindowRetryable.replace(/<[^>]*>/g, ' ');
+    assert.match(subWindowVisible, /Couldn’t load equipment designer\./);
+    assert.doesNotMatch(subWindowVisible, /equipment designs/i);
+
+    const recordingRefusal = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
+      value: designFrame,
+    }, createElement(WidgetState as never, {
+      kind: 'error',
+      failure: queryFailure({ kind: 'refused', text: 'SampleTable is not in this recording format' }),
+    } as never)));
+    const recordingRefusalVisible = recordingRefusal.replace(/<[^>]*>/g, ' ');
+    assert.match(recordingRefusalVisible, /Equipment designs isn’t in this recording\./);
+    assert.match(recordingRefusalVisible, /BattlePlan couldn’t tell why\. Details has the technical reason\./);
+
+    const causeWithOwnSubject = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
+      value: designFrame,
+    }, createElement(WidgetState as never, {
+      kind: 'error',
+      failure: new RefusedError('Map recording only', { kind: 'capture-mode', mode: 'Map' }, 'equipment designer'),
+    } as never)));
+    const causeVisible = causeWithOwnSubject.replace(/<[^>]*>/g, ' ');
+    assert.match(causeVisible, /Equipment designer isn’t in this recording\./);
+    assert.match(causeVisible, /This is a Map recording, which holds the campaign map and battle windows only\./);
+    assert.doesNotMatch(causeVisible, /equipment designs/i);
+
     const outsideWithBounds = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
       value: {
         title: 'Factories', subject: 'factories', things: 'factories', timeMode: 'pin', pinned: true,
@@ -156,8 +210,31 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     assert.equal(valueStateText({ kind: 'missing', reason: 'Gap' }), 'Not recorded: Gap');
     assert.equal(valueStateText({ kind: 'notApplicable', reason: 'No navy' }), 'Not applicable: No navy');
     assert.equal(valueStateText({ kind: 'partial', text: '12', reason: '2 countries missing' }), '12, partial: 2 countries missing');
+    assert.equal(valueStateText({ kind: 'pending', reason: 'Name is loading' }), 'Loading: Name is loading');
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /data-value-state="missing"/);
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /is-compact/);
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'partial', text: '12', reason: '2 countries missing' })), /data-value-state="partial"/);
+    assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'pending', reason: 'Name is loading' })), /data-value-state="pending"/);
+    assert.doesNotMatch(renderToStaticMarkup(createElement(ValueState, { kind: 'pending', reason: 'Name is loading' })), /Not recorded|val-hatch/);
+    const { FamilyTableHeader } = await vite.ssrLoadModule('/ui/src/families/table/TableHeader.tsx') as typeof import('../families/table/TableHeader');
+    const { tableDefaults } = await vite.ssrLoadModule('/ui/src/families/table/settings.ts') as typeof import('../families/table/settings');
+    const { valueStateProps } = await vite.ssrLoadModule('/ui/src/families/valueFormat.ts') as typeof import('../families/valueFormat');
+    const { pendingValue } = await vite.ssrLoadModule('/ui/src/families/value.ts') as typeof import('../families/value');
+    const headerCols = [{ key: 'country', label: 'Country', as: 'flagName' as const, offered: ['flagName' as const], priority: 0, text: true, minWidth: 120 }];
+    const headerHtml = renderToStaticMarkup(createElement(FamilyTableHeader, {
+      columns: [{ ...headerCols[0]!, width: 120, display: 'flagName', shown: true, displays: [['flagName', 'Flag and name']] }],
+      allColumns: headerCols,
+      settings: tableDefaults(headerCols, { density: 'normal', sort: { column: 'country', direction: 'ascending' } }),
+      pinned: false,
+      scrollLeft: 0,
+      identity: { name: 'Loading…', nameState: valueStateProps(pendingValue('Name is loading')), missing: false, flag: null, flagPending: true, country: 'AAA' },
+      onChange() {},
+      onResize() {},
+      onResizing() {},
+    }));
+    assert.match(headerHtml, /data-value-state="pending"/);
+    assert.match(headerHtml, /tf-th-identity-name is-pending/);
+    assert.match(headerHtml, /aria-label="Loading: Name is loading"/);
+    assert.match(headerHtml, />Loading…</);
   } finally { await vite.close(); }
 });

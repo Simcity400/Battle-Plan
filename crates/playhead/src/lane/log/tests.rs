@@ -111,8 +111,9 @@ pub(crate) fn read_directly(pages: &dyn Pages, run: usize, table: usize) -> (BTr
     let held = &pages.runs()[run];
     let kinds = pages.kinds(table).unwrap();
     let columns: Vec<usize> = (0..kinds.len()).collect();
+    let table_pages = pages.table_pages(run, table, 0, held.blocks()).unwrap();
     let mut did: BTreeMap<i32, Vec<Did>> = BTreeMap::new();
-    log_span(pages.extents(run), &held.pages, kinds, table, &columns, held.first_hour, i32::MIN..=i32::MAX, &mut |hour, event| {
+    log_span(pages.extents(run), &table_pages, kinds, table, &columns, held.first_hour, i32::MIN..=i32::MAX, &mut |hour, event| {
         let entry = did.entry(hour).or_default();
         match event {
             LogEvent::Appended { ordinal, key, rows, at, .. } => entry.push(Did::Appended { ordinal, key, cells: columns.iter().map(|&column| format!("{:?}", rows.value(column, at))).collect() }),
@@ -121,9 +122,9 @@ pub(crate) fn read_directly(pages: &dyn Pages, run: usize, table: usize) -> (BTr
         }
     })
     .unwrap();
-    let ends = (0..held.pages.len())
+    let ends = (0..held.blocks())
         .map(|at| {
-            let state = log_state(pages.extents(run), &held.pages, kinds, table, at).unwrap();
+            let state = log_state(pages.extents(run), &table_pages, kinds, table, at).unwrap();
             (state.count().unwrap(), state.listed().unwrap().ones().collect())
         })
         .collect();
@@ -225,7 +226,7 @@ fn follows_the_rule(done: &Done, did: &BTreeMap<i32, Vec<Did>>) {
 #[test]
 fn a_log_lane_steps_equal_the_logs_span_and_state() {
     let (recording, done) = recording(Settings { cap: 48, ..Settings::at(3) }, 4 * BLOCK);
-    let entries = &recording.runs[0].pages;
+    let entries = recording.runs[0].held_pages().unwrap();
     assert!(entries.iter().all(|page| page.tables[0].log));
     assert!(entries[0].tables[0].parts.len() > 3, "several parts a block");
     let (did, ends) = read_directly(&*recording, 0, 0);

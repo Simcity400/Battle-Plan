@@ -2492,7 +2492,7 @@ impl Document {
             let crate::map_icons::LoadedIcons {
                 combat: mut combat_assets,
                 raids: mut raid_assets,
-                images: mut icon_images,
+                images: icon_images,
                 fonts: icon_fonts,
                 counters: mut counter_assets,
                 animated_text,
@@ -2514,15 +2514,13 @@ impl Document {
             let names = h_names.take()?;
             let recorded_labels = h_labels.take()?;
             let icon_windows = viewer_runtime::load_record::stage("wave1.icon_windows");
-            joined_warnings.extend(layers.artwork("map icon windows", |stack| {
-                MapIcons::load_gui(
-                    &mut combat_assets,
-                    &mut counter_assets,
-                    &mut icon_images,
-                    stack,
-                    &names.localisation,
-                )
-            })?);
+            joined_warnings.extend(MapIcons::defer_window_art(
+                &mut combat_assets,
+                &mut counter_assets,
+                &lazy,
+                layers,
+                &names.localisation,
+            ));
             drop(icon_windows);
             let mut counters = h_counters.take()?;
             counters.recorded_labels = Some(Arc::clone(&recorded_labels));

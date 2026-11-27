@@ -7,13 +7,13 @@ use crate::{
         Fetch, Fetched, Held, Lane, Sought,
         log::{self, Rows, Wanted},
     },
-    pages::{Pages, Run},
+    pages::Pages,
     ring::Ring,
     state::{Flight, Rebuild, State},
     step::{Built, Fetching, Rebuilt, Seeking, Step},
 };
 use replay::campaign::timelines;
-use replay_columnar::unit::{BLOCK, reader};
+use replay_columnar::unit::BLOCK;
 use replay_data::{BranchId, Hour};
 use std::{
     cmp::Ordering as Order,
@@ -859,13 +859,23 @@ impl Shared {
     }
 }
 
-fn seek_cost(run: &Run, table: usize, hour: Hour) -> i64 {
-    let target = (hour - run.first_hour).max(0) as u32;
-    let block = ((target / BLOCK) as usize).min(run.pages.len() - 1);
-    let Some((restored, entry)) = reader::restored_before(&run.pages, table, block) else { return 0 };
-    let mut bytes: u64 = entry.streams.iter().flat_map(|(_, chunks)| chunks).map(|chunk| u64::from(chunk.frame.stored) + chunk.prefix.as_ref().map_or(0, |frame| u64::from(frame.stored))).sum();
-    for page in &run.pages[restored..=block] {
-        bytes += page.tables[table].parts.iter().flat_map(|part| &part.frames).map(|frame| u64::from(frame.stored)).sum::<u64>();
+fn seek_cost(pages: &dyn Pages, run: usize, table: usize, hour: Hour) -> i64 {
+    let held = &pages.runs()[run];
+    let target = (hour - held.first_hour).max(0) as u32;
+    let block = ((target / BLOCK) as usize).min(held.blocks() - 1);
+    let mut restored = None;
+    let mut bytes = 0u64;
+    for at in (0..=block).rev() {
+        let Ok(entry) = pages.table_entry(run, at, table) else { return 0 };
+        bytes += entry.parts.iter().flat_map(|part| &part.frames).map(|frame| u64::from(frame.stored)).sum::<u64>();
+        if let Some(restore) = entry.restore.as_ref().or(entry.first.as_ref()) {
+            bytes += restore.streams.iter().flat_map(|(_, chunks)| chunks).map(|chunk| u64::from(chunk.frame.stored) + chunk.prefix.as_ref().map_or(0, |frame| u64::from(frame.stored))).sum::<u64>();
+            restored = Some(at);
+            break;
+        }
+    }
+    if restored.is_none() {
+        return 0;
     }
     bytes as i64
 }
@@ -1520,6 +1530,10 @@ impl Playhead {
 
     pub fn newest(&self) -> Option<Hour> {
         lock(&self.shared.control).newest
+    }
+
+    pub fn published(&self) -> Option<(Hour, u64)> {
+        lock(&self.shared.ring).published_now()
     }
 
     #[cfg(feature = "test-support")]
@@ -2233,11 +2247,10 @@ impl Stepper {
         let through = lanes_at + self.shared.settings.ahead as Hour * self.quantum();
         let mut pending = BTreeMap::new();
         let mut jobs = Vec::new();
-        let held_run = &self.shared.pages.runs()[run];
         for (&table, selected) in &self.selection {
             self.generation += 1;
             pending.insert(table, self.generation);
-            let cost = seek_cost(held_run, table, lanes_at);
+            let cost = seek_cost(&*self.shared.pages, run, table, lanes_at);
             let prepare = Prepare {
                 epoch,
                 purpose: Purpose::Seek,
@@ -3350,7 +3363,6 @@ impl Stepper {
         }
         let (run, hour) = (pieces[next].run, pieces[next].first);
         let through = hour + self.shared.settings.ahead as Hour * quantum;
-        let held_run = &self.shared.pages.runs()[run];
         let mut piece = self.next_piece.take().unwrap_or(NextPiece { piece: next, pending: BTreeMap::new(), prepared: Vec::new() });
         let mut jobs = Vec::new();
         for (&table, selected) in &self.selection {
@@ -3374,7 +3386,7 @@ impl Stepper {
                 frames: None,
                 rebuilds: selected.rebuilds(None),
             };
-            jobs.push(((1, -seek_cost(held_run, table, hour)), Job::Prepare(prepare)));
+            jobs.push(((1, -seek_cost(&*self.shared.pages, run, table, hour)), Job::Prepare(prepare)));
         }
         self.shared.queue(jobs);
         self.next_piece = Some(piece);

@@ -1,6 +1,6 @@
 
 use super::{Presented, Source, worker_tables};
-use viewer_layer_core::{rebuilt::refusal, playhead_host::views::Stepped};
+use viewer_layer_core::playhead_host::views::Stepped;
 use replay_data::{
     BranchId, Hour,
     rows::{TABLE_COUNT, TableId},
@@ -227,15 +227,7 @@ impl Run {
                 stepped.frame_past(self.branch, hour)?
             }
         };
-        let mut tables = frame.tables;
-        let absent = stepped.absent();
-        if !absent.is_empty() {
-            let why = refusal("the map text's events", absent);
-            for &table in absent {
-                tables[table.index()] = SharedView::from(TableView::Unavailable { reason: why.clone() });
-            }
-        }
-        Some(tables)
+        Some(frame.tables)
     }
 
     fn make(&self, job: Job, tables: [SharedView; TABLE_COUNT]) -> Presented {

@@ -1,6 +1,6 @@
 use dashboard_base::products::{
     Country, LoadContext,
-    at_hour::{At, AtHour},
+    at_hour::{At, AtHour, Edits, ReadsAt, before, field_columns},
     flows::{CountryFlowReply, FlowEdge, FlowEnd, FlowEndpoint, FlowGap, FlowPart, FlowShape, GapEnd, build_flows},
     validate_country,
 };
@@ -95,7 +95,6 @@ impl AtHour for VolunteerFlow {
     const KEY: &'static str = "volunteer-flow";
     const TITLE: &'static str = "Volunteers & expeditionaries";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = VolunteerFlowParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top];
     type Reply = CountryFlowReply;
@@ -117,6 +116,17 @@ impl AtHour for VolunteerFlow {
         vec![TableId::MilitaryAid]
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::MilitaryAid => Some(field_columns(table, &["divisions"])),
+            _ => None,
+        }
+    }
+
+    fn plan_changes(_stage: usize, _edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        false
+    }
+
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
         Ok(GroupsAt::default())
     }
@@ -125,8 +135,9 @@ impl AtHour for VolunteerFlow {
         GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
     }
 
-    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        if params.subject.is_some() { i32::MAX } else { at.context.valid_through(params.group.as_ref(), at.hour) }
+    fn valid_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        let group = if params.subject.is_some() { i32::MAX } else { at.context.valid_through(params.group.as_ref(), at.hour) };
+        group.min(before(at.holders.next_change(frame.hour)))
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -241,5 +252,77 @@ mod tests {
         assert_eq!(host.incoming.links.iter().map(|link| link.total.as_deref()).collect::<Vec<_>>(), [None]);
         assert_eq!(host.incoming.missing.as_deref(), Some(NOT_RECORDED));
         assert_eq!((host.outgoing.total.as_deref(), host.outgoing.missing.as_deref()), (Some("0"), None), "a marker for another sender says nothing of the host's own forces");
+    }
+
+    #[test]
+    fn volunteer_flow_holds_quiet_hours_and_refreshes_on_aid_or_holder_changes() {
+        use dashboard_base::{
+            SourceKey,
+            products::at_hour::{exact_panel, frame_panel},
+            test_fixtures::{CAMPAIGN, materialized_frame, played, records, source, streamed},
+        };
+        use replay::campaign::Replay;
+        use replay_data::rows::{CountryCounterInputRow, CountryLinkRow, CountryRow, DivisionRow, SentVolunteerRow, TableRows};
+        use replay_frame::frame::TableView;
+        use serde_json::json;
+        use std::sync::{Arc, atomic::AtomicBool};
+
+        let frames: Vec<_> = (100..=106)
+            .map(|hour| {
+                let mut f = source(1, hour, None);
+                *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+                    CountryRow { id: 1, canonical_slot: 1, tag: if hour >= 105 { b"GDR".to_vec() } else { b"GER".to_vec() }, ..Default::default() },
+                    CountryRow { id: 2, canonical_slot: 2, tag: b"SPA".to_vec(), ..Default::default() },
+                ]));
+                *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+                    CountryLinkRow { id: 1, canonical_slot: 1 },
+                    CountryLinkRow { id: 2, canonical_slot: 2 },
+                ]));
+                let count = if hour >= 103 { 5u32 } else { 3u32 };
+                *f.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
+                    (0..count)
+                        .map(|i| DivisionRow { id: 100 + u64::from(i), roster_owner: 1, logical_owner: 2, expeditionary_owner: 0, ..Default::default() })
+                        .collect(),
+                ));
+                *f.tables[TableId::SentVolunteers.index()] = TableView::Complete(TableRows::SentVolunteers(
+                    (0..count)
+                        .map(|i| SentVolunteerRow { country: 1, ordinal: i, division: 100 + u64::from(i) })
+                        .collect(),
+                ));
+                *f.tables[TableId::CountryCounterInputs.index()] = TableView::Complete(TableRows::CountryCounterInputs(vec![
+                    CountryCounterInputRow { country: 1, sent_expeditionaries: Recorded::Value(Some(Default::default())), ..Default::default() },
+                    CountryCounterInputRow { country: 2, sent_expeditionaries: Recorded::Value(Some(Default::default())), ..Default::default() },
+                ]));
+                *f.tables[TableId::VolunteerHosts.index()] = TableView::Complete(TableRows::VolunteerHosts(Vec::new()));
+                f
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let source = Source::from_replay(
+            SourceKey { source_id: "vol-exact".into(), revision: "1".into() },
+            "memory.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let load = LoadContext { content: None };
+        let params = json!({"branchId": "1"});
+        let panel = exact_panel::<VolunteerFlow>(&source, &load, &params).unwrap();
+        let exact = panel.exact().unwrap();
+        let mut whole = frame_panel::<VolunteerFlow>(&source, &load, &params).unwrap();
+        let steps = played(source.replay_ref(), exact, 100, 106);
+        for step in &steps {
+            let expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
+            assert_eq!(streamed(&step.value, step.fresh), expected, "volunteer-flow at hour {}", step.hour);
+        }
+        for hour in [101, 102, 104, 106] {
+            assert_eq!(steps[(hour - 100) as usize].product_calls, 0, "quiet hour {hour} should hold");
+        }
+        assert_eq!(steps[3].value.as_ref().as_ref().unwrap()["links"][0]["total"], "5");
+        assert_eq!(steps[5].value.as_ref().as_ref().unwrap()["endpoints"][0]["tag"], "GDR");
+        assert_eq!((exact.cold)(103, &AtomicBool::new(false)), materialized_frame(&mut *whole, source.replay_ref(), 1, 103));
     }
 }

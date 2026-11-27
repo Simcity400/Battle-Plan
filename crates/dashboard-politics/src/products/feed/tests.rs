@@ -1142,19 +1142,158 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         "a read refusing a decision family breaks the decision's link, so its running state is not recorded from then"
     );
     assert_eq!((chose(109, ScriptStatus::Awaiting).as_str(), chose(110, ScriptStatus::Awaiting).as_str(), chose(110, ScriptStatus::NotRecorded).as_str()), ("3", "0", "3"), "a decision family refused loses no choice, a partial read may have");
+    let lost_choices = EventChoicesTail::load(&replay_source, &cards(110, Some(vec![ScriptStatus::NotRecorded]), None), &context, &cancel).unwrap();
+    assert!(lost_choices.rows.iter().all(|row| row.not_recorded_reason.as_deref() == Some("event feed read in part")));
+    let lost_feed = EventFeedTail::load(&replay_source, &feed(110, None, None), &context, &cancel).unwrap();
+    let lost_feed_reasons: Vec<_> = lost_feed.rows.iter().filter(|row| row.status == Some(ScriptStatus::NotRecorded)).map(|row| row.not_recorded_reason.as_deref()).collect();
+    assert_eq!(lost_feed_reasons, vec![Some("event feed read in part"); 3]);
 
     let choice_panel = event_choices_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-choices-tail", "branchId": "1", "limit": 64, "countries": ["GER"] })).unwrap();
     let choice_exact = choice_panel.exact().unwrap();
-    for hour in [100, 101, 102, 104, 105, 106, 100] {
+    for hour in [100, 101, 102, 104, 105, 106, 110, 100] {
         let stepped = (choice_exact.advance)(hour, true, &cancel, None);
         assert_eq!(*stepped.value, (choice_exact.cold)(hour, &cancel), "event-choices-tail stepped vs cold at {hour}");
     }
     let feed_panel = event_feed_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-feed-tail", "branchId": "1", "limit": 64, "categories": ["politics"] })).unwrap();
     let feed_exact = feed_panel.exact().unwrap();
-    for hour in [100, 101, 102, 104, 105, 106, 101] {
+    for hour in [100, 101, 102, 104, 105, 106, 110, 101] {
         let stepped = (feed_exact.advance)(hour, true, &cancel, None);
         assert_eq!(*stepped.value, (feed_exact.cold)(hour, &cancel), "event-feed-tail stepped vs cold at {hour}");
     }
+}
+
+#[test]
+fn choice_not_recorded_reason_keeps_first_break_before_later_pause() {
+    use super::{EventChoicesTail, EventFeedCategory, EventFeedTail, EventFeedTailParams, ScriptTailParams};
+    use dashboard_base::{
+        products::{LoadContext, Product},
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_data::{
+        event_feed_rows::{
+            EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedEventIdentity, EventFeedHistoryRow, EventFeedScript,
+        },
+        rows::{Recorded, TableId, TableRows},
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let ger = EventFeedCountry { reference: 9001, id: 9001, instance: 1 };
+    let tokens = b"ev.first";
+    let fired = EventFeedEvent {
+        sequence: 1,
+        generation: 1,
+        hour: 100,
+        source: EventFeedSource::ScriptEvent,
+        actor: ger,
+        target: ger,
+        cause: Recorded::NotRecorded,
+        script: Some(EventFeedScript {
+            token_start: 0,
+            token_len: tokens.len() as u32,
+            native_event: Some(EventFeedEventIdentity { kind: 50, id: 7 }),
+            ..EventFeedScript::default()
+        }),
+    };
+    let pack = |read_hour: i32, events: Vec<EventFeedEvent>, coverage: EventFeedCoverage| {
+        let count = events.len() as u64;
+        EventFeedHistoryRow {
+            generation: 1,
+            read_hour,
+            coverage,
+            counts: Some(EventFeedCounts { acquired: count, settled: count, failed: 0, rejected: 0 }),
+            outstanding: 0,
+            failure: None,
+            script_refusals: 0,
+            events,
+            script_tokens: tokens.to_vec(),
+            script_scopes: Vec::new(),
+            windows: Default::default(),
+        }
+    };
+    let frames: Vec<_> = (100..=115)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+            *frame.tables[TableId::EventFeedHistory.index()] = match hour {
+                100 => TableView::Complete(TableRows::EventFeedHistory(vec![pack(hour, vec![fired.clone()], EventFeedCoverage::Complete)])),
+                110 => TableView::Complete(TableRows::EventFeedHistory(vec![pack(hour, Vec::new(), EventFeedCoverage::Partial)])),
+                112..=114 => TableView::Unavailable { reason: "recording paused".into() },
+                _ => TableView::Complete(TableRows::EventFeedHistory(vec![pack(hour, Vec::new(), EventFeedCoverage::Complete)])),
+            };
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let replay_source = Arc::new(
+        dashboard_base::Source::from_replay(
+            dashboard_base::SourceKey { source_id: "choice-first-break".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    let cancel = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let choice_at = |hour: i32| {
+        EventChoicesTail::load(
+            &replay_source,
+            &ScriptTailParams {
+                branch_id: "1".into(),
+                hour: Some(hour),
+                from: None,
+                to: None,
+                countries: None,
+                group: None,
+                search: None,
+                row: None,
+                sort: None,
+                offset: None,
+                limit: 16,
+                events: None,
+                statuses: None,
+            },
+            &context,
+            &cancel,
+        )
+        .unwrap()
+    };
+    let feed_at = |hour: i32| {
+        EventFeedTail::load(
+            &replay_source,
+            &EventFeedTailParams {
+                branch_id: "1".into(),
+                hour: Some(hour),
+                from: None,
+                to: None,
+                countries: None,
+                group: None,
+                search: None,
+                row: None,
+                sort: None,
+                offset: None,
+                limit: 16,
+                categories: vec![EventFeedCategory::Politics],
+                exclude: None,
+            },
+            &context,
+            &cancel,
+        )
+        .unwrap()
+    };
+    assert_eq!((choice_at(109).rows[0].not_recorded_reason.as_deref(), choice_at(109).rows[0].not_recorded_hour), (None, None));
+    assert_eq!((choice_at(110).rows[0].not_recorded_reason.as_deref(), choice_at(110).rows[0].not_recorded_hour), (Some("event feed read in part"), Some(110)));
+    assert_eq!(
+        (choice_at(115).rows[0].not_recorded_reason.as_deref(), choice_at(115).rows[0].not_recorded_hour),
+        (Some("event feed read in part"), Some(110)),
+        "a later pause must not replace the earlier partial-read cause or hour"
+    );
+    assert_eq!(feed_at(115).rows[0].not_recorded_reason.as_deref(), Some("event feed read in part"));
 }
 
 #[test]
@@ -1679,4 +1818,85 @@ fn a_kept_row_says_again_which_mod_its_art_came_from() {
     assert_eq!(pixel, Some(BLUE), "the decision draws the selected mod's icon");
     assert!(!cold.is_empty(), "the first read says which mod the icon came from");
     assert_eq!(read(), (pixel, cold), "a read built from kept rows says it too");
+}
+
+#[test]
+fn a_followed_decisions_tail_carries_the_warnings_the_exact_read_gives_at_each_hour() {
+    use super::decisions_dated_panel;
+    use dashboard_base::{
+        products::LoadContext,
+        test_fixtures::{
+            source,
+            visual_mods::{BLUE, Machine, RED, png, select},
+        },
+    };
+    use replay_data::{
+        event_feed_rows::{EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript},
+        rows::{Recorded, TableRows},
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::atomic::AtomicBool;
+
+    let machine = Machine::new("feed_followed_warnings");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}");
+    machine.write("common/decisions/categories/fixture.txt", b"FIXTURE_CATEGORY={}");
+    machine.write("common/decisions/fixture.txt", b"FIXTURE_CATEGORY={fixture_decision={allowed={always=yes}}}");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_decision_fixture_decision textureFile=gfx/fixture_decision.png}}");
+    machine.write("gfx/fixture_decision.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_decision.png", &png(BLUE));
+    let token = b"fixture_decision";
+    let event = EventFeedEvent {
+        sequence: 1,
+        generation: 1,
+        hour: 100,
+        source: EventFeedSource::DecisionSelected,
+        actor: EventFeedCountry { reference: 9001, id: 9001, instance: 1 },
+        target: EventFeedCountry::default(),
+        cause: Recorded::NotRecorded,
+        script: Some(EventFeedScript { token_start: 0, token_len: token.len() as u32, ..EventFeedScript::default() }),
+    };
+    let frames = (99..=101)
+        .map(|hour| {
+            let events = if hour == 100 { vec![event.clone()] } else { Vec::new() };
+            let count = events.len() as u64;
+            let mut frame = source(1, hour, Some(1));
+            frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+            *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+                generation: 1,
+                read_hour: hour,
+                coverage: EventFeedCoverage::Complete,
+                counts: Some(EventFeedCounts { acquired: count, settled: count, failed: 0, rejected: 0 }),
+                outstanding: 0,
+                failure: None,
+                script_refusals: 0,
+                events,
+                script_tokens: token.to_vec(),
+                script_scopes: Vec::new(),
+                windows: Default::default(),
+            }]));
+            frame
+        })
+        .collect();
+    let (source, mut options) = machine.open_frames(frames);
+    select(&source, &mut options, &["fixture_art"]);
+    let context = LoadContext { content: Some(options) };
+    let cancelled = AtomicBool::new(false);
+    let warnings = |reply: &serde_json::Value| -> Vec<String> {
+        reply["warnings"].as_array().expect("a reply carries its warnings").iter().map(|line| line.as_str().unwrap().to_owned()).collect()
+    };
+    let exact = |hour: i32| {
+        let asked = serde_json::json!({ "branchId": "1", "hour": hour, "limit": 64 });
+        warnings(&crate::registrations::FEED_DECISIONSTAIL.answer(&source, asked, &context, &cancelled).unwrap())
+    };
+    let panel = decisions_dated_panel(&source, &context, &serde_json::json!({ "panel": "decisions-tail", "branchId": "1", "limit": 64 })).unwrap();
+    let followed = panel.exact().unwrap();
+    let art = |lines: &[String]| lines.iter().any(|line| line.starts_with("Artwork from visual mods"));
+    for hour in 99..=101 {
+        let read = (followed.advance)(hour, hour == 99, &cancelled, None);
+        let held = warnings(read.value.as_ref().as_ref().unwrap());
+        assert_eq!(held, exact(hour), "the followed reply at {hour} warns as the exact read of the same hour does");
+        assert_eq!(warnings(&(followed.cold)(hour, &cancelled).unwrap()), held, "and so does its cold read");
+        assert_eq!(art(&held), hour >= 100, "the decision's mod art is named from the hour it is listed, at {hour}");
+        assert_eq!(read.fresh, hour != 101, "hour 101 holds the reply read at 100, with its warnings");
+    }
 }

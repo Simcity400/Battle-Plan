@@ -10,14 +10,23 @@ const optional = (value: unknown): value is number | null | undefined => value =
 const costs = (value: unknown): boolean => value == null || (Array.isArray(value)
   && value.every(cost => object(cost) && typeof cost.currency === 'string' && CURRENCIES.has(cost.currency) && typeof cost.amount === 'string' && RAW.test(cost.amount)));
 
-export function validateOccurrence(value: unknown): ScriptOccurrence {
-  if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || typeof value.opened !== 'boolean' || !Array.isArray(value.edges)
-    || value.edges.length === 0 || !value.edges.every(edge => object(edge) && optional(edge.option) && optional(edge.lifecycle) && optional(edge.days) && costs(edge.costs)
-      && (edge.costsUnread === undefined || (Array.isArray(edge.costsUnread) && edge.costsUnread.every(currency => typeof currency === 'string' && CURRENCIES.has(currency)))))) {
+export function validateScriptEdge(value: unknown, readAt?: number): ScriptEdge {
+  if (!object(value) || !optional(value.option) || !optional(value.lifecycle) || !optional(value.days) || !costs(value.costs)
+    || (value.costsUnread !== undefined && (!Array.isArray(value.costsUnread) || !value.costsUnread.every(currency => typeof currency === 'string' && CURRENCIES.has(currency))))) {
     throw new Error('The occurrence card is malformed.');
   }
-  const edges = (value.edges as Record<string, unknown>[]).map(edge => ({ ...(edge as unknown as ScriptEdge), row: validateFeedRow(edge.row) }));
-  return { id: value.id, opened: value.opened, edges };
+  const row = validateFeedRow(value.row);
+  if (readAt !== undefined && row.readHour > readAt) {
+    throw new Error(`Event ${row.id} was read at hour ${row.readHour} after displayed hour ${readAt}.`);
+  }
+  return { ...(value as unknown as ScriptEdge), row };
+}
+
+export function validateOccurrence(value: unknown, readAt?: number): ScriptOccurrence {
+  if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || typeof value.opened !== 'boolean' || !Array.isArray(value.edges) || value.edges.length === 0) {
+    throw new Error('The occurrence card is malformed.');
+  }
+  return { id: value.id, opened: value.opened, edges: value.edges.map(edge => validateScriptEdge(edge, readAt)) };
 }
 
 export function occurrenceItem(occurrence: ScriptOccurrence): EventFeedItem | null {
@@ -32,16 +41,20 @@ export function lastEdge(edges: readonly ScriptEdge[], kinds: readonly EventFeed
   return null;
 }
 
-export interface RecordingBreak { firstHour: number; lastHour: number }
-export function recordingBreaks(branch: { gaps: readonly { firstHour: number; lastHour: number }[];
-  eventLosses?: readonly { afterHour: number; hour: number }[] }): RecordingBreak[] {
-  return [...branch.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour })),
-    ...(branch.eventLosses ?? []).map(loss => ({ firstHour: loss.afterHour + 1, lastHour: loss.hour }))]
+export interface RecordingBreak { firstHour: number; lastHour: number; reason?: string }
+export function recordingBreaks(branch: { gaps: readonly { firstHour: number; lastHour: number; reason?: string }[];
+  eventLosses?: readonly { afterHour: number; hour: number; reason?: string }[] }): RecordingBreak[] {
+  const reasonOf = (reason: string | undefined): { reason?: string } => {
+    const trimmed = reason?.trim();
+    return trimmed ? { reason: trimmed } : {};
+  };
+  return [...branch.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, ...reasonOf(gap.reason) })),
+    ...(branch.eventLosses ?? []).map(loss => ({ firstHour: loss.afterHour + 1, lastHour: loss.hour, ...reasonOf(loss.reason) }))]
     .filter(span => span.firstHour <= span.lastHour).sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
 }
 
 export function breakAfter(breaks: readonly RecordingBreak[], from: number, to: number): RecordingBreak | null {
-  return breaks.find(span => span.lastHour > from && span.firstHour <= to) ?? null;
+  return breaks.find(span => span.lastHour >= from && span.firstHour <= to) ?? null;
 }
 
 export const dayOf = (hour: number): string => { const date = gameDate(hour); return date ? formatDate(date) : formatDateTime(hour); };

@@ -356,7 +356,6 @@ impl AtHour for EntityStatsAt {
         vec![EntityStatsParams::decl(), EntityStats::decl(), EntityStat::decl()]
     }
 
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         Vec::new()

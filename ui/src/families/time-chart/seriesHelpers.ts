@@ -140,7 +140,7 @@ export function headReading(
   }
   const head = column === 0 ? bounded?.headValue : undefined;
   if (!head) return null;
-  if (head.kind === 'notRecorded' || head.kind === 'notApplicable') return { missing: head.reason };
+  if (head.kind === 'notRecorded' || head.kind === 'notApplicable' || head.kind === 'pending') return { missing: head.reason };
   if (typeof head.value === 'bigint') {
     return scaledReading(head.value, 0, scale) ?? { missing: NOT_READ_AT_HOUR };
   }

@@ -274,5 +274,46 @@ pub fn played(replay: &replay::campaign::Replay, exact: &dashboard_follow::panel
     out
 }
 
+pub fn proven_by_steps(replay: &replay::campaign::Replay, exact: &dashboard_follow::panel::AtHour, first: i32, to: i32, hours: i32) -> Vec<(i32, i32)> {
+    use playhead::pages::{Pages, Span, WorldPages};
+    use std::sync::{Arc, atomic::AtomicBool};
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let seed = (exact.advance)(first, true, &AtomicBool::new(false), None);
+    assert!(!seed.pending, "the seed is ready before playback");
+    let (send, read) = std::sync::mpsc::channel();
+    let advance = exact.advance.clone();
+    let hook: playhead::Hook = Box::new(move |step, lanes| {
+        let at = advance(step.last(), step.reset(), &AtomicBool::new(false), Some(dashboard_follow::panel::ProductStep { step, lanes, held: None, wake: None }));
+        let _ = send.send((step.last(), at.from, at.pending));
+    });
+    let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 1, ring: 3, speed: f64::from(hours), rate: 1.0, ..playhead::Settings::default() };
+    let playhead = playhead::Playhead::new(Arc::clone(&pages), playhead::Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap();
+    let reader = playhead.declare(seed.lanes, None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(first);
+    let (mut head, mut out) = (first, vec![(first, seed.from)]);
+    loop {
+        let mut next = None;
+        playhead
+            .drive_until(&mut consumer, head, || match read.try_recv() {
+                Ok(item) => {
+                    next = Some(item);
+                    std::ops::ControlFlow::Break(Ok(()))
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => std::ops::ControlFlow::Continue(()),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => std::ops::ControlFlow::Break(Err("step hook channel disconnected".into())),
+            })
+            .unwrap();
+        let (hour, from, pending) = next.unwrap();
+        assert!(!pending, "hour {hour} is read beside its step");
+        out.push((hour, from));
+        if hour >= to { break; }
+        if hour >= head { head = (head + hours).min(to); }
+    }
+    drop(consumer);
+    playhead.finish();
+    out
+}
+
 pub mod snow_content;
 pub mod visual_mods;

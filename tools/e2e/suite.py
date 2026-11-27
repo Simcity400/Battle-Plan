@@ -56,7 +56,13 @@ APP_TITLES = ("BattlePlan (Alpha)", "BattlePlan (Nightly)")
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-DEFAULT_STATE = Path(os.environ.get("BATTLEPLAN_CAPTURES", os.environ.get("HOI4_CAPTURES", ROOT / "captures"))) / "ci" / "e2e"
+def _default_state(env=None):
+    source_env = os.environ if env is None else env
+    captures = source_env.get("BATTLEPLAN_CAPTURES") or source_env.get("HOI4_CAPTURES")
+    return (Path(captures) if captures else ROOT / "captures") / "ci" / "e2e"
+
+
+DEFAULT_STATE = _default_state()
 WINDOW = (1920, 1080)
 SCREEN_VIEWS, TALL_VIEW, SCREEN = ("AllWidgets", "AllWidgetsLegible", "Heaviest"), "AllWidgetsTall", (3840, 2160)
 PROFILES = {
@@ -544,7 +550,7 @@ def _select_shell_record(folder, require_hosted=False):
     raise RuntimeError(f"{folder} holds both {SHELL_RECORD} and {BOAT_RECORD} and neither matches {APP_EXE} SHA-256 {actual_sha}")
 
 
-def shell_build(folder, expected_revision=None, verify_hash=False, require_hosted=False):
+def shell_build(folder, expected_revision=None, verify_hash=False, require_hosted=False, require_compiler=False):
     """What built a measuring shell, or why the folder holds none."""
     folder = Path(folder)
     record, built = _select_shell_record(folder, require_hosted=require_hosted)
@@ -577,6 +583,10 @@ def shell_build(folder, expected_revision=None, verify_hash=False, require_hoste
         actual_sha = sha256_file(exe)
         if actual_sha.lower() != expected_sha.lower():
             raise RuntimeError(f"{exe} SHA-256 is {actual_sha}, expected {expected_sha}")
+    if require_compiler:
+        missing = missing_shader_compiler(folder)
+        if missing:
+            raise RuntimeError(f"{folder} is missing the pinned shader compiler ({', '.join(missing)})")
     return {"folder": str(folder), "revision": revision, "cargoArguments": arguments}
 
 
@@ -658,15 +668,55 @@ def fixture_recording(folder):
 SHADER_COMPILER = ("dxcompiler.dll", "dxil.dll")
 
 
-def shader_compiler(state, app):
+def missing_shader_compiler(folder):
+    folder = Path(folder)
+    return [name for name in SHADER_COMPILER if not _is_regular_file(folder / name)]
+
+
+def _copy_atomic(src, dst, temp_dir=None):
+    tmp = (dst.parent if temp_dir is None else Path(temp_dir)) / f".{dst.parent.name}.{dst.name}.{os.getpid()}-{time.time_ns()}.tmp"
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _stage_shader_pair(src_dir, dst_dir, temp_dir=None):
+    for name in sorted(SHADER_COMPILER, key=lambda name: not _is_regular_file(dst_dir / name)):
+        _copy_atomic(src_dir / name, dst_dir / name, temp_dir=temp_dir)
+
+
+def shader_compiler(state, app, runner=subprocess.run):
     """The pinned shader compiler beside the app, whose maps load it from there: fetched once into the suite's state."""
-    copy = state / "shader-compiler"
-    if not all((copy / name).is_file() for name in SHADER_COMPILER):
-        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                        str(ROOT / "tools" / "install-shader-compiler.ps1"), "-Destination", str(copy)], check=True)
-    for name in SHADER_COMPILER:
-        if not (app / name).is_file():
-            shutil.copy2(copy / name, app / name)
+    app = Path(app)
+    if not missing_shader_compiler(app):
+        return
+    copy = Path(state) / "shader-compiler"
+    if missing_shader_compiler(copy):
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        staged = Path(tempfile.mkdtemp(prefix=".shader-compiler.staging-", dir=str(copy.parent)))
+        try:
+            done = runner(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                 str(ROOT / "tools" / "install-shader-compiler.ps1"), "-Destination", str(staged)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+            )
+            if done.returncode != 0:
+                detail = (getattr(done, "stderr", None) or getattr(done, "stdout", None) or "").strip()
+                raise RuntimeError(f"install-shader-compiler.ps1 failed (exit {done.returncode}): {detail}")
+            missing = missing_shader_compiler(staged)
+            if missing:
+                raise RuntimeError(f"install-shader-compiler.ps1 did not produce {', '.join(missing)}")
+            copy.mkdir(parents=True, exist_ok=True)
+            _stage_shader_pair(staged, copy)
+        finally:
+            shutil.rmtree(staged, ignore_errors=True)
+    _stage_shader_pair(copy, app, temp_dir=app.parent)
+    missing = missing_shader_compiler(app)
+    if missing:
+        raise RuntimeError(f"{app} is missing the pinned shader compiler ({', '.join(missing)})")
 
 
 def app_environment(profile, port, extra):
@@ -830,6 +880,7 @@ def run_locked(args, started, state):
                                               *(["--pages", args.pages] if args.pages else []),
                                               *(["--pages-at", args.pages_at] if args.pages_at is not None else []),
                                               *(["--kinds", args.kinds] if args.kinds else []),
+                                              *(["--all-views"] if args.all_views else []),
                                               *(["--costs", args.costs] if args.costs else []),
                                               *(["--heaviest", args.heaviest] if args.heaviest is not None else []),
                                               *(["--record-replies", session["recordedReplies"]] if args.record_replies else []),
@@ -888,16 +939,19 @@ def accept(args):
     return 0
 
 
-def run_build_boat(out, shell=False, runner=subprocess.run):
+def run_build_boat(out, shell=False, runner=subprocess.run, env=None):
     """The release app with the UI embedded, or the measuring shell, compiled on Boat; a Boat failure is retried once,
     as Boat asks."""
     if shell:
         print("note: `python tools/e2e/suite.py shell` fetches or dispatches the hosted measuring shell without Boat", file=sys.stderr)
     cargo_args = shell_cargo_arguments(shell=shell)
-    command = [sys.executable, str(ROOT / "tools" / "boat.py"), "build", "--out", str(Path(out).resolve()), *cargo_args[1:]]
+    out_dir = Path(out).resolve()
+    command = [sys.executable, str(ROOT / "tools" / "boat.py"), "build", "--out", str(out_dir), *cargo_args[1:]]
     for attempt in (1, 2):
         code = runner(command, cwd=ROOT).returncode
         if code != BOAT_FAILED:
+            if code == 0 and shell:
+                shader_compiler(_default_state(env), out_dir, runner=runner)
             return code
         print(f"Boat failed (exit {code}), attempt {attempt}", file=sys.stderr)
     return code
@@ -1078,7 +1132,7 @@ def _install_staged_shell(staging, target, revision):
             backup.rename(target)
         elif backup is None and target.is_dir():
             try:
-                shell_build(target, expected_revision=revision, verify_hash=True, require_hosted=True)
+                shell_build(target, expected_revision=revision, verify_hash=True, require_hosted=True, require_compiler=True)
                 shutil.rmtree(staging, ignore_errors=True)
                 return
             except RuntimeError:
@@ -1111,13 +1165,16 @@ def run_fetch_shell(commit="HEAD", out=None, gate_dir=None, dispatch=False, repo
     """Fetches and verifies the hosted measuring shell for `commit`, or dispatches the workflow when absent."""
     revision = resolve_commit(commit, runner=runner)
     target = validate_shell_target(shell_destination(revision, out=out, gate_dir=gate_dir, env=env, runner=runner))
+    cache_state = _default_state(env)
     if target.is_dir() and _find_hosted_record(target) is not None:
         try:
             shell_build(target, expected_revision=revision, verify_hash=True, require_hosted=True)
-            print(f"Measuring shell ready at {target} ({revision[:10]})")
-            return 0
         except RuntimeError:
             pass
+        else:
+            shader_compiler(cache_state, target, runner=runner)
+            print(f"Measuring shell ready at {target} ({revision[:10]})")
+            return 0
     resolved_repo = github_repo(repo, env=env, runner=runner)
     artifact_name = shell_artifact_name(revision)
     run_id, why = find_hosted_shell_artifact(resolved_repo, revision, runner=runner)
@@ -1133,6 +1190,7 @@ def run_fetch_shell(commit="HEAD", out=None, gate_dir=None, dispatch=False, repo
                 detail = (done.stderr or done.stdout or "").strip()
                 raise RuntimeError(f"gh run download failed (exit {done.returncode}): {detail}")
             shell_build(staging, expected_revision=revision, verify_hash=True, require_hosted=True)
+            shader_compiler(cache_state, staging, runner=runner)
             _install_staged_shell(staging, target, revision)
             print(f"Fetched measuring shell for {revision[:10]} into {target} (run {run_id})")
             return 0
@@ -1449,6 +1507,7 @@ def parse(argv):
     run_command.add_argument("--cpu-throttle", type=float, help="CPU throttle rate (>= 1); forwarded to Chromium and drawing-lane stretch()")
     run_command.add_argument("--cores", help="logical processor count or hex affinity mask applied to the app Job object and page")
     run_command.add_argument("--kinds", help="comma-separated widget kinds for the widget-costs phase (all registered kinds by default)")
+    run_command.add_argument("--all-views", action="store_true", help="enumerate every registered widget view instead of one default placement per kind")
     run_command.add_argument("--costs", help="path to widget-costs.json used to build the Heaviest fixture page")
     run_command.add_argument("--heaviest", type=int, help="number of most expensive widget kinds placed on the Heaviest page (default 30)")
     run_command.add_argument("--window-client", help="window client area in device pixels, WxH")

@@ -3,6 +3,7 @@ import type {
   CompiledFollowSubscription,
   FamilyId,
 } from './plan.ts';
+import type { TailValidator } from './table/rowSource.ts';
 
 export type {
   ArtHandle,
@@ -81,6 +82,7 @@ export interface FamilyProjection<TModel, TOptions> {
   readonly family: FamilyId;
   project(readView: BoundedReadView, options: TOptions): TModel;
   nextChange?(readView: BoundedReadView, options: TOptions): number;
+  readonly validateTail?: TailValidator;
 }
 
 export interface MirrorCell {

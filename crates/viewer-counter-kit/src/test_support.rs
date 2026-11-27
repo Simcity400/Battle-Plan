@@ -33,7 +33,7 @@ pub fn kept_frames_at(history: &History, frame: &DecodedFrame) -> LandMarkers {
         &engaged,
         &kept,
         &Movements::default(),
-        &LandCombatDefines::VANILLA,
+        &LandCombatDefines::FIXTURE,
     )
     .unwrap()
 }

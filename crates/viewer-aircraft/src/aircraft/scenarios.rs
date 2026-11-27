@@ -650,15 +650,7 @@ mod tests {
             missile: Ok(family.sizing),
             fire_threshold: 200_000,
             carpet_threshold: 100_000,
-            clock_speed: 1.0,
-            curve_density: 1.0,
-            curve_extrapolation: 1.0,
-            curve_elevation: 1.0,
-            scale_takeoff: 1.0,
-            scale_landing: 1.0,
-            scale_min: 1.0,
-            smooth_move: 0.13,
-            smooth_turn: 0.12,
+            ..FlightDefines::fixture()
         }
     }
 

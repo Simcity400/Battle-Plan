@@ -110,6 +110,7 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
     return {
       installedId: installed.id,
       owner: installed.owner,
+      target: { kind: 'cell', key: hit.key },
       subject: hit.key,
       hour: installed.hour,
       label: `${row.label} to ${column.label}`,
@@ -162,6 +163,7 @@ export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, Fa
     return {
       installedId: installed.id,
       owner: installed.owner,
+      target: { kind: 'row', key: row.id },
       subject: row.id,
       hour,
       label: row.label,

@@ -7,7 +7,7 @@ import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { cellArt, newIdentityBoundary } from '../../families/table/identityCell.ts';
+import { cellArt, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
 import {
   LOG_TABLE_BASE,
   logCountryCell,
@@ -22,7 +22,7 @@ import type { LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { RaidLogRow, RaidStatus, RaidTypeChip, RaidVictimSource } from '../../generated/dashboard';
 import { RAID_LOG_COLUMNS } from './definition.ts';
@@ -91,34 +91,24 @@ export function raidTypeFilterItems(
   });
 }
 
-function resolvePlace(readView: BoundedReadView, row: RaidLogRow): { readonly cell: TableCell; readonly label: string | null } {
+function resolvePlace(
+  readView: BoundedReadView,
+  row: RaidLogRow,
+  boundary: ReturnType<typeof newIdentityBoundary>,
+): { readonly cell: TableCell; readonly value: Value<string> | null } {
   const place = row.place;
   if (!place) {
-    return { cell: { value: notRecorded(row.placeMissing ?? "The raid's target place is not recorded") }, label: null };
+    return { cell: { value: notRecorded(row.placeMissing ?? "The raid's target place is not recorded") }, value: null };
   }
   if (place.state !== null && place.stateHour !== null) {
-    const res = readView.who('state', String(place.state), place.stateHour);
-    if (res.name.status === 'ready' && res.name.value.trim()) {
-      return { cell: { value: knownValue(res.name.value) }, label: res.name.value };
-    }
-    if (res.name.status === 'pending') {
-      const label = `State ${place.state}`;
-      return { cell: { value: knownValue(label) }, label };
-    }
-    return { cell: { value: notRecorded(res.name.status === 'ready' ? 'State name not recorded' : res.name.reason) }, label: null };
+    const value = resolveName(readView, 'state', String(place.state), { atHour: place.stateHour, boundary }).value;
+    return { cell: { value }, value };
   }
   if (place.province !== null && place.provinceHour !== null) {
-    const res = readView.who('province', String(place.province), place.provinceHour);
-    if (res.name.status === 'ready' && res.name.value.trim()) {
-      return { cell: { value: knownValue(res.name.value) }, label: res.name.value };
-    }
-    if (res.name.status === 'pending') {
-      const label = `Province ${place.province}`;
-      return { cell: { value: knownValue(label) }, label };
-    }
-    return { cell: { value: notRecorded(res.name.status === 'ready' ? 'Province name not recorded' : res.name.reason) }, label: null };
+    const value = resolveName(readView, 'province', String(place.province), { atHour: place.provinceHour, boundary }).value;
+    return { cell: { value }, value };
   }
-  return { cell: { value: notRecorded(row.placeMissing ?? "The raid's target place is not recorded") }, label: null };
+  return { cell: { value: notRecorded(row.placeMissing ?? "The raid's target place is not recorded") }, value: null };
 }
 
 function preparationCell(
@@ -252,7 +242,7 @@ function buildRaidRow(
         }
     : { value: notApplicable('Game artwork hidden'), blank: true };
 
-  const place = resolvePlace(readView, row);
+  const place = resolvePlace(readView, row, boundary);
   const prep = preparationCell(row, hour);
   const status = buildStatusCell(row);
 
@@ -261,7 +251,7 @@ function buildRaidRow(
       { label: 'Status', value: knownValue(status.label) },
       { label: victimSourceLabel(row.victim.source), value: row.victim.tag !== null ? knownValue(row.victim.tag) : notRecorded(row.victim.missing ?? "The raid's target is not recorded") },
     ];
-    if (place.label) out.push({ label: 'Target', value: knownValue(place.label) });
+    if (place.value && place.value.kind !== 'notRecorded') out.push({ label: 'Target', value: place.value });
     else if (row.placeMissing) out.push({ label: 'Target', value: notRecorded(row.placeMissing) });
     if (prep.text) out.push({ label: 'Preparation', value: knownValue(prep.text) });
     if (row.outcomeMissing) out.push({ label: 'Outcome', value: notRecorded(row.outcomeMissing) });

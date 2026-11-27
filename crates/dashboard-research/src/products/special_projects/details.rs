@@ -664,7 +664,6 @@ impl AtHour for SpecialProjectDetailsAt {
     const KEY: &'static str = "special-project-details";
     const TITLE: &'static str = "Special project details";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(dashboard_base::products::at_hour::at_hour);
     type Params = SpecialProjectDetailsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
@@ -1342,7 +1341,6 @@ impl AtHour for SpecialProjectEffectsAt {
     const KEY: &'static str = "special-project-effects";
     const TITLE: &'static str = "Special project effects";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(dashboard_base::products::at_hour::at_hour);
     type Params = SpecialProjectEffectsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, owner, project];

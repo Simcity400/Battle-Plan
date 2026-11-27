@@ -79,7 +79,6 @@ use viewer_native_gui::counter_hovers::land::CounterHover;
 use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
 use viewer_native_gui::lazy_icons::LazyFlags;
 use viewer_native_gui::native_gui::Assets;
-use viewer_native_gui::native_gui::Sheets;
 use viewer_native_gui::native_gui::container_frame;
 use viewer_native_gui::native_resources::GuiResources;
 use viewer_native_gui::native_windows::NAVY_WINDOW;
@@ -229,34 +228,30 @@ impl CounterDefines {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub const VANILLA: Self = Self {
-        movement_speeds: [12.0; 2],
-        icons_cutoff: 900.0,
-        units_cutoff: 120.0,
-        air_base_cutoff: 900.0,
-        naval_base_cutoff: 900.0,
-        facility_cutoff: 900.0,
-        naval_base_scale: 1.0,
-        naval_base_highlighted_scale: 1.2,
-        naval_mission_cutoff: 1500.0,
-        land_combat_cutoff: 1500.0,
-        naval_combat_cutoff: 1500.0,
-        radar_cutoff: 1100.0,
-        coarse_distance: [350.0, 350.0],
+    pub const FIXTURE: Self = Self {
+        movement_speeds: [11.0, 9.0],
+        icons_cutoff: 840.0,
+        units_cutoff: 135.0,
+        air_base_cutoff: 840.0,
+        naval_base_cutoff: 840.0,
+        facility_cutoff: 840.0,
+        naval_base_scale: 1.15,
+        naval_base_highlighted_scale: 1.35,
+        naval_mission_cutoff: 1420.0,
+        land_combat_cutoff: 1420.0,
+        naval_combat_cutoff: 1420.0,
+        radar_cutoff: 1040.0,
+        coarse_distance: [325.0, 325.0],
         priorities: Priorities::uniform([
-            10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 13, 5, 3, 3, 10, 3, 10,
+            8, 9, 4, 2, 2, 2, 2, 18, 18, 17, 12, 12, 4, 2, 2, 8, 2, 8,
         ]),
-        groups: GroupDefines::VANILLA,
-        split_selected_limit: 12,
-        naval_counts: viewer_unit_reads::naval_count_approx::Defines::VANILLA,
-        supply: counter_status::SupplyThresholds {
-            very_low: 20_000,
-            low: 35_000,
-            show: 50_000,
-        },
-        tints: allegiance::Tints::VANILLA,
-        land_combat: LandCombatDefines::VANILLA,
-        type_colors: type_tint::Colors::VANILLA,
+        groups: GroupDefines::FIXTURE,
+        split_selected_limit: 9,
+        naval_counts: viewer_unit_reads::naval_count_approx::Defines::FIXTURE,
+        supply: counter_status::SupplyThresholds::FIXTURE,
+        tints: allegiance::Tints::FIXTURE,
+        land_combat: LandCombatDefines::FIXTURE,
+        type_colors: type_tint::Colors::FIXTURE,
     };
 }
 
@@ -2360,7 +2355,7 @@ impl CounterArt {
                 .gui_assets
                 .sprites
                 .iter()
-                .filter_map(|name| Sheets::sheet(&self.gui, name));
+                .filter_map(|name| self.gui.loaded_sheet(name));
             for sheet in self
                 .sheets
                 .values()
@@ -2393,7 +2388,7 @@ impl CounterArt {
                 .gui_assets
                 .fonts
                 .iter()
-                .filter_map(|name| self.gui.font(name));
+                .filter_map(|name| self.gui.loaded_font(name));
             for font in window_fonts {
                 for ch in
                     "0123456789?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz /-+.%".chars()

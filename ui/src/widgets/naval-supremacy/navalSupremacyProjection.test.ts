@@ -2,7 +2,8 @@ import { assertRunCounts } from '../../families/heat/runIdentity.fixture.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import { deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
+import { deriveBarsAudit } from '../../families/bars/model.ts';
+import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
 import type { NavalSupremacyReply } from '../../generated/dashboard';
 import { projectSupremacyShares, projectSupremacyTimeline, shipsText, supremacySharesDeclaration, supremacyTimelineDeclaration } from './navalSupremacyProjection.ts';
@@ -41,6 +42,21 @@ test('the shares bar splits the score at the playhead between friends and enemie
   assert.ok(row && row.kind === 'data');
   assert.deepEqual((row.segments ?? []).map(segment => [segment.key, Math.round(segment.share * 100)]), [['friendly', 59], ['enemy', 41]]);
   assert.equal(row.readout?.primary, '13 v n/a ships');
+
+  const placeholderReply = {
+    ...reply(60),
+    regions: [{ ...reply(60).regions[0]!, name: 'Region 17 (name unavailable)' }],
+  };
+  const pendingModel = projectSupremacyShares(view(60, placeholderReply), { viewer: null, surface: SURFACE, historyStart: 0, tiles: 0 });
+  const pendingRow = pendingModel.rows.find(item => item.kind === 'data');
+  assert.ok(pendingRow && pendingRow.kind === 'data');
+  assert.deepEqual(pendingRow.label, { kind: 'pending', reason: 'Name is loading' });
+  assert.equal(deriveBarsAudit(pendingModel).find(entry => entry.key === '17:label')?.value, '["pending","Name is loading"]');
+
+  const timelineModel = projectSupremacyTimeline(view(60, placeholderReply), { viewer: null, surface: SURFACE, historyStart: 0, tiles: 0 });
+  assert.deepEqual(timelineModel.rows[0]?.labelValue, { kind: 'pending', reason: 'Name is loading' });
+  assert.equal(deriveLanesAudit(timelineModel, { firstRow: 0, endRow: 1 }).find(entry => entry.key === '17:label')?.value, '["pending","Name is loading"]');
+  assert.equal(deriveLanesMirror(timelineModel, 0, 1).rows[0]?.name, 'Loading: Name is loading');
 });
 
 test('a day with no score on either side is the empty lane, not contested', () => {
@@ -113,7 +129,7 @@ test('history comes from the tiles, laid out once, and the rows and readout from
   const model = at(60);
   assert.equal(model.firstHour, 0);
   assert.deepEqual(model.rows[0]!.runs.map(run => [run.firstHour, run.lastHour]), [[0, 47], [48, 60]]);
-  assert.equal(deriveLanesTooltip(model, 0, 30)!.items![0]!.label, 'Enemy control', 'a past day is answered by its tile');
+  assert.ok(deriveLanesTooltip(model, 0, 30)!.items!.some(item => item.label === 'Enemy control'), 'a past day is answered by its tile');
   assert.equal(deriveLanesTooltip(model, 0, 55)!.hour, 60);
   at(61);
   assert.equal(reads, 1);
@@ -178,5 +194,5 @@ test('a recorded 55% / 45% supremacy split formats from integer numerator and sc
     }],
   };
   const timeline = projectSupremacyTimeline(view(60, enemyDay), { viewer: null, surface: SURFACE, historyStart: 0, tiles: 0 });
-  assert.deepEqual(deriveLanesTooltip(timeline, 0, 12)?.items?.map(i => [i.label, i.value]), [['Enemy control', '90% of the score']]);
+  assert.deepEqual(deriveLanesTooltip(timeline, 0, 12)?.items?.map(i => [i.label, i.value ?? i.pendingReason]), [['Name', 'Name is loading'], ['Enemy control', '90% of the score']]);
 });

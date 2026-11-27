@@ -26,6 +26,7 @@ import { eventFeedProjection } from '../../widgets/event-feed/eventFeedProjectio
 import { gameScoreColumns, gameScoreProjection } from '../../widgets/game-score/gameScoreProjection.ts';
 import { marketLedgerProjection } from '../../widgets/market-ledger/marketLedgerProjection.ts';
 import { buildRowSourceFromHead, validateGenericTailReply } from './rowSource.ts';
+import { logCountryCell } from './logHelpers.ts';
 import { COLUMNS as OCCUPIED_DEFAULTS, TABLE_BASE as OCCUPIED_BASE } from '../../widgets/occupied-states/definition.ts';
 import { occupiedStatesProjection } from '../../widgets/occupied-states/occupiedProjection.ts';
 import { apmTableColumns, apmTableProjection } from '../../widgets/player-apm/apmProjection.ts';
@@ -43,7 +44,10 @@ import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
+import { identityCell, resolveName } from './identityCell.ts';
 import { createTablePicture, drawFamilyTable, glideCrossing, hasGlideCrossing, hitFamilyTable, NO_GLIDE, tableGlide } from './painter.ts';
+import { combinedPaneRows, resolvePanes } from './panes.ts';
+import { createPlanAuditVerifier } from '../host/auditBinding.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
 import { TREE_CHEVRON_LANE } from './layout.ts';
@@ -168,7 +172,7 @@ function instrumentedContext() {
   };
 }
 
-test('declarative table projection refuses bare null where a 5-state value is required', () => {
+test('declarative table projection refuses bare null where a family value is required', () => {
   const broken = declareTableProjection<{ items: { id: string; count: number }[] }, { id: string; count: number }, Record<string, never>>({
     kind: 'test-null-guard',
     columns: [
@@ -420,12 +424,11 @@ test('occupied-states, game-score (with faction groups), and division-template (
   const waiting = gsAt(60, datedIdentity({ GER: [{ from: 0, name: 'Germany' }] }));
   const loadingEng = waiting.rows.find(row => row.key === 'ENG')!;
   assert.notEqual(loadingEng.name, 'ENG', 'a name still loading is never the tag as if it were the name');
-  assert.deepEqual(loadingEng.cells.country!.value, notRecorded('Name is loading'), 'a name still loading is a missing state that says it is loading');
-  assert.equal(loadingEng.cells.country!.loading, true);
+  assert.deepEqual(loadingEng.cells.country!.value, { kind: 'pending', reason: 'Name is loading' }, 'a name still loading is a pending state, never notRecorded');
   const waitingFlat = resolveTableRows(waiting, tableSettingsOf(undefined, gameScoreColumns(undefined), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }));
   const waitingCol = buildColumnLayouts(gameScoreColumns(undefined), tableSettingsOf(undefined, gameScoreColumns(undefined), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } })).find(col => col.key === 'country')!;
   const waitingPaint = resolveCellPaintModel(loadingEng.cells.country, waitingCol, new Map());
-  assert.equal(waitingPaint.loading, true, 'the painted cell knows the name is loading');
+  assert.equal(waitingPaint.value.kind, 'pending', 'the painted cell knows the name is pending');
   assert.match(deriveTableMirror(waitingFlat, waiting.columns, false).rows.find(row => row.key === 'ENG')!.cells.find(cell => cell.column === 'country')!.spoken, /^Loading/, 'the mirror says loading, never not recorded');
   assert.deepEqual(waiting.rows.find(row => row.key === 'GER')!.cells.country!.value, knownValue('Germany'));
   const named = gsAt(61, datedIdentity({ GER: [{ from: 0, name: 'Germany' }], ENG: [{ from: 0, name: 'United Kingdom' }] }));
@@ -624,7 +627,7 @@ test('occupied-states projection names countries at the hour, filter ranges, unr
   );
   const beforeNames = waitingNames({ GER: [{ from: 0, name: 'Germany' }] });
   const beforeTip = deriveTableTooltip(resolveTableRows(beforeNames, settings), '1', beforeNames.columns)!;
-  assert.deepEqual(beforeTip.rows.find(r => r.label === 'Occupied country')?.valueState, { kind: 'missing', reason: 'Name is loading' }, 'the occupied country still loading says so, never the tag');
+  assert.deepEqual(beforeTip.rows.find(r => r.label === 'Occupied country')?.valueState, { kind: 'pending', reason: 'Name is loading' }, 'the occupied country still loading says pending, never missing or the tag');
   const afterNames = waitingNames({ GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] });
   const afterTip = deriveTableTooltip(resolveTableRows(afterNames, settings), '1', afterNames.columns)!;
   assert.equal(afterTip.rows.find(r => r.label === 'Occupied country')?.valueState?.text, 'Poland', 'once names arrive the tooltip names the occupied country');
@@ -6257,4 +6260,295 @@ test('tableHostAdapter.deriveAuditRows matches the painted lane columns without 
   };
   checkAtWidth(822, ['date', 'kind', 'country', 'entry', 'place', 'status'], 'flagName', 'wide table');
   checkAtWidth(420, ['date', 'kind', 'country', 'entry', 'status'], 'flag', 'narrow table');
+});
+
+test('resolvePanes namespaces pane-local headers for paint and exact audit while still rejecting duplicates inside one pane', async () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true, minWidth: 100 },
+    { key: 'share', label: 'Share', as: 'plain', offered: ['plain'], priority: 1, numeric: true, minWidth: 80 },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'compact', barsBehind: 'off', sort: { column: 'share', direction: 'descending' } });
+  const row = (key: string, name: string, share: number, group?: { readonly key: string; readonly label: string }): TableRow => ({
+    key,
+    name,
+    ...(group ? { group } : {}),
+    cells: {
+      name: { value: knownValue(name) },
+      share: { value: knownValue(share), format: 'integer' },
+    },
+  });
+  const sharedGroup = { key: 'side', label: 'Share of the side' } as const;
+  const twoSideModel: TableModel = {
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      {
+        key: 'opposing',
+        title: { name: knownValue('Alpha') },
+        totalRow: row('total:opposing', 'Share of the war', 60),
+        rows: [row('opposing:AAA', 'Alpha', 60, sharedGroup)],
+      },
+      {
+        key: 'viewpoint',
+        title: { name: knownValue('Beta') },
+        totalRow: row('total:viewpoint', 'Share of the war', 40),
+        rows: [row('viewpoint:BBB', 'Beta', 40, sharedGroup)],
+      },
+    ],
+  };
+
+  const panes = resolvePanes(twoSideModel, settings, undefined, 'standard');
+  const paneGroupKeys = panes.map(pane => pane.rows.find(item => item.kind === 'group-header')?.key);
+  assert.deepEqual(paneGroupKeys, ['pane:opposing:group:side', 'pane:viewpoint:group:side'], 'each pane carries its own composite key for the local group header');
+  const flatRows = combinedPaneRows(panes);
+  assert.deepEqual(
+    flatRows.filter(item => item.kind === 'group-header').map(item => item.key),
+    ['pane:opposing', 'pane:opposing:group:side', 'pane:viewpoint', 'pane:viewpoint:group:side'],
+    'combinedPaneRows keeps the pane-qualified group header keys beside each pane header',
+  );
+
+  const projection = registerFamilyProjection({
+    kind: 'test-panes-audit-group-collision',
+    family: 'table',
+    project: () => twoSideModel,
+  });
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 640, height: 240, dpr: 1 });
+    const painted = lane.paint({
+      label: 'two-sided-audit',
+      binding: {
+        family: 'table' as const,
+        kind: projection.kind,
+        options: NO_OPTIONS,
+        settings,
+        sources: NO_SOURCES,
+        width: 640,
+        height: 240,
+        scrollLeft: 0,
+        scrollTop: 0,
+        theme: TEST_THEME,
+        reducedMotion: true,
+        audit: true,
+        auditId: 1,
+      },
+      hour: 100,
+      speed: 0,
+      seek: 1,
+    });
+    const verifier = createPlanAuditVerifier<TableModel, Record<string, never>>();
+    const exact = await verifier(100, {
+      projection,
+      options: NO_OPTIONS,
+      exactReadView: async hour => createBoundedReadView({ hour }),
+      deriveRows: (model, hour, fields) => tableHostAdapter.deriveAuditRows!(model, hour, {
+        settings,
+        expanded: {},
+        viewport: { width: 640, height: 240, scrollLeft: 0, scrollTop: 0, dpr: 1, zoomWindow: null },
+        theme: TEST_THEME,
+        fields: fields ?? {},
+      }),
+    }, 1, Object.fromEntries(Object.entries(painted.fields).map(([k, v]) => [k, v.value])));
+    assert.ok(exact, 'verifier returns an exact map for two panes with the same local group key');
+    assert.ok(exact.values.has('pane:opposing:group:side:group'));
+    assert.ok(exact.values.has('pane:viewpoint:group:side:group'));
+    const auditField = painted.fields.audit?.value as { readonly rows: readonly { readonly row: string; readonly key: string; readonly value?: string }[] } | undefined;
+    assert.ok(auditField, 'painted picture emits audit rows');
+    assert.equal(pictureError('table', auditField.rows, exact), null, 'painted audit matches exact verifier output');
+  } finally {
+    recording.restore();
+  }
+
+  const colonPanes = resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      { key: 'a', title: { name: knownValue('A') }, rows: [row('a:1', 'One', 1, { key: 'b', label: 'B' })] },
+      { key: 'a:group:b', title: { name: knownValue('AB') }, rows: [row('ab:1', 'Two', 2)] },
+    ],
+  }, settings, undefined, 'standard');
+  const colonKeys = combinedPaneRows(colonPanes).filter(item => item.kind === 'group-header').map(item => item.key);
+  assert.equal(new Set(colonKeys).size, colonKeys.length, 'pane keys containing colons never collide with pane-local row keys');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [{
+      key: 'left',
+      title: { name: knownValue('Left') },
+      rows: [row('left:A', 'A1', 10, sharedGroup), row('left:A', 'A2', 5, sharedGroup)],
+    }],
+  }, settings, undefined, 'standard'), /duplicate row key left:A/, 'duplicate data row inside one pane is rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    slots: [
+      { kind: 'loading', key: 'loading:0' },
+      { kind: 'loading', key: 'loading:0' },
+    ],
+    panes: [{
+      key: 'left',
+      title: { name: knownValue('Left') },
+      rows: [],
+    }],
+  }, settings, undefined, 'standard'), /duplicate row key loading:0/, 'duplicate loading slot inside one pane is rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    slots: [
+      { kind: 'data', row: row('x', 'Alpha', 10) },
+      { kind: 'refused', key: 'x', reason: 'Not recorded' },
+    ],
+    panes: [{
+      key: 'left',
+      title: { name: knownValue('Left') },
+      rows: [],
+    }],
+  }, settings, undefined, 'standard'), /duplicate row key x/, 'mixed-kind duplicate local key inside one pane is rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      { key: 'left', title: { name: knownValue('Left') }, rows: [row('shared', 'A', 10)] },
+      { key: 'right', title: { name: knownValue('Right') }, rows: [row('shared', 'B', 5)] },
+    ],
+  }, settings, undefined, 'standard'), /already in another pane/, 'duplicate data row across panes is still rejected');
+
+  assert.throws(() => resolvePanes({
+    hour: 100,
+    columns,
+    rows: [],
+    panes: [
+      { key: 'same', title: { name: knownValue('One') }, rows: [row('one:A', 'A', 10)] },
+      { key: 'same', title: { name: knownValue('Two') }, rows: [row('two:B', 'B', 5)] },
+    ],
+  }, settings, undefined, 'standard'), /duplicate pane key/, 'duplicate pane key across panes is rejected');
+});
+
+test('pending identity yields a pending cell whose painted, mirror, hover and audit states say loading, while resolved shows the name and absent stays missing', () => {
+  const makeView = (status: 'pending' | 'ready' | 'absent') => createBoundedReadView({
+    hour: 10,
+    identity: {
+      resolve(kind, key) {
+        return {
+          kind,
+          key,
+          holder: { status: 'ready', value: key },
+          name: status === 'pending'
+            ? { status: 'pending' }
+            : status === 'ready'
+              ? { status: 'ready', value: kind === 'country' ? 'Valdoria' : 'Northbridge' }
+              : { status: 'absent', reason: 'Place not in recording' },
+          colour: { status: 'absent', reason: 'none' },
+          flagChoice: { status: 'absent', reason: 'none' },
+          validInterval: [0, Infinity] as const,
+          nextChangeAt: Infinity,
+        };
+      },
+    },
+  });
+  const cols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, pinned: true, minWidth: 140 },
+    { key: 'item', label: 'Battle', as: 'plain', offered: ['plain'], cellKind: 'item', priority: 1, text: true, minWidth: 140 },
+    { key: 'place', label: 'Place', as: 'plain', offered: ['plain'], priority: 2, text: true, minWidth: 140 },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'normal', sort: { column: 'country', direction: 'ascending' } });
+  const inspect = (status: 'pending' | 'ready' | 'absent') => {
+    const view = makeView(status);
+    const country = identityCell(view, 'country', 'AAA');
+    const resolved = resolveName(view, 'province', '101');
+    const row: TableRow = {
+      key: 'r1',
+      name: resolved.name,
+      cells: { country, item: { value: resolved.value }, place: { value: resolved.value } },
+    };
+    const model: TableModel = { hour: 10, columns: cols, rows: [row], unsorted: true };
+    const flat = resolveTableRows(model, settings);
+    const layout = layoutFamilyTable(buildColumnLayouts(cols, settings, { country: 160, item: 160, place: 160 }), 520);
+    const drawn: string[] = [];
+    const ctx = {
+      font: '', fillStyle: '', strokeStyle: '', globalAlpha: 1, lineWidth: 1, textAlign: 'left', textBaseline: 'middle',
+      save() {}, restore() {}, beginPath() {}, rect() {}, roundRect() {}, clip() {}, moveTo() {}, lineTo() {}, stroke() {}, fill() {},
+      fillRect() {}, clearRect() {}, drawImage() {},
+      measureText(text: string) { return { width: text.length * 7 }; },
+      fillText(text: string) { drawn.push(text); },
+    } as unknown as CanvasRenderingContext2D;
+    drawFamilyTable(ctx, {
+      layout, rows: flat, settings, hour: 10, width: 520, height: 120, scrollLeft: 0, scrollTop: 0,
+      rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 0, glideDuration: 0, glide: NO_GLIDE,
+      inspectedKey: null, selectedKey: null, focusedKey: null,
+    });
+    const mirror = deriveTableMirror(flat, cols, false).rows[0]!;
+    const tooltip = deriveTableTooltip(flat, 'r1', cols)!;
+    const audit = deriveTableAudit({ model, flatRows: flat, visibleColumns: layout.columns });
+    return { country, resolved, drawn, mirror, tooltip, audit };
+  };
+
+  const pending = inspect('pending');
+  assert.equal(pending.country.value.kind, 'pending');
+  assert.equal(pending.resolved.value.kind, 'pending');
+  assert.equal('loading' in pending.country, false, 'pending state lives on Value, not a separate cell flag');
+  assert.equal('loading' in pending.resolved, false, 'resolveName exposes no separate loading flag');
+  assert.equal(pending.drawn.filter(t => t === 'Loading…').length, 3, 'country, item and place all paint Loading…');
+  assert.equal(pending.drawn.some(t => /not recorded/i.test(t)), false, 'a pending cell never paints Not recorded');
+  for (const col of ['country', 'item', 'place']) {
+    const spoken = pending.mirror.cells.find(c => c.column === col)!.spoken;
+    assert.match(spoken, /^Loading/, `${col} accessible text says loading`);
+    assert.doesNotMatch(spoken, /not recorded/i, `${col} accessible text never says not recorded`);
+  }
+  assert.equal(pending.tooltip.rows.find(r => r.label === 'Place')?.valueState?.kind, 'pending');
+  assert.match(String(pending.audit.find(a => a.key === 'r1:place')!.value), /"pending"/);
+  assert.doesNotMatch(String(pending.audit.find(a => a.key === 'r1:place')!.value), /"notRecorded"/);
+
+  const ready = inspect('ready');
+  assert.deepEqual(ready.country.value, knownValue('Valdoria'));
+  assert.deepEqual(ready.resolved.value, knownValue('Northbridge'));
+  assert.ok(ready.drawn.includes('Valdoria'));
+  assert.ok(ready.drawn.includes('Northbridge'));
+  assert.equal(ready.mirror.cells.find(c => c.column === 'place')!.spoken, 'Northbridge');
+
+  const absent = inspect('absent');
+  assert.equal(absent.country.value.kind, 'notRecorded');
+  assert.equal(absent.resolved.value.kind, 'notRecorded');
+  assert.match(absent.mirror.cells.find(c => c.column === 'place')!.spoken, /^Not recorded: Place not in recording/);
+  assert.equal(absent.tooltip.rows.find(r => r.label === 'Place')?.valueState?.kind, 'missing');
+
+  const mixedView = createBoundedReadView({
+    hour: 10,
+    identity: {
+      resolve(kind, key) {
+        return {
+          kind, key, holder: { status: 'ready', value: key },
+          name: key === 'AAA' ? { status: 'ready', value: 'Valdoria' } : { status: 'pending' },
+          colour: { status: 'absent', reason: 'none' }, flagChoice: { status: 'absent', reason: 'none' },
+          validInterval: [0, Infinity] as const, nextChangeAt: Infinity,
+        };
+      },
+    },
+  });
+  const mixedCell = logCountryCell(mixedView, [{ tag: 'AAA' }, { tag: 'BBB' }], 10);
+  assert.equal(mixedCell.value.kind, 'partial');
+  assert.equal(mixedCell.value.kind === 'partial' ? mixedCell.value.reason : null, 'Name is loading');
+
+  const paneModel: TableModel = {
+    hour: 10,
+    columns: cols,
+    rows: [],
+    panes: [{ key: 'left', title: { name: { kind: 'pending', reason: 'Name is loading' } }, rows: [{ key: 'r1', name: 'Valdoria', cells: { country: { value: knownValue('Valdoria') }, item: { value: knownValue('A') }, place: { value: knownValue('B') } } }] }],
+  };
+  const paneFlat = combinedPaneRows(resolvePanes(paneModel, settings, undefined, 'standard'));
+  const paneMirror = deriveTableMirror(paneFlat, cols, false);
+  assert.equal(paneMirror.rows[0]!.name, 'Loading: Name is loading');
+  assert.equal(paneMirror.rows[0]!.cells[0]!.spoken, 'Loading: Name is loading');
+  const paneAudit = deriveTableAudit({ model: paneModel, flatRows: paneFlat, visibleColumns: buildColumnLayouts(cols, settings) });
+  assert.match(String(paneAudit.find(a => a.key === 'pane:left:group')!.value), /"pending"/);
 });

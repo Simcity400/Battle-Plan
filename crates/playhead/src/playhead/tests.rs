@@ -317,7 +317,7 @@ fn no_rows(step: &Step) -> bool {
 #[test]
 fn a_missing_part_stalls_its_table_and_the_next_step_takes_it_up() {
     let (pages, states) = recording(Writing { cap: 64, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
-    let parts = &pages.runs[0].pages[0].tables[0].parts;
+    let parts = &pages.runs[0].held_pages().unwrap()[0].tables[0].parts;
     let held = parts.iter().position(|part| part.first > 200).expect("a part past the seek's read-ahead");
     let frames = &parts[held].frames;
     let from = frames.iter().map(|frame| frame.offset).min().unwrap();
@@ -2450,6 +2450,30 @@ fn a_table_read_hourly_carries_its_hours_and_a_reset_or_a_crossing_carries_none(
 }
 
 #[test]
+fn steps_no_reader_took_stop_the_ring_at_its_byte_target_though_the_head_is_past_them() {
+    let mut changes = Changes::default();
+    changes.begin(0, &[], false, false);
+    for slot in 0..10 {
+        changes.inserted.push(1, slot, slot.into());
+    }
+    let mut ring = crate::ring::Ring::new(16);
+    let reader = ring.join(Reader(0));
+    ring.asks(reader);
+    ring.resize(16, 3 * 10 * 8);
+    let mut hour = 0;
+    while ring.room(1000) && hour < 16 {
+        hour += 1;
+        ring.publish(Arc::new(Step { epoch: ring.epoch, first: hour, last: hour, piece: Some(0), tables: vec![changes.clone()], ..Step::default() })).unwrap().unwrap();
+    }
+    assert_eq!(hour, 3, "three steps of 80 bytes no reader took fill a byte target of 240, though the head at 1000 is past them all");
+    let mut taken = Vec::new();
+    ring.take(reader, 1000, &mut taken);
+    assert!(ring.room(1000), "taking them makes room");
+    ring.resize(16, 0);
+    assert!(ring.room(1000), "with nothing untaken one step is always built, whatever the target");
+}
+
+#[test]
 fn completed_steps_keep_exact_byte_bounds_through_parking_and_rewind() {
     let changes = |table, count: u32| {
         let mut changes = Changes::default();
@@ -2986,7 +3010,7 @@ fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
     let (bytes, run, _) = record_log(Writing { cap: 256, ..Writing::at(3) }, 0, 2 * BLOCK);
     let gated = gated(bytes);
     let pages = Arc::new(Runs { extents: vec![gated], runs: vec![run], kinds: vec![LOG.to_vec()] });
-    let second_page_from = pages.runs[0].pages[1].tables[0].parts.iter()
+    let second_page_from = pages.runs[0].held_pages().unwrap()[1].tables[0].parts.iter()
         .flat_map(|part| part.frames.iter().map(|frame| frame.offset))
         .min()
         .unwrap();
@@ -3220,7 +3244,7 @@ fn paused_gap_seek_column_expansion_clears_join_without_stalling() {
 #[test]
 fn paused_gap_entry_with_stalled_lane_clears_column_expansion_via_seek() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
-    let parts = &pages.runs[0].pages[0].tables[0].parts;
+    let parts = &pages.runs[0].held_pages().unwrap()[0].tables[0].parts;
     let held = parts.iter().position(|part| part.first > 200).expect("a part past initial read-ahead");
     let frames = &parts[held].frames;
     let from = frames.iter().map(|frame| frame.offset).min().unwrap();
@@ -3281,7 +3305,7 @@ fn paused_gap_entry_with_stalled_lane_clears_column_expansion_via_seek() {
 #[test]
 fn paused_seed_hold_allows_stalled_slot_catch_up_at_head() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
-    let parts = &pages.runs[0].pages[0].tables[0].parts;
+    let parts = &pages.runs[0].held_pages().unwrap()[0].tables[0].parts;
     let held = parts.iter().position(|part| part.first > 200).expect("a part past initial read-ahead");
     let frames = &parts[held].frames;
     let from = frames.iter().map(|frame| frame.offset).min().unwrap();

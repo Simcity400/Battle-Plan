@@ -449,7 +449,6 @@ impl AtHour for NavalRepairs {
     const KEY: &'static str = "naval-repairs";
     const TITLE: &'static str = "Naval repairs";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = NavalYardsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = NavalRepairsReply;
@@ -629,7 +628,6 @@ impl AtHour for NavalRefits {
     const KEY: &'static str = "naval-refits";
     const TITLE: &'static str = "Naval refits";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = NavalYardsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = NavalRefitsReply;

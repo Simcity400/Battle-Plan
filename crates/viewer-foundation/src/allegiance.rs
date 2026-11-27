@@ -47,11 +47,11 @@ impl Tints {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub const VANILLA: Self = Self {
-        ours: [0.32, 0.71, 0.39, 1.0],
-        allied: [0.31, 0.65, 0.94, 1.0],
-        enemy: [0.91, 0.30, 0.30, 1.0],
-        other: [0.8, 0.8, 0.8, 1.0],
+    pub const FIXTURE: Self = Self {
+        ours: [0.15, 0.75, 0.25, 1.0],
+        allied: [0.20, 0.45, 0.85, 1.0],
+        enemy: [0.85, 0.15, 0.20, 1.0],
+        other: [0.65, 0.65, 0.65, 1.0],
     };
 }
 

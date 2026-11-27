@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const PROBE_PATH = new URL('./probe.js', import.meta.url);
 const PROBE_SOURCE = readFileSync(PROBE_PATH, 'utf8');
 
-function loadProbe() {
+function loadProbe(dom = {}) {
   const rafs = new Map();
   let nextRaf = 0, rafCalls = 0, now = 0;
   const microtasks = [];
@@ -30,13 +30,13 @@ function loadProbe() {
     addEventListener: () => {},
     document: {
       createElement: () => ({ width: 0, height: 0, getContext: () => ({ clearRect() {}, drawImage() {}, getImageData: () => ({ data: [] }) }) }),
-      querySelector: () => null,
-      querySelectorAll: () => [],
+      querySelector: dom.querySelector ?? (() => null),
+      querySelectorAll: dom.querySelectorAll ?? (() => []),
     },
     CSS: { escape: value => String(value) },
     innerWidth: 1280,
     innerHeight: 720,
-    getComputedStyle: () => ({ overflowX: 'visible', overflowY: 'visible', contain: '' }),
+    getComputedStyle: dom.getComputedStyle ?? (el => el?.__style ?? { overflowX: 'visible', overflowY: 'visible', contain: '' }),
   };
   sandbox.window = sandbox;
   vm.runInNewContext(PROBE_SOURCE, sandbox);
@@ -90,4 +90,86 @@ test('probe schedules no animation frames while idle, and runs only while tracki
   assert.ok(afterDrag > beforeDrag);
   host.stepFrame(16);
   assert.equal(host.rafCalls(), afterDrag, 'no extra frames run after stopFrames');
+});
+
+function makeEl({ tag = 'div', classes = [], attrs = {}, text = '', rect = { left: 10, top: 10, right: 110, bottom: 50 }, style = { overflowX: 'visible', overflowY: 'visible', contain: '' }, children = [] } = {}) {
+  const matchOne = part => (
+    (part === '[data-state=loading]' || part === '[data-state="loading"]') ? attrs['data-state'] === 'loading'
+      : part === '[aria-busy="true"]' ? attrs['aria-busy'] === 'true'
+      : (part === '[role=status]' || part === '[role="status"]') ? attrs.role === 'status'
+      : (part === '[data-state=error]' || part === '[role=alert]') ? attrs['data-state'] === 'error' || attrs.role === 'alert'
+      : part === '.sidebar-row.library-row' ? classes.includes('sidebar-row') && classes.includes('library-row')
+      : part === 'article.dash-widget' ? tag === 'article' && classes.includes('dash-widget')
+      : part.startsWith('.') ? classes.includes(part.slice(1))
+      : part === tag
+  );
+  const el = {
+    tagName: tag.toUpperCase(), className: classes.join(' '), classList: { contains: name => classes.includes(name) },
+    textContent: text, parentElement: null, __style: style, __children: [],
+    checkVisibility: () => true, getBoundingClientRect: () => rect,
+    getAttribute: name => (Object.hasOwn(attrs, name) ? attrs[name] : null),
+    matches: sel => sel.split(',').some(part => matchOne(part.trim())),
+    closest(sel) { for (let c = this; c; c = c.parentElement) if (c.matches(sel)) return c; return null; },
+    querySelector(sel) { return this.querySelectorAll(sel)[0] ?? null; },
+    querySelectorAll(sel) {
+      const out = [];
+      const walk = n => { for (const c of n.__children) { if (c.matches(sel)) out.push(c); walk(c); } };
+      walk(this);
+      return out;
+    },
+  };
+  for (const child of children) { child.parentElement = el; el.__children.push(child); }
+  return el;
+}
+
+test('probe ignores aria-busy on hidden screen-reader mirrors and the library row while keeping real loading widgets failing', () => {
+  const hiddenRect = { left: 10, top: 10, right: 11, bottom: 11 };
+  const srMirror = makeEl({
+    tag: 'table', classes: ['fh-sr-only'], attrs: { 'aria-busy': 'true' }, rect: hiddenRect,
+    style: { position: 'absolute', overflowX: 'hidden', overflowY: 'hidden', contain: 'strict', clip: 'rect(0px, 0px, 0px, 0px)', clipPath: 'inset(50%)' },
+  });
+  const clipParent = makeEl({
+    rect: hiddenRect, style: { position: 'absolute', overflowX: 'hidden', overflowY: 'hidden', contain: '', clip: 'rect(0px, 0px, 0px, 0px)' },
+    children: [makeEl({ tag: 'span', attrs: { 'aria-busy': 'true' }, rect: hiddenRect })],
+  });
+  const insetHidden = makeEl({ attrs: { 'aria-busy': 'true' }, style: { overflowX: 'visible', overflowY: 'visible', contain: '', clipPath: 'inset(50%)' } });
+  const hiddenOnlyWidget = makeEl({
+    tag: 'article', classes: ['dash-widget'], attrs: { 'aria-label': 'Occupied states' },
+    children: [makeEl({ classes: ['dash-widget-content'], text: 'Occupied states', children: [makeEl({ tag: 'canvas' }), srMirror, clipParent, insetHidden] })],
+  });
+  const libRow = makeEl({
+    tag: 'button', classes: ['sidebar-row', 'library-row'], attrs: { 'aria-busy': 'true' },
+    children: [makeEl({ tag: 'span', classes: ['campaign-loading'], children: [makeEl({ tag: 'span', classes: ['spinner'] })] })],
+  });
+  const root = makeEl({ children: [hiddenOnlyWidget, libRow] });
+  const host = loadProbe({ querySelectorAll: sel => root.querySelectorAll(sel) });
+  assert.equal(host.probe.stateOf(hiddenOnlyWidget).state, 'content');
+  host.probe.watch();
+  host.stepFrame(16);
+  host.stepFrame(32);
+  const clean = host.probe.unwatch();
+  assert.equal(clean.ms, 0, 'hidden mirrors and opening library row must not record placeholder time');
+  assert.deepEqual([...clean.where], []);
+
+  const visiblePartialClip = makeEl({
+    attrs: { 'aria-busy': 'true' },
+    style: { position: 'absolute', overflowX: 'visible', overflowY: 'visible', contain: '', clip: 'rect(0px, 100px, 50px, 0px)', clipPath: 'inset(10%)' },
+  });
+  const loadingWidget = makeEl({
+    tag: 'article', classes: ['dash-widget'], attrs: { 'aria-label': 'Fuel' },
+    children: [makeEl({ classes: ['dash-widget-content'], children: [visiblePartialClip] })],
+  });
+  const campaignRow = makeEl({
+    tag: 'button', classes: ['sidebar-row', 'campaign-row'],
+    children: [makeEl({ tag: 'span', classes: ['campaign-loading'], children: [makeEl({ tag: 'span', classes: ['spinner'] })] })],
+  });
+  const liveRoot = makeEl({ children: [loadingWidget, campaignRow] });
+  const liveHost = loadProbe({ querySelectorAll: sel => liveRoot.querySelectorAll(sel) });
+  assert.equal(liveHost.probe.stateOf(loadingWidget).state, 'loading');
+  liveHost.probe.watch();
+  liveHost.stepFrame(16);
+  liveHost.stepFrame(40);
+  const flagged = liveHost.probe.unwatch();
+  assert.ok(flagged.ms > 0, 'visible loading widget and campaign row spinner must still record placeholder time');
+  assert.deepEqual([...flagged.where], ['Fuel', 'spinner']);
 });

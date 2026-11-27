@@ -123,7 +123,6 @@ impl AtHour for ResearchSlots {
     fn compares_previous(table: TableId) -> bool { table == TableId::SliceReads }
 
 
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
     fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> bool {
         match stage {

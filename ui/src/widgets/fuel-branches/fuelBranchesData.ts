@@ -36,6 +36,9 @@ export function validateFuelBranches(value: unknown): FuelBranchesReply {
   return value as unknown as FuelBranchesReply;
 }
 
-export const branchName = (names: readonly (string | null)[], index: number) => names[index] ?? 'Branch name unavailable';
+export const branchName = (names: readonly (string | null)[], index: number) => {
+  const raw = names[index];
+  return raw !== null && raw !== undefined && raw.trim().length > 0 ? raw : 'Branch name unavailable';
+};
 
 export const fuelAmount = (value: bigint, digits: number) => formatAmount(value, FUEL_PLACES, digits);

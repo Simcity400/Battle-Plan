@@ -143,13 +143,13 @@ impl Assets {
             .map_err(|_| format!("resolved flag selector {index} exceeds the native i32 operand"))
     }
 
-    pub fn load_gui(
+    pub fn defer_window_art(
         &mut self,
         layers: &ResolvedLayers,
         localisation: &content_reader_localisation::localisation::Localisation,
         extra: &native_gui::Assets,
-        images: &mut Vec<dds::Texture>,
-    ) -> io::Result<Vec<String>> {
+        textures: &Arc<LazyTextures>,
+    ) -> Vec<String> {
         let mut assets = native_window_assets(&self.native_windows, localisation);
         assets.extend(extra.clone());
         self.window_sprites.extend(assets.sprites.iter().cloned());
@@ -158,56 +158,15 @@ impl Assets {
                 .ok()
                 .is_none_or(|name| !self.lazy_sprites.contains_key(name))
         });
-        self.gui.load(layers, &assets, images)?;
-        let mut warnings: Vec<_> = self
-            .gui
-            .missing_textures()
-            .into_iter()
-            .map(|(name, why)| format!("Combat UI: texture {name}: {why} (1 missing_texture)."))
-            .collect();
-        warnings.extend(sprite_warnings(
-            &self.gui,
-            &shortcut_assets(&self.native_windows).sprites,
-            false,
-        ));
-        for name in &assets.fonts {
-            let Some(font) = self.gui.font(name) else {
-                warnings.push(format!(
-                    "Combat UI: font {} is unavailable (1 missing_font).",
-                    String::from_utf8_lossy(name)
-                ));
-                continue;
-            };
-            for fnt in &font.glyphs.missing {
-                warnings.push(format!(
-                    "Combat UI: font {}: missing font file {fnt} (1 missing_font_file).",
-                    String::from_utf8_lossy(name)
-                ));
-            }
-            for (page, loaded) in font.glyphs.pages.iter().zip(&font.pages) {
-                if loaded.is_none() {
-                    warnings.push(format!("Combat UI: font {}: page {} did not load; its glyphs advance and draw nothing (1 missing_font_page).",
-                        String::from_utf8_lossy(name), String::from_utf8_lossy(page)));
-                }
-            }
-            if font.glyphs.glyphs.is_empty() {
-                warnings.push(format!(
-                    "Combat UI: font {} loads no characters (1 empty_font).",
-                    String::from_utf8_lossy(name)
-                ));
-            }
-            if font.glyphs.line_height.is_none() || font.glyphs.base.is_none() {
-                warnings.push(format!("Combat UI: font {} has no first-file lineHeight or base (1 missing_font_metrics).", String::from_utf8_lossy(name)));
-            }
-            for (kind, why) in &font.refusals {
-                warnings.push(format!(
-                    "Combat UI: font {}: {why} (1 {}).",
-                    String::from_utf8_lossy(name),
-                    kind.name()
-                ));
+        let mut warnings = self.gui.loaded_font_warnings(&assets.fonts);
+        warnings.extend(self.gui.missing_textures().into_iter().map(|(name, why)| format!("Combat UI: texture {name}: {why} (1 missing_texture).")));
+        for name in shortcut_assets(&self.native_windows).sprites {
+            if self.gui.registry().sprite(&name).is_none() {
+                warnings.push(format!("Combat UI: sprite {} is unavailable (1 missing_sprite).", String::from_utf8_lossy(&name)));
             }
         }
-        Ok(warnings)
+        self.gui.defer_window_art(layers, &assets, textures);
+        warnings
     }
 
     pub fn localisation_assets(

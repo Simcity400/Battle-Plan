@@ -194,7 +194,6 @@ impl AtHour for DecoratedDivisions {
     const CONTENT_DEPENDENT: bool = true;
     type Params = DecoratedDivisionsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", "countries[].firstHour": Start, "countries[].lastHour": End, by, descending, count];
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Reply = DecoratedDivisionsReply;
     type Context = DecoratedContext;
 

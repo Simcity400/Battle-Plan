@@ -1320,6 +1320,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       return null;
     }
     if (panel.waiting) { this.freed += size; return { kind: 'waiting', id: panel.id, hour: panel.hour }; }
+    if (panel.again) { this.freed += size; return { kind: 'again', id: panel.id, hour: panel.hour, stepped: panel.stepped }; }
     if (!panel.panel) {
       this.freed += size;
       return { kind: 'stands', id: panel.id, hour: panel.hour, stepped: panel.stepped };

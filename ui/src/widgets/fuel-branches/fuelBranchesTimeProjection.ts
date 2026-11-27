@@ -312,6 +312,7 @@ export const fuelBranchesTimeDeclaration: TimeChartWidgetDeclaration<FuelBranche
   countries: { mode: 'single', choose: 'Choose a country to see its fuel by branch.' },
   aux: {
     product: 'series-parts',
+    label: 'the fuel branches',
     params: (track, _options, _country, subject) => (
       subject
         ? {

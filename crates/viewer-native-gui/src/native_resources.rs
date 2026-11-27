@@ -96,7 +96,15 @@ fn plain_info(
     }
 }
 
+mod window_art;
+pub use window_art::SynchronousWindowArt;
+pub(crate) use window_art::window_art_misses;
+use window_art::WindowArt;
+use crate::lazy_icons::LazyTextures;
+
 pub struct GuiResources {
+    window: Option<Arc<WindowArt>>,
+    uploads: Option<Arc<LazyTextures>>,
     registry: Arc<Registry>,
     language: Vec<u8>,
     textures: BTreeMap<(Stack, Vec<u8>), Loaded>,
@@ -132,8 +140,14 @@ impl GuiResources {
         map_size: [u32; 2],
         decode: Decode,
     ) -> Self {
+        Self::unloaded(registry.into(), language, shader_pipeline::library::globals(map_size, decode), decode)
+    }
+
+    fn unloaded(registry: Arc<Registry>, language: &[u8], globals: Vec<String>, decode: Decode) -> Self {
         Self {
-            registry: registry.into(),
+            window: None,
+            uploads: None,
+            registry,
             language: language.to_vec(),
             textures: BTreeMap::new(),
             texture_diagnostics: BTreeMap::new(),
@@ -147,7 +161,7 @@ impl GuiResources {
             font_names: BTreeMap::new(),
             effects: std::array::from_fn(|_| BTreeMap::new()),
             compiler: None,
-            globals: shader_pipeline::library::globals(map_size, decode),
+            globals,
             uncovered: BTreeSet::new(),
             recorded: None,
             missing_fonts: BTreeMap::new(),
@@ -162,6 +176,45 @@ impl GuiResources {
 
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    pub fn defer_window_art(&mut self, layers: &ResolvedLayers, assets: &Assets, textures: &Arc<LazyTextures>) {
+        let mut reader = Self::unloaded(Arc::clone(&self.registry), &self.language, self.globals.clone(), self.decode);
+        reader.recorded_registry.clone_from(&self.recorded_registry);
+        reader.effects.clone_from(&self.effects);
+        reader.compiler = self.compiler.take();
+        reader.uploads = Some(Arc::clone(textures));
+        self.window = Some(WindowArt::new(reader, layers.clone(), assets, textures));
+    }
+
+    pub fn window_warnings(&self) -> Vec<String> {
+        self.window.as_ref().map(|art| art.warnings()).unwrap_or_default()
+    }
+
+    pub fn loaded_font_warnings(&self, names: &BTreeSet<Vec<u8>>) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for name in names {
+            if let Some(font) = self.loaded_font(name) { font_warnings(name, Some(font), &mut warnings); }
+        }
+        warnings
+    }
+
+    pub fn window_art_misses(&self) -> u64 {
+        self.window.as_ref().map_or(0, |_| window_art_misses())
+    }
+
+    pub fn loaded_sheet(&self, name: &[u8]) -> Option<&SpriteSheet> {
+        self.sprites.get(name).map(|sprite| &sprite.sheet)
+            .or_else(|| self.window.as_ref()?.sprite(name, false).map(|(sprite, _)| &sprite.sheet))
+    }
+
+    pub fn loaded_font(&self, name: &[u8]) -> Option<&native_text::Font> {
+        self.font_names.get(name).and_then(|key| self.fonts.get(key))
+            .or_else(|| self.window.as_ref()?.font(name, false))
+    }
+
+    pub fn loading_window_art(&self) -> bool {
+        self.window.as_ref().is_some_and(|art| art.loading())
     }
 
     pub fn load_lazy_plain(&mut self, layers: &ResolvedLayers, name: &[u8]) -> Result<(), String> {
@@ -349,9 +402,14 @@ impl GuiResources {
                 if !layers.covered_path(name) {
                     self.uncovered.insert(name.to_vec());
                 }
-                images.push(texture.image);
+                let id = if let Some(uploads) = &self.uploads {
+                    uploads.insert(texture.image)
+                } else {
+                    images.push(texture.image);
+                    images.len() - 1
+                };
                 Loaded {
-                    texture: images.len() - 1,
+                    texture: id,
                     size: [texture.width, texture.height],
                     missing: None,
                     refused: None,
@@ -543,7 +601,8 @@ impl GuiResources {
                     _ => (self.texture(stack, layers, &plain.texture, images)?, None),
                 };
                 if plain.transparence_check && main.missing.is_none() {
-                    if let Some(image) = images.get(main.texture)
+                    let uploaded = self.uploads.as_ref().and_then(|uploads| uploads.image(main.texture));
+                    if let Some(image) = uploaded.as_deref().or_else(|| images.get(main.texture))
                         && image.format == dds::TextureFormat::Rgba8
                     {
                         self.alpha.entry(main.texture).or_insert_with(|| AlphaMask {
@@ -995,8 +1054,7 @@ impl GuiResources {
     }
 
     pub fn sprite(&self, name: &[u8]) -> Option<SpriteInfo> {
-        self.credit_sprite(name);
-        self.sprites.get(name).map(|prepared| prepared.info.clone())
+        self.sprite_info(name).cloned()
     }
 
     fn credit_sprite(&self, name: &[u8]) {
@@ -1005,22 +1063,25 @@ impl GuiResources {
         }
     }
 
-    pub fn sprite_info(&self, name: &[u8]) -> Option<&SpriteInfo> {
+    fn prepared(&self, name: &[u8]) -> Option<&Prepared> {
         self.credit_sprite(name);
-        self.sprites.get(name).map(|prepared| &prepared.info)
+        self.sprites.get(name).or_else(|| self.window.as_ref()?.sprite(name, true).map(|(sprite, _)| sprite))
+    }
+
+    pub fn sprite_info(&self, name: &[u8]) -> Option<&SpriteInfo> {
+        self.prepared(name).map(|prepared| &prepared.info)
     }
 
     pub fn sprite_alpha(&self, name: &[u8]) -> Option<AlphaMask> {
         self.credit_sprite(name);
-        self.alpha
-            .get(&self.sprites.get(name)?.sheet.texture)
-            .cloned()
+        if let Some(sprite) = self.sprites.get(name) {
+            return self.alpha.get(&sprite.sheet.texture).cloned();
+        }
+        self.window.as_ref()?.sprite(name, true)?.1.cloned()
     }
 
     pub fn sprite_animations(&self, name: &[u8]) -> Option<Vec<AnimationRecord>> {
-        self.credit_sprite(name);
-        self.sprites
-            .get(name)
+        self.prepared(name)
             .map(|prepared| prepared.animations.clone())
     }
 
@@ -1033,7 +1094,10 @@ impl GuiResources {
                     diagnostics.credit();
                 }
                 self.textures.get(&key)
-            })?;
+            });
+        let Some(loaded) = loaded else {
+            return self.window.as_ref()?.texture(path).cloned();
+        };
         Some(match (&loaded.refused, &loaded.missing) {
             (Some((kind, why)), _) => TextureFile::Refused(*kind, why.clone()),
             (None, Some(why)) => TextureFile::Failed(why.clone()),
@@ -1051,7 +1115,8 @@ impl GuiResources {
         {
             diagnostics.credit();
         }
-        self.fonts.get(self.font_names.get(name)?)
+        self.font_names.get(name).and_then(|key| self.fonts.get(key))
+            .or_else(|| self.window.as_ref()?.font(name, true))
     }
 
     pub fn text_colors(&self) -> &TextColors {
@@ -1085,26 +1150,45 @@ impl GuiResources {
     }
 }
 
+fn font_warnings(name: &[u8], font: Option<&native_text::Font>, warnings: &mut Vec<String>) {
+    let name = lossy(name);
+    let Some(font) = font else {
+        warnings.push(format!("Map window art: font {name} is unavailable (1 missing_font)."));
+        return;
+    };
+    for file in &font.glyphs.missing {
+        warnings.push(format!("Map window art: font {name}: missing font file {file} (1 missing_font_file)."));
+    }
+    for (file, page) in font.glyphs.pages.iter().zip(&font.pages) {
+        if page.is_none() {
+            warnings.push(format!("Map window art: font {name}: page {} did not load (1 missing_font_page).", lossy(file)));
+        }
+    }
+    if font.glyphs.glyphs.is_empty() {
+        warnings.push(format!("Map window art: font {name} loads no characters (1 empty_font)."));
+    }
+    if font.glyphs.line_height.is_none() || font.glyphs.base.is_none() {
+        warnings.push(format!("Map window art: font {name} has no first-file lineHeight or base (1 missing_font_metrics)."));
+    }
+    warnings.extend(font.refusals.iter().map(|(kind, why)| format!("Map window art: font {name}: {why} (1 {}).", kind.name())));
+}
+
 impl Sheets for GuiResources {
     fn sheet(&self, sprite: &[u8]) -> Option<&SpriteSheet> {
-        self.credit_sprite(sprite);
-        self.sprites.get(sprite).map(|prepared| &prepared.sheet)
+        self.prepared(sprite).map(|prepared| &prepared.sheet)
     }
 
     fn progress(&self, sprite: &[u8]) -> Option<[&SpriteSheet; 2]> {
-        self.credit_sprite(sprite);
-        let prepared = self.sprites.get(sprite)?;
+        let prepared = self.prepared(sprite)?;
         Some([&prepared.sheet, prepared.second.as_ref()?])
     }
 
     fn masking(&self, sprite: &[u8]) -> Option<&SpriteSheet> {
-        self.credit_sprite(sprite);
-        self.sprites.get(sprite)?.masking.as_ref()
+        self.prepared(sprite)?.masking.as_ref()
     }
 
     fn mask(&self, sprite: &[u8]) -> Option<&SpriteSheet> {
-        self.credit_sprite(sprite);
-        self.sprites.get(sprite)?.second.as_ref()
+        self.prepared(sprite)?.second.as_ref()
     }
 }
 

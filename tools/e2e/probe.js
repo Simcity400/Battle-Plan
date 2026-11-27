@@ -18,15 +18,34 @@
     addEventListener(type, e => { if (e.isTrusted && p.inputs.length < 20000) p.inputs.push({ type, t: e.timeStamp }); }, { capture: true, passive: true });
 
   const LOADING = '[data-state=loading], .skeleton, [aria-busy="true"], .spinner, .is-loading';
+  const LIBRARY_OPENING = '.sidebar-row.library-row';
   const loadingText = e => e.matches('[role=status]') && /^Loading\b/.test((e.textContent || '').trim());
+  const visuallyHidden = (e, style = getComputedStyle(e)) => {
+    if (e.classList?.contains('sr-only') || e.classList?.contains('fh-sr-only')) return true;
+    const inset = /^inset\(\s*([^)]+?)\s*\)$/.exec((style?.clipPath || '').trim());
+    if (inset) {
+      const parts = inset[1].split(/\s+round\b/i)[0].trim().split(/\s+/);
+      if (parts.length >= 1 && parts.length <= 4 && parts.every(v => /^[+-]?(?:\d+\.?\d*|\.\d+)%$/.test(v))) {
+        const [t, r = t, b = t, l = r] = parts.map(parseFloat);
+        if (t + b >= 100 || l + r >= 100) return true;
+      }
+    }
+    const clip = /^rect\(\s*([+-]?(?:\d+\.?\d*|\.\d+))px,\s*([+-]?(?:\d+\.?\d*|\.\d+))px,\s*([+-]?(?:\d+\.?\d*|\.\d+))px,\s*([+-]?(?:\d+\.?\d*|\.\d+))px\s*\)$/.exec((style?.clip || '').trim());
+    return Boolean(clip && (style.position === 'absolute' || style.position === 'fixed')
+      && (Number(clip[1]) >= Number(clip[3]) || Number(clip[4]) >= Number(clip[2])));
+  };
+  p.visuallyHidden = visuallyHidden;
   const placeholders = () => [...document.querySelectorAll(`${LOADING}, [role=status]`)].filter(e => (e.matches(LOADING) || loadingText(e)) && shownOnScreen(e)
+    && !e.closest(LIBRARY_OPENING)
     && !(p.ignore && e.closest(`article.dash-widget[data-widget="${CSS.escape(p.ignore)}"]`)));
   const shownOnScreen = e => {
     if (!e.checkVisibility({ visibilityProperty: true, opacityProperty: true })) return false;
+    if (visuallyHidden(e)) return false;
     let { left, top, right, bottom } = e.getBoundingClientRect();
     left = Math.max(left, 0); top = Math.max(top, 0); right = Math.min(right, innerWidth); bottom = Math.min(bottom, innerHeight);
     for (let a = e.parentElement; a && right > left && bottom > top; a = a.parentElement) {
       const style = getComputedStyle(a);
+      if (visuallyHidden(a, style)) return false;
       if (a.matches(':popover-open') && style.overflowX === 'visible' && style.overflowY === 'visible' && style.contain.indexOf('paint') < 0) break;
       if (style.overflowX === 'visible' && style.overflowY === 'visible' && style.contain.indexOf('paint') < 0) continue;
       const r = a.getBoundingClientRect();

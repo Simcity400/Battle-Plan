@@ -134,6 +134,7 @@ export interface ChartStackModel {
   readonly total?: {
     readonly color?: string;
     readonly values: readonly (number | null)[];
+    readonly missingReason?: readonly (string | null)[];
     readonly exact?: readonly (ChartExactRational | null)[];
     readonly endLabel?: ChartEndLabel | null;
   };

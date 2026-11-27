@@ -3,7 +3,8 @@ import { readableColour, reservedGrey } from '../../charts/palette.ts';
 import type { BoundedReadView, EntityKind } from '../contract.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import type { ArtResult } from '../art/types.ts';
-import { LOADING_NAME } from '../table/identityCell.ts';
+import { LOADING_NAME, NAME_LOADING } from '../table/identityCell.ts';
+import { knownValue, notRecorded, pendingValue, type Value } from '../value.ts';
 
 export interface HeatPart {
   readonly id: string;
@@ -167,12 +168,16 @@ export function countryColourAt(readView: BoundedReadView, key: string, hour: nu
 
 export interface RegionLabel {
   readonly label: string;
+  readonly value: Value<string>;
   readonly nameMissing?: string;
+  readonly namePending?: string;
 }
 
-export function regionLabel(readView: BoundedReadView, id: string | number, pendingLabel: string | null): RegionLabel {
+export function regionLabel(readView: BoundedReadView, id: string | number, recordedName: string | null): RegionLabel {
   const name = readView.who('region', String(id)).name;
-  if (name.status === 'ready') return { label: name.value };
-  if (name.status === 'absent' || name.status === 'failed') return { label: 'Region name not recorded', nameMissing: name.reason };
-  return pendingLabel ? { label: pendingLabel } : { label: 'Region name not recorded', nameMissing: 'Region name not read yet' };
+  if (name.status === 'ready') return { label: name.value, value: knownValue(name.value) };
+  if (name.status === 'absent' || name.status === 'failed') return { label: 'Region name not recorded', value: notRecorded(name.reason), nameMissing: name.reason };
+  return recordedName
+    ? { label: recordedName, value: knownValue(recordedName) }
+    : { label: 'Loading…', value: pendingValue(NAME_LOADING), namePending: NAME_LOADING };
 }

@@ -35,6 +35,7 @@ pub struct ProductRead {
     pub pending: bool,
     pub live: Option<Arc<Live>>,
     pub lanes: Vec<Declared>,
+    pub from: Hour,
 }
 
 pub type ProductReader = Arc<dyn Fn(Hour, bool, &std::sync::atomic::AtomicBool, Option<ProductStep<'_>>) -> ProductRead + Send + Sync>;
