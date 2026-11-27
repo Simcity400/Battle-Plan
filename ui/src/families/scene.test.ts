@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Scene } from '../draw/lane.ts';
 import { artHandleKey } from './art/types.ts';
+import { FutureDataError } from './boundedView.ts';
 import { projectScene, sceneReadView } from './scene.ts';
 import { validateGenericTailReply, validateRowTailReply } from './table/rowSource.ts';
 
@@ -95,6 +96,23 @@ test('a read compares the whole observable result: the interval, a failure’s r
   const ready = projectScene(scene, { sources: {} }, 120, { art: readyOf(64) as never }, view => view.art(sprite).status);
   assert.equal(ready.reads.unchanged({ art: readyOf(64) as never }), true);
   assert.equal(ready.reads.unchanged({ art: readyOf(48) as never }), false, 'another frame size is a change');
+});
+
+test('a followed panel is judged by the hour its record proves from, not the later hour its reply was read at', () => {
+  const recordAt = (h: number, data: unknown) => ({
+    widget: 1,
+    subs: [{ id: 7, channel: 'panel', route: null }],
+    pictures: [{ h, c: 105, parts: [{ ...part(2, { kind: 'panel', bytes: null, data, refused: null }), h, c: 105 }] }],
+    model: null,
+  } as unknown as Scene);
+  const readAhead = { hour: 105, from: 96, until: 140, rows: [{ country: 'GER' }] };
+  assert.deepEqual(sceneReadView(recordAt(100, readAhead), { sources: { main: 7 } }, 102).panel('main'), readAhead,
+    'a reply read at 105 whose record proves it from 100 is shown at 102');
+  assert.throws(() => sceneReadView(recordAt(103, readAhead), { sources: { main: 7 } }, 102).panel('main'), FutureDataError,
+    'a record that proves its value only from 103 is refused at 102');
+  const unrecorded = { widget: 1, subs: [], pictures: [], model: null } as unknown as Scene;
+  assert.throws(() => sceneReadView(unrecorded, { sources: {}, staticPanels: { main: readAhead } }, 102).panel('main'), FutureDataError,
+    'a panel with no record is judged by the hour it was read at');
 });
 
 test('a log frozen on an answered snapshot reads that snapshot, not the live head’s refusal', () => {

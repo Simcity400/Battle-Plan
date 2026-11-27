@@ -769,6 +769,7 @@ export interface BoundedReadViewInput {
   readonly onArtDemand?: ArtDemand;
   readonly ensureNonLive?: () => {
     readonly panels: ReadonlyMap<string, unknown>;
+    readonly provenFrom?: ReadonlyMap<string, number>;
     readonly answers: ReadonlyMap<string, FollowedAnswer | undefined>;
     readonly refused: ReadonlyMap<string, string>;
   };
@@ -786,6 +787,7 @@ export function createBoundedReadView(input: BoundedReadViewInput): BoundedReadV
   const wrappedRows = new Map<string, TableRowSource<DatedLogRow>>();
   let nonLive: {
     readonly panels: ReadonlyMap<string, unknown>;
+    readonly provenFrom?: ReadonlyMap<string, number>;
     readonly answers: ReadonlyMap<string, FollowedAnswer | undefined>;
     readonly refused: ReadonlyMap<string, string>;
   } | null = null;
@@ -811,8 +813,12 @@ export function createBoundedReadView(input: BoundedReadViewInput): BoundedReadV
       return input.rowWindow;
     },
     panel<T = unknown>(name: string): T | undefined {
-      const raw = ensure().panels.get(name);
-      if (raw !== undefined && raw !== null && typeof raw === 'object') {
+      const held = ensure();
+      const raw = held.panels.get(name);
+      const proven = held.provenFrom?.get(name);
+      if (proven !== undefined) {
+        if (proven > h) throw new FutureDataError(`Panel "${name}" is proven from hour ${proven}, after displayed hour ${h}`);
+      } else if (raw !== undefined && raw !== null && typeof raw === 'object') {
         const maybeHour = (raw as { hour?: unknown }).hour;
         if (typeof maybeHour === 'number' && Number.isFinite(maybeHour) && maybeHour - (input.panelShifts?.[name] ?? 0) > h) {
           throw new FutureDataError(`Panel "${name}" carries hour ${maybeHour} after displayed hour ${h}`);

@@ -57,6 +57,7 @@ export type SceneIdentityDemand = readonly [kind: EntityKind, key: string, hour:
 
 export interface SceneProjection<TModel> {
   readonly model: TModel;
+  readonly scene: Scene;
   readonly view: BoundedReadView;
   readonly identityDemands: readonly SceneIdentityDemand[];
   readonly artUrls: readonly string[];
@@ -150,19 +151,23 @@ function readScene(
     ensureNonLive: () => {
       const answers = new Map<string, FollowedAnswer | undefined>();
       const panels = new Map<string, unknown>();
+      const provenFrom = new Map<string, number>();
       const refused = new Map<string, string>();
       if (sources.staticAnswers) for (const [name, answer] of Object.entries(sources.staticAnswers)) answers.set(name, answer);
       if (sources.staticPanels) for (const [name, data] of Object.entries(sources.staticPanels)) panels.set(name, data);
       for (const name of Object.keys(sources.sources)) {
-        const head = pictureOf(name)?.parts[0]?.value;
-        if (!head) continue;
+        const record = pictureOf(name)?.parts[0];
+        const head = record?.value;
+        if (!record || !head) continue;
         if (head.kind === 'answer') answers.set(name, head.answer);
         else if (head.kind === 'panel') {
-          if (head.refused === null) panels.set(name, head.data);
-          else if (!frozenAnswer(sources.pagedRows?.[name], hour)) refused.set(name, head.refused);
+          if (head.refused === null) {
+            panels.set(name, head.data);
+            provenFrom.set(name, record.h);
+          } else if (!frozenAnswer(sources.pagedRows?.[name], hour)) refused.set(name, head.refused);
         }
       }
-      return { panels, answers, refused };
+      return { panels, provenFrom, answers, refused };
     },
     resolveLive: name => {
       if (liveCache.has(name)) return liveCache.get(name);
@@ -318,6 +323,7 @@ export function projectScene<TModel>(
   };
   return {
     model,
+    scene,
     view,
     identityDemands: [...demands.identity.values()],
     artUrls: [...demands.urls],
