@@ -7,6 +7,9 @@ use replay_data::{rows::{RowChanges, TableRows}, scope::CaptureMode};
 use replay_frame::frame::{SharedView, TableView, Unsayable, cells_rows_of};
 use std::collections::hash_map::Entry;
 
+#[cfg(test)]
+mod selection_tests;
+
 pub(super) struct Projection {
     run: usize,
     columns: Vec<usize>,
@@ -46,6 +49,14 @@ impl Edits {
 
 fn field_mask(table: TableId, columns: Option<&[usize]>) -> u64 {
     columns.map_or(table.full_mask(), |v| v.iter().fold(0, |m, &c| m | 1 << c))
+}
+
+fn finite_keys(keys: &Keys) -> bool {
+    match keys {
+        Keys::All => false,
+        Keys::These(keys) => keys.windows(2).all(|pair| pair[0] < pair[1]),
+        Keys::Range(..) | Keys::Ranges(_) => true,
+    }
 }
 
 pub(super) fn capture_mode(pages: &WorldPages) -> io::Result<CaptureMode> {
@@ -95,15 +106,12 @@ impl Projection {
     }
 
     fn read(&mut self, input: &mut Input<'_>, read: &Read, sample: bool, view: &mut SharedView, edits: &mut Edits) -> io::Result<()> {
-        if self.selection.as_deref() != Some(&read.keys) {
-            self.at = None;
-            self.selection = Some(Arc::new(read.keys.clone()));
-        }
+        let reselected = self.selection.as_deref() != Some(&read.keys);
         let previous = self.at;
         let Input { pool, hour, count, step, placed, mode, gap, exact, .. } = input;
         let (run, table) = (self.run, read.table.index());
         let stepped = if let Some((step, lane, change)) = step.and_then(|step| self.lane(read.table, *hour, step)) {
-            self.from_lane(read, sample, view, edits, count, lane, Some((step, change)), *mode)?
+            self.from_lane(read, sample, view, edits, count, lane, Some((step, change)), reselected, *mode)?
         } else if *exact && let Some((made, sampled)) = empty_read(&*pool.pages, (run, table), *hour, read, *mode)? {
             if matches!(made, TableView::Complete(_) | TableView::Truncated { .. }) || view.held() != &made {
                 settle(read.table, Ok(made), sampled, sample, view, edits)?;
@@ -113,7 +121,7 @@ impl Projection {
             let warm = if step.is_some_and(|step| step.lanes_table(table)) {
                 let columns = self.columns.clone();
                 let wake = step.and_then(|step| step.wake.cloned());
-                pool.warm(run, table, &columns, *hour, wake, |lane| self.from_lane(read, sample, view, edits, count, lane, None, *mode))
+                pool.warm(run, table, &columns, *hour, wake, |lane| self.from_lane(read, sample, view, edits, count, lane, None, reselected, *mode))
             } else { Warm::Cold };
             match warm {
                 Warm::Read(result) => result?,
@@ -127,24 +135,26 @@ impl Projection {
                         self.whole(read, &selected.view(&read.keys)?, Status::Complete, None, selected.sampled, sample, view, edits, count)?;
                     } else {
                         let lane = placed.lane(table, &self.columns, *hour)?;
-                        self.from_lane(read, sample, view, edits, count, lane, None, *mode)?;
+                        self.from_lane(read, sample, view, edits, count, lane, None, reselected, *mode)?;
                     }
                     false
                 }
             }
         };
-        *gap |= !stepped && previous.is_none_or(|at| at.saturating_add(1) < *hour);
+        *gap |= reselected || !stepped && previous.is_none_or(|at| at.saturating_add(1) < *hour);
+        if reselected { self.selection = Some(Arc::new(read.keys.clone())); }
         *view = view.clone().with_keys(self.selection.clone());
         self.at = Some(*hour);
         Ok(())
     }
 
     #[expect(clippy::too_many_arguments, reason = "one table's read, its lane and the reply's edits")]
-    pub(super) fn from_lane(&mut self, read: &Read, sample: bool, view: &mut SharedView, edits: &mut Edits, count: &mut u64, lane: &Lane, step: Option<(&Step, &Changes)>, mode: CaptureMode) -> io::Result<bool> {
+    fn from_lane(&self, read: &Read, sample: bool, view: &mut SharedView, edits: &mut Edits, count: &mut u64, lane: &Lane, step: Option<(&Step, &Changes)>, reselected: bool, mode: CaptureMode) -> io::Result<bool> {
         let table = read.table;
         let continues = |step: &Step, change: &Changes| self.at.is_some_and(|at| at.checked_add(1) == Some(step.first())) && !change.reset();
         let one_hour = step.is_some_and(|(step, _)| step.first() == step.last());
-        let proven = step.is_some_and(|(step, change)| continues(step, change) && change.status_left().is_none() && (one_hour || lane.passing()));
+        let continuous = step.is_some_and(|(step, change)| continues(step, change) && change.status_left().is_none() && (one_hour || lane.passing()));
+        let proven = !reselected && continuous;
         let (status, sampled) = lane.status();
         let other = match status {
             Status::Complete | Status::Truncated { .. } => None,
@@ -160,7 +170,7 @@ impl Projection {
         }
         let cells = lane.view();
         if let (TableView::Truncated { missing, .. }, Status::Truncated { missing: still }, Some((step, change))) = (view.held(), status, step)
-            && *missing == still && continues(step, change) && !change.read_rows_changed() && change.renumber().is_none()
+            && !reselected && *missing == still && continues(step, change) && !change.read_rows_changed() && change.renumber().is_none()
             && change.inserted().is_empty() && change.deleted().is_empty() && change.columns().iter().all(|written| written.is_empty()) {
             return Ok(proven && one_hour);
         }
@@ -168,6 +178,16 @@ impl Projection {
             (TableView::Complete(held), Some((step, change))) if status == Status::Complete && continues(step, change) => (held, change),
             _ => return self.whole(read, &cells, status, lane.read_rows(), sampled, sample, view, edits, count).map(|()| false),
         };
+        let added = if reselected {
+            let added = self.selection.as_deref()
+                .filter(|old| continuous && self.validity == 0 && finite_keys(old) && finite_keys(&read.keys))
+                .and_then(|old| self.entering(old, read, &cells).ok());
+            let Some(added) = added else {
+                return self.whole(read, &cells, status, lane.read_rows(), sampled, sample, view, edits, count).map(|()| false);
+            };
+            *count += added.len() as u64;
+            Some(added)
+        } else { None };
         let mut dirty: BTreeMap<u128, u64> = BTreeMap::new();
         for &key in change.deleted().keys().into_iter().flatten().chain(change.inserted().keys().into_iter().flatten()).chain(change.passing().keys().into_iter().flatten()) {
             if read.keys.contains(key) { dirty.insert(key, u64::MAX); }
@@ -192,7 +212,10 @@ impl Projection {
                 }
             }
         }
-        if dirty.is_empty() {
+        if added.is_some() {
+            dirty.extend(held.iter().map(|row| row.key()).filter(|&key| !read.keys.contains(key)).map(|key| (key, u64::MAX)));
+        }
+        if dirty.is_empty() && added.as_ref().is_none_or(TableRows::is_empty) {
             if view.sampled_at() != sampled {
                 *view = view.clone().with_sampled_at(sampled);
                 if sample { edits.replaced.insert(table); }
@@ -202,22 +225,53 @@ impl Projection {
         let mut keyed = Vec::new();
         let mut deleted = Vec::new();
         for &key in dirty.keys() {
-            if let Some(slot) = cells.slot(key) { keyed.push((key, slot)); }
+            if added.as_ref().is_some_and(|rows| rows.contains_key(key)) { continue; }
+            if let Some(slot) = cells.slot(key).filter(|_| added.is_none() || read.keys.contains(key)) { keyed.push((key, slot)); }
             else if held.contains_key(key) { deleted.push(key); }
         }
         *count += keyed.len() as u64;
         let fresh = match cells_rows_of(table, &cells, &keyed, self.format, self.fields | self.validity) {
             Ok(rows) => rows,
-            Err(e) if Unsayable::of(&e).is_some() => return self.whole(read, &cells, status, None, sampled, sample, view, edits, count).map(|()| false),
+            Err(e) if added.is_some() || Unsayable::of(&e).is_some() => return self.whole(read, &cells, status, None, sampled, sample, view, edits, count).map(|()| false),
             Err(e) => return Err(e),
         };
+        let changes = if let Some(added) = added {
+            let before: Vec<_> = dirty.keys().copied().filter(|&key| held.contains_key(key)).collect();
+            let before = held.rows_at(&before, Vec::new())?;
+            let fresh = fresh.apply_changes(RowChanges::new(added, Vec::new()))?;
+            let changes = fresh.changes_since(before.rows())?.expect("the same table");
+            dirty = changes.rows().iter().map(|row| row.key()).chain(changes.deleted().iter().copied()).map(|key| (key, u64::MAX)).collect();
+            if dirty.is_empty() {
+                if view.sampled_at() != sampled {
+                    *view = view.clone().with_sampled_at(sampled);
+                    if sample { edits.replaced.insert(table); }
+                }
+                return Ok(false);
+            }
+            changes
+        } else { RowChanges::new(fresh, deleted) };
         if let TableView::Complete(old) = &mut **view {
             let previous = std::mem::replace(old, TableRows::empty(table));
-            *old = previous.apply_changes(RowChanges::new(fresh, deleted))?;
+            *old = previous.apply_changes(changes)?;
         }
         *view = view.clone().with_sampled_at(sampled);
         edits.record(table, dirty);
         Ok(proven && evidenced)
+    }
+
+    fn entering(&self, old: &Keys, read: &Read, cells: &StoreView<'_>) -> io::Result<TableRows> {
+        let keys = match &read.keys {
+            Keys::These(keys) => keys.iter().copied().filter(|&key| !old.contains(key)).collect(),
+            _ => {
+                let mut keys: Vec<_> = cells.rows().filter_map(|slot| cells.key(slot)).filter(|&key| read.keys.contains(key) && !old.contains(key)).collect();
+                keys.sort_unstable();
+                keys
+            }
+        };
+        if keys.is_empty() { return Ok(TableRows::empty(read.table)); }
+        let slots = keys.into_iter().map(|key| cells.slot(key).map(|slot| (key, slot))
+            .ok_or_else(|| io::Error::other("An entering key is not held"))).collect::<io::Result<Vec<_>>>()?;
+        cells_rows_of(read.table, cells, &slots, self.format, self.fields | self.validity)
     }
 
     #[expect(clippy::too_many_arguments, reason = "one table's cells at an hour and the reply's edits")]
