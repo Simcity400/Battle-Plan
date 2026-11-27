@@ -148,7 +148,8 @@ function read(item: Case) {
   const all = regionStates(host ?? null), inDrill = regionStates(drill ?? null);
   const main = all.filter(state => !inDrill.includes(state));
   const drawn = !!host?.querySelector('canvas, svg, table, [role="grid"], [role="table"], [role="status"]') || !!host?.textContent?.trim();
-  return { main, drawn, drill: inDrill, open: !!drill, shown: shown.has(item.id) ? shown.get(item.id)! : undefined, crash: crashes.get(item.id) ?? null,
+  const waiting = host ? [...host.querySelectorAll('[data-state="loading"]')].map(state => state.getAttribute('aria-label') ?? '') : [];
+  return { main, waiting, drawn, drill: inDrill, open: !!drill, shown: shown.has(item.id) ? shown.get(item.id)! : undefined, crash: crashes.get(item.id) ?? null,
     text: (host?.textContent ?? '').slice(0, 400) };
 }
 

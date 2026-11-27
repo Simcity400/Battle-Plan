@@ -10,7 +10,7 @@ const HOLD = { name: 'hold-modules', configureServer(server: { middlewares: { us
 
 type Mode = 'follow' | 'pin inside' | 'pin gap' | 'pin outside' | 'range';
 interface Case { id: string; mode: Mode; scope: 'moment' | 'history' }
-interface Read { main: string[]; drawn: boolean; drill: string[]; shown?: number | null; crash: string | null }
+interface Read { main: string[]; waiting: string[]; drawn: boolean; drill: string[]; shown?: number | null; crash: string | null }
 interface Step { hour: number; states: Record<string, Read> }
 interface Asked { product: string; hour: number }
 
@@ -52,6 +52,10 @@ test('every widget, through the real host on a track aligned 900 hours later wit
       const group = cases.filter(item => item.mode === mode);
       const steps: [string, Step, boolean][] = [];
       steps.push(['mounted at 95', { hour: 95, states: await act(`mount(${JSON.stringify(group.map(item => item.id))}, '${replies}', 95)`) }, false]);
+      if (replies === 'pending' && mode === 'follow') {
+        const party = (await act<Step>('seek(100)')).states['ruling-party|follow|main'];
+        assert.deepEqual(party?.waiting, ['Reading the party history…'], 'a widget held by a required read names that read');
+      }
       found.push(...unrecordedAsks(await act<Asked[]>('asked()'), `${mode} ${replies} mounted at 95`));
       for (const hour of [100, 104, 105, 107, 109]) {
         steps.push([`sought to ${hour}`, await act<Step>(`seek(${hour})`), false]);

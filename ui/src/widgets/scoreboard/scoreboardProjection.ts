@@ -651,6 +651,7 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
   },
   aux: {
     product: 'scoreboard-columns',
+    label: 'the scoreboard columns',
     params: track => ({ branchId: track.branch.id }),
     validate: validateColumnsReply,
   },

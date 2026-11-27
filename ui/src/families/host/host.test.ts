@@ -13,6 +13,7 @@ import type { FamilyTheme, InstalledAction, InstalledPicture, MirrorModel } from
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { familyBinding, lazyActionKeys, nextReportedRowWindow, reconcileInstalledRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
+import { allReady, inputOf, inputsStatus } from './planInputs.ts';
 import { BoundSelections, displayedHoverKeys, focusedSubject, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { hoverAsks, readPlanExact } from '../broker.ts';
@@ -2707,4 +2708,22 @@ test('R5: exact audit verifier uses the installed frame art resolutions for indi
   assert.equal(verifiedPending?.values.get('resolved:art'), 'art::Badge:pending');
   assert.equal(verifiedPending?.values.get('waiting:art'), 'art::Pending:pending');
   laneCache.dispose();
+});
+
+test('the plan inputs name the read a widget waits for, show a failed read as failed with its retry and never as loading, and are complete only when every input is ready', () => {
+  let retried = 0;
+  const retry = () => { retried++; };
+  const failure = { kind: 'local', message: 'party history broke' } as never;
+  const country = inputOf('the country', { data: 7, retry });
+  const history = inputOf('the party history', { retry });
+  assert.deepEqual(inputsStatus([country, history]), { kind: 'loading', label: 'Reading the party history…' }, 'a read that never answers is named, not a bare loading');
+  assert.equal(allReady([country, history]), false);
+  const failed = inputsStatus([inputOf('the country groups', { retry }), inputOf('the party history', { error: failure, retry })]);
+  assert.equal(failed?.kind, 'failed', 'a failed input wins over one still pending');
+  if (failed?.kind === 'failed') { assert.equal(failed.failure, failure); failed.onRetry?.(); }
+  assert.equal(retried, 1, 'the failure carries the input’s own retry');
+  const held = inputOf('the party history', { data: { parties: [] }, error: failure, retry });
+  assert.equal(held.state, 'ready', 'a held answer stays ready through a later failure');
+  assert.equal(inputsStatus([country, held]), null);
+  assert.equal(allReady([country, held]), true);
 });
