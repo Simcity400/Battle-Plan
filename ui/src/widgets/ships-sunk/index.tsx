@@ -33,7 +33,7 @@ function SunkBattle({ asked, track, runtime, anchor, onClose }: {
     product: 'naval-battle-course', params: { branchId: track.branch.id, key: asked.battle.key, hour: asked.hour as GatedHour } }), true, validateNavalBattleCourse);
   const row = course.data?.row;
   if (row) {
-    return <NavalBattleWindow opened={{ scope: asked.scope, subject: { row, title: asked.battle.title }, hour: asked.hour, start: asked.sunk }}
+    return <NavalBattleWindow opened={{ scope: asked.scope, subject: { row }, hour: asked.hour, start: asked.sunk }}
       track={track} runtime={runtime} anchor={anchor} returnFocus={mirrorRowSelector(asked.row)} onClose={onClose} />;
   }
   const reason = course.error ? failureText(course.error, 'The battle couldn’t be read.')

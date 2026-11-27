@@ -1,7 +1,7 @@
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { CountryFlowReply, FlowEndpoint, FlowLink, FlowSide as ReplySide } from '../../generated/dashboard';
-import { countryRowPresentation } from '../bars/model.ts';
-import { LOADING_NAME } from '../table/identityCell.ts';
+import { barsLabelSpoken, barsLabelText, countryRowPresentation } from '../bars/model.ts';
+import { knownValue, notRecorded, type Value } from '../value.ts';
 import type { ArtResult, BoundedReadView } from '../contract.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { formatCompactScalar, formatScalar, type ValueFormat } from '../valueFormat.ts';
@@ -29,9 +29,7 @@ export function scaledAmount(amount: string, decimals: number): number {
 
 interface FlowEndpointPresentation {
   readonly key: string;
-  readonly label: string;
-  readonly labelMissing: boolean;
-  readonly labelLoading?: true;
+  readonly label: Value<string>;
   readonly subject?: string;
   readonly tag?: string;
   readonly flag?: ArtResult;
@@ -51,17 +49,13 @@ export function presentFlowEndpoint(readView: BoundedReadView, endpoint: FlowEnd
   const key = flowEndpointKey(endpoint);
   if (endpoint.slot === null) {
     const label = unknownEndpointLabel(endpoint);
-    return { key, label, labelMissing: true, unknown: endpoint.unknown ?? label };
+    return { key, label: knownValue(label), unknown: endpoint.unknown ?? label };
   }
   const subject = countryKey(endpoint.slot);
   const shown = countryRowPresentation(readView, subject);
-  const labelLoading = shown.label.kind === 'pending';
-  const labelMissing = shown.label.kind !== 'known' && !labelLoading;
   return {
     key,
-    label: shown.label.kind === 'known' ? shown.label.value : labelLoading ? LOADING_NAME : endpoint.tag ?? UNKNOWN_COUNTRY,
-    labelMissing,
-    ...(labelLoading ? { labelLoading: true as const } : {}),
+    label: shown.label,
     subject,
     ...(endpoint.tag ? { tag: endpoint.tag } : {}),
     ...(endpoint.unknown ? { unknown: endpoint.unknown } : {}),
@@ -102,15 +96,15 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     const unit = unitOf(raw);
     return formatScalar(raw, unit ? { decimals, unit } : plainFormat);
   };
-  const parts: FlowPartKey[] = reply.parts.map((part, index) => ({ key: part.key, label: part.name ?? part.key, ordinal: part.ordinal ?? index, ...(part.nameMissing ? { missing: part.nameMissing } : {}) }));
-  const partNote = (part: FlowPartKey | undefined): TooltipListItem[] => (part?.missing ? [{ label: part.missing, tone: 'muted', indent: true }] : []);
-  const partSaid = (part: FlowPartKey | undefined) => `${part?.label ?? ''}${part?.missing ? ` (${part.missing})` : ''}`;
+  const parts: FlowPartKey[] = reply.parts.map((part, index) => ({ key: part.key, label: part.name?.trim() ? knownValue(part.name) : notRecorded(part.nameMissing ?? 'Resource name not recorded'), ordinal: part.ordinal ?? index }));
+  const partNote = (part: FlowPartKey | undefined): TooltipListItem[] => (part?.label.kind === 'notRecorded' ? [{ label: part.label.reason, tone: 'muted', indent: true }] : []);
+  const partSaid = (part: FlowPartKey | undefined) => `${barsLabelText(part?.label, 'Name', part?.key)}${part?.label.kind === 'notRecorded' ? ` (${part.label.reason})` : ''}`;
   const items = (link: FlowLink): TooltipListItem[] => {
     const listed = link.amounts.flatMap((amount): TooltipListItem[] => {
       const part = parts[amount.part];
       const shown: TooltipListItem = amount.amount === null
-        ? { label: part?.label ?? '', missingReason: link.missing ?? text.notRecorded }
-        : { label: part?.label ?? '', value: exact(amount.amount) };
+        ? { label: barsLabelText(part?.label, 'Name', part?.key), missingReason: link.missing ?? text.notRecorded }
+        : { label: barsLabelText(part?.label, 'Name', part?.key), value: exact(amount.amount) };
       return [shown, ...partNote(part)];
     });
     const total = link.total;
@@ -126,10 +120,14 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     return `${exact(link.total)} · ${said.join('; ')}`;
   };
   const identity = (...ends: readonly Pick<FlowNode, 'label' | 'unknown'>[]): TooltipListItem[] =>
-    ends.flatMap(end => (end.unknown ? [{ label: end.label, missingReason: end.unknown }] : []));
+    ends.flatMap(end => [
+      ...(end.label.kind === 'pending' ? [{ label: 'Name', pendingReason: end.label.reason }] : []),
+      ...(end.label.kind === 'notRecorded' ? [{ label: 'Name', missingReason: end.label.reason }] : []),
+      ...(end.unknown ? [{ label: barsLabelText(end.label), missingReason: end.unknown }] : []),
+    ]);
   const identityAudit = (...ends: readonly Pick<FlowNode, 'label' | 'unknown'>[]) =>
-    ends.flatMap(end => (end.unknown ? [` · ${end.label}: ${end.unknown}`] : [])).join('');
-  const named = (end: Pick<FlowNode, 'label' | 'tag' | 'labelMissing'>) => `${end.label}${end.tag ? ` [${end.tag}]` : ''}${end.labelMissing ? ' (name missing)' : ''}`;
+    ends.flatMap(end => (end.unknown ? [` · ${barsLabelText(end.label)}: ${end.unknown}`] : [])).join('');
+  const named = (end: Pick<FlowNode, 'label' | 'tag'>) => `${barsLabelSpoken(end.label)}${end.tag ? ` [${end.tag}]` : ''}`;
   const bands = (link: FlowLink): FlowBand[] => link.amounts.filter(amount => amount.amount !== null).map(amount => ({ part: amount.part, numeric: scaledAmount(amount.amount!, decimals) }));
   const endpoints = reply.endpoints.map(endpoint => presentFlowEndpoint(readView, endpoint));
   const keyOf = (index: number | null, side: FlowSide) => `${side}:${index === null ? 'others' : endpoints[index]!.key}`;
@@ -148,7 +146,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       return {
         key,
         side,
-        label,
+        label: knownValue(label),
         numeric: value(amount),
         figure: figure(amount),
         others: others ?? 0,
@@ -163,17 +161,15 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       key,
       side,
       label: shown.label,
-      ...(shown.labelMissing ? { labelMissing: true } : {}),
-      ...(shown.labelLoading ? { labelLoading: true } : {}),
       ...(shown.tag ? { tag: shown.tag } : {}),
       ...(shown.flag ? { flag: shown.flag } : {}),
       ...(shown.unknown ? { unknown: shown.unknown } : {}),
       numeric: value(amount),
       figure: figure(amount),
-      spoken: `${shown.label}: ${detail(link)}${missingReason && link.missing === null ? ` (${missingReason})` : ''}`,
+      spoken: `${barsLabelSpoken(shown.label)}: ${detail(link)}${missingReason && link.missing === null ? ` (${missingReason})` : ''}`,
       audit: `${named(shown)} · ${detail(link)}${identityAudit(shown)}`,
       ...(shown.subject ? { subject: shown.subject } : {}),
-      tooltip: { title: shown.label, hour, items: items(link), ...(missingReason ? { missingReason } : {}) },
+      tooltip: { title: barsLabelText(shown.label, 'Name', shown.tag), hour, items: [...items(link), ...identity(shown)], ...(missingReason ? { missingReason } : {}) },
     };
   };
 
@@ -186,7 +182,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     ...(from.others !== undefined || to.others !== undefined ? { others: true } : {}),
     numeric: value(link.total),
     audit: `${detail(link)}${identityAudit(from, to)}`,
-    tooltip: { title: text.ribbonTitle(from.label, to.label), hour, items: [...items(link), ...identity(from, to)], ...(link.missing ? { missingReason: link.missing } : {}) },
+    tooltip: { title: text.ribbonTitle(barsLabelText(from.label, 'Name', from.tag), barsLabelText(to.label, 'Name', to.tag)), hour, items: [...items(link), ...identity(from, to)], ...(link.missing ? { missingReason: link.missing } : {}) },
   });
 
   const unproven = (sides: readonly ReplySide[]) => blank(hour, {
@@ -209,15 +205,14 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       key: keyOf(reply.subject, 'centre'),
       side: 'centre',
       label: subject.label,
-      ...(subject.labelMissing ? { labelMissing: true } : {}),
-      ...(subject.labelLoading ? { labelLoading: true } : {}),
       ...(subject.tag ? { tag: subject.tag } : {}),
       ...(subject.flag ? { flag: subject.flag } : {}),
       ...(subject.unknown ? { unknown: subject.unknown } : {}),
       numeric: value(reply.largest),
       figure: '',
-      spoken: `${subject.label}: ${centreAudit}`,
+      spoken: `${barsLabelSpoken(subject.label)}: ${centreAudit}`,
       audit: `${named(subject)} · ${centreAudit}`,
+      tooltip: { title: barsLabelText(subject.label, 'Name', subject.tag), hour, items: identity(subject) },
       ...(subject.subject ? { subject: subject.subject } : {}),
     };
     const left = incoming.links.map(link => node(link.from, 'left', link, link.others ?? undefined));

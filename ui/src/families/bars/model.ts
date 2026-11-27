@@ -22,10 +22,10 @@ export function barsLabelMuted(label: Value<string> | undefined): boolean {
   return label !== undefined && (label.kind === 'notRecorded' || label.kind === 'notApplicable' || label.kind === 'pending');
 }
 
-export function barsLabelText(label: Value<string> | undefined, figure = 'Name'): string {
+export function barsLabelText(label: Value<string> | undefined, figure = 'Name', unrecordedText?: string): string {
   if (label === undefined) return '';
   const formatted = formatValueState(label, undefined, { figure });
-  if (formatted.kind === 'notRecorded') return notRecordedLabel(figure);
+  if (formatted.kind === 'notRecorded') return unrecordedText ?? notRecordedLabel(figure);
   if (formatted.kind === 'notApplicable' || formatted.kind === 'pending') return formatted.label;
   return formatted.text;
 }

@@ -89,7 +89,7 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
   const status = live ? logStatusCell('Ongoing', 'running') : row.result === 'unknown' ? { value: notRecorded('Battle result not recorded') }
     : logStatusCell(row.result === 'attackerWon' ? 'Attacker won' : 'Defender won', 'finished');
   return {
-    key: row.key, name: title, rowHour: row.hour, live, meta: { row, title, colors } satisfies BattleDetailSubject,
+    key: row.key, name: title, rowHour: row.hour, live, meta: { row, colors } satisfies BattleDetailSubject,
     tooltipExtra: (): TooltipExtraRow[] => sideValues.map((value, i) => ({
       label: i === 0 ? 'Attackers' : 'Defenders',
       value,
@@ -110,7 +110,6 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
 
 export interface BattleDetailSubject {
   readonly row: LandBattleLogRow;
-  readonly title: string;
   readonly colors: (string | undefined)[];
 }
 

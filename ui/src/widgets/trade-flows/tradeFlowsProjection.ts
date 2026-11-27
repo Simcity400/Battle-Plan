@@ -1,4 +1,5 @@
 import { unavailableArt } from '../../families/art/types.ts';
+import { barsLabelText } from '../../families/bars/model.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { flowEndpointKey, flowSideNotes, presentFlowEndpoint, projectCountryFlow, scaledAmount, UNKNOWN_COUNTRY, unknownEndpointLabel } from '../../families/flow/countryFlow.ts';
@@ -9,9 +10,8 @@ import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDecl
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { NAME_LOADING } from '../../families/table/identityCell.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
-import { knownValue, notRecorded, pendingValue, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatCompactScalar, formatScalar, type ValueFormat } from '../../families/valueFormat.ts';
 import type { CountryFlowReply } from '../../generated/dashboard';
 
@@ -94,10 +94,9 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
   const subject = presentFlowEndpoint(readView, reply.endpoints[reply.subject]!);
   const rows: TableRow[] = reply.table.map(row => {
     const partner = presentFlowEndpoint(readView, reply.endpoints[row.partner]!);
-    const name = partner.labelLoading ? pendingValue(NAME_LOADING)
-      : partner.labelMissing ? notRecorded(partner.unknown ?? 'Country name not recorded at this date') : knownValue(partner.label);
+    const name = partner.subject ? partner.label : notRecorded(partner.unknown ?? 'Country name not recorded at this date');
     const flags = partner.unknown || !partner.flag ? {} : {
-      flags: [{ tag: partner.tag ?? partner.label, art: partner.flag, ...(partner.flagKey ? { artKey: partner.flagKey } : {}) }],
+      flags: [{ tag: partner.tag ?? barsLabelText(partner.label), art: partner.flag, ...(partner.flagKey ? { artKey: partner.flagKey } : {}) }],
     };
     const cells: Record<string, TableRow['cells'][string]> = {
       partner: { value: name, ...flags },
@@ -111,7 +110,7 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
         ? { value, blank: true }
         : { value, format: signedCellFormat };
     });
-    return { key: partner.key, name: partner.label, cells, tooltipTitle: `${partner.label} and ${subject.label}` };
+    return { key: partner.key, name: barsLabelText(partner.label), cells, tooltipTitle: `${barsLabelText(partner.label)} and ${barsLabelText(subject.label)}` };
   });
   return {
     hour,

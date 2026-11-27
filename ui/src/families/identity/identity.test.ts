@@ -1325,8 +1325,7 @@ test('a country name that is still loading reads as loading in every family, nev
   assert.deepEqual(namedBars.label, { kind: 'known', value: 'Germany' });
   assert.equal(resolveEntityFromReadView(waiting, 'country', 'GER', 10, 'GER').pending, true);
   const flow = presentFlowEndpoint(waiting, { key: 's7', slot: 7, tag: 'GER', collective: false, unknown: null });
-  assert.equal(flow.label, LOADING_NAME, 'a flow endpoint waiting for its name does not print the tag as the name');
-  assert.equal(flow.labelLoading, true);
+  assert.deepEqual(flow.label, { kind: 'pending', reason: NAME_LOADING }, 'a flow endpoint waiting for its name does not print the tag as the name');
 });
 
 test('snapshot reuse refuses equal counters from a recreated index or a different language', () => {

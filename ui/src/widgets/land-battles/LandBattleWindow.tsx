@@ -2,6 +2,9 @@ import { useCallback, useId, useMemo, type ReactNode, type RefObject } from 'rea
 import { colour, distance, readableColour } from '../../charts/palette.ts';
 import type { Run } from '../../charts/series';
 import { BattleGameWindow, BattleViewer, type BattleSpan } from '../../components/BattleViewer.tsx';
+import { useBattleTitle } from '../../components/battleTitle.ts';
+import { ValueState } from '../../components/ValueState.tsx';
+import { barsLabelText } from '../../families/bars/model.ts';
 import type { BattleClock } from '../../components/battleClock.ts';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { formatDateRange, formatDateTime, formatDay } from '../../dashboard/calendar';
@@ -262,6 +265,7 @@ export default function LandBattleWindow({ opened, track, runtime, anchor, onClo
   const terrain = useProduct(runtime.client, row.province === null ? null : productRequest({ sourceId: track.source.id, revision: track.source.revision,
     product: 'land-battle-terrain', params: { provinces: [row.province] } }), true, validateLandBattleTerrain);
   const surface = theme!.surface;
+  const title = useBattleTitle(runtime.client, track, row.province, row.hour);
   const colours = useMemo(() => sideColours(subject.colors, surface), [subject, surface]);
   const data = course.data;
   const ongoing = row.result === 'ongoing';
@@ -334,7 +338,7 @@ export default function LandBattleWindow({ opened, track, runtime, anchor, onClo
     return <BattleGameWindow key={row.key} runtime={runtime} track={track} clock={clock} combat={combat} lead={lead} live={covered} until={until} ended={ended} />;
   };
 
-  return <BattleViewer subject={row.key} title={subject.title} day={day} closeLabel="Close battle viewer" anchor={anchor}
+  return <BattleViewer subject={row.key} title={title.kind === 'pending' ? <ValueState kind="pending" reason={title.reason} /> : barsLabelText(title, 'Battle name')} day={day} closeLabel="Close battle viewer" anchor={anchor}
     returnFocus={mirrorRowSelector(row.key)} runtime={runtime} track={track} province={row.province} span={span} unplayable={unplayable}
     gaps={gaps} fallbackHour={first} onClose={onClose}
     sides={hour => <SidesAt runtime={runtime} track={track} hour={hour} subject={subject} keys={sideKeys} run={!data ? failed ? 'unread' : 'pending' : settled(hour) ? null : runCovering(data, hour) ?? 'gap'} figures={figuresAt(hour)} />}
