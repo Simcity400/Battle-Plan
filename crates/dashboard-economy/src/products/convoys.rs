@@ -869,7 +869,9 @@ fn bounds(rows: &BTreeMap<u128, Vec<(i32, i32)>>) -> (i32, i32) {
     rows.values().flatten().fold((i32::MAX, i32::MIN), |(a, b), &(first, last)| (a.min(first), b.max(last)))
 }
 
-fn region_names(source: &Source, context: &LoadContext, regions: &BTreeSet<u32>, warnings: &mut Vec<String>) -> BTreeMap<u32, Result<String, String>> {
+type RegionNames = BTreeMap<u32, Result<String, String>>;
+
+fn region_names(source: &Source, context: &LoadContext, regions: &BTreeSet<u32>, warnings: &mut Vec<String>) -> RegionNames {
     let named = context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|error| format!("Sea region names unavailable: {error}")).and_then(|cat| {
         let content = dashboard_base::content::strategic_regions(&cat.content.layers).map_err(|error| format!("Sea region names unavailable: {error}"))?;
         warnings.extend(content.notes.iter().cloned());
@@ -1155,19 +1157,44 @@ fn listed_since(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams,
 
 type HeldTrade = ((i32, i32, Option<u32>), DayInputs);
 
-struct NamedResources {
-    generation: Option<Arc<dashboard_base::presentation::Presented>>,
-    naming: ResourceNaming,
+struct NamedRegions {
+    ids: BTreeSet<u32>,
+    names: RegionNames,
+    warnings: Vec<String>,
     refusals: catalogue::OwnRefusals,
 }
 
-#[derive(Default)]
-struct TradePlayback {
-    day: Option<HeldTrade>,
-    resources: Option<NamedResources>,
+struct PlaybackContent {
+    generation: [Option<Arc<dashboard_base::presentation::Presented>>; 2],
+    regions: Option<NamedRegions>,
+    resources: Option<(ResourceNaming, catalogue::OwnRefusals)>,
 }
 
-fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, cancelled: &AtomicBool, stepped: Option<(&mut at_hour::DatedStep<'_>, &mut TradePlayback)>) -> io::Result<ConvoyHealthReply> {
+#[derive(Default)]
+struct Playback {
+    day: Option<HeldTrade>,
+    content: Option<PlaybackContent>,
+}
+
+impl Playback {
+    fn content(&mut self, source: &Source, load: &LoadContext) -> Option<&mut PlaybackContent> {
+        let generation = if let Some(content) = &load.content {
+            let recorded = source.recorded_presented(&content.options).ok()?;
+            let shown = if catalogue::reads_recorded(content) { None } else { Some(source.presented_for(content).ok()?) };
+            [Some(recorded), shown]
+        } else {
+            [None, None]
+        };
+        if self.content.as_ref().is_none_or(|held| {
+            held.generation.each_ref().map(|mount| mount.as_ref().map(Arc::as_ptr)) != generation.each_ref().map(|mount| mount.as_ref().map(Arc::as_ptr))
+        }) {
+            self.content = Some(PlaybackContent { generation, regions: None, resources: None });
+        }
+        self.content.as_mut()
+    }
+}
+
+fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, cancelled: &AtomicBool, stepped: Option<(&mut at_hour::DatedStep<'_>, &mut Playback)>) -> io::Result<ConvoyHealthReply> {
     let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
     let query = dashboard_base::queries::query(source, branch)?;
     let from = params.from.unwrap_or(query.timeline.first).max(query.timeline.first);
@@ -1179,22 +1206,20 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         let (a, b) = (gap.first.max(from), gap.last.min(reach));
         (a <= b).then_some(HourSpan { first_hour: a, last_hour: b })
     }).collect();
-    let mut resource_names = None;
+    let (step, mut held) = stepped.map_or((None, None), |(step, held)| (Some(step), Some(held)));
     let (mut history, mut gathered, mut known, mut unheld) = match params.view {
         ConvoyView::Regions => {
-            let step = stepped.map(|(step, _)| step);
             let history = if from <= to { region_history(source, &query, params, from, reach, cancelled, step)? } else { RegionHistory::read(source, &query, params, from, reach, cancelled, None)? };
             let (known, unheld) = (vec![history.known.clone(), Vec::new(), Vec::new()], history.unheld.clone());
             (history, Gathered::default(), known, unheld)
         }
         ConvoyView::Trade => {
-            let inputs = if let Some((_, held)) = stepped {
+            let inputs = if let Some(held) = held.as_deref_mut() {
                 let day = (from, reach, query.timeline.at(to).map(|stretch| stretch.run));
                 if held.day.as_ref().is_none_or(|(span, _)| *span != day) {
-                    if held.day.as_ref().is_some_and(|(span, _)| span.2 != day.2) { held.resources = None; }
+                    if held.day.as_ref().is_some_and(|(span, _)| span.2 != day.2) { held.content = None; }
                     held.day = Some((day, window(source, &query, params, from, reach, cancelled, None)?.inputs));
                 }
-                resource_names = Some(&mut held.resources);
                 held.day.as_ref().expect("trade day").1.clone()
             } else {
                 window(source, &query, params, from, reach, cancelled, None)?.inputs
@@ -1214,7 +1239,26 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         region_ids.extend(params.regions.iter().flatten().copied());
         region_ids.extend(params.pinned_regions.iter().flatten().copied());
     }
-    let named = region_names(source, context, &region_ids, &mut warnings);
+    let mut content = held.and_then(|held| held.content(source, context));
+    let loaded;
+    let named = if let Some(content) = content.as_mut() {
+        let held = match &mut content.regions {
+            Some(held) if held.ids == region_ids => {
+                catalogue::credit(&held.refusals);
+                held
+            }
+            slot => {
+                let mut warnings = Vec::new();
+                let (names, refusals) = catalogue::capture(|| region_names(source, context, &region_ids, &mut warnings));
+                slot.insert(NamedRegions { ids: region_ids.clone(), names, warnings, refusals })
+            }
+        };
+        warnings.extend(held.warnings.iter().cloned());
+        &held.names
+    } else {
+        loaded = region_names(source, context, &region_ids, &mut warnings);
+        &loaded
+    };
     let absent = (params.view == ConvoyView::Regions).then(|| {
         let mut cells = history.absent.clone();
         valid = valid.min(unchanged_through(&cells, to));
@@ -1322,22 +1366,15 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
     let resources = if params.view == ConvoyView::Trade {
         let shown: BTreeSet<u32> = deals.iter().flat_map(|deal| deal.resource.iter().filter_map(|run| u32::try_from(run.2).ok())).collect();
         let tokens = resource_tokens(source, &query, Some(&shown), &mut warnings)?;
-        let generation = resource_names.as_ref().and_then(|_| match &context.content {
-            Some(content) => source.recorded_presented(&content.options).ok().map(Some),
-            None => Some(None),
-        });
-        let (infos, notes) = if let (Some(slot), Some(generation)) = (resource_names, generation) {
-            let held = match slot {
-                Some(held) if held.generation.as_ref().map(Arc::as_ptr) == generation.as_ref().map(Arc::as_ptr) => {
-                    catalogue::credit(&held.refusals);
+        let (infos, notes) = if let Some(content) = content {
+            let (naming, _) = match &mut content.resources {
+                Some(held) => {
+                    catalogue::credit(&held.1);
                     held
                 }
-                slot => {
-                    let (naming, refusals) = catalogue::capture(|| ResourceNaming::stored(source, context));
-                    slot.insert(NamedResources { generation, naming, refusals })
-                }
+                slot => slot.insert(catalogue::capture(|| ResourceNaming::stored(source, context))),
             };
-            held.naming.infos(&tokens, cancelled)?
+            naming.infos(&tokens, cancelled)?
         } else {
             ResourceNaming::stored(source, context).infos(&tokens, cancelled)?
         };
@@ -1425,14 +1462,14 @@ impl Product for ConvoyHealth {
 }
 
 pub(crate) fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
-    let trade = Mutex::new(TradePlayback::default());
+    let playback = Mutex::new(Playback::default());
     at_hour::stepped_day_panel::<ConvoyHealth>(source, load, asked, ("from", "to"),
         |_, reply| reply.last_hour, |_, _| {}, move |source, params, load, cancelled, mut step| {
-            let mut held = trade.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if step.step.is_none_or(|input| input.step.reset() || input.step.gap()) { *held = TradePlayback::default(); }
+            let mut held = playback.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if step.step.is_none_or(|input| input.step.reset() || input.step.gap()) { *held = Playback::default(); }
             let result = dashboard_text::metadata::check_cancel(cancelled)
                 .and_then(|()| health(source, params, load, cancelled, Some((&mut step, &mut held))));
-            if result.is_err() { *held = TradePlayback::default(); }
+            if result.is_err() { *held = Playback::default(); }
             result
         })
 }
