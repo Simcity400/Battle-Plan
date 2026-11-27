@@ -117,7 +117,10 @@ fn frame(hour: i32) -> DecodedFrame {
 }
 
 fn recording() -> (Source, Arc<dyn Pages>) {
-    let frames = (FIRST..=LAST).map(frame).collect();
+    recording_frames((FIRST..=LAST).map(frame).collect())
+}
+
+fn recording_frames(frames: Vec<DecodedFrame>) -> (Source, Arc<dyn Pages>) {
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let source = Source::from_replay(crate::SourceKey { source_id: "at-hour".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
@@ -648,7 +651,7 @@ fn older_format_frame(tables: &[TableId]) -> DecodedFrame {
     let pool = placed::Pool::of(&source).unwrap();
     let mode = incremental::capture_mode(&pool.pages).unwrap();
     let mut count = 0;
-    let mut input = incremental::Input { pool: &pool, run: pool.pages.run_of(0).unwrap(), hour: FIRST + 1, mode, count: &mut count, step: None, placed: None, gap: false };
+    let mut input = incremental::Input { pool: &pool, run: pool.pages.run_of(0).unwrap(), hour: FIRST + 1, mode, count: &mut count, step: None, placed: None, gap: false, exact: true };
     input.frame(&tables.iter().copied().map(Read::all).collect::<Vec<_>>(), |_| None, 1).unwrap()
 }
 
@@ -719,7 +722,7 @@ fn a_keyed_read_names_the_rows_it_chose() {
     let mode = incremental::capture_mode(&pool.pages).unwrap();
     let reads = [Read::these(TableId::Countries, [9001, 9002]), Read::all(TableId::CountryLinks)];
     for hour in [FIRST, ITA_LEAVES] {
-        let mut input = incremental::Input { pool: &pool, run, hour, mode, count: &mut count, step: None, placed: None, gap: false };
+        let mut input = incremental::Input { pool: &pool, run, hour, mode, count: &mut count, step: None, placed: None, gap: false, exact: true };
         let frame = input.frame(&reads, |_| None, 1).unwrap();
         assert_eq!(*frame.tables[TableId::Countries.index()].keys(), Keys::These(vec![9001, 9002]), "hour {hour}");
         assert_eq!(*frame.tables[TableId::CountryLinks.index()].keys(), Keys::All, "hour {hour}");
@@ -1168,4 +1171,66 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
     assert_eq!(at_expiry.value.as_ref().as_ref().unwrap()["count"], 2);
     assert_eq!(after.rows, 0);
     assert!(Arc::ptr_eq(&after.value, &at_expiry.value));
+}
+
+#[test]
+fn empty_exact_keys_read_status_without_positioning_a_lane() {
+    let frames = (FIRST..=LAST).map(|hour| {
+        let mut frame = frame(hour);
+        frame.metrics.table_ns[TableId::Countries.index()] = 1;
+        frame
+    }).collect();
+    let (source, _) = recording_frames(frames);
+    let pool = placed::Pool::of(&source).unwrap();
+    let run = pool.pages.run_of(0).unwrap();
+    let mode = incremental::capture_mode(&pool.pages).unwrap();
+    let reads = [Read::these(TableId::Countries, []), Read { table: TableId::Countries, keys: Keys::Ranges(vec![(9, 8)]) }];
+    for (hour, read) in [FIRST, FIRST + 1].into_iter().zip(&reads) {
+        let mut count = 0;
+        let mut input = incremental::Input { pool: &pool, run, hour, mode, count: &mut count, step: None, placed: None, gap: false, exact: true };
+        let frame = input.frame(std::slice::from_ref(read), |_| None, 1).unwrap();
+        assert!(frame.complete::<tables::Countries>().unwrap().is_empty());
+        assert_eq!(frame.tables[read.table.index()].sampled_at(), Some(hour));
+        assert!(input.placed.is_none(), "empty keys at {hour} only need the recorded status");
+    }
+}
+
+#[test]
+fn a_checkpoint_snapshot_refuses_keys_outside_its_selection() {
+    let (_, pages) = recording();
+    let table = TableId::Countries.index();
+    let column = column(TableId::Countries, "political_power_raw");
+    let asked = Keys::These(vec![9002, 9999, 9001]);
+    let snapshot = playhead::lane::selected_at(&*pages, 0, table, &[column], FIRST, &asked).unwrap().unwrap();
+    let view = snapshot.view(&asked).unwrap();
+    assert_eq!(view.status(), replay_columnar::manifest::Status::Complete);
+    assert!(view.slot(9001).is_some());
+    assert!(view.slot(9002).is_some());
+    assert!(view.slot(9999).is_none());
+    let error = snapshot.view(&Keys::These(vec![9003])).err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn empty_exact_keys_keep_recorded_refusal_and_truncation() {
+    let read = Read::these(TableId::Countries, []);
+    let boundary = FIRST + replay_columnar::unit::BLOCK as i32;
+    let mut frames: Vec<_> = (FIRST..=boundary + 1).map(frame).collect();
+    let named = TableView::Unavailable { reason: "countries deliberately withheld".into() };
+    let partial = TableView::Truncated { rows: TableRows::empty(read.table), missing: 7 };
+    *frames[1].tables[read.table.index()] = named.clone();
+    *frames[2].tables[read.table.index()] = partial.clone();
+    let later = TableView::Unavailable { reason: "countries withheld in the next block".into() };
+    *frames[(boundary - FIRST) as usize].tables[read.table.index()] = later.clone();
+    let (source, _) = recording_frames(frames);
+    let pool = placed::Pool::of(&source).unwrap();
+    let run = pool.pages.run_of(0).unwrap();
+    let mode = incremental::capture_mode(&pool.pages).unwrap();
+    for (hour, expected) in [(FIRST + 1, named), (FIRST + 2, partial), (boundary, later)] {
+        let mut count = 0;
+        let mut input = incremental::Input { pool: &pool, run, hour, mode, count: &mut count, step: None, placed: None, gap: false, exact: true };
+        let frame = input.frame(std::slice::from_ref(&read), |_| None, 1).unwrap();
+        assert_eq!(frame.tables[read.table.index()].held(), &expected);
+        assert!(input.placed.is_none());
+    }
 }

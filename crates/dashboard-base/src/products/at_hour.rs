@@ -276,7 +276,7 @@ fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, po
     let context = held.borrow();
     let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
     let mut count = 0;
-    let mut input = incremental::Input { pool, run: read_run, hour, mode: incremental::capture_mode(&pool.pages)?, count: &mut count, step: None, placed: None, gap: false };
+    let mut input = incremental::Input { pool, run: read_run, hour, mode: incremental::capture_mode(&pool.pages)?, count: &mut count, step: None, placed: None, gap: false, exact: true };
     let mut answer = AnswerFrame::new(query.timeline.id, hour);
     let mut read_frame = |reads: &[Read]| dashboard_query::cost::storage(|| input.frame(reads, P::columns, query.timeline.id));
     for step in 0.. {

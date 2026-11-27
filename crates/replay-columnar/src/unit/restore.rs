@@ -363,13 +363,13 @@ fn read_whole_table(bytes: &[u8], at: &mut usize, kinds: &[Kind]) -> io::Result<
 
 pub(crate) fn read_meta(bytes: &[u8], kinds: &[Kind], table: &mut TableState) -> io::Result<Meta> {
     let mut strings = Vec::new();
-    let meta = read_meta_with(bytes, kinds, table, &mut |id, text, _| strings.push((id, text.to_vec())))?;
+    let meta = read_meta_with(bytes, kinds, table, false, &mut |id, text, _| strings.push((id, text.to_vec())))?;
     Ok(Meta { strings, ..meta })
 }
 
 pub(crate) fn read_meta_lazily(bytes: Vec<u8>, length: usize, kinds: &[Kind], table: &mut TableState) -> io::Result<(Meta, StringTable)> {
     let mut at = Vec::new();
-    let meta = read_meta_with(bytes.get(..length).ok_or_else(|| invalid("A restore's meta passes its chunk"))?, kinds, table, &mut |id, text, from| {
+    let meta = read_meta_with(bytes.get(..length).ok_or_else(|| invalid("A restore's meta passes its chunk"))?, kinds, table, false, &mut |id, text, from| {
         at.push((id, from as u32, text.len() as u32));
     })?;
     let text = |&(_, from, length): &(u32, u32, u32)| &bytes[from as usize..from as usize + length as usize];
@@ -381,7 +381,15 @@ pub(crate) fn read_meta_lazily(bytes: Vec<u8>, length: usize, kinds: &[Kind], ta
     Ok((meta, StringTable { bytes, at }.packed()))
 }
 
-fn read_meta_with(bytes: &[u8], kinds: &[Kind], table: &mut TableState, each: &mut dyn FnMut(u32, &[u8], usize)) -> io::Result<Meta> {
+pub(crate) fn meta_text(bytes: &[u8], wanted: u32) -> io::Result<Option<Vec<u8>>> {
+    let mut found = None;
+    read_meta_with(bytes, &[], &mut TableState::new(&[]), true, &mut |id, text, _| {
+        if id == wanted { found = Some(text.to_vec()); }
+    })?;
+    Ok(found)
+}
+
+fn read_meta_with(bytes: &[u8], kinds: &[Kind], table: &mut TableState, names_only: bool, each: &mut dyn FnMut(u32, &[u8], usize)) -> io::Result<Meta> {
     let mut at = 0;
     let count = get_varint(bytes, &mut at)?;
     let slots = if table.is_log() { 0 } else { u32::try_from(count).map_err(|_| invalid("A restore's slots pass 32 bits"))? };
@@ -411,6 +419,7 @@ fn read_meta_with(bytes: &[u8], kinds: &[Kind], table: &mut TableState, each: &m
         each(id, bytes.get(at..at + length).ok_or_else(|| invalid("A restore's string passes its stream"))?, at);
         at += length;
     }
+    if names_only { return Ok(Meta::default()); }
     let last = match *bytes.get(at).ok_or_else(|| invalid("A restore's meta ends early"))? {
         0 => {
             at += 1;

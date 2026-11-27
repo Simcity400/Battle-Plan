@@ -100,24 +100,36 @@ impl Projection {
             self.selection = Some(Arc::new(read.keys.clone()));
         }
         let previous = self.at;
-        let Input { pool, hour, count, step, placed, mode, gap, .. } = input;
+        let Input { pool, hour, count, step, placed, mode, gap, exact, .. } = input;
         let (run, table) = (self.run, read.table.index());
-        let stepped = match step.and_then(|step| self.lane(read.table, *hour, step)) {
-            Some((step, lane, change)) => self.from_lane(read, sample, view, edits, count, lane, Some((step, change)), *mode)?,
-            None => {
-                let warm = if step.is_some_and(|step| step.lanes_table(table)) {
-                    let columns = self.columns.clone();
-                    let wake = step.and_then(|step| step.wake.cloned());
-                    pool.warm(run, table, &columns, *hour, wake, |lane| self.from_lane(read, sample, view, edits, count, lane, None, *mode))
-                } else { Warm::Cold };
-                match warm {
-                    Warm::Read(result) => result?,
-                    Warm::Warming => return Err(io::Error::new(io::ErrorKind::WouldBlock, format!("{:?} is being placed beside the step", read.table))),
-                    Warm::Cold => {
-                        let placed = placed.get_or_insert_with(|| pool.take(run, *hour));
+        let stepped = if let Some((step, lane, change)) = step.and_then(|step| self.lane(read.table, *hour, step)) {
+            self.from_lane(read, sample, view, edits, count, lane, Some((step, change)), *mode)?
+        } else if *exact && let Some((made, sampled)) = empty_read(&*pool.pages, (run, table), *hour, read, *mode)? {
+            if matches!(made, TableView::Complete(_) | TableView::Truncated { .. }) || view.held() != &made {
+                settle(read.table, Ok(made), sampled, sample, view, edits)?;
+            }
+            false
+        } else {
+            let warm = if step.is_some_and(|step| step.lanes_table(table)) {
+                let columns = self.columns.clone();
+                let wake = step.and_then(|step| step.wake.cloned());
+                pool.warm(run, table, &columns, *hour, wake, |lane| self.from_lane(read, sample, view, edits, count, lane, None, *mode))
+            } else { Warm::Cold };
+            match warm {
+                Warm::Read(result) => result?,
+                Warm::Warming => return Err(io::Error::new(io::ErrorKind::WouldBlock, format!("{:?} is being placed beside the step", read.table))),
+                Warm::Cold => {
+                    let placed = placed.get_or_insert_with(|| pool.take(run, *hour));
+                    let selected = if *exact && !matches!(read.keys, Keys::All) {
+                        placed.selected(table, &self.columns, *hour, &read.keys)?
+                    } else { None };
+                    if let Some(selected) = selected {
+                        self.whole(read, &selected.view(&read.keys)?, Status::Complete, None, selected.sampled, sample, view, edits, count)?;
+                    } else {
                         let lane = placed.lane(table, &self.columns, *hour)?;
-                        self.from_lane(read, sample, view, edits, count, lane, None, *mode)?
+                        self.from_lane(read, sample, view, edits, count, lane, None, *mode)?;
                     }
+                    false
                 }
             }
         };
@@ -227,6 +239,24 @@ impl Projection {
     }
 }
 
+fn empty_read(pages: &WorldPages, (run, table): (usize, usize), hour: i32, read: &Read, mode: CaptureMode) -> io::Result<Option<(TableView, Option<i32>)>> {
+    let empty = match &read.keys {
+        Keys::All => false,
+        Keys::These(keys) => keys.is_empty(),
+        Keys::Range(low, high) => low > high,
+        Keys::Ranges(ranges) => ranges.iter().all(|(low, high)| low > high),
+    };
+    if !empty { return Ok(None); }
+    let (status, sampled, reason) = playhead::lane::table_status(pages, run, table, hour)?;
+    let made = match status {
+        Status::Complete => TableView::Complete(TableRows::empty(read.table)),
+        Status::Truncated { missing } => TableView::Truncated { rows: TableRows::empty(read.table), missing },
+        Status::NotRecorded => TableView::NotRecorded { mode },
+        Status::Unavailable { .. } => TableView::Unavailable { reason: reason.expect("an unavailable status has a reason") },
+    };
+    Ok(Some((made, sampled)))
+}
+
 fn settle(table: TableId, made: io::Result<TableView>, sampled: Option<i32>, sample: bool, view: &mut SharedView, edits: &mut Edits) -> io::Result<()> {
     let made = match made {
         Ok(made) => made,
@@ -288,7 +318,7 @@ impl DatedStep<'_> {
             .unwrap_or_else(|| (run, Box::new(empty(query.timeline.id, hour)), Projections::new()));
         frame.hour = hour;
         let mut count = 0;
-        let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step: self.step, placed: None, gap: false };
+        let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step: self.step, placed: None, gap: false, exact: false };
         for read in reads {
             let fields = columns(read.table);
             if let Err(error) = input.read(&mut tables, read, &mut frame.tables[read.table.index()], || (fields.clone(), fields.clone()), false, &mut Edits::default()) {
@@ -310,6 +340,7 @@ pub(super) struct Input<'a> {
     pub(super) step: Option<ProductStep<'a>>,
     pub(super) placed: Option<Taken>,
     pub(super) gap: bool,
+    pub(super) exact: bool,
 }
 
 impl Input<'_> {
@@ -506,7 +537,7 @@ where P::Context: Sync, P::Params: Sync {
         let result = engine_executable::executable_tables::scope(executable, || -> io::Result<_> {
             let run = timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)))?.run;
             let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
-            let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step, placed: None, gap: false };
+            let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step, placed: None, gap: false, exact: false };
             if let Some(state) = held.as_mut().filter(|s| s.frame.hour == hour && s.run == run && !s.rebuild) {
                 return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
             }

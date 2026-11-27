@@ -359,6 +359,82 @@ pub struct Lane {
     pub(crate) read_compares: usize,
 }
 
+pub struct Selected<'a> {
+    keys: &'a replay_frame::frame::Keys,
+    cells: TableState,
+    kinds: Vec<Kind>,
+    strings: replay_columnar::store::Strings,
+    pub sampled: Option<Hour>,
+}
+
+impl Selected<'_> {
+    pub fn view(&self, keys: &replay_frame::frame::Keys) -> io::Result<TableView<'_>> {
+        if self.keys != keys { return Err(invalid("Keys are outside the loaded selection")); }
+        Ok(TableView::new(&self.cells, &self.kinds, &self.strings))
+    }
+}
+
+fn ends_at_checkpoint(target: u32, hours: u16, status: Status) -> bool {
+    !matches!(status, Status::Truncated { .. }) && target % BLOCK + 1 == u32::from(hours)
+}
+
+pub fn table_status(pages: &dyn Pages, run: usize, table: usize, hour: Hour) -> io::Result<(Status, Option<Hour>, Option<String>)> {
+    let held = pages.runs().get(run).ok_or_else(|| invalid(format!("No run {run}")))?;
+    let target = (i64::from(hour) - i64::from(held.first_hour)).clamp(0, i64::from(held.hours()) - 1) as u32;
+    let entry = pages.table_entry(run, (target / BLOCK) as usize, table)?;
+    if entry.log { return Err(invalid(format!("Table {table} is a log: its rows are read by ordinal, never at an hour"))); }
+    let (status, _, sampled, _) = reader::status(&entry, (target % BLOCK) as u16, held.first_hour + (target / BLOCK * BLOCK) as Hour)?;
+    if let Some(reason) = pages.withheld_at(run, table, hour) { return Ok((Status::Unavailable { reason: 0 }, sampled, Some(reason.to_owned()))); }
+    let reason = if let Status::Unavailable { reason } = status {
+        let block = (target / BLOCK) as usize;
+        let hours = held.block_hours(block).ok_or_else(|| invalid("The run holds no block for this hour"))?;
+        let end = ends_at_checkpoint(target, hours, status);
+        let mut named = None;
+        for at in (0..=block).rev() {
+            let entry = if at == block { entry.clone() } else { pages.table_entry(run, at, table)? };
+            let source = pages.extents(run);
+            if let Some(restore) = entry.restore.as_ref().filter(|_| at < block || end) {
+                named = reader::restore_text(source, restore, reason)?;
+                break;
+            }
+            let hour = if at == block { (target % BLOCK) as u16 } else { BLOCK as u16 - 1 };
+            named = reader::part_text(source, &entry.parts, hour, reason)?;
+            if named.is_some() { break; }
+            if let Some(first) = &entry.first {
+                named = reader::restore_text(source, first, reason)?;
+                break;
+            }
+        }
+        Some(named.and_then(|bytes| String::from_utf8(bytes).ok()).unwrap_or_else(|| "A table's reason is not text".into()))
+    } else { None };
+    Ok((status, sampled, reason))
+}
+
+pub fn selected_at<'a>(pages: &dyn Pages, run: usize, table: usize, columns: &[usize], hour: Hour, keys: &'a replay_frame::frame::Keys) -> io::Result<Option<Selected<'a>>> {
+    let held = pages.runs().get(run).ok_or_else(|| invalid(format!("No run {run}")))?;
+    let target = (i64::from(hour) - i64::from(held.first_hour)).clamp(0, i64::from(held.hours()) - 1) as u32;
+    let block = (target / BLOCK) as usize;
+    let Some(hours) = held.block_hours(block) else { return Ok(None); };
+    if (target != 0 && target % BLOCK + 1 != u32::from(hours)) || pages.withheld_at(run, table, hour).is_some() { return Ok(None); }
+    let entry = pages.table_entry(run, block, table)?;
+    if entry.log { return Ok(None); }
+    let (status, _, sampled, _) = reader::status(&entry, (target % BLOCK) as u16, held.first_hour + (target / BLOCK * BLOCK) as Hour)?;
+    if status != Status::Complete { return Ok(None); }
+    let end = ends_at_checkpoint(target, hours, status).then_some(entry.restore.as_ref()).flatten();
+    let Some(restore) = end.or_else(|| (target == 0).then_some(entry.first.as_ref()).flatten()) else { return Ok(None); };
+    let kinds = pages.kinds(table).ok_or_else(|| invalid(format!("No table {table} in the schema")))?;
+    let kinds = &kinds[..pages.held(table).min(kinds.len())];
+    let mut sorted = None;
+    if let replay_frame::frame::Keys::These(keys) = keys && !keys.is_sorted() {
+        let mut keys = keys.clone();
+        keys.sort_unstable();
+        sorted = Some(replay_frame::frame::Keys::These(keys));
+    }
+    let wants = sorted.as_ref().unwrap_or(keys);
+    let (cells, strings) = reader::restore_selected(pages.extents(run), restore, kinds, columns, &|key| wants.contains(key))?;
+    Ok(Some(Selected { keys, cells, kinds: kinds.to_vec(), strings, sampled }))
+}
+
 impl Lane {
     pub fn new(pages: Arc<dyn Pages>, run: usize, table: usize, columns: &[usize], keyed: bool) -> io::Result<Self> {
         let held_run = pages.runs().get(run).ok_or_else(|| invalid(format!("No run {run}")))?;
@@ -598,8 +674,8 @@ impl Lane {
         let block = (target / BLOCK) as usize;
         let block_hours = run.block_hours(block).ok_or_else(|| invalid(format!("Run {} holds no block {block}", self.run)))?;
         let target_entry = self.entry_at(block)?;
-        let truncated = matches!(reader::status(&target_entry, (target % BLOCK) as u16, self.game(block as u32 * BLOCK))?.0, Status::Truncated { .. });
-        let ends_block = !truncated && target + 1 == block as u32 * BLOCK + u32::from(block_hours);
+        let status = reader::status(&target_entry, (target % BLOCK) as u16, self.game(block as u32 * BLOCK))?.0;
+        let ends_block = ends_at_checkpoint(target, block_hours, status);
         let at = if ends_block { Some(block) } else { block.checked_sub(1) };
         let refused = || invalid(format!("No restore of table {} is written", self.table));
         let (restored, restore_entry, from_first) = match at {

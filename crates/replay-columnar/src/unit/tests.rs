@@ -404,6 +404,14 @@ fn restores_with_changed_keys_and_rows_past_their_chunks_read_back() {
     }
     let (table, _) = rebuild(&memory.bytes, &memory.pages, &KINDS, 0, 2, 0).unwrap();
     assert_eq!(rows(&table), rows(&states[3 * BLOCK as usize - 1]));
+    let selected_key = 1_000;
+    let (selected, _) = reader::restore_selected(&memory.bytes, block0, &KINDS, &columns, &|key| key == selected_key).unwrap();
+    let (full, _) = restore(&memory.bytes, block0, &KINDS, &columns).unwrap();
+    let mut expected = rows(&full);
+    expected.retain(|&key, _| key == selected_key);
+    assert_eq!(rows(&selected), expected);
+    assert_eq!(selected.slots(), 1);
+
 }
 
 #[test]
@@ -1562,4 +1570,33 @@ fn unit_numbers_hold_their_widest_values_and_refuse_bits_past_them() {
     for refused in [get_varint(&over(9, 2), &mut 0).map(u128::from), get_wide(&over(18, 4), &mut 0)] {
         assert!(refused.unwrap_err().to_string().contains("passes"));
     }
+}
+
+#[test]
+fn a_selected_restore_checks_a_cell_chunk_for_unselected_rows() {
+    let kinds = [Kind::Opaque];
+    let mut store = Store::new(vec![kinds.to_vec()], vec![false]);
+    store.attach(Encoder::new(&[kinds.to_vec()], Settings::at(3)).unwrap());
+    let mut memory = Memory::default();
+    store.begin_run(0);
+    store.begin_hour(0, &[]).unwrap();
+    store.status(0, Status::Complete, true, Some(0), true).unwrap();
+    let mut changes = store.table(0).unwrap();
+    let large = vec![3; restore::CHUNK];
+    changes.insert_at(0, 5).unwrap();
+    changes.write(0, 0, Cell::Opaque(&large)).unwrap();
+    changes.insert_at(1, 9).unwrap();
+    changes.write(1, 0, Cell::Opaque(&[4])).unwrap();
+    store.end_hour(&mut memory).unwrap();
+    store.end_run(&mut memory).unwrap();
+    let entry = memory.pages[0].tables[0].first.as_ref().unwrap();
+    let stream = restore::column_stream(0);
+    assert_eq!(chunk(entry, stream, 0).first, 0);
+    let other = chunk(entry, stream, 1);
+    assert_eq!(other.first, 1);
+    memory.bytes[other.frame.offset as usize] ^= 1;
+    let full_error = restore(&memory.bytes, entry, &kinds, &[0]).unwrap_err();
+    let selected_error = reader::restore_selected(&memory.bytes, entry, &kinds, &[0], &|key| key == 5)
+        .err().expect("a damaged unselected column chunk is refused");
+    assert_eq!(selected_error.to_string(), full_error.to_string());
 }
