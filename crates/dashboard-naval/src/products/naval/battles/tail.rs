@@ -817,6 +817,7 @@ fn course(scanned: &Scanned, key: &str, branch_last: i32) -> Option<(Vec<NavalCo
         .iter()
         .filter(|gap| gap.first_hour <= last && gap.last_hour >= first)
         .map(|gap| MissingSpan { first_hour: gap.first_hour.max(first), last_hour: gap.last_hour.min(last), reason: gap.reason.clone() })
+        .filter(|gap| gap.first_hour <= gap.last_hour)
         .collect();
     Some((reads, missing))
 }
@@ -924,8 +925,8 @@ mod tests {
         };
         let entry = |id: u128, key: &str, reads: Steps<Snapshot>| Occurrence {
             id,
-            date: 100,
-            observed: 100,
+            date: reads[0].0,
+            observed: reads[0].0,
             kind: 0,
             roles: Box::default(),
             subjects: Box::default(),
@@ -941,6 +942,7 @@ mod tests {
                     entry(0, "combat:7:100", vec![(100, read(NavalBattleStatus::Ongoing))]),
                     entry(1, "combat:8:100", vec![(100, read(NavalBattleStatus::Ongoing)), (105, read(NavalBattleStatus::Unknown))]),
                     entry(2, "combat:6:100", vec![(100, read(NavalBattleStatus::Ongoing)), (111, Snapshot { result_id: Some(61), ..read(NavalBattleStatus::AttackerWon) })]),
+                    entry(3, "result:62", vec![(111, Snapshot { result_id: Some(62), ..read(NavalBattleStatus::AttackerWon) })]),
                 ],
                 Vec::new(),
                 &[NavalBattleStatus::Ongoing as u8],
@@ -954,6 +956,8 @@ mod tests {
         assert!(ended.is_empty(), "an ended battle's gaps stop at its last reading");
         let (_, resulted) = course(&scanned, "combat:6:100", 120).unwrap();
         assert_eq!(resulted, [gap(110, 110)], "census gaps stop where the battle's result is recorded");
+        let (reads, only) = course(&scanned, "result:62", 120).unwrap();
+        assert_eq!((reads.len(), reads[0].hour, only.len()), (1, 111, 0), "a battle held only as a result has no hours before it for a gap to cover");
         assert!(course(&scanned, "combat:9:100", 120).is_none());
     }
 
