@@ -103,7 +103,6 @@ const OVERLAY: &[TableId] = &[
     TableId::Capitulation,
     TableId::CountryGameScoreInputs,
     TableId::AirRegionalMissions,
-    TableId::VariantDefinitions,
     TableId::RaidAirSites,
     TableId::RaidAirScores,
     TableId::RaidCountryInputs,

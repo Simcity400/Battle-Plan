@@ -91,7 +91,9 @@ impl<'a> Census<'a> {
             .map_err(|e| e.to_string())?;
         let variants = self
             .frame
-            .complete::<tables::VariantDefinitions>()
+            .complete_fields::<tables::VariantDefinitions>(
+                replay_data::rows::mask::<replay_data::rows::VariantDefinitionRow>(&["equipment_token"]),
+            )
             .map_err(|e| e.to_string())?;
         let tokens = TokenNames::new(self.frame).map_err(|e| e.to_string())?;
         let equipment = inputs.equipment.map_err(str::to_owned)?;

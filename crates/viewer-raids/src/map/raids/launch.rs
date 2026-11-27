@@ -1343,8 +1343,9 @@ impl<'w, 'a> Context<'w, 'a> {
     }
 
     fn definitions(&self) -> Result<&BTreeMap<u64, &'a VariantDefinitionRow>, String> {
+        const FIELDS: u64 = replay_data::rows::mask::<VariantDefinitionRow>(&["archetype_token", "classifier_flags"]);
         lazy(&self.definitions, || {
-            Ok(table::<tables::VariantDefinitions>(self.world)?
+            Ok(table_fields::<tables::VariantDefinitions>(self.world, FIELDS)?
                 .iter()
                 .map(|row| (row.id, row))
                 .collect())
