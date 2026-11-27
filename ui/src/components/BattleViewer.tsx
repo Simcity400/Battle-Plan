@@ -37,6 +37,7 @@ export interface BattleViewerProps {
   readonly unplayable: ReactNode;
   readonly gaps: readonly BattleSpan[];
   readonly fallbackHour: number;
+  readonly startHour?: number;
   readonly sides: (hour: number) => ReactNode;
   readonly battle: (hour: number, clock: BattleClock | null) => ReactNode;
   readonly details?: (hour: number) => ReactNode;
@@ -259,7 +260,8 @@ export function BattleViewer(props: BattleViewerProps) {
     setViewing(props.subject);
     setView('battle');
   }
-  const clock = useMemo(() => span ? new BattleClock(span, span.first) : null, [props.subject, span?.first, span?.last]);
+  const start = props.startHour;
+  const clock = useMemo(() => span ? new BattleClock(span, Math.min(span.last, Math.max(span.first, start ?? span.first))) : null, [props.subject, span?.first, span?.last, start]);
   useEffect(() => () => clock?.dispose(), [clock]);
   const hour = useSyncExternalStore(clock?.subscribe ?? still, clock?.getHour ?? (() => props.fallbackHour));
   const page = runtime.clock;

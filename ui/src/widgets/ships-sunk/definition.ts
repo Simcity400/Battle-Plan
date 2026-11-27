@@ -1,6 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { columnsControl } from '../../families/settingsControls.ts';
-import { LOG_TABLE_BASE, logCountryColumn, logDateColumn, logItemColumn, logKindColumn, logPlaceColumn } from '../../families/table/logHelpers.ts';
+import { LOG_TABLE_BASE, logActionColumn, logCountryColumn, logDateColumn, logItemColumn, logKindColumn, logPlaceColumn } from '../../families/table/logHelpers.ts';
 import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
@@ -11,6 +11,7 @@ export const SHIPS_SUNK_COLUMNS: readonly TableColumnSpec[] = [
   logItemColumn({ label: 'Ship', minWidth: 48, narrow: 'primary', grow: 2.4 }),
   logPlaceColumn({ label: 'Sea zone', minWidth: 210, maxWidth: 210, grow: 0, narrow: 'hide', textTone: 'muted' }),
   logPlaceColumn({ key: 'cause', label: 'Cause', minWidth: 270, maxWidth: 270, narrowWidth: 92, grow: 1, textTone: 'secondary' }),
+  logActionColumn({ minWidth: 84, narrow: 'hide' }),
 ];
 
 export const definition = {

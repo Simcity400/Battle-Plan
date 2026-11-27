@@ -55,7 +55,7 @@ test('ship rows name the class and keep the victim dimmed, with the missing mark
   assert.equal(model.empty, undefined);
   assert.equal(model.titleSummary, '2 sunk');
   assert.equal(model.kindFilter?.allLabel, 'All classes');
-  assert.equal(row.meta, 10);
+  assert.deepEqual(row.meta, { hour: 10, battle: null });
   assert.equal(row.cells.item?.inlineSubtext, 'Corvette');
   assert.deepEqual(row.cells.country?.flags?.map(flag => [flag.tag, !!flag.dimmed]), [['AAA', false], ['BBB', true]]);
   assert.equal(row.cells.cause?.value.kind, 'notRecorded');
@@ -86,4 +86,10 @@ test('a battle row names the battle in bold with its recorded killer beside it, 
   assert.deepEqual(unnamed!.cells.cause?.value, { kind: 'known', value: 'Battle' }, 'a battle whose name is not recorded still shows its killer');
   assert.equal(unnamed!.cells.cause?.inlineSubtext, 'by aircraft');
   assert.equal(tooltip(unnamed!).value('Battle')?.kind, 'notRecorded');
+  assert.equal(known!.cells.action?.actionLabel, 'Watch', 'a sinking in a recorded battle offers Watch on that battle');
+  assert.deepEqual(known!.meta, { hour: known!.rowHour, battle: { key: linked.id, title: 'Battle of Mod Strait' } });
+  assert.deepEqual(unnamed!.meta, { hour: unnamed!.rowHour, battle: { key: linked.id, title: 'Naval battle' } });
+  const [alone] = project([sinking('3', {})]).rows;
+  assert.equal(alone!.cells.action?.blank, true, 'a sinking with no recorded battle has nothing to watch');
+  assert.deepEqual(alone!.meta, { hour: alone!.rowHour, battle: null });
 });

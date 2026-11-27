@@ -661,35 +661,10 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams
     let rows = answer
         .rows
         .iter()
-        .map(|shown| {
-            let entry = prepared.scanned.index.get(shown.at);
-            let line = &entry.payload;
-            let mut next = |candidate: Option<i32>| {
-                visible_change = visible_change.into_iter().chain(candidate).min();
-            };
-            let partition = line.reads.partition_point(|(at, _)| *at <= hour);
-            let (at, read) = &line.reads[partition - 1];
-            next(line.reads.get(partition).map(|step| step.0));
-            let result = read.result;
-            NavalBattleLogRow {
-                key: line.key.clone(),
-                hour: entry.date,
-                province: read.province,
-                result,
-                detail_id: read.result_id.map_or_else(|| line.key.clone(), |id| format!("result:{id}")),
-                detail_hour: read.detail_hour,
-                result_hour: read.result_hour,
-                last_live_hour: read.live_last,
-                end_seen: read.end_seen,
-                ships_sunk: read.sunk,
-                convoys_sunk: read.convoys_sunk,
-                ic_lost: read.ic.map(|raw| raw.map(|raw| raw as f64 / 100_000.0)),
-                ships: read.ships,
-                convoys: read.convoys,
-                countries: read.countries.clone(),
-                countries_hour: read.countries_hour.map(|h| h.unwrap_or(*at)),
-                read_hour: *at,
-            }
+        .filter_map(|shown| {
+            let (row, change) = log_row(prepared.scanned.index.get(shown.at), hour)?;
+            visible_change = visible_change.into_iter().chain(change).min();
+            Some(row)
         })
         .collect();
     let mut boundary = answer.next_change;
@@ -717,6 +692,32 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams
     };
     dashboard_base::products::check_reply_budget(&reply)?;
     Ok(reply)
+}
+
+fn log_row(entry: &Occurrence<Line>, hour: i32) -> Option<(NavalBattleLogRow, Option<i32>)> {
+    let line = &entry.payload;
+    let partition = line.reads.partition_point(|(at, _)| *at <= hour);
+    let (at, read) = line.reads.get(partition.checked_sub(1)?)?;
+    let row = NavalBattleLogRow {
+        key: line.key.clone(),
+        hour: entry.date,
+        province: read.province,
+        result: read.result,
+        detail_id: read.result_id.map_or_else(|| line.key.clone(), |id| format!("result:{id}")),
+        detail_hour: read.detail_hour,
+        result_hour: read.result_hour,
+        last_live_hour: read.live_last,
+        end_seen: read.end_seen,
+        ships_sunk: read.sunk,
+        convoys_sunk: read.convoys_sunk,
+        ic_lost: read.ic.map(|raw| raw.map(|raw| raw as f64 / 100_000.0)),
+        ships: read.ships,
+        convoys: read.convoys,
+        countries: read.countries.clone(),
+        countries_hour: read.countries_hour.map(|h| h.unwrap_or(*at)),
+        read_hour: *at,
+    };
+    Some((row, line.reads.get(partition).map(|step| step.0)))
 }
 
 pub struct NavalBattlesTail;
@@ -759,6 +760,9 @@ impl Product for NavalBattlesTail {
 pub struct NavalBattleCourseParams {
     pub branch_id: String,
     pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -782,14 +786,19 @@ pub struct NavalBattleCourseReply {
     pub branch_id: String,
     pub reads: Vec<NavalCourseRead>,
     pub missing: Vec<MissingSpan>,
+    pub row: Option<NavalBattleLogRow>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(NavalBattleCourseReply);
 
-fn course(scanned: &Scanned, key: &str, branch_last: i32) -> Option<(Vec<NavalCourseRead>, Vec<MissingSpan>)> {
+fn entry<'a>(scanned: &'a Scanned, key: &str) -> Option<&'a Occurrence<Line>> {
     let index = &scanned.index;
-    let entry = (0..index.len()).map(|at| index.get(at as u32)).find(|entry| entry.payload.key == key)?;
+    (0..index.len()).map(|at| index.get(at as u32)).find(|entry| entry.payload.key == key)
+}
+
+fn course(scanned: &Scanned, key: &str, branch_last: i32) -> Option<(Vec<NavalCourseRead>, Vec<MissingSpan>)> {
+    let entry = entry(scanned, key)?;
     let reads: Vec<_> = entry
         .payload
         .reads
@@ -828,7 +837,7 @@ impl Product for NavalBattleCourse {
     const KEY: &'static str = "naval-battle-course";
     const CONTENT_DEPENDENT: bool = false;
     type Params = NavalBattleCourseParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, key];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, key, hour: Read];
     type Reply = NavalBattleCourseReply;
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -847,7 +856,11 @@ impl Product for NavalBattleCourse {
         let query = dashboard_base::queries::query(source, branch)?;
         let scanned = scanned(source, &query, cancelled)?;
         let (reads, missing) = course(&scanned, &params.key, query.timeline.last).ok_or_else(|| dashboard_core::invalid("No naval battle with this key in the branch"))?;
-        let reply = NavalBattleCourseReply { branch_id: params.branch_id.clone(), reads, missing, warnings: Vec::new() };
+        let row = match params.hour {
+            Some(hour) => entry(&scanned, &params.key).and_then(|entry| log_row(entry, occurrences::cutoff(&query, Some(hour)).ok()?)).map(|(row, _)| row),
+            None => None,
+        };
+        let reply = NavalBattleCourseReply { branch_id: params.branch_id.clone(), reads, missing, row, warnings: Vec::new() };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
