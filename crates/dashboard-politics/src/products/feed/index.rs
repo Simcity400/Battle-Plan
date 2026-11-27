@@ -110,13 +110,19 @@ pub(crate) struct Scanned {
     pub incomplete: Vec<(i32, u128, FeedEvent)>,
     pub windows_unrecorded: Vec<(i32, i32, String)>,
     states: HashMap<u128, DecisionLifecycleState>,
-    resolved: Mutex<HashMap<u128, Option<DecisionLifecycleState>>>,
+    resolved: Mutex<ResolvedDecisions>,
     presented: Mutex<Presented>,
     breaks: Vec<(i32, i32)>,
     choice_breaks: Vec<(i32, i32, String)>,
     decision_breaks: Vec<(i32, i32)>,
     partial_reads: Vec<i32>,
     pub gaps: Vec<MissingSpan>,
+}
+
+#[derive(Default)]
+struct ResolvedDecisions {
+    states: HashMap<u128, Option<DecisionLifecycleState>>,
+    readers: Option<replay_lanes::at::Readers>,
 }
 
 pub(crate) type HeldRow = Arc<(Option<EventFeedRow>, Notices, OwnRefusals)>;
@@ -241,28 +247,25 @@ impl Scanned {
         let key = |event: &FeedEvent| (u128::from(event.generation) << 64) | u128::from(event.sequence);
         let mut out: Vec<Option<DecisionLifecycleState>> = vec![None; events.len()];
         let mut missing: Vec<usize> = Vec::new();
-        {
-            let held = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
-            for (at, event) in events.iter().enumerate() {
-                if !decision_state::applies(event) {
-                    continue;
-                }
-                let key = key(event);
-                match (self.states.get(&key), held.get(&key)) {
-                    (Some(state), _) => out[at] = Some(state.clone()),
-                    (None, Some(state)) => out[at] = state.clone(),
-                    (None, None) => missing.push(at),
-                }
+        let mut held = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
+        for (at, event) in events.iter().enumerate() {
+            if !decision_state::applies(event) {
+                continue;
+            }
+            let key = key(event);
+            match (self.states.get(&key), held.states.get(&key)) {
+                (Some(state), _) => out[at] = Some(state.clone()),
+                (None, Some(state)) => out[at] = state.clone(),
+                (None, None) => missing.push(at),
             }
         }
         if missing.is_empty() {
             return Ok(out);
         }
         let asked: Vec<&FeedEvent> = missing.iter().map(|&at| events[at]).collect();
-        let resolved = decision_state::resolve_all(query, &asked)?;
-        let mut held = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
+        let resolved = decision_state::resolve_all(query, &asked, &mut held.readers)?;
         for (&at, state) in missing.iter().zip(resolved) {
-            held.insert(key(events[at]), state.clone());
+            held.states.insert(key(events[at]), state.clone());
             out[at] = state;
         }
         Ok(out)
@@ -451,7 +454,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
         }
     }
     let refs: Vec<&FeedEvent> = lifecycles.iter().collect();
-    let resolved = decision_state::resolve_all(query, &refs)?;
+    let resolved = decision_state::resolve_all(query, &refs, &mut None)?;
     let states = lifecycles.iter().zip(resolved).filter_map(|(event, state)| state.map(|state| ((u128::from(event.generation) << 64) | u128::from(event.sequence), state))).collect();
     let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
     let mut choice_breaks: Vec<(i32, i32, String)> = query.timeline.unheld.iter().map(|gap| (gap.first, gap.last, gap.reason.clone())).collect();
