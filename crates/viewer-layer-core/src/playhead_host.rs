@@ -826,7 +826,9 @@ impl<P: PlaybackProducts> MapSide<P> {
             }
             let asked = self.ask_overlay_step(true, true, Arc::default());
             self.post_makers();
-            if asked && self.makers_home() {
+            if asked && self.makers_home()
+                && (self.join_overlay(Settling::Whole) || self.overlay.as_deref().is_some_and(|overlay| overlay.missed().is_empty()))
+            {
                 break;
             }
             if Instant::now() >= until {
@@ -843,7 +845,6 @@ impl<P: PlaybackProducts> MapSide<P> {
             }
             std::thread::sleep(std::time::Duration::from_micros(200));
         }
-        self.join_overlay(Settling::Whole);
         let hour = self.applied;
         self.take_overlay().ok_or_else(|| {
             let overlay = self.overlay.as_deref().expect("asked above");

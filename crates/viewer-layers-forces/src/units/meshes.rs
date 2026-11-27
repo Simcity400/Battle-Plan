@@ -117,9 +117,13 @@ impl Shared {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn wait(&self, until: Instant) {
+    fn wait(&self, until: Instant, reader: &views::Reader) -> bool {
         let held = self.lock();
+        if reader.frame().is_none() {
+            return false;
+        }
         let _ = self.done.wait_timeout(held, until.saturating_duration_since(Instant::now()));
+        true
     }
 
     fn stood(&self, stands: Hour) {
@@ -135,6 +139,7 @@ impl Shared {
 
 pub struct Meshes {
     shared: Arc<Shared>,
+    reader: std::sync::Weak<views::Reader>,
     worker: Option<JoinHandle<()>>,
     maker: timeline::Maker,
     pub meshes: HashMap<u64, usize>,
@@ -154,7 +159,7 @@ impl Meshes {
         tables.retain(|table| !absent.contains(table));
         let keyed: Vec<TableId> = KEYED.into_iter().filter(|table| !absent.contains(table)).collect();
         let learned: Vec<TableId> = learned.iter().copied().filter(|table| tables.contains(table)).collect();
-        let reader = store.telling("unit_meshes", &needs(&tables, &learned));
+        let reader = Arc::new(store.telling("unit_meshes", &needs(&tables, &learned)));
         let declared = Arc::new(BTreeSet::new());
         for &table in &keyed {
             reader.declare_keyed(table, Arc::clone(&declared));
@@ -181,6 +186,7 @@ impl Meshes {
             clear: false,
             again: false,
         };
+        let rows = Arc::downgrade(&reader);
         let spawned = std::thread::Builder::new().name("unit meshes".into()).spawn({
             let shared = Arc::clone(&shared);
             move || {
@@ -192,7 +198,7 @@ impl Meshes {
             Ok(worker) => (Some(worker), None),
             Err(error) => (None, Some(format!("The unit meshes' worker cannot start: {error}"))),
         };
-        Self { shared, worker, maker, meshes: HashMap::new(), withheld: HashMap::new(), hour: None, refused }
+        Self { shared, reader: rows, worker, maker, meshes: HashMap::new(), withheld: HashMap::new(), hour: None, refused }
     }
 
     pub fn maker(&self) -> timeline::Maker {
@@ -226,7 +232,7 @@ impl Meshes {
             if Instant::now() >= until {
                 return changed;
             }
-            self.shared.wait(until);
+            if !self.reader.upgrade().is_some_and(|reader| self.shared.wait(until, &reader)) { return changed }
         }
     }
 

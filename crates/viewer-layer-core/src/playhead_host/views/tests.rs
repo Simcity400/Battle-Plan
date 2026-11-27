@@ -282,6 +282,25 @@ fn a_reader_of_some_columns_or_of_keys_alone_holds_only_those_and_any_other_fiel
 }
 
 #[test]
+fn a_ready_projection_is_published_while_a_wider_reader_waits_for_its_columns() {
+    use replay_data::rows::{CountryRow, column, mask};
+    let entry = open(record("projection arriving", 4), hourly_steps()).unwrap();
+    let mut lane = playhead::lane::Lane::new(Arc::clone(&entry.pages), 0, COUNTRIES.index(), &[column::<CountryRow>("stability_raw")], true).unwrap();
+    lane.seek(3).unwrap();
+    let mut mirrors = super::Mirrors::default();
+    mirrors.insert(Box::new(Mirror::rebuild(&lane, &[column::<CountryRow>("stability_raw")])));
+    let mut store = super::Store::new(&entry);
+    let projected = store.reader("stability", &[Need::columns(COUNTRIES, mask::<CountryRow>(&["stability_raw"]))]);
+    let whole = store.reader("all", &[Need::every(COUNTRIES)]);
+    store.post(&Arc::new(mirrors), 3, RECORDING.branch, 0, true);
+    store.settled();
+    let frame = projected.frame().expect("the projected rows are ready");
+    assert_eq!(frame.hour, 3);
+    assert!(whole.frame().is_none());
+    assert_eq!(whole.arriving(), [COUNTRIES]);
+}
+
+#[test]
 fn a_view_of_declared_columns_holds_what_the_whole_view_holds_and_a_write_outside_it_makes_nothing() {
     use replay_data::rows::{LandCombatRow, mask};
     let (day, place) = (mask::<LandCombatRow>(&["day"]), mask::<LandCombatRow>(&["province", "duration"]));

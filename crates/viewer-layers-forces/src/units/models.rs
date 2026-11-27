@@ -189,9 +189,13 @@ impl Shared {
         self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn wait(&self, until: Instant) {
+    fn wait(&self, until: Instant, reader: &views::Reader) -> bool {
         let held = self.lock();
+        if reader.frame().is_none() {
+            return false;
+        }
         let _ = self.done.wait_timeout(held, until.saturating_duration_since(Instant::now()));
+        true
     }
 
     fn answered(&self, stands: Hour) {
@@ -288,6 +292,7 @@ fn work(shared: &Shared, select: &dyn Select, reader: &views::Reader, maker: tim
             reader.declare_only(&tables);
             let mut held = shared.lock();
             (held.tables, held.working) = (tables.clone(), true);
+            shared.done.notify_all();
             drop(held);
             (built, standing, handled) = (None, None, None);
             continue;
@@ -411,7 +416,7 @@ impl Models {
             if Instant::now() >= until {
                 return arrived;
             }
-            self.shared.wait(until);
+            if !self.shared.wait(until, &self.reader) { return arrived }
         }
     }
 

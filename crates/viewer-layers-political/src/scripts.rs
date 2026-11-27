@@ -136,7 +136,7 @@ struct Open {
     jobs: mpsc::Sender<Work>,
     done: landed::Receiver<Done>,
     busy: bool,
-    seen: Option<(Hour, u64)>,
+    seen: Option<Arc<DecodedFrame>>,
     handed: bool,
     handed_whole: bool,
     evaluating: Option<Hour>,
@@ -189,6 +189,11 @@ impl Open {
         let _ = self.jobs.send(Work::Free(Box::new(held)));
     }
 
+    fn see(&mut self, frame: Option<Arc<DecodedFrame>>) {
+        if let Some(old) = std::mem::replace(&mut self.seen, frame) {
+            self.free(old);
+        }
+    }
 }
 
 fn learning<T>(missed: &mut Missed, read: impl FnOnce() -> T) -> T {
@@ -512,13 +517,13 @@ impl Scripts {
         self.stats.learning += 1;
         joined(&mut self.needs, done.missed);
         open.reader.declare_only_needs(&self.needs);
-        open.seen = None;
+        open.see(None);
         (open.handed, open.handed_whole) = (false, false);
         true
     }
 
     fn ask_rows(&mut self) {
-        if let Some(open) = &self.open && !open.busy {
+        if let Some(open) = &self.open {
             open.reader.ready();
         }
     }
@@ -538,24 +543,25 @@ impl Scripts {
 
     fn offer(&mut self, whole: bool) {
         let Some(open) = self.open.as_mut() else { return };
-        let Some((frame, publication, resets)) = open.reader.newest_seek() else { return };
-        let seen = (frame.hour, publication);
-        if open.seen != Some(seen) {
+        if let Some((frame, _, _)) = open.reader.newest_seek()
+            && !open.seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, &frame))
+        {
             if open.seen.is_some() && !open.handed {
                 self.stats.skipped += 1;
             }
-            open.seen = Some(seen);
+            open.see(Some(frame));
             (open.handed, open.handed_whole) = (false, false);
         }
         if open.busy || (open.handed && (!whole || open.handed_whole)) {
             return;
         }
+        let Some((frame, _, resets)) = open.reader.newest_seek() else { return };
         let music = self.music_due(whole);
         let open = self.open.as_mut().expect("held above");
         let job = Job { frame, choice: self.choice.clone(), content: self.content.clone(), raids: self.shown.0, music, whole, epoch: self.epoch, resets };
         if open.jobs.send(Work::Evaluate(Box::new(job))).is_ok() {
             (open.busy, open.handed, open.handed_whole) = (true, true, whole);
-            open.evaluating = Some(seen.0);
+            open.evaluating = open.seen.as_ref().map(|frame| frame.hour);
         }
     }
 
@@ -732,7 +738,7 @@ impl Layer for Scripts {
         let Some(open) = &self.open else {
             return self.product.as_ref().map_or(Published::Nothing, |product| Published::Cadence(product.hour));
         };
-        let seen = open.seen.map(|(hour, _)| hour);
+        let seen = open.seen.as_ref().map(|frame| frame.hour);
         match (&self.product, seen) {
             (Some(product), Some(seen)) if product.hour >= seen => Published::Current,
             (Some(_), Some(seen)) if open.busy && open.evaluating == Some(seen) => Published::Current,
