@@ -615,14 +615,17 @@ struct Prepared {
     selection: Option<Selection>,
 }
 
-fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &NavalBattlesTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
+fn index(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Arc<Index<Line>>> {
     let state = source.state::<Branches>();
     let mut branches = state.lock().unwrap_or_else(PoisonError::into_inner);
-    let index = match branches.0.entry(query.timeline.id) {
+    Ok(match branches.0.entry(query.timeline.id) {
         std::collections::hash_map::Entry::Occupied(e) => Arc::clone(e.get()),
         std::collections::hash_map::Entry::Vacant(e) => Arc::clone(e.insert(Arc::new(scan(source, query, cancelled)?))),
-    };
-    drop(branches);
+    })
+}
+
+fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &NavalBattlesTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
+    let index = index(source, query, cancelled)?;
     let selection = dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
     Ok(Prepared { index, selection })
 }
@@ -740,6 +743,97 @@ impl Product for NavalBattlesTail {
         let hour = occurrences::cutoff(&query, params.hour)?;
         let prepared = prepare(source, &query, load, params, cancelled)?;
         reply(&prepared, &query.holders, params, hour)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NavalBattleCourseParams {
+    pub branch_id: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct NavalCourseRead {
+    pub hour: i32,
+    pub result: NavalBattleStatus,
+    pub ships: [Option<u32>; 2],
+    pub convoys: [Option<u32>; 2],
+    pub ships_sunk: [Option<u32>; 2],
+    pub convoys_sunk: [Option<u32>; 2],
+    pub ic_lost: [Option<f64>; 2],
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct NavalBattleCourseReply {
+    pub branch_id: String,
+    pub reads: Vec<NavalCourseRead>,
+    pub missing: Vec<MissingSpan>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(NavalBattleCourseReply);
+
+fn course(index: &Index<Line>, key: &str) -> Option<(Vec<NavalCourseRead>, Vec<MissingSpan>)> {
+    let entry = (0..index.len()).map(|at| index.get(at as u32)).find(|entry| entry.payload.key == key)?;
+    let reads: Vec<_> = entry
+        .payload
+        .reads
+        .iter()
+        .map(|(hour, read)| NavalCourseRead {
+            hour: *hour,
+            result: read.result,
+            ships: read.ships,
+            convoys: read.convoys,
+            ships_sunk: read.sunk,
+            convoys_sunk: read.convoys_sunk,
+            ic_lost: read.ic.map(|raw| raw.map(|raw| raw as f64 / 100_000.0)),
+        })
+        .collect();
+    let first = entry.date.min(reads.first().map_or(entry.date, |read| read.hour));
+    let last = reads.last().map_or(first, |read| read.hour);
+    let missing = index
+        .gaps()
+        .iter()
+        .filter(|gap| gap.first_hour <= last && gap.last_hour >= first)
+        .map(|gap| MissingSpan { first_hour: gap.first_hour.max(first), last_hour: gap.last_hour.min(last), reason: gap.reason.clone() })
+        .collect();
+    Some((reads, missing))
+}
+
+pub struct NavalBattleCourse;
+
+impl Product for NavalBattleCourse {
+    const KEY: &'static str = "naval-battle-course";
+    const CONTENT_DEPENDENT: bool = false;
+    type Params = NavalBattleCourseParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, key];
+    type Reply = NavalBattleCourseReply;
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![NavalBattleCourseParams::decl(), NavalCourseRead::decl(), NavalBattleCourseReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
+        let keyed = params.key.len() <= 64 && (params.key.starts_with("combat:") || params.key.starts_with("result:"));
+        keyed.then_some(()).ok_or("A naval battle course names a naval battle row's key")
+    }
+
+    fn load(source: &Source, params: &Self::Params, _load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        check_cancel(cancelled)?;
+        let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+        let query = dashboard_base::queries::query(source, branch)?;
+        let index = index(source, &query, cancelled)?;
+        let (reads, missing) = course(&index, &params.key).ok_or_else(|| dashboard_core::invalid("No naval battle with this key in the branch"))?;
+        let reply = NavalBattleCourseReply { branch_id: params.branch_id.clone(), reads, missing, warnings: Vec::new() };
+        dashboard_base::products::check_reply_budget(&reply)?;
+        Ok(reply)
     }
 }
 
