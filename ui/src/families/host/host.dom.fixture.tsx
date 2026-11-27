@@ -349,7 +349,8 @@ function readVisibleTooltip() {
   return {
     open,
     title: open ? (el.querySelector('strong')?.textContent ?? null) : null,
-    subtitle: open ? (el.querySelector('.chart-tooltip-head small')?.textContent ?? null) : null,
+    subtitle: open ? (el.querySelector('.chart-tooltip-head small:not(.chart-tooltip-pinned)')?.textContent ?? null) : null,
+    pinned: open ? (el.querySelector('.chart-tooltip-pinned')?.textContent ?? null) : null,
     rows: open
       ? [...el.querySelectorAll<HTMLElement>('.chart-tooltip-row')].map(row => [
           row.querySelector('span')?.textContent ?? '',
@@ -802,7 +803,7 @@ window.hostDom = {
     const pipeId = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas')!.dataset.placement);
     await until(() => !!(pipeline.view(pipeId)?.fields?.focusTooltip as { text?: unknown } | undefined)?.text, 2000);
     firstRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
-    await until(() => (tooltipStore.get()?.content.subtitle ?? '').startsWith('Pinned at '), 2000);
+    await until(() => Boolean(tooltipStore.get()?.content.pinned), 2000);
     const pinnedBefore = tooltipStore.get()?.content.title ?? null;
 
     currentState = { ...currentState, source: sourceB };
@@ -2032,6 +2033,7 @@ window.hostDom = {
       date0: formatDateHover(0),
       date3: formatDateHover(3),
       date6: formatDateHover(6),
+      date24: formatDateHover(24),
     };
   },
 
@@ -2063,7 +2065,22 @@ window.hostDom = {
   },
 
   async waitPinnedPointsTooltip(expectedHour: number) {
-    await waitForTooltipSubtitle(`Pinned at ${formatDateHover(expectedHour)}`);
+    const expectedSubtitle = formatDateHover(expectedHour);
+    const expectedPinned = `Pinned at ${formatDateHover(24)}`;
+    const matches = () => {
+      const content = tooltipStore.get()?.content;
+      return content?.subtitle === expectedSubtitle && content?.pinned === expectedPinned;
+    };
+    if (!matches()) {
+      await new Promise<void>(resolve => {
+        const stop = tooltipStore.subscribe(() => {
+          if (!matches()) return;
+          stop();
+          resolve();
+        });
+      });
+    }
+    await waitAnimationFrames(1);
     return readVisibleTooltip();
   },
 

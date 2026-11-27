@@ -175,7 +175,7 @@ export function resolveHostInput(
   if (key === null) return null;
   if (command === 'pin') {
     const tip = (record.fields.focusTooltip as FamilyTooltipField | undefined)?.text;
-    return tip && tip.rowKey === key ? { kind: 'pin', tip, hour: tip.hour ?? picture.hour } : null;
+    return tip && tip.rowKey === key ? { kind: 'pin', tip, hour: picture.hour } : null;
   }
   if (command === 'activate' && options.regions) {
     const field = record.fields.regions as RegionRowsField | undefined;

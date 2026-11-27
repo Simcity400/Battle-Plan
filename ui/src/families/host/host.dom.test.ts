@@ -53,7 +53,7 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       assert.deepEqual(focus.outside, [null], 'a seek that takes the picture away clears the focused row with it');
       assert.deepEqual(focus.left, [null], 'focus leaving the rows clears the focused row');
 
-      type VisibleTip = { open: boolean; title: string | null; subtitle: string | null; rows: Array<[string, string]> };
+      type VisibleTip = { open: boolean; title: string | null; subtitle: string | null; pinned: string | null; rows: Array<[string, string]> };
       type PointsMount = {
         pipeId: number;
         hour12Point: { x: number; y: number };
@@ -62,6 +62,7 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
         date0: string;
         date3: string;
         date6: string;
+        date24: string;
       };
       type DeliveredState = {
         visibleTooltip: VisibleTip;
@@ -120,7 +121,8 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
           await pressPinKey();
           const pinnedTip = await act<VisibleTip>('waitPinnedPointsTooltip(3)');
           assert.equal(pinnedTip.open, true, `${mode}: pressing P pins the keyboard-focused hour-3 tooltip`);
-          assert.equal(pinnedTip.subtitle, `Pinned at ${mountedPoints.date3}`, `${mode}: pinned tooltip locks onto hour 3`);
+          assert.equal(pinnedTip.subtitle, mountedPoints.date3, `${mode}: pinned tooltip preserves hour-3 point subtitle`);
+          assert.equal(pinnedTip.pinned, `Pinned at ${mountedPoints.date24}`, `${mode}: pinned tooltip shows inspection time separately`);
           assert.deepEqual(pinnedTip.rows, [['Metric', '30']], `${mode}: pinned tooltip shows hour 3 value`);
 
           await act(`holdPointsHits(${mountedPoints.pipeId})`);
@@ -136,7 +138,8 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
 
           const afterPinnedReply = await act<DeliveredState>(`deliverHeldPointsHit(${mountedPoints.pipeId})`);
           assert.equal(afterPinnedReply.visibleTooltip.open, true, `${mode}: pinned tooltip remains visible after keyboard move and delayed pointer reply`);
-          assert.equal(afterPinnedReply.visibleTooltip.subtitle, `Pinned at ${mountedPoints.date3}`, `${mode}: pinned tooltip at hour 3 is preserved`);
+          assert.equal(afterPinnedReply.visibleTooltip.subtitle, mountedPoints.date3, `${mode}: pinned tooltip preserves hour-3 subtitle`);
+          assert.equal(afterPinnedReply.visibleTooltip.pinned, `Pinned at ${mountedPoints.date24}`, `${mode}: pinned tooltip keeps inspection pin line`);
           assert.deepEqual(afterPinnedReply.visibleTooltip.rows, [['Metric', '30']], `${mode}: pinned tooltip content stays at hour 3`);
           assert.equal(afterPinnedReply.inspecting, null, `${mode}: delayed pointer reply while pinned does not re-inspect hour 12`);
           assert.equal(afterPinnedReply.hoverHours.at(-1), 6, `${mode}: keyboard focus moved hover hour to 6 while preserving the pinned tooltip`);
@@ -153,7 +156,8 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
           await pressPinKey();
           const repinnedTip = await act<VisibleTip>('waitPinnedPointsTooltip(6)');
           assert.equal(repinnedTip.open, true, `${mode}: unpinning and pinning again locks onto the preserved keyboard-focused hour 6`);
-          assert.equal(repinnedTip.subtitle, `Pinned at ${mountedPoints.date6}`, `${mode}: re-pinned tooltip shows hour 6`);
+          assert.equal(repinnedTip.subtitle, mountedPoints.date6, `${mode}: re-pinned tooltip preserves hour 6 subtitle`);
+          assert.equal(repinnedTip.pinned, `Pinned at ${mountedPoints.date24}`, `${mode}: re-pinned tooltip shows inspection time separately`);
           assert.deepEqual(repinnedTip.rows, [['Metric', '60']], `${mode}: re-pinned tooltip shows hour 6 value`);
         } finally {
           await act('unmountPointsHost()');

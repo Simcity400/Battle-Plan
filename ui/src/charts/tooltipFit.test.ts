@@ -145,3 +145,22 @@ test('rows wrap by their width in the active font, so a wide font cuts rows the 
   const title = 'The Kingdom of the Netherlands in exile';
   assert.equal(tooltipHeight({ title, rows: [], countryFlag: {} }, even), tooltipHeight({ title, rows: [] }, even) + 19, 'a flagged title has the room beside its flag, and wraps there');
 });
+
+test('pinned metadata adds its own header height, survives fitting, and enters spoken text', () => {
+  const base: TooltipContent = { title: 'Spanish Civil War', subtitle: '17 Jul 1936 \u2013 12 Mar 1938', rows: rows(8) };
+  const pinned: TooltipContent = { ...base, pinned: 'Pinned at 27 Dec 1940 \u00b7 13:00' };
+  assert.ok(tooltipHeight(pinned) > tooltipHeight(base), 'pinned line counts toward tooltip height');
+  assert.match(tooltipText(pinned), /17 Jul 1936 \u2013 12 Mar 1938; Pinned at 27 Dec 1940 \u00b7 13:00/);
+  const exactHeight = tooltipHeight(base) + 16;
+  assert.equal(fitTooltip([base], exactHeight).rows.length, 8);
+  const fitted = fitTooltip([pinned], exactHeight);
+  assert.equal(fitted.subtitle, base.subtitle);
+  assert.equal(fitted.pinned, pinned.pinned);
+  assert.ok(fitted.rows.length < 8, 'the added pinned line trims rows so the card still fits');
+  assert.ok(tooltipHeight(fitted) <= tooltipRoom(exactHeight));
+  assert.equal(fitted.spoken, tooltipText(pinned));
+  const scrollable = fitTooltip([{ ...pinned, scrollable: true, scrollId: 'civil-war' }], 120);
+  assert.equal(scrollable.subtitle, base.subtitle);
+  assert.equal(scrollable.pinned, pinned.pinned);
+  assert.equal(scrollable.rows.length, 8);
+});
