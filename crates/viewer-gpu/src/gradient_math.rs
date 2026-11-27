@@ -59,7 +59,7 @@ impl FieldDefines {
         country_thickness: [5.0, 25.0],
         country_area: [300.0, 9000.0],
         strategic_thickness: 140.0,
-        optimization_range: 34.0,
+        optimization_range: 29.0,
         navy_neutral: [51, 63, 89],
         mode_thickness_max: 14.0,
     };

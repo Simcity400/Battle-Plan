@@ -99,7 +99,7 @@ pub fn unnamed_assets() -> MovementFixture {
             north_pole_offset: 91_000,
             day_night_feather: 2_700,
         }),
-        combat_minimum_time: 7,
+        combat_minimum_time: 3,
         naval_combat_min_duration: Ok(7),
         avoid_enemy: true,
     }
