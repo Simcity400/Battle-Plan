@@ -604,7 +604,9 @@ fn perspective_keys(placed: &Placed, perspective: Option<&str>) -> Box<[SortKey]
     let mut keys = placed.sort_keys.clone();
     let Some(perspective) = perspective else { return keys };
     if placed.seller.0.as_deref() == Some(perspective) {
-        keys[0] = SortKey::dated_text(std::iter::once((placed.observed, placed.buyer.0.as_deref().map(Into::into))).chain(placed.buyer_later.iter().map(|(at, buyer)| (*at, buyer.0.as_deref().map(Into::into)))).collect::<BTreeMap<_, _>>()).shared();
+        let initial = (placed.observed, placed.buyer.0.as_deref().map(Into::into));
+        let later = placed.buyer_later.iter().map(|(at, buyer)| (*at, buyer.0.as_deref().map(Into::into)));
+        keys[0] = SortKey::dated_text(std::iter::once(initial).chain(later).collect::<BTreeMap<_, _>>()).shared();
     } else if let SortKey::SharedDated(steps) = &placed.sort_keys[4] {
         let mut hours: Vec<_> = steps.iter().map(|&(at, _)| at).chain(placed.buyer_later.iter().map(|&(at, _)| at)).collect();
         hours.sort_unstable();
@@ -1118,19 +1120,27 @@ fn sort_keys(source: &Source, query: &Query<'_>, load: &LoadContext, ledger: &mu
     let name_of = |at, variant| (named.get(&(at, variant)).and_then(|(name, _)| name.clone()), None, None);
     let mut made = Vec::with_capacity(ledger.contracts.len());
     for placed in &ledger.contracts {
-        let mut hours: Vec<i32> = placed.contract.children.iter().map(|child| child.observed).chain(placed.states.iter().map(|&(at, _)| at)).chain(ledger.unread.gaps.iter().flat_map(|gap| [gap.first_hour, gap.last_hour.saturating_add(1)])).collect();
+        let mut hours: Vec<i32> = placed.contract.children.iter().map(|child| child.observed).chain(placed.states.iter().map(|&(at, _)| at)).chain(ledger.unread.gaps.iter().filter(|gap| placed.contract.ended.is_none_or(|(_, seen)| gap.first_hour <= seen)).flat_map(|gap| [gap.first_hour, gap.last_hour.saturating_add(1)])).collect();
         hours.sort_unstable();
         hours.dedup();
         let (mut items, mut status, mut delivered, mut paid, mut text) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut seen = BTreeSet::new();
-        for hour in hours.into_iter().filter(|&hour| hour >= placed.observed && placed.contract.ended.is_none_or(|(_, seen)| hour <= seen)) {
+        for hour in hours.into_iter().filter(|&hour| hour >= placed.observed) {
             let at = placed.states.partition_point(|&(at, _)| at <= hour);
             let state = at.checked_sub(1).map(|at| placed.states[at].1);
             let row = contract_row(ledger, &Shown { at: 0, ordinal: 0, live: false, state }, placed, hour, &terms, &name_of);
             items.push((hour, row.items.first().and_then(|item| item.name.as_deref()).map(Into::into)));
             for name in row.items.iter().filter_map(|item| item.name.as_ref()).filter(|name| seen.insert((*name).clone())) { text.push((hour, name.as_str().into())); }
-            status.push((hour, match row.status { MarketContractStatus::Active => Some("Contract started".into()), MarketContractStatus::Requested => Some("Request posted".into()), MarketContractStatus::Ended => Some("Contract ended".into()), MarketContractStatus::RequestEnded => Some("Request ended".into()), MarketContractStatus::NotRecorded => None }));
-            let amounts = row.items.iter().map(|item| item.delivered_raw.as_deref().filter(|_| item.delivery_unavailable.is_none()).and_then(|raw| raw.parse::<i64>().ok())).collect::<Option<Vec<_>>>();
+            status.push((hour, match row.status {
+                MarketContractStatus::Active => Some("Contract started".into()),
+                MarketContractStatus::Requested => Some("Request posted".into()),
+                MarketContractStatus::Ended => Some("Contract ended".into()),
+                MarketContractStatus::RequestEnded => Some("Request ended".into()),
+                MarketContractStatus::NotRecorded => None,
+            }));
+            let amounts = row.items.iter().map(|item| {
+                item.delivered_raw.as_deref().filter(|_| item.delivery_unavailable.is_none()).and_then(|raw| raw.parse::<i64>().ok())
+            }).collect::<Option<Vec<_>>>();
             let total = amounts.map(|values| values.into_iter().fold(0i64, i64::saturating_add));
             delivered.push((hour, total.filter(|_| row.delivery_missing.is_none() && !row.items.is_empty())));
             paid.push((hour, row.paid_raw.as_deref().filter(|_| row.paid_missing.is_none()).and_then(|raw| raw.parse().ok())));
