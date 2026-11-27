@@ -52,6 +52,9 @@ pub struct TradeFlowParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub side_totals_only: Option<bool>,
     #[doc = " One resource by its native index; every resource when absent."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
@@ -194,7 +197,7 @@ impl AtHour for TradeFlow {
     const TITLE: &'static str = "Trade flows";
     const CONTENT_DEPENDENT: bool = true;
     type Params = TradeFlowParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top, resource, table];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top, sideTotalsOnly, resource, table];
     type Reply = CountryFlowReply;
     type Context = TradeContext;
 
@@ -366,6 +369,7 @@ impl AtHour for TradeFlow {
             between: params.between,
             limit: params.limit.map(|limit| limit.max(1) as usize),
             top: params.top.map(|top| top.max(1) as usize),
+            side_totals_only: params.side_totals_only.unwrap_or_default(),
             table: params.table,
             not_recorded: NOT_RECORDED,
             unlinked: UNLINKED,
@@ -458,7 +462,7 @@ mod tests {
         let (rows, gaps) = witnessed_deals(&truncated).unwrap();
         assert_eq!(rows.len(), 2);
         let index: HashMap<u32, u32> = [(3, 0)].into_iter().collect();
-        let shape = FlowShape { subject: Some(2), chosen: None, between: false, limit: None, top: None, table: false, not_recorded: NOT_RECORDED, unlinked: UNLINKED };
+        let shape = FlowShape { subject: Some(2), chosen: None, between: false, limit: None, top: None, side_totals_only: false, table: false, not_recorded: NOT_RECORDED, unlinked: UNLINKED };
         let reply = build_flows(&edges(rows, &index, None), &gaps, vec![FlowPart { key: "oil".into(), name: None, name_missing: None, ordinal: 0, icon: None }], 0, &shape, &|end| FlowEndpoint::unidentified(end, String::new()));
         let partners = |side: &dashboard_base::products::flows::FlowSide, from: bool| -> Vec<Option<u32>> {
             side.links.iter().map(|link| if from { link.from } else { link.to }.and_then(|at| reply.endpoints[at as usize].slot)).collect()

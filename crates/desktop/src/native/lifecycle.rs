@@ -2,25 +2,7 @@ use super::NativeHost;
 use dashboard_core::protocol::{DashboardMapState, NativeEvent, ViewerState};
 use std::{sync::Arc, thread};
 use tauri::{AppHandle, Emitter, WebviewWindow};
-use viewer::host::{Ending, Launch, Map, Role};
-
-fn launch_folders(
-    applied: Option<&dashboard_core::config::Config>,
-    saved: Option<&dashboard_core::config::Config>,
-) -> Vec<std::ffi::OsString> {
-    applied.or(saved).map(folder_arguments).unwrap_or_default()
-}
-
-fn folder_arguments(config: &dashboard_core::config::Config) -> Vec<std::ffi::OsString> {
-    [
-        ("--game-dir", &config.game_dir),
-        ("--user-dir", &config.user_dir),
-    ]
-    .into_iter()
-    .filter(|(_, folder)| !folder.as_os_str().is_empty())
-    .flat_map(|(option, folder)| [std::ffi::OsString::from(option), folder.into()])
-    .collect()
-}
+use viewer::host::{Ending, Launch, LaunchOptions, Map, Role};
 
 impl super::Inner {
     fn publish_stopped(&self, app: &AppHandle) {
@@ -226,6 +208,11 @@ impl NativeHost {
         let service = window
             .state::<crate::dashboard_service::DashboardService>()
             .runtime(window.app_handle())?;
+        let mut options = match self.launch.as_deref() {
+            Some(launch) => launch.clone()?,
+            None => LaunchOptions::parse(std::env::args_os().skip(1).filter(|arg| arg == "--allow-unverified-content"))
+                .map_err(|error| error.to_string())?,
+        };
         let parent = match &self.shared.lock().map_err(|e| e.to_string())?.popout {
             Some(window) => window.parent,
             None => own.unwrap_or_else(|| Err("Couldn’t find the map’s window.".into()))?,
@@ -249,15 +236,9 @@ impl NativeHost {
             let app = window.app_handle().clone();
             map_window.on_press(move || { let _ = app.emit("map-pressed", ()); });
         }
-        let mut args: Vec<std::ffi::OsString> = if inner.popout.is_some() {
-            std::env::args_os()
-                .skip(1)
-                .filter(|argument| argument == "--allow-unverified-content")
-                .collect()
-        } else {
-            std::env::args_os().skip(1).collect()
-        };
-        args.extend(launch_folders(inner.folders.as_ref(), saved_folders.as_ref()));
+        if let Some(config) = inner.folders.as_ref().or(saved_folders.as_ref()) {
+            options.apply_folders(config);
+        }
         let diagnostics = inner.diagnostics.unwrap_or(saved_diagnostics);
         let muted = inner.muted.unwrap_or(saved_muted);
         if inner.generation > 0 {
@@ -298,7 +279,7 @@ impl NativeHost {
         let ending = self.clone();
         let ended_window = window.clone();
         let closing = map_window.clone();
-        let map = Map::start(Launch { args, window: map_window, inputs, events, role, service }, move |end| {
+        let map = Map::start(Launch { options, window: map_window, inputs, events, role, service }, move |end| {
             ending.ended(end, generation, &ended_window)
         })
         .map_err(|error| {
@@ -432,42 +413,19 @@ impl NativeHost {
 
 #[cfg(test)]
 mod tests {
-    use super::{Launched, folder_arguments, launch_folders};
-    use crate::native::{HostStatus, Inner};
+    use super::Launched;
+    use crate::native::{HostStatus, Inner, NativeHost};
+    use dashboard_core::protocol::MapAction;
     use viewer::host::Ending;
 
     #[test]
-    fn the_viewer_receives_only_the_folders_the_host_has() {
-        let config = |game: &str, user: &str| dashboard_core::config::Config {
-            game_dir: game.into(),
-            user_dir: user.into(),
-            older_game_dirs: Vec::new(),
-        };
-        assert_eq!(
-            folder_arguments(&config(r"C:\Game", r"C:\User")),
-            ["--game-dir", r"C:\Game", "--user-dir", r"C:\User"]
-        );
-        assert_eq!(
-            folder_arguments(&config("", r"C:\User")),
-            ["--user-dir", r"C:\User"]
-        );
-        assert!(folder_arguments(&config("", "")).is_empty());
-    }
-
-    #[test]
-    fn a_new_viewer_starts_with_the_folders_apply_last_sent() {
-        let config = |game: &str| dashboard_core::config::Config {
-            game_dir: game.into(),
-            user_dir: r"C:\User".into(),
-            older_game_dirs: Vec::new(),
-        };
-        let (applied, saved) = (config(r"C:\New"), config(r"C:\Old"));
-        assert_eq!(
-            launch_folders(Some(&applied), Some(&saved)),
-            folder_arguments(&applied)
-        );
-        assert_eq!(launch_folders(None, Some(&saved)), folder_arguments(&saved));
-        assert!(launch_folders(None, None).is_empty());
+    fn unloading_a_recording_during_viewer_startup_reaches_the_viewer() {
+        let host = NativeHost::default();
+        assert!(host.shared.lock().unwrap().begin_launch().unwrap());
+        assert!(host.map_action(MapAction::Inspect).is_err());
+        host.map_action(MapAction::Unload { path: "launch.battleplan".into() }).unwrap();
+        let mut inner = host.shared.lock().unwrap();
+        assert!(matches!(inner.pending.actions.pop_front(), Some(MapAction::Unload { path }) if path == "launch.battleplan"));
     }
 
     fn showing(path: &str) -> Inner {

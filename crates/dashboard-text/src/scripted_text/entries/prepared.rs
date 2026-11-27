@@ -124,6 +124,7 @@ impl ScriptedContent {
             ),
         )
         .with_prepared_content(self)
+        .with_name_indexes(&self.name_indexes)
         .with_template_names(
             &self.template_names,
             &self.layers.layers,

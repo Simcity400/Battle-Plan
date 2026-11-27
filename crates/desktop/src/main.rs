@@ -52,10 +52,21 @@ fn serve_artwork(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSc
     });
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopSnapshot {
+    #[serde(flatten)]
+    status: HostStatus,
+    launch_recording: Option<String>,
+}
+
 #[tauri::command]
-fn desktop_state(window: WebviewWindow, host: State<'_, NativeHost>) -> Result<HostStatus, String> {
+fn desktop_state(window: WebviewWindow, host: State<'_, NativeHost>) -> Result<DesktopSnapshot, String> {
     host.ensure_started(&window)?;
-    Ok(host.status())
+    Ok(DesktopSnapshot {
+        status: host.status(),
+        launch_recording: host.launch_recording().map(|path| path.to_string_lossy().into_owned()),
+    })
 }
 
 #[tauri::command]
@@ -674,7 +685,7 @@ fn main() {
             }
             Ok(())
         })
-        .manage(NativeHost::default())
+        .manage(NativeHost::for_launch(std::env::args_os().skip(1)))
         .manage(popout::PopOuts::default())
         .manage(DashboardService::default())
         .manage(game_windows::GameWindows::default())

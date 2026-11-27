@@ -13,6 +13,7 @@ import { coveredBy, mapHoles } from './mapOverlays';
 
 export function useDesktopState(retry: number) {
   const [state, setState] = useState<DesktopState | null>(null);
+  const [launchRecording, setLaunchRecording] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -35,8 +36,9 @@ export function useDesktopState(retry: number) {
         }
         unlisten = stop;
         const beforeRead = eventVersion;
-        const snapshot = await getDesktopState();
+        const { launchRecording, ...snapshot } = await getDesktopState();
         if (!active) return;
+        setLaunchRecording(launchRecording);
         if (beforeRead === eventVersion) setState(snapshot);
         setError(null);
       } catch (cause) {
@@ -51,7 +53,7 @@ export function useDesktopState(retry: number) {
     };
   }, [retry]);
 
-  return { state, error };
+  return { state, error, launchRecording };
 }
 
 interface MapViewFailure {

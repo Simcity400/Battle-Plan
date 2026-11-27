@@ -257,20 +257,16 @@ fn sparse_lexicon_frame(hour: i32) -> DecodedFrame {
 }
 
 #[test]
-fn a_leaders_portrait_is_read_by_one_reader_however_often_the_lexicon_is_read() {
+fn a_leaders_portrait_is_never_read() {
     let source = recording((400..=420).map(sparse_lexicon_frame).collect());
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let run = query.timeline.stretches[0].run;
     let recording = query.replay.recording();
     assert_eq!(super::complete_reads(recording, run, TableId::LexicalTokens, 400, 420).unwrap().len(), 11, "the lexicon is read every other hour");
     let (parties, counts) = replay_recording::cells::count_reads(|| read(&query, &"GER".into(), super::PartyRead::Full, &AtomicBool::new(false)).unwrap());
-    let leader = |person, first, last, starts_segment| LeaderRun { ideology: "liberalism".into(), person: Some(person), first_hour: first, last_hour: last, starts_segment };
-    assert_eq!(parties.leaders, [leader(0, 400, 409, true), leader(1, 410, 420, false)], "the portrait recorded at 410 is seen by the reader that has moved there");
-    assert_eq!(
-        counts[&TableId::CharacterPortraits].opened,
-        1,
-        "the leader's portrait is read by one reader moving through the hours it is looked at, not one opened at each read of the lexicon"
-    );
+    let leader = LeaderRun { ideology: "liberalism".into(), person: Some(0), first_hour: 400, last_hour: 420, starts_segment: true };
+    assert_eq!(parties.leaders, [leader], "the portrait recorded at 410 leaves the leader one person");
+    assert!(!counts.contains_key(&TableId::CharacterPortraits), "no widget shows a party leader's portrait, so none is read: {:?}", counts.get(&TableId::CharacterPortraits));
 }
 
 const HELD: u32 = 5501;

@@ -10,19 +10,21 @@ import { SettingsBlock } from './SettingsBlock';
 import { useMapDiagnostics } from './diagnosticsSetting';
 import { branchCoverage, historyLabels, missingTime } from './diagnosticsData';
 import { damagedRecordingText, partialRecordingDetail } from './recordingNotice';
+import { useDiagnosticsFont } from './appearance/bundledFonts';
 
 const recordingFolder = (path: string) => path.replace(/[\\/][^\\/]*$/, '');
 
 export default function MapDiagnostics({ native, metadata, branch }: { native: DesktopState | null; metadata: ReplayMetadata | null; branch?: BranchChoice | null }) {
   const [error, setError] = useState<string | null>(null);
   const details = native?.mapDetails;
+  const fontReady = useDiagnosticsFont(!!metadata || !!details?.messages.length);
   const ready = desktopAvailable && !!native?.ready;
   const inspect = () => { setError(null); void mapAction({ kind: 'inspect' }).catch(cause => setError(errorMessage(cause))); };
   useEffect(() => { if (ready) inspect(); }, [ready]);
   const overlay = useMapDiagnostics();
   return <div className="diagnostics-settings">
     <SettingsBlock id="diagnostics-recording" title="Recording">
-      {metadata ? <Recording metadata={metadata} shown={branch ?? null} />
+      {metadata ? <Recording metadata={metadata} shown={branch ?? null} fontReady={fontReady} />
         : <div className="settings-row"><span className="settings-row-text"><strong>No campaign open</strong><small>Open one to see how complete its recording is.</small></span></div>}
     </SettingsBlock>
     <SettingsBlock id="diagnostics-map" title="Map" actions={ready && <button type="button" className="button small quiet" onClick={inspect}><Icon name="refresh" />Check again</button>}>
@@ -39,12 +41,12 @@ export default function MapDiagnostics({ native, metadata, branch }: { native: D
           : details.messages.length ? `What the map reported${details.hour != null ? ` at ${formatDateTime(details.hour)}` : ''}.` : 'None reported.'}</small></span>
         {!desktopAvailable ? <span className="settings-value">Desktop only</span> : !!details?.messages.length && <span className="pill warning">{details.messages.length}</span>}</div>
       {error && <div className="settings-group-body"><FailureLine message="Couldn’t check the map." detail={error} onRetry={inspect} /></div>}
-      {!!details?.messages.length && <div className="settings-group-body diagnostics-list"><ul>{details.messages.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
+      {fontReady && !!details?.messages.length && <div className="settings-group-body diagnostics-list"><ul>{details.messages.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
     </SettingsBlock>
   </div>;
 }
 
-function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: BranchChoice | null }) {
+function Recording({ metadata, shown, fontReady }: { metadata: ReplayMetadata; shown: BranchChoice | null; fontReady: boolean }) {
   const branches = metadata.branches;
   const labels = historyLabels(branches);
   const first = Math.min(...branches.map(branch => branch.firstHour)), last = Math.max(...branches.map(branch => branch.lastHour));
@@ -78,20 +80,20 @@ function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: Branc
       <summary><span className="settings-row-text"><strong>Event losses</strong>
         <small>{losses.length} {losses.length === 1 ? 'interval' : 'intervals'} between two reads whose recorded events are incomplete; a lost frame is listed as a gap.</small></span>
         <Icon name="chevron-down" className="settings-details-chevron" /></summary>
-      <div className="diagnostics-list"><ul>{losses.map(({ branch, loss }, index) => <li key={index}>
-        {branches.length > 1 && `${labels.get(branch)}: `}{formatDateTime(loss.afterHour)} – {formatDateTime(loss.hour)}: {loss.reason}</li>)}</ul></div>
+      {fontReady && <div className="diagnostics-list"><ul>{losses.map(({ branch, loss }, index) => <li key={index}>
+        {branches.length > 1 && `${labels.get(branch)}: `}{formatDateTime(loss.afterHour)} – {formatDateTime(loss.hour)}: {loss.reason}</li>)}</ul></div>}
     </details>}
     {metadata.buildWarnings.length > 0 && <details className="settings-details">
       <summary><span className="settings-row-text"><strong>Game version</strong>
         <small>The game version is new to this release of BattlePlan, or differs from the one recorded, so some details may be missing. {metadata.buildWarnings.length} technical {metadata.buildWarnings.length === 1 ? 'note' : 'notes'}.</small></span>
         <Icon name="chevron-down" className="settings-details-chevron" /></summary>
-      <div className="diagnostics-list"><ul>{metadata.buildWarnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>
+      {fontReady && <div className="diagnostics-list"><ul>{metadata.buildWarnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>}
     </details>}
     {metadata.warnings.length > 0 && <details className="settings-details">
       <summary><span className="settings-row-text"><strong>File notes</strong>
         <small>{metadata.warnings.length} {metadata.warnings.length === 1 ? 'thing' : 'things'} this file couldn’t provide, such as details only newer versions record.</small></span>
         <Icon name="chevron-down" className="settings-details-chevron" /></summary>
-      <div className="diagnostics-list"><ul>{metadata.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>
+      {fontReady && <div className="diagnostics-list"><ul>{metadata.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>}
     </details>}
   </>;
 }

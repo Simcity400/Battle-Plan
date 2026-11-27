@@ -4357,9 +4357,9 @@ partyNameRuns: Array<PartyNameRun>,
  */
 partyNames: Array<string | null>,
 /**
- * Each character on `leaders`, named and pictured.
+ * Each character on `leaders`, named.
  */
-people: Array<LeaderArtwork>,
+people: Array<LeaderPerson>,
 /**
  * The leaders' sub-ideologies, named.
  */
@@ -4439,19 +4439,11 @@ export type PartyNameRun = {
  */
 name: number, firstHour: number, lastHour: number, };
 export type IdeologyTypeInfo = { token: string, name: string | null, };
-export type LeaderArtwork = { character: IdeaCharacter,
+export type LeaderPerson = { character: IdeaCharacter,
 /**
  * Null when the saved name needs runtime scope or nothing names the character.
  */
-name: string | null,
-/**
- * An artwork URL; null when the portrait is not known.
- */
-portrait: string | null,
-/**
- * Why `portrait` is null.
- */
-portraitMissing: string | null, };
+name: string | null, };
 export type IdeologyInfo = { token: string, name: string | null,
 /**
  * sRGB bytes; null when the content's colour is refused (the warnings name why).
@@ -4764,7 +4756,7 @@ group?: GroupSelection, limit?: number,
 /**
  * An explicit top partners per side: exactly this many named and the rest folded, where the order is proven at the hour.
  */
-top?: number, };
+top?: number, sideTotalsOnly?: boolean, };
 export type ProductionLicencesParamsAtHour = ProductionLicencesParams & { hour: number };
 export type ProductionBreakdownParams = { branchId: string, country: CountryRef,
 /**
@@ -5958,7 +5950,7 @@ limit?: number,
 /**
  * An explicit top partners per side: exactly this many named and the rest folded, where the order is proven at the hour.
  */
-top?: number,
+top?: number, sideTotalsOnly?: boolean,
 /**
  * One resource by its native index; every resource when absent.
  */
@@ -6261,7 +6253,7 @@ group?: GroupSelection, limit?: number,
 /**
  * An explicit top partners per side: exactly this many named and the rest folded, where the order is proven at the hour.
  */
-top?: number, };
+top?: number, sideTotalsOnly?: boolean, };
 export type VolunteerFlowParamsAtHour = VolunteerFlowParams & { hour: number };
 export type WarContributionsParams = { branchId: string,
 /**
@@ -6763,7 +6755,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "politics-state-history": { "branchId": "leaf", "country": "any", "hour": "leaf", "mode": "leaf" },
   "power-spend-markers": { "branchId": "leaf", "country": "any", "currency": "leaf", "hour": "leaf" },
   "power-spending-breakdown": { "branchId": "leaf", "country": "any", "currency": "leaf", "from": "leaf", "hour": "leaf" },
-  "production-licences": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any", "top": "leaf" },
+  "production-licences": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "sideTotalsOnly": "leaf", "subject": "any", "top": "leaf" },
   "production-line-breakdown": { "branchId": "leaf", "country": "any", "group": "leaf", "handle": "leaf", "hour": "leaf" },
   "production-lines-at": { "branchId": "leaf", "country": "any", "hour": "leaf", "order": "leaf" },
   "production-spending": { "branchId": "leaf", "country": "any", "fromHour": "leaf", "hour": "leaf", "includeRefits": "leaf", "scope": "leaf" },
@@ -6803,14 +6795,14 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "territory-breakdown": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "rule": "leaf" },
   "territory-share": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "top": "leaf" },
   "territory-transfers": { "branchId": "leaf", "through": "leaf" },
-  "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "resource": "leaf", "subject": "any", "table": "leaf", "top": "leaf" },
+  "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "resource": "leaf", "sideTotalsOnly": "leaf", "subject": "any", "table": "leaf", "top": "leaf" },
   "training-queue": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "unit-leader-career": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "unit-leader-choices": { "branchId": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "unit-leader-hour": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "unit-leader-portraits": { "branchId": "leaf", "edge": "leaf", "hour": "leaf", "references": "node", "references[]": "leaf" },
   "unit-leaders": { "branchId": "leaf", "hour": "leaf", "leaders": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
-  "volunteer-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any", "top": "leaf" },
+  "volunteer-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "sideTotalsOnly": "leaf", "subject": "any", "top": "leaf" },
   "war-contributions": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
   "war-timeline": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
   "wargoals": { "branchId": "leaf", "country": "any", "hour": "leaf" },

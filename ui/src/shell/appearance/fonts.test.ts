@@ -4,8 +4,8 @@ import { readFileSync, statSync } from 'node:fs';
 import { FONT_PRESETS, canUseFontFamily, fontStack, isMonospaceFamily } from './fonts.ts';
 
 test('every named font preset ships its font faces and files with the app', () => {
-  const entry = readFileSync(new URL('../../main.tsx', import.meta.url), 'utf8');
-  const sheets = [...entry.matchAll(/import '(@fontsource-variable\/[^']+)';/g)].map(match => {
+  const entry = readFileSync(new URL('./bundledFonts.ts', import.meta.url), 'utf8');
+  const sheets = [...entry.matchAll(/import\('(@fontsource-variable\/[^']+)\?inline'\)/g)].map(match => {
     const url = new URL(import.meta.resolve(match[1]));
     return { url, css: readFileSync(url, 'utf8') };
   });

@@ -15,6 +15,7 @@ import {
 } from '../families/manifest.ts';
 import { bindFamilyManifest, ensureBoundProjection, ensureFamilyProjection, registeredFamilyProjections } from '../families/registry.ts';
 import { familyBinding, type FamilyBindingContext, type FamilyBindingIdentity } from '../families/host/adapter.ts';
+import { familyHostAdapters } from '../families/host/adapters.ts';
 import type { FamilyTheme } from '../families/contract.ts';
 import {
   BARS_BEHIND_CHOICES,
@@ -72,7 +73,8 @@ function otherValue(field: OptionField): OptionValue {
 test('every manifest view reaches its own projection through the binding the host builds, every option its editors write is what the host reads after a reopen, and nothing registers under an undeclared view', async () => {
   const declared = new Set(FAMILY_VIEWS.map(entry => `${entry.family}\u0000${entry.kind}\u0000${normalizeView(entry.view)}`));
   for (const manifest of FAMILY_MANIFESTS) {
-    assert.ok(manifest.hostAdapter, `${manifest.family} has a host adapter`);
+    const adapter = familyHostAdapters.get(manifest.family);
+    assert.ok(adapter, `${manifest.family} has a host adapter`);
     for (const entry of manifest.views) {
       const view = normalizeView(entry.view);
       const spec = await entry.loadSpec();
@@ -83,7 +85,7 @@ test('every manifest view reaches its own projection through the binding the hos
         viewport: { width: 400, height: 300, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null }, theme: {} as FamilyTheme, reducedMotion: false,
         selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
       };
-      const binding: FamilyBindingIdentity | null = familyBinding(manifest.hostAdapter!, ctx);
+      const binding: FamilyBindingIdentity | null = familyBinding(adapter, ctx);
       assert.ok(binding, `${entry.kind}/${view}: the ${manifest.family} adapter builds a binding`);
       const lookup = (onReady: () => void): ReturnType<typeof ensureBoundProjection> => ensureBoundProjection(binding, onReady);
       const found = await new Promise<ReturnType<typeof ensureBoundProjection>>(resolve => {

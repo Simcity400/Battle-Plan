@@ -1,5 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { powerSpendingOptions } from '../political-power-spending/powerSpendingProjection.ts';
+import { powerSpendingOptions } from '../political-power-spending/powerSpendingOptions.ts';
 
 export const definition = {
   kind: 'command-power-spending', version: 1, title: 'Command power spending', icon: 'chart-line',

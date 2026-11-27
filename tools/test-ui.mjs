@@ -30,6 +30,7 @@ export const browserTests = [
   'ui/src/dashboard/prepareLane.dom.test.ts',
   'ui/src/widgets/lazyWidget.dom.test.ts',
   'ui/src/recorder/RecorderPanel.dom.test.ts',
+  'ui/src/shell/startupRecording.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
   'ui/src/shell/desktopStartup.dom.test.ts',
   tabFullTest,

@@ -1,20 +1,15 @@
-
-use dashboard_base::products::{LoadContext, at_hour::{self, Read}};
-use dashboard_base::{Source, catalogue::{self, Catalogue}};
-use dashboard_text::{
-    metadata::not_recorded,
-    scope,
-    scripted_text,
-};
 use content_reader_country_names::country_names;
-use replay_data::rows::{StateRow, TableId, tables};
+use content_reader_localisation::localisation::Argument;
+use content_reader_map::province_geometry::ProvinceGeometry;
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{self, Read}}};
+use dashboard_query::coverage::{Witness, reading_witness};
+use dashboard_text::{metadata::{check_cancel, not_recorded}, naval_battle_name::{Picker, battle_name_candidates}, scope, scripted_text};
+use replay_columnar::manifest::Status;
+use replay_data::{codec::Decoder, rows::{StateRow, TableId, tables}, scope::CaptureMode, value::Value as _};
 use replay_frame::frame::{DecodedFrame, DecodedSource, TableView};
-use std::{
-    cell::{OnceCell, RefCell},
-    collections::{BTreeMap, BTreeSet, HashMap},
-    io,
-    sync::Arc,
-};
+use replay_lanes::lanes::{self, Cell, History, Keys, Reading, StatusRun};
+use replay_recording::columnar_frames::{Recording, TableCoverage};
+use std::{cell::{OnceCell, RefCell}, collections::{BTreeMap, BTreeSet, HashMap}, io, sync::{Arc, OnceLock, atomic::AtomicBool}};
 
 #[cfg(test)]
 mod tests;
@@ -28,6 +23,22 @@ pub const TABLES: [TableId; 7] = [
     TableId::ProvinceNames,
     TableId::States,
 ];
+
+const PROVINCE_STATE: usize = 0;
+const PROVINCE_VICTORY_POINTS: usize = 3;
+const STATE_COLUMNS: [usize; 3] = [0, 3, 4];
+const COUNTRY_COLUMNS: [usize; 2] = [0, 1];
+const APPEARANCE_ORIGINAL_TAG: usize = 19;
+const APPEARANCE_COLUMNS: [usize; 2] = [APPEARANCE_ORIGINAL_TAG, 20];
+const RESERVED_ORIGINAL_TAG: usize = 8;
+const RESERVED_COLUMNS: [usize; 3] = [0, RESERVED_ORIGINAL_TAG, 9];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProvinceMode { Place, Land, Naval }
+
+impl ProvinceMode {
+    pub fn from_land(land: bool) -> Self { if land { Self::Land } else { Self::Place } }
+}
 
 pub fn reads(provinces: &[u32], states: &[u32], step: usize, held: &DecodedFrame) -> Vec<Read> {
     match step {
@@ -44,9 +55,7 @@ pub fn reads(provinces: &[u32], states: &[u32], step: usize, held: &DecodedFrame
             if let Ok(rows) = held.complete::<tables::Provinces>() {
                 wanted.extend(rows.iter().map(|row| row.state).filter(|&state| state != 0));
             }
-            if wanted.is_empty() {
-                return Vec::new();
-            }
+            if wanted.is_empty() { return Vec::new(); }
             vec![Read::these(TableId::States, wanted.into_iter().map(u128::from))]
         }
         _ => Vec::new(),
@@ -56,18 +65,25 @@ pub fn reads(provinces: &[u32], states: &[u32], step: usize, held: &DecodedFrame
 pub struct Content {
     pub cat: Arc<Catalogue>,
     regions: Result<Regions, String>,
+    naval: OnceLock<Result<NavalContent, String>>,
 }
 
 struct Regions {
     by_region: BTreeMap<u32, Result<String, String>>,
     by_province: BTreeMap<u32, Result<String, String>>,
+    region_of: BTreeMap<u32, Result<u32, String>>,
     notes: Vec<String>,
 }
 
-#[derive(Default)]
-struct Cached {
-    held: Option<(Arc<Catalogue>, Arc<Content>)>,
+struct NavalContent {
+    width: i32,
+    defines: Result<[i64; 2], String>,
+    centroids: BTreeMap<u32, [i32; 2]>,
+    candidates: BTreeMap<u32, Vec<u32>>,
 }
+
+#[derive(Default)]
+struct Cached { held: Option<(Arc<Catalogue>, Arc<Content>)> }
 
 impl Content {
     pub fn read(source: &Source, load: &LoadContext) -> io::Result<Arc<Self>> {
@@ -75,28 +91,29 @@ impl Content {
         let cat = catalogue::catalogue(source, options)?;
         let state = source.state::<Cached>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some((held, content)) = &state.held
-            && Arc::ptr_eq(held, &cat)
-        {
+        if let Some((held, content)) = &state.held && Arc::ptr_eq(held, &cat) {
             return Ok(Arc::clone(content));
         }
         let regions = dashboard_base::content::strategic_regions(&cat.content.layers)
             .map(|regions| {
-                let mut by_region = BTreeMap::new();
-                let mut by_province = BTreeMap::new();
+                let (mut by_region, mut by_province, mut region_of) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
                 for (&id, region) in &regions.regions {
                     let name = crate::products::region_names::region_name(&cat, &regions, id);
                     for province in region.native_provinces(|_| true) {
                         if by_province.insert(province, name.clone()).is_some() {
-                            by_province.insert(province, Err(format!("province {province}: multiple strategic-region memberships refused")));
+                            let err = format!("province {province}: multiple strategic-region memberships refused");
+                            by_province.insert(province, Err(err.clone()));
+                            region_of.insert(province, Err(err));
+                        } else {
+                            region_of.insert(province, Ok(id));
                         }
                     }
                     by_region.insert(id, name);
                 }
-                Regions { by_region, by_province, notes: regions.notes.clone() }
+                Regions { by_region, by_province, region_of, notes: regions.notes.clone() }
             })
             .map_err(|error| format!("Strategic-region names unavailable: {error}"));
-        let content = Arc::new(Self { cat: Arc::clone(&cat), regions });
+        let content = Arc::new(Self { cat: Arc::clone(&cat), regions, naval: OnceLock::new() });
         state.held = Some((cat, Arc::clone(&content)));
         Ok(content)
     }
@@ -111,15 +128,68 @@ impl Content {
         regions.by_province.get(&id).cloned().unwrap_or_else(|| Err(format!("province {id}: no content-defined strategic region")))
     }
 
+    fn province_region_or_none(&self, id: u32) -> Result<Option<String>, String> {
+        let regions = self.regions.as_ref().map_err(Clone::clone)?;
+        regions.by_province.get(&id).cloned().transpose()
+    }
+
+    fn province_region_id(&self, id: u32) -> Result<u32, String> {
+        let regions = self.regions.as_ref().map_err(Clone::clone)?;
+        regions.region_of.get(&id).cloned().unwrap_or_else(|| Err(format!("province {id} is in no content strategic region")))
+    }
+
+    fn naval(&self) -> Result<&NavalContent, &str> {
+        self.naval
+            .get_or_init(|| {
+                let regions = dashboard_base::content::strategic_regions(&self.cat.content.layers).map_err(|e| format!("Strategic regions unavailable: {e}"))?;
+                let states = self.cat.cached_states()?;
+                let geometry = ProvinceGeometry::read(&self.cat.content.layers).map_err(|e| format!("Province geometry unavailable: {e}"))?;
+                let defines = self.cat.defines().and_then(|d| Ok([
+                    d.fixed5("NNavy", "BATTLE_NAME_VP_FACTOR").map_err(|e| e.to_string())?,
+                    d.fixed5("NNavy", "BATTLE_NAME_VP_CUTOFF").map_err(|e| e.to_string())?,
+                ]));
+                let candidates = battle_name_candidates(&regions.regions, states.states.definitions(), &|p| geometry.centroids.contains_key(&p));
+                Ok(NavalContent { width: geometry.width, defines, centroids: geometry.centroids, candidates })
+            })
+            .as_ref()
+            .map_err(String::as_str)
+    }
+
+    pub fn naval_candidate_provinces(&self, provinces: impl IntoIterator<Item = u32>) -> Vec<u32> {
+        let (Ok(naval), Ok(regions)) = (self.naval(), &self.regions) else { return provinces.into_iter().collect(); };
+        let mut out = BTreeSet::new();
+        for province in provinces {
+            out.insert(province);
+            if let Some(Ok(region)) = regions.region_of.get(&province) && let Some(candidates) = naval.candidates.get(region) {
+                out.extend(candidates.iter().copied());
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    pub fn land_battle_title(&self, place: Name) -> Result<String, String> {
+        if let Some(missing) = place.missing {
+            return Err(missing);
+        }
+        match place.name.filter(|name| !name.trim().is_empty()) {
+            Some(name) => Ok(format!("Battle of {name}")),
+            None => Err("Province name not recorded".into()),
+        }
+    }
+
+    pub fn naval_battle_title_text(&self, name: &str, port_strike: bool) -> Result<String, String> {
+        let key = if port_strike { "NAVAL_PORT_STRIKE_TITLE" } else { "NAVAL_BATTLE_TITLE" };
+        let text = self.cat.localisation.localise_with(key.as_bytes(), &[("NAME", Argument::Text(name))]).map_err(|e| e.to_string())?;
+        catalogue::plain_text(&text)
+    }
+
     pub fn warnings(&self) -> Vec<String> {
         let mut out: Vec<String> = self.cat.verification.iter().chain(&self.cat.warnings).cloned().collect();
         match &self.regions {
             Ok(regions) => out.extend(regions.notes.iter().cloned()),
             Err(reason) => out.push(reason.clone()),
         }
-        if let Err(reason) = self.cat.cached_states() {
-            out.push(reason);
-        }
+        if let Err(reason) = self.cat.cached_states() { out.push(reason); }
         out
     }
 }
@@ -131,19 +201,66 @@ pub struct Name {
 }
 
 impl Name {
-    fn found(name: String) -> Self {
-        Self { name: Some(name), missing: None }
-    }
+    fn found(name: String) -> Self { Self { name: Some(name), missing: None } }
+    fn missing(reason: impl Into<String>) -> Self { Self { name: None, missing: Some(reason.into()) } }
+    fn of(name: Result<String, String>) -> Self { match name { Ok(n) => Self::found(n), Err(r) => Self::missing(r) } }
+}
 
-    fn missing(reason: impl Into<String>) -> Self {
-        Self { name: None, missing: Some(reason.into()) }
+fn resolve_province(
+    content: &Content,
+    id: u32,
+    state: u32,
+    mode: ProvinceMode,
+    rename: Result<Option<&[u8]>, String>,
+    vp_tag: impl FnOnce() -> Result<String, String>,
+    state_name: impl FnOnce(u32) -> Result<String, String>,
+) -> Name {
+    let loc = &content.cat.localisation;
+    let rename = match rename {
+        Ok(rename) => rename,
+        Err(reason) => return Name::missing(reason),
+    };
+    if let Some(raw) = rename.filter(|raw| !raw.is_empty()) {
+        let translated = loc.localise(raw).map_err(|e| e.to_string()).and_then(|text| catalogue::plain_text(&text));
+        return match translated {
+            Ok(name) if !matches!(mode, ProvinceMode::Land) || !name.is_empty() => Name::found(name),
+            Err(reason) => Name::missing(reason),
+            Ok(_) => fallback_province(content, id, state, mode, state_name),
+        };
     }
+    let vp = vp_tag()
+        .and_then(|tag| scripted_text::victory_point_name(loc, id, &tag))
+        .and_then(|text| (!text.is_empty()).then(|| catalogue::plain_text(&text)).transpose());
+    match vp {
+        Ok(Some(name)) if !matches!(mode, ProvinceMode::Land | ProvinceMode::Naval) || !name.is_empty() => Name::found(name),
+        Err(reason) if matches!(mode, ProvinceMode::Naval) => Name::missing(reason),
+        Err(reason) => match fallback_province(content, id, state, mode, state_name) {
+            Name { name: Some(name), missing: None } => Name { name: Some(name), missing: Some(reason) },
+            Name { missing: Some(fb), .. } => Name::missing(format!("{reason}; {fb}")),
+            _ => Name::missing(reason),
+        },
+        Ok(_) => fallback_province(content, id, state, mode, state_name),
+    }
+}
 
-    fn of(name: Result<String, String>) -> Self {
-        match name {
-            Ok(name) => Self::found(name),
-            Err(reason) => Self::missing(reason),
-        }
+fn fallback_province(
+    content: &Content,
+    id: u32,
+    state: u32,
+    mode: ProvinceMode,
+    state_name: impl FnOnce(u32) -> Result<String, String>,
+) -> Name {
+    if state != 0 {
+        return Name::of(state_name(state));
+    }
+    match mode {
+        ProvinceMode::Land => Name::missing(format!("province {id}: no state name available")),
+        ProvinceMode::Place => Name::of(content.province_region(id)),
+        ProvinceMode::Naval => match content.province_region_or_none(id) {
+            Ok(Some(name)) => Name::found(name),
+            Ok(None) => Name::found(id.to_string()),
+            Err(reason) => Name::missing(reason),
+        },
     }
 }
 
@@ -205,7 +322,10 @@ impl<'f> Places<'f> {
     }
 
     fn links(&self) -> &HashMap<u32, u32> {
-        self.links.get_or_init(|| self.frame.complete::<tables::CountryLinks>().map(|rows| rows.iter().map(|link| (link.id, link.canonical_slot)).collect()).unwrap_or_default())
+        self.links.get_or_init(|| match self.view(TableId::CountryLinks) {
+            TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.rows::<tables::CountryLinks>().unwrap_or_default().iter().map(|link| (link.id, link.canonical_slot)).collect(),
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => HashMap::new(),
+        })
     }
 
     fn tag(&self, slot: u32) -> Result<String, String> {
@@ -239,7 +359,8 @@ impl<'f> Places<'f> {
         }
         match self.links().get(&row.owner) {
             Some(&slot) => self.tag(slot),
-            None => Err(format!("province {id}: state owner's link {} resolves to no country", row.owner)),
+            None if (self.frame as &dyn DecodedSource).complete_status(TableId::CountryLinks).is_ok() => Err(format!("province {id}: state owner's link {} resolves to no country", row.owner)),
+            None => Err(format!("province {id}: state owner's link {} is unknown: {}", row.owner, scope::gap(self.view(TableId::CountryLinks)))),
         }
     }
 
@@ -261,27 +382,7 @@ impl<'f> Places<'f> {
         let Some(state) = self.province_state(id) else {
             return Name::missing(format!("Not in this recording: province {id} at this hour"));
         };
-        let loc = &content.cat.localisation;
-        let own = scripted_text::province_primary_name(loc, self.rename(id), || scripted_text::victory_point_name(loc, id, &self.victory_point_tag(id, state)?))
-            .and_then(|name| name.map(|name| catalogue::plain_text(&name)).transpose());
-        if let Ok(Some(name)) = &own
-            && (!land || !name.is_empty())
-        {
-            return Name::found(name.clone());
-        }
-        let fallback = if state != 0 {
-            self.state_display(content, state, || format!("state {state}: Not in this recording"))
-        } else if land {
-            Err(format!("province {id}: no state name available"))
-        } else {
-            content.province_region(id)
-        };
-        match (own, fallback) {
-            (Ok(_), Ok(name)) => Name::found(name),
-            (Err(reason), Ok(name)) => Name { name: Some(name), missing: Some(reason) },
-            (Ok(_), Err(reason)) => Name::missing(reason),
-            (Err(own), Err(fallback)) => Name::missing(format!("{own}; {fallback}")),
-        }
+        resolve_province(content, id, state, ProvinceMode::from_land(land), self.rename(id), || self.victory_point_tag(id, state), |s| self.state_display(content, s, || format!("state {s}: Not in this recording")))
     }
 }
 
@@ -302,4 +403,439 @@ pub fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frame
         }
     }
     Ok(frame)
+}
+
+fn status_at(history: &History, hour: i32) -> (Status, Option<&str>) {
+    let at = history.statuses.partition_point(|run| run.last < hour);
+    match history.statuses.get(at).filter(|run| run.first <= hour) {
+        Some(run) => match run.status {
+            status @ Status::Unavailable { reason } => (status, history.reasons.get(&reason).map(String::as_str)),
+            status => (status, None),
+        },
+        None => (Status::NotRecorded, None),
+    }
+}
+
+fn is_complete(history: &History, hour: i32) -> bool { matches!(status_at(history, hour).0, Status::Complete) }
+
+fn status_gap(status: Status, reason: Option<&str>, mode: CaptureMode) -> String {
+    match status {
+        Status::Complete => "the complete table has no row for it".into(),
+        Status::Truncated { missing } => format!("the table is truncated ({missing} rows missing)"),
+        Status::Unavailable { .. } => format!("the table is unavailable: {}", reason.unwrap_or_default()),
+        Status::NotRecorded => format!("the table is not recorded in a {mode} recording"),
+    }
+}
+
+fn unavailable_history(from: i32, to: i32, reason: String) -> History {
+    History {
+        to,
+        statuses: vec![StatusRun { first: from, last: to, status: Status::Unavailable { reason: 0 } }],
+        reasons: HashMap::from([(0, reason)]),
+        ..History::default()
+    }
+}
+
+fn read_history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, from: i32, to: i32) -> io::Result<History> {
+    if recording.predates(table.index()).is_some() { return Ok(History::default()); }
+    match recording.table_coverage(table.index(), run) {
+        TableCoverage::Valid => dashboard_query::cost::storage(|| lanes::history(recording, run, table, columns, keys, from, to)),
+        TableCoverage::WithheldAll(reason) => Ok(unavailable_history(from, to, reason.to_owned())),
+        TableCoverage::WithheldBefore { ordinal, reason } => {
+            let valid = recording.run(run)?.first_hour + ordinal as i32;
+            if to < valid { return Ok(unavailable_history(from, to, reason.to_owned())); }
+            let mut history = dashboard_query::cost::storage(|| lanes::history(recording, run, table, columns, keys, from.max(valid), to))?;
+            if from < valid {
+                let id = history.reasons.keys().copied().max().map_or(0, |max| max + 1);
+                history.reasons.insert(id, reason.to_owned());
+                history.statuses.insert(0, StatusRun { first: from, last: valid - 1, status: Status::Unavailable { reason: id } });
+            }
+            Ok(history)
+        }
+    }
+}
+
+fn decode_written_tags(recording: &Recording, run: u32, table: TableId, column: usize, history: &History, orig: usize, ref_col: usize) -> io::Result<HashMap<(i32, u128), Option<Vec<u8>>>> {
+    let stored = recording.run(run)?;
+    let mut asks = Vec::new();
+    for (key, steps) in &history.keys {
+        for step in steps {
+            if let Some(cells) = &step.cells
+                && matches!(cells[ref_col], Cell::Number(r) if r > 0)
+                && let Cell::Written(hour) = cells[orig]
+                && stored.ordinal(hour).is_some()
+            {
+                asks.push((hour, *key));
+            }
+        }
+    }
+    asks.sort_unstable();
+    asks.dedup();
+    let mut out = HashMap::new();
+    if asks.is_empty() { return Ok(out); }
+    let format = recording.format();
+    dashboard_query::cost::storage(|| {
+        lanes::at_each(recording, run, table, Some(&[column]), &asks, &mut |hour, key, row| {
+            if let Some((view, slot)) = row && let Some(bytes) = view.list(column, slot) {
+                let mut input = Decoder::new(bytes);
+                input.format = format;
+                out.insert((hour, key), Option::<Vec<u8>>::decode(&mut input)?);
+            }
+            Ok(())
+        })
+    })?;
+    Ok(out)
+}
+
+fn resolve_original_or_own(what: &str, ref_cell: Cell, orig_cell: Cell, key: u128, own: &[u8], written: &HashMap<(i32, u128), Option<Vec<u8>>>, utf8_error: &str) -> Result<String, String> {
+    let reference = match ref_cell {
+        Cell::Number(value) => value,
+        Cell::Missing => return Err(format!("original tag reference of {what} capture refused")),
+        _ => return Err(format!("original tag reference of {what} not recorded")),
+    };
+    let bytes = if reference > 0 {
+        match orig_cell {
+            Cell::Written(hour) => match written.get(&(hour, key)) {
+                Some(Some(bytes)) => bytes.as_slice(),
+                Some(None) => return Err(format!("original tag of {what} capture refused")),
+                None => return Err(format!("original tag of {what} not recorded")),
+            },
+            Cell::Missing => return Err(format!("original tag of {what} capture refused")),
+            _ => return Err(format!("original tag of {what} not recorded")),
+        }
+    } else {
+        own
+    };
+    std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| utf8_error.to_owned())
+}
+
+fn push_step<T: PartialEq>(steps: &mut Vec<(i32, T)>, hour: i32, value: T) {
+    if steps.last().is_some_and(|(at, _)| *at == hour) { steps.pop(); }
+    if steps.last().is_none_or(|(_, held)| *held != value) { steps.push((hour, value)); }
+}
+
+fn push_status_edges(out: &mut Vec<i32>, statuses: &[StatusRun], first: i32, last: i32) {
+    for run in statuses {
+        if run.last >= first && run.first <= last {
+            if run.first > first { out.push(run.first); }
+            if run.last < last { out.push(run.last + 1); }
+        }
+    }
+}
+
+fn push_reading_starts<T>(out: &mut Vec<i32>, readings: &[(i32, i32, T)], first: i32, last: i32) {
+    for (start, end, _) in readings {
+        if *end >= first && *start <= last && *start > first { out.push(*start); }
+    }
+}
+
+fn push_tag_hours<T>(out: &mut Vec<i32>, steps: &[(i32, T)], first: i32, last: i32) {
+    let start = steps.partition_point(|(h, _)| *h <= first);
+    out.extend(steps[start..].iter().take_while(|(h, _)| *h <= last).map(|(h, _)| *h));
+}
+
+fn step_at<T>(steps: &[(i32, T)], hour: i32) -> Option<&T> {
+    steps.partition_point(|(h, _)| *h <= hour).checked_sub(1).map(|i| &steps[i].1)
+}
+
+fn cell_number(cell: Cell) -> Option<i64> { match cell { Cell::Number(v) => Some(v), _ => None } }
+
+fn build_slot_tags(
+    recording: &Recording,
+    run: u32,
+    countries: &History,
+    appearance: &History,
+    reserved: &History,
+    mode: CaptureMode,
+    first: i32,
+    last: i32,
+) -> io::Result<HashMap<u32, Vec<(i32, Result<String, String>)>>> {
+    let written_res = decode_written_tags(recording, run, TableId::ReservedCountryNaming, RESERVED_ORIGINAL_TAG, reserved, 1, 2)?;
+    let written_app = decode_written_tags(recording, run, TableId::CountryAppearance, APPEARANCE_ORIGINAL_TAG, appearance, 0, 1)?;
+    let mut by_slot: HashMap<u32, Vec<u128>> = HashMap::new();
+    for (key, steps) in &countries.keys {
+        for step in steps {
+            if let Some(cells) = &step.cells && let Some(slot) = cell_number(cells[0]).and_then(|v| u32::try_from(v).ok()) {
+                by_slot.entry(slot).or_default().push(*key);
+            }
+        }
+    }
+    let mut status_edges = Vec::new();
+    push_status_edges(&mut status_edges, &countries.statuses, first, last);
+    push_status_edges(&mut status_edges, &appearance.statuses, first, last);
+    let mut out = HashMap::with_capacity(by_slot.len() + 1);
+    let mut res_hours = vec![first];
+    push_reading_starts(&mut res_hours, &reserved.readings(0), first, last);
+    push_status_edges(&mut res_hours, &reserved.statuses, first, last);
+    res_hours.sort_unstable();
+    res_hours.dedup();
+    let mut res_steps = Vec::new();
+    for hour in res_hours {
+        let value = match status_at(reserved, hour) {
+            (Status::Complete, _) => match reserved.reading(0, hour) {
+                Reading::Cells(c) => resolve_original_or_own("reserved country naming", c[2], c[1], 0, reserved.text(c[0]).unwrap_or(&[]), &written_res, "reserved original-or-own tag is not UTF-8"),
+                _ => Err("reserved country naming has no singleton row for country zero".into()),
+            },
+            (status, reason) => Err(format!("reserved country naming is unavailable this hour: {}", status_gap(status, reason, mode))),
+        };
+        push_step(&mut res_steps, hour, value);
+    }
+    out.insert(0, res_steps);
+    for (slot, mut ids) in by_slot {
+        ids.sort_unstable();
+        ids.dedup();
+        let mut hours = vec![first];
+        hours.extend_from_slice(&status_edges);
+        for &id in &ids {
+            for history in [countries, appearance] {
+                if let Ok(at) = history.keys.binary_search_by_key(&id, |(k, _)| *k) {
+                    hours.extend(history.keys[at].1.iter().filter(|s| s.hour > first && s.hour <= last).map(|s| s.hour));
+                }
+            }
+        }
+        hours.sort_unstable();
+        hours.dedup();
+        let mut steps = Vec::new();
+        for hour in hours {
+            let found = ids.iter().rev().find_map(|&id| {
+                let Reading::Cells(c) = countries.reading(id, hour) else { return None };
+                (cell_number(c[0]).and_then(|v| u32::try_from(v).ok()) == Some(slot)).then(|| (id, countries.text(c[1]).unwrap_or(&[])))
+            });
+            let value = match found {
+                None => Err(if is_complete(countries, hour) { format!("country slot {slot} has no Countries row") } else { "countries is incomplete this hour: a country is unknown".to_owned() }),
+                Some((id, own)) => match appearance.reading(id, hour) {
+                    Reading::Cells(app) => resolve_original_or_own("country appearance", app[1], app[0], id, own, &written_app, "country original-or-own tag is not UTF-8"),
+                    _ => Err(if is_complete(appearance, hour) { format!("country slot {slot} has no country appearance row") } else { "country appearance is incomplete this hour: a country is unknown".to_owned() }),
+                },
+            };
+            push_step(&mut steps, hour, value);
+        }
+        out.insert(slot, steps);
+    }
+    Ok(out)
+}
+
+pub struct PlaceHistory {
+    mode: CaptureMode,
+    provinces: History,
+    states: History,
+    renames: History,
+    links: History,
+    country_statuses: Vec<StatusRun>,
+    slot_tags: HashMap<u32, Vec<(i32, Result<String, String>)>>,
+    with_victory_points: bool,
+}
+
+impl PlaceHistory {
+    #[expect(clippy::too_many_arguments, reason = "stretch bounds, key sets and mode flags come from distinct callers")]
+    pub fn load(recording: &Recording, run: u32, first: i32, last: i32, province_keys: Keys<'_>, state_keys: Keys<'_>, with_victory_points: bool, cancelled: &AtomicBool) -> io::Result<Self> {
+        check_cancel(cancelled)?;
+        let mode = CaptureMode::from_byte(recording.root_identity().capture_mode)?;
+        let read = |table, cols: &[usize], keys: Keys<'_>| read_history(recording, run, table, cols, keys, first, last);
+        let want_provinces = !matches!(province_keys, Keys::These([]));
+        let province_cols: &[usize] = if with_victory_points { &[PROVINCE_STATE, PROVINCE_VICTORY_POINTS] } else { &[PROVINCE_STATE] };
+        let provinces = if want_provinces { read(TableId::Provinces, province_cols, province_keys)? } else { History::default() };
+        check_cancel(cancelled)?;
+        let renames = if want_provinces { read(TableId::ProvinceNames, &[0], province_keys)? } else { History::default() };
+        check_cancel(cancelled)?;
+        let states = match (want_provinces, state_keys) {
+            (false, Keys::These([])) => History::default(),
+            (_, Keys::These(asked)) => {
+                let mut needed: Vec<u128> = asked.to_vec();
+                for (_, steps) in &provinces.keys {
+                    for step in steps {
+                        if let Some(c) = &step.cells && let Some(s) = cell_number(c[0]).and_then(|v| u32::try_from(v).ok()) && s != 0 {
+                            needed.push(u128::from(s));
+                        }
+                    }
+                }
+                needed.sort_unstable();
+                needed.dedup();
+                if needed.is_empty() { History::default() } else { read(TableId::States, &STATE_COLUMNS, Keys::These(&needed))? }
+            }
+            _ => read(TableId::States, &STATE_COLUMNS, Keys::All)?,
+        };
+        check_cancel(cancelled)?;
+        let (links, country_statuses, slot_tags) = if want_provinces {
+            let links = read(TableId::CountryLinks, &[0], Keys::All)?;
+            let countries = read(TableId::Countries, &COUNTRY_COLUMNS, Keys::All)?;
+            let appearance = read(TableId::CountryAppearance, &APPEARANCE_COLUMNS, Keys::All)?;
+            let reserved = read(TableId::ReservedCountryNaming, &RESERVED_COLUMNS, Keys::All)?;
+            let slot_tags = build_slot_tags(recording, run, &countries, &appearance, &reserved, mode, first, last)?;
+            (links, countries.statuses, slot_tags)
+        } else {
+            (History::default(), Vec::new(), HashMap::new())
+        };
+        Ok(Self { mode, provinces, states, renames, links, country_statuses, slot_tags, with_victory_points })
+    }
+
+    fn countries_complete(&self, hour: i32) -> bool {
+        let at = self.country_statuses.partition_point(|run| run.last < hour);
+        self.country_statuses.get(at).is_some_and(|run| run.first <= hour && matches!(run.status, Status::Complete))
+    }
+
+    fn tag_at(&self, slot: u32, hour: i32) -> Result<String, String> {
+        if let Some(tag) = self.slot_tags.get(&slot).and_then(|steps| step_at(steps, hour)) {
+            return tag.clone();
+        }
+        Err(if slot == 0 {
+            "reserved country naming has no singleton row for country zero".into()
+        } else if self.countries_complete(hour) {
+            format!("country slot {slot} has no Countries row")
+        } else {
+            "countries is incomplete this hour: a country is unknown".to_owned()
+        })
+    }
+
+    fn rename_at(&self, id: u32, hour: i32) -> Result<Option<&[u8]>, String> {
+        match self.renames.reading(u128::from(id), hour) {
+            Reading::Cells(c) => Ok(Some(self.renames.text(c[0]).unwrap_or(&[]))),
+            Reading::Absent => Ok(None),
+            Reading::Unread { status, reason } => Err(format!("GetName of province {id}: province names {}", status_gap(status, reason, self.mode))),
+        }
+    }
+
+    fn victory_point_tag_at(&self, id: u32, state: u32, hour: i32) -> Result<String, String> {
+        if state == 0 { return self.tag_at(0, hour); }
+        let Reading::Cells(c) = self.states.reading(u128::from(state), hour) else {
+            let (status, reason) = status_at(&self.states, hour);
+            return Err(format!("province {id}: state {state} has no States row: {}", status_gap(status, reason, self.mode)));
+        };
+        let owner = cell_number(c[0]).and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
+        if owner == 0 { return self.tag_at(0, hour); }
+        match self.links.reading(u128::from(owner), hour) {
+            Reading::Cells(link) => match cell_number(link[0]).and_then(|v| u32::try_from(v).ok()) {
+                Some(slot) => self.tag_at(slot, hour),
+                None => Err(format!("province {id}: state owner's link {owner} resolves to no country")),
+            },
+            Reading::Absent => Err(format!("province {id}: state owner's link {owner} resolves to no country")),
+            Reading::Unread { status, reason } => Err(format!("province {id}: state owner's link {owner} is unknown: {}", status_gap(status, reason, self.mode))),
+        }
+    }
+
+    fn state_display_cells(&self, content: &Content, id: u32, cells: &[Cell]) -> Result<String, String> {
+        let row = StateRow { id, custom_name: self.states.text(cells[1]).unwrap_or(&[]).to_vec(), owner_name: self.states.text(cells[2]).unwrap_or(&[]).to_vec(), ..StateRow::default() };
+        let states = content.cat.cached_states();
+        let names = states.as_ref().map(|states| &states.names).map_err(String::as_str);
+        scripted_text::state_display_name(&row, &content.cat, names, scripted_text::StateNameUsage::Place)
+    }
+
+    fn state_display_at(&self, content: &Content, id: u32, hour: i32, absent: impl FnOnce() -> String) -> Result<String, String> {
+        if matches!(status_at(&self.states, hour).0, Status::NotRecorded) {
+            return Err(not_recorded(hour, TableId::States, &self.mode));
+        }
+        let Reading::Cells(c) = self.states.reading(u128::from(id), hour) else { return Err(absent()); };
+        self.state_display_cells(content, id, c)
+    }
+
+    pub fn state_reading(&self, content: &Content, id: u32, hour: i32) -> Result<Option<Name>, String> {
+        match reading_witness(TableId::States, self.states.reading(u128::from(id), hour)) {
+            Witness::Row(c) => Ok(Some(Name::of(self.state_display_cells(content, id, c)))),
+            Witness::Absent => Ok(None),
+            Witness::NotRecorded(reason) => Err(reason),
+        }
+    }
+
+    pub fn province_reading(&self, content: &Content, id: u32, mode: ProvinceMode, hour: i32) -> Result<Option<Name>, String> {
+        match reading_witness(TableId::Provinces, self.provinces.reading(u128::from(id), hour)) {
+            Witness::Row(c) => {
+                let state = cell_number(c[0]).and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
+                Ok(Some(resolve_province(content, id, state, mode, self.rename_at(id, hour), || self.victory_point_tag_at(id, state, hour), |s| self.state_display_at(content, s, hour, || format!("state {s}: Not in this recording")))))
+            }
+            Witness::Absent => Ok(None),
+            Witness::NotRecorded(reason) => Err(reason),
+        }
+    }
+
+    pub fn province_name(&self, content: &Content, id: u32, mode: ProvinceMode, hour: i32) -> Name {
+        match self.province_reading(content, id, mode, hour) {
+            Ok(Some(name)) => name,
+            Ok(None) => Name::missing(format!("Not in this recording: province {id} at this hour")),
+            Err(reason) => Name::missing(reason),
+        }
+    }
+
+    pub fn land_battle_title(&self, content: &Content, province: u32, hour: i32) -> Result<String, String> {
+        content.land_battle_title(self.province_name(content, province, ProvinceMode::Land, hour))
+    }
+
+    pub fn naval_battle_title(&self, content: &Content, province: u32, port_strike: bool, hour: i32) -> Result<String, String> {
+        let region = content.province_region_id(province)?;
+        let region_name = content.region(region)?;
+        if port_strike { return content.naval_battle_title_text(&region_name, true); }
+        let naval = content.naval().map_err(str::to_owned)?;
+        let [factor, cutoff] = *naval.defines.as_ref().map_err(|r| format!("the NNavy battle name defines are unavailable ({r})"))?;
+        let candidates = naval.candidates.get(&region).map_or(&[][..], Vec::as_slice);
+        let position = |id: u32| naval.centroids.get(&id).copied().unwrap_or([0, 0]);
+        let victory_points = |id: u32| -> Result<i32, String> {
+            if !self.with_victory_points { return Err("victory points were not loaded for naval battle naming".into()); }
+            match self.provinces.reading(u128::from(id), hour) {
+                Reading::Cells(c) => c.get(1).copied().and_then(cell_number).and_then(|v| i32::try_from(v).ok()).ok_or_else(|| format!("province {id}'s victory points are unavailable")),
+                Reading::Absent => Err(format!("province {id} has no Provinces row")),
+                Reading::Unread { .. } => Err(format!("the Provinces table is incomplete this hour, so province {id}'s victory points are unknown")),
+            }
+        };
+        let picker = Picker { width: naval.width, factor, cutoff, position: &position, victory_points: &victory_points };
+        let place = match picker.pick(province, candidates)? {
+            None => region_name,
+            Some(picked) => {
+                let resolved = self.province_name(content, picked, ProvinceMode::Naval, hour);
+                resolved.name.ok_or_else(|| resolved.missing.unwrap_or_else(|| format!("province {picked}: name unavailable")))?
+            }
+        };
+        content.naval_battle_title_text(&place, false)
+    }
+
+    pub fn state_change_hours(&self, id: u32, first: i32, last: i32) -> Vec<i32> {
+        let mut hours = vec![first];
+        push_reading_starts(&mut hours, &self.states.readings(u128::from(id)), first, last);
+        hours.sort_unstable();
+        hours.dedup();
+        hours
+    }
+
+    pub fn province_change_hours(&self, id: u32, first: i32, last: i32) -> Vec<i32> {
+        let mut hours = vec![first];
+        let push_slot = |hours: &mut Vec<i32>, slot: u32, a: i32, b: i32| {
+            if let Some(steps) = self.slot_tags.get(&slot) {
+                push_tag_hours(hours, steps, a, b);
+            } else {
+                push_status_edges(hours, &self.country_statuses, a, b);
+            }
+        };
+        push_reading_starts(&mut hours, &self.renames.readings(u128::from(id)), first, last);
+        for (p_start, p_end, p_read) in self.provinces.readings(u128::from(id)) {
+            let (p_first, p_last) = (p_start.max(first), p_end.min(last));
+            if p_first > p_last { continue; }
+            if p_first > first { hours.push(p_first); }
+            let Reading::Cells(p_cells) = p_read else { continue };
+            let state = cell_number(p_cells[0]).and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
+            if state == 0 {
+                push_slot(&mut hours, 0, p_first, p_last);
+                continue;
+            }
+            for (s_start, s_end, s_read) in self.states.readings(u128::from(state)) {
+                let (s_first, s_last) = (s_start.max(p_first), s_end.min(p_last));
+                if s_first > s_last { continue; }
+                if s_first > first { hours.push(s_first); }
+                let Reading::Cells(s_cells) = s_read else { continue };
+                let owner = cell_number(s_cells[0]).and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
+                if owner == 0 {
+                    push_slot(&mut hours, 0, s_first, s_last);
+                    continue;
+                }
+                for (l_start, l_end, l_read) in self.links.readings(u128::from(owner)) {
+                    let (l_first, l_last) = (l_start.max(s_first), l_end.min(s_last));
+                    if l_first > l_last { continue; }
+                    if l_first > first { hours.push(l_first); }
+                    if let Reading::Cells(link) = l_read && let Some(slot) = cell_number(link[0]).and_then(|v| u32::try_from(v).ok()) {
+                        push_slot(&mut hours, slot, l_first, l_last);
+                    }
+                }
+            }
+        }
+        hours.sort_unstable();
+        hours.dedup();
+        hours
+    }
 }

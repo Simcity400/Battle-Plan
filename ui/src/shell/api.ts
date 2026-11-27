@@ -56,9 +56,9 @@ function requireDesktop(): void {
   }
 }
 
-export function getDesktopState(): Promise<DesktopState> {
+export function getDesktopState(): Promise<DesktopState & { launchRecording: string | null }> {
   requireDesktop();
-  return invoke<DesktopState>('desktop_state');
+  return invoke('desktop_state');
 }
 
 export function onViewerState(callback: (state: DesktopState) => void) {

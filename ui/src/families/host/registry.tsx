@@ -1,10 +1,10 @@
 import type { ComponentType } from 'react';
 import type { FamilyViewProps } from '../../dashboard/definitions';
-import { FAMILY_MANIFESTS } from '../../widgets/familyManifest.ts';
 import type { FamilyViewModule } from '../manifest.ts';
 import type { FamilyId } from '../plan.ts';
+import FlowWidget from '../flow/FlowWidget.tsx';
 import TableChrome from '../table/TableChrome.tsx';
-import type { FamilyHostAdapter } from './adapter.ts';
+import { familyHostAdapters } from './adapters.ts';
 import DeclaredFamilyWidget, { type DeclaredFamilyWidgetDeclaration, type DeclaredFamilyWidgetProps } from './DeclaredFamilyWidget.tsx';
 import type { FamilyChromeProps } from './FamilyHost.tsx';
 
@@ -16,11 +16,6 @@ const CHROME: Readonly<Record<string, ComponentType<FamilyChromeProps<any>>>> = 
   table: TableChrome,
 };
 
-const adapters = new Map<FamilyId, FamilyHostAdapter<any, any, any, any>>();
-for (const manifest of FAMILY_MANIFESTS) {
-  if (manifest.hostAdapter) adapters.set(manifest.family, manifest.hostAdapter);
-}
-
 export function familyChrome(family: FamilyId): ComponentType<FamilyChromeProps<any>> | undefined {
   return Object.hasOwn(CHROME, family) ? CHROME[family] : undefined;
 }
@@ -31,7 +26,7 @@ export interface FamilyWidgetProps extends Omit<DeclaredFamilyWidgetProps<any, a
 }
 
 export function FamilyWidget({ family, declaration, ...props }: FamilyWidgetProps) {
-  const adapter = adapters.get(family);
+  const adapter = familyHostAdapters.get(family);
   if (!adapter) return null;
   const chrome = familyChrome(family);
   return (
@@ -49,5 +44,6 @@ function AdaptedFamilyHost({ spec, ...props }: FamilyHostProps) {
 }
 
 export function familyHost(family: FamilyId): ComponentType<FamilyHostProps> | undefined {
-  return adapters.has(family) ? AdaptedFamilyHost : undefined;
+  if (family === 'flow') return FlowWidget;
+  return familyHostAdapters.has(family) ? AdaptedFamilyHost : undefined;
 }

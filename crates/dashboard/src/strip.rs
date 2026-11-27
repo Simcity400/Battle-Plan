@@ -12,7 +12,7 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-mod patch;
+pub mod patch;
 
 pub const PRODUCT: &str = "strip";
 

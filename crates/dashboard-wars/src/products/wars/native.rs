@@ -20,6 +20,12 @@ pub(crate) struct Blob {
     pub second: Vec<u32>,
 }
 
+pub(crate) struct Grouping {
+    pub view: u32,
+    pub countries: HashSet<u32>,
+    pub blobs: Vec<(Blob, Vec<Pair>)>,
+}
+
 impl World {
     pub fn active(&self, a: u32, b: u32) -> bool {
         self.relations.contains_key(&pair(a, b))
@@ -147,6 +153,19 @@ impl World {
         }
         out
     }
+    pub fn grouping(&self, view: u32) -> Grouping {
+        let enemies = self.owned.get(&view).into_iter().flatten();
+        let mut countries = HashSet::from([view]);
+        countries.extend(enemies.clone().copied());
+        for &enemy in enemies.filter(|&&enemy| self.active(view, enemy)) {
+            countries.extend(self.owned.get(&enemy).into_iter().flatten().copied());
+        }
+        let blobs = self.blobs(view).into_iter().map(|blob| {
+            let pairs = self.inside(&blob);
+            (blob, pairs)
+        }).collect();
+        Grouping { view, countries, blobs }
+    }
     fn closed_bipartite(&self, blob: &Blob) -> bool {
         let first: HashSet<_> = blob.first.iter().copied().collect();
         let second: HashSet<_> = blob.second.iter().copied().collect();
@@ -197,10 +216,10 @@ impl World {
         }
         Ok((s.major, s.divisions.wrapping_add(s.factories)))
     }
-    pub fn representative(&self, blob: &Blob) -> Result<Pair, String> {
-        self.oldest(blob).and_then(|oldest| self.ranked(blob, oldest))
+    pub fn representative(&self, blob: &Blob, pairs: &[Pair]) -> Result<Pair, String> {
+        self.oldest(blob, pairs).and_then(|oldest| self.ranked(blob, oldest))
     }
-    pub fn oldest(&self, blob: &Blob) -> Result<Pair, String> {
+    fn oldest(&self, blob: &Blob, pairs: &[Pair]) -> Result<Pair, String> {
         let first_rank: HashMap<_, _> = blob
             .first
             .iter()
@@ -215,9 +234,9 @@ impl World {
             .rev()
             .map(|(i, &x)| (x, i))
             .collect();
-        let oldest = self
-            .inside(blob)
-            .into_iter()
+        let oldest = pairs
+            .iter()
+            .copied()
             .min_by_key(|p| {
                 let r = &self.relations[p];
                 let (a, b) = if first_rank.contains_key(&p.0) {

@@ -2,7 +2,7 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import { choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { tableFamilyOptions } from '../../families/table/settings.ts';
-import { STOCKPILE_BASE, stockpileColumns } from './stockpileProjection.ts';
+import { STOCKPILE_BASE, stockpileColumns } from './stockpileColumns.ts';
 
 const overTime = (options: Readonly<Record<string, OptionValue>>) => options.view === 'time';
 

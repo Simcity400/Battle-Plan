@@ -1,7 +1,7 @@
 
 use dashboard_effects::ScriptedEffects;
 use super::token;
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{Country, LoadContext, at_hour::{At, AtHour, Owner, Read, ReadsAt}}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{Country, LoadContext, at_hour::{At, AtHour, Owner, Read, ReadsAt, field_columns}}};
 use crate::products::country_people::{self, Links};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::Holder;
@@ -235,10 +235,24 @@ impl AtHour for PoliticsState {
     }
 
     fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        if params.view == PoliticsView::Exiles {
+            return match step {
+                0 => [TableId::Countries, TableId::CountryLinks, TableId::CountryStabilityInputs].map(Read::all).into(),
+                1 => {
+                    let rows = country_people::exile_rows(held, |_, _| true).0;
+                    let stability = (TableId::CountryStabilityInputs.index() as u128) << 32;
+                    vec![
+                        Read::these(TableId::SliceReads, rows.iter().map(|row| stability | u128::from(row.country))),
+                        Read::these(TableId::CountryDeployedManpower, rows.iter().filter_map(|row| row.slot.map(u128::from))),
+                    ]
+                }
+                _ => Vec::new(),
+            };
+        }
         if step == 0 {
             return Self::tables(params).into_iter().map(Read::all).collect();
         }
-        if step > MAX_SCRIPTED_STAGES || params.view != PoliticsView::Balances {
+        if step > MAX_SCRIPTED_STAGES {
             return Vec::new();
         }
         let Some(Ok(catalogue)) = at.context.catalogue.as_ref().map(|held| held.as_deref()) else {
@@ -251,9 +265,27 @@ impl AtHour for PoliticsState {
             .collect()
     }
 
+    fn projection(params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        if params.view == PoliticsView::Balances {
+            return None;
+        }
+        let fields: &[&str] = match table {
+            TableId::Countries => &["canonical_slot", "tag"],
+            TableId::CountryLinks => &["canonical_slot"],
+            TableId::CountryStabilityInputs => &["exile_host", "exile_legitimacy", "exile_manpower", "exile_manpower_cap", "exile_leaders"],
+            TableId::SliceReads => &["sample_hour"],
+            TableId::CountryDeployedManpower => &["exile_air"],
+            _ => return None,
+        };
+        Some(field_columns(table, fields))
+    }
+
     fn valid_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        if params.view == PoliticsView::Exiles {
+            return if frame.complete::<tables::CountryStabilityInputs>().is_ok() { i32::MAX } else { frame.hour };
+        }
         let Some(Ok(catalogue)) = at.context.catalogue.as_ref().map(|held| held.as_deref()) else { return i32::MAX };
-        if params.view != PoliticsView::Balances || !names_read_the_date(frame, catalogue) {
+        if !names_read_the_date(frame, catalogue) {
             return i32::MAX;
         }
         frame.hour.div_euclid(24).saturating_add(1).saturating_mul(24).saturating_sub(1)

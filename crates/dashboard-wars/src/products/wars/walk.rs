@@ -53,15 +53,14 @@ pub(crate) fn observed(
     world: &World,
     (tags, identities): (&HashMap<u32, String>, &HashMap<u32, (u32, u32)>),
     view: u32,
-    blob: &Blob,
+    (blob, pairs): (&Blob, &[Pair]),
     named: Result<(Pair, WarName), String>,
     hour: i32,
 ) -> Observed {
     let first: HashSet<_> = blob.first.iter().copied().collect();
-    let relations = world
-        .inside(blob)
-        .into_iter()
-        .map(|p| {
+    let relations = pairs
+        .iter()
+        .map(|&p| {
             let first_side = first.contains(&world.relations[&p].first_country);
             let r = &world.relations[&p];
             let (a, b) = (&tags[&p.0], &tags[&p.1]);

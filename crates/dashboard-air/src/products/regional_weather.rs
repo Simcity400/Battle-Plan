@@ -1,6 +1,7 @@
 
-use dashboard_base::products::{LoadContext, Product, regions::{ActiveRegions, NoRegions, automatic, no_regions}};
+use dashboard_base::products::{Finish, LoadContext, Product, at_hour, regions::{ActiveRegions, NoRegions, automatic, no_regions}};
 use dashboard_base::{Source, catalogue::{self, Catalogue, KeyedResults, Refusals, View}, span::HourSpan};
+use dashboard_follow::panel::{Panel, ProductRead, ProductReader};
 use dashboard_query::{Query, read};
 use engine_executable::modifier_keys;
 use content_reader_map::province_graph::ProvinceGraph;
@@ -11,10 +12,11 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -614,7 +616,14 @@ fn modifier_choices(frame: Option<&DecodedFrame>, cat: &Catalogue, warnings: &mu
     choices
 }
 
-fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather, cancelled: &AtomicBool) -> io::Result<RegionalWeatherReply> {
+enum Sample {
+    Regions(Result<(Vec<WeatherRegionRow>, Option<String>), String>),
+    Temperature(Result<Vec<(u32, Option<i128>)>, String>),
+}
+
+type Samples = BTreeMap<(u32, i32), Arc<Sample>>;
+
+fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather, mut held: Option<&mut Samples>, cancelled: &AtomicBool) -> io::Result<RegionalWeatherReply> {
     let recording = query.replay.recording();
     let asked = match (params.first_hour, params.window_days) {
         (Some(first), _) => first,
@@ -656,15 +665,40 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     };
     let mut days = days(first, last, &known, &reads);
     let days_len = days.len();
+    if let Some(held) = held.as_deref_mut() {
+        let present: BTreeSet<_> = days.iter().filter_map(|day| day.at).collect();
+        held.retain(|key, _| present.contains(key));
+    }
     let wanted: Option<BTreeSet<u32>> = params.regions.as_ref().map(|ids| ids.iter().filter_map(|id| id.parse().ok()).collect());
     let keeps = |region: u32| wanted.as_ref().is_none_or(|wanted| wanted.contains(&region));
+    let mut frames = at_hour::Frames::new(query)?;
+    let mut memo = Memo::default();
+    let mut sample = |run, at| -> io::Result<Arc<Sample>> {
+        let key = (run, at);
+        if let Some(saved) = held.as_ref().and_then(|held| held.get(&key)) {
+            return Ok(Arc::clone(saved));
+        }
+        let frame = frames.frame(at, &[at_hour::Read::all(sampled)], "Regional weather")?;
+        let witness = if sampled == TableId::WeatherRegions {
+            Sample::Regions(dashboard_text::metadata::recorded_rows::<tables::WeatherRegions>(&frame)?
+                .into_rows(sampled, at).map(|(rows, incomplete)| (rows.to_vec(), incomplete)))
+        } else {
+            Sample::Temperature(frame.complete::<tables::WeatherProvinces>().map_err(|error| error.to_string())
+                .and_then(|rows| states(&mut memo, weather, frame.branch, at, rows))
+                .map(|states| weather.members.iter().filter(|(region, _)| keeps(**region)).map(|(&region, members)| (region, mean(members, states))).collect()))
+        };
+        let witness = Arc::new(witness);
+        if let Some(held) = held.as_deref_mut() {
+            held.insert(key, Arc::clone(&witness));
+        }
+        Ok(witness)
+    };
     let mut measures: Vec<(String, Daily)> = Vec::new();
     let temperature = weather.pass.as_ref().map(|_| "available".to_owned()).unwrap_or_else(Clone::clone);
     match params.show {
         Show::Conditions => {
             let mut daily: Vec<Daily> = FLAGS.iter().map(|_| BTreeMap::new()).collect();
             let mut refused = Refusals::default();
-            let mut seeker = replay_lanes::at::Seeker::new(recording)?;
             for (index, day) in days.iter_mut().enumerate() {
                 dashboard_text::metadata::check_cancel(cancelled)?;
                 let Some((run, at)) = day.at else {
@@ -677,8 +711,9 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                     }
                     continue;
                 };
-                let frame = dashboard_query::cost::storage(|| seeker.frame(run, at, &[replay_lanes::at::Read::all(TableId::WeatherRegions)]))?;
-                match dashboard_text::metadata::recorded_rows::<tables::WeatherRegions>(&frame)?.into_rows(TableId::WeatherRegions, at) {
+                let witness = sample(run, at)?;
+                let Sample::Regions(found) = witness.as_ref() else { unreachable!() };
+                match found {
                     Ok((held, incomplete)) => {
                         for row in held {
                             rows.insert(row.id);
@@ -728,9 +763,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
             let modifier = params.modifier.as_deref().unwrap_or(MODIFIERS[0].0);
             let slot = MODIFIERS.iter().position(|(id, _, _)| *id == modifier).ok_or_else(|| dashboard_core::invalid("Invalid weather modifier"))?;
             let mut daily: Daily = BTreeMap::new();
-            let mut memo = Memo::default();
             let mut refused = Refusals::default();
-            let mut seeker = replay_lanes::at::Seeker::new(recording)?;
             for (index, day) in days.iter_mut().enumerate() {
                 dashboard_text::metadata::check_cancel(cancelled)?;
                 let Some((run, at)) = day.at else {
@@ -743,9 +776,9 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                     }
                     continue;
                 };
-                let frame = dashboard_query::cost::storage(|| seeker.frame(run, at, &[replay_lanes::at::Read::all(sampled)]))?;
-                if params.show == Show::Modifier {
-                    match dashboard_text::metadata::recorded_rows::<tables::WeatherRegions>(&frame)?.into_rows(TableId::WeatherRegions, at) {
+                let witness = sample(run, at)?;
+                if let Sample::Regions(found) = witness.as_ref() {
+                    match found {
                         Ok((held, incomplete)) => {
                             for row in held {
                                 rows.insert(row.id);
@@ -787,7 +820,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                     }
                     continue;
                 }
-                let found = frame.complete::<tables::WeatherProvinces>().map_err(|error| error.to_string()).and_then(|held| states(&mut memo, weather, frame.branch, at, held));
+                let Sample::Temperature(found) = witness.as_ref() else { unreachable!() };
                 match found {
                     Err(why) => {
                         if index + 1 == days_len {
@@ -795,10 +828,10 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                         }
                         refused.note(why, format!("hour {at}"))
                     }
-                    Ok(states) => {
-                        for (&region, members) in weather.members.iter().filter(|(region, _)| keeps(**region)) {
+                    Ok(values) => {
+                        for &(region, value) in values {
                             rows.insert(region);
-                            if let Some(value) = mean(members, states) {
+                            if let Some(value) = value {
                                 daily.entry(region).or_insert_with(|| vec![None; days_len])[index] = Some(value);
                             }
                         }
@@ -987,12 +1020,49 @@ impl Product for RegionalWeather {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
-        let query = dashboard_base::queries::query(source, branch)?;
-        let weather = weather(source, context)?;
-        let reply = history(&query, params, &weather, cancelled)?;
-        dashboard_base::products::check_reply_budget(&reply).map_err(|_| dashboard_core::invalid("Regional weather reply exceeds transport budget; nothing was truncated"))?;
-        Ok(reply)
+        load_history(source, params, context, None, cancelled)
     }
+}
+
+fn load_history(source: &Source, params: &RegionalWeatherParams, load: &LoadContext, samples: Option<&mut Samples>, cancelled: &AtomicBool) -> io::Result<RegionalWeatherReply> {
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+    let query = dashboard_base::queries::query(source, branch)?;
+    let weather = weather(source, load)?;
+    let reply = history(&query, params, &weather, samples, cancelled)?;
+    dashboard_base::products::check_reply_budget(&reply).map_err(|_| dashboard_core::invalid("Regional weather reply exceeds transport budget; nothing was truncated"))?;
+    Ok(reply)
+}
+
+pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
+    let mut args = asked.clone();
+    args.as_object_mut().ok_or("Expected panel parameters")?.remove("panel");
+    let source = Arc::clone(source);
+    let load = LoadContext { content: load.content.clone() };
+    let finish = Finish::new(&source, &load, RegionalWeather::CONTENT_DEPENDENT);
+    let read = Arc::new(move |hour: i32, samples: Option<&mut Samples>, cancelled: &AtomicBool| {
+        let mut request = args.clone();
+        request["lastHour"] = hour.into();
+        let params = dashboard_query::named::named::<RegionalWeatherParams>(&request)?;
+        RegionalWeather::validate(&params).map_err(dashboard_core::invalid)?;
+        let reply = source.in_scope(|| finish.reply(|| load_history(&source, &params, &load, samples, cancelled)))?;
+        serde_json::to_value(reply).map_err(io::Error::from)
+    });
+    let exact = Arc::clone(&read);
+    let cold = Arc::new(move |hour, cancelled: &AtomicBool| exact(hour, None, cancelled).map_err(|error| error.to_string()));
+    let held = Mutex::new((None, Samples::new()));
+    let advance: ProductReader = Arc::new(move |hour, seed, cancelled, input| {
+        let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let step = input.map(|input| input.step).filter(|step| step.last() == hour && !step.gap());
+        let piece = step.and_then(|step| step.piece());
+        let continues = !seed && step.is_some_and(|step| {
+            !step.reset() && held.0 == piece.zip(step.first().checked_sub(1))
+        });
+        if !continues { held.1.clear(); }
+        let (value, rows) = at_hour::counted(|| read(hour, piece.map(|_| &mut held.1), cancelled));
+        held.0 = if value.is_ok() { piece.map(|piece| (piece, hour)) } else { None };
+        if held.0.is_none() { held.1.clear(); }
+        ProductRead { value: Arc::new(value.map_err(|error| error.to_string())), rows, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour }
+    });
+    Ok(at_hour::product_panel(advance, cold))
 }

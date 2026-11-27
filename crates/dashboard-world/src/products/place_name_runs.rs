@@ -1,12 +1,12 @@
-use crate::products::place_names::{Content, Name, Places, read_hour};
-use dashboard_base::products::{LoadContext, Product, at_hour};
-use dashboard_base::{Source, catalogue::Refusals};
+use crate::products::place_names::{Content, Name, PlaceHistory, ProvinceMode};
+use dashboard_base::{
+    Source,
+    catalogue::Refusals,
+    products::{LoadContext, Product},
+};
 use dashboard_core::dto::RecordingGap;
-use dashboard_query::{coverage::{Witness, witnessed}, read::{self, touched}};
 use dashboard_text::metadata::check_cancel;
-use replay_data::rows::{TableId, TableSchema, tables};
-use replay_frame::frame::DecodedFrame;
-use replay_recording::cells::TableReader;
+use replay_lanes::lanes::Keys;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -93,14 +93,11 @@ impl Answer {
 
 const PLACE_ABSENT: &str = "No such place at this hour";
 
-fn witnessed_answer<T: TableSchema>(frame: &DecodedFrame, id: u32, name: impl FnOnce() -> Name) -> Answer {
-    match witnessed::<T>(frame, u128::from(id)) {
-        Witness::Row(_) => {
-            let name = name();
-            Answer { name: name.name, missing: name.missing, presence: Presence::Present }
-        }
-        Witness::Absent => Answer { name: None, missing: Some(PLACE_ABSENT.into()), presence: Presence::Absent },
-        Witness::NotRecorded(why) => Answer::unknown(why),
+fn answer_of(reading: Result<Option<Name>, String>) -> Answer {
+    match reading {
+        Ok(Some(name)) => Answer { name: name.name, missing: name.missing, presence: Presence::Present },
+        Ok(None) => Answer { name: None, missing: Some(PLACE_ABSENT.into()), presence: Presence::Absent },
+        Err(reason) => Answer::unknown(reason),
     }
 }
 
@@ -165,50 +162,6 @@ fn unknown_between(unknown: &[RecordingGap], first: i32, last: i32) -> bool {
     cursor > last
 }
 
-const STATES: usize = 0;
-const PROVINCES: usize = 1;
-const PROVINCE_NAMES: usize = 2;
-const COUNTRY_TABLES: std::ops::Range<usize> = 3..7;
-const PROVINCE_STATE: usize = 0;
-
-pub const PLACE_TABLES: [(TableId, Option<&[usize]>); 7] = [
-    (TableId::States, Some(&[0, 3, 4])),
-    (TableId::Provinces, Some(&[PROVINCE_STATE])),
-    (TableId::ProvinceNames, None),
-    (TableId::CountryLinks, None),
-    (TableId::Countries, Some(&[0, 1])),
-    (TableId::CountryAppearance, None),
-    (TableId::ReservedCountryNaming, None),
-];
-
-#[derive(Default)]
-pub struct PlaceInputs {
-    province_state: HashMap<u32, u32>,
-}
-
-impl PlaceInputs {
-    pub fn dirty(&mut self, readers: &[TableReader], opening: bool, states: &[u32], provinces: &[u32]) -> (Vec<u32>, Vec<u32>) {
-        let countries_moved = opening || readers[COUNTRY_TABLES].iter().any(|reader| reader.changes().rows_moved());
-        let dirty_states: Vec<u32> = states.iter().copied().filter(|&id| opening || touched(&readers[STATES], u128::from(id))).collect();
-        let dirty_provinces: Vec<u32> = provinces
-            .iter()
-            .copied()
-            .filter(|&id| {
-                let key = u128::from(id);
-                let moved = countries_moved || touched(&readers[PROVINCES], key) || touched(&readers[PROVINCE_NAMES], key);
-                moved || self.province_state.get(&id).is_some_and(|&state| state != 0 && touched(&readers[STATES], u128::from(state)))
-            })
-            .collect();
-        for &id in &dirty_provinces {
-            match read::number(&readers[PROVINCES], u128::from(id), PROVINCE_STATE).and_then(|state| u32::try_from(state).ok()) {
-                Some(state) => self.province_state.insert(id, state),
-                None => self.province_state.remove(&id),
-            };
-        }
-        (dirty_states, dirty_provinces)
-    }
-}
-
 pub struct PlaceNameRuns;
 
 impl Product for PlaceNameRuns {
@@ -247,6 +200,9 @@ impl Product for PlaceNameRuns {
         }
         let states: Vec<u32> = params.states.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
         let provinces: Vec<u32> = params.provinces.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
+        let state_keys: Vec<u128> = states.iter().copied().map(u128::from).collect();
+        let province_keys: Vec<u128> = provinces.iter().copied().map(u128::from).collect();
+        let mode = ProvinceMode::from_land(params.land);
         let unknown: Vec<RecordingGap> = query
             .timeline
             .unheld
@@ -257,34 +213,30 @@ impl Product for PlaceNameRuns {
         let mut state_book = RunBook::new(states.iter().copied());
         let mut province_book = RunBook::new(provinces.iter().copied());
         let recording = query.replay.recording();
-        let mut frames = at_hour::Frames::new(&query)?;
         for stretch in query.timeline.stretches.iter().filter(|stretch| stretch.first <= to && stretch.last >= from) {
             let (first, last) = (stretch.first.max(from), stretch.last.min(to));
-            let mut inputs = PlaceInputs::default();
-            read::walk(recording, stretch.run, &PLACE_TABLES, first, last, |hour, readers: &[TableReader]| {
+            let history = PlaceHistory::load(
+                recording,
+                stretch.run,
+                first,
+                last,
+                Keys::These(&province_keys),
+                Keys::These(&state_keys),
+                false,
+                cancelled,
+            )?;
+            for &id in &states {
                 check_cancel(cancelled)?;
-                let (dirty_states, dirty_provinces) = inputs.dirty(readers, hour == first, &states, &provinces);
-                if dirty_states.is_empty() && dirty_provinces.is_empty() {
-                    return Ok(());
+                for hour in history.state_change_hours(id, first, last) {
+                    state_book.settle(id, answer_of(history.state_reading(&content, id, hour)), hour, &unknown);
                 }
-                let named = read_hour(&query, &mut frames, hour, &dirty_provinces, &dirty_states);
-                let places = named.as_ref().map(|frame| (frame, Places::new(frame)));
-                for &id in &dirty_states {
-                    let answer = match &places {
-                        Ok((frame, places)) => witnessed_answer::<tables::States>(frame, id, || places.state(&content, id)),
-                        Err(reason) => Answer::unknown(String::clone(reason)),
-                    };
-                    state_book.settle(id, answer, hour, &unknown);
+            }
+            for &id in &provinces {
+                check_cancel(cancelled)?;
+                for hour in history.province_change_hours(id, first, last) {
+                    province_book.settle(id, answer_of(history.province_reading(&content, id, mode, hour)), hour, &unknown);
                 }
-                for &id in &dirty_provinces {
-                    let answer = match &places {
-                        Ok((frame, places)) => witnessed_answer::<tables::Provinces>(frame, id, || places.province(&content, id, params.land)),
-                        Err(reason) => Answer::unknown(String::clone(reason)),
-                    };
-                    province_book.settle(id, answer, hour, &unknown);
-                }
-                Ok(())
-            })?;
+            }
             state_book.close(last, &unknown);
             province_book.close(last, &unknown);
         }
@@ -317,7 +269,8 @@ impl Product for PlaceNameRuns {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dashboard_query::read;
+    use replay_data::rows::{ProvinceRow, StateRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
 
     fn name(text: &str) -> Answer {
         Answer { name: Some(text.to_owned()), missing: None, presence: Presence::Present }
@@ -353,60 +306,83 @@ mod tests {
         assert_eq!(missing.len(), 2, "an absent stretch is its own run with its reason");
     }
 
-    fn walked_dirty_states(frames: Vec<replay_frame::frame::DecodedFrame>, first: i32, last: i32, states: &[u32]) -> Vec<(i32, Vec<u32>)> {
-        walked(frames, first, last, states, &[]).into_iter().map(|(hour, states, _)| (hour, states)).collect()
-    }
-
-    fn walked_dirty(frames: Vec<replay_frame::frame::DecodedFrame>, first: i32, last: i32) -> Vec<(i32, Vec<u32>, Vec<u32>)> {
-        walked(frames, first, last, &[7], &[3])
-    }
-
-    fn walked(frames: Vec<replay_frame::frame::DecodedFrame>, first: i32, last: i32, states: &[u32], provinces: &[u32]) -> Vec<(i32, Vec<u32>, Vec<u32>)> {
-        let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), dashboard_core::test_fixtures::CAMPAIGN.into(), &[dashboard_core::test_fixtures::records(1, frames)])
-            .unwrap()
-            .into_timelines(&Default::default())
-            .unwrap();
-        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "places".into(), revision: "1".into() }, "synthetic.battleplan".into(), std::sync::Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    fn history_for(frames: Vec<replay_frame::frame::DecodedFrame>, first: i32, last: i32, states: &[u32], provinces: &[u32]) -> PlaceHistory {
+        let replay = replay::campaign::Replay::from_records(
+            recorder_derive::writers(),
+            dashboard_core::test_fixtures::CAMPAIGN.into(),
+            &[dashboard_core::test_fixtures::records(1, frames)],
+        )
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+        let source = Source::from_replay(
+            dashboard_base::SourceKey { source_id: "places".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            std::sync::Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         let query = dashboard_base::queries::query(&source, 1).unwrap();
         let run = query.timeline.stretches[0].run;
-        let mut inputs = PlaceInputs::default();
-        let mut seen = Vec::new();
-        read::walk(query.replay.recording(), run, &PLACE_TABLES, first, last, |hour, readers| {
-            let (states, provinces) = inputs.dirty(readers, hour == first, states, provinces);
-            if !states.is_empty() || !provinces.is_empty() {
-                seen.push((hour, states, provinces));
-            }
-            Ok(())
-        })
-        .unwrap();
-        seen
+        let state_keys: Vec<u128> = states.iter().copied().map(u128::from).collect();
+        let province_keys: Vec<u128> = provinces.iter().copied().map(u128::from).collect();
+        PlaceHistory::load(
+            query.replay.recording(),
+            run,
+            first,
+            last,
+            Keys::These(&province_keys),
+            Keys::These(&state_keys),
+            false,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
     }
 
     #[test]
     fn a_place_is_present_only_on_its_witnessed_row_and_absent_only_from_a_complete_read() {
-        use replay_data::rows::{StateRow, TableRows};
-        use replay_frame::frame::TableView;
-        let frame = |view: fn(TableRows) -> TableView| {
-            let mut frame = dashboard_core::test_fixtures::source(1, 1_000, Some(1));
-            *frame.tables[TableId::States.index()] = view(TableRows::States(vec![StateRow { id: 7, ..StateRow::default() }]));
+        let make = |hour: i32, view: fn(TableRows) -> TableView| {
+            let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
+            *frame.tables[TableId::States.index()] = view(TableRows::States(vec![StateRow { id: 7, custom_name: b"Sample State".to_vec(), ..StateRow::default() }]));
             frame
         };
-        let complete = frame(TableView::Complete);
-        let truncated = frame(|rows| TableView::Truncated { rows, missing: 3 });
-        let named = || Name { name: None, missing: Some("Not in this recording: state 8 at this hour".into()) };
-        let presence = |frame: &DecodedFrame, id: u32| witnessed_answer::<tables::States>(frame, id, named).presence;
-        assert_eq!(presence(&complete, 7), Presence::Present);
-        assert_eq!(presence(&complete, 8), Presence::Absent, "a complete read without the row proves the state does not exist");
-        assert_eq!(presence(&truncated, 7), Presence::Present, "a witnessed row is present even in a truncated read");
-        assert_eq!(presence(&truncated, 8), Presence::Unknown, "a truncated read without the row proves nothing");
-        let unread = dashboard_core::test_fixtures::source(1, 1_000, Some(1));
-        assert_eq!(witnessed_answer::<tables::Provinces>(&unread, 3, named).presence, Presence::Unknown);
+        let root = std::env::temp_dir().join(format!("place-runs-presence-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (source, load) = dashboard_base::test_fixtures::source_with_content(
+            vec![
+                make(1_000, TableView::Complete),
+                make(1_001, |rows| TableView::Truncated { rows, missing: 3 }),
+                dashboard_core::test_fixtures::source(1, 1_002, Some(1)),
+            ],
+            &root,
+        );
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let content = Content::read(&source, &load).unwrap();
+        let history = PlaceHistory::load(
+            query.replay.recording(),
+            query.timeline.stretches[0].run,
+            1_000,
+            1_002,
+            Keys::These(&[3]),
+            Keys::These(&[7, 8]),
+            false,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(answer_of(history.state_reading(&content, 7, 1_000)).presence, Presence::Present);
+        assert_eq!(answer_of(history.state_reading(&content, 8, 1_000)).presence, Presence::Absent, "a complete read without the row proves the state does not exist");
+        assert_eq!(answer_of(history.state_reading(&content, 7, 1_001)).presence, Presence::Present, "a witnessed row is present even in a truncated read");
+        assert_eq!(answer_of(history.state_reading(&content, 8, 1_001)).presence, Presence::Unknown, "a truncated read without the row proves nothing");
+        assert_eq!(answer_of(history.province_reading(&content, 3, ProvinceMode::Place, 1_002)).presence, Presence::Unknown);
+        assert_eq!(history.state_change_hours(7, 1_000, 1_002), vec![1_000, 1_002]);
+        assert_eq!(history.state_change_hours(8, 1_000, 1_002), vec![1_000, 1_001, 1_002]);
+        drop(query);
+        drop(source);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_state_that_drops_out_of_a_truncated_read_is_named_again_though_the_missing_count_stays_the_same() {
-        use replay_data::rows::{StateRow, TableRows};
-        use replay_frame::frame::TableView;
         let frame = |hour: i32| {
             let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
             let state = |id: u32| StateRow { id, custom_name: b"Sample State".to_vec(), ..StateRow::default() };
@@ -417,14 +393,13 @@ mod tests {
             };
             frame
         };
-        let seen = walked_dirty_states((1_000..=1_003).map(frame).collect(), 1_000, 1_003, &[7, 8]);
-        assert_eq!(seen, vec![(1_000, vec![7, 8]), (1_001, vec![7, 8]), (1_002, vec![7, 8])], "at 1002 the witnessed row changed with no value write and the same missing count; both states are named again, and 1003 changes nothing");
+        let history = history_for((1_000..=1_003).map(frame).collect(), 1_000, 1_003, &[7, 8], &[]);
+        assert_eq!(history.state_change_hours(7, 1_000, 1_003), vec![1_000, 1_002]);
+        assert_eq!(history.state_change_hours(8, 1_000, 1_003), vec![1_000, 1_001, 1_002]);
     }
 
     #[test]
     fn a_province_follows_its_states_rename_through_the_state_cell_and_a_fresh_sample_alone_changes_nothing() {
-        use replay_data::rows::{ProvinceRow, StateRow, TableRows};
-        use replay_frame::frame::TableView;
         let frame = |hour: i32| {
             let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
             let name = if hour < 1_050 { b"Sample State".to_vec() } else { b"Renamed State".to_vec() };
@@ -432,7 +407,8 @@ mod tests {
             *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![ProvinceRow { id: 3, state: 7, ..ProvinceRow::default() }]));
             frame
         };
-        let seen = walked_dirty((1_000..=1_100).map(frame).collect(), 1_000, 1_100);
-        assert_eq!(seen, vec![(1_000, vec![7], vec![3]), (1_050, vec![7], vec![3])], "every table is sampled afresh each hour, yet only the opening hour and the state's rename name anything again");
+        let history = history_for((1_000..=1_100).map(frame).collect(), 1_000, 1_100, &[7], &[3]);
+        assert_eq!(history.state_change_hours(7, 1_000, 1_100), vec![1_000, 1_050]);
+        assert_eq!(history.province_change_hours(3, 1_000, 1_100), vec![1_000, 1_050]);
     }
 }

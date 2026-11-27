@@ -264,7 +264,7 @@ fn the_shared_fixture_is_the_real_encoders_bytes_in_both_modes() {
     }
 
     let cases = fixture["arrayCases"].as_array().unwrap();
-    assert_eq!(cases.len(), 6);
+    assert_eq!(cases.len(), 7);
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let states = case["states"].as_array().unwrap();
@@ -283,7 +283,7 @@ fn the_shared_fixture_is_the_real_encoders_bytes_in_both_modes() {
                 encode(patch).unwrap().len() < rmp_serde::to_vec(target).unwrap().len(),
                 "{name}"
             );
-            if name == "edit budget exceeded" {
+            if name == "replacement block" {
                 assert_eq!(patch.len(), 20);
                 assert!(
                     patch.iter().all(

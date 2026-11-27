@@ -2,7 +2,7 @@ use super::super::{inputs, refusal};
 use super::*;
 use dashboard_core::test_fixtures::game;
 use literals::Lookup;
-use replay_data::rows::{LexicalTokenRow, TableId, TableRows};
+use replay_data::rows::{LexicalTokenRow, ScriptVariableNameRow, TableId, TableRows};
 
 struct Reference<'a> {
     frame: &'a DecodedFrame,
@@ -60,14 +60,22 @@ fn frame(hour: replay_data::Hour, view: TableView) -> DecodedFrame {
     frame
 }
 
-fn with_world<T>(frame: &DecodedFrame, run: impl FnOnce(World<'_>) -> T) -> T {
+fn with_world<T>(
+    frame: &DecodedFrame,
+    indexes: Option<&NameIndexes>,
+    run: impl FnOnce(World<'_>) -> T,
+) -> T {
     let dlcs = BTreeSet::new();
     let triggers = TriggerNames::default();
     let aliases = Arc::default();
-    run(World::read(
+    let world = World::read(
         frame,
         ContentFacts::content_only(&dlcs, &triggers, &aliases),
-    ))
+    );
+    run(match indexes {
+        Some(indexes) => world.with_name_indexes(indexes),
+        None => world,
+    })
 }
 
 type Value = Result<Option<Vec<u8>>, Failure>;
@@ -92,7 +100,7 @@ fn observe<'a>(
 }
 
 fn check(frame: &DecodedFrame) {
-    with_world(frame, |actual| {
+    with_world(frame, None, |actual| {
         let reference = Reference {
             frame,
             literals: OnceLock::new(),
@@ -177,7 +185,7 @@ fn public_token_lookup_keeps_null_and_last_duplicate_semantics() {
         0,
         TableView::Complete(TableRows::LexicalTokens(rows(&[7, 0, 7]))),
     );
-    with_world(&frame, |world| {
+    with_world(&frame, None, |world| {
         assert!(world.literals.get().is_none());
         assert_eq!(world.token(7).unwrap(), Some([7, 0, 2, 255].as_slice()));
         let held = std::ptr::from_ref(world.literals.get().unwrap());
@@ -185,7 +193,7 @@ fn public_token_lookup_keeps_null_and_last_duplicate_semantics() {
         assert_eq!(held, std::ptr::from_ref(world.literals.get().unwrap()));
     });
     let frame = self::frame(1, TableView::Complete(TableRows::LexicalTokens(Vec::new())));
-    with_world(&frame, |world| {
+    with_world(&frame, None, |world| {
         assert_eq!(
             refusal::capture(|| world.token(0)),
             (Ok(None), BTreeSet::new())
@@ -206,12 +214,26 @@ fn mod_defined_folded_names_remain_independent_of_literal_lookup() {
     game::enter();
     let frame = frame(
         0,
-        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
-            token: 9001,
-            literal: b"Mod_Defined_Key".to_vec(),
-        }])),
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 9001,
+                literal: b"Mod_Defined_Key".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 9002,
+                literal: b"Mixed\xff_Name".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 9003,
+                literal: b"MIXED\xff_NAME".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 9004,
+                literal: b"mixed\xff_Name".to_vec(),
+            },
+        ])),
     );
-    with_world(&frame, |world| {
+    with_world(&frame, None, |world| {
         assert_eq!(world.token_of(b"MOD_DEFINED_KEY").unwrap(), Some(9001));
         assert!(world.literals.get().is_none());
         assert_eq!(
@@ -219,5 +241,65 @@ fn mod_defined_folded_names_remain_independent_of_literal_lookup() {
             Some(b"Mod_Defined_Key".as_slice())
         );
         assert_eq!(world.token_of(b"mod_defined_key").unwrap(), Some(9001));
+        assert_eq!(world.token_of(b"mixed\xfe_name").unwrap(), None);
+        let (result, failures) = refusal::capture(|| world.token_of(b"Mixed\xff_Name"));
+        let reason = result.unwrap_err();
+        assert!(reason.ends_with("mixed\u{fffd}_Name names several lexer tokens"));
+        assert_eq!(
+            failures.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["mixed\u{fffd}_Name names several lexer tokens"]
+        );
     });
+}
+
+#[test]
+fn two_workers_share_the_recordings_two_recent_name_indexes() {
+    game::enter();
+    let mut shared_frame = frame(
+        0,
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 4,
+            literal: b"Example_Leader".to_vec(),
+        }])),
+    );
+    shared_frame.tables[TableId::ScriptVariableNames.index()] =
+        TableView::Complete(TableRows::ScriptVariableNames(vec![
+            ScriptVariableNameRow {
+                id: 5,
+                name: b"example_setting".to_vec(),
+            },
+        ]))
+        .into();
+    let indexes = NameIndexes::default();
+    let ready = std::sync::Barrier::new(2);
+    let read = || {
+        game::enter();
+        ready.wait();
+        with_world(&shared_frame, Some(&indexes), |world| {
+            assert_eq!(world.token_of(b"EXAMPLE_LEADER"), Ok(Some(4)));
+            assert_eq!(world.variable_id(b"example_setting"), Ok(Some(5)));
+        });
+        folds::BUILDS.with(std::cell::Cell::get)
+    };
+    let builds = std::thread::scope(|threads| {
+        let first = threads.spawn(&read);
+        let second = threads.spawn(&read);
+        first.join().unwrap() + second.join().unwrap()
+    });
+    assert_eq!(builds, 1);
+    assert_eq!(indexes.folded.lock().unwrap().len(), 1);
+    assert_eq!(indexes.variables.lock().unwrap().len(), 1);
+
+    let other = frame(1, TableView::Complete(TableRows::LexicalTokens(Vec::new())));
+    let latest = frame(2, TableView::Complete(TableRows::LexicalTokens(Vec::new())));
+    for (frame, expected) in [(&other, None), (&shared_frame, Some(4)), (&latest, None)] {
+        with_world(frame, Some(&indexes), |world| {
+            assert_eq!(world.token_of(b"EXAMPLE_LEADER"), Ok(expected));
+        });
+    }
+    let held = indexes.folded.lock().unwrap();
+    let table = TableId::LexicalTokens.index();
+    assert_eq!(held.len(), 2);
+    assert_eq!(held[0].0, Some(latest.tables[table].identity()));
+    assert_eq!(held[1].0, Some(shared_frame.tables[table].identity()));
 }

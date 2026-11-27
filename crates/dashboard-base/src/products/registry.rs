@@ -1,6 +1,7 @@
 use super::{Envelope, Finish, LoadContext, Product, ReplyWarnings};
 use crate::Source;
-use dashboard_core::transport::{MAX_REPLY_BYTES, bounded_json};
+use dashboard_core::{QueryError, transport::{MAX_REPLY_BYTES, bounded_json}};
+use replay_recording::columnar_frames::{Damage, DamageScope};
 use std::sync::atomic::AtomicBool;
 
 #[macro_export]
@@ -135,7 +136,12 @@ pub fn reply_json<R: serde::Serialize + ReplyWarnings>(
     load: impl FnOnce() -> std::io::Result<R>,
 ) -> Result<String, dashboard_core::QueryError> {
     let mut reply = JsonReply::new(source, lease_id, key, content_dependent, context, cancelled)?;
-    let data = Finish::new(source, context, content_dependent).reply(load)?;
+    let data = Finish::new(source, context, content_dependent).reply(load).map_err(|error| {
+        match Damage::of(&error).map(|damage| &damage.scope) {
+            Some(DamageScope::Withheld { .. }) => QueryError::Refused { text: error.to_string() },
+            _ => QueryError::from(error),
+        }
+    })?;
     reply.finish(bounded_json(&data, cancelled)?)
 }
 

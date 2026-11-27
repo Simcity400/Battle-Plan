@@ -248,7 +248,6 @@ export default function App() {
   const clearSettingsTarget = useCallback(() => setSettingsTarget(null), []);
   const client = browserRecordings ? browserDashboardClient : nativeDashboardClient;
   const replayLibrary = useReplayLibrary(client, shellReady);
-  const defaultChosen = useRef(false);
   const [tab, setTab] = useState<Tab>(desktopAvailable ? 'map' : 'analytics');
   const [pages, setPages] = useState(loadPages);
   const [page, setPage] = useState<PageId>(() => { try { const saved = localStorage.getItem(PAGE_KEY); return pages.find(entry => entry.id === saved)?.id ?? pages[0].id; } catch { return pages[0].id; } });
@@ -364,7 +363,7 @@ export default function App() {
   const openCampaign = useRef<(() => void) | null>(null);
   const registerOpen = useCallback((open: (() => void) | null) => { openCampaign.current = open; }, []);
   const [retry, setRetry] = useState(0);
-  const [path, setPath] = useState<string | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>();
   const [opening, setOpening] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [switchFailure, setSwitchFailure] = useState<{ tab: Tab; message: string } | null>(null);
@@ -385,7 +384,6 @@ export default function App() {
   }, []);
   const pendingPath = useRef<string | null>(null);
   const defaultRequest = useRef(0);
-  const lastNativePath = useRef<string | null>(null);
   const content = useRef<HTMLElement>(null);
   const header = useCallback((element: HTMLElement) => {
     const observer = new ResizeObserver(([entry]) => element.parentElement?.style.setProperty('--shell-header-height', `${entry.borderBoxSize[0].blockSize}px`));
@@ -393,6 +391,7 @@ export default function App() {
     return () => observer.disconnect();
   }, []);
   const native = useDesktopState(retry);
+  const path = selectedPath === undefined ? native.launchRecording : selectedPath;
   useEffect(() => { contentRevision(client).observe(folders); }, [client, folders?.game, folders?.user, folders?.contentReady]);
   useEffect(() => {
     if (!client.contentFolders) return;
@@ -412,43 +411,37 @@ export default function App() {
     }).catch(cause => { if (current) setSwitchFailure({ tab: 'settings', message: errorMessage(cause) }); });
     return () => { current = false; };
   }, [folders?.contentReady]);
-  const shellError = actionError ?? native.error;
-  const mapSurface = tab === 'map' && !!path && !shellError;
-  const boundsError = useMapSurface(content, mapSurface && !leaving && !closing, retry, tab === 'map');
   const nativePath = native.state?.viewer.path ?? null;
-  const mapError = actionError ?? boundsError ?? native.error ?? native.state?.error ?? null;
+  const nativeReady = native.state?.ready && native.state.running;
+  const nativeError = native.error ?? native.state?.error ?? null;
+  const acceptedPath = nativeReady && !nativeError ? nativePath : null;
+  const shownNativePath = native.state?.viewer.hour != null ? acceptedPath : null;
+  const mapAccepted = !!(path && acceptedPath && sameCampaignPath(path, acceptedPath));
+  const mapRecordingReady = mapAccepted && shownNativePath != null;
+  const mapSurface = tab === 'map' && mapAccepted && !actionError;
+  const boundsError = useMapSurface(content, mapSurface && !leaving && !closing, retry, tab === 'map');
+  const mapError = actionError ?? boundsError ?? nativeError;
 
   useEffect(() => {
-    const changed = lastNativePath.current !== nativePath;
-    lastNativePath.current = nativePath;
-    if (path != null) { if (nativePath === pendingPath.current) pendingPath.current = null; return; }
-    if (!nativePath || defaultChosen.current) return;
-    if (pendingPath.current && nativePath !== pendingPath.current) return;
-    const acknowledged = pendingPath.current === nativePath;
-    pendingPath.current = null;
-    if (changed || acknowledged || path == null) setPath(nativePath);
-  }, [nativePath, native.state?.viewer, tab, path]);
-
-  useEffect(() => {
-    if (native.state?.error) pendingPath.current = null;
-  }, [native.state?.error]);
+    if (native.state?.error || (nativePath && pendingPath.current && sameCampaignPath(nativePath, pendingPath.current))) pendingPath.current = null;
+  }, [nativePath, native.state?.viewer, native.state?.error]);
 
   function openRecording() { openCampaign.current?.(); }
   const openDefault = useCallback((chosen: string | null) => {
     const request = ++defaultRequest.current;
-    if (!chosen || !desktopAvailable || tab !== 'map' || (chosen === nativePath && !pendingPath.current)) { setOpening(false); reportMap('open', null); return; }
+    if (!chosen || !desktopAvailable || tab !== 'map' || (shownNativePath && sameCampaignPath(chosen, shownNativePath) && !pendingPath.current)) { setOpening(false); reportMap('open', null); return; }
     pendingPath.current = chosen;
     setOpening(true);
     void openReplay(chosen).then(() => { if (request === defaultRequest.current) reportMap('open', null); }, (cause) => {
       if (request === defaultRequest.current) { pendingPath.current = null; reportMap('open', errorMessage(cause)); }
     }).finally(() => { if (request === defaultRequest.current) setOpening(false); });
-  }, [tab, nativePath, reportMap]);
-  const setDefaultPath = useCallback((chosen: string | null) => {
-    defaultChosen.current = true;
-    setPath(chosen);
+  }, [tab, shownNativePath, reportMap]);
+  const setDefaultPath = useCallback((chosen: string | null, requested: string | null) => {
+    setSelectedPath(chosen);
+    if (selectedPath === undefined && requested === native.launchRecording && chosen != null) return;
     reportMap('open', null);
     openDefault(chosen);
-  }, [openDefault, reportMap]);
+  }, [selectedPath, native.launchRecording, openDefault, reportMap]);
 
   async function changeTab(next: Tab) {
     if (switching || next === tab) return;
@@ -457,7 +450,7 @@ export default function App() {
     try {
       await selectNativeView(next !== 'map');
       selected = true;
-      if (desktopAvailable && next === 'map' && path && path !== nativePath) {
+      if (desktopAvailable && next === 'map' && path && (!nativePath || !sameCampaignPath(path, nativePath))) {
         pendingPath.current = path;
         await openReplay(path);
       }
@@ -474,7 +467,7 @@ export default function App() {
   }
 
   function retryMap() {
-    if (mapFailures.open != null) openDefault(path);
+    if (mapFailures.open != null || !mapRecordingReady) openDefault(path);
     setRetry(value => value + 1);
   }
 
@@ -564,7 +557,6 @@ export default function App() {
   const everReady = useRef(false);
 
   const workspaceBackdrop = appearance.settings.workspaceBackdrop;
-  const nativeReady = native.state?.ready && native.state.running;
   if (nativeReady) everReady.current = true;
   const mapOperation = Object.keys(mapFailures)[0];
   const titledFailure = (title: string, sentence: string, raw: string) => {
@@ -670,7 +662,7 @@ export default function App() {
               <MapState title="Preparing the map" busy>
                 <p>The map and playback controls appear here when it’s ready.</p>
               </MapState>
-            ) : path && nativePath && sameCampaignPath(path, nativePath) && native.state?.viewer.hour != null ? null : (
+            ) : mapRecordingReady ? null : (
               <MapState title={path ? 'Opening the campaign' : 'No campaign open'} busy={!!path}>
                 <p>{path ? 'The map appears here as soon as it’s ready.' : 'Choose a campaign from the library in the sidebar to explore it hour by hour.'}</p>
                 {!path && <button type="button" className="button primary" disabled={opening} onClick={() => void openRecording()}>
@@ -683,7 +675,7 @@ export default function App() {
 
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
-          <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} onMapWarning={setMapWarning} mapRetry={retry} onUnsaved={setUnsavedPages} unsavedReader={layoutReader} saveRequest={saveRequest} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
+          <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} mapRecordingReady={mapRecordingReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} onMapWarning={setMapWarning} mapRetry={retry} onUnsaved={setUnsavedPages} unsavedReader={layoutReader} saveRequest={saveRequest} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
         </section>
       </main>
       <aside className="workspace-side" ref={setSideHost} aria-label="Map tools" hidden={tab !== 'map'} />

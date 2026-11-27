@@ -64,7 +64,7 @@ impl Pending {
         Ok(())
     }
 
-    pub(super) fn can_send(&self, visible: bool) -> bool {
+    pub(super) fn can_send(&self, campaign_selected: bool, visible: bool) -> bool {
         self.close
             || !self.actions.is_empty()
             || self.campaign_map
@@ -73,10 +73,10 @@ impl Pending {
             || self.visibility.is_some()
             || self.gamepad.is_some()
             || self.holes.is_some()
-            || (visible && (self.open.is_some() || self.seek.is_some()))
+            || (campaign_selected && (self.open.is_some() || (visible && self.seek.is_some())))
     }
 
-    pub(super) fn take_commands(&mut self, visible: bool) -> Vec<NativeCommand> {
+    pub(super) fn take_commands(&mut self, campaign_selected: bool, visible: bool) -> Vec<NativeCommand> {
         if self.close {
             *self = Self::default();
             return vec![NativeCommand::Close];
@@ -93,10 +93,10 @@ impl Pending {
         if let Some(bounds) = self.bounds.take() {
             commands.push(bounds.command());
         }
-        if visible && let Some((path, revision, open_id)) = self.open.take() {
+        if campaign_selected && let Some((path, revision, open_id)) = self.open.take() {
             commands.push(NativeCommand::Open { path, revision, open_id });
         }
-        if visible && let Some(target) = self.seek.take() {
+        if campaign_selected && visible && let Some(target) = self.seek.take() {
             commands.push(target.command());
         }
         if let Some(visible) = self.visibility.take() {

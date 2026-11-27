@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import { widgetMetas } from './definitions.ts';
 import { FAMILY_VIEWS, FAMILY_VIEW_UI, NATIVE_WIDGETS, familyViewsForKind, manifestSlotsForKind } from './manifest.ts';
-import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, setPlaybackActive } from './rendererLoaders.ts';
+import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadOtherWidgetRenderers, setPlaybackActive } from './rendererLoaders.ts';
 import { viewKey, type FamilyViewEntry } from '../families/manifest.ts';
 
 test('all installed kinds have independent lazy loaders and unknown saved kinds remain unknown', async () => {
@@ -47,8 +47,8 @@ test('every widget module loads with its registered lazy body and the catalogue 
       setPlaying(clock, false);
     }
     for (const meta of widgetMetas) {
-      const registered = widgetDefinition(meta.kind);
       const renderer = await load(meta.kind);
+      const registered = widgetDefinition(meta.kind);
       assert.ok(
         typeof renderer.render === 'function' || (renderer.declaration !== undefined && familyHost(renderer.declaration.family) !== undefined),
         `${meta.kind} body or family declaration loads`,
@@ -94,7 +94,7 @@ test('idle preloading never runs while playback is active, respects idle budget,
   const preloaded: string[] = [];
   const loaded: string[] = [];
   const resolvers: (() => void)[] = [];
-  const stop = preloadAllWidgetRenderers({
+  const stop = preloadOtherWidgetRenderers({
     kinds: ['a', 'b', 'c'],
     chunks: { a: './assets/widget-a.js', b: './assets/widget-b.js', c: './assets/widget-c.js' },
     schedule: run => queued.push(run),

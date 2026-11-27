@@ -1,4 +1,3 @@
-import { tableHostAdapter } from '../../families/table/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { AnyTableWidgetDeclaration } from '../../families/table/declaration.ts';
 import type { TableProjection } from '../../families/table/model.ts';
@@ -548,5 +547,4 @@ export const tableFamilyManifest: FamilyManifestModule = {
   family: 'table',
   lane: () => import('../../families/table/laneView.ts').then(m => m.tableLane),
   views: TABLE_VIEWS,
-  hostAdapter: tableHostAdapter,
 };

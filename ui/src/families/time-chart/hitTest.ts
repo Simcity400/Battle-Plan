@@ -1,6 +1,6 @@
 import type { FamilyTooltipEntry, TooltipListItem } from '../host/tooltips.ts';
 import type { BoundedSeries } from '../plan.ts';
-import { formatDateOnly, formatRational, formatRecordedPercent, formatScalar, formatShare, formatShareRatio, notRecordedLabel } from '../valueFormat.ts';
+import { formatDateHover, formatDateOnly, formatRational, formatRecordedPercent, formatScalar, formatShare, formatShareRatio, notRecordedLabel } from '../valueFormat.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import { seriesLookAt, type ChartValueFormat, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
 import { hitChartRows, rowsTooltip } from './rows.ts';
@@ -583,17 +583,22 @@ export function deriveTimeChartTooltip(
     const placed = layout.markers[parsed.index];
     if (!placed) return null;
     const m = placed.marker;
-    const eventItems: TooltipListItem[] = (m.items && m.items.length > 0 ? m.items : [{ title: m.title, detail: m.detail, icon: m.icon, flag: m.flag }]).map(item => {
-      const iconUrl = artUrlOf(item.icon);
-      const flagUrl = artUrlOf(item.flag);
-      return {
-        label: item.title,
-        ...(item.detail ? { value: item.detail } : {}),
-        ...(iconUrl ? { icon: iconUrl } : {}),
-        ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
-        strong: true,
-      };
-    });
+    const eventItems: TooltipListItem[] = [];
+    for (const marker of placed.members ?? [m]) {
+      const date = placed.members ? formatDateHover(marker.hour) : null;
+      for (const item of marker.items?.length ? marker.items : [marker]) {
+        const iconUrl = artUrlOf(item.icon);
+        const flagUrl = artUrlOf(item.flag);
+        const value = date && item.detail ? `${date} · ${item.detail}` : date ?? item.detail;
+        eventItems.push({
+          label: item.title,
+          ...(value ? { value } : {}),
+          ...(iconUrl ? { icon: iconUrl } : {}),
+          ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+          strong: true,
+        });
+      }
+    }
     const valueItems = seriesTooltipItemsAt(model, m.hour);
     if (valueItems.length > 0 && eventItems.length > 0) {
       valueItems[0] = { ...valueItems[0]!, divider: true };
@@ -604,6 +609,7 @@ export function deriveTimeChartTooltip(
       payload: {
         title: formatDateOnly(m.hour),
         items: [...eventItems, ...valueItems],
+        ...(placed.members ? { scrollable: true } : {}),
       },
     };
   }

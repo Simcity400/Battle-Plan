@@ -164,8 +164,36 @@ impl Role {
     }
 }
 
+#[derive(Clone)]
+pub struct LaunchOptions(Options);
+
+impl LaunchOptions {
+    pub fn parse(args: impl Iterator<Item = OsString>) -> io::Result<Self> {
+        let options = Options::parse(args)?;
+        if options.compare.is_some() || options.headless_dump || options.window_dump {
+            return Err(io::Error::other(
+                "Desktop embedding requires the interactive viewer, without dump or compare options",
+            ));
+        }
+        Ok(Self(options))
+    }
+
+    pub fn recording(&self) -> Option<&std::path::Path> {
+        self.0.replay.as_deref()
+    }
+
+    pub fn apply_folders(&mut self, config: &dashboard_core::config::Config) {
+        if !config.game_dir.as_os_str().is_empty() {
+            self.0.game_dir = Some(config.game_dir.clone());
+        }
+        if !config.user_dir.as_os_str().is_empty() {
+            self.0.user_dir = Some(config.user_dir.clone());
+        }
+    }
+}
+
 pub struct Launch {
-    pub args: Vec<OsString>,
+    pub options: LaunchOptions,
     pub window: Window,
     pub inputs: Inputs,
     pub events: Events,
@@ -406,14 +434,7 @@ fn embedded_map(
     commands: mpsc::Receiver<Command>,
     lost: &Lost,
 ) -> Result<(), String> {
-    let Launch { args, window, inputs, events, role, service } = launch;
-    let options = Options::parse(args.into_iter()).map_err(|error| error.to_string())?;
-    if options.compare.is_some() || options.headless_dump || options.window_dump {
-        return Err(
-            "Desktop embedding requires the interactive viewer, without dump or compare options"
-                .into(),
-        );
-    }
+    let Launch { options: LaunchOptions(options), window, inputs, events, role, service } = launch;
     crate::perf_log::enter(role.name());
     viewer_runtime::worker_priority::frame_priority();
     let mut config = dashboard_core::config::Config::default();
@@ -435,6 +456,21 @@ fn embedded_map(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn launch_folders_override_only_nonempty_settings() {
+        let mut launch = LaunchOptions::parse(
+            ["launch.battleplan", "--game-dir", "cli-game", "--user-dir", "cli-user"]
+                .into_iter().map(OsString::from),
+        ).unwrap();
+        launch.apply_folders(&dashboard_core::config::Config {
+            game_dir: "settings-game".into(),
+            ..Default::default()
+        });
+        assert_eq!(launch.recording(), Some(std::path::Path::new("launch.battleplan")));
+        assert_eq!(launch.0.game_dir.as_deref(), Some(std::path::Path::new("settings-game")));
+        assert_eq!(launch.0.user_dir.as_deref(), Some(std::path::Path::new("cli-user")));
+    }
 
     pub(crate) type Answers = Arc<Mutex<Vec<Answer>>>;
 
