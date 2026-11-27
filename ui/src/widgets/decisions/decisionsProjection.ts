@@ -309,6 +309,13 @@ function validateDecisionsTail(raw: unknown, readAt?: number): TailReply<ScriptP
   return validateRowTailReply(raw, (row, _columns, at): ScriptPageRow & DatedLogRow => {
     if (row.occurrence === null) throw new Error('Decision was not recorded.');
     const occurrence = validateOccurrence(row.occurrence, at);
+    if (row.status != null && (typeof row.status !== 'string' || !Object.hasOwn(RECORDED_STATUS, row.status))) {
+      throw new Error('The decision row is malformed.');
+    }
+    if (row.status === 'timedOut') {
+      const resolved = decisionAt(decisionCard(occurrence), at ?? occurrence.edges[occurrence.edges.length - 1]!.row.readHour, []);
+      if (!resolved?.end) throw new Error('The decision row is malformed.');
+    }
     return { ...(row as unknown as ScriptPageRow & DatedLogRow), occurrence };
   }, readAt);
 }

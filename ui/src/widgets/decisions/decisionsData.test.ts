@@ -456,6 +456,23 @@ test('S3: a malformed decision row becomes a refused slot with its reason instea
   assert.equal(nullAndFutureModel.slots?.[1]?.kind, 'refused');
   assert.match(nullAndFutureModel.slots?.[1]?.kind === 'refused' ? nullAndFutureModel.slots[1].reason : '', /after displayed hour/);
 
+  const inconsistentTimedOutSource = buildRowSourceFromHead('test:decisions-timed-out-no-end', {
+    ...mixedHead,
+    total: '2',
+    counts: [],
+    rows: [
+      { hour: start, key: goodOcc.id, observed: start, ordinal: '0', live: true, status: 'active', occurrence: goodOcc },
+      { hour: start, key: 'bad:timedout', observed: start, ordinal: '1', live: false, status: 'timedOut', occurrence: card([edge('decisionSelected', start)]) },
+    ],
+  }, undefined, hour, undefined, decisionsProjection.validateTail)!;
+  const inconsistentModel = decisionsProjection.project(
+    createBoundedReadView({ hour, rows: new Map([['main', inconsistentTimedOutSource]]) }),
+    { artwork: false, breaks: [] },
+  );
+  assert.equal(inconsistentModel.rows.length, 1);
+  assert.equal(inconsistentModel.rows[0]?.key, goodOcc.id);
+  assert.deepEqual(inconsistentModel.slots?.[1], { kind: 'refused', key: 'refused:1', reason: 'The decision row is malformed.' });
+
   for (const declaration of [decisionsDeclaration, eventChoicesDeclaration, eventFeedDeclaration]) {
     const entry = declaration.sources({
       track: { source: { id: 's1', revision: 'r1', metadata: { playerCountryId: '9' } }, axisOffset: 0, selectedSlot: 7 },
