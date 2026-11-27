@@ -155,9 +155,7 @@ struct RawClean {
 }
 
 impl RawClean {
-    fn materialize(
-        &self,
-    ) -> Option<[engine_allocation::SharedBox<replay_data::rows::TableRows>; 2]> {
+    fn materialize(&self) -> Option<[replay_data::rows::TableRows; 2]> {
         let (dictionary, refused) =
             engine_allocation::contained(|| build_templates(&self.rows, &self.bytes, None));
         let TableInput::Sampled(TableView::Complete(dictionary)) = dictionary else {
@@ -187,31 +185,40 @@ impl RawClean {
         if refused {
             return None;
         }
-        let (pair, refused) = engine_allocation::contained(|| {
-            let dictionary = engine_allocation::shared(dictionary).ok()?;
-            let icons = engine_allocation::shared(icons).ok()?;
-            Some([dictionary, icons])
-        });
-        (!refused).then_some(pair).flatten()
+        Some([dictionary, icons])
     }
 }
 
 struct LazyClean {
     raw: RawClean,
     country: std::sync::Arc<replay_data::rows::TableRows>,
-    tables: std::sync::OnceLock<[engine_allocation::SharedBox<replay_data::rows::TableRows>; 2]>,
+    tables: std::sync::OnceLock<[replay_data::rows::TableRows; 2]>,
 }
 
 impl LazyClean {
-    fn tables(
-        &self,
-    ) -> Option<&[engine_allocation::SharedBox<replay_data::rows::TableRows>; 2]> {
+    fn tables(&self) -> Option<&[replay_data::rows::TableRows; 2]> {
         if let Some(tables) = self.tables.get() {
             return Some(tables);
         }
         let built = self.raw.materialize()?;
         let _ = self.tables.set(built);
         self.tables.get()
+    }
+
+    fn table_input(&self, index: usize) -> TableInput {
+        let (cloned, refused) = engine_allocation::contained(|| {
+            self.tables()
+                .and_then(|tables| tables[index].try_clone().ok())
+        });
+        if !refused
+            && let Some(rows) = cloned
+        {
+            return TableInput::Sampled(TableView::Complete(rows));
+        }
+        engine_allocation::contained(|| {
+            unavailable("template clean snapshot allocation failed").into()
+        })
+        .0
     }
 }
 
@@ -1836,14 +1843,7 @@ impl Captured {
             projection.as_deref_mut(),
             witness,
             |projection| match &self.fast_clean {
-                Some(fast) => match fast
-                    .clean
-                    .tables()
-                    .and_then(|tables| tables[0].try_clone().ok())
-                {
-                    Some(rows) => TableInput::Sampled(TableView::Complete(rows)),
-                    None => unavailable("template clean snapshot allocation failed").into(),
-                },
+                Some(fast) => fast.clean.table_input(0),
                 None => self.templates(projection),
             },
         );
@@ -1869,14 +1869,7 @@ impl Captured {
             projection.as_deref_mut(),
             witness,
             |projection| match &self.fast_clean {
-                Some(fast) => match fast
-                    .clean
-                    .tables()
-                    .and_then(|tables| tables[1].try_clone().ok())
-                {
-                    Some(rows) => TableInput::Sampled(TableView::Complete(rows)),
-                    None => unavailable("template clean snapshot allocation failed").into(),
-                },
+                Some(fast) => fast.clean.table_input(1),
                 None => self.icons(projection, names),
             },
         );

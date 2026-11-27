@@ -1873,6 +1873,25 @@ fn unmatched_temporary_template_receiver_reuses_clean_state_without_rereading() 
 
 #[test]
 fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() {
+    thread_local! {
+        static WATCHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static HOOK_FIRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    fn record_failure() {
+        WATCHED.with(|watched| {
+            if watched.get() {
+                HOOK_FIRED.with(|fired| fired.set(true));
+            }
+        });
+    }
+    struct HookGuard;
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            WATCHED.with(|watched| watched.set(false));
+            engine_allocation::set_hooks(None, None);
+        }
+    }
+
     let changes = CoreChanges::new();
     let source = gridded_fixture();
     let mut fast = Captured::with_capacities(&capacity());
@@ -1884,6 +1903,11 @@ fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() 
             reference.capture_original(&source, 0, 0x1000, hour, true, &changes);
         }
     }
+    HOOK_FIRED.with(|fired| fired.set(false));
+    WATCHED.with(|watched| watched.set(true));
+    engine_allocation::set_hooks(None, Some(record_failure));
+    let _hook = HookGuard;
+
     let clean = &fast.fast_clean.as_ref().expect("clean snapshot").clean;
     let mut refusals = 0_usize;
     for ordinal in 1.. {
@@ -1891,7 +1915,7 @@ fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() 
         let materialized = clean.tables();
         let denied = collector_test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed);
         drop(guard);
-        assert!(!collector_memory::terminal::failed(), "ordinal {ordinal}");
+        assert!(!HOOK_FIRED.with(std::cell::Cell::get), "ordinal {ordinal}");
         if denied == 0 {
             assert!(materialized.is_some(), "ordinal {ordinal}");
             break;
@@ -1900,5 +1924,32 @@ fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() 
         refusals += 1;
     }
     assert!(refusals >= 4);
+
+    let mut publish_refusals = 0_usize;
+    for ordinal in 1.. {
+        let guard = collector_test_support::NullGuard::new(ordinal);
+        let [dictionary, icons, _] = fast.projected_inputs(None);
+        let denied = collector_test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed);
+        drop(guard);
+        assert!(
+            !HOOK_FIRED.with(std::cell::Cell::get),
+            "publish ordinal {ordinal}"
+        );
+        if denied == 0 {
+            assert!(matches!(
+                dictionary,
+                TableInput::Sampled(TableView::Complete(_))
+            ));
+            assert!(matches!(icons, TableInput::Sampled(TableView::Complete(_))));
+            break;
+        }
+        assert!(
+            matches!(dictionary, TableInput::Sampled(TableView::Unavailable { .. }))
+                || matches!(icons, TableInput::Sampled(TableView::Unavailable { .. })),
+            "publish ordinal {ordinal}"
+        );
+        publish_refusals += 1;
+    }
+    assert!(publish_refusals >= 2);
     assert_eq!(fast.tables(), reference.tables());
 }
