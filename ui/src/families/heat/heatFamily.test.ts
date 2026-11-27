@@ -4,7 +4,7 @@ import type { Canvas2D } from '../../charts/textWidth.ts';
 import { followedProduct, refusedHours, type FollowQuery } from '../../dashboard/regionTime.ts';
 import { computeTimeAxisTicks, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import { displayedHour } from '../boundedView.ts';
-import { compileFollowPlan } from '../broker.ts';
+import { buildExactRequests, compileFollowPlan, exactEntries } from '../broker.ts';
 import type { FamilyTheme, InstalledPicture } from '../contract.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { askUnits, unitEntries, unitEvidence, UnitReads } from '../readUnits.ts';
@@ -12,7 +12,8 @@ import { trackGate } from '../sources.ts';
 import { airTimelineDeclaration } from '../../widgets/air-superiority-timeline/airTimelineProjection.ts';
 import { convoyHealthDeclaration } from '../../widgets/convoy-health/convoyHealthProjection.ts';
 import { supremacyTimelineDeclaration } from '../../widgets/naval-supremacy/navalSupremacyProjection.ts';
-import { DAY_TILE_HOURS } from './dayTiles.ts';
+import { DAY_TILE_HOURS, dayTileKey, holdDayTiles } from './dayTiles.ts';
+import { TileCache } from '../../dashboard/tiles/cache.ts';
 import { marginColour, sequentialRampColour, signedRampColour, splitStripes } from './scale.ts';
 import {
   deriveMatrixAudit,
@@ -100,6 +101,42 @@ test('heat timelines follow the head and read only closed days with reusable ran
     } finally {
       reader.dispose();
     }
+  }
+});
+
+test('a heat strip keeps closed asks once and gives the changing prefix one slot', async () => {
+  const branch = { id: '1', firstHour: 5, lastHour: DAY_TILE_HOURS * 2 + 46 };
+  const source = { id: 'test', revision: 'r', metadata: {} };
+  const ctx = { track: { source, axisOffset: 0 }, branch, countryTag: 'AAA', options: {}, staticSpan: null } as FamilyPlanContext;
+  const gate = trackGate({ source: ctx.track.source, branch: ctx.branch });
+  const options = { following: true, timeMode: 'follow' as const, branch: ctx.branch, staticSpan: null, window: null, gate };
+  for (const declaration of [airTimelineDeclaration, convoyHealthDeclaration, supremacyTimelineDeclaration]) {
+    const entries = exactEntries(declaration.sources(ctx, { following: true, staticSpan: null }));
+    const request = (entry: typeof entries[number], hour: number) => buildExactRequests(entry, gate.recorded(hour)!, options)?.asks[0]?.request;
+    const terminal = (entry: typeof entries[number]) => request(entry, branch.lastHour);
+    const held = holdDayTiles(entries, terminal);
+    const cache = new TileCache(1024), claim = cache.claim(() => assert.fail('The ranges fit'));
+    const asked: string[] = [];
+    await held.prepare(claim, async <T,>(ask: NonNullable<ReturnType<typeof terminal>>) => {
+      const key = dayTileKey(ask);
+      asked.push(key);
+      return { ...ask, data: key.length as T };
+    });
+    const closed = entries.filter(entry => entry.name.startsWith('tile:')).map(entry => dayTileKey(terminal(entry)!));
+    assert.deepEqual(asked, closed);
+    assert.ok(cache.stripBytes > 0);
+    for (const hour of [96, DAY_TILE_HOURS + 96, branch.lastHour]) {
+      const slots = entries.flatMap(entry => {
+        const ask = request(entry, hour);
+        if (!ask) return [];
+        const slot = held.slot(entry, ask);
+        if (slot === null) assert.equal(claim.value<number>(dayTileKey(ask)), dayTileKey(ask).length);
+        return slot === null ? [] : [slot];
+      });
+      assert.deepEqual(slots, hour === branch.lastHour ? ['now'] : ['now', 'day:open']);
+    }
+    claim.release();
+    assert.equal(cache.stripBytes, 0);
   }
 });
 

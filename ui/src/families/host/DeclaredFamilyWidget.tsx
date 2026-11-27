@@ -210,22 +210,25 @@ export default function DeclaredFamilyWidget<
   const rawWindowHours = typeof (plan.options as { windowHours?: unknown }).windowHours === 'number'
     ? (plan.options as { windowHours: number }).windowHours
     : lineChartSettings(plan.options, plan.following).windowHours;
+  const stripActive = plan.stripPlan !== undefined;
   const pushSeriesViewport = useCallback((vp: FamilyViewportChange) => {
     if (!hasPixelBinned || !plan.track || vp.width <= 0) return;
     const scale = Math.min(2, Math.max(1, vp.dpr));
     let from = vp.window ? vp.window[0] : extent[0];
     let to = vp.window ? vp.window[1] : extent[1];
-    if (!vp.window && plan.following && rawWindowHours != null) {
+    const rolling = !vp.window && plan.following ? rawWindowHours : null;
+    if (rolling != null) {
       to = Math.min(extent[1], Math.max(extent[0], Math.floor(runtime.clock.getHour()) + plan.track.axisOffset));
-      from = Math.max(extent[0], to - rawWindowHours);
+      from = Math.max(extent[0], to - rolling);
     }
     plan.onSeriesViewport({
       from,
       to,
       end: to,
       width: Math.max(1, Math.round((vp.width - SERIES_PLOT_INSET_PX) * scale)),
+      ...(stripActive && rolling !== null ? { rolling: { first: extent[0], hours: rolling } } : {}),
     });
-  }, [hasPixelBinned, plan.track, plan.following, extent, rawWindowHours, runtime.clock, plan.onSeriesViewport]);
+  }, [hasPixelBinned, plan.track, plan.following, extent, rawWindowHours, runtime.clock, plan.onSeriesViewport, stripActive]);
 
   const measureViewport = plan.measureViewport;
   const handleViewportChange = useCallback((vp: FamilyViewportChange) => {

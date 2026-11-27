@@ -9,6 +9,7 @@ import { OpenedSources } from '../openedSources.ts';
 import { PlaybackController } from '../playback.ts';
 import { PrepareGate } from '../prepare.ts';
 import { productRequest } from '../request.ts';
+import { tileCache } from '../tiles/view.ts';
 import { configuredStripPage, StripPage, type StripWidget } from './driver.ts';
 import { stripLattice } from './lattice.ts';
 import { WidgetStrips, type StripUpdate } from './store.ts';
@@ -38,9 +39,16 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
   let frame: (() => void) | undefined, settled = true, reads = 0;
   const gate = new PrepareGate(() => true, { request: run => { frame = run; return 1; }, cancel: () => { frame = undefined; } });
   const groups: { source: string; hours: number[]; whole: boolean; signal: AbortSignal; busy: boolean }[] = [];
+  const tiles: { signal: AbortSignal; busy: boolean }[] = [];
   let answer = (hour: number): unknown => ({ answer: { hour, value: hour * 3 } });
   let delay: ((hours: number[], signal: AbortSignal) => Promise<void> | void) | undefined;
+  let delayTile: ((signal: AbortSignal) => Promise<void>) | undefined;
   const client = { product: async (request: ProductRequest, signal: AbortSignal) => {
+    if (request.product === 'series-tiles') {
+      tiles.push({ signal, busy: clock.getSnapshot().playing || clock.getScrubPosition() !== null || !settled || busyKinds().requests > 0 });
+      await delayTile?.(signal);
+      return { ...request, data: 'tile reply' };
+    }
     assert.equal(request.product, 'strip');
     assert.equal(opened.refusal(request), null);
     const { product, asks, whole } = request.params as StripParams;
@@ -79,10 +87,11 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
     };
     return { held, remove: page.register(id, widget) };
   };
-  return { page, clock, groups, lattice, gate, mount, until, reads: () => reads,
+  return { page, clock, groups, tiles, lattice, gate, mount, until, cache: tileCache(client), reads: () => reads,
     stop() { clock.setPlaying(false); stop(); },
     settle: (value: boolean) => { settled = value; },
     delay: (value: typeof delay) => { delay = value; },
+    delayTile: (value: typeof delayTile) => { delayTile = value; },
     answer: (value: typeof answer) => { answer = value; },
   };
 }
@@ -151,12 +160,55 @@ test('the shipped switch allocates no page and leaves zero requests and zero hel
   let groups = 0;
   const page = configuredStripPage(() => {
     groups++;
-    return setup(200).page;
+    const h = setup(200);
+    h.page.register('chart', { key: 'chart', supported: true, requests: () => [], settled: () => true,
+      tiles: async () => { groups++; }, store: async (_build, change) => held.update(change) });
+    return h.page;
   });
   assert.equal(page, null);
   assert.equal(groups, 0);
   assert.equal(held.slots.size, 0);
   assert.equal(held.update({ kind: 'drop', fine: false }).bytes, 0);
+});
+
+test('a mixed page waits for every claimed tile, including after a scrub cancels its request', async t => {
+  const h = setup(200);
+  t.after(h.stop);
+  const answer = h.mount('answer');
+  const chart = h.page.register('chart', {
+    key: 'chart', supported: true, requests: () => [], settled: () => true,
+    store: async () => assert.fail('Tile-only chart does not store strip slots'),
+    async tiles(claim, read) {
+      const request = productRequest({ sourceId: 'chart', revision: 'r', product: 'series-tiles',
+        params: { branchId: '1', family: { kind: 'autonomy-lines' }, binHours: 6, index: 0 } });
+      const reply = await read<string>(request);
+      claim.put({ key: 'chart|tile', value: reply.data, bytes: reply.data.length });
+    },
+  });
+  let settleTile!: (value?: undefined) => void;
+  h.delayTile(async signal => {
+    await new Promise<void>(resolve => { settleTile = resolve; });
+    signal.throwIfAborted();
+  });
+  await h.until(() => h.tiles.length === 1);
+  assert.equal(h.page.status, 'not ready');
+  h.clock.scrub(100);
+  assert.ok(h.tiles[0]!.signal.aborted);
+  settleTile();
+  await h.until(() => h.gate.pending === 1);
+  assert.equal(h.tiles.length, 1);
+  assert.equal(h.cache.stripBytes, 0);
+  h.clock.endScrub();
+  await h.until(() => h.tiles.length === 2);
+  settleTile();
+  await h.until(() => h.page.status === 'ready');
+  assert.equal(h.cache.stripBytes, 'tile reply'.length);
+  assert.ok(answer.held.slots.size > 0);
+  assert.deepEqual(h.tiles.map(tile => tile.busy), [false, false]);
+  assert.equal(h.page['counts'].tilesCancelled, 1);
+  chart();
+  await h.until(() => h.page.status === 'ready');
+  assert.equal(h.cache.stripBytes, 0);
 });
 
 test('late sources hold local markers and a fine-only first anchor, and give exact cursor states at every sampled hour', async t => {

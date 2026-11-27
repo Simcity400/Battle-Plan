@@ -40,6 +40,7 @@ export interface PointSourceRead {
   readonly coverage: SourceCoverage;
   readonly product: DeclaredProduct;
   readonly followQuery: FollowRequest | null;
+  readonly dayTile?: true;
   readonly exactProduct?: DeclaredProduct;
   readonly params: Readonly<Record<string, unknown>> | null;
   readonly hourParam?: string;

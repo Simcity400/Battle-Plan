@@ -7,6 +7,8 @@ import type { PlaybackController } from '../playback.ts';
 import { baseClient, prepareGate, type PrepareGate } from '../prepare.ts';
 import { RefusedError } from '../queryError.ts';
 import { productRequest } from '../request.ts';
+import type { StripTileClaim, StripTileRead } from '../tiles/cache.ts';
+import { tileCache } from '../tiles/view.ts';
 import type { StripDensity, StripLattice } from './lattice.ts';
 import { EMPTY_STRIP_RECEIPT, type StripReceipt, type StripUpdate } from './store.ts';
 
@@ -14,13 +16,14 @@ export interface StripWidget {
   readonly key: string;
   readonly supported: boolean;
   readonly fixed?: boolean;
+  readonly tiles?: (claim: StripTileClaim, read: StripTileRead) => Promise<void>;
   requests(hour: number): readonly { slot: string; request: ProductRequest | null }[];
   store(build: number, update: StripUpdate): Promise<StripReceipt>;
   settled(): boolean;
 }
 
 type Slot = { name: string; hours: Set<number>; held: StripReceipt; coarseNext: number; fineNext: Map<number, number> };
-type HeldWidget = { input: StripWidget; build: number; bytes: number; coarse: number | null; slots: Slot[]; building: StripDensity };
+type HeldWidget = { input: StripWidget; build: number; bytes: number; coarse: number | null; slots: Slot[]; building: StripDensity; claim?: StripTileClaim };
 type Status = 'not ready' | 'coarse' | 'ready' | 'will not follow';
 export const STRIP_PAGE_BUDGET_BYTES = 64 * 1024 * 1024;
 const BUILD_TIMELINE_STRIPS = false;
@@ -38,7 +41,7 @@ function pageReadiness(held: ReadonlyMap<string, HeldWidget>, mounted: number, s
   let complete = held.size === mounted;
   for (const widget of held.values()) {
     bytes += widget.bytes;
-    complete &&= widget.slots.every(slot => slotAt(slot, selected, density));
+    complete &&= (!widget.input.tiles || widget.claim?.active === true) && widget.slots.every(slot => slotAt(slot, selected, density));
   }
   return { bytes, state: bytes > budget ? 'over budget' : complete ? 'ready' : 'incomplete' } as const;
 }
@@ -68,7 +71,8 @@ export class StripPage {
   private readonly held = new Map<string, HeldWidget>();
   private readonly products = new Set<string>();
   private readonly counts = { groupsAsked: 0, groupsCancelled: 0, groupsResumed: 0, anchorsAsked: 0, anchorsCommitted: 0,
-    keyframesAsked: 0, asksDiscarded: 0, releaseCount: 0, releasedBytes: 0, startedWhilePlaying: 0, startedWhileSeeking: 0, startedWhileForeground: 0 };
+    keyframesAsked: 0, asksDiscarded: 0, releaseCount: 0, releasedBytes: 0, startedWhilePlaying: 0, startedWhileSeeking: 0, startedWhileForeground: 0,
+    tilesAsked: 0, tilesCancelled: 0, tilesStartedWhileScrubbing: 0 };
   private build: AbortController | null = null;
   private scheduled = false;
   private running = Promise.resolve();
@@ -107,6 +111,7 @@ export class StripPage {
   private async run(signal: AbortSignal) {
     if (signal.aborted) return;
     const widgets = this.enabled && [...this.widgets.values()].every(w => w.supported) ? new Map(this.widgets) : new Map<string, StripWidget>();
+    const cache = tileCache(this.client);
     const levels = new Map<StripDensity, Set<number>>(([1, ...DENSITIES] as const).map(density => [density, new Set(this.lattice.hours(density))]));
     let candidate: StripDensity = 1, finest = 16;
     const readiness = (density = candidate) => pageReadiness(this.held, widgets.size, levels.get(density)!, density, this.budget);
@@ -115,15 +120,19 @@ export class StripPage {
       if (!signal.aborted && level.state === 'over budget') this.status = 'not ready';
       return level.state;
     };
-    const report = (detail?: unknown) => {
-      if (signal.aborted) return;
+    const report = (detail?: unknown, lost = false) => {
+      if (signal.aborted && !lost) return;
       perfLog?.strip({ ...this.counts, page: this.name, status: this.status, density: this.density,
         builtEnd: this.lattice.last, products: [...this.products], bytes: readiness().bytes, budgetBytes: this.budget, maxLateAsksPerWorker: 1, detail,
+        tileBytes: cache.stripBytes, tileCacheBytes: cache.bytes, tileBudgetBytes: cache.cap,
+        supportedWidgets: [...this.widgets].filter(([id, widget]) => widget.supported && (!widget.tiles || this.held.get(id)?.claim?.active)).length,
+        mountedWidgets: this.widgets.size,
         widgets: [...this.held].map(([widget, held]) => ({ widget, bytes: held.bytes,
           keyframes: held.slots.length ? Math.min(...held.slots.map(slot => slot.held.keys)) : 0 })) });
     };
     const drop = async (widget: HeldWidget, fine: boolean) => {
       const before = widget.bytes;
+      if (!fine) widget.claim?.release();
       const held = widget.input.store(widget.build, { kind: 'drop', fine });
       widget.bytes = (await (fine ? held : held.catch(() => EMPTY_STRIP_RECEIPT))).bytes;
       for (const slot of widget.slots) {
@@ -150,7 +159,10 @@ export class StripPage {
       if (signal.aborted) return;
       report();
     }
-    if (signal.aborted || !widgets.size) return;
+    if (signal.aborted || !widgets.size) {
+      if (this.enabled && this.widgets.size) report('A mounted widget cannot follow the timeline');
+      return;
+    }
     const playing = () => this.clock.getSnapshot().playing;
     const seeking = () => this.clock.getScrubPosition() !== null || [...widgets.values()].some(w => !w.fixed && !w.settled());
     const foreground = () => busyKinds().requests > 0;
@@ -167,11 +179,7 @@ export class StripPage {
       return received();
     };
     const requestAt = (widget: HeldWidget, slot: Slot, hour: number) => widget.input.requests(hour).find(ask => ask.slot === slot.name)!.request!;
-    const send = async (widget: HeldWidget, slot: Slot, hours: number[], whole: boolean, anchors: number) => {
-      const requests = hours.map(hour => requestAt(widget, slot, hour));
-      const first = requests[0]!;
-      const request = productRequest({ sourceId: first.sourceId, revision: first.revision, product: 'strip',
-        params: { product: first.product, asks: requests.map(ask => ask.params), whole } });
+    const read = async <T>(request: ProductRequest, group?: { product: string; keys: number; anchors: number }) => {
       let resuming = false;
       for (;;) {
         signal.throwIfAborted();
@@ -180,28 +188,43 @@ export class StripPage {
           const response = await this.gate.ask(request, () => {
             flight = new AbortController();
             attempt.signal = AbortSignal.any([signal, flight.signal]);
-            this.counts.groupsAsked++;
-            if (resuming) this.counts.groupsResumed++;
-            this.counts.anchorsAsked += anchors;
-            this.counts.keyframesAsked += hours.length - anchors;
+            if (group) {
+              this.counts.groupsAsked++;
+              if (resuming) this.counts.groupsResumed++;
+              this.counts.anchorsAsked += group.anchors;
+              this.counts.keyframesAsked += group.keys - group.anchors;
+            } else {
+              this.counts.tilesAsked++;
+              this.counts.tilesStartedWhileScrubbing += Number(this.clock.getScrubPosition() !== null);
+            }
             this.counts.startedWhilePlaying += Number(playing());
             this.counts.startedWhileSeeking += Number(seeking());
             this.counts.startedWhileForeground += Number(foreground());
-            this.products.add(first.product);
-            return inBackground(() => baseClient(this.client).product<StripReply>(request, attempt.signal!));
+            this.products.add(group?.product ?? request.product);
+            return inBackground(() => baseClient(this.client).product<T>(request, attempt.signal!));
           }, signal, idle);
           attempt.signal!.throwIfAborted();
-          const binary = atob(validateProductReply(response, request).data.data), data = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i);
-          return data;
+          return validateProductReply(response, request);
         } catch (error) {
           if (!attempt.signal?.aborted) throw error;
-          this.counts.groupsCancelled++;
-          this.counts.asksDiscarded += hours.length;
+          if (group) {
+            this.counts.groupsCancelled++;
+            this.counts.asksDiscarded += group.keys;
+          } else this.counts.tilesCancelled++;
           resuming = true;
           report();
         } finally { flight = null; }
       }
+    };
+    const send = async (widget: HeldWidget, slot: Slot, hours: number[], whole: boolean, anchors: number) => {
+      const requests = hours.map(hour => requestAt(widget, slot, hour));
+      const first = requests[0]!;
+      const request = productRequest({ sourceId: first.sourceId, revision: first.revision, product: 'strip',
+        params: { product: first.product, asks: requests.map(ask => ask.params), whole } });
+      const response = await read<StripReply>(request, { product: first.product, keys: hours.length, anchors });
+      const binary = atob(response.data.data), data = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i);
+      return data;
     };
     const chain = async (widget: HeldWidget, slot: Slot, hours: number[], fine: boolean, closesAtAnchor: boolean) => {
       const first = hours[0]!;
@@ -241,8 +264,23 @@ export class StripPage {
           if (!entry) slots.set(slot, entry = { name: slot, hours: new Set(), held: EMPTY_STRIP_RECEIPT, coarseNext: 0, fineNext: new Map() });
           if (request) entry.hours.add(hour);
         }
-        if (!slots.size && !source.fixed) slots.set('', { name: '', hours: new Set(), held: EMPTY_STRIP_RECEIPT, coarseNext: 0, fineNext: new Map() });
+        if (!slots.size && !source.fixed && !source.tiles) slots.set('', { name: '', hours: new Set(), held: EMPTY_STRIP_RECEIPT, coarseNext: 0, fineNext: new Map() });
         this.held.set(id, { input: source, build: ++nextBuild, bytes: 0, coarse: null, building: 1, slots: [...slots.values()] });
+      }
+      for (const widget of this.held.values()) if (widget.input.tiles && !widget.claim?.active) {
+        await this.gate.wait(signal, idle);
+        signal.throwIfAborted();
+        const claim = cache.claim(() => {
+          this.changed();
+          report('A timeline tile claim yielded to the active viewport or recording', true);
+        });
+        try {
+          await widget.input.tiles(claim, read);
+          signal.throwIfAborted();
+          widget.claim = claim;
+        } finally {
+          if (widget.claim !== claim) claim.release();
+        }
       }
       const level = async (density: StripDensity) => {
         candidate = density;
