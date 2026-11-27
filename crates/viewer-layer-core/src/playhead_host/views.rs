@@ -911,6 +911,7 @@ impl Store {
         self.settled();
         lock(&self.shared.jobs).from = Some(Posted { mirrors: Arc::clone(mirrors), hour, branch, epoch });
         let asked = std::mem::take(&mut *lock(&self.shared.asked));
+        let demand_changed = !asked.is_empty();
         for asked in asked {
             match asked {
                 Asked::Open { id, name, needs, pace } => {
@@ -920,6 +921,9 @@ impl Store {
                 Asked::Declare { id, needs } => declare(&self.shared, id, &needs, false),
                 Asked::Close { id } => close(&self.shared, id),
             }
+        }
+        if demand_changed {
+            self.shared.note_demand();
         }
         let kept = reading(&self.shared);
         let mut readers = lock(&self.shared.readers);

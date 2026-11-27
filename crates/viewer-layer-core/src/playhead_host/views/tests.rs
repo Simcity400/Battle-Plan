@@ -601,6 +601,7 @@ fn a_table_learned_while_playing_reads_at_the_hour_the_side_applied() {
     let (_entry, mut side) = side_of("views learned playing", 24);
     until(&mut side, 4);
     assert!(learned_at(&side).is_none(), "{LEARNED:?} is in no frame before a maker reads it");
+    assert!(side.parts().unwrap().0.get(LEARNED).is_none());
     side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Maker>()).expect("the maker").learn = true;
     let (hour, rows) = until_learned(&mut side, None, "while the side played");
     assert!(rows > 0, "the rows of {LEARNED:?} it learned");

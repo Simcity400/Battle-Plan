@@ -732,6 +732,10 @@ impl Mirror {
         self.index.as_ref().and_then(|index| index.get(&key).copied())
     }
 
+    pub(super) fn keyed(&self) -> bool {
+        self.keys.is_some()
+    }
+
     #[inline]
     pub fn number<T: Number>(&self, column: Num<T>, slot: u32) -> Cell<T> {
         debug_assert_eq!(column.table.index(), self.table, "a column of another table");
