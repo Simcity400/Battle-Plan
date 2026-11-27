@@ -211,12 +211,12 @@ impl Readings<'_> {
     }
 }
 
-struct BlockInput {
+struct StretchInput {
     found: BTreeMap<Key, super::Battle>,
     data: Combats,
 }
 
-fn prepare_block(query: &Query<'_>, columns: &Columns, span: Stretch, cancelled: &AtomicBool) -> io::Result<BlockInput> {
+fn prepare_stretch(query: &Query<'_>, columns: &Columns, span: Stretch, cancelled: &AtomicBool) -> io::Result<StretchInput> {
     check_cancel(cancelled)?;
     let recording = query.replay.recording();
     let mut found = BTreeMap::new();
@@ -229,13 +229,13 @@ fn prepare_block(query: &Query<'_>, columns: &Columns, span: Stretch, cancelled:
     let mut handles: Vec<u64> = found.keys().map(|key| key.0).collect();
     handles.dedup();
     let data = combats(query, columns, span.run, span.first, span.last, &handles, false)?;
-    Ok(BlockInput { found, data })
+    Ok(StretchInput { found, data })
 }
 
-fn scan_block(query: &Query<'_>, BlockInput { found, data }: BlockInput, readings: &Readings<'_>, cancelled: &AtomicBool) -> io::Result<Vec<(Key, Line)>> {
+fn scan_stretch(query: &Query<'_>, StretchInput { found, data }: StretchInput, readings: &Readings<'_>, cancelled: &AtomicBool) -> io::Result<Vec<(Key, Line)>> {
     check_cancel(cancelled)?;
-    let mut out = Vec::with_capacity(found.len());
-    for (key, battle) in found {
+    found.into_par_iter().map(|(key, battle)| {
+        check_cancel(cancelled)?;
         let (combat, _, _) = key;
         let mut line = Line {
             exact: battle.exact,
@@ -330,11 +330,8 @@ fn scan_block(query: &Query<'_>, BlockInput { found, data }: BlockInput, reading
                 },
             );
         }
-        if !line.states.is_empty() {
-            out.push((key, line));
-        }
-    }
-    Ok(out)
+        Ok((key, line))
+    }).collect()
 }
 
 fn dated<T>(steps: &Steps<T>, value: impl Fn(&T) -> Option<i64>) -> SortKey {
@@ -384,40 +381,26 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
                     }),
             );
         }
-        let links = queries::links(source, stretch.run)?;
-        let origin = recording.run(stretch.run)?.first_hour;
-        let spans = dashboard_world::products::army_windows::coalesce(origin, [(stretch.first, stretch.last)]);
-        let inputs: Vec<_> = spans
-            .par_iter()
-            .map(|s| {
-                prepare_block(
-                    query,
-                    &columns,
-                    Stretch {
-                        first: s.first_hour,
-                        last: s.last_hour,
-                        ..*stretch
-                    },
-                    cancelled,
-                )
-            })
-            .collect::<io::Result<_>>()?;
+        let (links, input) = rayon::join(
+            || queries::links(source, stretch.run),
+            || prepare_stretch(query, &columns, *stretch, cancelled),
+        );
+        let links = links?;
+        let input = input?;
         let mut province_keys = BTreeSet::new();
         let mut variant_keys = BTreeSet::new();
         let mut add_variants = |equipment: &[Option<Vec<LandEquipmentLoss>>; 2]| {
             variant_keys.extend(equipment.iter().flatten().flatten().filter(|item| item.amount_raw != 0).map(|item| u128::from(item.variant)));
         };
-        for BlockInput { found, data } in &inputs {
-            for read in data.census.values().flatten().filter_map(|(_, read)| read.as_ref()) {
-                province_keys.extend(read.province.map(u128::from));
-            }
-            for read in data.losses.values().flatten().filter_map(|(_, read)| read.as_ref()) {
-                add_variants(&read.equipment);
-            }
-            for end in found.values().filter_map(|battle| battle.end.as_ref()) {
-                province_keys.extend(end.province.map(u128::from));
-                add_variants(&end.terminal_equipment);
-            }
+        for read in input.data.census.values().flatten().filter_map(|(_, read)| read.as_ref()) {
+            province_keys.extend(read.province.map(u128::from));
+        }
+        for read in input.data.losses.values().flatten().filter_map(|(_, read)| read.as_ref()) {
+            add_variants(&read.equipment);
+        }
+        for end in input.found.values().filter_map(|battle| battle.end.as_ref()) {
+            province_keys.extend(end.province.map(u128::from));
+            add_variants(&end.terminal_equipment);
         }
         let history = |table: TableId, columns: &[usize], keys: BTreeSet<u128>| {
             if keys.is_empty() || recording.predates(table.index()).is_some() || recording.withheld_reason(table.index()).is_some() {
@@ -429,8 +412,10 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
         let costs = history(TableId::VariantStats, &[VariantStatsRow::BUILD_COST_IC], variant_keys)?;
         let provinces = history(TableId::Provinces, &[dashboard_declare::field(TableId::Provinces, "state")?], province_keys)?;
         let readings = Readings { links: &links, costs: &costs, provinces: &provinces };
-        let blocks: Vec<_> = inputs.into_par_iter().map(|input| scan_block(query, input, &readings, cancelled)).collect::<io::Result<_>>()?;
-        for (key, part) in blocks.into_iter().flatten() {
+        for (key, part) in scan_stretch(query, input, &readings, cancelled)? {
+            if part.states.is_empty() {
+                continue;
+            }
             let line = lines.entry(key).or_default();
             if line.states.is_empty() {
                 line.exact = part.exact;
