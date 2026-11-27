@@ -1173,3 +1173,201 @@ fn partial_drain_reclaims_only_consumed_root_slots_under_out_of_order_reservatio
         .iter()
         .all(|slot| slot.owner.load(Ordering::Acquire) == 0));
 }
+
+#[test]
+fn pending_batch_rehash_recovers_after_advisory_denial_and_checks_decoded_identity() {
+    let mut batch = PendingBatch::default();
+    let mut memory = Memory(vec![0; 0x400]);
+    batch.items.reserve(128);
+    let recipient = native::Recipient {
+        kind: 0,
+        reference: 11,
+        owner: 2,
+        host: 0,
+    };
+    crate::test_support::with_allocations_denied(|| {
+        for index in 0..70_usize {
+            assert!(batch.push(
+                0,
+                0x1000 + index * 0x10,
+                0,
+                native::Recipient {
+                    reference: index as u64 + 1,
+                    ..recipient
+                },
+                5,
+                None,
+                None,
+                &memory,
+            ));
+        }
+    });
+    assert!(batch.table.is_empty());
+    assert!(batch.push(
+        0,
+        0x9000,
+        0,
+        native::Recipient {
+            reference: 999,
+            ..recipient
+        },
+        7,
+        None,
+        None,
+        &memory,
+    ));
+    assert!(batch.table.len() >= 256);
+    assert_eq!(batch.items.len(), 71);
+    batch.clear();
+    assert!(batch.table.iter().all(|&entry| entry == 0));
+
+    let first_name = name(&mut memory, b"alpha");
+    assert!(batch.push(
+        2,
+        0x2000,
+        0,
+        recipient,
+        10,
+        None,
+        Some("fuel award name unreadable"),
+        &memory,
+    ));
+    assert!(batch.push(
+        2,
+        0x2000,
+        0,
+        recipient,
+        20,
+        Some(&first_name),
+        None,
+        &memory,
+    ));
+    assert!(batch.push(
+        2,
+        0x2000,
+        0,
+        recipient,
+        30,
+        Some(&first_name),
+        None,
+        &memory,
+    ));
+    let second_name = name(&mut memory, b"beta");
+    assert!(batch.push(
+        2,
+        0x2000,
+        0,
+        recipient,
+        40,
+        Some(&second_name),
+        None,
+        &memory,
+    ));
+    assert!(batch.push(
+        2,
+        0x2000,
+        0,
+        native::Recipient {
+            reference: 12,
+            ..recipient
+        },
+        50,
+        Some(&second_name),
+        None,
+        &memory,
+    ));
+    assert_eq!(batch.items.len(), 4);
+    assert_eq!(batch.items[0].amount, 10);
+    assert_eq!(batch.items[0].name_reason, Some("fuel award name unreadable"));
+    assert_eq!(batch.items[1].amount, 50);
+    assert_eq!(batch.items[1].name_reason, None);
+    assert_eq!(batch.items[2].amount, 40);
+    assert_eq!(batch.items[3].amount, 50);
+    assert_eq!(batch.items[3].recipient.reference, 12);
+}
+
+#[test]
+fn distribution_start_resets_cached_reference_registry_headers() {
+    use engine_native_parts::{creference_registry as reg, reference_bucket as bucket};
+    const UNIT: usize = 0x1000;
+    let mut state = ThreadState::default();
+    let handle = (1_u64 << 32) | 5_u64;
+    let root = reg::LOW_ROOTS_RVA.0 + 5 * 8;
+    struct RegistryMemory {
+        root: usize,
+        header: usize,
+        bytes: Vec<u8>,
+    }
+    impl engine_native_memory::Memory for RegistryMemory {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == self.root && output.len() == 8 {
+                output.copy_from_slice(&(self.header as u64).to_le_bytes());
+                return true;
+            }
+            let Some(end) = address.checked_add(output.len()) else {
+                return false;
+            };
+            let Some(slice) = self.bytes.get(address..end) else {
+                return false;
+            };
+            output.copy_from_slice(slice);
+            true
+        }
+    }
+    let write_table = |bytes: &mut [u8], header: usize, buckets: usize, value: usize| {
+        let mask = 7_u32;
+        let overflow = 5_u8;
+        bytes[header + reg::ENTRIES..header + reg::ENTRIES + 8]
+            .copy_from_slice(&(buckets as u64).to_le_bytes());
+        bytes[header + reg::COUNT..header + reg::COUNT + 4].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[header + reg::MASK..header + reg::MASK + 4].copy_from_slice(&mask.to_le_bytes());
+        bytes[header + reg::MASK + 4] = overflow;
+        let hash = handle.rotate_left(32).wrapping_mul(reg::HASH_MULTIPLIER);
+        let slot = ((hash >> 32) as u32 ^ hash as u32) & mask;
+        let cell = buckets + slot as usize * bucket::STRIDE;
+        bytes[cell + bucket::TYPE..cell + bucket::TYPE + 8].copy_from_slice(&handle.to_le_bytes());
+        bytes[cell + bucket::OBJECT..cell + bucket::OBJECT + 8]
+            .copy_from_slice(&(value as u64).to_le_bytes());
+        bytes[cell + bucket::DISTANCE] = 1;
+        let terminal = buckets + (mask as usize + 1 + overflow as usize) * bucket::STRIDE;
+        bytes[terminal + bucket::DISTANCE] = bucket::TERMINAL_DISTANCE;
+    };
+    let mut bytes = vec![0_u8; 0x2000];
+    bytes[UNIT..UNIT + 8]
+        .copy_from_slice(&(engine_native::carmy::VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[UNIT + 8..UNIT + 12].copy_from_slice(&0_u32.to_le_bytes());
+    bytes[UNIT + 24..UNIT + 32].copy_from_slice(&handle.to_le_bytes());
+    let owner_at = UNIT + engine_native::cunit::ROSTER_OWNER;
+    bytes[owner_at..owner_at + 4].copy_from_slice(&7_u32.to_le_bytes());
+    write_table(&mut bytes, 0x100, 0x200, UNIT + 0x10);
+    let mut reg_mem = RegistryMemory {
+        root,
+        header: 0x100,
+        bytes,
+    };
+    let expected = native::Recipient {
+        kind: 0,
+        reference: handle,
+        owner: 7,
+        host: 0,
+    };
+    assert_eq!(
+        native::unit_with(&reg_mem, 0, UNIT, 0, &mut state.registry),
+        Ok((expected, false))
+    );
+    assert_eq!(
+        native::unit_with(&reg_mem, 0, UNIT, 0, &mut state.registry),
+        Ok((expected, true))
+    );
+    reg_mem.bytes[0x200..0x600].fill(0);
+    write_table(&mut reg_mem.bytes, 0x100, 0x800, UNIT + 0x10);
+    assert!(
+        native::unit_with(&reg_mem, 0, UNIT, 0, &mut state.registry).is_err(),
+        "reused registry header must fail against relocated buckets before a new distribution"
+    );
+    let _ = state.begin_distribution(started(1));
+    assert_eq!(
+        native::unit_with(&reg_mem, 0, UNIT, 0, &mut state.registry),
+        Ok((expected, false))
+    );
+}

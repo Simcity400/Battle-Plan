@@ -437,7 +437,7 @@ pub fn walk_scopes_carried(
                 let container = character
                     .checked_add(ccharacter::VARIABLES)
                     .ok_or("character variables address overflow")?;
-                let head = Head::from_span(rec[16..16 + HEAD_SPAN].try_into().unwrap());
+                let head = Head::from_fields(rec[16..16 + HEAD_STRIDE].try_into().unwrap());
                 scope(Scope::Character(id), container, Some(head))?;
             }
             for &character in &char_ptrs[done..batch_len] {
@@ -575,17 +575,25 @@ pub fn read_store_carried_with_head(
 }
 
 pub const HEAD_BATCH: usize = 64;
-const HEAD_SPAN: usize = STORAGE + HEADER;
-const _: () = {
-    assert!(VTABLE == 0);
-    assert!(SEED + 4 <= STORAGE);
-};
-const HEAD_FIELDS: [RecordField; 1] = [RecordField {
-    source_offset: 0,
-    destination_offset: 0,
-    len: HEAD_SPAN,
-}];
-const HEAD_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&HEAD_FIELDS, HEAD_SPAN) {
+const HEAD_STRIDE: usize = 8 + HEADER + 4;
+const HEAD_FIELDS: [RecordField; 3] = [
+    RecordField {
+        source_offset: VTABLE,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: STORAGE,
+        destination_offset: 8,
+        len: HEADER,
+    },
+    RecordField {
+        source_offset: SEED,
+        destination_offset: 8 + HEADER,
+        len: 4,
+    },
+];
+const HEAD_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&HEAD_FIELDS, HEAD_STRIDE) {
     Some(layout) => layout,
     None => panic!("valid variables head layout"),
 };
@@ -620,19 +628,29 @@ const STATE_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&STATE_FIELD
     Some(layout) => layout,
     None => panic!("valid state variables layout"),
 };
-const CHAR_FIELDS: [RecordField; 2] = [
+const CHAR_FIELDS: [RecordField; 4] = [
     RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: 16,
     },
     RecordField {
-        source_offset: ccharacter::VARIABLES,
+        source_offset: ccharacter::VARIABLES + VTABLE,
         destination_offset: 16,
-        len: HEAD_SPAN,
+        len: 8,
+    },
+    RecordField {
+        source_offset: ccharacter::VARIABLES + STORAGE,
+        destination_offset: 24,
+        len: HEADER,
+    },
+    RecordField {
+        source_offset: ccharacter::VARIABLES + SEED,
+        destination_offset: 24 + HEADER,
+        len: 4,
     },
 ];
-const CHAR_STRIDE: usize = 16 + HEAD_SPAN;
+const CHAR_STRIDE: usize = 16 + HEAD_STRIDE;
 const CHAR_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&CHAR_FIELDS, CHAR_STRIDE) {
     Some(layout) => layout,
     None => panic!("valid character variables layout"),
@@ -640,7 +658,7 @@ const CHAR_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&CHAR_FIELDS,
 
 pub fn read_heads(memory: &impl Memory, containers: &[usize], out: &mut [Head]) {
     let total = containers.len().min(out.len());
-    let mut raw = [0_u8; HEAD_BATCH * HEAD_SPAN];
+    let mut raw = [0_u8; HEAD_BATCH * HEAD_STRIDE];
     let mut offset = 0_usize;
     while offset < total {
         let batch = (total - offset).min(HEAD_BATCH);
@@ -648,11 +666,14 @@ pub fn read_heads(memory: &impl Memory, containers: &[usize], out: &mut [Head]) 
         let done = memory.copy_records(
             RecordSources::Pointers(slice),
             &HEAD_LAYOUT,
-            &mut raw[..batch * HEAD_SPAN],
-        );
+            &mut raw[..batch * HEAD_STRIDE],
+        ) / HEAD_FIELDS.len();
         for i in 0..done {
-            out[offset + i] =
-                Head::from_span(raw[i * HEAD_SPAN..(i + 1) * HEAD_SPAN].try_into().unwrap());
+            out[offset + i] = Head::from_fields(
+                raw[i * HEAD_STRIDE..(i + 1) * HEAD_STRIDE]
+                    .try_into()
+                    .unwrap(),
+            );
         }
         for i in done..batch {
             let container = slice[i];
@@ -702,11 +723,11 @@ pub struct Head {
 }
 
 impl Head {
-    fn from_span(bytes: [u8; HEAD_SPAN]) -> Self {
+    fn from_fields(bytes: [u8; HEAD_STRIDE]) -> Self {
         Self {
             vtable: bytes[0..8].try_into().unwrap(),
-            header: bytes[STORAGE..STORAGE + HEADER].try_into().unwrap(),
-            seed: bytes[SEED..SEED + 4].try_into().unwrap(),
+            header: bytes[8..8 + HEADER].try_into().unwrap(),
+            seed: bytes[8 + HEADER..8 + HEADER + 4].try_into().unwrap(),
             copied: 3,
             overflow: false,
         }

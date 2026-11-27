@@ -86,34 +86,54 @@ impl Store {
         if !demanded(row) {
             return None;
         }
+        self.capture_observed(
+            memory,
+            base,
+            pointer,
+            row,
+            observed_pointer,
+            observed_token,
+            collector_observers::wing_changes::map_sequence_at,
+            collector_observers::wing_changes::map_quiet,
+        )
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "observer callbacks separate live capture from unit-test registry injection"
+    )]
+    fn capture_observed(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        pointer: usize,
+        row: &cair_wing::Row,
+        observed_pointer: Option<usize>,
+        observed_token: Option<(u64, u64)>,
+        sequence: impl FnMut(usize, usize) -> Option<((u64, u64), usize)>,
+        quiet: impl Fn() -> Option<(u64, u64)>,
+    ) -> Option<bool> {
         self.capture_with_at(
             pointer,
             row.id,
-            collector_observers::wing_changes::map_sequence_at,
-            collector_observers::wing_changes::map_quiet,
+            sequence,
+            &quiet,
             || {
-                if let Some(observed) = row.raid_reference {
-                    observed_token
-                        .filter(|token| {
-                            Some(*token) == collector_observers::wing_changes::map_quiet()
-                        })
-                        .map(|_| observed.raw)
-                } else {
-                    pointer
-                        .checked_add(sites::RAID_REFERENCE)
-                        .and_then(|at| engine_native_memory::read(memory, at))
+                if let Some(observed) = row.raid_reference
+                    && observed_token.is_some_and(|token| Some(token) == quiet())
+                {
+                    return Some(observed.raw);
                 }
+                pointer
+                    .checked_add(sites::RAID_REFERENCE)
+                    .and_then(|at| engine_native_memory::read(memory, at))
             },
             |raw| {
                 if let Some(observed) = row.raid_reference.filter(|value| value.raw == raw)
                     && let Some(pointer) = observed_pointer
                     && observed.resolves == (pointer != 0)
+                    && observed_token.is_some_and(|token| Some(token) == quiet())
                 {
-                    return observed_token
-                        .filter(|token| {
-                            Some(*token) == collector_observers::wing_changes::map_quiet()
-                        })
-                        .map(|_| (pointer != 0).then_some(pointer));
+                    return Some((pointer != 0).then_some(pointer));
                 }
                 resolve(memory, base, raw).ok()
             },
@@ -474,6 +494,118 @@ mod tests {
             ),
             Some(true),
             "an uncertified read is read again, never carried"
+        );
+    }
+
+    #[test]
+    fn stale_observed_token_falls_back_to_live_read_instead_of_caching_none() {
+        struct LiveMemory {
+            wing_zero: usize,
+            wing_nonzero: usize,
+            raw: u64,
+        }
+        impl Memory for LiveMemory {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == self.wing_zero + sites::RAID_REFERENCE && output.len() == 8 {
+                    output.copy_from_slice(&0_u64.to_le_bytes());
+                    true
+                } else if address == self.wing_nonzero + sites::RAID_REFERENCE && output.len() == 8
+                {
+                    output.copy_from_slice(&self.raw.to_le_bytes());
+                    true
+                } else if output.len() == 8 {
+                    output.fill(0);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        let registry = collector_certificates::watch_registry::WatchRegistry::new();
+        registry.offer(8);
+        registry.boundary(false);
+        registry.set_enabled(true);
+        let raw = (1_u64 << 32) | u64::from(craid_instance::REFERENCE_TYPE_VALUE);
+        let memory = LiveMemory {
+            wing_zero: 0x1000,
+            wing_nonzero: 0x2000,
+            raw,
+        };
+        let current = registry.quiet().unwrap();
+        let stale = Some((current.0, current.1.wrapping_add(1)));
+        let row_zero = cair_wing::Row {
+            id: 11,
+            air_base: 1,
+            raid_reference: Some(cair_wing::transport_operands::RaidReference {
+                raw: 0,
+                resolves: false,
+            }),
+            ..Default::default()
+        };
+        let row_nonzero = cair_wing::Row {
+            id: 12,
+            air_base: 1,
+            raid_reference: Some(cair_wing::transport_operands::RaidReference {
+                raw,
+                resolves: false,
+            }),
+            ..Default::default()
+        };
+        let mut store = Store::default();
+        store.begin(2, true);
+        assert_eq!(
+            store.capture_observed(
+                &memory,
+                0,
+                0x1000,
+                &row_zero,
+                Some(0),
+                stale,
+                |at, slot| registry.sequence_at(at, slot),
+                || registry.quiet(),
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            store.capture_observed(
+                &memory,
+                0,
+                0x2000,
+                &row_nonzero,
+                Some(0),
+                stale,
+                |at, slot| registry.sequence_at(at, slot),
+                || registry.quiet(),
+            ),
+            Some(false)
+        );
+        store.finish();
+        store.begin(2, false);
+        assert_eq!(
+            store.capture_observed(
+                &memory,
+                0,
+                0x1000,
+                &row_zero,
+                Some(0),
+                stale,
+                |at, slot| registry.sequence_at(at, slot),
+                || registry.quiet(),
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            store.capture_observed(
+                &memory,
+                0,
+                0x2000,
+                &row_nonzero,
+                Some(0),
+                stale,
+                |at, slot| registry.sequence_at(at, slot),
+                || registry.quiet(),
+            ),
+            Some(false)
         );
     }
 }

@@ -955,6 +955,21 @@ mod tests {
         let mut runtime = Runtime::default();
         runtime.read(&memory, 0, &[], false, false, None);
         assert_eq!(memory.variable_reads.get(), 0);
+        let pre_registration_write = project_variable_changes::writing_project(row.source_pointer);
+        runtime.read(&memory, 0, &[row], false, false, None);
+        let rows::Recorded::Value(unready) = runtime.value(&row) else {
+            panic!("captured runtime")
+        };
+        assert!(
+            !unready.pending_known,
+            "first pending reward must not certify while a pre-registration writer is active"
+        );
+        assert!(
+            unready.variables.is_none(),
+            "first variable store must not certify while a pre-registration writer is active"
+        );
+        assert_eq!(memory.pending_reads.get(), 0);
+        drop(pre_registration_write);
         runtime.read(&memory, 0, &[row], false, false, None);
         let rows::Recorded::Value(value) = runtime.value(&row) else {
             panic!("captured runtime")

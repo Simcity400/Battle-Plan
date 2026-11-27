@@ -544,6 +544,12 @@ struct BatchedRecipient {
     name_reason: Option<&'static str>,
 }
 
+enum CandidateName<'a> {
+    None,
+    Slice(&'a [u8]),
+    Range(usize, usize),
+}
+
 #[derive(Default)]
 struct PendingBatch {
     items: Vec<BatchedRecipient>,
@@ -552,6 +558,7 @@ struct PendingBatch {
     max_name_len: usize,
     table: Vec<u32>,
     touched: Vec<usize>,
+    touched_overflow: bool,
 }
 
 impl PendingBatch {
@@ -569,7 +576,7 @@ impl PendingBatch {
         self.names.clear();
         self.total_name_bytes = 0;
         self.max_name_len = 0;
-        if self.touched.len() * 4 < self.table.len() {
+        if !self.touched_overflow && self.touched.len() * 4 < self.table.len() {
             for &slot in &self.touched {
                 self.table[slot] = 0;
             }
@@ -577,49 +584,82 @@ impl PendingBatch {
             self.table.fill(0);
         }
         self.touched.clear();
+        self.touched_overflow = false;
     }
 
-    #[inline(always)]
-    fn try_coalesce(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "decoded coalescing checks every published recipient identity field"
+    )]
+    fn try_coalesce_decoded(
         &mut self,
         kind: u32,
         pointer: usize,
         host_ptr: usize,
+        recipient: native::Recipient,
         amount: i64,
-    ) -> Option<bool> {
+        candidate: CandidateName<'_>,
+        name_reason: Option<&'static str>,
+    ) -> bool {
         let len = self.table.len();
         if len == 0 {
-            return None;
+            return false;
         }
+        let candidate_bytes = match candidate {
+            CandidateName::None => None,
+            CandidateName::Slice(bytes) => Some(bytes),
+            CandidateName::Range(start, len) => Some(&self.names[start..start + len]),
+        };
         let mask = len - 1;
         let mut slot = Self::hash(kind, pointer, host_ptr) & mask;
         loop {
             let entry = self.table[slot];
             if entry == 0 {
-                return None;
+                return false;
             }
             let item = &mut self.items[(entry - 1) as usize];
-            if item.kind == kind && item.pointer == pointer && item.host_ptr == host_ptr {
-                if let Some(sum) = item.amount.checked_add(amount) {
-                    item.amount = sum;
-                    return Some(true);
-                }
-                return Some(false);
+            if item.kind == kind
+                && item.pointer == pointer
+                && item.host_ptr == host_ptr
+                && item.recipient == recipient
+                && item.name_reason == name_reason
+                && item.name.map(|(start, len)| &self.names[start..start + len]) == candidate_bytes
+                && let Some(sum) = item.amount.checked_add(amount)
+            {
+                item.amount = sum;
+                return true;
             }
             slot = (slot + 1) & mask;
         }
     }
 
-    fn rehash(&mut self, new_len: usize) {
+    fn rehash(&mut self) {
+        let Some(new_len) = self
+            .items
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(1))
+            .and_then(usize::checked_next_power_of_two)
+            .map(|n| n.max(64))
+        else {
+            self.table.clear();
+            self.touched.clear();
+            self.touched_overflow = false;
+            return;
+        };
         let mut table = Vec::new();
         if engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut table, new_len))
             .is_err()
         {
+            self.table.clear();
+            self.touched.clear();
+            self.touched_overflow = false;
             return;
         }
         table.resize(new_len, 0);
         let mask = new_len - 1;
         self.touched.clear();
+        self.touched_overflow = false;
         let _ = engine_allocation::advisory(|| {
             engine_allocation::reserve(&mut self.touched, self.items.len())
         });
@@ -631,6 +671,8 @@ impl PendingBatch {
             table[slot] = (idx + 1) as u32;
             if self.touched.len() < self.touched.capacity() {
                 self.touched.push(slot);
+            } else {
+                self.touched_overflow = true;
             }
         }
         self.table = table;
@@ -649,37 +691,74 @@ impl PendingBatch {
         amount: i64,
         stored_name: Option<&native::StoredName>,
         mut name_reason: Option<&'static str>,
-        insert_in_table: bool,
         memory: &impl Memory,
     ) -> bool {
-        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.items, 1)).is_err() {
-            return false;
-        }
         let name_required = stored_name.map_or(0, native::StoredName::byte_len);
-        let mut name = None;
-        if let Some(stored) = stored_name {
-            let start = self.names.len();
-            if engine_allocation::advisory(|| {
-                engine_allocation::reserve(&mut self.names, name_required)
-            })
-            .is_err()
-            {
-                return false;
-            }
+        let mut copied_start = None;
+        let candidate = if let Some(stored) = stored_name {
             if let Some(loaded) = stored.loaded_bytes() {
-                self.names.extend_from_slice(loaded);
-                name = Some((start, loaded.len()));
+                CandidateName::Slice(loaded)
             } else {
+                let start = self.names.len();
+                if engine_allocation::advisory(|| {
+                    engine_allocation::reserve(&mut self.names, name_required)
+                })
+                .is_err()
+                {
+                    return false;
+                }
                 self.names.resize(start + name_required, 0);
                 match stored.copy(memory, &mut self.names[start..start + name_required]) {
-                    Ok(()) => name = Some((start, name_required)),
+                    Ok(()) => {
+                        copied_start = Some(start);
+                        CandidateName::Range(start, name_required)
+                    }
                     Err(reason) => {
                         self.names.truncate(start);
                         name_reason = Some(reason);
+                        CandidateName::None
                     }
                 }
             }
+        } else {
+            CandidateName::None
+        };
+        if self.try_coalesce_decoded(
+            kind,
+            pointer,
+            host_ptr,
+            recipient,
+            amount,
+            candidate,
+            name_reason,
+        ) {
+            if let Some(start) = copied_start {
+                self.names.truncate(start);
+            }
+            return true;
         }
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.items, 1)).is_err() {
+            if let Some(start) = copied_start {
+                self.names.truncate(start);
+            }
+            return false;
+        }
+        let name = match candidate {
+            CandidateName::None => None,
+            CandidateName::Range(start, len) => Some((start, len)),
+            CandidateName::Slice(loaded) => {
+                let start = self.names.len();
+                if engine_allocation::advisory(|| {
+                    engine_allocation::reserve(&mut self.names, loaded.len())
+                })
+                .is_err()
+                {
+                    return false;
+                }
+                self.names.extend_from_slice(loaded);
+                Some((start, loaded.len()))
+            }
+        };
         let idx = self.items.len();
         self.items.push(BatchedRecipient {
             kind,
@@ -693,31 +772,33 @@ impl PendingBatch {
         });
         self.total_name_bytes = self.total_name_bytes.saturating_add(name_required);
         self.max_name_len = self.max_name_len.max(name_required);
-        if insert_in_table && idx < u32::MAX as usize {
-            if self.table.is_empty() {
-                self.rehash(64);
-            } else if self.items.len() * 2 >= self.table.len() {
-                self.rehash(self.table.len().saturating_mul(2));
-            }
-            if !self.table.is_empty() && self.items.len() * 2 < self.table.len() {
+        if idx < u32::MAX as usize {
+            if self.table.is_empty() || self.items.len().saturating_mul(2) >= self.table.len() {
+                self.rehash();
+            } else {
                 let mask = self.table.len() - 1;
                 let mut slot = Self::hash(kind, pointer, host_ptr) & mask;
                 while self.table[slot] != 0 {
                     slot = (slot + 1) & mask;
                 }
                 self.table[slot] = (idx + 1) as u32;
-                if self.touched.len() == self.touched.capacity() {
-                    let _ = engine_allocation::advisory(|| {
-                        engine_allocation::reserve(&mut self.touched, 1)
-                    });
-                }
-                if self.touched.len() < self.touched.capacity() {
-                    self.touched.push(slot);
-                } else {
-                    self.touched.clear();
-                    self.touched.resize(self.table.len(), 0);
+                if !self.touched_overflow {
+                    if self.touched.len() == self.touched.capacity() {
+                        let _ = engine_allocation::advisory(|| {
+                            engine_allocation::reserve(&mut self.touched, 1)
+                        });
+                    }
+                    if self.touched.len() < self.touched.capacity() {
+                        self.touched.push(slot);
+                    } else {
+                        self.touched_overflow = true;
+                    }
                 }
             }
+        } else {
+            self.table.clear();
+            self.touched.clear();
+            self.touched_overflow = false;
         }
         true
     }
@@ -728,7 +809,13 @@ struct ThreadState {
     pending: Option<Pending>,
     batch: PendingBatch,
     registry: native::Registry,
-    registry_stamp: (usize, u64),
+}
+
+impl ThreadState {
+    fn begin_distribution(&mut self, next: Pending) -> Option<Pending> {
+        self.registry = native::Registry::default();
+        self.pending.replace(next)
+    }
 }
 
 thread_local! {
@@ -1030,19 +1117,21 @@ fn append(
         attempted_since(attempted, &ENTRY_CONSUMED),
         Ordering::Release,
     );
-    if let Some(name) = &name {
-        let len = name.byte_len();
-        let bytes = len as u64;
-        let attempted = NAME_ATTEMPTS
-            .fetch_add(bytes, Ordering::Relaxed)
-            .wrapping_add(bytes);
-        raise(
-            &NAME_DEMAND,
-            attempted_since(attempted, &NAME_CONSUMED),
-            Ordering::Release,
-        );
-        raise(&NAME_STRIDE, len, Ordering::Release);
-    }
+    let attempted = match &name {
+        Some(name) => {
+            let len = name.byte_len();
+            raise(&NAME_STRIDE, len, Ordering::Release);
+            NAME_ATTEMPTS
+                .fetch_add(len as u64, Ordering::Relaxed)
+                .wrapping_add(len as u64)
+        }
+        None => NAME_ATTEMPTS.load(Ordering::Relaxed),
+    };
+    raise(
+        &NAME_DEMAND,
+        attempted_since(attempted, &NAME_CONSUMED),
+        Ordering::Release,
+    );
     let Some(buffer) = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing)
     else {
         let index = LOG.cursor.fetch_add(1, Ordering::SeqCst);
@@ -1072,18 +1161,20 @@ fn flush_batch_orphans(_call: &Call<'_>, batch: &mut PendingBatch, root: u64, co
         attempted_since(attempted, &ENTRY_CONSUMED),
         Ordering::Release,
     );
-    if batch.total_name_bytes != 0 {
+    let attempted = if batch.total_name_bytes != 0 {
         let bytes = batch.total_name_bytes as u64;
-        let attempted = NAME_ATTEMPTS
-            .fetch_add(bytes, Ordering::Relaxed)
-            .wrapping_add(bytes);
-        raise(
-            &NAME_DEMAND,
-            attempted_since(attempted, &NAME_CONSUMED),
-            Ordering::Release,
-        );
         raise(&NAME_STRIDE, batch.max_name_len, Ordering::Release);
-    }
+        NAME_ATTEMPTS
+            .fetch_add(bytes, Ordering::Relaxed)
+            .wrapping_add(bytes)
+    } else {
+        NAME_ATTEMPTS.load(Ordering::Relaxed)
+    };
+    raise(
+        &NAME_DEMAND,
+        attempted_since(attempted, &NAME_CONSUMED),
+        Ordering::Release,
+    );
     let buffer = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing);
     let base_index = LOG.cursor.fetch_add(count as u64, Ordering::AcqRel);
     if let Some(ref buffer) = buffer {
@@ -1200,18 +1291,20 @@ fn append_batch(
         attempted_since(attempted, &ENTRY_CONSUMED),
         Ordering::Release,
     );
-    if batch.total_name_bytes != 0 {
+    let attempted = if batch.total_name_bytes != 0 {
         let bytes = batch.total_name_bytes as u64;
-        let attempted = NAME_ATTEMPTS
-            .fetch_add(bytes, Ordering::Relaxed)
-            .wrapping_add(bytes);
-        raise(
-            &NAME_DEMAND,
-            attempted_since(attempted, &NAME_CONSUMED),
-            Ordering::Release,
-        );
         raise(&NAME_STRIDE, batch.max_name_len, Ordering::Release);
-    }
+        NAME_ATTEMPTS
+            .fetch_add(bytes, Ordering::Relaxed)
+            .wrapping_add(bytes)
+    } else {
+        NAME_ATTEMPTS.load(Ordering::Relaxed)
+    };
+    raise(
+        &NAME_DEMAND,
+        attempted_since(attempted, &NAME_CONSUMED),
+        Ordering::Release,
+    );
     let root_entry = Entry {
         root: pending.root,
         country: pending.started.country,
@@ -1665,12 +1758,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                 };
                 THREAD_STATE.with(|state| {
                     let state = &mut *state.borrow_mut();
-                    let reg_stamp = (base, next.stamp.0);
-                    if state.registry_stamp != reg_stamp {
-                        state.registry = native::Registry::default();
-                        state.registry_stamp = reg_stamp;
-                    }
-                    let old = state.pending.replace(next);
+                    let old = state.begin_distribution(next);
                     if let Some(prev) = old {
                         flush_batch_orphans(
                             &call,
@@ -1692,6 +1780,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                 REFUSAL.record(reason);
                 THREAD_STATE.with(|state| {
                     let state = &mut *state.borrow_mut();
+                    state.registry = native::Registry::default();
                     if let Some(prev) = state.pending.take() {
                         flush_batch_orphans(
                             &call,
@@ -1776,14 +1865,6 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
             }
         };
         pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
-        let coalesced = state.batch.try_coalesce(kind, pointer, host_ptr, amount);
-        if coalesced == Some(true) {
-            if held_ref(pending, epoch_current).is_some() {
-                HELD.increment(if kind == 1 { 1 } else { 2 });
-            }
-            return;
-        }
-        let insert_in_table = coalesced.is_none();
         let recipient_and_name = {
             let located = held_ref(pending, epoch_current);
             if kind == 1 {
@@ -1834,7 +1915,6 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                     amount,
                     name.as_ref(),
                     name_reason,
-                    insert_in_table,
                     &memory,
                 );
                 if !buffered

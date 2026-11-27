@@ -144,9 +144,22 @@ impl std::hash::Hasher for PointerHasher {
 
 type FastMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<PointerHasher>>;
 
+#[derive(Clone, Copy, Debug)]
+struct HeldEntry<V> {
+    certificate: (u64, u64),
+    value: V,
+    seen: u64,
+}
+
+impl<V: PartialEq> PartialEq for HeldEntry<V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.certificate == other.certificate && self.value == other.value
+    }
+}
+
 #[derive(Debug, Default)]
 struct HeldLeaders {
-    held: FastMap<usize, ((u64, u64), u64, u64)>,
+    held: FastMap<usize, HeldEntry<u64>>,
     generation: u64,
     seen: usize,
     fresh: Vec<(usize, (u64, u64))>,
@@ -154,7 +167,7 @@ struct HeldLeaders {
 
 #[derive(Debug, Default)]
 struct HeldGroups {
-    held: FastMap<usize, ((u64, u64), carmy_leader::GroupFields, u64)>,
+    held: FastMap<usize, HeldEntry<carmy_leader::GroupFields>>,
     generation: u64,
     seen: usize,
     fresh: Vec<(usize, (u64, u64))>,
@@ -168,7 +181,7 @@ struct Carry<'a, L, G> {
 }
 
 fn carried<V: Copy>(
-    held: &mut FastMap<usize, ((u64, u64), V, u64)>,
+    held: &mut FastMap<usize, HeldEntry<V>>,
     generation: u64,
     seen: &mut usize,
     fresh: &mut Vec<(usize, (u64, u64))>,
@@ -176,12 +189,12 @@ fn carried<V: Copy>(
     certificate: (u64, u64),
 ) -> Option<V> {
     match held.get_mut(&key) {
-        Some(&mut (previous, value, ref mut stamp)) if previous == certificate => {
-            if *stamp != generation {
-                *stamp = generation;
+        Some(entry) if entry.certificate == certificate => {
+            if entry.seen != generation {
+                entry.seen = generation;
                 *seen += 1;
             }
-            Some(value)
+            Some(entry.value)
         }
         _ => {
             if engine_allocation::advisory(|| engine_allocation::reserve(&mut *fresh, 1)).is_ok()
@@ -229,8 +242,15 @@ where
             && engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *held, 1)).is_ok()
         {
             if held
-                .insert(group, (fresh[at].1, fields, *generation))
-                .is_none_or(|(_, _, prev)| prev != *generation)
+                .insert(
+                    group,
+                    HeldEntry {
+                        certificate: fresh[at].1,
+                        value: fields,
+                        seen: *generation,
+                    },
+                )
+                .is_none_or(|prev| prev.seen != *generation)
             {
                 *seen += 1;
             }
@@ -280,20 +300,27 @@ fn select(
             && engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *held, 1)).is_ok()
         {
             if held
-                .insert(leader, (fresh[at].1, handle, *generation))
-                .is_none_or(|(_, _, prev)| prev != *generation)
+                .insert(
+                    leader,
+                    HeldEntry {
+                        certificate: fresh[at].1,
+                        value: handle,
+                        seen: *generation,
+                    },
+                )
+                .is_none_or(|prev| prev.seen != *generation)
             {
                 *seen += 1;
             }
         }
     }
-    if held.len() > seen.saturating_mul(2).saturating_add(64) {
+    if *seen != held.len() {
         let current = *generation;
-        held.retain(|_, (_, _, stamp)| *stamp == current);
+        held.retain(|_, entry| entry.seen == current);
     }
-    if groups.held.len() > groups.seen.saturating_mul(2).saturating_add(64) {
+    if groups.seen != groups.held.len() {
         let current = groups.generation;
-        groups.held.retain(|_, (_, _, stamp)| *stamp == current);
+        groups.held.retain(|_, entry| entry.seen == current);
     }
     collector_observers::orders_group_changes::record(
         &collector_observers::orders_group_changes::Counts {

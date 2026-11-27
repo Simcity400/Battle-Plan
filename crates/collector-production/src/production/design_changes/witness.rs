@@ -256,7 +256,7 @@ fn normalize(
             let prev_len = last.1 as usize;
             let prev_end = prev_start.checked_add(prev_len)?;
             if address < prev_end {
-                let overlap_off = address - prev_start;
+                let overlap_off = address.checked_sub(prev_start)?;
                 let overlap_len = (prev_end - address).min(len_usize);
                 if out_bytes[prev_byte_start + overlap_off
                     ..prev_byte_start + overlap_off + overlap_len]
@@ -785,5 +785,22 @@ mod tests {
         assert!(!held.unchanged(&world, &mut scratch));
         world.0.borrow_mut()[20] ^= 0xff;
         assert!(held.unchanged(&world, &mut scratch));
+
+        let wide = World(std::cell::RefCell::new(
+            (0..4300).map(|i| (i & 0xff) as u8).collect(),
+        ));
+        let recording = Recording::new(&wide, (0, 0));
+        let mut first = vec![0u8; 4096];
+        let mut second = vec![0u8; 200];
+        let mut third = vec![0u8; 10];
+        assert!(recording.copy(16, &mut first));
+        assert!(recording.copy(4016, &mut second));
+        assert!(recording.copy(4026, &mut third));
+        let held = recording.witness(16, (0, false)).unwrap();
+        assert!(held.unchanged(&wide, &mut scratch));
+        wide.0.borrow_mut()[4030] ^= 0xff;
+        assert!(!held.unchanged(&wide, &mut scratch));
+        wide.0.borrow_mut()[4030] ^= 0xff;
+        assert!(held.unchanged(&wide, &mut scratch));
     }
 }

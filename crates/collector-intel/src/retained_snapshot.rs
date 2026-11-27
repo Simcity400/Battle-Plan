@@ -18,6 +18,7 @@ use std::{
     },
 };
 
+#[derive(Debug, PartialEq)]
 pub(crate) struct ContributionsDelta {
     pub(crate) prev_generation: u64,
     pub(crate) generation: u64,

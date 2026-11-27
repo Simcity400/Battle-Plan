@@ -546,18 +546,24 @@ impl Dispatch {
             }
             return Ok(parts);
         };
+        let count = parts.len();
         let mut pending = Children {
             executor: &executor,
             calibration: self.calibration.as_deref().unwrap(),
-            tickets: engine_allocation::vec(parts.len())
+            tickets: engine_allocation::vec(count)
                 .map_err(|_| "variant worker ticket allocation failed")?,
         };
-        let mut output = engine_allocation::vec(parts.len())
+        let mut ticket_indices = engine_allocation::vec(count)
+            .map_err(|_| "variant worker ticket allocation failed")?;
+        let mut slots: Vec<Option<Work>> = engine_allocation::vec(count)
             .map_err(|_| "variant worker result allocation failed")?;
-        let mut parts = parts.into_iter();
+        for _ in 0..count {
+            slots.push(None);
+        }
+        let mut parts = parts.into_iter().enumerate();
         let local = parts.next();
         let mut failure = None;
-        for part in parts {
+        for (index, part) in parts {
             let role = part.role();
             let mut request = Some(Job::VariantPart(Request { base, part }));
             // SAFETY: the worker parent drains every child before returning its live lease.
@@ -565,22 +571,25 @@ impl Dispatch {
                 unsafe { executor.submit_with_priority(&mut request, self.priority, true, true) };
             note_dispatch(&pending.calibration.roles[role as usize], submitted.is_ok());
             match submitted {
-                Ok(ticket) => pending.tickets.push(Some(ticket)),
+                Ok(ticket) => {
+                    pending.tickets.push(Some(ticket));
+                    ticket_indices.push(index);
+                }
                 Err(SubmitError::Full) => {
                     let Some(Job::VariantPart(mut request)) = request else {
                         unreachable!()
                     };
                     request.part.capture(memory, base);
-                    output.push(request.part);
+                    slots[index] = Some(request.part);
                 }
                 Err(_) => failure = Some("variant partition admission stopped before reading"),
             }
         }
         if failure.is_none()
-            && let Some(mut local) = local
+            && let Some((index, mut local)) = local
         {
             local.capture(memory, base);
-            output.push(local);
+            slots[index] = Some(local);
         }
         for ticket in pending.tickets.iter().flatten() {
             executor.run_unclaimed_child(*ticket);
@@ -599,13 +608,24 @@ impl Dispatch {
                     let Job::VariantPart(request) = completed.request else {
                         unreachable!()
                     };
-                    output.push(request.part);
+                    slots[ticket_indices[index]] = Some(request.part);
                 }
                 Err(Failure::Panicked) => failure = Some("variant partition acquisition panicked"),
                 _ => failure = Some("variant partition acquisition stopped before reading"),
             }
         }
-        failure.map_or(Ok(output), Err)
+        if let Some(reason) = failure {
+            return Err(reason);
+        }
+        let mut output = engine_allocation::vec(count)
+            .map_err(|_| "variant worker result allocation failed")?;
+        for slot in slots {
+            let Some(part) = slot else {
+                return Err("variant partition completion missing");
+            };
+            output.push(part);
+        }
+        Ok(output)
     }
 }
 struct Fanout<'a>(&'a std::sync::atomic::AtomicUsize);

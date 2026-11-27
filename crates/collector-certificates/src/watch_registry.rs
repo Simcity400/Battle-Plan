@@ -944,7 +944,7 @@ impl WatchRegistry {
                     self.new_epoch();
                     table.clear();
                     self.new_epoch();
-                    self.registered.store(0, Relaxed);
+                    self.registered.store(0, SeqCst);
                     self.clears.fetch_add(1, Relaxed);
                     self.refused_at_clear.store(refused, Relaxed);
                     self.refused_at_offer.fetch_max(refused, Relaxed);
@@ -979,7 +979,7 @@ impl WatchRegistry {
                 let previous = self.table.swap(next, SeqCst);
                 self.new_epoch();
                 self.capacity.store(len, Relaxed);
-                self.registered.store(0, Relaxed);
+                self.registered.store(0, SeqCst);
                 self.installs.fetch_add(1, Relaxed);
                 self.refused_at_clear.store(refused, Relaxed);
                 self.purged_for_refusal.store(false, Relaxed);
@@ -995,7 +995,7 @@ impl WatchRegistry {
                 self.new_epoch();
                 table.clear();
                 self.new_epoch();
-                self.registered.store(0, Relaxed);
+                self.registered.store(0, SeqCst);
                 self.clears.fetch_add(1, Relaxed);
                 self.refused_at_clear.store(refused, Relaxed);
                 self.purged_for_refusal.store(false, Relaxed);
@@ -1084,7 +1084,7 @@ impl WatchRegistry {
         }
         self.table.store(offered, SeqCst);
         self.capacity.store(next.slots.len(), Relaxed);
-        self.registered.store(copied_count, Relaxed);
+        self.registered.store(copied_count, SeqCst);
         self.installs.fetch_add(1, Relaxed);
         self.refused_at_clear
             .store(self.refused.load(Relaxed), Relaxed);
@@ -1241,7 +1241,7 @@ impl WatchRegistry {
     }
 
     pub fn registered(&self) -> usize {
-        self.registered.load(Relaxed)
+        self.registered.load(SeqCst)
     }
 
     pub fn active(&self) -> usize {

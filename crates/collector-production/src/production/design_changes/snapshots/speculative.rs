@@ -49,6 +49,7 @@ pub(in super::super) fn release() {
 }
 
 pub struct Part {
+    ordinal: usize,
     base: usize,
     hour: i32,
     marked: Vec<(usize, u64, Read)>,
@@ -160,6 +161,15 @@ impl Part {
     }
 }
 
+fn fallback_reads(watches: &[Watch]) -> Result<Vec<(usize, u64, Read)>, &'static str> {
+    let mut fallback = engine_allocation::vec(watches.len())
+        .map_err(|_| "variant boundary read allocation failed")?;
+    for watch in watches {
+        fallback.push((watch.pointer, watch.id, Read::Refused));
+    }
+    Ok(fallback)
+}
+
 pub(in super::super) fn read_marked(
     speculation: Option<&mut super::super::Speculation<'_>>,
     base: usize,
@@ -167,7 +177,7 @@ pub(in super::super) fn read_marked(
     watches: &[Watch],
     witnesses: Vec<Option<Witness>>,
     removed: &[usize],
-) -> Result<Vec<Read>, &'static str> {
+) -> Result<Vec<(usize, u64, Read)>, &'static str> {
     let mut witnesses = witnesses.into_iter();
     let mut marked = engine_allocation::vec(watches.len())
         .map_err(|_| "variant boundary read allocation failed")?;
@@ -191,8 +201,9 @@ pub(in super::super) fn read_marked(
             let mut parts = engine_allocation::vec(part_count)
                 .map_err(|_| "variant boundary read allocation failed")?;
             let mut marked = marked.into_iter();
-            for _ in 0..part_count {
+            for ordinal in 0..part_count {
                 parts.push(Part {
+                    ordinal,
                     base,
                     hour,
                     marked: engine_allocation::collect_vec(marked.by_ref().take(per_part))
@@ -203,18 +214,23 @@ pub(in super::super) fn read_marked(
                     ns: 0,
                 });
             }
-            let Ok(parts) = (speculation.run)(parts) else {
-                let mut fallback = engine_allocation::vec(watches.len())
-                    .map_err(|_| "variant boundary read allocation failed")?;
-                for _ in 0..watches.len() {
-                    fallback.push(Read::Refused);
-                }
-                return Ok(fallback);
+            let Ok(mut parts) = (speculation.run)(parts) else {
+                return fallback_reads(watches);
             };
+            parts.sort_unstable_by_key(|part| part.ordinal);
+            if parts.len() != part_count
+                || parts
+                    .iter()
+                    .enumerate()
+                    .any(|(expected, part)| part.ordinal != expected)
+            {
+                return fallback_reads(watches);
+            }
             parts
         }
         _ => {
             let mut part = Part {
+                ordinal: 0,
                 base,
                 hour,
                 marked,
@@ -240,9 +256,76 @@ pub(in super::super) fn read_marked(
         ];
     }
     for part in &mut parts {
-        for (_, _, read) in part.marked.drain(..) {
-            reads.push(read);
+        for item in part.marked.drain(..) {
+            if reads.len() == watches.len() {
+                return fallback_reads(watches);
+            }
+            reads.push(item);
         }
     }
+    if reads.len() != watches.len() {
+        return fallback_reads(watches);
+    }
     Ok(reads)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn out_of_order_worker_parts_restore_watch_order_and_identity() {
+        let watches: Vec<Watch> = (0..MIN_BURST)
+            .map(|index| Watch {
+                pointer: (index + 1) * 0x1000,
+                id: (index as u64) + 100,
+                flags: [0; 3],
+                dirty: true,
+            })
+            .collect();
+        let witnesses: Vec<Option<Witness>> = vec![None; watches.len()];
+        let mut run = |mut parts: Vec<Part>| {
+            assert!(parts.len() >= 2);
+            for part in &mut parts {
+                for (_, _, read) in &mut part.marked {
+                    *read = Read::Refused;
+                }
+            }
+            parts.reverse();
+            Ok(parts)
+        };
+        let mut speculation = super::super::Speculation {
+            lanes: 2,
+            run: &mut run,
+        };
+        let reads = read_marked(Some(&mut speculation), 0, 1, &watches, witnesses, &[]).unwrap();
+        assert_eq!(reads.len(), watches.len());
+        for (watch, (pointer, id, read)) in watches.iter().zip(reads) {
+            assert_eq!((pointer, id), (watch.pointer, watch.id));
+            assert!(matches!(read, Read::Refused));
+        }
+
+        let mut drop_one = |mut parts: Vec<Part>| {
+            parts.pop();
+            Ok(parts)
+        };
+        let mut short_speculation = super::super::Speculation {
+            lanes: 2,
+            run: &mut drop_one,
+        };
+        let fallback = read_marked(
+            Some(&mut short_speculation),
+            0,
+            1,
+            &watches,
+            vec![None; watches.len()],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fallback.len(), watches.len());
+        for (watch, (pointer, id, read)) in watches.iter().zip(fallback) {
+            assert_eq!((pointer, id), (watch.pointer, watch.id));
+            assert!(matches!(read, Read::Refused));
+        }
+    }
 }

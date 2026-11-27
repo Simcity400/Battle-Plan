@@ -27,7 +27,7 @@ const SURPLUS_CAP: usize = STEADY + 2;
 
 const SURPLUS_STREAK: u32 = 48;
 
-const STEADY_IDLE_STREAK: u32 = 64;
+const STEADY_IDLE_STREAK: u32 = 4;
 
 const STEADY_PARK_STREAK: u32 = 720;
 
@@ -585,7 +585,7 @@ impl FramePool {
             self.surplus_streak.store(0, Ordering::Relaxed);
             return false;
         }
-        if live > SURPLUS_CAP || self.live_bytes() > MAX_LIVE_BYTES {
+        if self.len() >= STEADY || live > SURPLUS_CAP || self.live_bytes() > MAX_LIVE_BYTES {
             self.surplus_streak.store(0, Ordering::Relaxed);
             return true;
         }

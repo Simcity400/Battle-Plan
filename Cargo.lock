@@ -1529,6 +1529,7 @@ dependencies = [
  "engine-native",
  "engine-native-land",
  "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "replay-data",
  "replay-frame",

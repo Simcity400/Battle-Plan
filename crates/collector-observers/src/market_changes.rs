@@ -281,7 +281,10 @@ pub unsafe fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, in
             renewed[domain] = renew[domain];
         }
     }
-    if VARIABLES_WATCH.boundary(invalidate).renewed() && VARIABLES_WATCH.active() == 0 {
+    if VARIABLES_WATCH.boundary(invalidate).renewed()
+        && VARIABLES_WATCH.registered() == 0
+        && VARIABLES_WATCH.active() == 0
+    {
         for word in &VARIABLES_BLOOM {
             word.store(0, Ordering::SeqCst);
         }
@@ -1791,5 +1794,62 @@ mod tests {
         publish(&mut events).unwrap();
         assert!(events[0].id > previous);
         assert!(events[0].occurrence > previous);
+    }
+
+    #[test]
+    fn preserving_growth_keeps_variable_watch_bloom_bits_live() {
+        let _serial = test_support::SERIAL.lock().unwrap();
+        let was_enabled = ENABLED.load(Ordering::SeqCst);
+        let was_reset = RESET_FORWARDED.load(Ordering::SeqCst);
+        let was_vars = VARIABLES_FORWARDED.load(Ordering::SeqCst);
+        ENABLED.store(true, Ordering::SeqCst);
+        RESET_FORWARDED.store(true, Ordering::SeqCst);
+        VARIABLES_FORWARDED.store(true, Ordering::SeqCst);
+        refresh_coverage();
+        LEDGER.reset();
+        let base_cap = VARIABLES_WATCH.capacity().max(8);
+        VARIABLES_WATCH.offer(base_cap);
+        let clock = |hour| {
+            Some(engine_native::cgame_state::Clock {
+                hour,
+                ..Default::default()
+            })
+        };
+        unsafe { boundary(clock(10), true) };
+        unsafe { boundary(clock(11), false) };
+        let cap_before = VARIABLES_WATCH.capacity();
+        assert!(cap_before >= 8);
+        let watched = 0x55aa_1000_usize;
+        assert!(register_variable_watch(watched).is_some());
+        assert!(variables_bloom_contains(watched));
+        VARIABLES_WATCH.offer(cap_before * 2);
+        unsafe {
+            collector_certificates::watch_registry::with_quiescent_growth(|| {
+                boundary(clock(12), false);
+            });
+        }
+        assert!(VARIABLES_WATCH.capacity() > cap_before);
+        assert!(VARIABLES_WATCH.registered() >= 1);
+        assert!(variables_bloom_contains(watched));
+        drop(variable_write(watched));
+        let mut seen = false;
+        assert!(
+            VARIABLES_WATCH
+                .take(|at| {
+                    if at == watched {
+                        seen = true;
+                    }
+                })
+                .is_some()
+        );
+        assert!(
+            seen,
+            "variable write must still hit live watch after preserving growth"
+        );
+        VARIABLES_WATCH.collect();
+        ENABLED.store(was_enabled, Ordering::SeqCst);
+        RESET_FORWARDED.store(was_reset, Ordering::SeqCst);
+        VARIABLES_FORWARDED.store(was_vars, Ordering::SeqCst);
+        refresh_coverage();
     }
 }

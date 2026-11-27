@@ -66,6 +66,7 @@ type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
 struct Entry {
     owner: u32,
     id: u32,
+    born_quiet: AtomicBool,
     revision: AtomicU64,
     active: AtomicUsize,
     pending_revision: AtomicU64,
@@ -101,6 +102,21 @@ pub fn enabled(value: bool) {
     invalidate();
 }
 
+fn finalize_born_quiet(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
+    FLIGHT.quiet_epoch()?;
+    let entries = OWNERS.try_read().ok()?;
+    let entry = entries.as_ref()?.get(&store)?;
+    if entry.owner != owner || entry.id != id {
+        return None;
+    }
+    entry.born_quiet.store(true, Ordering::SeqCst);
+    let stamp = (
+        EPOCH.load(Ordering::SeqCst),
+        entry.revision.load(Ordering::SeqCst),
+    );
+    (entry.active.load(Ordering::SeqCst) == 0).then_some(stamp)
+}
+
 pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
     if !ENABLED.load(Ordering::SeqCst) {
         return None;
@@ -110,15 +126,17 @@ pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
         && entry.owner == owner
         && entry.id == id
     {
-        return (entry.active.load(Ordering::SeqCst) == 0).then(|| {
-            (
+        if entry.born_quiet.load(Ordering::SeqCst) {
+            let stamp = (
                 EPOCH.load(Ordering::SeqCst),
                 entry.revision.load(Ordering::SeqCst),
-            )
-        });
+            );
+            return (entry.active.load(Ordering::SeqCst) == 0).then_some(stamp);
+        }
+        drop(entries);
+        return finalize_born_quiet(store, owner, id);
     }
-    let mut inserted = false;
-    let stamped = {
+    {
         let mut entries = OWNERS.try_write().ok()?;
         let entries = entries.get_or_insert_with(FastMap::default);
         if !entries.contains_key(&store) {
@@ -128,6 +146,7 @@ pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
                 Entry {
                     owner,
                     id,
+                    born_quiet: AtomicBool::new(false),
                     revision: AtomicU64::new(0),
                     active: AtomicUsize::new(0),
                     pending_revision: AtomicU64::new(0),
@@ -136,27 +155,24 @@ pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
             );
             bloom_insert(store);
             COUNT.store(entries.len(), Ordering::SeqCst);
-            inserted = true;
         }
         let entry = entries.get_mut(&store)?;
         if entry.owner != owner || entry.id != id {
             entry.owner = owner;
             entry.id = id;
             entry.revision.fetch_add(1, Ordering::SeqCst);
+            entry.pending_revision.fetch_add(1, Ordering::SeqCst);
             GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
         }
-        if entry.active.load(Ordering::SeqCst) != 0 {
-            return None;
+        if entry.born_quiet.load(Ordering::SeqCst) {
+            let stamp = (
+                EPOCH.load(Ordering::SeqCst),
+                entry.revision.load(Ordering::SeqCst),
+            );
+            return (entry.active.load(Ordering::SeqCst) == 0).then_some(stamp);
         }
-        (
-            EPOCH.load(Ordering::SeqCst),
-            entry.revision.load(Ordering::SeqCst),
-        )
-    };
-    if inserted && FLIGHT.quiet_epoch().is_none() {
-        return None;
     }
-    Some(stamped)
+    finalize_born_quiet(store, owner, id)
 }
 
 pub struct Write {
@@ -288,14 +304,21 @@ impl StampReader {
         let stamp = if !enabled {
             None
         } else {
-            let entry = entry.filter(|entry| entry.owner == owner && entry.id == id)?;
-            (entry.active.load(Ordering::SeqCst) == 0)
-                .then(|| (epoch, entry.revision.load(Ordering::SeqCst)))
+            let entry = entry.filter(|entry| {
+                entry.owner == owner
+                    && entry.id == id
+                    && entry.born_quiet.load(Ordering::SeqCst)
+            })?;
+            let stamp = (epoch, entry.revision.load(Ordering::SeqCst));
+            (entry.active.load(Ordering::SeqCst) == 0).then_some(stamp)
         };
         let pending_stamp = if !project_hooks {
             None
         } else {
             entry.and_then(|entry| {
+                if !entry.born_quiet.load(Ordering::SeqCst) {
+                    return None;
+                }
                 let stamp = (epoch, entry.pending_revision.load(Ordering::SeqCst));
                 (entry.pending_active.load(Ordering::SeqCst) == 0).then_some(stamp)
             })
@@ -316,6 +339,9 @@ pub fn pending_stamp(store: usize) -> Option<(u64, u64)> {
     }
     let entries = OWNERS.try_read().ok()?;
     let entry = entries.as_ref()?.get(&store)?;
+    if !entry.born_quiet.load(Ordering::SeqCst) {
+        return None;
+    }
     let stamp = (
         EPOCH.load(Ordering::SeqCst),
         entry.pending_revision.load(Ordering::SeqCst),

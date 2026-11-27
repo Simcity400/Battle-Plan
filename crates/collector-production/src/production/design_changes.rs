@@ -1854,10 +1854,19 @@ fn drain_speculating(
             witnesses,
             &removed,
         )?;
+        if reads.len() != repairs.watches.len() {
+            return Err("variant speculative read count mismatch");
+        }
         let walked = repairs.watches.len()
-            - reads
+            - repairs
+                .watches
                 .iter()
-                .filter(|read| matches!(read, snapshots::speculative::Read::Unchanged(_)))
+                .zip(&reads)
+                .filter(|(watch, (pointer, id, read))| {
+                    *pointer == watch.pointer
+                        && *id == watch.id
+                        && matches!(read, snapshots::speculative::Read::Unchanged(_))
+                })
                 .count();
         if walked != 0 {
             collector_observers::world_input_changes::prepare_design_mios(walked, true);
@@ -1875,17 +1884,24 @@ fn drain_speculating(
             decode_events(&batch, base, output)?;
             drain_profile_mut().events_ns = elapsed_ns(begin);
             sources::resume_all(repairs.watches.iter().zip(&reads).filter_map(
-                |(watch, read)| {
-                    matches!(read, snapshots::speculative::Read::Unchanged(_)).then_some(watch.id)
+                |(watch, (pointer, id, read))| {
+                    (*pointer == watch.pointer
+                        && *id == watch.id
+                        && matches!(read, snapshots::speculative::Read::Unchanged(_)))
+                    .then_some(watch.id)
                 },
             ))?;
         } else {
             if walked != 0 {
                 sources::suspend_ids(
-                    repairs.watches.iter().zip(&reads).filter_map(|(watch, read)| {
-                        (!matches!(read, snapshots::speculative::Read::Unchanged(_)))
+                    repairs.watches.iter().zip(&reads).filter_map(
+                        |(watch, (pointer, id, read))| {
+                            (!(*pointer == watch.pointer
+                                && *id == watch.id
+                                && matches!(read, snapshots::speculative::Read::Unchanged(_))))
                             .then_some(watch.id)
-                    }),
+                        },
+                    ),
                     walked,
                 )?;
             }
@@ -1907,8 +1923,13 @@ fn drain_speculating(
         let mut flag_updates = engine_allocation::vec(walked)
             .map_err(|_| "variant repair allocation failed")?;
         let (mut unchanged, mut lane_walks) = (0, 0);
-        for (watch, read) in repairs.watches.iter().zip(reads) {
+        for (watch, (pointer, id, read)) in repairs.watches.iter().zip(reads) {
             use snapshots::speculative::Read;
+            let read = if pointer == watch.pointer && id == watch.id {
+                read
+            } else {
+                Read::Refused
+            };
             let (walk, recorded) = match read {
                 Read::Unchanged(witness) => {
                     if witness.team.0 != 0 {

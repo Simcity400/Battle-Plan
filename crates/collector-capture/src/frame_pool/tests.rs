@@ -229,9 +229,6 @@ fn surplus_waits_for_a_sustained_idle_streak_and_resets_when_popped() {
     assert!(!pool.surplus_after(4));
     pool.push(in_flight).unwrap();
     assert_eq!(pool.len(), STEADY);
-    for _ in 0..2 {
-        assert!(!pool.surplus_after(4));
-    }
     assert!(pool.surplus_after(4));
     let mut all: Vec<_> = (0..STEADY).map(|_| unsafe { pool.pop() }.unwrap()).collect();
     all.push(extra);

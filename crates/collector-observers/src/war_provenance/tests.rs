@@ -52,16 +52,28 @@ fn a_caller_outside_its_list_is_counted_and_names_no_route() {
     BASE.store(0x1_4000_0000, Ordering::Relaxed);
     let before = UNCLASSIFIED.load(Ordering::Relaxed);
     assert_eq!(
-        route(&native::DIPLOMACY_CALLERS, 0x1_4000_0000 + 0x0036_c94e),
+        route(
+            CallerSet::Diplomacy,
+            &native::DIPLOMACY_CALLERS,
+            0x1_4000_0000 + 0x0036_c94e
+        ),
         EventFeedRoute::DeclareWarEffect
     );
     assert_eq!(UNCLASSIFIED.load(Ordering::Relaxed), before);
     assert_eq!(
-        route(&native::DIPLOMACY_CALLERS, 0x1_4000_0000 + 0x0036_c949),
+        route(
+            CallerSet::Diplomacy,
+            &native::DIPLOMACY_CALLERS,
+            0x1_4000_0000 + 0x0036_c949
+        ),
         EventFeedRoute::None
     );
     assert_eq!(
-        route(&native::DIPLOMACY_CALLERS, 0x1_4000_0000 + 0x0036_5014),
+        route(
+            CallerSet::Diplomacy,
+            &native::DIPLOMACY_CALLERS,
+            0x1_4000_0000 + 0x0036_5014
+        ),
         EventFeedRoute::None
     );
     assert_eq!(UNCLASSIFIED.load(Ordering::Relaxed), before + 2);

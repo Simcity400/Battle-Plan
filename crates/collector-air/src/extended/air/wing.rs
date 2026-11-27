@@ -540,7 +540,7 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
                         crate::crew::wing(memory, pointer, collector_observers::crew_changes::quiet)
                     })
                 } else {
-                    None
+                    crate::crew::wing(memory, pointer, collector_observers::crew_changes::quiet)
                 };
                 row.acquired_manpower = crew.map(|value| value[0]);
                 row.exile_country = crew.map(|value| value[1]);
