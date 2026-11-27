@@ -198,7 +198,7 @@ pub struct Columns {
     pub touched: Result<Touched, Whole>,
     pub bound: usize,
     pub whole_read: bool,
-    pub spare: Option<(SharedView, Vec<(u128, u64)>)>,
+    pub spares: Vec<(SharedView, Vec<(u128, u64)>)>,
     pub costs: Costs,
     pub untold: bool,
     pub told: bool,
@@ -214,12 +214,12 @@ pub type Source<'a> = (&'a Mirror, &'a [Kind], bool);
 
 impl Columns {
     pub fn new() -> Self {
-        Self { stamp: 0, built: None, built_failure: None, rows: 0, touched: Err(Whole::First), bound: 0, whole_read: false, spare: None, costs: Costs::default(), untold: false, told: false, last_ns: 0 }
+        Self { stamp: 0, built: None, built_failure: None, rows: 0, touched: Err(Whole::First), bound: 0, whole_read: false, spares: Vec::new(), costs: Costs::default(), untold: false, told: false, last_ns: 0 }
     }
 
     pub fn arriving(&mut self) {
         (self.built, self.built_failure, self.touched) = (None, None, Err(Whole::First));
-        self.spare = None;
+        self.spares.clear();
         self.stamp += 1;
     }
 
@@ -233,7 +233,6 @@ impl Columns {
             && touched.is_empty()
             && holds_rows(previous)
         {
-            self.spare = None;
             self.built = Some((self.stamp, previous.clone()));
             return previous.clone();
         }
@@ -255,12 +254,36 @@ impl Columns {
             _ => 0,
         };
         self.bound = if self.whole_read { self.costs.bound(self.rows) } else { usize::MAX };
+        self.prune();
         self.built_failure = built.failure.map(|kind| view::HeadFailure {
             table: TableId::ALL[table],
             kind,
         });
         self.built = Some((self.stamp, view.clone()));
         view
+    }
+
+    pub fn prune(&mut self) {
+        let mut at = 0;
+        while at < self.spares.len() {
+            if self.spares[at].0.is_shared() {
+                at += 1;
+                continue;
+            }
+            let (_, rows) = self.spares.remove(at);
+            if let Some(before) = at.checked_sub(1) {
+                let held = &mut self.spares[before].1;
+                *held = touched::merge(held.iter().chain(&rows).copied().collect());
+            }
+        }
+        let mut anew = Vec::new();
+        for at in (0..self.spares.len()).rev() {
+            anew = touched::merge(anew.into_iter().chain(self.spares[at].1.iter().copied()).collect());
+            if self.costs.patching(anew.len(), 0) >= self.rows as f64 {
+                self.spares.drain(..=at);
+                break;
+            }
+        }
     }
 
     pub fn failed_make(&mut self, table: usize, payload: &(dyn std::any::Any + Send)) -> SharedView {
@@ -272,7 +295,7 @@ impl Columns {
             reason: failure.format(),
         });
         (self.touched, self.untold) = (Err(Whole::First), false);
-        self.spare = None;
+        self.spares.clear();
         self.built_failure = Some(failure);
         self.built = Some((self.stamp, view.clone()));
         view
@@ -314,10 +337,10 @@ impl Columns {
     }
 
     pub fn remake(&mut self, table: TableId, columns: u64, previous: Option<SharedView>, since: Result<&[(u128, u64)], Whole>, from: Source<'_>, order: &mut Vec<(u128, u32)>) -> (TableView, view::Made, Make) {
-        let spare = self.spare.take();
         let (previous, touched) = match (previous, since) {
             (Some(previous), Ok(touched)) if holds_rows(&previous) => (previous, touched),
             (previous, since) => {
+                self.spares.clear();
                 let why = match (previous, since) {
                     (_, Err(why)) => why,
                     (None, _) => Whole::First,
@@ -330,10 +353,11 @@ impl Columns {
         let shared = previous.is_shared();
         let on_newest = self.costs.patching(touched.len(), if shared { rows } else { 0 });
         let mut made = view::Made::default();
-        if let Some((spare, since)) = spare.filter(|(spare, _)| !spare.is_shared()) {
-            let anew = touched::merge(since.into_iter().chain(touched.iter().copied()).collect());
+        if let Some(at) = self.spares.iter().rposition(|(spare, _)| !spare.is_shared()) {
+            let anew = touched::merge(self.spares[at..].iter().flat_map(|(_, rows)| rows.iter().copied()).chain(touched.iter().copied()).collect());
             let on_spare = self.costs.patching(anew.len(), 0);
             if on_spare < on_newest && on_spare < rows as f64 {
+                let (spare, _) = self.spares.drain(..=at).next_back().expect("the spare found");
                 let started = Instant::now();
                 let patched = spare.try_unwrap().map_err(|_| io::Error::other(format!("{table:?}'s spare is held"))).and_then(|held| self.patch(table, columns, held, &anew, from, &mut made));
                 if let Ok(view) = patched {
@@ -358,8 +382,9 @@ impl Columns {
         };
         let started = Instant::now();
         let patched = held.and_then(|held| self.patch(table, columns, held, touched, from, &mut made));
-        if let Some(previous) = previous && patched.is_ok() {
-            self.keep(previous, touched);
+        match previous {
+            Some(previous) => self.keep(previous, touched),
+            None => self.extend(touched),
         }
         match patched {
             Ok(view) => {
@@ -380,8 +405,12 @@ impl Columns {
     }
 
     pub fn keep(&mut self, view: SharedView, since: &[(u128, u64)]) {
-        if view.is_shared() && self.costs.patching(since.len(), 0) < self.rows as f64 {
-            self.spare = Some((view, since.to_vec()));
+        self.spares.push((view, since.to_vec()));
+    }
+
+    pub fn extend(&mut self, since: &[(u128, u64)]) {
+        if let Some((_, rows)) = self.spares.last_mut() {
+            *rows = touched::merge(rows.iter().chain(since).copied().collect());
         }
     }
 }
