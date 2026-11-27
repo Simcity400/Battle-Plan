@@ -2,7 +2,7 @@ use super::{Election, GovernmentCauseKind, GovernmentChange, IdeologyInfo, Leade
 use dashboard_base::{Source, products::Product, test_fixtures::{CAMPAIGN, records, source, source_with_mods, visual_mods::Machine}};
 use replay::campaign::Replay;
 use replay_data::rows::{
-    CharacterRow, CountryAppearanceRow, CountryLinkRow, CountryRow, GovernmentCause, GovernmentChangeRow, LexicalTokenRow, PoliticalPartyRow, PoliticsCaptureCoverageRow, PoliticsRow, Recorded,
+    CharacterPortrait, CharacterPortraitRow, CharacterRow, CountryAppearanceRow, PORTRAIT_CIVILIAN, PORTRAIT_LARGE, CountryLinkRow, CountryRow, GovernmentCause, GovernmentChangeRow, LexicalTokenRow, PoliticalPartyRow, PoliticsCaptureCoverageRow, PoliticsRow, Recorded,
     ReservedCountryNamingRow, TableId, TableRows,
 };
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -234,6 +234,43 @@ fn a_party_named_for_another_country_follows_that_countrys_naming_and_never_brid
     let held = replay_lanes::lanes::history(recording, run, TableId::PoliticalParties, &columns.party, replay_lanes::lanes::Keys::Range(key << 32, key << 32 | 0xFFFF_FFFF), 200, 220).unwrap();
     let hours = super::naming_changes(recording, run, &columns, &held, (7, GER), 200, 220).unwrap().hours;
     assert!(hours.contains(&210) && !hours.contains(&208), "only a ruling party's country names it: {hours:?}");
+}
+
+fn sparse_lexicon_frame(hour: i32) -> DecodedFrame {
+    let mut frame = source(1, hour, Some(1_000));
+    set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: 7, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
+    set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: GER, canonical_slot: 7 }]));
+    let character = CharacterRow { id: 701, country: GER, name_token_id: 61, token: b"TEST_LEADER_NAME".to_vec(), ..Default::default() };
+    set(&mut frame, TableId::Characters, TableRows::Characters(vec![character]));
+    let words = TableRows::LexicalTokens(vec![LexicalTokenRow { token: 61, literal: b"TEST_LEADER_SCRIPT".to_vec() }]);
+    if hour % 2 == 0 {
+        set(&mut frame, TableId::LexicalTokens, words);
+    } else {
+        carried(&mut frame, TableId::LexicalTokens, words);
+    }
+    let look = CountryAppearanceRow { country: GER, leader_ideology: b"liberalism".to_vec(), leader_character: Some(701), ..Default::default() };
+    set(&mut frame, TableId::CountryAppearance, TableRows::CountryAppearance(vec![look]));
+    let portrait = CharacterPortrait { category: PORTRAIT_CIVILIAN, size: PORTRAIT_LARGE, is_set: 1, kind: 0, identity: b"test_portrait".to_vec() };
+    let portraits = if hour >= 410 { vec![CharacterPortraitRow { character: 701, portraits: vec![portrait] }] } else { Vec::new() };
+    set(&mut frame, TableId::CharacterPortraits, TableRows::CharacterPortraits(portraits));
+    frame
+}
+
+#[test]
+fn a_leaders_portrait_is_read_by_one_reader_however_often_the_lexicon_is_read() {
+    let source = recording((400..=420).map(sparse_lexicon_frame).collect());
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let run = query.timeline.stretches[0].run;
+    let recording = query.replay.recording();
+    assert_eq!(super::complete_reads(recording, run, TableId::LexicalTokens, 400, 420).unwrap().len(), 11, "the lexicon is read every other hour");
+    let (parties, counts) = replay_recording::cells::count_reads(|| read(&query, &"GER".into(), super::PartyRead::Full, &AtomicBool::new(false)).unwrap());
+    let leader = |person, first, last, starts_segment| LeaderRun { ideology: "liberalism".into(), person: Some(person), first_hour: first, last_hour: last, starts_segment };
+    assert_eq!(parties.leaders, [leader(0, 400, 409, true), leader(1, 410, 420, false)], "the portrait recorded at 410 is seen by the reader that has moved there");
+    assert_eq!(
+        counts[&TableId::CharacterPortraits].opened,
+        1,
+        "the leader's portrait is read by one reader moving through the hours it is looked at, not one opened at each read of the lexicon"
+    );
 }
 
 const HELD: u32 = 5501;
