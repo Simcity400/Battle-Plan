@@ -1117,8 +1117,12 @@ mod tests {
         live_lines(&mut lines, span, span.last, &RunLinks::default(), &battles, &History::default(), &participants, &prices);
         let reads = &lines[&Battle::Live(7, 10)].reads;
         assert_eq!(reads.iter().map(|(hour, read)| (*hour, read.ic)).collect::<Vec<_>>(), [
-            (10, [Some(0), Some(0)]), (12, [Some(92_250_000), Some(0)]), (14, [Some(92_250_000), None]),
+            (10, [Some(0), Some(0)]), (12, [Some(92_250_000), Some(0)]),
+            (13, [Some(92_250_000), Some(0)]), (14, [Some(92_250_000), None]),
         ]);
+        let attacker_gap = |read: &Snapshot| country_gap(read.roster_status, read.country_links_failed[0]);
+        assert_eq!(attacker_gap(&reads[1].1), Some("Country roster was not recorded and a recorded owner has no country link"));
+        assert_eq!(attacker_gap(&reads[2].1), Some("Country roster was not recorded"));
     }
 
     #[test]
