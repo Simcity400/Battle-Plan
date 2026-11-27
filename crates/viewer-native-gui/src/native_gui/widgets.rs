@@ -466,6 +466,188 @@ pub fn smooth_list_step(current: f32) -> f32 {
     (0.0 - current) * 0.2 + current
 }
 
+struct ListBoxOutcome {
+    places: Vec<Option<[i32; 2]>>,
+    range: i32,
+    page: i32,
+    shown: bool,
+    smooth: bool,
+}
+
+fn finish_list_box_rows(
+    element: &Element,
+    list: &native::ListBox,
+    at: [i32; 2],
+    bar: Option<&Plain<'_>>,
+    mut walk: Walk<'_>,
+    outcome: ListBoxOutcome,
+) -> Result<ListBoxRows, Refusals> {
+    let mut scrollbar = Vec::new();
+    let mut controls = Vec::new();
+    if let (true, Some(bar)) = (outcome.shown, bar) {
+        let node = bar.node(at);
+        let first = walk.parts.len();
+        let first_region = walk.regions.len();
+        let outer = walk.opacity;
+        walk.opacity = 1.0;
+        let drawn = walk.plain_parts(bar, element, node, None, true);
+        walk.opacity = outer;
+        drawn.map_err(|refusal| vec![refusal])?;
+        scrollbar = walk.parts.split_off(first);
+        let [_, _, track, slider, ..] = bar.parts();
+        let slide = bar.slide();
+        controls = walk
+            .regions
+            .split_off(first_region)
+            .into_iter()
+            .filter_map(|region| {
+                let control = match region.scroll {
+                    Some((_, step)) => ListControl::Step(step),
+                    None if slider.is_some_and(|slider| slider.path == region.path) => {
+                        ListControl::Thumb(slide)
+                    }
+                    None if track.is_some_and(|track| track.path == region.path) => {
+                        ListControl::Track
+                    }
+                    None => return None,
+                };
+                Some((control, region))
+            })
+            .collect();
+    }
+    let refused = walk.refused.take();
+    walk.refusals.extend(refused);
+    if !walk.refusals.is_empty() {
+        return Err(walk.refusals);
+    }
+    Ok(ListBoxRows {
+        places: outcome.places,
+        scrollbar,
+        range: outcome.range,
+        rect: [at[0], at[1], list.size[0], list.size[1]],
+        page: outcome.page,
+        controls,
+        clipped: !outcome.smooth,
+        diagnostics: walk.diagnostics,
+    })
+}
+
+pub fn list_box_uniform_rows(
+    element: &Element,
+    item_size: [i32; 2],
+    count: usize,
+    visible: std::ops::Range<usize>,
+    current: Option<f32>,
+    resources: &dyn Resources,
+    bindings: &Bindings,
+) -> Result<ListBoxRows, Refusals> {
+    let smooth = element.kind == Kind::SmoothListBox;
+    let path = &element.path;
+    let Fields::ListBox(list) = &element.fields else {
+        return Err(vec![Refusal::new(
+            path,
+            RefusalKind::Reader,
+            "is not a list box",
+        )]);
+    };
+    let at = list_box_place(element, list, smooth, bindings.viewport)
+        .map_err(|refusal| vec![refusal])?;
+    let walk = Walk::new(resources, bindings);
+    let mut bar = match walk.list_scrollbar(element, list, smooth) {
+        Ok(bar) => bar,
+        Err(refusal) => return Err(vec![refusal]),
+    };
+    let border = list.border_size[0];
+    let start = visible.start.min(count);
+    let end = visible.end.min(count).max(start);
+    let mut places = Vec::with_capacity(end - start);
+    let mut shown = false;
+    let mut range = 0;
+    let page;
+    if smooth {
+        let horizontal = list.horizontal != 0;
+        let extent = if horizontal { list.size[0] } else { list.size[1] };
+        let step = if horizontal { item_size[0] } else { item_size[1] };
+        page = extent;
+        let cur = current.unwrap_or(bar.as_ref().map_or(0.0, |bar| bar.value));
+        let along = |own: i32| truncate_f32((float(border) - cur) + float(own));
+        let across = |own: i32| truncate_f32(float(border) + float(own));
+        for index in start..end {
+            let run = (index as i32).wrapping_mul(step);
+            let target = if horizontal { [run, 0] } else { [0, run] };
+            let place = if horizontal {
+                [along(target[0]), across(target[1])]
+            } else {
+                [across(target[0]), along(target[1])]
+            };
+            places.push(Some([
+                at[0].wrapping_add(place[0]),
+                at[1].wrapping_add(place[1]),
+            ]));
+        }
+        if let Some(bar) = &mut bar
+            && count > 0
+        {
+            let over = (i64::from(step) * count as i64 - i64::from(extent))
+                .clamp(0, i64::from(i32::MAX)) as i32;
+            if over >= 1 {
+                bar.set_range(Range::new(0, i64::from(over) * 100_000, bar.range.step));
+                bar.value = cur.clamp(0.0, float(over));
+                bar.place_slider();
+                shown = true;
+                range = over;
+            }
+        }
+    } else {
+        let fit = if count == 0 || item_size[1] <= 0 {
+            0
+        } else {
+            truncate_f32(float(list.size[1]) / float(item_size[1]))
+        };
+        page = fit.max(1);
+        let over = (count as i32).wrapping_sub(fit).max(0);
+        let first = match current {
+            Some(current) if bar.is_some() && over >= 1 => truncate_f32(current).clamp(0, over),
+            _ => 0,
+        };
+        for index in start..end {
+            let idx = index as f32;
+            if idx < float(first) || float(first) + float(fit) <= idx {
+                places.push(None);
+            } else {
+                let offset = (index as i32).wrapping_sub(first);
+                let y = border.wrapping_add(offset.wrapping_mul(item_size[1]));
+                places.push(Some([at[0].wrapping_add(border), at[1].wrapping_add(y)]));
+            }
+        }
+        if let Some(bar) = &mut bar
+            && count > 0
+        {
+            bar.set_range(Range::new(0, i64::from(over) * 100_000, 100_000));
+            if bar.range.max >= 100_000 {
+                bar.value = float(first);
+                bar.place_slider();
+                shown = true;
+                range = over;
+            }
+        }
+    }
+    finish_list_box_rows(
+        element,
+        list,
+        at,
+        bar.as_ref(),
+        walk,
+        ListBoxOutcome {
+            places,
+            range,
+            page,
+            shown,
+            smooth,
+        },
+    )
+}
+
 pub fn list_box_rows(
     element: &Element,
     rows: &[[i32; 2]],
@@ -575,54 +757,20 @@ pub fn list_box_rows_as(
             }
         }
     }
-    let mut scrollbar = Vec::new();
-    let mut controls = Vec::new();
-    if let (true, Some(bar)) = (shown, &bar) {
-        let node = bar.node(at);
-        let first = walk.parts.len();
-        let first_region = walk.regions.len();
-        let outer = walk.opacity;
-        walk.opacity = 1.0;
-        let drawn = walk.plain_parts(bar, element, node, None, true);
-        walk.opacity = outer;
-        drawn.map_err(|refusal| vec![refusal])?;
-        scrollbar = walk.parts.split_off(first);
-        let [_, _, track, slider, ..] = bar.parts();
-        let slide = bar.slide();
-        controls = walk
-            .regions
-            .split_off(first_region)
-            .into_iter()
-            .filter_map(|region| {
-                let control = match region.scroll {
-                    Some((_, step)) => ListControl::Step(step),
-                    None if slider.is_some_and(|slider| slider.path == region.path) => {
-                        ListControl::Thumb(slide)
-                    }
-                    None if track.is_some_and(|track| track.path == region.path) => {
-                        ListControl::Track
-                    }
-                    None => return None,
-                };
-                Some((control, region))
-            })
-            .collect();
-    }
-    let refused = walk.refused.take();
-    walk.refusals.extend(refused);
-    if !walk.refusals.is_empty() {
-        return Err(walk.refusals);
-    }
-    Ok(ListBoxRows {
-        places,
-        scrollbar,
-        range,
-        rect: [at[0], at[1], list.size[0], list.size[1]],
-        page,
-        controls,
-        clipped: !smooth,
-        diagnostics: walk.diagnostics,
-    })
+    finish_list_box_rows(
+        element,
+        list,
+        at,
+        bar.as_ref(),
+        walk,
+        ListBoxOutcome {
+            places,
+            range,
+            page,
+            shown,
+            smooth,
+        },
+    )
 }
 
 pub(super) fn list_box_place(

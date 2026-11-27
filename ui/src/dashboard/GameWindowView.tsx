@@ -9,6 +9,7 @@ import {
   accessibleRegions,
   shownPlaceholders,
   fitGameWindowSize,
+  formatGameWindowText,
   acceptRender,
   followGameWindowRender,
   frameShown,
@@ -314,10 +315,14 @@ export default function GameWindowView({
       const now = wheelState.current;
       if (!now.render) return;
       const point = now.logicalPoint(event.clientX, event.clientY);
-      const list = point ? hitTestScroll(now.render.regions, point[0], point[1]) : null;
+      const horizontal = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY);
+      const list = point ? hitTestScroll(now.render.regions, point[0], point[1], horizontal) : null;
       if (!list?.scroll) return;
+      const delta = !list.scroll.vertical && Math.abs(event.deltaX) > Math.abs(event.deltaY)
+        ? event.deltaX
+        : event.deltaY;
       event.preventDefault();
-      moveList(list.scroll, { kind: 'wheel', delta: event.deltaY });
+      moveList(list.scroll, { kind: 'wheel', delta });
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
@@ -446,7 +451,7 @@ export default function GameWindowView({
           ref={imgRef}
           className="game-window-image"
           src={`data:image/png;base64,${render.pngBase64}`}
-          alt={label}
+          alt={render.title ? `${label}: ${render.title}` : label}
           style={{
             width: `${displayWidth}px`,
             height: `${displayHeight}px`,
@@ -540,7 +545,7 @@ export default function GameWindowView({
     </div>
     {render.text.length > 0 && <ul className="sr-only" aria-label={`${label} contents`}>
       {render.text.map((entry, index) => <li key={`${entry.path}:${index}`}>
-        {entry.label}: {entry.value ?? `not recorded (${entry.missing ?? 'no reason given'})`}
+        {formatGameWindowText(entry)}
       </li>)}
     </ul>}
     {render.artLabel && <div className="game-window-art-note">{render.artLabel}</div>}
