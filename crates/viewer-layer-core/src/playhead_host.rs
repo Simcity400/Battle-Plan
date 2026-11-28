@@ -1159,7 +1159,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         }
         self.view = view;
         for (at, read) in reads.iter().enumerate() {
-            if read.is_ok() && self.reads[at].is_err() {
+            if read.is_ok() && self.declared_each[at] != each[at] {
                 self.ready[at] = false;
                 self.recompose[at] = true;
             }
@@ -1176,18 +1176,12 @@ impl<P: PlaybackProducts> MapSide<P> {
                 }
             }
         }
-        let moved: BTreeSet<usize> = declared.iter().filter(|(table, read)| self.declared_layers.get(table) != Some(read)).map(|(&table, _)| table).chain(self.declared_layers.keys().filter(|table| !declared.contains_key(table)).copied()).collect();
         self.declared_layers = declared;
         self.layers_awake = awake_mask(&self.declared_layers);
-        self.remirror(&moved)
+        self.remirror()
     }
 
-    fn remirror(&mut self, moved: &BTreeSet<usize>) -> io::Result<()> {
-        for at in 0..self.reads.len() {
-            if self.reads[at].as_ref().is_ok_and(|tables| tables.iter().any(|table| moved.contains(table))) {
-                (self.ready[at], self.recompose[at]) = (false, true);
-            }
-        }
+    fn remirror(&mut self) -> io::Result<()> {
         let declared = merged(&self.declared_layers, self.views.declared());
         if declared == self.declared {
             return Ok(());
@@ -1311,7 +1305,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         }
         let demand = self.views.demand();
         if !self.composing && self.demand != demand {
-            self.remirror(&BTreeSet::new())?;
+            self.remirror()?;
             self.demand = demand;
         }
         let swapped = frame.swapped.is_some();
@@ -1356,8 +1350,8 @@ impl<P: PlaybackProducts> MapSide<P> {
         if self.superseded && self.resets_taken == resets_before {
             compose.fill(false);
         } else if !self.composing {
-            for (wanted, again) in compose.iter_mut().zip(&mut self.recompose) {
-                *wanted |= std::mem::take(again);
+            for (wanted, &again) in compose.iter_mut().zip(&self.recompose) {
+                *wanted |= again;
             }
             if self.applied.is_some() {
                 for (at, wanted) in compose.iter_mut().enumerate() {
@@ -1381,6 +1375,9 @@ impl<P: PlaybackProducts> MapSide<P> {
             }
         }
         home(&mut compose[..], self.mirrors.as_deref());
+        for (&wanted, again) in compose.iter().zip(&mut self.recompose) {
+            *again &= !wanted;
+        }
         let composed_here = crossing && !after_reset && !self.composing && !self.superseded && compose.contains(&true);
         if composed_here {
             self.compose_here(&compose, &mut frame);
@@ -2122,9 +2119,9 @@ impl<P: PlaybackProducts> MapSide<P> {
                 let kinds = &self.entry.kinds()[table];
                 let changed: Vec<_> = read.columns.iter().copied()
                     .filter(|&column| !old.same_column(replacement, column, kinds[column])).collect();
-                for (wanted, declared) in compose.iter_mut().zip(&self.declared_each) {
+                for ((wanted, declared), &ready) in compose.iter_mut().zip(&self.declared_each).zip(&self.ready) {
                     *wanted |= declared.as_ref().and_then(|(reads, _)| reads.get(&table))
-                        .is_some_and(|read| read.columns.iter().any(|column| changed.contains(column)));
+                        .is_some_and(|read| !ready || read.columns.iter().any(|column| changed.contains(column)));
                 }
             }
             self.worker.drop_later(old);

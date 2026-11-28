@@ -831,13 +831,16 @@ impl Mirror {
     pub(super) fn same_column(&self, other: &Self, column: usize, kind: Kind) -> bool {
         let (ours, theirs) = (self.resolve(column), other.resolve(column));
         let (Some(a), Some(b)) = (ours.0, theirs.0) else { return false };
-        if kind == Kind::Bytes && self.texts != other.texts {
-            return false;
-        }
-        if a.cells == b.cells && a.missing == b.missing && a.unrecorded == b.unrecorded {
+        if a.cells == b.cells && a.missing == b.missing && a.unrecorded == b.unrecorded
+            && (kind != Kind::Bytes || self.texts == other.texts)
+        {
             return true;
         }
         match kind {
+            Kind::Bytes => self.live.ones().all(|row| match (ours.bits(row), theirs.bits(row)) {
+                (Cell::Value(a), Cell::Value(b)) => a == b && self.string(a as u32) == other.string(b as u32),
+                (a, b) => a == b,
+            }),
             Kind::U32List | Kind::U64List | Kind::Opaque => self.live.ones().all(|row| ours.list(row) == theirs.list(row)),
             _ => self.live.ones().all(|row| ours.bits(row) == theirs.bits(row)),
         }
@@ -1085,6 +1088,32 @@ impl Mirrors {
         self.tables.iter().flatten().map(|mirror| &**mirror)
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Kind, Lane, Mirror, Status};
+    use replay_columnar::state::Cell;
+
+    #[test]
+    fn a_text_projection_compares_only_strings_referenced_by_its_rows() {
+        let (recording, _) = crate::test_support::host_recording::record(1, 4, |hour, table, store| {
+            store.status(table, Status::Complete, true, Some(hour as i32), true).unwrap();
+            if hour == 0 {
+                let mut rows = store.table(table).unwrap();
+                rows.insert_at(0, 12).unwrap();
+                rows.write(0, 3, Cell::Bytes(0)).unwrap();
+            }
+        });
+        let mut lane = Lane::new(recording, 0, 0, &[3], true).unwrap();
+        lane.seek(0).unwrap();
+        let mirror = Mirror::rebuild(&lane, &[3]);
+        let mut incremental = mirror.clone();
+        incremental.name(99, b"removed between checkpoints");
+        assert!(incremental.same_column(&mirror, 3, Kind::Bytes));
+        incremental.name(0, b"the current name changed");
+        assert!(!incremental.same_column(&mirror, 3, Kind::Bytes));
+    }
 }
 
 pub fn rebuild(pages: Arc<dyn Pages>) -> Rebuild {

@@ -1551,13 +1551,14 @@ struct Meeting {
     name: &'static str,
     after: Option<&'static str>,
     column: Option<usize>,
+    delivered: Option<Arc<Mutex<(usize, usize)>>>,
     meet: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
     composed: Arc<Mutex<Vec<&'static str>>>,
 }
 
 impl Meeting {
     fn boxed(name: &'static str, after: Option<&'static str>, meet: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>, composed: &Arc<Mutex<Vec<&'static str>>>) -> Box<dyn Layer> {
-        Box::new(Self { name, after, column: None, meet, composed: Arc::clone(composed) })
+        Box::new(Self { name, after, column: None, delivered: None, meet, composed: Arc::clone(composed) })
     }
 }
 
@@ -1565,10 +1566,13 @@ impl Layer for Meeting {
     fn name(&self) -> &'static str {
         self.name
     }
-    fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
+    fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
         if let Some(column) = self.column {
             inputs.table(table(0), true)?;
             inputs.index(table(0), column)?;
+            if column == 0 && view.camera_height >= 1.0 {
+                inputs.index(table(0), 1)?;
+            }
         }
         if let Some(upstream) = self.after {
             inputs.after(upstream);
@@ -1588,7 +1592,19 @@ impl Layer for Meeting {
         self.composed.lock().unwrap().push(self.name);
         Ok(())
     }
-    fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
+    fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
+        if step.first() > step.last() && let Some(delivered) = &self.delivered {
+            delivered.lock().unwrap().0 += 1;
+        }
+    }
+    fn wants_ahead(&self) -> bool {
+        self.delivered.is_some()
+    }
+    fn ahead(&mut self, steps: &[Arc<Step>]) {
+        if let Some(delivered) = &self.delivered {
+            delivered.lock().unwrap().1 += steps.iter().filter(|step| step.first() > step.last()).count();
+        }
+    }
     fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
@@ -1630,20 +1646,22 @@ fn layers_that_read_nothing_of_one_another_compose_at_once_and_a_dependent_after
 #[test]
 fn a_same_hour_restore_recomposes_only_changed_inputs_and_their_dependents() {
     use super::views::Need;
-    for changed in [false, true] {
+    for (changed, ready) in [(false, true), (true, true), (false, false)] {
         let (recording, _) = record(1, 8, eventful);
         let entry = open(units(recording, "same-hour projection restore"), quick()).unwrap();
         let composed = Arc::new(Mutex::new(Vec::new()));
-        let reads = |name, column| -> Box<dyn Layer> {
-            Box::new(Meeting { name, after: None, column: Some(column), meet: None, composed: Arc::clone(&composed) })
+        let delivered = Arc::new(Mutex::new((0, 0)));
+        let reads = |name, column, delivered| -> Box<dyn Layer> {
+            Box::new(Meeting { name, after: None, column: Some(column), delivered, meet: None, composed: Arc::clone(&composed) })
         };
-        let layers = vec![reads("source", 0), Meeting::boxed("downstream", Some("source"), None, &composed), reads("independent", 2)];
+        let layers = vec![reads("source", 0, None), Meeting::boxed("downstream", Some("source"), None, &composed), reads("independent", 2, Some(Arc::clone(&delivered)))];
         let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
         entry.playhead().seek(0);
         side.catch_up(0).unwrap();
         let calls = || composed.lock().unwrap().clone();
         let opened = calls().len();
         assert_eq!(opened, 3);
+        let delivery_before = *delivered.lock().unwrap();
 
         if changed {
             let (different, _) = record(1, 8, |hour, table, store| {
@@ -1659,12 +1677,14 @@ fn a_same_hour_restore_recomposes_only_changed_inputs_and_their_dependents() {
             side.mirrors = Some(Arc::new(held));
         }
 
+        side.ready[0] = ready;
         let added = side.views().reader("extra projection", &[Need::columns(table(0), 1 << 1)]);
         added.ready();
         side.catch_up(0).unwrap();
         assert!(side.parts().unwrap().0.get(table(0)).unwrap().holds(1));
-        let expected: &[&str] = if changed { &["source", "downstream"] } else { &[] };
+        let expected: &[&str] = if changed || !ready { &["source", "downstream"] } else { &[] };
         assert_eq!(&calls()[opened..], expected);
+        assert_eq!(*delivered.lock().unwrap(), (delivery_before.0 + 1, delivery_before.1 + 1));
 
         for hour in [0, 2] {
             let epoch = side.epoch;
@@ -1677,6 +1697,30 @@ fn a_same_hour_restore_recomposes_only_changed_inputs_and_their_dependents() {
             assert_eq!(sought, ["downstream", "independent", "source"]);
         }
     }
+}
+
+#[test]
+fn widening_one_layers_read_keeps_its_sibling_ready_while_the_restore_arrives() {
+    let (recording, _) = record(1, 8, eventful);
+    let entry = open(units(recording, "sibling projection restore"), quick()).unwrap();
+    let composed = Arc::new(Mutex::new(Vec::new()));
+    let layer = |name, column| -> Box<dyn Layer> {
+        Box::new(Meeting { name, after: None, column: Some(column), delivered: None, meet: None, composed: Arc::clone(&composed) })
+    };
+    let mut side = MapSide::new(Arc::clone(&entry), vec![layer("widened", 0), layer("sibling", 2)], View::default()).unwrap();
+    entry.playhead().seek(2);
+    side.catch_up(2).unwrap();
+    let before = composed.lock().unwrap().len();
+
+    side.set_view(View { camera_height: 2.0, ..View::default() }).unwrap();
+    side.frame(1).unwrap();
+    assert!(!side.parts().unwrap().0.get(table(0)).unwrap().holds(1));
+    assert!(side.draws("sibling"), "its existing projection can still be drawn");
+    assert!(!side.draws("widened"), "the new projection is still coming");
+
+    side.catch_up(2).unwrap();
+    assert!(side.draws("widened") && side.draws("sibling"));
+    assert_eq!(&composed.lock().unwrap()[before..], ["widened"]);
 }
 
 #[test]
