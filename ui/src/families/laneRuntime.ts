@@ -109,6 +109,7 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   readonly playback?: {
     enabled(binding: TBinding): boolean;
     supports(model: TModel): boolean;
+    unavailable(model: TModel): boolean;
     frame(frame: LaneFrame<TBinding, TModel, TLayout>, next: TModel, fraction: number): LaneFrame<TBinding, TModel, TLayout> | false | null;
   };
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
@@ -1032,12 +1033,14 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
             if (diagnostic) diagnostic.reason = 'notEligible';
             return 'release';
           }
+          const unavailable = animation.unavailable(exact.model);
+          if (unavailable && !current.proven) return { unavailableFrom: exact.from };
           const begin = exact.from;
-          const to = next && position > begin && position < next.hour && exact.until >= next.hour ? modelAt(next) : null;
+          const to = !unavailable && next && position > begin && position < next.hour && exact.until >= next.hour ? modelAt(next) : null;
           const fraction = to && next ? (position - begin) / (next.hour - begin) : 0;
           exact.layout ??= family.layout(exact.model, binding, surface, theme, keep.ctx, exact.from, { previous: null, now: effectiveNow, speed: 0 });
           const recorded = { ...frame, hour: exact.from, model: exact.model, layout: exact.layout, projected: exact.projected, inspect };
-          const moving = to ? animation.frame(recorded, to.model, fraction) : null;
+          const moving = to && !animation.unavailable(to.model) ? animation.frame(recorded, to.model, fraction) : null;
           if (diagnostic && next) {
             diagnostic.reason = position <= begin ? 'recordedHour' : !to ? 'modelValidity' : moving === null ? 'incompatible' : 'unchanged';
           }

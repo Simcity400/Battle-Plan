@@ -164,7 +164,7 @@ export type PlaybackPaint = (
   target: PaintInput['sharedSurface'],
   inspect: string | null,
   diagnostic?: { reason?: MotionSkip },
-) => 'exact' | 'interpolated' | 'empty' | 'release';
+) => 'exact' | 'interpolated' | 'empty' | 'release' | { unavailableFrom: number };
 
 export interface Painted {
   surfaces: readonly ({ source: Bitmapped; content: string } | null)[];
@@ -2128,14 +2128,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     });
   }
 
-  private playbackPicture(widget: Widget, hour: number): PlaybackPicture | null {
+  private playbackPicture(widget: Widget, hour: number, throughHour = hour): PlaybackPicture | null {
     const dated = widget.binding.dated;
     if (!widget.subs.length && !dated) return null;
     for (const id of widget.subs) {
       const sub = this.subs.get(id);
       if (!sub || this.failedSubs.has(id) || (sub.route !== null && this.failed.has(sub.route))) return null;
     }
-    let at = Math.min(hour, dated?.c ?? Infinity);
+    let at = Math.min(throughHour, dated?.c ?? Infinity);
     while (at >= (dated?.h ?? -Infinity)) {
       const pictures: Picture<Value>[] = [];
       let from = dated?.h ?? -Infinity;
@@ -2148,7 +2148,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         from = Math.max(from, picture.h);
         through = Math.min(through, picture.c);
       }
-      if (from <= through) return { hour: Math.min(at, through), pictures, from, through, proven: hour <= through };
+      if (from <= through) return { hour: Math.min(at, through), pictures, from, through, proven: at === hour && hour <= through };
       at = through;
     }
     return null;
@@ -2182,15 +2182,19 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const pos = position + widget.binding.offset;
       const hour = Math.floor(pos);
       try {
-        const current = this.playbackPicture(widget, hour);
+        let current = this.playbackPicture(widget, hour);
         const end = current?.proven && current.pictures.every(isPlaybackReading) ? current.through + 1 : Infinity;
         const next = Number.isFinite(end) && end <= (clock.lastHour ?? Infinity) + widget.binding.offset
           ? this.playbackPicture(widget, end) : null;
         const diagnostic: { reason?: MotionSkip } | undefined = diagnostics ? {} : undefined;
         const nextProven = next?.proven && next.pictures.every(isPlaybackReading) ? next : null;
-        const painted = current && current.pictures.every(picture => stopOf(picture) === null)
+        let painted = current && current.pictures.every(picture => stopOf(picture) === null)
           ? held.paint(current, nextProven, pos, target.shared, widget.inspect, diagnostic)
           : 'empty';
+        while (typeof painted === 'object') {
+          current = this.playbackPicture(widget, hour, painted.unavailableFrom - 1);
+          painted = current ? held.paint(current, null, pos, target.shared, widget.inspect, diagnostic) : 'empty';
+        }
         if (painted === 'empty') this.clearDirectSlot(target.shared?.lane ?? null, target.shared?.slot, target.shared ? undefined : this.activeWorkerCanvas(id));
         if (diagnostics) {
           if (current) diagnostics.proof = { widget: id, from: current.from, through: current.through, next: nextProven?.hour ?? null };

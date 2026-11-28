@@ -211,13 +211,14 @@ const testProjection = registerFamilyProjection({
   kind: KIND,
   singleValueBars: () => true,
   project(view, options): BarsModel {
-    const refused = view.refused('s');
+    const panel = view.panel('s') as Sample | { rows: readonly unknown[]; refused: string | null } | undefined;
+    const refused = view.refused('s') ?? (panel && 'rows' in panel && !panel.rows.length ? panel.refused : null);
     if (refused) return { form: 'ordered', hour: view.hour, rows: [], empty: refused, emptyKind: 'unavailable' };
-    const sample = view.panel('s') as Sample;
+    const sample = panel as Sample | undefined;
     const nextRename = sample?.renames?.find(at => view.hour < at);
     const name = sample?.renames?.filter(at => view.hour >= at).length;
     const numeric = sample?.value == null ? null : sample.value * Number(options ?? 1);
-    const value = numeric === null ? notRecorded('Missing') : knownValue(sample.whole && numeric !== 0 ? BigInt(numeric) : numeric);
+    const value = numeric === null ? notRecorded('Missing') : knownValue(sample?.whole && numeric !== 0 ? BigInt(numeric) : numeric);
     return {
       form: sample?.form ?? 'ordered',
       hour: view.hour,
@@ -934,26 +935,31 @@ describe('Ordered bar playback', () => {
     assert.equal(f.barWidth(), width);
   }));
 
-  it('draws an exact refusal within its proof and cuts across adjacent gaps', async () => withLane(async f => {
-    f.record(100, { value: 100 });
-    f.lane.receive('panels', datedRecord(1, 101, 0, 'Unavailable'));
-    f.record(103, { value: 300 });
-    await f.request(100);
-    const start = f.barWidth();
-    for (const [position, unavailable] of [[100.5, false], [101.5, true], [102.5, false]] as const) {
-      f.canvas.clearOps();
-      f.clock(position, 1, 1, true);
+  it('draws exact transport and rank refusals within their proof and cuts across adjacent gaps', async () => {
+    for (const origin of ['transport', 'rank']) await withLane(async f => {
+      f.record(100, { value: 100 });
+      f.lane.receive('panels', origin === 'transport' ? datedRecord(1, 101, 0, 'Unavailable') : datedPanel(1, 101, {
+        branchId: '1', hour: 101, from: 101, until: 101, measures: [{ name: 'ownerDivisions', decimals: 0 }],
+        refused: 'The ranking is incomplete', rows: [],
+      }));
+      f.record(103, { value: 300 });
+      await f.request(100);
+      const start = f.barWidth();
+      for (const [position, unavailable] of [[100.5, false], [101.5, true], [102.5, false]] as const) {
+        f.canvas.clearOps();
+        f.clock(position, 1, 1, true);
+        f.tick(0);
+        const barDrawn = f.operations().some(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE);
+        assert.equal(barDrawn, !unavailable, `${origin} at ${position}`);
+        if (unavailable) assert.equal(f.served.at(-1)?.motionDiagnostics?.recorded, 1);
+        else assert.equal(f.barWidth(), start);
+      }
+      f.clock(103.5, 1);
       f.tick(0);
-      if (unavailable) {
-        assert.equal(f.served.at(-1)?.motionDiagnostics?.recorded, 1);
-        assert.ok(!f.operations().some(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE));
-      } else assert.equal(f.barWidth(), start);
-    }
-    f.clock(103.5, 1);
-    f.tick(0);
-    assert.equal(f.barWidth(), start * 3);
-    assert.ok(!f.served.some(frame => frame.motion && frame.changed));
-  }));
+      assert.equal(f.barWidth(), start * 3);
+      assert.ok(!f.served.some(frame => frame.motion && frame.changed));
+    });
+  });
 
   it('repaints a changed measure exactly when the old bracket is no longer confirmed', async () => withLane(async f => {
     f.record(100, { value: 50 });

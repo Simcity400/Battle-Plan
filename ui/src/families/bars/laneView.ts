@@ -240,7 +240,12 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     return model.nextChangeAt ?? Infinity;
   },
   redraw: () => Infinity,
-  playback: { enabled: binding => !binding.reducedMotion && !binding.motion, supports: isSingleValueOrdered, frame: orderedMotion },
+  playback: {
+    enabled: binding => !binding.reducedMotion && !binding.motion,
+    supports: isSingleValueOrdered,
+    unavailable: model => model.emptyKind === 'unavailable',
+    frame: orderedMotion,
+  },
   status: model => (model.rows.length > 0 || model.empty !== undefined ? 'picture' : 'scene'),
   view: [],
   layout(model, _binding, surface, theme, measure) {
