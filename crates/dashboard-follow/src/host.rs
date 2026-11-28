@@ -1210,8 +1210,13 @@ fn check_parked_panel(release: &str) {
     let mut tasks = parking.ready(next_epoch, held_at());
     assert_eq!(tasks.len(), 1);
     tasks.pop().unwrap()();
-    assert!(work.take().is_some());
-    if release == "seek" {
+    let product = work.take().expect("the worker returned the product");
+    if release == "play" {
+        assert_eq!(*sampled.lock().unwrap(), [head], "Play leaves the next reading to the live step");
+        assert!(push.try_take().is_none(), "Play does not send replies from the parked catch-up");
+        assert_eq!(product.last, Some((epoch, seek, head)), "the handoff does not claim a newer reading");
+        assert!(!product.joined, "the first live step still owes its panel confirmation");
+    } else if release == "seek" {
         assert_eq!(*sampled.lock().unwrap(), [head], "the seek wakes the job so it can retire without computing");
         assert!(push.try_take().is_none());
     } else {
