@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { Responsive } from 'react-grid-layout';
 import type { Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
+import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { measureColour } from '../../charts/palette.ts';
@@ -24,13 +25,17 @@ import { ExportSurfaceContext } from '../../export/exportMotion.ts';
 import { drawnViews } from '../../draw/views/drawn.ts';
 import type { Breakdown, BreakdownAmount, BreakdownPart, CountryFlowReply, DoctrineMasteryReply, FlowLink, FocusCardReply, IdeaHistoryReply, IdeaLook, PowerSpendingBreakdownReply } from '../../generated/dashboard';
 import { doctrineMasteryProjection } from '../../widgets/doctrine-mastery/doctrineMasteryProjection.ts';
+import { fuelBranchesProjection } from '../../widgets/fuel-branches/fuelBranchesProjection.ts';
 import { ideaTimelineProjection } from '../../widgets/idea-timeline/ideaTimelineProjection.ts';
 import { nationalFocusProjection } from '../../widgets/national-focus/nationalFocusProjection.ts';
 import { ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
 import { tradeFlowProjection } from '../../widgets/trade-flows/tradeFlowsProjection.ts';
 import { barsHostAdapter } from '../bars/hostAdapter.ts';
+import { defaultArtFrame, readyArt } from '../art/types.ts';
+import { layoutFamilyBars } from '../bars/layout.ts';
 import { barsLane } from '../bars/laneView.ts';
-import { createBoundedReadView } from '../boundedView.ts';
+import { drawFamilyBars } from '../bars/painter.ts';
+import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import { breakdownHostAdapter } from '../breakdown/hostAdapter.ts';
 import { cardHostAdapter } from '../card/hostAdapter.ts';
 import type { FamilyProjection } from '../contract.ts';
@@ -52,6 +57,7 @@ import { createLaneView, type LaneBinding, type LaneFamily } from '../laneRuntim
 import type { TimeChartModel } from '../time-chart/model.ts';
 import { timelineHostAdapter } from '../timeline/hostAdapter.ts';
 import { knownValue } from '../value.ts';
+import { readFamilyTheme } from '../theme.ts';
 import type { FamilyHostAdapter, FamilyStaticSources } from './adapter.ts';
 import FamilyHost from './FamilyHost.tsx';
 import '../../styles.css';
@@ -517,7 +523,80 @@ function hideCanvases(hidden: boolean) {
 
 let root: ReturnType<typeof createRoot> | null = null;
 
+function pausedFuelReadout(width: number, names = ['Expeditionary Infantry Command', 'Fleet'],
+  amounts = [['100000000', '90000000'], ['1000000000', '1000000000']], capture = false) {
+  const dpr = window.devicePixelRatio;
+  const height = 150;
+  applyAppearance(document.documentElement, DEFAULT_APPEARANCE, resolveAppearance(DEFAULT_APPEARANCE, true, false));
+  const base = readFamilyTheme()!;
+  const theme = { ...base, font: 'Segoe UI', fontSize: { ...base.fontSize, body: 15 } };
+  const sprite = new OffscreenCanvas(16, 16);
+  const art = sprite.getContext('2d')!;
+  art.fillStyle = theme.accent;
+  art.fillRect(1, 1, 14, 14);
+  const bitmap = sprite.transferToImageBitmap();
+  const icon = { ...readyArt('fixture-fuel-icon', { frame: defaultArtFrame(16, 16) }), bitmap };
+  const reply = {
+    tag: 'GER', scale: 100000, consumerNames: names, consumerIcons: names.map(() => 'fixture-branch-icon'),
+    consumerIconReasons: names.map(() => null), fuelIcon: 'fixture-fuel-icon', fuelIconReason: null,
+    readHour: 100, missing: null, warnings: [],
+    consumers: amounts.map(([requested, received], index) => ({ index, requested, received, priority: index + 1 })),
+  };
+  const model = fuelBranchesProjection.project(createBoundedReadView({
+    hour: displayedHour(100), panels: new Map([['main', reply]]), art: { demandOwner: 'view', resolve: () => icon },
+  }), { digits: 5, surface: theme.surface });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(dpr, dpr);
+  ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+  const layout = layoutFamilyBars(model, width, height, theme, text => ctx.measureText(text).width);
+  const draw = (picture: typeof model, at = layout) => {
+    drawFamilyBars(ctx, { model: picture, layout: at, theme, scrollTop: 0, now: 0, glideDuration: 0 });
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-over';
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+  };
+  draw(model);
+  const image = capture ? canvas.toDataURL('image/png') : null;
+  const readoutX = Math.floor(layout.readoutX * dpr);
+  const readoutPixels = () => ctx.getImageData(readoutX, 0, canvas.width - readoutX, canvas.height).data;
+  const painted = readoutPixels();
+  const noBars = { ...model, rows: model.rows.map(row => row.kind === 'data' ? { ...row, numeric: 0, target: undefined } : row) };
+  draw(noBars);
+  const labels = readoutPixels();
+  let overlapPixels = 0;
+  for (let i = 0; i < painted.length; i += 4) {
+    if (painted[i] !== labels[i] || painted[i + 1] !== labels[i + 1] || painted[i + 2] !== labels[i + 2] || painted[i + 3] !== labels[i + 3]) overlapPixels++;
+  }
+  const gutterLeft = Math.ceil(layout.plotRight * dpr);
+  const gutterWidth = readoutX - gutterLeft;
+  let readoutInkInGutter = 0;
+  if (gutterWidth > 0) {
+    const gutterPixels = () => ctx.getImageData(gutterLeft, 0, gutterWidth, canvas.height).data;
+    const withReadout = gutterPixels();
+    draw({ ...noBars, rows: noBars.rows.map(row => row.kind === 'data' ? { ...row, readout: { primary: '' } } : row) });
+    const withoutReadout = gutterPixels();
+    readoutInkInGutter = withReadout.reduce((changed, value, i) => changed + Number(value !== withoutReadout[i]), 0);
+  }
+  const moving = { ...layout, plotLeft: layout.plotLeft - 20, plotWidth: layout.plotWidth + 20 };
+  const movedLeft = Math.ceil(moving.plotLeft * dpr);
+  const movedWidth = Math.floor(moving.plotRight * dpr) - movedLeft;
+  draw(noBars, moving);
+  const withNames = ctx.getImageData(movedLeft, 0, movedWidth, canvas.height).data;
+  draw({ ...noBars, rows: noBars.rows.map(row => row.kind === 'data' ? { ...row, label: undefined } : row) }, moving);
+  const withoutNames = ctx.getImageData(movedLeft, 0, movedWidth, canvas.height).data;
+  const nameInkInPlot = withNames.reduce((changed, value, i) => changed + Number(value !== withoutNames[i]), 0);
+  bitmap.close();
+  const { nameWidth, plotLeft, plotRight, readoutX: column, readoutWidth } = layout;
+  return { image, dpr, nameWidth, plotLeft, plotRight, column, readoutWidth, overlapPixels, nameInkInPlot, readoutInkInGutter };
+}
+
 const api = {
+  pausedFuelReadout,
   async mount(motion = false): Promise<{ readonly settled: boolean; readonly pending: readonly string[]; readonly dpr: number }> {
     applyAppearance(document.documentElement, DEFAULT_APPEARANCE, resolveAppearance(DEFAULT_APPEARANCE, true, false));
     await document.fonts.ready;

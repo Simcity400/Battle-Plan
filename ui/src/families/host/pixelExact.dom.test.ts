@@ -8,6 +8,23 @@ type Cdp = { send(method: string, params?: Record<string, unknown>): Promise<unk
 const RATIOS = [1, 1.25, 1.5, 1.75, 2];
 const FAMILIES = ['bars', 'breakdown', 'card', 'flow', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'];
 
+test('paused narrow fuel bars reserve the readout and its gutter at fractional DPR', async () => {
+  await withNativePage('ordered-readout-gutter', '/ui/src/families/host/pixelExact.dom.fixture.tsx', async page => {
+    const { dpr, plotLeft, plotRight, column, overlapPixels, nameInkInPlot } = await page.evaluate<{
+      dpr: number; plotLeft: number; plotRight: number; column: number; overlapPixels: number; nameInkInPlot: number;
+    }>('window.pixelExact.pausedFuelReadout(360)');
+    assert.equal(dpr, 1.25);
+    assert.equal(overlapPixels, 0, `the paused bar covers ${overlapPixels} pixels in the readout column`);
+    assert.ok(column - plotRight >= 10);
+    assert.ok(plotRight - plotLeft >= 40);
+    assert.equal(nameInkInPlot, 0, 'the name fits when motion moves the plot to the left');
+    const { readoutInkInGutter } = await page.evaluate<{ readoutInkInGutter: number }>(
+      'window.pixelExact.pausedFuelReadout(360, undefined, [["100012345", "900000"], ["1000000000", "1000000000"]])',
+    );
+    assert.equal(readoutInkInGutter, 0, 'the five-decimal shortfall leaves room for the received amount inside the readout');
+  }, [], false, ['--force-device-scale-factor=1.25']);
+});
+
 test('moving a paused canvas onto fractional device pixels keeps its installed answer while drawing is held', async () => {
   await withNativePage('pixel-exact-paused', '/ui/src/families/host/pixelExact.dom.fixture.tsx', async page => {
     assert.ok((await page.evaluate<{ settled: boolean }>('window.pixelExact.mount()')).settled);

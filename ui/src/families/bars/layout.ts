@@ -11,6 +11,7 @@ export const BARS_HEADER_HEIGHT = 22;
 export const BARS_AXIS_HEIGHT = 20;
 export const BARS_LEGEND_ROW_HEIGHT = 22;
 export const BARS_VALUE_GAP = 6;
+const ORDERED_NAME_GAP = 10;
 export const BARS_SPLIT_CENTER_GAP = 36;
 export const PICK_WIDTH = 330;
 export const PICK_GAP = 24;
@@ -181,6 +182,10 @@ export function layoutFamilyBars(
   };
 }
 
+export function fitOrderedNameWidth(nameWidth: number, nameX: number, plotLeft: number): number {
+  return Math.max(0, Math.min(nameWidth, plotLeft - nameX - ORDERED_NAME_GAP));
+}
+
 function layoutBarsBody(
   model: BarsModel,
   width: number,
@@ -341,7 +346,7 @@ function layoutBarsBody(
       : Math.min(240, Math.max(92, Math.round(w * 0.26)));
     const maxNameRoom = Math.max(76, Math.round(w * 0.4));
     nameWidth = Math.min(desiredName, maxNameRoom);
-    plotLeft = nameX + nameWidth + 10;
+    plotLeft = nameX + nameWidth + ORDERED_NAME_GAP;
     if (hasReadoutColumn) {
       showReadout = !narrow;
       let maxReadout = 0;
@@ -362,7 +367,11 @@ function layoutBarsBody(
       const cap = Math.min(230, Math.round(w * 0.44));
       readoutWidth = showReadout ? Math.min(cap, Math.max(88, Math.ceil(maxReadout))) : 0;
       readoutX = w - BARS_PAD_X - readoutWidth;
-      plotRight = Math.max(plotLeft + 40, readoutX - (showReadout ? 10 : 0));
+      plotRight = showReadout ? readoutX - 10 : Math.max(plotLeft + 40, readoutX);
+      if (showReadout) {
+        nameWidth = fitOrderedNameWidth(nameWidth, nameX, plotRight - 40);
+        plotLeft = nameX + nameWidth + ORDERED_NAME_GAP;
+      }
     } else {
       valueInsideBar = w < 300;
       valueRightGutter = valueInsideBar ? 0 : 62;
