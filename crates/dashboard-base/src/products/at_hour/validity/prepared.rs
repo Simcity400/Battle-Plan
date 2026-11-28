@@ -3,7 +3,7 @@ use crate::{Source, products::read_ahead::{self, Preparation}};
 use replay_columnar::summary::Shape;
 use replay_lanes::{lanes::status_reasons, points::cells};
 use replay_recording::columnar_frames::TableCoverage;
-use std::{collections::BTreeMap, io, sync::{Arc, Mutex, PoisonError}};
+use std::{collections::{BTreeMap, BTreeSet}, io, sync::{Arc, Mutex, PoisonError}};
 
 #[cfg(test)]
 mod tests;
@@ -14,7 +14,10 @@ const RUN_BYTES: usize = 1024;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DateSelection { pub table: TableId, pub fields: u64, pub shift: Option<u8> }
 
-type PreparedKey = (u32, &'static [DateSelection]);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum DateWindows { Run, Blocks }
+
+type PreparedKey = (u32, DateWindows, &'static [DateSelection]);
 type PrepareRun = Box<dyn FnOnce(&Replay, u32) + Send>;
 type PreparedEntry = (Arc<Preparation>, Option<Arc<RunDates>>, Option<PrepareRun>);
 
@@ -26,20 +29,24 @@ pub(super) struct PreparedDates {
 }
 
 pub(super) struct RunDates {
+    windows: Box<[WindowDates]>,
+}
+
+struct WindowDates {
     span: (i32, i32),
-    tables: Vec<TableDates>,
+    tables: Box<[TableDates]>,
 }
 
 struct TableDates {
     table: TableId,
     fields: u64,
     shift: Option<u8>,
-    statuses: Box<[i32]>,
+    dates: Box<[i32]>,
     changes: Box<[(u128, i32)]>,
 }
 
 impl PreparedDates {
-    pub(super) fn prepare(source: &Source, run: u32, specs: &'static [DateSelection],
+    pub(super) fn prepare(source: &Source, run: u32, windows: DateWindows, specs: &'static [DateSelection],
         extra: impl FnOnce(&Replay, u32) + Send + 'static,
     ) -> io::Result<Option<Arc<Preparation>>> {
         let replay = source.replay();
@@ -47,9 +54,9 @@ impl PreparedDates {
         let variable_build = VariableDates::prepare(&variables, Arc::clone(&replay), run)?;
         let state = source.state::<Self>();
         let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
-        let key = (run, specs);
+        let key = (run, windows, specs);
         if let Some((ready, ..)) = held.runs.get(&key) { return ready.pending(); }
-        let reserved = RUN_BYTES.saturating_add(specs.len().saturating_mul(size_of::<TableDates>()));
+        let reserved = RUN_BYTES;
         if reserved > RETAINED_BYTES - held.bytes { return Ok(variable_build); }
         let ready = Arc::<Preparation>::default();
         if !held.building {
@@ -67,7 +74,7 @@ impl PreparedDates {
     fn build(state: &Mutex<Self>, replay: &Arc<Replay>, variables: &Arc<Mutex<VariableDates>>) {
         job_priority::background_thread();
         loop {
-            let ((run, specs), ready, budget, extra) = {
+            let ((run, windows, specs), ready, budget, extra) = {
                 let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
                 let budget = RETAINED_BYTES - held.bytes;
                 let Some((&key, (ready, _, extra))) = held.runs.iter_mut().find(|(_, (ready, ..))| ready.result().is_none()) else {
@@ -78,20 +85,11 @@ impl PreparedDates {
             };
             ready.run(|| {
                 if let Some(extra) = extra { extra(replay, run); }
-                let run_info = replay.recording().run(run)?;
-                let span = (run_info.first_hour, run_info.last_hour());
-                let mut dates = RunDates { span, tables: Vec::with_capacity(specs.len()) };
-                let mut bytes = 0;
-                for spec in specs {
-                    if let Some(table) = spec.load(replay, run, span, budget - bytes) {
-                        bytes += table.bytes();
-                        dates.tables.push(table);
-                    }
-                }
+                let (dates, bytes) = RunDates::load(replay, run, specs, windows, budget)?;
                 let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
                 if bytes <= RETAINED_BYTES - held.bytes {
                     held.bytes += bytes;
-                    held.runs.get_mut(&(run, specs)).expect("admitted date selection").1 = Some(Arc::new(dates));
+                    held.runs.get_mut(&(run, windows, specs)).expect("admitted date selection").1 = Some(Arc::new(dates));
                 }
                 drop(held);
                 if let Some(variable_build) = VariableDates::prepare(variables, Arc::clone(replay), run)? {
@@ -102,8 +100,8 @@ impl PreparedDates {
         }
     }
 
-    pub(super) fn get(&self, run: u32, span: (i32, i32), specs: &'static [DateSelection]) -> Option<Arc<RunDates>> {
-        self.runs.get(&(run, specs))?.1.as_ref().filter(|dates| dates.span == span).cloned()
+    pub(super) fn get(&self, run: u32, windows: DateWindows, specs: &'static [DateSelection]) -> Option<Arc<RunDates>> {
+        self.runs.get(&(run, windows, specs))?.1.clone()
     }
 }
 
@@ -152,21 +150,59 @@ impl DateSelection {
         changes.dedup();
         let dates = TableDates {
             table: self.table, fields: self.fields, shift: self.shift,
-            statuses: statuses.into_iter().map(|status| status.first).collect(),
+            dates: statuses.into_iter().map(|status| status.first).collect(),
             changes: changes.into_boxed_slice(),
         };
         (dates.bytes() <= budget).then_some(dates)
     }
+
+    fn load_block(&self, replay: &Replay, run: u32, (first, last): (i32, i32), budget: usize) -> Option<TableDates> {
+        if self.shift.is_some() { return None; }
+        let selection = Selection { fields: self.fields, rows: None, ends: false };
+        let dates = selection.dates(replay, run, self.table, first, last).ok()?.into_boxed_slice();
+        let table = TableDates { table: self.table, fields: self.fields, shift: None, dates, changes: Box::default() };
+        (table.bytes() <= budget).then_some(table)
+    }
 }
 
 impl RunDates {
-    pub(super) fn next(&self, table: TableId, selection: &Selection, hour: i32) -> Option<Option<i32>> {
-        self.tables.iter().find(|dates| dates.table == table)?.next(selection, hour)
+    fn load(replay: &Replay, run: u32, specs: &[DateSelection], mode: DateWindows, mut budget: usize) -> io::Result<(Self, usize)> {
+        let info = replay.recording().run(run)?;
+        let available = budget;
+        let mut windows = Vec::new();
+        let whole = (mode == DateWindows::Run).then_some((info.first_hour, info.last_hour()));
+        let blocks = replay.index.iter().filter(|block| mode == DateWindows::Blocks && block.run == run)
+            .map(|block| (block.first_hour, block.last_hour));
+        let spans: BTreeSet<_> = whole.into_iter().chain(blocks).collect();
+        for span in spans {
+            let headers = size_of::<WindowDates>().saturating_add(specs.len().saturating_mul(size_of::<TableDates>()));
+            let Some(after_headers) = budget.checked_sub(headers) else { break };
+            budget = after_headers;
+            let mut tables = Vec::with_capacity(specs.len());
+            for spec in specs {
+                let table = match mode {
+                    DateWindows::Run => spec.load(replay, run, span, budget),
+                    DateWindows::Blocks => spec.load_block(replay, run, span, budget),
+                };
+                if let Some(table) = table {
+                    budget -= table.bytes();
+                    tables.push(table);
+                }
+            }
+            budget += (specs.len() - tables.len()) * size_of::<TableDates>();
+            windows.push(WindowDates { span, tables: tables.into_boxed_slice() });
+        }
+        Ok((Self { windows: windows.into_boxed_slice() }, available - budget))
+    }
+
+    pub(super) fn next(&self, table: TableId, selection: &Selection, span: (i32, i32), hour: i32) -> Option<Option<i32>> {
+        let index = self.windows.binary_search_by_key(&span, |window| window.span).ok()?;
+        self.windows[index].tables.iter().find(|dates| dates.table == table)?.next(selection, hour)
     }
 }
 
 impl TableDates {
-    fn bytes(&self) -> usize { size_of_val(&*self.statuses) + size_of_val(&*self.changes) }
+    fn bytes(&self) -> usize { size_of_val(&*self.dates) + size_of_val(&*self.changes) }
 
     fn next(&self, selection: &Selection, hour: i32) -> Option<Option<i32>> {
         if selection.fields != self.fields || selection.ends { return None; }
@@ -183,7 +219,7 @@ impl TableDates {
                 }).min()
             }
         };
-        let status = self.statuses.get(self.statuses.partition_point(|&date| date <= hour)).copied();
-        Some(changes.into_iter().chain(status).min())
+        let date = self.dates.get(self.dates.partition_point(|&date| date <= hour)).copied();
+        Some(changes.into_iter().chain(date).min())
     }
 }

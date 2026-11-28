@@ -1,9 +1,9 @@
 use super::details::{self, DetailContent, FactionDetailParams, FactionDetailReply, FactionDetails};
 use super::goals::{self, FactionGoalDefinition};
 use dashboard_base::products::Country;
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Edits, Held, Owner, PrepareHour, Read, ReadDates, ReadsAt, field_columns, warnings_through}}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, DateSelection, Edits, Held, Owner, PrepareHour, Read, ReadDates, ReadsAt, field_columns, warnings_through}}};
 use dashboard_text::metadata::link_slot;
-use replay_data::rows::{CountryLinkRow, FactionMemberRow, TableId, tables};
+use replay_data::rows::{CountryLinkRow, FactionMemberRow, ProvinceRow, TableId, mask, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -123,6 +123,26 @@ dashboard_base::reply_warnings!(CountryFactionGoalsReply);
 
 const MEMBERSHIP: [TableId; 2] = [TableId::FactionMembers, TableId::CountryLinks];
 
+const fn all_dates(table: TableId) -> DateSelection {
+    DateSelection { table, fields: table.full_mask(), shift: None }
+}
+
+const DATE_SELECTIONS: &[DateSelection] = &[
+    DateSelection { table: TableId::CountryLinks, fields: mask::<CountryLinkRow>(&["canonical_slot"]), shift: None },
+    DateSelection { table: TableId::Provinces, fields: mask::<ProvinceRow>(&[]), shift: None },
+    all_dates(TableId::Countries),
+    all_dates(TableId::States),
+    all_dates(TableId::FactionMembers),
+    all_dates(TableId::Politics),
+    all_dates(TableId::PoliticalParties),
+    all_dates(TableId::Autonomy),
+    all_dates(TableId::CountryAppearance),
+    all_dates(TableId::CountryCounterInputs),
+    all_dates(TableId::GlobalSavedEventTargets),
+    all_dates(TableId::ReservedCountryNaming),
+    all_dates(TableId::CountryWars),
+];
+
 fn blank(missing: Option<String>) -> CountryFactionGoalsReply {
     CountryFactionGoalsReply { through: Through(i32::MAX), faction: None, goals: Vec::new(), definitions: Vec::new(), goal_reason: None, membership_missing: missing, warnings: Vec::new() }
 }
@@ -156,7 +176,7 @@ impl AtHour for CountryFactionGoals {
         if load.content.is_none() { return Ok(None); }
         let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid faction branch"))?;
         let query = dashboard_base::queries::query(source, branch)?;
-        query.timeline.at(hour).map_or(Ok(None), |span| ReadDates::prepare_scripted(source, span.run))
+        query.timeline.at(hour).map_or(Ok(None), |span| ReadDates::prepare_block_dates(source, span.run, DATE_SELECTIONS))
     });
     type Params = CountryFactionGoalsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, goals];
@@ -270,7 +290,7 @@ impl AtHour for CountryFactionGoals {
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        <FactionDetails as AtHour>::context(source, load).map(|context| context.with_scripted_playback(source))
+        <FactionDetails as AtHour>::context(source, load).map(|context| context.with_scripted_playback(source, DATE_SELECTIONS))
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
