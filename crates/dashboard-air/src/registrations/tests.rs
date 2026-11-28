@@ -236,6 +236,28 @@ fn the_current_air_day_follows_score_changes_and_dates_the_held_readouts() {
 }
 
 #[test]
+fn the_followed_air_tile_matches_each_exact_closed_day_prefix() {
+    let registration = AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE;
+    let source = recording(&[1]);
+    let load = LoadContext { content: None };
+    let request = |last_hour| json!({"branchId": "1", "mode": "sides", "every": true, "firstHour": 100, "lastHour": last_hour});
+    let mut subscription = request(143);
+    subscription["panel"] = registration.key.into();
+    let panel = (registration.panel.unwrap().open)(&source, &load, &subscription).unwrap();
+    let exact = panel.exact().unwrap();
+    let before = Value::Null;
+    let prefix = registration.answer(&source, request(119), &load, &false.into()).unwrap();
+    let closed = registration.answer(&source, request(143), &load, &false.into()).unwrap();
+    let reads = played(source.replay_ref(), exact, 100, 149);
+    for read in &reads {
+        let expected = if read.hour < 120 { &before } else if read.hour < 144 { &prefix } else { &closed };
+        assert!(!read.pending);
+        assert_eq!(read.value.as_ref().as_ref().unwrap(), expected, "prefix at {}", read.hour);
+    }
+    assert_eq!(reads.iter().filter(|read| read.fresh && read.hour > 100).map(|read| read.hour).collect::<Vec<_>>(), [120, 144]);
+}
+
+#[test]
 fn the_air_day_rebuilds_on_read_errors_gaps_and_new_runs() {
     let segments = [(1, 96..=107), (2, 109..=125)].map(|(branch, hours)| {
         records(branch, hours.map(|hour| {

@@ -346,6 +346,7 @@ function airEntries(ctx: FamilyPlanContext, params: Record<string, unknown>): So
       coverage: { mode: 'population', form: 'top', limit: Number(top) },
     },
     tile: {
+      panel: 'air-superiority-timeline',
       params: { ...unranked, every: true },
       coverage: { mode: 'population', form: 'all' },
     },

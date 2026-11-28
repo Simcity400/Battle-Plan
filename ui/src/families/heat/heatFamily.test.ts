@@ -8,7 +8,7 @@ import { displayedHour } from '../boundedView.ts';
 import { buildExactRequests, buildStripKeyframe, compileFollowPlan, exactEntries } from '../broker.ts';
 import type { FamilyTheme, InstalledPicture } from '../contract.ts';
 import type { FamilyPlanContext } from '../plan.ts';
-import { askUnits, unitEntries, unitEvidence, UnitReads } from '../readUnits.ts';
+import { askUnits, unitEntries } from '../readUnits.ts';
 import { trackGate } from '../sources.ts';
 import { airTimelineDeclaration } from '../../widgets/air-superiority-timeline/airTimelineProjection.ts';
 import { convoyHealthDeclaration } from '../../widgets/convoy-health/convoyHealthProjection.ts';
@@ -41,7 +41,7 @@ import { heatMatrixHostAdapter } from './hostAdapter.ts';
 import { heatLanesLane } from './lanesLaneView.ts';
 import { heatMatrixLane } from './matrixLaneView.ts';
 
-test('heat timelines follow the head and read only closed days with reusable range keys', async () => {
+test('heat timelines follow the head and read only closed days with reusable range keys', () => {
   const firstHour = 5;
   const lastHour = DAY_TILE_HOURS * 57;
   const ctx = {
@@ -87,6 +87,32 @@ test('heat timelines follow the head and read only closed days with reusable ran
       }), expected, 'audit');
       continue;
     }
+    if (declaration === airTimelineDeclaration) {
+      assert.deepEqual(subscriptions.map(sub => sub.name), ['now', ...plan.entries.slice(1).map(entry => entry.name)]);
+      assert.equal(subscriptions.length, 58);
+      for (const tile of subscriptions.slice(1)) {
+        assert.equal(tile.channel, 'panel');
+        assert.equal(tile.product, 'air-superiority-timeline');
+        assert.equal(tile.query.panel, 'air-superiority-timeline');
+      }
+      const first = subscriptions[1]!.query;
+      assert.deepEqual([first.every, first.firstHour, first.lastHour], [true, firstHour, DAY_TILE_HOURS - 1]);
+      for (const hour of [firstHour, 24, DAY_TILE_HOURS - 1, DAY_TILE_HOURS, DAY_TILE_HOURS + 24, lastHour]) {
+        assert.equal(ask(hour).length, 0, 'a followed air tile never makes an exact playback request');
+      }
+      const options = { following: false, timeMode: 'follow' as const, branch: ctx.branch, staticSpan: null, window: null, gate };
+      const history = exactEntries(plan).slice(1);
+      const bounds = (tile: number, hour: number) => {
+        const params = buildExactRequests(history[tile]!, gate.recorded(hour)!, options)?.asks[0]?.request.params;
+        return params && [params.firstHour, params.lastHour];
+      };
+      assert.equal(bounds(0, 23), undefined);
+      assert.deepEqual(bounds(0, 24), [firstHour, 23]);
+      assert.deepEqual(bounds(0, DAY_TILE_HOURS), [firstHour, DAY_TILE_HOURS - 1]);
+      assert.equal(bounds(1, DAY_TILE_HOURS + 23), undefined);
+      assert.deepEqual(bounds(1, DAY_TILE_HOURS + 24), [DAY_TILE_HOURS, DAY_TILE_HOURS + 23]);
+      continue;
+    }
     if (declaration === supremacyTimelineDeclaration) {
       assert.deepEqual(subscriptions.map(sub => sub.name), ['now', ...plan.entries.slice(1).map(entry => entry.name)]);
       assert.equal(subscriptions.length, 58);
@@ -109,45 +135,6 @@ test('heat timelines follow the head and read only closed days with reusable ran
       assert.deepEqual(exact(0, DAY_TILE_HOURS), { branchId: '1', country: 'AAA', firstHour, lastHour: DAY_TILE_HOURS - 1 });
       assert.equal(exact(1, DAY_TILE_HOURS + 23), undefined);
       assert.deepEqual(exact(1, DAY_TILE_HOURS + 24), { branchId: '1', country: 'AAA', firstHour: DAY_TILE_HOURS, lastHour: DAY_TILE_HOURS + 23 });
-      continue;
-    }
-    assert.deepEqual(subscriptions.map(sub => sub.name), ['now'], declaration.kind);
-    const firstDay = ask(firstHour);
-    assert.ok(firstDay.every(unit => unit.key === null), 'nothing is closed on the first day');
-    assert.deepEqual(firstDay[0]?.idle, [-Infinity, 23], 'the first closed day becomes available at midnight');
-
-    const initial = ask(hour);
-    assert.deepEqual(initial.filter(unit => unit.key !== null).map(unit => unit.name), ['tile:0', 'tile:1']);
-    const [closed, partial] = initial;
-    const ranges = ['firstHour', 'lastHour'];
-    const bounds = (unit: typeof closed) => ranges.map(key => (unit.spec!.request.params as Record<string, number>)[key]);
-    assert.deepEqual(bounds(closed!), [firstHour, DAY_TILE_HOURS - 1]);
-    assert.deepEqual(bounds(partial!), [DAY_TILE_HOURS, hour - 1]);
-    assert.deepEqual(ask(hour + 23).map(unit => unit.key), initial.map(unit => unit.key));
-    assert.deepEqual(unitEvidence(partial!, { key: partial!.key!, data: {} }, true), { kind: 'held', data: {}, proof: [hour, hour + 23] });
-    assert.deepEqual(unitEvidence(closed!, { key: closed!.key!, data: {} }, true), { kind: 'held', data: {}, proof: [hour, Infinity] });
-    assert.equal(ask(hour + 24)[0]!.key, closed!.key);
-    assert.deepEqual(bounds(ask(hour + 24)[1]!), [DAY_TILE_HOURS, hour + 23]);
-    assert.equal(ask(hour - 1)[1]!.key, null, 'a backward seek before that day cannot use a future tile');
-
-    const calls: (string | number)[][] = [];
-    const reader = new UnitReads(async unit => {
-      calls.push([unit.name, ...bounds(unit)]);
-      return {};
-    }, () => {});
-    try {
-      for (let played = hour; played <= hour + 48; played++) {
-        reader.sync(ask(played), true);
-        await new Promise<void>(resolve => setImmediate(resolve));
-      }
-      assert.deepEqual(calls, [
-        ['tile:0', firstHour, DAY_TILE_HOURS - 1],
-        ['tile:1', DAY_TILE_HOURS, hour - 1],
-        ['tile:1', DAY_TILE_HOURS, hour + 23],
-        ['tile:1', DAY_TILE_HOURS, hour + 47],
-      ], declaration.kind);
-    } finally {
-      reader.dispose();
     }
   }
 });
