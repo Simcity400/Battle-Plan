@@ -11,7 +11,7 @@ dashboard_base::register_products! {
     EQUIPMENT_LOSSES_EQUIPMENTLOSSES => crate::products::equipment_losses::EquipmentLosses; interval(at_hour, |r| r.through),
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDTYPES => crate::products::equipment_produced::EquipmentProducedTypes,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT => crate::products::equipment_produced::EquipmentProducedAt,
-    EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDRACE => crate::products::equipment_produced::EquipmentProducedRace; interval(at_hour, |r| r.hour),
+    EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDRACE => crate::products::equipment_produced::EquipmentProducedRace; panel(crate::products::equipment_produced::race_panel),
 
     @hourly
     PRODUCTION_PRODUCTIONLINESAT => exact<crate::products::production::ProductionLinesAt>,

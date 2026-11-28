@@ -8,7 +8,7 @@ use dashboard_query::{
     Query, cost,
     identity::Holder,
     read::{self, CoveredValue},
-    series::{ranked::GroupSelection, totals::Gap},
+    series::{ranked::GroupSelection, totals::{Gap, TotalReaders}},
 };
 use replay_lanes::lanes::{self, Keys};
 use replay_columnar::manifest::Status;
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, PoisonError, atomic::AtomicBool},
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -542,6 +542,7 @@ struct ModelSnapshots(Vec<Arc<ModelSnapshot>>);
 pub(crate) fn forget(source: &Source) {
     source.state::<ModelSnapshots>().lock().unwrap_or_else(PoisonError::into_inner).0.clear();
     *source.state::<Option<Arc<DatedDesigns>>>().lock().unwrap_or_else(PoisonError::into_inner) = None;
+    *source.state::<TotalReaders>().lock().unwrap_or_else(PoisonError::into_inner) = TotalReaders::default();
 }
 
 fn model_snapshot(source: &Source, query: &Query<'_>, run: u32, hour: i32, ids: &BTreeSet<u32>) -> io::Result<Arc<ModelSnapshot>> {
@@ -913,6 +914,17 @@ fn race_reply(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<EquipmentProducedRaceReply> {
+    race_reply_with_readers(source, query, params, context, cancelled, None)
+}
+
+fn race_reply_with_readers(
+    source: &Source,
+    query: &Query<'_>,
+    params: &EquipmentProducedRaceParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    readers: Option<&Mutex<TotalReaders>>,
+) -> io::Result<EquipmentProducedRaceReply> {
     let mut warnings = Vec::new();
     let hour = params.hour;
     let Some(stretch) = query.timeline.at(hour).copied() else {
@@ -935,6 +947,10 @@ fn race_reply(
     let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
     let measure = series.measure(produced_measure(params.count, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
     let line = dashboard_query::series::Line::new(query, series, measure)?;
+    let line = match readers {
+        Some(readers) => line.with_total_readers(readers, hour),
+        None => line,
+    };
     let baseline = tiles::range_baseline(&line, query, params.measure, params.from_hour)?;
     if let tiles::Baseline::Unavailable(reason) = baseline {
         return Ok(EquipmentProducedRaceReply {
@@ -1153,30 +1169,46 @@ impl Product for EquipmentProducedRace {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
-        let mut reply = race_reply(source, &query, params, context, cancelled)?;
-        if let Some(named) = &params.models {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let rows: Vec<_> = reply.rows.iter_mut().filter(|row| named.contains(&row.counted))
-                .filter_map(|row| row.value.map(|total| (row, total))).collect();
-            let countries: Vec<_> = rows.iter().map(|(row, _)| row.counted.clone()).collect();
-            if !countries.is_empty() {
-                let window = DetailWindow { branch_id: &params.branch_id, hour: params.hour, measure: params.measure, refits: params.refits, from_hour: params.from_hour };
-                match details_at(source, &query, window, &countries, context, cancelled) {
-                    Ok(details) => for ((row, total), detail) in rows.into_iter().zip(details) {
-                        row.breakdown = Some(ProducedBreakdown::from_detail(detail, params.count, &params.types, total));
-                    },
-                    Err(error) if replay_recording::columnar_frames::Damage::of(&error).is_some() => for (row, _) in rows {
-                        row.breakdown = Some(ProducedBreakdown::Unavailable { unavailable: error.to_string() });
-                    },
-                    Err(error) => return Err(error),
-                }
-            }
-            dashboard_base::products::check_reply_budget(&reply)?;
-        }
-        Ok(reply)
+        load_race(source, params, context, cancelled, None)
     }
+}
+
+fn load_race(source: &Source, params: &EquipmentProducedRaceParams, context: &LoadContext, cancelled: &AtomicBool, readers: Option<&Mutex<TotalReaders>>) -> io::Result<EquipmentProducedRaceReply> {
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
+    let mut reply = race_reply_with_readers(source, &query, params, context, cancelled, readers)?;
+    if let Some(named) = &params.models {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let rows: Vec<_> = reply.rows.iter_mut().filter(|row| named.contains(&row.counted))
+            .filter_map(|row| row.value.map(|total| (row, total))).collect();
+        let countries: Vec<_> = rows.iter().map(|(row, _)| row.counted.clone()).collect();
+        if !countries.is_empty() {
+            let window = DetailWindow { branch_id: &params.branch_id, hour: params.hour, measure: params.measure, refits: params.refits, from_hour: params.from_hour };
+            match details_at(source, &query, window, &countries, context, cancelled) {
+                Ok(details) => for ((row, total), detail) in rows.into_iter().zip(details) {
+                    row.breakdown = Some(ProducedBreakdown::from_detail(detail, params.count, &params.types, total));
+                },
+                Err(error) if replay_recording::columnar_frames::Damage::of(&error).is_some() => for (row, _) in rows {
+                    row.breakdown = Some(ProducedBreakdown::Unavailable { unavailable: error.to_string() });
+                },
+                Err(error) => return Err(error),
+            }
+        }
+        dashboard_base::products::check_reply_budget(&reply)?;
+    }
+    Ok(reply)
+}
+
+pub fn race_panel(source: &Arc<Source>, context: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
+    use dashboard_base::products::at_hour::{at_hour, dated_product};
+
+    let readers = source.state::<TotalReaders>();
+    dated_product::<EquipmentProducedRace>(source, context, asked, at_hour, |_, reply| reply.hour, |_, _| {}, move |source, params, context, cancelled, step| {
+        if step.step.is_some_and(|step| step.step.gap() || step.step.reset()) {
+            *readers.lock().unwrap_or_else(PoisonError::into_inner) = TotalReaders::default();
+        }
+        load_race(source, params, context, cancelled, Some(&readers))
+    })
 }
 
 #[cfg(test)]
@@ -1248,6 +1280,7 @@ pub(super) mod tests {
     fn the_race_reads_each_date_once_for_all_its_countries() {
         let src = two_producers_read_from("race-dated-reads", 1000, 1300, 1000, true, Some(1200), None);
         let query = dashboard_base::queries::query(&src, 1).unwrap();
+        let readers = Mutex::default();
         let ask = |countries: Vec<Country>, top: Option<u32>, from_hour: i32| {
             let params = EquipmentProducedRaceParams {
                 branch_id: "1".into(), hour: 1300, countries, group: None, top, count: ProducedCount::Units,
@@ -1256,6 +1289,12 @@ pub(super) mod tests {
             let (reply, reads) = replay_recording::cells::count_reads(|| {
                 race_reply(&src, &query, &params, &LoadContext { content: None }, &false.into()).unwrap()
             });
+            for hour in [1252, 1276, 1300, 1276] {
+                let mut params = params.clone();
+                params.hour = hour;
+                let ask = |readers| race_reply_with_readers(&src, &query, &params, &LoadContext { content: None }, &false.into(), readers).unwrap();
+                assert_eq!(ask(Some(&readers)), ask(None));
+            }
             (reply, reads.get(&TableId::ProducedValues).copied().unwrap_or_default())
         };
         let (one, one_read) = ask(vec![], Some(1), 1120);
