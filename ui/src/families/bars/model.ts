@@ -254,9 +254,11 @@ export interface BarsProjection<TOptions = unknown> extends FamilyProjection<Bar
 export function isSingleValueOrdered(model: BarsModel, form: BarsPlaybackForm = true): boolean {
   return model.form === 'ordered' && !model.pickList && !model.twoSidedLayout
     && model.rows.every(row => row.kind === 'section' || (row.kind === 'data' && row.value !== undefined
-      && row.segments === undefined && !row.left && !row.right && !row.rightSide && !row.pair
+      && !row.left && !row.right && !row.rightSide && !row.pair
+      && (form === 'ordered-segments' || row.segments === undefined)
       && (form === true ? !row.target && !row.readout
-        : !!row.target || (row.value.value.kind === 'zero' && row.numeric === 0))));
+        : form === 'ordered-segments' ? !row.target
+          : !!row.target || (row.value.value.kind === 'zero' && row.numeric === 0))));
 }
 
 export class FutureBarsDataError extends Error {

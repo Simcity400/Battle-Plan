@@ -133,7 +133,7 @@ async function checkReadoutClearance() {
   return result;
 }
 
-async function checkSettledPixels(withTarget = false) {
+async function checkSettledPixels(form: true | 'target-markers' | 'ordered-segments') {
   const sprite = new OffscreenCanvas(37, 21);
   const brush = sprite.getContext('2d')!;
   brush.fillStyle = theme.red;
@@ -142,10 +142,10 @@ async function checkSettledPixels(withTarget = false) {
   brush.fillRect(9, 0, 23, 11);
   const bitmap = sprite.transferToImageBitmap();
   const flag = { ...readyArt('fixture-flag', { frame: defaultArtFrame(37, 21) }), bitmap };
-  const kind = withTarget ? 'target-bars-pixel-settle' : 'ordered-bars-pixel-settle';
+  const kind = `bars-pixel-settle-${form}`;
   registerFamilyProjection({
     family: 'bars', kind,
-    singleValueBars: () => withTarget ? 'target-markers' : true,
+    singleValueBars: () => form,
     project(view): BarsModel {
       const refused = view.refused('main');
       if (refused) return { form: 'ordered', hour: view.hour, rows: [], empty: refused, emptyKind: 'unavailable' };
@@ -156,9 +156,15 @@ async function checkSettledPixels(withTarget = false) {
         rows: [{
           kind: 'data', key: 'fixture', label: knownValue('Fixture country'), numeric: value, value: { value: knownValue(value) },
           media: { kind: 'flag', art: flag, tag: 'FIX' },
-          ...(withTarget ? {
+          ...(form === 'target-markers' ? {
             target: { numeric: target, value: knownValue(target) },
             readout: { primary: String(value), secondary: `/ ${target} a day` },
+          } : {}),
+          ...(form === 'ordered-segments' ? {
+            segments: [
+              { key: 'solid', label: 'Solid', share: value < 100 ? .75 : .25, color: theme.blue, value: knownValue(value * .25) },
+              { key: 'dashed', label: 'Dashed', share: .75, color: theme.red, hatched: true, value: knownValue(value * .75) },
+            ],
           } : {}),
         }],
       };
@@ -180,7 +186,9 @@ async function checkSettledPixels(withTarget = false) {
     const cold = rig(kind, dpr);
     await cold.request(100);
     results.push({ dpr, moving, paused: changedBytes(cold.pixels(), played.pixels()) });
-    if (withTarget) for (const values of [[0.1, 0], [0, 0.1]]) {
+    const tinyValues = form === 'target-markers' ? [[0.1, 0], [0, 0.1]]
+      : form === 'ordered-segments' ? [[0.1, 150], [150, 0.1]] : [];
+    for (const values of tinyValues) {
       const live = rig(kind, dpr, values);
       const endpoint = rig(kind, dpr, values);
       live.clock(true);

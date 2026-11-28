@@ -60,7 +60,7 @@ function splitParts(surface: string, reply: SeriesRankReply, row: SeriesRankRow)
 export const gameScoreRaceProjection: BarsProjection<GameScoreRaceOptions> = registerFamilyProjection({
   kind: 'game-score',
   family: 'bars',
-  singleValueBars: options => !splits(options),
+  singleValueBars: options => splits(options) ? 'ordered-segments' : true,
   nextChange: () => Infinity,
   project(readView: BoundedReadView, options: GameScoreRaceOptions): BarsModel {
     return projectSeriesRace(readView, options, {
