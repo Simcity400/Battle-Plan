@@ -70,7 +70,7 @@ function changedBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
   return changed;
 }
 
-async function checkSettledPixels() {
+async function checkSettledPixels(withTarget = false) {
   const sprite = new OffscreenCanvas(37, 21);
   const brush = sprite.getContext('2d')!;
   brush.fillStyle = theme.red;
@@ -79,19 +79,24 @@ async function checkSettledPixels() {
   brush.fillRect(9, 0, 23, 11);
   const bitmap = sprite.transferToImageBitmap();
   const flag = { ...readyArt('fixture-flag', { frame: defaultArtFrame(37, 21) }), bitmap };
-  const kind = 'ordered-bars-pixel-settle';
+  const kind = withTarget ? 'target-bars-pixel-settle' : 'ordered-bars-pixel-settle';
   registerFamilyProjection({
     family: 'bars', kind,
-    singleValueBars: () => true,
+    singleValueBars: () => withTarget ? 'target-markers' : true,
     project(view): BarsModel {
       const refused = view.refused('main');
       if (refused) return { form: 'ordered', hour: view.hour, rows: [], empty: refused, emptyKind: 'unavailable' };
       const value = Number(view.panel('main'));
+      const target = value + 40;
       return {
         form: 'ordered', hour: view.hour, scaleMax: 200, showAxis: true,
         rows: [{
           kind: 'data', key: 'fixture', label: knownValue('Fixture country'), numeric: value, value: { value: knownValue(value) },
           media: { kind: 'flag', art: flag, tag: 'FIX' },
+          ...(withTarget ? {
+            target: { numeric: target, value: knownValue(target) },
+            readout: { primary: String(value), secondary: `/ ${target} a day` },
+          } : {}),
         }],
       };
     },

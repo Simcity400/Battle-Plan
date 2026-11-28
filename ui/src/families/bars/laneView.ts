@@ -192,11 +192,16 @@ function sameFormat(first: ValueFormat | undefined, second: ValueFormat | undefi
     && first.percent === second.percent && first.unit === second.unit);
 }
 
+function measuredTarget(target: NonNullable<BarsDataRow['target']>): boolean {
+  return Number.isFinite(target.numeric) && target.numeric > 0
+    && (target.value.kind === 'known' || target.value.kind === 'zero') && typeof target.value.value !== 'string';
+}
+
 function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSampleDiagnostic): readonly BarsRow[] | null {
   if (first === second) return second.rows;
   if (first.showAxis !== second.showAxis || first.rowHeight !== second.rowHeight || first.barHeight !== second.barHeight
     || first.caption !== second.caption || first.scaleUnit !== second.scaleUnit || !sameFormat(first.scaleFormat, second.scaleFormat)
-    || first.leftHeader !== second.leftHeader || first.rightHeader !== second.rightHeader) return null;
+    || first.leftHeader !== second.leftHeader || first.rightHeader !== second.rightHeader || first.readoutHeader !== second.readoutHeader) return null;
   if (first.rows.length !== second.rows.length) {
     if (diagnostic) diagnostic.rowChange = 'membership';
     return null;
@@ -243,7 +248,9 @@ function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSa
       return null;
     }
     if (row.subject !== endpoint.subject || row.group !== endpoint.group || row.region !== endpoint.region
-      || row.media?.kind !== endpoint.media?.kind || !sameFormat(row.value?.format, endpoint.value?.format)) return null;
+      || row.media?.kind !== endpoint.media?.kind || !sameFormat(row.value?.format, endpoint.value?.format)
+      || Boolean(row.target) !== Boolean(endpoint.target) || !sameFormat(row.target?.format, endpoint.target?.format)
+      || Boolean(row.readout) !== Boolean(endpoint.readout)) return null;
   }
   if (diagnostic && reordered) diagnostic.rowChange = 'reorder';
   return endpoints;
@@ -251,7 +258,6 @@ function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSa
 
 function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, diagnostic?: MotionSampleDiagnostic): BarsFrame | false | null {
   const current = frame.model;
-  if (!isSingleValueOrdered(next)) return null;
   const endpoints = matchingRows(current, next, diagnostic);
   if (!endpoints) return null;
   const rows: BarsModel['rows'][number][] = [];
@@ -264,9 +270,16 @@ function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, diag
       || !row.value || !end.value
       || (row.value.value.kind !== 'zero' && row.value.value.kind !== 'known')
       || (end.value.value.kind !== 'zero' && end.value.value.kind !== 'known')) return null;
-    if (row.numeric === end.numeric) { rows.push(row); continue; }
+    let target = row.target;
+    if (target && end.target) {
+      if (!measuredTarget(target) || !measuredTarget(end.target)) return null;
+      if (target.numeric !== end.target.numeric) {
+        target = { ...target, numeric: target.numeric + (end.target.numeric - target.numeric) * fraction };
+      }
+    }
+    if (row.numeric === end.numeric && target === row.target) { rows.push(row); continue; }
     changed = true;
-    rows.push({ ...row, numeric: row.numeric + (end.numeric - row.numeric) * fraction });
+    rows.push({ ...row, numeric: row.numeric + (end.numeric - row.numeric) * fraction, ...(target ? { target } : {}) });
   }
   if (!changed) return false;
   const currentScale = frame.layout.scaleMax;

@@ -7,7 +7,7 @@ import { setContextSlot, snapCanvasText } from '../draw/kit.ts';
 import { LaneArtCache, LaneArtPool, type LaneArtFetcher } from './art/laneCache.ts';
 import { createLaneArtProvider, type ArtResolutions } from './art/provider.ts';
 import { TrailingFlushScheduler, type CadenceTimers } from './cadence.ts';
-import type { ArtProvider, BoundedReadView, FamilyProjection, FamilyTheme, IdentityProvider } from './contract.ts';
+import type { ArtProvider, BarsPlaybackForm, BoundedReadView, FamilyProjection, FamilyTheme, IdentityProvider } from './contract.ts';
 import type { FamilyTooltipEntry, FamilyTooltipField } from './host/tooltips.ts';
 import { IdentityIndex } from './identity/index.ts';
 import { createSnapshotIdentityProvider } from './identity/provider.ts';
@@ -109,7 +109,7 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   readonly view: readonly (keyof TBinding & string)[];
   readonly playback?: {
     enabled(binding: TBinding): boolean;
-    supports(model: TModel): boolean;
+    supports(model: TModel, form: BarsPlaybackForm): boolean;
     unavailable(model: TModel): boolean;
     frame(frame: LaneFrame<TBinding, TModel, TLayout>, next: TModel, fraction: number, diagnostic?: MotionSampleDiagnostic): LaneFrame<TBinding, TModel, TLayout> | false | null;
   };
@@ -487,12 +487,12 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   const projectionOf = (binding: TBinding, widget: number) =>
     ensureBoundProjection<TModel, unknown>(binding, wakerOf(widget)) as FamilyProjection<TModel, unknown> | 'loading' | 'unknown';
   const invalidPlayback = new WeakSet<TBinding>();
-  const playbackEligible = (binding: TBinding, projection: FamilyProjection<TModel, unknown>) =>
-    !invalidPlayback.has(binding) && family.playback?.enabled(binding) === true && projection.singleValueBars?.(binding.options) === true;
-  const reportInvalidPlayback = (binding: TBinding) => {
+  const playbackForm = (binding: TBinding, projection: FamilyProjection<TModel, unknown>) =>
+    !invalidPlayback.has(binding) && family.playback?.enabled(binding) === true && projection.singleValueBars?.(binding.options);
+  const reportInvalidPlayback = (binding: TBinding, form: BarsPlaybackForm) => {
     if (invalidPlayback.has(binding)) return;
     invalidPlayback.add(binding);
-    console.error(`Bars projection ${binding.kind}/${binding.view ?? 'main'} produced a form outside its single-value guarantee`);
+    console.error(`Bars projection ${binding.kind}/${binding.view ?? 'main'} produced a form outside its ${form === true ? 'single-value' : 'target-marker'} guarantee`);
   };
   const sameInputs = (held: Held<TBinding, TModel, TLayout>, binding: TBinding, scene: Scene, hour: number): boolean =>
     held.projected !== null
@@ -607,7 +607,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     playbackEligible(widget, binding) {
       if (!family.playback || !isBinding(binding)) return false;
       const projection = projectionOf(binding, widget);
-      return typeof projection !== 'string' && playbackEligible(binding, projection);
+      return typeof projection !== 'string' && Boolean(playbackForm(binding, projection));
     },
     scrub(scene, statics, state, readers) {
       const binding = scene.model;
@@ -801,9 +801,10 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const shared = input.sharedSurface;
       const playbackOwnsPixels = input.playbackOwnsPixels === true;
       const direct = (shared || keep.workerCanvas) && input.binding.pin === null;
-      let animation = playbackOwnsPixels || (direct && playbackEligible(binding, projection)) ? family.playback : undefined;
-      if (animation && !animation.supports(model)) {
-        reportInvalidPlayback(binding);
+      const form = playbackOwnsPixels ? projection.singleValueBars?.(binding.options) : direct && playbackForm(binding, projection);
+      let animation = form ? family.playback : undefined;
+      if (form && animation && !animation.supports(model, form)) {
+        reportInvalidPlayback(binding, form);
         animation = undefined;
       }
       const metadataOnly = playbackOwnsPixels || (animation !== undefined && input.deferPlaybackDraw === 'handover');
@@ -990,7 +991,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       keep.lastTarget = activeTarget;
 
       let playback: PlaybackRenderer | undefined;
-      if (animation && !playbackOwnsPixels) {
+      if (form && animation && !playbackOwnsPixels) {
         const base = sceneSources(binding, projection.validateTail);
         const tiles = new SceneTiles();
         type Visual = { parts: ReturnType<typeof snapshotPictures>; dates: readonly number[]; start: number; from: number; until: number; model: TModel; projected: typeof frame.projected; layout?: TLayout };
@@ -1013,8 +1014,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           try {
             while (hour <= sample.hour) {
               const { projected, until } = projectAt({ ...input, pictures: sample.pictures }, hour, binding, projection, base, readersOf(keep), tiles);
-              if (!animation.supports(projected.model)) {
-                reportInvalidPlayback(binding);
+              if (!animation.supports(projected.model, form)) {
+                reportInvalidPlayback(binding, form);
                 return null;
               }
               if (sample.hour < until) {
