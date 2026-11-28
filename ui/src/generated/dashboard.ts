@@ -6544,6 +6544,7 @@ export const PANEL_KEYS = [
   "research-slots",
   "resource-balance",
   "resource-balance-months",
+  "scoreboard",
   "series-rank",
   "ships-sunk-tail",
   "special-project-details",

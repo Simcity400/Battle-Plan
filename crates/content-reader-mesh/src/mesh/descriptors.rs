@@ -1075,6 +1075,10 @@ impl DescriptorJob<'_> {
         (&self.roster.descriptors).into()
     }
 
+    pub fn entities(&self) -> impl Iterator<Item = &EntityDefinition> {
+        self.roster.descriptors.entities.values()
+    }
+
     pub fn refused_declaration(&self, entity: &str) -> Option<String> {
         self.roster.refused_below(self.view(), entity, &BTreeSet::new())
     }
@@ -1328,6 +1332,26 @@ impl Roster {
         self.unreadable_names
             .get(name)
             .map(|path| format!("may be declared in {path}, which does not parse"))
+    }
+
+    pub fn unreadable_attachment(&self, root: &str) -> Option<(&str, &str)> {
+        if self.unreadable_names.is_empty() {
+            return None;
+        }
+        let mut pending = vec![root];
+        let mut seen = BTreeSet::new();
+        while let Some(name) = pending.pop() {
+            if !seen.insert(name) {
+                continue;
+            }
+            if let Some((name, path)) = self.unreadable_names.get_key_value(name) {
+                return Some((name, path));
+            }
+            if let Some(entity) = self.descriptors.inherit(name) {
+                pending.extend(entity.attachments.into_iter().map(|attachment| attachment.entity.as_str()));
+            }
+        }
+        None
     }
 
     pub fn refused_declaration(&self, entity: &str) -> Option<String> {

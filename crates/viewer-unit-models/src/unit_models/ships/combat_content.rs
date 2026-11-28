@@ -193,7 +193,10 @@ pub(super) struct CombatAssets {
 }
 
 impl CombatAssets {
-    pub(super) fn load(descriptors: &mesh::Descriptors, config: &Config) -> io::Result<Self> {
+    pub(super) fn load<'a>(
+        descriptors: impl Into<mesh::DescriptorView<'a>>,
+        config: &Config,
+    ) -> io::Result<Self> {
         let template_entity = text(&config.combat_formation, "naval_combat_formation")?;
         for (value, field) in [
             (config.combat_scale, "naval_combat_formation_scale"),
@@ -202,7 +205,7 @@ impl CombatAssets {
         ] {
             finite(value, field)?;
         }
-        if !descriptors.entities.contains_key(&template_entity) {
+        if !descriptors.into().has_entity(&template_entity) {
             return Err(invalid(format!(
                 "{NAVAL_COMBAT_FILE}: 1 refused naval_combat_formation: entity {template_entity:?} is not registered"
             )));

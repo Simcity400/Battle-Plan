@@ -286,7 +286,7 @@ fn build_panels(
 ) -> io::Result<Vec<PanelSub>> {
     let world = json!({ "branchId": branch });
     let country = json!({ "branchId": branch, "country": tag });
-    let specs: [(&'static str, &'static str, Option<&'static str>, Value); 29] = [
+    let specs: [(&'static str, &'static str, Option<&'static str>, Value); 30] = [
         ("most-decorated-divisions", "decorated-divisions", None, json!({ "branchId": branch, "countries": null, "by": "medals", "descending": true, "count": 12 })),
         ("air-superiority-timeline", "air-superiority-timeline", None, json!({ "branchId": branch, "mode": "sides", "top": 7 })),
         ("national-spirits", "idea-history", Some("idea-history"), country.clone()),
@@ -313,6 +313,9 @@ fn build_panels(
         ("industrial-organisations", "industrial-organisations", None, country),
         ("governments-in-exile", "politics-state", None, json!({ "branchId": branch, "view": "exiles" })),
         ("occupied-states", "occupied-states", None, world.clone()),
+        ("scoreboard", "scoreboard", None, json!({ "branchId": branch,
+            "columns": ["factories", "armySize", "territory", "casualtiesDealt", "casualtiesTaken", "planes", "ships"],
+            "top": { "count": 10, "sort": "factories", "descending": true } })),
         ("factories:race", "series-rank", None, json!({ "branchId": branch, "family": { "kind": "country-factories", "measure": "free7" }, "top": 10 })),
         ("decryption:matrix", "decryption", Some("decryption"), world),
         ("political-power:markers", "power-spend-markers", None, json!({ "branchId": branch, "country": tag, "currency": "Political" })),
@@ -336,16 +339,7 @@ fn build_follow(
     only_product: Option<&str>,
 ) -> io::Result<(Follow, Vec<Declared>, Vec<FollowSub>)> {
     let follow = Follow::new(0);
-    let specs: [(&'static str, &'static str, Value); 10] = [
-        ("scoreboard:rank", "scoreboard", json!({ "product": "series-state", "params": { "branchId": branch, "family": { "kind": "country-factories", "measure": "free7" }, "top": 10 } })),
-        ("scoreboard:factories", "scoreboard", json!({ "product": "series-state", "params": { "branchId": branch, "family": { "kind": "country-factories", "measure": "free7" }, "reads": "every" } })),
-        ("scoreboard:army", "scoreboard", json!({ "product": "series-state", "params": { "branchId": branch, "family": { "kind": "army-totals", "measure": "ownerManpower" }, "reads": "every" } })),
-        ("scoreboard:territory", "scoreboard", json!({ "product": "series-state", "params": { "branchId": branch, "family": { "kind": "territory", "measure": "ownedStates" }, "reads": "every" } })),
-        ("scoreboard:cas-dealt", "scoreboard", json!({ "product": "series-state", "params": { "branchId": branch, "family": { "kind": "casualty-totals", "measure": "dealt" }, "reads": "every" } })),
-        ("scoreboard:cas-taken", "scoreboard", json!({ "product": "series-state", "params": { "branchId": branch, "family": { "kind": "casualty-totals", "measure": "taken" }, "reads": "every" } })),
-        ("scoreboard:cas-partial", "scoreboard", json!({ "product": "series-state", "params": { "branchId": branch, "family": { "kind": "casualty-totals", "measure": "partial" }, "reads": "every" } })),
-        ("scoreboard:planes", "scoreboard", json!({ "product": "series-state", "params": { "branchId": branch, "family": { "kind": "air-force-totals", "measure": "rosterPlanes" }, "reads": "every" } })),
-        ("scoreboard:ships", "scoreboard", json!({ "product": "series-state", "params": { "branchId": branch, "family": { "kind": "navy-totals", "measure": "rosterShips" }, "reads": "every" } })),
+    let specs: [(&'static str, &'static str, Value); 1] = [
         ("political-power:series", "political-power", json!({ "product": "series-state", "coverage": "row", "params": { "branchId": branch, "family": { "kind": "country-measure", "measure": "politicalPower" }, "reads": [{ "country": tag }] } })),
     ];
     let mut subs = Vec::new();
