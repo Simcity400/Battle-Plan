@@ -494,7 +494,15 @@ fn a_history_extended_by_each_new_day_is_the_history_read_whole() {
     for last in [23, 47, 71, 95] {
         let asked = ConvoyHealthParams { every: Some(true), ..regions(0, last) };
         let whole = health_of(&synthetic("convoy-whole", &hours), &asked);
-        assert_eq!(health_of(&followed, &asked), whole, "through hour {last}: a region first seen on a later day takes the earlier days' cells of a region without one");
+        if last > 23 {
+            health_of(&followed, &regions(last - 23, last - 12));
+        }
+        let (closed, reads) = replay_recording::cells::count_reads(|| health_of(&followed, &asked));
+        assert_eq!(closed, whole, "through hour {last}: a region first seen on a later day takes the earlier days' cells of a region without one");
+        if last > 23 {
+            let efficiency_reads = reads.get(&TableId::RegionalConvoyEfficiency).map_or((0, 0), |stats| (stats.opened, stats.restores));
+            assert_eq!(efficiency_reads, (0, 0), "the current-day reader already read this day through hour {last}");
+        }
         let top = ConvoyHealthParams { top: Some(1), pinned_regions: Some(vec![19]), ..regions(0, last) };
         assert_eq!(health_of(&followed, &top), health_of(&synthetic("convoy-whole-top", &hours), &top));
     }
