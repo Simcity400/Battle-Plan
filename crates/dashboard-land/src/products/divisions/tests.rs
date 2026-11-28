@@ -502,6 +502,53 @@ fn the_type_view_keeps_its_rows_when_the_designs_behind_its_tooltip_are_unread()
 }
 
 #[test]
+fn equipment_designs_share_one_country_tag_lookup_per_reply() {
+    use super::equipment::{DivisionEquipment, DivisionEquipmentParams, DivisionEquipmentView};
+    use super::{ArmyAttribution, DESIGN_TAGS_BUILT, UNNAMED_DESIGN, design_handle};
+    use dashboard_base::products::at_hour::{At, AtHour, Owner};
+    use dashboard_base::test_fixtures::{source, source_with_content, visual_mods::Machine};
+    use replay_data::rows::{DivisionEquipmentCountRow, DivisionEquipmentDesignRow, DivisionEquipmentTypeRow, LexicalTokenRow, TableId, TableRows, VariantDefinitionRow};
+    use replay_frame::frame::TableView;
+
+    let machine = Machine::new("division_equipment_design_tags");
+    machine.write("localisation/english/equipment_l_english.yml", "\u{feff}l_english:\n GER_fixture_rifle: \"Recorded rifle\"\n GER_fixture_support: \"Recorded support\"\n".as_bytes());
+    let mut frame = source(1, 100, Some(1));
+    let side = super::side(ArmyAttribution::Owner);
+    let slot = 7;
+    let (source, load) = source_with_content(vec![frame.clone()], &machine.root);
+    for rows in [
+        TableRows::DivisionEquipmentCounts(vec![DivisionEquipmentCountRow { slot, side, divisions: Recorded::Value(2), stock_hour: Some(100), ..Default::default() }]),
+        TableRows::DivisionEquipmentByType([7, 8].map(|archetype| DivisionEquipmentTypeRow { slot, side, archetype: Some(archetype), ..Default::default() }).into()),
+        TableRows::DivisionEquipmentByDesign((1..=4).map(|id| DivisionEquipmentDesignRow { slot, side, archetype: Some(if id < 3 { 7 } else { 8 }), variant: Some(id), ..Default::default() }).collect()),
+        TableRows::VariantDefinitions((1..=4).map(|id| VariantDefinitionRow {
+            id: design_handle(id), equipment_token: if id < 3 { 7 } else { 8 }, origin_link: if id % 2 == 1 { 9001 } else { 9999 }, ..Default::default()
+        }).collect()),
+        TableRows::LexicalTokens(vec![LexicalTokenRow { token: 7, literal: b"fixture_rifle".to_vec() }, LexicalTokenRow { token: 8, literal: b"fixture_support".to_vec() }]),
+    ] {
+        let table = rows.table();
+        frame.tables[table.index()] = TableView::Complete(rows).into();
+    }
+    let context = DivisionEquipment::context(&source, &load).unwrap();
+    let at = At {
+        owner: Some(Owner { slot, id: 9001 }), holders: &Default::default(), hour: 100, context: &context,
+        cancelled: &std::sync::atomic::AtomicBool::new(false), live: &Default::default(),
+    };
+    let params = DivisionEquipmentParams { branch_id: "1".into(), country: "GER".into(), count_for: ArmyAttribution::Owner, view: DivisionEquipmentView::Types };
+    DESIGN_TAGS_BUILT.set(0);
+    let reply = DivisionEquipment::reply(&frame, &params, &at).unwrap();
+    let names: Vec<_> = reply.types.iter().flat_map(|ty| &ty.variants).map(|design| design.name.as_deref()).collect();
+    assert_eq!(names, [Some("Recorded rifle"), None, Some("Recorded support"), None]);
+    assert!(reply.warnings.contains(&format!("{UNNAMED_DESIGN} (2)")), "{:?}", reply.warnings);
+    assert_eq!(DESIGN_TAGS_BUILT.get(), 1, "one tag lookup covers every emitted variant in the same reply");
+
+    *frame.tables[TableId::DivisionEquipmentByDesign.index()] = TableView::Complete(TableRows::DivisionEquipmentByDesign(Vec::new()));
+    DESIGN_TAGS_BUILT.set(0);
+    let reply = DivisionEquipment::reply(&frame, &params, &at).unwrap();
+    assert!(reply.types.iter().all(|ty| ty.variants.is_empty()));
+    assert_eq!(DESIGN_TAGS_BUILT.get(), 0, "the country tags are only needed for a displayed design");
+}
+
+#[test]
 fn enemy_killed_is_the_recorded_count_rounded_to_men_zero_when_absent_and_missing_when_not_known() {
     use super::careers::{EnemyKilled, enemy_killed};
     use dashboard_base::test_fixtures::source;

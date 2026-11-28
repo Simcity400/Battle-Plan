@@ -3,7 +3,7 @@ use dashboard_base::products::{Country, validate_country};
 use super::{ArmyAttribution, Content, Refusals, design_handle, find, side, templates::slot_side_range, token_key, unavailable};
 use dashboard_base::{Source, catalogue, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read}}};
 use dashboard_text::subunit_requirements::{Content as Needs, Sources};
-use replay_data::rows::{DivisionEquipmentCountRow, DivisionEquipmentDesignRow, DivisionEquipmentTemplateRow, DivisionEquipmentTypeRow, Recorded, TableId, tables};
+use replay_data::rows::{DivisionEquipmentCountRow, DivisionEquipmentDesignRow, DivisionEquipmentTemplateRow, DivisionEquipmentTypeRow, Recorded, TableId, VariantDefinitionRow, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -318,7 +318,7 @@ fn archetype(frame: &DecodedFrame, content: &Content, token: Option<u32>, refusa
     }
 }
 
-fn design(frame: &DecodedFrame, content: &Content, id: Option<u32>, refusals: &mut Refusals) -> Option<String> {
+fn design(frame: &DecodedFrame, name: &impl Fn(&VariantDefinitionRow) -> Result<String, String>, id: Option<u32>, refusals: &mut Refusals) -> Option<String> {
     let Some(id) = id else {
         refusals.note("A pool entry names no equipment design");
         return None;
@@ -328,7 +328,7 @@ fn design(frame: &DecodedFrame, content: &Content, id: Option<u32>, refusals: &m
         refusals.note("An equipment design has no recorded definition");
         return None;
     };
-    refusals.keep(content.design_name(frame, definition)).0
+    refusals.keep(name(definition)).0
 }
 
 fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String, slot: u32, content: &Content, refusals: &mut Refusals) -> io::Result<DivisionEquipmentReply> {
@@ -380,12 +380,13 @@ fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String,
             (Vec::new(), Some(why))
         }
     };
+    let design_name = content.design_names(frame);
     for row in frame.complete::<tables::DivisionEquipmentByType>()?.iter().filter(|row: &&DivisionEquipmentTypeRow| mine(row.slot, row.side)) {
         let (key, name, name_missing) = archetype(frame, content, row.archetype, refusals);
         let variants = designs
             .iter()
             .filter(|design| design.archetype == row.archetype)
-            .map(|row| EquipmentVariant { variant: row.variant.map(design_handle).unwrap_or(0).to_string(), name: design(frame, content, row.variant, refusals), held_raw: text(&row.held) })
+            .map(|row| EquipmentVariant { variant: row.variant.map(design_handle).unwrap_or(0).to_string(), name: design(frame, &design_name, row.variant, refusals), held_raw: text(&row.held) })
             .collect();
         let stock = text(&row.stock);
         reply.types.push(EquipmentType {
