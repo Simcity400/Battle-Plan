@@ -640,7 +640,7 @@ struct Reading {
     declared: Vec<Need>,
     keyed: Vec<Keyed>,
     frame_keys: Vec<(usize, Arc<BTreeSet<u64>>)>,
-    keyed_views: Vec<(usize, u64, u64, Arc<BTreeSet<u64>>, SharedView, Option<view::HeadFailure>)>,
+    keyed_views: Vec<(usize, Version, u64, Arc<BTreeSet<u64>>, SharedView, Option<view::HeadFailure>)>,
     frame: viewer_runtime::landed::PublishedKeyed<(Hour, u64, u64), (Arc<DecodedFrame>, Arc<[view::HeadFailure]>, (Hour, u64))>,
     schema_ver: u64,
     published: u64,
@@ -704,6 +704,7 @@ struct Posted {
     hour: Hour,
     branch: BranchId,
     epoch: u64,
+    deferred: Option<BTreeSet<u64>>,
 }
 
 #[derive(Default)]
@@ -759,6 +760,8 @@ struct Shared {
     on_publish: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     chosen: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    worker_built: Mutex<Option<(bool, Box<dyn FnOnce() + Send>)>>,
 }
 
 impl Shared {
@@ -826,6 +829,8 @@ impl Store {
             on_publish: Mutex::default(),
             #[cfg(test)]
             chosen: Mutex::default(),
+            #[cfg(test)]
+            worker_built: Mutex::default(),
         };
         Self { shared: Arc::new(shared), threads: Vec::new(), order: Vec::new(), record: Record::default() }
     }
@@ -880,7 +885,11 @@ impl Store {
 
     pub fn post(&mut self, mirrors: &Arc<Mirrors>, hour: Hour, branch: BranchId, epoch: u64, whole: bool) {
         self.settled();
-        lock(&self.shared.jobs).from = Some(Posted { mirrors: Arc::clone(mirrors), hour, branch, epoch });
+        {
+            let mut jobs = lock(&self.shared.jobs);
+            jobs.from = Some(Posted { mirrors: Arc::clone(mirrors), hour, branch, epoch, deferred: Some(BTreeSet::new()) });
+            jobs.running += 1;
+        }
         let asked = std::mem::take(&mut *lock(&self.shared.asked));
         for asked in asked {
             match asked {
@@ -950,10 +959,9 @@ impl Store {
             let mut jobs = lock(&self.shared.jobs);
             (jobs.queue, jobs.waiting, jobs.left, jobs.next) = (queue, waiting, left, 0);
             jobs.made = Made::since(viewer_runtime::view_record::on().then(Instant::now));
-            jobs.from = Some(Posted { mirrors: Arc::clone(mirrors), hour, branch, epoch });
         }
         if !ready.is_empty() {
-            publish(&self.shared, &kept, mirrors, &ready, (hour, branch, epoch));
+            publish(&self.shared, &kept, mirrors, &ready, (hour, branch, epoch), false);
         }
         drop(kept);
         if owed > 0 {
@@ -962,6 +970,7 @@ impl Store {
             self.spawn();
             self.shared.work.notify_all();
         }
+        posted_work_done(&self.shared);
     }
 
     pub fn settled(&mut self) {
@@ -1408,15 +1417,25 @@ fn make_next(shared: &Shared, order: &mut Vec<(u128, u32)>) -> bool {
         }
     }))
     .err();
+    #[cfg(test)]
+    let after = {
+        let refresh = lock(&shared.worker_built).take();
+        refresh.and_then(|(after, refresh)| {
+            if after { Some(refresh) } else { refresh(); None }
+        })
+    };
     telling(shared, &kept, &mut made);
+    #[cfg(test)]
+    if let Some(refresh) = after {
+        refresh();
+    }
     let ready = lock(&shared.jobs).built(at, made, failed);
     if !ready.is_empty() {
-        publish(shared, &kept, &mirrors, &ready, stands);
+        publish(shared, &kept, &mirrors, &ready, stands, false);
     }
     drop(kept);
     drop(mirrors);
-    lock(&shared.jobs).running -= 1;
-    shared.done.notify_all();
+    posted_work_done(shared);
     true
 }
 
@@ -1434,12 +1453,21 @@ fn make_views(shared: &Shared) {
     }
 }
 
-fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[usize], (hour, branch, epoch): (Hour, BranchId, u64)) {
+#[derive(PartialEq, Eq)]
+enum Version {
+    Mirror(u64),
+    Unwritten,
+}
+
+fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[usize], (hour, branch, epoch): (Hour, BranchId, u64), republishing: bool) {
     let (mut order, mut made) = (Vec::new(), Made::default());
     let mut readers = lock(&shared.readers);
     let mut published = false;
     for &place in places {
-        let Some(reading) = readers.get(place) else { continue };
+        let Some(reading) = readers.get(place).filter(|reading| reading.open) else { continue };
+        if republishing && reading.stands() == Some((hour, epoch)) && reading.frame().is_some_and(|frame| frame.branch == branch) && !reading.keys_moved() {
+            continue;
+        }
         let is_written = |table: usize| matches!(shared.written[table], playhead::pages::TableWritten::Written);
         let home = |&(table, columns): &(usize, u64)| !is_written(table) || kept[table].as_ref().is_some_and(|kept| kept.answers(columns, mirrors.get(TableId::ALL[table]), hour));
         let waiting: Vec<TableId> = reading
@@ -1499,16 +1527,15 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
         let before = std::mem::take(&mut readers[place].keyed_views);
         let (mut views, mut keys) = (Vec::with_capacity(keyed.len()), Vec::with_capacity(keyed.len()));
         for keyed in &keyed {
-            if !is_written(keyed.table) {
-                held[keyed.table] = Some(not_written(keyed.table));
+            let kept = kept[keyed.table].as_ref();
+            if is_written(keyed.table) && kept.is_none() {
                 continue;
             }
-            let Some(kept) = kept[keyed.table].as_ref() else { continue };
-            let stamp = kept.stamp(u64::MAX);
+            let stamp = kept.map_or(Version::Unwritten, |kept| Version::Mirror(kept.stamp(u64::MAX)));
             let was = before.iter().find(|(table, ..)| *table == keyed.table);
-            let (view, failure) = match was {
-                Some((_, shown, version, _, view, failure)) if *shown == stamp && *version == keyed.version => (view.clone(), failure.clone()),
-                _ => {
+            let (view, failure) = match (was, kept) {
+                (Some((_, shown, version, _, view, failure)), _) if *shown == stamp && *version == keyed.version => (view.clone(), failure.clone()),
+                (_, Some(kept)) => {
                     let tells = kept.tells(u64::MAX);
                     let (view, failure) = kept.keyed(keyed.table, mirrors.get(TableId::ALL[keyed.table]), &keyed.keys, &mut order, &mut made);
                     let asked: Vec<(u128, u64)> = order.iter().map(|&(key, _)| key).filter(|&key| was.is_none_or(|(_, _, _, keys, ..)| !keys.contains(&prefix(key)))).map(|key| (key, view::EVERY)).collect();
@@ -1517,6 +1544,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
                     }
                     (view, failure)
                 }
+                _ => not_written(keyed.table),
             };
             held[keyed.table] = Some((view.clone(), failure.clone()));
             keys.push((keyed.table, Arc::clone(&keyed.keys)));
@@ -1572,20 +1600,52 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
 }
 
 fn republish(shared: &Shared, id: u64) {
-    let Some((mirrors, stands)) = ({
+    let (mirrors, stands) = {
         let mut jobs = lock(&shared.jobs);
-        let held = jobs.from.as_ref().map(|from| (Arc::clone(&from.mirrors), (from.hour, from.branch, from.epoch)));
-        if held.is_some() {
+        let Some(from) = &mut jobs.from else { return };
+        if let Some(deferred) = &mut from.deferred {
+            deferred.insert(id);
+            return;
+        }
+        let held = (Arc::clone(&from.mirrors), (from.hour, from.branch, from.epoch));
+        jobs.running += 1;
+        held
+    };
+    refresh_readers(shared, mirrors, stands, [id]);
+}
+
+fn posted_work_done(shared: &Shared) {
+    let refresh = {
+        let mut jobs = lock(&shared.jobs);
+        jobs.running -= 1;
+        let refresh = if jobs.running == 0 && jobs.next == jobs.queue.len() {
+            jobs.from.as_mut().and_then(|from| {
+                let readers = from.deferred.take().filter(|readers| !readers.is_empty())?;
+                Some((Arc::clone(&from.mirrors), (from.hour, from.branch, from.epoch), readers))
+            })
+        } else {
+            None
+        };
+        if refresh.is_some() {
             jobs.running += 1;
         }
-        held
-    }) else {
-        return;
+        refresh
     };
+    if let Some((mirrors, stands, readers)) = refresh {
+        refresh_readers(shared, mirrors, stands, readers);
+    } else {
+        shared.done.notify_all();
+    }
+}
+
+fn refresh_readers(shared: &Shared, mirrors: Arc<Mirrors>, stands: (Hour, BranchId, u64), ids: impl IntoIterator<Item = u64>) {
     let kept = reading(shared);
-    let place = Reader::place(&lock(&shared.readers), id);
-    if let Some(place) = place {
-        publish(shared, &kept, &mirrors, &[place], stands);
+    let places: Vec<_> = {
+        let readers = lock(&shared.readers);
+        ids.into_iter().filter_map(|id| Reader::place(&readers, id)).collect()
+    };
+    if !places.is_empty() {
+        publish(shared, &kept, &mirrors, &places, stands, true);
     }
     drop(kept);
     drop(mirrors);
@@ -1849,8 +1909,8 @@ impl Reader {
             self.declared(&needs);
         } else {
             self.shared.note_demand();
+            republish(&self.shared, self.id);
         }
-        republish(&self.shared, self.id);
     }
 
     pub fn declare_only(&self, tables: &[TableId]) {
