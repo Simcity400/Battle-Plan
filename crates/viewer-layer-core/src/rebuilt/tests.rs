@@ -446,10 +446,13 @@ fn a_whole_join_yields_for_a_table_the_builder_learns() {
     gate.wait_reached();
     assert!(!side.readers().iter().any(|&(held, ..)| held == table));
 
+    let mut layer = std::mem::replace(&mut side.layers_mut()[1], Box::new(vision::Vision::new(vision_content())));
+    let (mirrors, _) = side.parts().unwrap();
     std::thread::scope(|scope| {
         scope.spawn(|| gate.open());
-        side.settle_all().unwrap();
+        layer.settle(mirrors, crate::layers::Settling::Whole).unwrap();
     });
+    side.layers_mut()[1] = layer;
     assert_eq!(probe_of(&side).rebuilt().awaiting(), [table]);
     assert!(!probe_of(&side).behind, "waiting for inputs must yield without falling behind");
     for _ in 0..200_000 {
