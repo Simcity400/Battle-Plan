@@ -423,3 +423,50 @@ fn retired_occurrence_is_visible_until_retirement_wakes_next_change_and_keeps_bi
     assert_eq!(index.bins(&holders(), &ask(103), 100, 105, 10).unwrap(), (0, vec![(0, 1)]));
     assert_eq!(index.bins(&holders(), &ask(103), 102, 105, 10).unwrap(), (1, Vec::new()));
 }
+
+#[test]
+fn dated_cursor_matches_rebuilt_order_counts_gaps_and_proof_with_bounded_visits() {
+    let mut entries: Vec<_> = (0..2000).map(|hour| occurrence(hour as u128, hour, hour)).collect();
+    let mut late = occurrence(2100, 1950, 2002);
+    late.states = vec![(2002, RUNNING), (2004, DONE)].into_boxed_slice();
+    entries.push(late);
+    entries.push(occurrence(2101, 2003, 2003));
+    let gaps = vec![
+        MissingSpan { first_hour: 1990, last_hour: 1991, reason: "before the late row".into() },
+        MissingSpan { first_hour: 2001, last_hour: 2002, reason: "gap".into() },
+    ];
+    let index = Arc::new(Index::new(entries, gaps, &[RUNNING]).unwrap().with_retirements(HashMap::from([(2100, 2005)])));
+    let late = index.find(2100).unwrap();
+    let holders = holders();
+    let chips = [Chip { kinds: None, states: Some(vec![DONE]) }];
+    let mut cursor = index.dated_cursor(&holders, &Ask { chips: &chips, ..ask(1999) }).unwrap();
+    for hour in [1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2001, 2005] {
+        let asked = Ask { chips: &chips, ..ask(hour) };
+        STATE_READS.set(0);
+        index.with_dated(&holders, &asked, |full| {
+            let rebuilt = STATE_READS.replace(0);
+            let step = cursor.advance(hour);
+            assert_eq!(step.newest_first().collect::<Vec<_>>(), full.rows, "rows at hour {hour}");
+            assert_eq!(step.live_newest_first().len() as u64, step.live);
+            assert_eq!((step.live, step.unattributed, step.until), (full.live, full.unattributed, full.until), "counts and proof at hour {hour}");
+            let mut gaps: Vec<_> = full.gaps.iter().map(|gap| (gap.first_hour, gap.last_hour, &gap.reason)).collect();
+            gaps.sort_unstable();
+            let coverage: Vec<_> = step.gaps.iter().map(|gap| (gap.first_hour, gap.last_hour, &gap.reason)).collect();
+            assert_eq!(gaps, coverage, "gaps at hour {hour}");
+            if hour == 2004 {
+                assert!(step.changed.iter().any(|edit| edit.at == late && !edit.visibility_changed), "live and chip counts change without a visibility edit");
+            }
+            if hour == 2003 {
+                assert!(rebuilt >= 2000);
+                assert_eq!(step.visited, 1);
+                assert_eq!(STATE_READS.get(), 0);
+            }
+            assert_eq!(step.chips, index.ask(&holders, &asked).unwrap().chips, "filter counts at hour {hour}");
+            let live_first = Ask { live_first: true, ..asked.clone() };
+            index.with_dated(&holders, &live_first, |full| {
+                let rows: Vec<_> = step.live_newest_first().chain(step.newest_first().filter(|&at| !step.is_live(at))).collect();
+                assert_eq!(rows, full.rows, "live-first rows at hour {hour}");
+            }).unwrap();
+        }).unwrap();
+    }
+}

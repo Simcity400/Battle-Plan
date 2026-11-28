@@ -12,6 +12,9 @@ use std::{
 };
 use ts_rs::TS;
 
+mod dated;
+pub use dated::{DatedCursor, DatedEdit, DatedUpdate};
+
 #[cfg(test)]
 mod tests;
 
