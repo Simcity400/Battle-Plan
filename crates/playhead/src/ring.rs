@@ -233,6 +233,10 @@ impl Ring {
         (kept, spare)
     }
 
+    pub(crate) fn settle(&mut self) -> Vec<Arc<Step>> {
+        self.lent.extract_if(.., |step| Arc::strong_count(step) == 1).collect()
+    }
+
     pub(crate) fn join(&mut self, reader: Reader) -> usize {
         let start = self.built.front().map_or(self.next_seq, |step| step.seq);
         let mut own = VecDeque::new();

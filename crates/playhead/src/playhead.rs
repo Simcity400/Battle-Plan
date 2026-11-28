@@ -2224,6 +2224,12 @@ impl Stepper {
                 self.shared.notify_control();
             }
             self.publish_joins();
+            if !moved && !lock_clock(&self.shared.clock).playing() {
+                let retired = lock(&self.shared.ring).settle();
+                if !retired.is_empty() {
+                    self.shared.free(retired);
+                }
+            }
             self.report(false);
             idle = !moved;
         }
