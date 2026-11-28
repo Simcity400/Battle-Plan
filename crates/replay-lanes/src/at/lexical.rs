@@ -224,6 +224,13 @@ fn character_slots(cells: &TableState, touched: &[u128]) -> Option<Vec<(u128, u3
 
 fn patch_characters(view: SharedView, reader: &TableReader, format: u16, touched: Vec<u128>) -> Option<(SharedView, usize, u64)> {
     let TableView::Complete(mut rows) = view.try_unwrap().ok()? else { return None };
+    let held = rows.rows::<tables::Characters>()?;
+    if touched.iter().any(|&key| {
+        let first = held.partition_point(|row| u128::from(row.id) < key);
+        held.get(first..first + 2).is_some_and(|pair| u128::from(pair[1].id) == key)
+    }) {
+        return None;
+    }
     let changed = character_slots(reader.cells(), &touched)?;
     let mut removed = Vec::new();
     removed.try_reserve_exact(touched.len()).ok()?;

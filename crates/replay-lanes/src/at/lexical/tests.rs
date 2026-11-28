@@ -211,6 +211,18 @@ fn character_views_apply_writes_insertions_and_deletions_since_the_held_hour() {
         assert_eq!(got.2, decoded);
         assert_eq!(cursor.held.as_ref().unwrap().reader.restores(), 1);
     }
+
+    let mut cursor = CompleteCursor::default();
+    cursor.read(&recording, 0, START, table, RETAINED_BYTES).unwrap();
+    let held = cursor.held.as_mut().unwrap();
+    let TableView::Complete(TableRows::Characters(rows)) = held.view.held() else { panic!("expected Characters") };
+    let mut rows = rows.clone();
+    rows.insert(0, rows[0].clone());
+    held.view = SharedView::from(TableView::Complete(TableRows::Characters(rows)));
+    let got = cursor.read(&recording, 0, START + 3, table, RETAINED_BYTES).unwrap();
+    let expected = super::super::frame(&recording, 0, START + 3, &[super::super::Read::all(table)]).unwrap();
+    assert_eq!(got.0, expected.tables[table.index()]);
+    assert_eq!(got.2, 2);
 }
 
 #[test]
