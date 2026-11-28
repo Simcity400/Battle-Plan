@@ -144,7 +144,6 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
 fn each_ui_panel_key_has_one_registered_reader() {
     let folder = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let contract = std::fs::read_to_string(folder.join("../../ui/src/generated/dashboard.ts")).unwrap();
-    let keys = contract.lines().find_map(|line| line.strip_prefix("export const PANEL_KEYS = ")).unwrap();
-    let keys: Vec<String> = serde_json::from_str(keys.strip_suffix(" as const;").unwrap()).unwrap();
+    let keys = crate::contract_tests::product_keys(&contract, "PANEL_KEYS");
     assert_eq!(keys, READERS.keys().copied().collect::<Vec<_>>());
 }
