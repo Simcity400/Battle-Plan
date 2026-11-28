@@ -133,10 +133,13 @@ export function projectOperativeMatrix(readView: BoundedReadView, options?: Oper
     activeColumns = keptColumns;
   }
 
+  const axes = new Map<number, MatrixAxisEntity>();
   const entity = (index: number): MatrixAxisEntity => {
+    const held = axes.get(index);
+    if (held) return held;
     const country = reply.countries[index]!;
     const shown = resolveEntityFromReadView(readView, 'country', country.tag, hour, country.tag);
-    return {
+    const made: MatrixAxisEntity = {
       id: country.tag,
       label: shown.label,
       shortLabel: country.tag,
@@ -145,6 +148,8 @@ export function projectOperativeMatrix(readView: BoundedReadView, options?: Oper
       ...(shown.color ? { color: shown.color } : {}),
       ...(shown.flag ? { flag: shown.flag } : {}),
     };
+    axes.set(index, made);
+    return made;
   };
   const hasUnknownTarget = activeRows.some(row => row.unknownTarget.length > 0);
   const rows = activeRows.map(row => entity(row.country));
@@ -302,10 +307,18 @@ export function projectOperativePairs(readView: BoundedReadView, options?: Opera
     : reply.pairs;
   if (!pairs.length) return { form: 'ordered', hour, rows: [], empty: NONE_PLACED, warnings: reply.warnings };
   const readHour = reply.readHour ?? hour;
+  const presentations = new Map<string, ReturnType<typeof countryRowPresentation>>();
+  const presentation = (tag: string) => {
+    const held = presentations.get(tag);
+    if (held) return held;
+    const made = countryRowPresentation(readView, tag);
+    presentations.set(tag, made);
+    return made;
+  };
   let scaleMax = 0;
   const rows: BarsDataRow[] = pairs.map(pair => {
     const spy = reply.countries[pair.spy]!.tag;
-    const shownSpy = countryRowPresentation(readView, spy);
+    const shownSpy = presentation(spy);
     const count = pair.operatives.length;
     scaleMax = Math.max(scaleMax, count);
     if (pair.target === null) {
@@ -349,7 +362,7 @@ export function projectOperativePairs(readView: BoundedReadView, options?: Opera
       };
     }
     const target = reply.countries[pair.target]!.tag;
-    const shownTarget = countryRowPresentation(readView, target);
+    const shownTarget = presentation(target);
     const spyLabel = shownSpy.label;
     const targetLabel = shownTarget.label;
     let label: Value<string>;

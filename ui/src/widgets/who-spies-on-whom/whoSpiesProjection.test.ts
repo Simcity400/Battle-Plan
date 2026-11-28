@@ -44,6 +44,23 @@ const reply: OperativeMatrixReply = {
 const identity = datedIdentity(Object.fromEntries(['ENG', 'GER', 'ITA', 'SOV'].map(tag => [tag, [{ from: 0, name: tag }]])));
 const view = (data: unknown) => createBoundedReadView({ hour: HOUR, identity, panels: new Map([['main', data]]) });
 
+test('each spy view resolves a country only once per projection', () => {
+  const bounded = view(reply);
+  const lookups: string[] = [];
+  const tracked: typeof bounded = {
+    ...bounded,
+    who(kind, key, hour) {
+      lookups.push(key);
+      return bounded.who(kind, key, hour);
+    },
+  };
+  projectOperativeMatrix(tracked);
+  assert.deepEqual(lookups.sort(), ['ENG', 'GER', 'ITA', 'SOV']);
+  lookups.length = 0;
+  projectOperativePairs(tracked);
+  assert.deepEqual(lookups.sort(), ['ENG', 'GER', 'ITA']);
+});
+
 test('spy matrix: counter-intelligence on the diagonal, unknown pairs hatched never zero, agency capacity in the margin', () => {
   const model = projectOperativeMatrix(view(reply));
   assert.equal(model.shape, 'wide');
