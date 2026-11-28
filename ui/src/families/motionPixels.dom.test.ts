@@ -18,20 +18,45 @@ async function motionBrowser(url: string) {
 
 test('ordered bars settle to the same pixels as a cold draw after worker playback', async () => {
   await withNativePage('ordered-bars-pixel-settle', '/ui/src/families/motionPixels.dom.fixture.ts', async page => {
-    const { results, histories, afterScroll, afterResize, afterTick, afterRefusal } = await page.evaluate<{
-      results: { dpr: number; moving: number; paused: number }[];
-      histories: { revoked: boolean; history: string; difference: number }[];
-      afterScroll: number; afterResize: number; afterTick: number; afterRefusal: number;
-    }>('window.checkSettledPixels()');
-    for (const result of results) {
-      assert.ok(result.moving > 0, `no movement at DPR ${result.dpr}`);
-      assert.equal(result.paused, 0, `paused picture differs at DPR ${result.dpr}`);
+    for (const withTarget of [false, true]) {
+      const { results, tinyEndpoints, histories, afterScroll, afterResize, afterTick, afterRefusal } = await page.evaluate<{
+        results: { dpr: number; moving: number; paused: number }[];
+        tinyEndpoints: { dpr: number; first: number; last: number }[];
+        histories: { revoked: boolean; history: string; difference: number }[];
+        afterScroll: number; afterResize: number; afterTick: number; afterRefusal: number;
+      }>(`window.checkSettledPixels(${withTarget})`);
+      for (const result of results) {
+        const detail = `DPR ${result.dpr}, with target ${withTarget}`;
+        assert.ok(result.moving > 0, `no movement at ${detail}`);
+        assert.equal(result.paused, 0, `paused picture differs at ${detail}`);
+      }
+      if (withTarget) assert.equal(tinyEndpoints.length, 8);
+      for (const { dpr, first, last } of tinyEndpoints) assert.deepEqual([first, last], [0, 0], `tiny target endpoints at DPR ${dpr}`);
+      for (const sample of histories) assert.equal(sample.difference, 0, `${sample.history} with endpoint refusal ${sample.revoked}`);
+      assert.equal(afterScroll, 0, 'layout must not copy other pixels into the owned slot');
+      assert.equal(afterResize, 0, 'the worker redraws owned pixels as the resized geometry takes effect');
+      assert.equal(afterTick, 0, 'the next tick at the same clock hour draws identical pixels');
+      assert.equal(afterRefusal, 0, 'a proven unavailable hour matches its recorded cold picture');
     }
-    for (const sample of histories) assert.equal(sample.difference, 0, `${sample.history} with endpoint refusal ${sample.revoked}`);
-    assert.equal(afterScroll, 0, 'layout must not copy other pixels into the owned slot');
-    assert.equal(afterResize, 0, 'the worker redraws owned pixels as the resized geometry takes effect');
-    assert.equal(afterTick, 0, 'the next tick at the same clock hour draws identical pixels');
-    assert.equal(afterRefusal, 0, 'a proven unavailable hour matches its recorded cold picture');
+  });
+});
+
+test('a moving target clears the recorded readout until the plot widens at the next hour', async () => {
+  await withNativePage('target-bars-readout-clearance', '/ui/src/families/motionPixels.dom.fixture.ts', async page => {
+    type Edges = { barRight: number; readoutLeft: number };
+    const { first, samples, last, firstDifference, lastDifference } = await page.evaluate<{
+      first: Edges; samples: (Edges & { fraction: number; readoutDifference: number })[]; last: Edges; firstDifference: number; lastDifference: number;
+    }>('window.checkReadoutClearance()');
+    assert.ok(first.barRight > 0 && first.readoutLeft < 490 && last.readoutLeft < 490);
+    assert.ok(last.barRight > first.readoutLeft, 'the next bar reaches into the previous readout column');
+    assert.deepEqual([firstDifference, lastDifference], [0, 0], 'both recorded endpoints match cold draws');
+    let previous = first.barRight;
+    for (const { fraction, barRight, readoutLeft, readoutDifference } of samples) {
+      assert.equal(readoutLeft, first.readoutLeft, `held readout at ${fraction}`);
+      assert.ok(barRight > previous && barRight < readoutLeft, `bar ${barRight}, readout ${readoutLeft} at ${fraction}`);
+      assert.equal(readoutDifference, 0, `recorded readout pixels at ${fraction}`);
+      previous = barRight;
+    }
   });
 });
 

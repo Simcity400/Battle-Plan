@@ -1,6 +1,8 @@
+import { readableColour } from '../charts/palette.ts';
 import { datedPanel, datedRecord } from '../dashboard/follow/messages.fixture.ts';
 import type { Refusal } from '../dashboard/follow/page.ts';
 import { Lane, type Presented } from '../draw/lane.ts';
+import { parseColor } from '../shell/appearance/color.ts';
 import { DEFAULT_SEEDS, deriveColors } from '../shell/appearance/themes.ts';
 import { defaultArtFrame, readyArt } from './art/types.ts';
 import { barsLane, type FamilyBarsBinding } from './bars/laneView.ts';
@@ -18,7 +20,7 @@ const theme: FamilyTheme = {
   hatchEdge: colours.border, font: 'Segoe UI, sans-serif', fontSize: { small: 11, body: 12 }, lineWidth: 1, hatchSpacing: 6,
 };
 
-function rig(kind: string, dpr: number) {
+function rig(kind: string, dpr: number, values = [30, 150]) {
   let now = 1000;
   let serial = 0;
   let presented: Presented<ImageBitmap> | undefined;
@@ -41,8 +43,8 @@ function rig(kind: string, dpr: number) {
     slots: [{ widget: 1, x: slotX, y: 4, w: 481, h: 235, bx: slotX, by: 2, bw: 481, bh: 238, visible: true }],
   });
   layout();
-  lane.receive('panels', datedPanel(1, 100, 30));
-  lane.receive('panels', datedPanel(1, 101, 150));
+  lane.receive('panels', datedPanel(1, 100, values[0]));
+  lane.receive('panels', datedPanel(1, 101, values[1]));
   const request = async (now: number, speed = 0, acknowledge = false, refused: Refusal[] = []) => {
     const installed = acknowledge ? (presented?.entries ?? []).map(({ id, widget, binding }) => ({ id, widget, binding })) : [];
     lane.frame({ type: 'frame', serial: ++serial, now, target: now, exact: true, seek: 1, speed, installed, refused, inspect: [] });
@@ -70,7 +72,68 @@ function changedBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
   return changed;
 }
 
-async function checkSettledPixels() {
+async function checkReadoutClearance() {
+  const sprite = new OffscreenCanvas(16, 16);
+  const brush = sprite.getContext('2d')!;
+  brush.fillStyle = theme.green;
+  brush.fillRect(0, 0, 3, 16);
+  const bitmap = sprite.transferToImageBitmap();
+  const icon = { ...readyArt('fixture-readout', { frame: defaultArtFrame(16, 16) }), bitmap };
+  const kind = 'target-bars-readout-clearance';
+  registerFamilyProjection({
+    family: 'bars', kind,
+    singleValueBars: () => 'target-markers',
+    project(view): BarsModel {
+      const value = Number(view.panel('main'));
+      const target = value === 900 ? 1000 : 1;
+      return {
+        form: 'ordered', hour: view.hour, scaleMax: target, showAxis: false,
+        rows: [{
+          kind: 'data', key: 'fuel', label: knownValue('Fuel'), numeric: value, value: { value: knownValue(value) },
+          target: { numeric: target, value: knownValue(target) },
+          readout: { icon, primary: String(value), secondary: `/ ${target} a day`, ...(value === 900 ? { shortfall: '\u2212100' } : {}) },
+        }],
+      };
+    },
+  }, 'main');
+  const width = 490;
+  const fill = parseColor(readableColour(theme.accent, theme.surface))!;
+  const readout = parseColor(theme.green)!;
+  const live = rig(kind, 1, [900, 1]);
+  const cold = rig(kind, 1, [900, 1]);
+  const edges = () => {
+    const pixels = live.pixels(0, 0, width, 250);
+    let barRight = -1;
+    let readoutLeft = width;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const x = (i / 4) % width;
+      if (pixels[i] === fill.r && pixels[i + 1] === fill.g && pixels[i + 2] === fill.b) barRight = Math.max(barRight, x);
+      if (pixels[i] === readout.r && pixels[i + 1] === readout.g && pixels[i + 2] === readout.b) readoutLeft = Math.min(readoutLeft, x);
+    }
+    return { barRight, readoutLeft };
+  };
+  live.clock(true);
+  await live.request(100, 1);
+  live.step(0);
+  const first = edges();
+  await cold.request(100);
+  const firstDifference = changedBytes(cold.pixels(), live.pixels());
+  const readoutPixels = () => live.pixels(first.readoutLeft, 0, width - first.readoutLeft, 250);
+  const heldReadout = readoutPixels();
+  const samples = [.25, .5, .75, .99].map(fraction => {
+    live.clock(true, 100 + fraction);
+    live.step(0);
+    return { fraction, ...edges(), readoutDifference: changedBytes(heldReadout, readoutPixels()) };
+  });
+  live.clock(true, 101);
+  live.step(0);
+  await cold.request(101);
+  const result = { first, samples, last: edges(), firstDifference, lastDifference: changedBytes(cold.pixels(), live.pixels()) };
+  bitmap.close();
+  return result;
+}
+
+async function checkSettledPixels(withTarget = false) {
   const sprite = new OffscreenCanvas(37, 21);
   const brush = sprite.getContext('2d')!;
   brush.fillStyle = theme.red;
@@ -79,24 +142,30 @@ async function checkSettledPixels() {
   brush.fillRect(9, 0, 23, 11);
   const bitmap = sprite.transferToImageBitmap();
   const flag = { ...readyArt('fixture-flag', { frame: defaultArtFrame(37, 21) }), bitmap };
-  const kind = 'ordered-bars-pixel-settle';
+  const kind = withTarget ? 'target-bars-pixel-settle' : 'ordered-bars-pixel-settle';
   registerFamilyProjection({
     family: 'bars', kind,
-    singleValueBars: () => true,
+    singleValueBars: () => withTarget ? 'target-markers' : true,
     project(view): BarsModel {
       const refused = view.refused('main');
       if (refused) return { form: 'ordered', hour: view.hour, rows: [], empty: refused, emptyKind: 'unavailable' };
       const value = Number(view.panel('main'));
+      const target = value <= 0.1 ? 0.1 : value + 40;
       return {
         form: 'ordered', hour: view.hour, scaleMax: 200, showAxis: true,
         rows: [{
           kind: 'data', key: 'fixture', label: knownValue('Fixture country'), numeric: value, value: { value: knownValue(value) },
           media: { kind: 'flag', art: flag, tag: 'FIX' },
+          ...(withTarget ? {
+            target: { numeric: target, value: knownValue(target) },
+            readout: { primary: String(value), secondary: `/ ${target} a day` },
+          } : {}),
         }],
       };
     },
   }, 'main');
   const results: { dpr: number; moving: number; paused: number }[] = [];
+  const tinyEndpoints: { dpr: number; first: number; last: number }[] = [];
   for (const dpr of [1, 1.25, 1.5, 2]) {
     const played = rig(kind, dpr);
     await played.request(100);
@@ -111,6 +180,20 @@ async function checkSettledPixels() {
     const cold = rig(kind, dpr);
     await cold.request(100);
     results.push({ dpr, moving, paused: changedBytes(cold.pixels(), played.pixels()) });
+    if (withTarget) for (const values of [[0.1, 0], [0, 0.1]]) {
+      const live = rig(kind, dpr, values);
+      const endpoint = rig(kind, dpr, values);
+      live.clock(true);
+      await live.request(100, 1);
+      live.step(0);
+      await endpoint.request(100);
+      const first = changedBytes(endpoint.pixels(), live.pixels());
+      live.step(500);
+      live.step(500);
+      await endpoint.request(101);
+      const last = changedBytes(endpoint.pixels(), live.pixels());
+      tinyEndpoints.push({ dpr, first, last });
+    }
   }
   const histories = [];
   for (const revoked of [false, true]) {
@@ -171,7 +254,8 @@ async function checkSettledPixels() {
   await coldRefusal.request(101);
   const afterRefusal = changedBytes(refused.pixels(), coldRefusal.pixels());
   bitmap.close();
-  return { results, histories, afterScroll, afterResize, afterTick, afterRefusal };
+  return { results, tinyEndpoints, histories, afterScroll, afterResize, afterTick, afterRefusal };
 }
 
 (window as unknown as { checkSettledPixels: typeof checkSettledPixels }).checkSettledPixels = checkSettledPixels;
+(window as unknown as { checkReadoutClearance: typeof checkReadoutClearance }).checkReadoutClearance = checkReadoutClearance;
