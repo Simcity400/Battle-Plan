@@ -22,12 +22,13 @@ use dashboard_query::{
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
+use dashboard_world::products::{place_name_runs::{PlacePoint, names_at}, place_names::Name};
 use replay::campaign::Replay;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, PoisonError, atomic::AtomicBool},
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -92,6 +93,30 @@ pub struct ConstructionPlaceAt {
     pub to_state: Option<u32>,
     pub province: Option<u32>,
     pub at_hour: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub name_missing: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub to_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub to_name_missing: Option<String>,
+}
+
+impl ConstructionPlaceAt {
+    fn points(&self) -> [Option<PlacePoint>; 2] {
+        let state = |id| PlacePoint::State(id, self.at_hour);
+        let first = self.state.map(state);
+        if self.kind == ProjectKind::Railway {
+            [first, self.to_state.filter(|&id| Some(id) != self.state).map(state)]
+        } else {
+            [first.or_else(|| self.province.map(|id| PlacePoint::Province(id, self.at_hour))), None]
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -213,6 +238,9 @@ pub struct ConstructionLogTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub order: Option<ConstructionOrder>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub place_names: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -736,11 +764,12 @@ fn tail(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, can
 struct Prepared {
     tail: Arc<Tail>,
     selection: Option<Selection>,
+    places: Mutex<BTreeMap<PlacePoint, Name>>,
 }
 
 fn prepare(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, params: &ConstructionLogTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
     let selection = dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
-    Ok(Prepared { tail: tail(source, query, branch, load, cancelled)?, selection })
+    Ok(Prepared { tail: tail(source, query, branch, load, cancelled)?, selection, places: Mutex::default() })
 }
 
 fn build_row(
@@ -783,6 +812,10 @@ fn build_row(
         to_state: state.to_state,
         province: state.province,
         at_hour: row_hour,
+        name: None,
+        name_missing: None,
+        to_name: None,
+        to_name_missing: None,
     });
     let place_missing = place.is_none().then(|| {
         if project.kind == ProjectKind::Railway {
@@ -858,7 +891,41 @@ fn build_row(
     })
 }
 
-fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &ConstructionLogTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<ConstructionLogTailReply> {
+fn attach_places(
+    reply: &mut ConstructionLogTailReply, prepared: &Prepared, query: &Query<'_>,
+    (source, load): (&Source, &LoadContext), hour: i32, cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let points: BTreeSet<_> = reply.rows.iter().filter_map(|row| row.place.as_ref()).filter(|place| place.at_hour <= hour)
+        .flat_map(|place| place.points().into_iter().flatten()).collect();
+    let mut held = prepared.places.lock().unwrap_or_else(PoisonError::into_inner);
+    held.retain(|point, _| points.contains(point));
+    let needed = points.into_iter().filter(|point| !held.contains_key(point)).collect();
+    held.extend(names_at(source, query, load, &needed, cancelled)?);
+    for place in reply.rows.iter_mut().filter_map(|row| row.place.as_mut()) {
+        let [first, last] = place.points();
+        if place.at_hour > hour {
+            let reason = || "Location is only recorded after this hour".to_owned();
+            place.name_missing = first.map(|_| reason());
+            place.to_name_missing = last.map(|_| reason());
+            reply.next_change = reply.next_change.into_iter().chain([place.at_hour]).min();
+        } else {
+            let name = |point| held.get(&point);
+            if let Some(value) = first.and_then(name) {
+                place.name.clone_from(&value.name);
+                place.name_missing.clone_from(&value.missing);
+            }
+            if let Some(value) = last.and_then(name) {
+                place.to_name.clone_from(&value.name);
+                place.to_name_missing.clone_from(&value.missing);
+            }
+        }
+    }
+    let text_bytes: usize = held.values().map(|name| name.name.as_ref().map_or(0, String::capacity) + name.missing.as_ref().map_or(0, String::capacity)).sum();
+    if text_bytes > dashboard_base::products::MAX_PRODUCT_REPLY_BYTES { held.clear(); }
+    Ok(())
+}
+
+fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &ConstructionLogTailParams, hour: i32, cancelled: &AtomicBool, places: Option<(&Source, &LoadContext)>) -> io::Result<ConstructionLogTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     let tail = &prepared.tail;
     let index = &tail.index;
@@ -924,7 +991,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &ConstructionLog
     if let Some(later) = tail.chips.iter().filter(|chip| chip.first_hour > hour).map(|chip| chip.first_hour).min() {
         next_change = Some(next_change.map_or(later, |held| held.min(later)));
     }
-    let reply = ConstructionLogTailReply {
+    let mut reply = ConstructionLogTailReply {
         branch_id: params.branch_id.clone(),
         total: answer.total.to_string(),
         offset: answer.offset.to_string(),
@@ -941,6 +1008,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &ConstructionLog
         unavailable: tail.unavailable.clone(),
         warnings: tail.warnings.clone(),
     };
+    if let Some(places) = places { attach_places(&mut reply, prepared, query, places, hour, cancelled)?; }
     dashboard_base::products::check_reply_budget(&reply)?;
     Ok(reply)
 }
@@ -968,7 +1036,8 @@ impl Product for ConstructionLogTail {
         "buildingTypes[]",
         projects,
         inQueue,
-        order
+        order,
+        placeNames
     ];
     type Reply = ConstructionLogTailReply;
 
@@ -1005,7 +1074,7 @@ impl Product for ConstructionLogTail {
         let query = dashboard_base::queries::query(source, branch)?;
         let hour = occurrences::cutoff(&query, params.hour)?;
         let prepared = prepare(source, &query, branch, load, params, cancelled)?;
-        load_tail_at(&prepared, &query, params, hour, cancelled)
+        load_tail_at(&prepared, &query, params, hour, cancelled, (params.place_names == Some(true)).then_some((source, load)))
     }
 }
 
@@ -1015,7 +1084,7 @@ struct Owned {
     holders: Arc<Holders>,
 }
 
-pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
     let mut request = asked.clone();
     request.as_object_mut().ok_or("Invalid construction-log-tail panel")?.remove("panel");
     let params: ConstructionLogTailParams = dashboard_query::named::named(&request).map_err(|error| format!("Invalid construction-log-tail panel: {error}"))?;
@@ -1025,10 +1094,13 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, ConstructionLogTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, &params, &AtomicBool::new(false)));
     let prepared = prepared.map_err(|error| error.to_string())?;
     let owned = Owned { replay: source.replay(), timeline: Arc::clone(&query.timeline), holders: Arc::clone(&query.holders) };
+    let opened = (params.place_names == Some(true)).then(|| Arc::downgrade(source));
+    let load = LoadContext { content: load.content.clone() };
     Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         let query = Query { replay: &owned.replay, timeline: Arc::clone(&owned.timeline), holders: Arc::clone(&owned.holders) };
         let hour = occurrences::cutoff(&query, Some(hour))?;
-        load_tail_at(&prepared, &query, &params, hour, cancelled)
+        let source = opened.as_ref().map(|source| source.upgrade().ok_or_else(|| io::Error::other("Recording closed"))).transpose()?;
+        load_tail_at(&prepared, &query, &params, hour, cancelled, source.as_deref().map(|source| (source, &load)))
     }))
 }
 
@@ -1036,6 +1108,7 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
 mod tests {
     use super::*;
     use dashboard_base::test_fixtures::{CAMPAIGN, session};
+    use dashboard_world::products::place_name_runs::{PlaceNameRuns, PlaceNameRunsParams};
     use replay_data::rows::{BuildingConstructionRow, BuildingRow, CampaignRow, ClockRow, ConstructionCompletion, ConstructionLineOutputRow, CountryLinkRow, CountryRow, LexicalTokenRow, RailwayConstructionRow, Recorded, TableId};
     use replay_frame::branches::{BranchReason, BranchStart, Parentage};
     use replay_journal::synthetic::{Input, Sample};
@@ -1199,19 +1272,31 @@ mod tests {
             projects: None,
             in_queue: None,
             order: None,
+            place_names: None,
         }
     }
 
     #[test]
     fn construction_tail_transitions_stepped_equals_cold_and_withholds_future_chips() {
-        let source = make_source();
+        let source = Arc::new(make_source());
         let load = LoadContext { content: None };
-        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "construction-log-tail", "branchId": "1", "limit": 64 })).unwrap();
+        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "construction-log-tail", "branchId": "1", "limit": 64, "placeNames": true })).unwrap();
         let exact = panel.exact().unwrap();
+        let cancelled = AtomicBool::new(false);
+        let name_asked = PlaceNameRunsParams { branch_id: "1".into(), land: false, from: 100, to: 100, states: vec![64, 66], provinces: Vec::new() };
+        let missing = PlaceNameRuns::load(&source, &name_asked, &load, &cancelled).unwrap_err().to_string();
         for (hour, seed) in [(100, true), (104, false), (105, false), (119, false), (120, false), (121, false), (122, false), (110, true)] {
-            let stepped = (exact.advance)(hour, seed, &AtomicBool::new(false), None);
-            let cold = (exact.cold)(hour, &AtomicBool::new(false));
+            let stepped = (exact.advance)(hour, seed, &cancelled, None);
+            let cold = (exact.cold)(hour, &cancelled);
             assert_eq!(*stepped.value, cold, "stepped equals cold at hour {hour}");
+            let params = ConstructionLogTailParams { place_names: Some(true), ..ask(hour) };
+            let named = ConstructionLogTail::load(&source, &params, &load, &cancelled).unwrap();
+            assert_eq!(cold.unwrap()["rows"], serde_json::to_value(&named.rows).unwrap());
+            for place in named.rows.iter().filter_map(|row| row.place.as_ref()) {
+                let expected = if place.at_hour < 100 { "Place name not answered" } else { missing.as_str() };
+                assert_eq!(place.name, None);
+                assert_eq!(place.name_missing.as_deref(), Some(expected), "place hour {}", place.at_hour);
+            }
         }
         let at100 = ConstructionLogTail::load(&source, &ask(100), &load, &AtomicBool::new(false)).unwrap();
         assert_eq!(at100.rows.len(), 2);
@@ -1219,6 +1304,7 @@ mod tests {
             reply.rows.iter().find(|row| row.key == key).expect("row")
         }
         assert_eq!(row_of(&at100, "10").status, ConstructionStatus::Waiting);
+        assert!(row_of(&at100, "10").place.as_ref().unwrap().name_missing.is_none(), "legacy queries omit place-name fields");
         assert_eq!(row_of(&at100, "10").factories, Some(0));
         assert_eq!(at100.building_types.iter().map(|c| c.token.as_str()).collect::<Vec<_>>(), ["industrial_complex"]);
         assert_eq!(at100.next_change, Some(105));

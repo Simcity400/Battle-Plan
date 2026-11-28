@@ -1319,7 +1319,7 @@ beforeFirstRead: number,
  * Projects read by `hour` whose output no country can be given, not counted.
  */
 unattributed: number, warnings: Array<string>, };
-export type ConstructionLogTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, search?: string, sort?: OccurrenceSort, offset?: string, limit: number, buildingTypes?: Array<string>, projects?: ConstructionWorkFilter, inQueue?: boolean, order?: ConstructionOrder, };
+export type ConstructionLogTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, search?: string, sort?: OccurrenceSort, offset?: string, limit: number, buildingTypes?: Array<string>, projects?: ConstructionWorkFilter, inQueue?: boolean, order?: ConstructionOrder, placeNames?: boolean, };
 export type ProjectKind = "building" | "railway" | "unknown";
 export type ProjectSource = "census" | "outputAlone" | "unknown";
 export type SpendingGap = "notRecorded" | "linkedOutput" | "inexactOutput" | "observationRestart" | "finalOutputMissing" | "ownerUnknown";
@@ -1329,7 +1329,7 @@ export type ConstructionStatus = "building" | "repairing" | "waiting" | "observe
 export type ConstructionWorkFilter = "all" | "new" | "repair";
 export type ConstructionOrder = "change" | "start";
 export type ConstructionOwner = { tag: string | null, slot: number | null, missing: string | null, };
-export type ConstructionPlaceAt = { kind: ProjectKind, state: number | null, toState: number | null, province: number | null, atHour: number, };
+export type ConstructionPlaceAt = { kind: ProjectKind, state: number | null, toState: number | null, province: number | null, atHour: number, name?: string, nameMissing?: string, toName?: string, toNameMissing?: string, };
 export type ConstructionLevelsAt = { built: number, total: number, unknown: number, possible: number, added: number, earlierUnknown: boolean, countersUnread: boolean, };
 export type ConstructionEndAt = { kind: EndKind, hour: number | null, knownAt: number, unknown: UnknownEnd | null, };
 export type ConstructionOutputAt = { constructionRaw: string | null, repairRaw: string | null, reason: SpendingGap | null, beforeObservation: boolean, };
@@ -6662,7 +6662,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "casualty-matrix": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "subject": "any", "top": "leaf" },
   "civil-wars": { "branchId": "leaf", "hour": "leaf" },
   "construction-breakdown": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "construction-log-tail": { "branchId": "leaf", "buildingTypes": "node", "buildingTypes[]": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "inQueue": "leaf", "limit": "leaf", "offset": "leaf", "order": "leaf", "projects": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "to": "leaf" },
+  "construction-log-tail": { "branchId": "leaf", "buildingTypes": "node", "buildingTypes[]": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "inQueue": "leaf", "limit": "leaf", "offset": "leaf", "order": "leaf", "placeNames": "leaf", "projects": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "to": "leaf" },
   "content-entity-stats": { "branchId": "leaf", "hour": "leaf", "kind": "leaf", "token": "leaf" },
   "convoy-health": { "branchId": "leaf", "country": "any", "every": "leaf", "from": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "listFrom": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "to": "leaf", "top": "leaf", "view": "leaf" },
   "country-faction-goals": { "branchId": "leaf", "country": "any", "goals": "leaf", "hour": "leaf" },
