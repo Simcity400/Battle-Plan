@@ -867,7 +867,7 @@ fn a_view_above_the_land_cutoff_and_below_the_ships_draws_the_ships_and_no_land_
             && reading(side).models.as_ref().is_some_and(|models| models.made_at(8))
     });
     assert_eq!(reading(&side).stack_count(), 0, "it holds no land figure");
-    assert!(!reading(&side).uploaded(), "the field the ships are drawn with is to be uploaded");
+    assert!(reading(&side).prepared().is_some(), "the models for the ships-only view were made");
 
     let (published, progress) = std::sync::mpsc::channel();
     side.views().handle().set_on_publish(Arc::new(move || {
@@ -881,8 +881,11 @@ fn a_view_above_the_land_cutoff_and_below_the_ships_draws_the_ships_and_no_land_
     let waiting = !units.figures_stand(8);
     release.send(()).unwrap();
     assert!(waiting, "the old naval models cannot finish a ships-only frame");
-    progress.recv().unwrap();
-    units.models.as_mut().unwrap().join(Some(8), viewer_layer_core::layers::Settling::Whole);
+    let models = units.models.as_mut().unwrap();
+    while !models.made_at(8) {
+        progress.recv().unwrap();
+        models.join(None, viewer_layer_core::layers::Settling::Whole);
+    }
     assert!(units.figures_stand(8));
     assert!(units.models.as_ref().unwrap().refused.as_deref().unwrap().contains("the replacement models were withheld"));
 }
