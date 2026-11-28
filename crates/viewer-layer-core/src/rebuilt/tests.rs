@@ -318,12 +318,12 @@ fn a_build_that_misses_three_tables_learns_the_three_in_one_round() {
 }
 
 fn window_side(units: Units, gate: &Arc<Gate>) -> MapSide {
-    window_side_with(units, gate, false)
+    window_side_with(units, gate, false, Vec::new())
 }
 
-fn window_side_with(units: Units, gate: &Arc<Gate>, exact: bool) -> MapSide {
+fn window_side_with(units: Units, gate: &Arc<Gate>, exact: bool, reads: Vec<TableId>) -> MapSide {
     let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
-    let probe = Whole::new("probe", Probe { reads: Vec::new(), gate: Arc::clone(gate) }, |_, view| view.camera_height < 500.0, |_| 0, &[TableId::Clock], false).unwrap().in_window(Arc::clone(&entry), Recording { branch: 1 }).unwrap();
+    let probe = Whole::new("probe", Probe { reads, gate: Arc::clone(gate) }, |_, view| view.camera_height < 500.0, |_| 0, &[TableId::Clock], false).unwrap().in_window(Arc::clone(&entry), Recording { branch: 1 }).unwrap();
     let probe = if exact { probe.exact() } else { probe };
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(vision::Vision::new(vision_content())), Box::new(probe)];
     let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
@@ -406,7 +406,7 @@ fn a_window_layer_shows_todays_plan_until_its_first_product_and_nothing_where_th
 #[test]
 fn an_exact_layer_is_the_product_of_the_hour_each_step_applies() {
     let gate = Gate::opened();
-    let mut side = window_side_with(record(), &gate, true);
+    let mut side = window_side_with(record(), &gate, true, Vec::new());
     let _opens = Opens(Arc::clone(&gate));
     wait_probe_product(&mut side);
     let hour = side.applied().expect("the head has reached an hour");
@@ -429,9 +429,45 @@ fn an_exact_layer_is_the_product_of_the_hour_each_step_applies() {
 }
 
 #[test]
+fn a_whole_join_yields_for_a_table_the_builder_learns() {
+    let table = TableId::CountryAppearance;
+    let units = recording(40, |at, store| {
+        if at == 0 {
+            store.table(table.index()).unwrap().insert_at(0, 101).unwrap();
+        }
+        store.status(table.index(), Status::Complete, true, Some(at as Hour), true).unwrap();
+    });
+    let gate = Gate::shut();
+    let mut side = window_side_with(units, &gate, true, vec![table]);
+    let _opens = Opens(Arc::clone(&gate));
+    side.entry().playhead().play(0.0);
+    let hour = side.applied().unwrap();
+    side.frame(hour).unwrap();
+    gate.wait_reached();
+    assert!(!side.readers().iter().any(|&(held, ..)| held == table));
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| gate.open());
+        side.settle_all().unwrap();
+    });
+    assert_eq!(probe_of(&side).rebuilt().awaiting(), [table]);
+    assert!(!probe_of(&side).behind, "waiting for inputs must yield without falling behind");
+    for _ in 0..200_000 {
+        side.settle_all().unwrap();
+        if let Some(built) = probe_of(&side).product() {
+            assert!(built.of(hour));
+            assert_eq!(built.product.as_ref().ok(), Some(&hour));
+            return;
+        }
+        std::thread::yield_now();
+    }
+    panic!("the whole settle never built the product at hour {hour}");
+}
+
+#[test]
 fn a_compose_lets_the_product_built_before_it_go() {
     let gate = Gate::opened();
-    let mut side = window_side_with(record(), &gate, true);
+    let mut side = window_side_with(record(), &gate, true, Vec::new());
     let _opens = Opens(Arc::clone(&gate));
     wait_probe_product(&mut side);
     let hour = side.applied().expect("the head has reached an hour");

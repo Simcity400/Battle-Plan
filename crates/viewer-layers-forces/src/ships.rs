@@ -229,6 +229,9 @@ impl Rosters {
                 waited_for(began, asked.answered_at, slices, timeouts, true);
                 return Ok(());
             }
+            if asked.loading {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, format!("The ship rosters await {:?} at hour {hour}", asked.tables)));
+            }
             let now = Instant::now();
             if now >= until {
                 waited_for(began, asked.answered_at, slices, timeouts, false);
@@ -345,7 +348,11 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
             }
         }
         let frame = reader.as_ref().and_then(views::Reader::frame).filter(|frame| viewer_layer_core::rebuilt::holds(frame, &asked.tables));
-        asked.loading = reader.is_some() && frame.is_none();
+        let loading = reader.is_some() && frame.is_none();
+        if loading && !asked.loading {
+            shared.answered.notify_all();
+        }
+        asked.loading = loading;
         let Some(frame) = frame else {
             if !std::mem::take(&mut asked.woken) {
                 let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
@@ -446,6 +453,8 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
             asked.tables.dedup();
             if let Some(reader) = &reader {
                 reader.declare_only(&asked.tables);
+                asked.loading = true;
+                shared.answered.notify_all();
             }
             last = None;
             continue;

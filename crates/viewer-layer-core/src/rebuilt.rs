@@ -316,6 +316,10 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
     }
 
     pub fn wait(&self, hour: Hour, limit: Duration) -> io::Result<Landed<Arc<Built<P>>>> {
+        self.wait_for(hour, limit, false)
+    }
+
+    fn wait_for(&self, hour: Hour, limit: Duration, drives_rows: bool) -> io::Result<Landed<Arc<Built<P>>>> {
         let until = Instant::now() + limit;
         let mut state = self.shared.lock();
         loop {
@@ -331,6 +335,9 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
             if let Some(why) = state.refused.landed_clone() {
                 let generation = state.generation;
                 return Ok(why.map(|why| Arc::new(Built::new(hour, generation, Err(why), 0, None, None))));
+            }
+            if drives_rows && !state.awaiting.is_empty() {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, format!("The {} layer awaits {:?} at hour {hour}", self.name, state.awaiting)));
             }
             let now = Instant::now();
             if now >= until {
@@ -498,7 +505,7 @@ enum Found<'a, P> {
     Wait(MutexGuard<'a, State<P>>),
 }
 
-fn from_rows<'a, P>(mut state: MutexGuard<'a, State<P>>, held: &mut Option<views::Reader>) -> Found<'a, P> {
+fn from_rows<'a, P>(mut state: MutexGuard<'a, State<P>>, held: &mut Option<views::Reader>, built: &Condvar) -> Found<'a, P> {
     if held.is_none() {
         *held = state.reader.take();
     }
@@ -507,6 +514,7 @@ fn from_rows<'a, P>(mut state: MutexGuard<'a, State<P>>, held: &mut Option<views
         let needs: Vec<Need> = state.tables.iter().copied().map(Need::every).collect();
         *held = Some(store.reader(state.name, &needs));
         state.awaiting = state.tables.clone();
+        built.notify_all();
     }
     match held.as_ref().and_then(views::Reader::newest).filter(|(frame, _)| holds(frame, &state.tables)) {
         Some((frame, published)) => Found::Frame(state, frame, published),
@@ -543,7 +551,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             continue;
         }
         let generation = state.generation;
-        let (mut state, frame, published) = match from_rows(state, &mut reader) {
+        let (mut state, frame, published) = match from_rows(state, &mut reader, &shared.built) {
             Found::Frame(state, frame, published) => (state, frame, published),
             Found::Wait(state) => {
                 let _ = shared.wake.wait_timeout(state, TICK);
@@ -810,10 +818,10 @@ impl<B: Build> crate::layers::Layer for Whole<B> {
                 () if self.exact && self.held.is_some() => WHOLE,
                 () => settling.waiting(WHOLE),
             };
-            if self.exact && !waiting.is_zero() && self.rebuilt.wait(hour, waiting).is_err() && self.rebuilt.stopped().is_none() {
+            if !waiting.is_zero() && let Err(error) = self.rebuilt.wait_for(hour, waiting, true)
+                && self.exact && error.kind() != io::ErrorKind::WouldBlock && self.rebuilt.stopped().is_none()
+            {
                 self.behind = true;
-            } else if !self.exact {
-                let _ = self.rebuilt.wait(hour, waiting);
             }
         }
         if let Some(why) = self.rebuilt.stopped() {
