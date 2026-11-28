@@ -19,7 +19,7 @@ use replay_data::{
     rows::ScriptVariablesRow, rows::StateRow,
     rows::TableId, rows::TableSchema, rows::column, rows::mask, rows::tables,
 };
-use replay_frame::frame::{HourFrame, Leader, OperandStatus, Province, Rowset};
+use replay_frame::frame::{HourFrame, KeyedNumber, Leader, OperandStatus, Province, Rowset};
 use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 
 use super::{Eval, Scope, SurrenderLimits, ongoing, variables::Store};
@@ -3385,6 +3385,23 @@ impl<'a> World<'a> {
                 .find(|entry| entry.name == key)
                 .map(|entry| entry.value_raw));
         }
+        let row_key = |var_id| (u128::from(variables.scope_kind) << 64)
+            | (u128::from(variables.scope_id) << 32)
+            | u128::from(var_id);
+        let values_table = TableId::ScriptVariableValues;
+        if let Some(frame) = self.frame.decoded().map(|source| source.decoded_frame())
+            && let Some(mut value) = frame.keyed_i64(values_table, None)
+        {
+            if matches!(value, KeyedNumber::Value(_)) {
+                let Some(var_id) = self.variable_id(key)? else { return Ok(None) };
+                value = frame.keyed_i64(values_table, Some(row_key(var_id))).expect("the playback column supports keyed reads");
+            }
+            return match value {
+                KeyedNumber::Value(value) => Ok(value),
+                KeyedNumber::NotRecorded => Ok(None),
+                KeyedNumber::Unavailable(reason) => Err(walked::<tables::ScriptVariableValues>(std::io::Error::other(reason))),
+            };
+        }
         if matches!(
             self.frame
                 .status(replay_data::rows::TableId::ScriptVariableValues),
@@ -3393,9 +3410,6 @@ impl<'a> World<'a> {
             return Ok(None);
         }
         const VALUE: u64 = mask::<replay_data::rows::ScriptVariableValueRow>(&["value_raw"]);
-        let row_key = |var_id| (u128::from(variables.scope_kind) << 64)
-            | (u128::from(variables.scope_id) << 32)
-            | u128::from(var_id);
         if let Some(read) = variable_values()
             && self.frame.decoded().is_some_and(|frame| frame.decoded_frame().tables[TableId::ScriptVariableValues.index()].held().is_not_selected())
             && read(None).is_some()

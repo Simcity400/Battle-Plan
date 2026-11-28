@@ -153,7 +153,6 @@ const OVERLAY: &[TableId] = &[
     TableId::NavalRepairQueue,
     TableId::ScriptVariables,
     TableId::ScriptVariableNames,
-    TableId::ScriptVariableValues,
     TableId::TaskForceMapMotion,
 ];
 

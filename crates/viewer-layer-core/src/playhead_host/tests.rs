@@ -561,6 +561,56 @@ fn a_map_on_an_earlier_format_plays_with_changed_tables_withheld_and_newer_table
 }
 
 #[test]
+fn script_values_are_read_from_the_requested_hour_without_building_a_mirror() {
+    use playhead::pages::{Span, WorldPages};
+    use replay_data::{format::FormatVersion, rows::{CountryRow, ScriptVariableValueRow}};
+    use replay_frame::frame::KeyedNumber;
+    use replay_journal::{fixtures, synthetic::{Input, Sample}};
+    use replay_recording::columnar_frames::Recording;
+
+    let values = TableId::ScriptVariableValues;
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"script values", &[(1, 0, 3)], &[TableId::Countries, values], |synthetic, _, ordinal| {
+        let countries = [CountryRow { id: 7, tag: b"TST".to_vec(), ..Default::default() }];
+        let rows = [ScriptVariableValueRow { scope_kind: 2, scope_id: 7, var_id: 9, value_raw: -20 + i64::from(ordinal) }];
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.table(values, Input::Snapshot { rows: &rows, partial: (ordinal == 2).then_some(1), read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let opened = Arc::new(WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap());
+    let kinds = Arc::new(opened.schema().to_vec());
+    let pages: Arc<dyn Pages> = opened;
+    let timeline = Timeline::whole(&*pages).unwrap();
+    let hour = timeline.first();
+    let entry = open(Units { name: "script values".into(), pages, timeline, kinds }, quick()).unwrap();
+    let (layer, _) = super::shared_maps_tests::Reads::new(&[TableId::Countries]);
+    let mut side = MapSide::new(Arc::clone(&entry), vec![layer], View::default()).unwrap();
+    side.set_branch(1);
+    let reader = side.views().reader("script values", &[super::views::Need::every(TableId::Countries)]);
+    let key = (2u128 << 64) | (7u128 << 32) | 9;
+    let read = |side: &mut MapSide, hour| {
+        side.anchor(hour, false, 0.0, true);
+        side.catch_up(hour).unwrap();
+        assert!(side.parts().unwrap().0.get(values).is_none());
+        let frame = reader.frame().unwrap();
+        assert_eq!(frame.hour, hour);
+        frame.keyed_i64(values, Some(key)).unwrap()
+    };
+    assert_eq!(read(&mut side, hour), KeyedNumber::Value(Some(-20)));
+    assert_eq!(read(&mut side, hour + 1), KeyedNumber::Value(Some(-19)));
+    assert!(matches!(read(&mut side, hour + 2), KeyedNumber::Unavailable(reason) if reason.contains("truncated") && reason.contains("ScriptVariableValues")));
+    assert_eq!(read(&mut side, hour), KeyedNumber::Value(Some(-20)));
+    let original = reader.frame().unwrap().tables[values.index()].identity();
+    assert_eq!(read(&mut side, hour + 1), KeyedNumber::Value(Some(-19)));
+    assert!(!original.is(&reader.frame().unwrap().tables[values.index()]));
+
+    let all = side.views().reader("explicit script values", &[super::views::Need::every(values)]);
+    side.catch_up(hour + 1).unwrap();
+    let frame = all.frame().expect("the explicit reader receives the written table");
+    let rows = frame.complete::<replay_data::rows::tables::ScriptVariableValues>().unwrap();
+    assert_eq!(rows[0].value_raw, -19);
+    assert!(side.parts().unwrap().0.get(values).is_none());
+}
+
+#[test]
 fn a_gap_step_shows_every_table_not_recorded_until_the_next_piece() {
     let (recording, _) = record(2, BLOCK, busy);
     let pages: Arc<dyn Pages> = Arc::clone(&recording) as Arc<dyn Pages>;

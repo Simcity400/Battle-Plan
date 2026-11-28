@@ -1,7 +1,7 @@
 
 use crate::playhead_host::mirror::{Cell, Mirror, Resolved};
 use replay_columnar::{manifest::Status, state::Kind};
-use replay_data::rows::{Field, List, Opaque, RowChanges, TableId};
+use replay_data::{rows::{Field, List, Opaque, RowChanges, TableId, TableRows}, scope::CaptureMode};
 use replay_frame::frame::TableView;
 use std::io;
 
@@ -44,27 +44,32 @@ pub fn make(table: TableId, mirror: &Mirror, held: (&[Kind], u64), gap: bool, or
 pub fn make_of(table: TableId, mirror: &Mirror, (kinds, declared): (&[Kind], u64), gap: bool, keep: impl Fn(u128) -> bool, order: &mut Vec<(u128, u32)>) -> (TableView, Made) {
     let mut made = Made::default();
     let status = if gap { Status::NotRecorded } else { mirror.status().unwrap_or(Status::NotRecorded) };
+    let (view, failure) = make_rows(table, status, mirror.capture(), |_| mirror.reason().unwrap_or("unavailable for a reason the mirror does not hold").to_owned(), || rows(table, mirror, (kinds, declared), &keep, order, &mut made));
+    made.failure = failure.map(|failure| failure.kind);
+    (view, made)
+}
+
+pub(crate) fn make_rows(table: TableId, status: Status, capture: Option<CaptureMode>, reason: impl FnOnce(u32) -> String, rows: impl FnOnce() -> io::Result<TableRows>) -> (TableView, Option<HeadFailure>) {
     let view = match status {
-        Status::NotRecorded => match mirror.capture() {
+        Status::NotRecorded => match capture {
             Some(mode) => TableView::NotRecorded { mode },
             None => TableView::Unavailable { reason: format!("{table:?} is not recorded here, in a recording whose capture mode the playhead was not given") },
         },
-        Status::Unavailable { .. } => TableView::Unavailable { reason: mirror.reason().unwrap_or("unavailable for a reason the mirror does not hold").to_owned() },
-        Status::Complete | Status::Truncated { .. } => match rows(table, mirror, (kinds, declared), &keep, order, &mut made) {
+        Status::Unavailable { reason: id } => TableView::Unavailable { reason: reason(id) },
+        Status::Complete | Status::Truncated { .. } => match rows() {
             Ok(rows) => match status {
                 Status::Truncated { missing } => TableView::Truncated { rows, missing },
                 _ => TableView::Complete(rows),
             },
-            Err(error) => {
-                let kind = HeadFailureKind::BuildError(error.to_string());
-                made.failure = Some(kind.clone());
-                TableView::Unavailable {
-                    reason: HeadFailure { table, kind }.format(),
-                }
-            }
+            Err(error) => return failed_rows(table, error),
         },
     };
-    (view, made)
+    (view, None)
+}
+
+pub(crate) fn failed_rows(table: TableId, error: io::Error) -> (TableView, Option<HeadFailure>) {
+    let failure = HeadFailure { table, kind: HeadFailureKind::BuildError(error.to_string()) };
+    (TableView::Unavailable { reason: failure.format() }, Some(failure))
 }
 
 fn rows(table: TableId, mirror: &Mirror, (kinds, declared): (&[Kind], u64), keep: &impl Fn(u128) -> bool, order: &mut Vec<(u128, u32)>, made: &mut Made) -> io::Result<replay_data::rows::TableRows> {

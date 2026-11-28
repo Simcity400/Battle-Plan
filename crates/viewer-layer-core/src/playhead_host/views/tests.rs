@@ -918,3 +918,35 @@ fn an_unrecorded_selection_is_answered_once() {
     store.post(&mirrors, 0, RECORDING.branch, 0, false);
     assert_eq!(reader.published(), published);
 }
+
+#[test]
+fn an_exact_column_uses_the_same_failure_and_key_publication_as_a_mirror() {
+    use super::{SCRIPT_VALUES as table, view::HeadFailureKind};
+    let good = 1u128 << 32;
+    let units = record_with("exact column publication", 1, |store, _| {
+        store.status(table.index(), Status::Complete, true, Some(0), true).unwrap();
+        write_rows(store, table, &[(good, vec![Put::Cell(Cell::I64(7))]), (2u128 << 32, vec![Put::Unrecorded])]);
+    });
+    let entry = open(units, hourly_steps()).unwrap();
+    entry.set_capture(CaptureMode::Full);
+    let mut store = Store::new(&entry);
+    let whole = store.reader("explicit whole", &[Need::every(table)]);
+    let selected = store.reader("explicit selection", &[Need::every(table)]);
+    let mirrors = Arc::new(Mirrors::default());
+    store.post(&mirrors, 0, RECORDING.branch, 0, false);
+    let published = selected.published();
+    selected.declare_keyed(table, Arc::new(BTreeSet::from([super::prefix(good)])));
+    assert_eq!(selected.published(), published + 1);
+    let (frame, failures) = whole.frame_with_failures().unwrap();
+    assert!(matches!(&*frame.tables[table.index()], TableView::Unavailable { .. }));
+    assert!(matches!(&failures[..], [failure] if failure.table == table && matches!(failure.kind, HeadFailureKind::BuildError(_))));
+    let refused_bytes = super::view_bytes(&frame.tables[table.index()]);
+    let (frame, failures) = selected.frame_with_failures().unwrap();
+    assert!(failures.is_empty());
+    assert_eq!(frame.complete::<tables::ScriptVariableValues>().unwrap()[0].value_raw, 7);
+    let held = store.held();
+    assert_eq!(held.iter().find(|&&(id, _)| id == table).unwrap().1, refused_bytes + super::view_bytes(&frame.tables[table.index()]));
+    let (_, published) = selected.newest().unwrap();
+    store.post(&mirrors, 0, RECORDING.branch, 0, false);
+    assert_eq!(selected.newest().unwrap().1, published);
+}

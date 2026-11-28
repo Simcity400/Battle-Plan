@@ -30,7 +30,6 @@ pub const TABLES: &[TableId] = &[
     TableId::LexicalTokens,
     TableId::ScriptVariables,
     TableId::ScriptVariableNames,
-    TableId::ScriptVariableValues,
     TableId::SimulationFeatures,
     TableId::Provinces,
     TableId::States,
