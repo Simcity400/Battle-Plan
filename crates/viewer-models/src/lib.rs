@@ -45,7 +45,7 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use content_reader_layers::ResolvedLayers;
-use content_reader_mesh::mesh::{self, Descriptors};
+use content_reader_mesh::mesh::{self, DescriptorView, Descriptors};
 use content_reader_image::{Rgba8Image, dds, native::Decode};
 
 use viewer_scene_base::shadow::DEPTH_MAP_FORMAT;
@@ -523,10 +523,10 @@ impl ModelLibrary {
         self.decode
     }
 
-    pub fn load(
+    pub fn load<'a>(
         layers: &ResolvedLayers,
         decode: Decode,
-        descriptors: &Descriptors,
+        descriptors: impl Into<DescriptorView<'a>>,
         names: &[String],
         warnings: &mut Vec<content_reader_parser::Diagnostic>,
     ) -> io::Result<Self> {
@@ -545,7 +545,7 @@ impl ModelLibrary {
             layers,
             layers,
             decode,
-            descriptors,
+            descriptors.into(),
             names,
             warnings,
             |_, _| None,
@@ -554,10 +554,10 @@ impl ModelLibrary {
         )
     }
 
-    pub fn load_with(
+    pub fn load_with<'a>(
         layers: &ResolvedLayers,
         decode: Decode,
-        descriptors: &Descriptors,
+        descriptors: impl Into<DescriptorView<'a>>,
         names: &[String],
         warnings: &mut Vec<content_reader_parser::Diagnostic>,
         refused: fn(&mesh::Roster, &str) -> Option<String>,
@@ -566,7 +566,7 @@ impl ModelLibrary {
             layers,
             layers,
             decode,
-            descriptors,
+            descriptors.into(),
             names,
             warnings,
             refused,
@@ -580,7 +580,7 @@ impl ModelLibrary {
         layers: &ResolvedLayers,
         session: &ResolvedLayers,
         decode: Decode,
-        descriptors: &Descriptors,
+        descriptors: DescriptorView<'_>,
         names: &[String],
         warnings: &mut Vec<content_reader_parser::Diagnostic>,
         refused: fn(&mesh::Roster, &str) -> Option<String>,
@@ -660,7 +660,7 @@ impl ModelLibrary {
                     &recorded,
                     session,
                     decode,
-                    &roster.descriptors,
+                    (&roster.descriptors).into(),
                     &names,
                     &mut Vec::new(),
                     |_, _| None,
@@ -690,7 +690,7 @@ impl ModelLibrary {
                     &recorded,
                     session,
                     decode,
-                    &roster.descriptors,
+                    (&roster.descriptors).into(),
                     &visual,
                     &mut Vec::new(),
                     |_, _| None,
@@ -810,7 +810,7 @@ impl ModelLibrary {
             &recorded,
             layers,
             decode,
-            &roster.descriptors,
+            (&roster.descriptors).into(),
             names,
             &mut Vec::new(),
             |_, _| None,
@@ -967,15 +967,15 @@ impl ModelLibrary {
         self
     }
 
-    fn add(
+    fn add<'a>(
         &mut self,
         layers: &ResolvedLayers,
-        descriptors: &Descriptors,
+        descriptors: impl Into<DescriptorView<'a>>,
         name: &str,
     ) -> io::Result<()> {
         let marks = (self.palette.len(), self.materials.len());
         let mut geometry_added = Vec::new();
-        let added = self.compose_entity(layers, descriptors, name, &mut geometry_added);
+        let added = self.compose_entity(layers, descriptors.into(), name, &mut geometry_added);
         if added.is_err() {
             self.palette.truncate(marks.0);
             self.materials.truncate(marks.1);
@@ -989,7 +989,7 @@ impl ModelLibrary {
     fn compose_entity(
         &mut self,
         layers: &ResolvedLayers,
-        descriptors: &Descriptors,
+        descriptors: DescriptorView<'_>,
         name: &str,
         geometry_added: &mut Vec<native::GeometryKey>,
     ) -> io::Result<()> {
@@ -1055,7 +1055,7 @@ impl ModelLibrary {
     fn compose(
         &mut self,
         layers: &ResolvedLayers,
-        descriptors: &Descriptors,
+        descriptors: DescriptorView<'_>,
         name: &str,
         placement: mesh::Transform,
         depth: usize,
@@ -1069,8 +1069,7 @@ impl ModelLibrary {
             return Err(invalid(format!("attachment cycle through {name}")));
         }
         if descriptors
-            .entities
-            .get(name)
+            .entity(name)
             .is_some_and(|entity| entity.clone.is_some())
         {
             return Err(invalid(format!(
@@ -1164,7 +1163,7 @@ impl ModelLibrary {
             mesh: Arc::new(skeleton_source::skeleton(&decoded)),
             native: Some(Arc::new(crate::mesh_pose::Source {
                 pdxmesh: entity.is_some(),
-                entity_locators: descriptors.entities.get(name).map_or_else(
+                entity_locators: descriptors.entity(name).map_or_else(
                     Vec::new,
                     |definition| {
                         crate::mesh_pose::entity_locators(
@@ -1339,7 +1338,7 @@ impl ModelLibrary {
                 crate::mesh_pose::actors(&out.rig, None, true)
             };
             for (joint_name, child, handle) in attachments {
-                if !descriptors.entities.contains_key(&child) {
+                if !descriptors.has_entity(&child) {
                     *out.refusals.entry(format!("{name} -> {child}: attachment child has no registered entity definition")).or_default() += 1;
                     continue;
                 }

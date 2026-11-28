@@ -2,6 +2,25 @@ use super::descriptors::last_text;
 use super::*;
 
 #[test]
+fn aliases_borrow_the_roster_and_override_only_the_named_entities() {
+    let descriptors = parse_descriptors(
+        br#"entity = { name = base default_state = idle }
+            entity = { name = child clone = base }"#,
+        "gfx/entities/aliases.asset",
+    )
+    .unwrap();
+    let mut alias = descriptors.entities["base"].clone();
+    alias.default_state = Some("damaged".into());
+    let aliases = BTreeMap::from([("base".into(), alias)]);
+    let view = descriptors.with_aliases(&aliases);
+
+    assert!(std::ptr::eq(view.entity("child").unwrap(), &descriptors.entities["child"]));
+    assert!(std::ptr::eq(view.entity("base").unwrap(), &aliases["base"]));
+    assert_eq!(view.inherit("child").unwrap().default_state, Some("damaged"));
+    assert_eq!(descriptors.inherit("child").unwrap().default_state, Some("idle"));
+}
+
+#[test]
 fn entity_boolean_reads_keep_defaults_and_previous_assignments() {
     let descriptors = parse_descriptors(
         br#"entity = { name = e

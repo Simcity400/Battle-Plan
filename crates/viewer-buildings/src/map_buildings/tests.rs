@@ -11,13 +11,13 @@ fn only_states_the_building_producer_cannot_select_are_refused() {
             entity = { name = linked_ruin clone = ruin state = { name = idle next_state = destroyed } }
         "#, "fixture.asset").unwrap();
     assert_eq!(
-        super::unselected_meshless_states(&descriptors, "ruin"),
+        super::unselected_meshless_states((&descriptors).into(), "ruin"),
         [
             "entity ruin state destroyed: 2 map effects refused; state is not selected by the building producer"
         ]
     );
-    assert!(super::unselected_meshless_states(&descriptors, "default_ruin").is_empty());
-    assert!(super::unselected_meshless_states(&descriptors, "linked_ruin").is_empty());
+    assert!(super::unselected_meshless_states((&descriptors).into(), "default_ruin").is_empty());
+    assert!(super::unselected_meshless_states((&descriptors).into(), "linked_ruin").is_empty());
 }
 
 use super::*;
