@@ -187,8 +187,9 @@ fn build_branch_index(source: &Source, query: &Query<'_>) -> io::Result<BranchTa
             lanes::History::default()
         } else {
             let ids: Vec<u128> = tokens.into_iter().collect();
+            let last = met.iter().map(|&(_, _, last)| last).max().unwrap_or(end);
             dashboard_query::cost::storage(|| {
-                lanes::history(recording, run, TableId::LexicalTokens, &[0], Keys::These(&ids), start, end)
+                lanes::history(recording, run, TableId::LexicalTokens, &[0], Keys::These(&ids), start, last)
             })?
         };
         let spelled: Vec<i32> = lexical.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)).collect();
