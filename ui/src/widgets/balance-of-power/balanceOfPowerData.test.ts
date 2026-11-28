@@ -80,7 +80,7 @@ test('a record is joined by the ordinal the history recorded at that hour, never
   assert.equal(recordAt(detail([record(5, 'bop_a')]), bop, 150), null, 'another record with the same balance is never taken');
 });
 
-test('the chart draws the answer, keeps an unnamed range and side by key with its reason, and audits what it shows', () => {
+test('the chart draws and audits the recorded answer and labels an unnamed side as missing', () => {
   const hist = history(800, { selected: 'bop_a', nextChange: 900, holderBalances: [holder([balance('bop_a', [run(500, 800, '36000')])])] });
   const named = project(820, [['history', hist], ['state', detail([record(0, 'bop_a')])]]);
   const line = named.series[0]!;
@@ -105,13 +105,26 @@ test('the chart draws the answer, keeps an unnamed range and side by key with it
   })], ['state', detail([record(0, 'bop_a')])]]);
   assert.deepEqual(singleUnread.gaps?.map(gap => [gap.firstHour, gap.lastHour]), [[0, 0]], 'a single unread opening hour is preserved');
 
-  const unnamed = project(800, [['history', hist], ['state', detail([record(0, 'bop_a', {
+  const unreadSide = detail([record(0, 'bop_a', {
     range: { token: 'range_high', name: null, reason: 'missing localisation', min: '25000', max: '100000' },
     left: { token: 'side_west', name: null, reason: 'characters table was not recorded' },
-  })])]]);
+  })]);
+  const unnamed = project(800, [['history', hist], ['state', unreadSide]], new Map([['hover', { hour: 800, data: unreadSide }]]));
   assert.equal(unnamed.series[0]!.endLabel?.name, 'Range name unavailable', 'an unresolved active range is said, never dropped');
-  assert.equal(unnamed.overlays?.[1]?.text, 'side_west', 'an unresolved side shows its recorded key');
+  assert.equal(unnamed.overlays?.[1]?.text, 'Side name not recorded');
+  assert.deepEqual(unnamed.hoverDetail?.items.find(item => item.label === 'Left'), { label: 'Left', missingReason: 'characters table was not recorded' });
+  assert.ok(!String(unnamed.auditRows![0]!.value).includes('side_west'));
   assert.notEqual(unnamed.auditRows![0]!.value, named.auditRows![0]!.value, 'correcting the displayed range changes the audit');
+});
+
+test('a side shown from history keeps its missing-name reason after the balance ends', () => {
+  const hist = history(800, { selected: 'bop_a', holderBalances: [holder([balance('bop_a', [run(500, 799, '36000')], {
+    right: { token: 'side_east', name: 'East Assembly' },
+    left: { token: 'side_west', name: null, reason: 'The side name requires an active balance of power' },
+  })])] });
+  const chart = project(800, [['history', hist], ['state', detail([])]]);
+  assert.equal(chart.overlays?.[1]?.text, 'Side name not recorded');
+  assert.deepEqual(chart.warnings, ['The side name requires an active balance of power']);
 });
 
 test('a hover reads the record at the hit hour: unread is not "Not active", and the change is the product\'s', () => {

@@ -168,11 +168,11 @@ function buildHoverDetail(
   const range = rangeOf(record);
   if (range) items.push(range.reason ? { label: 'Range', missingReason: `${range.reason} (key ${range.token})` } : { label: 'Range', value: range.name });
   const trending = sideLabel(record.trending);
-  if (trending) items.push(trending.reason ? { label: 'Leaning toward', missingReason: `${trending.reason} (key ${trending.label})` } : { label: 'Leaning toward', value: trending.label });
+  if (trending) items.push(trending.reason ? { label: 'Leaning toward', missingReason: trending.reason } : { label: 'Leaning toward', value: trending.label });
   items.push(changeItem(record));
   for (const [label, side] of [['Right', record.right], ['Left', record.left]] as const) {
     const named = sideLabel(side);
-    if (named?.reason) items.push({ label, missingReason: `${named.reason} (key ${named.label})` });
+    if (named) items.push(named.reason ? { label, missingReason: named.reason } : { label, value: named.label });
   }
   return { hour: hoverHour, items, replacesSeries: true };
 }
@@ -220,6 +220,8 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
     const range = rangeOf(record);
     const right = sideLabel(record?.right ?? balance.right);
     const left = sideLabel(record?.left ?? balance.left);
+    if (!record && right?.reason) warnings.push(right.reason);
+    if (!record && left?.reason && left.reason !== right?.reason) warnings.push(left.reason);
 
     const series: TimeChartSeriesModel[] = [{
       id: balance.token,

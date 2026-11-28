@@ -609,18 +609,25 @@ where P::Context: Sync, P::Params: Sync {
                 state.identity_through = identity_edges.get(identity_edges.partition_point(|&h| h <= hour)).map_or(i32::MAX, |&h| h - 1);
             }
             let mut edits = Edits::default();
-            let mut selected = BTreeSet::new();
+            let mut selected = BTreeSet::<TableId>::new();
             let at = ReadsAt { holders: &holders, context: &*context, run, hour, since: (!seed).then_some(previous_hour) };
             let mut tried: HashMap<TableId, Vec<u64>> = HashMap::new();
             loop {
                 selected.clear();
                 for stage in 0.. {
                     crate::metadata::check_cancel(cancelled)?;
-                    if stage >= state.plans.len() {
-                        let planned = sampling(&state.frame, &mut state.sampled, || P::retained_reads(&params, owner, stage, &state.frame, &at));
-                        state.plans.push(planned);
-                    } else if state.rebuild || identity_changed || hour > state.plans[stage].1 || P::plan_changes(stage, &edits, &state.frame, &at) {
-                        state.plans[stage] = sampling(&state.frame, &mut state.sampled, || P::retained_reads(&params, owner, stage, &state.frame, &at));
+                    let new_stage = stage == state.plans.len();
+                    if new_stage || state.rebuild || identity_changed || hour > state.plans[stage].1 || P::plan_changes(stage, &edits, &state.frame, &at) {
+                        let mut inputs = empty(timeline.id, hour);
+                        for &table in &selected {
+                            inputs.tables[table.index()] = state.frame.tables[table.index()].clone();
+                        }
+                        let planned = sampling(&inputs, &mut state.sampled, || P::retained_reads(&params, owner, stage, &inputs, &at));
+                        if new_stage {
+                            state.plans.push(planned);
+                        } else {
+                            state.plans[stage] = planned;
+                        }
                     }
                     let (asks, _) = &state.plans[stage];
                     if asks.is_empty() { state.plans.truncate(stage + 1); break; }
