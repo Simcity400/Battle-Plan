@@ -17,6 +17,8 @@ use std::collections::BTreeMap;
 thread_local! {
     static WALKS: Cell<usize> = const { Cell::new(0) };
     static GROUPINGS: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+    static PROJECTIONS: Cell<usize> = const { Cell::new(0) };
+    static OBSERVATIONS: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(super) fn count_walk() {
@@ -25,6 +27,55 @@ pub(super) fn count_walk() {
 
 pub(super) fn count_grouping(hour: i32) {
     GROUPINGS.with_borrow_mut(|hours| hours.push(hour));
+}
+
+pub(super) fn count_projection() {
+    PROJECTIONS.set(PROJECTIONS.get() + 1);
+}
+
+pub(super) fn count_observation() {
+    OBSERVATIONS.set(OBSERVATIONS.get() + 1);
+}
+
+#[test]
+fn the_first_timeline_reply_reuses_a_war_until_scores_change_its_representative() {
+    use dashboard_base::{SourceKey, test_fixtures::{CAMPAIGN, records}};
+    use replay::campaign::Replay;
+
+    let make = |hour: i32| {
+        let mut frame = recorded(hour);
+        let TableView::Complete(TableRows::WarOverviewCountries(rows)) = &mut *frame.tables[TableId::WarOverviewCountries.index()] else {
+            panic!("the war fixture has overview scores");
+        };
+        rows[1].major = 0;
+        rows[1].divisions = 2 * (hour - 120);
+        rows[2].major = 0;
+        rows[2].divisions = 5;
+        for (table, value) in frame.tables.iter().enumerate() {
+            if matches!(&**value, TableView::Complete(_)) {
+                frame.metrics.table_ns[table] = 1;
+            }
+        }
+        frame
+    };
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (120..=126).map(make).collect())])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let source = Source::from_replay(
+        SourceKey { source_id: "war-observation-count".into(), revision: "1".into() },
+        "memory.battleplan".into(), Arc::new(replay), &cancelled,
+    ).unwrap();
+    PROJECTIONS.set(0);
+    OBSERVATIONS.set(0);
+    let params = WarTimelineParams { branch_id: "1".into(), viewpoint: Some(Country::from("ONE")), hour: 126 };
+    let reply = WarTimelineAt::load(&source, &params, &LoadContext { content: None }, &cancelled).unwrap();
+    assert_eq!(reply.wars.len(), 1);
+    let observations: Vec<_> = reply.wars[0].observations.iter().map(|seen| {
+        let representative = seen.representative.as_ref().map(|[first, second]| [first.as_str(), second.as_str()]);
+        (seen.first_hour, seen.last_hour, representative)
+    }).collect();
+    assert_eq!(observations, [(120, 122, Some(["ONE", "THREE"])), (123, 126, Some(["ONE", "TWO"]))]);
+    assert_eq!((PROJECTIONS.get(), OBSERVATIONS.get()), (2, 2));
 }
 
 #[test]
@@ -139,7 +190,7 @@ fn seen(state: &State, held: &Holders, hour: i32) -> Result<(Viewed, Vec<walk::O
         .iter()
         .map(|blob| {
             let pairs = read.world.inside(blob);
-            let named = read.world.representative(blob, &pairs).map(|p| (p, naming::unknown("Not recorded: no content in this test")));
+            let named = read.world.representative(blob, &pairs, &mut Vec::new()).map(|p| (p, naming::unknown("Not recorded: no content in this test")));
             walk::observed(&read.world, (&read.tags, &read.identities), read.view, (blob, &pairs), named, hour)
         })
         .collect();
