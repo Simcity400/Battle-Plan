@@ -422,7 +422,7 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
             export const useFollowedProduct = () => ({ data: undefined, error: undefined, retry() {} });`;
         }
         if (path.endsWith('/dashboard/useCountryGroups.ts')) {
-          return `export const useCountryGroups = () => ({ data: { countryIdentities: [{ tag: 'GER' }], warnings: [] }, error: undefined, retry() {} });`;
+          return `export const useCountryGroups = () => ({ data: globalThis.__datedTestGroups ?? { countryIdentities: [{ tag: 'GER' }], warnings: [] }, complete: true, error: undefined, retry() {} });`;
         }
         if (path.endsWith('/families/identity/react.ts')) {
           return _source.replace(/export function useSlotIndex\(/, 'function realUseSlotIndex(')
@@ -475,6 +475,35 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
     assert.match(refusedHtml, /data-state="unavailable"/, 'scoreboard recording refusal renders unavailable, never a load error');
     assert.doesNotMatch(refusedHtml, /role="alert"|is-error|Retry/);
     (globalThis as Record<string, unknown>).__sbFollowCheck = (q: unknown) => ({ query: q, refused: null });
+    const emptyPlan = { ...scoreboardDeclaration, sources: () => ({ owner: 'empty-plan', entries: [], refused: 'No territory is available for this selection.' }) };
+    for (const time of [
+      { mode: 'follow' },
+      { mode: 'pin', windows: { t1: { firstOffset: 5, lastOffset: 5 } } },
+      { mode: 'range', firstOffset: 5, lastOffset: 15 },
+    ]) {
+      const html = renderToStaticMarkup(createElement(DeclaredFamilyWidget as never, {
+        ...sbProps, declaration: emptyPlan, widget: { ...sbProps.widget, time },
+      } as never));
+      assert.match(html, /data-state="unavailable"/, time.mode);
+      assert.match(html, />No territory is available for this selection\.</, time.mode);
+      assert.doesNotMatch(html, /data-state="loading"/, time.mode);
+    }
+    const { territoryLinesDeclaration } = await scoreboardVite.ssrLoadModule('/ui/src/widgets/territory/territoryLinesProjection.ts');
+    const { timeChartHostAdapter } = await scoreboardVite.ssrLoadModule('/ui/src/families/time-chart/hostAdapter.ts');
+    (globalThis as Record<string, unknown>).__datedTestGroups = {
+      humans: [], factions: [], wars: [], countryIdentities: [], warnings: [],
+      unobserved: { humans: [], factions: [], wars: [{ firstHour: 120, lastHour: 130 }], unattributed: [] },
+    };
+    for (const [hour, reason] of [[119, 'This group has no members yet.'], [120, 'Group membership was not recorded at this time.']] as const) {
+      const html = renderToStaticMarkup(createElement(DeclaredFamilyWidget as never, {
+        ...sbProps, declaration: territoryLinesDeclaration, adapter: timeChartHostAdapter,
+        options: widgetViewOptions('territory', { view: 'lines' }),
+        widget: { ...sbProps.widget, kind: 'territory', options: { view: 'lines' },
+          countries: { kind: 'group', group: { type: 'war', tag: 'GER' }, membership: 'ever', aggregate: false } },
+        runtime: { ...sbProps.runtime, clock: { ...sbProps.runtime.clock, getHour: () => hour } },
+      } as never));
+      assert.ok(html.includes(`>${reason}<`), html);
+    }
     (globalThis as Record<string, unknown>).__sbAux = { data: undefined, error: new ShownError('Scoreboard stream broke.', 'sb 503'), retry() {} };
     const failedHtml = renderToStaticMarkup(createElement(DeclaredFamilyWidget as never, sbProps as never));
     assert.match(failedHtml, /data-state="error"/, 'scoreboard stream failure renders retryable error');
@@ -483,6 +512,7 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
   } finally {
     delete (globalThis as Record<string, unknown>).__sbAux;
     delete (globalThis as Record<string, unknown>).__sbFollowCheck;
+    delete (globalThis as Record<string, unknown>).__datedTestGroups;
     await scoreboardVite.close();
   }
 });

@@ -122,9 +122,13 @@ function territoryRaceSources(ctx: FamilyPlanContext): SourcePlan {
   const measure = measureOf(ctx.options.measure);
   const rule = ruleOf(ctx.options.rule);
   const seriesMeasure = territorySeriesMeasure(measure, rule);
-  if (isFactionTotalsSelection(ctx.widget.countries)) {
-    return factionTotalsSources('territory:race', ctx, 'territory', seriesMeasure);
-  }
+  const plan = isFactionTotalsSelection(ctx.widget.countries)
+    ? factionTotalsSources('territory:race', ctx, 'territory', seriesMeasure)
+    : countryRaceSources(ctx, seriesMeasure);
+  return plan.entries.length ? plan : { ...plan, refused: ctx.countries.reason ?? 'No territory is available for this selection.' };
+}
+
+function countryRaceSources(ctx: FamilyPlanContext, seriesMeasure: string): SourcePlan {
   const top = ctx.countries.top;
   const group = top == null ? groupSelection(ctx.widget.countries) : null;
   const tags = top == null && !group ? ctx.countries.tags : [];
@@ -133,11 +137,9 @@ function territoryRaceSources(ctx: FamilyPlanContext): SourcePlan {
     : ctx.countries.all || group
       ? { mode: 'population', form: 'all' }
       : { mode: 'keyed', keys: tags };
-  const emptyExplicit = !ctx.countries.all && top == null && !group && !tags.length;
   return {
     owner: `territory:race:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${seriesMeasure}`,
     entries: rankSource(ctx, 'main', { kind: 'territory', measure: seriesMeasure }, coverage, tags, top, group),
-    allowEmptyFollow: emptyExplicit,
   };
 }
 

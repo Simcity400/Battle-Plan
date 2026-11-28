@@ -116,7 +116,10 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
   const overrides = settings.campaigns[reference?.source.metadata.campaignKey ?? '']?.factions;
   const groups = useCountryGroups(runtime, reference);
   const source = reference?.source;
-  const set = (patch: Partial<Extract<CountrySelection, { kind: 'group' }>>) => onChange({ ...selection, ...patch });
+  const set = (patch: Partial<Extract<CountrySelection, { kind: 'group' }>>) => {
+    const next = { ...selection, ...patch };
+    onChange(next.group.type === 'top' ? { ...next, aggregate: false } : next);
+  };
   const group = selection.group;
   const kinds = [...useAtHead(runtime.clock, widget.time.mode === 'follow', clockHour => groupKinds(groups.data, limits,
     reference ? resolveWindow(widget, reference, runtime.tracks, clockHour)?.lastHour ?? Number.NaN : undefined, overrides), sameKinds)];
@@ -141,7 +144,7 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
         onChange={event => { const count = Math.round(Number(event.currentTarget.value)); if (count >= 1 && count <= limits.max) set({ group: { type: 'top', count } }); }} /></span></label>}
     {group.type !== 'top' && <div className="setting-row setting-row-stacked"><span>Members</span>
       <Segmented label="Group membership" value={selection.membership} options={MEMBERSHIP} onChange={membership => set({ membership })} /></div>}
-    {limits.aggregate && <label className="setting-row"><SettingLabel label="Show as one total" />
+    {limits.aggregate && group.type !== 'top' && <label className="setting-row"><SettingLabel label="Show as one total" />
       <input type="checkbox" role="switch" checked={selection.aggregate} onChange={event => set({ aggregate: event.currentTarget.checked })} /></label>}
   </>;
 }
