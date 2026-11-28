@@ -803,21 +803,26 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const prev = shared.slots.get(widget);
       if (prev && prev.visible && shared.width > 0 && shared.height > 0) {
         const dpr = shared.dpr > 0 ? shared.dpr : 1;
-        if (shared.surfaceColor) {
-          shared.ctx.save();
-          shared.rawSetTransform(1, 0, 0, 1, 0, 0);
-          shared.ctx.fillStyle = shared.surfaceColor;
-          shared.ctx.fillRect(
-            Math.floor(prev.x * dpr),
-            Math.floor(prev.y * dpr),
-            Math.ceil(prev.w * dpr),
-            Math.ceil(prev.h * dpr),
-          );
-          shared.ctx.restore();
-        }
+        const bx = prev.bx ?? prev.x;
+        const by = prev.by ?? prev.y;
+        const bw = prev.bw ?? prev.w;
+        const bh = prev.bh ?? prev.h;
+        shared.ctx.save();
+        shared.rawSetTransform(1, 0, 0, 1, 0, 0);
+        shared.rawClearRect(
+          Math.floor(bx * dpr),
+          Math.floor(by * dpr),
+          Math.ceil(bw * dpr),
+          Math.ceil(bh * dpr),
+        );
+        shared.ctx.restore();
         for (const [otherId, other] of shared.slots) {
           if (otherId === widget || !other.visible) continue;
-          if (other.x < prev.x + prev.w && other.x + other.w > prev.x && other.y < prev.y + prev.h && other.y + other.h > prev.y) {
+          const obx = other.bx ?? other.x;
+          const oby = other.by ?? other.y;
+          const obw = other.bw ?? other.w;
+          const obh = other.bh ?? other.h;
+          if (obx < bx + bw && obx + obw > bx && oby < by + bh && oby + obh > by) {
             this.markDirectDirty(otherId);
           }
         }
@@ -1058,7 +1063,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         const next = nextSlots.get(wid);
         const stillSame = next && next.visible
           && Math.abs(next.x - rx) < 0.5 && Math.abs(next.y - ry) < 0.5 && next.w === prev.w && next.h === prev.h
-          && (next.bx ?? next.x) === (prev.bx ?? prev.x) - (originMoved ? dx / dpr : 0)
+          && Math.abs((next.bx ?? next.x) - rbx) < 0.5 && Math.abs((next.by ?? next.y) - rby) < 0.5
           && (next.bw ?? next.w) === rbw && (next.bh ?? next.h) === rbh;
         if (stillSame) continue;
         clearedRects.push({ x: rbx, y: rby, w: rbw, h: rbh });
@@ -1094,16 +1099,28 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const slot of payload.slots) {
       const prev = prevSlots.get(slot.widget);
       if (slot.visible !== Boolean(prev?.visible)) directChanged = true;
-      const moved = !prev || prev.x !== slot.x || prev.y !== slot.y || prev.w !== slot.w || prev.h !== slot.h || prev.visible !== slot.visible;
+      const pbx = prev ? (prev.bx ?? prev.x) : 0;
+      const pby = prev ? (prev.by ?? prev.y) : 0;
+      const pbw = prev ? (prev.bw ?? prev.w) : 0;
+      const pbh = prev ? (prev.bh ?? prev.h) : 0;
+      const sbx = slot.bx ?? slot.x;
+      const sby = slot.by ?? slot.y;
+      const sbw = slot.bw ?? slot.w;
+      const sbh = slot.bh ?? slot.h;
+      const moved = !prev || prev.x !== slot.x || prev.y !== slot.y || prev.w !== slot.w || prev.h !== slot.h
+        || pbx !== sbx || pby !== sby || pbw !== sbw || pbh !== sbh || prev.visible !== slot.visible;
       const overlappedClear = clearedRects.some(r =>
-        slot.x < r.x + r.w && slot.x + slot.w > r.x && slot.y < r.y + r.h && slot.y + slot.h > r.y
+        sbx < r.x + r.w && sbx + sbw > r.x && sby < r.y + r.h && sby + sbh > r.y
       );
       const preservedByBlit = !resized && originMoved && prev !== undefined && prev.visible
         && Math.abs(slot.x - (prev.x - dx / dpr)) < 0.5
         && Math.abs(slot.y - (prev.y - dy / dpr)) < 0.5
         && slot.w === prev.w && slot.h === prev.h
-        && prev.x >= 0 && prev.y >= 0 && prev.x + prev.w <= prevW && prev.y + prev.h <= prevH
-        && slot.x >= 0 && slot.y >= 0 && slot.x + slot.w <= payload.width && slot.y + slot.h <= payload.height
+        && Math.abs(sbx - (pbx - dx / dpr)) < 0.5
+        && Math.abs(sby - (pby - dy / dpr)) < 0.5
+        && sbw === pbw && sbh === pbh
+        && pbx >= 0 && pby >= 0 && pbx + pbw <= prevW && pby + pbh <= prevH
+        && sbx >= 0 && sby >= 0 && sbx + sbw <= payload.width && sby + sbh <= payload.height
         && !overlappedClear;
       if (slot.visible && !preservedByBlit && (resized || originMoved || moved || overlappedClear)) {
         shared.dirtySlots.add(slot.widget);

@@ -68,7 +68,7 @@ const TEST_THEME: FamilyTheme = {
   hatchSpacing: 6,
 };
 
-test('laneCount derives from hardwareConcurrency without an artificial 4-lane cap and spatial partition bounds by widget count', () => {
+test('laneCount keeps the 4-lane cap from hardwareConcurrency and spatial partition bounds by widget count', () => {
   const navDesc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   const setHw = (cores: number) => {
     Object.defineProperty(globalThis, 'navigator', { value: { hardwareConcurrency: cores }, configurable: true });
@@ -79,9 +79,9 @@ test('laneCount derives from hardwareConcurrency without an artificial 4-lane ca
     setHw(4);
     assert.equal(laneCount(), 2);
     setHw(8);
-    assert.equal(laneCount(), 6);
+    assert.equal(laneCount(), 4);
     setHw(16);
-    assert.equal(laneCount(), 14);
+    assert.equal(laneCount(), 4);
   } finally {
     if (navDesc) Object.defineProperty(globalThis, 'navigator', navDesc);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -92,7 +92,7 @@ test('laneCount derives from hardwareConcurrency without an artificial 4-lane ca
     { id: 'b', x: 6, y: 0, w: 6, h: 8 },
     { id: 'c', x: 0, y: 8, w: 12, h: 8 },
   ];
-  const part = computeSpatialLaneMap(three, 14);
+  const part = computeSpatialLaneMap(three, 4);
   assert.equal(part.hasCleanCut, true);
   assert.equal(new Set(part.laneById.values()).size, 3);
 });
@@ -892,7 +892,8 @@ test('round-3 regressions: uncovered refusal restores installed model while park
 
     sharedCanvas.ops.length = 0;
     lane.unmount(1);
-    assert.ok(sharedCanvas.ops.includes('fillRect:40,20,300,200'));
+    assert.ok(sharedCanvas.ops.includes('clearRect:40,20,300,200'));
+    assert.ok(!sharedCanvas.ops.some(op => op.startsWith('fillRect:')));
   } finally {
     Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
   }
@@ -1635,6 +1636,26 @@ test('SharedSurfaceHost aligns slots to viewport device pixels without double ro
     assert.equal(Math.round(actualDevY * 1000) / 1000, Math.round(bodyEl.rect.top * dpr));
     assert.equal(Math.round(slot.w * dpr), Math.floor(bodyEl.clientWidth * dpr + 1e-3));
     assert.equal(Math.round(slot.h * dpr), Math.floor(bodyEl.clientHeight * dpr + 1e-3));
+
+    (globalThis.window as { devicePixelRatio: number }).devicePixelRatio = 1;
+    layerEl.rect = { left: 0, top: 0, right: 1522, bottom: 0, width: 1522, height: 0 };
+    const hScrollBody = new FakeElement();
+    hScrollBody.rect = { left: 20, top: 10.75, right: 220, bottom: 114.75, width: 200, height: 104 };
+    hScrollBody.offsetWidth = 200;
+    hScrollBody.offsetHeight = 104;
+    hScrollBody.clientWidth = 200;
+    hScrollBody.clientHeight = 100;
+    const hScrollFrame = new FakeElement();
+    scrollEl.contained.add(hScrollBody);
+    host.register(3, 0, hScrollBody as unknown as HTMLElement, hScrollFrame as unknown as HTMLElement);
+    const hCanvasEl = created.find(el => el.className === 'dash-shared-canvas')!;
+    const hTopCss = parseFloat(hCanvasEl.style.top);
+    const hTxMatch = /translate\(([-0-9.]+)px,\s*([-0-9.]+)px\)/.exec(hCanvasEl.style.transform || '');
+    const hTy = hTxMatch ? parseFloat(hTxMatch[2]!) : 0;
+    const hLast = sentSlots.filter(s => s.lane === 0).at(-1)!.payload;
+    const hSlot = hLast.slots.find(s => s.widget === 3)!;
+    assert.equal(hTopCss + hTy + hSlot.y, 11);
+    assert.equal(hTopCss + hTy + hSlot.y + hSlot.h, 110);
     host.dispose();
   } finally {
     Object.defineProperty(globalThis, 'document', { value: origDoc, configurable: true });
@@ -1645,5 +1666,330 @@ test('SharedSurfaceHost aligns slots to viewport device pixels without double ro
     Object.defineProperty(globalThis, 'cancelAnimationFrame', { value: origCancelRaf, configurable: true });
     Object.defineProperty(globalThis, 'window', { value: origWindow, configurable: true });
     Object.defineProperty(globalThis, 'getComputedStyle', { value: origGetComputedStyle, configurable: true });
+  }
+});
+
+test('S1: unmounting a shared widget clears its full clip box to transparent when lane-slots arrives after with unchanged bounds', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number; height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) { this.width = w; this.height = h; this.ctx = fakeContext2D().ctx; }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+  try {
+    const cw = 220;
+    const ch = 120;
+    const alpha = new Uint8Array(cw * ch);
+    let tx = 0;
+    let ty = 0;
+    let sx = 1;
+    let sy = 1;
+    const stack: { tx: number; ty: number; sx: number; sy: number }[] = [];
+    const paintRect = (x: number, y: number, w: number, h: number, value: number) => {
+      const x0 = Math.max(0, Math.floor(x * sx + tx));
+      const y0 = Math.max(0, Math.floor(y * sy + ty));
+      const x1 = Math.min(cw, Math.ceil((x + w) * sx + tx));
+      const y1 = Math.min(ch, Math.ceil((y + h) * sy + ty));
+      for (let py = y0; py < y1; py++) {
+        for (let px = x0; px < x1; px++) alpha[py * cw + px] = value;
+      }
+    };
+    const ctx: Record<string, unknown> = {
+      fillStyle: TEST_THEME.surface,
+      strokeStyle: TEST_THEME.surface,
+      font: '12px sans-serif',
+      save() { stack.push({ tx, ty, sx, sy }); },
+      restore() { const s = stack.pop(); if (s) ({ tx, ty, sx, sy } = s); },
+      beginPath() {},
+      rect() {},
+      clip() {},
+      fillRect(x: number, y: number, w: number, h: number) { paintRect(x, y, w, h, 255); },
+      clearRect(x: number, y: number, w: number, h: number) { paintRect(x, y, w, h, 0); },
+      drawImage() {},
+      fillText() {},
+      measureText(text: string) { return { width: text.length * 7 }; },
+      setTransform(a?: number, _b?: number, _c?: number, d?: number, e?: number, f?: number) {
+        sx = typeof a === 'number' ? a : 1;
+        sy = typeof d === 'number' ? d : 1;
+        tx = typeof e === 'number' ? e : 0;
+        ty = typeof f === 'number' ? f : 0;
+      },
+      getTransform() { return { a: sx, b: 0, c: 0, d: sy, e: tx, f: ty }; },
+      translate(dx: number, dy: number) { tx += dx * sx; ty += dy * sy; },
+      scale(fx: number, fy: number) { sx *= fx; sy *= fy; },
+    };
+    const canvas = { width: cw, height: ch, getContext: () => ctx } as unknown as OffscreenCanvas;
+    const kind = 'test-s1-unmount-clear-box';
+    registerFamilyProjection({ family: 'bars', kind, project(v) { return { hour: v.hour }; } }, 'main');
+    const family: LaneFamily<LaneBinding, { readonly hour: number }, { readonly hour: number }> = {
+      family: 'bars',
+      boundary: (_m, hour) => hour + 1,
+      redraw: () => Infinity,
+      status: () => 'picture',
+      view: [],
+      layout: m => m,
+      paint(pctx) {
+        pctx.fillRect(0, 0, 70, 40);
+        return false;
+      },
+      hit: () => null,
+      tooltip: () => null,
+      structure: () => ({}),
+      mirror: null,
+      audit: () => [],
+      visibleArt: () => [],
+    };
+    const view: LaneView = createLaneView(family, () => {});
+    const lane = new Lane<Bitmapped & { close(): void }>({
+      lane: 0,
+      lanes: 1,
+      views: () => view,
+      crop: async () => [],
+      present() {},
+      release() {},
+      fail(reason) { throw new Error(reason); },
+      later() {},
+      clock: () => 0,
+      budget: Infinity,
+    });
+    lane.setLaneSurface(canvas, true);
+    const binding = {
+      family: 'bars',
+      kind,
+      view: 'main',
+      options: {},
+      sources: {},
+      scrollTop: 0,
+      theme: TEST_THEME,
+    } satisfies LaneBinding;
+    lane.mount(1, [], 'bars', binding);
+    lane.mount(2, [], 'bars', binding);
+    lane.bind(1, { generation: 1, surfaces: [{ width: 70, height: 40, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 5 } });
+    lane.bind(2, { generation: 1, surfaces: [{ width: 70, height: 40, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 5 } });
+    const slot1 = { widget: 1, x: 10, y: 12, w: 70, h: 40, bx: 6, by: 8, bw: 80, bh: 48, visible: true };
+    const slot2 = { widget: 2, x: 110, y: 12, w: 70, h: 40, bx: 106, by: 8, bw: 80, bh: 48, visible: true };
+    lane.setLaneSlots({
+      width: cw,
+      height: ch,
+      dpr: 1,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [slot1, slot2],
+    });
+    lane.frame({ type: 'frame', serial: 1, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    assert.equal(alpha[slot1.by * cw + slot1.bx], 255);
+    assert.equal(alpha[slot2.y * cw + slot2.x], 255);
+
+    lane.unmount(1);
+    lane.setLaneSlots({
+      width: cw,
+      height: ch,
+      dpr: 1,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [slot2],
+    });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    let opaqueInOldBox = 0;
+    for (let py = slot1.by; py < slot1.by + slot1.bh; py++) {
+      for (let px = slot1.bx; px < slot1.bx + slot1.bw; px++) {
+        if (alpha[py * cw + px] !== 0) opaqueInOldBox++;
+      }
+    }
+    assert.equal(opaqueInOldBox, 0, 'old unmounted clip box holds no opaque pixel');
+    assert.equal(alpha[slot2.y * cw + slot2.x], 255, 'remaining sibling stays painted');
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+test('S2: preservedByBlit checks full clip box containment so a scrolled-in scrollbar strip repaints', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number; height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) { this.width = w; this.height = h; this.ctx = fakeContext2D().ctx; }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+  try {
+    const kind = 'test-s2-blit-clip-box';
+    registerFamilyProjection({ family: 'bars', kind, project(v) { return { hour: v.hour }; } }, 'main');
+    let paints = 0;
+    const family: LaneFamily<LaneBinding, { readonly hour: number }, { readonly hour: number }> = {
+      family: 'bars',
+      boundary: (_m, hour) => hour + 10,
+      redraw: () => Infinity,
+      status: () => 'picture',
+      view: [],
+      layout: m => m,
+      paint() {
+        paints++;
+        return false;
+      },
+      hit: () => null,
+      tooltip: () => null,
+      structure: () => ({}),
+      mirror: null,
+      audit: () => [],
+      visibleArt: () => [],
+    };
+    const view: LaneView = createLaneView(family, () => {});
+    const presented: { id: number; widget: number; binding: number }[] = [];
+    const lane = new Lane<Bitmapped & { close(): void }>({
+      lane: 0,
+      lanes: 1,
+      views: () => view,
+      crop: async () => [],
+      present(p) {
+        for (const e of p.entries) presented.push({ id: e.id, widget: e.widget, binding: e.binding });
+      },
+      release() {},
+      fail(reason) { throw new Error(reason); },
+      later() {},
+      clock: () => 0,
+      budget: Infinity,
+    });
+    const sharedCanvas = fakeOffscreenCanvas(200, 100);
+    lane.setLaneSurface(sharedCanvas.canvas, true);
+    lane.mount(1, [], 'bars', {
+      family: 'bars',
+      kind,
+      view: 'main',
+      options: {},
+      sources: {},
+      scrollTop: 0,
+      theme: TEST_THEME,
+    } satisfies LaneBinding);
+    lane.bind(1, { generation: 1, surfaces: [{ width: 70, height: 76, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 10 } });
+    lane.setLaneSlots({
+      width: 200,
+      height: 100,
+      dpr: 1,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [{ widget: 1, x: 10, y: 20, w: 70, h: 76, bx: 10, by: 20, bw: 70, bh: 84, visible: true }],
+    });
+    lane.frame({ type: 'frame', serial: 1, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    assert.equal(paints, 1);
+
+    const installed = presented.splice(0);
+    lane.setLaneSlots({
+      width: 200,
+      height: 100,
+      dpr: 1,
+      scrollTop: 10,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 10,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [{ widget: 1, x: 10, y: 10, w: 70, h: 76, bx: 10, by: 10, bw: 70, bh: 84, visible: true }],
+    });
+    lane.frame({ type: 'frame', serial: 2, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed, refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    assert.equal(paints, 2, 'slot whose clip box scrolled into view must repaint instead of preserving by blit');
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+test('S3: shared table paint starts background strips at effective clipped surface width and height', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number; height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) { this.width = w; this.height = h; this.ctx = fakeContext2D().ctx; }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+  try {
+    const kind = 'test-s3-table-scaled-strips';
+    registerFamilyProjection({ family: 'table', kind, project(v) { return { hour: v.hour }; } }, 'main');
+    const family: LaneFamily<LaneBinding, { readonly hour: number }, { readonly hour: number }> = {
+      family: 'table',
+      boundary: (_m, hour) => hour + 1,
+      redraw: () => Infinity,
+      status: () => 'picture',
+      view: [],
+      layout: m => m,
+      paint() { return false; },
+      hit: () => null,
+      tooltip: () => null,
+      structure: () => ({}),
+      mirror: null,
+      audit: () => [],
+      visibleArt: () => [],
+    };
+    const view: LaneView = createLaneView(family, () => {});
+    const lane = new Lane<Bitmapped & { close(): void }>({
+      lane: 0,
+      lanes: 1,
+      views: () => view,
+      crop: async () => [],
+      present() {},
+      release() {},
+      fail(reason) { throw new Error(reason); },
+      later() {},
+      clock: () => 0,
+      budget: Infinity,
+    });
+    const sharedCanvas = fakeOffscreenCanvas(400, 300);
+    lane.setLaneSurface(sharedCanvas.canvas, true);
+    lane.mount(1, [], 'table', {
+      family: 'table',
+      kind,
+      view: 'main',
+      options: {},
+      sources: {},
+      scrollTop: 0,
+      theme: TEST_THEME,
+    } satisfies LaneBinding);
+    lane.bind(1, { generation: 1, surfaces: [{ width: 240, height: 160, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 5 } });
+    lane.setLaneSlots({
+      width: 400,
+      height: 300,
+      dpr: 1,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [{ widget: 1, x: 10, y: 10, w: 300, h: 200, bx: 10, by: 10, bw: 304, bh: 204, visible: true }],
+    });
+    sharedCanvas.ops.length = 0;
+    lane.frame({ type: 'frame', serial: 1, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    assert.ok(sharedCanvas.ops.includes('fillRect:240,0,64,204'), 'right strip starts at min(surface.width, slot.w)');
+    assert.ok(sharedCanvas.ops.includes('fillRect:0,160,304,44'), 'bottom strip starts at min(surface.height, slot.h)');
+    assert.ok(!sharedCanvas.ops.includes('fillRect:0,0,304,204'), 'table incremental area is not pre-filled');
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
   }
 });

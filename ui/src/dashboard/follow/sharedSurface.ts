@@ -554,7 +554,7 @@ export class SharedSurfaceHost {
       const hasVScroll = ow > cw && visRight < r.right - 0.5;
       const hasHScroll = oh > ch && visBottom < r.bottom - 0.5;
       const w = hasVScroll ? Math.max(0, Math.min(rawW, Math.floor(visRight * dpr + 1e-3) / dpr - layerSnapLeft - x)) : rawW;
-      const h = hasHScroll ? Math.max(0, Math.min(rawH, snapRound(visBottom, dpr) - layerSnapTop - y)) : rawH;
+      const h = hasHScroll ? Math.max(0, Math.min(rawH, Math.floor(visBottom * dpr + 1e-3) / dpr - layerSnapTop - y)) : rawH;
       const boxLeft = snapFloor(clipBox ? Math.max(r.left, clipBox.left) : r.left, dpr) - layerSnapLeft;
       const boxTop = y;
       const boxRight = snapCeil(clipBox ? Math.min(r.right, clipBox.right) : r.right, dpr) - layerSnapLeft;

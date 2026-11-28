@@ -883,19 +883,21 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
                 sctx.rect(bx, by, bw, bh);
                 sctx.clip();
               }
+              const paintW = Math.min(surface.width, slot.w);
+              const paintH = Math.min(surface.height, slot.h);
               if (sharedLane.opaque) {
                 sctx.fillStyle = theme.surface;
                 if (family.family !== 'table') {
                   sctx.fillRect(bx, by, bw, bh);
                 } else {
                   if (bx < 0) sctx.fillRect(bx, by, -bx, bh);
-                  if (bx + bw > slot.w) sctx.fillRect(slot.w, by, bx + bw - slot.w, bh);
+                  if (bx + bw > paintW) sctx.fillRect(paintW, by, bx + bw - paintW, bh);
                   if (by < 0) sctx.fillRect(bx, by, bw, -by);
-                  if (by + bh > slot.h) sctx.fillRect(bx, slot.h, bw, by + bh - slot.h);
+                  if (by + bh > paintH) sctx.fillRect(bx, paintH, bw, by + bh - paintH);
                 }
               }
               sctx.beginPath();
-              sctx.rect(0, 0, Math.min(surface.width, slot.w), Math.min(surface.height, slot.h));
+              sctx.rect(0, 0, paintW, paintH);
               sctx.clip();
               const result = family.paint(sctx, frame);
               keep.sharedPainted = true;
