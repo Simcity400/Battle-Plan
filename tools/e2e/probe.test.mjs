@@ -180,6 +180,31 @@ test('probe ignores aria-busy on hidden screen-reader mirrors and the library ro
   assert.deepEqual([...liveHost.probe.report(110, false, []).placeholderStill], []);
 });
 
+test('probe distinguishes a held family picture from a visible loading overlay', () => {
+  const overlay = makeEl({ classes: ['is-loading'], text: 'Loading chart' });
+  const frame = makeEl({ classes: ['fh-frame'], attrs: { 'data-held': 'stale', 'aria-busy': 'true' }, text: 'Recorded value' });
+  const content = makeEl({ classes: ['dash-widget-content'], text: 'Recorded value', children: [frame] });
+  const article = makeEl({ tag: 'article', classes: ['dash-widget'], children: [content] });
+  const root = makeEl({ children: [article] });
+  const host = loadProbe({ querySelectorAll: sel => root.querySelectorAll(sel) });
+  assert.equal(host.probe.stateOf(article).state, 'loading', 'a paused seek must wait for the held picture to be replaced');
+  const state = host.probe.stateOf(article, true);
+  assert.equal(state.state, 'content');
+  assert.equal(state.held, frame);
+  host.probe.watch(true);
+  host.stepFrame(16);
+  host.stepFrame(16);
+  const report = host.probe.unwatch();
+  assert.equal(report.ms, 0);
+  assert.deepEqual([...report.still], []);
+  content.__children.push(overlay);
+  overlay.parentElement = content;
+  const loading = host.probe.stateOf(article, true);
+  assert.equal(loading.state, 'loading');
+  assert.equal(loading.element, overlay);
+  assert.equal(loading.held, frame);
+});
+
 test('settlement waits for a transient global spinner and leaves a persistent one named at timeout', async () => {
   const spinner = makeEl({ tag: 'span', classes: ['spinner'] });
   const root = makeEl({ children: [spinner] });

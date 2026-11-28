@@ -17,8 +17,12 @@
   for (const type of ['pointerdown', 'pointerup', 'pointermove', 'click', 'keydown', 'input', 'change', 'wheel'])
     addEventListener(type, e => { if (e.isTrusted && p.inputs.length < 20000) p.inputs.push({ type, t: e.timeStamp }); }, { capture: true, passive: true });
 
-  const LOADING = '[data-state=loading], .skeleton, [aria-busy="true"], .spinner, .is-loading';
+  const PLACEHOLDER = '[data-state=loading], .skeleton, .spinner, .is-loading';
+  const BUSY = '[aria-busy="true"]';
+  const LOADING = `${PLACEHOLDER}, ${BUSY}`;
   const LIBRARY_OPENING = '.sidebar-row.library-row';
+  const heldFrame = e => e?.matches('.fh-frame') && e.getAttribute('data-held') === 'stale';
+  const loadingElement = (e, playback) => e.matches(PLACEHOLDER) || (e.matches(BUSY) && !(playback && heldFrame(e)));
   const loadingText = e => e.matches('[role=status]') && /^Loading\b/.test((e.textContent || '').trim());
   const visuallyHidden = (e, style = getComputedStyle(e)) => {
     if (e.classList?.contains('sr-only') || e.classList?.contains('fh-sr-only')) return true;
@@ -35,7 +39,7 @@
       && (Number(clip[1]) >= Number(clip[3]) || Number(clip[4]) >= Number(clip[2])));
   };
   p.visuallyHidden = visuallyHidden;
-  const placeholders = () => [...document.querySelectorAll(`${LOADING}, [role=status]`)].filter(e => (e.matches(LOADING) || loadingText(e)) && shownOnScreen(e)
+  const placeholders = (playback = false) => [...document.querySelectorAll(`${LOADING}, [role=status]`)].filter(e => (loadingElement(e, playback) || loadingText(e)) && shownOnScreen(e)
     && !e.closest(LIBRARY_OPENING)
     && !(p.ignore && e.closest(`article.dash-widget[data-widget="${CSS.escape(p.ignore)}"]`)));
   const shownOnScreen = e => {
@@ -78,10 +82,10 @@
   const ids = new WeakMap();
   let serial = 0;
   const idOf = article => { let id = ids.get(article); if (id === undefined) ids.set(article, id = ++serial); return id; };
-  p.stateOf = (article, describeLoading = false) => {
+  const widgetState = (article, describeLoading) => {
     const error = article.querySelector(ERROR);
     if (error) return { state: 'error', text: (error.textContent || '').trim().slice(0, 200), detail: error.getAttribute('data-detail') };
-    const placeholder = [...article.querySelectorAll(LOADING)].find(shownOnScreen);
+    const placeholder = [...article.querySelectorAll(LOADING)].find(e => loadingElement(e, describeLoading) && shownOnScreen(e));
     if (placeholder) return { state: 'loading', ...(describeLoading ? { element: placeholder } : {}) };
     if ([...article.querySelectorAll('canvas')].some(c => c.drawPending && shownOnScreen(c))) return { state: 'loading', drawing: true };
     const status = [...article.querySelectorAll('[role=status]')].find(e => loadingText(e) && shownOnScreen(e));
@@ -92,6 +96,11 @@
       return { state: notice.getAttribute('data-state'), text: (notice.textContent || '').trim().slice(0, 200) };
     if (!(content?.textContent || '').trim() && !content?.querySelector('canvas, svg, img')) return { state: 'blank' };
     return { state: 'content' };
+  };
+  p.stateOf = (article, describeLoading = false) => {
+    const state = widgetState(article, describeLoading);
+    const held = describeLoading ? [...article.querySelectorAll('.fh-frame')].find(e => heldFrame(e) && shownOnScreen(e)) : undefined;
+    return held ? { ...state, held } : state;
   };
   p.widgets = () => {
     const scroller = document.querySelector('.dash-grid-scroll');
@@ -276,10 +285,11 @@
     if (shouldRun()) loopId = requestAnimationFrame(frame);
   };
   let placeholderSince = null;
+  let playbackWatch = false;
   const placeholderEnd = at => { if (placeholderSince !== null) p.placeholders.ms += at - placeholderSince; placeholderSince = null; };
   const sampleFrame = () => {
     if (p.tracking || p.watching) {
-      const shown = placeholders();
+      const shown = placeholders(playbackWatch);
       placeholderEnd(p.frameStart);
       if (shown.length) {
         placeholderSince = p.frameStart;
@@ -382,8 +392,16 @@
       placeholderMs: (placeholderEnd(now), p.placeholders.ms), placeholderAt: [...p.placeholders.where], placeholderStill: [...new Set(placeholders().map(placeholderAt))],
       loafs: p.loafs.filter(l => l.dur >= 50 && l.start + l.dur >= p.t0).map(l => ({ dur: Math.round(l.dur), top: l.top })) };
   };
-  p.watch = () => { p.watching = true; placeholderSince = null; p.placeholders = { ms: 0, where: new Set() }; startLoop(); };
-  p.unwatch = () => { placeholderEnd(performance.now()); p.watching = false; stopLoopIfIdle(); return { ms: p.placeholders.ms, where: [...p.placeholders.where], still: [...new Set(placeholders().map(placeholderAt))] }; };
+  p.watch = (playback = false) => {
+    p.watching = true; playbackWatch = playback; placeholderSince = null; p.placeholders = { ms: 0, where: new Set() }; startLoop();
+  };
+  p.unwatch = () => {
+    placeholderEnd(performance.now());
+    p.watching = false; stopLoopIfIdle();
+    const still = [...new Set(placeholders(playbackWatch).map(placeholderAt))];
+    playbackWatch = false;
+    return { ms: p.placeholders.ms, where: [...p.placeholders.where], still };
+  };
   p.startFrames = () => { recordingFrames = true; startLoop(); };
   p.stopFrames = () => { recordingFrames = false; stopLoopIfIdle(); };
   p.gaps = (from, to) => { const f = p.frames.filter(t => t >= from && t <= to); const gaps = []; for (let i = 1; i < f.length; i++) gaps.push(f[i] - f[i - 1]); return gaps; };

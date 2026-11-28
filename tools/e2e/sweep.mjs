@@ -792,7 +792,7 @@ await phase('playback', async () => {
           trace = dated && await startTrace(app, ['disabled-by-default-display.framedisplayed', 'blink.user_timing']);
           const clockMark = trace && await app.evaluate("performance.timeOrigin + performance.mark('dated-playback-clock').startTime");
           await app.evaluate('window.__perf.start()');
-          await s.watch();
+          await s.watch(true);
           const perfContext = await app.evaluate('__e2e.perfContext()');
           const perfScenario = { ...scopeScenario(s.recipe, { ...perfContext, page }, 'play'), speed, scroll };
           const from = s.epoch + await app.evaluate('performance.now()');
@@ -817,11 +817,11 @@ await phase('playback', async () => {
             if (endHour > line.max || !await s.until(`${Session.CLOCK_HOUR} >= ${endHour}`, 2 * PLAY_SECONDS * 1000 + 5000))
               windowReasons.push('Playback did not cover the requested game hours');
           } else await sleep(PLAY_SECONDS * 1000);
+          const endInventory = await app.evaluate(dashboardInventory(true)).catch(() => null);
           const observedOutcomes = await app.evaluate('__e2e.endWidgetOutcomes?.() ?? {}').catch(() => ({}));
-          const endInventory = await app.evaluate(dashboardInventory()).catch(() => null);
           widgets = mergeWidgetOutcomes(widgets, observedOutcomes);
           if (Array.isArray(endInventory)) {
-            const byId = Object.fromEntries(endInventory.map(w => [w.id, w]));
+            const byId = Object.fromEntries(endInventory.map(w => [w.id, w.outcome === 'loading' ? { ...w, outcome: 'error' } : w]));
             widgets = mergeWidgetOutcomes(widgets, byId);
           }
           await pausePlayback();
@@ -917,7 +917,7 @@ await phase('widget-costs', async () => {
     return warmupReasons;
   };
   const measureOne = async ({ kind, view = null, isDefaultView = true, title, label, widget, isEmpty, sampleLabel = null, extraReasons = [] }) => {
-    let from = null, to = null, seekStart = null, audit = [], outcome = isEmpty ? 'empty' : 'content', detail = null, loading = null, surfaces = [], playingAtSnap = null;
+    let from = null, to = null, seekStart = null, audit = [], outcome = isEmpty ? 'empty' : 'content', detail = null, loading = null, held = null, surfaces = [], playingAtSnap = null;
     const reasons = [...extraReasons];
     try {
       await s.openPage(label);
@@ -948,7 +948,7 @@ await phase('widget-costs', async () => {
         })()`);
         const merged = mergeWidgetOutcomes([{ id: snap.id ?? widget, outcome: snap.outcome, detail: snap.detail }], observed)[0];
         outcome = merged.outcome === 'loading' ? 'error' : merged.outcome;
-        detail = merged.detail; loading = merged.loading ?? null; surfaces = snap.surfaces;
+        detail = merged.detail; loading = merged.loading ?? null; held = merged.held ?? null; surfaces = snap.surfaces;
       }
       to = s.epoch + await app.evaluate('performance.now()');
       await pausePlayback();
@@ -971,7 +971,7 @@ await phase('widget-costs', async () => {
     }
     const itemName = sampleLabel ? `${kind}/${sampleLabel}` : !isDefaultView && view ? `${kind}/${view}` : kind;
     await s.record({ area: 'widget-costs', item: itemName, label, kind, ...(view ? { view } : {}), title, widget, isEmpty, sampleLabel, from, to, seekStart, seconds: COST_SECONDS,
-      playingAtSnap, outcome, detail, ...(loading ? { loading } : {}), surfaces, audit, complete: reasons.length === 0, pass: reasons.length === 0, reasons, screenshot: false });
+      playingAtSnap, outcome, detail, ...(loading ? { loading } : {}), ...(held ? { held } : {}), surfaces, audit, complete: reasons.length === 0, pass: reasons.length === 0, reasons, screenshot: false });
   };
   const warmupReasons = await warmEmptyBaseline();
   await measureOne({ kind: '__empty__', title: 'Empty page (start)', label: costFixture.empty.label, widget: null, isEmpty: true, sampleLabel: 'start', extraReasons: warmupReasons });
