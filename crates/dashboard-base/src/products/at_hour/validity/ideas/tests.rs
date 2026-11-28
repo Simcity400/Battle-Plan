@@ -44,7 +44,7 @@ fn a_damaged_anchor_refuses_dates_even_when_another_owner_spans_it() {
     use replay_columnar::unit::{BLOCK, restore::column_stream};
     let checkpoint = 100 + 6 * BLOCK as i32;
     let last = checkpoint + 1;
-    let full = ideas_recording(last, |hour| [(2, checkpoint - 1), (1, checkpoint)].into_iter()
+    let full = ideas_recording(last, |hour| [(1, checkpoint), (2, checkpoint - 1)].into_iter()
         .filter(|&(_, from)| hour >= from)
         .map(|(country, _)| ActiveIdeaRow { country, ordinal: 0, token: b"idea".to_vec() }).collect());
     let table = TableId::ActiveIdeas;
