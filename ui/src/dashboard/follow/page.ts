@@ -34,6 +34,7 @@ export interface Entry<B extends Bitmap = Bitmap> {
   failureOrigin?: FailureOrigin;
   viewport?: InstalledViewport;
   repainted?: boolean;
+  recordedPicture?: true;
   surfaces: readonly (B | Same | null)[];
   content: Readonly<Record<string, string>>;
   fields: Readonly<Record<string, unknown>>;
@@ -653,7 +654,8 @@ export class Page<B extends Bitmap = Bitmap> {
       this.refusals[widget.lane]!.push({ widget: widget.id, id: entry.id, reason: 'drawing failed' });
       return;
     }
-    if (entry.mode === 'picture' && (entry.repainted || entry.surfaces.some(part => part && part !== SAME))) this.pictures++;
+    const recordedChanged = entry.recordedPicture && entry.content[0] !== undefined && entry.content[0] !== widget.content[0];
+    if (entry.mode === 'picture' && (entry.repainted || recordedChanged || entry.surfaces.some(part => part && part !== SAME))) this.pictures++;
     const fields: Record<string, unknown> = {}, kept = this.holding.get(entry) ?? [];
     this.holding.delete(entry);
     for (const [key, value] of Object.entries(entry.fields)) {
@@ -664,7 +666,7 @@ export class Page<B extends Bitmap = Bitmap> {
       else fields[key] = widget.installed!.fields[key];
     }
     const drew = !widget.installed || widget.installed.mode !== entry.mode || entry.reason !== widget.installed.reason
-      || entry.repainted === true || entry.surfaces.some(part => part !== SAME) || Object.values(entry.fields).some(value => value !== SAME)
+      || entry.repainted === true || recordedChanged || entry.surfaces.some(part => part !== SAME) || Object.values(entry.fields).some(value => value !== SAME)
       || Object.keys(widget.installed.fields).length !== Object.keys(entry.fields).length;
     widget.content = entry.mode === 'picture' ? { ...entry.content } : {};
     this.drop(widget.installed);

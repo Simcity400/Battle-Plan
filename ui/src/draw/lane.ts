@@ -1325,7 +1325,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (change.dated !== undefined) {
       const previous = held.binding;
       held.binding = change.dated ? { ...withoutDated(previous), dated: change.dated } : withoutDated(previous);
-      if (change.statics === undefined && change.identity === undefined && held.playback?.binding === previous) {
+      const extendsProof = !change.dated || (previous.dated !== undefined && change.dated.h <= previous.dated.h && change.dated.c >= previous.dated.c);
+      if (extendsProof && change.statics === undefined && change.identity === undefined && held.playback?.binding === previous) {
         held.playback.binding = held.binding;
       }
     }
@@ -2042,7 +2043,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (request.speed === 0 && this.playbackClock?.playing) this.playbackClock = null;
     this.pageRequests++;
     if (this.lastSpeed !== request.speed) {
+      const wasPlaying = (this.lastSpeed ?? 0) > 0;
       this.lastSpeed = request.speed;
+      if (request.speed === 0 && wasPlaying) this.pausePlayback();
+      else if (request.speed > 0 && !wasPlaying) this.beginPlayback(request.seek);
       for (const widget of this.widgets.values()) {
         this.host.views(widget.view).onSpeed?.(request.speed, widget.state);
       }
@@ -2069,6 +2073,18 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         motionDiagnostics: { recorded: 0, skipped: { paused: this.playbackWidgets.size } } });
     }
     this.armPlayback();
+  }
+
+  private beginPlayback(seek: number) {
+    for (const id of this.playbackWidgets) {
+      const widget = this.widgets.get(id);
+      if (widget && this.ownsPlayback(widget, seek, true)) this.playbackOwners.add(id);
+    }
+    this.windowSafeDirty = true;
+  }
+
+  private pausePlayback(widgets: Iterable<number> = this.playbackWidgets) {
+    for (const id of widgets) this.playbackOwners.add(id);
   }
 
   private armPlayback() {
@@ -2164,10 +2180,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
     const ms = this.time() - began;
     if (changed || exact) this.host.stretch?.(ms);
-    if (changed || diagnostics) {
-      if (diagnostics) diagnostics.recorded = exact;
+    if (diagnostics) {
+      diagnostics.recorded = exact;
       this.host.served?.({ seek: clock.seek, target: Math.floor(position), exact: false, changed, ms, motion: true,
-        ...(diagnostics ? { motionDiagnostics: diagnostics } : {}) });
+        motionDiagnostics: diagnostics });
     }
     if (keepGoing) this.armPlayback();
   }
@@ -2306,10 +2322,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         widget.installed = owner.sent;
         if (owner.sent.staged && sameOwner && widget.withdrawn === null) {
           const valid = staged && !stagedSeekChanged && !this.seekSuperseded(owner.sent.seek);
-          if (valid && playing && !this.playbackOwners.has(widget.id) && staged.playback
+          if (valid && !this.ownsPlayback(widget, this.pageSeek, playing) && staged.playback
             && owner.sent.bindingSnapshot === widget.binding && owner.sent.supply === widget.supply) {
-            this.rememberPlayback(widget, staged.playback, owner.sent.seek, owner.sent.lo, true);
-            this.markDirectDirty(widget.id);
+            this.rememberPlayback(widget, staged.playback, owner.sent.seek, owner.sent.lo, playing);
+            if (playing) this.markDirectDirty(widget.id);
+            else this.pausePlayback([widget.id]);
           } else if (!this.playbackOwners.has(widget.id)) {
             if (valid) this.showStaged(widget.id, owner.sent.id, staged);
             else this.markDirectDirty(widget.id);
@@ -3200,6 +3217,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode, ...reason !== undefined ? { reason } : {},
       ...open ? { open } : {}, ...failureOrigin !== undefined ? { failureOrigin } : {}, ...(viewport ? { viewport } : {}),
       ...(mode === 'picture' && painted.repainted === true ? { repainted: true } : {}),
+      ...(mode === 'picture' && painted.playbackOwnsPixels ? { recordedPicture: true } : {}),
       surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
   }
 

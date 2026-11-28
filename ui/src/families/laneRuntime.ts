@@ -836,8 +836,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (speedChanged) family.onSpeed?.(layout, effectiveSpeed, keep.continuity);
       const speedRedraw = speedChanged && keep.content !== '' && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame) === false;
       keep.speed = effectiveSpeed;
+      const drawChanged = !sameKey(keep.drawKey, drawKey);
       const shouldPaint = input.restorePlayback || (input.playbackOwnsPixels && !animation)
-        || slotDirty || keep.motion || effectiveNow >= keep.expiry || speedRedraw || !sameKey(keep.drawKey, drawKey);
+        || slotDirty || keep.motion || effectiveNow >= keep.expiry || speedRedraw || drawChanged;
       const drawCanvas = (shown = frame, sharedTarget = shared) => {
         if (sharedTarget) {
           const { lane: sharedLane, slot } = sharedTarget;
@@ -955,7 +956,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.drawn = { binding, model, layout, hour: drawn };
         keep.drawKey = drawKey;
         keep.hit = point => family.hit(frame, point);
-        if (!incremental || painted.drew || !keep.content) keep.content = content();
+        if (!incremental || painted.drew || !keep.content || (playbackOwnsPixels && drawChanged)) keep.content = content();
       }
       keep.lastTarget = activeTarget;
 
@@ -977,7 +978,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
               projection.nextChange?.(result.view, binding.options) ?? Infinity,
               family.boundary(result.model, hour), result.boundary,
             );
-            if (family.status(result.model) !== 'picture') return null;
             const visual = { parts: snapshotPictures(sample.pictures), from: hour, until: Math.max(hour + 1, until), model: result.model, projected: result.view };
             cache = [visual, ...cache.slice(0, 2)];
             return visual;
@@ -987,28 +987,32 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         };
         let last: Visual | null = repainted ? original : null;
         let lastNext: Visual | null = null;
+        let endpoint: { visual: Visual; hour: number } | null = null;
         let lastFraction = 0;
         let lastArtRevision = keep.artRevision;
         let lastInspect = input.inspect;
         playback = (current, next, position, target, inspect, dirty, diagnostic) => {
           let exact = original;
           if (current) {
-            const start = modelAt(current, current.from);
-            const after = start && current.hour >= start.until ? modelAt(current, start.until) : start;
-            const actual = after && current.hour < after.until ? after : modelAt(current, current.hour);
-            if (!actual || !animation.supports(actual.model, binding)) {
+            let actual = modelAt(current, current.from);
+            while (actual && current.hour >= actual.until) actual = modelAt(current, actual.until);
+            if (!actual || family.status(actual.model) !== 'picture' || !animation.supports(actual.model, binding)) {
               if (diagnostic) diagnostic.reason = actual ? 'notEligible' : 'modelValidity';
               return 'release';
             }
             exact = actual;
           }
-          if (!current?.proven && last && last.from > exact.from) exact = last;
+          if (!current?.proven) {
+            if (endpoint && position >= endpoint.hour && endpoint.hour > exact.from) exact = endpoint.visual;
+            if (last && last.from > exact.from) exact = last;
+          }
           const begin = current ? Math.max(current.from, exact.from) : position;
           const to = next && position > begin && position < next.hour && exact.until >= next.hour ? modelAt(next, next.hour) : null;
           const fraction = to && next ? (position - begin) / (next.hour - begin) : 0;
           exact.layout ??= family.layout(exact.model, binding, surface, theme, keep.ctx, exact.from, { previous: null, now: effectiveNow, speed: 0 });
           const recorded = { ...frame, hour: exact.from, model: exact.model, layout: exact.layout, projected: exact.projected, inspect };
           const moving = to ? animation.frame(recorded, to.model, fraction) : null;
+          if (moving && to && next) endpoint = { visual: to, hour: next.hour };
           if (diagnostic && next) {
             diagnostic.reason = position <= begin ? 'recordedHour' : !to ? 'modelValidity' : moving === null ? 'incompatible' : 'unchanged';
           }

@@ -204,13 +204,15 @@ function makeRecordingCanvas(width = 960, height = 300) {
 
 const KIND = 'worker-motion-test';
 const BLUE = '#4f86f7';
-type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renameAt?: number };
+type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renames?: readonly number[] };
 
 registerFamilyProjection({
   family: 'bars',
   kind: KIND,
   project(view, options): BarsModel {
     const sample = view.panel('s') as Sample;
+    const nextRename = sample?.renames?.find(at => view.hour < at);
+    const name = sample?.renames?.filter(at => view.hour >= at).length;
     const numeric = sample?.value == null ? null : sample.value * Number(options ?? 1);
     const value = numeric === null ? notRecorded('Missing') : knownValue(sample.whole && numeric !== 0 ? BigInt(numeric) : numeric);
     return {
@@ -218,11 +220,11 @@ registerFamilyProjection({
       hour: view.hour,
       showAxis: true,
       scaleMax: sample?.scale ?? 400,
-      ...(sample?.renameAt && view.hour < sample.renameAt ? { nextChangeAt: sample.renameAt } : {}),
+      ...(nextRename !== undefined ? { nextChangeAt: nextRename } : {}),
       rows: [{
         kind: 'data',
         key: sample?.key ?? 'GER',
-        label: knownValue(sample?.renameAt && view.hour >= sample.renameAt ? 'Renamed' : 'Germany'),
+        label: knownValue(name ? `Renamed ${name}` : 'Germany'),
         value: { value },
         numeric,
         color: BLUE,
@@ -355,6 +357,13 @@ function fixture(budget: number) {
     ...(diagnostics ? { diagnostics: true } : {}),
   }));
   const tick = (elapsed: number) => { now += elapsed; later.splice(0).forEach(run => run()); };
+  const spendOnFactSelection = (cost: number) => {
+    const select = lane.facts.select.bind(lane.facts);
+    lane.facts.select = (...args) => {
+      now += cost;
+      return select(...args);
+    };
+  };
   const operations = () => canvas.snapshotOps().flat();
   const bar = () => {
     const paint = operations().reverse().find(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE);
@@ -363,7 +372,7 @@ function fixture(budget: number) {
   };
   const barWidth = () => Number(bar().args[2]);
   return {
-    lane, canvas, record, request, clock, tick, operations, bar, barWidth, presented, served, hits, released, bind, mount, sampled, painted, drain,
+    lane, canvas, record, request, clock, tick, operations, bar, barWidth, presented, served, hits, released, bind, mount, sampled, painted, drain, spendOnFactSelection,
     selectionCost: (value: number) => { selectionCost = value; selections = 0; },
     selections: () => selections,
     finishArtwork: () => settleArtwork({ width: 20, height: 13, close() {} } as ImageBitmap),
@@ -438,8 +447,8 @@ describe('Ordered bar playback', () => {
     }
   }));
 
-  it('paints a covered pause even when an older staged ID is acknowledged after a newer live paint', async () => withLane(async f => {
-    f.record(100, { value: 30 });
+  it('paints a covered pause after an older eligible stage is acknowledged, even without a prior playback owner', async () => withLane(async f => {
+    f.record(100, { value: 30, target: true });
     f.record(123);
     f.record(124, { value: 60 });
     f.clock(100, 1);
@@ -451,6 +460,40 @@ describe('Ordered bar playback', () => {
     f.clock(124, 0);
     await f.request(124, 0, 1, [staged]);
     assert.ok(Math.abs(f.barWidth() / exact - 2) < .01);
+  }));
+
+  it('resumes a matching renderer from a picture accepted while paused', async () => withLane(async f => {
+    f.record(100, { value: 30, target: true });
+    f.record(123);
+    f.record(124, { value: 60 });
+    f.record(147);
+    f.record(148, { value: 100 });
+    await f.request(100);
+    const unit = f.barWidth() / 30;
+    f.clock(100, 1);
+    await f.request(101, 1, 1, true, false, 124);
+    const staged = f.presented.at(-1)!.entries[0]!;
+    assert.equal(staged.lo, 124);
+    f.clock(124, 0);
+    await f.request(124, 0, 1, [staged]);
+    f.clock(136, 1);
+    await f.request(136, 1, 1, true);
+    f.tick(0);
+    assert.ok(Math.abs(f.barWidth() / unit - 80) < .01);
+  }));
+
+  it('settles to the proven endpoint when the clock skips beyond it before any acknowledgement', async () => withLane(async f => {
+    f.record(100, { value: 30 });
+    f.record(101, { value: 60 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const unit = f.barWidth() / 30;
+    await f.request(100, 1, 1, true);
+    f.tick(500);
+    assert.ok(Math.abs(f.barWidth() / unit - 45) < .01);
+    f.tick(1500);
+    assert.ok(Math.abs(f.barWidth() / unit - 60) < .01);
+    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
   }));
 
   it('animates the accepted interval even while a later staged picture awaits acknowledgement', async () => withLane(async f => {
@@ -476,19 +519,22 @@ describe('Ordered bar playback', () => {
     assert.equal(f.canvas.stagedCopies().length, 0);
   }));
 
-  it('starts a fresh bracket after a model change inside a confirmed fact interval', async () => withLane(async f => {
-    f.record(100, { value: 30, renameAt: 110 });
-    f.record(123);
-    f.record(124, { value: 100, renameAt: 110 });
-    f.clock(100, 1);
-    await f.request(100, 1);
-    const unit = f.barWidth() / 30;
-    f.clock(110, 1);
-    await f.request(110, 1);
-    f.tick(7000);
-    assert.ok(Math.abs(f.barWidth() / unit - 65) < .01);
-    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === 'Renamed'));
-  }));
+  it('starts the bracket at the last model boundary regardless of which ticks ran', async () => {
+    for (const prior of [[], [105.5, 111.5]]) await withLane(async f => {
+      f.record(100, { value: 30, renames: [105, 110] });
+      f.record(123);
+      f.record(124, { value: 100, renames: [105, 110] });
+      f.clock(100, 1);
+      await f.request(100, 1);
+      const unit = f.barWidth() / 30;
+      for (const position of [...prior, 117]) {
+        f.clock(position, 1);
+        f.tick(0);
+      }
+      assert.ok(Math.abs(f.barWidth() / unit - 65) < .01);
+      assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === 'Renamed 2'));
+    });
+  });
 
   it('lets a reduced-motion binding resume shared look-ahead on its first request', async () => withLane(async f => {
     f.record(100, { value: 30 });
@@ -616,7 +662,7 @@ describe('Ordered bar playback', () => {
       f.record(hour, { value: 40 + 40 * at });
       f.record(hour + 23);
     }
-    f.clock(100, 1440);
+    f.clock(100, 1440, 1, true);
     await f.request(100, 1440);
     const presents = f.presented.length;
     const unitWidth = f.barWidth() / 40;
@@ -637,14 +683,14 @@ describe('Ordered bar playback', () => {
     }
     assert.equal(f.served.filter(frame => frame.motion).reduce((count, frame) => count + frame.changed, 0), 8);
     assert.equal(f.presented.length, presents);
-    f.clock(244, 1440);
+    f.clock(244, 1440, 1, true);
     await f.request(244, 1440);
     f.tick(0);
     assert.ok(Math.abs(f.barWidth() / unitWidth - 280) < .01);
-    f.clock(244, 0);
+    f.clock(244, 0, 1, true);
     await f.request(244);
     f.tick(1000 / 95);
-    assert.equal(f.served.filter(frame => frame.motion).length, 8);
+    assert.equal(f.served.filter(frame => frame.motion).reduce((count, frame) => count + frame.changed, 0), 8);
     assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '280'));
   }));
 
@@ -652,12 +698,13 @@ describe('Ordered bar playback', () => {
     f.record(100, { value: 60 });
     f.record(123);
     f.record(126, { value: 100 });
-    f.clock(100, 1440);
+    f.clock(100, 1440, 1, true);
     await f.request(100, 1440);
     const exact = f.barWidth();
     f.tick(1000 / 95);
     assert.equal(f.barWidth(), exact);
-    assert.ok(!f.served.some(frame => frame.motion));
+    assert.ok(f.served.some(frame => frame.motionDiagnostics?.skipped.noBracket));
+    assert.ok(!f.served.some(frame => frame.motion && frame.changed));
     f.clock(126, 1440);
     await f.request(126, 1440);
     f.tick(0);
@@ -669,23 +716,23 @@ describe('Ordered bar playback', () => {
     f.record(101, { value: null });
     f.record(102, { value: 200 });
     f.record(103, { value: 400, key: 'ENG' });
-    f.clock(100.5, 168);
+    f.clock(100.5, 168, 1, true);
     await f.request(100, 168);
     const start = f.barWidth();
     f.canvas.clearOps();
     f.tick(0);
     assert.equal(f.operations().length, 0);
-    f.clock(101.5, 168);
+    f.clock(101.5, 168, 1, true);
     f.tick(0);
     assert.ok(f.operations().some(op => op.op === 'fillText' && String(op.args[0]).includes('recorded')));
-    f.clock(102.5, 168);
+    f.clock(102.5, 168, 1, true);
     f.tick(0);
     assert.equal(f.barWidth(), start * 2);
     f.canvas.clearOps();
-    f.clock(103.5, 168);
+    f.clock(103.5, 168, 1, true);
     f.tick(0);
     assert.equal(f.barWidth(), start * 4);
-    assert.ok(!f.served.some(frame => frame.motion));
+    assert.ok(!f.served.some(frame => frame.motion && frame.changed));
   }));
 
   it('does not paint or publish newly segmented rows between page requests', async () => withLane(async f => {
@@ -708,7 +755,7 @@ describe('Ordered bar playback', () => {
   it('keeps the recorded labels, tooltip, mirror and audit through ordinary presentation', async () => withLane(async f => {
     f.record(100, { value: 100 });
     f.record(101, { value: 200 });
-    f.clock(100.5, 1);
+    f.clock(100.5, 1, 1, true);
     await f.request(100, 1);
     const first = f.presented.flatMap(reply => reply.entries).at(-1);
     assert.ok(first?.repainted, 'the ordinary page request paints the direct slot');
@@ -806,6 +853,18 @@ describe('Ordered bar playback', () => {
     assert.deepEqual(f.sampled, [1, 2]);
     f.tick(16);
     assert.deepEqual(f.sampled, [1, 2, 3]);
+  }, 10));
+
+  it('budgets fact selection even if each playing slot already shows its exact value', async () => withLane(async f => {
+    f.mount(3);
+    f.record(100, { value: 100 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    f.spendOnFactSelection(11);
+    f.tick(0);
+    assert.deepEqual(f.sampled, [1]);
+    f.tick(0);
+    assert.deepEqual(f.sampled, [1, 2]);
   }, 10));
 
   it('uses extended date proof even when an unchanged entry is still pending', async () => withLane(async f => {
@@ -912,6 +971,8 @@ describe('Ordered bar playback', () => {
     assert.equal(entry?.lo, 101);
     assert.match(JSON.stringify(entry?.fields.audit), /60/);
     assert.ok(!entry?.repainted);
+    assert.equal(entry?.recordedPicture, true);
+    assert.notEqual(entry?.content[0], f.presented[0]?.entries[0]?.content[0]);
   }));
 
   it('several expensive artwork wakes do no work between exact playing page requests', async () => withLane(async f => {
@@ -1012,14 +1073,12 @@ describe('Ordered bar playback', () => {
     assert.deepEqual(f.painted, [4, 1, 2, 3]);
   }, 10));
 
-  it('gives a sibling its ordinary paint before selecting bars that simultaneously lose coverage', async () => withLane(async f => {
+  it('gives a sibling its ordinary paint before selecting bars due on the first Play request', async () => withLane(async f => {
     f.mount(4, true);
     f.record(100, { value: 100 });
     f.record(101, { value: 200 });
-    f.clock(100.5, 1);
-    await f.request(100, 1);
-    f.tick(0);
-    assert.deepEqual(f.sampled, [1, 2, 3]);
+    await f.request(100);
+    await f.request(100, 0, 1, true);
     f.clock(101.5, 1);
     f.lane.touch(4);
     f.painted.length = 0;
@@ -1028,6 +1087,18 @@ describe('Ordered bar playback', () => {
     assert.equal(f.painted[0], 4);
     assert.ok(f.selections() <= 2);
   }, 10));
+
+  it('draws without posting a playback message when performance recording is off', async () => withLane(async f => {
+    f.record(100, { value: 30 });
+    f.record(101, { value: 60 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const start = f.barWidth();
+    const served = f.served.length;
+    f.tick(500);
+    assert.ok(f.barWidth() > start);
+    assert.equal(f.served.length, served);
+  }));
 
   it('interpolates a recorded number zero to a recorded whole-number bigint', async () => withLane(async f => {
     f.record(100, { value: 0, whole: true });
