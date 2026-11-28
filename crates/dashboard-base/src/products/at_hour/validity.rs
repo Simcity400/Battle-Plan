@@ -218,6 +218,10 @@ pub struct ReadDates {
 struct ScriptedReadDates(Arc<Mutex<ReadDates>>);
 
 impl ReadDates {
+    pub fn prepare_scripted(source: &Source, run: u32) -> io::Result<Option<Arc<crate::products::read_ahead::Preparation>>> {
+        VariableDates::prepare(&source.state::<VariableDates>(), source.replay(), run)
+    }
+
     pub fn for_scripted_source(source: &Source) -> Arc<Mutex<Self>> {
         let kept = source.state::<ScriptedReadDates>();
         let dates = Arc::clone(&kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0);
@@ -333,9 +337,9 @@ impl ReadDates {
         for (table, selection) in uncached {
             check_cancel(cancelled)?;
             let indexed = match self.variables.as_ref() {
-                Some(variables) if table == TableId::ScriptVariableValues => {
+                Some(variables) if matches!(table, TableId::ScriptVariableValues | TableId::ScriptVariableNames) => {
                     variables.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .dates(replay.recording(), run, first, last, &selection, cancelled)?
+                        .dates(replay.recording(), run, table, first, last, &selection)
                 }
                 _ => None,
             };

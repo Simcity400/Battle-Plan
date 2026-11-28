@@ -1,8 +1,9 @@
-use super::{Keys, Selection, TableId, check_cancel};
-use replay_columnar::container::Revision;
+use super::{Keys, Selection, TableId};
+use crate::products::read_ahead::{self, Preparation};
+use replay::campaign::Replay;
 use replay_lanes::{lanes::{StatusRun, status_reasons}, points::cells};
-use replay_recording::columnar_frames::{Recording, Run, Source, TableCoverage};
-use std::{collections::{BTreeMap, BTreeSet, btree_map::Entry}, io, sync::{Arc, Weak, atomic::{AtomicBool, Ordering}}};
+use replay_recording::columnar_frames::{Recording, Run, TableCoverage};
+use std::{collections::{BTreeMap, BTreeSet, btree_map::Entry}, io, sync::{Arc, Mutex, PoisonError}};
 
 #[cfg(test)]
 mod tests;
@@ -10,59 +11,110 @@ mod tests;
 const TABLE: TableId = TableId::ScriptVariableValues;
 const RETAINED_BYTES: usize = 16 * 1024 * 1024;
 const TREE_BYTES_PER_SCOPE: usize = 512;
+const BYTES_PER_RUN: usize = 512;
 
 #[derive(Default)]
 pub(super) struct VariableDates {
-    held: Option<(Weak<Source>, Revision, u32, Option<Index>)>,
+    runs: BTreeMap<u32, (Arc<Preparation>, Option<Index>)>,
+    bytes: usize,
+    building: bool,
 }
 
 struct Index {
     scopes: BTreeMap<u128, Vec<i32>>,
     statuses: Vec<StatusRun>,
     validated_start: Option<(i32, bool)>,
+    bytes: usize,
+    names: Option<Box<[i32]>>,
 }
 
 impl VariableDates {
+    pub(super) fn prepare(state: &Arc<Mutex<Self>>, replay: Arc<Replay>, run: u32) -> io::Result<Option<Arc<Preparation>>> {
+        let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((ready, _)) = held.runs.get(&run) { return ready.pending(); }
+        if held.bytes + BYTES_PER_RUN > RETAINED_BYTES || !indexable(replay.recording(), run) { return Ok(None); }
+        let ready = Arc::<Preparation>::default();
+        held.bytes += BYTES_PER_RUN;
+        held.runs.insert(run, (Arc::clone(&ready), None));
+        if !held.building {
+            let state = Arc::clone(state);
+            held.building = read_ahead::spawn("script variable dates", move || Self::build(&state, &replay)).is_ok();
+            if !held.building { ready.publish(Ok(())); }
+        }
+        ready.pending()
+    }
+
+    fn build(state: &Mutex<Self>, replay: &Replay) {
+        job_priority::background_thread();
+        loop {
+            let (run, ready, budget) = {
+                let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
+                let Some((&run, (ready, _))) = held.runs.iter().find(|(_, (ready, _))| ready.result().is_none()) else {
+                    held.building = false;
+                    return;
+                };
+                (run, Arc::clone(ready), RETAINED_BYTES - held.bytes)
+            };
+            ready.run(|| {
+                if let Some(index) = Index::load(replay.recording(), run, budget) {
+                    let span = replay.recording().run(run)?;
+                    let selection = Selection { fields: 1, ..Selection::default() };
+                    let names = selection.dates(replay, run, TableId::ScriptVariableNames, span.first_hour, span.last_hour())
+                        .ok().map(Vec::into_boxed_slice);
+                    state.lock().unwrap_or_else(PoisonError::into_inner).publish(run, index, names);
+                }
+                Ok(())
+            });
+        }
+    }
+
+    fn publish(&mut self, run: u32, mut index: Index, names: Option<Box<[i32]>>) {
+        if index.bytes > RETAINED_BYTES - self.bytes { return; }
+        self.bytes += index.bytes;
+        index.names = names.filter(|names| size_of_val(&**names) <= RETAINED_BYTES - self.bytes);
+        self.bytes += index.names.as_deref().map_or(0, size_of_val);
+        self.runs.get_mut(&run).expect("admitted run").1 = Some(index);
+    }
+
     pub(super) fn dates(
-        &mut self, recording: &Recording, run: u32, first: i32, last: i32, selection: &Selection, cancelled: &AtomicBool,
-    ) -> io::Result<Option<Vec<i32>>> {
+        &mut self, recording: &Recording, run: u32, table: TableId, first: i32, last: i32, selection: &Selection,
+    ) -> Option<Vec<i32>> {
         if selection.fields != 1 || selection.ends
             || selection.rows.as_ref().is_some_and(|rows| rows.iter().any(|&(lo, hi)| lo as u32 != 0 || hi as u32 != u32::MAX))
         {
-            return Ok(None);
+            return None;
         }
-        if recording.columns().get(TABLE.index()) != Some(&1) || recording.read_columns(TABLE.index()) != [0]
-            || !matches!(recording.table_coverage(TABLE.index(), run), TableCoverage::Valid)
-        {
-            self.held = None;
-            return Ok(None);
+        if !indexable(recording, run) { return None; }
+        let span = recording.run(run).ok()?;
+        let start = span.ordinal(first)?;
+        if last > span.last_hour() || first > last { return None; }
+        let (_, index) = self.runs.get_mut(&run)?;
+        let index = index.as_mut()?;
+        if table == TableId::ScriptVariableNames {
+            let names = index.names.as_deref()?;
+            return (selection.rows.is_none() && start == 0 && last == span.last_hour()).then(|| names.to_vec());
         }
-        let Ok(span) = recording.run(run) else { return Ok(None) };
-        let Some(start) = span.ordinal(first) else { return Ok(None) };
-        if last > span.last_hour() || first > last { return Ok(None); }
-        let source = Arc::downgrade(&recording.source());
-        let revision = recording.revision();
-        if self.held.as_ref().is_none_or(|(s, r, at, _)| !s.ptr_eq(&source) || *r != revision || *at != run) {
-            self.held = None;
-            self.held = Some((source, revision, run, Index::load(recording, run, cancelled, RETAINED_BYTES)?));
-        }
-        let Some(index) = self.held.as_mut().and_then(|(_, _, _, index)| index.as_mut()) else { return Ok(None) };
-        if start != 0 && !index.validates(recording, run, first) { return Ok(None); }
-        Ok(Some(index.dates(first, last, selection)))
+        if start != 0 && !index.validates(recording, run, first) { return None; }
+        Some(index.dates(first, last, selection))
     }
 }
 
+fn indexable(recording: &Recording, run: u32) -> bool {
+    recording.columns().get(TABLE.index()) == Some(&1) && recording.read_columns(TABLE.index()) == [0]
+        && matches!(recording.table_coverage(TABLE.index(), run), TableCoverage::Valid)
+}
+
 impl Index {
-    fn load(recording: &Recording, run: u32, cancelled: &AtomicBool, budget: usize) -> io::Result<Option<Self>> {
-        let Ok(span) = recording.run(run) else { return Ok(None) };
+    fn load(recording: &Recording, run: u32, budget: usize) -> Option<Self> {
+        if budget < size_of::<Self>() { return None; }
+        let span = recording.run(run).ok()?;
         let (first, last) = (span.first_hour, span.last_hour());
-        if !Self::check_restores(recording, run, span, cancelled)? { return Ok(None); }
+        if !Self::check_restores(recording, run, span) { return None; }
         let mut scopes = BTreeMap::<u128, Vec<i32>>::new();
         let mut statuses = Vec::new();
         let mut bytes = size_of::<Self>();
         let loaded = dashboard_query::cost::storage(|| {
             cells(recording, run, TABLE, &[0], Keys::All, first, last, Some(&mut statuses), &mut |hour, key, _| {
-                if cancelled.load(Ordering::Relaxed) { return false; }
                 if hour == first { return true; }
                 let dates = match scopes.entry(key >> 32) {
                     Entry::Vacant(entry) => {
@@ -79,24 +131,23 @@ impl Index {
                 bytes <= budget
             })
         });
-        check_cancel(cancelled)?;
-        if loaded.is_err() || bytes + statuses.capacity() * size_of::<StatusRun>() > budget
+        bytes += statuses.capacity() * size_of::<StatusRun>();
+        if loaded.is_err() || bytes > budget
             || status_reasons(recording, run, TABLE, &statuses).is_err()
         {
-            return Ok(None);
+            return None;
         }
-        Ok(Some(Self { scopes, statuses, validated_start: None }))
+        Some(Self { scopes, statuses, validated_start: None, bytes, names: None })
     }
 
-    fn check_restores(recording: &Recording, run: u32, span: &Run, cancelled: &AtomicBool) -> io::Result<bool> {
+    fn check_restores(recording: &Recording, run: u32, span: &Run) -> bool {
         for block in 0..(span.pages() as u32).saturating_sub(1) {
-            check_cancel(cancelled)?;
-            let Ok(entry) = recording.table_entry(run, block, TABLE.index()) else { return Ok(false) };
+            let Ok(entry) = recording.table_entry(run, block, TABLE.index()) else { return false };
             if entry.unit.restore.is_some() && !check_start(recording, run, span.block_first_hour(block + 1)) {
-                return Ok(false);
+                return false;
             }
         }
-        Ok(true)
+        true
     }
 
     fn validates(&mut self, recording: &Recording, run: u32, start: i32) -> bool {
