@@ -1,6 +1,6 @@
 
 use crate::native_windows::NativeWindows;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -88,6 +88,11 @@ struct Prepared {
     animations: Vec<AnimationRecord>,
 }
 
+struct LazyPlain {
+    prepared: OnceLock<Box<Prepared>>,
+    diagnostics: Diagnostics,
+}
+
 fn plain_info(
     plain: &Plain,
     main: &Loaded,
@@ -134,6 +139,7 @@ pub struct GuiResources {
     touched: Vec<(Stack, Vec<u8>)>,
     decode: Decode,
     sprites: HashMap<Vec<u8>, Prepared>,
+    lazy_plain: HashMap<Vec<u8>, LazyPlain>,
     sprite_diagnostics: HashMap<Vec<u8>, Diagnostics>,
     alpha: BTreeMap<usize, AlphaMask>,
     fonts: BTreeMap<FontKey, native_text::Font>,
@@ -177,6 +183,7 @@ impl GuiResources {
             touched: Vec::new(),
             decode,
             sprites: HashMap::new(),
+            lazy_plain: HashMap::new(),
             sprite_diagnostics: HashMap::new(),
             alpha: BTreeMap::new(),
             fonts: BTreeMap::new(),
@@ -228,7 +235,7 @@ impl GuiResources {
     }
 
     pub fn loaded_sheet(&self, name: &[u8]) -> Option<&SpriteSheet> {
-        self.sprites.get(name).map(|sprite| &sprite.sheet)
+        self.prepared_local(name).map(|sprite| &sprite.sheet)
             .or_else(|| self.window.as_ref()?.sprite(name, false).map(|(sprite, _)| &sprite.sheet))
     }
 
@@ -245,10 +252,14 @@ impl GuiResources {
         let (result, diagnostics) =
             diagnostics::capture(|| self.load_lazy_plain_inner(layers, name));
         diagnostics.credit();
-        if result.is_ok() {
-            self.sprite_diagnostics.insert(name.to_vec(), diagnostics);
-        }
-        result
+        result?;
+        self.sprites.remove(name);
+        self.sprite_diagnostics.remove(name);
+        self.lazy_plain.insert(
+            name.to_vec(),
+            LazyPlain { prepared: OnceLock::new(), diagnostics },
+        );
+        Ok(())
     }
 
     fn load_lazy_plain_inner(
@@ -256,7 +267,8 @@ impl GuiResources {
         layers: &ResolvedLayers,
         name: &[u8],
     ) -> Result<(), String> {
-        let Some(facts) = self.registry.sprite(name).cloned() else {
+        let registry = Arc::clone(&self.registry);
+        let Some(facts) = registry.sprite(name) else {
             return Err(format!("undeclared lazy sprite {}", lossy(name)));
         };
         let Declared::Plain(plain) = &facts.kind else {
@@ -271,26 +283,35 @@ impl GuiResources {
                 lossy(name)
             ));
         }
-        let main = Loaded {
-            texture: NO_TEXTURE,
-            size: [0; 2],
-            missing: None,
-            refused: None,
-        };
-        let effect = self.effect_result(layers, plain.effect(), false);
-        let info = plain_info(
-            plain,
-            &main,
-            false,
-            false,
-            SpriteKind::Plain,
-            effect,
-            Vec::new(),
-        );
-        self.sprites.insert(
-            name.to_vec(),
-            Prepared {
-                info,
+        let _ = self.effect_result(layers, plain.effect(), false);
+        Ok(())
+    }
+
+    pub fn has_lazy_plain(&self, name: &[u8]) -> bool {
+        self.lazy_plain.contains_key(name)
+    }
+
+    pub fn lazy_plain(&self, name: &[u8]) -> Option<&Plain> {
+        self.lazy_plain.get(name)?;
+        self.registry.sprite(name)?.kind.plain()
+    }
+
+    fn prepared_plain(&self, name: &[u8]) -> Option<&Prepared> {
+        let slot = &self.lazy_plain.get(name)?.prepared;
+        if let Some(prepared) = slot.get() {
+            return Some(prepared);
+        }
+        let plain = self.registry.sprite(name)?.kind.plain()?;
+        let (effect, _) = self.effects[0].get(plain.effect())?;
+        Some(slot.get_or_init(|| {
+            let main = Loaded {
+                texture: NO_TEXTURE,
+                size: [0; 2],
+                missing: None,
+                refused: None,
+            };
+            Box::new(Prepared {
+                info: plain_info(plain, &main, false, false, SpriteKind::Plain, effect.clone(), Vec::new()),
                 sheet: SpriteSheet {
                     name: lossy(name),
                     texture: NO_TEXTURE,
@@ -300,9 +321,8 @@ impl GuiResources {
                 second: None,
                 masking: None,
                 animations: Vec::new(),
-            },
-        );
-        Ok(())
+            })
+        }))
     }
 
     pub fn effects(&self) -> Vec<Arc<shader_pipeline::library::Effect>> {
@@ -353,12 +373,10 @@ impl GuiResources {
                 .map(Vec::as_slice)
                 .chain([FALLBACK_SPRITE])
             {
-                if !self.sprites.contains_key(name) {
+                if !self.sprites.contains_key(name) && !self.has_lazy_plain(name) {
                     self.prepare(layers, name, images)?;
                 }
-                if let Some(diagnostics) = self.sprite_diagnostics.get(name) {
-                    diagnostics.credit();
-                }
+                self.credit_sprite(name);
             }
             for name in &assets.fonts {
                 self.load_font(layers, name, images)?;
@@ -1159,12 +1177,18 @@ impl GuiResources {
     fn credit_sprite(&self, name: &[u8]) {
         if let Some(diagnostics) = self.sprite_diagnostics.get(name) {
             diagnostics.credit();
+        } else if let Some(lazy) = self.lazy_plain.get(name) {
+            lazy.diagnostics.credit();
         }
+    }
+
+    fn prepared_local(&self, name: &[u8]) -> Option<&Prepared> {
+        self.sprites.get(name).or_else(|| self.prepared_plain(name))
     }
 
     fn prepared(&self, name: &[u8]) -> Option<&Prepared> {
         self.credit_sprite(name);
-        self.sprites.get(name).or_else(|| self.window.as_ref()?.sprite(name, true).map(|(sprite, _)| sprite))
+        self.prepared_local(name).or_else(|| self.window.as_ref()?.sprite(name, true).map(|(sprite, _)| sprite))
     }
 
     pub fn sprite_info(&self, name: &[u8]) -> Option<&SpriteInfo> {
@@ -1175,6 +1199,9 @@ impl GuiResources {
         self.credit_sprite(name);
         if let Some(sprite) = self.sprites.get(name) {
             return self.alpha.get(&sprite.sheet.texture).cloned();
+        }
+        if self.has_lazy_plain(name) {
+            return None;
         }
         self.window.as_ref()?.sprite(name, true)?.1.cloned()
     }

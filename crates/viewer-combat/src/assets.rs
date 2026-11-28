@@ -37,7 +37,6 @@ pub struct Assets {
     pub gui: GuiResources,
     window_sprites: BTreeSet<Vec<u8>>,
     flag_selectors: Mutex<BTreeMap<String, usize>>,
-    lazy_sprites: BTreeMap<String, (String, Plain)>,
     portraits: Arc<LazyImages>,
     portrait_failures: Arc<Mutex<PortraitFailures>>,
     flags: Arc<LazyFlags>,
@@ -151,11 +150,7 @@ impl Assets {
         let mut assets = native_window_assets(&self.native_windows, localisation);
         assets.extend(extra.clone());
         self.window_sprites.extend(assets.sprites.iter().cloned());
-        assets.sprites.retain(|name| {
-            std::str::from_utf8(name)
-                .ok()
-                .is_none_or(|name| !self.lazy_sprites.contains_key(name))
-        });
+        assets.sprites.retain(|name| !self.gui.has_lazy_plain(name));
         let mut warnings = self.gui.loaded_font_warnings(&assets.fonts);
         warnings.extend(self.gui.missing_textures().into_iter().map(|(name, why)| format!("Combat UI: texture {name}: {why} (1 missing_texture).")));
         for name in shortcut_assets(&self.native_windows).sprites {
@@ -187,18 +182,16 @@ impl Assets {
     }
 
     fn lazy_sprite<'a>(&'a self, name: &'a str) -> Option<(&'a str, &'a Plain)> {
-        if let Some(path) = name
+        let plain = self.gui.lazy_plain(Self::lazy_key(name.as_bytes()))?;
+        let path = if let Some(path) = name
             .strip_prefix("air_texture:")
             .filter(|path| !path.is_empty())
         {
-            return self
-                .lazy_sprites
-                .get("air_texture:")
-                .map(|(_, plain)| (path, plain));
-        }
-        self.lazy_sprites
-            .get(name)
-            .map(|(path, plain)| (path.as_str(), plain))
+            path
+        } else {
+            std::str::from_utf8(&plain.texture).ok()?
+        };
+        Some((path, plain))
     }
 
     pub fn native_sprite(&self, name: &[u8]) -> Option<native_gui::SpriteInfo> {
@@ -820,7 +813,7 @@ impl Assets {
                 .into_iter()
                 .filter(|name| registry.sprite(name.as_bytes()).is_some()),
         );
-        let mut lazy_sprites = BTreeMap::new();
+        let mut lazy_sprites = Vec::new();
         let window_sprites = native_assets.sprites.clone();
         let mut resident = native_gui::Assets {
             sprites: native_assets.sprites,
@@ -845,9 +838,9 @@ impl Assets {
                 && (plain.legacy_lazy_load || plain.animations.is_empty())
                 && plain.frames >= 0
                 && facts.refusals.is_empty()
-                && let Ok(first) = std::str::from_utf8(&plain.texture)
+                && std::str::from_utf8(&plain.texture).is_ok()
             {
-                lazy_sprites.insert(name.clone(), (first.to_owned(), plain.clone()));
+                lazy_sprites.push(name);
                 resident.sprites.remove(name.as_bytes());
             } else {
                 resident.sprites.insert(name.as_bytes().to_vec());
@@ -860,7 +853,7 @@ impl Assets {
             interface.decode,
         );
         gui.load(layers, &resident, images)?;
-        for name in lazy_sprites.keys() {
+        for name in &lazy_sprites {
             gui.load_lazy_plain(layers, name.as_bytes())
                 .map_err(super::invalid)?;
         }
@@ -1144,7 +1137,6 @@ impl Assets {
             gui,
             window_sprites,
             flag_selectors: Mutex::default(),
-            lazy_sprites,
             portraits,
             portrait_failures,
             flags: Arc::clone(flags),

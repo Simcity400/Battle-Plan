@@ -285,11 +285,7 @@ fn lazy_portraits_publish_loaded_and_missing_resources() {
         &inventory,
     );
     for name in [b"GFX_lazy".as_slice(), b"GFX_lazy_missing"] {
-        assert!(
-            assets
-                .lazy_sprites
-                .contains_key(std::str::from_utf8(name).unwrap())
-        );
+        assert!(assets.gui.has_lazy_plain(name));
         assert!(resources.sprite_info(name).unwrap().missing.is_some());
     }
     assert_eq!(
@@ -318,18 +314,10 @@ fn lazy_portraits_publish_loaded_and_missing_resources() {
             .is_some()
     );
     for name in [b"GFX_lazy".as_slice(), b"GFX_lazy_missing"] {
-        assert!(
-            assets
-                .lazy_sprites
-                .contains_key(std::str::from_utf8(name).unwrap())
-        );
+        assert!(assets.gui.has_lazy_plain(name));
     }
     for name in [b"GFX_static".as_slice(), b"GFX_absent", b"\xff"] {
-        assert!(
-            std::str::from_utf8(name)
-                .ok()
-                .is_none_or(|name| !assets.lazy_sprites.contains_key(name))
-        );
+        assert!(!assets.gui.has_lazy_plain(name));
     }
     assert!(resources.sprite_info(b"GFX_static").is_some());
     assert!(resources.sprite_info(b"GFX_absent").is_none());
@@ -532,8 +520,8 @@ fn sprites_the_state_view_names_from_its_content_load_with_the_windows() {
         )
         .unwrap();
     });
-    assert!(assets.lazy_sprites.contains_key("GFX_bound_law"));
-    assert!(assets.lazy_sprites.contains_key("GFX_bound_modifier"));
+    assert!(assets.gui.has_lazy_plain(b"GFX_bound_law"));
+    assert!(assets.gui.has_lazy_plain(b"GFX_bound_modifier"));
     assert_eq!(assets.portraits.peek("gfx/bound/one.tga"), Lookup::Pending);
     assert!(assets.has_sprite("GFX_bound_law"));
     assert!(assets.has_sprite("GFX_bound_modifier"));
@@ -574,12 +562,12 @@ fn combat_dynamic_sprites_defer_until_drawn_or_queried_and_keep_alpha_hit_eager(
         )
         .unwrap();
     });
-    assert!(assets.lazy_sprites.contains_key("GFX_navalcombat_ship_icon_destroyer"));
-    assert!(assets.lazy_sprites.contains_key("GFX_navalcombat_ship_icon_missing"));
-    assert!(assets.lazy_sprites.contains_key("GFX_terrain_cold"));
-    assert!(!assets.lazy_sprites.contains_key("GFX_terrain_alpha"));
-    assert!(!assets.lazy_sprites.contains_key("GFX_mapmode_buttons_default_medium"));
-    assert!(!assets.lazy_sprites.contains_key("combat_tactic:fixture"));
+    assert!(assets.gui.has_lazy_plain(b"GFX_navalcombat_ship_icon_destroyer"));
+    assert!(assets.gui.has_lazy_plain(b"GFX_navalcombat_ship_icon_missing"));
+    assert!(assets.gui.has_lazy_plain(b"GFX_terrain_cold"));
+    assert!(!assets.gui.has_lazy_plain(b"GFX_terrain_alpha"));
+    assert!(!assets.gui.has_lazy_plain(b"GFX_mapmode_buttons_default_medium"));
+    assert!(!assets.gui.has_lazy_plain(b"combat_tactic:fixture"));
     assert_eq!(assets.portraits.peek("gfx/combat/ship.tga"), Lookup::Pending);
     assert_eq!(assets.portraits.peek("gfx/combat/cold.tga"), Lookup::Pending);
     assert_eq!(assets.portraits.peek("gfx/combat/missing.tga"), Lookup::Pending);

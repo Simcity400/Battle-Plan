@@ -88,13 +88,20 @@ fn lazy_plain_resources_share_native_metadata_without_loading_texture() {
     );
     lazy.load_lazy_plain(&layers, b"GFX_portrait").unwrap();
     assert!(lazy.textures.is_empty());
+    assert!(lazy.sprites.is_empty());
+    assert!(lazy.sprite_diagnostics.is_empty());
+    let slot = &lazy.lazy_plain[b"GFX_portrait".as_slice()].prepared;
+    assert!(slot.get().is_none());
+    assert!(lazy.sprite_alpha(b"GFX_portrait").is_none());
+    assert!(slot.get().is_none());
     assert_eq!(lazy.sheet(b"GFX_portrait").unwrap().texture, NO_TEXTURE);
+    assert!(slot.get().is_some());
     let deferred = lazy.sprite(b"GFX_portrait").unwrap();
     let assets = Assets {
         sprites: [b"GFX_portrait".to_vec()].into(),
         ..Assets::default()
     };
-    lazy.sprites.remove(b"GFX_portrait".as_slice());
+    lazy.lazy_plain.remove(b"GFX_portrait".as_slice());
     let mut images = Vec::new();
     lazy.load(&layers, &assets, &mut images).unwrap();
     let mut expected = lazy.sprite(b"GFX_portrait").unwrap();
