@@ -46,13 +46,17 @@ fn prepared_idea_dates_keep_exact_owner_selections_without_restoring() {
 #[test]
 fn prepared_block_dates_match_exact_dates_without_opening_history() {
     let boundary = 100 + replay_columnar::unit::BLOCK as i32;
-    let replay = ideas_recording(boundary + 2, |hour| vec![ActiveIdeaRow {
+    let mut replay = ideas_recording(boundary + 2, |hour| vec![ActiveIdeaRow {
         country: 1, ordinal: 0, token: hour.to_string().into_bytes(),
     }]);
+    let inherited = replay.index[0];
+    replay.index.push(inherited);
+    replay.index.push(replay::campaign::BlockIndex { last_hour: inherited.last_hour - 1, ..inherited });
     let spec = DateSelection { shift: None, ..ACTIVE_IDEAS };
     let selection = Selection { fields: spec.fields, rows: None, ends: false };
     let (prepared, _) = RunDates::load(&replay, 0, &[spec], DateWindows::Blocks, RETAINED_BYTES).unwrap();
-    for (first, last) in [(100, boundary - 1), (boundary, boundary + 2)] {
+    assert_eq!(prepared.windows.len(), 3);
+    for (first, last) in [(100, boundary - 2), (100, boundary - 1), (boundary, boundary + 2)] {
         let (legacy, reads) = replay_recording::cells::count_reads(|| {
             selection.dates(&replay, 0, spec.table, first, last).unwrap()
         });

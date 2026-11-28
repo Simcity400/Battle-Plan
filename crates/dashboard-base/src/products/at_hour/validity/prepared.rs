@@ -3,7 +3,7 @@ use crate::{Source, products::read_ahead::{self, Preparation}};
 use replay_columnar::summary::Shape;
 use replay_lanes::{lanes::status_reasons, points::cells};
 use replay_recording::columnar_frames::TableCoverage;
-use std::{collections::BTreeMap, io, sync::{Arc, Mutex, PoisonError}};
+use std::{collections::{BTreeMap, BTreeSet}, io, sync::{Arc, Mutex, PoisonError}};
 
 #[cfg(test)]
 mod tests;
@@ -173,7 +173,8 @@ impl RunDates {
         let whole = (mode == DateWindows::Run).then_some((info.first_hour, info.last_hour()));
         let blocks = replay.index.iter().filter(|block| mode == DateWindows::Blocks && block.run == run)
             .map(|block| (block.first_hour, block.last_hour));
-        for span in whole.into_iter().chain(blocks) {
+        let spans: BTreeSet<_> = whole.into_iter().chain(blocks).collect();
+        for span in spans {
             let headers = size_of::<WindowDates>().saturating_add(specs.len().saturating_mul(size_of::<TableDates>()));
             let Some(after_headers) = budget.checked_sub(headers) else { break };
             budget = after_headers;
@@ -191,7 +192,6 @@ impl RunDates {
             budget += (specs.len() - tables.len()) * size_of::<TableDates>();
             windows.push(WindowDates { span, tables: tables.into_boxed_slice() });
         }
-        windows.sort_unstable_by_key(|window| window.span);
         Ok((Self { windows: windows.into_boxed_slice() }, available - budget))
     }
 

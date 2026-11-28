@@ -464,6 +464,7 @@ fn scripted_goal_refresh(fixture: &str, condition: &str, unrelated_tokens: bool)
     };
     use replay_data::rows::{CountryRow, CountryWarRow, Recorded, ScriptFlagRow};
     use serde_json::json;
+    use std::{collections::BTreeMap, sync::{Arc, Mutex}};
 
     game::enter();
     let machine = Machine::new(fixture);
@@ -512,16 +513,31 @@ fn scripted_goal_refresh(fixture: &str, condition: &str, unrelated_tokens: bool)
         .collect();
 
     let params = json!({"branchId": "1", "country": "AAA", "goals": "all"});
+    let counted = |replay: &replay::campaign::Replay, panel: &dashboard_follow::panel::AtHour| {
+        let stretches = Arc::new(Mutex::new(BTreeMap::<i32, u64>::new()));
+        let counts = Arc::clone(&stretches);
+        let advance = Arc::clone(&panel.advance);
+        let tracked = dashboard_follow::panel::AtHour {
+            advance: Arc::new(move |hour, seed, cancelled, step| {
+                let (reply, reads) = replay_recording::cells::count_reads(|| advance(hour, seed, cancelled, step));
+                *counts.lock().unwrap().entry(hour).or_default() += reads.get(&TableId::CountryWars).map_or(0, |read| read.stretches);
+                reply
+            }),
+            cold: Arc::clone(&panel.cold),
+            read: Arc::clone(&panel.read),
+        };
+        let steps = played(replay, &tracked, 100, 105);
+        let counts = std::mem::take(&mut *stretches.lock().unwrap());
+        (steps, counts)
+    };
     if unrelated_tokens {
         let (control, load) = source_with_content(frames.clone(), &machine.root);
         let panel = exact_panel::<CountryFactionGoals>(&control, &load, &params).unwrap();
-        let (_, reads) = replay_recording::cells::count_reads(|| {
-            played(control.replay_ref(), panel.exact().unwrap(), 100, 105)
-        });
-        assert!(reads[&TableId::CountryWars].stretches > 0);
+        let (_, reads) = counted(control.replay_ref(), panel.exact().unwrap());
+        assert!(reads.values().sum::<u64>() > 0);
     }
     let (source, load) = source_with_content(frames, &machine.root);
-    let source = std::sync::Arc::new(source);
+    let source = Arc::new(source);
     if unrelated_tokens {
         let asked = serde_json::from_value(params.clone()).unwrap();
         if let Some(pending) = CountryFactionGoals::PREPARE.unwrap()(&source, &asked, &load, 100).unwrap() {
@@ -531,9 +547,10 @@ fn scripted_goal_refresh(fixture: &str, condition: &str, unrelated_tokens: bool)
     let panel = exact_panel::<CountryFactionGoals>(&source, &load, &params).unwrap();
     let exact = panel.exact().unwrap();
     let mut whole = frame_panel::<CountryFactionGoals>(&source, &load, &params).unwrap();
-    let (steps, reads) = replay_recording::cells::count_reads(|| played(source.replay_ref(), exact, 100, 105));
+    let (steps, reads) = counted(source.replay_ref(), exact);
     if unrelated_tokens {
-        assert_eq!(reads.get(&TableId::CountryWars).map_or(0, |read| read.stretches), 0);
+        assert_eq!(reads[&103], 0);
+        assert_eq!(reads.values().sum::<u64>(), 0);
     }
     for step in &steps {
         let expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
