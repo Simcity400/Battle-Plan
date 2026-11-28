@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
+bench-counts = ["dep:replay-recording", "replay-recording/test-support"]
 export-types = ["dashboard-base/export-types", "dashboard-air/export-types", "dashboard-economy/export-types", "dashboard-intelligence/export-types", "dashboard-land/export-types", "dashboard-naval/export-types", "dashboard-players/export-types", "dashboard-politics/export-types", "dashboard-production/export-types", "dashboard-research/export-types", "dashboard-wars/export-types", "dashboard-world/export-types"]
 
 [dependencies]
@@ -51,6 +52,7 @@ playhead = { path = "../playhead" }
 recording-upgrade = { workspace = true }
 replay-data = { workspace = true }
 replay-frame = { workspace = true }
+replay-recording = { workspace = true, optional = true }
 rfd = { workspace = true }
 rmp-serde = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
