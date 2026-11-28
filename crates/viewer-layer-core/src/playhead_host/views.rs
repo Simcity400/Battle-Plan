@@ -8,7 +8,7 @@ pub mod view;
 use super::{
     Entry, lock,
     mirror::{Mirror, Mirrors},
-    script_values::{ScriptValues, TABLE as SCRIPT_VALUES},
+    script_values::{ExactColumns, ScriptValues, TABLE as SCRIPT_VALUES},
 };
 use crate::rebuilt::panicked;
 use playhead::changes::{Changes, Lives};
@@ -225,6 +225,12 @@ impl Columns {
     }
 
     pub fn make(&mut self, table: usize, columns: u64, from: Source<'_>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> SharedView {
+        self.make_from(table, columns, from, order, made, |held, previous, since, order| {
+            held.remake(TableId::ALL[table], columns, previous, since, from, order)
+        })
+    }
+
+    fn make_from(&mut self, table: usize, columns: u64, from: Source<'_>, order: &mut Vec<(u128, u32)>, made: &mut Made, build: impl FnOnce(&mut Self, Option<SharedView>, Result<&[(u128, u64)], Whole>, &mut Vec<(u128, u32)>) -> (TableView, view::Made, Make)) -> SharedView {
         let at = made.at();
         made.made_on();
         let started = Instant::now();
@@ -238,7 +244,7 @@ impl Columns {
             self.built = Some((self.stamp, previous.clone()));
             return previous.clone();
         }
-        let (view, built, how) = self.remake(TableId::ALL[table], columns, previous, since.as_deref().map_err(|why| *why), from, order);
+        let (view, built, how) = build(self, previous, since.as_deref().map_err(|why| *why), order);
         let took = started.elapsed();
         self.last_ns = took.as_nanos() as u64;
         made.builds.push((table, took.as_nanos() as u64, built.rows, how, at));
@@ -280,6 +286,10 @@ impl Columns {
     }
 
     pub fn keyed_made(&mut self, table: usize, columns: u64, from: Source<'_>, keys: &BTreeSet<u64>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> (SharedView, Option<view::HeadFailure>) {
+        self.keyed_from(table, columns, from, order, made, |order| view::make_of(TableId::ALL[table], from.0, (from.1, columns), from.2, |key| keys.contains(&prefix(key)), order))
+    }
+
+    fn keyed_from(&mut self, table: usize, columns: u64, from: Source<'_>, order: &mut Vec<(u128, u32)>, made: &mut Made, decode: impl FnOnce(&mut Vec<(u128, u32)>) -> (TableView, view::Made)) -> (SharedView, Option<view::HeadFailure>) {
         let (mirror, kinds, gap) = from;
         let at = made.at();
         made.made_on();
@@ -288,7 +298,7 @@ impl Columns {
             let since = if self.built.is_none() { self.since(from).ok() } else { None };
             made.told.push((table, columns, since));
         }
-        let (view, built) = view::make_of(TableId::ALL[table], mirror, (kinds, columns), gap, |key| keys.contains(&prefix(key)), order);
+        let (view, built) = decode(order);
         made.builds.push((table, started.elapsed().as_nanos() as u64, built.rows, Make::Keyed, at));
         made.untold += built.untold;
         let sampled = if matches!(view, TableView::Complete(_)) && !gap { mirror.sampled() } else { None };
@@ -497,11 +507,12 @@ struct Kept {
     columns: u64,
     gap: bool,
     views: Vec<Set>,
+    exact: Option<Arc<ExactColumns>>,
 }
 
 impl Kept {
     fn new(kinds: Vec<Kind>) -> Self {
-        Self { kinds, columns: 0, gap: false, views: Vec::new() }
+        Self { kinds, columns: 0, gap: false, views: Vec::new(), exact: None }
     }
 
     fn set(&self, columns: u64) -> Option<usize> {
@@ -557,7 +568,14 @@ impl Kept {
             return (not_declared(TableId::ALL[table]), None);
         };
         let mut held = lock(&self.views[at].made);
-        match catch_unwind(AssertUnwindSafe(|| held.keyed_made(table, columns, (mirror, &self.kinds, self.gap || mirror.in_gap()), keys, order, made))) {
+        let from = (mirror, self.kinds.as_slice(), self.gap || mirror.in_gap());
+        match catch_unwind(AssertUnwindSafe(|| {
+            if let (Some(source), Some(hour), false) = (&self.exact, mirror.head(), from.2) {
+                held.keyed_from(table, columns, from, order, made, |order| source.decoded(hour, columns, Some(keys), order))
+            } else {
+                held.keyed_made(table, columns, from, keys, order, made)
+            }
+        })) {
             Ok(result) => result,
             Err(payload) => {
                 let view = held.failed_make(table, &*payload);
@@ -571,7 +589,7 @@ impl Kept {
     }
 
     fn home(&self, columns: u64, mirror: Option<&Mirror>) -> bool {
-        self.set(columns).is_some() && mirror.is_some_and(|mirror| holds_every(mirror, self.columns, self.kinds.len()))
+        self.set(columns).is_some() && mirror.is_some_and(|mirror| self.exact.is_some() || holds_every(mirror, self.columns, self.kinds.len()))
     }
 
     fn view(&self, table: usize, columns: u64, mirror: Option<&Mirror>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> SharedView {
@@ -581,14 +599,27 @@ impl Kept {
     fn view_with_failure(&self, table: usize, columns: u64, mirror: Option<&Mirror>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> (SharedView, Option<view::HeadFailure>) {
         let Some(at) = self.set(columns) else { return (not_declared(TableId::ALL[table]), None) };
         let set = &self.views[at];
-        let Some(mirror) = mirror.filter(|mirror| holds_every(mirror, set.columns, self.kinds.len())) else {
+        let Some(mirror) = mirror.filter(|mirror| self.exact.is_some() || holds_every(mirror, set.columns, self.kinds.len())) else {
             viewer_runtime::view_record::add("map views", "sets_withheld", 1);
             return (not_declared(TableId::ALL[table]), None);
         };
         let mut held = lock(&set.made);
         let view = match &held.built {
             Some((stamp, view)) if *stamp == held.stamp => view.clone(),
-            _ => match catch_unwind(AssertUnwindSafe(|| held.make(table, set.columns, (mirror, &self.kinds, self.gap || mirror.in_gap()), order, made))) {
+            _ => match catch_unwind(AssertUnwindSafe(|| {
+                let from = (mirror, self.kinds.as_slice(), self.gap || mirror.in_gap());
+                if let (Some(source), Some(hour), false) = (&self.exact, mirror.head(), from.2) {
+                    held.make_from(table, set.columns, from, order, made, |held, previous, since, order| {
+                        held.spare = None;
+                        let why = since.err().unwrap_or(if previous.is_some() { Whole::Cost } else { Whole::First });
+                        drop(previous);
+                        let (view, built) = source.decoded(hour, set.columns, None, order);
+                        (view, built, Make::Whole(why))
+                    })
+                } else {
+                    held.make(table, set.columns, from, order, made)
+                }
+            })) {
                 Ok(view) => view,
                 Err(payload) => held.failed_make(table, &*payload),
             },
@@ -755,6 +786,7 @@ struct Shared {
     unwritten: Vec<std::sync::OnceLock<SharedView>>,
     entry: Arc<Entry>,
     script_values: Arc<ScriptValues>,
+    variant_columns: Option<Arc<ExactColumns>>,
     script_values_view: Mutex<Option<((Hour, BranchId, u64), SharedView)>>,
     learned: Mutex<BTreeMap<(&'static str, usize), (Option<Hour>, u64)>>,
     asked: Mutex<Vec<Asked>>,
@@ -784,7 +816,7 @@ impl Shared {
     fn held(&self) -> Vec<(TableId, usize)> {
         let script = SCRIPT_VALUES.index();
         let mut held: Vec<_> = reading(self).iter().enumerate().filter(|(table, _)| *table != script).filter_map(|(table, held)| held.as_ref().map(|held| (TableId::ALL[table], held.bytes()))).collect();
-        let mut bytes = self.script_values.bytes();
+        let mut bytes = self.script_values.columns.bytes();
         let mut seen = BTreeSet::new();
         let mut count = |view: &SharedView| {
             if seen.insert(view.as_ptr()) {
@@ -848,8 +880,18 @@ pub struct Store {
 
 impl Store {
     pub fn new(entry: &Arc<Entry>) -> Self {
+        Self::open(entry, false)
+    }
+
+    pub(super) fn for_map(entry: &Arc<Entry>) -> Self {
+        Self::open(entry, true)
+    }
+
+    fn open(entry: &Arc<Entry>, map: bool) -> Self {
         let written = entry.pages.written_tables(&crate::playhead_host::timeline_runs(entry), TABLE_COUNT);
         let script_values = Arc::new(ScriptValues::new(entry, written[SCRIPT_VALUES.index()].clone()));
+        let variants = TableId::VariantDefinitions;
+        let variant_columns = map.then(|| Arc::new(ExactColumns::new(entry, variants, written[variants.index()].clone())));
         let shared = Shared {
             kept: RwLock::new((0..TABLE_COUNT).map(|_| None).collect()),
             jobs: Mutex::default(),
@@ -865,6 +907,7 @@ impl Store {
             unwritten: (0..TABLE_COUNT).map(|_| std::sync::OnceLock::new()).collect(),
             entry: Arc::clone(entry),
             script_values,
+            variant_columns,
             script_values_view: Mutex::default(),
             learned: Mutex::default(),
             asked: Mutex::default(),
@@ -1245,7 +1288,7 @@ impl Drop for Store {
         }
         writing(&self.shared).iter_mut().for_each(|kept| *kept = None);
         lock(&self.shared.readers).clear();
-        self.shared.script_values.release();
+        self.shared.script_values.columns.release();
     }
 }
 
@@ -1530,7 +1573,7 @@ impl RowsAt<'_> {
         match (self, keys) {
             (Self::Mirror(mirror), Some(keys)) => kept.keyed(table, mirror, keys, order, made),
             (Self::Mirror(mirror), None) => kept.view_with_failure(table, columns, mirror, order, made),
-            (Self::Exact(source, hour, _), keys) => source.snapshot(hour, columns, keys, order),
+            (Self::Exact(source, hour, _), keys) => source.columns.snapshot(hour, columns, keys, order),
         }
     }
 }
@@ -2075,7 +2118,13 @@ fn declare(shared: &Arc<Shared>, id: u64, needs: &[Need], republishes: bool) {
                 continue;
             }
             let Some(kinds) = shared.kinds.get(table) else { continue };
-            let held = kept[table].get_or_insert_with(|| Kept::new(kinds.clone()));
+            let held = kept[table].get_or_insert_with(|| {
+                let mut held = Kept::new(kinds.clone());
+                if table == TableId::VariantDefinitions.index() {
+                    held.exact = shared.variant_columns.clone();
+                }
+                held
+            });
             let columns = sets.iter().fold(0, |columns, &(set, _, _)| columns | set);
             let widened = columns & !held.columns != 0;
             for &(set, told, whole) in sets {

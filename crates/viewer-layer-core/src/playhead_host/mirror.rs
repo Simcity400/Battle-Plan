@@ -1075,3 +1075,16 @@ pub fn rebuild(pages: Arc<dyn Pages>) -> Rebuild {
         Ok(State::new(mirror, bytes))
     })
 }
+
+pub(super) fn rebuild_map(pages: Arc<dyn Pages>) -> Rebuild {
+    const TRAINS: u64 = replay_data::rows::mask::<replay_data::rows::VariantDefinitionRow>(&["equipment_token", "creator_link"]);
+    let rebuild = rebuild(pages);
+    Arc::new(move |lane, columns| {
+        if lane.table() == TableId::VariantDefinitions.index() {
+            let projected: Vec<_> = columns.iter().copied().filter(|&column| column < 64 && TRAINS & (1 << column) != 0).collect();
+            rebuild(lane, &projected)
+        } else {
+            rebuild(lane, columns)
+        }
+    })
+}

@@ -615,6 +615,51 @@ fn script_values_are_read_from_the_requested_hour_without_building_a_mirror() {
 }
 
 #[test]
+fn variant_views_follow_the_recording_without_a_full_map_mirror() {
+    use playhead::pages::{Span, WorldPages};
+    use replay_data::{format::FormatVersion, rows::{CountryRow, VariantDefinitionRow, tables}};
+    use replay_frame::frame::SharedView;
+    use replay_journal::{fixtures, synthetic::{Input, Sample}};
+    use replay_recording::columnar_frames::Recording;
+
+    let variants = TableId::VariantDefinitions;
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"variant views", &[(1, 0, 3)], &[TableId::Countries, variants], |synthetic, _, ordinal| {
+        let countries = [CountryRow { id: 7, tag: b"TST".to_vec(), ..Default::default() }];
+        let rows = [VariantDefinitionRow { id: 42, equipment_token: if ordinal < 2 { 9 } else { 10 }, creator_link: 7, ..Default::default() }];
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.table(variants, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let opened = Arc::new(WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap());
+    let kinds = Arc::new(opened.schema().to_vec());
+    let pages: Arc<dyn Pages> = opened;
+    let timeline = Timeline::whole(&*pages).unwrap();
+    let hour = timeline.first();
+    let entry = open(Units { name: "variant views".into(), pages, timeline, kinds }, quick()).unwrap();
+    let (layer, _) = super::shared_maps_tests::Reads::new(&[TableId::Countries]);
+    let mut side = MapSide::new(Arc::clone(&entry), vec![layer], View::default()).unwrap();
+    side.set_branch(1);
+    let reader = side.views().reader("variant models", &[super::views::Need::every(variants)]);
+    let mut held = None;
+    for (offset, token) in [(0, 9), (0, 9), (2, 10)] {
+        let at = hour + offset;
+        side.anchor(at, false, 0.0, true);
+        side.catch_up(at).unwrap();
+        let frame = reader.frame().unwrap();
+        assert_eq!(frame.hour, at);
+        assert_eq!(frame.complete::<tables::VariantDefinitions>().unwrap()[0].equipment_token, token);
+        let mirror = side.parts().unwrap().0.get(variants).unwrap();
+        let slot = mirror.slot(42).unwrap();
+        assert_eq!(mirror.cell(0, slot).value(), Some(token as u64));
+        assert_eq!(mirror.cell(1, slot).value(), Some(7));
+        assert!(!(2..variants.field_count()).any(|column| mirror.holds(column)));
+        let view = frame.tables[variants.index()].clone();
+        if let Some(before) = held.replace(view.clone()) {
+            assert_eq!(SharedView::ptr_eq(&before, &view), offset == 0);
+        }
+    }
+}
+
+#[test]
 fn a_gap_step_shows_every_table_not_recorded_until_the_next_piece() {
     let (recording, _) = record(2, BLOCK, busy);
     let pages: Arc<dyn Pages> = Arc::clone(&recording) as Arc<dyn Pages>;

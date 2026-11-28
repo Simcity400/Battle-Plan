@@ -170,7 +170,7 @@ fn field<'m>(mirror: &'m Mirror, kind: Kind, resolved: Resolved<'m>, slot: u32, 
     }
 }
 
-fn zero(kind: Kind) -> Field<'static> {
+pub(in crate::playhead_host) fn zero(kind: Kind) -> Field<'static> {
     match kind {
         Kind::Bytes => Field::Bytes(&[]),
         Kind::U32List => Field::U32List(List::Native(&[])),

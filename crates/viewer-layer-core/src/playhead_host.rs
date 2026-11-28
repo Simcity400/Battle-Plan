@@ -856,7 +856,7 @@ impl<P: PlaybackProducts> MapSide<P> {
     pub fn with_products(entry: Arc<Entry>, mut layers: Vec<Box<dyn Layer>>, view: View) -> io::Result<Self> {
         let names: Vec<_> = layers.iter().map(|layer| layer.name()).collect();
         let counter_at = counters_at(&names);
-        let views = views::Store::new(&entry);
+        let views = views::Store::for_map(&entry);
         for layer in &mut layers {
             layer.views(&views)?;
         }
@@ -865,7 +865,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         let declared_layers = declared;
         let for_the_makers = for_the_makers(&entry);
         let declared = merged(&declared_layers, &for_the_makers);
-        let reader = entry.playhead.declare(to_declared(&declared), Some(mirror::rebuild(Arc::clone(&entry.pages))))?;
+        let reader = entry.playhead.declare(to_declared(&declared), Some(mirror::rebuild_map(Arc::clone(&entry.pages))))?;
         let consumer = entry.playhead.consumer(reader);
         let reads_len = reads.len();
         let timed = layers.iter().any(|layer| layer.timed());
