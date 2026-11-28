@@ -11,32 +11,39 @@ import { SERVICE_COLUMNS } from '../division-service-record/definition.ts';
 import { DIVISION_LOG_COLUMNS } from './definition.ts';
 import { divisionLogProjection } from './divisionLogProjection.ts';
 
-test('expanded groups retain their paged children and resolve identities at the supplying hours', () => {
-  const group = { key: 'group:92:92:1', hour: 92, observed: 92, slot: 1, tag: 'ABC', parent: null, event: null, members: 2, open: true };
-  const child = { ...group, key: '17', parent: group.key, members: 0, open: false, event: {
+test('expanded groups retain their paged children and carry place names without another request', () => {
+  const group = { key: 'group:92:92:1', hour: 92, observed: 92, slot: 1, tag: 'ABC', parent: null, event: null, members: 3, open: true };
+  const event = {
     division: '17', kind: 0, status: 'first_observed', exact: false, afterHour: 87, name: null, nameMissing: 'Division name unavailable',
     icon: null, iconMissing: null, template: 2, templateName: 'Engineers', templateMissing: null, province: 12, placeHour: 89,
     killerSlot: null, killerTag: null, killerDivision: null, matchedDeaths: null,
-  } };
+  };
+  const child = { ...group, key: '17', parent: group.key, members: 0, open: false, event, placeName: 'Province at the supplying hour' };
+  const missing = { ...group, key: '18', parent: group.key, members: 0, open: false, event: { ...event, division: '18', kind: 1, status: 'division_destroyed', name: '', nameMissing: null }, placeMissing: 'Part of the place history is unavailable' };
+  const blank = { ...missing, key: '19', placeName: '' };
   const head: DivisionLogTailReply = {
-    branchId: '1', available: true, unavailable: null, total: '3', offset: '0', counts: [{ key: 'created', total: '2' }], censusIncomplete: false,
+    branchId: '1', available: true, unavailable: null, total: '4', offset: '0', counts: [{ key: 'created', total: '2' }], censusIncomplete: false,
     templates: [{ id: 2, firstHour: 91, name: 'Engineers' }, { id: 3, firstHour: 102, name: 'Reserves' }],
-    rows: [group, child, { ...child, key: '18', event: { ...child.event, division: '18', kind: 1, status: 'division_destroyed', name: '', nameMissing: null } }], missing: [], nextChange: 102, warnings: [],
+    rows: [group, child, missing, blank], missing: [], nextChange: 102, warnings: [],
   };
   const source = buildRowSourceFromHead('branch', head, undefined, 100)!;
+  let placeReads = 0;
   const view = createBoundedReadView({ hour: 100, rows: new Map([['main', source]]), identity: {
-    resolve: (kind, key, atHour) => ({ kind, key, atHour, name: { status: 'ready', value: `${kind} ${key} at ${atHour}` },
-      holder: { status: 'absent', reason: 'fixture' }, validInterval: [atHour, atHour], nextChangeAt: Infinity }),
+    resolve: (kind, key, atHour) => {
+      if (kind === 'province') placeReads++;
+      return { kind, key, atHour, name: { status: 'ready', value: `${kind} ${key} at ${atHour}` },
+        holder: { status: 'absent', reason: 'fixture' }, validInterval: [atHour, atHour], nextChangeAt: Infinity };
+    },
   } });
   const model = divisionLogProjection.project(view, { ranged: false, events: 'both', prefix: 'branch-', selected: [] });
   assert.equal(model.endNote, 'Start of the recording');
   assert.equal(divisionLogProjection.project(view, { ranged: true, events: 'both', prefix: 'branch-', selected: [] }).endNote, undefined);
   const flat = resolveTableRows(model, tableDefaults(DIVISION_LOG_COLUMNS, LOG_TABLE_BASE));
   assert.deepEqual(flat.flatMap(row => row.kind === 'data' ? [[row.key, row.level, row.parent, row.isOpen]] : []),
-    [[group.key, 1, null, true], ['17', 2, group.key, false], ['18', 2, group.key, false]]);
+    [[group.key, 1, null, true], ['17', 2, group.key, false], ['18', 2, group.key, false], ['19', 2, group.key, false]]);
   assert.deepEqual(model.kindFilter?.items.map(item => item.label), ['Engineers']);
   assert.equal(model.rows[0]!.cells.item!.value.kind, 'known');
-  assert.deepEqual(model.rows[1]!.cells.place!.value, { kind: 'known', value: 'province 12 at 89' });
+  assert.deepEqual(model.rows[1]!.cells.place!.value, { kind: 'known', value: 'Province at the supplying hour' });
   assert.deepEqual(model.rows[1]!.cells.item!.value, { kind: 'notRecorded', reason: 'Division name unavailable' });
   const extra = model.rows[1]!.tooltipExtra;
   const tooltip = typeof extra === 'function' ? extra() : extra;
@@ -46,6 +53,9 @@ test('expanded groups retain their paged children and resolve identities at the 
   assert.deepEqual(lost.cells.item!.value, { kind: 'notRecorded', reason: 'Division name not recorded for this event' });
   const lostExtra = typeof lost.tooltipExtra === 'function' ? lost.tooltipExtra() : lost.tooltipExtra;
   assert.equal(lost.cells.place!.tooltipLabel, 'Last seen at', 'a removal the recording only bounds names its place as where the division was last seen');
+  assert.deepEqual(lost.cells.place!.value, { kind: 'notRecorded', reason: 'Part of the place history is unavailable' });
+  assert.deepEqual(model.rows[3]!.cells.place!.value, { kind: 'notRecorded', reason: 'Name not recorded' });
+  assert.equal(placeReads, 0);
   assert.equal(lostExtra?.some(line => line.label === 'Last seen at' || line.label === 'Place'), false, 'and states it once');
 });
 

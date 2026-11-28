@@ -2249,11 +2249,11 @@ neededRaw: string | null,
 heldRaw: string | null, typesShort: number | null, unknownDivisions: number | null, };
 export type DivisionEquipmentView = "types" | "templates";
 export type DivisionEquipmentParamsAtHour = DivisionEquipmentParams & { hour: number };
-export type DivisionLogTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, offset?: string, events?: DivisionEvents, templates?: Array<number>, expanded?: Array<string>, totals?: boolean, limit: number, };
+export type DivisionLogTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, offset?: string, events?: DivisionEvents, templates?: Array<number>, expanded?: Array<string>, totals?: boolean, placeNames?: boolean, limit: number, };
 export type DivisionEvents = "both" | "created" | "lost";
 export type DivisionTemplateChip = { id: number, name: string | null, firstHour: number, };
 export type DivisionEventDetail = { division: string, kind: number, status: string, exact: boolean, afterHour: number | null, name: string | null, nameMissing: string | null, icon: string | null, iconMissing: string | null, template: number | null, templateName: string | null, templateMissing: string | null, province: number | null, placeHour: number | null, killerSlot: number | null, killerTag: string | null, killerDivision: string | null, matchedDeaths: number | null, };
-export type DivisionLogRow = { key: string, hour: number, observed: number, slot: number | null, tag: string | null, event: DivisionEventDetail | null, parent: string | null, members: number, open: boolean, };
+export type DivisionLogRow = { key: string, hour: number, observed: number, slot: number | null, tag: string | null, event: DivisionEventDetail | null, parent: string | null, members: number, open: boolean, placeName?: string, placeMissing?: string, };
 export type DivisionLogTailReply = { branchId: string, available: boolean, unavailable: string | null, total: string, offset: string, counts: Array<OccurrenceCount>, censusIncomplete: boolean, templates: Array<DivisionTemplateChip>, rows: Array<DivisionLogRow>, missing: Array<OccurrenceGap>, nextChange: number | null, warnings: Array<string>, };
 export type ServiceChoicesParams = { branchId: string, hour: number, countries?: Array<CountryRef>, group?: GroupSelection, };
 export type ServiceChoicesReply = { partial: string | null, choices: Array<ServiceDivision>, warnings: Array<string>, };
@@ -6683,7 +6683,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "diplomatic-pacts": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "diplomatic-relations": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "order": "leaf", "top": "leaf" },
   "division-equipment": { "branchId": "leaf", "countFor": "leaf", "country": "any", "hour": "leaf", "view": "leaf" },
-  "division-log-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "events": "leaf", "expanded": "node", "expanded[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "templates": "node", "templates[]": "leaf", "to": "leaf", "totals": "leaf" },
+  "division-log-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "events": "leaf", "expanded": "node", "expanded[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "placeNames": "leaf", "templates": "node", "templates[]": "leaf", "to": "leaf", "totals": "leaf" },
   "division-service-record-choices": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf" },
   "division-service-record-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "division": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "show": "leaf" },
   "division-templates": { "branchId": "leaf", "countFor": "leaf", "country": "any", "hour": "leaf" },

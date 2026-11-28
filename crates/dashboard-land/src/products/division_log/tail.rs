@@ -21,6 +21,7 @@ use dashboard_query::{
     series::{MissingSpan, ranked::GroupSelection},
 };
 use dashboard_text::metadata::check_cancel;
+use dashboard_world::products::{place_name_runs::{PlacePoint, names_at}, place_names::Name};
 use replay_data::rows::{DivisionEventRow, TableId};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -77,6 +78,9 @@ pub struct DivisionLogTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub totals: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub place_names: Option<bool>,
     pub limit: u32,
 }
 
@@ -126,6 +130,12 @@ pub struct DivisionLogRow {
     pub parent: Option<String>,
     pub members: usize,
     pub open: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub place_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub place_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -519,6 +529,7 @@ struct Prepared {
     tail: Arc<Tail>,
     index: Arc<Index<Line>>,
     selection: Option<Selection>,
+    places: Mutex<BTreeMap<PlacePoint, Name>>,
 }
 
 fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &DivisionLogTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
@@ -549,7 +560,7 @@ fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &Divi
     let index = tail.index(filters, cancelled)?;
     let selection =
         dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
-    Ok(Prepared { tail, index, selection })
+    Ok(Prepared { tail, index, selection, places: Mutex::default() })
 }
 
 fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams, hour: i32) -> io::Result<DivisionLogTailReply> {
@@ -612,6 +623,8 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams,
                 parent,
                 members,
                 open,
+                place_name: None,
+                place_missing: None,
             }
         })
         .collect();
@@ -635,6 +648,37 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams,
         next_change,
         warnings,
     };
+    Ok(reply)
+}
+
+fn checked_reply(
+    source: &Source, query: &Query<'_>, load: &LoadContext, prepared: &Prepared, params: &DivisionLogTailParams, hour: i32, cancelled: &AtomicBool,
+) -> io::Result<DivisionLogTailReply> {
+    let mut reply = reply(prepared, &query.holders, params, hour)?;
+    if params.place_names == Some(true) {
+        let point = |event: &DivisionEventDetail| {
+            event.province.zip(event.place_hour).filter(|&(_, at)| at <= hour).map(|(id, at)| PlacePoint::Province(id, at))
+        };
+        let points: BTreeSet<_> = reply.rows.iter().filter_map(|row| point(row.event.as_ref()?)).collect();
+        let mut held = prepared.places.lock().unwrap_or_else(PoisonError::into_inner);
+        held.retain(|point, _| points.contains(point));
+        let needed = points.into_iter().filter(|point| !held.contains_key(point)).collect();
+        held.extend(names_at(source, query, load, &needed, cancelled)?);
+        for row in &mut reply.rows {
+            let Some(event) = &row.event else { continue };
+            if let Some(name) = point(event).and_then(|point| held.get(&point)) {
+                row.place_name.clone_from(&name.name);
+                row.place_missing.clone_from(&name.missing);
+            } else if let Some((_, at)) = event.province.zip(event.place_hour).filter(|&(_, at)| at > hour) {
+                row.place_missing = Some("Location is only recorded after this hour".into());
+                reply.next_change = reply.next_change.into_iter().chain([at]).min();
+            }
+        }
+        let text_bytes = held.values().map(|name| {
+            name.name.as_ref().map_or(0, String::capacity) + name.missing.as_ref().map_or(0, String::capacity)
+        }).sum::<usize>();
+        if text_bytes > dashboard_base::products::MAX_PRODUCT_REPLY_BYTES { held.clear(); }
+    }
     dashboard_base::products::check_reply_budget(&reply)?;
     Ok(reply)
 }
@@ -647,7 +691,7 @@ impl Product for DivisionLogTail {
     const INTERACTIVE: bool = true;
     type Params = DivisionLogTailParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
-        branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, offset, events, templates, "templates[]", expanded, "expanded[]", totals, limit
+        branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, offset, events, templates, "templates[]", expanded, "expanded[]", totals, placeNames, limit
     ];
     type Reply = DivisionLogTailReply;
 
@@ -674,11 +718,11 @@ impl Product for DivisionLogTail {
         let query = dashboard_base::queries::query(source, branch)?;
         let hour = occurrences::cutoff(&query, params.hour)?;
         let prepared = prepare(source, &query, load, params, cancelled)?;
-        reply(&prepared, &query.holders, params, hour)
+        checked_reply(source, &query, load, &prepared, params, hour, cancelled)
     }
 }
 
-pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
     let mut request = asked.clone();
     request.as_object_mut().ok_or("Invalid division-log-tail panel")?.remove("panel");
     let params: DivisionLogTailParams =
@@ -688,12 +732,24 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, DivisionLogTail::CONTENT_DEPENDENT, || prepare(source, &query, load, &params, &AtomicBool::new(false)));
     let prepared = prepared.map_err(|error| error.to_string())?;
-    let (first, last, holders) = (query.timeline.first, query.timeline.last, query.holders);
+    let (timeline, holders) = (query.timeline, query.holders);
+    let (first, last) = (timeline.first, timeline.last);
+    let load = LoadContext { content: load.content.clone() };
+    let opened = Arc::downgrade(source);
     Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         check_cancel(cancelled)?;
         if hour < first {
             return Err(dashboard_core::invalid("The hour asked is before the branch"));
         }
-        reply(&prepared, &holders, &params, hour.min(last))
+        let hour = hour.min(last);
+        if params.place_names == Some(true) {
+            let source = opened.upgrade().ok_or_else(|| io::Error::other("Recording closed"))?;
+            let query = Query { replay: source.replay_ref(), timeline: Arc::clone(&timeline), holders: Arc::clone(&holders) };
+            checked_reply(&source, &query, &load, &prepared, &params, hour, cancelled)
+        } else {
+            let reply = reply(&prepared, &holders, &params, hour)?;
+            dashboard_base::products::check_reply_budget(&reply)?;
+            Ok(reply)
+        }
     }))
 }
