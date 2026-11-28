@@ -130,6 +130,7 @@ export interface PaintInput extends Scene {
   inspect: string | null;
   now: number;
   restorePlayback?: boolean;
+  onlyPlayback?: boolean;
   workerCanvas?: WorkerCanvasInfo;
   sharedSurface?: { readonly lane: SharedLaneCanvas; readonly slot: SharedSurfaceSlot; readonly dirty: boolean };
 }
@@ -144,7 +145,9 @@ export type PlaybackPaint = (
   next: PlaybackPicture | null,
   fraction: number,
   target: PaintInput['sharedSurface'],
-) => boolean;
+) => boolean | 'cut';
+
+type PlaybackWork = { readonly widget: number; readonly hour: number | null };
 
 export interface Painted {
   surfaces: readonly ({ source: Bitmapped; content: string } | null)[];
@@ -158,6 +161,7 @@ export interface Painted {
   nextChangeAt?: number;
   waiting?: true;
   playback?: PlaybackPaint;
+  playbackDeclined?: true;
   viewport?: InstalledViewport;
   hit?: (point: readonly [number, number]) => string | null;
 }
@@ -228,6 +232,7 @@ interface Widget {
   validWindow: Window | null;
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; deferrals: number; halted: number | null; parked: Sent | null;
   withdrawn: number | null;
+  playbackWaiting?: boolean;
   playback?: { paint: PlaybackPaint; binding: Binding; supply: number; seek: number; canvas: OffscreenCanvas };
 }
 
@@ -460,6 +465,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly playbackWidgets = new Set<number>();
   private readonly previewedWidgets = new Set<number>();
   private lastPlayingFrame: FrameRequest | null = null;
+  private readonly playbackWork = new Map<number, number | null>();
   private readonly subWidgets = new Map<number, Set<number>>();
   private readonly routeWidgets = new Map<number, Set<number>>();
   private readonly dirtyWidgets = new Set<number>();
@@ -682,6 +688,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.failedWidgets.add(widget.id);
     this.playbackWidgets.delete(widget.id);
     this.previewedWidgets.delete(widget.id);
+    this.playbackWork.delete(widget.id);
     widget.halted = widget.binding.generation;
     widget.motion = false;
     widget.inflight = null;
@@ -822,6 +829,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const pendingWithdrawn = was ? this.pendingWithdrawn.get(widget) : undefined;
     if (was) this.unindexWidget(was);
     this.playbackWidgets.delete(widget);
+    this.playbackWork.delete(widget);
     const switched = !!was && was.view !== view;
     if (switched) this.host.views(was.view).unmount?.(widget, was.state);
     const early = was ? undefined : this.earlySupply.get(widget);
@@ -845,6 +853,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   unmount(widget: number) {
     this.playbackWidgets.delete(widget);
+    this.playbackWork.delete(widget);
     this.previewedWidgets.delete(widget);
     this.strips?.delete(widget);
     this.scrubScenes?.widgets.delete(widget);
@@ -1174,6 +1183,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (!held) return;
     const ownerChanged = binding.owner !== undefined && held.binding.owner !== undefined && binding.owner !== held.binding.owner;
     const prev = held.binding;
+    this.playbackWork.delete(widget);
     held.binding = binding;
     if (ownerChanged) held.supplied = { stamp: undefined, statics: null, identity: held.supplied.identity };
     if (model !== undefined) held.own = this.store.resolve(model);
@@ -1221,7 +1231,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
     this.dirtyWidgets.add(widget);
     this.syncWindowTracking(held);
-    this.wakeBars(held);
+    this.queuePlaybackWork(held);
     this.wake();
   }
 
@@ -1285,15 +1295,22 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (change.statics === undefined && change.dated !== undefined && change.stamp !== held.supplied.stamp) return;
     if (change.statics !== undefined) held.supplied = { ...held.supplied, stamp: change.stamp, statics: change.statics };
     if (change.identity !== undefined) held.supplied = { ...held.supplied, identity: change.identity };
-    if (change.dated !== undefined) held.binding = change.dated ? { ...withoutDated(held.binding), dated: change.dated } : withoutDated(held.binding);
+    if (change.dated !== undefined) {
+      const previous = held.binding;
+      held.binding = change.dated ? { ...withoutDated(previous), dated: change.dated } : withoutDated(previous);
+      if (change.statics === undefined && change.identity === undefined && held.playback?.binding === previous) {
+        held.playback.binding = held.binding;
+      }
+    }
     this.bounded(held);
     if (change.statics !== undefined || change.identity !== undefined) {
+      this.playbackWork.delete(held.id);
       held.model = this.compose(held);
       held.supply++;
     }
     this.dirtyWidgets.add(held.id);
     this.syncWindowTracking(held);
-    this.wakeBars(held);
+    if (change.statics !== undefined || change.identity !== undefined || held.playbackWaiting) this.queuePlaybackWork(held);
     this.wake();
   }
 
@@ -1316,7 +1333,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   touch(widget: number) {
     const held = this.widgets.get(widget);
     if (!held) return;
-    this.wakeBars(held);
+    this.queuePlaybackWork(held);
     held.motion = true;
     this.motionWidgets.add(widget);
     this.dirtyWidgets.add(widget);
@@ -2020,6 +2037,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   setClock(clock: MotionClock) {
+    if (!clock.playing || clock.seek !== this.playbackClock?.seek) this.playbackWork.clear();
     this.playbackClock = clock;
     this.armPlayback();
   }
@@ -2077,7 +2095,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       try {
         const current = this.playbackPicture(widget, hour, true);
         next = current?.hour === hour ? this.playbackPicture(widget, hour + 1) : null;
-        if (held.paint(current, next, pos - hour, target.shared)) {
+        const painted = held.paint(current, next, pos - hour, target.shared);
+        if (painted === 'cut' && current) {
+          this.queuePlaybackWork(widget, current.hour);
+          this.schedule();
+        } else if (painted === true) {
           this.previewedWidgets.add(id);
           changed++;
         }
@@ -2112,6 +2134,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private rememberPlayback(widget: Widget, painted: Painted, seek: number) {
+    widget.playbackWaiting = painted.waiting && widget.view === 'bars' && this.isDirectTarget(widget.id);
     if (painted.repainted) this.previewedWidgets.delete(widget.id);
     const target = painted.playback && this.playbackTarget(widget.id);
     if (painted.playback && target) {
@@ -2128,11 +2151,18 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
   }
 
-  private wakeBars(widget: Widget) {
-    if (!this.request && !this.pendingExact && this.lastPlayingFrame && this.playbackClock?.playing
-      && this.lastPlayingFrame.seek === this.playbackClock.seek && widget.view === 'bars' && this.isDirectTarget(widget.id)) {
-      this.request = this.lastPlayingFrame;
-    }
+  private queuePlaybackWork(widget: Widget, hour: number | null = null) {
+    const frame = this.lastPlayingFrame;
+    if (!frame || !this.playbackClock?.playing || frame.seek !== this.playbackClock.seek
+      || (!widget.playback && !widget.playbackWaiting) || !this.isDirectTarget(widget.id)) return;
+    const queuedHour = this.playbackWork.get(widget.id);
+    this.playbackWork.set(widget.id, hour ?? queuedHour ?? null);
+  }
+
+  private playbackRequest() {
+    const frame = this.lastPlayingFrame;
+    const clock = this.playbackClock;
+    return this.playbackWork.size && clock?.playing && frame?.seek === clock.seek ? frame : null;
   }
 
   private wake() {
@@ -2142,8 +2172,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private schedule() {
-    if (!this.request) return;
-    if (this.request.exact && this.inHandover) {
+    if (!this.request && !this.playbackRequest()) return;
+    if (this.request?.exact && this.inHandover) {
       this.inHandover = false;
       this.handoverToken++;
       this.working = false;
@@ -2166,26 +2196,41 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private finishRun() {
     this.working = false;
-    if (this.request) this.schedule();
+    if (this.request || this.playbackRequest()) this.schedule();
     else this.armMotion();
   }
 
   private async run() {
-    const request = this.pendingRequest();
+    let request = this.pendingRequest();
     this.pendingExact = null;
     if (request === this.request) this.request = null;
+    let local: PlaybackWork | undefined;
+    const playing = !request && this.playbackRequest();
+    if (playing) {
+      const item = this.playbackWork.entries().next().value;
+      if (item) {
+        const [id, hour] = item;
+        this.playbackWork.delete(id);
+        const widget = this.widgets.get(id);
+        if (widget && this.isDirectTarget(id)) {
+          local = { widget: id, hour };
+          const now = hour === null ? playing.now : hour - widget.binding.offset;
+          request = { ...playing, now, target: now, serial: 0 };
+        }
+      }
+    }
     const ackMs = this.ackMs;
     this.ackMs = 0;
     const began = this.time() - ackMs;
     this.serving = true;
-    try { if (request) await this.serve(request, began); }
+    try { if (request) await this.serve(request, began, local); }
     catch (error) { this.host.fail(error instanceof Error ? error.message : String(error)); }
     finally {
       this.serving = false;
       this.flushAcks();
       const deferredExact = this.deferredExact;
       this.deferredExact = false;
-      const next = this.pendingRequest();
+      const next = this.pendingRequest() ?? this.playbackRequest();
       const overBudget = this.time() - began >= (this.host.budget ?? 10);
       if (this.host.schedule && (!next?.exact || deferredExact) && (next || overBudget)) {
         if (!next) this.armMotion();
@@ -2325,33 +2370,42 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const wid of this.dirtyWorkerCanvases) if (!sharedReady || !shared.slots.get(wid)?.visible) dirty.add(wid);
     for (const wid of this.dirtyWidgets) if (this.widgets.get(wid)?.forceFull && this.isDirectTarget(wid)) dirty.add(wid);
     for (const wid of dirty) {
+      if (request.speed === 0 && this.previewedWidgets.has(wid)) continue;
       const widget = this.widgets.get(wid);
-      if (!widget) continue;
-      const wc = this.activeWorkerCanvas(wid);
-      const slot = sharedReady ? shared.slots.get(wid) : undefined;
-      const sharedArg = sharedReady && slot?.visible ? { lane: shared, slot, dirty: true } : undefined;
-      if (!sharedArg && !wc) continue;
-      const halted = widget.halted === widget.binding.generation || this.failedWidgets.has(wid);
-      const kept = halted ? null : this.keptPicture(widget);
-      if (!kept) {
-        this.clearDirectSlot(sharedArg ? shared : null, sharedArg?.slot, sharedArg ? undefined : wc);
-        continue;
-      }
-      try {
-        this.host.views(widget.view).paint({
-          widget: wid, subs: kept.subsSnapshot, pictures: kept.pictures, model: kept.model,
-          ...(kept.owner !== undefined ? { owner: kept.owner } : {}),
-          hour: kept.lo, seek: request.seek, speed: request.speed, binding: kept.bindingSnapshot, inspect: kept.inspect, now,
-          ...(wc && !sharedArg ? { workerCanvas: { ...wc, dirty: true } } : {}),
-          ...(sharedArg ? { sharedSurface: sharedArg } : {}),
-        }, widget.state, this.content);
-        if (sharedArg && shared) shared.dirtySlots.delete(wid);
-        if (wc && !sharedArg) this.dirtyWorkerCanvases.delete(wid);
-        widget.forceFull = false;
-      } catch {
-        this.stats.restoreFailures++;
-      }
+      if (widget) this.paintKeptDirect(widget, request, now);
     }
+  }
+
+  private paintKeptDirect(widget: Widget, request: FrameRequest, now: number) {
+    const wid = widget.id;
+    const worker = this.activeWorkerCanvas(wid);
+    const shared = this.playbackTarget(wid)?.shared;
+    if (!shared && !worker) return;
+    const halted = widget.halted === widget.binding.generation || this.failedWidgets.has(wid);
+    const kept = halted ? null : this.keptPicture(widget);
+    if (!kept) {
+      this.clearDirectSlot(shared?.lane ?? null, shared?.slot, shared ? undefined : worker);
+      return;
+    }
+    try {
+      this.host.views(widget.view).paint({
+        widget: wid, subs: kept.subsSnapshot, pictures: kept.pictures, model: kept.model,
+        ...(kept.owner !== undefined ? { owner: kept.owner } : {}),
+        hour: kept.lo, seek: request.seek, speed: request.speed, binding: kept.bindingSnapshot, inspect: kept.inspect, now,
+        ...(worker && !shared ? { workerCanvas: { ...worker, dirty: true } } : {}),
+        ...(shared ? { sharedSurface: { ...shared, dirty: true } } : {}),
+      }, widget.state, this.content);
+      if (shared) shared.lane.dirtySlots.delete(wid);
+      if (worker && !shared) this.dirtyWorkerCanvases.delete(wid);
+      widget.forceFull = false;
+    } catch {
+      this.stats.restoreFailures++;
+    }
+  }
+
+  private settleKept(widget: Widget, request: FrameRequest, now: number) {
+    this.previewedWidgets.delete(widget.id);
+    this.paintKeptDirect(widget, request, now);
   }
 
   private willPageRefuseDirect(widget: Widget, selected: Selected, target: number, request: FrameRequest): boolean {
@@ -2485,29 +2539,16 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return false;
   }
 
-  private async serve(request: FrameRequest, began = this.time()) {
-    this.requests++;
-    this.stats.frames++;
-    if (this.seekSuperseded(request.seek)) {
-      if (request.installed.length || request.refused.length) this.acknowledge(request.installed, request.refused);
-      for (const id of this.facts.drain()) this.gone.add(id);
-      const bytes = this.freed + this.releasedFacts();
-      this.freed = 0;
-      if (bytes) this.host.release(bytes);
-      this.host.stretch?.(this.time() - began);
-      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began, cancelled: true });
-      return;
-    }
+  private frameCandidates(request: FrameRequest, began: number, inspect: ReadonlyMap<number, string>) {
+    const candidates = new Set<number>();
     this.lastTarget = request.target;
     this.lastNow = request.now;
     this.acknowledge(request.installed, request.refused);
     this.restoreDirtyDirectSlots(request, began);
-    const inspect = new Map(request.inspect);
-    const candidates = new Set<number>();
     for (const wid of this.dirtyWidgets) candidates.add(wid);
     this.dirtyWidgets.clear();
     for (const wid of this.motionWidgets) candidates.add(wid);
-    for (const wid of this.previewedWidgets) {
+    if (request.speed > 0) for (const wid of this.previewedWidgets) {
       const widget = this.widgets.get(wid);
       if (widget && this.restorePlayback(widget, request)) candidates.add(wid);
     }
@@ -2559,13 +2600,35 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.windowSafeHi = hi;
       this.windowSafeDirty = false;
     }
-    const due: { widget: Widget; selected: Selected; motion: boolean; target: number }[] = [];
-    for (const wid of candidates) {
+    return candidates;
+  }
+
+  private async serve(request: FrameRequest, began = this.time(), local?: PlaybackWork) {
+    if (!local) {
+      this.requests++;
+      this.stats.frames++;
+    }
+    if (this.seekSuperseded(request.seek)) {
+      if (local) return;
+      if (request.installed.length || request.refused.length) this.acknowledge(request.installed, request.refused);
+      for (const id of this.facts.drain()) this.gone.add(id);
+      const bytes = this.freed + this.releasedFacts();
+      this.freed = 0;
+      if (bytes) this.host.release(bytes);
+      this.host.stretch?.(this.time() - began);
+      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began, cancelled: true });
+      return;
+    }
+    const inspect = new Map(request.inspect);
+    const candidates = local ? [local.widget] : this.frameCandidates(request, began, inspect);
+    const nextCandidate = (wid: number) => {
       const widget = this.widgets.get(wid);
-      if (!widget || widget.halted === widget.binding.generation || this.failedWidgets.has(wid)) continue;
+      if (!widget || widget.halted === widget.binding.generation || this.failedWidgets.has(wid)) return null;
       this.stats.visited++;
       if (!request.exact && widget.parked) { widget.parked = null; this.parkedWidgets.delete(wid); }
       const key = inspect.get(widget.id) ?? null, target = this.requestHourFor(widget, request);
+      const queued = this.playbackWork.get(wid);
+      const refresh = local !== undefined || (queued !== undefined && (queued === null || target >= queued));
       const route = this.routeOf(widget);
       const selected = this.select(widget, target);
       if (!selected) {
@@ -2583,22 +2646,29 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         this.syncWindowTracking(widget);
         widget.inspect = key;
         if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
-        continue;
+        return null;
       }
       widget.validWindow = selected.window;
       this.syncWindowTracking(widget);
       const shown = this.matches(widget.installed, selected, target, widget.binding.generation, widget.supply, key, route, request.seek);
       const slotDirty = this.isDirectSlotDirty(wid) || this.restorePlayback(widget, request);
-      if (!this.restorePlayback(widget, request) && this.matches(widget.parked, selected, target, widget.binding.generation, widget.supply, key, route, request.seek)) continue;
+      if (!refresh && !this.restorePlayback(widget, request) && this.matches(widget.parked, selected, target, widget.binding.generation, widget.supply, key, route, request.seek)) return null;
       const pending = widget.inflight && this.pageRequests - widget.inflight.request <= STALE && this.matches(widget.inflight, selected, target, widget.binding.generation, widget.supply, key, route, request.seek);
-      if ((pending || (shown && !widget.motion)) && !widget.forceFull && !slotDirty) {
+      if (!refresh && (pending || (shown && !widget.motion)) && !widget.forceFull && !slotDirty) {
         widget.inspect = key;
         if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
-        continue;
+        return null;
       }
-      due.push({ widget, selected, motion: shown && !widget.forceFull && !slotDirty, target });
       widget.inspect = key;
       if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
+      return { widget, selected, motion: shown && !widget.forceFull && !slotDirty, target, refresh };
+    };
+    const settling = !local && request.speed === 0 && this.previewedWidgets.size ? this.previewedWidgets.values() : null;
+    const due: NonNullable<ReturnType<typeof nextCandidate>>[] = [];
+    for (const wid of candidates) {
+      if (settling && this.previewedWidgets.has(wid)) continue;
+      const candidate = nextCandidate(wid);
+      if (candidate) due.push(candidate);
     }
     const starved = (w: Widget) => w.deferrals >= 3 ? 0 : 1;
     due.sort((a, b) => {
@@ -2615,10 +2685,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     let tried = 0;
     let deferred = false;
     try {
-      for (let i = 0; i < due.length; i++) {
-        const { widget, selected, motion, target } = due[i]!;
+      for (let i = 0; i < due.length || settling; i++) {
+        let candidate: ReturnType<typeof nextCandidate> | undefined = due[i];
         const elapsed = this.time() - began;
-        if (tried > 0 && elapsed + widget.cost > budget) {
+        if (candidate && tried > 0 && elapsed + candidate.widget.cost > budget) {
+          const { widget } = candidate;
           deferred = true;
           widget.deferrals++;
           this.dirtyWidgets.add(widget.id);
@@ -2632,13 +2703,29 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           continue;
         }
         tried++;
+        if (!candidate) {
+          if (this.previewedWidgets.size && tried > 1 && elapsed >= budget) {
+            deferred = true;
+            break;
+          }
+          const item = settling!.next();
+          if (item.done) break;
+          candidate = nextCandidate(item.value);
+          if (!candidate) {
+            const widget = this.widgets.get(item.value);
+            if (widget) this.settleKept(widget, request, this.time());
+            else this.previewedWidgets.delete(item.value);
+            continue;
+          }
+        }
+        const { widget, selected, motion, target, refresh } = candidate;
         widget.deferrals = 0;
         const start = this.time();
         widget.served = this.requests;
         const initialOpen = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
         const restorePlayback = this.restorePlayback(widget, request);
         const slotDirty = this.isDirectSlotDirty(widget.id) || restorePlayback;
-        if (!motion && !widget.motion && !widget.forceFull && !slotDirty && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.supply, widget.inspect, request.seek)) {
+        if (!refresh && !motion && !widget.motion && !widget.forceFull && !slotDirty && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.supply, widget.inspect, request.seek)) {
           const redated = this.redateEntry(widget, widget.installed, selected, request.seek, initialOpen);
           entries.push(redated);
           made.push({ widget, selected });
@@ -2646,7 +2733,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           continue;
         }
         const view = this.host.views(widget.view);
-        if (this.isDirectTarget(widget.id) && this.willPageRefuseDirect(widget, selected, target, request)) continue;
+        if (this.isDirectTarget(widget.id) && this.willPageRefuseDirect(widget, selected, target, request)) {
+          if (restorePlayback) this.settleKept(widget, request, start);
+          continue;
+        }
+        if (refresh && !local) this.playbackWork.delete(widget.id);
         let activeSelected = selected;
         let painted: Painted = { surfaces: [], fields: {}, motion: false };
         let mode: Entry['mode'] = 'picture', reason: string | undefined, failureOrigin: FailureOrigin | undefined;
@@ -2670,7 +2761,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
               hour: activeSelected.window[0], seek: request.seek, speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start,
               ...(wc && !sharedArg ? { workerCanvas: this.dirtyWorkerCanvases.has(widget.id) ? { ...wc, dirty: true } : wc } : {}),
               ...(sharedArg ? { sharedSurface: sharedArg } : {}),
-              ...(restorePlayback ? { restorePlayback } : {}) }, widget.state, this.content);
+              ...(restorePlayback ? { restorePlayback } : {}),
+              ...(local?.hour === null ? { onlyPlayback: true } : {}) }, widget.state, this.content);
+            if (painted.playbackDeclined) {
+              unpresentedDirect.delete(widget.id);
+              break;
+            }
             if (sharedArg && shared) shared.dirtySlots.delete(widget.id);
             if (wc && !sharedArg) this.dirtyWorkerCanvases.delete(widget.id);
             mode = painted.mode ?? 'picture'; reason = painted.reason; failureOrigin = undefined;
@@ -2705,6 +2801,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           break;
         }
         if (failedLocally) continue;
+        if (painted.playbackDeclined) {
+          delete widget.playback;
+          widget.playbackWaiting = false;
+          this.playbackWidgets.delete(widget.id);
+          continue;
+        }
+        if (restorePlayback && (mode !== 'picture' || painted.waiting)) this.settleKept(widget, request, start);
         this.rememberPlayback(widget, mode === 'picture' && !painted.waiting ? painted : { ...painted, playback: undefined }, request.seek);
         if (painted.waiting) {
           widget.validWindow = null;
@@ -2727,6 +2830,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         const open = mode === 'failed' ? undefined : this.isOpenFollowed(widget, activeSelected) ? 'followed' : this.isOpenPanel(widget, activeSelected) ? 'panel' : undefined;
         const parts: (B | typeof SAME | null)[] = [];
         const emitted = mode === 'picture' ? painted : { ...painted, surfaces: [] };
+        if (refresh && widget.inflight) widget.forceFull = true;
         const entry = this.entry(widget, activeSelected, emitted, mode, reason, parts, request.seek, paintMs, open, failureOrigin);
         if (mode === 'picture') {
           painted.surfaces.forEach((surface, k) => {
@@ -2743,14 +2847,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const resets: [number, number][] = [];
       const toldMoved: [number, number | undefined][] = [];
       let moved = false;
-      for (const [route, native] of this.natives) {
+      if (!local) for (const [route, native] of this.natives) {
         const count = this.resets.get(native) ?? 0;
         const prev = this.told.get(route);
         if (prev !== count) { moved = true; toldMoved.push([route, prev]); this.told.set(route, count); }
         resets.push([route, count]);
       }
       const confirmed: [number, 'followed' | 'panel', number, number, number][] = [];
-      for (const [route, hour] of this.routeConfirmedFollowed) {
+      if (!local) for (const [route, hour] of this.routeConfirmedFollowed) {
         if (this.toldConfirmedFollowed.get(route) !== hour) {
           this.toldConfirmedFollowed.set(route, hour);
           const native = this.natives.get(route);
@@ -2760,7 +2864,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           moved = true;
         }
       }
-      for (const [route, hour] of this.routeConfirmedPanel) {
+      if (!local) for (const [route, hour] of this.routeConfirmedPanel) {
         if (this.toldConfirmedPanel.get(route) !== hour) {
           this.toldConfirmedPanel.set(route, hour);
           const native = this.natives.get(route);
@@ -2770,9 +2874,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           moved = true;
         }
       }
-      const closed = this.pendingClosed.size ? [...this.pendingClosed].map(([widget, [lo, hi]]): [number, number, number] => [widget, lo, hi]) : undefined;
+      const closed = !local && this.pendingClosed.size ? [...this.pendingClosed].map(([widget, [lo, hi]]): [number, number, number] => [widget, lo, hi]) : undefined;
       if (closed) { this.pendingClosed.clear(); moved = true; }
-      const withdrawn = this.pendingWithdrawn.size ? [...this.pendingWithdrawn].map(([widget, binding]): [number, number] => [widget, binding]) : undefined;
+      const withdrawn = !local && this.pendingWithdrawn.size ? [...this.pendingWithdrawn].map(([widget, binding]): [number, number] => [widget, binding]) : undefined;
       if (withdrawn) { this.pendingWithdrawn.clear(); moved = true; }
       let crops: B[] = [];
       let failedEntries: Set<number> | null = null;
@@ -2844,11 +2948,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         if (this.isDirectTarget(wid)) this.markDirectDirty(wid);
       }
     }
-    this.prune(request.now);
-    for (const id of this.facts.drain()) this.gone.add(id);
-    const bytes = this.freed + this.releasedFacts();
-    this.freed = 0;
-    if (bytes) this.host.release(bytes);
+    if (!local) {
+      this.prune(request.now);
+      for (const id of this.facts.drain()) this.gone.add(id);
+      const bytes = this.freed + this.releasedFacts();
+      this.freed = 0;
+      if (bytes) this.host.release(bytes);
+    }
+    if (local && !entries.length) return;
     this.host.stretch?.(this.time() - began);
     const costs: [number, number][] | undefined = made.length ? made.map(({ widget }) => [widget.id, widget.cost]) : undefined;
     this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: entries.length, ms: this.time() - began, ...costs ? { costs } : {} });

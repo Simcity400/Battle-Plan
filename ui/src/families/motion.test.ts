@@ -11,6 +11,7 @@ import { barsLane, type FamilyBarsBinding } from './bars/laneView.ts';
 import type { BarsModel } from './bars/model.ts';
 import { RecordedPath2D } from './time-chart/path2d.fixture.ts';
 import { knownValue, notRecorded } from './value.ts';
+import { defaultArtFrame, readyArt } from './art/types.ts';
 
 const TEST_THEME: FamilyTheme = {
   surface: '#11161d',
@@ -199,13 +200,15 @@ function makeRecordingCanvas(width = 960, height = 300) {
 
 const KIND = 'worker-motion-test';
 const BLUE = '#4f86f7';
-type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; scale?: number };
+type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; scale?: number; whole?: boolean; art?: boolean };
 
 registerFamilyProjection({
   family: 'bars',
   kind: KIND,
   project(view, options): BarsModel {
     const sample = view.panel('s') as Sample;
+    const numeric = sample?.value == null ? null : sample.value * Number(options ?? 1);
+    const value = numeric === null ? notRecorded('Missing') : knownValue(sample.whole && numeric !== 0 ? BigInt(numeric) : numeric);
     return {
       form: sample?.form ?? 'ordered',
       hour: view.hour,
@@ -215,9 +218,11 @@ registerFamilyProjection({
         kind: 'data',
         key: sample?.key ?? 'GER',
         label: knownValue('Germany'),
-        value: { value: sample?.value == null ? notRecorded('Missing') : knownValue(sample.value * Number(options ?? 1)) },
-        numeric: sample?.value == null ? null : sample.value * Number(options ?? 1),
+        value: { value },
+        numeric,
         color: BLUE,
+        ...(sample?.art ? { media: { kind: 'flag', tag: 'GER',
+          art: readyArt('art://motion-fixture', { frame: defaultArtFrame(20, 13) }) } } : {}),
         ...(sample?.target ? { target: { numeric: 400, value: knownValue(400) } } : {}),
       }],
     };
@@ -256,14 +261,20 @@ function fixture(budget: number) {
   const hits: (string | null)[] = [];
   const released: number[] = [];
   const sampled: number[] = [];
+  const painted: number[] = [];
+  let selectionCost = 0;
+  let selections = 0;
   let ready = true;
   let paintCost = 0;
   let now = 1000;
-  const view = createLaneView(barsLane, widget => lane.touch(widget));
+  let settleArtwork!: (bitmap: ImageBitmap) => void;
+  const artwork = new Promise<ImageBitmap>(resolve => { settleArtwork = resolve; });
+  const view = createLaneView(barsLane, widget => lane.touch(widget), { fetchBitmap: () => artwork });
   const workerView = {
     ...view,
     paint(...args: Parameters<typeof view.paint>) {
       if (!ready) return { surfaces: [], fields: {}, motion: false, waiting: true as const };
+      painted.push(args[0].widget);
       const result = view.paint(...args);
       const playback = result.playback;
       return playback ? { ...result, playback: (...visual: Parameters<typeof playback>) => {
@@ -274,11 +285,22 @@ function fixture(budget: number) {
     },
   };
   const lane = new Lane<TestBitmap>({
-    lane: 0, lanes: 1, views: () => workerView, crop: async () => [], release: bytes => released.push(bytes),
+    lane: 0, lanes: 1,
+    views: kind => kind === 'bars' ? workerView : { paint: input => {
+      painted.push(input.widget);
+      return { surfaces: [], fields: {}, motion: false };
+    } },
+     crop: async () => [], release: bytes => released.push(bytes),
     present: reply => presented.push(reply), served: reply => served.push(reply),
     hit: (_id, key) => hits.push(key), fail: assert.fail, later: fn => later.push(fn),
     clock: () => now, budget,
   });
+  const window = lane.facts.window.bind(lane.facts);
+  lane.facts.window = (...args) => {
+    now += selectionCost;
+    selections++;
+    return window(...args);
+  };
   const canvas = makeRecordingCanvas(480, 240);
   lane.setLaneSurface(canvas.canvas, true);
   lane.follow(1, 'panel', 'p');
@@ -293,10 +315,10 @@ function fixture(budget: number) {
       revisions: { options: 10 + measure, sources: 1 },
     } satisfies FamilyBarsBinding);
   };
-  const mount = (count: number) => {
+  const mount = (count: number, sibling = false) => {
     const slots = Array.from({ length: count }, (_, i) => {
       const widget = i + 1;
-      lane.mount(widget, [1], 'bars', {});
+      lane.mount(widget, [1], sibling && widget === count ? 'other' : 'bars', {});
       bind(1, widget);
       return { widget, x: 480 * i, y: 0, w: 480, h: 240, visible: true };
     });
@@ -308,9 +330,11 @@ function fixture(budget: number) {
   mount(1);
   const record = (hour: number, value?: Sample, seek = 1) => lane.receive('panels', datedPanel(1, hour, value, seek, 9));
   let serial = 0;
-  const request = async (hour: number, speed = 0, seek = 1, inspect = 'row:GER') => {
-    lane.frame({ type: 'frame', serial: ++serial, seek, now: hour, target: hour, exact: speed === 0, speed, installed: [], refused: [], inspect: [[1, inspect]] });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
+  const drain = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+  const request = async (hour: number, speed = 0, seek = 1, acknowledge = false) => {
+    const installed = acknowledge ? (presented.at(-1)?.entries ?? []).map(({ widget, binding, id }) => ({ widget, binding, id })) : [];
+    lane.frame({ type: 'frame', serial: ++serial, seek, now: hour, target: hour, exact: speed === 0, speed, installed, refused: [], inspect: [[1, 'row:GER']] });
+    await drain();
   };
   const clock = (anchorPosition: number, speed: number, seek = 1) => lane.setClock(baseClock({
     anchorPosition, exactHour: Math.floor(anchorPosition), anchorTimeMs: performance.timeOrigin + now,
@@ -325,7 +349,10 @@ function fixture(budget: number) {
   };
   const barWidth = () => Number(bar().args[2]);
   return {
-    lane, canvas, record, request, clock, tick, operations, bar, barWidth, presented, served, hits, released, bind, mount, sampled,
+    lane, canvas, record, request, clock, tick, operations, bar, barWidth, presented, served, hits, released, bind, mount, sampled, painted, drain,
+    selectionCost: (value: number) => { selectionCost = value; selections = 0; },
+    selections: () => selections,
+    finishArtwork: () => settleArtwork({ width: 20, height: 13, close() {} } as ImageBitmap),
     ready: (value: boolean) => { ready = value; },
     paintCost: (value: number) => { paintCost = value; },
   };
@@ -358,16 +385,18 @@ describe('Ordered bar playback', () => {
     f.record(101, { value: null });
     f.record(102, { value: 200 });
     f.record(103, { value: 400, key: 'ENG' });
-    await f.request(100);
-    const start = f.barWidth();
     f.clock(100.5, 168);
+    await f.request(100, 168);
+    const start = f.barWidth();
     f.tick(0);
     assert.equal(f.barWidth(), start);
     f.tick(2 / .168);
     assert.equal(f.barWidth(), start * 2);
+    f.canvas.clearOps();
     f.tick(1 / .168);
-    await f.request(103, 168);
-    assert.equal(f.barWidth(), start * 4);
+    await f.drain();
+    const widths = f.operations().filter(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE).map(op => op.args[2]);
+    assert.deepEqual(widths, [start * 4], 'the first paint at the boundary uses the new rows without a page request');
   }));
 
   it('keeps the recorded labels, tooltip, mirror and audit through ordinary presentation', async () => withLane(async f => {
@@ -471,6 +500,113 @@ describe('Ordered bar playback', () => {
     f.tick(16);
     assert.deepEqual(f.sampled, [1, 2, 3]);
   }, 10));
+
+  it('uses extended date proof even when an unchanged entry is still pending', async () => withLane(async f => {
+    f.lane.supply(1, { dated: { h: 100, c: 100 } });
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200 });
+    f.clock(100.5, 1);
+    await f.request(100, 1);
+    const exact = f.barWidth();
+    f.lane.supply(1, { dated: { h: 100, c: 101 } });
+    f.tick(0);
+    assert.ok(f.barWidth() > exact);
+    await f.drain();
+  }));
+
+  it('restores the picture kept by the page when the paused hour is uncovered', async () => withLane(async f => {
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200 });
+    f.clock(100.5, 1);
+    await f.request(100, 1);
+    const exact = f.barWidth();
+    await f.request(100, 1, 1, true);
+    f.tick(0);
+    assert.ok(f.barWidth() > exact);
+    const count = f.presented.flatMap(p => p.entries).length;
+    f.clock(102, 0);
+    await f.request(102);
+    assert.equal(f.barWidth(), exact);
+    assert.equal(f.presented.flatMap(p => p.entries).length, count);
+  }));
+
+  it('services one artwork wake while a matching presentation awaits acknowledgement', async () => withLane(async f => {
+    f.record(100, { value: 100, art: true });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    assert.ok(!f.operations().some(op => op.op === 'drawImage'));
+    f.painted.length = 0;
+    f.finishArtwork();
+    await f.drain();
+    assert.deepEqual(f.painted, [1]);
+    assert.equal(f.operations().filter(op => op.op === 'drawImage').length, 1);
+    assert.equal(typeof f.presented.at(-1)?.entries[0]?.fields.meta, 'object');
+    f.tick(16);
+    await f.drain();
+    assert.deepEqual(f.painted, [1]);
+  }));
+
+  it('does not serve a target bar or its dirty sibling between page requests', async () => withLane(async f => {
+    f.mount(2, true);
+    f.record(100, { value: 100, target: true });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const served = f.served.length;
+    f.painted.length = 0;
+    f.lane.touch(2);
+    f.lane.touch(1);
+    await f.drain();
+    assert.equal(f.served.length, served);
+    assert.deepEqual(f.painted, []);
+  }));
+
+  it('services eligible artwork without serving a dirty sibling', async () => withLane(async f => {
+    f.mount(2, true);
+    f.record(100, { value: 100 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    await f.request(100, 1, 1, true);
+    f.painted.length = 0;
+    f.lane.touch(2);
+    f.lane.touch(1);
+    await f.drain();
+    assert.deepEqual(f.painted, [1]);
+    await f.request(100, 1);
+    assert.deepEqual(f.painted, [1, 2]);
+  }));
+
+  it('gives a sibling its ordinary paint before spending the pause budget on pending bar restorations', async () => withLane(async f => {
+    f.mount(4, true);
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200 });
+    f.clock(100.5, 1);
+    await f.request(100, 1);
+    f.tick(0);
+    assert.deepEqual(f.sampled, [1, 2, 3]);
+    f.painted.length = 0;
+    f.selectionCost(6);
+    f.clock(101, 0);
+    await f.request(101);
+    assert.equal(f.painted[0], 4);
+    assert.ok(f.selections() <= 2, 'a pause slice cannot select every previewed bar before yielding');
+    for (let i = 0; i < 4; i++) {
+      f.tick(16);
+      await f.drain();
+    }
+    assert.deepEqual(f.painted, [4, 1, 2, 3]);
+  }, 10));
+
+  it('interpolates a recorded number zero to a recorded whole-number bigint', async () => withLane(async f => {
+    f.record(100, { value: 0, whole: true });
+    f.record(101, { value: 200, whole: true });
+    f.clock(100.5, 1);
+    await f.request(100, 1);
+    f.tick(0);
+    const between = f.barWidth();
+    f.clock(101, 0);
+    await f.request(101);
+    assert.equal(f.barWidth(), between * 2);
+  }));
 
   it('uses the same interpolated scale for the width and the axis', async () => withLane(async f => {
     f.record(100, { value: 60, scale: 200 });

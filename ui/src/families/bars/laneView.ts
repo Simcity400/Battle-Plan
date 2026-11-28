@@ -229,8 +229,7 @@ function orderedMotion(
     if (row.kind !== 'data' || end.kind !== 'data' || row.numeric == null || end.numeric == null
       || !row.value || !end.value
       || (row.value.value.kind !== 'zero' && row.value.value.kind !== 'known')
-      || (end.value.value.kind !== 'zero' && end.value.value.kind !== 'known')
-      || typeof row.value.value.value !== typeof end.value.value.value) return exact;
+      || (end.value.value.kind !== 'zero' && end.value.value.kind !== 'known')) return exact;
     if (row.numeric === end.numeric) { rows.push(row); continue; }
     changed = true;
     rows.push({ ...row, numeric: row.numeric + (end.numeric - row.numeric) * fraction });
