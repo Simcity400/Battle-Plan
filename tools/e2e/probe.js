@@ -113,13 +113,35 @@
     let h = hashText(2166136261, `${Math.round(r.width)}x${Math.round(r.height)}|${article.className}|${article.getAttribute('style') ?? ''}`);
     const content = article.querySelector('.dash-widget-content');
     h = hashText(h, content?.innerHTML ?? '');
-    for (const canvas of content?.querySelectorAll('canvas') ?? []) {
-      h = hashText(h, `${canvas.width}x${canvas.height}`);
-      try {
-        sampler.clearRect(0, 0, 24, 24);
-        sampler.drawImage(canvas, 0, 0, 24, 24);
-        for (const value of sampler.getImageData(0, 0, 24, 24).data) h = hash(h, value);
-      } catch { h = hashText(h, 'unreadable'); }
+    const sharedFrame = article.querySelector('[data-shared-surface="1"][data-shared-lane]');
+    const sharedCanvas = sharedFrame
+      ? document.querySelector(`canvas.dash-shared-canvas[data-shared-lane="${CSS.escape(sharedFrame.dataset.sharedLane)}"]`)
+      : null;
+    if (sharedFrame && sharedCanvas) {
+      const body = sharedFrame.querySelector('.fh-body') ?? sharedFrame;
+      const cr = sharedCanvas.getBoundingClientRect();
+      const br = body.getBoundingClientRect();
+      if (cr.width > 0 && cr.height > 0 && br.width > 0 && br.height > 0 && sharedCanvas.width > 0 && sharedCanvas.height > 0) {
+        const sx = (br.left - cr.left) * (sharedCanvas.width / cr.width);
+        const sy = (br.top - cr.top) * (sharedCanvas.height / cr.height);
+        const sw = br.width * (sharedCanvas.width / cr.width);
+        const sh = br.height * (sharedCanvas.height / cr.height);
+        h = hashText(h, `shared:${Math.round(sw)}x${Math.round(sh)}`);
+        try {
+          sampler.clearRect(0, 0, 24, 24);
+          sampler.drawImage(sharedCanvas, sx, sy, sw, sh, 0, 0, 24, 24);
+          for (const value of sampler.getImageData(0, 0, 24, 24).data) h = hash(h, value);
+        } catch { h = hashText(h, 'unreadable'); }
+      }
+    } else {
+      for (const canvas of content?.querySelectorAll('canvas') ?? []) {
+        h = hashText(h, `${canvas.width}x${canvas.height}`);
+        try {
+          sampler.clearRect(0, 0, 24, 24);
+          sampler.drawImage(canvas, 0, 0, 24, 24);
+          for (const value of sampler.getImageData(0, 0, 24, 24).data) h = hash(h, value);
+        } catch { h = hashText(h, 'unreadable'); }
+      }
     }
     for (const img of content?.querySelectorAll('img') ?? []) h = hashText(h, img.currentSrc);
     return (h >>> 0).toString(36);

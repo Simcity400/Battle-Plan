@@ -65,14 +65,20 @@ export function lanesHost(
   client: DashboardClient,
   createWorker: () => Worker = () => new Worker(new URL('../../draw/lane.worker.ts', import.meta.url), { type: 'module' }),
 ): PipelineHost {
-  const lanes = Array.from({ length: laneCount() }, () => makeLaneWorker(createWorker));
+  const created: (LaneWorker & { terminate(): void })[] = [];
   return {
-    lanes,
+    lanes: [],
+    laneCapacity: laneCount(),
+    createLane: () => {
+      const worker = makeLaneWorker(createWorker);
+      created.push(worker);
+      return worker;
+    },
     open: ports => client.openFollow ? client.openFollow(ports) : Promise.reject(new Error('This connection has no channel for pushed answers')),
     channel: () => new MessageChannel(),
     frameRate: playbackRate,
     rate: weakCpu,
-    close: () => { for (const lane of lanes) lane.terminate(); },
+    close: () => { for (const lane of created) lane.terminate(); },
   };
 }
 
@@ -82,7 +88,8 @@ export function pipelineOf(clock: PlaybackController, client: DashboardClient): 
 }
 
 export function usePipeline(clock: PlaybackController | null, client: DashboardClient | null): Pipeline | null {
-  return useMemo(() => (clock && client ? pipelineOf(clock, client) : null), [clock, client]);
+  const generation = usePipelineGeneration(clock);
+  return useMemo(() => (clock && client ? pipelineOf(clock, client) : null), [clock, client, generation]);
 }
 
 export function usePipelineGeneration(clock: PlaybackController | null): number {

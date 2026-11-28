@@ -34,7 +34,11 @@ import { timeChartCacheState } from '../families/time-chart/cacheControl.ts';
 
 export type RowDensity = 'compact' | 'normal' | 'comfortable';
 
+const snappedContexts = new WeakSet<Canvas2D>();
+
 export function snapCanvasText(ctx: Canvas2D): void {
+  if (snappedContexts.has(ctx)) return;
+  snappedContexts.add(ctx);
   const fill = ctx.fillText;
   ctx.fillText = (text, x, y, maxWidth) => {
     const t = ctx.getTransform();
@@ -2586,4 +2590,25 @@ export function drawAddRow(
     ctx.stroke();
   }
   ctx.restore();
+}
+
+export interface SharedContextSlot {
+  readonly widgetKey: object;
+  readonly slotBw: number;
+  readonly slotBh: number;
+}
+
+const sharedContextSlots = new WeakMap<object, SharedContextSlot>();
+
+export function setContextSlot(ctx: object, slot: SharedContextSlot): void {
+  sharedContextSlots.set(ctx, slot);
+}
+
+export function contextWidgetKey(ctx: object): object {
+  return sharedContextSlots.get(ctx)?.widgetKey ?? ctx;
+}
+
+export function contextSlotBacking(ctx: object): { readonly bw: number; readonly bh: number } | null {
+  const slot = sharedContextSlots.get(ctx);
+  return slot ? { bw: slot.slotBw, bh: slot.slotBh } : null;
 }

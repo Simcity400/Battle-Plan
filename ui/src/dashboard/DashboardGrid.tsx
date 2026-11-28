@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { Responsive, useContainerWidth } from 'react-grid-layout';
@@ -26,7 +26,8 @@ import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
 import { FollowedCard, FollowedWidgetKey, FollowedWidgetKind } from './follow/store.ts';
-import { usePipelineGeneration } from './follow/useFollowed.ts';
+import { laneCount as defaultLaneCount, usePipelineGeneration } from './follow/useFollowed.ts';
+import { computeSpatialLaneMap, SharedSurfaceContext, SpatialLaneContext } from './follow/sharedSurface.ts';
 import { pageClock, WidgetFrames } from './widgetClock';
 import { configuredStripPage, StripPage, StripPageContext } from './strip/driver.ts';
 import { stripLattice } from './strip/lattice.ts';
@@ -68,25 +69,54 @@ function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts
   const { width, containerRef, mounted } = useContainerWidth({ initialWidth: 1200 });
   const placement = useGridPlacement(containerRef);
   useEffect(() => { preloadPageRenderers(template.widgets); }, [template.widgets]);
+  const sharedHost = useContext(SharedSurfaceContext);
+  const effectiveLaneCount = sharedHost?.laneCount ?? defaultLaneCount();
+  const activeBreakpoint: Breakpoint = width >= 1280 ? 'lg' : width >= 850 ? 'md' : width >= 520 ? 'sm' : 'xs';
+  const spatialLanes = useMemo(() => {
+    const items = template.layouts[activeBreakpoint]
+      ?? template.layouts.lg
+      ?? template.layouts.md
+      ?? template.layouts.sm
+      ?? template.layouts.xs
+      ?? [];
+    return computeSpatialLaneMap(items.map(item => ({ id: item.i, x: item.x, y: item.y, w: item.w, h: item.h })), effectiveLaneCount).laneById;
+  }, [template.layouts, activeBreakpoint, effectiveLaneCount]);
+  useLayoutEffect(() => {
+    sharedHost?.scheduleSync();
+  }, [sharedHost, template.layouts, width, editing]);
+  const beginInteraction = useCallback(() => {
+    sharedHost?.setInteractive(true);
+  }, [sharedHost]);
+  const endInteraction = useCallback(() => {
+    runtime.maps.schedule();
+    sharedHost?.setInteractive(false);
+    sharedHost?.scheduleSync();
+  }, [runtime.maps, sharedHost]);
+  const syncSurfaces = useCallback(() => {
+    runtime.maps.schedule();
+    sharedHost?.scheduleSync();
+  }, [runtime.maps, sharedHost]);
   const changed = useCallback((_layout: Layout, layouts: ResponsiveLayouts<Breakpoint>) => {
     runtime.maps.schedule();
+    sharedHost?.scheduleSync();
     const next: GridLayouts = {};
     for (const breakpoint of Object.keys(GRID_COLUMNS) as Breakpoint[]) {
       const layout = layouts[breakpoint];
       if (layout) next[breakpoint] = layout.map(({ i, x, y, w, h, minW, minH }) => ({ i, x, y, w, h, minW, minH }));
     }
     onLayouts(next);
-  }, [onLayouts, runtime.maps]);
+  }, [onLayouts, runtime.maps, sharedHost]);
   return <div className={`dash-grid${editing ? ' is-editing' : ''}`} ref={containerRef}>
-    {mounted && <Responsive<Breakpoint> width={width} layouts={template.layouts}
+    {mounted && <SpatialLaneContext.Provider value={spatialLanes}><Responsive<Breakpoint> width={width} layouts={template.layouts}
       breakpoints={{ lg: 1280, md: 850, sm: 520, xs: 0 }} cols={GRID_COLUMNS} rowHeight={26} margin={[6, 6]} containerPadding={[0, 0]} positionStrategy={placement}
       dragConfig={{ enabled: editing, handle: '.dash-drag-grip', cancel: 'input,select,textarea,a' }}
       resizeConfig={{ enabled: editing, handles: ['se'] }} onLayoutChange={changed}
-      onDrag={runtime.maps.schedule} onDragStop={runtime.maps.schedule} onResize={runtime.maps.schedule} onResizeStop={runtime.maps.schedule}>
+      onDragStart={beginInteraction} onDrag={syncSurfaces} onDragStop={endInteraction}
+      onResizeStart={beginInteraction} onResize={syncSurfaces} onResizeStop={endInteraction}>
       {template.widgets.map((widget) => <div key={widget.id} className="dash-grid-cell">
         <WidgetFrame prepared={prepared} widget={widget} template={template} runtime={runtime} editing={editing} onApply={onApply} onRemove={onRemove} />
       </div>)}
-    </Responsive>}
+    </Responsive></SpatialLaneContext.Provider>}
   </div>;
 }
 

@@ -113,7 +113,7 @@ const speeds = quick ? QUICK_PLAYBACK.speeds : SPEEDS;
 const readConfinement = () => app.evaluate(`({
   hardwareConcurrency: navigator.hardwareConcurrency,
   lanes: window.__perf?.lanes?.() ?? null,
-  expectedLanes: Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 2)),
+  expectedLanes: Math.max(1, (navigator.hardwareConcurrency || 2) - 2),
 })`);
 const meta = { session, tier, requestedPages: onlyPages, cpuThrottle: rate, coresCount, confinement: null, started: started.toISOString(), port, phases, epoch: s.epoch, pages: [], viewport: null, cataloguePage: CATALOGUE_PAGE, speeds, seeks: SEEKS, pictureSeek: PICTURE_SEEK };
 const save = async () => {

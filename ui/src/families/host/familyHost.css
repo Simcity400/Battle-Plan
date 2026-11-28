@@ -11,6 +11,42 @@
   outline: none;
 }
 
+.fh-before-body {
+  display: flow-root;
+  flex: none;
+}
+
+.fh-frame[data-shared-surface='1'],
+.fh-frame[data-shared-outer='1'] {
+  background: transparent;
+}
+
+.fh-frame[data-shared-surface='1'] > :not(.fh-body-wrap) {
+  background: var(--surface);
+}
+
+.fh-frame[data-shared-surface='1'] .fh-canvas {
+  visibility: hidden;
+}
+
+.fh-frame[data-shared-surface='1'][data-held='stale'] {
+  opacity: 1;
+}
+
+.fh-frame[data-shared-surface='1'][data-held='stale'] > :not(.fh-body-wrap) {
+  opacity: var(--muted-row-opacity);
+}
+
+.fh-frame[data-shared-surface='1'][data-held='stale'] > .fh-body-wrap::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: var(--surface);
+  opacity: calc(1 - var(--muted-row-opacity));
+}
+
 .fh-body-wrap {
   position: relative;
   flex: 1 1 auto;

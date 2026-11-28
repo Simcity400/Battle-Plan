@@ -1,0 +1,670 @@
+import { createContext } from 'react';
+import type { SharedSurfaceSlot } from '../../draw/laneMessages.ts';
+import { APPEARANCE_EVENT } from '../../shell/appearance/events.ts';
+import type { Pipeline } from './pipeline.ts';
+
+export interface GridRectItem {
+  readonly id: string;
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+}
+
+export interface SpatialLanePartition {
+  readonly laneById: ReadonlyMap<string, number>;
+  readonly hasCleanCut: boolean;
+}
+
+function findBestCut(
+  items: readonly GridRectItem[],
+  axis: 'x' | 'y',
+): { coord: number; left: GridRectItem[]; right: GridRectItem[]; imb: number } | null {
+  const coords = new Set<number>();
+  for (const item of items) {
+    coords.add(axis === 'x' ? item.x : item.y);
+    coords.add(axis === 'x' ? item.x + item.w : item.y + item.h);
+  }
+  const sorted = [...coords].sort((a, b) => a - b);
+  let best: { coord: number; left: GridRectItem[]; right: GridRectItem[]; imb: number } | null = null;
+  for (let i = 1; i < sorted.length - 1; i++) {
+    const c = sorted[i]!;
+    let clean = true;
+    const left: GridRectItem[] = [];
+    const right: GridRectItem[] = [];
+    for (const item of items) {
+      const start = axis === 'x' ? item.x : item.y;
+      const end = axis === 'x' ? item.x + item.w : item.y + item.h;
+      if (start < c && end > c) {
+        clean = false;
+        break;
+      }
+      if (end <= c) left.push(item);
+      else right.push(item);
+    }
+    if (!clean || !left.length || !right.length) continue;
+    const imb = Math.abs(left.length - right.length);
+    if (!best || imb < best.imb) best = { coord: c, left, right, imb };
+  }
+  return best;
+}
+
+function partitionInto(
+  items: readonly GridRectItem[],
+  lanes: readonly number[],
+  out: Map<string, number>,
+): boolean {
+  if (!items.length || !lanes.length) return true;
+  if (lanes.length === 1 || items.length === 1) {
+    const lane = lanes[0]!;
+    for (const item of items) out.set(item.id, lane);
+    return true;
+  }
+  const cutY = findBestCut(items, 'y');
+  const cutX = findBestCut(items, 'x');
+  const best = cutY && cutX ? (cutY.imb <= cutX.imb ? cutY : cutX) : (cutY ?? cutX);
+  if (best) {
+    const leftCount = Math.max(1, Math.min(lanes.length - 1, Math.round((lanes.length * best.left.length) / items.length)));
+    const okLeft = partitionInto(best.left, lanes.slice(0, leftCount), out);
+    const okRight = partitionInto(best.right, lanes.slice(leftCount), out);
+    return okLeft && okRight;
+  }
+  const sorted = [...items].sort((a, b) => a.y - b.y || a.x - b.x);
+  const per = Math.ceil(sorted.length / lanes.length);
+  for (let i = 0; i < sorted.length; i++) {
+    const laneIdx = Math.min(lanes.length - 1, Math.floor(i / per));
+    out.set(sorted[i]!.id, lanes[laneIdx]!);
+  }
+  return false;
+}
+
+export function computeSpatialLaneMap(items: readonly GridRectItem[], laneCount: number): SpatialLanePartition {
+  const laneById = new Map<string, number>();
+  const effective = Math.max(1, Math.min(laneCount, Math.max(1, items.length)));
+  const lanes = Array.from({ length: effective }, (_, i) => i);
+  const hasCleanCut = partitionInto(items, lanes, laneById);
+  return { laneById, hasCleanCut };
+}
+
+export function isImageBackdropActive(): boolean {
+  try {
+    return typeof document !== 'undefined' && document.documentElement.dataset.backdrop === 'image';
+  } catch {
+    return false;
+  }
+}
+
+export interface Rect {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+}
+
+export interface SharedSlotInput {
+  readonly widget: number;
+  readonly lane: number;
+  readonly rect: Rect;
+  readonly clipRect?: Rect;
+  readonly inView: boolean;
+  readonly active: boolean;
+}
+
+export interface SharedLaneLayout {
+  readonly lane: number;
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+  readonly clipPath: string;
+  readonly clipPathFallback: boolean;
+  readonly roundBottom: boolean;
+  readonly slots: readonly SharedSurfaceSlot[];
+}
+
+export interface SharedGeometryResult {
+  readonly clipPathFallback: boolean;
+  readonly lanes: ReadonlyMap<number, SharedLaneLayout>;
+}
+
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w - 0.5 && a.x + a.w > b.x + 0.5 && a.y < b.y + b.h - 0.5 && a.y + a.h > b.y + 0.5;
+}
+
+function snapFloor(v: number, dpr: number): number {
+  return Math.floor(v * dpr + 1e-3) / dpr;
+}
+
+function snapCeil(v: number, dpr: number): number {
+  return Math.ceil(v * dpr - 1e-3) / dpr;
+}
+
+function snapRound(v: number, dpr: number): number {
+  return Math.round(v * dpr + 1e-3) / dpr;
+}
+
+export function computeSharedLaneGeometry(
+  items: readonly SharedSlotInput[],
+  viewport: Rect,
+  dpr: number,
+  cornerRadius = 0,
+): SharedGeometryResult {
+  const perLane = new Map<number, SharedSlotInput[]>();
+  for (const item of items) {
+    let list = perLane.get(item.lane);
+    if (!list) perLane.set(item.lane, list = []);
+    list.push(item);
+  }
+
+  const bounds = new Map<number, Rect>();
+  const minXLimit = snapFloor(viewport.x, dpr);
+  const minYLimit = snapFloor(viewport.y, dpr);
+  const maxXLimit = snapCeil(viewport.x + viewport.w, dpr);
+  const maxYLimit = snapCeil(viewport.y + viewport.h, dpr);
+
+  for (const [lane, list] of perLane) {
+    if (!list.some(item => item.inView && item.active)) continue;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const item of list) {
+      if (!item.inView) continue;
+      const box = item.clipRect ?? item.rect;
+      const cx0 = Math.max(minXLimit, box.x);
+      const cy0 = Math.max(minYLimit, box.y);
+      const cx1 = Math.min(maxXLimit, box.x + box.w);
+      const cy1 = Math.min(maxYLimit, box.y + box.h);
+      if (cx1 <= cx0 || cy1 <= cy0) continue;
+      if (cx0 < minX) minX = cx0;
+      if (cy0 < minY) minY = cy0;
+      if (cx1 > maxX) maxX = cx1;
+      if (cy1 > maxY) maxY = cy1;
+    }
+    if (minX < maxX && minY < maxY) {
+      const bx = snapFloor(minX, dpr);
+      const by = snapFloor(minY, dpr);
+      const bw = snapCeil(maxX, dpr) - bx;
+      const bh = snapCeil(maxY, dpr) - by;
+      bounds.set(lane, { x: bx, y: by, w: Math.max(1, bw), h: Math.max(1, bh) });
+    }
+  }
+
+  let overlap = false;
+  const boundList = [...bounds.values()];
+  for (let i = 0; i < boundList.length && !overlap; i++) {
+    for (let j = i + 1; j < boundList.length; j++) {
+      if (rectsOverlap(boundList[i]!, boundList[j]!)) {
+        overlap = true;
+        break;
+      }
+    }
+  }
+
+  const lanes = new Map<number, SharedLaneLayout>();
+  const vpW = Math.max(0, Math.round(viewport.w));
+  const vpH = Math.max(0, Math.round(viewport.h));
+
+  for (const [lane, b] of bounds) {
+    const list = perLane.get(lane) ?? [];
+    const ox = overlap ? minXLimit : b.x;
+    const oy = overlap ? minYLimit : b.y;
+    const cw = overlap ? vpW : b.w;
+    const ch = overlap ? vpH : b.h;
+    const slots: SharedSurfaceSlot[] = [];
+    const clipParts: string[] = [];
+    for (const item of list) {
+      const sx = snapRound(item.rect.x - ox, dpr);
+      const sy = snapRound(item.rect.y - oy, dpr);
+      const sw = item.rect.w;
+      const sh = item.rect.h;
+      const box = item.clipRect ?? item.rect;
+      const bx = snapRound(box.x - ox, dpr);
+      const by = snapRound(box.y - oy, dpr);
+      const bw = box.w;
+      const bh = box.h;
+      const hasBox = item.clipRect !== undefined && (bx !== sx || by !== sy || bw !== sw || bh !== sh);
+      const slot: SharedSurfaceSlot = {
+        widget: item.widget,
+        x: sx,
+        y: sy,
+        w: sw,
+        h: sh,
+        ...(hasBox ? { bx, by, bw, bh } : {}),
+        visible: item.active,
+      };
+      slots.push(slot);
+      if (overlap && item.active) {
+        const r = Math.min(cornerRadius, bw / 2, bh / 2);
+        if (r > 0) {
+          clipParts.push(`M${bx} ${by}H${bx + bw}V${by + bh - r}A${r} ${r} 0 0 1 ${bx + bw - r} ${by + bh}H${bx + r}A${r} ${r} 0 0 1 ${bx} ${by + bh - r}Z`);
+        } else {
+          clipParts.push(`M${bx} ${by}H${bx + bw}V${by + bh}H${bx}Z`);
+        }
+      }
+    }
+    lanes.set(lane, {
+      lane,
+      left: ox,
+      top: oy,
+      width: cw,
+      height: ch,
+      clipPath: overlap && clipParts.length ? `path("${clipParts.join(' ')}")` : '',
+      clipPathFallback: overlap,
+      roundBottom: false,
+      slots,
+    });
+  }
+
+  return { clipPathFallback: overlap, lanes };
+}
+
+interface RegisteredSlot {
+  readonly widget: number;
+  readonly lane: number;
+  readonly bodyEl: HTMLElement;
+  readonly frameEl: HTMLElement;
+  readonly cardEl: HTMLElement | null;
+  readonly outerFrameEl: HTMLElement | null;
+  active: boolean;
+}
+
+interface LaneCanvasState {
+  readonly lane: number;
+  readonly canvas: HTMLCanvasElement;
+  transferred: boolean;
+  lastSig: string;
+}
+
+function readCornerRadius(root: HTMLElement): number {
+  try {
+    const cs = getComputedStyle(root);
+    const parsed = parseFloat(cs.getPropertyValue('--radius').trim()) || parseFloat(cs.getPropertyValue('--r-md').trim());
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function readSurfaceColor(root: HTMLElement): string {
+  try {
+    const cs = getComputedStyle(root);
+    const bg = cs.getPropertyValue('--surface').trim() || cs.getPropertyValue('--bg').trim() || cs.getPropertyValue('--canvas').trim() || cs.backgroundColor;
+    return bg && bg !== 'transparent' && !/^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$/.test(bg) ? bg : '';
+  } catch {
+    return '';
+  }
+}
+
+function supportsOffscreenTransfer(): boolean {
+  try {
+    return typeof HTMLCanvasElement !== 'undefined'
+      && typeof HTMLCanvasElement.prototype.transferControlToOffscreen === 'function';
+  } catch {
+    return false;
+  }
+}
+
+export class SharedSurfaceHost {
+  private readonly pipeline: Pipeline;
+  private readonly scrollEl: HTMLElement;
+  private readonly layerEl: HTMLDivElement;
+  private readonly lanes = new Map<number, LaneCanvasState>();
+  private readonly widgets = new Map<number, RegisteredSlot>();
+  private readonly ro: ResizeObserver | null;
+  private readonly mo: MutationObserver | null;
+  private readonly supported: boolean;
+  private rafId: number | null = null;
+  private disposed = false;
+  private imageBackdrop = isImageBackdropActive();
+  private interactive = false;
+  private lastUsedClipPath = false;
+  private readonly failedLanes = new Set<number>();
+  private readonly listeners = new Set<() => void>();
+  private readonly unsubLaneFailed: (() => void) | null;
+
+  constructor(pipeline: Pipeline, scrollEl: HTMLElement) {
+    this.pipeline = pipeline;
+    this.scrollEl = scrollEl;
+    this.supported = supportsOffscreenTransfer();
+    this.unsubLaneFailed = pipeline.onLaneSurfaceFailed?.(lane => this.failLane(lane)) ?? null;
+    const layer = document.createElement('div');
+    layer.className = 'dash-shared-layer';
+    layer.setAttribute('aria-hidden', 'true');
+    scrollEl.insertBefore(layer, scrollEl.firstChild);
+    this.layerEl = layer;
+
+    scrollEl.addEventListener('scroll', this.onScroll, { passive: true });
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener(APPEARANCE_EVENT, this.onAppearance);
+    }
+    if (typeof ResizeObserver !== 'undefined') {
+      this.ro = new ResizeObserver(() => this.scheduleSync());
+      this.ro.observe(scrollEl);
+    } else {
+      this.ro = null;
+    }
+    if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
+      this.mo = new MutationObserver(() => {
+        const next = isImageBackdropActive();
+        if (next !== this.imageBackdrop) {
+          this.imageBackdrop = next;
+          for (const listener of this.listeners) listener();
+        }
+        this.scheduleSync();
+      });
+      this.mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-backdrop', 'data-theme', 'data-mode'] });
+    } else {
+      this.mo = null;
+    }
+  }
+
+  private failLane(lane: number): void {
+    if (this.disposed || this.failedLanes.has(lane)) return;
+    this.failedLanes.add(lane);
+    const existing = this.lanes.get(lane);
+    if (existing) {
+      existing.canvas.remove();
+      this.lanes.delete(lane);
+    }
+    for (const listener of this.listeners) listener();
+    this.scheduleSync();
+  }
+
+  private ensureLane(lane: number): LaneCanvasState | null {
+    const existing = this.lanes.get(lane);
+    if (existing) return existing;
+    if (!this.supported || this.failedLanes.has(lane) || lane < 0 || lane >= this.pipeline.laneCount) return null;
+    const canvas = document.createElement('canvas');
+    canvas.className = 'dash-shared-canvas';
+    canvas.dataset.sharedLane = String(lane);
+    canvas.width = 1;
+    canvas.height = 1;
+    this.layerEl.appendChild(canvas);
+    let transferred = false;
+    try {
+      const offscreen = canvas.transferControlToOffscreen();
+      this.pipeline.transferLaneSurface(lane, offscreen, true);
+      transferred = true;
+    } catch {
+      transferred = false;
+    }
+    if (!transferred) {
+      canvas.remove();
+      this.failedLanes.add(lane);
+      for (const listener of this.listeners) listener();
+      return null;
+    }
+    const state: LaneCanvasState = { lane, canvas, transferred, lastSig: '' };
+    this.lanes.set(lane, state);
+    return state;
+  }
+
+  get enabled(): boolean {
+    return !this.disposed && !this.imageBackdrop && !this.interactive && this.supported;
+  }
+
+  get laneCount(): number {
+    return this.pipeline.laneCount;
+  }
+
+  laneAvailable(lane: number | null): boolean {
+    if (!this.enabled) return false;
+    return lane === null || !this.failedLanes.has(lane);
+  }
+
+  setInteractive(active: boolean): void {
+    if (this.disposed || this.interactive === active) return;
+    this.interactive = active;
+    for (const listener of this.listeners) listener();
+    this.scheduleSync();
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  get usingClipPathFallback(): boolean {
+    return this.lastUsedClipPath;
+  }
+
+  private setSlotDomFlags(entry: RegisteredSlot, visible: boolean): void {
+    if (visible) {
+      const laneStr = String(entry.lane);
+      if (entry.frameEl.dataset.sharedSurface !== '1') entry.frameEl.dataset.sharedSurface = '1';
+      if (entry.frameEl.dataset.sharedLane !== laneStr) entry.frameEl.dataset.sharedLane = laneStr;
+      if (entry.cardEl && entry.cardEl.dataset.sharedCard !== '1') entry.cardEl.dataset.sharedCard = '1';
+      if (entry.outerFrameEl && entry.outerFrameEl.dataset.sharedOuter !== '1') entry.outerFrameEl.dataset.sharedOuter = '1';
+      return;
+    }
+    if (entry.frameEl.dataset.sharedSurface !== undefined) delete entry.frameEl.dataset.sharedSurface;
+    if (entry.frameEl.dataset.sharedLane !== undefined) delete entry.frameEl.dataset.sharedLane;
+    if (entry.cardEl && entry.cardEl.dataset.sharedCard !== undefined) {
+      let keepCard = false;
+      for (const other of this.widgets.values()) {
+        if (other !== entry && other.cardEl === entry.cardEl && other.frameEl.dataset.sharedSurface === '1') {
+          keepCard = true;
+          break;
+        }
+      }
+      if (!keepCard) delete entry.cardEl.dataset.sharedCard;
+    }
+    if (entry.outerFrameEl && entry.outerFrameEl.dataset.sharedOuter !== undefined) {
+      let keepOuter = false;
+      for (const other of this.widgets.values()) {
+        if (other !== entry && other.outerFrameEl === entry.outerFrameEl && other.frameEl.dataset.sharedSurface === '1') {
+          keepOuter = true;
+          break;
+        }
+      }
+      if (!keepOuter) delete entry.outerFrameEl.dataset.sharedOuter;
+    }
+  }
+
+  register(widget: number, lane: number, bodyEl: HTMLElement, frameEl: HTMLElement): () => void {
+    this.ensureLane(lane);
+    const cardEl = typeof frameEl.closest === 'function' ? frameEl.closest('.dash-widget') as HTMLElement | null : null;
+    const parent = frameEl.parentElement;
+    const outerFrameEl = parent && typeof parent.closest === 'function' ? parent.closest('.fh-frame') as HTMLElement | null : null;
+    const entry: RegisteredSlot = { widget, lane, bodyEl, frameEl, cardEl, outerFrameEl, active: true };
+    this.widgets.set(widget, entry);
+    this.scheduleSync();
+    return () => {
+      if (this.widgets.get(widget) === entry) {
+        this.widgets.delete(widget);
+        this.setSlotDomFlags(entry, false);
+        this.scheduleSync();
+      }
+    };
+  }
+
+  setActive(widget: number, active: boolean): void {
+    const entry = this.widgets.get(widget);
+    if (!entry || entry.active === active) return;
+    entry.active = active;
+    if (!active) this.setSlotDomFlags(entry, false);
+    this.scheduleSync();
+  }
+
+  private readonly onScroll = () => {
+    this.scheduleSync();
+  };
+
+  scheduleSync(): void {
+    if (this.disposed || this.rafId !== null) return;
+    let done = false;
+    const id = requestAnimationFrame(() => {
+      done = true;
+      this.rafId = null;
+      this.syncNow();
+    });
+    if (!done) this.rafId = id;
+  }
+
+  syncNow(): void {
+    if (this.disposed) return;
+    const dpr = window.devicePixelRatio || 1;
+    const scrollRect = this.scrollEl.getBoundingClientRect();
+    const layerRect = this.layerEl.getBoundingClientRect();
+    const layerSnapLeft = snapRound(layerRect.left, dpr);
+    const layerSnapTop = snapRound(layerRect.top, dpr);
+    const originDx = layerSnapLeft - layerRect.left;
+    const originDy = layerSnapTop - layerRect.top;
+    const vpW = Math.max(0, Math.round(scrollRect.width));
+    const vpH = Math.max(0, Math.round(scrollRect.height));
+    const scrollTop = this.scrollEl.scrollTop;
+    const scrollLeft = this.scrollEl.scrollLeft;
+    const surfaceColor = readSurfaceColor(this.scrollEl);
+    const activeEnabled = this.enabled && vpW > 0 && vpH > 0;
+
+    const inputs: SharedSlotInput[] = [];
+    const flagUpdates: { entry: RegisteredSlot; visible: boolean }[] = [];
+    for (const entry of this.widgets.values()) {
+      const dragging = Boolean(entry.frameEl.closest('.react-draggable-dragging, .resizing'));
+      const inScroll = typeof this.scrollEl.contains !== 'function' || this.scrollEl.contains(entry.bodyEl);
+      if (!activeEnabled || dragging || !inScroll) {
+        flagUpdates.push({ entry, visible: false });
+        continue;
+      }
+      const laneState = this.ensureLane(entry.lane);
+      if (!laneState?.transferred) {
+        flagUpdates.push({ entry, visible: false });
+        continue;
+      }
+      const r = entry.bodyEl.getBoundingClientRect();
+      const ow = entry.bodyEl.offsetWidth;
+      const oh = entry.bodyEl.offsetHeight;
+      const cw = entry.bodyEl.clientWidth;
+      const ch = entry.bodyEl.clientHeight;
+      const zoomX = ow > 0 && cw > 0 ? r.width / ow : 1;
+      const zoomY = oh > 0 && ch > 0 ? r.height / oh : 1;
+      const contentLeft = r.left + (entry.bodyEl.clientLeft || 0) * zoomX;
+      const contentTop = r.top + (entry.bodyEl.clientTop || 0) * zoomY;
+      const contentW = ow > 0 && cw > 0 ? cw * zoomX : r.width;
+      const contentH = oh > 0 && ch > 0 ? ch * zoomY : r.height;
+      const clipBox = entry.frameEl.closest('.dash-widget-content')?.getBoundingClientRect();
+      const visLeft = clipBox ? Math.max(contentLeft, clipBox.left) : contentLeft;
+      const visTop = clipBox ? Math.max(contentTop, clipBox.top) : contentTop;
+      const visRight = clipBox ? Math.min(contentLeft + contentW, clipBox.right) : contentLeft + contentW;
+      const visBottom = clipBox ? Math.min(contentTop + contentH, clipBox.bottom) : contentTop + contentH;
+      const visW = Math.max(0, visRight - visLeft);
+      const visH = Math.max(0, visBottom - visTop);
+      const x = snapRound(visLeft, dpr) - layerSnapLeft;
+      const y = snapRound(visTop, dpr) - layerSnapTop;
+      const rawW = Math.max(0, Math.floor(visW * dpr + 1e-3)) / dpr;
+      const rawH = Math.max(0, Math.floor(visH * dpr + 1e-3)) / dpr;
+      const hasVScroll = ow > cw && visRight < r.right - 0.5;
+      const hasHScroll = oh > ch && visBottom < r.bottom - 0.5;
+      const w = hasVScroll ? Math.max(0, Math.min(rawW, Math.floor(visRight * dpr + 1e-3) / dpr - layerSnapLeft - x)) : rawW;
+      const h = hasHScroll ? Math.max(0, Math.min(rawH, Math.floor(visBottom * dpr + 1e-3) / dpr - layerSnapTop - y)) : rawH;
+      const boxLeft = snapFloor(clipBox ? Math.max(r.left, clipBox.left) : r.left, dpr) - layerSnapLeft;
+      const boxTop = y;
+      const boxRight = snapCeil(clipBox ? Math.min(r.right, clipBox.right) : r.right, dpr) - layerSnapLeft;
+      const boxBottom = snapCeil(clipBox ? Math.min(r.bottom, clipBox.bottom) : r.bottom, dpr) - layerSnapTop;
+      const clipRect: Rect = {
+        x: boxLeft,
+        y: boxTop,
+        w: Math.max(w, boxRight - boxLeft),
+        h: Math.max(h, boxBottom - boxTop),
+      };
+      const inView = w > 0 && h > 0 && visLeft + visW > scrollRect.left && visLeft < scrollRect.right && visTop + visH > scrollRect.top && visTop < scrollRect.bottom;
+      const visible = inView && entry.active;
+      flagUpdates.push({ entry, visible });
+      inputs.push({ widget: entry.widget, lane: entry.lane, rect: { x, y, w, h }, clipRect, inView, active: visible });
+    }
+
+    const cornerRadius = readCornerRadius(this.scrollEl);
+    for (const update of flagUpdates) {
+      this.setSlotDomFlags(update.entry, update.visible);
+    }
+    const geometry = computeSharedLaneGeometry(
+      inputs,
+      { x: scrollRect.left - layerSnapLeft, y: scrollRect.top - layerSnapTop, w: scrollRect.width, h: scrollRect.height },
+      dpr,
+      cornerRadius,
+    );
+    this.lastUsedClipPath = geometry.clipPathFallback;
+
+    for (const laneState of this.lanes.values()) {
+      if (!laneState.transferred) continue;
+      const layout = activeEnabled ? geometry.lanes.get(laneState.lane) : undefined;
+      if (!layout) {
+        const sig = 'off';
+        if (laneState.lastSig !== sig) {
+          laneState.canvas.style.display = 'none';
+          laneState.canvas.style.clipPath = '';
+          laneState.canvas.style.borderRadius = '';
+          laneState.lastSig = sig;
+          this.pipeline.sendLaneSlots(laneState.lane, {
+            width: 0,
+            height: 0,
+            dpr,
+            scrollTop,
+            scrollLeft,
+            surfaceColor,
+            clipPathFallback: false,
+            slots: [],
+          });
+        }
+        continue;
+      }
+
+      const originX = snapRound(scrollLeft + layout.left + originDx, dpr);
+      const originY = snapRound(scrollTop + layout.top + originDy, dpr);
+      const sig = `${layout.left}:${layout.top}:${originDx}:${originDy}:${layout.width}:${layout.height}:${dpr}:${originX}:${originY}:${surfaceColor}:${cornerRadius}:${layout.clipPathFallback ? 1 : 0}:${layout.clipPath}|${layout.slots.map(s => `${s.widget},${s.x},${s.y},${s.w},${s.h},${s.bx ?? ''},${s.by ?? ''},${s.bw ?? ''},${s.bh ?? ''},${s.visible ? 1 : 0}`).join(';')}`;
+      if (laneState.lastSig !== sig) {
+        laneState.canvas.style.display = 'block';
+        laneState.canvas.style.left = `${layout.left}px`;
+        laneState.canvas.style.top = `${layout.top}px`;
+        laneState.canvas.style.width = `${layout.width}px`;
+        laneState.canvas.style.height = `${layout.height}px`;
+        laneState.canvas.style.transform = Math.abs(originDx) > 1e-4 || Math.abs(originDy) > 1e-4
+          ? `translate(${originDx}px, ${originDy}px)`
+          : '';
+        laneState.canvas.style.clipPath = layout.clipPath;
+        laneState.canvas.style.borderRadius = layout.roundBottom ? `0 0 ${cornerRadius}px ${cornerRadius}px` : '';
+        laneState.canvas.dataset.clipFallback = layout.clipPathFallback ? '1' : '0';
+        laneState.lastSig = sig;
+        this.pipeline.sendLaneSlots(laneState.lane, {
+          width: layout.width,
+          height: layout.height,
+          dpr,
+          scrollTop,
+          scrollLeft,
+          originX,
+          originY,
+          surfaceColor,
+          cornerRadius,
+          clipPathFallback: layout.clipPathFallback,
+          slots: layout.slots,
+        });
+      }
+    }
+  }
+
+  private readonly onAppearance = () => {
+    this.scheduleSync();
+  };
+
+  dispose(): void {
+    this.disposed = true;
+    if (this.rafId !== null) cancelAnimationFrame(this.rafId);
+    this.scrollEl.removeEventListener('scroll', this.onScroll);
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener(APPEARANCE_EVENT, this.onAppearance);
+    }
+    this.ro?.disconnect();
+    this.mo?.disconnect();
+    this.unsubLaneFailed?.();
+    for (const laneState of this.lanes.values()) {
+      if (laneState.transferred) this.pipeline.disposeLaneSurface?.(laneState.lane);
+    }
+    for (const entry of this.widgets.values()) {
+      this.setSlotDomFlags(entry, false);
+    }
+    this.widgets.clear();
+    this.lanes.clear();
+    this.layerEl.remove();
+  }
+}
+
+export const SharedSurfaceContext = createContext<SharedSurfaceHost | null>(null);
+export const SpatialLaneContext = createContext<ReadonlyMap<string, number> | null>(null);

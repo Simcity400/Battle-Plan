@@ -7,6 +7,33 @@ import type { StripReceipt, StripUpdate } from '../dashboard/strip/store.ts';
 
 export type ProjectionKey = readonly [family: string, kind: string, view: string];
 
+export interface SharedSurfaceSlot {
+  readonly widget: number;
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+  readonly bx?: number;
+  readonly by?: number;
+  readonly bw?: number;
+  readonly bh?: number;
+  readonly visible: boolean;
+}
+
+export interface LaneSlotsPayload {
+  readonly width: number;
+  readonly height: number;
+  readonly dpr: number;
+  readonly scrollTop: number;
+  readonly scrollLeft: number;
+  readonly originX?: number;
+  readonly originY?: number;
+  readonly surfaceColor: string;
+  readonly cornerRadius?: number;
+  readonly clipPathFallback: boolean;
+  readonly slots: readonly SharedSurfaceSlot[];
+}
+
 export type ToLane =
   | { type: 'init'; lane: number; lanes: number; port: MessagePort; rate: number }
   | { type: 'options'; rate: number }
@@ -25,11 +52,18 @@ export type ToLane =
   | { type: 'stream'; route: number; seek: number; target: number }
   | { type: 'fail'; route: number; seek: number; command: number; reason: string }
   | { type: 'pointer'; widget: number; surface: number; point: [number, number] | null; installed?: number }
+  | { type: 'canvas'; widget: number; canvas: OffscreenCanvas; opaque: boolean }
+  | { type: 'clear-canvas'; widget: number }
+  | { type: 'use-canvas'; widget: number }
+  | { type: 'lane-surface'; canvas: OffscreenCanvas; opaque: boolean }
+  | ({ type: 'lane-slots' } & LaneSlotsPayload)
+  | { type: 'lane-surface-dispose' }
   | FrameRequest;
 
 export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
+  | { type: 'lane-surface-failed'; lane: number }
   | { type: 'prepared'; lane: number; ask: number }
   | { type: 'route-bound'; sub: number; route: number; seek: number }
   | { type: 'strip'; receipt: number; held: StripReceipt } | { type: 'strip'; receipt: number; error: string }

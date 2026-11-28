@@ -33,6 +33,7 @@ export interface Entry<B extends Bitmap = Bitmap> {
   open?: 'followed' | 'panel';
   failureOrigin?: FailureOrigin;
   viewport?: InstalledViewport;
+  repainted?: boolean;
   surfaces: readonly (B | Same | null)[];
   content: Readonly<Record<string, string>>;
   fields: Readonly<Record<string, unknown>>;
@@ -167,6 +168,7 @@ export class Page<B extends Bitmap = Bitmap> {
   private readonly byRoute = new Map<number, Set<Widget<B>>>();
   private readonly earlyWidgets = new Set<Widget<B>>();
   private readonly inspectedByLane: Set<Widget<B>>[];
+  private readonly laneWidgetCounts: number[];
   private readonly bounded = new Set<Widget<B>>();
   private safeLo = -Infinity;
   private safeHi = Infinity;
@@ -187,6 +189,7 @@ export class Page<B extends Bitmap = Bitmap> {
     this.refusals = Array.from({ length: lanes }, () => []);
     this.laneConfirmed = Array.from({ length: lanes }, () => new Map());
     this.inspectedByLane = Array.from({ length: lanes }, () => new Set<Widget<B>>());
+    this.laneWidgetCounts = Array.from({ length: lanes }, () => 0);
   }
 
   private confirmedBox(lane: number, route: number, channel: 'followed' | 'panel'): { hour: number } {
@@ -281,6 +284,7 @@ export class Page<B extends Bitmap = Bitmap> {
       ...(dead !== undefined ? { reason: dead, failureOrigin: 'stream' as const } : {}), inspect: null, early: null, earlyMore: [],
       changed: mount.changed, dated: mount.dated, failed: dead !== undefined, face: '', drawn: 0 };
     this.widgets.set(id, widget);
+    this.laneWidgetCounts[mount.lane] = (this.laneWidgetCounts[mount.lane] ?? 0) + 1;
     this.routeSet(mount.route).add(widget);
     this.trackBounds(widget);
     if (dead !== undefined) { this.touched.add(widget); this.tell(); }
@@ -295,6 +299,7 @@ export class Page<B extends Bitmap = Bitmap> {
     this.bounded.delete(widget);
     this.safeDirty = true;
     this.drop(widget.installed);
+    this.laneWidgetCounts[widget.lane] = Math.max(0, (this.laneWidgetCounts[widget.lane] ?? 0) - 1);
     this.widgets.delete(id);
   }
 
@@ -372,6 +377,7 @@ export class Page<B extends Bitmap = Bitmap> {
       }
     }
     for (let lane = 0; lane < this.lanes; lane++) {
+      if (this.laneWidgetCounts[lane] === 0 && this.acks[lane]!.length === 0 && this.refusals[lane]!.length === 0) continue;
       const lead = Math.min(MAX_AHEAD, Math.max(1, Math.round(this.ahead[lane]!)));
       const target = exact ? this.T : Math.max(this.targets[lane]!, this.T + this.step * lead);
       this.targets[lane] = exact ? -Infinity : target;
@@ -643,7 +649,7 @@ export class Page<B extends Bitmap = Bitmap> {
       this.refusals[widget.lane]!.push({ widget: widget.id, id: entry.id, reason: 'drawing failed' });
       return;
     }
-    if (entry.mode === 'picture' && entry.surfaces.some(part => part && part !== SAME)) this.pictures++;
+    if (entry.mode === 'picture' && (entry.repainted || entry.surfaces.some(part => part && part !== SAME))) this.pictures++;
     const fields: Record<string, unknown> = {}, kept = this.holding.get(entry) ?? [];
     this.holding.delete(entry);
     for (const [key, value] of Object.entries(entry.fields)) {
@@ -654,7 +660,7 @@ export class Page<B extends Bitmap = Bitmap> {
       else fields[key] = widget.installed!.fields[key];
     }
     const drew = !widget.installed || widget.installed.mode !== entry.mode || entry.reason !== widget.installed.reason
-      || entry.surfaces.some(part => part !== SAME) || Object.values(entry.fields).some(value => value !== SAME)
+      || entry.repainted === true || entry.surfaces.some(part => part !== SAME) || Object.values(entry.fields).some(value => value !== SAME)
       || Object.keys(widget.installed.fields).length !== Object.keys(entry.fields).length;
     widget.content = entry.mode === 'picture' ? { ...entry.content } : {};
     this.drop(widget.installed);

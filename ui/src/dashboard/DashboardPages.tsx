@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { LiveMotion } from '../charts/liveMotion.ts';
 import { busyCount } from '../shell/busy.ts';
 import '../widgets';
@@ -10,6 +10,8 @@ import DashboardGrid, { bodiesWaiting, LiveDashboardGrid } from './DashboardGrid
 import PreparedPages, { type PreparedPage } from './PreparedPages';
 import type { WidgetRuntime } from './definitions';
 import { prepareLanes } from './follow/pipeline.ts';
+import { SharedSurfaceContext, SharedSurfaceHost } from './follow/sharedSurface.ts';
+import { usePipeline } from './follow/useFollowed.ts';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { preparingClient } from './prepare.ts';
 import { pageClock } from './widgetClock.ts';
@@ -52,6 +54,21 @@ export default function DashboardPages({ active, viewport, stripPageId, runtime,
   }, [active, viewport, template.widgets, drawn]);
 
   const { client, clock } = runtime;
+  const hasWidgets = template.widgets.length > 0;
+  const pipeline = usePipeline(active && hasWidgets ? clock : null, active && hasWidgets ? client : null);
+  const [sharedHost, setSharedHost] = useState<SharedSurfaceHost | null>(null);
+  useLayoutEffect(() => {
+    if (!active || !hasWidgets || !pipeline || !viewport) {
+      setSharedHost(null);
+      return;
+    }
+    const host = new SharedSurfaceHost(pipeline, viewport);
+    setSharedHost(host);
+    return () => {
+      host.dispose();
+      setSharedHost(null);
+    };
+  }, [active, hasWidgets, pipeline, viewport]);
   const laneClient = useMemo(() => preparingClient(client), [client]);
   const pages = useMemo(() => drawn ? preparePages().map(page => ({
     ...page,
@@ -68,11 +85,11 @@ export default function DashboardPages({ active, viewport, stripPageId, runtime,
     }
     return { families: [...new Set([...projections.values()].map(([family]) => family))], projections: [...projections.values()] };
   }, [drawn, laneKinds, template.widgets]);
-  useEffect(() => { if (active) prepareLanes(pageClock(clock), needs); }, [active, clock, needs]);
+  useEffect(() => { if (active && (hasWidgets || drawn)) prepareLanes(pageClock(clock), needs); }, [active, hasWidgets, drawn, clock, needs]);
 
   return <>
     {active && (template.widgets.length
-      ? <LiveMotion.Provider value={clock.getMotion}><LiveDashboardGrid stripPageId={stripPageId} template={template} runtime={runtime} editing={editing} {...actions} /></LiveMotion.Provider>
+      ? <SharedSurfaceContext.Provider value={sharedHost}><LiveMotion.Provider value={clock.getMotion}><LiveDashboardGrid stripPageId={stripPageId} template={template} runtime={runtime} editing={editing} {...actions} /></LiveMotion.Provider></SharedSurfaceContext.Provider>
       : empty)}
     <PreparedPages pages={pages} clock={clock} client={client} viewport={viewport}
       enabled={active && drawn && preparing} draw={drawPrepared} mounting={bodiesWaiting} />

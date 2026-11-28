@@ -103,7 +103,7 @@ export function sessionConfinement(run, sessionEntry, sweepMeta = null) {
   const page = sweepMeta?.confinement ?? null;
   const reasons = [];
   if (cores) {
-    const expectedLanes = Math.max(1, Math.min(4, cores.count - 2));
+    const expectedLanes = Math.max(1, cores.count - 2);
     if (!job) reasons.push('Job object confinement was not recorded');
     else if (!job.allConfined || job.confinedProcesses < job.jobProcesses) {
       reasons.push(`Job object confined ${job.confinedProcesses}/${job.jobProcesses} processes (expected all at ${cores.mask})`);
@@ -116,8 +116,8 @@ export function sessionConfinement(run, sessionEntry, sweepMeta = null) {
       }
       const phases = sessionEntry?.phases ?? sweepMeta?.phases ?? [];
       const expectsLanes = phases.some(phase => phase === 'playback' || phase === 'widget-costs');
-      if (page.lanes != null && page.lanes !== expectedLanes) {
-        reasons.push(`created ${page.lanes} drawing lanes, expected ${expectedLanes} for ${cores.count} cores`);
+      if (page.lanes != null && (page.lanes < 1 || page.lanes > expectedLanes)) {
+        reasons.push(`created ${page.lanes} drawing lanes, expected 1..${expectedLanes} for ${cores.count} cores`);
       } else if (page.lanes == null && expectsLanes) {
         reasons.push('drawing lane count was not recorded');
       }

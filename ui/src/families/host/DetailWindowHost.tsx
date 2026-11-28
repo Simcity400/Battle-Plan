@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef } 
 import type { PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react';
 import { Icon } from '../../components/Icons';
 import { Popover, usePopover } from '../../components/Popover';
+import { SharedSurfaceContext } from '../../dashboard/follow/sharedSurface.ts';
 import { formatDateHover } from '../valueFormat.ts';
 import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts';
 import './detailWindow.css';
@@ -294,7 +295,9 @@ export function DetailWindowHost({
               </button>
             </div>
           </div>
-          <div className="detail-window-body">{children}</div>
+          <div className="detail-window-body">
+            <SharedSurfaceContext.Provider value={null}>{children}</SharedSurfaceContext.Provider>
+          </div>
         </DetailWindowCloseContext.Provider>
       )}
     </Popover>
