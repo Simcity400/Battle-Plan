@@ -286,6 +286,9 @@ type Daily = BTreeMap<u32, Vec<Option<i128>>>;
 
 const CONDITION_PRIORITY: [&str; 6] = ["blizzard", "sandstorm", "heavy_rain", "snow", "light_rain", "arctic_water"];
 
+#[cfg(test)]
+thread_local! { static GRIDS_FOLDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 fn chunk_ranges(len: usize, size: usize, preserve_terminal: bool) -> Vec<(usize, usize)> {
     if len == 0 {
         return Vec::new();
@@ -301,14 +304,22 @@ fn chunk_ranges(len: usize, size: usize, preserve_terminal: bool) -> Vec<(usize,
 
 #[cfg(test)]
 pub(crate) fn fold(days: &[Day], width: u32, measures: &[(String, Daily)], conditions: bool) -> io::Result<Columns> {
-    fold_inner(days, width, measures, conditions, false)
+    fold_inner(days, width, measures, conditions, false, None)
 }
 
+#[cfg(test)]
 pub(crate) fn fold_preserving_terminal(days: &[Day], width: u32, measures: &[(String, Daily)], conditions: bool) -> io::Result<Columns> {
-    fold_inner(days, width, measures, conditions, true)
+    fold_inner(days, width, measures, conditions, true, None)
 }
 
-fn fold_inner(days: &[Day], width: u32, measures: &[(String, Daily)], conditions: bool, preserve_terminal: bool) -> io::Result<Columns> {
+fn fold_inner(
+    days: &[Day],
+    width: u32,
+    measures: &[(String, Daily)],
+    conditions: bool,
+    preserve_terminal: bool,
+    selected: Option<&HashSet<u32>>,
+) -> io::Result<Columns> {
     let size = days.len().div_ceil(width.max(1) as usize).max(1);
     let ranges = chunk_ranges(days.len(), size, preserve_terminal);
     let columns = ranges
@@ -328,6 +339,9 @@ fn fold_inner(days: &[Day], width: u32, measures: &[(String, Daily)], conditions
     for (id, daily) in measures {
         let flag = FLAGS.iter().any(|(flag, _, _)| flag == id);
         for (&region, values) in daily {
+            if selected.is_some_and(|selected| !selected.contains(&region)) {
+                continue;
+            }
             let held = regions.entry(region).or_insert_with(|| (vec![false; days.len()], vec![false; days.len()], Vec::new()));
             let measure = if flag {
                 for (day, value) in values.iter().enumerate() {
@@ -358,6 +372,8 @@ fn fold_inner(days: &[Day], width: u32, measures: &[(String, Daily)], conditions
             }
         }
     }
+    #[cfg(test)]
+    GRIDS_FOLDED.set(regions.len());
     let per_column = |keep: &dyn Fn(usize) -> bool| -> Vec<u32> { ranges.iter().map(|&(start, end)| (start..end).filter(|&day| keep(day)).count() as u32).collect() };
     let regions = regions
         .into_iter()
@@ -636,6 +652,24 @@ struct Playback<'a, 'step> {
     step: at_hour::DatedStep<'step>,
 }
 
+#[derive(Default)]
+struct RegionSampleReader(Option<replay_lanes::at::Readers>);
+
+fn region_sample_frame(source: &Source, query: &Query<'_>, run: u32, hour: i32) -> io::Result<DecodedFrame> {
+    let state = source.state::<RegionSampleReader>();
+    let mut held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let recording = query.replay.recording();
+    let reads = [replay_lanes::at::Read::all(TableId::WeatherRegions)];
+    let mut cursor = replay_lanes::at::Cursor::resume(recording, &reads, held.0.take())?;
+    let frame = dashboard_query::cost::storage(|| cursor.frame(run, hour))?;
+    at_hour::count_rows(|| match frame.tables[TableId::WeatherRegions.index()].held() {
+        replay_frame::frame::TableView::Complete(rows) | replay_frame::frame::TableView::Truncated { rows, .. } => rows.len() as u64,
+        _ => 0,
+    });
+    held.0 = cursor.into_readers();
+    Ok(frame)
+}
+
 fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather, mut playback: Option<Playback<'_, '_>>, cancelled: &AtomicBool) -> io::Result<RegionalWeatherReply> {
     let recording = query.replay.recording();
     let asked = match (params.first_hour, params.window_days) {
@@ -678,16 +712,17 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     };
     let mut days = days(first, last, &known, &reads);
     let days_len = days.len();
-    let (mut held, held_choices, projected) = if let Some(playback) = playback.as_mut() {
+    let (mut held, held_choices, projected, reader_source) = if let Some(playback) = playback.as_mut() {
         let retain = playback.step.step.is_some_and(|input| input.step.last() == params.last_hour && !input.step.gap());
+        let reader_source = (retain && sampled == TableId::WeatherRegions).then_some(playback.source);
         let projected = if let Some((_, at)) = days.last().and_then(|day| day.at)
             && at == params.last_hour
             && playback.step.step.is_none_or(|input| input.step.last() == at && !input.step.gap())
         {
             Some(playback.step.frame(playback.source, query, at, &[sampled, TableId::ModifierDefinitions].map(at_hour::Read::all), |_| None)?)
         } else { None };
-        (retain.then_some(&mut playback.held.samples), retain.then_some(&mut playback.held.modifiers), projected)
-    } else { (None, None, None) };
+        (retain.then_some(&mut playback.held.samples), retain.then_some(&mut playback.held.modifiers), projected, reader_source)
+    } else { (None, None, None, None) };
     if let Some(held) = held.as_deref_mut() {
         let present: BTreeSet<_> = days.iter().filter_map(|day| day.at).collect();
         held.retain(|key, _| present.contains(key));
@@ -703,7 +738,11 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
         }
         let exact;
         let frame = if let Some(frame) = projected.filter(|frame| frame.hour == at) { frame } else {
-            exact = frames.frame(at, &[at_hour::Read::all(sampled)], "Regional weather")?;
+            exact = if let Some(source) = reader_source {
+                region_sample_frame(source, query, run, at)?
+            } else {
+                frames.frame(at, &[at_hour::Read::all(sampled)], "Regional weather")?
+            };
             &exact
         };
         let witness = if sampled == TableId::WeatherRegions {
@@ -891,14 +930,35 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
             rows.extend(held.iter().map(|row| row.id));
         }
     }
-    let mut columns = fold_preserving_terminal(&days, params.width, &measures, params.show == Show::Conditions)?;
-    let shown = days.iter().rev().find_map(|day| day.at);
-    let mut refused = Refusals::default();
     let all_candidates: Vec<u32> = rows
         .iter()
         .copied()
         .filter(|region| weather.names.contains_key(region) && (weather.members.is_empty() || weather.members.get(region).is_some_and(|members| !members.is_empty())))
         .collect();
+    let use_ranking = params.regions.is_none() && (params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some());
+    let mut rank_missing = None;
+    let mut hidden_active = 0;
+    let mut active_unlisted = ActiveRegions::default();
+    let ranked_order: Option<Vec<(u32, bool)>> = if use_ranking {
+        let mut seen = HashSet::new();
+        let pinned: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
+        let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
+        let candidates: Vec<u32> = all_candidates.iter().copied().filter(|id| !seen.contains(id)).collect();
+        let whole = days.last().is_some_and(|day| complete.iter().any(|&(first, end)| first <= day.last && day.last <= end));
+        let HourRank { ranked, missing } = rank_at_hour(&candidates, &days, &measures, params.show, whole);
+        rank_missing = terminal_failure.or(missing);
+        let top = if rank_missing.is_some() { 0 } else { params.top.unwrap_or(usize::MAX) };
+        let chosen = automatic(ranked, &hidden, top, rank_missing.clone());
+        hidden_active = chosen.hidden;
+        active_unlisted = chosen.active_unlisted;
+        Some(pinned.into_iter().map(|id| (id, true)).chain(chosen.listed.into_iter().map(|id| (id, false))).collect())
+    } else {
+        None
+    };
+    let selected = ranked_order.as_ref().map(|order| order.iter().map(|&(id, _)| id).collect());
+    let mut columns = fold_inner(&days, params.width, &measures, params.show == Show::Conditions, true, selected.as_ref())?;
+    let shown = days.iter().rev().find_map(|day| day.at);
+    let mut refused = Refusals::default();
     let regions: Vec<Choice> = all_candidates
         .iter()
         .map(|&region| Choice {
@@ -929,26 +989,9 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
         let auxiliary = shown.and_then(|(run, at)| dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, at, &[replay_lanes::at::Read::all(TableId::ModifierDefinitions)])).ok());
         modifier_choices(auxiliary.as_ref(), &weather.cat, &mut warnings)
     };
-    let use_ranking = params.regions.is_none() && (params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some());
-    let mut rank_missing = None;
-    let mut hidden_active = 0;
-    let mut active_unlisted = ActiveRegions::default();
-    let displayed_order: Vec<(u32, bool)> = if use_ranking {
-        let mut seen = HashSet::new();
-        let pinned: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
-        let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
-        let candidates: Vec<u32> = all_candidates.iter().copied().filter(|id| !seen.contains(id)).collect();
-        let whole = days.last().is_some_and(|day| complete.iter().any(|&(first, end)| first <= day.last && day.last <= end));
-        let HourRank { ranked, missing } = rank_at_hour(&candidates, &days, &measures, params.show, whole);
-        rank_missing = terminal_failure.or(missing);
-        let top = if rank_missing.is_some() { 0 } else { params.top.unwrap_or(usize::MAX) };
-        let chosen = automatic(ranked, &hidden, top, rank_missing.clone());
-        hidden_active = chosen.hidden;
-        active_unlisted = chosen.active_unlisted;
-        pinned.into_iter().map(|id| (id, true)).chain(chosen.listed.into_iter().map(|id| (id, false))).collect()
-    } else {
+    let displayed_order = ranked_order.unwrap_or_else(|| {
         columns.regions.iter().filter_map(|r| Some((r.id.parse::<u32>().ok()?, params.regions.is_some()))).collect()
-    };
+    });
     let mut by_id: HashMap<u32, ColumnRegion> = columns.regions.into_iter().filter_map(|r| Some((r.id.parse::<u32>().ok()?, r))).collect();
     let col_count = columns.columns.len();
     let terminal_unsampled = days.last().is_none_or(|day| day.at.is_none());
