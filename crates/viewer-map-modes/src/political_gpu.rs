@@ -249,12 +249,14 @@ impl Static {
                 view_formats: &[],
             })
         });
-        let layer = Layer::new(
+        let mut layer = Layer::new(
             gradient::LayerKind::Fixed(self.field.strategic_thickness),
             &self.strategic_keys,
             &color,
             &self.field,
         );
+        layer.region_opacity = 0;
+        layer.no_region_color = self.field.navy_neutral;
         let naval = self
             .strategic
             .layer_with(device, &layer, Some(Arc::clone(&self.strategic.scratch)))?;
