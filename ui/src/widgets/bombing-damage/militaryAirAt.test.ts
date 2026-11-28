@@ -56,6 +56,16 @@ test('the product order and ratio are drawn as given, each row keyed and drawn b
   assert.deepEqual(rows.map(item => item.readout?.primary), ['1.80 : 1', '0.69 : 1'], 'the ratio is the product\'s');
 });
 
+test('the followed content renders the exact bar picture at the displayed hour', () => {
+  const { hour, validUntil, ...content } = reply({});
+  const shown = displayedHour(hour + 5);
+  const playing = createBoundedReadView({ hour: shown, panels: new Map([['main', content]]), identity });
+  const paused = createBoundedReadView({ hour: shown, panels: new Map([['main', { ...content, hour: shown, validUntil }]]), identity });
+  assert.deepEqual(militaryAirModel(playing, AIR), militaryAirModel(paused, AIR));
+  assert.deepEqual(militaryAirModel(playing, PAIRED), militaryAirModel(paused, PAIRED));
+  assert.deepEqual(lossCausesModel(playing, AIR), lossCausesModel(paused, AIR));
+});
+
 test('R2-K6: aircraft are cut whole on screen from the recorded integer, 0.4 is never drawn as zero, and the tooltip keeps 1.23456', () => {
   const drawn = model(reply({ rows: [row({ tag: 'GER', identity: '7:1', dealt: '40000', taken: '123456' })] }), PAIRED);
   const first = drawn.rows[0] as BarsDataRow;

@@ -1,7 +1,7 @@
 use super::{MilitaryAirCauseName, MilitaryAirFamily, MilitaryAirMetric, MilitaryAirParams, MilitaryAirReply, air_loss_cause, window_reply};
 use dashboard_query::series::ranked::{GroupSelection, Members};
-use dashboard_base::products::{Country, LoadContext, Product, at_hour, validate_country};
-use dashboard_follow::panel::{Panel, PanelData};
+use dashboard_base::products::{Country, Finish, LoadContext, Product, at_hour, validate_country};
+use dashboard_follow::panel::Panel;
 use dashboard_base::{Source, span::HourSpan};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -371,19 +371,27 @@ pub(super) fn window(source: &Source, params: &MilitaryAirAtParams, branch: u64,
 }
 
 pub(crate) fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
-    let date = |data: &mut Arc<PanelData>, hour: i32| {
-        if data.as_ref().as_ref().ok().and_then(|reply| reply["hour"].as_i64()) != Some(i64::from(hour))
-            && let Ok(reply) = Arc::make_mut(data)
-        {
-            reply["hour"] = hour.into();
-        }
-    };
-    at_hour::dated_product::<MilitaryAirAt>(
-        source, load, asked, at_hour::at_hour,
-        |_, reply| reply.proof_through.min(reply.valid_until),
-        date,
-        |source, params, load, cancelled, _| MilitaryAirAt::load(source, params, load, cancelled),
-    )
+    let mut params = asked.clone();
+    params.as_object_mut().ok_or("Expected panel parameters")?.remove("panel");
+    let source = Arc::clone(source);
+    let load = LoadContext { content: load.content.clone() };
+    let finish = Finish::new(&source, &load, MilitaryAirAt::CONTENT_DEPENDENT);
+    Ok(at_hour::interval_panel(source.tables(), move |hour, cancelled| {
+        let mut request = params.clone();
+        at_hour::at_hour(&mut request, hour);
+        let params: MilitaryAirAtParams = dashboard_query::named::named(&request)?;
+        MilitaryAirAt::validate(&params).map_err(dashboard_core::invalid)?;
+        #[cfg(any(test, feature = "test-support"))]
+        dashboard_base::test_fixtures::product_called();
+        let (reply, rows) = at_hour::counted(|| finish.reply(|| MilitaryAirAt::load(&source, &params, &load, cancelled)));
+        let reply = reply?;
+        let through = reply.proof_through.min(reply.valid_until);
+        let mut body = serde_json::to_value(reply)?;
+        let fields = body.as_object_mut().expect("military air reply object");
+        fields.remove("hour");
+        fields.remove("validUntil");
+        Ok((body, hour..=through, rows))
+    }))
 }
 
 impl Product for MilitaryAirAt {

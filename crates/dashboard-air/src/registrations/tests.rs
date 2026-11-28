@@ -301,7 +301,9 @@ fn the_air_day_rebuilds_on_read_errors_gaps_and_new_runs() {
 }
 
 #[test]
-fn military_air_head_follows_changes_and_dates_quiet_replies_without_reloading() {
+fn military_air_head_confirms_quiet_replies_and_delivers_only_changed_content() {
+    use dashboard_follow::panel::product::Delivery;
+
     let frames = (100..=120).map(|hour| {
         let mut frame = source(1, hour, Some(i64::from(hour)));
         let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
@@ -320,31 +322,45 @@ fn military_air_head_follows_changes_and_dates_quiet_replies_without_reloading()
         }).collect();
         *frame.tables[TableId::AirLossEvents.index()] = TableView::Complete(TableRows::AirLossEvents(events));
         frame.metrics.table_ns[TableId::AirLossEvents.index()] = 1;
+        *frame.tables[TableId::BuildingBombingDamage.index()] = TableView::Complete(TableRows::BuildingBombingDamage(Vec::new()));
+        frame.metrics.table_ns[TableId::BuildingBombingDamage.index()] = 1;
         frame
     }).collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Arc::new(Source::from_replay(SourceKey { source_id: "military-air-head".into(), revision: "1".into() }, "air.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
     let load = LoadContext { content: None };
     let registration = AIR_LEDGER_AT_MILITARYAIRAT;
-    for (ranked, selection) in [(false, json!({"countries":["GER"]})), (true, json!({"top":1}))] {
+    for (family, ranked, selection, changed) in [
+        ("airLosses", false, json!({"countries":["GER"]}), &[100, 112][..]),
+        ("airLosses", true, json!({"top":1}), &[100, 112][..]),
+        ("bombing", false, json!({"countries":["GER"]}), &[100][..]),
+    ] {
         let mut request = selection;
         request["branchId"] = "1".into();
-        request["family"] = "airLosses".into();
+        request["family"] = family.into();
         request["metric"] = "taken".into();
         let mut follow_request = request.clone();
         follow_request["panel"] = registration.key.into();
         let follow = (registration.panel.unwrap().open)(&source, &load, &follow_request).unwrap();
+        let mut delivery = Delivery::default();
         for read in played(source.replay_ref(), follow.exact().unwrap(), 100, 120) {
+            let packet = delivery.packet((read.hour, 1, 1), 1, read.hour, read.hour == 100, &read.value);
+            assert_eq!(packet.changed, changed.contains(&read.hour), "{follow_request} at {}", read.hour);
             request["hour"] = read.hour.into();
-            let reply = registration.answer(&source, request.clone(), &load, &false.into()).unwrap();
-            assert_eq!(read.value.as_ref().as_ref().unwrap(), &reply, "{follow_request} at {}", read.hour);
+            let mut reply = registration.answer(&source, request.clone(), &load, &false.into()).unwrap();
+            assert_eq!(reply["hour"], read.hour, "exact replies still carry the requested hour");
             match read.hour {
                 100 if ranked => assert!(reply["validUntil"].as_i64().unwrap() >= 107, "the runner-up does not change the shown rank"),
                 101..=106 => assert_eq!(read.product_calls, 0, "quiet hour {}", read.hour),
                 107 => assert_eq!(read.product_calls, u64::from(ranked), "a ranked proof stops at the runner-up's event"),
-                112 => assert_eq!(read.product_calls, 1, "the new event is included at its read hour"),
+                112 if family == "airLosses" => assert_eq!(read.product_calls, 1, "the new event is included at its read hour"),
                 _ => {}
             }
+            let body = reply.as_object_mut().unwrap();
+            body.remove("hour");
+            body.remove("validUntil");
+            assert_eq!(serde_json::to_vec(read.value.as_ref().as_ref().unwrap()).unwrap(),
+                serde_json::to_vec(&reply).unwrap(), "{follow_request} at {}", read.hour);
         }
     }
 }

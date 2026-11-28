@@ -50,6 +50,8 @@ import {
   causeLabel,
   militaryAirParams,
   validateMilitaryAirAt,
+  validateMilitaryAirContent,
+  type MilitaryAirContent,
   type MilitaryAirFilters,
 } from '../bombing-damage/militaryAirAt.ts';
 
@@ -115,7 +117,7 @@ export function airKillsLossesProvenInterval(data: unknown, hour: number): reado
   return reply.hour <= hour && hour <= reply.validUntil ? [reply.hour, reply.validUntil] : null;
 }
 
-function unattributedNote(reply: MilitaryAirAtReply): string | null {
+function unattributedNote(reply: MilitaryAirContent): string | null {
   const [dealt, taken] = reply.unattributed;
   if (dealt === '0' && taken === '0') return null;
   return `No recorded country: Own losses ${formatAirExact(taken)}, Enemy losses ${formatAirExact(dealt)}.`;
@@ -237,8 +239,8 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       };
     }
 
-    const headPanel = readView.panel<MilitaryAirAtReply>('head');
-    const head = headPanel ? validateMilitaryAirAt(headPanel) : undefined;
+    const headPanel = readView.panel('head');
+    const head = headPanel == null ? undefined : validateMilitaryAirContent(headPanel);
     const dealtSeries = readView.series('dealt');
     const takenSeries = readView.series('taken');
     const rankRefused = head?.missing ?? head?.rankMissing ?? null;
