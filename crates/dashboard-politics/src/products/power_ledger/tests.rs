@@ -1476,7 +1476,27 @@ fn format_155_summary_logs_skip_legacy_walks_and_surface_log_gaps() {
     .unwrap();
     let damaged_replay = Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
     let damaged_source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-log-gap".into(), revision: "1".into() }, "gap.battleplan".into(), Arc::new(damaged_replay), &AtomicBool::new(false)).unwrap();
-    let reply = asked(&damaged_source, FIRST, 125);
+    let base_query = dashboard_base::queries::query(&damaged_source, 1).unwrap();
+    let holders = dashboard_query::identity::Holders::new(
+        [(
+            "GER".to_owned(),
+            vec![
+                dashboard_query::identity::HolderRun { first: FIRST, last: 117, holder: dashboard_query::identity::Holder::Found { slot: SLOT, id: GER }, starts_segment: true },
+                dashboard_query::identity::HolderRun { first: 118, last: 125, holder: dashboard_query::identity::Holder::Found { slot: next_slot, id: GER }, starts_segment: false },
+            ],
+        )]
+        .into(),
+        Vec::new(),
+    );
+    let explicit_query = dashboard_query::Query { replay: base_query.replay, timeline: base_query.timeline, holders: Arc::new(holders) };
+    let naming = naming::context(&damaged_source, &LoadContext { content: None }).unwrap();
+    let reply = spending(
+        &explicit_query,
+        &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: FIRST, to: 125 },
+        &naming,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(
         reply.coverage.iter().any(|span| {
             !span.covered

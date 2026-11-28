@@ -581,33 +581,6 @@ fn push_gain_day(events: &mut Vec<GainEvent>, (gained, capped, read): tally::Gai
     push_gain(events, gained, Some(i128::from(capped)), i64::from(read), unknown_days, 0);
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct SeqRuns(Vec<(u64, u64)>);
-
-impl SeqRuns {
-    fn insert(&mut self, seq: u64) -> bool {
-        let at = self.0.partition_point(|&(_, last)| last < seq);
-        if let Some(&(first, last)) = self.0.get(at)
-            && first <= seq
-            && seq <= last
-        {
-            return false;
-        }
-        let merge_prev = at > 0 && self.0[at - 1].1.checked_add(1) == Some(seq);
-        let merge_next = self.0.get(at).is_some_and(|&(first, _)| seq.checked_add(1) == Some(first));
-        match (merge_prev, merge_next) {
-            (true, true) => {
-                self.0[at - 1].1 = self.0[at].1;
-                self.0.remove(at);
-            }
-            (true, false) => self.0[at - 1].1 = seq,
-            (false, true) => self.0[at].0 = seq,
-            (false, false) => self.0.insert(at, (seq, seq)),
-        }
-        true
-    }
-}
-
 fn instant_gain(row: &CountryPowerChangeRow) -> Option<(Option<i128>, Option<i128>, i64)> {
     let before = row.balance_before_raw;
     let after = match row.realized_delta_raw {
@@ -709,11 +682,28 @@ pub struct PowerLedger {
     item_days: HashMap<(u32, u8, u32), ItemDays>,
     holds: HashMap<u32, Holds>,
     mismatched: HashSet<u32>,
-    seen_changes: HashMap<(u32, u64), SeqRuns>,
+    seen_changes: HashMap<u32, (u64, u64)>,
     idle: bool,
 }
 
 impl PowerLedger {
+    fn see_change(&mut self, country: u32, epoch: u64, sequence: u64) -> bool {
+        let mark = (epoch, sequence);
+        match self.seen_changes.entry(country) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if *entry.get() >= mark {
+                    return false;
+                }
+                entry.insert(mark);
+                true
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(mark);
+                true
+            }
+        }
+    }
+
     fn slot(&self, raw: u32) -> u32 {
         if raw == 0 {
             return NONE;
@@ -1253,7 +1243,7 @@ impl PowerLedger {
         if changes.backlog {
             for row in changes.rows {
                 if instant_gain(&row).is_some() || charge(&row).is_some() {
-                    self.seen_changes.entry((row.country, row.epoch)).or_default().insert(row.sequence);
+                    self.see_change(row.country, row.epoch, row.sequence);
                 }
             }
             return Ok(());
@@ -1275,7 +1265,7 @@ impl PowerLedger {
             let gain = instant_gain(&row);
             let charge = charge(&row);
             let fresh = (gain.is_some() || charge.is_some())
-                && self.seen_changes.entry((row.country, row.epoch)).or_default().insert(row.sequence);
+                && self.see_change(row.country, row.epoch, row.sequence);
             if let Some((gained, capped, unknown_days)) = gain
                 && fresh
             {
@@ -1979,7 +1969,7 @@ fn moved(hour: &Hour<'_>) -> bool {
     })
 }
 
-fn partial(hour: &Hour<'_>, out: &mut Rows, logged_days: bool, logged_payments: bool, logged_gains: bool) {
+fn partial(hour: &Hour<'_>, out: &mut Rows, logged_gains: bool) {
     let changes = hour.status(TableId::CountryPowerChanges);
     let costs = hour.status(TableId::CountryPowerDailyCosts);
     let set = |out: &mut Rows, derived: TableId, status: Status, not_recorded: &[u8]| match status {
@@ -1988,18 +1978,13 @@ fn partial(hour: &Hour<'_>, out: &mut Rows, logged_days: bool, logged_payments: 
     };
     if changes != Status::Complete {
         set(out, TableId::PowerDayParts, changes, b"CountryPowerChanges is not recorded");
-        if !logged_payments || matches!(changes, Status::Truncated { .. }) {
-            set(out, TableId::PowerSpendPayments, changes, b"CountryPowerChanges is not recorded");
-        }
+        set(out, TableId::PowerSpendDays, changes, b"CountryPowerChanges is not recorded");
+        set(out, TableId::PowerSpendPayments, changes, b"CountryPowerChanges is not recorded");
         if !logged_gains || matches!(changes, Status::Truncated { .. }) {
             set(out, TableId::PowerSpendGains, changes, b"CountryPowerChanges is not recorded");
         }
     } else if costs != Status::Complete {
         set(out, TableId::PowerDayParts, costs, b"CountryPowerDailyCosts is not recorded");
-    }
-    if changes != Status::Complete && (!logged_days || matches!(changes, Status::Truncated { .. })) {
-        set(out, TableId::PowerSpendDays, changes, b"CountryPowerChanges is not recorded");
-    } else if costs != Status::Complete && (!logged_days || matches!(costs, Status::Truncated { .. })) {
         set(out, TableId::PowerSpendDays, costs, b"CountryPowerDailyCosts is not recorded");
     }
 }
@@ -2052,51 +2037,6 @@ fn read_day_runs(reader: &mut Reader<'_>, limit: usize, allow_empty: bool) -> io
         runs.push((first, last));
     }
     Ok(DayRuns(runs))
-}
-
-fn write_seq_runs(blob: &mut Bytes, runs: &SeqRuns) -> io::Result<()> {
-    blob.varint(runs.0.len() as u64)?;
-    let mut prev_last: Option<u64> = None;
-    for &(first, last) in &runs.0 {
-        if last < first {
-            return Err(invalid("PowerLedger's state holds an inverted sequence run"));
-        }
-        let delta = match prev_last {
-            None => first,
-            Some(prev) => prev
-                .checked_add(2)
-                .and_then(|min| first.checked_sub(min))
-                .ok_or_else(|| invalid("PowerLedger's state holds unsorted, overlapping or unmerged sequence runs"))?,
-        };
-        blob.varint(delta)?;
-        blob.varint(last - first)?;
-        prev_last = Some(last);
-    }
-    Ok(())
-}
-
-fn read_seq_runs(reader: &mut Reader<'_>, limit: usize) -> io::Result<SeqRuns> {
-    let run_count = reader.count()?;
-    if run_count == 0 || run_count > limit {
-        return Err(invalid("PowerLedger's state holds an invalid sequence run count"));
-    }
-    let mut runs = Vec::with_capacity(run_count);
-    let mut prev_last: Option<u64> = None;
-    for _ in 0..run_count {
-        let delta = reader.varint()?;
-        let first = match prev_last {
-            None => delta,
-            Some(prev) => prev
-                .checked_add(2)
-                .and_then(|min| min.checked_add(delta))
-                .ok_or_else(|| invalid("PowerLedger's state holds a sequence run past u64"))?,
-        };
-        let span = reader.varint()?;
-        let last = first.checked_add(span).ok_or_else(|| invalid("PowerLedger's state holds a sequence run past u64"))?;
-        prev_last = Some(last);
-        runs.push((first, last));
-    }
-    Ok(SeqRuns(runs))
 }
 
 fn validate_batch_parts(batch: &CostBatch) -> io::Result<()> {
@@ -2175,7 +2115,7 @@ impl Writer for PowerLedger {
             }
             for row in inputs::changes(hour)?.rows {
                 if instant_gain(&row).is_some() || charge(&row).is_some() {
-                    self.seen_changes.entry((row.country, row.epoch)).or_default().insert(row.sequence);
+                    self.see_change(row.country, row.epoch, row.sequence);
                 }
             }
             let reason = match status {
@@ -2200,7 +2140,7 @@ impl Writer for PowerLedger {
         let adjacent = !hour.fresh && self.last.and_then(|last| last.checked_add(1)) == Some(at);
         let rolls = self.batches.keys().any(|key| key.day != midnight(at)) || self.change_parts.values().any(|(day, _)| *day != midnight(at));
         if !whole && self.idle && !rolls && !moved(hour) {
-            partial(hour, out, false, false, false);
+            partial(hour, out, false);
             self.last = Some(at);
             return Ok(());
         }
@@ -2359,7 +2299,7 @@ impl Writer for PowerLedger {
                 out.append(TableId::PowerSpendGains, row.key(), cells);
             }
         }
-        partial(hour, out, logged_days, logged_payments, logged_gains);
+        partial(hour, out, logged_gains);
         self.idle = !current
             && self.holds.is_empty()
             && !logged_days
@@ -2435,13 +2375,13 @@ impl Writer for PowerLedger {
                 blob.varint(u64::from(part.read as u32))?;
             }
         }
-        let mut seen_changes: Vec<((u32, u64), &SeqRuns)> = self.seen_changes.iter().filter(|(_, runs)| !runs.0.is_empty()).map(|(&key, runs)| (key, runs)).collect();
-        seen_changes.sort_unstable_by_key(|&(key, _)| key);
+        let mut seen_changes: Vec<(u32, (u64, u64))> = self.seen_changes.iter().map(|(&country, &mark)| (country, mark)).collect();
+        seen_changes.sort_unstable_by_key(|&(country, _)| country);
         blob.varint(seen_changes.len() as u64)?;
-        for ((country, epoch), runs) in seen_changes {
+        for (country, (epoch, sequence)) in seen_changes {
             blob.varint(u64::from(country))?;
             blob.varint(epoch)?;
-            write_seq_runs(blob, runs)?;
+            blob.varint(sequence)?;
         }
         Ok(())
     }
@@ -2568,14 +2508,14 @@ impl Writer for PowerLedger {
         }
         let seen_changes = reader.count()?;
         if seen_changes > blob.len() {
-            return Err(invalid("PowerLedger's state counts more seen change histories than it holds"));
+            return Err(invalid("PowerLedger's state counts more seen change marks than it holds"));
         }
         for _ in 0..seen_changes {
             let country = reader.varint_u32()?;
             let epoch = reader.varint()?;
-            let runs = read_seq_runs(&mut reader, blob.len())?;
-            if self.seen_changes.insert((country, epoch), runs).is_some() {
-                return Err(invalid(format!("PowerLedger's state repeats seen changes for country {country} epoch {epoch}")));
+            let sequence = reader.varint()?;
+            if self.seen_changes.insert(country, (epoch, sequence)).is_some() {
+                return Err(invalid(format!("PowerLedger's state repeats seen change mark for country {country}")));
             }
         }
         reader.finish()?;
