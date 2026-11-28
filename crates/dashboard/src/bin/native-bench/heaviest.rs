@@ -22,7 +22,7 @@ use std::{
 const SPEED: f64 = 1440.0;
 
 #[cfg(windows)]
-fn thread_cpu_ns() -> u64 {
+pub(super) fn thread_cpu_ns() -> u64 {
     use windows_sys::Win32::{Foundation::FILETIME, System::Threading::{GetCurrentThread, GetThreadTimes}};
     let mut t = [FILETIME::default(); 4];
     let [c, e, k, u] = &mut t;
@@ -32,10 +32,10 @@ fn thread_cpu_ns() -> u64 {
 }
 
 #[cfg(not(windows))]
-fn thread_cpu_ns() -> u64 { 0 }
+pub(super) fn thread_cpu_ns() -> u64 { 0 }
 
 #[cfg(windows)]
-fn thread_cycles() -> u64 {
+pub(super) fn thread_cycles() -> u64 {
     use windows_sys::Win32::System::Threading::GetCurrentThread;
     unsafe extern "system" { fn QueryThreadCycleTime(thread: *mut std::ffi::c_void, cycles: *mut u64) -> i32; }
     let mut cycles = 0u64;
@@ -45,7 +45,7 @@ fn thread_cycles() -> u64 {
 }
 
 #[cfg(not(windows))]
-fn thread_cycles() -> u64 { 0 }
+pub(super) fn thread_cycles() -> u64 { 0 }
 
 fn patch_bytes(before: &Value, after: &Value) -> usize {
     dashboard::patch::encode(&dashboard::patch::diff(before, after)).map_or(usize::MAX, |b| b.len())
@@ -64,7 +64,7 @@ fn change_touches(c: &Changes, cols: &BTreeSet<usize>) -> bool {
         || c.log().is_some_and(|l| !l.is_empty() || !l.forgotten().is_empty())
 }
 
-type GroupKey = (usize, Vec<usize>, Vec<u128>, bool);
+pub(super) type GroupKey = (usize, Vec<usize>, Vec<u128>, bool);
 
 fn release_live(follow: &Follow, held: &mut Vec<(GroupKey, u32)>) {
     for (_, id) in held.drain(..) {
@@ -73,9 +73,9 @@ fn release_live(follow: &Follow, held: &mut Vec<(GroupKey, u32)>) {
 }
 
 #[expect(clippy::too_many_arguments, reason = "mirrors host::StepProduct::follow_cells transformation for delivered wire payloads")]
-fn sync_live(
+pub(super) fn sync_live(
     follow: &Follow,
-    lane: u32,
+    mut live_id: impl FnMut() -> u32,
     held: &mut Vec<(GroupKey, u32)>,
     last_delivered: Option<&Arc<PanelData>>,
     value: &Arc<PanelData>,
@@ -109,7 +109,7 @@ fn sync_live(
                 kept.push(entry);
                 (kept.last().unwrap().1, false)
             } else {
-                let id = cells_id(lane, 2);
+                let id = live_id();
                 let _ = follow.follow(id, group.query());
                 kept.push((key, id));
                 (id, true)
@@ -232,20 +232,21 @@ struct StepReport {
     follow_touched: u32,
 }
 
-fn widen<'a>(declared: &mut BTreeMap<usize, Declared>, lanes: impl IntoIterator<Item = &'a Declared>) -> bool {
+pub(super) fn widen<'a>(declared: &mut BTreeMap<usize, Declared>, lanes: impl IntoIterator<Item = &'a Declared>) -> bool {
     let mut widened = false;
     for lane in lanes {
         let held = declared.entry(lane.table).or_insert_with(|| {
             widened = true;
             lane.clone()
         });
-        let before = (held.columns.len(), held.keyed, held.passing);
+        let before = (held.columns.len(), held.keyed, held.passing, held.hourly);
         held.columns.extend(&lane.columns);
         held.columns.sort_unstable();
         held.columns.dedup();
         held.keyed |= lane.keyed;
         held.passing |= lane.passing;
-        widened |= before != (held.columns.len(), held.keyed, held.passing);
+        held.hourly |= lane.hourly;
+        widened |= before != (held.columns.len(), held.keyed, held.passing, held.hourly);
     }
     widened
 }
@@ -369,6 +370,64 @@ fn build_follow(
     }
     let declared = follow.declared()?;
     Ok((follow, declared, subs))
+}
+
+#[expect(clippy::too_many_arguments, reason = "shared playback driver accepts a hook and its result consumer")]
+pub(super) fn drive<T>(
+    pages: Arc<WorldPages>,
+    piece: Piece,
+    quantum: i32,
+    mut declared: BTreeMap<usize, Declared>,
+    hook: Hook,
+    recv: mpsc::Receiver<(T, Vec<Declared>)>,
+    setup: impl FnOnce(&Playhead) -> io::Result<()>,
+    mut accept: impl FnMut(T) -> io::Result<Option<i32>>,
+) -> io::Result<()> {
+    let Piece { first, last, .. } = piece;
+    let timeline = Timeline::new(&*pages, vec![piece])?;
+    let rate = SPEED / f64::from(quantum);
+    let ph = Playhead::new(
+        pages,
+        timeline,
+        Settings { step_threads: 2, rate, ..Settings::default() },
+        Some(hook),
+    )?;
+    setup(&ph)?;
+    ph.lead(dashboard_follow::lead::LEAD);
+    let reader = ph.declare(declared.values().cloned().collect(), None)?;
+    let mut seat = ph.consumer(reader);
+    ph.seek(first);
+
+    let mut started = false;
+    let mut finished = first - 1;
+    let mut taken = Vec::new();
+    while finished < last {
+        if let Some(why) = ph.error() {
+            return Err(io::Error::other(why));
+        }
+        let newest = ph.newest().unwrap_or(first);
+        seat.advance(newest);
+        seat.take(newest, &mut taken);
+        taken.clear();
+        if !started && ph.newest().is_some() {
+            started = true;
+            ph.anchor(f64::from(first), true, SPEED, std::time::Instant::now(), false);
+        }
+        match recv.recv_timeout(Duration::from_millis(2)) {
+            Ok((rep, new_lanes)) => {
+                if widen(&mut declared, &new_lanes) {
+                    ph.redeclare(reader, declared.values().cloned().collect())?;
+                }
+                if let Some(hour) = accept(rep)? { finished = finished.max(hour); }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(io::Error::other("playhead disconnected early")),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+    drop(seat);
+    ph.finish();
+
+    Ok(())
 }
 
 #[expect(clippy::too_many_arguments, reason = "benchmark entry point taking opened recording context and stride options")]
@@ -527,7 +586,7 @@ pub fn run(
             } else {
                 sync_live(
                     &follow_live,
-                    (i as u32) % 2,
+                    || cells_id((i as u32) % 2, 2),
                     &mut panel.live_groups,
                     panel.last_delivered.as_ref(),
                     &reading.value,
@@ -612,42 +671,11 @@ pub fn run(
         let _ = send.send((Some(rep), new_lanes));
     });
 
-    let timeline = Timeline::new(&*pages, vec![Piece { run: 0, first, last }])?;
-    let rate = SPEED / f64::from(quantum);
-    let ph = Playhead::new(
-        pages,
-        timeline,
-        Settings { step_threads: 2, rate, ..Settings::default() },
-        Some(hook),
-    )?;
-    ph.lead(dashboard_follow::lead::LEAD);
-    let reader = ph.declare(declared.values().cloned().collect(), None)?;
-    let mut seat = ph.consumer(reader);
-    ph.seek(first);
-
-    let mut started = false;
-    let mut finished = first - 1;
-    let mut taken = Vec::new();
     let mut step_reports: Vec<StepReport> = Vec::new();
-    while finished < last {
-        if let Some(why) = ph.error() {
-            return Err(io::Error::other(why));
-        }
-        let newest = ph.newest().unwrap_or(first);
-        seat.advance(newest);
-        seat.take(newest, &mut taken);
-        taken.clear();
-        if !started && ph.newest().is_some() {
-            started = true;
-            ph.anchor(f64::from(first), true, SPEED, std::time::Instant::now(), false);
-        }
-        match recv.recv_timeout(Duration::from_millis(2)) {
-            Ok((rep, new_lanes)) => {
-                if widen(&mut declared, &new_lanes) {
-                    ph.redeclare(reader, declared.values().cloned().collect())?;
-                }
+    drive(pages, Piece { run: 0, first, last }, quantum, declared, hook, recv, |_| Ok(()), |rep| {
+        Ok({
                 if let Some(rep) = rep {
-                    finished = rep.last;
+                    let hour = rep.last;
                     if rep.measured {
                         if let Some(prev) = step_reports.last_mut().filter(|p| p.stride == rep.stride) {
                             prev.last = rep.last;
@@ -667,14 +695,12 @@ pub fn run(
                             step_reports.push(rep);
                         }
                     }
+                    Some(hour)
+                } else {
+                    None
                 }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(io::Error::other("playhead disconnected early")),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
-    }
-    drop(seat);
-    ph.finish();
+        })
+    })?;
 
     let (total_cpu_ns, total_cycles) = *hook_cpu.lock().unwrap();
     let ns_per_cycle = (total_cpu_ns > 0 && total_cycles > 0).then(|| total_cpu_ns as f64 / total_cycles as f64);

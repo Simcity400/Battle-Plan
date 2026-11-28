@@ -415,22 +415,22 @@ fn dated_interval(
     });
     let cold_read = Arc::clone(&read);
     let cold: ExactReader = Arc::new(move |hour, cancelled| cold_read(hour, cancelled, None).map(|(data, _, _)| data).map_err(|error| error.to_string()));
-    let held = Mutex::new((None::<(RangeInclusive<i32>, Arc<PanelData>, u64)>, incremental::StepFrame::default()));
+    let held = Mutex::new((None::<(RangeInclusive<i32>, Arc<PanelData>)>, incremental::StepFrame::default()));
     let advance: ProductReader = Arc::new(move |hour, seed, cancelled, step| {
         let (held, frame) = &mut *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if seed || step.is_some_and(|input| input.step.reset() || input.step.gap()) { *frame = incremental::StepFrame::default(); }
-        if !seed && let Some((interval, value, rows)) = &mut *held && interval.contains(&hour) {
+        if !seed && let Some((interval, value)) = &mut *held && interval.contains(&hour) {
             let undated = value.clone();
             date(value, hour);
             if !Arc::ptr_eq(&undated, value) { *interval = hour..=*interval.end(); }
-            return ProductRead { value: value.clone(), rows: *rows, fresh: false, pending: false, live: None, lanes: Vec::new(), from: *interval.start() };
+            return ProductRead { value: value.clone(), rows: 0, fresh: false, pending: false, live: None, lanes: Vec::new(), from: *interval.start() };
         }
         let (value, rows, from) = match read(hour, cancelled, Some(DatedStep { step, frame })) {
             Ok((reply, proven, rows)) => {
                 let value = Arc::new(Ok(reply));
                 let holds = *proven.end() >= hour;
                 let from = if holds { (*proven.start()).min(hour) } else { hour };
-                *held = holds.then(|| (from..=*proven.end(), value.clone(), rows));
+                *held = holds.then(|| (from..=*proven.end(), value.clone()));
                 (value, rows, from)
             }
             Err(error) if (seed_pending || step.is_some()) && error.kind() == io::ErrorKind::WouldBlock => return ProductRead {

@@ -170,6 +170,17 @@ fn recording_frames(frames: Vec<DecodedFrame>) -> (Source, Arc<dyn Pages>) {
 }
 
 #[test]
+fn reusing_a_dated_panel_does_not_charge_the_cached_rows() {
+    let panel = interval_panel(None, |hour, _| Ok((json!(hour), hour..=hour + 2, 3)));
+    let reader = &panel.exact().unwrap().advance;
+    let cancelled = false.into();
+    let first = reader(110, true, &cancelled, None);
+    let next = reader(111, false, &cancelled, None);
+    assert_eq!(first.value, next.value);
+    assert_eq!((first.rows, next.rows), (3, 0));
+}
+
+#[test]
 fn a_dated_panel_projects_the_same_changed_rows_from_the_step_and_the_recording() {
     let (source, _) = recording();
     let source = Arc::new(source);
