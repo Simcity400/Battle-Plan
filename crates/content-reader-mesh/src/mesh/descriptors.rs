@@ -426,6 +426,25 @@ pub struct Descriptors {
     pub animations: BTreeMap<String, AnimationDefinition>,
 }
 
+#[derive(Clone, Copy)]
+pub struct DescriptorView<'a> {
+    pub meshes: &'a BTreeMap<String, MeshDefinition>,
+    pub animations: &'a BTreeMap<String, AnimationDefinition>,
+    entities: &'a BTreeMap<String, EntityDefinition>,
+    aliases: Option<&'a BTreeMap<String, EntityDefinition>>,
+}
+
+impl<'a> From<&'a Descriptors> for DescriptorView<'a> {
+    fn from(descriptors: &'a Descriptors) -> Self {
+        Self {
+            meshes: &descriptors.meshes,
+            animations: &descriptors.animations,
+            entities: &descriptors.entities,
+            aliases: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InheritedEntity<'a> {
     pub mesh: Option<&'a str>,
@@ -442,12 +461,38 @@ pub struct InheritedEntity<'a> {
 }
 
 impl Descriptors {
+    pub fn with_aliases<'a>(&'a self, aliases: &'a BTreeMap<String, EntityDefinition>) -> DescriptorView<'a> {
+        DescriptorView {
+            aliases: Some(aliases),
+            ..self.into()
+        }
+    }
+
     pub fn inherit(&self, name: &str) -> Option<InheritedEntity<'_>> {
+        DescriptorView::from(self).inherit(name)
+    }
+
+    pub fn resolve_entity(&self, name: &str) -> Option<ResolvedEntity<'_>> {
+        DescriptorView::from(self).resolve_entity(name)
+    }
+}
+
+impl<'a> DescriptorView<'a> {
+    pub fn entity(self, name: &str) -> Option<&'a EntityDefinition> {
+        self.aliases.and_then(|aliases| aliases.get(name)).or_else(|| self.entities.get(name))
+    }
+
+    pub fn has_entity(self, name: &str) -> bool {
+        self.aliases.is_some_and(|aliases| aliases.contains_key(name)) || self.entities.contains_key(name)
+    }
+
+    pub fn inherit(self, name: &str) -> Option<InheritedEntity<'a>> {
         let mut out = InheritedEntity::default();
         let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
-        let mut current = self.entities.get(name)?;
+        let mut current = self.entity(name)?;
         let mut chain = Vec::new();
-        for _ in 0..=self.entities.len() {
+        let count = self.entities.len() + self.aliases.map_or(0, BTreeMap::len);
+        for _ in 0..=count {
             chain.push(current);
             out.sources.extend(&current.sources);
             out.mesh = out.mesh.or(current.mesh.as_deref());
@@ -475,7 +520,7 @@ impl Descriptors {
             if seen.insert(parent, ()).is_some() {
                 break;
             }
-            let Some(parent) = self.entities.get(parent) else {
+            let Some(parent) = self.entity(parent) else {
                 break;
             };
             current = parent;
@@ -495,7 +540,7 @@ impl Descriptors {
         Some(out)
     }
 
-    pub fn resolve_entity(&self, name: &str) -> Option<ResolvedEntity<'_>> {
+    pub fn resolve_entity(self, name: &str) -> Option<ResolvedEntity<'a>> {
         let Some(inherited) = self.inherit(name) else {
             let definition = self.meshes.get(name)?;
             return Some(ResolvedEntity {
