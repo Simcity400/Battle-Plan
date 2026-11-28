@@ -17,7 +17,7 @@ use replay_data::{
     BranchId, Hour,
     rows::{TABLE_COUNT, TableId},
 };
-use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView, not_declared};
+use replay_frame::frame::{DecodedFrame, Metrics, SharedView, Stamp, TableView, not_declared};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io,
@@ -773,8 +773,10 @@ impl Shared {
         if let Some((_, view)) = view.as_ref().filter(|(held, _)| *held == at) {
             return view.clone();
         }
-        let next = SharedView::from(TableView::Unavailable { reason: format!("{SCRIPT_VALUES:?} is read by key") })
-            .with_keyed_numbers(self.script_values.clone());
+        let next = view.as_ref().map_or_else(
+            || SharedView::from(TableView::Unavailable { reason: format!("{SCRIPT_VALUES:?} is read by key") }).with_keyed_numbers(self.script_values.clone()),
+            |(_, previous)| previous.clone(),
+        ).with_stamp(Stamp::new(at.0));
         *view = Some((at, next.clone()));
         next
     }

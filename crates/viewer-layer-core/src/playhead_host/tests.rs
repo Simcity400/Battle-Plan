@@ -564,7 +564,7 @@ fn a_map_on_an_earlier_format_plays_with_changed_tables_withheld_and_newer_table
 fn script_values_are_read_from_the_requested_hour_without_building_a_mirror() {
     use playhead::pages::{Span, WorldPages};
     use replay_data::{format::FormatVersion, rows::{CountryRow, ScriptVariableValueRow}};
-    use replay_frame::frame::KeyedNumber;
+    use replay_frame::frame::{KeyedNumber, SharedView, view_reads};
     use replay_journal::{fixtures, synthetic::{Input, Sample}};
     use replay_recording::columnar_frames::Recording;
 
@@ -598,9 +598,13 @@ fn script_values_are_read_from_the_requested_hour_without_building_a_mirror() {
     assert_eq!(read(&mut side, hour + 1), KeyedNumber::Value(Some(-19)));
     assert!(matches!(read(&mut side, hour + 2), KeyedNumber::Unavailable(reason) if reason.contains("truncated") && reason.contains("ScriptVariableValues")));
     assert_eq!(read(&mut side, hour), KeyedNumber::Value(Some(-20)));
-    let original = reader.frame().unwrap().tables[values.index()].identity();
+    let original = reader.frame().unwrap();
+    let (_, reads) = view_reads::record(|| original.keyed_i64(values, Some(key)).unwrap());
+    assert_eq!(reads.len(), 1);
     assert_eq!(read(&mut side, hour + 1), KeyedNumber::Value(Some(-19)));
-    assert!(!original.is(&reader.frame().unwrap().tables[values.index()]));
+    let next = reader.frame().unwrap();
+    assert!(SharedView::ptr_eq(&original.tables[values.index()], &next.tables[values.index()]), "a keyed source is not a changed row view");
+    assert!(!reads[0].is(&next.tables[values.index()]), "a lookup at a different hour invalidates the recorded dependency");
 
     let all = side.views().reader("explicit script values", &[super::views::Need::every(values)]);
     side.catch_up(hour + 1).unwrap();
