@@ -805,6 +805,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         reportInvalidPlayback(binding);
         animation = undefined;
       }
+      const playbackUnavailable = animation?.unavailable(model) === true;
       const status = family.status(model);
       const settlePlayback = input.restorePlayback;
       if (status === 'waiting') {
@@ -970,7 +971,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           keep.artShown = shownKey;
           keep.art.requestVisible(shown, keep.artUrls ?? projected.artUrls);
         }
-        const canKeep = playbackOwnsPixels
+        const canKeep = playbackOwnsPixels || (input.deferExpiredPlaybackRefusal && playbackUnavailable)
           || (!settlePlayback && !input.playbackOwnsPixels && !slotDirty && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame));
         const painted = canKeep ? { drew: false, next: false } : drawCanvas();
         const incremental = typeof painted === 'object';
@@ -1057,7 +1058,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
 
       const tPaint = timed ? performance.now() : 0;
       const fields: Record<string, Field> = { ...keep.demandFields };
-      const playbackUnavailable = animation?.unavailable(model) === true;
       const structureKey = [model, layout, playbackUnavailable];
       const structureChanged = !sameKey(keep.structureKey, structureKey);
       if (structureChanged) {

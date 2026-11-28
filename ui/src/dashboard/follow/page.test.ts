@@ -126,6 +126,17 @@ test('while playing, an entry whose window ended before the actual target still 
   assert.deepEqual([view().id, view().h], [4, 130], 'the same window end with a later start is the newer picture');
 });
 
+test('a delayed playback refusal cannot cover a held reading after the refusal expires', () => {
+  const { p, offer, view, frames } = page({ surfaces: 0 });
+  offer(entry({ n: 0, id: 1, h: 100, c: 100, lo: 100, hi: 100 }));
+  p.publish(100, { playing: true });
+  const delayed = { ...entry({ n: 0, id: 2, h: 101, c: 101, lo: 101, hi: 101 }), playbackUnavailable: true as const };
+  offer(delayed);
+  p.publish(102);
+  assert.equal(view().id, 1);
+  assert.deepEqual(frames().at(-1)!.refused.map(r => [r.id, r.reason]), [[2, 'uncovered']]);
+});
+
 test('review 3: a paused step to 20 never installs a delayed entry whose window ended at 14; the visible picture stays, dimmed', () => {
   const { p, offer, view } = page();
   offer(entry({ id: 1, h: 10, c: 18, lo: 10, hi: 18 })); p.publish(18);

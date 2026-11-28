@@ -104,7 +104,6 @@ async function checkHostedRefusal() {
     send(100, 37);
     if (!await until(() => sharedActive() && labels.has('37'))) throw new Error('Initial rank did not paint on the shared canvas');
     send(101, null);
-    send(103, 83);
     clock.setPlaying(true);
     const anchor = clock.composedAt();
     const tick = (offset: number) => { now = anchor + offset; frames.tick(now); };
@@ -124,11 +123,20 @@ async function checkHostedRefusal() {
     const gap = pipeline.view(placement);
     const afterGap = { refusal, refusalSlot, held, through: gap?.through, painted: gap?.painted, label: labels.has('37'), overlay: overlay() };
     labels.clear();
+    mount.querySelector<HTMLElement>('.fh-body')!.focus();
+    const rebound = await until(() => {
+      tick(2500);
+      const view = pipeline.view(placement);
+      return overlay() === null && labels.has('37') && view?.through === 100
+        && (view.installedBinding ?? 0) > (gap?.installedBinding ?? 0);
+    });
+    send(103, 83);
+    labels.clear();
     const resumed = await until(() => {
       tick(3500);
       return overlay() === null && labels.has('83') && pipeline.view(placement)?.through === 103;
     });
-    return { ...afterGap, resumed };
+    return { ...afterGap, rebound, resumed };
   } finally {
     clock.stop();
     flushSync(() => root.unmount());

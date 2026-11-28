@@ -24,6 +24,6 @@ test('ordered bars settle to the same pixels as a cold draw after worker playbac
 test('the shared host shows a proven refusal and reveals the held recorded bar after it expires', async () => {
   await withNativePage('ordered-bars-host-refusal', '/ui/src/families/motionHost.dom.fixture.tsx', async page => {
     const result = await page.evaluate('window.checkHostedRefusal()');
-    assert.deepEqual(result, { refusal: true, refusalSlot: true, held: true, through: 100, painted: 100, label: true, overlay: null, resumed: true });
+    assert.deepEqual(result, { refusal: true, refusalSlot: true, held: true, through: 100, painted: 100, label: true, overlay: null, rebound: true, resumed: true });
   });
 });

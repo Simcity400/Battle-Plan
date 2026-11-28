@@ -35,6 +35,7 @@ export interface Entry<B extends Bitmap = Bitmap> {
   viewport?: InstalledViewport;
   repainted?: boolean;
   recordedPicture?: true;
+  playbackUnavailable?: true;
   surfaces: readonly (B | Same | null)[];
   content: Readonly<Record<string, string>>;
   fields: Readonly<Record<string, unknown>>;
@@ -590,9 +591,10 @@ export class Page<B extends Bitmap = Bitmap> {
     const shown = widget.installed;
     if (shown && shown.binding === entry.binding && entry.id < shown.id) return 'superseded';
     if (at < entry.lo) return 'early';
+    const c = this.effectiveC(widget, entry);
+    if (this.playing && entry.playbackUnavailable && at > Math.min(c, entry.hi)) return 'uncovered';
     if (at > entry.hi && (!this.playing || (shown && shown.binding === entry.binding && shown.lo >= entry.lo))) return 'superseded';
     if (!shown && Object.values(entry.fields).some(value => value === SAME)) return 'kept content';
-    const c = this.effectiveC(widget, entry);
     if (entry.mode === 'refused' && !this.playing && shown && at > c && !sameContent(entry.content, widget.content)) return 'uncovered';
     if (entry.mode !== 'picture') return null;
     for (let k = 0; k < widget.surfaces.length; k++) {

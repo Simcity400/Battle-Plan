@@ -144,6 +144,7 @@ export interface PaintInput extends Scene {
   inspect: string | null;
   now: number;
   restorePlayback?: boolean;
+  deferExpiredPlaybackRefusal?: true;
   playbackOwnsPixels?: true;
   workerCanvas?: WorkerCanvasInfo;
   sharedSurface?: { readonly lane: SharedLaneCanvas; readonly slot: SharedSurfaceSlot; readonly dirty: boolean };
@@ -248,6 +249,7 @@ interface Sent {
   model: unknown; bindingSnapshot: Binding; subsSnapshot: readonly Sub[];
   staged?: true;
   metadataOnly?: true;
+  playbackUnavailable?: true;
 }
 
 interface Supplied { stamp: number | undefined; statics: Readonly<Record<string, unknown>> | null; identity: { readonly id: number; readonly snapshot: unknown } | null }
@@ -2170,6 +2172,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return picture;
   }
 
+  private selectHeldPlayback(widget: Widget, hour: number, until: number, renderer: PlaybackRenderer): Selected | null {
+    const picture = this.recordedPlayback(widget, hour, renderer);
+    return picture && { pictures: [...picture.pictures], h: picture.from, c: picture.through, window: [picture.hour, until] };
+  }
+
   private paintPlayback() {
     const clock = this.playbackClock;
     if (!clock?.playing || clock.seek < this.pageSeek || this.seekSuperseded(clock.seek)) return;
@@ -2835,8 +2842,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         const { renderer } = widget.playback;
         const expired = { pictures: selected.pictures, from: selected.h, hour: selected.c, through: selected.c, proven: false };
         if (selected.pictures.some(part => refusalOf(part) !== null) || renderer.unavailableFrom(expired) !== undefined) {
-          const picture = this.recordedPlayback(widget, target, renderer);
-          if (picture) selected = { pictures: [...picture.pictures], h: picture.from, c: picture.through, window: [picture.hour, selected.window[1]] };
+          selected = this.selectHeldPlayback(widget, target, selected.window[1], renderer) ?? selected;
         }
       }
       const restore = this.restorePlayback(widget, request);
@@ -2903,7 +2909,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     let tried = 0;
     let deferred = false;
     try {
-      for (let i = 0; i < due.length; i++) {
+      serveWidgets: for (let i = 0; i < due.length; i++) {
         const work = due[i]!;
         const elapsed = this.time() - began;
         const overBudget = 'selectInBudget' in work ? elapsed >= budget : elapsed + work.widget.cost > budget;
@@ -2969,12 +2975,17 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         if (restorePlayback && activeSelected.window[0] > actual) {
           const atNow = this.select(widget, actual);
           const visible = atNow && !this.willPageRefuseDirect(widget, atNow, actual, request) ? atNow : undefined;
-          this.settleKept(widget, request, start, visible);
-          playbackOwnsPixels = this.ownsPlayback(widget, request.seek, request.speed > 0);
-          if (playbackOwnsPixels) {
-            if (!visible) continue;
+          if (visible && request.speed > 0 && actual > visible.c && view.playbackEligible?.(widget.id, widget.model)) {
             activeSelected = visible;
             paintTarget = actual;
+          } else {
+            this.settleKept(widget, request, start, visible);
+            playbackOwnsPixels = this.ownsPlayback(widget, request.seek, request.speed > 0);
+            if (playbackOwnsPixels) {
+              if (!visible) continue;
+              activeSelected = visible;
+              paintTarget = actual;
+            }
           }
         }
         for (let pass = 0; pass < 4; pass++) {
@@ -3005,12 +3016,27 @@ export class Lane<B extends { readonly width: number; close(): void }> {
               unpresentedDirect.add(widget.id);
               drewDirect = true;
             }
+            const expired = request.speed > 0 && actual > activeSelected.c;
             painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: activeSelected.pictures, model: widget.model, ...widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {},
               hour: activeSelected.window[0], seek: request.seek, speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start,
               ...(wc && !sharedArg ? { workerCanvas: this.dirtyWorkerCanvases.has(widget.id) ? { ...wc, dirty: true } : wc } : {}),
               ...(sharedArg ? { sharedSurface: staged ? { lane: staged.scratch, slot: staged.relative, dirty: true } : sharedArg } : {}),
               ...(restorePlayback || pause ? { restorePlayback: true } : {}),
+              ...(expired ? { deferExpiredPlaybackRefusal: true } : {}),
               ...(playbackOwnsPixels ? { playbackOwnsPixels: true } : {}) }, widget.state, this.content);
+            if (expired && painted.playbackUnavailable) {
+              if (painted.playback) {
+                const held = this.selectHeldPlayback(widget, actual, activeSelected.window[1], painted.playback);
+                if (held && pass < 3) {
+                  activeSelected = held;
+                  paintTarget = actual;
+                  continue;
+                }
+                this.completePlaybackDraw(widget, request, painted.playback);
+              }
+              unpresentedDirect.delete(widget.id);
+              continue serveWidgets;
+            }
             if (pause === 'only') {
               if (painted.repainted) {
                 this.completePlaybackDraw(widget, request, painted.playback);
@@ -3262,7 +3288,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };
     const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.pageRequests, seek, ephemeral: base.ephemeral, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       binding: widget.binding.generation, contents, fieldKeys: base.fieldKeys, surfaceCount: base.surfaceCount, mode: base.mode, reason: base.reason, open, ...(base.viewport ? { viewport: base.viewport } : {}), inspect: widget.inspect, hit: base.hit, supply: base.supply,
-      model: base.model, bindingSnapshot: base.bindingSnapshot, subsSnapshot: base.subsSnapshot, ...(metadataOnly ? { metadataOnly: true } : {}) };
+      model: base.model, bindingSnapshot: base.bindingSnapshot, subsSnapshot: base.subsSnapshot, ...(metadataOnly ? { metadataOnly: true } : {}),
+      ...(base.playbackUnavailable ? { playbackUnavailable: true } : {}) };
     widget.withdrawn = null;
     widget.sent = { ...contents };
     widget.inflight = sent;
@@ -3270,7 +3297,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.syncWindowTracking(widget);
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode: base.mode, ...base.reason !== undefined ? { reason: base.reason } : {},
-      ...open ? { open } : {}, ...(base.viewport ? { viewport: base.viewport } : {}), surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms: 0, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
+      ...open ? { open } : {}, ...(base.viewport ? { viewport: base.viewport } : {}), ...(base.playbackUnavailable ? { playbackUnavailable: true } : {}),
+      surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms: 0, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
   }
 
   private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, open?: 'followed' | 'panel', failureOrigin?: FailureOrigin, staged = false, metadataOnly = false): Entry<B> {
@@ -3299,7 +3327,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const viewport = painted.viewport ?? (primarySurface ? { width: primarySurface.width, height: primarySurface.height, dpr: primarySurface.dpr, scrollLeft: 0, scrollTop: 0 } : undefined);
     const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.pageRequests, seek, ephemeral: painted.ephemeral === true, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       binding: widget.binding.generation, contents, fieldKeys, surfaceCount: painted.surfaces.length, mode, reason, open, ...(viewport ? { viewport } : {}), inspect: widget.inspect, hit: painted.hit, supply: widget.supply,
-      model: widget.model, bindingSnapshot: widget.binding, subsSnapshot: widget.subs.map(id => this.subs.get(id)!), ...(staged ? { staged: true } : {}), ...(metadataOnly ? { metadataOnly: true } : {}) };
+      model: widget.model, bindingSnapshot: widget.binding, subsSnapshot: widget.subs.map(id => this.subs.get(id)!), ...(staged ? { staged: true } : {}), ...(metadataOnly ? { metadataOnly: true } : {}),
+      ...(painted.playbackUnavailable ? { playbackUnavailable: true } : {}) };
     widget.withdrawn = null;
     widget.sent = { ...contents };
     widget.inflight = sent;
@@ -3310,6 +3339,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       ...open ? { open } : {}, ...failureOrigin !== undefined ? { failureOrigin } : {}, ...(viewport ? { viewport } : {}),
       ...(mode === 'picture' && painted.repainted === true ? { repainted: true } : {}),
       ...(mode === 'picture' && painted.playbackOwnsPixels ? { recordedPicture: true } : {}),
+      ...(painted.playbackUnavailable ? { playbackUnavailable: true } : {}),
       surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
   }
 
