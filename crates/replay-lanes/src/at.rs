@@ -8,7 +8,7 @@ use std::io;
 
 pub use crate::lanes::Keys;
 mod lexical;
-pub use lexical::LexicalCursor;
+pub use lexical::{CompleteCursor, LexicalCursor};
 
 #[cfg(test)]
 mod tests;

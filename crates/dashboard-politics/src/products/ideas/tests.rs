@@ -28,6 +28,7 @@ fn cached_idea_looks_keep_overlay_notes() {
         dates: std::sync::Arc::default(),
         variables: Arc::new(super::KeyedVariables::new(source.replay())),
         lexical: super::Lexical::for_source(&source),
+        companions: super::CompanionTables::for_source(&source),
         presentation: Default::default(),
     };
     let reply = || {

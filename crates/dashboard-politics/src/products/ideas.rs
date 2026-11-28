@@ -7,7 +7,7 @@ use dashboard_base::products::{
     idea_format::{self, LocalisedText, ModifierFormat},
     politics_content::{PoliticsContent, politics_content},
     read_ahead::Prepare,
-    scoped_text::{self, KeyedVariables, Lexical, Scope, ScopedText, Validity},
+    scoped_text::{self, CompanionTables, KeyedVariables, Lexical, Scope, ScopedText, Validity},
     validate_country,
 };
 use dashboard_core::dto::Artwork;
@@ -980,7 +980,10 @@ pub(crate) fn present(
     cancelled: &AtomicBool,
 ) -> io::Result<IdeaHistoryReply> {
     check_cancel(cancelled)?;
-    if asked.unrecorded.is_some() { read.lexical.release(); }
+    if asked.unrecorded.is_some() {
+        read.lexical.release();
+        read.companions.release();
+    }
     let mut kept = read.presentation.lock().unwrap_or_else(PoisonError::into_inner);
     if !kept.content.upgrade().is_some_and(|held| Arc::ptr_eq(&held, content)) {
         *kept = Presentation { content: Arc::downgrade(content), ..Presentation::default() };
@@ -1034,7 +1037,8 @@ fn present_new(
     }
     warnings.extend(ideas.warnings.iter().filter(|(_, at)| **at <= hour).map(|(warning, _)| (*warning).to_owned()));
     let scoped = ScopedText::new(query.replay, &content.catalogue)
-        .with_keyed_variables(Arc::clone(&read.variables)).with_lexical(&read.lexical);
+        .with_keyed_variables(Arc::clone(&read.variables)).with_lexical(&read.lexical)
+        .with_companions(&read.companions);
     let mut validity = Validity::default();
     let unnamed = NamingCountry::default();
     let mut looks: Vec<IdeaLook> = Vec::new();
@@ -1254,6 +1258,7 @@ pub(crate) struct Read {
     dates: Arc<Mutex<ReadDates>>,
     variables: Arc<KeyedVariables>,
     lexical: Lexical,
+    companions: CompanionTables,
     presentation: Mutex<Presentation>,
 }
 
@@ -1322,7 +1327,8 @@ pub(crate) fn history(source: &Source, branch: u64, tag: &Country) -> io::Result
     let variables = Arc::clone(state.lock().unwrap_or_else(PoisonError::into_inner)
         .get_or_insert_with(|| Arc::new(KeyedVariables::new(source.replay()))));
     let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: ReadDates::for_scripted_source(source),
-        variables, lexical: Lexical::for_source(source), presentation: Mutex::default() });
+        variables, lexical: Lexical::for_source(source), companions: CompanionTables::for_source(source),
+        presentation: Mutex::default() });
     *held = Some(Arc::clone(&read));
     Ok(read)
 }

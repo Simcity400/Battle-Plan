@@ -1,12 +1,12 @@
 use super::*;
-use replay_data::{format::FormatVersion, rows::LexicalTokenRow};
+use replay_data::{format::FormatVersion, rows::{LexicalTokenRow, StateRow}};
 use replay_journal::{fixtures, synthetic::{Input, Sample}};
 
 const START: i32 = 100;
 const RUNS: [(u64, i32, u32); 2] = [(1, START, 2), (2, START + 10_000, 1)];
 
 fn fixture() -> Vec<u8> {
-    fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"exact lexical", &RUNS, &[TABLE], |synthetic, _, ordinal| {
+    fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"exact lexical", &RUNS, &[TABLE, TableId::States], |synthetic, _, ordinal| {
         let mut rows = vec![LexicalTokenRow { token: 1, literal: if ordinal < 51 { b"one" } else { b"uno" }.to_vec() }];
         if ordinal >= 51 { rows.push(LexicalTokenRow { token: 2, literal: b"two".to_vec() }); }
         let input = if ordinal == 123 {
@@ -16,7 +16,28 @@ fn fixture() -> Vec<u8> {
             read: ordinal % 3 == 0, sample: Sample::FromReadBit,
         } };
         synthetic.table(TABLE, input).unwrap();
+        synthetic.table(TableId::States, Input::Snapshot {
+            rows: &[StateRow { id: 1, owner: if ordinal < 51 { 7 } else { 8 }, ..Default::default() }],
+            partial: (ordinal == 120).then_some(1), read: true, sample: Sample::FromReadBit,
+        }).unwrap();
     }).0
+}
+
+#[test]
+fn complete_table_cursor_matches_exact_reads_and_skips_unchanged_rows() {
+    let recording = Recording::open(fixture()).unwrap();
+    let mut cursor = CompleteCursor::default();
+    for (hour, rows) in [(START, 1), (START + 48, 0), (START + 72, 1)] {
+        let got = cursor.read(&recording, 0, hour, TableId::States, RETAINED_BYTES).unwrap();
+        let expected = super::super::frame(&recording, 0, hour, &[super::super::Read::all(TableId::States)]).unwrap();
+        assert_eq!(got.0, expected.tables[TableId::States.index()]);
+        assert_eq!(got.0.sampled_at(), Some(hour));
+        assert!(got.1);
+        assert_eq!(got.2, rows);
+        assert_eq!(cursor.held.as_ref().unwrap().reader.restores(), 1);
+    }
+    assert!(cursor.read(&recording, 0, START + 120, TableId::States, RETAINED_BYTES).is_none());
+    assert_eq!(cursor.retained_bytes(), 0);
 }
 
 fn compared(cache: &mut LexicalCursor, recording: &Recording, run: u32, hour: i32) -> (SharedView, u64) {
@@ -41,7 +62,7 @@ fn lexical_playback_reuses_the_reader_and_unchanged_views() {
             let (view, rows) = compared(&mut cache, &recording, 0, START + offset);
             assert_eq!(SharedView::ptr_eq(&first, &view), offset < 51);
             assert_eq!(rows, if offset - step < 51 && offset >= 51 { 2 } else { 0 });
-            assert_eq!(cache.held.as_ref().unwrap().reader.restores(), 1);
+            assert_eq!(cache.0.held.as_ref().unwrap().reader.restores(), 1);
         }
     }
 }
@@ -54,18 +75,18 @@ fn lexical_playback_releases_its_view_on_a_seek_or_inexact_read() {
     let (back, _) = compared(&mut cache, &recording, 0, START);
     assert!(!SharedView::ptr_eq(&first, &back));
     assert!(cache.read(&recording, 0, START + 120).is_none());
-    assert!(cache.held.is_none());
+    assert!(cache.0.held.is_none());
     assert!(cache.read(&recording, 0, START + 123).is_none());
-    assert!(cache.held.is_none());
+    assert!(cache.0.held.is_none());
     let (before, _) = compared(&mut cache, &recording, 0, START + BLOCK as i32 - 1);
     let (after, _) = compared(&mut cache, &recording, 0, START + BLOCK as i32);
     assert!(!SharedView::ptr_eq(&before, &after));
     assert!(cache.read(&recording, 0, START + (RUNS[0].2 * BLOCK) as i32).is_none());
-    assert!(cache.held.is_none());
+    assert!(cache.0.held.is_none());
     let (other, _) = compared(&mut cache, &recording, 1, START + 10_000);
     assert!(!SharedView::ptr_eq(&after, &other));
-    assert!(cache.read_bounded(&recording, 1, START + 10_001, 0).is_some());
-    assert!(cache.held.is_none());
+    assert!(cache.0.read(&recording, 1, START + 10_001, TABLE, 0).is_some());
+    assert!(cache.0.held.is_none());
 }
 
 #[test]
@@ -75,7 +96,7 @@ fn the_same_recordings_projection_cannot_use_a_full_lexical_view() {
     let _ = compared(&mut cache, &recording, 0, START);
     recording.project(TABLE, &[]).unwrap();
     assert!(cache.read(&recording, 0, START).is_none());
-    assert!(cache.held.is_none());
+    assert!(cache.0.held.is_none());
 }
 
 #[test]
@@ -93,5 +114,5 @@ fn a_damaged_checkpoint_cannot_be_bypassed_by_a_lexical_reader() {
     let exact = super::super::frame(&recording, 0, target, &[super::super::Read::all(TABLE)]).unwrap();
     assert!(matches!(exact.tables[TABLE.index()].held(), TableView::Unavailable { .. }));
     assert!(cache.read(&recording, 0, target).is_none());
-    assert!(cache.held.is_none());
+    assert!(cache.0.held.is_none());
 }
