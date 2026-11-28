@@ -4,7 +4,7 @@ import { resolveWindow } from '../../dashboard/model.ts';
 import { contentSet } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { identityFlags, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
+import { identityFlags, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import {
   LOG_TABLE_BASE,
   logCountryCell,
@@ -75,6 +75,8 @@ interface FeedPageInfo {
   readonly choice: ScriptEdge | null;
   readonly status?: ScriptStatus;
   readonly notRecordedReason?: string;
+  readonly placeName?: string;
+  readonly placeMissing?: string;
   readonly live: boolean;
 }
 
@@ -121,7 +123,6 @@ function scriptEventDetailCell(item: EventFeedItem | null, chosenOrdinal: number
 function eventItemAndSubtext(
   event: EventFeedRow,
   page: FeedPageInfo,
-  readView: BoundedReadView,
 ): { readonly primary: string | null; readonly secondary?: string; readonly place?: Value<string>; readonly detail?: TableCell; readonly missingReason?: string } {
   const item = effectiveEventItem(event, page.choice);
   const reasons = reasonsOf(item);
@@ -130,7 +131,7 @@ function eventItemAndSubtext(
   const chosenOrdinal = parsedOptionOrdinal(event, page.choice);
   const stateName = (stateId: number | null | undefined): Value<string> => stateId == null
     ? notRecorded('Target state was not recorded')
-    : resolveName(readView, 'state', String(stateId), { atHour: event.hour }).value;
+    : page.placeName?.trim() ? knownValue(page.placeName) : notRecorded(page.placeMissing ?? 'State name not recorded');
 
   switch (event.kind) {
     case 'scriptEventFired':
@@ -251,7 +252,7 @@ function buildFeedTableRow(
   parent?: string,
 ): TableRow {
   const item = effectiveEventItem(event, page.choice);
-  const { primary, secondary, place, detail, missingReason } = eventItemAndSubtext(event, page, readView);
+  const { primary, secondary, place, detail, missingReason } = eventItemAndSubtext(event, page);
   const reasons = reasonsOf(item);
   const spriteKey = !item?.icon ? KIND_SPRITES[event.kind] : undefined;
   const artHandle = artwork
@@ -463,6 +464,9 @@ function validateEventFeedTail(raw: unknown, readAt?: number): TailReply<Validat
       if (row.parent !== undefined && typeof row.parent !== 'string') {
         throw new Error('The event feed row is malformed.');
       }
+      if (row.placeName !== undefined && typeof row.placeName !== 'string' || row.placeMissing !== undefined && typeof row.placeMissing !== 'string') {
+        throw new Error('The event feed row is malformed.');
+      }
       const valid = validateFeedRow(row.row);
       if (at !== undefined && valid.readHour > at) {
         throw new Error(`Event ${valid.id} was read at hour ${valid.readHour} after displayed hour ${at}.`);
@@ -529,6 +533,8 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
           choice: rawLine.choice ?? null,
           status: rawLine.status,
           ...(rawLine.notRecordedReason !== undefined ? { notRecordedReason: rawLine.notRecordedReason } : {}),
+          ...(rawLine.placeName !== undefined ? { placeName: rawLine.placeName } : {}),
+          ...(rawLine.placeMissing !== undefined ? { placeMissing: rawLine.placeMissing } : {}),
           live: rawLine.live === true,
         };
         return buildFeedTableRow(readView, rawLine.row, page, rawLine.key, options.artwork, source.at ?? hour, boundary, options.hover ?? [], rawLine.parent);
@@ -597,6 +603,7 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
             limit: HEAD_LIMIT,
             ask: { search, sort,
               categories,
+              placeNames: true,
               ...(excludedKinds.length ? { exclude: excludedKinds } : {}),
               ...selection,
               ...(expanded.length ? { expanded } : {}),

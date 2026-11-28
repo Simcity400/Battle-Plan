@@ -42,7 +42,7 @@ const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Par
   id: `native:1:${serial++}`, hour, readHour: hour, nameHour: hour, exact: true, category: 'warsPeace', kind, tags,
   participants: [tags[0] ?? null, tags[1] ?? null], item: null, amount: null, ...more });
 
-test('event feed preserves dated state readings and the recipient name date', () => {
+test('event feed shows dated state names with the first row and preserves the recipient name date', () => {
   const transfer = row('stateTransferred', 101, [], { cause: { state: 42, notes: [] } });
   const strike = row('nuclearStrike', 102, [], { strike: { province: 201, state: 42, manpowerLost: null,
     buildingLevels: null, warSupport: null, units: null, equipmentLost: null, notRecorded: [] } });
@@ -50,25 +50,21 @@ test('event feed preserves dated state readings and the recipient name date', ()
     nameHour: 102,
     item: { token: 'synthetic.1', name: 'Dispatch', icon: null, description: null },
   });
-  const events = [firing, strike, transfer];
-  const head = { branchId: '1', offset: '0', total: '3', live: '0', counts: [],
-    rows: events.map(event => ({ line: 'event', hour: event.hour, observed: event.hour, key: event.id,
-      row: event, choice: null, live: false })),
-    missing: [], nextChange: null, unavailable: [], warnings: [] };
-  const source = buildRowSourceFromHead('state-details', head, undefined, 110, undefined, eventFeedProjection.validateTail)!;
-  for (const status of ['pending', 'absent', 'ready'] as const) {
+  const events = [[firing], [strike, 'New Province'], [transfer, 'Old Province']] as const;
+  for (const status of ['absent', 'ready'] as const) {
+    const head = { branchId: '1', offset: '0', total: '3', live: '0', counts: [],
+      rows: events.map(([event, place]) => ({ line: 'event', hour: event.hour, observed: event.hour, key: event.id,
+        row: event, choice: null, live: false, ...place && (status === 'ready' ? { placeName: place } : { placeMissing: 'State name missing in the recording' }) })),
+      missing: [], nextChange: null, unavailable: [], warnings: [] };
+    const source = buildRowSourceFromHead('state-details', head, undefined, 110, undefined, eventFeedProjection.validateTail)!;
     const identity = datedIdentity({});
+    let stateReads = 0;
     const view = createBoundedReadView({ hour: 110, rows: new Map([['main', source]]), identity: {
       resolve(kind, key, atHour) {
+        if (kind === 'state') stateReads++;
         const base = identity.resolve(kind, key, atHour);
         if (kind === 'country') return { ...base, name: { status: 'absent', reason: 'Recipient name missing in the recording' } };
-        if (kind !== 'state') return base;
-        assert.equal(key, '42');
-        assert.ok(atHour === 101 || atHour === 102);
-        const name = status === 'ready' ? { status, value: atHour === 101 ? 'Old Province' : 'New Province' } as const
-          : status === 'absent' ? { status, reason: 'State name missing in the recording' } as const
-            : { status } as const;
-        return { ...base, name };
+        return base;
       },
     } });
     const model = eventFeedProjection.project(view, { categories: ['warsPeace'], artwork: false });
@@ -82,12 +78,12 @@ test('event feed preserves dated state readings and the recipient name date', ()
       const actual = flat.find(entry => entry.key === event.id)!;
       assert.ok(actual.kind === 'data');
       const detail = deriveRowTooltip(actual, model.columns).rows.find(entry => entry.label === 'Detail')!.rawValue;
-      if (status === 'pending') assert.equal(detail?.kind, 'pending');
       if (status === 'absent') assert.deepEqual(detail, { kind: 'notRecorded', reason: 'State name missing in the recording' });
       if (status === 'ready') assert.deepEqual(detail, { kind: 'known', value: place });
       const spoken = mirror.rows.find(entry => entry.key === event.id)!.cells.find(cell => cell.column === 'item')!.spoken;
-      assert.match(spoken, status === 'ready' ? new RegExp(place) : status === 'absent' ? /State name missing/ : /Loading/i);
+      assert.match(spoken, status === 'ready' ? new RegExp(place) : /State name missing/);
     }
+    assert.equal(stateReads, 0);
   }
 });
 
@@ -366,6 +362,7 @@ test('expanded event-feed folds project children with pageParent, detail meta, m
   const ask = (plan.entries[0]!.read as { tailQuery: { ask: Record<string, unknown> } }).tailQuery.ask;
   assert.deepEqual(ask.expanded, [foldKey]);
   assert.deepEqual(ask.full, [foldKey]);
+  assert.equal(ask.placeNames, true);
 });
 
 test('event feed projection renders merged choice letter and text, awaiting choice, paused choice, and unrecorded choice ordinal from page rows', () => {
