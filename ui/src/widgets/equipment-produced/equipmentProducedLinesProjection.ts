@@ -188,7 +188,13 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       };
     }
 
-    const headRefused = readView.refused('head') ?? (options.top !== null ? readView.refused('main') : undefined);
+    const headPanel = readView.panel<EquipmentProducedRaceReply>('head');
+    const panelRefused = readView.refused('head');
+    const rankRefused = panelRefused ?? headPanel?.missing ?? null;
+    const followedTileRanks = options.top !== null && (headPanel || rankRefused)
+      ? { head: { tags: rankRefused ? [] : headPanel?.rows.map(rowKeyOf) ?? [], refused: rankRefused } }
+      : undefined;
+    const headRefused = panelRefused ?? (options.top !== null ? readView.refused('main') : undefined);
     if (headRefused) {
       return {
         kind: 'equipment-produced',
@@ -199,13 +205,13 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        ...(followedTileRanks ? { followedTileRanks } : {}),
         gaps,
         empty: { kind: 'unavailable' as const, message: headRefused },
         auditRows: [],
       };
     }
 
-    const headPanel = readView.panel<EquipmentProducedRaceReply>('head');
     const mainTiles = readView.series('main');
     if (!headPanel) {
       return {
@@ -232,6 +238,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        ...(followedTileRanks ? { followedTileRanks } : {}),
         gaps,
         empty: { kind: 'unavailable' as const, message: headPanel.missing },
         warnings: headPanel.warnings.length > 0 ? headPanel.warnings : undefined,
@@ -347,6 +354,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       yAxis,
       series: seriesList,
       drawnKeys: { main: orderedKeys, named },
+      ...(followedTileRanks ? { followedTileRanks } : {}),
       empty,
       summaryText,
       warnings: headPanel.warnings.length > 0 ? headPanel.warnings : undefined,
@@ -437,7 +445,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
         family: tileFamily as unknown as Readonly<Record<string, unknown>>,
         tags,
         ...(within ? { within } : {}),
-        ...(top !== null ? { top: { n: top } } : {}),
+        ...(top !== null ? { top: { n: top }, followRank: 'head' } : {}),
         headQuery: null,
       },
     };
