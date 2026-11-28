@@ -323,17 +323,21 @@ test('played equipment produced history uses the followed ranking and asks only 
   const lane = chartTileLane(client, { ...entry, read: entry.read }, ctx.branch.lastHour, ctx.gateSpan, hour => hour as GatedHour);
   assert.ok(lane);
   const tiles = new TileView(new TileCache(), lane, () => {});
+  const rankSource = tiles.rankSource;
+  assert.equal(rankSource, 'head');
   tiles.setView({ from: 290, to: 345, end: 345, width: 100 });
   const options = equipmentProducedLinesDeclaration.projectionOptions(ctx, { extent: [100, 600], surface: '#111111' });
-  for (const [index, countries] of [[7, 8], [8, 7], [8, 9], [], []].entries()) {
+  for (const [index, countries] of [[7, 8], [8, 7], [8, 9], [], [], []].entries()) {
     const hour = 300 + 10 * index;
-    const refused = index === 4 ? 'Production ranking is unavailable' : null;
+    const refused = index >= 4 ? 'Production ranking is unavailable' : null;
     const head: EquipmentProducedRaceReply = {
       branchId: '1', hour, firstHour: hour, lastHour: hour + 9, count: 'units', measure: 'day', decimals: 0,
       types: ['infantry_equipment'], readHour: hour, observationHour: 100, missing: refused, warnings: [],
       rows: countries.map(country => ({ country, counted: country, tag: String(country), value: 10, unknown: null })),
     };
-    const view = createBoundedReadView({ hour: displayedHour(hour), panels: new Map([['head', head]]) });
+    const view = createBoundedReadView(index === 5
+      ? { hour: displayedHour(hour), refused: new Map([['head', refused!]]) }
+      : { hour: displayedHour(hour), panels: new Map([['head', head]]) });
     const rank = equipmentProducedLinesProjection.project(view, options).followedTileRanks?.head;
     const tags = countries.map(countryKey);
     assert.deepEqual(rank, { tags, refused });
