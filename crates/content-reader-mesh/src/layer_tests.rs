@@ -34,7 +34,7 @@ fn a_recorded_descriptor_read_for_a_mods_unparsed_one_is_traced() {
         .with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)))
         .with_read_purpose("artwork");
     let roster = crate::mesh::Roster::read(&traced).unwrap();
-    assert!(roster.descriptors.entities.contains_key("plane"));
+    assert!(roster.has_entity("plane"));
     assert!(roster.unreadable.is_empty(), "{:?}", roster.unreadable);
     let reads = reads.lock().unwrap();
     let fallback: Vec<_> = reads
@@ -142,7 +142,7 @@ fn a_mods_descriptor_that_does_not_parse_reads_the_recordings_file() {
     )
     .unwrap();
     let roster = layers.presentation().descriptor_roster().unwrap();
-    assert!(roster.descriptors.entities.contains_key("plane"));
+    assert!(roster.has_entity("plane"));
     assert!(roster.unreadable.is_empty(), "{:?}", roster.unreadable);
     assert!(roster.unreadable_names.contains_key("zeppelin"));
     assert!(!roster.unreadable_names.contains_key("plane"));

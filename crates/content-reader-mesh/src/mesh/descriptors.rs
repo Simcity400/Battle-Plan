@@ -1,3 +1,5 @@
+mod frozen_entities;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -96,7 +98,7 @@ impl MeshDefinition {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Attachment {
     pub name: String,
     pub joint: String,
@@ -113,7 +115,7 @@ impl Attachment {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EntityDefinition {
     pub name: String,
     pub mesh: Option<String>,
@@ -130,7 +132,7 @@ pub struct EntityDefinition {
     pub sources: Vec<ScriptPath>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EntityGameData {
     pub texture_anim_speed: f32,
     pub atlas_size: [i32; 2],
@@ -207,14 +209,14 @@ fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, Str
     Some(Ok(data))
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Locator {
     pub transform: Transform,
     pub parent_joint: Option<String>,
     pub origin_mesh: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EntityState {
     pub name: String,
     pub animation: String,
@@ -232,13 +234,13 @@ pub struct EntityState {
     pub naval_hitmiss_error: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NavalHitMissEffect {
     pub time: f32,
     pub kind: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EntityEvent {
     pub id: Option<String>,
     pub time: f32,
@@ -427,10 +429,41 @@ pub struct Descriptors {
 }
 
 #[derive(Clone, Copy)]
+enum EntityRows<'a> {
+    Raw(&'a BTreeMap<String, EntityDefinition>),
+    Packed(&'a frozen_entities::Job<'a>),
+    Prepared(&'a frozen_entities::Job<'a>),
+}
+
+impl<'a> EntityRows<'a> {
+    fn get(self, name: &str) -> Option<&'a EntityDefinition> {
+        match self {
+            Self::Raw(rows) => rows.get(name),
+            Self::Packed(job) => job.get(name),
+            Self::Prepared(job) => job.prepared(name),
+        }
+    }
+
+    fn contains(self, name: &str) -> bool {
+        match self {
+            Self::Raw(rows) => rows.contains_key(name),
+            Self::Packed(job) | Self::Prepared(job) => job.contains(name),
+        }
+    }
+
+    fn len(self) -> usize {
+        match self {
+            Self::Raw(rows) => rows.len(),
+            Self::Packed(job) | Self::Prepared(job) => job.len(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct DescriptorView<'a> {
     pub meshes: &'a BTreeMap<String, MeshDefinition>,
     pub animations: &'a BTreeMap<String, AnimationDefinition>,
-    entities: &'a BTreeMap<String, EntityDefinition>,
+    entities: EntityRows<'a>,
     aliases: Option<&'a BTreeMap<String, EntityDefinition>>,
 }
 
@@ -439,7 +472,7 @@ impl<'a> From<&'a Descriptors> for DescriptorView<'a> {
         Self {
             meshes: &descriptors.meshes,
             animations: &descriptors.animations,
-            entities: &descriptors.entities,
+            entities: EntityRows::Raw(&descriptors.entities),
             aliases: None,
         }
     }
@@ -471,6 +504,13 @@ impl Descriptors {
 }
 
 impl<'a> DescriptorView<'a> {
+    pub fn prepared(self) -> Self {
+        match self.entities {
+            EntityRows::Packed(job) => Self { entities: EntityRows::Prepared(job), ..self },
+            _ => self,
+        }
+    }
+
     pub fn with_aliases(self, aliases: &'a BTreeMap<String, EntityDefinition>) -> Self {
         Self { aliases: Some(aliases), ..self }
     }
@@ -480,7 +520,7 @@ impl<'a> DescriptorView<'a> {
     }
 
     pub fn has_entity(self, name: &str) -> bool {
-        self.aliases.is_some_and(|aliases| aliases.contains_key(name)) || self.entities.contains_key(name)
+        self.aliases.is_some_and(|aliases| aliases.contains_key(name)) || self.entities.contains(name)
     }
 
     pub fn entity_count(self) -> usize {
@@ -1058,7 +1098,7 @@ pub fn balanced_blocks(bytes: &[u8]) -> Vec<u8> {
 
 #[derive(Clone, Debug, Default)]
 pub struct Roster {
-    pub descriptors: Descriptors,
+    pub descriptors: RosterDescriptors,
     pub lights: BTreeMap<String, Vec<parser::Item>>,
     pub logged: Vec<String>,
     pub unreadable: Vec<String>,
@@ -1066,17 +1106,61 @@ pub struct Roster {
     pub clones: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct RosterDescriptors {
+    pub meshes: BTreeMap<String, MeshDefinition>,
+    pub animations: BTreeMap<String, AnimationDefinition>,
+    entities: frozen_entities::Entities,
+    attachments: BTreeMap<String, Box<[String]>>,
+}
+
+impl RosterDescriptors {
+    fn freeze(&mut self, definitions: BTreeMap<String, EntityDefinition>) {
+        let view = DescriptorView {
+            meshes: &self.meshes,
+            animations: &self.animations,
+            entities: EntityRows::Raw(&definitions),
+            aliases: None,
+        };
+        self.attachments = definitions.iter().filter_map(|(name, entity)| {
+            if entity.clone.is_none() && entity.attachments.is_empty() {
+                return None;
+            }
+            let links: Box<[String]> = view.inherit(name)?.attachments.into_iter()
+                .map(|attachment| attachment.entity.clone())
+                .collect();
+            (!links.is_empty()).then(|| (name.clone(), links))
+        }).collect();
+        self.entities = frozen_entities::Entities::freeze(definitions.into_iter());
+    }
+}
+
+impl From<Descriptors> for RosterDescriptors {
+    fn from(descriptors: Descriptors) -> Self {
+        let Descriptors { meshes, animations, entities } = descriptors;
+        let mut registered = Self { meshes, animations, ..Self::default() };
+        registered.freeze(entities);
+        registered
+    }
+}
+
 pub struct DescriptorJob<'a> {
     roster: &'a Roster,
+    entities: frozen_entities::Job<'a>,
 }
 
 impl DescriptorJob<'_> {
     pub fn view(&self) -> DescriptorView<'_> {
-        (&self.roster.descriptors).into()
+        DescriptorView {
+            meshes: &self.roster.descriptors.meshes,
+            animations: &self.roster.descriptors.animations,
+            entities: EntityRows::Packed(&self.entities),
+            aliases: None,
+        }
     }
 
     pub fn entities(&self) -> impl Iterator<Item = &EntityDefinition> {
-        self.roster.descriptors.entities.values()
+        self.entities.iter()
     }
 
     pub fn refused_declaration(&self, entity: &str) -> Option<String> {
@@ -1097,15 +1181,15 @@ struct ParsedFile {
 
 impl Roster {
     pub fn descriptor_job(&self) -> DescriptorJob<'_> {
-        DescriptorJob { roster: self }
+        DescriptorJob { roster: self, entities: self.descriptors.entities.job() }
     }
 
     pub fn has_entity(&self, name: &str) -> bool {
-        self.descriptors.entities.contains_key(name)
+        self.descriptors.entities.contains(name)
     }
 
     pub fn entity_names(&self) -> impl Iterator<Item = &str> {
-        self.descriptors.entities.keys().map(String::as_str)
+        self.descriptors.entities.names()
     }
 
     pub fn mesh_definitions(&self) -> &BTreeMap<String, MeshDefinition> {
@@ -1213,11 +1297,9 @@ impl Roster {
             let animation = loaded_animation(layers, declarations)?;
             roster.descriptors.animations.insert(name, animation);
         }
-        roster.descriptors.entities = entities
-            .0
-            .into_iter()
-            .map(|(name, (definition, _))| (name, definition))
-            .collect();
+        roster.descriptors.freeze(
+            entities.0.into_iter().map(|(name, (definition, _))| (name, definition)).collect(),
+        );
         Ok(roster)
     }
 
@@ -1347,8 +1429,8 @@ impl Roster {
             if let Some((name, path)) = self.unreadable_names.get_key_value(name) {
                 return Some((name, path));
             }
-            if let Some(entity) = self.descriptors.inherit(name) {
-                pending.extend(entity.attachments.into_iter().map(|attachment| attachment.entity.as_str()));
+            if let Some(links) = self.descriptors.attachments.get(name) {
+                pending.extend(links.iter().map(String::as_str));
             }
         }
         None

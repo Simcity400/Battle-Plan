@@ -11,7 +11,7 @@ pub use container::{Node, Value, parse};
 pub use descriptors::{
     AnimationDefinition, Attachment, DEFAULT_CULL_DISTANCE_SQUARED, DEFAULT_STATE, DescriptorJob, DescriptorView, Descriptors, EntityDefinition, EntityEvent,
     EntityGameData, EntityState, InheritedEntity, Locator, MeshDefinition, MeshSetting,
-    NavalHitMissEffect, ResolvedEntity, ResolvedMesh, Roster, TextureIndex, balanced_blocks,
+    NavalHitMissEffect, ResolvedEntity, ResolvedMesh, Roster, RosterDescriptors, TextureIndex, balanced_blocks,
     lexical_names, parse_descriptors,
 };
 
@@ -26,7 +26,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Transform {
     pub basis: [[f32; 3]; 3],
     pub translation: [f32; 3],

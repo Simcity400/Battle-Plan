@@ -417,17 +417,14 @@ fn icons_anchor_only_at_records_the_loader_admits() {
             ..Default::default()
         },
     )]);
-    let mut roster = Roster::default();
-    for name in [
-        "building_port_spawn",
-        "building_facility_spawn",
-        "building_lone_spawn",
-    ] {
-        roster
-            .descriptors
-            .entities
-            .insert(name.into(), Default::default());
-    }
+    let roster = Roster {
+        descriptors: content_reader_mesh::mesh::Descriptors {
+            entities: ["building_port_spawn", "building_facility_spawn", "building_lone_spawn"]
+                .into_iter().map(|name| (name.into(), Default::default())).collect(),
+            ..Default::default()
+        }.into(),
+        ..Default::default()
+    };
     let provinces = ProvinceMap {
         width: map.width,
         height: map.height,

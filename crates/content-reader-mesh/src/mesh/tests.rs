@@ -429,23 +429,24 @@ fn the_roster_registers_entities_in_declaration_order() {
             br#"entity = { name = "first" pdxmesh = "f" }"#,
         )],
     );
-    let entities = &roster.descriptors.entities;
-    let mesh = |name: &str| entities[name].mesh.as_deref();
-    assert!(!entities.contains_key("early"));
+    let job = roster.descriptor_job();
+    let entities = job.view();
+    let mesh = |name: &str| entities.entity(name).unwrap().mesh.as_deref();
+    assert!(!entities.has_entity("early"));
     assert_eq!(roster.logged.len(), 1, "{:?}", roster.logged);
     assert!(roster.logged[0].starts_with("early in gfx/entities/a.asset"));
     assert_eq!(mesh("after_first"), Some("f"));
     assert_eq!(mesh("base"), Some("n"));
-    assert_eq!(entities["base"].scale, None);
+    assert_eq!(entities.entity("base").unwrap().scale, None);
     assert_eq!(mesh("child"), Some("m"));
-    assert_eq!(entities["child"].scale, Some(2.0));
-    assert_eq!(entities["child"].clone, None);
+    assert_eq!(entities.entity("child").unwrap().scale, Some(2.0));
+    assert_eq!(entities.entity("child").unwrap().clone, None);
     assert_eq!(mesh("cross"), Some("o"));
-    assert_eq!(entities["cross"].scale, Some(2.0));
-    assert_eq!(entities["cross"].attachments.len(), 1);
+    assert_eq!(entities.entity("cross").unwrap().scale, Some(2.0));
+    assert_eq!(entities.entity("cross").unwrap().attachments.len(), 1);
     assert_eq!(mesh("v"), Some("o"));
     assert_eq!(mesh("vc"), Some("o"));
-    assert!(!entities.contains_key("quoted"));
+    assert!(!entities.has_entity("quoted"));
     assert!(roster.unreadable.is_empty());
     assert_eq!(
         roster.clones,
@@ -483,7 +484,7 @@ fn a_plain_redeclaration_ends_a_copy() {
         &[],
     );
     assert_eq!(
-        roster.descriptors.entities["skin"].mesh.as_deref(),
+        roster.descriptor_job().view().entity("skin").unwrap().mesh.as_deref(),
         Some("n")
     );
     assert!(!roster.clones.contains_key("skin"));
@@ -520,7 +521,7 @@ fn a_clone_of_an_unreadable_name_may_be_declared_there_too() {
     assert_eq!(file("plain"), None);
     assert_eq!(roster.logged.len(), 2, "{:?}", roster.logged);
     assert_eq!(
-        roster.descriptors.entities.keys().collect::<Vec<_>>(),
+        roster.entity_names().collect::<Vec<_>>(),
         ["plain"]
     );
 }
@@ -550,8 +551,9 @@ fn a_clone_merges_attachments_in_place_and_keeps_an_unregistered_mesh() {
         ],
         &[],
     );
-    let entities = &roster.descriptors.entities;
-    let slots: Vec<_> = entities["child"]
+    let job = roster.descriptor_job();
+    let entities = job.view();
+    let slots: Vec<_> = entities.entity("child").unwrap()
         .attachments
         .iter()
         .map(|attachment| (attachment.name.as_str(), attachment.entity.as_str()))
@@ -567,11 +569,11 @@ fn a_clone_merges_attachments_in_place_and_keeps_an_unregistered_mesh() {
             ("extra", "z"),
         ]
     );
-    assert_eq!(entities["child"].mesh.as_deref(), Some("m"));
-    assert_eq!(entities["plain"].mesh.as_deref(), Some("n"));
+    assert_eq!(entities.entity("child").unwrap().mesh.as_deref(), Some("m"));
+    assert_eq!(entities.entity("plain").unwrap().mesh.as_deref(), Some("n"));
     assert!(
-        entities
-            .values()
+        job
+            .entities()
             .all(|entity| entity.unbound_mesh.is_none())
     );
     assert_eq!(roster.logged.len(), 2, "{:?}", roster.logged);
@@ -605,18 +607,18 @@ fn unbound_mesh_diagnostics_follow_registration() {
     );
     for name in ["empty", "child"] {
         assert_eq!(
-            roster.descriptors.entities[name].unbound_mesh.as_deref(),
+            roster.descriptor_job().view().entity(name).unwrap().unbound_mesh.as_deref(),
             Some("absent")
         );
     }
     for name in ["bare", "cleared", "repaired"] {
-        assert!(roster.descriptors.entities[name].unbound_mesh.is_none());
+        assert!(roster.descriptor_job().view().entity(name).unwrap().unbound_mesh.is_none());
     }
     for name in ["empty", "child", "bare", "cleared"] {
-        assert!(roster.descriptors.entities[name].mesh.is_none());
+        assert!(roster.descriptor_job().view().entity(name).unwrap().mesh.is_none());
     }
     assert_eq!(
-        roster.descriptors.entities["repaired"].mesh.as_deref(),
+        roster.descriptor_job().view().entity("repaired").unwrap().mesh.as_deref(),
         Some("m")
     );
 }
@@ -653,7 +655,7 @@ fn the_roster_keeps_the_last_object_of_a_name() {
     assert_eq!(meshes["m"].file, "b.mesh");
     assert_eq!(meshes["kept"].file, "k.mesh");
     assert!(!meshes.contains_key("shadowed"));
-    assert!(roster.descriptors.entities.is_empty());
+    assert!(roster.entity_names().next().is_none());
 }
 
 #[test]
@@ -2128,7 +2130,7 @@ fn roster_clone_inheritance_multiplies_entity_and_mesh_scale_factors() {
         ],
         &[],
     );
-    let resolve = |name: &str| roster.descriptors.resolve(name).unwrap().scale;
+    let resolve = |name: &str| roster.descriptor_job().view().resolve(name).unwrap().scale;
     assert!((resolve("base") - 1.0).abs() < 1e-6);
     assert!((resolve("inherited") - 1.0).abs() < 1e-6);
     assert!((resolve("overridden") - 4.0).abs() < 1e-6);
@@ -2202,7 +2204,7 @@ fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
         ],
         &[],
     );
-    let resolve = |name: &str| roster.descriptors.resolve(name).unwrap().scale;
+    let resolve = |name: &str| roster.descriptor_job().view().resolve(name).unwrap().scale;
     assert!((resolve("early") - 1.0).abs() < 1e-6);
     assert!((resolve("var_mesh") - 2.5).abs() < 1e-6);
     assert!((resolve("quoted_mesh") - 3.0).abs() < 1e-6);
@@ -2333,8 +2335,8 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     let roster = Roster::read(layers.presentation()).unwrap();
     let _ = std::fs::remove_dir_all(&root);
 
-    assert_eq!(roster.descriptors.resolve("first").unwrap().scale, 2.0);
-    assert_eq!(roster.descriptors.resolve("second").unwrap().scale, 4.0);
+    assert_eq!(roster.descriptor_job().view().resolve("first").unwrap().scale, 2.0);
+    assert_eq!(roster.descriptor_job().view().resolve("second").unwrap().scale, 4.0);
     assert_eq!(roster.refused_declaration("first"), None);
     assert_eq!(roster.refused_declaration("second"), None);
     assert_eq!(roster.refused_declaration("other_file_valid"), None);
@@ -2402,8 +2404,8 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
             .map(String::as_str),
         Some("gfx/entities/embedded_def.asset")
     );
-    assert!(!roster.descriptors.entities.contains_key("broken_first"));
-    assert!(!roster.descriptors.entities.contains_key("broken_second"));
+    assert!(!roster.has_entity("broken_first"));
+    assert!(!roster.has_entity("broken_second"));
     assert_eq!(
         roster.unreadable_names.get("broken_first").map(String::as_str),
         Some("gfx/entities/broken.asset")

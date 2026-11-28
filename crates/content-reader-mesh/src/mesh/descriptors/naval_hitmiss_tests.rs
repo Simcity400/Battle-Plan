@@ -154,7 +154,7 @@ fn naval_hitmiss_layered_roster_refuses_later_entity_names_from_an_unsettled_fil
             &[("gfx/entities/refused.asset", text.as_bytes())],
             &[],
         );
-        assert!(roster.descriptors.entities.is_empty());
+        assert!(roster.entity_names().next().is_none());
         assert!(roster.unreadable.iter().any(|message| {
             message.contains("gfx/entities/refused.asset") && message.contains(reason)
         }));

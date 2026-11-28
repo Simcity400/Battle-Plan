@@ -3,7 +3,7 @@ use content_reader_parser::{DiagnosticKind, DiagnosticMessage, parser::Document}
 use crate::{ResolvedLayers, content::LayerPath};
 use std::{borrow::Cow, fmt, io};
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ScriptPath(std::sync::Arc<LayerPath>);
 
 impl ScriptPath {

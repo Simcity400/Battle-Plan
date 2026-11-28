@@ -241,7 +241,7 @@ fn meshless_aircraft_use_the_shared_actor_player() {
             }
         "#, "fixture.asset").unwrap();
     let roster = mesh::Roster {
-        descriptors,
+        descriptors: descriptors.into(),
         ..Default::default()
     };
     assert_eq!(roster.refused_declaration("plane"), None);
@@ -288,7 +288,7 @@ fn lazy_explicit_aircraft_keep_named_counted_attachment_diagnostics_without_audi
         &|| panic!("unreached designer"),
         &|| panic!("unreached graphical override"),
         &|| panic!("unreached equipment ladder"),
-        &|name| assets.roster.descriptors.entities.contains_key(name),
+        &|name| assets.roster.has_entity(name),
     )
     .unwrap()
     .unwrap();
@@ -1240,7 +1240,7 @@ fn why() -> String {
 
 fn roster(text: &str) -> mesh::Roster {
     mesh::Roster {
-        descriptors: mesh::parse_descriptors(text.as_bytes(), "gfx/entities/planes.asset").unwrap(),
+        descriptors: mesh::parse_descriptors(text.as_bytes(), "gfx/entities/planes.asset").unwrap().into(),
         ..Default::default()
     }
 }
@@ -1481,7 +1481,7 @@ fn an_unreadable_file_s_cr_comments_and_escaped_names_still_refuse() {
                     entity = {{ name = "{}" pdxmesh = "clean_mesh" }}"#,
             generic.replace('\\', "\\\\")
         ));
-        assert!(roster.descriptors.entities.contains_key(&generic));
+        assert!(roster.has_entity(&generic));
         for name in mesh::lexical_names(broken) {
             roster.unreadable_names.insert(name, path.to_owned());
         }
@@ -2106,7 +2106,7 @@ fn scenario_source_keeps_entity_scale_separate_from_mesh_scale() {
     let definition = &roster.descriptors.meshes["scenario_mesh"];
     for name in ["scenario_base", "scenario_clone"] {
         let source =
-            scenario_source(layers.presentation(), &roster.descriptors, name, definition).unwrap();
+            scenario_source(layers.presentation(), roster.descriptor_job().view(), name, definition).unwrap();
         assert!((source.mesh_scale - 2.5).abs() < 1e-6, "{name}: {}", source.mesh_scale);
         assert!((source.entity_scale - 0.4).abs() < 1e-6, "{name}: {}", source.entity_scale);
     }
