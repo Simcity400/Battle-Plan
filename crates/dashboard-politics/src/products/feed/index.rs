@@ -12,9 +12,10 @@ use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals}, products::Load
 use dashboard_query::{
     Query,
     identity::Holder,
-    log::{Reader, occurrence::{Index, Occurrence, Role, SearchText, SortKey}},
+    log::{Reader, occurrence::{Index, IndexedStateRecords, Occurrence, Role, SearchText, SortKey}},
     series::MissingSpan,
 };
+use dashboard_world::products::place_name_runs::PlacePoint;
 use replay_data::{event_feed_rows::EventFeedCoverage, rows::FeedEventRow};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -104,6 +105,7 @@ struct Brief {
 
 pub(crate) struct Scanned {
     briefs: Vec<Brief>,
+    places: Vec<PlacePoint>,
     pub(super) unique_record_keys: bool,
     native: Vec<Occurrence<Item>>,
     pub war_ends: Vec<NativeWarEnd>,
@@ -150,6 +152,14 @@ fn presented_key(event: &FeedEvent, effects: bool) -> (u64, u64, i32, bool) {
 }
 
 impl Scanned {
+    pub(super) fn place_points(&self) -> impl Iterator<Item = PlacePoint> + '_ {
+        self.places.iter().copied()
+    }
+
+    pub(super) fn visible_choice(&self, edges: &[Locator], hour: i32) -> Option<Locator> {
+        edges.iter().copied().rfind(|edge| edge.hour <= hour && chosen(self.brief(*edge)))
+    }
+
     pub(crate) fn observed_kinds(&self) -> [Option<i32>; EventFeedKind::ALL.len()] {
         let mut first = [None::<i32>; EventFeedKind::ALL.len()];
         for brief in &self.briefs {
@@ -176,6 +186,7 @@ impl Scanned {
         let message = format!("The event history could not be read: {reason}");
         Self {
             briefs: Vec::new(),
+            places: Vec::new(),
             unique_record_keys: true,
             native: Vec::new(),
             war_ends: Vec::new(),
@@ -380,6 +391,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     runs.sort_unstable();
     runs.dedup();
     let mut briefs = Vec::new();
+    let mut places = Vec::new();
     let mut native = Vec::new();
     let mut war_ends = Vec::new();
     let mut incomplete = Vec::new();
@@ -416,6 +428,9 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
             }
             if !event.derived() && kind == EventFeedKind::WarEnded && event.hour <= event.read_hour {
                 war_ends.push(NativeWarEnd { hour: event.hour.min(row.hour), observed: row.hour, actor: event.actor, target: event.target });
+            }
+            if kind == EventFeedKind::StateTransferred && let Some(state) = event.cause.and_then(|cause| cause.state) {
+                places.push(PlacePoint::State(state, event.hour));
             }
             briefs.push(Brief {
                 at,
@@ -459,7 +474,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let breaks = spans(held.clone());
     let decision_lost = incomplete.iter().filter(|(_, _, read)| read.refusals != Some(0)).map(|&(hour, ..)| (hour, hour));
     let decision_breaks = spans(held.into_iter().chain(decision_lost).collect());
-    Ok(Scanned { briefs, unique_record_keys, native, war_ends, incomplete, windows_unrecorded: reasons, lifecycles, resolved: Mutex::default(), presented: Mutex::default(), titles: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
+    Ok(Scanned { briefs, places, unique_record_keys, native, war_ends, incomplete, windows_unrecorded: reasons, lifecycles, resolved: Mutex::default(), presented: Mutex::default(), titles: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
 }
 
 fn incomplete_break_reason(read: &FeedEvent) -> String {
@@ -1085,7 +1100,7 @@ thread_local! {
     pub(super) static REQUESTED_EVENT_LOCATORS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-pub(super) fn read_indexed_events(query: &Query<'_>, locators: &[Locator]) -> io::Result<Option<HashMap<u128, FeedEvent>>> {
+pub(super) fn read_indexed_events(query: &Query<'_>, locators: &[Locator], retained: &IndexedStateRecords) -> io::Result<Option<HashMap<u128, FeedEvent>>> {
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let columns = Columns::new()?;
@@ -1097,13 +1112,15 @@ pub(super) fn read_indexed_events(query: &Query<'_>, locators: &[Locator]) -> io
     for (run, mut points) in by_run {
         points.sort_unstable();
         points.dedup();
-        if !reader.visit_indexed_state_records(run, &points, |key, cells| {
+        if !reader.visit_indexed_state_records(retained, run, &points, |key, cells| {
             out.insert(key, columns.read_cells(key, cells)?);
             Ok(())
         })? {
             return Ok(None);
         }
     }
+    #[cfg(test)]
+    REQUESTED_EVENT_LOCATORS.set(REQUESTED_EVENT_LOCATORS.get() + out.len());
     Ok(Some(out))
 }
 
