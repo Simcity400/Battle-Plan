@@ -1275,7 +1275,7 @@ fn check_parked_panel(release: &str) {
     let pending_at = (release == "preparation").then_some(head + 1);
     let prepared = Arc::new(AtomicBool::new(false));
     let ready = prepared.clone();
-    let (subscribe, subscriber) = mpsc::channel();
+    let (subscribe, subscriber) = mpsc::channel::<panel::Wake>();
     let pending_preparation = pending_at.map(|hour| Arc::new(move |asked| {
         assert_eq!(asked, hour);
         let subscribe = subscribe.clone();
@@ -1383,46 +1383,75 @@ fn a_pending_handoff_can_retry_the_paused_hour() {
 #[test]
 fn an_older_handoff_dispatches_the_final_hour_without_another_native_step() {
     use crate::panel::{ProductRead, dated};
-    use crate::tests::{joined, playing_panel_with_hook};
+    use crate::tests::playing_panel_with_hook;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Gate {
+        FinalStep,
+        BeforeHandoff,
+        AfterHandoff,
+    }
 
     let armed = Arc::new(AtomicBool::new(false));
     let observe = Arc::clone(&armed);
     let (gates, hook) = mpsc::channel();
+    let mut at_final = false;
     let advance = Arc::new(|hour, _, _: &AtomicBool, _: Option<panel::ProductStep<'_>>| ProductRead {
         value: Arc::new(Ok(serde_json::json!(hour))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour,
     });
-    let (host, push, ..) = playing_panel_with_hook(advance, move |step, after| {
-        if step.first() <= step.last() { return; }
-        let selected = if after { observe.swap(false, Ordering::AcqRel) } else { observe.load(Ordering::Acquire) };
-        if selected {
-            let (permit, wait) = mpsc::channel();
-            gates.send((after, permit)).unwrap();
-            let _ = wait.recv();
-        }
+    let (host, push, ..) = playing_panel_with_hook(advance, true, move |step, last, after| {
+        if step.last() != last { return; }
+        let gate = if step.first() <= last {
+            if after || at_final { return; }
+            at_final = true;
+            Gate::FinalStep
+        } else if after && observe.swap(false, Ordering::AcqRel) {
+            Gate::AfterHandoff
+        } else if !after && observe.load(Ordering::Acquire) {
+            Gate::BeforeHandoff
+        } else {
+            return;
+        };
+        let (permit, wait) = mpsc::channel();
+        if gates.send((gate, permit)).is_ok() { let _ = wait.recv(); }
     });
-    joined(&push);
-    let work = host.panels.lock().unwrap().products[&1].clone();
-    let mut product = std::iter::repeat_with(|| work.take()).find_map(|product| product).unwrap();
+    let hook = hook;
     let playhead = host.playhead();
     let last = playhead.timeline().last();
-    playhead.anchor(f64::from(last), true, 360.0, Instant::now(), false);
+    let (gate, permit) = hook.recv().unwrap();
+    assert_eq!(gate, Gate::FinalStep);
+    let work = host.panels.lock().unwrap().products[&1].clone();
+    let mut product = std::iter::repeat_with(|| work.take()).find_map(|product| product).unwrap();
+    permit.send(()).unwrap();
     playhead.wait_newest(last).unwrap();
     armed.store(true, Ordering::Release);
     host.follow.rehooker()();
-    let (after, permit) = hook.recv().unwrap();
-    assert!(!after);
-    let old = Arc::new(Ok(serde_json::json!(last - 1)));
+    let (gate, permit) = hook.recv().unwrap();
+    assert_eq!(gate, Gate::BeforeHandoff);
+    let older = serde_json::json!({ "late": last - 1 });
+    let old = Arc::new(Ok(older.clone()));
     let (kind, body) = product.wire.update(true, &old).unwrap();
     product.resume = Some(PanelResume::Ready(last - 1, kind, body.to_vec()));
     work.put(product);
     permit.send(()).unwrap();
-    let (after, permit) = hook.recv().unwrap();
-    assert!(after);
+    let (gate, permit) = hook.recv().unwrap();
+    assert_eq!(gate, Gate::AfterHandoff);
     {
         let state = work.state.lock().unwrap();
-        assert!(!state.0.as_ref().is_some_and(|product| matches!(product.resume, Some(PanelResume::Read(hour)) if hour == last)),
-            "the final hour's read must already be dispatched");
+        assert!(state.0.as_ref().is_none_or(|product| matches!(product.resume, Some(PanelResume::Ready(hour, ..)) if hour == last)),
+            "the hook must consume the older reply and dispatch the final hour's read");
     }
+    let mut delivered_older = false;
+    while let Some((kind, bytes, ..)) = push.try_take() {
+        push.credit(push.session(), u64::MAX);
+        if kind != PANEL { continue; }
+        for record in dated::records(&bytes).unwrap().into_iter().filter(|r| r.id == 1 && r.kind == dated::DATA) {
+            assert!(record.hour < last, "the final hour cannot publish while the handoff hook is held");
+            let value = rmp_serde::from_slice::<Value>(record.body).unwrap();
+            if record.hour == last - 1 && value == older { delivered_older = true; }
+        }
+    }
+    assert!(delivered_older, "the injected reply must reach the wire before the final reading");
     permit.send(()).unwrap();
     loop {
         let (kind, bytes, session) = push.take_sent().unwrap();

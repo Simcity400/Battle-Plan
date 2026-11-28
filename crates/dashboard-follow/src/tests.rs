@@ -2954,10 +2954,10 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
 type StepGate = mpsc::Receiver<(Hour, mpsc::Sender<()>)>;
 
 fn playing_panel(advance: crate::panel::ProductReader) -> (Arc<crate::host::PlayheadHost<Playhead>>, Arc<crate::push::Push>, Arc<std::sync::atomic::AtomicI32>, StepGate) {
-    playing_panel_with_hook(advance, |_, _| {})
+    playing_panel_with_hook(advance, false, |_, _, _| {})
 }
 
-pub(super) fn playing_panel_with_hook(advance: crate::panel::ProductReader, mut observe: impl FnMut(&playhead::Step, bool) + Send + 'static) -> (Arc<crate::host::PlayheadHost<Playhead>>, Arc<crate::push::Push>, Arc<std::sync::atomic::AtomicI32>, StepGate) {
+pub(super) fn playing_panel_with_hook(advance: crate::panel::ProductReader, start_at_end: bool, mut observe: impl FnMut(&playhead::Step, Hour, bool) + Send + 'static) -> (Arc<crate::host::PlayheadHost<Playhead>>, Arc<crate::push::Push>, Arc<std::sync::atomic::AtomicI32>, StepGate) {
     use crate::{panel::{AtHour, ExactReader, PanelRows}, registry::Hosted};
     use std::sync::atomic::{AtomicI32, Ordering};
     struct NoRows;
@@ -2967,6 +2967,8 @@ pub(super) fn playing_panel_with_hook(advance: crate::panel::ProductReader, mut 
         }
     }
     let pages = record(quiet);
+    let timeline = Timeline::whole(&*pages).unwrap();
+    let last = timeline.last();
     let follow = Follow::new(0);
     let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 8, speed: 1.0, rate: 60.0, ..Settings::default() };
     let gate_from = Arc::new(AtomicI32::new(i32::MAX));
@@ -2977,11 +2979,11 @@ pub(super) fn playing_panel_with_hook(advance: crate::panel::ProductReader, mut 
             let (permit, wait) = mpsc::channel();
             if arrived.send((step.last(), permit)).is_ok() { let _ = wait.recv(); }
         }
-        observe(step, false);
+        observe(step, last, false);
         inner(step, lanes);
-        observe(step, true);
+        observe(step, last, true);
     });
-    let playhead = Arc::new(Playhead::new(pages.clone(), Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap());
+    let playhead = Arc::new(Playhead::new(pages, timeline, settings, Some(hook)).unwrap());
     let host = crate::host::PlayheadHost::new(playhead, |p| p, |p, a| { if a.sought { p.seek(a.hour); } }, follow, vec![true; TABLE + 1]).unwrap();
     let push = Arc::new(crate::push::Push::default());
     host.show_panels(Arc::new(NoRows), push.clone());
@@ -2990,7 +2992,7 @@ pub(super) fn playing_panel_with_hook(advance: crate::panel::ProductReader, mut 
     host.prepare_panel(Box::new(AtHour { read: cold.clone(), cold, advance })).unwrap()(1, 1).unwrap();
     let (_, _, _, offered) = push.take_kind().expect("the seed's first record");
     host.playhead().pace(360.0);
-    host.playhead().anchor(0.0, true, 360.0, offered, false);
+    host.playhead().anchor(if start_at_end { f64::from(last) } else { 0.0 }, true, 360.0, offered, false);
     (host, push, gate_from, gated)
 }
 
@@ -3007,7 +3009,7 @@ fn completed_batch(push: &crate::push::Push) -> (Hour, Vec<(u32, u8, Hour, bool)
     }
 }
 
-pub(super) fn joined(push: &crate::push::Push) -> Hour {
+fn joined(push: &crate::push::Push) -> Hour {
     loop {
         let (completed, records) = completed_batch(push);
         if records.iter().any(|&(id, kind, _, stepped)| id == 1 && stepped && kind != crate::panel::dated::WAITING) { return completed; }
