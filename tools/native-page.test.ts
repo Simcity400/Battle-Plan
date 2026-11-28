@@ -318,7 +318,9 @@ test('devServer bounds readiness connections and closes its listener and sockets
     },
   }]);
   const upgradedSocket = connect(stalled.port, '127.0.0.1');
-  const upgradedClosed = once(upgradedSocket, 'close');
+  let reset: string | undefined;
+  upgradedSocket.on('error', (error: NodeJS.ErrnoException) => { reset = error.code; });
+  const upgradedClosed = new Promise<void>(done => upgradedSocket.once('close', () => done()));
   try {
     await new Promise<void>((done, reject) => {
       upgradedSocket.once('connect', () => {
@@ -334,6 +336,7 @@ test('devServer bounds readiness connections and closes its listener and sockets
     await assert.rejects(() => pending, /stalled page load timed out/);
     await checkClosed(stalled.close());
     await checkClosed(upgradedClosed);
+    assert.equal(reset, 'ECONNRESET', 'closing the fixture resets connections it still owns');
     const probe = connect(stalled.port, '127.0.0.1');
     try {
       await assert.rejects(once(probe, 'connect'), { code: 'ECONNREFUSED' });

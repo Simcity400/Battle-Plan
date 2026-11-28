@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createReadStream, existsSync, rmSync } from 'node:fs';
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import type { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { setTimeout as pause } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { parseAst } from 'rolldown/parseAst';
 import { Agent, fetch } from 'undici';
 import { build, createLogger, createServer, type PluginOption } from 'vite';
@@ -293,18 +295,34 @@ const TYPES: Readonly<Record<string, string>> = { '.js': 'text/javascript', '.mj
   '.png': 'image/png', '.webp': 'image/webp', '.wasm': 'application/wasm', '.woff2': 'font/woff2' };
 const builds = new Map<string, Promise<string>>();
 
-function fixtureClose(server: Server, record: (url: string, status: number | undefined, reason: string) => void,
+async function writeSocketSummary(line: string) {
+  const summary = process.env.GITHUB_STEP_SUMMARY;
+  if (process.platform === 'win32' && summary) {
+    await appendFile(summary, `- ${line}\n`).catch(error => console.error('Could not write fixture socket counts', errorDetail(error)));
+  }
+}
+
+function fixtureClose(name: string, server: Server, record: (url: string, status: number | undefined, reason: string) => void,
   dispose?: () => Promise<void>) {
-  const sockets = new Map<Duplex, Promise<void>>();
+  const sockets = new Map<Socket, Promise<void>>();
+  let opened = 0, peak = 0, requests = 0;
   server.on('connection', socket => {
+    opened++;
     sockets.set(socket, new Promise<void>(done => socket.once('close', () => { sockets.delete(socket); done(); })));
+    peak = Math.max(peak, sockets.size);
   });
+  server.on('request', () => { requests++; });
   server.keepAliveTimeout = PAGE_LOAD_MS;
   server.headersTimeout = PAGE_LOAD_MS + 1_000;
   server.on('clientError', handleClientError(record));
   let closing: Promise<void> | undefined;
   return () => closing ??= (async () => {
+    const address = server.address();
     const listenerClosed = server.listening ? once(server, 'close') : undefined;
+    const remaining = [...sockets];
+    for (const [socket] of remaining) {
+      if (!socket.destroyed) socket.resetAndDestroy();
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const disposed = dispose && Promise.race([
@@ -312,8 +330,10 @@ function fixtureClose(server: Server, record: (url: string, status: number | und
         new Promise<void>(done => { timer = setTimeout(done, 500); }),
       ]);
       if (server.listening) server.close();
-      const closed = [...sockets].map(([socket, done]) => { socket.destroy(); return done; });
-      const results = await Promise.allSettled([listenerClosed, ...closed, disposed]);
+      const results = await Promise.allSettled([listenerClosed, ...remaining.map(([, closed]) => closed), disposed]);
+      if (address && typeof address !== 'string') {
+        await writeSocketSummary(`${name} on port ${address.port} served ${requests} HTTP requests, opened ${opened} sockets, closed ${opened - sockets.size}, peak ${peak}, ${remaining.length} at teardown.`);
+      }
       assert.equal(server.listening, false, 'fixture listener still open after teardown');
       assert.equal(sockets.size, 0, 'fixture connections still open after teardown');
       for (const result of results) {
@@ -323,6 +343,36 @@ function fixtureClose(server: Server, record: (url: string, status: number | und
       clearTimeout(timer);
     }
   })();
+}
+
+async function reportTcpBufferError(name: string, error: unknown) {
+  if (process.platform !== 'win32' || !errorDetail(error).includes('net::ERR_NO_BUFFER_SPACE')) return;
+  let snapshot: string;
+  try {
+    const command = promisify(execFile);
+    const options = { windowsHide: true, timeout: 5_000, maxBuffer: 4 * 1024 * 1024 };
+    const [{ stdout }, range] = await Promise.all([
+      command('netstat.exe', ['-qno', '-p', 'tcp'], options),
+      command('netsh.exe', ['interface', 'ipv4', 'show', 'dynamicport', 'tcp'], options).catch(() => undefined),
+    ]);
+    const counts = new Map<string, number>();
+    const ports = new Set<number>();
+    for (const line of stdout.split('\n')) {
+      const [protocol, local, , state] = line.trim().split(/\s+/);
+      if (protocol !== 'TCP' || !local || !state) continue;
+      counts.set(state, (counts.get(state) ?? 0) + 1);
+      ports.add(Number(local.slice(local.lastIndexOf(':') + 1)));
+    }
+    const first = Number(range?.stdout.match(/Start Port\s*:\s*(\d+)/i)?.[1]);
+    const size = Number(range?.stdout.match(/Number of Ports\s*:\s*(\d+)/i)?.[1]);
+    const used = [...ports].filter(port => port >= first && port < first + size).length;
+    const pool = Number.isFinite(first) && size > 0 ? `, ${used} of ${size} ports in the configured dynamic range` : '';
+    snapshot = `Windows IPv4 TCP had ${ports.size} distinct local ports${pool} at fixture failure (${[...counts].map(([state, count]) => `${count} ${state}`).join(', ')})`;
+  } catch (snapshotError) {
+    snapshot = `Could not count Windows TCP sockets at fixture failure (${errorDetail(snapshotError).replace(/\s+/g, ' ')})`;
+  }
+  console.error(name, snapshot);
+  await writeSocketSummary(`${name} reported net::ERR_NO_BUFFER_SPACE. ${snapshot}`);
 }
 
 function builtFixture(name: string, fixture: string, plugins: PluginOption[]): Promise<string> {
@@ -396,7 +446,7 @@ export async function builtServer(name: string, route: string, out: string): Pro
       response.end(reason);
     });
   });
-  const close = fixtureClose(server, record);
+  const close = fixtureClose(name, server, record);
   try {
     await once(server.listen(0, '127.0.0.1'), 'listening');
     const address = server.address(); assert.ok(address && typeof address !== 'string');
@@ -504,7 +554,7 @@ export async function devServer(name: string, route: string, fixture: string, pr
     server: { host: '127.0.0.1', port: 0, watch: null, hmr: false, ws: false },
     plugins: [capturePlugin, ...plugins, routePlugin] });
   const httpServer = vite.httpServer as Server;
-  const close = fixtureClose(httpServer, record, () => vite.close());
+  const close = fixtureClose(name, httpServer, record, () => vite.close());
   let address;
   try {
     await vite.listen();
@@ -606,8 +656,12 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
       await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 }, guard.getStore());
     };
     await run({ evaluate, press, reload, page: target, stage });
+  } catch (error) {
+    await reportTcpBufferError(name, error);
+    throw error;
   } finally {
     readyAbort.abort();
+    const fixtureClosed = Promise.allSettled([closeFixture?.(), ready]);
     try {
       if (browser) await stopBrowser(browser, async (_budget, signal) => { await browserCdp?.send('Browser.close', {}, signal); }, async budget => {
         if (process.platform === 'win32') {
@@ -620,7 +674,8 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
         try { process.kill(browserPid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true; throw error; }
       }, { profile });
     } finally {
-      await Promise.all([ready, closeFixture?.(), pageCdp?.close(), browserCdp?.close()]);
+      const [[result]] = await Promise.all([fixtureClosed, pageCdp?.close(), browserCdp?.close()]);
+      if (result.status === 'rejected') throw result.reason;
     }
     assert.ok(profile.startsWith(resolve(tmpdir()) + sep));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
