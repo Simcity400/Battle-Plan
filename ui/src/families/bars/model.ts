@@ -153,6 +153,7 @@ export interface BarsDataRow {
   readonly numeric?: number | null;
   readonly target?: BarsNeedTarget;
   readonly segments?: readonly BarsSegment[];
+  readonly segmentsIncomplete?: true;
   readonly left?: BarsSideMeasure;
   readonly right?: BarsSideMeasure;
   readonly rightSide?: BarsOppositeRow;

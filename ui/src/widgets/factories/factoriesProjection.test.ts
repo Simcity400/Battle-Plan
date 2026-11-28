@@ -144,6 +144,7 @@ test('a missing part leaves the rest of the proven total as not recorded, and mi
   const built = { ...BASE_OPTS, mode: 'built' as const, damagedSource: 'damaged7' };
   const unknownDamage = factoriesProjection.project(partsView(300, panelOf(300, [['GER', 100, 'Damage not recorded']], ['built7', 'damaged7'])), built).rows[0] as BarsDataRow;
   assert.equal(unknownDamage.segments, undefined, 'the whole bar stays one known total');
+  assert.equal(unknownDamage.segmentsIncomplete, true);
   assert.deepEqual(unknownDamage.tooltip?.items?.find(item => item.label === 'Damaged'), { label: 'Damaged', missingReason: 'Damage not recorded' });
 
   const partDamage = factoriesProjection.project(
@@ -155,6 +156,7 @@ test('a missing part leaves the rest of the proven total as not recorded, and mi
   assert.deepEqual(partDamage.segments?.map(s => [s.key, Math.round(s.share * 100)]), [
     ['military', 54], ['damaged:military', 6], ['naval', 10], ['civilian', 30],
   ]);
+  assert.equal(partDamage.segmentsIncomplete, true, 'the visible parts cannot establish the missing damage share');
 });
 
 test('the one reply is read and indexed once per picture, not once per country and part', () => {

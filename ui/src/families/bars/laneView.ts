@@ -1,6 +1,7 @@
 import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import { textWidth } from '../../charts/textWidth.ts';
 import { splitBarWidths } from '../../draw/kit.ts';
+import type { BarsPlaybackForm } from '../contract.ts';
 import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import type { MotionSampleDiagnostic } from '../motion.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
@@ -269,7 +270,7 @@ function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSa
   return endpoints;
 }
 
-function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, nextLayout: () => BarsLayout, diagnostic?: MotionSampleDiagnostic): BarsFrame | false | null {
+function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, nextLayout: () => BarsLayout, form: BarsPlaybackForm, diagnostic?: MotionSampleDiagnostic): BarsFrame | false | null {
   const current = frame.model;
   const endpoints = matchingRows(current, next, diagnostic);
   if (!endpoints) return null;
@@ -290,7 +291,7 @@ function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, next
       || !row.value || !end.value
       || (row.value.value.kind !== 'zero' && row.value.value.kind !== 'known')
       || (end.value.value.kind !== 'zero' && end.value.value.kind !== 'known')) return null;
-    if ((row.numeric < 0) !== (end.numeric < 0)) return null;
+    if (form === 'ordered-segments' && (row.segmentsIncomplete || end.segmentsIncomplete || (row.numeric < 0) !== (end.numeric < 0))) return null;
     if ((row.target && !measuredTarget(row.target)) || (end.target && !measuredTarget(end.target))) return null;
     const from = orderedBarGeometry(start.plotWidth, row.numeric / start.scaleMax, row.target && row.target.numeric / start.scaleMax);
     const to = orderedBarGeometry(endPlotWidth, end.numeric / endLayout.scaleMax, end.target && end.target.numeric / endLayout.scaleMax);

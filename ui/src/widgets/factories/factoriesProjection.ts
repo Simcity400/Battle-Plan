@@ -106,18 +106,18 @@ function buildPartSegments(
   total: number,
   options: FactoriesProjectionOptions,
   baseColor: string | undefined,
-): { readonly segments?: readonly BarsSegment[]; readonly tooltipItems: TooltipListItem[] } {
+): Pick<BarsDataRow, 'segments' | 'segmentsIncomplete'> & { readonly tooltipItems: TooltipListItem[] } {
   if (!options.split && options.mode !== 'built') return { tooltipItems: [] };
   if (total <= 0) return { tooltipItems: [] };
 
   const tooltipItems: TooltipListItem[] = [];
   if (!options.split) {
     const damaged = options.damagedSource ? partValue(index, options.damagedSource, wireName) : null;
-    if (damaged === null) return { tooltipItems };
+    if (damaged === null) return { tooltipItems, segmentsIncomplete: true };
     const amount = numericOf(damaged);
     if (amount === null) {
       tooltipItems.push({ label: 'Damaged', missingReason: reasonOf(damaged) });
-      return { tooltipItems };
+      return { tooltipItems, segmentsIncomplete: true };
     }
     const hurt = Math.min(total, Math.max(0, amount));
     tooltipItems.push({ label: 'Damaged', value: countText(hurt) });
@@ -132,9 +132,10 @@ function buildPartSegments(
   const segments: BarsSegment[] = [];
   let known = 0;
   let unknownReason: string | null = null;
+  let damageUnknown = false;
   for (const spec of options.parts) {
     const value = partValue(index, spec.source, wireName);
-    if (value === null) return { tooltipItems };
+    if (value === null) return { tooltipItems, segmentsIncomplete: true };
     const amount = numericOf(value);
     if (amount === null) {
       unknownReason ??= reasonOf(value);
@@ -148,6 +149,7 @@ function buildPartSegments(
     const damagedValue = spec.damagedSource ? partValue(index, spec.damagedSource, wireName) : null;
     const damaged = damagedValue === null ? null : numericOf(damagedValue);
     const damagedLabel = damagedGroupLabel({ label: spec.label });
+    damageUnknown ||= spec.damagedSource !== undefined && damaged === null;
     if (damagedValue !== null && damaged === null) {
       tooltipItems.push({ label: damagedLabel, swatch: spec.color, missingReason: reasonOf(damagedValue) });
     }
@@ -158,7 +160,7 @@ function buildPartSegments(
   if (unknownReason !== null && total > known) {
     segments.push({ key: 'unrecorded', label: 'Not recorded', share: (total - known) / total, value: notRecorded(unknownReason), color: options.surface, hatched: true });
   }
-  return { ...(segments.length ? { segments } : {}), tooltipItems };
+  return { ...(segments.length ? { segments } : {}), ...((unknownReason !== null || damageUnknown) ? { segmentsIncomplete: true } : {}), tooltipItems };
 }
 
 function makeRow(
@@ -193,6 +195,7 @@ function makeRow(
     },
     numeric,
     ...(parts.segments ? { segments: parts.segments } : {}),
+    ...(parts.segmentsIncomplete ? { segmentsIncomplete: true } : {}),
     tooltip: {
       title: barsLabelText(pres.label),
       hour: readView.hour,
