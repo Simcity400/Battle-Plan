@@ -485,7 +485,7 @@ impl Mirror {
         let texts: HashMap<u32, Box<[u8]>, Keys> = if text { lane.texts().iter().map(|(id, text)| (id, text.into())).collect() } else { HashMap::default() };
         let texts_bytes = texts.values().map(|text| text.len() + 40).sum();
         let reason = match lane.status().0 {
-            Status::Unavailable { reason } => Some((reason, lane.texts().iter().find(|&(id, _)| id == reason).map_or_else(|| unnamed(reason), |(_, text)| String::from_utf8_lossy(text).into()))),
+            Status::Unavailable { reason } => Some((reason, lane.reason().map_or_else(|| unnamed(reason), |text| String::from_utf8_lossy(text).into()))),
             _ => None,
         };
         let listed = lane.log().map(|_| HashMap::default());

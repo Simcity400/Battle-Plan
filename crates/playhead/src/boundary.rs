@@ -88,7 +88,10 @@ pub fn crossed(before: &Lane, after: &mut Lane, out: &mut Changes) -> io::Result
         }
     }
     after.texts_into(out);
-    out.status = Some(after.status());
+    after.report_status(out);
+    if let (Some(before), Some(after)) = (before.read_rows(), after.read_rows()) {
+        out.read_rows_changed = before != after;
+    }
     out.set_head(head, 0, false);
     Ok(Some(held))
 }

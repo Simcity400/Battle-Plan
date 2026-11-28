@@ -772,7 +772,7 @@ impl Lane {
         for (written, &column) in out.columns.iter_mut().zip(self.columns.iter()) {
             written.fill(self.cells.column(column).expect("a selected column"))?;
         }
-        out.status = Some(self.status);
+        self.report_status(out);
         out.set_head(head, 0, false);
         Ok(())
     }
@@ -788,6 +788,16 @@ impl Lane {
     pub(crate) fn texts_into(&mut self, out: &mut Changes) {
         std::mem::swap(&mut out.texts, &mut self.texts);
         self.texts.clear();
+    }
+
+    pub(crate) fn report_status(&self, out: &mut Changes) {
+        out.status = Some(self.status);
+        if let Status::Unavailable { reason } = self.status.0
+            && !out.texts.ids.contains(&reason)
+            && let Some(text) = self.reason()
+        {
+            out.texts.push(reason, text);
+        }
     }
 
     pub(crate) fn show_known(&mut self) -> Texts {
@@ -1019,7 +1029,7 @@ impl Lane {
         out.status_left = self.status_left(held.0)?;
         self.read_status()?;
         if self.status != held {
-            out.status = Some(self.status);
+            self.report_status(out);
         }
         if self.status.0 == held.0 && matches!(self.status.0, Status::Truncated { .. }) {
             #[cfg(test)]

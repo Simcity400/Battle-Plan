@@ -81,24 +81,15 @@ impl ExactColumns {
 
     pub(super) fn snapshot(&self, hour: Hour, fields: u64, keys: Option<&BTreeSet<u64>>, order: &mut Vec<(u128, u32)>) -> (SharedView, Option<HeadFailure>) {
         order.clear();
-        self.snapshot_with(hour, fields, |lane| {
-            if let Some(read) = lane.read_rows() {
-                self.order_of(lane, read.iter().copied(), keys, order);
-            } else {
-                self.order_of(lane, lane.cells().rows(), keys, order);
-            }
+        let (rows, failure, sampled) = self.snapshot_with(hour, fields, |lane| {
+            order_rows(lane, keys, order);
             cells_rows_of(self.table, &lane.view(), order, lane.format(), fields)
-        })
+        });
+        let width = self.entry.kinds()[self.table.index()].len();
+        (held_fields(SharedView::from(rows).with_sampled_at(sampled), fields, width), failure)
     }
 
-    fn order_of(&self, lane: &Lane, slots: impl Iterator<Item = u32>, keys: Option<&BTreeSet<u64>>, order: &mut Vec<(u128, u32)>) {
-        order.extend(slots.filter_map(|slot| {
-            lane.cells().key(slot).filter(|&key| keys.is_none_or(|keys| keys.contains(&prefix(key)))).map(|key| (key, slot))
-        }));
-        order.sort_unstable();
-    }
-
-    fn snapshot_with(&self, hour: Hour, fields: u64, decode: impl FnOnce(&Lane) -> io::Result<TableRows>) -> (SharedView, Option<HeadFailure>) {
+    fn snapshot_with(&self, hour: Hour, fields: u64, decode: impl FnOnce(&Lane) -> io::Result<TableRows>) -> (TableView, Option<HeadFailure>, Option<Hour>) {
         let width = self.entry.kinds()[self.table.index()].len();
         let columns: Vec<_> = (0..width).filter(|&column| column >= 64 || fields & (1 << column) != 0).collect();
         let capture = self.entry.capture.get().copied();
@@ -116,18 +107,18 @@ impl ExactColumns {
             }
         };
         let sampled = sampled.filter(|_| matches!(view, TableView::Complete(_)));
-        (held_fields(SharedView::from(view).with_sampled_at(sampled), fields, width), failure)
+        (view, failure, sampled)
     }
 
     pub(super) fn decoded(&self, hour: Hour, fields: u64, keys: Option<&BTreeSet<u64>>, order: &mut Vec<(u128, u32)>) -> (TableView, view::Made) {
         order.clear();
         let mut untold = 0;
-        let (rows, failure) = self.snapshot_with(hour, fields, |lane| {
-            self.order_of(lane, lane.cells().rows(), keys, order);
+        let (rows, failure, _) = self.snapshot_with(hour, fields, |lane| {
+            order_rows(lane, keys, order);
             let keys: Vec<_> = order.iter().map(|&(key, _)| key).collect();
             let columns = lane.view();
             self.table.rows_from_wire(&keys, &mut |at, column| {
-                let kind = *columns.kinds().get(column).ok_or_else(|| io::Error::other(format!("{:?} has no column {column}", self.table)))?;
+                let Some(&kind) = columns.kinds().get(column) else { return Ok(Field::NotRecorded) };
                 if column < 64 && fields & (1 << column) == 0 {
                     return Ok(view::zero(kind));
                 }
@@ -142,8 +133,21 @@ impl ExactColumns {
                 }
             })
         });
-        (rows.into_inner(), view::Made { rows: order.len(), failure: failure.map(|failure| failure.kind), untold })
+        (rows, view::Made { rows: order.len(), failure: failure.map(|failure| failure.kind), untold })
     }
+}
+
+fn order_rows(lane: &Lane, keys: Option<&BTreeSet<u64>>, order: &mut Vec<(u128, u32)>) {
+    let add = |slot| {
+        if let Some(key) = lane.cells().key(slot).filter(|&key| keys.is_none_or(|keys| keys.contains(&prefix(key)))) {
+            order.push((key, slot));
+        }
+    };
+    match lane.read_rows() {
+        Some(slots) => slots.iter().copied().for_each(add),
+        None => lane.cells().rows().for_each(add),
+    }
+    order.sort_unstable();
 }
 
 pub(super) struct ScriptValues {

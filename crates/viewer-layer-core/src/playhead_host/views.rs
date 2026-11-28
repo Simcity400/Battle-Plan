@@ -1329,6 +1329,7 @@ fn noted_apply(kept: &mut [Option<Kept>], table: usize, changes: &Changes, moved
     {
         let Some(Some(kept)) = kept.get_mut(table) else { return };
         kept.gap = false;
+        let moved = moved || (kept.exact.is_some() && changes.read_rows_changed());
         let membership = changes.reset() || !changes.deleted().is_empty() || !changes.inserted().is_empty() || moved;
         let written = changes.columns().iter().filter(|written| !written.is_empty()).fold(0_u64, |held, written| held | if written.column() < 64 { 1 << written.column() } else { view::EVERY });
         for held in &mut kept.views {

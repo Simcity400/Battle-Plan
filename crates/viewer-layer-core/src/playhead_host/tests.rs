@@ -618,22 +618,28 @@ fn script_values_are_read_from_the_requested_hour_without_building_a_mirror() {
 fn variant_views_follow_the_recording_without_a_full_map_mirror() {
     use playhead::pages::{Span, WorldPages};
     use replay_data::{format::FormatVersion, rows::{CountryRow, VariantDefinitionRow, tables}};
-    use replay_frame::frame::SharedView;
+    use replay_frame::frame::{SharedView, TableView};
     use replay_journal::{fixtures, synthetic::{Input, Sample}};
     use replay_recording::columnar_frames::Recording;
 
     let variants = TableId::VariantDefinitions;
-    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"variant views", &[(1, 0, 3)], &[TableId::Countries, variants], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"variant views", &[(1, 0, 7)], &[TableId::Countries, variants], |synthetic, _, ordinal| {
         let countries = [CountryRow { id: 7, tag: b"TST".to_vec(), ..Default::default() }];
         let token = if ordinal < 2 { 9 } else { 10 };
-        let name = if ordinal < 2 { b"before".to_vec() } else { b"after".to_vec() };
+        let name = if ordinal == 0 { b"before".to_vec() } else { b"after".to_vec() };
         let rows = [
             VariantDefinitionRow { id: 41, equipment_token: 8, creator_link: 7, ..Default::default() },
             VariantDefinitionRow { id: 42, equipment_token: token, creator_link: 7, explicit_entity: name, ..Default::default() },
         ];
         synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
-        let rows = if ordinal < 2 { &rows[..] } else { &rows[1..] };
-        synthetic.table(variants, Input::Snapshot { rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        let input = match ordinal {
+            2 => Input::Snapshot { rows: &rows[1..], partial: None, read: true, sample: Sample::FromReadBit },
+            4 => Input::Snapshot { rows: &rows[1..], partial: Some(1), read: true, sample: Sample::FromReadBit },
+            5 => Input::Snapshot { rows: &rows[..1], partial: Some(1), read: true, sample: Sample::FromReadBit },
+            6 => Input::Unavailable { reason: "after", read: false, sample: Sample::FromReadBit },
+            _ => Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit },
+        };
+        synthetic.table(variants, input).unwrap();
     });
     let opened = Arc::new(WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap());
     let kinds = Arc::new(opened.schema().to_vec());
@@ -646,7 +652,7 @@ fn variant_views_follow_the_recording_without_a_full_map_mirror() {
     side.set_branch(1);
     let reader = side.views().handle().telling("variant models", &[super::views::Need::every(variants)]);
     let mut held = None;
-    for (offset, token) in [(0, 9), (0, 9), (2, 10)] {
+    for (offset, token) in [(0, 9), (0, 9), (1, 9), (2, 10)] {
         let at = hour + offset;
         side.anchor(at, false, 0.0, held.is_none());
         side.catch_up(at).unwrap();
@@ -656,8 +662,12 @@ fn variant_views_follow_the_recording_without_a_full_map_mirror() {
         let row = rows.iter().find(|row| row.id == 42).unwrap();
         assert_eq!(row.equipment_token, token);
         assert_eq!(&row.explicit_entity[..], if offset == 0 { &b"before"[..] } else { &b"after"[..] });
-        assert_eq!(rows.iter().any(|row| row.id == 41), offset == 0);
-        if offset > 0 {
+        assert_eq!(rows.iter().any(|row| row.id == 41), offset < 2);
+        if offset == 1 {
+            let entity = replay_data::rows::mask::<VariantDefinitionRow>(&["explicit_entity"]);
+            let changes = changes.get(&variants).and_then(Option::as_ref).expect("a rename carries its changed field");
+            assert_eq!(changes.get(&42), Some(&entity));
+        } else if offset == 2 {
             let changes = changes.get(&variants).expect("changed variant rows carry their invalidation");
             assert!(changes.as_ref().is_none_or(|rows| rows.contains_key(&41) && rows.contains_key(&42)));
         }
@@ -666,13 +676,57 @@ fn variant_views_follow_the_recording_without_a_full_map_mirror() {
         assert_eq!(mirror.cell(0, slot).value(), Some(token as u64));
         assert_eq!(mirror.cell(1, slot).value(), Some(7));
         assert!(!(2..variants.field_count()).any(|column| mirror.holds(column)));
-        assert_eq!(mirror.slot(41).is_some(), offset == 0);
+        assert_eq!(mirror.slot(41).is_some(), offset < 2);
         assert_eq!(mirror.refused(), 0, "intentionally omitted columns do not count as refused writes");
         let view = frame.tables[variants.index()].clone();
         if let Some(before) = held.replace(view.clone()) {
             assert_eq!(SharedView::ptr_eq(&before, &view), offset == 0);
         }
     }
+    for (offset, expected) in [(3, None), (4, Some(42)), (5, Some(41)), (6, None)] {
+        let at = hour + offset;
+        side.anchor(at, false, 0.0, false);
+        side.catch_up(at).unwrap();
+        let frame = reader.frame().unwrap();
+        assert_eq!(frame.hour, at);
+        if let Some(key) = expected {
+            let TableView::Truncated { rows, missing: 1 } = frame.tables[variants.index()].held() else { panic!("the hour should be truncated") };
+            assert_eq!(rows.len(), 1);
+            assert!(rows.contains_key(key));
+        }
+    }
+    let frame = reader.frame().unwrap();
+    assert!(matches!(frame.tables[variants.index()].held(), TableView::Unavailable { reason } if reason == "after"));
+    assert_eq!(side.parts().unwrap().0.get(variants).unwrap().reason(), Some("after"));
+}
+
+#[test]
+fn variant_views_keep_recorded_fields_before_design_was_appended() {
+    use super::script_values::ExactColumns;
+    use playhead::pages::{Span, TableWritten, WorldPages};
+    use replay_data::rows::{VariantDefinitionRow, compatibility::DESIGN_STATE_FORMAT, tables};
+    use replay_journal::{fixtures, synthetic::{Input, Sample}};
+    use replay_recording::columnar_frames::Recording;
+
+    let table = TableId::VariantDefinitions;
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, DESIGN_STATE_FORMAT - 1, b"variants before design", &[(1, 0, 1)], &[table], |synthetic, _, _| {
+        let rows = [VariantDefinitionRow { id: 42, equipment_token: 9, explicit_entity: b"recorded".to_vec(), ..Default::default() }];
+        synthetic.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let opened = Arc::new(WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap());
+    let kinds = Arc::new(opened.schema().to_vec());
+    let pages: Arc<dyn Pages> = opened;
+    let timeline = Timeline::whole(&*pages).unwrap();
+    let hour = timeline.first();
+    let entry = open(Units { name: "variants before design".into(), pages, timeline, kinds }, quick()).unwrap();
+    let columns = ExactColumns::new(&entry, table, TableWritten::Written);
+    let (view, made) = columns.decoded(hour, table.full_mask(), None, &mut Vec::new());
+    assert!(made.failure.is_none(), "{:?}", made.failure);
+    let replay_frame::frame::TableView::Complete(rows) = view else { panic!("the recorded variant must be available") };
+    let &[ref row] = rows.rows::<tables::VariantDefinitions>().unwrap() else { panic!("expected one recorded variant") };
+    assert_eq!(row.equipment_token, 9);
+    assert_eq!(row.explicit_entity, b"recorded");
+    assert!(matches!(row.design, replay_data::rows::Recorded::NotRecorded));
 }
 
 #[test]
