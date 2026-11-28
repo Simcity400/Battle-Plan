@@ -1901,7 +1901,7 @@ impl<P: PlaybackProducts> MapSide<P> {
     }
 
     fn step_makers(&mut self, lay: bool) -> io::Result<()> {
-        self.applied.filter(|_| !self.makers_home())
+        self.applied.filter(|_| self.epoch == self.entry.playhead.epoch() && !self.makers_home())
             .map_or(Ok(()), |hour| self.frame_whole_step(hour, lay).map(|_| ()))
     }
 
@@ -1946,9 +1946,10 @@ impl<P: PlaybackProducts> MapSide<P> {
 
     pub fn settle_all(&mut self) -> io::Result<()> {
         let until = Instant::now() + CATCHING_UP;
-        loop {
+        let epoch = self.epoch;
+        while epoch == self.entry.playhead.epoch() {
             let _ = self.whole_progress().try_recv();
-            if self.settle_makers()? {
+            if self.settle_makers()? || epoch != self.entry.playhead.epoch() {
                 return Ok(());
             }
             if let Some(error) = self.entry.playhead.error() {
@@ -1959,6 +1960,7 @@ impl<P: PlaybackProducts> MapSide<P> {
                 return Err(io::Error::new(io::ErrorKind::TimedOut, self.waiting_state(hour)));
             }
         }
+        Ok(())
     }
 
     fn settle_makers(&mut self) -> io::Result<bool> {

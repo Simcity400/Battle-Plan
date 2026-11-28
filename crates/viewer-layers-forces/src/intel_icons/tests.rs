@@ -20,7 +20,7 @@ struct Count;
 impl Evaluate for Count {
     fn icons(&self, frame: &DecodedFrame, _choice: &perspective::Choice) -> IntelIcons {
         let links = frame.complete::<tables::CountryLinks>().map(<[_]>::len).ok();
-        let humans = frame.complete::<tables::HumanControllers>().map(<[_]>::len).ok();
+        let humans = if frame.hour >= 2 { frame.complete::<tables::HumanControllers>().map(<[_]>::len).ok() } else { None };
         let mut icons = IntelIcons { built_for: Some((frame.branch, frame.hour, 0)), ..IntelIcons::default() };
         icons.report.reasons.insert(format!("links {links:?}, humans {humans:?}, on {:?}", std::thread::current().name()), 1);
         icons
@@ -83,12 +83,21 @@ fn icons_at(side: &mut MapSide, hour: replay_data::Hour, what: &str) {
 }
 
 fn learned_at(side: &mut MapSide, hour: replay_data::Hour) {
-    sought(side, hour);
-    at(side, hour, "the reader opens", Icons::is_open);
-    assert!(read(side).is_none() && drawn(side.layer_parts()).is_none(), "while its tables load the window keeps today's icons");
-    sought(side, hour);
-    at(side, hour, "the table the content reads is learned", |layer| layer.tables().contains(&TableId::HumanControllers));
-    icons_at(side, hour, "the icons of the hour");
+    icons_at(side, 0, "the icons before learning another table");
+    let mut held = drawn(side.layer_parts()).unwrap();
+    assert!(!layer(side).tables().contains(&TableId::HumanControllers));
+    let until = Instant::now() + Duration::from_secs(60);
+    while !layer(side).tables().contains(&TableId::HumanControllers) {
+        side.frame(hour).unwrap();
+        let icons = drawn(side.layer_parts()).expect("while a new table loads, the window keeps its icons");
+        if layer(side).tables().contains(&TableId::HumanControllers) {
+            assert!(Arc::ptr_eq(&held, &icons));
+        }
+        held = icons;
+        assert!(Instant::now() < until, "the table the content reads is never learned: {}", state(side));
+        std::thread::yield_now();
+    }
+    at(side, hour, "the icons of the hour", |layer| layer.icons().is_some_and(|(_, at)| at == hour));
 }
 
 fn play(side: &mut MapSide, from: replay_data::Hour, what: &str, mut each: impl FnMut(&MapSide, &viewer_layer_core::playhead_host::Frame) -> bool) {

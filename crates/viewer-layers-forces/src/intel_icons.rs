@@ -498,7 +498,9 @@ impl Layer for Icons {
     }
 
     fn made_at(&self, hour: Hour) -> bool {
-        self.open.is_none() || matches!(self.published(), Published::Cadence(held) if held == hour)
+        self.open.as_ref().is_none_or(|open| {
+            !open.busy && open.seen.is_some() && open.handed && matches!(self.published(), Published::Cadence(held) if held == hour)
+        })
     }
 
     fn held(&self) -> usize {
