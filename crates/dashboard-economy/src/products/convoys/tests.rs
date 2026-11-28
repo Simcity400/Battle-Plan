@@ -326,6 +326,19 @@ fn consecutive_convoy_days_reuse_discovery_but_keep_the_unrecorded_reason() {
     };
     dashboard_base::test_fixtures::proven_by_steps(source.replay_ref(), &checked, 0, 120, 24);
     assert!(saw_unrecorded.load(std::sync::atomic::Ordering::Relaxed));
+
+    let tile = super::panel(
+        &source,
+        &LoadContext { content: None },
+        &serde_json::json!({ "branchId": "1", "country": "GER", "view": "regions", "from": 24, "to": 143, "regions": [17] }),
+    ).unwrap();
+    let cold = &tile.exact().unwrap().cold;
+    let early = cold(72, &false.into()).unwrap();
+    assert_eq!(early["lastHour"], 71);
+    assert!(!early.to_string().contains("Convoy clients were not recorded at this hour"));
+    let later = cold(120, &false.into()).unwrap();
+    assert_eq!(later["lastHour"], 119);
+    assert!(later.to_string().contains("Convoy clients were not recorded at this hour"));
 }
 
 #[test]
