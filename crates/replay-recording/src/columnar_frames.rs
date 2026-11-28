@@ -6,8 +6,10 @@ use rayon::prelude::*;
 use replay_columnar::{lane::ClockHour, manifest::Status, unit::BLOCK};
 use std::{io, sync::Arc, time::Instant};
 
+mod campaign;
 mod input;
 mod reader;
+pub use campaign::CampaignBlocks;
 pub use input::{NotSaved, Source, is_not_saved};
 pub use reader::{Damage, DamageScope, PageCounts, Recording, Run, SharedEntry, TableCoverage, TablePage, strings_of, table_name};
 pub use replay_columnar::container::Open;
@@ -259,6 +261,10 @@ impl<R: std::ops::Deref<Target = Recording>> Frames<R> {
     }
 
     pub fn seek(&mut self, run: u32, ordinal: u32) -> io::Result<()> {
+        self.seek_with(run, ordinal, TableReader::go_to)
+    }
+
+    fn seek_with(&mut self, run: u32, ordinal: u32, move_reader: fn(&mut TableReader, &Recording, u32) -> io::Result<()>) -> io::Result<()> {
         let recording: &Recording = &self.recording;
         let held = recording.run(run)?;
         if ordinal >= held.ordinals {
@@ -284,7 +290,7 @@ impl<R: std::ops::Deref<Target = Recording>> Frames<R> {
         self.anew = true;
         self.stepped = false;
         let timed = self.timed;
-        self.slots.par_iter_mut().try_for_each(|slot| move_slot(slot, timed, |reader| reader.go_to(recording, ordinal)))
+        self.slots.par_iter_mut().try_for_each(|slot| move_slot(slot, timed, |reader| move_reader(reader, recording, ordinal)))
     }
 
     pub fn step(&mut self) -> io::Result<bool> {
