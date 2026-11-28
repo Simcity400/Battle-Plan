@@ -215,7 +215,7 @@ impl Playback {
     pub fn frame(&self) -> Option<&DecodedFrame> {
         match &self.current {
             Current::Frame(frame) => Some(frame),
-            Current::Gap { .. } | Current::Refused { .. } => None,
+            Current::Published | Current::Gap { .. } | Current::Refused { .. } => None,
         }
     }
 
@@ -233,6 +233,19 @@ impl Playback {
 
     pub fn release_bootstrap_cursor(&mut self) -> Option<impl Send + 'static + use<>> {
         self.cursor.take()
+    }
+
+    pub fn release_bootstrap_frame(&mut self) -> Option<Arc<DecodedFrame>> {
+        match std::mem::replace(&mut self.current, Current::Published) {
+            Current::Frame(frame) => {
+                self.materialized = false;
+                Some(frame)
+            }
+            current => {
+                self.current = current;
+                None
+            }
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -709,6 +722,20 @@ pub mod tests {
         for bootstrap_only in [false, true] {
             check_release(bootstrap_only);
         }
+    }
+
+    #[test]
+    fn releasing_the_bootstrap_frame_frees_its_table_after_the_source_retires() {
+        let mut playback = Playback::new(fixture()).unwrap();
+        playback.seek(1, 105).unwrap();
+        let table = playback.frame().unwrap().tables[TableId::Clock.index()].identity();
+
+        drop(playback.release_source());
+        assert_eq!(table.owner_count(), 1);
+        drop(playback.release_bootstrap_frame());
+        assert_eq!(table.owner_count(), 0);
+        assert_eq!((playback.branch(), playback.hour()), (1, 105));
+        assert_seek_matches_shared(&mut playback, 1, 105);
     }
 
     #[cfg(test)]

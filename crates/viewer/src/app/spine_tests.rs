@@ -151,6 +151,16 @@ fn target(hour: Hour, playing: bool) -> dashboard_core::protocol::DashboardMapVi
 fn the_window_is_ready_at_the_hosts_first_picture_and_loads_after_a_seek() {
     let (side, gate) = side("spine first picture");
     let mut viewer = viewer(side, 2);
+    viewer.dashboard_map = true;
+    let mut playback =
+        viewer_playback::playback::Playback::new(viewer_playback::playback::tests::fixture())
+            .unwrap();
+    playback.seek(1, 105).unwrap();
+    drop(playback.release_source());
+    let bootstrap = playback.frame().unwrap().tables[TableId::Clock.index()].identity();
+
+    viewer.complete_first_picture(&mut playback);
+    assert!(bootstrap.is_alive(), "the opened map has no replacement picture yet");
     assert!(!viewer.picture_ready(), "no picture before the host's first");
     assert_eq!(viewer.layers_on_screen(), None);
     assert!(viewer.map_state(&target(2, false)).loading);
@@ -159,9 +169,13 @@ fn the_window_is_ready_at_the_hosts_first_picture_and_loads_after_a_seek() {
     assert!(viewer.picture_ready(), "the host's first picture is the window's");
     drawn(&mut viewer);
     assert!(viewer.map_state(&target(2, false)).loading, "no overlay is laid out yet");
+    viewer.complete_first_picture(&mut playback);
+    assert!(bootstrap.is_alive(), "the first picture still needs its overlay");
     whole_at(&mut viewer, 2);
     let state = viewer.map_state(&target(2, false));
     assert_eq!((state.loading, state.hour, state.branch_id.as_deref()), (false, Some(2), Some("1")), "{state:?}");
+    viewer.complete_first_picture(&mut playback);
+    assert!(!bootstrap.is_alive(), "the first complete picture takes over from the bootstrap");
     gate.store(false, Ordering::Release);
     viewer.anchor_playback(at(8), false, 0.0, true, None, Instant::now(), LAST);
     frames_at(map(&mut viewer), 8, |side| !side.composing() && side.applied() == Some(8));

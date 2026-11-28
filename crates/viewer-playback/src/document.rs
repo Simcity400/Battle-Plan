@@ -3361,6 +3361,9 @@ impl Document {
     pub fn frame(&self) -> io::Result<&DecodedFrame> {
         match self.playback.current() {
             crate::map_source::Current::Frame(frame) => Ok(frame),
+            crate::map_source::Current::Published => {
+                Err(invalid("the map's frame is published through the playhead"))
+            }
             crate::map_source::Current::Gap {
                 branch,
                 hour,
