@@ -8,7 +8,7 @@ import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { cellArt, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
+import { cellArt, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import {
   LOG_TABLE_BASE,
   logCountryCell,
@@ -23,7 +23,7 @@ import type { LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ConstructionLogRow, ConstructionStatus, ConstructionTypeChip } from '../../generated/dashboard';
 import { CONSTRUCTION_LOG_COLUMNS } from './definition.ts';
@@ -78,30 +78,23 @@ export function constructionTypeFilterItems(
 function combinePlaceValues(endpoints: readonly Value<string>[], fallbackMissing: string): Value<string> {
   const known: string[] = [];
   const reasons: string[] = [];
-  let hasPending = false;
   for (const value of endpoints) {
     if (value.kind === 'known') {
       known.push(value.value);
-    } else if (value.kind === 'pending') {
-      hasPending = true;
-      if (!reasons.includes(value.reason)) reasons.push(value.reason);
     } else if (value.kind === 'notRecorded') {
       if (!reasons.includes(value.reason)) reasons.push(value.reason);
     }
   }
-  if (!known.length) {
-    if (hasPending) return pendingValue(reasons.join('; '));
-    return notRecorded(reasons.join('; ') || fallbackMissing);
-  }
+  if (!known.length) return notRecorded(reasons.join('; ') || fallbackMissing);
   const text = known.join(' – ');
   return reasons.length ? partialValue(text, reasons.join('; ')) : knownValue(text);
 }
 
-function resolvePlace(
-  readView: BoundedReadView,
-  row: ConstructionLogRow,
-  boundary: ReturnType<typeof newIdentityBoundary>,
-): { readonly cell: TableCell; readonly value: Value<string> | null } {
+function placeName(name: string | undefined, missing: string | undefined): Value<string> {
+  return name?.trim() ? knownValue(name) : notRecorded((name === undefined ? missing : undefined) ?? 'Name not recorded');
+}
+
+function resolvePlace(row: ConstructionLogRow): { readonly cell: TableCell; readonly value: Value<string> | null } {
   const place = row.place;
   if (!place) {
     return {
@@ -117,25 +110,21 @@ function resolvePlace(
     const endpointMissing = row.placeMissing ?? 'Railway endpoint was not recorded';
     const endpoints: Value<string>[] = [
       place.state !== null
-        ? resolveName(readView, 'state', String(place.state), { atHour: place.atHour, boundary }).value
+        ? placeName(place.name, place.nameMissing)
         : notRecorded(endpointMissing),
     ];
     if (place.toState !== place.state) {
       endpoints.push(
         place.toState !== null
-          ? resolveName(readView, 'state', String(place.toState), { atHour: place.atHour, boundary }).value
+          ? placeName(place.toName, place.toNameMissing)
           : notRecorded(endpointMissing),
       );
     }
     const value = combinePlaceValues(endpoints, row.placeMissing ?? 'Railway route was not recorded');
     return { cell: { value, ...(value.kind === 'notRecorded' ? { missingFigure: 'Place' } : {}) }, value };
   }
-  if (place.state !== null) {
-    const value = resolveName(readView, 'state', String(place.state), { atHour: place.atHour, boundary }).value;
-    return { cell: { value, ...(value.kind === 'notRecorded' ? { missingFigure: 'Place' } : {}) }, value };
-  }
-  if (place.province !== null) {
-    const value = resolveName(readView, 'province', String(place.province), { atHour: place.atHour, boundary }).value;
+  if (place.state !== null || place.province !== null) {
+    const value = placeName(place.name, place.nameMissing);
     return { cell: { value, ...(value.kind === 'notRecorded' ? { missingFigure: 'Place' } : {}) }, value };
   }
   return {
@@ -267,7 +256,7 @@ function buildConstructionRow(
         }
     : { value: notApplicable('Game artwork hidden'), blank: true };
 
-  const place = resolvePlace(readView, row, boundary);
+  const place = resolvePlace(row);
   const levels = levelsCell(row);
   const rowCap = lineCap(row, cap);
   const factories = factoriesCell(readView, row, rowCap, artwork);
@@ -438,6 +427,7 @@ export const constructionLogDeclaration: TableWidgetDeclaration<ConstructionLogP
             from: boundFrom,
             limit: HEAD_LIMIT,
             ask: {
+              placeNames: true,
               ...(selectedTypes.length ? { buildingTypes: selectedTypes } : {}),
               ...(projects !== 'all' ? { projects } : {}),
               ...(inQueue ? { inQueue: true } : {}),

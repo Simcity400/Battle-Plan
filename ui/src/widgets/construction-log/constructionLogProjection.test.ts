@@ -249,7 +249,7 @@ test('place cells and tooltips use the names and refusals delivered with the pag
     return key;
   });
   const rows: ConstructionLogRow[] = [
-    sampleRow({ key: 'p-state', place: { kind: 'building', state: 77, toState: null, province: null, atHour: 100, name: 'Oslofjord' } }),
+    sampleRow({ key: 'p-state', place: { kind: 'building', state: 77, toState: null, province: null, atHour: 100, name: 'North Harbour' } }),
     sampleRow({ key: 'p-province', place: { kind: 'building', state: null, toState: null, province: 30, atHour: 99, name: 'Norway' } }),
     sampleRow({ key: 'p-rail-mixed', kind: 'railway', place: { kind: 'railway', state: 10, toState: 88, province: null, atHour: 100, name: 'Illinois', toNameMissing: 'State 88 was not recorded' } }),
     sampleRow({ key: 'p-rail-half-null', kind: 'railway', place: { kind: 'railway', state: 10, toState: null, province: null, atHour: 100, name: 'Illinois' } }),
@@ -263,8 +263,8 @@ test('place cells and tooltips use the names and refusals delivered with the pag
     const extra = model.rows[idx]!.tooltipExtra;
     return (typeof extra === 'function' ? extra() : extra) ?? [];
   };
-  assert.deepEqual(model.rows[0]!.cells.place?.value, { kind: 'known', value: 'Oslofjord' });
-  assert.deepEqual(tipOf(0).find(item => item.label === 'Place')?.value, { kind: 'known', value: 'Oslofjord' });
+  assert.deepEqual(model.rows[0]!.cells.place?.value, { kind: 'known', value: 'North Harbour' });
+  assert.deepEqual(tipOf(0).find(item => item.label === 'Place')?.value, { kind: 'known', value: 'North Harbour' });
   assert.deepEqual(model.rows[1]!.cells.place?.value, { kind: 'known', value: 'Norway' });
   assert.deepEqual(tipOf(1).find(item => item.label === 'Place')?.value, { kind: 'known', value: 'Norway' });
   assert.deepEqual(model.rows[2]!.cells.place?.value, { kind: 'partial', value: 'Illinois', reason: 'State 88 was not recorded' });
