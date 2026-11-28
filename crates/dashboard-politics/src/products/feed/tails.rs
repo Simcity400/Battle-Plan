@@ -24,7 +24,7 @@ use dashboard_query::{
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
-use dashboard_world::products::{place_name_runs::{PlacePoint, names_at}, place_names::Name};
+use dashboard_world::products::{place_name_runs::{self, PlacePoint, names_at}, place_names::Name};
 use replay::campaign::Replay;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -1008,6 +1008,9 @@ impl Product for EventFeedTail {
     const KEY: &'static str = "event-feed-tail";
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
+    const PREPARE: Option<dashboard_base::products::read_ahead::Prepare<Self::Params>> = Some(|source, params, load| {
+        if params.place_names == Some(true) { place_name_runs::prepare(source, load) } else { Ok(None) }
+    });
     type Params = EventFeedTailParams;
     const FIELDS: dashboard_base::products::Fields = FEED_FIELDS;
     type Reply = EventFeedTailReply;
@@ -1073,22 +1076,24 @@ fn parse<P: serde::de::DeserializeOwned>(name: &str, asked: &serde_json::Value) 
 pub fn event_feed_dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
     let params: EventFeedTailParams = parse(EventFeedTail::KEY, asked)?;
     EventFeedTail::validate(&params)?;
+    let ready = EventFeedTail::PREPARE.expect("event feed preparation")(source, &params, load).map_err(|error| error.to_string())?;
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, None, asked!(params), &AtomicBool::new(false)));
     let held = Mutex::new((finish, prepared.map_err(|error| error.to_string())?, None));
     let owned = Owned::of(&query, source.replay());
-    let (shared, load) = (Arc::clone(source), LoadContext { content: load.content.clone() });
-    Ok(dashboard_base::products::at_hour::interval_panel(source.tables(), move |hour, cancelled| {
+    let (shared, panel_load) = (Arc::clone(source), LoadContext { content: load.content.clone() });
+    place_name_runs::prepared_panel(ready, dashboard_base::products::at_hour::interval_panel(source.tables(), move |hour, cancelled| {
+        let load = &panel_load;
         let query = owned.query();
         let hour = occurrences::cutoff(&query, Some(hour))?;
         let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if held.1.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
-            let (finish, prepared) = dashboard_base::products::Finish::open(&shared, &load, EventFeedTail::CONTENT_DEPENDENT, || prepare(&shared, &query, branch, &load, None, asked!(params), cancelled));
+            let (finish, prepared) = dashboard_base::products::Finish::open(&shared, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(&shared, &query, branch, load, None, asked!(params), cancelled));
             *held = (finish, prepared.map_err(|error| dashboard_core::duplicate(&error))?, None);
         }
         let (finish, prepared, pages) = &mut *held;
-        let reply = finish.reply(|| load_feed_at(prepared, &query, (&shared, &load), &params, hour, Some(pages), cancelled))?;
+        let reply = finish.reply(|| load_feed_at(prepared, &query, (&shared, load), &params, hour, Some(pages), cancelled))?;
         let through = match prepared.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
             true => hour.saturating_sub(1),
             false => reply.next_change().map_or(i32::MAX, |next| next.saturating_sub(1)),

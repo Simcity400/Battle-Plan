@@ -123,8 +123,19 @@ fn the_region_catalogue_keeps_named_regions_when_their_membership_is_unread() {
 #[test]
 fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a_reason() {
     let (source, load, saved, _folder) = fixture_source((100..=110).map(frame).collect());
+    let source = Arc::new(source);
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let content = Content::read(&source, &load).unwrap();
+    let before = content.cat.content_loads();
+    let point = super::super::place_name_runs::PlacePoint::Province(18, 105);
+    let rename = super::super::place_name_runs::names_at(&source, &query, &load, &BTreeSet::from([point]), &false.into()).unwrap();
+    assert_eq!(rename[&point].name.as_deref(), Some("Renamed town"));
+    assert_eq!(content.cat.content_loads(), before, "a renamed point needs no catalogue warnings or state templates");
+    for _ in 0..2 {
+        if let Some(ready) = Content::prepare(&source, &load).unwrap() { ready.wait().unwrap(); }
+        assert_eq!(content.cat.content_loads(), before + 1, "the state-name preparation is shared");
+        assert!(content.regions.get().is_none(), "state-name preparation leaves region membership unread");
+    }
     let mut frames = at_hour::Frames::new(&query).unwrap();
     let frame = read_hour(&query, &mut frames, 105, &[17, 18, 19, 20], &[64, 65, 66]).unwrap();
     let places = Places::new(&frame);
@@ -139,11 +150,11 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
 
     let run = query.timeline.stretches[0].run;
     let history = PlaceHistory::load(query.replay.recording(), run, 100, 110, Keys::All, Keys::All, true, &AtomicBool::new(false)).unwrap();
-    let regions = content.regions.as_ref().unwrap();
-    let resolved_regions = || regions.by_region.values().filter(|name| name.get().is_some()).count();
     assert_eq!(history.province_name(&content, 18, ProvinceMode::Place, 105).name.as_deref(), Some("Renamed town"));
-    assert_eq!(resolved_regions(), 0, "a recorded rename needs no region name");
+    assert!(content.regions.get().is_none(), "state names and recorded renames need no region index");
     assert_eq!(history.province_name(&content, 21, ProvinceMode::Place, 105).name.as_deref(), Some("Sample Sea"));
+    let regions = content.regions.get().unwrap().as_ref().unwrap();
+    let resolved_regions = || regions.by_region.values().filter(|name| name.get().is_some()).count();
     assert_eq!(resolved_regions(), 1, "a fallback resolves just its strategic region");
     let absent = super::super::region_names::region_name(&content.cat, &regions.definitions, 2).unwrap_err();
     assert!(absent.contains("REG_WITHOUT_NAME"), "{absent}");

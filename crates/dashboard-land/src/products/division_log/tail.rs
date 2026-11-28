@@ -21,7 +21,7 @@ use dashboard_query::{
     series::{MissingSpan, ranked::GroupSelection},
 };
 use dashboard_text::metadata::check_cancel;
-use dashboard_world::products::place_name_runs::{PlacePoint, RowNames};
+use dashboard_world::products::place_name_runs::{self, PlacePoint, RowNames};
 use replay_data::rows::{DivisionEventRow, TableId};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -730,6 +730,9 @@ impl Product for DivisionLogTail {
     const KEY: &'static str = "division-log-tail";
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
+    const PREPARE: Option<dashboard_base::products::read_ahead::Prepare<Self::Params>> = Some(|source, params, load| {
+        if params.place_names == Some(true) { place_name_runs::prepare(source, load) } else { Ok(None) }
+    });
     type Params = DivisionLogTailParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
         branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, offset, events, templates, "templates[]", expanded, "expanded[]", totals, placeNames, limit
@@ -769,6 +772,7 @@ pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json:
     let params: DivisionLogTailParams =
         dashboard_query::named::named(&request).map_err(|error| format!("Invalid division-log-tail panel: {error}"))?;
     DivisionLogTail::validate(&params)?;
+    let ready = DivisionLogTail::PREPARE.expect("division log preparation")(source, &params, load).map_err(|error| error.to_string())?;
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, DivisionLogTail::CONTENT_DEPENDENT, || prepare(source, &query, load, &params, &AtomicBool::new(false)));
@@ -793,9 +797,9 @@ pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json:
     }
     let (timeline, holders) = (query.timeline, query.holders);
     let (first, last) = (timeline.first, timeline.last);
-    let load = LoadContext { content: load.content.clone() };
+    let panel_load = LoadContext { content: load.content.clone() };
     let opened = Arc::downgrade(source);
-    Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
+    place_name_runs::prepared_panel(ready, occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         check_cancel(cancelled)?;
         if hour < first {
             return Err(dashboard_core::invalid("The hour asked is before the branch"));
@@ -804,7 +808,7 @@ pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json:
         if params.place_names == Some(true) {
             let source = opened.upgrade().ok_or_else(|| io::Error::other("Recording closed"))?;
             let query = Query { replay: source.replay_ref(), timeline: Arc::clone(&timeline), holders: Arc::clone(&holders) };
-            checked_reply(&source, &query, &load, &prepared, &params, hour, cancelled)
+            checked_reply(&source, &query, &panel_load, &prepared, &params, hour, cancelled)
         } else {
             let reply = reply(&prepared, &holders, &params, hour)?;
             dashboard_base::products::check_reply_budget(&reply)?;

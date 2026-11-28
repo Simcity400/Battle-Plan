@@ -22,7 +22,7 @@ use dashboard_query::{
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
-use dashboard_world::products::place_name_runs::{PlacePoint, RowNames};
+use dashboard_world::products::place_name_runs::{self, PlacePoint, RowNames};
 use replay::campaign::Replay;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -1036,6 +1036,9 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &ConstructionLog
 pub struct ConstructionLogTail;
 
 impl Product for ConstructionLogTail {
+    const PREPARE: Option<dashboard_base::products::read_ahead::Prepare<Self::Params>> = Some(|source, params, load| {
+        if params.place_names == Some(true) { place_name_runs::prepare(source, load) } else { Ok(None) }
+    });
     const KEY: &'static str = "construction-log-tail";
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
@@ -1109,6 +1112,7 @@ pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json:
     request.as_object_mut().ok_or("Invalid construction-log-tail panel")?.remove("panel");
     let params: ConstructionLogTailParams = dashboard_query::named::named(&request).map_err(|error| format!("Invalid construction-log-tail panel: {error}"))?;
     ConstructionLogTail::validate(&params)?;
+    let ready = ConstructionLogTail::PREPARE.expect("construction log preparation")(source, &params, load).map_err(|error| error.to_string())?;
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, ConstructionLogTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, &params, &AtomicBool::new(false)));
@@ -1122,12 +1126,12 @@ pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json:
     }
     let owned = Owned { replay: source.replay(), timeline: Arc::clone(&query.timeline), holders: Arc::clone(&query.holders) };
     let opened = (params.place_names == Some(true)).then(|| Arc::downgrade(source));
-    let load = LoadContext { content: load.content.clone() };
-    Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
+    let panel_load = LoadContext { content: load.content.clone() };
+    place_name_runs::prepared_panel(ready, occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         let query = Query { replay: &owned.replay, timeline: Arc::clone(&owned.timeline), holders: Arc::clone(&owned.holders) };
         let hour = occurrences::cutoff(&query, Some(hour))?;
         let source = opened.as_ref().map(|source| source.upgrade().ok_or_else(|| io::Error::other("Recording closed"))).transpose()?;
-        load_tail_at(&prepared, &query, &params, hour, cancelled, source.as_deref().map(|source| (source, &load)))
+        load_tail_at(&prepared, &query, &params, hour, cancelled, source.as_deref().map(|source| (source, &panel_load)))
     }))
 }
 
@@ -1340,6 +1344,7 @@ mod tests {
         let source = Arc::new(source);
         let cancelled = AtomicBool::new(false);
         let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "construction-log-tail", "branchId": "1", "limit": 64, "placeNames": true })).unwrap();
+        if let Some(ready) = place_name_runs::prepare(&source, &load).unwrap() { ready.wait().unwrap(); }
         let reader = panel.exact().unwrap();
         let seed = (reader.advance)(718, true, &cancelled, None);
         let seed = seed.value.as_ref().as_ref().unwrap();

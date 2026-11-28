@@ -2570,6 +2570,7 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
     assert_eq!(transfer.place_name.as_deref(), Some("First Reach"));
     let params = serde_json::json!({ "panel": "event-feed-tail", "branchId": "1", "limit": 64, "categories": ["warsPeace"], "placeNames": true });
     let followed = event_feed_dated_panel(&named_source, &content, &params).unwrap();
+    if let Some(ready) = dashboard_world::products::place_name_runs::prepare(&named_source, &content).unwrap() { ready.wait().unwrap(); }
     let stepped = (followed.exact().unwrap().advance)(106, true, &cancel, None);
     assert_eq!(*stepped.value, Ok(serde_json::to_value(named).unwrap()));
 }
