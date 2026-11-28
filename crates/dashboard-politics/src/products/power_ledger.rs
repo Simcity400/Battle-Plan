@@ -681,7 +681,7 @@ fn combine_gap_reason(covered: bool, existing: Option<&str>, day_reason: &str) -
     }
 }
 
-fn apply_log_gaps(coverage: &mut Vec<SpendCoverage>, gaps: &[lanes::LogGap], label: &str, gap_hours: &mut BTreeMap<String, u64>, only_covered: bool) {
+fn apply_log_gaps(coverage: &mut Vec<SpendCoverage>, gaps: &[lanes::LogGap], label: &str, gap_hours: &mut BTreeMap<String, u64>) {
     if gaps.is_empty() {
         return;
     }
@@ -691,9 +691,7 @@ fn apply_log_gaps(coverage: &mut Vec<SpendCoverage>, gaps: &[lanes::LogGap], lab
         if reason.is_empty() {
             continue;
         }
-        if !only_covered {
-            *gap_hours.entry(reason.clone()).or_default() += u64::try_from(i64::from(gap.last) - i64::from(gap.first) + 1).unwrap_or(0);
-        }
+        *gap_hours.entry(reason.clone()).or_default() += u64::try_from(i64::from(gap.last) - i64::from(gap.first) + 1).unwrap_or(0);
         resolved.push((gap.first, gap.last, reason));
     }
     if resolved.is_empty() {
@@ -702,10 +700,6 @@ fn apply_log_gaps(coverage: &mut Vec<SpendCoverage>, gaps: &[lanes::LogGap], lab
     let mut next: Vec<SpendCoverage> = Vec::with_capacity(coverage.len() + resolved.len());
     let mut gap_at = 0usize;
     for run in coverage.drain(..) {
-        if only_covered && !run.covered {
-            push_coverage(&mut next, run);
-            continue;
-        }
         let mut cursor = run.first_hour;
         let mut done = false;
         while gap_at < resolved.len() && resolved[gap_at].1 < cursor {
@@ -717,9 +711,6 @@ fn apply_log_gaps(coverage: &mut Vec<SpendCoverage>, gaps: &[lanes::LogGap], lab
             let b = last.min(run.last_hour);
             if cursor < a {
                 push_coverage(&mut next, SpendCoverage { first_hour: cursor, last_hour: a - 1, covered: run.covered, reason: run.reason.clone() });
-            }
-            if only_covered {
-                *gap_hours.entry(day_reason.clone()).or_default() += u64::try_from(i64::from(b) - i64::from(a) + 1).unwrap_or(0);
             }
             let reason = combine_gap_reason(run.covered, run.reason.as_deref(), day_reason);
             push_coverage(&mut next, SpendCoverage { first_hour: a, last_hour: b, covered: false, reason: Some(reason) });
@@ -1464,10 +1455,11 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
                 ask(ordinal, hour, true);
                 reply.days.push(day);
             }
-            apply_log_gaps(&mut piece_cov, &day_gaps, "Daily spending log", &mut day_gap_hours, false);
+            apply_log_gaps(&mut piece_cov, &day_gaps, "Daily spending log", &mut day_gap_hours);
             let extra_payment_gaps = uncovered_gaps(&payment_gaps, &day_gaps);
-            apply_log_gaps(&mut piece_cov, &extra_payment_gaps, "Spending payments log", &mut day_gap_hours, false);
-            apply_log_gaps(&mut piece_gain_cov, &gain_gaps, "Spending gains log", &mut day_gap_hours, true);
+            apply_log_gaps(&mut piece_cov, &extra_payment_gaps, "Spending payments log", &mut day_gap_hours);
+            let extra_gain_gaps = uncovered_gaps(&gain_gaps, &day_gaps);
+            apply_log_gaps(&mut piece_gain_cov, &extra_gain_gaps, "Spending gains log", &mut day_gap_hours);
             for span in piece_cov {
                 push_coverage(&mut reply.coverage, span);
             }
@@ -1504,7 +1496,7 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
                     day.read = hour;
                     reply.days.push(day);
                 })?;
-                apply_log_gaps(&mut piece_cov, &gaps, "Daily spending log", &mut day_gap_hours, false);
+                apply_log_gaps(&mut piece_cov, &gaps, "Daily spending log", &mut day_gap_hours);
             }
             for span in piece_cov {
                 push_coverage(&mut reply.coverage, span);

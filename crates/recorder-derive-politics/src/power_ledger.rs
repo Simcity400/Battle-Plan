@@ -709,7 +709,7 @@ pub struct PowerLedger {
     item_days: HashMap<(u32, u8, u32), ItemDays>,
     holds: HashMap<u32, Holds>,
     mismatched: HashSet<u32>,
-    seen_gains: HashMap<(u32, u64), SeqRuns>,
+    seen_changes: HashMap<(u32, u64), SeqRuns>,
     idle: bool,
 }
 
@@ -1252,8 +1252,8 @@ impl PowerLedger {
         pending.backlog = changes.backlog;
         if changes.backlog {
             for row in changes.rows {
-                if instant_gain(&row).is_some() {
-                    self.seen_gains.entry((row.country, row.epoch)).or_default().insert(row.sequence);
+                if instant_gain(&row).is_some() || charge(&row).is_some() {
+                    self.seen_changes.entry((row.country, row.epoch)).or_default().insert(row.sequence);
                 }
             }
             return Ok(());
@@ -1272,8 +1272,12 @@ impl PowerLedger {
                 pending.holds.push(HoldRow { row: row.clone(), covered });
             }
             let holder = self.slot(row.country);
-            if let Some((gained, capped, unknown_days)) = instant_gain(&row)
-                && self.seen_gains.entry((row.country, row.epoch)).or_default().insert(row.sequence)
+            let gain = instant_gain(&row);
+            let charge = charge(&row);
+            let fresh = (gain.is_some() || charge.is_some())
+                && self.seen_changes.entry((row.country, row.epoch)).or_default().insert(row.sequence);
+            if let Some((gained, capped, unknown_days)) = gain
+                && fresh
             {
                 push_gain(
                     pending.gain_events.entry((holder, row.currency as u8, Some(row.hour))).or_default(),
@@ -1284,7 +1288,6 @@ impl PowerLedger {
                     0,
                 );
             }
-            let charge = charge(&row);
             if charge.is_none() && skipped(row.cause) {
                 continue;
             }
@@ -1295,6 +1298,9 @@ impl PowerLedger {
             let Some(charge) = charge else {
                 continue;
             };
+            if !fresh {
+                continue;
+            }
             let payment = Payment {
                 recurring: recurring(item_kind, row.cause),
                 hour: row.hour,
@@ -1973,13 +1979,19 @@ fn moved(hour: &Hour<'_>) -> bool {
     })
 }
 
-fn partial(hour: &Hour<'_>, out: &mut Rows) {
+fn partial(hour: &Hour<'_>, out: &mut Rows, logged_gains: bool) {
     let changes = hour.status(TableId::CountryPowerChanges);
     if changes != Status::Complete {
-        for derived in [TableId::PowerDayParts, TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
+        for derived in [TableId::PowerDayParts, TableId::PowerSpendDays, TableId::PowerSpendPayments] {
             match changes {
                 Status::NotRecorded => out.unavailable(derived, b"CountryPowerChanges is not recorded"),
                 other => out.status(derived, other),
+            }
+        }
+        if !logged_gains || matches!(changes, Status::Truncated { .. }) {
+            match changes {
+                Status::NotRecorded => out.unavailable(TableId::PowerSpendGains, b"CountryPowerChanges is not recorded"),
+                other => out.status(TableId::PowerSpendGains, other),
             }
         }
         return;
@@ -2158,7 +2170,7 @@ impl Writer for PowerLedger {
         let adjacent = !hour.fresh && self.last.and_then(|last| last.checked_add(1)) == Some(at);
         let rolls = self.batches.keys().any(|key| key.day != midnight(at)) || self.change_parts.values().any(|(day, _)| *day != midnight(at));
         if !whole && self.idle && !rolls && !moved(hour) {
-            partial(hour, out);
+            partial(hour, out, false);
             self.last = Some(at);
             return Ok(());
         }
@@ -2317,7 +2329,7 @@ impl Writer for PowerLedger {
                 out.append(TableId::PowerSpendGains, row.key(), cells);
             }
         }
-        partial(hour, out);
+        partial(hour, out, logged_gains);
         self.idle = !current
             && self.holds.is_empty()
             && !logged_days
@@ -2393,10 +2405,10 @@ impl Writer for PowerLedger {
                 blob.varint(u64::from(part.read as u32))?;
             }
         }
-        let mut seen_gains: Vec<((u32, u64), &SeqRuns)> = self.seen_gains.iter().filter(|(_, runs)| !runs.0.is_empty()).map(|(&key, runs)| (key, runs)).collect();
-        seen_gains.sort_unstable_by_key(|&(key, _)| key);
-        blob.varint(seen_gains.len() as u64)?;
-        for ((country, epoch), runs) in seen_gains {
+        let mut seen_changes: Vec<((u32, u64), &SeqRuns)> = self.seen_changes.iter().filter(|(_, runs)| !runs.0.is_empty()).map(|(&key, runs)| (key, runs)).collect();
+        seen_changes.sort_unstable_by_key(|&(key, _)| key);
+        blob.varint(seen_changes.len() as u64)?;
+        for ((country, epoch), runs) in seen_changes {
             blob.varint(u64::from(country))?;
             blob.varint(epoch)?;
             write_seq_runs(blob, runs)?;
@@ -2524,16 +2536,16 @@ impl Writer for PowerLedger {
                 return Err(invalid("PowerLedger's state holds a duplicate open batch"));
             }
         }
-        let seen_gains = reader.count()?;
-        if seen_gains > blob.len() {
-            return Err(invalid("PowerLedger's state counts more seen gain histories than it holds"));
+        let seen_changes = reader.count()?;
+        if seen_changes > blob.len() {
+            return Err(invalid("PowerLedger's state counts more seen change histories than it holds"));
         }
-        for _ in 0..seen_gains {
+        for _ in 0..seen_changes {
             let country = reader.varint_u32()?;
             let epoch = reader.varint()?;
             let runs = read_seq_runs(&mut reader, blob.len())?;
-            if self.seen_gains.insert((country, epoch), runs).is_some() {
-                return Err(invalid(format!("PowerLedger's state repeats seen gains for country {country} epoch {epoch}")));
+            if self.seen_changes.insert((country, epoch), runs).is_some() {
+                return Err(invalid(format!("PowerLedger's state repeats seen changes for country {country} epoch {epoch}")));
             }
         }
         reader.finish()?;

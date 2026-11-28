@@ -427,8 +427,8 @@ struct PaymentSummary {
 
 #[derive(Default)]
 struct GainSummary {
-    gained: i64,
-    capped: i64,
+    gained: i128,
+    capped: i128,
     gain_days: i64,
     gain_unknown_days: i64,
     unmatched: i64,
@@ -494,10 +494,10 @@ impl LoggedStore {
             for row in inputs::every::<SpendGain>(&view).unwrap() {
                 let entry = self.gains.entry((row.holder, row.currency)).or_default();
                 if let Recorded::Value(gained) = row.gained {
-                    entry.gained += gained;
+                    entry.gained += i128::from(gained);
                 }
                 if let Recorded::Value(capped) = row.capped {
-                    entry.capped += capped;
+                    entry.capped += i128::from(capped);
                 }
                 entry.gain_days += row.days;
                 entry.gain_unknown_days += row.unknown_days;
@@ -538,8 +538,8 @@ fn spend(logged: &LoggedStore, holder: u32, currency: u8, ordinal: u32, name: &s
     if ordinal == Total::GAINS {
         let entry = logged.gains.get(&(holder, currency))?;
         return match name {
-            "gained" => Some(entry.gained),
-            "capped" => Some(entry.capped),
+            "gained" => i64::try_from(entry.gained).ok(),
+            "capped" => i64::try_from(entry.capped).ok(),
             "gain_days" => Some(entry.gain_days),
             "gain_unknown_days" => Some(entry.gain_unknown_days),
             "unmatched" => Some(entry.unmatched),
@@ -1071,12 +1071,12 @@ fn its_blob_holds_hours_links_recovery_settled_days_and_open_batches_and_a_damag
         settled: [(1, runs), (2, DayRuns(vec![(48, 48)]))].into(),
         item_days: [((10, POLITICAL, 0), ItemDays { counted: item_counted, uncovered: item_uncovered })].into(),
         batches: [(key, batch)].into(),
-        seen_gains: [((1, 1), SeqRuns(vec![(1, 2), (5, 5)]))].into(),
+        seen_changes: [((1, 1), SeqRuns(vec![(1, 2), (5, 5)]))].into(),
         ..PowerLedger::default()
     };
     let mut blob = Bytes::new();
     ledger.save(&mut blob).unwrap();
-    assert!(blob.bytes().len() <= 96, "two hours, a flag, links, mismatch, settled runs, item days, one open batch and seen gains");
+    assert!(blob.bytes().len() <= 96, "two hours, a flag, links, mismatch, settled runs, item days, one open batch and seen changes");
     let mut loaded = PowerLedger::default();
     loaded.load(blob.bytes()).unwrap();
     assert!(loaded.rebuild && loaded.recover);
@@ -1086,7 +1086,7 @@ fn its_blob_holds_hours_links_recovery_settled_days_and_open_batches_and_a_damag
     assert_eq!(loaded.settled, ledger.settled);
     assert_eq!(loaded.item_days, ledger.item_days);
     assert_eq!(loaded.batches, ledger.batches);
-    assert_eq!(loaded.seen_gains, ledger.seen_gains);
+    assert_eq!(loaded.seen_changes, ledger.seen_changes);
     assert_eq!(loaded.raw_batches(1), [key]);
     assert_eq!(loaded.holder_batches(10), [key]);
     assert_eq!(loaded.aliases.get(&10).map(Vec::as_slice), Some(&[1, 2][..]), "the holders are rebuilt from the links");
@@ -2243,7 +2243,7 @@ fn shared_holder_mismatch_stays_isolated_and_overflowing_sum_is_uncovered() {
 }
 
 #[test]
-fn republished_instant_gains_are_deduped_large_gains_split_and_idle_unavailable_hours_stay_unavailable() {
+fn republished_changes_are_deduped_large_gains_split_daily_gains_survive_change_outage_and_idle_stays_unavailable() {
     let half = 1_i64 << 62;
     let grant = |seq: u64, amount: i64| CountryPowerChangeRow {
         country: 1,
@@ -2259,19 +2259,36 @@ fn republished_instant_gains_are_deduped_large_gains_split_and_idle_unavailable_
         site: PowerSite::AddPoliticalPower,
         ..Default::default()
     };
+    let charge_row = |seq: u64, amount: i64| CountryPowerChangeRow {
+        country: 1,
+        epoch: 7,
+        sequence: seq,
+        hour: 2,
+        currency: PowerCurrency::Political,
+        operation: PowerOperation::Subtract,
+        balance_before_raw: 100 * Q,
+        realized_delta_raw: Recorded::Value(-amount),
+        requested_delta_raw: Some(-amount),
+        cause: PowerCause::Decision,
+        site: PowerSite::AddPoliticalPower,
+        ..Default::default()
+    };
     let scenario = |store: &mut Store, hour: i32| {
         setup_base(store, hour, &[(1, 10)], &[1]);
         match hour {
             2 => {
                 testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &charge_row(11, 25 * Q), TEXTS).unwrap();
             }
             3 => {
                 testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 10).unwrap();
+                testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 11).unwrap();
                 testing::put(store, TableId::CountryPowerChanges, &grant(20, half), TEXTS).unwrap();
                 testing::put(store, TableId::CountryPowerChanges, &grant(21, half), TEXTS).unwrap();
             }
             4 => {
                 testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &charge_row(11, 25 * Q), TEXTS).unwrap();
             }
             _ => {}
         }
@@ -2284,15 +2301,38 @@ fn republished_instant_gains_are_deduped_large_gains_split_and_idle_unavailable_
         .map(|&key| i128::from(cell::<SpendGain>(&h3, TableId::PowerSpendGains, key, "gained").expect("each split entry is exact")))
         .sum();
     assert_eq!(total_gained, i128::from(half) * 2);
+    assert_eq!(h3.gains[&(10, POLITICAL)].gained, i128::from(5 * Q) + i128::from(half) * 2);
     let (h4, _) = run_custom(4, scenario);
     assert!(keys(&h4, TableId::PowerSpendGains).is_empty(), "republishing an instant gain with the same country, sequence and epoch must not count it twice");
+    assert!(keys(&h4, TableId::PowerSpendPayments).is_empty(), "republishing a charge with the same country, sequence and epoch must not count it twice");
+    assert_eq!(spend(&h4, 10, POLITICAL, 0, "payments"), Some(1));
+    assert_eq!(spend(&h4, 10, POLITICAL, 0, "known"), Some(25 * Q));
     assert_resumes_match(&[2, 3], 4, scenario);
 
+    let daily_during_outage = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10)], &[1]);
+        if hour == 24 {
+            put_daily(store, hour, &daily(24, 3 * Q, Q, 50));
+        } else if hour == 48 {
+            store.status(TableId::CountryPowerChanges.index(), Status::Unavailable { reason: 1 }, false, None, false).unwrap();
+            put_daily(store, hour, &daily(48, 4 * Q, Q, 60));
+        }
+    };
+    let (d48, _) = run_custom(48, daily_during_outage);
+    assert_eq!(d48.view(TableId::PowerSpendPayments.index()).status(), Status::Unavailable { reason: 1 });
+    assert_eq!(d48.view(TableId::PowerSpendGains.index()).status(), Status::Complete, "a closed daily gain keeps PowerSpendGains readable despite CountryPowerChanges outage");
+    assert_eq!(spend(&d48, 10, POLITICAL, Total::GAINS, "gained"), Some(3 * Q));
+
     let idle_unavailable = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[], &[]);
         if hour >= 2 {
             store.status(TableId::CountryPowerChanges.index(), Status::Unavailable { reason: 1 }, false, None, false).unwrap();
         }
     };
+    let (u1, _) = run_custom(1, idle_unavailable);
+    for derived in [TableId::PowerDayParts, TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
+        assert_eq!(u1.view(derived.index()).status(), Status::Complete, "writer runs cleanly and becomes idle at hour 1");
+    }
     let (u3, _) = run_custom(3, idle_unavailable);
     for derived in [TableId::PowerDayParts, TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
         assert_eq!(
