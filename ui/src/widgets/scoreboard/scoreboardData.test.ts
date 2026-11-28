@@ -263,8 +263,12 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
     countries: { top: 5, tags: [], holders: {}, membership: null },
   } as unknown as Parameters<typeof scoreboardDeclaration.sources>[0], followView);
   const topSubs = compileFollowPlan(topPlan, allowFollow).subscriptions;
-  assert.equal(topSubs.length, 4);
-  assert.ok(topSubs.every(sub => (sub.query as { coverage?: string }).coverage === undefined), 'top-N scoreboard follows stay on default Table coverage');
+  assert.equal(topSubs.length, 1);
+  assert.equal(topSubs[0]?.channel, 'panel');
+  assert.deepEqual(topSubs[0]?.query, {
+    panel: 'scoreboard', branchId: '1', columns: ['politicalPower', 'casualtiesTaken'],
+    countries: [], top: { count: 5, sort: 'politicalPower', descending: true },
+  });
 });
 
 test('scoreboard incremental projection reuses unchanged rows across 1,500 countries, handles top-N internal rank swaps without full rebuild, and invalidates on identity change', () => {

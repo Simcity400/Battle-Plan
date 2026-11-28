@@ -11,7 +11,7 @@ dashboard_base::register_products! {
     WARS_WARTIMELINEAT => crate::products::wars::WarTimelineAt,
     WARS_CONTRIBUTION_HISTORY => crate::products::wars::history::WarContributionHistory,
     SCOREBOARD_SCOREBOARDCOLUMNS => crate::products::scoreboard::ScoreboardColumns,
-    SCOREBOARD_SCOREBOARD => crate::products::scoreboard::Scoreboard,
+    SCOREBOARD_SCOREBOARD => crate::products::scoreboard::Scoreboard; panel(crate::products::scoreboard::panel),
 
     @hourly
     FACTIONS_FACTIONTOTALSAT => exact<crate::products::factions::FactionTotalsAt>,

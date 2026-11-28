@@ -1,6 +1,6 @@
 
 use dashboard_base::products::Country;
-use dashboard_base::products::{BranchParams, LoadContext, Product};
+use dashboard_base::products::{BranchParams, LoadContext, Product, at_hour::{at_hour, dated_product}};
 use dashboard_base::{Source, catalogue};
 use dashboard_query::{
     Query,
@@ -10,7 +10,9 @@ use dashboard_query::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::{io, sync::atomic::AtomicBool};
+use dashboard_follow::panel::Panel;
+use serde_json::Value;
+use std::{collections::HashMap, io, sync::{Arc, PoisonError, atomic::AtomicBool}};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -332,16 +334,37 @@ impl Product for Scoreboard {
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
-        let mut reply = answer(&query, params)?;
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        reply.branch_id.clone_from(&params.branch_id);
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
+        read(source, params, cancelled, false)
     }
 }
 
-pub(crate) fn answer(query: &Query<'_>, params: &ScoreboardParams) -> io::Result<ScoreboardReply> {
+type FollowedReaders = HashMap<u64, board::Readers>;
+
+pub(crate) fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
+    dated_product::<Scoreboard>(
+        source, load, asked, at_hour, |_, reply| reply.hour, |_, _| {},
+        |source, params, _, cancelled, _| read(source, params, cancelled, true),
+    )
+}
+
+fn read(source: &Source, params: &ScoreboardParams, cancelled: &AtomicBool, followed: bool) -> io::Result<ScoreboardReply> {
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+    let query = dashboard_base::queries::query(source, branch)?;
+    let mut reply = if followed && params.top.is_some() {
+        let state = source.state::<FollowedReaders>();
+        let mut readers = state.lock().unwrap_or_else(PoisonError::into_inner);
+        answer(&query, params, Some(readers.entry(branch).or_default()))?
+    } else {
+        answer(&query, params, None)?
+    };
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    reply.branch_id.clone_from(&params.branch_id);
+    dashboard_base::products::check_reply_budget(&reply)?;
+    Ok(reply)
+}
+
+fn answer(query: &Query<'_>, params: &ScoreboardParams, readers: Option<&mut board::Readers>) -> io::Result<ScoreboardReply> {
     let mut keys: Vec<ScoreboardColumnKey> = Vec::new();
     let mut columns = Vec::new();
     let mut add = |key: ScoreboardColumnKey| -> io::Result<()> {
@@ -369,7 +392,11 @@ pub(crate) fn answer(query: &Query<'_>, params: &ScoreboardParams) -> io::Result
         }
         None => Rows::Countries(&params.countries),
     };
-    let board = if columns.is_empty() { unmeasured(query, &params.countries, params.hour) } else { board::at(&columns, rows, params.hour)? };
+    let board = match (rows, readers) {
+        (Rows::Top { by, n, least }, Some(readers)) => board::top_with_readers(&columns, by, n, least, params.hour, readers)?,
+        _ if columns.is_empty() => unmeasured(query, &params.countries, params.hour),
+        (rows, _) => board::at(&columns, rows, params.hour)?,
+    };
     let rows = board
         .rows
         .into_iter()

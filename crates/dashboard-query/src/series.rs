@@ -737,9 +737,13 @@ impl<'q, 'a> Line<'q, 'a> {
         if let Some(reason) = board::table_unrecorded(self.series.table, snapshot.status, status_reason) {
             return Ok(Err(reason));
         }
+        Ok(self.population_in(&snapshot.view(), hour, n, least))
+    }
+
+    fn population_in(&self, view: &replay_columnar::store::TableView<'_>, hour: i32, n: Option<usize>, least: bool) -> Result<Vec<Country>, String> {
         let mut ranked = RankRows { owners: self.rank_owners(hour), ..Default::default() };
-        Ok(self.rank_rows(&snapshot.view(), hour, n, least, true, &mut ranked)
-            .map(|()| ranked.values.into_iter().map(|(_, owner)| owner.country()).collect()))
+        self.rank_rows(view, hour, n, least, true, &mut ranked)
+            .map(|()| ranked.values.into_iter().map(|(_, owner)| owner.country()).collect())
     }
 
     fn rank_owners(&self, hour: i32) -> HashMap<u128, RankOwner<'_>> {
