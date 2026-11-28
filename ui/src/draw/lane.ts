@@ -1,4 +1,4 @@
-import { positionAt, type MotionClock, type MotionDiagnostics, type MotionSkip } from '../families/motion.ts';
+import { positionAt, type MotionClock, type MotionDiagnostics, type MotionSampleDiagnostic, type MotionSkip } from '../families/motion.ts';
 import { Facts, changeWindow, followsChannel, joinComponents, samePicture, type Channel, type PanelRecord, type Picture, type Window } from '../dashboard/follow/facts.ts';
 import { MAX_EARLY, SAME, type Ack, type Bitmap, type Entry, type FailureOrigin, type FrameRequest, type Refusal } from '../dashboard/follow/page.ts';
 import { parseAnswer, parseDatedPanelRecord, parseFollowedFrame, type FollowedAnswer } from '../dashboard/follow/message.ts';
@@ -168,7 +168,7 @@ export type PlaybackPaint = (
   position: number,
   target: PaintInput['sharedSurface'],
   inspect: string | null,
-  diagnostic?: { reason?: MotionSkip },
+  diagnostic?: MotionSampleDiagnostic,
 ) => PlaybackDraw | 'empty' | 'release';
 
 export interface PlaybackRenderer {
@@ -2228,7 +2228,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private drawPlaybackPicture(widget: Widget, target: PlaybackTarget, current: PlaybackPicture | null, next: PlaybackPicture | null,
-    position: number, diagnostic?: { reason?: MotionSkip }) {
+    position: number, diagnostic?: MotionSampleDiagnostic) {
     const held = widget.playback!;
     const drawn = current && current.pictures.every(picture => stopOf(picture) === null)
       ? held.renderer.paint(current, next, position, target.shared, widget.inspect, diagnostic)
@@ -2280,12 +2280,16 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         const end = current?.proven && current.pictures.every(isPlaybackReading) ? current.through + 1 : Infinity;
         const next = Number.isFinite(end) && end <= (clock.lastHour ?? Infinity) + widget.binding.offset
           ? this.playbackPicture(widget, end) : null;
-        const diagnostic: { reason?: MotionSkip } | undefined = diagnostics ? {} : undefined;
+        const diagnostic: MotionSampleDiagnostic | undefined = diagnostics ? {} : undefined;
         const nextProven = next?.proven && next.pictures.every(isPlaybackReading) ? next : null;
         const painted = this.drawPlaybackPicture(widget, target, current, nextProven, pos, diagnostic);
         const moving = typeof painted === 'object' && painted.kind === 'interpolated';
         if (diagnostics) {
           if (current) diagnostics.proof = { widget: id, from: current.from, through: current.through, next: nextProven?.hour ?? null };
+          if (diagnostic?.rowChange) {
+            const rows = diagnostics.rowChanges ??= {};
+            rows[diagnostic.rowChange] = (rows[diagnostic.rowChange] ?? 0) + 1;
+          }
           if (!moving) skip(!current ? 'noBracket' : painted === 'release' ? 'notEligible' : painted === 'empty' ? 'modelValidity' : !current.proven ? 'unproven' : !nextProven ? 'noBracket' : diagnostic?.reason ?? 'unchanged');
         }
         if (painted === 'release') {
@@ -2608,8 +2612,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (handover && painted.playback && target) {
         const actual = this.targetOf(widget, request.now);
         const recorded = this.recordedPlayback(widget, actual, painted.playback);
+        const live = this.livePlaybackPosition(widget, request);
+        const liveHour = Math.floor(live);
+        const visible = liveHour === actual ? recorded : this.recordedPlayback(widget, liveHour, painted.playback);
         this.completePlaybackDraw(widget, request, painted.playback);
-        const drawn = this.drawPlaybackPicture(widget, target, recorded, null, actual);
+        const drawn = this.drawPlaybackPicture(widget, target, visible, null, live);
         if (drawn === 'release') {
           this.rememberPlayback(widget, undefined, request.seek, false);
           return;
@@ -2617,7 +2624,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         this.stagedViews.delete(wid);
         widget.forceFull = false;
         if (!recorded) return { selected: null };
-        const same = typeof drawn === 'object' && handover.window[0] >= drawn.from && handover.window[0] < drawn.until
+        const sameInterval = liveHour !== actual || (typeof drawn === 'object' && handover.window[0] >= drawn.from && handover.window[0] < drawn.until);
+        const same = sameInterval
           && handover.h === recorded.from && handover.c === recorded.through && recorded.pictures.length === handover.pictures.length
           && recorded.pictures.every((picture, at) => samePicture(picture, handover.pictures[at]));
         return same ? { selected: handover, metadata: painted } : { selected: this.selectionOfPlayback(recorded, handover.window[1]) };
@@ -2639,7 +2647,22 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private settleKept(widget: Widget, request: FrameRequest, now: number, selected?: Selected) {
+    if (!selected && request.speed > 0 && this.restorePlayback(widget, request)
+      && this.host.views(widget.view).playbackEligible?.(widget.id, widget.model)) {
+      const hour = Math.floor(this.livePlaybackPosition(widget, request));
+      const live = hour === this.targetOf(widget, request.now) ? null : this.playbackPicture(widget, hour);
+      if (live) {
+        this.paintKeptDirect(widget, request, now, this.selectionOfPlayback(live, hour), true);
+        return;
+      }
+    }
     return this.paintKeptDirect(widget, request, now, selected, true);
+  }
+
+  private livePlaybackPosition(widget: Widget, request: FrameRequest): number {
+    const clock = this.playbackClock;
+    const hour = clock?.seek === request.seek ? positionAt(clock, performance.timeOrigin + this.time()) : request.now;
+    return this.targetOf(widget, hour);
   }
 
   private completePlaybackDraw(widget: Widget, request: FrameRequest, playback: PlaybackRenderer | undefined, drawnEntry?: number) {

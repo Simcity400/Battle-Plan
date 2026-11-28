@@ -10,10 +10,17 @@ export interface MotionClock {
 }
 
 export type MotionSkip = 'paused' | 'notEligible' | 'noRenderer' | 'pendingStage' | 'noBracket' | 'unproven' | 'recordedHour' | 'modelValidity' | 'incompatible' | 'unchanged' | 'budget';
+export type MotionRowChange = 'reorder' | 'membership' | 'label';
+
+export interface MotionSampleDiagnostic {
+  reason?: MotionSkip;
+  rowChange?: MotionRowChange;
+}
 
 export interface MotionDiagnostics {
   readonly skipped: Partial<Record<MotionSkip, number>>;
   recorded: number;
+  rowChanges?: Partial<Record<MotionRowChange, number>>;
   proof?: { widget: number; from: number; through: number; next: number | null };
 }
 

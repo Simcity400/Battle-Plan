@@ -12,6 +12,7 @@ import type { FamilyTooltipEntry, FamilyTooltipField } from './host/tooltips.ts'
 import { IdentityIndex } from './identity/index.ts';
 import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
+import type { MotionSampleDiagnostic } from './motion.ts';
 import type { FamilyId } from './plan.ts';
 import { ensureBoundProjection, familyProjectionFailure, forgetProjectionWaiter, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
 import { projectScene, samePictures, sceneReadView, snapshotPictures, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
@@ -110,7 +111,7 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
     enabled(binding: TBinding): boolean;
     supports(model: TModel): boolean;
     unavailable(model: TModel): boolean;
-    frame(frame: LaneFrame<TBinding, TModel, TLayout>, next: TModel, fraction: number): LaneFrame<TBinding, TModel, TLayout> | false | null;
+    frame(frame: LaneFrame<TBinding, TModel, TLayout>, next: TModel, fraction: number, diagnostic?: MotionSampleDiagnostic): LaneFrame<TBinding, TModel, TLayout> | false | null;
   };
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
   keepsCanvas?(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean;
@@ -1043,7 +1044,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           const fraction = to && next ? (position - begin) / (next.hour - begin) : 0;
           exact.layout ??= family.layout(exact.model, binding, surface, theme, keep.ctx, exact.from, { previous: null, now: effectiveNow, speed: 0 });
           const recorded = { ...frame, hour: exact.from, model: exact.model, layout: exact.layout, projected: exact.projected, inspect };
-          const moving = to && !animation.unavailable(to.model) ? animation.frame(recorded, to.model, fraction) : null;
+          const moving = to && !animation.unavailable(to.model) ? animation.frame(recorded, to.model, fraction, diagnostic) : null;
           if (diagnostic && next) {
             diagnostic.reason = position <= begin ? 'recordedHour' : !to ? 'modelValidity' : moving === null ? 'incompatible' : 'unchanged';
           }
