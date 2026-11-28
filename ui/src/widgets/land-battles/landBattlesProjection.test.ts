@@ -7,8 +7,6 @@ import { deriveRowTooltip, deriveTableAudit, deriveTableMirror, resolveTableRows
 import { LOG_TABLE_BASE } from '../../families/table/logHelpers.ts';
 import { tableDefaults } from '../../families/table/settings.ts';
 import { buildColumnLayouts } from '../../families/table/layout.ts';
-import { LOADING_NAME } from '../../families/table/identityCell.ts';
-import { formatValueState } from '../../families/valueFormat.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import type { LandBattlesTailReply } from '../../generated/dashboard';
 import { LAND_BATTLES_COLUMNS, LOSSES_SO_FAR } from './definition.ts';
@@ -132,7 +130,7 @@ test('a coalition battle identifies every participant on both sides in the row a
   assert.deepEqual(pendingVsAbsent.cells.country!.value, { kind: 'pending', reason: 'Name is loading; Country name unavailable' });
 });
 
-test('pending land battle identities stay pending through cell, mirror, hover and audit until resolved, while unrecorded names stay missing', () => {
+test('land battle rows carry settled title and place readings through the cell, mirror, hover and audit', () => {
   const head: LandBattlesTailReply = {
     branchId: '1', total: '1', offset: '0', missing: [], warnings: [], nextChange: null,
     rows: [{
@@ -141,14 +139,14 @@ test('pending land battle identities stay pending through cell, mirror, hover an
       result: 'ongoing', casualties: [5, 8], icLost: [1, 2], lossesSoFar: true, divisions: [2, 3],
     }],
   };
-  const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
+  let nameRequests = 0;
   const makeIdentity = (mode: 'pending' | 'ready' | 'absent'): IdentityProvider => ({
     resolve(kind, key) {
+      if (kind === 'battle' || kind === 'state') nameRequests++;
       const name = mode === 'pending'
         ? { status: 'pending' as const }
         : mode === 'ready'
-          ? { status: 'ready' as const, value: kind === 'battle' ? 'Second Battle of Westford'
-            : kind === 'province' ? 'Westford' : kind === 'state' ? 'Highland' : key === countryKey(1) ? 'Alpha' : 'Bravo' }
+          ? { status: 'ready' as const, value: key === countryKey(1) ? 'Alpha' : 'Bravo' }
           : { status: 'absent' as const, reason: `${kind} name absent` };
       return {
         kind, key,
@@ -163,6 +161,9 @@ test('pending land battle identities stay pending through cell, mirror, hover an
   });
   const settings = tableDefaults(LAND_BATTLES_COLUMNS, LOG_TABLE_BASE);
   const project = (mode: 'pending' | 'ready' | 'absent') => {
+    const names = mode === 'absent' ? { titleMissing: 'Battle title absent', placeMissing: 'State name absent' }
+      : { title: 'Second Battle of Westford', placeName: 'Highland' };
+    const source = buildRowSourceFromHead('branch', { ...head, rows: [{ ...head.rows[0]!, ...names }] }, undefined, 18)!;
     const view = createBoundedReadView({ hour: 18, identity: makeIdentity(mode), rows: new Map([['main', source]]) });
     const model = landBattlesProjection.project(view, { byDate: true });
     const flat = resolveTableRows(model, settings);
@@ -175,20 +176,16 @@ test('pending land battle identities stay pending through cell, mirror, hover an
   };
 
   const pending = project('pending');
-  assert.equal(pending.row.name, LOADING_NAME);
-  assert.equal(pending.row.cells.item!.value.kind, 'pending');
-  assert.equal(pending.row.cells.place!.value.kind, 'pending');
+  assert.equal(pending.row.name, 'Second Battle of Westford');
+  assert.deepEqual(pending.row.cells.item!.value, { kind: 'known', value: 'Second Battle of Westford' });
+  assert.deepEqual(pending.row.cells.place!.value, { kind: 'known', value: 'Highland' });
   assert.equal(pending.row.cells.country!.value.kind, 'pending');
-  const itemFormatted = formatValueState(pending.row.cells.item!.value);
-  assert.equal(itemFormatted.kind, 'pending');
-  assert.equal(itemFormatted.kind === 'pending' ? itemFormatted.label : null, 'Loading…');
-  assert.match(pending.mirror.cells.find(c => c.column === 'item')!.spoken, /^Loading/);
-  assert.match(pending.mirror.cells.find(c => c.column === 'place')!.spoken, /^Loading/);
-  assert.equal(pending.tip.title, LOADING_NAME);
-  assert.equal(pending.tip.rows.find(r => r.label === 'Province')?.valueState?.kind, 'pending');
+  assert.equal(pending.mirror.cells.find(c => c.column === 'item')!.spoken, 'Second Battle of Westford');
+  assert.equal(pending.mirror.cells.find(c => c.column === 'place')!.spoken, 'Highland');
+  assert.equal(pending.tip.title, 'Second Battle of Westford');
+  assert.equal(pending.tip.rows.find(r => r.label === 'Province')?.valueState?.kind, 'known');
   assert.equal(pending.tip.rows.find(r => r.label === 'Attackers')?.valueState?.kind, 'pending');
-  assert.match(String(pending.audit.find(a => a.key === '1:77:10:item')!.value), /"pending"/);
-  assert.doesNotMatch(String(pending.audit.find(a => a.key === '1:77:10:item')!.value), /"notRecorded"/);
+  assert.match(String(pending.audit.find(a => a.key === '1:77:10:item')!.value), /Second Battle of Westford/);
 
   const ready = project('ready');
   assert.equal(ready.row.name, 'Second Battle of Westford');
@@ -197,8 +194,9 @@ test('pending land battle identities stay pending through cell, mirror, hover an
   assert.equal(ready.mirror.cells.find(c => c.column === 'item')!.spoken, 'Second Battle of Westford');
 
   const absent = project('absent');
-  assert.equal(absent.row.cells.item!.value.kind, 'notRecorded');
-  assert.equal(absent.row.cells.place!.value.kind, 'notRecorded');
+  assert.deepEqual(absent.row.cells.item!.value, { kind: 'notRecorded', reason: 'Battle title absent' });
+  assert.deepEqual(absent.row.cells.place!.value, { kind: 'notRecorded', reason: 'State name absent' });
   assert.match(absent.mirror.cells.find(c => c.column === 'item')!.spoken, /^Not recorded:/);
   assert.equal(absent.tip.rows.find(r => r.label === 'Province')?.valueState?.kind, 'missing');
+  assert.equal(nameRequests, 0);
 });

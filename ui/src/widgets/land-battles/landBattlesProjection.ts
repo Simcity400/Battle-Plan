@@ -4,8 +4,8 @@ import { artHoverText } from '../../families/art/adapters.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { battleTitleText, landBattleTitleKey } from '../../components/battleTitle.ts';
-import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { battleTitleText } from '../../components/battleTitle.ts';
+import { artKindCell, newIdentityBoundary, resolveIdentity, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
@@ -61,8 +61,12 @@ function battleSidesValue(sideValues: readonly Value<string>[]): Value<string> {
   return reasons.length ? partialValue(text, reasons.join('; ')) : knownValue(text);
 }
 
+function recordedName(name: string | undefined, missing: string | undefined): Value<string> {
+  return name?.trim() ? knownValue(name) : notRecorded((name === undefined ? missing : undefined) ?? 'Name not recorded');
+}
+
 function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: IdentityBoundary): TableRow {
-  const name = resolveName(view, 'battle', landBattleTitleKey(row.key), { boundary }).value;
+  const name = recordedName(row.title, row.titleMissing);
   const sides = row.countries.map((slots, i) => slots.map(slot => resolveIdentity(view, 'country', countryKey(slot), { atHour: row.countriesHour[i], boundary })));
   const flagEntries = row.countries.flatMap<{ readonly tag: string | null; readonly atHour: number }>((slots, i) => (
     slots.length
@@ -100,7 +104,7 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_landbattle_strip', frame: 0 }, 'square', 'Land battle', 'Battle artwork unavailable'),
       country: { ...countryCell, ...(countryFlags ? { flags: countryFlags } : {}), value: battleSidesValue(sideValues) },
       item: { value: name },
-      place: { value: row.state === null ? notRecorded('Province state not recorded') : resolveName(view, 'state', String(row.state), { atHour: row.hour, boundary }).value },
+      place: { value: row.state === null ? notRecorded('Province state not recorded') : recordedName(row.placeName, row.placeMissing) },
       casualties: logPairCell(row.casualties, 'Casualties', colors, row.lossesSoFar ? LOSSES_SO_FAR : undefined),
       icLost: logPairCell(row.icLost, 'IC lost', colors, row.lossesSoFar ? LOSSES_SO_FAR : undefined, IC_UNRECORDED),
       divisions: logPairCell(row.divisions, 'Divisions'), status, action: logWatchCell(),
@@ -150,7 +154,7 @@ export const landBattlesDeclaration: TableWidgetDeclaration<{ byDate: boolean }>
     const win = ctx.widget.time.mode === 'range' ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;
     const from = win ? ctx.gateSpan(Math.max(Math.floor(win.firstHour), ctx.branch.firstHour), ctx.branch.lastHour)?.firstHour ?? null : null;
     const { sort } = tableSettingsOf(ctx.options[TABLE_SETTINGS_KEY], LAND_BATTLES_COLUMNS, LOG_TABLE_BASE);
-    const ask = { ...occurrenceSelection(ctx), sort };
+    const ask = { ...occurrenceSelection(ctx), sort, rowNames: true };
     return { owner: JSON.stringify([ctx.track.source.id, ctx.branch.id, 'land-battles', from, ask]),
       entries: [pagedTailEntry('main', ctx.track.source, ctx.branch.id, ctx.track.axisOffset,
         { product: 'land-battles-tail', branchId: ctx.branch.id, from, limit: 64, ask }, ctx.following)] };

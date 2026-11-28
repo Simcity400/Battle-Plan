@@ -13,14 +13,17 @@ const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(resol
 let root: Root | null = null;
 let release: (() => void) | undefined;
 let opened: Element | null = null;
+let nameRequests = 0;
 const title = () => document.querySelector('.detail-window-header strong')?.textContent ?? '';
 Object.assign(window, { battleTitle: {
   async mount(kind: 'land' | 'naval', missing = false) {
     root?.unmount();
     document.body.replaceChildren();
     release = undefined;
+    nameRequests = 0;
     const client = { available: true, nativeMaps: false, product: (request: { sourceId: string; revision: string; product: string; params: { battles: string[] } }) => {
       if (request.product !== 'battle-names') return pending;
+      nameRequests++;
       return new Promise(resolve => { release = () => resolve({ ...request, data: {
         titles: Object.fromEntries(request.params.battles.map(key => [key, missing
           ? { name: null, missing: 'The province name was withheld' }
@@ -40,7 +43,8 @@ Object.assign(window, { battleTitle: {
     const row = { key: kind === 'land' ? '1:7:101' : 'result:7', hour: kind === 'land' ? 101 : 98, province: 51, state: null, countries: [[], []], countriesHour: [101, 101],
       countriesUnknown: [false, false], countriesMissing: [null, null], result: 'ongoing', readHour: 103, detailId: 'result:7', detailHour: null,
       resultHour: null, lastLiveHour: null, endSeen: false, shipsSunk: [0, 0], convoysSunk: [0, 0], icLost: [0, 0],
-      ships: [0, 0], convoys: [0, 0], casualties: [0, 0], divisions: [0, 0] };
+      ships: [0, 0], convoys: [0, 0], casualties: [0, 0], divisions: [0, 0],
+      ...(kind === 'land' ? missing ? { titleMissing: 'The province name was withheld' } : { title: 'Second Battle of Copper Hollow' } : {}) };
     const props = { opened: { scope: kind, subject: { row, title: 'Loading name…', colors: [] }, hour: 103 }, track, runtime, anchor, onClose() {} };
     root = createRoot(element);
     root.render(kind === 'land' ? <LandBattleWindow {...props as unknown as Parameters<typeof LandBattleWindow>[0]} /> : <NavalBattleWindow {...props as unknown as Parameters<typeof NavalBattleWindow>[0]} />);
@@ -55,4 +59,5 @@ Object.assign(window, { battleTitle: {
     return { title: title(), sameWindow: opened !== null && document.querySelector('.detail-window') === opened };
   },
   missingReason: () => document.querySelector('.detail-window-header [data-value-state=missing]')?.getAttribute('aria-label'),
+  nameRequests: () => nameRequests,
 } });
