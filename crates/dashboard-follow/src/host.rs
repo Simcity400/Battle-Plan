@@ -208,9 +208,9 @@ impl PanelParking {
         (self.wake)();
     }
 
-    fn ready(&self, epoch: u64, lead: Result<Option<Hour>, ()>) -> Vec<PanelTask> {
+    fn ready(&self, epoch: u64, held_at: Option<Hour>) -> Vec<PanelTask> {
         self.jobs.lock().unwrap_or_else(PoisonError::into_inner).extract_if(.., |job| {
-            job.epoch != epoch || job.token.load(Ordering::Acquire) || !matches!(lead, Ok(Some(head)) if job.hour > head)
+            job.epoch != epoch || job.token.load(Ordering::Acquire) || held_at.is_none_or(|head| job.hour <= head)
         }).map(|job| job.task).collect()
     }
 }
@@ -341,33 +341,29 @@ impl PanelJob {
             }
         }
         let owner = Arc::downgrade(owner);
-        run_panel(move || self.run(read, product, work, move || {
-            owner.upgrade().map(|owner| {
-                let playhead = get(&owner);
-                (playhead.epoch(), playhead.head(Instant::now()))
-            })
-        }));
+        run_panel(move || self.run(read, product, work, move || owner.upgrade().map(|owner| get(&owner).clock_state_at(Instant::now()))));
     }
 
-    fn run(self, read: PanelRead, mut product: StepProduct, work: Arc<Work<StepProduct>>, head: impl Fn() -> Option<(u64, Hour)> + Send + 'static) {
+    fn run(self, read: PanelRead, mut product: StepProduct, work: Arc<Work<StepProduct>>, clock: impl Fn() -> Option<(u64, Hour, bool)> + Send + 'static) {
+        let head = || clock().map(|(epoch, hour, _)| (epoch, hour));
         match read {
             PanelRead::Seed(hour) => self.seed(&mut product, hour, head),
             PanelRead::CatchUp { through, quantum } => {
                 if let Some((_, _, mut hour)) = product.last {
                     while hour < through {
                         hour = hour.saturating_add(quantum).min(through);
-                        if let Some((epoch, current)) = head() && epoch == self.epoch && !self.token.load(Ordering::Acquire) {
-                            match self.push.paused_reply_lead(self.stamp.1, current) {
+                        if let Some((epoch, current, false)) = clock() && hour > current && epoch == self.epoch && !self.token.load(Ordering::Acquire) {
+                            match self.push.reply_lead_full() {
                                 Err(()) => break,
-                                Ok(Some(current)) if hour > current => {
+                                Ok(true) => {
                                     let Some(parking) = self.parking.upgrade() else { break };
                                     parking.park(ParkedPanel {
                                         hour, epoch, token: self.token.clone(),
-                                        task: Box::new(move || self.run(PanelRead::CatchUp { through, quantum }, product, work, head)),
+                                        task: Box::new(move || self.run(PanelRead::CatchUp { through, quantum }, product, work, clock)),
                                     });
                                     return;
                                 }
-                                _ => {}
+                                Ok(false) => {}
                             }
                         }
                         if !self.read_one(&mut product, hour, false, false, true, &head) {
@@ -843,15 +839,15 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             while !stopping.load(Ordering::Acquire) {
                 let seen = gate.stamp();
                 let playhead = get(&driven);
-                let playing = playhead.playing();
                 let (has_work, told) = {
                     let held = waiting.lock().unwrap_or_else(PoisonError::into_inner);
                     (!held.products.is_empty() || !held.shown.is_empty() || follow_ref.has_work(), held.push.clone().map(|push| (push, held.stamp.1, held.stamp.3)))
                 };
-                let head = playhead.head(Instant::now());
+                let (epoch, head, playing) = playhead.clock_state_at(Instant::now());
                 if let Some((push, route, seek)) = told {
-                    push.clock(route, seek, head, playing);
-                    for task in parked.ready(playhead.epoch(), push.paused_reply_lead(route, head)) { run_panel(task); }
+                    push.head(route, seek, head);
+                    let held_at = (!playing && push.reply_lead_full() == Ok(true)).then_some(head);
+                    for task in parked.ready(epoch, held_at) { run_panel(task); }
                 }
                 let release = if playing { head.saturating_add(playhead.step_hours().saturating_mul(crate::lead::RELEASE_FRAMES)) } else { head };
                 let advance_ok = consumer.try_advance(release);
@@ -1165,7 +1161,7 @@ fn check_parked_panel(release: &str) {
         Arc::new(move || gate.wake())
     }, jobs: Mutex::default() });
     push.watch_reply_lead(&parking.wake);
-    push.clock(route, seek, head + 90, false);
+    push.head(route, seek, head + 90);
     push.offer_kind(PANEL, future);
     assert!(push.try_take().is_some());
 
@@ -1184,18 +1180,21 @@ fn check_parked_panel(release: &str) {
     let job = PanelJob { stamp: (0, route, seek), session: push.session(), epoch, token, reads: reads.clone(), push: push.clone(), wake: Arc::new(|| {}), parking: Arc::downgrade(&parking) };
     let work = Arc::new(Work::new(None));
     let now = Arc::new(AtomicU64::new(epoch));
+    let playing = Arc::new(AtomicBool::new(false));
     let clock = now.clone();
-    job.run(PanelRead::CatchUp { through: head + 1, quantum: 1 }, product, work.clone(), move || Some((clock.load(Ordering::Acquire), head)));
+    let live = playing.clone();
+    job.run(PanelRead::CatchUp { through: head + 1, quantum: 1 }, product, work.clone(), move || Some((clock.load(Ordering::Acquire), head, live.load(Ordering::Acquire))));
     assert_eq!(*sampled.lock().unwrap(), [head]);
     let (_, bytes, ..) = push.try_take().expect("the head answer fits while future replies hold credit");
     assert_eq!(panel::dated::records(&bytes).unwrap()[0].hour, head);
     assert!(push.try_take().is_none(), "the parked catch-up has offered nothing past the head");
-    assert!(parking.ready(epoch, push.paused_reply_lead(route, head)).is_empty());
+    let held_at = || (!playing.load(Ordering::Acquire) && push.reply_lead_full() == Ok(true)).then_some(head);
+    assert!(parking.ready(epoch, held_at()).is_empty());
     assert!(work.take().is_none());
 
     let mut next_epoch = epoch;
     match release {
-        "play" => push.clock(route, seek, head, true),
+        "play" => playing.store(true, Ordering::Release),
         "credit" => {
             let seen = gate.stamp();
             push.credit(push.session(), u64::MAX);
@@ -1205,10 +1204,10 @@ fn check_parked_panel(release: &str) {
             next_epoch += 1;
             now.store(next_epoch, Ordering::Release);
             reads.lock().unwrap().anchor(next_epoch, seek + 1);
-            push.clock(route, seek + 1, head, false);
+            push.head(route, seek + 1, head);
         }
     }
-    let mut tasks = parking.ready(next_epoch, push.paused_reply_lead(route, head));
+    let mut tasks = parking.ready(next_epoch, held_at());
     assert_eq!(tasks.len(), 1);
     tasks.pop().unwrap()();
     assert!(work.take().is_some());

@@ -1,7 +1,7 @@
 
 use crate::{answer, invalid, panel};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     io::{self, Read, Write},
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak},
     time::Instant,
@@ -137,7 +137,7 @@ struct State {
     released: u64,
     credit: usize,
     session: u64,
-    heads: HashMap<u32, (u32, i32, bool)>,
+    heads: std::collections::HashMap<u32, (u32, i32)>,
     admitted: std::collections::HashMap<u32, u32>,
     next: u32,
     pressed: Option<u64>,
@@ -164,12 +164,12 @@ impl State {
     fn new(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
         let credit = budget.limit() / 2;
         let reply_charge = playhead::ByteBudget::new(credit / 2).charge();
-        Self { charge: budget.charge(), reply_charge, reply_leads: Vec::new(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit, session: 0, heads: HashMap::new(), admitted: HashMap::new(), next: 0, pressed: None, stopped: false, failed: None, counters: PushCounters::default() }
+        Self { charge: budget.charge(), reply_charge, reply_leads: Vec::new(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit, session: 0, heads: std::collections::HashMap::new(), admitted: std::collections::HashMap::new(), next: 0, pressed: None, stopped: false, failed: None, counters: PushCounters::default() }
     }
 
     fn reached(&self, stream: Stream) -> bool {
         match stream {
-            Stream::Steps { route, seek, due } | Stream::Panels { route, seek, due } => self.heads.get(&route).is_some_and(|&(at, head, _)| at == seek && due <= head),
+            Stream::Steps { route, seek, due } | Stream::Panels { route, seek, due } => self.heads.get(&route).is_some_and(|&(at, head)| at == seek && due <= head),
             Stream::Notice => false,
         }
     }
@@ -387,24 +387,21 @@ impl Push {
         }
     }
 
-    pub fn head(&self, route: u32, seek: u32, hour: i32) {
-        self.clock(route, seek, hour, true);
-    }
-
     pub(crate) fn watch_reply_lead(&self, wake: &panel::Wake) {
-        lock(&self.state).reply_leads.push(Arc::downgrade(wake));
+        let mut state = lock(&self.state);
+        state.reply_leads.retain(|wake| wake.strong_count() != 0);
+        state.reply_leads.push(Arc::downgrade(wake));
     }
 
-    pub(crate) fn paused_reply_lead(&self, route: u32, head: i32) -> Result<Option<i32>, ()> {
+    pub(crate) fn reply_lead_full(&self) -> Result<bool, ()> {
         let state = lock(&self.state);
         if state.stopped { return Err(()); }
-        let (_, head, playing) = state.heads.get(&route).copied().unwrap_or((0, head, false));
-        Ok((!playing && state.reply_charge.full()).then_some(head))
+        Ok(state.reply_charge.full())
     }
 
-    pub(crate) fn clock(&self, route: u32, seek: u32, hour: i32, playing: bool) {
+    pub fn head(&self, route: u32, seek: u32, hour: i32) {
         let mut state = lock(&self.state);
-        if state.heads.insert(route, (seek, hour, playing)).is_some_and(|(at, head, _)| (at, head) == (seek, hour)) { return; }
+        if state.heads.insert(route, (seek, hour)) == Some((seek, hour)) { return; }
         state.merge_passed();
         if state.failed.is_none() {
             state.charged();
