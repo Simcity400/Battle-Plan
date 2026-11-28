@@ -2374,4 +2374,37 @@ fn republished_changes_are_deduped_large_gains_split_daily_gains_survive_change_
     assert!(keys(&s2, TableId::PowerSpendGains).is_empty(), "a pre-attachment backlog grant captured while CountryLinks was unavailable on hour 0 must not be counted if republished after recovery");
     assert_eq!(spend(&s2, 10, POLITICAL, Total::GAINS, "gained"), None);
     assert_resumes_match(&[0, 1], 2, startup_outage);
+
+    let later_outage = |store: &mut Store, hour: i32| {
+        let complete = |store: &mut Store, table: TableId| store.status(table.index(), Status::Complete, true, Some(hour), true).unwrap();
+        match hour {
+            0 => {
+                setup_base(store, hour, &[(1, 10)], &[1]);
+            }
+            1 => {
+                store.status(TableId::Countries.index(), Status::Unavailable { reason: 1 }, false, None, false).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+            }
+            2 => {
+                complete(store, TableId::Countries);
+                testing::put(store, TableId::Countries, &CountryRow { id: 1, canonical_slot: 20, ..Default::default() }, TEXTS).unwrap();
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 20 }, TEXTS).unwrap();
+                testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 10).unwrap();
+            }
+            3 => {
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(11, 7 * Q), TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let (l1, _) = run_custom(1, later_outage);
+    assert_eq!(l1.view(TableId::PowerSpendGains.index()).status(), Status::Unavailable { reason: 1 });
+    let (l3, _) = run_custom(3, later_outage);
+    let l3_gains = keys(&l3, TableId::PowerSpendGains);
+    assert_eq!(l3_gains.len(), 1, "only the fresh grant after recovery should be emitted for holder 20");
+    assert_eq!(cell::<SpendGain>(&l3, TableId::PowerSpendGains, l3_gains[0], "gained"), Some(7 * Q));
+    assert_eq!(spend(&l3, 10, POLITICAL, Total::GAINS, "gained"), None);
+    assert_eq!(spend(&l3, 20, POLITICAL, Total::GAINS, "gained"), Some(7 * Q));
+    assert_resumes_match(&[0, 1, 2], 3, later_outage);
 }

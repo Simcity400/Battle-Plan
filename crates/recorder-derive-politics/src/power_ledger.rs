@@ -2176,11 +2176,9 @@ impl Writer for PowerLedger {
             for log in [TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
                 recorder_derive_framework::forces::forget_listed(hour, out, log);
             }
-            if hour.first {
-                for row in inputs::changes(hour)?.rows {
-                    if instant_gain(&row).is_some() || charge(&row).is_some() {
-                        self.seen_changes.entry((row.country, row.epoch)).or_default().insert(row.sequence);
-                    }
+            for row in inputs::changes(hour)?.rows {
+                if instant_gain(&row).is_some() || charge(&row).is_some() {
+                    self.seen_changes.entry((row.country, row.epoch)).or_default().insert(row.sequence);
                 }
             }
             let reason = match status {
