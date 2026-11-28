@@ -163,13 +163,14 @@ fn sample_pixel(x: u32, y: u32) -> Sample {
     return Sample(vec4<u32>(rgb(region.color), a), vec4<u32>(region.attributes & 255u, region.fx & 255u, select(0u, 255u, (region.fx & 256u) != 0u), (region.attributes >> 8u) & 255u));
 }
 fn pack(c: vec4<u32>) -> u32 { return c.x | (c.y << 8u) | (c.z << 16u) | (c.w << 24u); }
-@compute @workgroup_size(8, 8)
-fn field(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
+fn field_position(group: vec3<u32>, local: vec3<u32>) -> vec2<u32> {
     let n = group.x + group.y * p.dispatch_stride;
-    if n >= p.count { return; }
+    if n >= p.count { return vec2<u32>(p.width, p.height); }
     let cell = dirty[n];
-    let xy = vec2<u32>(cell % p.columns, cell / p.columns) * 8u + local.xy;
-    if xy.x >= p.width / 2u || xy.y >= p.height / 2u { return; }
+    return vec2<u32>(cell % p.columns, cell / p.columns) * 8u + local.xy;
+}
+
+fn field_sample(xy: vec2<u32>) -> Sample {
     var sum = vec4<u32>(0u); var effects = vec4<u32>(0u);
     for (var dx = 0u; dx < 2u; dx++) {
         let a = sample_pixel(xy.x * 2u + dx, xy.y * 2u);
@@ -177,7 +178,50 @@ fn field(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) 
         sum += (a.color + b.color) / 2u;
         effects += (a.effects + b.effects) / 2u;
     }
+    return Sample(sum / 2u, effects / 2u);
+}
+
+@compute @workgroup_size(8, 8)
+fn field(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
+    let xy = field_position(group, local);
+    if xy.x >= p.width / 2u || xy.y >= p.height / 2u { return; }
+    let result = field_sample(xy);
     let at = xy.y * p.stride + xy.x;
-    output[at] = pack(sum / 2u);
-    output[at + p.stride * (p.height / 2u)] = pack(effects / 2u);
+    output[at] = pack(result.color);
+    output[at + p.stride * (p.height / 2u)] = pack(result.effects);
+}
+
+@group(1) @binding(0) var colors_out: texture_storage_2d<rgba8unorm, write>;
+@group(1) @binding(1) var effects_out: texture_storage_2d<rgba8unorm, write>;
+
+fn store_field(group: vec3<u32>, local: vec3<u32>, top: bool, bottom: bool) {
+    let xy = field_position(group, local);
+    if xy.x >= p.width / 2u || xy.y >= p.height / 2u { return; }
+    let result = field_sample(xy);
+    let color = unpack4x8unorm(pack(result.color));
+    let effects = unpack4x8unorm(pack(result.effects));
+    if top {
+        textureStore(colors_out, vec2<i32>(xy), color);
+        textureStore(effects_out, vec2<i32>(xy), effects);
+    }
+    if bottom {
+        let lower = vec2<i32>(xy + vec2<u32>(0u, textureDimensions(colors_out).y / 2u));
+        textureStore(colors_out, lower, color);
+        textureStore(effects_out, lower, effects);
+    }
+}
+
+@compute @workgroup_size(8, 8)
+fn field_top(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
+    store_field(group, local, true, false);
+}
+
+@compute @workgroup_size(8, 8)
+fn field_bottom(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
+    store_field(group, local, false, true);
+}
+
+@compute @workgroup_size(8, 8)
+fn field_both(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
+    store_field(group, local, true, true);
 }

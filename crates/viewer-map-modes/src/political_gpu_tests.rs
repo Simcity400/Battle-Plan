@@ -773,6 +773,7 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
             &b.shown.as_ref().unwrap().lock().gpu.scratch
         ));
         assert!(!Arc::ptr_eq(&base.scratch, &base.strategic.scratch));
+        assert_eq!(base.scratch.output.size(), 4, "live views write to the textures");
         let cells = u64::from(gpu.params.columns) * u64::from(gpu.params.rows);
         let textures = 2 * u64::from(base.size[0]) * u64::from(base.size[1]) * 4;
         let expected = textures
@@ -1003,17 +1004,13 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
     assert_eq!(c.shown.as_ref().unwrap().lock().naval.dispatched_cells, 0, "the sea stood in its half: nothing to redraw");
     let fill = a.shown.as_ref().unwrap().lock();
     assert!(fill.gpu.dispatched_cells < fill.gpu.dirty.len());
-    let rows = fill
-        .gpu
-        .copies
-        .iter()
-        .map(|rect| rect[1])
-        .collect::<Vec<_>>();
+    let columns = fill.gpu.params.columns;
     assert!(
-        rows.iter()
-            .any(|y| rows.iter().filter(|other| *other == y).count() > 1),
-        "the incremental update must copy a row with a gap: {:?}",
-        fill.gpu.copies
+        fill.gpu.marked.windows(2).any(|cells| {
+            cells[0] / columns == cells[1] / columns && cells[1] > cells[0] + 1
+        }),
+        "the incremental update must mark a row with a gap: {:?}",
+        fill.gpu.marked
     );
 }
 

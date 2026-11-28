@@ -213,9 +213,9 @@ impl Static {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("warm strategic gradient"),
         });
-        gpu.dispatch(&mut encoder);
+        gpu.dispatch(&mut encoder, None);
         queue.submit([encoder.finish()]);
-        let scratch = Arc::new(Scratch::new(device, &gpu.params)?);
+        let scratch = Arc::new(Scratch::new(device, &gpu.params, false)?);
         Ok(Self {
             strategic: gpu,
             scratch,
@@ -254,11 +254,12 @@ impl Static {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::STORAGE_BINDING
                     | wgpu::TextureUsages::COPY_DST
                     | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
+                view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
             })
         });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -278,8 +279,26 @@ impl Static {
             &[[0, 0, params.width / 2, params.height / 2]],
         );
         queue.submit([encoder.finish()]);
+        let storage_views = textures.each_ref().map(|texture| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+                ..Default::default()
+            })
+        });
+        let outputs = shader_pipeline::gpu::stats::create_bind_group(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("political texture outputs"),
+                layout: &gpu.kernel.outputs_layout,
+                entries: &std::array::from_fn::<_, 2, _>(|index| wgpu::BindGroupEntry {
+                    binding: index as u32,
+                    resource: wgpu::BindingResource::TextureView(&storage_views[index]),
+                }),
+            },
+        );
         let state = Arc::new(State {
             textures,
+            outputs,
             fill: Mutex::new(Fill {
                 gpu,
                 naval,
@@ -394,6 +413,7 @@ fn same_fill(a: &Regions, b: &Regions) -> bool {
 
 pub struct State {
     textures: [wgpu::Texture; 2],
+    outputs: wgpu::BindGroup,
     fill: Mutex<Fill>,
 }
 
@@ -745,17 +765,8 @@ impl View {
 
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) -> Option<Encoded> {
         let state = self.shown.as_ref()?;
-        let [first, second] = &state.textures;
         let mut fill = state.lock();
         let held = holders(fill.channels);
-        let half = first.height() / 2;
-        let rows = |layer: Held| {
-            [0, half]
-                .into_iter()
-                .zip(held)
-                .filter_map(|(row, holder)| (holder == layer).then_some(row))
-                .collect::<Vec<_>>()
-        };
         let fill = &mut *fill;
         let mut layers = [false; 3];
         for (recorded, (layer, gpu)) in layers.iter_mut().zip([
@@ -763,9 +774,9 @@ impl View {
             (Held::Country, &mut fill.gpu),
             (Held::Mode, &mut fill.mode),
         ]) {
-            let rows = rows(layer);
-            if !rows.is_empty() {
-                *recorded = gpu.encode_rows(encoder, [first, second], &rows);
+            let mask = usize::from(held[0] == layer) | (usize::from(held[1] == layer) << 1);
+            if mask != 0 {
+                *recorded = gpu.dispatch(encoder, Some((&state.outputs, mask - 1)));
             }
         }
         layers.contains(&true).then(|| Encoded {
@@ -824,7 +835,7 @@ struct Scratch {
 }
 
 impl Scratch {
-    fn new(device: &wgpu::Device, params: &Params) -> io::Result<Self> {
+    fn new(device: &wgpu::Device, params: &Params, keep_output: bool) -> io::Result<Self> {
         let rw = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let cells = u64::from(params.columns) * u64::from(params.rows);
         Ok(Self {
@@ -832,7 +843,7 @@ impl Scratch {
             output: zero_buffer(
                 device,
                 "political output bytes",
-                u64::from(params.stride) * u64::from(params.height) * 4,
+                if keep_output { u64::from(params.stride) * u64::from(params.height) * 4 } else { 4 },
                 rw | wgpu::BufferUsages::COPY_SRC,
             )?,
         })
@@ -847,6 +858,8 @@ impl Scratch {
 struct Kernel {
     layout: wgpu::BindGroupLayout,
     pipelines: [wgpu::ComputePipeline; 5],
+    outputs_layout: wgpu::BindGroupLayout,
+    texture_pipelines: [wgpu::ComputePipeline; 3],
 }
 
 impl Kernel {
@@ -899,7 +912,35 @@ impl Kernel {
                 cache: None,
             })
         });
-        Self { layout, pipelines }
+        let outputs_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("political texture outputs"),
+            entries: &std::array::from_fn::<_, 2, _>(|index| wgpu::BindGroupLayoutEntry {
+                binding: index as u32,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            }),
+        });
+        let textures = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("political texture fill"),
+            bind_group_layouts: &[Some(&layout), Some(&outputs_layout)],
+            immediate_size: 0,
+        });
+        let texture_pipelines = ["field_top", "field_bottom", "field_both"].map(|entry| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&textures),
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        });
+        Self { layout, pipelines, outputs_layout, texture_pipelines }
     }
 }
 
@@ -933,7 +974,6 @@ pub struct PoliticalGpu {
     indirect: wgpu::Buffer,
     dirty: Vec<bool>,
     marked: Vec<u32>,
-    copies: Vec<[u32; 4]>,
     group: wgpu::BindGroup,
     kernel: Arc<Kernel>,
     field: FieldDefines,
@@ -1058,7 +1098,6 @@ impl PoliticalGpu {
             indirect,
             dirty: vec![false; self.dirty.len()],
             marked: Vec::new(),
-            copies: Vec::new(),
             group,
             kernel: Arc::clone(&self.kernel),
             field: self.field,
@@ -1211,7 +1250,7 @@ impl PoliticalGpu {
         )?;
         let scratch = match scratch {
             Some(scratch) => scratch,
-            None => Arc::new(Scratch::new(device, &params)?),
+            None => Arc::new(Scratch::new(device, &params, true)?),
         };
         let dirty_buffer = zero_buffer(device, "political dirty cells", cell_count as u64 * 4, rw)?;
         let indirect = buffer(
@@ -1269,7 +1308,6 @@ impl PoliticalGpu {
             indirect,
             dirty: vec![false; cell_count],
             marked: Vec::new(),
-            copies: Vec::new(),
             group,
             kernel,
             field,
@@ -1616,12 +1654,6 @@ impl PoliticalGpu {
             .filter_map(|(i, &d)| d.then_some(i as u32))
             .collect::<Vec<_>>();
         self.dispatched_cells = dirty.len();
-        self.copies = copy_rects(
-            &dirty,
-            self.params.columns,
-            self.params.width / 2,
-            self.params.height / 2,
-        );
         self.params.count = dirty.len() as u32;
         self.pending = !dirty.is_empty();
         if self.pending {
@@ -1802,14 +1834,12 @@ impl PoliticalGpu {
             shader_pipeline::gpu::stats::write_buffer(queue, &self.mapping_buffer, (range.start * 4) as u64, bytemuck::cast_slice(&self.mapping[range]));
         }
         let _ = device;
-        let mut dirty = self.marked.clone();
-        dirty.sort_unstable();
-        self.dispatched_cells = dirty.len();
-        self.copies = copy_rects(&dirty, self.params.columns, self.params.width / 2, self.params.height / 2);
-        self.params.count = dirty.len() as u32;
-        self.pending = !dirty.is_empty();
+        self.marked.sort_unstable();
+        self.dispatched_cells = self.marked.len();
+        self.params.count = self.marked.len() as u32;
+        self.pending = !self.marked.is_empty();
         if self.pending {
-            shader_pipeline::gpu::stats::write_buffer(queue, &self.dirty_buffer, 0, bytemuck::cast_slice(&dirty));
+            shader_pipeline::gpu::stats::write_buffer(queue, &self.dirty_buffer, 0, bytemuck::cast_slice(&self.marked));
             shader_pipeline::gpu::stats::write_buffer(queue, &self.uniform, 0, bytemuck::bytes_of(&self.params));
             let x = self.params.count.min(self.params.dispatch_stride);
             shader_pipeline::gpu::stats::write_buffer(queue, &self.indirect, 0, bytemuck::cast_slice(&[x, self.params.count.div_ceil(x), 1]));
@@ -1890,29 +1920,24 @@ impl PoliticalGpu {
         textures: [&wgpu::Texture; 2],
         origin_y: u32,
     ) -> bool {
-        if !self.dispatch(encoder) {
+        if !self.dispatch(encoder, None) {
             return false;
         }
-        self.copy(encoder, textures, origin_y, &self.copies);
+        let rectangles = copy_rects(
+            &self.marked,
+            self.params.columns,
+            self.params.width / 2,
+            self.params.height / 2,
+        );
+        self.copy(encoder, textures, origin_y, &rectangles);
         true
     }
 
-    fn encode_rows(
+    fn dispatch(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        textures: [&wgpu::Texture; 2],
-        rows: &[u32],
+        output: Option<(&wgpu::BindGroup, usize)>,
     ) -> bool {
-        if !self.dispatch(encoder) {
-            return false;
-        }
-        for &row in rows {
-            self.copy(encoder, textures, row, &self.copies);
-        }
-        true
-    }
-
-    fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
         if !self.pending || self.recorded {
             return false;
         }
@@ -1941,7 +1966,15 @@ impl PoliticalGpu {
             for step in 0..self.params.distance_cap - 1 {
                 dispatch(if step % 2 == 0 { 2 } else { 3 }, false);
             }
-            dispatch(4, true);
+            if let Some((group, layer)) = output {
+                shader_pipeline::gpu::stats::pipeline();
+                pass.set_pipeline(&self.kernel.texture_pipelines[layer]);
+                shader_pipeline::gpu::stats::bind();
+                pass.set_bind_group(1, group, &[]);
+                pass.dispatch_workgroups_indirect(&self.indirect, 0);
+            } else {
+                dispatch(4, true);
+            }
         }
         self.recorded = true;
         true

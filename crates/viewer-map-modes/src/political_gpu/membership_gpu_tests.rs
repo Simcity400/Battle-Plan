@@ -106,7 +106,7 @@ pub(super) fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_ho
         let regions = bytemuck::cast_slice::<Region, u8>(&gpu.regions).to_vec();
         let alpha = gpu.alpha.clone();
         let dirty = gpu.dirty.clone();
-        let copies = gpu.copies.clone();
+        let marked = gpu.marked.clone();
         let pending = gpu.pending;
         let invalid = Layer::new(LayerKind::Country, &keys[..4], &color, &field);
         let error = gpu
@@ -122,7 +122,7 @@ pub(super) fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_ho
         assert_eq!(bytemuck::cast_slice::<Region, u8>(&gpu.regions), regions);
         assert_eq!(gpu.alpha, alpha);
         assert_eq!(gpu.dirty, dirty);
-        assert_eq!(gpu.copies, copies);
+        assert_eq!(gpu.marked, marked);
         assert_eq!(gpu.pending, pending);
         if hour == 3 {
             assert!(gpu.pending);
