@@ -1046,7 +1046,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
 fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_date() {
     use super::{
         DecisionsTail, EventChoicesTail, EventFeedCategory, EventFeedTail, EventFeedTailParams, ScriptStatus, ScriptTailParams,
-        decisions_dated_panel, event_choices_dated_panel, event_feed_dated_panel,
+        decisions_dated_panel, event_choices_dated_panel, event_feed_dated_panel, index::REQUESTED_EVENT_LOCATORS,
     };
     use dashboard_base::{
         products::{LoadContext, Product},
@@ -1339,16 +1339,17 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     let choice_panel = event_choices_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-choices-tail", "branchId": "1", "limit": 64, "countries": ["GER"] })).unwrap();
     let choice_exact = choice_panel.exact().unwrap();
     let finish = dashboard_base::products::Finish::new(&replay_source, &context, EventChoicesTail::CONTENT_DEPENDENT);
-    for (hour, decoded) in [(100, None), (101, None), (102, None), (104, None), (105, Some(1)), (106, None), (110, None), (100, None), (105, Some(3))] {
-        let (stepped, followed) = replay_columnar::unit::reader::count_decodes(|| (choice_exact.advance)(hour, hour == 100, &cancel, None));
-        let (exact, rebuilt) = replay_columnar::unit::reader::count_decodes(|| {
-            finish.reply(|| EventChoicesTail::load(&replay_source, &cards(hour, None, selection("GER")), &context, &cancel)).unwrap()
-        });
+    REQUESTED_EVENT_LOCATORS.set(0);
+    for (hour, new_locators) in [(100, None), (101, None), (102, None), (104, None), (105, Some(1)), (106, None), (110, None), (100, None), (105, Some(3))] {
+        let stepped = (choice_exact.advance)(hour, hour == 100, &cancel, None);
+        let followed = REQUESTED_EVENT_LOCATORS.replace(0);
+        let exact = finish.reply(|| EventChoicesTail::load(&replay_source, &cards(hour, None, selection("GER")), &context, &cancel)).unwrap();
+        let rebuilt = REQUESTED_EVENT_LOCATORS.replace(0);
         assert_eq!(*stepped.value, Ok(serde_json::to_value(exact).unwrap()), "event-choices-tail stepped vs exact at {hour}");
-        if let Some(decoded) = decoded {
+        if let Some(new_locators) = new_locators {
             assert!(stepped.fresh, "the news event enters at 105");
-            assert_eq!(rebuilt.log_rows_at_rows, 4);
-            assert_eq!(followed.log_rows_at_rows, decoded, "only rows absent from the preceding page are decoded");
+            assert_eq!(rebuilt, 4, "the exact page requests all four event locators");
+            assert_eq!(followed, new_locators, "the followed page requests only locators missing from the preceding page");
         }
     }
     let feed_panel = event_feed_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-feed-tail", "branchId": "1", "limit": 64, "categories": ["politics"] })).unwrap();

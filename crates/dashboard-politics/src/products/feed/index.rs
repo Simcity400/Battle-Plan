@@ -1072,7 +1072,14 @@ impl CardEvents {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static REQUESTED_EVENT_LOCATORS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn read_events(query: &Query<'_>, locators: &[Locator]) -> io::Result<HashMap<u128, FeedEvent>> {
+    #[cfg(test)]
+    REQUESTED_EVENT_LOCATORS.set(REQUESTED_EVENT_LOCATORS.get() + locators.iter().collect::<BTreeSet<_>>().len());
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let columns = Columns::new()?;
