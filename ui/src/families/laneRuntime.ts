@@ -1048,7 +1048,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           }
           const shown = moving || recorded;
           drawCanvas(shown, target);
-          return { kind: moving ? 'interpolated' : 'exact', hit: point => family.hit(shown, point) };
+          return { kind: moving ? 'interpolated' : 'exact', hit: point => family.hit(shown, point), from: exact.from, until: exact.until };
         };
         playback = {
           paint,

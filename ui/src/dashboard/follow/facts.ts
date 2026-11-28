@@ -124,6 +124,14 @@ export class Facts<V> {
     return best;
   }
 
+  canHoldCarried(id: number, hour: number): boolean {
+    const sub = this.subs.get(id);
+    const carried = sub?.carried;
+    if (!carried) return false;
+    const replacement = sub.facts.find(fact => fact.c >= carried.h);
+    return !replacement || (hour < replacement.h && hour <= carried.c);
+  }
+
   prunable(id: number): boolean {
     const sub = this.subs.get(id);
     if (!sub) return false;

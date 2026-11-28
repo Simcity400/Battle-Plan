@@ -1579,6 +1579,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       focusAnchorRef,
       accessibleRef: (mountAdapter.mirror ?? 'none') === 'table' ? accessibleTableRef : (mountAdapter.mirror ?? 'none') === 'listbox' ? listboxMirrorRef : bodyRef,
       pointerMode,
+      playbackHover: mountAdapter.family === 'bars',
       isBlocked: () => inputBlocked(gateNow()),
       getInstalled: resolveInstalled,
       getViewportHeight: () => latestRef.current.viewportHeight,

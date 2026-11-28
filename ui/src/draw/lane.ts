@@ -159,6 +159,7 @@ export interface PlaybackPicture {
 }
 
 type HitTest = (point: readonly [number, number]) => string | null;
+type PlaybackDraw = { kind: 'exact' | 'interpolated'; hit: HitTest; from: number; until: number };
 
 export type PlaybackPaint = (
   current: PlaybackPicture,
@@ -167,7 +168,7 @@ export type PlaybackPaint = (
   target: PaintInput['sharedSurface'],
   inspect: string | null,
   diagnostic?: { reason?: MotionSkip },
-) => { kind: 'exact' | 'interpolated'; hit: HitTest } | 'empty' | 'release';
+) => PlaybackDraw | 'empty' | 'release';
 
 export interface PlaybackRenderer {
   paint: PlaybackPaint;
@@ -236,6 +237,7 @@ export interface LaneHost<B extends Bitmap> {
   later(run: () => void): void;
   schedule?(run: () => void): void;
   hit?(widget: number, key: string | null, installedId?: number, owner?: string): void;
+  playbackHover?(widget: number): void;
   served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; motionDiagnostics?: MotionDiagnostics; costs?: [widget: number, cost: number][] }): void;
   scrubbed?(frame: StripFrame, samples: readonly ScrubSample[]): void;
   budget?: number;
@@ -262,7 +264,9 @@ interface Widget {
   validWindow: Window | null;
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; deferrals: number; halted: number | null; parked: Sent | null;
   withdrawn: number | null;
-  playback?: { renderer: PlaybackRenderer; binding: Binding; supply: number; seek: number; canvas: OffscreenCanvas; hit?: HitTest | null };
+  playback?: { renderer: PlaybackRenderer; binding: Binding; supply: number; seek: number; canvas: OffscreenCanvas;
+    painted?: { draw: PlaybackDraw; pictures: readonly Picture<Value>[] } };
+  hover?: { point: [number, number]; key: string | null };
 }
 
 interface Held { kind: 'follow' | 'panels'; native: number; seek: number; hour: number; id: number; records: Uint8Array[]; size: number; completed?: number }
@@ -1405,19 +1409,42 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.wake();
   }
 
-  pointer(widget: number, _surface: number, point: [number, number] | null, installed?: number) {
+  pointer(widget: number, _surface: number, point: [number, number] | null, installed?: number, trackHover = false) {
     const held = this.widgets.get(widget);
     if (!held) return;
     const owner = held.binding.owner;
     const accepted = installed === undefined ? undefined : this.presented.get(installed);
     const named = installed === undefined ? held.installed : accepted?.widget === widget ? accepted.sent : held.shown?.id === installed ? held.shown : null;
     const inst = named && (named.owner === undefined || owner === undefined || named.owner === owner) ? named : null;
-    let key = point && inst?.hit ? inst.hit(point) : null;
-    if (key !== null && point && this.playbackOwners.has(widget)) {
-      const playback = held.playback;
-      if (!playback || (playback.hit !== undefined && playback.hit?.(point) !== key)) key = null;
-    }
+    const key = point ? this.hitAt(held, point, inst) : null;
+    if (!point) delete held.hover;
+    else if (trackHover) held.hover = { point, key };
     this.host.hit?.(widget, key, installed ?? inst?.id, inst?.owner);
+  }
+
+  private hitAt(widget: Widget, point: [number, number], installed: Sent | null) {
+    if (!installed?.hit) return null;
+    if (!this.playbackOwners.has(widget.id)) {
+      if (installed.staged && (this.lastSpeed ?? 0) > 0 && this.staged.get(widget.id)?.get(installed.id)?.playback) return null;
+      return installed.hit(point);
+    }
+    const playback = widget.playback;
+    const painted = playback?.painted;
+    if (!painted || installed.binding !== playback.binding.generation || installed.supply !== playback.supply
+      || installed.lo < painted.draw.from || installed.lo >= painted.draw.until
+      || installed.pictures.length !== painted.pictures.length
+      || !installed.pictures.every((picture, i) => samePicture(picture, painted.pictures[i]))) return null;
+    const key = installed.hit(point);
+    return painted.draw.hit(point) === key ? key : null;
+  }
+
+  private refreshPlaybackHover(widget: Widget) {
+    const hover = widget.hover;
+    if (!hover) return;
+    const key = this.hitAt(widget, hover.point, widget.shown);
+    if (key === hover.key) return;
+    hover.key = key;
+    this.host.playbackHover?.(widget.id);
   }
 
   exact(sub: number, hour: number, data: unknown, refused: string | null) {
@@ -2160,7 +2187,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       let through = dated?.c ?? Infinity;
       const accepts = (picture: Picture<Value>) => (at === hour && hour <= picture.c) || isRecordedReading(picture);
       for (const id of widget.subs) {
-        const picture = this.facts.select(id, at, accepts);
+        const picture = this.facts.select(id, at, picture => accepts(picture) && (!picture.carried || this.facts.canHoldCarried(id, hour)));
         if (!picture) return null;
         pictures.push(picture);
         from = Math.max(from, picture.h);
@@ -2237,12 +2264,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         }
         if (painted === 'release') {
           this.rememberPlayback(widget, undefined, clock.seek, false);
+          this.refreshPlaybackHover(widget);
           this.dirtyWidgets.add(id);
           continue;
         }
         target.shared?.lane.dirtySlots.delete(id);
         this.dirtyWorkerCanvases.delete(id);
-        held.hit = typeof painted === 'object' ? painted.hit : null;
+        held.painted = typeof painted === 'object' && current ? { draw: painted, pictures: current.pictures } : undefined;
+        this.refreshPlaybackHover(widget);
         if (moving) changed++;
         else exact++;
         if (position < (clock.lastHour ?? Infinity)) keepGoing = true;
@@ -2406,6 +2435,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         }
       }
       staged?.pixels.close();
+      if (this.playbackOwners.has(widget.id)) this.refreshPlaybackHover(widget);
       if (!current) continue;
       if (widget.inflight?.id === ack.id) widget.inflight = null;
       for (const sub of widget.subs) this.schedulePrune(sub);
@@ -2429,6 +2459,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       }
       if (refusal.reason === 'failed' || refusal.reason === 'refused') widget.halted = widget.binding.generation;
       if (refusal.reason === 'kept content') { widget.installed = null; widget.shown = null; }
+      if (this.playbackOwners.has(widget.id)) this.refreshPlaybackHover(widget);
       widget.parked = refusal.reason === 'uncovered' ? owner.sent : null;
       widget.sent = { ...widget.installed?.contents ?? {} };
       this.dirtyWidgets.add(widget.id);

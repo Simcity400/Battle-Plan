@@ -165,6 +165,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
         ...(installedId !== undefined ? { installedId } : {}),
         ...(owner !== undefined ? { owner } : {}),
       }),
+      playbackHover: widget => post({ type: 'playback-hover', widget }),
       served: frame => post({ type: 'served', ...frame }),
       scrubbed: (frame, samples) => post({ type: 'scrubbed', frame, samples }),
       fail: reason => post({ type: 'failure', lane: index, reason }),
@@ -213,7 +214,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       case 'exact': lane.exact(m.sub, m.hour, m.data, m.refused); break;
       case 'stream': lane.stream(m.route, m.seek, m.target); break;
       case 'fail': lane.fail(m.route); break;
-      case 'pointer': lane.pointer(m.widget, m.surface, m.point, m.installed); break;
+      case 'pointer': lane.pointer(m.widget, m.surface, m.point, m.installed, m.trackHover); break;
       case 'canvas': lane.setCanvas(m.widget, m.canvas, m.opaque); break;
       case 'clear-canvas': lane.clearCanvas(m.widget); break;
       case 'use-canvas': lane.useCanvas(m.widget); break;

@@ -52,7 +52,7 @@ export type ToLane =
   | { type: 'exact'; sub: number; hour: number; data: unknown; refused: string | null }
   | { type: 'stream'; route: number; seek: number; target: number }
   | { type: 'fail'; route: number; seek: number; command: number; reason: string }
-  | { type: 'pointer'; widget: number; surface: number; point: [number, number] | null; installed?: number }
+  | { type: 'pointer'; widget: number; surface: number; point: [number, number] | null; installed?: number; trackHover?: true }
   | { type: 'canvas'; widget: number; canvas: OffscreenCanvas; opaque: boolean }
   | { type: 'clear-canvas'; widget: number }
   | { type: 'use-canvas'; widget: number }
@@ -74,6 +74,7 @@ export type FromLane =
   | { type: 'sub-waiting'; lane: number; sub: number; waiting: boolean }
   | { type: 'widget-failed'; lane: number; widget: number; reason: string; stamp?: number }
   | { type: 'hit'; widget: number; key: string | null; installedId?: number; owner?: string }
+  | { type: 'playback-hover'; widget: number }
   | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; motionDiagnostics?: MotionDiagnostics; costs?: [widget: number, cost: number][] };
 
 export type FromPull = { kind: 'follow'; bytes: Uint8Array; resets: number } | { kind: 'panels'; bytes: Uint8Array } | { kind: 'failure'; reason: string };

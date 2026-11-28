@@ -398,6 +398,11 @@ function fixture(budget: number) {
   };
 }
 
+function topRowPoint(nav: unknown): [number, number] {
+  const entry = (nav as readonly [string, string, number, number, string, unknown, number, number][])[0]!;
+  return [32, entry[6] + entry[7] / 2];
+}
+
 describe('Ordered bar playback', () => {
   it('holds the recorded picture when factory playback outruns the delivered proof', async () => withLane(async f => {
     const base = 60788000;
@@ -622,16 +627,23 @@ describe('Ordered bar playback', () => {
     f.clock(100.5, 1);
     f.canvas.clearOps();
     await f.request(101, 1, 1, false, false, 124);
-    const staged = f.presented.at(-1)?.entries[0];
-    assert.equal(staged?.lo, 124);
+    const staged = f.presented.at(-1)!.entries[0]!;
+    assert.equal(staged.lo, 124);
     f.tick(0);
     assert.deepEqual(f.sampled, []);
     assert.equal(f.canvas.stagedCopies().length, 0);
+    const point = topRowPoint(staged.fields.nav);
+    f.lane.pointer(1, 0, point, staged.id);
+    assert.deepEqual(f.hits, [null]);
     f.clock(124, 1);
-    await f.request(124, 1, 1, [staged!], false, 148);
+    await f.request(124, 1, 1, [staged], false, 148);
     assert.equal(f.canvas.stagedCopies().length, 0);
+    f.lane.pointer(1, 0, point, staged.id);
+    assert.deepEqual(f.hits, [null, null], 'the accepted metadata has no visible row until the worker paints it');
     f.tick(0);
     assert.equal(f.sampled.length, 1);
+    f.lane.pointer(1, 0, point, staged.id);
+    assert.deepEqual(f.hits, [null, null, 'row:GER']);
     assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
     const exact = f.barWidth();
     f.clock(136, 1);
@@ -806,8 +818,8 @@ describe('Ordered bar playback', () => {
     await f.request(100, 1);
     const first = f.presented.at(-1)!.entries[0]!;
     await f.request(100, 1, 1, true);
-    const [[, , , , , , top, height]] = first.fields.nav as [string, string, number, number, string, unknown, number, number][];
-    const point: [number, number] = [32, top + height / 2];
+    f.tick(0);
+    const point = topRowPoint(first.fields.nav);
     f.lane.pointer(1, 0, point, first.id);
     assert.deepEqual(f.hits, ['row:GER']);
 
@@ -1069,6 +1081,40 @@ describe('Ordered bar playback', () => {
     assert.equal(f.barWidth(), exact);
     assert.equal(f.served.at(-1)?.changed, 0);
   }));
+
+  it('does not bring a seek-carried bar back past a recorded cut', async () => {
+    for (const cut of ['transport refusal', 'rank refusal', 'missing reading', 'proof hole']) await withLane(async f => {
+      f.record(100, { value: 50 });
+      f.record(123);
+      f.clock(100, 1);
+      await f.request(100, 1);
+      const width = f.barWidth();
+      await f.request(100, 1, 1, true);
+      f.lane.stream(1, 2, 110);
+      f.clock(110, 0, 2);
+      await f.request(110, 0, 2);
+      f.clock(110.5, 1, 2, true);
+      await f.request(110, 1, 2, true);
+      f.canvas.clearOps();
+      f.clock(124.5, 1, 2, true);
+      f.tick(0);
+      assert.equal(f.barWidth(), width, cut);
+
+      if (cut === 'transport refusal') f.lane.receive('panels', datedRecord(1, 124, 0, 'Unavailable', 2));
+      if (cut === 'rank refusal') f.lane.receive('panels', datedPanel(1, 124, { rows: [], refused: 'Incomplete rank' }, 2));
+      if (cut === 'missing reading') f.record(124, { value: null }, 2);
+      f.record(126, { value: 100 }, 2);
+      assert.equal(f.lane.facts.select(1, 126)?.h, 126, cut);
+      f.clock(125.5, 1, 2, true);
+      f.canvas.clearOps();
+      f.tick(0);
+      assert.ok(!f.operations().some(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE), cut);
+
+      f.clock(126.5, 1, 2, true);
+      f.tick(0);
+      assert.equal(f.barWidth(), width * 2, cut);
+    });
+  });
 
   it('paints a newly ready projection on the next ordinary playing request', async () => withLane(async f => {
     f.ready(false);
