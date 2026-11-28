@@ -47,6 +47,7 @@ import type {
 } from '../../generated/dashboard';
 import {
   buildExactParams,
+  raceParams,
   captionFor,
   provenInterval,
   resolvedEquipment,
@@ -445,11 +446,11 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
       ...common,
       read: {
         shape: 'point',
-        channel: 'followed',
+        channel: 'panel',
         coverage: headCoverage,
         product: 'equipment-produced-race',
         exactProduct: 'equipment-produced-race',
-        followQuery: null,
+        followQuery: { panel: 'equipment-produced-race', ...raceParams(headBase) },
         params: headBase as unknown as Readonly<Record<string, unknown>>,
         buildExactParams,
         dynamicKeys: ['hour'],

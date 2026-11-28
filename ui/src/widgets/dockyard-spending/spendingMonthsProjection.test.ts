@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { firstHourOfMonth } from '../../dashboard/calendar.ts';
+import type { FollowQuery } from '../../dashboard/regionTime.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { compileFollowPlan, readsWithoutFollow } from '../../families/broker.ts';
+import type { FamilyPlanContext } from '../../families/plan.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import type { ProductionSpendingMonthsReply } from '../../generated/dashboard';
-import { factoryMonthsProjection } from '../military-factory-spending/factoryMonthsProjection.ts';
-import { dockyardMonthsProjection } from './dockyardMonthsProjection.ts';
+import { factoryMonthsDeclaration, factoryMonthsProjection } from '../military-factory-spending/factoryMonthsProjection.ts';
+import { dockyardMonthsDeclaration, dockyardMonthsProjection } from './dockyardMonthsProjection.ts';
 import { formatExactIcText } from './spendingMonthsProjection.ts';
 
 const measure = (text: string) => text.length * 6.5;
@@ -15,6 +18,20 @@ const jan1 = firstHourOfMonth(1936 * 12);
 const feb1 = firstHourOfMonth(1936 * 12 + 1);
 const mar1 = firstHourOfMonth(1936 * 12 + 2);
 const apr1 = firstHourOfMonth(1936 * 12 + 3);
+
+test('both monthly spending views follow without exact playback requests', () => {
+  const branch = { id: '1', firstHour: jan1, lastHour: apr1 };
+  const context = { track: { source: { id: 'src', revision: '1' }, axisOffset: 0, branch }, branch, countryTag: 'GER', options: {} } as unknown as FamilyPlanContext;
+  for (const declaration of [dockyardMonthsDeclaration, factoryMonthsDeclaration]) {
+    const plan = declaration.sources(context, { following: true, staticSpan: null });
+    assert.equal(plan.entries.length, 1);
+    assert.equal(plan.entries.filter(entry => readsWithoutFollow(entry.read)).length, 0);
+    const { subscriptions } = compileFollowPlan(plan, query => ({ query: query as FollowQuery, refused: null }));
+    assert.deepEqual(subscriptions.map(sub => [sub.channel, sub.product]), [['panel', 'production-spending-months']]);
+    const pinned = declaration.sources(context, { following: false, staticSpan: [feb1, mar1] });
+    assert.equal(pinned.entries[0]?.read.shape, 'branch-to-hour');
+  }
+});
 
 function dockyardReply(): ProductionSpendingMonthsReply {
   return {

@@ -159,11 +159,9 @@ export interface ProducedRaceExactBase {
   readonly fromHour?: number;
 }
 
-export function buildExactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
-  const cfg = base as unknown as ProducedRaceExactBase;
+export function raceParams(cfg: ProducedRaceExactBase): Readonly<Record<string, unknown>> | null {
   const common = {
     branchId: cfg.branchId,
-    hour,
     count: cfg.count,
     measure: cfg.measure,
     types: [...cfg.types],
@@ -178,6 +176,11 @@ export function buildExactParams(base: Readonly<Record<string, unknown>>, hour: 
   }
   if (!cfg.tags.length) return null;
   return { ...common, countries: cfg.tags.map(countryFromKey) };
+}
+
+export function buildExactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
+  const params = raceParams(base as unknown as ProducedRaceExactBase);
+  return params && { ...params, hour };
 }
 
 export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRaceOptions> = registerFamilyProjection({
@@ -346,11 +349,11 @@ function equipmentProducedRaceSources(ctx: FamilyPlanContext<ProducedTypesReply>
       offset: ctx.track.axisOffset,
       read: {
         shape: 'point',
-        channel: 'followed',
+        channel: 'panel',
         coverage,
         product: 'equipment-produced-race',
         exactProduct: 'equipment-produced-race',
-        followQuery: null,
+        followQuery: { panel: 'equipment-produced-race', ...raceParams(base) },
         params: base as unknown as Readonly<Record<string, unknown>>,
         buildExactParams,
         dynamicKeys: ['hour'],

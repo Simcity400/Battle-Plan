@@ -197,8 +197,6 @@ pub struct Named {
     pub origin: Option<String>,
 }
 
-pub const NAME_TABLES: [TableId; 4] = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens];
-
 pub fn named_in(frame: &DecodedFrame, variants: &[u64], tokens: &BTreeSet<u32>, content: &Content, refused: &mut BTreeMap<String, usize>) -> (BTreeMap<u64, Named>, BTreeMap<u32, String>) {
     let unknown = || Named { known: false, token: String::new(), name: None, design: None, origin: None };
     let tables = (frame.complete::<tables::Countries>(), frame.complete::<tables::CountryLinks>(), frame.complete::<tables::LexicalTokens>(), frame.complete::<tables::VariantDefinitions>());
@@ -265,8 +263,17 @@ fn of_variant<T>(rows: &[T], variant: u64, key: impl Fn(&T) -> u64) -> &[T] {
 }
 
 pub fn name_at(query: &Query<'_>, hour: i32, variants: &[u64], tokens: &BTreeSet<u32>, content: &Content, refused: &mut BTreeMap<String, usize>) -> io::Result<(BTreeMap<u64, Named>, BTreeMap<u32, String>)> {
-    let mut reads: Vec<Read> = NAME_TABLES.into_iter().map(Read::all).collect();
+    use dashboard_base::products::at_hour::frame;
+
+    let mut reads = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance].map(Read::all).to_vec();
     reads.extend(design_reads(variants.iter().copied()));
-    let frame = dashboard_base::products::at_hour::frame(query, hour, &reads, "Stockpile")?;
-    Ok(named_in(&frame, variants, tokens, content, refused))
+    let mut names = frame(query, hour, &reads, "Stockpile")?;
+    let types = names.complete::<tables::VariantDefinitions>().into_iter().flatten().map(|row| row.equipment_token);
+    let modules = names.complete::<tables::VariantModules>().into_iter().flatten().flat_map(|row| [row.slot, row.definition_token]);
+    let upgrades = names.complete::<tables::VariantUpgrades>().into_iter().flatten().map(|row| row.definition_token as u32);
+    let spellings = Read::these(TableId::LexicalTokens, tokens.iter().copied().chain(types).chain(modules).chain(upgrades).map(u128::from));
+    let lexical = frame(query, hour, &[spellings], "Stockpile")?;
+    let index = TableId::LexicalTokens.index();
+    names.tables[index] = lexical.tables[index].clone();
+    Ok(named_in(&names, variants, tokens, content, refused))
 }
