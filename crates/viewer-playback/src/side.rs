@@ -1,6 +1,7 @@
 use crate::{map_open::{Combat, MapSide}, overlay};
 use viewer_layer_core::playhead_host::{Doing, Entry, Frame, Head, LayerParts, OnScreen, Overlaying, Waited, lock, views};
-use viewer_layer_core::layers::{Gpu, Installs, View, drawn_layer as drawn};
+use viewer_layer_core::layers::{Gpu, Installs, Upstream, View, drawn_layer as drawn};
+use viewer_layers_forces::orders::{Orders, Retirement};
 use replay_data::Hour;
 use std::{
     io,
@@ -122,6 +123,7 @@ pub struct SideThread {
     doing: Arc<Doing>,
     composed: Arc<std::sync::atomic::AtomicU64>,
     thread: Option<std::thread::JoinHandle<()>>,
+    orders_retirement: Option<Retirement>,
     refused: Option<String>,
 }
 
@@ -130,6 +132,9 @@ impl SideThread {
         let (entry, sight, views) = (Arc::clone(side.entry()), side.sight().cloned(), side.views().handle());
         let doing = Arc::clone(side.doing());
         let composed = Arc::clone(side.composed());
+        let orders_retirement = side.parts()
+            .and_then(|(_, layers)| Upstream::new(layers).get::<Orders>())
+            .map(Orders::retirement);
         let installs = side.take_installs();
         let products = Products { branch: side.branch(), ..Products::default() };
         let tables = sight.as_ref().and_then(|content| content.tables);
@@ -149,7 +154,7 @@ impl SideThread {
                 advance(&shared);
             }
         })?;
-        Ok(Self { shared, entry, sight, views, products, installs, install_failure: None, doing, composed, thread: Some(thread), refused: None })
+        Ok(Self { shared, entry, sight, views, products, installs, install_failure: None, doing, composed, thread: Some(thread), orders_retirement, refused: None })
     }
 
     pub fn ask(&self, view: View, at: Head, overlay: Option<overlay::Ask>, combat: Option<viewer_combat::Asking>) {
@@ -401,6 +406,9 @@ impl SideThread {
 
 impl Drop for SideThread {
     fn drop(&mut self) {
+        if let Some(orders) = self.orders_retirement.take() {
+            orders.stop();
+        }
         lock(&self.shared.held).stop = true;
         self.shared.signal.notify_all();
         if let Some(thread) = self.thread.take() {
