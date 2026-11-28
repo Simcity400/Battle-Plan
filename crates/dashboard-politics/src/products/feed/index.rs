@@ -1048,7 +1048,38 @@ pub fn warm(source: &Source, branch: u64, context: &LoadContext) -> io::Result<(
     Ok(())
 }
 
+#[derive(Default)]
+pub(super) struct CardEvents {
+    locators: HashMap<u128, Locator>,
+    rows: HashMap<u128, FeedEvent>,
+}
+
+impl CardEvents {
+    pub(super) fn read(&mut self, query: &Query<'_>, locators: &[Locator]) -> io::Result<&HashMap<u128, FeedEvent>> {
+        let mut wanted = HashMap::with_capacity(locators.len());
+        if !locators.iter().all(|&at| wanted.insert(at.key, at).is_none_or(|previous| previous == at)) {
+            self.locators.clear();
+            self.rows = read_events(query, locators)?;
+            return Ok(&self.rows);
+        }
+        self.rows.retain(|key, _| wanted.get(key).is_some_and(|at| self.locators.get(key) == Some(at)));
+        let missing: Vec<_> = wanted.values().copied().filter(|at| !self.rows.contains_key(&at.key)).collect();
+        if !missing.is_empty() {
+            self.rows.extend(read_events(query, &missing)?);
+        }
+        self.locators = wanted;
+        Ok(&self.rows)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static REQUESTED_EVENT_LOCATORS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn read_events(query: &Query<'_>, locators: &[Locator]) -> io::Result<HashMap<u128, FeedEvent>> {
+    #[cfg(test)]
+    REQUESTED_EVENT_LOCATORS.set(REQUESTED_EVENT_LOCATORS.get() + locators.iter().collect::<BTreeSet<_>>().len());
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let columns = Columns::new()?;
