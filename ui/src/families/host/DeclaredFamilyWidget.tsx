@@ -408,7 +408,7 @@ export default function DeclaredFamilyWidget<
       laneArt={laneArt}
       extent={extent}
       plan={plan.plan}
-      exactReadView={displayedCtx && perfLog && !blockedState ? plan.exactReadView : undefined}
+      exactReadView={displayedCtx && perfLog && (!blockedState || plan.keepFollowingWhenBlocked) ? plan.exactReadView : undefined}
       stripPlan={plan.stripPlan}
       offset={plan.offset}
       pin={plan.pin}
@@ -433,6 +433,7 @@ export default function DeclaredFamilyWidget<
       extraWarnings={combinedWarnings}
       blockedState={blockedState}
       blockedLoading={plan.bodyStatus.kind === 'loading'}
+      keepFollowingWhenBlocked={plan.keepFollowingWhenBlocked}
       bodyStatus={plan.bodyStatus.kind}
       held={plan.staticHeld}
       loadingLabel={plan.loadingLabel}

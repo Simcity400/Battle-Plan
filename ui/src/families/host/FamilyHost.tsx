@@ -272,6 +272,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly extraWarnings?: readonly string[];
   readonly blockedState?: ReactNode;
   readonly blockedLoading?: boolean;
+  readonly keepFollowingWhenBlocked?: boolean;
   readonly bodyStatus?: string;
   readonly held?: boolean;
   readonly loadingLabel?: string;
@@ -342,6 +343,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   extraWarnings,
   blockedState = null,
   blockedLoading = false,
+  keepFollowingWhenBlocked = false,
   bodyStatus,
   held = false,
   loadingLabel,
@@ -463,7 +465,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const say = useCallback((message: string) => announceRef.current(message), []);
 
   const hasTiled = !!tiledSeries && Object.keys(tiledSeries).length > 0;
-  const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || hasTiled || allowEmptyFollow);
+  const enabled = active && !prepared && (!blockedState || keepFollowingWhenBlocked) && (subscriptions.length > 0 || staticSources !== null || hasTiled || allowEmptyFollow);
   const auditable = !!exactReadView && !!adapter.deriveAuditRows;
   const resolvedOwner = owner ?? `${widget.id}:${declaration.kind}:${subject}`;
 
@@ -997,7 +999,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }), [setZoomWindow]);
 
   const gateNow = useCallback((): HostInputGate => ({
-    current: installedRecordOf(resolveInstalledRef.current()),
+    current: latestRef.current.blocked ? null : installedRecordOf(resolveInstalledRef.current()),
     held: heldRef.current,
     expired: !!pipeline && pipe !== null && pipeline.view(pipe)?.expired === true,
   }), [pipeline, pipe]);

@@ -227,6 +227,11 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     const tuple = await act<{
       blockedMeasured: boolean;
       blockedShown: boolean;
+      gapShown: boolean;
+      pictureAfterGap: boolean;
+      subscriptions: { before: number[]; duringGap: number[]; afterGap: number[] };
+      activatedDuringGap: number;
+      activatedAfterGap: number;
       description: string | null;
       clearedDescription: boolean;
       activatedId: number | null;
@@ -236,6 +241,12 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     }>('testGenericInstalledTuple()');
     assert.equal(tuple.blockedMeasured, true, 'a blocked host still measures its body, so a cold chart can ask for its first tiles');
     assert.equal(tuple.blockedShown, true, 'the blocked state shows inside the frame');
+    assert.equal(tuple.gapShown, true, 'a recorded chart gap still shows its reason');
+    assert.deepEqual(tuple.subscriptions.duringGap, tuple.subscriptions.before, 'the gap keeps the same native subscriptions');
+    assert.deepEqual(tuple.subscriptions.afterGap, tuple.subscriptions.before, 'leaving the gap reuses the followed placement');
+    assert.equal(tuple.pictureAfterGap, true, 'the picture is installed when the gap notice clears');
+    assert.equal(tuple.activatedDuringGap, 0, 'the covered picture cannot receive actions');
+    assert.equal(tuple.activatedAfterGap, 1, 'actions resume when the gap clears');
     assert.equal(tuple.description, 'Four countries ranked by factories', 'the installed description is what the body is described by');
     assert.equal(tuple.clearedDescription, true, 'the description goes when the picture goes');
     assert.equal(tuple.activatedId, tuple.viewId, 'Enter after forty played hours carries the picture Page shows now');
