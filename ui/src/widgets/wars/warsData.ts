@@ -1,5 +1,6 @@
 import { runAt } from '../../charts/series.ts';
 import { entryAt } from '../../dashboard/reads.ts';
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import type { HourSpan, WarContributionGroup, WarContributionsReply, WarObservation, WarParticipantRun, WarSide, WarTimeline, WarsReply } from '../../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null;
@@ -10,6 +11,8 @@ const range = (value: unknown): value is HourSpan & Record<string, unknown> => o
 const ordered = (ranges: readonly HourSpan[]) => ranges.every((item, index) => !index || ranges[index - 1].lastHour < item.firstHour);
 const side = (value: unknown): value is WarSide => value === 'attacker' || value === 'defender' || value === 'viewpoint' || value === 'opponent';
 const raw = (value: unknown) => text(value) && /^-?\d+$/.test(value);
+
+export const warViewpoint = (tag: string | null, choice?: string | null) => tag && choice && isSlotKey(choice) ? countryFromKey(choice) : tag;
 
 export function isWarsReply(value: unknown): value is WarsReply {
   if (!object(value) || !text(value.branchId) || typeof value.available !== 'boolean'

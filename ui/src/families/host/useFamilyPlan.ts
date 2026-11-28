@@ -259,6 +259,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const singleCountry = isSingle ? gate.country! : null;
   const countryTag = isSingle && gate.open ? singleCountry!.tag : null;
   const countrySubject = isSingle && gate.open ? singleCountry!.history?.key ?? null : null;
+  const countryChoice = singleCountry?.chosen ?? null;
   const countryLabel = useCountryNameAt(
     runtime.client,
     isSingle ? track : undefined,
@@ -287,8 +288,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const auxEnabled = !!auxSpec && (!auxSpec.when || auxSpec.when(options));
   const auxParams = useMemo(
-    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options, countryTag, countrySubject) : null),
-    [auxSpec, auxEnabled, track, options, countryTag, countrySubject],
+    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options, countryTag, countrySubject, countryChoice) : null),
+    [auxSpec, auxEnabled, track, options, countryTag, countrySubject, countryChoice],
   );
   const auxReq = useMemo(
     () => (auxSpec && auxParams && track
@@ -525,12 +526,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       aux: auxResult.data,
       countryTag,
       countrySubject,
+      countryChoice,
       countryName,
       countries: countriesState,
       gateSpan: gate.span,
       planHour,
     };
-  }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countrySubject, countryName, countriesState, gate.span, planHour]);
+  }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countrySubject, countryChoice, countryName, countriesState, gate.span, planHour]);
 
   const gateStage = isSingle && !gate.open ? gate.stage : null;
   const planInputs: PlanInput[] = [];
@@ -538,7 +540,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   else if (gateStage?.stage === 'loading') planInputs.push({ name: 'the country', state: 'pending' });
   if (needsGroups) planInputs.push(isFilter && groups.data && !filterMatch?.ready ? { name: 'the country groups', state: 'pending' } : inputOf('the country groups', groups));
   if (needsSlots) planInputs.push(inputOf('the country holders', { data: slots, error: slotState.failure, retry: slotState.retry }));
-  if (auxSpec && auxEnabled) planInputs.push(inputOf(auxSpec.label, auxResult));
+  if (auxSpec && auxEnabled) planInputs.push(inputOf(auxSpec.label, auxResult, auxSpec.loadingLabel));
   const planReady = !!baseCtx && (!isSingle || gate.open) && allReady(planInputs)
     && !(isFilter && filterMatch?.reason) && !(isMulti && countriesState.reason);
 

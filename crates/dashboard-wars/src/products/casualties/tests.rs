@@ -284,9 +284,12 @@ fn product_answers_at_the_hour_with_branch_start_and_no_future_warnings() {
     let frames = (1_000..=1_800).map(|hour| source(1, hour, Some(1))).collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "casualties".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let source = Arc::new(source);
     let load = LoadContext { content: None };
     let cancelled = AtomicBool::new(false);
-    let reply = CasualtyBreakdown::load(&source, &CasualtyBreakdownParams { branch_id: "1".into(), country: "GER".into(), hour: 1_750 }, &load, &cancelled).unwrap();
+    let params = CasualtyBreakdownParams { branch_id: "1".into(), country: "GER".into(), hour: 1_750 };
+    assert!(prepare_wars(&source, &params, &load).unwrap().is_none());
+    let reply = CasualtyBreakdown::load(&source, &params, &load, &cancelled).unwrap();
     assert_eq!(reply.from, 1_000, "from stays branch start even in the second 720h window");
     assert_eq!(reply.hour, 1_750);
     assert_eq!(reply.through, 1_800, "quiet stretch stands through the window end");

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarObservation, WarParticipantRun, WarTimeline, WarsReply } from '../../generated/dashboard';
-import { isWarsReply, labelObservationAt, observationAt, validateWarsReply } from './warsData.ts';
+import { isWarsReply, labelObservationAt, observationAt, validateWarsReply, warViewpoint } from './warsData.ts';
 
 const participant = (tag: string, side: WarParticipantRun['side'], firstHour = 10, lastHour = 19): WarParticipantRun =>
   ({ tag, side, firstHour, lastHour, joinedBy: true, leftBy: false });
@@ -26,6 +26,13 @@ test('the whole-branch wars reply war contribution reads is validated whole', ()
     assert.throws(() => validateWarsReply(bad), /malformed/);
   }
   assert.equal(isWarsReply(reply([])), true);
+});
+
+test('war views retain a selected slot and preserve explicit tag viewpoints', () => {
+  assert.equal(warViewpoint('GER', '\u000068'), 68);
+  assert.equal(warViewpoint('DDR', '\u000068'), 68);
+  assert.equal(warViewpoint('DDR', 'GER:15'), 'DDR');
+  assert.equal(warViewpoint(null, '\u000068'), null);
 });
 
 test('an observation is found at its own hour, never carried past the war', () => {

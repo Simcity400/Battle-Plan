@@ -746,6 +746,16 @@ impl Inner {
                     let json = bounded_json(&reply, &job.request.cancelled);
                     match json {
                         Ok(json) => {
+                            if let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) {
+                                let view = reply.metadata.player_country_id.as_deref().and_then(|id| id.parse().ok()).map(dashboard_base::products::Country::Slot);
+                                let source = Arc::downgrade(&source);
+                                let _ = dashboard_base::products::read_ahead::spawn("war timeline open", move || {
+                                    job_priority::background_thread();
+                                    if let Some(source) = source.upgrade() {
+                                        source.in_scope(|| dashboard_wars::products::wars::warm(&source, branch, view.as_ref()));
+                                    }
+                                });
+                            }
                             pending.leases.insert(
                                 id.clone(),
                                 Lease {

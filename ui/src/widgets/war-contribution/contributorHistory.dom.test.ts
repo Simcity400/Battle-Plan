@@ -22,13 +22,16 @@ test('installed War contribution rows open a cancellable history and keep its re
     };
     try {
       await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+      assert.deepEqual(await act('mountWaitingForCountry()'), []);
+      await act('resolveCountries()');
       await act('mount("sides")');
+      assert.deepEqual((await act<{ wars: unknown[] }>('viewpoints()')).wars, [0]);
       await act('activateTable("viewpoint:AAA")');
       await page.press('Enter');
       const lastHour = await act<number>('lastHour');
       const first = await act<{ calls: unknown; text: string; title: string }>('loading(1)');
-      assert.deepEqual(first.calls, [[{ branchId: '1', viewpoint: 'AAA', warId: '0', throughHour: lastHour }, false]]);
-      assert.match(first.text, /Reading contributor history/);
+      assert.deepEqual(first.calls, [[{ branchId: '1', viewpoint: 0, warId: '0', throughHour: lastHour }, false]]);
+      assert.match(first.text, /Loading wars/);
       assert.match(first.title, /AAA.*Fixture War/);
       await act('answer(0)');
       assert.deepEqual(await act<{ focus: string; rows: number; text: string }>('chart()').then(({ focus, rows }) => [focus, rows]), ['war-history-chart', 10]);
@@ -81,6 +84,15 @@ test('installed War contribution rows open a cancellable history and keep its re
       assert.equal(missing.count, 3);
       await page.press('Escape');
       assert.deepEqual(await act('closed()'), [true, true, true]);
+
+      await act('mount("sides", "AAA")');
+      await act('activateTable("viewpoint:AAA")');
+      await page.press('Enter');
+      const explicit = await act<{ calls: unknown[] }>('loading(4)');
+      assert.deepEqual(explicit.calls[3], [{ branchId: '1', viewpoint: 'AAA', warId: '0', throughHour: lastHour }, false]);
+      const viewpoints = await act<{ wars: unknown[]; contributions: unknown[] }>('viewpoints()');
+      assert.deepEqual(viewpoints.wars, [0, 'AAA']);
+      assert.equal(viewpoints.contributions.at(-1), 'AAA');
     } finally {
       await cdp.close();
     }

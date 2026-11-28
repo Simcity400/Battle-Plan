@@ -7,9 +7,9 @@ export type PlanInput =
 
 interface InputState<T> { readonly data?: T; readonly error?: Failure; readonly retry: () => void }
 
-export function inputOf<T>(name: string, read: InputState<T>): PlanInput {
+export function inputOf<T>(name: string, read: InputState<T>, loadingLabel?: string): PlanInput {
   if (read.data !== undefined) return { name, state: 'ready' };
-  return read.error ? { name, state: 'failed', failure: read.error, retry: read.retry } : { name, state: 'pending' };
+  return read.error ? { name, state: 'failed', failure: read.error, retry: read.retry } : { name, state: 'pending', loadingLabel };
 }
 
 export const allReady = (inputs: readonly PlanInput[]): boolean => inputs.every(input => input.state === 'ready');

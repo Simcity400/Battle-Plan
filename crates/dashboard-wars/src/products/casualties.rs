@@ -4,6 +4,7 @@ use dashboard_base::{
     products::{
         Country, LoadContext, Product,
         breakdown::{self, Amount, Breakdown, Exact, Leaf, Node, Unrecorded},
+        read_ahead::Prepare,
     },
     span::HourSpan,
 };
@@ -649,6 +650,7 @@ fn finalize_index(
 impl Product for CasualtyBreakdown {
     const KEY: &'static str = "casualty-breakdown";
     const CONTENT_DEPENDENT: bool = true;
+    const PREPARE: Option<Prepare<Self::Params>> = Some(prepare_wars);
     type Params = CasualtyBreakdownParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: End];
     type Reply = CasualtyBreakdownReply;
@@ -687,11 +689,31 @@ impl Product for CasualtyBreakdown {
         };
         let (first, last) = (windows[at].first_hour, windows[at].last_hour);
         let key = (params.branch_id.clone(), params.country.clone(), at, query.timeline.first, query.timeline.last);
-        let held = breakdown::held(source, context, key, || build_index(source, &query, branch_id, &params.country, first, last, context, cancelled))?;
-        let reply = held.at(params.hour);
+        let held = breakdown::held(source, context, key, || dashboard_base::catalogue::Drawn::try_new(|| {
+            build_index(source, &query, branch_id, &params.country, first, last, context, cancelled)
+        }))?;
+        let reply = held.get().at(params.hour);
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+fn prepare_wars(source: &std::sync::Arc<Source>, params: &CasualtyBreakdownParams, load: &LoadContext) -> io::Result<Option<std::sync::Arc<dashboard_base::products::read_ahead::Preparation>>> {
+    let branch = branch(&params.branch_id).map_err(invalid)?;
+    let query = dashboard_base::queries::query(source, branch)?;
+    let windows = manifest(&query)?;
+    let Some(window) = windows.iter().find(|span| span.first_hour <= params.hour && params.hour <= span.last_hour) else { return Ok(None) };
+    let tags = HolderTags::new(&query);
+    for stretch in query.timeline.within(window.first_hour, window.last_hour) {
+        let holding = tags.holding(&params.country, stretch.first, stretch.last);
+        if stretch_lifetimes(source, stretch.run, stretch.last)?.iter().any(|&(key, ..)| {
+            let life = Lifetime::of(key);
+            holding.iter().any(|(country, ..)| *country == life.a || *country == life.b)
+        }) {
+            return wars::prepare(source, branch, Some(params.country.clone()), load);
+        }
+    }
+    Ok(None)
 }
 
 enum RunKey {}

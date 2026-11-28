@@ -16,9 +16,9 @@ pub use inputs::{RunWars, run_wars};
 pub use measures::{WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide};
 pub use participation::{WarContributionCountry, WarContributionGroup};
 
-use dashboard_base::products::{LoadContext, Product, at_hour};
+use dashboard_base::products::{LoadContext, Product, at_hour, read_ahead::{Preparation, Prepare}};
 use dashboard_world::products::{groups::MembershipRun, styles::RunLooks};
-use dashboard_base::{Source, catalogue::{self, Catalogue}, span::HourSpan};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, presentation::Cancel, span::HourSpan};
 use dashboard_base::products::{Country, check_reply_budget, validate_country};
 use dashboard_query::{
     Query,
@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, PoisonError, atomic::AtomicBool},
+    sync::{Arc, OnceLock, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -469,7 +469,7 @@ fn changes_grouping(change: &Change, group: &Grouping, link: impl Fn(u32) -> Opt
     }
 }
 
-fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat: Option<&Catalogue>, cancelled: &AtomicBool) -> io::Result<WarsReply> {
+fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat: Option<&Catalogue>, cancelled: &AtomicBool, ready: &Preparation) -> io::Result<WarsReply> {
     #[cfg(test)]
     tests::count_walk();
     let timeline = &query.timeline;
@@ -503,6 +503,7 @@ fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat
         let mut observation = None::<ObservationInputs>;
         for (index, &(hour, ObservationBoundary { links_changed, recheck })) in hours.iter().enumerate() {
             dashboard_text::metadata::check_cancel(cancelled)?;
+            ready.result().transpose()?;
             let before = applied;
             let mut reuse = !recheck && walk.can_repeat_observation() && observation.as_ref().is_some_and(|held| {
                 hour <= held.through && zero(hour) == zero(held.hour) && names.at(held.viewpoint, hour) == names.at(held.viewpoint, held.hour)
@@ -593,41 +594,106 @@ fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat
 }
 
 #[derive(Default)]
-struct Walks(HashMap<(u64, Option<Country>), (Option<Arc<Catalogue>>, Arc<WarsReply>)>);
+struct Build {
+    ready: Arc<Preparation>,
+    reply: OnceLock<(Arc<WarsReply>, catalogue::OwnRefusals)>,
+}
+
+fn build_walk(build: &Build, source: &Source, key: &WalkKey, cat: Option<&Catalogue>, cancelled: &AtomicBool) -> io::Result<()> {
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let query = dashboard_base::queries::query(source, key.0)?;
+    let (reply, notes) = catalogue::capture_isolated(|| timeline_wars(source, &query, key.1.as_ref(), cat, cancelled, &build.ready));
+    let reply = reply?;
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let _ = build.reply.set((Arc::new(reply), notes));
+    Ok(())
+}
+
+type WalkKey = (u64, Option<Country>);
+type PreparedWalks = (Option<Arc<Catalogue>>, HashMap<WalkKey, Arc<Build>>);
+#[derive(Default)]
+struct Walks(catalogue::ByCatalogue<PreparedWalks>);
 
 fn forget_walks(source: &Source) {
-    source.state::<Walks>().lock().unwrap_or_else(PoisonError::into_inner).0.clear();
+    *source.state::<Walks>().lock().unwrap_or_else(PoisonError::into_inner) = Walks::default();
 }
 
 #[cfg(feature = "test-support")]
 pub fn has_cached_walks(source: &Source) -> bool {
-    !source.state::<Walks>().lock().unwrap_or_else(PoisonError::into_inner).0.is_empty()
+    let state = source.state::<Walks>();
+    let walk = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let [recorded, shown] = walk.0.both();
+    !recorded.1.is_empty() || !shown.1.is_empty()
 }
 
 fn catalogue_of(source: &Source, context: &LoadContext) -> io::Result<Option<Arc<Catalogue>>> {
     context.content.as_ref().map(|options| catalogue::catalogue(source, options)).transpose()
 }
 
-fn walked(source: &Source, branch: u64, view: Option<&Country>, cat: Option<Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<WarsReply>> {
-    let key = (branch, view.cloned());
-    let same = |held: &Option<Arc<Catalogue>>| match (held, &cat) {
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-        (None, None) => true,
-        _ => false,
+fn build_for(source: &Source, context: &LoadContext, key: &WalkKey, cat: &Option<Arc<Catalogue>>) -> io::Result<(Arc<Build>, bool)> {
+    let state = source.state::<Walks>();
+    let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let (old, entries) = held.0.of_optional(cat.as_deref());
+    let retired = if old.as_ref().map(Arc::as_ptr) != cat.as_ref().map(Arc::as_ptr) {
+        if !entries.is_empty()
+            && (context.content.as_ref().map_or_else(|| source.binding().is_some(), |options| !source.still_admitted(options))
+                || catalogue_of(source, context)?.as_ref().map(Arc::as_ptr) != cat.as_ref().map(Arc::as_ptr))
+        {
+            return Err(dashboard_core::refused("War catalogue changed"));
+        }
+        *old = cat.clone();
+        std::mem::take(entries)
+    } else {
+        HashMap::new()
     };
-    if let Some((held, reply)) = source.state::<Walks>().lock().unwrap_or_else(PoisonError::into_inner).0.get(&key)
-        && same(held)
-    {
-        return Ok(Arc::clone(reply));
+    if let Some(build) = entries.get(key)
+        && !build.ready.result().is_some_and(|result| result.is_err()) {
+        return Ok((Arc::clone(build), false));
     }
-    let query = dashboard_base::queries::query(source, branch)?;
-    let reply = Arc::new(timeline_wars(source, &query, view, cat.as_deref(), cancelled)?);
-    source.state::<Walks>().lock().unwrap_or_else(PoisonError::into_inner).0.insert(key, (cat, Arc::clone(&reply)));
-    Ok(reply)
+    let build = Arc::<Build>::default();
+    entries.insert(key.clone(), Arc::clone(&build));
+    drop(held);
+    for retired in retired.into_values() {
+        retired.ready.publish(Err(io::Error::new(io::ErrorKind::Interrupted, "War catalogue changed")));
+    }
+    Ok((build, true))
 }
 
+fn walked(source: &Source, branch: u64, view: Option<&Country>, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<WarsReply>> {
+    let (key, cat) = ((branch, view.cloned()), catalogue_of(source, context)?);
+    let (build, start) = build_for(source, context, &key, &cat)?;
+    if start { build.ready.run(|| build_walk(&build, source, &key, cat.as_deref(), cancelled)); }
+    build.ready.wait()?;
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let (reply, notes) = build.reply.get().expect("completed war timeline");
+    catalogue::credit(notes);
+    Ok(Arc::clone(reply))
+}
+
+pub fn prepare(source: &Arc<Source>, branch: u64, view: Option<Country>, context: &LoadContext) -> io::Result<Option<Arc<Preparation>>> {
+    let (key, cat) = ((branch, view), catalogue_of(source, context)?);
+    let (build, start) = build_for(source, context, &key, &cat)?;
+    if start {
+        let (source, task) = (Arc::downgrade(source), Arc::clone(&build));
+        let binding = context.content.as_ref().map(|content| Arc::clone(content.presentation.binding()));
+        build.ready.start("war timeline ahead", move || {
+            let source = source.upgrade().ok_or_else(|| io::Error::other("Recording closed"))?;
+            let cancelled = binding.as_ref().map_or(&NO_CANCEL, |binding| binding.flag());
+            source.in_scope(|| build_walk(&task, &source, &key, cat.as_deref(), cancelled))
+        });
+    }
+    build.ready.pending()
+}
+
+static NO_CANCEL: AtomicBool = AtomicBool::new(false);
+
+pub fn warm(source: &Source, branch: u64, view: Option<&Country>) {
+    let context = LoadContext { content: source.admit_resolved(dashboard_base::source::Work::Ahead) };
+    let cancelled = context.content.as_ref().map_or(&NO_CANCEL, |content| content.presentation.binding().flag());
+    let _ = walked(source, branch, view, &context, cancelled);
+}
 pub(crate) fn viewpoint_wars(source: &Source, branch: u64, view: &Country, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<WarsReply>> {
-    walked(source, branch, Some(view), catalogue_of(source, context)?, cancelled)
+    walked(source, branch, Some(view), context, cancelled)
 }
 
 fn branch(id: &str) -> io::Result<u64> {
@@ -637,6 +703,8 @@ fn branch(id: &str) -> io::Result<u64> {
 impl Product for Wars {
     const KEY: &'static str = "wars";
     const CONTENT_DEPENDENT: bool = true;
+    const PREPARE: Option<Prepare<Self::Params>> = Some(|source, params, context|
+        prepare(source, branch(&params.branch_id)?, params.viewpoint.clone(), context));
     type Params = WarsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint];
     type Reply = WarsReply;
@@ -663,8 +731,7 @@ impl Product for Wars {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let cat = catalogue_of(source, context)?;
-        let reply = walked(source, branch(&params.branch_id)?, params.viewpoint.as_ref(), cat, cancelled)?;
+        let reply = walked(source, branch(&params.branch_id)?, params.viewpoint.as_ref(), context, cancelled)?;
         check_reply_budget(&*reply)?;
         Ok((*reply).clone())
     }
@@ -673,6 +740,8 @@ impl Product for Wars {
 impl Product for WarTimelineAt {
     const KEY: &'static str = "war-timeline";
     const CONTENT_DEPENDENT: bool = true;
+    const PREPARE: Option<Prepare<Self::Params>> = Some(|source, params, context|
+        prepare(source, branch(&params.branch_id)?, params.viewpoint.clone(), context));
     type Params = WarTimelineParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint, hour: Read];
     type Reply = WarTimelineReply;
@@ -689,8 +758,7 @@ impl Product for WarTimelineAt {
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = branch(&params.branch_id)?;
-        let cat = catalogue_of(source, context)?;
-        let walked = walked(source, branch, params.viewpoint.as_ref(), cat, cancelled)?;
+        let walked = walked(source, branch, params.viewpoint.as_ref(), context, cancelled)?;
         let last = dashboard_base::queries::query(source, branch)?.timeline.last;
         let reply = at::at(&walked, params.hour.min(last));
         check_reply_budget(&reply)?;
