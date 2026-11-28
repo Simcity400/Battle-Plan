@@ -10,14 +10,14 @@ use serde_json::Value;
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
 use playhead::{
-    Declared, Playhead, Reader, ReplyLeadHold, Watcher,
+    Declared, Playhead, Reader, Watcher,
     pages::Pages,
 };
 use replay_data::Hour;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex, OnceLock, PoisonError, mpsc,
+        Arc, Condvar, Mutex, OnceLock, PoisonError, Weak, mpsc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
@@ -170,11 +170,12 @@ fn with_cells(frame: &DecodedFrame, data: &PanelData, live: Option<&Live>, ids: 
     (Ok(reply), cell_lanes)
 }
 
+type PanelTask = Box<dyn FnOnce() + Send>;
+
 fn run_panel(job: impl FnOnce() + Send + 'static) {
-    type Job = Box<dyn FnOnce() + Send>;
-    static JOBS: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
+    static JOBS: OnceLock<mpsc::Sender<PanelTask>> = OnceLock::new();
     let jobs = JOBS.get_or_init(|| {
-        let (send, receive) = mpsc::channel::<Job>();
+        let (send, receive) = mpsc::channel::<PanelTask>();
         let receive = Arc::new(Mutex::new(receive));
         let threads = std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(4));
         for i in 0..threads {
@@ -187,6 +188,31 @@ fn run_panel(job: impl FnOnce() + Send + 'static) {
         send
     });
     jobs.send(Box::new(job)).expect("follow panel workers");
+}
+
+struct ParkedPanel {
+    hour: Hour,
+    epoch: u64,
+    token: Arc<AtomicBool>,
+    task: PanelTask,
+}
+
+struct PanelParking {
+    wake: panel::Wake,
+    jobs: Mutex<Vec<ParkedPanel>>,
+}
+
+impl PanelParking {
+    fn park(&self, job: ParkedPanel) {
+        self.jobs.lock().unwrap_or_else(PoisonError::into_inner).push(job);
+        (self.wake)();
+    }
+
+    fn ready(&self, epoch: u64, lead: Result<Option<Hour>, ()>) -> Vec<PanelTask> {
+        self.jobs.lock().unwrap_or_else(PoisonError::into_inner).extract_if(.., |job| {
+            job.epoch != epoch || job.token.load(Ordering::Acquire) || !matches!(lead, Ok(Some(head)) if job.hour > head)
+        }).map(|job| job.task).collect()
+    }
 }
 
 struct Work<T> {
@@ -295,6 +321,7 @@ struct PanelJob {
     reads: Arc<Mutex<ProductReads>>,
     push: Arc<Push>,
     wake: panel::Wake,
+    parking: Weak<PanelParking>,
 }
 
 impl PanelJob {
@@ -329,6 +356,20 @@ impl PanelJob {
                 if let Some((_, _, mut hour)) = product.last {
                     while hour < through {
                         hour = hour.saturating_add(quantum).min(through);
+                        if let Some((epoch, current)) = head() && epoch == self.epoch && !self.token.load(Ordering::Acquire) {
+                            match self.push.paused_reply_lead(self.stamp.1, current) {
+                                Err(()) => break,
+                                Ok(Some(current)) if hour > current => {
+                                    let Some(parking) = self.parking.upgrade() else { break };
+                                    parking.park(ParkedPanel {
+                                        hour, epoch, token: self.token.clone(),
+                                        task: Box::new(move || self.run(PanelRead::CatchUp { through, quantum }, product, work, head)),
+                                    });
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
                         if !self.read_one(&mut product, hour, false, false, true, &head) {
                             product.resend = true;
                             product.joined = true;
@@ -637,7 +678,7 @@ pub struct PlayheadHost<E: Send + Sync + 'static> {
     follow: Follow,
     reader: Reader,
     held: Vec<bool>,
-    reply_lead: Arc<ReplyLeadHold>,
+    parking: Arc<PanelParking>,
     stop: Arc<AtomicBool>,
     driver_gate: Arc<WaitGate>,
     panel_gate: Arc<WaitGate>,
@@ -664,6 +705,12 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         }, playhead.log_reads())?;
         let stop = Arc::new(AtomicBool::new(false));
         let (driven, stopping) = (Arc::clone(&owner), Arc::clone(&stop));
+        let driver_gate = Arc::new(WaitGate::new());
+        let parking = Arc::new(PanelParking { wake: {
+            let gate = driver_gate.clone();
+            Arc::new(move || gate.wake())
+        }, jobs: Mutex::default() });
+        let park = Arc::downgrade(&parking);
         let panels = Arc::new(Mutex::new(Panels { stamp: (follow.clock(), follow.route(), playhead.epoch() as u32, 0), cells: Some(HostCells { follow: follow.clone(), held: held.clone() }), ..Panels::default() }));
         let weak = Arc::downgrade(&panels);
         let reads = Arc::new(Mutex::new(ProductReads { host: Some(HostCells { follow: follow.clone(), held: held.clone() }), ..Default::default() }));
@@ -719,7 +766,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                     None
                 };
                 if let Some(job) = job {
-                    let task = PanelJob { stamp, session, epoch, token: token.clone(), reads: active.clone(), push: push.clone(), wake: wake.clone() };
+                    let task = PanelJob { stamp, session, epoch, token: token.clone(), reads: active.clone(), push: push.clone(), wake: wake.clone(), parking: park.clone() };
                     task.start(job, product, work, &owner, get);
                     replies.push((id, None, token, step.last(), None, None));
                     continue;
@@ -771,8 +818,6 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         }));
         playhead.share_budget(budget)?;
         playhead.lead(crate::lead::LEAD);
-        let reply_lead = playhead.reply_lead_hold();
-        let driver_gate = Arc::new(WaitGate::new());
         let panel_gate = Arc::new(WaitGate::new());
         let panel_work = Arc::new(AtomicU64::new(0));
         follow.set_wake({
@@ -791,7 +836,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 panel_gate.wake();
             })
         });
-        let (waiting, gate, follow_ref) = (panels.clone(), Arc::clone(&driver_gate), follow.clone());
+        let (waiting, gate, follow_ref, parked) = (panels.clone(), Arc::clone(&driver_gate), follow.clone(), parking.clone());
         let driver = std::thread::Builder::new().name("follow driver".into()).spawn(move || {
             let mut taken = Vec::new();
             let mut next = Instant::now();
@@ -804,7 +849,10 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                     (!held.products.is_empty() || !held.shown.is_empty() || follow_ref.has_work(), held.push.clone().map(|push| (push, held.stamp.1, held.stamp.3)))
                 };
                 let head = playhead.head(Instant::now());
-                if let Some((push, route, seek)) = told { push.clock(route, seek, head, playing); }
+                if let Some((push, route, seek)) = told {
+                    push.clock(route, seek, head, playing);
+                    for task in parked.ready(playhead.epoch(), push.paused_reply_lead(route, head)) { run_panel(task); }
+                }
                 let release = if playing { head.saturating_add(playhead.step_hours().saturating_mul(crate::lead::RELEASE_FRAMES)) } else { head };
                 let advance_ok = consumer.try_advance(release);
                 let take_ok = consumer.try_take(release, &mut taken).is_some();
@@ -828,7 +876,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             }
         })?;
 
-        Ok(Arc::new(Self { owner, panels, reads, get, anchored, follow, reader, held, reply_lead, stop, driver_gate, panel_gate, panel_work, _driver_watch: driver_watch, _panel_watch: panel_watch, driver: Mutex::new(Some(driver)) }))
+        Ok(Arc::new(Self { owner, panels, reads, get, anchored, follow, reader, held, parking, stop, driver_gate, panel_gate, panel_work, _driver_watch: driver_watch, _panel_watch: panel_watch, driver: Mutex::new(Some(driver)) }))
     }
 
     fn install_panel(&self, id: u32, panel: Box<dyn Panel>, lanes: u32, reader: Option<Box<dyn PanelReader>>) -> Result<(), String> {
@@ -843,7 +891,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             let hour = self.playhead().head(Instant::now());
             let host = panels.cells.clone();
             let product = StepProduct { id, pending_seed: None, started_on: None, read: exact.advance.clone(), wire: Default::default(), last: None, joined: false, cells: Vec::new(), class, host, followed: None, input: None, resend: false };
-            let task = PanelJob { stamp: (panels.stamp.0, panels.stamp.1, reads.seek), session: panels.session, epoch, token: reads.tokens[&id].clone(), reads: self.reads.clone(), push, wake: self.follow.rehooker() };
+            let task = PanelJob { stamp: (panels.stamp.0, panels.stamp.1, reads.seek), session: panels.session, epoch, token: reads.tokens[&id].clone(), reads: self.reads.clone(), push, wake: self.follow.rehooker(), parking: Weak::new() };
             let work = Arc::new(Work::new(None));
             panels.due.insert((Hour::MIN, id));
             panels.products.insert(id, work.clone());
@@ -955,7 +1003,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
     }
 
     pub fn show_panels(&self, rows: Arc<dyn PanelRows>, push: Arc<Push>) {
-        push.watch_reply_lead(self.follow.route(), self.playhead().playing(), &self.reply_lead);
+        push.watch_reply_lead(&self.parking.wake);
         rows.on_publish({
             let panel_gate = Arc::clone(&self.panel_gate);
             let panel_work = Arc::clone(&self.panel_work);
@@ -1084,7 +1132,7 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     };
     let push = Arc::new(Push::default());
     std::thread::scope(|threads| {
-        let job = PanelJob { stamp: (0, 1, 0), session: 0, epoch: 1, token: token.clone(), reads: reads.clone(), push: push.clone(), wake: Arc::new(|| {}) };
+            let job = PanelJob { stamp: (0, 1, 0), session: 0, epoch: 1, token: token.clone(), reads: reads.clone(), push: push.clone(), wake: Arc::new(|| {}), parking: Weak::new() };
         threads.spawn(move || job.seed(&mut product, 12, || Some((1, 12))));
         wait_started.recv().unwrap();
         reads.lock().unwrap().anchor(2, 9);
@@ -1101,9 +1149,22 @@ fn a_retired_product_read_cannot_publish_its_seed() {
 #[cfg(test)]
 #[test]
 fn a_paused_panel_catches_up_to_the_head_without_computing_past_its_credit() {
+    for release in ["play", "credit", "seek"] {
+        check_parked_panel(release);
+    }
+}
+
+#[cfg(test)]
+fn check_parked_panel(release: &str) {
     let (head, epoch, route, seek) = (10, 1, 1, 1);
     let future = panel::dated::encoded(0, route, seek, 2, head + 1, panel::dated::DATA, &[1; 2048]);
     let push = Arc::new(Push::with_budget(playhead::ByteBudget::new(crate::answer::charge(&future) * 4)));
+    let gate = Arc::new(WaitGate::new());
+    let parking = Arc::new(PanelParking { wake: {
+        let gate = gate.clone();
+        Arc::new(move || gate.wake())
+    }, jobs: Mutex::default() });
+    push.watch_reply_lead(&parking.wake);
     push.clock(route, seek, head, false);
     push.offer_kind(PANEL, future);
     assert!(push.try_take().is_some());
@@ -1120,12 +1181,45 @@ fn a_paused_panel_catches_up_to_the_head_without_computing_past_its_credit() {
             panel::ProductRead { value: Arc::new(Ok(serde_json::json!(hour))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour }
         }),
     };
-    let job = PanelJob { stamp: (0, route, seek), session: push.session(), epoch, token, reads, push: push.clone(), wake: Arc::new(|| {}) };
-    job.run(PanelRead::CatchUp { through: head + 1, quantum: 1 }, product, Arc::new(Work::new(None)), move || Some((epoch, head)));
+    let job = PanelJob { stamp: (0, route, seek), session: push.session(), epoch, token, reads: reads.clone(), push: push.clone(), wake: Arc::new(|| {}), parking: Arc::downgrade(&parking) };
+    let work = Arc::new(Work::new(None));
+    let now = Arc::new(AtomicU64::new(epoch));
+    let clock = now.clone();
+    job.run(PanelRead::CatchUp { through: head + 1, quantum: 1 }, product, work.clone(), move || Some((clock.load(Ordering::Acquire), head)));
     assert_eq!(*sampled.lock().unwrap(), [head]);
     let (_, bytes, ..) = push.try_take().expect("the head answer fits while future replies hold credit");
     assert_eq!(panel::dated::records(&bytes).unwrap()[0].hour, head);
     assert!(push.try_take().is_none(), "the parked catch-up has offered nothing past the head");
+    assert!(parking.ready(epoch, push.paused_reply_lead(route, head)).is_empty());
+    assert!(work.take().is_none());
+
+    let mut next_epoch = epoch;
+    match release {
+        "play" => push.clock(route, seek, head, true),
+        "credit" => {
+            let seen = gate.stamp();
+            push.credit(push.session(), u64::MAX);
+            assert_ne!(seen, gate.stamp(), "the refund wakes the driver's gate");
+        }
+        _ => {
+            next_epoch += 1;
+            now.store(next_epoch, Ordering::Release);
+            reads.lock().unwrap().anchor(next_epoch, seek + 1);
+            push.clock(route, seek + 1, head, false);
+        }
+    }
+    let mut tasks = parking.ready(next_epoch, push.paused_reply_lead(route, head));
+    assert_eq!(tasks.len(), 1);
+    tasks.pop().unwrap()();
+    assert!(work.take().is_some());
+    if release == "seek" {
+        assert_eq!(*sampled.lock().unwrap(), [head], "the seek wakes the job so it can retire without computing");
+        assert!(push.try_take().is_none());
+    } else {
+        assert_eq!(*sampled.lock().unwrap(), [head, head + 1]);
+        let (_, bytes, ..) = push.try_take().unwrap();
+        assert_eq!(panel::dated::records(&bytes).unwrap()[0].hour, head + 1);
+    }
 }
 
 #[cfg(test)]

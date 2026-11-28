@@ -20,7 +20,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque},
     io,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, Weak,
+        Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
@@ -559,7 +559,6 @@ struct Shared {
     epoch: AtomicU64,
     freed_ns: AtomicU64,
     activity: AtomicU64,
-    reply_lead_holds: AtomicUsize,
     control_seq: AtomicU64,
     next_watcher: AtomicU64,
     watchers: Mutex<Vec<(u64, bool, Arc<dyn Fn() + Send + Sync>)>>,
@@ -639,10 +638,6 @@ impl Control {
 }
 
 impl Shared {
-    fn paused_reply_lead_full(&self) -> bool {
-        self.reply_lead_holds.load(Ordering::Acquire) != 0
-    }
-
     fn try_nudge(&self) {
         if let Some(mut control) = try_lock(&self.control) {
             control.version += 1;
@@ -992,28 +987,6 @@ pub struct Playhead {
     threads: Vec<JoinHandle<()>>,
 }
 
-pub struct ReplyLeadHold {
-    shared: Weak<Shared>,
-    held: AtomicBool,
-}
-
-impl ReplyLeadHold {
-    pub fn set(&self, held: bool) {
-        let Some(shared) = self.shared.upgrade() else { return };
-        let mut control = lock(&shared.control);
-        if self.held.swap(held, Ordering::Relaxed) == held { return; }
-        if held { shared.reply_lead_holds.fetch_add(1, Ordering::Release); }
-        else { shared.reply_lead_holds.fetch_sub(1, Ordering::Release); }
-        control.version += 1;
-        drop(control);
-        shared.wake.notify_all();
-    }
-}
-
-impl Drop for ReplyLeadHold {
-    fn drop(&mut self) { self.set(false); }
-}
-
 pub struct Consumer {
     shared: Arc<Shared>,
     id: usize,
@@ -1221,7 +1194,6 @@ impl Playhead {
             epoch: AtomicU64::new(0),
             freed_ns: AtomicU64::new(0),
             activity: AtomicU64::new(0),
-            reply_lead_holds: AtomicUsize::new(0),
             control_seq: AtomicU64::new(0),
             next_watcher: AtomicU64::new(0),
             watchers: Mutex::default(),
@@ -1518,15 +1490,11 @@ impl Playhead {
         lock(&self.shared.ring).share_budget(budget)
     }
 
-    pub fn reply_lead_hold(&self) -> Arc<ReplyLeadHold> {
-        Arc::new(ReplyLeadHold { shared: Arc::downgrade(&self.shared), held: AtomicBool::new(false) })
-    }
-
     pub fn lead_held(&self) -> LeadHeld {
         let head = lock(&self.shared.control).head;
         let ring = lock(&self.shared.ring);
         let (past, bytes, capped) = ring.lead(head);
-        LeadHeld { steps: ring.size(), past, bytes, capped: capped || self.shared.paused_reply_lead_full() }
+        LeadHeld { steps: ring.size(), past, bytes, capped }
     }
 
     pub fn pause(&self) {
@@ -3816,7 +3784,6 @@ impl Stepper {
         if self.hold_for_paused_seed() || self.hold_for_paused_reads(newest) {
             return Ok(false);
         }
-        if newest >= self.head && self.shared.paused_reply_lead_full() { return Ok(false); }
         let timeline = &self.shared.timeline;
         if newest >= timeline.last() {
             self.why = IDLE_END;

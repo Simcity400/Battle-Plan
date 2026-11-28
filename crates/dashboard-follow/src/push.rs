@@ -130,14 +130,14 @@ struct Queued {
 struct State {
     charge: playhead::Charge,
     reply_charge: playhead::Charge,
-    reply_leads: HashMap<u32, (Weak<playhead::ReplyLeadHold>, bool)>,
+    reply_leads: Vec<Weak<dyn Fn() + Send + Sync>>,
     queue: VecDeque<Queued>,
     bytes: usize,
     sent: u64,
     released: u64,
     credit: usize,
     session: u64,
-    heads: std::collections::HashMap<u32, (u32, i32)>,
+    heads: HashMap<u32, (u32, i32, bool)>,
     admitted: std::collections::HashMap<u32, u32>,
     next: u32,
     pressed: Option<u64>,
@@ -164,12 +164,12 @@ impl State {
     fn new(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
         let credit = budget.limit() / 2;
         let reply_charge = playhead::ByteBudget::new(credit / 2).charge();
-        Self { charge: budget.charge(), reply_charge, reply_leads: HashMap::new(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit, session: 0, heads: std::collections::HashMap::new(), admitted: std::collections::HashMap::new(), next: 0, pressed: None, stopped: false, failed: None, counters: PushCounters::default() }
+        Self { charge: budget.charge(), reply_charge, reply_leads: Vec::new(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit, session: 0, heads: HashMap::new(), admitted: HashMap::new(), next: 0, pressed: None, stopped: false, failed: None, counters: PushCounters::default() }
     }
 
     fn reached(&self, stream: Stream) -> bool {
         match stream {
-            Stream::Steps { route, seek, due } | Stream::Panels { route, seek, due } => self.heads.get(&route).is_some_and(|&(at, head)| at == seek && due <= head),
+            Stream::Steps { route, seek, due } | Stream::Panels { route, seek, due } => self.heads.get(&route).is_some_and(|&(at, head, _)| at == seek && due <= head),
             Stream::Notice => false,
         }
     }
@@ -186,14 +186,13 @@ impl State {
     fn charge_replies(&mut self) {
         let full = self.reply_charge.full();
         self.reply_charge.resize(self.bytes + self.in_flight());
-        if full != self.reply_charge.full() { self.update_reply_leads(); }
+        if full && !self.reply_charge.full() { self.wake_reply_leads(); }
     }
 
-    fn update_reply_leads(&mut self) {
-        let full = self.reply_charge.full() && !self.stopped;
-        self.reply_leads.retain(|_, (hold, playing)| {
-            let Some(hold) = hold.upgrade() else { return false };
-            hold.set(full && !*playing);
+    fn wake_reply_leads(&mut self) {
+        self.reply_leads.retain(|wake| {
+            let Some(wake) = wake.upgrade() else { return false };
+            wake();
             true
         });
     }
@@ -392,26 +391,20 @@ impl Push {
         self.clock(route, seek, hour, true);
     }
 
-    pub(crate) fn watch_reply_lead(&self, route: u32, playing: bool, hold: &Arc<playhead::ReplyLeadHold>) {
-        let mut state = lock(&self.state);
-        if let Some((previous, _)) = state.reply_leads.insert(route, (Arc::downgrade(hold), playing))
-            && let Some(previous) = previous.upgrade()
-        {
-            previous.set(false);
-        }
-        hold.set(!playing && !state.stopped && state.reply_charge.full());
+    pub(crate) fn watch_reply_lead(&self, wake: &panel::Wake) {
+        lock(&self.state).reply_leads.push(Arc::downgrade(wake));
+    }
+
+    pub(crate) fn paused_reply_lead(&self, route: u32, head: i32) -> Result<Option<i32>, ()> {
+        let state = lock(&self.state);
+        if state.stopped { return Err(()); }
+        let (_, head, playing) = state.heads.get(&route).copied().unwrap_or((0, head, false));
+        Ok((!playing && state.reply_charge.full()).then_some(head))
     }
 
     pub(crate) fn clock(&self, route: u32, seek: u32, hour: i32, playing: bool) {
         let mut state = lock(&self.state);
-        let full = state.reply_charge.full() && !state.stopped;
-        if let Some((hold, held_playing)) = state.reply_leads.get_mut(&route)
-            && *held_playing != playing
-        {
-            *held_playing = playing;
-            if let Some(hold) = hold.upgrade() { hold.set(full && !playing); }
-        }
-        if state.heads.insert(route, (seek, hour)) == Some((seek, hour)) { return; }
+        if state.heads.insert(route, (seek, hour, playing)).is_some_and(|(at, head, _)| (at, head) == (seek, hour)) { return; }
         state.merge_passed();
         if state.failed.is_none() {
             state.charged();
@@ -469,7 +462,7 @@ impl Push {
     pub fn stop(&self) {
         let mut state = lock(&self.state);
         state.stopped = true;
-        state.update_reply_leads();
+        state.wake_reply_leads();
         drop(state);
         self.ready.notify_all();
     }
@@ -494,8 +487,9 @@ impl Push {
                 state.queue.clear();
                 state.bytes = 0;
                 state.released = state.sent;
-                state.charged();
-                state.update_reply_leads();
+                state.charge.resize(0);
+                state.reply_charge.resize(0);
+                state.wake_reply_leads();
                 return Err(error);
             }
         }
