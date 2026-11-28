@@ -983,6 +983,7 @@ pub(crate) fn present(
     if asked.unrecorded.is_some() {
         read.lexical.release();
         read.companions.release();
+        read.variables.release_prepared();
     }
     let mut kept = read.presentation.lock().unwrap_or_else(PoisonError::into_inner);
     if !kept.content.upgrade().is_some_and(|held| Arc::ptr_eq(&held, content)) {
@@ -1356,9 +1357,7 @@ pub(crate) fn history(source: &Source, branch: u64, tag: &Country) -> io::Result
         .zip(&ideas.starts)
         .map(|(&hour, &(_, _, id))| naming_at(&mut frames, hour, id))
         .collect::<io::Result<Vec<_>>>()?;
-    let state = source.state::<Option<Arc<KeyedVariables>>>();
-    let variables = Arc::clone(state.lock().unwrap_or_else(PoisonError::into_inner)
-        .get_or_insert_with(|| Arc::new(KeyedVariables::new(source.replay()))));
+    let variables = KeyedVariables::for_source(source);
     let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: ReadDates::for_scripted_source(source),
         variables, lexical: Lexical::for_source(source), companions: CompanionTables::for_source(source),
         presentation: Mutex::default() });
@@ -1491,7 +1490,14 @@ impl Product for IdeaHistory {
         if load.content.is_none() { return Ok(None); }
         let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let query = dashboard_base::queries::query(source, branch)?;
-        query.timeline.at(params.hour.min(query.timeline.last)).map_or(Ok(None), |span| ReadDates::prepare_scripted(source, span.run))
+        let hour = params.hour.min(query.timeline.last);
+        let Some(span) = query.timeline.at(hour) else { return Ok(None) };
+        if let Some(holding) = query.holders.at(&params.country, hour)
+            && let Holder::Found { id, .. } = holding.holder
+        {
+            KeyedVariables::for_source(source).prepare_country(span.run, id);
+        }
+        ReadDates::prepare_scripted(source, span.run)
     });
     type Params = IdeaHistoryParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
