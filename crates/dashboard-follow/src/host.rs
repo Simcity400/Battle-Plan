@@ -300,6 +300,7 @@ struct StepProduct {
     wire: panel::product::Delivery,
     last: Option<(u64, u32, Hour)>,
     joined: bool,
+    join_at_step: bool,
     cells: Vec<(Group, u32)>,
     class: (u32, u32),
     host: Option<HostCells>,
@@ -310,7 +311,7 @@ struct StepProduct {
 
 enum PanelRead {
     Seed(Hour),
-    CatchUp { through: Hour, quantum: Hour },
+    CatchUp { through: Hour, quantum: Hour, parked: bool },
 }
 
 struct PanelJob {
@@ -348,22 +349,28 @@ impl PanelJob {
         let head = || clock().map(|(epoch, hour, _)| (epoch, hour));
         match read {
             PanelRead::Seed(hour) => self.seed(&mut product, hour, head),
-            PanelRead::CatchUp { through, quantum } => {
+            PanelRead::CatchUp { through, quantum, parked } => {
                 if let Some((_, _, mut hour)) = product.last {
                     while hour < through {
                         hour = hour.saturating_add(quantum).min(through);
-                        if let Some((epoch, current, false)) = clock() && hour > current && epoch == self.epoch && !self.token.load(Ordering::Acquire) {
-                            match self.push.reply_lead_full() {
-                                Err(()) => break,
-                                Ok(true) => {
-                                    let Some(parking) = self.parking.upgrade() else { break };
-                                    parking.park(ParkedPanel {
-                                        hour, epoch, token: self.token.clone(),
-                                        task: Box::new(move || self.run(PanelRead::CatchUp { through, quantum }, product, work, clock)),
-                                    });
-                                    return;
+                        if let Some((epoch, current, playing)) = clock() && epoch == self.epoch && !self.token.load(Ordering::Acquire) {
+                            if playing && parked {
+                                product.join_at_step = true;
+                                break;
+                            }
+                            if !playing && hour > current {
+                                match self.push.reply_lead_full() {
+                                    Err(()) => break,
+                                    Ok(true) => {
+                                        let Some(parking) = self.parking.upgrade() else { break };
+                                        parking.park(ParkedPanel {
+                                            hour, epoch, token: self.token.clone(),
+                                            task: Box::new(move || self.run(PanelRead::CatchUp { through, quantum, parked: true }, product, work, clock)),
+                                        });
+                                        return;
+                                    }
+                                    Ok(false) => {}
                                 }
-                                Ok(false) => {}
                             }
                         }
                         if !self.read_one(&mut product, hour, false, false, true, &head) {
@@ -385,6 +392,7 @@ impl PanelJob {
     fn seed(&self, product: &mut StepProduct, hour: Hour, current_head: impl Fn() -> Option<(u64, Hour)>) {
         product.started_on = Some((self.epoch, self.stamp.2));
         product.joined = false;
+        product.join_at_step = false;
         product.pending_seed = None;
         if !self.read_one(product, hour, true, true, false, &current_head) {
             product.pending_seed = Some((self.epoch, self.stamp.2, hour));
@@ -753,11 +761,12 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                     product.started_on = Some((epoch, stamp.2));
                     product.last = Some((epoch, stamp.2, seed_hour));
                     product.joined = false;
+                    product.join_at_step = false;
                 }
                 let job = if product.started_on != Some((epoch, stamp.2)) {
                     Some(PanelRead::Seed(seed_hour))
-                } else if !product.joined && !step.reset() && product.last.is_some_and(|(e, g, h)| (e, g) == (epoch, stamp.2) && h.saturating_add(quantum) < step.first()) {
-                    Some(PanelRead::CatchUp { through: step.last(), quantum })
+                } else if !product.joined && !product.join_at_step && !step.reset() && product.last.is_some_and(|(e, g, h)| (e, g) == (epoch, stamp.2) && h.saturating_add(quantum) < step.first()) {
+                    Some(PanelRead::CatchUp { through: step.last(), quantum, parked: false })
                 } else {
                     None
                 };
@@ -787,6 +796,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                                 product.last = Some((epoch, stamp.2, hour));
                                 product.wire.commit();
                                 product.joined = true;
+                                product.join_at_step = false;
                                 active.proven.insert(id, (stamp.2, hour));
                             }
                             held_products.push((work, product));
@@ -886,7 +896,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             let epoch = self.playhead().epoch();
             let hour = self.playhead().head(Instant::now());
             let host = panels.cells.clone();
-            let product = StepProduct { id, pending_seed: None, started_on: None, read: exact.advance.clone(), wire: Default::default(), last: None, joined: false, cells: Vec::new(), class, host, followed: None, input: None, resend: false };
+            let product = StepProduct { id, pending_seed: None, started_on: None, read: exact.advance.clone(), wire: Default::default(), last: None, joined: false, join_at_step: false, cells: Vec::new(), class, host, followed: None, input: None, resend: false };
             let task = PanelJob { stamp: (panels.stamp.0, panels.stamp.1, reads.seek), session: panels.session, epoch, token: reads.tokens[&id].clone(), reads: self.reads.clone(), push, wake: self.follow.rehooker(), parking: Weak::new() };
             let work = Arc::new(Work::new(None));
             panels.due.insert((Hour::MIN, id));
@@ -1119,7 +1129,7 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     let (release, wait_release) = std::sync::mpsc::channel();
     let wait_release = Mutex::new(wait_release);
     let mut product = StepProduct {
-        id: 4, pending_seed: None, started_on: None, last: None, joined: false, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
+        id: 4, pending_seed: None, started_on: None, last: None, joined: false, join_at_step: false, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |_, _, _, _| {
             started.send(()).unwrap();
             wait_release.lock().unwrap().recv().unwrap();
@@ -1171,7 +1181,7 @@ fn check_parked_panel(release: &str) {
     let sampled = Arc::new(Mutex::new(Vec::new()));
     let recorded = sampled.clone();
     let product = StepProduct {
-        id: 4, pending_seed: None, started_on: Some((epoch, seek)), last: Some((epoch, seek, head - 1)), joined: false, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
+        id: 4, pending_seed: None, started_on: Some((epoch, seek)), last: Some((epoch, seek, head - 1)), joined: false, join_at_step: false, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |hour, _, _, _| {
             recorded.lock().unwrap().push(hour);
             panel::ProductRead { value: Arc::new(Ok(serde_json::json!(hour))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour }
@@ -1183,7 +1193,7 @@ fn check_parked_panel(release: &str) {
     let playing = Arc::new(AtomicBool::new(false));
     let clock = now.clone();
     let live = playing.clone();
-    job.run(PanelRead::CatchUp { through: head + 1, quantum: 1 }, product, work.clone(), move || Some((clock.load(Ordering::Acquire), head, live.load(Ordering::Acquire))));
+    job.run(PanelRead::CatchUp { through: head + 1, quantum: 1, parked: false }, product, work.clone(), move || Some((clock.load(Ordering::Acquire), head, live.load(Ordering::Acquire))));
     assert_eq!(*sampled.lock().unwrap(), [head]);
     let (_, bytes, ..) = push.try_take().expect("the head answer fits while future replies hold credit");
     assert_eq!(panel::dated::records(&bytes).unwrap()[0].hour, head);
@@ -1216,6 +1226,7 @@ fn check_parked_panel(release: &str) {
         assert!(push.try_take().is_none(), "Play does not send replies from the parked catch-up");
         assert_eq!(product.last, Some((epoch, seek, head)), "the handoff does not claim a newer reading");
         assert!(!product.joined, "the first live step still owes its panel confirmation");
+        assert!(product.join_at_step, "the hook reads this product in its next step batch");
     } else if release == "seek" {
         assert_eq!(*sampled.lock().unwrap(), [head], "the seek wakes the job so it can retire without computing");
         assert!(push.try_take().is_none());
