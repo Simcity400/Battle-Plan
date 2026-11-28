@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Lane, type Bitmapped, type LaneHost, type Presented } from '../draw/lane.ts';
 import { contextWidgetKey } from '../draw/kit.ts';
 import { datedPanel, datedRecord, message } from '../dashboard/follow/messages.fixture.ts';
-import { Page, type Ack } from '../dashboard/follow/page.ts';
+import { Page, type Ack, type Refusal } from '../dashboard/follow/page.ts';
 import type { FamilyTheme } from './contract.ts';
 import { createLaneView } from './laneRuntime.ts';
 import { type MotionClock } from './motion.ts';
@@ -204,7 +204,7 @@ function makeRecordingCanvas(width = 960, height = 300) {
 
 const KIND = 'worker-motion-test';
 const BLUE = '#4f86f7';
-type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean };
+type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renameAt?: number };
 
 registerFamilyProjection({
   family: 'bars',
@@ -218,10 +218,11 @@ registerFamilyProjection({
       hour: view.hour,
       showAxis: true,
       scaleMax: sample?.scale ?? 400,
+      ...(sample?.renameAt && view.hour < sample.renameAt ? { nextChangeAt: sample.renameAt } : {}),
       rows: [{
         kind: 'data',
         key: sample?.key ?? 'GER',
-        label: knownValue('Germany'),
+        label: knownValue(sample?.renameAt && view.hour >= sample.renameAt ? 'Renamed' : 'Germany'),
         value: { value },
         numeric,
         color: BLUE,
@@ -316,13 +317,13 @@ function fixture(budget: number) {
   lane.setLaneSurface(canvas.canvas, true);
   lane.follow(1, 'panel', 'p');
   lane.bindRoute(1, 1, 9, 1, 0);
-  const bind = (measure = 1, id = 1) => {
+  const bind = (measure = 1, id = 1, reducedMotion = false) => {
     lane.payloads({ type: 'payloads', put: [[1, { s: 1 }], [10 + measure, measure]] });
     lane.bind(id, {
       generation: measure, owner: 'track', surfaces: [{ width: 480, height: 240, dpr: 1 }], offset: 0, pin: null,
     }, {
       family: 'bars', kind: KIND, view: 'main', options: measure, sources: { s: 1 }, scrollTop: 0,
-      width: 480, height: 240, theme: TEST_THEME, audit: true,
+      width: 480, height: 240, theme: TEST_THEME, audit: true, reducedMotion,
       revisions: { options: 10 + measure, sources: 1 },
     } satisfies FamilyBarsBinding);
   };
@@ -342,15 +343,16 @@ function fixture(budget: number) {
   const record = (hour: number, value?: Sample, seek = 1) => lane.receive('panels', datedPanel(1, hour, value, seek, 9));
   let serial = 0;
   const drain = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
-  const request = async (hour: number, speed = 0, seek = 1, acknowledge: boolean | Ack[] = false, exact = speed === 0, target = hour) => {
+  const request = async (hour: number, speed = 0, seek = 1, acknowledge: boolean | Ack[] = false, exact = speed === 0, target = hour, refused: Refusal[] = []) => {
     const installed = Array.isArray(acknowledge) ? acknowledge
       : acknowledge ? (presented.at(-1)?.entries ?? []).map(({ widget, binding, id }) => ({ widget, binding, id })) : [];
-    lane.frame({ type: 'frame', serial: ++serial, seek, now: hour, target, exact, speed, installed, refused: [], inspect: [[1, 'row:GER']] });
+    lane.frame({ type: 'frame', serial: ++serial, seek, now: hour, target, exact, speed, installed, refused, inspect: [[1, 'row:GER']] });
     await drain();
   };
-  const clock = (anchorPosition: number, speed: number, seek = 1) => lane.setClock(baseClock({
+  const clock = (anchorPosition: number, speed: number, seek = 1, diagnostics = false) => lane.setClock(baseClock({
     anchorPosition, exactHour: Math.floor(anchorPosition), anchorTimeMs: performance.timeOrigin + now,
     speed, playing: speed > 0, seek,
+    ...(diagnostics ? { diagnostics: true } : {}),
   }));
   const tick = (elapsed: number) => { now += elapsed; later.splice(0).forEach(run => run()); };
   const operations = () => canvas.snapshotOps().flat();
@@ -371,6 +373,137 @@ function fixture(budget: number) {
 }
 
 describe('Ordered bar playback', () => {
+  it('holds the recorded picture when factory playback outruns the delivered proof', async () => withLane(async f => {
+    const base = 60788000;
+    f.record(base + 28, { value: 30 });
+    f.record(base + 50);
+    f.clock(base + 47.008, 1440, 1, true);
+    await f.request(base + 47, 1440, 1, false, true);
+    const unit = f.barWidth() / 30;
+    let recorded = 30;
+    for (const sample of [
+      { position: 61.984, target: 75, expected: 30 },
+      { position: 77.248, target: 93, expected: 30 },
+      { position: 92.224, target: 107, delivered: [77, 98, 60], expected: 60 },
+      { position: 107.488, target: 122, expected: 60 },
+      { position: 122.752, target: 137, expected: 60 },
+      { position: 137.872, target: 152, delivered: [115, 122, 60], expected: 60 },
+      { position: 152.992, target: 167, delivered: [123, 146, 100], expected: 100 },
+    ] as const) {
+      if (sample.delivered) {
+        const [first, through, value] = sample.delivered;
+        f.record(base + first, { value });
+        f.record(base + through);
+      }
+      const hour = base + Math.floor(sample.position);
+      f.clock(base + sample.position, 1440, 1, true);
+      await f.request(hour, 1440, 1, true, false, base + sample.target);
+      await f.request(hour, 1440, 1, true, false, base + sample.target);
+      assert.ok(Math.abs(f.barWidth() / unit - recorded) < .01, 'the page leaves playing pixels to the tick');
+      f.tick(0);
+      assert.ok(Math.abs(f.barWidth() / unit - sample.expected) < .01);
+      recorded = sample.expected;
+    }
+    const trace = f.served.filter(frame => frame.motionDiagnostics);
+    assert.equal(trace.length, 7);
+    assert.equal(trace.reduce((count, frame) => count + frame.changed, 0), 0);
+    assert.equal(trace.reduce((count, frame) => count + (frame.motionDiagnostics?.skipped.unproven ?? 0), 0), 6);
+  }));
+
+  it('does not restore pixels after a refusal of a metadata-only entry', async () => withLane(async f => {
+    for (const [hour, value] of [[100, 30], [101, 60], [102, 100]] as const) f.record(hour, { value });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const exact = f.barWidth();
+    await f.request(100, 1, 1, true);
+    f.clock(101.5, 1);
+    f.tick(0);
+    await f.request(101, 1);
+    const metadata = f.presented.at(-1)!.entries[0]!;
+    assert.ok(!metadata.repainted);
+    await f.request(101, 1, 1, false, false, 101, [{ widget: 1, id: metadata.id, reason: 'superseded' }]);
+    assert.ok(Math.abs(f.barWidth() / exact - 80 / 30) < .01);
+  }));
+
+  it('paints exact values at recorded hours, including the last endpoint, without waiting for the page', async () => withLane(async f => {
+    for (const [hour, value] of [[100, 30], [101, 60], [102, 100]] as const) f.record(hour, { value });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const unit = f.barWidth() / 30;
+    for (const [elapsed, expected, label] of [[500, 45, '30'], [500, 60, '60'], [500, 80, '60'], [500, 100, '100']] as const) {
+      f.canvas.clearOps();
+      f.tick(elapsed);
+      assert.ok(Math.abs(f.barWidth() / unit - expected) < .01);
+      assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === label));
+    }
+  }));
+
+  it('paints a covered pause even when an older staged ID is acknowledged after a newer live paint', async () => withLane(async f => {
+    f.record(100, { value: 30 });
+    f.record(123);
+    f.record(124, { value: 60 });
+    f.clock(100, 1);
+    await f.request(100, 1, 1, false, false, 124);
+    const staged = f.presented.at(-1)!.entries[0]!;
+    assert.equal(staged.lo, 124);
+    await f.request(100, 1, 1, false, true);
+    const exact = f.barWidth();
+    f.clock(124, 0);
+    await f.request(124, 0, 1, [staged]);
+    assert.ok(Math.abs(f.barWidth() / exact - 2) < .01);
+  }));
+
+  it('animates the accepted interval even while a later staged picture awaits acknowledgement', async () => withLane(async f => {
+    f.record(100, { value: 30, target: true });
+    f.record(123);
+    f.record(124, { value: 60 });
+    f.record(147);
+    f.record(148, { value: 100 });
+    f.clock(100, 1);
+    await f.request(100, 1, 1, false, true);
+    const unit = f.barWidth() / 30;
+    await f.request(101, 1, 1, true, false, 124);
+    const first = f.presented.at(-1)!.entries[0]!;
+    await f.request(102, 1, 1, false, false, 148);
+    const later = f.presented.at(-1)!.entries[0]!;
+    assert.deepEqual([first.lo, later.lo], [124, 148]);
+    f.clock(136, 1);
+    await f.request(136, 1, 1, [first], false, 148);
+    f.tick(0);
+    assert.ok(Math.abs(f.barWidth() / unit - 80) < .01);
+    await f.request(148, 1, 1, [later], false, 148);
+    assert.ok(Math.abs(f.barWidth() / unit - 80) < .01);
+    assert.equal(f.canvas.stagedCopies().length, 0);
+  }));
+
+  it('starts a fresh bracket after a model change inside a confirmed fact interval', async () => withLane(async f => {
+    f.record(100, { value: 30, renameAt: 110 });
+    f.record(123);
+    f.record(124, { value: 100, renameAt: 110 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const unit = f.barWidth() / 30;
+    f.clock(110, 1);
+    await f.request(110, 1);
+    f.tick(7000);
+    assert.ok(Math.abs(f.barWidth() / unit - 65) < .01);
+    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === 'Renamed'));
+  }));
+
+  it('lets a reduced-motion binding resume shared look-ahead on its first request', async () => withLane(async f => {
+    f.record(100, { value: 30 });
+    f.record(123);
+    f.record(124, { value: 60 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    await f.request(100, 1, 1, true);
+    f.tick(500);
+    f.bind(2, 1, true);
+    await f.request(101, 1, 1, false, false, 124);
+    assert.equal(f.presented.at(-1)?.entries[0]?.lo, 124);
+    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
+  }));
+
   it('hands a staged slot to playback only after acceptance and never paints behind its accepted date', async () => withLane(async f => {
     f.record(100, { value: 30, target: true });
     f.record(123);
@@ -388,7 +521,7 @@ describe('Ordered bar playback', () => {
     assert.deepEqual(f.sampled, []);
     assert.equal(f.canvas.stagedCopies().length, 0);
     await f.request(124, 1, 1, [staged!], false, 148);
-    assert.equal(f.canvas.stagedCopies().length, 1);
+    assert.equal(f.canvas.stagedCopies().length, 0);
     f.tick(0);
     assert.deepEqual(f.sampled, []);
     f.clock(136, 1);
@@ -398,7 +531,7 @@ describe('Ordered bar playback', () => {
     f.clock(148, 0);
     await f.request(148);
     assert.ok(Math.abs(f.barWidth() / exact - 100 / 30) < .01);
-    assert.equal(f.canvas.stagedCopies().length, 1);
+    assert.equal(f.canvas.stagedCopies().length, 0);
   }));
 
   it('does not copy a delayed staged acknowledgement over a newer live bar', async () => withLane(async f => {
@@ -420,7 +553,7 @@ describe('Ordered bar playback', () => {
     assert.equal(f.barWidth(), width);
   }));
 
-  it('starts playback from a first staged picture that needs an exact live redraw on acceptance', async () => withLane(async f => {
+  it('draws the accepted first picture on the tick even when the shared slot was dirty', async () => withLane(async f => {
     f.record(124, { value: 60 });
     f.record(147);
     f.record(148, { value: 100 });
@@ -430,6 +563,7 @@ describe('Ordered bar playback', () => {
     assert.equal(staged?.lo, 124);
     f.clock(124, 1);
     await f.request(124, 1, 1, [staged!], false, 148);
+    f.tick(0);
     const exact = f.barWidth();
     assert.equal(f.canvas.stagedCopies().length, 0);
     f.tick(12000);
@@ -505,6 +639,7 @@ describe('Ordered bar playback', () => {
     assert.equal(f.presented.length, presents);
     f.clock(244, 1440);
     await f.request(244, 1440);
+    f.tick(0);
     assert.ok(Math.abs(f.barWidth() / unitWidth - 280) < .01);
     f.clock(244, 0);
     await f.request(244);
@@ -525,10 +660,11 @@ describe('Ordered bar playback', () => {
     assert.ok(!f.served.some(frame => frame.motion));
     f.clock(126, 1440);
     await f.request(126, 1440);
+    f.tick(0);
     assert.ok(Math.abs(f.barWidth() / exact - 100 / 60) < .01);
   }));
 
-  it('leaves missing readings and row boundaries to the first ordinary paint', async () => withLane(async f => {
+  it('draws exact missing readings and row boundaries without interpolating across either', async () => withLane(async f => {
     f.record(100, { value: 100 });
     f.record(101, { value: null });
     f.record(102, { value: 200 });
@@ -539,17 +675,17 @@ describe('Ordered bar playback', () => {
     f.canvas.clearOps();
     f.tick(0);
     assert.equal(f.operations().length, 0);
-    await f.request(101, 168);
+    f.clock(101.5, 168);
+    f.tick(0);
     assert.ok(f.operations().some(op => op.op === 'fillText' && String(op.args[0]).includes('recorded')));
-    await f.request(102, 168);
+    f.clock(102.5, 168);
+    f.tick(0);
     assert.equal(f.barWidth(), start * 2);
     f.canvas.clearOps();
     f.clock(103.5, 168);
     f.tick(0);
-    await f.drain();
-    assert.equal(f.operations().length, 0);
-    await f.request(103, 168);
     assert.equal(f.barWidth(), start * 4);
+    assert.ok(!f.served.some(frame => frame.motion));
   }));
 
   it('does not paint or publish newly segmented rows between page requests', async () => withLane(async f => {
@@ -611,13 +747,15 @@ describe('Ordered bar playback', () => {
     await f.request(100);
     const start = f.barWidth();
     f.canvas.clearOps();
-    for (const position of [100.5, 102.5, 103.5, 105.5]) {
+    for (const position of [100.5, 101.5, 102.5]) {
       f.clock(position, 1);
       f.tick(0);
       assert.equal(f.operations().length, 0);
     }
-    await f.request(103, 1);
+    f.clock(103.5, 1);
+    f.tick(0);
     assert.equal(f.barWidth(), start * 3);
+    assert.ok(!f.served.some(frame => frame.motion));
   }));
 
   it('repaints a changed measure exactly when the old bracket is no longer confirmed', async () => withLane(async f => {
@@ -716,7 +854,7 @@ describe('Ordered bar playback', () => {
     assert.equal(f.barWidth(), exact);
   }));
 
-  it('paints ready artwork on the next page request despite a matching unacknowledged entry', async () => withLane(async f => {
+  it('paints ready artwork on the next tick despite a matching unacknowledged page entry', async () => withLane(async f => {
     f.record(100, { value: 100, art: true });
     f.clock(100, 1);
     await f.request(100, 1);
@@ -725,6 +863,8 @@ describe('Ordered bar playback', () => {
     f.finishArtwork();
     await f.drain();
     assert.deepEqual(f.painted, []);
+    f.tick(0);
+    assert.equal(f.operations().filter(op => op.op === 'drawImage').length, 1);
     await f.request(100, 1);
     assert.deepEqual(f.painted, [1]);
     assert.equal(f.operations().filter(op => op.op === 'drawImage').length, 1);
@@ -848,7 +988,7 @@ describe('Ordered bar playback', () => {
     await f.drain();
     assert.deepEqual(f.painted, []);
     await f.request(100, 1);
-    assert.deepEqual(f.painted, [1, 2]);
+    assert.deepEqual(f.painted, [2, 1]);
   }));
 
   it('gives a sibling its ordinary paint before spending the pause budget on pending bar restorations', async () => withLane(async f => {
@@ -881,7 +1021,6 @@ describe('Ordered bar playback', () => {
     f.tick(0);
     assert.deepEqual(f.sampled, [1, 2, 3]);
     f.clock(101.5, 1);
-    f.tick(0);
     f.lane.touch(4);
     f.painted.length = 0;
     f.selectionCost(6);

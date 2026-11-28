@@ -64,6 +64,11 @@ const GLANCE_AT = 0.5;
 const PRESETS = [0.25, 1, 4, 24, 168, 720, 1440];
 const PLAY_SECONDS = Number((process.env.BATTLEPLAN_PLAY_SECONDS ?? process.env.HOI4_PLAY_SECONDS) ?? 8);
 const COST_SECONDS = Number(process.env.BATTLEPLAN_COST_SECONDS ?? 4);
+const COST_SPEEDS = (process.env.BATTLEPLAN_COST_SPEEDS ?? '1440').split(',').map(Number);
+const COST_START_HOUR = process.env.BATTLEPLAN_COST_START_HOUR === undefined ? null : Number(process.env.BATTLEPLAN_COST_START_HOUR);
+if (COST_SPEEDS.some(speed => !PRESETS.includes(speed)) || COST_START_HOUR !== null && !Number.isSafeInteger(COST_START_HOUR)) {
+  throw new Error('Widget costs need playback presets and an integer start hour');
+}
 const rate = Number(flag('--cpu-throttle', '1'));
 if (!(rate >= 1 && Number.isFinite(rate) && PLAY_SECONDS > 0 && Number.isFinite(PLAY_SECONDS) && COST_SECONDS > 0 && Number.isFinite(COST_SECONDS))) throw new Error('Invalid playback duration or throttle');
 const TRACE_SPEED = 1440;
@@ -916,16 +921,25 @@ await phase('widget-costs', async () => {
     await app.evaluate('window.__perf.flush()', 60_000).catch(() => {});
     return warmupReasons;
   };
-  const measureOne = async ({ kind, view = null, isDefaultView = true, title, label, widget, isEmpty, sampleLabel = null, extraReasons = [] }) => {
+  const measureOne = async ({ kind, view = null, isDefaultView = true, title, label, widget, isEmpty, sampleLabel = null, extraReasons = [], speed = 1440 }) => {
     let from = null, to = null, seekStart = null, audit = [], outcome = isEmpty ? 'empty' : 'content', detail = null, loading = null, surfaces = [], playingAtSnap = null;
     const reasons = [...extraReasons];
     try {
       await s.openPage(label);
       if (!await s.holds(pageShown(label))) await s.openPage(label, { force: true });
       if (!await s.holds(pageShown(label))) throw new Error(`could not switch to ${label}`);
-      if (!await s.holds(speedTaken(1440))) await setSpeed(1440);
+      if (!await s.holds(speedTaken(speed))) await setSpeed(speed);
       seekStart = s.epoch + await app.evaluate('performance.now()');
-      await seekTo(0.3);
+      if (COST_START_HOUR === null || isEmpty) await seekTo(0.3);
+      else {
+        await app.evaluate(`(() => {
+          const slider = document.querySelector('input.header-timeline');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(slider, ${COST_START_HOUR});
+          slider.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        if (!await s.until(`${Session.CLOCK_HOUR} === ${COST_START_HOUR}`, 3000)) throw new Error('The clock did not reach the widget cost start hour');
+        await app.evaluate(`(__e2e.mark(null), ${settleCall(15000, 300)})`, 60_000);
+      }
       await throttle(rate);
       await app.evaluate('window.__perf.beginAudit()');
       await app.evaluate('window.__perf.start()');
@@ -969,8 +983,9 @@ await phase('widget-costs', async () => {
       await throttle(1).catch(() => {});
       await app.evaluate('window.__perf.flush()', 60_000).catch(() => {});
     }
-    const itemName = sampleLabel ? `${kind}/${sampleLabel}` : !isDefaultView && view ? `${kind}/${view}` : kind;
-    await s.record({ area: 'widget-costs', item: itemName, label, kind, ...(view ? { view } : {}), title, widget, isEmpty, sampleLabel, from, to, seekStart, seconds: COST_SECONDS,
+    const name = sampleLabel ? `${kind}/${sampleLabel}` : !isDefaultView && view ? `${kind}/${view}` : kind;
+    const itemName = speed === 1440 ? name : `${name}@${speed}`;
+    await s.record({ area: 'widget-costs', item: itemName, label, kind, ...(view ? { view } : {}), title, widget, isEmpty, sampleLabel, from, to, seekStart, seconds: COST_SECONDS, speed,
       playingAtSnap, outcome, detail, ...(loading ? { loading } : {}), surfaces, audit, complete: reasons.length === 0, pass: reasons.length === 0, reasons, screenshot: false });
   };
   const warmupReasons = await warmEmptyBaseline();
@@ -978,7 +993,9 @@ await phase('widget-costs', async () => {
   for (let index = 0; index < costFixture.kinds.length; index++) {
     const entry = costFixture.kinds[index];
     log('widget-cost', `${index + 1}/${costFixture.kinds.length}`, !entry.isDefaultView && entry.view ? `${entry.kind}/${entry.view}` : entry.kind);
-    await measureOne({ kind: entry.kind, view: entry.view, isDefaultView: entry.isDefaultView, title: entry.title, label: entry.label, widget: entry.widget, isEmpty: false });
+    for (const speed of COST_SPEEDS) {
+      await measureOne({ kind: entry.kind, view: entry.view, isDefaultView: entry.isDefaultView, title: entry.title, label: entry.label, widget: entry.widget, isEmpty: false, speed });
+    }
     if ((index + 1) % 15 === 0) await save();
   }
   await measureOne({ kind: '__empty__', title: 'Empty page (end)', label: costFixture.empty.label, widget: null, isEmpty: true, sampleLabel: 'end' });

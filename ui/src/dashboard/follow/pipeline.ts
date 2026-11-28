@@ -267,6 +267,7 @@ export class Pipeline {
       anchorPosition: next.position,
       anchorTimeMs: performance.timeOrigin + (next.composedAt ?? performance.now()),
       ...(next.bounds ? { lastHour: next.bounds.lastHour } : {}),
+      ...(perfLog ? { diagnostics: true } : {}),
     };
     this.motionClock = clock;
     for (let lane = 0; lane < this.workers.length; lane++) this.postLane(lane, { type: 'clock', clock });
@@ -671,7 +672,8 @@ export class Pipeline {
         }
       }
       if (message.motion) {
-        perfLog?.barPlayback(lane, message.target, message.changed, message.ms);
+        if (message.motionDiagnostics) perfLog?.barPlayback(lane, message.target, message.changed, message.ms, message.motionDiagnostics);
+        else perfLog?.barPlayback(lane, message.target, message.changed, message.ms);
         return;
       }
       if (auditing()) recordPicture({ t: 'workerFrame', at: performance.timeOrigin + performance.now(), lane, lanes: this.lanes, seek: message.seek, head: message.target,

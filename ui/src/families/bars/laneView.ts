@@ -213,14 +213,9 @@ function sameRows(first: BarsModel, second: BarsModel): boolean {
   });
 }
 
-function orderedMotion(
-  frame: BarsFrame, current: BarsModel, next: BarsModel, fraction: number,
-): BarsFrame | null {
-  if (!canAnimate(current, frame.binding) || !sameRows(frame.model, current)) return null;
-  const currentScale = current === frame.model ? frame.layout.scaleMax : barsScales(current, frame.layout.showAxis).scaleMax;
-  const exact = current === frame.model ? frame : { ...frame, model: current, layout: { ...frame.layout, scaleMax: currentScale } };
+function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number): BarsFrame | false | null {
+  const current = frame.model;
   if (!canAnimate(next, frame.binding) || !sameRows(current, next)) return null;
-  if (fraction <= 0) return exact;
   const rows: BarsModel['rows'][number][] = [];
   let changed = false;
   for (let i = 0; i < current.rows.length; i++) {
@@ -235,10 +230,11 @@ function orderedMotion(
     changed = true;
     rows.push({ ...row, numeric: row.numeric + (end.numeric - row.numeric) * fraction });
   }
-  if (!changed) return exact;
+  if (!changed) return false;
+  const currentScale = frame.layout.scaleMax;
   const endScale = barsScales(next, frame.layout.showAxis).scaleMax;
   return {
-    ...exact,
+    ...frame,
     model: { ...current, rows },
     layout: { ...frame.layout, scaleMax: currentScale + (endScale - currentScale) * fraction },
   };

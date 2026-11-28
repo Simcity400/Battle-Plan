@@ -1,4 +1,4 @@
-import type { MotionClock } from '../families/motion.ts';
+import type { MotionClock, MotionDiagnostics } from '../families/motion.ts';
 import type { Channel } from '../dashboard/follow/facts';
 import type { FrameRequest } from '../dashboard/follow/page';
 import type { PayloadsMessage } from '../dashboard/follow/payloads';
@@ -74,7 +74,7 @@ export type FromLane =
   | { type: 'sub-waiting'; lane: number; sub: number; waiting: boolean }
   | { type: 'widget-failed'; lane: number; widget: number; reason: string; stamp?: number }
   | { type: 'hit'; widget: number; key: string | null; installedId?: number; owner?: string }
-  | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; motion?: boolean; costs?: [widget: number, cost: number][] };
+  | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; motion?: boolean; motionDiagnostics?: MotionDiagnostics; costs?: [widget: number, cost: number][] };
 
 export type FromPull = { kind: 'follow'; bytes: Uint8Array; resets: number } | { kind: 'panels'; bytes: Uint8Array } | { kind: 'failure'; reason: string };
 

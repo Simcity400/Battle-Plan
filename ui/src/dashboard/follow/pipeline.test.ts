@@ -1639,7 +1639,11 @@ test('worker bar playback reports its own repaints without changing installed pi
     env.workers[0]!.onmessage!({
       data: { type: 'served', seek: 1, target: 12, exact: false, changed: 2, ms: 1, motion: true },
     } as MessageEvent<FromLane>);
-    assert.deepEqual(repaints, [[0, 12, 2, 1]]);
+    const diagnostics = { recorded: 1, skipped: { unproven: 1 } };
+    env.workers[0]!.onmessage!({
+      data: { type: 'served', seek: 1, target: 13, exact: false, changed: 0, ms: 1, motion: true, motionDiagnostics: diagnostics },
+    } as MessageEvent<FromLane>);
+    assert.deepEqual(repaints, [[0, 12, 2, 1], [0, 13, 0, 1, diagnostics]]);
     assert.equal(installed, 4);
     assert.deepEqual(expired, ['late widget']);
   } finally {
