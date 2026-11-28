@@ -146,8 +146,11 @@ def comparison(before, after, output):
         for field_name in ("trace_version", "recording_bytes", "format", "branch", "country", "first", "last", "recording_sha256"):
             if left.spec.get(field_name) != right.spec.get(field_name):
                 raise ValueError(f"{key}: {field_name} differs across runs")
-        if left.spec.get("view_selectors") != right.spec.get("view_selectors"):
+        selectors = left.spec.get("view_selectors")
+        if selectors != right.spec.get("view_selectors"):
             raise ValueError(f"{key}: --view selections differ across runs")
+        if selectors is None and left.views.keys() != right.views.keys():
+            raise ValueError(f"{key}: traces without --view metadata cover different views")
     writer = csv.writer(output, lineterminator="\n")
     writer.writerow(["campaign", "quantum", "kind", "view", "page", *(
         f"{key}_{which}" for key in METRICS for which in ("before", "after")
