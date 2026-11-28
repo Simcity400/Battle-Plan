@@ -821,9 +821,7 @@ impl<P: PlaybackProducts> MapSide<P> {
     pub fn lay_overlay_again(&mut self) -> Result<viewer_runtime::landed::Landed<P::OverlayMade>, String> {
         let mut until = Instant::now() + HANDS_BACK;
         loop {
-            if !self.makers_home() && let Some(hour) = self.applied {
-                self.frame_within(hour, Settling::step(), false).map_err(|error| error.to_string())?;
-            }
+            self.step_makers(false).map_err(|error| error.to_string())?;
             let asked = self.ask_overlay_step(true, true, Arc::default());
             self.post_makers();
             if asked && self.makers_home() {
@@ -1864,6 +1862,11 @@ impl<P: PlaybackProducts> MapSide<P> {
             })
     }
 
+    fn step_makers(&mut self, lay: bool) -> io::Result<()> {
+        self.applied.filter(|_| !self.makers_home())
+            .map_or(Ok(()), |hour| self.frame_within(hour, Settling::step(), lay).map(|_| ()))
+    }
+
     fn post_makers(&mut self) {
         if self.composing || self.superseded {
             return;
@@ -1904,6 +1907,7 @@ impl<P: PlaybackProducts> MapSide<P> {
     }
 
     pub fn settle_all(&mut self) -> io::Result<()> {
+        self.step_makers(true)?;
         self.doing.set(Doing::WHOLE);
         self.post_makers();
         self.views.made();

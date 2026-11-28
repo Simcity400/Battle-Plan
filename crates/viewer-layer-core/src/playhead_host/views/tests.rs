@@ -644,6 +644,29 @@ fn a_table_learned_while_a_stepped_frame_holds_the_head_reads_at_that_head() {
 }
 
 #[test]
+fn a_table_learned_during_a_whole_settle_answers_at_the_same_hour() {
+    let (entry, mut side) = side_of("views learned during a whole settle", 24);
+    until(&mut side, 6);
+    entry.playhead().play(0.0);
+    let hour = side.applied().expect("the hour being drawn");
+    side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Maker>()).expect("the maker").learn = true;
+    side.settle_all().unwrap();
+    assert!(learned_at(&side).is_none(), "the new declaration needs rows");
+    side.settle_all().unwrap();
+    assert!(side.readers().iter().any(|&(table, ..)| table == LEARNED), "whole settling drives the new declaration");
+    for _ in 0..200_000u64 {
+        if let Some((held, rows)) = learned_at(&side) {
+            assert_eq!(held, hour, "the learned rows are of the hour being exported");
+            assert!(rows > 0, "the learned table has rows");
+            return;
+        }
+        side.settle_all().unwrap();
+        std::thread::yield_now();
+    }
+    panic!("the whole settle never published {LEARNED:?} at hour {hour}");
+}
+
+#[test]
 fn a_mirror_short_of_the_posted_hour_makes_no_frame_of_that_hour() {
     let entry = open(record("stalled short", 8), hourly_steps()).unwrap();
     entry.set_capture(CaptureMode::Full);
