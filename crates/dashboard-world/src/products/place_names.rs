@@ -1,7 +1,7 @@
 use content_reader_country_names::country_names;
 use content_reader_localisation::localisation::Argument;
 use content_reader_map::province_geometry::ProvinceGeometry;
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{self, Read}}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, presentation::Cancel, products::{LoadContext, at_hour::{self, Read}, read_ahead::Preparation}};
 use dashboard_query::coverage::{Witness, reading_witness, witnessed_selection};
 use dashboard_text::{metadata::{check_cancel, not_recorded}, naval_battle_name::{Picker, battle_name_candidates}, scope, scripted_text};
 use replay_columnar::manifest::Status;
@@ -55,7 +55,7 @@ pub fn reads(provinces: &[u32], states: &[u32], step: usize, held: &DecodedFrame
 
 pub struct Content {
     pub cat: Arc<Catalogue>,
-    regions: Result<Regions, String>,
+    regions: OnceLock<Result<Regions, String>>,
     naval: OnceLock<Result<NavalContent, String>>,
 }
 
@@ -72,7 +72,14 @@ struct NavalContent {
 }
 
 #[derive(Default)]
-struct Cached { held: Option<(Arc<Catalogue>, Arc<Content>)> }
+struct Cached { held: [Option<Arc<Content>>; 2] }
+
+type PreloadKey = (dashboard_base::content::LocalisationKey, u64);
+
+#[derive(Default)]
+struct Preload {
+    held: [Option<(PreloadKey, Arc<Preparation>)>; 2],
+}
 
 impl Content {
     pub fn read(source: &Source, load: &LoadContext) -> io::Result<Arc<Self>> {
@@ -80,10 +87,44 @@ impl Content {
         let cat = catalogue::catalogue(source, options)?;
         let state = source.state::<Cached>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some((held, content)) = &state.held && Arc::ptr_eq(held, &cat) {
+        let slot = &mut state.held[usize::from(catalogue::reads_recorded(options))];
+        if let Some(content) = slot && Arc::ptr_eq(&content.cat, &cat) {
             return Ok(Arc::clone(content));
         }
-        let regions = dashboard_base::content::strategic_regions(&cat.content.layers)
+        let content = Arc::new(Self { cat, regions: OnceLock::new(), naval: OnceLock::new() });
+        *slot = Some(Arc::clone(&content));
+        Ok(content)
+    }
+
+    pub(super) fn prepare(source: &Arc<Source>, load: &LoadContext) -> io::Result<Option<Arc<Preparation>>> {
+        let Some(options) = &load.content else { return Ok(None); };
+        let binding = Arc::clone(options.presentation.binding());
+        check_cancel(binding.flag())?;
+        let key = (dashboard_base::content::localisation_key(options), binding.generation);
+        let state = source.state::<Preload>();
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let slot = &mut state.held[usize::from(catalogue::reads_recorded(options))];
+        if let Some((held, ready)) = slot && *held == key { return ready.pending(); }
+        let ready = Arc::<Preparation>::default();
+        *slot = Some((key, Arc::clone(&ready)));
+        drop(state);
+        let source = Arc::downgrade(source);
+        let load = LoadContext { content: Some(options.clone()) };
+        ready.start("row place names ahead", move || {
+            let source = source.upgrade().ok_or_else(|| io::Error::other("Recording closed"))?;
+            check_cancel(binding.flag())?;
+            source.in_scope(|| {
+                if let Ok(content) = Self::read(&source, &load) {
+                    drop(content.cat.cached_states());
+                }
+            });
+            check_cancel(binding.flag())
+        });
+        ready.pending()
+    }
+
+    fn regions(&self) -> Result<&Regions, String> {
+        self.regions.get_or_init(|| dashboard_base::content::strategic_regions(&self.cat.content.layers)
             .map(|regions| {
                 let mut region_of = BTreeMap::new();
                 for (&id, region) in &regions.regions {
@@ -96,14 +137,12 @@ impl Content {
                 let by_region = regions.regions.keys().map(|&id| (id, OnceLock::new())).collect();
                 Regions { definitions: regions, by_region, region_of }
             })
-            .map_err(|error| format!("Strategic-region names unavailable: {error}"));
-        let content = Arc::new(Self { cat: Arc::clone(&cat), regions, naval: OnceLock::new() });
-        state.held = Some((cat, Arc::clone(&content)));
-        Ok(content)
+            .map_err(|error| format!("Strategic-region names unavailable: {error}")))
+            .as_ref().map_err(Clone::clone)
     }
 
     pub fn region(&self, id: u32) -> Result<String, String> {
-        let regions = self.regions.as_ref().map_err(Clone::clone)?;
+        let regions = self.regions()?;
         let name = regions.by_region.get(&id).ok_or_else(|| format!("region {id}: no content-defined strategic region"))?;
         name.get_or_init(|| crate::products::region_names::region_name(&self.cat, &regions.definitions, id)).clone()
     }
@@ -113,12 +152,12 @@ impl Content {
     }
 
     fn province_region_or_none(&self, id: u32) -> Result<Option<String>, String> {
-        let regions = self.regions.as_ref().map_err(Clone::clone)?;
+        let regions = self.regions()?;
         regions.region_of.get(&id).cloned().transpose()?.map(|region| self.region(region)).transpose()
     }
 
     fn province_region_id(&self, id: u32) -> Result<u32, String> {
-        let regions = self.regions.as_ref().map_err(Clone::clone)?;
+        let regions = self.regions()?;
         regions.region_of.get(&id).cloned().unwrap_or_else(|| Err(format!("province {id} is in no content strategic region")))
     }
 
@@ -140,7 +179,7 @@ impl Content {
     }
 
     pub fn naval_candidate_provinces(&self, provinces: impl IntoIterator<Item = u32>) -> Vec<u32> {
-        let (Ok(naval), Ok(regions)) = (self.naval(), &self.regions) else { return provinces.into_iter().collect(); };
+        let (Ok(naval), Ok(regions)) = (self.naval(), self.regions()) else { return provinces.into_iter().collect(); };
         let mut out = BTreeSet::new();
         for province in provinces {
             out.insert(province);
@@ -170,9 +209,9 @@ impl Content {
 
     pub fn warnings(&self) -> Vec<String> {
         let mut out: Vec<String> = self.cat.verification.iter().chain(&self.cat.warnings).cloned().collect();
-        match &self.regions {
+        match self.regions() {
             Ok(regions) => out.extend(regions.definitions.notes.iter().cloned()),
-            Err(reason) => out.push(reason.clone()),
+            Err(reason) => out.push(reason),
         }
         if let Err(reason) = self.cat.cached_states() { out.push(reason); }
         out

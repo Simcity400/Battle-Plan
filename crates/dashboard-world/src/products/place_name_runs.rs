@@ -5,17 +5,19 @@ use dashboard_base::{
     products::{
         LoadContext, Product,
         at_hour::ReadDates,
+        read_ahead::Preparation,
         scoped_text::{Scope, ScopedText, Validity, key_needs_scope},
     },
 };
 use dashboard_core::dto::RecordingGap;
+use dashboard_follow::panel::{OnPrepared, Panel, PendingPreparation, ProductRead, Wake};
 use dashboard_text::metadata::check_cancel;
 use replay_lanes::lanes::Keys;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -123,6 +125,52 @@ pub fn names_at(source: &Source, query: &dashboard_query::Query<'_>, load: &Load
     names_at_with(source, query, load, points, cancelled, None)
 }
 
+pub fn prepare(source: &Arc<Source>, load: &LoadContext) -> io::Result<Option<Arc<Preparation>>> {
+    Content::prepare(source, load)
+}
+
+pub fn prepared_panel(preparation: Option<Arc<Preparation>>, panel: Box<dyn Panel>) -> Result<Box<dyn Panel>, String> {
+    let Some(preparation) = preparation else { return Ok(panel); };
+    let exact = panel.exact().ok_or("Prepared place rows need an exact panel")?;
+    let (advance, cold) = (exact.advance.clone(), exact.cold.clone());
+    let watch = Arc::clone(&preparation);
+    let waiting = Arc::clone(&preparation);
+    let subscribed = AtomicBool::new(false);
+    let panel = dashboard_base::products::at_hour::product_panel(Arc::new(move |hour, seed, cancelled, step| {
+        let (pending, value) = match waiting.result() {
+            Some(Ok(())) => return advance(hour, seed, cancelled, step),
+            Some(Err(error)) => (false, Err(error.to_string())),
+            None => {
+                if let Some(wake) = step.and_then(|step| step.wake).filter(|_| !subscribed.swap(true, Ordering::Relaxed)).cloned() {
+                    waiting.on_ready(Box::new(move |_| wake()));
+                }
+                (true, Ok(serde_json::Value::Null))
+            }
+        };
+        ProductRead { value: Arc::new(value), rows: 0, fresh: !pending, pending, live: None, lanes: Vec::new(), from: hour }
+    }), Arc::new(move |hour, cancelled| {
+        preparation.wait().map_err(|error| error.to_string())?;
+        cold(hour, cancelled)
+    }));
+    let pending = Arc::new(move |_| {
+        let ready = Arc::clone(&watch);
+        Some(Box::new(move |wake: Wake| ready.on_ready(Box::new(move |_| wake()))) as OnPrepared)
+    });
+    Ok(Box::new(PreparedPanel { panel, pending }))
+}
+
+struct PreparedPanel {
+    panel: Box<dyn Panel>,
+    pending: PendingPreparation,
+}
+
+impl Panel for PreparedPanel {
+    fn exact(&self) -> Option<&dashboard_follow::panel::AtHour> { self.panel.exact() }
+    fn pending_preparation(&self) -> Option<&PendingPreparation> { Some(&self.pending) }
+    fn tables(&self) -> &[replay_data::rows::TableId] { self.panel.tables() }
+    fn data(&mut self, frame: &replay_frame::frame::DecodedFrame) -> dashboard_follow::panel::PanelData { self.panel.data(frame) }
+}
+
 #[derive(Default)]
 pub struct RowNames {
     held: BTreeMap<PlacePoint, Name>,
@@ -193,7 +241,7 @@ fn names_at_with(source: &Source, query: &dashboard_query::Query<'_>, load: &Loa
                 PlacePoint::Province(id, _) => params.provinces.push(id),
             }
         }
-        let runs = PlaceNameRuns::read(source, query, &params, load, cancelled, cache.as_deref_mut());
+        let runs = PlaceNameRuns::read(source, query, &params, load, cancelled, cache.as_deref_mut(), false);
         for point in asked {
             check_cancel(cancelled)?;
             let hour = point.hour();
@@ -311,12 +359,12 @@ impl Product for PlaceNameRuns {
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid place name runs branch"))?;
         let query = dashboard_base::queries::query(source, branch)?;
-        Self::read(source, &query, params, load, cancelled, None)
+        Self::read(source, &query, params, load, cancelled, None, true)
     }
 }
 
 impl PlaceNameRuns {
-    fn read(source: &Source, query: &dashboard_query::Query<'_>, params: &PlaceNameRunsParams, load: &LoadContext, cancelled: &AtomicBool, mut cache: Option<&mut RowHistoryWindows>) -> io::Result<PlaceNameRunsReply> {
+    fn read(source: &Source, query: &dashboard_query::Query<'_>, params: &PlaceNameRunsParams, load: &LoadContext, cancelled: &AtomicBool, mut cache: Option<&mut RowHistoryWindows>, run_warnings: bool) -> io::Result<PlaceNameRunsReply> {
         let content = Content::read(source, load)?;
         let (from, to) = (params.from.max(query.timeline.first), params.to.min(query.timeline.last));
         if from > to {
@@ -401,26 +449,29 @@ impl PlaceNameRuns {
             state_book.close(last, &unknown);
             province_book.close(last, &unknown);
         }
-        let mut refused = Refusals::default();
-        let mut collect = |runs: BTreeMap<u32, Vec<NameRun>>, what: &str| -> Vec<PlaceRuns> {
-            runs.into_iter()
-                .map(|(id, runs)| {
-                    for run in &runs {
+        let collect = |runs: BTreeMap<u32, Vec<NameRun>>| -> Vec<PlaceRuns> {
+            runs.into_iter().map(|(id, runs)| PlaceRuns { id, runs }).collect()
+        };
+        let states = collect(state_book.runs);
+        let provinces = collect(province_book.runs);
+        let mut warnings = Vec::new();
+        if run_warnings {
+            let mut refused = Refusals::default();
+            for (what, places) in [("state", &states), ("province", &provinces)] {
+                for PlaceRuns { id, runs } in places {
+                    for run in runs {
                         if let Some(reason) = &run.missing {
                             refused.note(reason, format!("{what} {id} from {}", run.first_hour));
                         }
                     }
-                    PlaceRuns { id, runs }
-                })
-                .collect()
-        };
-        let states = collect(state_book.runs, "state");
-        let provinces = collect(province_book.runs, "province");
-        let mut warnings = content.warnings();
-        warnings.extend(content.cat.refusal_lines());
-        warnings.extend(refused.lines("place names"));
-        warnings.sort();
-        warnings.dedup();
+                }
+            }
+            warnings = content.warnings();
+            warnings.extend(content.cat.refusal_lines());
+            warnings.extend(refused.lines("place names"));
+            warnings.sort();
+            warnings.dedup();
+        }
         let reply = PlaceNameRunsReply { from, to, unknown, states, provinces, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
@@ -432,6 +483,24 @@ mod tests {
     use super::*;
     use replay_data::rows::{ProvinceRow, StateRow, TableId, TableRows};
     use replay_frame::frame::TableView;
+
+    #[test]
+    fn a_named_panel_waits_for_preparation_then_publishes_the_same_hour() {
+        let ready = Arc::<Preparation>::default();
+        let panel = dashboard_base::products::at_hour::interval_panel(None, |hour, _| Ok((hour.into(), hour..=hour, 1)));
+        let panel = prepared_panel(Some(Arc::clone(&ready)), panel).unwrap();
+        let cancel = AtomicBool::new(false);
+        let read = &panel.exact().unwrap().advance;
+        assert!(read(100, true, &cancel, None).pending);
+        let woke = Arc::new(AtomicBool::new(false));
+        let wake = Arc::clone(&woke);
+        panel.pending_preparation().unwrap()(100).unwrap()(Arc::new(move || wake.store(true, Ordering::Relaxed)));
+        ready.publish(Ok(()));
+        assert!(woke.load(Ordering::Relaxed));
+        let read = read(100, true, &cancel, None);
+        assert!(!read.pending);
+        assert_eq!(read.value.as_ref(), &Ok(100.into()));
+    }
 
     fn name(text: &str) -> Answer {
         Answer { name: Some(text.to_owned()), missing: None, presence: Presence::Present }

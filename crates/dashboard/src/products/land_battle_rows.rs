@@ -1,9 +1,9 @@
 use super::battle_names;
-use dashboard_base::{Source, catalogue::{self, OwnRefusals}, products::{self, LoadContext, PanelReader, Product, Registered, at_hour, occurrences, read_ahead::Prepare}, queries};
+use dashboard_base::{Source, catalogue::{self, OwnRefusals}, products::{self, LoadContext, PanelReader, Product, Registered, at_hour, occurrences, read_ahead::{Preparation, Prepare}}, queries};
 use dashboard_core::{QueryError, presentation::Admitted};
 use dashboard_follow::panel::Panel;
 use dashboard_land::{products::land_battles::tail::{self, LandBattlesTail, LandBattlesTailParams, LandBattlesTailReply}, registrations::LAND_BATTLES_TAIL};
-use dashboard_world::products::place_name_runs::{PlacePoint, RowNames};
+use dashboard_world::products::place_name_runs::{self, PlacePoint, RowNames};
 use serde_json::Value;
 use std::{io, sync::{Arc, Mutex, PoisonError, atomic::AtomicBool}};
 
@@ -42,7 +42,21 @@ impl Product for Named {
     const CONTENT_DEPENDENT: bool = true;
     const FIELDS: products::Fields = LandBattlesTail::FIELDS;
     const PREPARE: Option<Prepare<Self::Params>> = Some(|source, params, load| {
-        if params.row_names == Some(true) { battle_names::prepare_for_rows(source, branch(params)?, load) } else { Ok(None) }
+        if params.row_names != Some(true) { return Ok(None); }
+        let places = place_name_runs::prepare(source, load)?;
+        let battles = battle_names::prepare_for_rows(source, branch(params)?, load)?;
+        match (places, battles) {
+            (Some(places), Some(battles)) => {
+                let ready = Arc::<Preparation>::default();
+                let wake = Arc::clone(&ready);
+                places.on_ready(Box::new(move |result| match result {
+                    Ok(()) => battles.on_ready(Box::new(move |result| wake.publish(result))),
+                    Err(error) => wake.publish(Err(error)),
+                }));
+                ready.pending()
+            }
+            (places, battles) => Ok(places.or(battles)),
+        }
     });
     type Params = LandBattlesTailParams;
     type Reply = LandBattlesTailReply;

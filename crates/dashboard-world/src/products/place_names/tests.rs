@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicBool;
 use super::*;
-use dashboard_base::test_fixtures::{CAMPAIGN, content_identity, records, source};
+use dashboard_base::test_fixtures::{CAMPAIGN, content_identity, records, source, write_with_facts};
 use replay::campaign::Replay;
 use replay_data::rows::{CountryAppearanceRow, CountryLinkRow, ProvinceNameRow, ProvinceRow, Recorded, ReservedCountryNamingRow, TableRows, TableSchema};
 
@@ -82,16 +82,15 @@ fn fixture_source(frames: Vec<DecodedFrame>) -> (Source, LoadContext, std::path:
     bitmap[26..28].copy_from_slice(&1_u16.to_le_bytes());
     bitmap[28..30].copy_from_slice(&24_u16.to_le_bytes());
     std::fs::write(folder.0.join("map/provinces.bmp"), bitmap).unwrap();
-    let (options, identity) = content_identity(&folder.0);
+    let (mut options, identity) = content_identity(&folder.0);
     let mut input = records(1, frames);
     let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] else { unreachable!() };
-    session.identity = identity;
+    session.identity = identity.clone();
     let saved = std::env::temp_dir().join(format!("place-names-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&saved).unwrap();
     let path = saved.join("synthetic.battleplan");
-    Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[input]).unwrap().write_atomic(&path).unwrap();
-    let folders = recording_upgrade::Folders { games: vec![folder.0.clone()], user: folder.0.join("user"), cache: folder.0.join("cache") };
-    recording_upgrade::upgrade(&path, &folders).unwrap();
+    options.options.cache_dir = saved.join("cache");
+    write_with_facts(&path, &options, &identity, input);
     let replay = Replay::open_newest(&path).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "place-names".into(), revision: "1".into() }, path, Arc::new(replay), &AtomicBool::new(false)).unwrap();
     (source, LoadContext { content: Some(options) }, saved, folder)
@@ -123,8 +122,28 @@ fn the_region_catalogue_keeps_named_regions_when_their_membership_is_unread() {
 #[test]
 fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a_reason() {
     let (source, load, saved, _folder) = fixture_source((100..=110).map(frame).collect());
+    let source = Arc::new(source);
     let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let content = Content::read(&source, &load).unwrap();
+    let content = source.in_scope(|| {
+        use super::super::place_name_runs::{PlacePoint, names_at};
+        let content = Content::read(&source, &load).unwrap();
+        let before = content.cat.content_loads();
+        let rename = PlacePoint::Province(18, 105);
+        let cancel = AtomicBool::new(false);
+        let names = names_at(&source, &query, &load, &BTreeSet::from([rename]), &cancel).unwrap();
+        assert_eq!(names[&rename].name.as_deref(), Some("Renamed town"));
+        assert_eq!(content.cat.content_loads(), before, "a renamed point needs no catalogue warnings or state templates");
+        if let Some(ready) = Content::prepare(&source, &load).unwrap() { ready.wait().unwrap(); }
+        assert_eq!(content.cat.content_loads(), before + 1, "preparation warms the catalogue used by the point reader");
+        assert!(Content::prepare(&source, &load).unwrap().is_none(), "preparation is shared");
+        let state = PlacePoint::State(64, 105);
+        let names = names_at(&source, &query, &load, &BTreeSet::from([state]), &cancel).unwrap();
+        assert_eq!(names[&state].name.as_deref(), Some("Mod state"));
+        assert!(Arc::ptr_eq(&content, &Content::read(&source, &load).unwrap()));
+        assert_eq!(content.cat.content_loads(), before + 1, "the first state point reuses the warmed templates");
+        assert!(content.regions.get().is_none(), "state points leave region membership unread");
+        content
+    });
     let mut frames = at_hour::Frames::new(&query).unwrap();
     let frame = read_hour(&query, &mut frames, 105, &[17, 18, 19, 20], &[64, 65, 66]).unwrap();
     let places = Places::new(&frame);
@@ -139,11 +158,11 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
 
     let run = query.timeline.stretches[0].run;
     let history = PlaceHistory::load(query.replay.recording(), run, 100, 110, Keys::All, Keys::All, true, &AtomicBool::new(false)).unwrap();
-    let regions = content.regions.as_ref().unwrap();
-    let resolved_regions = || regions.by_region.values().filter(|name| name.get().is_some()).count();
     assert_eq!(history.province_name(&content, 18, ProvinceMode::Place, 105).name.as_deref(), Some("Renamed town"));
-    assert_eq!(resolved_regions(), 0, "a recorded rename needs no region name");
+    assert!(content.regions.get().is_none(), "state names and recorded renames need no region index");
     assert_eq!(history.province_name(&content, 21, ProvinceMode::Place, 105).name.as_deref(), Some("Sample Sea"));
+    let regions = content.regions.get().unwrap().as_ref().unwrap();
+    let resolved_regions = || regions.by_region.values().filter(|name| name.get().is_some()).count();
     assert_eq!(resolved_regions(), 1, "a fallback resolves just its strategic region");
     let absent = super::super::region_names::region_name(&content.cat, &regions.definitions, 2).unwrap_err();
     assert!(absent.contains("REG_WITHOUT_NAME"), "{absent}");

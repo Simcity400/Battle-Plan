@@ -189,6 +189,7 @@ fn named_battle_rows_match_the_brokers_at_the_recorded_hours() {
     build.ready.publish(Ok(()));
     *source.state::<Ahead>().lock().unwrap() = Ahead(binding.generation, HashMap::from([(1, build)]));
     let product = crate::products::find("land-battles-tail").unwrap();
+    if let Some(ready) = dashboard_world::products::place_name_runs::prepare(&source, &load).unwrap() { ready.wait().unwrap(); }
     let panel = crate::panel::open(&source, &load, &json!({"panel": "land-battles-tail", "branchId": "1", "rowNames": true, "limit": 1})).unwrap();
     let advance = &panel.exact().unwrap().advance;
     let places = source.in_scope(|| PlaceNameRuns::load(&source, &PlaceNameRunsParams {
