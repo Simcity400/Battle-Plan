@@ -1285,7 +1285,9 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     assert_eq!(*at_101.value, (dec_exact.cold)(101, &cancel));
     let at_103 = (dec_exact.advance)(103, false, &cancel, None);
     assert!(at_103.fresh, "the continuing edge at 103 is the next change");
-    assert_eq!(*at_103.value, (dec_exact.cold)(103, &cancel));
+    let exact = dashboard_base::products::Finish::new(&replay_source, &context, DecisionsTail::CONTENT_DEPENDENT)
+        .reply(|| DecisionsTail::load(&replay_source, &cards(103, None, None), &context, &cancel)).unwrap();
+    assert_eq!(*at_103.value, Ok(serde_json::to_value(exact).unwrap()));
     assert_eq!(at_103.value.as_ref().as_ref().unwrap()["rows"][0]["occurrence"]["edges"].as_array().unwrap().len(), 2);
     assert!(!(dec_exact.advance)(104, false, &cancel, None).fresh);
     let back_100 = (dec_exact.advance)(100, true, &cancel, None);
@@ -1336,9 +1338,18 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
 
     let choice_panel = event_choices_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-choices-tail", "branchId": "1", "limit": 64, "countries": ["GER"] })).unwrap();
     let choice_exact = choice_panel.exact().unwrap();
-    for hour in [100, 101, 102, 104, 105, 106, 110, 100] {
-        let stepped = (choice_exact.advance)(hour, true, &cancel, None);
-        assert_eq!(*stepped.value, (choice_exact.cold)(hour, &cancel), "event-choices-tail stepped vs cold at {hour}");
+    let finish = dashboard_base::products::Finish::new(&replay_source, &context, EventChoicesTail::CONTENT_DEPENDENT);
+    for (hour, decoded) in [(100, None), (101, None), (102, None), (104, None), (105, Some(1)), (106, None), (110, None), (100, None), (105, Some(3))] {
+        let (stepped, followed) = replay_columnar::unit::reader::count_decodes(|| (choice_exact.advance)(hour, hour == 100, &cancel, None));
+        let (exact, rebuilt) = replay_columnar::unit::reader::count_decodes(|| {
+            finish.reply(|| EventChoicesTail::load(&replay_source, &cards(hour, None, selection("GER")), &context, &cancel)).unwrap()
+        });
+        assert_eq!(*stepped.value, Ok(serde_json::to_value(exact).unwrap()), "event-choices-tail stepped vs exact at {hour}");
+        if let Some(decoded) = decoded {
+            assert!(stepped.fresh, "the news event enters at 105");
+            assert_eq!(rebuilt.log_rows_at_rows, 4);
+            assert_eq!(followed.log_rows_at_rows, decoded, "only rows absent from the preceding page are decoded");
+        }
     }
     let feed_panel = event_feed_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-feed-tail", "branchId": "1", "limit": 64, "categories": ["politics"] })).unwrap();
     let feed_exact = feed_panel.exact().unwrap();

@@ -895,7 +895,10 @@ pub(super) fn listed(rows: &mut [Option<EventFeedRow>], description: bool, windo
     }
 }
 
-fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &ScriptTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<ScriptOccurrenceTailReply> {
+fn load_cards_at(
+    list: List, prepared: &Prepared, query: &Query<'_>, params: &ScriptTailParams, hour: i32,
+    followed: Option<&Mutex<index::CardEvents>>, cancelled: &AtomicBool,
+) -> io::Result<ScriptOccurrenceTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     if list == List::Decisions && params.events.is_some() {
         return Err(invalid("Decisions are not filtered by event kind"));
@@ -910,7 +913,16 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
     let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit, sortable: if list == List::Decisions { &["country", "item", "cost", "status"] } else { &["country", "item", "choice"] } };
     let mut answer = answer(&prepared.index, query, &window, hour, kinds.as_deref(), states.as_deref(), true, &chips)?;
     let opened_row = only_row(&prepared.scanned, &prepared.index, params.row.as_deref(), &mut answer, hour);
-    let read = index::read_events(query, &locators(&prepared.index, &answer, hour))?;
+    let locators = locators(&prepared.index, &answer, hour);
+    let mut kept = followed.map(|held| std::mem::take(&mut *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
+    let exact;
+    let read = match kept.as_mut() {
+        Some(kept) => kept.read(query, &locators)?,
+        None => {
+            exact = index::read_events(query, &locators)?;
+            &exact
+        }
+    };
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
     let presenter = Presenter::new(query, content_from(&prepared.content, &mut notices), Arc::clone(&prepared.kept));
@@ -984,6 +996,9 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         warnings: Vec::new(),
     };
     dashboard_base::products::check_reply_budget(&reply)?;
+    if let Some((held, kept)) = followed.zip(kept) {
+        *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = kept;
+    }
     Ok(reply)
 }
 
@@ -1088,7 +1103,7 @@ fn cards_load(list: List, source: &Source, params: &ScriptTailParams, context: &
     let query = dashboard_base::queries::query(source, branch)?;
     let hour = occurrences::cutoff(&query, params.hour)?;
     let prepared = prepare(source, &query, branch, context, Some(list), asked!(params), cancelled)?;
-    load_cards_at(list, &prepared, &query, params, hour, cancelled)
+    load_cards_at(list, &prepared, &query, params, hour, None, cancelled)
 }
 
 fn cards_dated_panel<P: Product>(list: List, source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
@@ -1099,10 +1114,11 @@ fn cards_dated_panel<P: Product>(list: List, source: &Source, load: &LoadContext
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, P::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, Some(list), asked!(params), &AtomicBool::new(false)));
     let prepared = prepared.map_err(|error| error.to_string())?;
     let owned = Owned::of(&query, source.replay());
+    let followed = Mutex::new(index::CardEvents::default());
     Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         let query = owned.query();
         let hour = occurrences::cutoff(&query, Some(hour))?;
-        load_cards_at(list, &prepared, &query, &params, hour, cancelled)
+        load_cards_at(list, &prepared, &query, &params, hour, Some(&followed), cancelled)
     }))
 }
 
