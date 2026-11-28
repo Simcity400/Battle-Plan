@@ -452,21 +452,26 @@ fn country_faction_goals_holds_quiet_and_foreign_hours_and_refreshes_on_membersh
 
 #[test]
 fn country_faction_goals_refreshes_when_scripted_goal_text_input_changes() {
+    scripted_goal_refresh("cfg_scripted_goal_flag", "has_global_flag = mod_flag", false);
+    scripted_goal_refresh("cfg_scripted_goal_war", "has_war = yes", true);
+}
+
+fn scripted_goal_refresh(fixture: &str, condition: &str, unrelated_tokens: bool) {
     use super::country_goals::CountryFactionGoals;
     use dashboard_base::{
         products::at_hour::{exact_panel, frame_panel},
         test_fixtures::{game, materialized_frame, played, source, source_with_content, streamed, visual_mods::Machine},
     };
-    use replay_data::rows::{CountryRow, ScriptFlagRow};
+    use replay_data::rows::{CountryRow, CountryWarRow, Recorded, ScriptFlagRow};
     use serde_json::json;
 
     game::enter();
-    let machine = Machine::new("cfg_scripted_goal_text");
+    let machine = Machine::new(fixture);
     machine.write("common/defines/probe.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=7}}");
     machine.write("common/factions/goals/mod_goals.txt", b"mod_goal = { name = mod_goal_name description = mod_goal_desc }\n");
     machine.write(
         "common/scripted_localisation/mod_loc.txt",
-        b"defined_text = {\n  name = ModGoalPhrase\n  text = { trigger = { has_global_flag = mod_flag } localization_key = mod_phrase_on }\n  text = { trigger = { always = yes } localization_key = mod_phrase_off }\n}\n",
+        format!("defined_text = {{\n  name = ModGoalPhrase\n  text = {{ trigger = {{ {condition} }} localization_key = mod_phrase_on }}\n  text = {{ trigger = {{ always = yes }} localization_key = mod_phrase_off }}\n}}\n").as_bytes(),
     );
     machine.write(
         "localisation/english/mod_l_english.yml",
@@ -476,17 +481,32 @@ fn country_faction_goals_refreshes_when_scripted_goal_text_input_changes() {
     let frames: Vec<_> = (100..=105)
         .map(|hour| {
             let mut f = source(1, hour, Some(100));
-            set(&mut f, TableId::Countries, TableRows::Countries(vec![CountryRow { id: 7, canonical_slot: 3, tag: b"AAA".to_vec(), ..Default::default() }]));
-            set(&mut f, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: 7, canonical_slot: 3 }]));
+            set(&mut f, TableId::Countries, TableRows::Countries(vec![
+                CountryRow { id: 7, canonical_slot: 3, tag: b"AAA".to_vec(), ..Default::default() },
+                CountryRow { id: 8, canonical_slot: 4, tag: b"BBB".to_vec(), ..Default::default() },
+            ]));
+            set(&mut f, TableId::CountryLinks, TableRows::CountryLinks(vec![
+                CountryLinkRow { id: 7, canonical_slot: 3 }, CountryLinkRow { id: 8, canonical_slot: 4 },
+            ]));
             set(&mut f, TableId::FactionMembers, TableRows::FactionMembers(vec![FactionMemberRow { country: 7, faction: FACTION, ordinal: 0 }]));
             set(&mut f, TableId::FactionGoalStatus, TableRows::FactionGoalStatus(vec![FactionGoalStatusRow { faction: FACTION, manifest: None }]));
             set(&mut f, TableId::FactionGoalEntries, TableRows::FactionGoalEntries(vec![goal(FACTION, 0, 0, Some(1), i64::from(hour) * 100)]));
-            set(&mut f, TableId::LexicalTokens, TableRows::LexicalTokens(vec![
+            let mut lexical = vec![
                 LexicalTokenRow { token: 1, literal: b"mod_goal".to_vec() },
                 LexicalTokenRow { token: 2, literal: b"mod_flag".to_vec() },
-            ]));
-            let flags = if hour >= 103 { vec![ScriptFlagRow { scope_kind: 0, scope_id: 0, token: 2, set_hour: 103, value: 1, remaining_days: 0 }] } else { Vec::new() };
-            set(&mut f, TableId::ScriptFlags, TableRows::ScriptFlags(flags));
+            ];
+            if unrelated_tokens {
+                lexical.extend((101..=hour).map(|hour| LexicalTokenRow { token: hour as u32, literal: format!("unrelated_{hour}").into_bytes() }));
+                let enemies = if hour >= 103 { vec![8] } else { Vec::new() };
+                set(&mut f, TableId::CountryWars, TableRows::CountryWars(vec![CountryWarRow {
+                    country: 7, enemies_read: 1, enemies, ordered: Recorded::Value(None), can_occupy_non_war: 0,
+                }]));
+                set(&mut f, TableId::WarRelations, TableRows::WarRelations(Vec::new()));
+            } else {
+                let flags = if hour >= 103 { vec![ScriptFlagRow { scope_kind: 0, scope_id: 0, token: 2, set_hour: 103, value: 1, remaining_days: 0 }] } else { Vec::new() };
+                set(&mut f, TableId::ScriptFlags, TableRows::ScriptFlags(flags));
+            }
+            set(&mut f, TableId::LexicalTokens, TableRows::LexicalTokens(lexical));
             f
         })
         .collect();
@@ -503,7 +523,7 @@ fn country_faction_goals_refreshes_when_scripted_goal_text_input_changes() {
         let desc = step.value.as_ref().as_ref().unwrap()["definitions"][0]["description"].as_str().unwrap_or_else(|| panic!("missing description: {:?}", step.value));
         assert_eq!(desc, if step.hour >= 103 { "State: Active" } else { "State: Idle" });
         if matches!(step.hour, 101 | 102 | 104 | 105) {
-            assert_eq!(step.product_calls, 0, "quiet scripted hour {} should hold", step.hour);
+            assert_eq!(step.product_calls, 0, "{fixture} quiet scripted hour {} should hold", step.hour);
         }
     }
 }
