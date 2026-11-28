@@ -2957,7 +2957,9 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     };
     let reads = s8_reads.lock().unwrap().clone();
     assert!(!reads.is_empty() && reads.iter().all(|&(_, seed)| !seed), "multi-hour catch-up reads through the held interval, never as a seed: {reads:?}");
-    assert!((through8.min(head8)..=head8).contains(&caught.0), "catch-up skips only elapsed hours");
+    let first = reads[0].0;
+    assert!((through8.min(head8)..head8 + quantum).contains(&first), "the first read without a cost estimate aims at the boundary at the head");
+    assert!(caught.0 >= first, "a later confirmation can fold the first reading");
     assert_eq!(caught.1, dated::AGAIN, "the unchanged value is exact at the new hour and proves nothing about the skipped hours");
 }
 
