@@ -823,6 +823,7 @@ fn the_ring_holds_its_size_and_recycles_its_steps() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
     let log = Log::default();
     let (playhead, mut consumer) = start(&pages, whole_ahead(), &[0], &log);
+    playhead.play(24.0);
     let mut taken = Vec::new();
     play(&playhead, &mut consumer, 0, 0, 24, &mut taken);
     drop(taken);
@@ -843,6 +844,29 @@ fn the_ring_holds_its_size_and_recycles_its_steps() {
         playhead.wait_until(|| playhead.newest() == Some(head + 3 * 24));
     }
     assert!(made.len() <= 7, "{} buffers carried {steps} steps; seven are alive at most", made.len());
+}
+
+#[test]
+fn settling_releases_retired_steps_after_readers_return_their_loans() {
+    let mut ring = crate::ring::Ring::new(4);
+    let reader = ring.join(Reader(0));
+    ring.asks(reader);
+    for hour in 1..=4 {
+        ring.publish(Arc::new(Step { epoch: ring.epoch, first: hour, last: hour, ..Step::default() })).unwrap();
+    }
+    let mut taken = Vec::new();
+    assert_eq!(ring.take(reader, 4, &mut taken), 4);
+    let loan = taken.pop().unwrap();
+    drop(taken);
+    assert_eq!(ring.settle().len(), 3);
+    assert_eq!(ring.steps().len(), 1);
+    assert_eq!(loan.last(), 4);
+    assert_eq!(Arc::strong_count(&loan), 2);
+    drop(loan);
+    let released = ring.settle();
+    assert_eq!(released.len(), 1);
+    assert_eq!(released[0].last(), 4);
+    assert!(ring.steps().is_empty());
 }
 
 #[test]
