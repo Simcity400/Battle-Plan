@@ -183,6 +183,47 @@ fn the_models_declare_the_tables_they_are_known_to_read_and_those_learned_not_th
     assert!(!models.tables().contains(&TableId::AirRegionalMissions), "a table the models do not read is not among theirs");
 }
 
+fn publish_refusal(models: &Models, hour: Hour) {
+    let mut held = models.shared.lock();
+    let asked = held.asked.as_ref().unwrap().clone();
+    let reason = "model rows withheld";
+    held.made.publish((0, 1, hour), super::Made {
+        generation: 0, stamp: 1, hour, key: asked.key(), stands: hour, frame: None,
+        prepared: Arc::new(PreparedModels::withheld(reason)), refusal: Some(reason.into()),
+    });
+}
+
+#[test]
+fn a_same_hour_refusal_only_answers_the_request_that_produced_it() {
+    let entry = open(clock("model refusal key", 2), hourly_steps()).unwrap();
+    let store = views::Store::new(&entry);
+    let mut models = Models::new(Arc::new(Counted::default()), &store.handle(), &[]);
+    let choice = Choice::default();
+    models.ask(&choice, Some((1, &[])), true);
+    publish_refusal(&models, 0);
+    assert!(models.join(None, Settling::Whole));
+    assert!(models.made_at(0));
+    models.ask(&choice, Some((1, &[])), false);
+    assert!(!models.made_at(0));
+    models.ask(&choice, Some((2, &[])), true);
+    assert!(!models.made_at(0));
+}
+
+#[test]
+fn a_failed_worker_is_final_without_consulting_the_result_slot() {
+    let entry = open(clock("model worker refused", 2), hourly_steps()).unwrap();
+    let store = views::Store::new(&entry);
+    let mut models = Models::new(Arc::new(Counted::default()), &store.handle(), &[]);
+    models.shared.lock().stop = true;
+    models.worker.take().unwrap().join().unwrap();
+    models.refused = Some("the model worker cannot start".into());
+    models.ask(&Choice::default(), None, false);
+    publish_refusal(&models, 0);
+    assert!(!models.join(Some(0), Settling::Whole));
+    assert!(models.made_at(0));
+    assert_eq!(models.refused.as_deref(), Some("the model worker cannot start"));
+}
+
 #[test]
 fn a_build_begins_only_for_rows_whose_declared_tables_changed() {
     let speed = viewer_layer_core::test_support::recorded::column(TableId::Clock, "speed");

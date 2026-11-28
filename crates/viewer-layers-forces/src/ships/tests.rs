@@ -609,6 +609,21 @@ fn a_roster_out_on_the_worker_is_not_carried_and_the_hour_the_parts_stand_for_is
     let owed = layer(&side).rosters().owed().into_iter().map(|(_, at)| at).min().expect("the gate holds a roster the worker owes");
     assert_eq!(stands, answered.min(owed - 1), "a roster out publishes the hour the parts stand for: the rows answered ({answered}), before the change it owes ({owed}), and never the hour of the last settle that owed nothing ({before})");
     assert_eq!(side.last_frame().layers[0].shown, Some(stands), "the host shows that hour");
+    let (woke, progress) = std::sync::mpsc::channel();
+    side.views().handle().set_on_publish(Arc::new(move || {
+        if std::thread::current().name() == Some("ship rosters") {
+            let _ = woke.send(());
+        }
+    }));
+    let shared = &layer(&side).rosters().shared;
+    let mut asked = shared.lock();
+    let builds = asked.builds.len();
+    held.let_through(1);
+    while asked.builds.len() == builds {
+        asked = shared.answered.wait(asked).unwrap();
+    }
+    assert_eq!(progress.try_recv(), Ok(()), "the roster answer wakes the whole map while no frame is being driven");
+    drop(asked);
     held.set(true);
     settled_at(&mut side, before + 8);
     assert_eq!(layer(&side).published(), Published::Current, "answered, current again");

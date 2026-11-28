@@ -118,6 +118,15 @@ impl Shared {
     fn lock(&self) -> MutexGuard<'_, Asked> {
         self.asked.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
+    fn published(&self, asked: &mut Asked, maker: timeline::Maker) {
+        asked.answered_at = Some(Instant::now());
+        timeline::mark(maker, Mark::Published);
+        if let Some(reader) = &asked.views {
+            reader.notify_progress();
+        }
+        self.answered.notify_all();
+    }
 }
 
 pub struct Rosters {
@@ -340,9 +349,7 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
             asked.answers.extend_nonempty(forces.into_iter().map(|(force, _)| (force, Arc::new(Some(Err(why.clone()))))));
             if let Some(head) = asked.head.filter(|&head| refused || asked.answered.as_ref() != Some(&head)) {
                 asked.answered.set_if_changed(Some(head));
-                asked.answered_at = Some(Instant::now());
-                timeline::mark(maker, Mark::Published);
-                shared.answered.notify_all();
+                shared.published(&mut asked, maker);
             }
             if !std::mem::take(&mut asked.woken) {
                 let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
@@ -409,17 +416,13 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
         if forces.is_empty() {
             if newer {
                 asked.answered.set_if_changed(Some(frame.hour));
-                asked.answered_at = Some(Instant::now());
                 last = Some(frame);
-                timeline::mark(maker, Mark::Published);
-                shared.answered.notify_all();
+                shared.published(&mut asked, maker);
             } else if let Some(stands) = reader.as_ref().and_then(|reader| reader.through(Arc::as_ptr(&frame)))
                 && asked.answered.as_ref().is_some_and(|&answered| answered < stands)
             {
                 asked.answered.advance(stands);
-                asked.answered_at = Some(Instant::now());
-                timeline::mark(maker, Mark::Published);
-                shared.answered.notify_all();
+                shared.published(&mut asked, maker);
             }
             let seen = reader.as_ref().map_or(0, |reader| reader.published());
             let woken = std::mem::take(&mut asked.woken);
@@ -488,11 +491,8 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
         asked.known.dedup();
         asked.answers.extend_nonempty(answers);
         asked.answered.set_if_changed(Some(frame.hour));
-        asked.answered_at = Some(Instant::now());
+        shared.published(&mut asked, maker);
         last = Some(frame);
-        drop(asked);
-        timeline::mark(maker, Mark::Published);
-        shared.answered.notify_all();
     }
 }
 

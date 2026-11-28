@@ -1788,14 +1788,12 @@ impl Units {
             return false;
         }
         let Some(models) = self.models.as_ref().filter(|_| self.showing) else { return true };
-        if models.refused.is_some() {
-            return models.refused_at(hour);
-        }
-        if models.waiting() || self.meshes.as_ref().is_some_and(|meshes| meshes.waiting() || !meshes.stand()) {
+        if !models.made_at(hour) {
             return false;
         }
-        let Some((made, _)) = &models.prepared else { return false };
-        models.stands().unwrap_or(*made) >= hour && self.meshes.as_ref().and_then(|meshes| meshes.hour).is_none_or(|meshes| meshes >= hour)
+        models.refused.is_some() || (!models.waiting() && self.meshes.as_ref().is_none_or(|meshes| {
+            !meshes.waiting() && meshes.stand() && meshes.hour.is_none_or(|made| made >= hour)
+        }))
     }
 
     pub fn figures_state(&self) -> String {
