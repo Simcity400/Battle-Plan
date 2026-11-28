@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -143,11 +143,14 @@ pub struct LeaderWithheld {
     pub reason: String,
 }
 
+type TraitIcons = Mutex<HashMap<String, catalogue::Drawn<io::Result<String>>>>;
+
 pub struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
     politics: Result<Arc<PoliticsContent>, String>,
     leaders: Result<Arc<Leaders>, String>,
     icons: std::sync::OnceLock<(LeaderSkillIcons, Vec<String>)>,
+    trait_icons: content_reader_layers::content::ByMode<TraitIcons>,
 }
 
 type HeldLeaders = content_reader_layers::content::diagnostics::Once<Result<Arc<Leaders>, String>>;
@@ -155,7 +158,7 @@ type HeldLeaders = content_reader_layers::content::diagnostics::Once<Result<Arc<
 impl Content {
     pub fn load(source: &Source, load: &LoadContext) -> Self {
         let Some(options) = load.content.as_ref() else {
-            return Self { catalogue: Err(UNCONFIGURED.into()), politics: Err(UNCONFIGURED.into()), leaders: Err(UNCONFIGURED.into()), icons: std::sync::OnceLock::new() };
+            return Self { catalogue: Err(UNCONFIGURED.into()), politics: Err(UNCONFIGURED.into()), leaders: Err(UNCONFIGURED.into()), icons: Default::default(), trait_icons: Default::default() };
         };
         let catalogue = catalogue::catalogue(source, options).map_err(|error| error.to_string());
         let politics = recorded_politics_content(source, options).map_err(|error| error.to_string());
@@ -167,7 +170,7 @@ impl Content {
                 .get_or_init(|| Leaders::load(&catalogue.content.layers, &|_| None).map(Arc::new).map_err(|error| error.to_string()))
                 .clone()
         });
-        Self { catalogue, politics, leaders, icons: std::sync::OnceLock::new() }
+        Self { catalogue, politics, leaders, icons: Default::default(), trait_icons: Default::default() }
     }
 
     pub fn skill_icons(&self) -> &(LeaderSkillIcons, Vec<String>) {
@@ -226,7 +229,7 @@ impl Content {
     pub fn trait_info(&self, token: &str) -> LeaderTrait {
         let name = self.trait_name(token);
         let drawn = match (&self.catalogue, &self.leaders) {
-            (Ok(shown), Ok(leaders)) => catalogue::draw(|| format!("trait {token} icon"), shown, |catalogue| trait_icon(catalogue, leaders, token)).get().clone(),
+            (Ok(shown), Ok(leaders)) => self.draw_trait_icon(shown, leaders, token),
             (Err(why), _) | (_, Err(why)) => Err(why.clone()),
         };
         let (icon, missing) = match drawn {
@@ -234,6 +237,27 @@ impl Content {
             Err(why) => (None, Some(why)),
         };
         LeaderTrait { token: token.to_owned(), name, icon, missing }
+    }
+
+    fn draw_trait_icon(&self, shown: &Catalogue, leaders: &Leaders, token: &str) -> Result<String, String> {
+        let held = self.trait_icons.current();
+        let report = |drawn: &catalogue::Drawn<io::Result<String>>| drawn.get().as_ref().cloned().map_err(ToString::to_string);
+        if let Some(icon) = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(token) {
+            return report(icon);
+        }
+        let retryable = std::cell::Cell::new(false);
+        let drawn = catalogue::draw(|| format!("trait {token} icon"), shown, |catalogue| {
+            let attempt = trait_icon(catalogue, leaders, token);
+            if attempt.as_ref().is_err_and(|error| error.kind() != io::ErrorKind::InvalidData) {
+                retryable.set(true);
+            }
+            attempt
+        });
+        let answer = report(&drawn);
+        if !retryable.get() {
+            held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(token.to_owned(), drawn);
+        }
+        answer
     }
 
     pub fn person_name(&self, character: Option<&CharacterRow>, lexical: Option<&[LexicalTokenRow]>) -> Option<String> {
@@ -263,12 +287,16 @@ impl Content {
     }
 }
 
-fn trait_icon(catalogue: &Catalogue, leaders: &Leaders, token: &str) -> Result<String, String> {
-    let name = leaders.traits.assignment_sprite(token).map_err(str::to_owned)?.ok_or_else(|| format!("Trait {token} is not registered"))?;
-    let sprite = catalogue::created_gui_sprite(&catalogue.sprites, &name).map_err(|error| error.to_string())?;
-    dashboard_base::products::artwork::resolve_sprite_type(catalogue, sprite, 0, 32)
-        .into_result()?
-        .ok_or_else(|| "Trait icon unavailable".to_owned())
+fn trait_icon(catalogue: &Catalogue, leaders: &Leaders, token: &str) -> io::Result<String> {
+    let name = leaders.traits.assignment_sprite(token).map_err(dashboard_core::invalid)?
+        .ok_or_else(|| dashboard_core::invalid(format!("Trait {token} is not registered")))?;
+    let sprite = catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
+    match dashboard_base::products::artwork::resolve_sprite_type(catalogue, sprite, 0, 32) {
+        ArtResolution::Ready { url, .. } => Ok(url),
+        ArtResolution::Pending => Err(io::Error::new(io::ErrorKind::WouldBlock, "artwork resolution is pending")),
+        ArtResolution::Failed { reason, retryable: true } => Err(io::Error::other(reason)),
+        unavailable => Err(dashboard_core::invalid(unavailable.reason().unwrap_or("Trait icon unavailable"))),
+    }
 }
 
 fn world_of<'a>(frame: &'a DecodedFrame, content: &'a Content) -> Result<World<'a>, String> {
