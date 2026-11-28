@@ -3192,6 +3192,58 @@ mod paused_reset {
         }
     }
 
+    #[test]
+    fn paused_reply_pressure_holds_look_ahead_and_leaves_room_for_the_head() {
+        let head = 10;
+        for release in ["play", "credit", "seek"] {
+            let pages = record(quiet);
+            let follow = Follow::new(0);
+            let route = follow.route();
+            let first = routed(route, head + 1, 1, 2048);
+            let budget = playhead::ByteBudget::new(crate::answer::charge(&first) * 4);
+            let push = Arc::new(Push::with_budget(budget.clone()));
+            let producer = push.clone();
+            let hook: playhead::Hook = Box::new(move |step, _| {
+                if !step.reset() && step.first() <= step.last() {
+                    producer.offer(routed(route, step.last(), 1, 2048));
+                }
+            });
+            let timeline = Timeline::whole(&*pages).unwrap();
+            let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 32, ring: 1, speed: 60.0, rate: 60.0, ..Settings::default() };
+            let playhead = Arc::new(Playhead::new(pages, timeline, settings, Some(hook)).unwrap());
+            let host = PlayheadHost::new_with_budget(playhead.clone(), |p| p, anchored, follow, vec![true; TABLE + 1], budget).unwrap();
+            host.show_panels(Arc::new(NoRows), push.clone());
+            playhead.seek(head);
+            playhead.wait_for(|| {
+                let lead = playhead.lead_held();
+                lead.past != 0 && (lead.capped || lead.past == lead.steps)
+            }).unwrap();
+            assert_eq!(playhead.lead_held().past, 1, "a single future packet filled half the send window");
+            assert_eq!(push.try_take().unwrap().1, first);
+            let current = routed(route, head, 2, 0);
+            push.offer(current.clone());
+            assert_eq!(push.try_take().unwrap().1, current, "a head reading is the next send");
+            assert!(push.try_take().is_none());
+
+            match release {
+                "play" => {
+                    playhead.play(60.0);
+                    playhead.wait_newest(head + 2).unwrap();
+                }
+                "credit" => {
+                    push.credit(push.session(), u64::MAX);
+                    playhead.wait_newest(head + 2).unwrap();
+                    assert!(!playhead.playing(), "credit alone wakes an idle paused route");
+                }
+                _ => {
+                    playhead.seek(head + 4);
+                    let epoch = playhead.epoch();
+                    playhead.wait_for(|| playhead.published() == Some((head + 4, epoch))).unwrap();
+                }
+            }
+        }
+    }
+
     fn open_host(
         pages: &Arc<Recording>,
         pieces: Vec<playhead::Piece>,
