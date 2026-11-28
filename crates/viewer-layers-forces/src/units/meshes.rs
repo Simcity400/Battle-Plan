@@ -514,6 +514,7 @@ impl Run {
             self.publish_answer(shared, answer, busy_ns, &frame);
             self.publish(shared, reader, false);
             shared.done.notify_all();
+            reader.notify_progress();
         }
     }
 

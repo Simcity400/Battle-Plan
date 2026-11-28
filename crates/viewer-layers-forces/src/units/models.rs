@@ -144,6 +144,7 @@ struct Made {
     stands: Hour,
     frame: Option<Arc<DecodedFrame>>,
     prepared: Arc<PreparedModels>,
+    refusal: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -172,7 +173,6 @@ struct Held {
     made: viewer_runtime::landed::PublishedKeyed<(u64, u64, Hour), Made>,
     published: u64,
     answered: viewer_runtime::landed::Published<Option<Hour>>,
-    refused: viewer_runtime::landed::Published<Option<String>>,
     working: bool,
     tables: Vec<TableId>,
     counts: Counts,
@@ -305,26 +305,26 @@ fn work(shared: &Shared, select: &dyn Select, reader: &views::Reader, maker: tim
             (built, standing, handled) = (None, None, None);
             continue;
         }
-        match prepared {
-            Ok(prepared) => {
-                let stamp = held.published + 1;
-                held.published = stamp;
-                held.refused.set_if_changed(None);
-                build_seq += 1;
-                held.made.publish(
-                    (generation, build_seq, stands),
-                    Made { generation, stamp, hour: frame.hour, perspective, stands, frame: Some(frame), prepared: Arc::new(prepared) },
-                );
-                standing = Some(at);
-            }
+        let (prepared, refusal) = match prepared {
+            Ok(prepared) => (prepared, None),
             Err(error) => {
-                held.refused.set_if_changed(Some(format!("Today's unit models cannot be made from the rows at the head: {error}")));
+                let why = format!("Today's unit models cannot be made from the rows at the head: {error}");
+                (PreparedModels::withheld(&why), Some(why))
             }
-        }
+        };
+        let stamp = held.published + 1;
+        held.published = stamp;
+        build_seq += 1;
+        held.made.publish(
+            (generation, build_seq, stands),
+            Made { generation, stamp, hour: frame.hour, perspective, stands, frame: Some(frame), prepared: Arc::new(prepared), refusal },
+        );
+        standing = Some(at);
         held.answered.advance(stands);
         held.working = false;
         drop(held);
         shared.done.notify_all();
+        reader.notify_progress();
     }
 }
 
@@ -424,11 +424,11 @@ impl Models {
         let mut arrived = false;
         {
             let held = self.shared.lock();
-            self.refused = held.refused.as_ref().cloned();
             if let Some(made) = held.made.as_ref().filter(|made| made.generation == self.generation && self.asked.as_ref() == Some(&made.perspective))
                 && self.made.as_ref().is_none_or(|ours| ours.stamp < made.stamp)
             {
                 arrived = self.made.as_ref().is_none_or(|ours| !Arc::ptr_eq(&ours.prepared, &made.prepared));
+                self.refused.clone_from(&made.refusal);
                 self.made = held.made.landed_clone();
             }
         }
@@ -449,7 +449,7 @@ impl Models {
         }
         if arrived && let Some(made) = &self.made {
             let prepared = made.as_ref().map(|made| Arc::clone(&made.prepared));
-            (self.shipless, self.joined) = ((!prepared.naval()).then(|| Arc::clone(&*prepared)), None);
+            (self.shipless, self.joined) = ((self.refused.is_none() && !prepared.naval()).then(|| Arc::clone(&*prepared)), None);
             (self.prepared, self.prepared_for) = (Some((made.hour, prepared)), Some(made.perspective.clone()));
         }
         if let Some((hour, prepared)) = self.prepared.clone().filter(|_| self.prepared_for.is_some() && self.prepared_for != self.asked) {
@@ -466,6 +466,12 @@ impl Models {
 
     pub fn stands(&self) -> Option<Hour> {
         self.made.as_ref().filter(|made| made.generation == self.generation).map(|made| made.stands)
+    }
+
+    pub(super) fn refused_at(&self, hour: Hour) -> bool {
+        (self.worker.is_none() && self.refused.is_some()) || self.made.as_ref().is_some_and(|made| {
+            made.refusal.is_some() && made.generation == self.generation && self.asked.as_ref() == Some(&made.perspective) && made.stands == hour
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]

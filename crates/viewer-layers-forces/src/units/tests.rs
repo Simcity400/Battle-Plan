@@ -629,6 +629,9 @@ fn a_models_job_out_is_not_carried_and_the_layer_publishes_nothing_before_its_fi
     assert!(refused.as_deref().is_some_and(|why| why.contains("no unit models in this test")), "{refused:?}");
     frames_at(&mut side, None, 1, "the layer current, answered and refused, once its meshes are made", |side| side.parts().is_some() && reading(side).published() == Published::Current);
     frames_at(&mut side, None, 1, &format!("the map's drawn hour at {held_at}"), |side| side.on_screen().and_then(|on| on.drawn).is_some_and(|drawn| drawn >= held_at));
+    let hour = side.applied().expect("an hour was drawn");
+    side.catch_up(hour).expect("the whole picture accepts the model refusal");
+    assert!(reading(&side).warnings().iter().any(|note| note.contains("no unit models in this test")));
 }
 
 #[test]

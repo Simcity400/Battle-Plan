@@ -156,10 +156,17 @@ fn facts(head: &Head<'_>) -> (RowFacts, Vec<String>) {
         missing.extend(display_missing);
         missing.push(format!("{NOT_GIVEN}Field Winter grading: it requires the recording's WeatherProvinces.display"));
     }
+    let mut present = |table, line| match rows_of(head, mirrors, table, &[]) {
+        Ok(rows) => rows.is_some(),
+        Err(error) => {
+            missing.push(format!("{NOT_GIVEN}{line}: {error}"));
+            false
+        }
+    };
     let facts = RowFacts {
         unreadable_naval_bases,
-        divisions: rows_of(head, mirrors, TableId::Divisions, &[]).ok().flatten().is_some(),
-        task_forces: rows_of(head, mirrors, TableId::TaskForces, &[]).ok().flatten().is_some(),
+        divisions: present(TableId::Divisions, "Field Counter presentation"),
+        task_forces: present(TableId::TaskForces, "Field Naval counter presentation"),
         unreadable_templates,
         ship_counters,
         weather,

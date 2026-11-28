@@ -171,6 +171,13 @@ impl<P> Shared<P> {
     fn lock(&self) -> MutexGuard<'_, State<P>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
+    fn notify_product(&self, state: &State<P>) {
+        self.built.notify_all();
+        if let Some(views) = &state.views {
+            views.notify_progress();
+        }
+    }
 }
 
 pub struct Rebuilt<P> {
@@ -219,8 +226,9 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
             viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             let worked = std::panic::catch_unwind(AssertUnwindSafe(|| work(&working, &*build, &Rules { name, timed, maker })));
             if let Err(panic) = worked {
-                working.lock().stopped.set_some(format!("The {name} worker stopped: {}", panicked(&*panic)));
-                working.built.notify_all();
+                let mut state = working.lock();
+                state.stopped.set_some(format!("The {name} worker stopped: {}", panicked(&*panic)));
+                working.notify_product(&state);
             }
         })?;
         Ok(Self { shared, worker: Some(worker), name, maker, timed })
@@ -497,7 +505,7 @@ fn refuse<P>(shared: &Shared<P>, state: &mut State<P>, why: String) {
         return;
     }
     state.built.set_some(Arc::new(Built::new(hour, state.generation, Err(why), 0, None, None)));
-    shared.built.notify_all();
+    shared.notify_product(state);
 }
 
 fn row_reader<P>(state: &mut State<P>, built: &Condvar) -> Option<Arc<views::Reader>> {
@@ -555,6 +563,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
                 && through > built.stands()
             {
                 built.stands.advance(through);
+                shared.notify_product(&state);
             }
             if state.generation != generation {
                 continue;
@@ -583,8 +592,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             if stood {
                 held.current.set(frame.hour);
                 state.builds.confirmed += 1;
-                drop(state);
-                shared.built.notify_all();
+                shared.notify_product(&state);
                 continue;
             }
         }
@@ -599,8 +607,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             let absent = state.source.as_ref().map_or_else(Vec::new, |(entry, _)| absent(entry, &missed));
             if !absent.is_empty() {
                 state.refused.set_if_changed(Some(refusal(&format!("the {} layer", rules.name), &absent)));
-                drop(state);
-                shared.built.notify_all();
+                shared.notify_product(&state);
                 continue;
             }
             state.tables.extend(missed.iter().copied());
@@ -622,9 +629,8 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
         }
         if state.open {
             state.built.set_some(Arc::new(Built::new(frame.hour, generation, product, ns, Some(frame), Some(seen))));
+            shared.notify_product(&state);
         }
-        drop(state);
-        shared.built.notify_all();
     }
 }
 
@@ -896,6 +902,11 @@ impl<B: Build> crate::layers::Layer for Whole<B> {
 
     fn any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    #[cfg(test)]
+    fn any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 

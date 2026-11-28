@@ -798,6 +798,13 @@ impl Shared {
             wake();
         }
     }
+
+    fn notify_progress(&self) {
+        let wake = lock(&self.on_publish).clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
 }
 
 enum Asked {
@@ -1165,6 +1172,10 @@ impl Views {
 
     pub fn set_on_publish(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         *lock(&self.shared.on_publish) = Some(wake);
+    }
+
+    pub fn notify_progress(&self) {
+        self.shared.notify_progress();
     }
 
     pub fn demand(&self) -> u64 {
@@ -1594,10 +1605,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
     shared.made.notify_all();
     if published {
         shared.entry.playhead().wake_waiters();
-        let on_publish = lock(&shared.on_publish).clone();
-        if let Some(wake) = on_publish {
-            wake();
-        }
+        shared.notify_progress();
     }
 }
 
@@ -1680,6 +1688,10 @@ pub struct Reader {
 }
 
 impl Reader {
+    pub fn notify_progress(&self) {
+        self.shared.notify_progress();
+    }
+
     fn place(readers: &[Reading], id: u64) -> Option<usize> {
         readers.iter().position(|held| held.id == id)
     }
