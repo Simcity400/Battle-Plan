@@ -1277,6 +1277,57 @@ mod tests {
     }
 
     #[test]
+    fn a_new_construction_location_reuses_the_followed_place_history() {
+        use dashboard_base::test_fixtures::{source, source_with_content, visual_mods::Machine};
+        use replay_data::rows::{StateRow, TableRows};
+        use replay_frame::frame::TableView;
+        use replay_recording::cells::count_reads;
+
+        let machine = Machine::new("construction_place_history");
+        let frames = (100..=102).map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let project = |id, created_hour, state, queue_ordinal| BuildingConstructionRow {
+                id, country: 9001, queue_ordinal, active_factories: 1, amount: 1, created_hour,
+                building_type: 300, target_location: state, target_state: state, ..Default::default()
+            };
+            let mut buildings = vec![project(10, 100, 64, 0)];
+            if hour >= 102 {
+                buildings.push(project(11, 102, 65, 1));
+            }
+            for rows in [
+                TableRows::Clock(vec![ClockRow { hour, ..Default::default() }]),
+                TableRows::States(vec![
+                    StateRow { id: 64, custom_name: b"North Reach".to_vec(), ..Default::default() },
+                    StateRow { id: 65, custom_name: b"South Reach".to_vec(), ..Default::default() },
+                ]),
+                TableRows::BuildingConstruction(buildings),
+                TableRows::RailwayConstruction(vec![]),
+            ] {
+                let table = rows.table();
+                frame.tables[table.index()] = TableView::Complete(rows).into();
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+            frame
+        }).collect();
+        let (source, load) = source_with_content(frames, &machine.root);
+        let source = Arc::new(source);
+        let cancelled = AtomicBool::new(false);
+        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "construction-log-tail", "branchId": "1", "limit": 64, "placeNames": true })).unwrap();
+        let reader = panel.exact().unwrap();
+        let seed = (reader.advance)(100, true, &cancelled, None);
+        let seed = seed.value.as_ref().as_ref().unwrap();
+        assert_eq!(seed["rows"][0]["place"]["name"], "North Reach");
+        let (followed, warm) = count_reads(|| (reader.advance)(102, false, &cancelled, None));
+        let params = ConstructionLogTailParams { place_names: Some(true), ..ask(102) };
+        let (exact, cold) = count_reads(|| ConstructionLogTail::load(&source, &params, &load, &cancelled).unwrap());
+        assert!(exact.rows.iter().any(|row| row.place.as_ref().and_then(|place| place.name.as_deref()) == Some("South Reach")));
+        assert_eq!(followed.value.as_ref().as_ref().unwrap()["rows"], serde_json::to_value(&exact.rows).unwrap());
+        let state_reads = |reads: &replay_recording::cells::ReadCounts| reads.get(&TableId::States).map_or((0, 0), |stats| (stats.opened, stats.restores));
+        assert!(state_reads(&cold).0 > 0, "the exact lookup needs recorded state operands");
+        assert_eq!(state_reads(&warm), (0, 0), "the newly shown location was in the retained broker window");
+    }
+
+    #[test]
     fn construction_tail_transitions_stepped_equals_cold_and_withholds_future_chips() {
         let source = Arc::new(make_source());
         let load = LoadContext { content: None };
