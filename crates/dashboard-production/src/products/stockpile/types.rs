@@ -1,12 +1,12 @@
 
-use super::{Content, DECIMALS, NEED_BOUND_RAW, StockType, Types, daily_units_raw, history, name_at};
+use super::{Content, DECIMALS, NEED_BOUND_RAW, Named, StockType, Types, daily_units_raw, design_reads, history, name_at, named_in, spelling_read};
 use crate::products::production::LineKind;
-use dashboard_base::products::{Country, LoadContext, Product, at_hour::{self, DatedStep, Keys, Read}, validate_country};
+use dashboard_base::products::{Country, LoadContext, Product, at_hour::{self, At, AtHour, Edits, Keys, Owner, Read, ReadsAt}, validate_country};
 use dashboard_base::{Source, span::HourSpan};
 use dashboard_query::{coverage::witnessed_selection, identity::Holder};
 use replay_data::{
     cadence::STAGGER_PERIOD,
-    rows::{Recorded, TableId, tables},
+    rows::{LogisticsEquipmentRow, ProductionLineRow, Recorded, StockByVariantRow, TableId, tables},
 };
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -313,49 +313,63 @@ fn stale(frame: &DecodedFrame, table: TableId, what: &str) -> Option<String> {
     (i64::from(frame.hour) - i64::from(read) >= i64::from(STAGGER_PERIOD)).then(|| format!("The {what} was not read within a day of this hour."))
 }
 
-fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, cancelled: &AtomicBool, mut step: Option<DatedStep<'_>>) -> io::Result<StockpileTypesReply> {
-    let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
-    let query = dashboard_base::queries::query(source, branch)?;
-    let hour = params.hour;
-    let run = query.holders.at(&params.country, hour).copied().ok_or_else(|| dashboard_core::refused("Equipment stockpile country is unavailable at this hour"))?;
-    let Holder::Found { slot, id } = run.holder else { return Err(dashboard_core::refused(query.holders.not_known(&params.country, hour).unwrap_or_else(|| "Equipment stockpile country is unavailable at this hour".to_owned()))) };
-    let replay = history::kept(source, &query, &params.country)?;
-    dashboard_text::metadata::check_cancel(cancelled)?;
-    let content = Content::load(source, context)?;
+fn stock_reads(Owner { slot, id }: Owner) -> [Read; 5] {
     let range = |table, low: u128, high: u128| Read { table, keys: Keys::Range(low, high) };
-    let reads = [
+    [
         range(TableId::StockByVariant, u128::from(slot) << 64, u128::from(slot) << 64 | u128::from(u64::MAX)),
         range(TableId::Stockpiles, u128::from(id) << 32, u128::from(id) << 32 | u128::from(u32::MAX)),
         range(TableId::LogisticsEquipment, u128::from(id) << 32, u128::from(id) << 32 | u128::from(u32::MAX)),
         Read::all(TableId::ProductionLines),
         Read::all(TableId::CountryLinks),
-    ];
-    let cold;
-    let frame = match &mut step {
-        Some(step) if query.timeline.at(hour).is_some() => step.frame(source, &query, hour, &reads, |_| None)?,
-        _ => {
-            cold = at_hour::frame(&query, hour, &reads, "Equipment stockpile")?;
-            &cold
-        }
-    };
+    ]
+}
+
+struct Observed<'a> {
+    stock_rows: Vec<&'a StockByVariantRow>,
+    lines: Vec<&'a ProductionLineRow>,
+    logistics_rows: Vec<&'a LogisticsEquipmentRow>,
+    stock_missing: Option<String>,
+    lines_missing: Option<String>,
+    logistics_missing: Option<String>,
+}
+
+impl Observed<'_> {
+    fn variants(&self) -> Vec<u64> {
+        self.stock_rows.iter().map(|row| row.variant).chain(self.lines.iter().map(|line| line.variant))
+            .collect::<BTreeSet<_>>().into_iter().collect()
+    }
+
+    fn tokens(&self) -> BTreeSet<u32> {
+        self.logistics_rows.iter().map(|row| row.token).collect()
+    }
+}
+
+fn observed(frame: &DecodedFrame, Owner { slot, id }: Owner) -> Observed<'_> {
     let links = witnessed_selection::<tables::CountryLinks>(frame);
     let raws: BTreeSet<u32> = links.rows.iter().filter(|link| link.canonical_slot == slot).map(|link| link.id).collect();
     let stock = witnessed_selection::<tables::StockByVariant>(frame);
     let stock_missing = stock.missing.or_else(|| stale(frame, TableId::Stockpiles, "stockpile"));
-    let stock_rows: Vec<_> = stock.rows.iter().filter(|row| row.slot == slot).collect();
+    let stock_rows = stock.rows.iter().filter(|row| row.slot == slot).collect();
     let production = witnessed_selection::<tables::ProductionLines>(frame);
     let lines_missing = production.missing.or(links.missing).or_else(|| stale(frame, TableId::ProductionLines, "production lines"));
-    let lines: Vec<_> = production.rows.iter().filter(|line| raws.contains(&line.country)).collect();
+    let lines = production.rows.iter().filter(|line| raws.contains(&line.country)).collect();
+    let (logistics_rows, logistics_missing) = logistics_at(frame, id);
+    Observed { stock_rows, lines, logistics_rows, stock_missing, lines_missing, logistics_missing }
+}
+
+fn logistics_at(frame: &DecodedFrame, id: u32) -> (Vec<&LogisticsEquipmentRow>, Option<String>) {
     let logistics = witnessed_selection::<tables::LogisticsEquipment>(frame);
     let logistics_stale = stale(frame, TableId::LogisticsEquipment, "logistics record");
-    let logistics_rows: Vec<_> = logistics.rows.iter().filter(|row| row.country == id && logistics_stale.is_none()).collect();
-    let logistics_missing = logistics.missing.or(logistics_stale);
-    let mut ids: BTreeSet<u64> = stock_rows.iter().map(|row| row.variant).collect();
-    ids.extend(lines.iter().map(|line| line.variant));
-    let ids: Vec<u64> = ids.into_iter().collect();
-    let tokens: BTreeSet<u32> = logistics_rows.iter().map(|row| row.token).collect();
-    let mut refused = BTreeMap::new();
-    let (mut named, spelled) = name_at(&query, hour, &ids, &tokens, &content, &mut refused)?;
+    let logistics_rows = logistics.rows.iter().filter(|row| row.country == id && logistics_stale.is_none()).collect();
+    (logistics_rows, logistics.missing.or(logistics_stale))
+}
+
+fn projected(
+    Observed { stock_rows, lines, logistics_rows, stock_missing, lines_missing, logistics_missing }: Observed<'_>,
+    (hour, valid_until): (i32, i32), content: &Content, ids: Vec<u64>,
+    (mut named, spelled): (BTreeMap<u64, Named>, BTreeMap<u32, String>),
+    refused: BTreeMap<String, usize>,
+) -> StockpileTypesReply {
     let mut warnings = content.warnings.clone();
     let mut types = Types::default();
     let mut variants = Vec::with_capacity(ids.len());
@@ -379,7 +393,7 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
         });
         variants.push(Held {
             id: variant,
-            archetype: types.variant(&content, &token),
+            archetype: types.variant(content, &token),
             token,
             name: name.as_ref().and_then(|name| name.name.clone()),
             origin: name.and_then(|name| name.origin),
@@ -399,7 +413,7 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
                     Recorded::Value(value) => value,
                     Recorded::NotRecorded => None,
                 };
-                by_key.entry(types.logistics(&content, &spelling)).or_default().push(Logistic { balance: row.balance_raw, stock: row.stock_raw, available });
+                by_key.entry(types.logistics(content, &spelling)).or_default().push(Logistic { balance: row.balance_raw, stock: row.stock_raw, available });
             }
             Need::Player(by_key, missing)
         }
@@ -407,11 +421,11 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
     for (why, count) in refused {
         warnings.push(format!("{count} equipment designs with unknown text or design operands: {why}"));
     }
-    let kinds = types.finish(&content, &mut warnings);
+    let kinds = types.finish(content, &mut warnings);
     let rows = rows(&Inputs { types: &kinds, variants: &variants, need: &need, stock_missing: stock_missing.as_deref(), lines_missing: lines_missing.as_deref() });
-    Ok(StockpileTypesReply {
+    StockpileTypesReply {
         hour,
-        valid_until: valid_until(&replay, hour, run.last, query.timeline.last),
+        valid_until,
         decimals: DECIMALS,
         need_missing: match &need {
             Need::Player(_, missing) => missing.clone(),
@@ -421,16 +435,139 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
         rows,
         rows_missing,
         warnings,
-    })
+    }
+}
+
+const COUNTRY_UNAVAILABLE: &str = "Equipment stockpile country is unavailable at this hour";
+
+fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<StockpileTypesReply> {
+    let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+    let query = dashboard_base::queries::query(source, branch)?;
+    let hour = params.hour;
+    let run = query.holders.at(&params.country, hour).copied().ok_or_else(|| dashboard_core::refused(COUNTRY_UNAVAILABLE))?;
+    let Holder::Found { slot, id } = run.holder else { return Err(dashboard_core::refused(query.holders.not_known(&params.country, hour).unwrap_or_else(|| COUNTRY_UNAVAILABLE.to_owned()))) };
+    let replay = history::kept(source, &query, &params.country)?;
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let content = Content::load(source, context)?;
+    let owner = Owner { slot, id };
+    let frame = at_hour::frame(&query, hour, &stock_reads(owner), "Equipment stockpile")?;
+    let observed = observed(&frame, owner);
+    let ids = observed.variants();
+    let mut refused = BTreeMap::new();
+    let named = name_at(&query, hour, &ids, &observed.tokens(), &content, &mut refused)?;
+    let through = valid_until(&replay, hour, run.last, query.timeline.last);
+    Ok(projected(observed, (hour, through), &content, ids, named, refused))
 }
 
 pub struct EquipmentStockpileTypes;
 
 pub fn panel(source: &Arc<Source>, context: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
-    at_hour::dated_product::<EquipmentStockpileTypes>(
-        source, context, asked, at_hour::at_hour, |_, reply| reply.hour, |_, _| {},
-        |source, params, context, cancelled, step| load(source, params, context, cancelled, Some(step)),
-    )
+    let panel = at_hour::exact_panel::<FollowedTypes>(source, context, asked)?;
+    let exact = panel.exact().expect("an AtHour panel has exact readers");
+    let branch = dashboard_query::branch(asked).map_err(|error| error.to_string())?;
+    let timeline = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?.timeline;
+    let recorded = Arc::clone(&timeline);
+    let read = Arc::clone(&exact.advance);
+    let unavailable = Arc::new(Err(COUNTRY_UNAVAILABLE.to_owned()));
+    let advance: dashboard_follow::panel::ProductReader = Arc::new(move |hour, values, cancelled, step| {
+        let mut answer = read(hour, values, cancelled, step);
+        if recorded.at(hour).is_none() { answer.value = Arc::clone(&unavailable); }
+        answer
+    });
+    let read = Arc::clone(&exact.cold);
+    let cold = Arc::new(move |hour, cancelled: &AtomicBool| {
+        if timeline.at(hour).is_none() {
+            Err(COUNTRY_UNAVAILABLE.to_owned())
+        } else {
+            read(hour, cancelled)
+        }
+    });
+    Ok(at_hour::product_panel(advance, cold))
+}
+
+struct FollowedTypes;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FollowedParams {
+    branch_id: String,
+    country: Country,
+}
+
+struct FollowedContext {
+    replay: Arc<history::Replay>,
+    content: Content,
+    last: i32,
+}
+
+impl AtHour for FollowedTypes {
+    const KEY: &'static str = EquipmentStockpileTypes::KEY;
+    const TITLE: &'static str = "Equipment stockpile";
+    const CONTENT_DEPENDENT: bool = EquipmentStockpileTypes::CONTENT_DEPENDENT;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
+    type Params = FollowedParams;
+    type Reply = StockpileTypesReply;
+    type Context = io::Result<FollowedContext>;
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        validate_country(&params.country)
+    }
+
+    fn owner(params: &Self::Params) -> Option<&Country> { Some(&params.country) }
+
+    fn tables(_: &Self::Params) -> Vec<TableId> {
+        use TableId::*;
+        vec![StockByVariant, Stockpiles, LogisticsEquipment, ProductionLines, CountryLinks, Countries,
+            CountryAppearance, VariantDefinitions, VariantModules, VariantUpgrades, LexicalTokens]
+    }
+
+    fn reads_in(_: &Self::Params, owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        let Some(owner) = owner.filter(|_| at.context.is_ok()) else { return Vec::new() };
+        match stage {
+            0 => stock_reads(owner).into_iter().chain([Read::all(TableId::Countries), Read::all(TableId::CountryAppearance)]).collect(),
+            1 => design_reads(observed(frame, owner).variants()).into(),
+            2 => vec![spelling_read(frame, &logistics_at(frame, owner.id).0.iter().map(|row| row.token).collect())],
+            _ => Vec::new(),
+        }
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _: &DecodedFrame, _: &ReadsAt<'_, Self::Context>) -> bool {
+        match stage {
+            1 => [TableId::CountryLinks, TableId::ProductionLines, TableId::StockByVariant].into_iter().any(|table| edits.fields(table, u64::MAX)),
+            2 => true,
+            _ => false,
+        }
+    }
+
+    fn context(_: &Source, _: &LoadContext) -> io::Result<Self::Context> {
+        Err(dashboard_core::invalid("Equipment stockpile needs a branch and country"))
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+        let query = dashboard_base::queries::query(source, branch)?;
+        Ok(history::kept(source, &query, &params.country).and_then(|replay| {
+            Ok(FollowedContext { replay, content: Content::load(source, load)?, last: query.timeline.last })
+        }))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _: &Self::Params, _: &At<'_, Self::Context>, _: &Self::Reply, _: bool) -> i32 {
+        frame.hour
+    }
+
+    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        let owner = at.owner.ok_or_else(|| dashboard_core::refused(COUNTRY_UNAVAILABLE))?;
+        let context = at.context.as_ref().map_err(dashboard_core::duplicate)?;
+        let hour = frame.hour;
+        let last = at.holders.at(&params.country, hour).map_or(hour, |run| run.last);
+        let observed = observed(frame, owner);
+        let ids = observed.variants();
+        let mut refused = BTreeMap::new();
+        let content = &context.content;
+        let named = named_in(frame, &ids, &observed.tokens(), content, &mut refused);
+        let through = valid_until(&context.replay, hour, last, context.last);
+        Ok(projected(observed, (hour, through), content, ids, named, refused))
+    }
 }
 
 impl Product for EquipmentStockpileTypes {
@@ -451,6 +588,6 @@ impl Product for EquipmentStockpileTypes {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        load(source, params, context, cancelled, None)
+        load(source, params, context, cancelled)
     }
 }
