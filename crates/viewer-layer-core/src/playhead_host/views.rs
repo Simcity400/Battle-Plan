@@ -1689,6 +1689,11 @@ impl Reader {
         readers.get(Self::place(&readers, self.id)?)?.frame().cloned()
     }
 
+    pub fn has_rows_at(&self, hour: Hour) -> bool {
+        let readers = lock(&self.shared.readers);
+        Self::place(&readers, self.id).and_then(|at| readers[at].stands()) == Some((hour, self.seek()))
+    }
+
     pub fn frame_with_failures(&self) -> Option<(Arc<DecodedFrame>, Arc<[view::HeadFailure]>)> {
         let readers = lock(&self.shared.readers);
         let reading = readers.get(Self::place(&readers, self.id)?)?;

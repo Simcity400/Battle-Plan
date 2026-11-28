@@ -595,6 +595,10 @@ impl Layer for Orders {
         }
     }
 
+    fn made_at(&self, hour: Hour) -> bool {
+        self.perspective().is_none() || self.made_for() == Some(hour)
+    }
+
     fn held(&self) -> usize {
         self.plan().map_or(0, |(_, plan)| std::mem::size_of_val(&plan.vertices[..]) + std::mem::size_of_val(&plan.native_vertices[..]) + std::mem::size_of_val(&plan.draws[..]))
     }

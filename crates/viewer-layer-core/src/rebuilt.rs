@@ -149,7 +149,7 @@ struct State<P> {
     stop: bool,
     head: Option<Hour>,
     views: Option<views::Views>,
-    reader: Option<views::Reader>,
+    reader: Option<Arc<views::Reader>>,
     built: PublishedSlot<Option<Arc<Built<P>>>>,
     tables: Vec<TableId>,
     builds: Builds,
@@ -247,7 +247,7 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         let mut state = self.shared.lock();
         let needs: Vec<Need> = state.tables.iter().copied().map(Need::every).collect();
         if state.refused.is_none() {
-            state.reader = Some(store.reader(self.name, &needs));
+            state.reader = Some(Arc::new(store.reader(self.name, &needs)));
             state.awaiting = state.tables.clone();
         }
         state.views = Some(store.handle());
@@ -336,8 +336,8 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
                 let generation = state.generation;
                 return Ok(why.map(|why| Arc::new(Built::new(hour, generation, Err(why), 0, None, None))));
             }
-            if drives_rows && !state.awaiting.is_empty() {
-                return Err(io::Error::new(io::ErrorKind::WouldBlock, format!("The {} layer awaits {:?} at hour {hour}", self.name, state.awaiting)));
+            if drives_rows && state.views.is_some() && state.reader.as_ref().is_none_or(|reader| !reader.has_rows_at(hour)) {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, format!("The {} layer awaits {:?} at hour {hour}", self.name, state.tables)));
             }
             let now = Instant::now();
             if now >= until {
@@ -500,30 +500,18 @@ fn refuse<P>(shared: &Shared<P>, state: &mut State<P>, why: String) {
     shared.built.notify_all();
 }
 
-enum Found<'a, P> {
-    Frame(MutexGuard<'a, State<P>>, Arc<DecodedFrame>, u64),
-    Wait(MutexGuard<'a, State<P>>),
-}
-
-fn from_rows<'a, P>(mut state: MutexGuard<'a, State<P>>, held: &mut Option<views::Reader>, built: &Condvar) -> Found<'a, P> {
-    if held.is_none() {
-        *held = state.reader.take();
-    }
-    if held.is_none() {
-        let Some(store) = state.views.clone() else { return Found::Wait(state) };
+fn row_reader<P>(state: &mut State<P>, built: &Condvar) -> Option<Arc<views::Reader>> {
+    if state.reader.is_none() {
+        let store = state.views.as_ref()?;
         let needs: Vec<Need> = state.tables.iter().copied().map(Need::every).collect();
-        *held = Some(store.reader(state.name, &needs));
+        state.reader = Some(Arc::new(store.reader(state.name, &needs)));
         state.awaiting = state.tables.clone();
         built.notify_all();
     }
-    match held.as_ref().and_then(views::Reader::newest).filter(|(frame, _)| holds(frame, &state.tables)) {
-        Some((frame, published)) => Found::Frame(state, frame, published),
-        None => Found::Wait(state),
-    }
+    state.reader.clone()
 }
 
 fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
-    let mut reader: Option<views::Reader> = None;
     let mut last: Option<(Arc<DecodedFrame>, u64, u64)> = None;
     loop {
         let mut state = shared.lock();
@@ -537,13 +525,12 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             continue;
         }
         if !state.open || state.seen.is_none() {
-            (reader, last) = (None, None);
+            last = None;
             state.awaiting.clear();
             let _ = shared.wake.wait_timeout(state, TICK);
             continue;
         }
         if let Some(why) = state.refused.as_ref().cloned() {
-            reader = None;
             state.reader = None;
             state.awaiting.clear();
             refuse(shared, &mut state, why);
@@ -551,17 +538,20 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             continue;
         }
         let generation = state.generation;
-        let (mut state, frame, published) = match from_rows(state, &mut reader, &shared.built) {
-            Found::Frame(state, frame, published) => (state, frame, published),
-            Found::Wait(state) => {
-                let _ = shared.wake.wait_timeout(state, TICK);
-                continue;
-            }
+        let Some(reader) = row_reader(&mut state, &shared.built) else {
+            let _ = shared.wake.wait_timeout(state, TICK);
+            continue;
+        };
+        let before = reader.published();
+        let Some((frame, published)) = reader.newest().filter(|(frame, _)| holds(frame, &state.tables)) else {
+            drop(state);
+            reader.wait_newer(before, TICK);
+            continue;
         };
         state.awaiting.clear();
         if last.as_ref().is_some_and(|(held, _, taken)| Arc::ptr_eq(held, &frame) && *taken == generation) || state.generation != generation {
             if let Some(built) = state.built.as_ref().filter(|built| built.generation == generation && built.current() >= frame.hour)
-                && let Some(through) = reader.as_ref().and_then(|reader| reader.through(Arc::as_ptr(&frame)))
+                && let Some(through) = reader.through(Arc::as_ptr(&frame))
                 && through > built.stands()
             {
                 built.stands.advance(through);
@@ -572,9 +562,7 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             state.settled = Some((frame.hour, generation));
             shared.built.notify_all();
             drop(state);
-            if let Some(reader) = &reader {
-                reader.wait_newer(published, TICK);
-            }
+            reader.wait_newer(published, TICK);
             continue;
         }
         if let Some((_, before, _)) = &last {
@@ -620,9 +608,8 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             state.tables.dedup();
             state.awaiting = missed;
             state.builds.discovered += 1;
-            if let Some(reader) = &reader {
-                reader.declare_only(&state.tables);
-            }
+            state.generation += 1;
+            reader.declare_only(&state.tables);
             drop(state);
             shared.built.notify_all();
             continue;
@@ -895,6 +882,12 @@ impl<B: Build> crate::layers::Layer for Whole<B> {
             },
             Some(built) => Published::Cadence(built.stands()),
         }
+    }
+
+    fn made_at(&self, hour: Hour) -> bool {
+        !self.open || self.held.as_ref().is_some_and(|built| {
+            built.of(hour) && (built.product.is_err() || built.generation == self.rebuilt.shared.lock().generation)
+        })
     }
 
     fn held(&self) -> usize {

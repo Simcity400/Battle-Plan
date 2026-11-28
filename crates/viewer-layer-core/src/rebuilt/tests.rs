@@ -455,16 +455,11 @@ fn a_whole_join_yields_for_a_table_the_builder_learns() {
     side.layers_mut()[1] = layer;
     assert_eq!(probe_of(&side).rebuilt().awaiting(), [table]);
     assert!(!probe_of(&side).behind, "waiting for inputs must yield without falling behind");
-    for _ in 0..200_000 {
-        side.settle_all().unwrap();
-        if let Some(built) = probe_of(&side).product() {
-            assert!(built.of(hour));
-            assert_eq!(built.product.as_ref().ok(), Some(&hour));
-            return;
-        }
-        std::thread::yield_now();
-    }
-    panic!("the whole settle never built the product at hour {hour}");
+    assert!(!probe_of(&side).made_at(hour));
+    side.catch_up(hour).unwrap();
+    assert!(side.parts().unwrap().1.iter().all(|layer| layer.made_at(hour)));
+    let built = probe_of(&side).product().expect("catch up returned the finished product");
+    assert_eq!(built.product.as_ref().ok(), Some(&hour));
 }
 
 #[test]

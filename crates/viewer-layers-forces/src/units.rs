@@ -1701,6 +1701,10 @@ impl Layer for Units {
         }
     }
 
+    fn made_at(&self, hour: replay_data::Hour) -> bool {
+        self.window.is_none() || self.figures_stand(hour)
+    }
+
     fn carried(&self) -> Carried {
         let entities = self.divisions.len() + self.rows_carried() + self.sights.len() + self.dirty_stacks.len() + self.figures.len() + usize::from(self.combat_dirty) + usize::from(self.links_dirty);
         Carried { entities }

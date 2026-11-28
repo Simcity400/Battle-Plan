@@ -822,10 +822,15 @@ impl<P: PlaybackProducts> MapSide<P> {
         let mut until = Instant::now() + HANDS_BACK;
         loop {
             self.step_makers(false).map_err(|error| error.to_string())?;
+            if self.applied.is_some_and(|hour| !self.head_products_reached(hour)) {
+                self.settle_all().map_err(|error| error.to_string())?;
+            }
             let asked = self.ask_overlay_step(true, true, Arc::default());
             self.post_makers();
-            if asked && self.makers_home() {
-                if self.join_overlay(Settling::Whole) || self.makers_home() {
+            let ready = |side: &Self| side.applied.is_some_and(|hour| side.whole_ready_at(hour));
+            if asked && ready(self) {
+                self.join_overlay(Settling::Whole);
+                if ready(self) {
                     break;
                 }
                 until = Instant::now() + HANDS_BACK;
@@ -1745,10 +1750,9 @@ impl<P: PlaybackProducts> MapSide<P> {
             let newest = self.entry.playhead.newest().unwrap_or(head);
             self.frame_within(head.min(newest.max(self.applied.unwrap_or(newest))), crate::layers::Settling::step(), false)?;
             if !self.composing && !self.superseded && self.applied == Some(head) && self.makers_home() && self.ready.iter().zip(&self.reads).all(|(&ready, reads)| ready || reads.is_err()) {
-                self.settle_all()?;
-                if self.head_products_reached(head) && self.overlay_whole(head)? {
+                if self.settle_all()? && self.overlay_whole(head)? {
                     self.combat_whole = self.combat_whole();
-                    if self.makers_home() {
+                    if self.whole_ready_at(head) {
                         self.update_shown();
                         return Ok(());
                     }
@@ -1822,7 +1826,9 @@ impl<P: PlaybackProducts> MapSide<P> {
                 }
                 std::thread::sleep(std::time::Duration::from_micros(200));
             }
-            self.settle_all()?;
+            if !self.settle_all()? {
+                return Ok(false);
+            }
         }
         Ok(self.overlay.as_deref().expect("held above").stands_at(head))
     }
@@ -1853,6 +1859,11 @@ impl<P: PlaybackProducts> MapSide<P> {
 
     fn head_products_reached(&self, head: Hour) -> bool {
         (0..self.layers.len()).filter(|&at| self.reads[at].is_ok() && self.ready[at]).all(|at| self.layers[at].made_at(head))
+    }
+
+    fn whole_ready_at(&self, head: Hour) -> bool {
+        self.applied == Some(head) && !self.composing && !self.superseded && self.makers_home()
+            && self.ready.iter().zip(&self.reads).all(|(&ready, reads)| ready || reads.is_err()) && self.head_products_reached(head)
     }
 
     fn makers_home(&self) -> bool {
@@ -1906,7 +1917,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         self.switched.is_some_and(|at| at.elapsed() < HURRY)
     }
 
-    pub fn settle_all(&mut self) -> io::Result<()> {
+    pub fn settle_all(&mut self) -> io::Result<bool> {
         self.step_makers(true)?;
         self.doing.set(Doing::WHOLE);
         self.post_makers();
@@ -1932,7 +1943,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             }
         }
         self.doing.set(Doing::IDLE);
-        Ok(())
+        Ok(self.applied.is_some_and(|hour| self.whole_ready_at(hour)))
     }
 
     pub fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
