@@ -10,6 +10,10 @@ pub struct Visions {
     fold: Mutex<Option<viewer_foundation::perspective::incremental::Fold>>,
 }
 impl Visions {
+    pub fn take(&self) -> Option<viewer_foundation::perspective::incremental::Fold> {
+        self.fold.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+    }
+
     #[cfg(test)]
     pub fn stats(&self) -> Option<viewer_foundation::perspective::incremental::WorkStats> {
         self.fold.lock().unwrap().as_ref().map(|fold| fold.last)

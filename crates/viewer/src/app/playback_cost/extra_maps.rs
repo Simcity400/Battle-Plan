@@ -121,7 +121,7 @@ impl Extras {
 
     fn start(&mut self, document: &Document, index: u64, shown: bool) {
         while self.sides.len() + self.pending.len() < self.wanted {
-            match crate::playhead_host::open_document(document, None) {
+            match crate::playhead_host::open_document(document, None, false, || {}) {
                 Ok(opening) => self.pending.push(Pending { opening, started: index, shown }),
                 Err(error) => {
                     eprintln!("An extra map's playhead is refused: {error}");

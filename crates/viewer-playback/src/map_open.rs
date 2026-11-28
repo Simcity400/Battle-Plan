@@ -157,12 +157,11 @@ impl ForMap {
     }
 }
 
-pub fn open_document(document: &crate::document::Document, at: Option<At>) -> io::Result<Opening> {
+pub fn open_document(document: &crate::document::Document, at: Option<At>, private: bool, wake: impl FnOnce() + Send + 'static) -> io::Result<Opening> {
     let made = ForMap::of(document, at);
-    Opening::spawn(move || made.made(false))
-}
-
-pub fn open_document_private(document: &crate::document::Document, at: Option<At>) -> io::Result<Opening> {
-    let made = ForMap::of(document, at);
-    Opening::spawn(move || made.made(true))
+    Opening::spawn(move || {
+        let result = made.made(private);
+        wake();
+        result
+    })
 }

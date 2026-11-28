@@ -282,6 +282,8 @@ pub struct SnowContent {
     pub cells: map_snow::SnowCells,
     pub winter: map_snow::winter::Winter,
 }
+
+pub(crate) type SnowSource = Box<dyn Fn(&content_reader_map::map::MapData) -> io::Result<SnowContent> + Send + Sync>;
 impl SnowContent {
     pub fn project(
         &self,
@@ -312,15 +314,25 @@ impl crate::ProductContent {
         self.snow_loader = Some(loader);
         self
     }
-    pub fn with_snow(self, value: io::Result<SnowContent>) -> Self {
+    pub fn with_snow(mut self, value: io::Result<SnowContent>, permanent: &[bool]) -> Self {
         let value = value.and_then(|snow| {
             self.record_snow_content(&snow)?;
             Ok(snow)
         });
-        if let Err(error) = &value {
+        if let Ok(snow) = &value {
+            let winter = snow.winter.clone();
+            let packed: Box<[_]> = permanent.chunks(8).map(|chunk| {
+                chunk.iter().enumerate().fold(0, |byte, (bit, &set)| byte | (u8::from(set) << bit))
+            }).collect();
+            self.snow_source = Some(Box::new(move |map| {
+                let permanent: Vec<_> = (0..map.province_ids.len()).map(|at| packed[at / 8] & (1 << (at % 8)) != 0).collect();
+                SnowContent::new(map, &permanent, winter.clone())
+            }));
+        } else if let Err(error) = &value {
             self.reads.session_error(error);
         }
-        let _ = self.snow.set(value.map_err(|e| (e.kind(), e.to_string())));
+        *self.snow.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(value.map(Arc::new).map_err(|e| (e.kind(), e.to_string())));
         self
     }
     fn record_snow_content(&self, snow: &SnowContent) -> io::Result<()> {
@@ -347,36 +359,32 @@ impl crate::ProductContent {
                 Ok(())
             })
     }
-    pub fn snow_content(&self) -> io::Result<&SnowContent> {
-        if self.snow.get().is_none() {
-            let _building = self
-                .snow_building
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if self.snow.get().is_none() {
-                let result = self
+    pub fn snow_content(&self) -> io::Result<Arc<SnowContent>> {
+        let mut snow = self.snow.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if snow.is_none() {
+            let result = match &self.snow_source {
+                Some(source) => source(&self.map),
+                None => self
                     .snow_loader
                     .as_ref()
                     .ok_or_else(|| io::Error::other("snow content not configured"))
-                    .and_then(|loader| read_snow(loader, &self.map));
-                let result = result.and_then(|snow| {
-                    self.record_snow_content(&snow)?;
-                    Ok(snow)
-                });
-                if let Err(error) = &result {
-                    if error.kind() == io::ErrorKind::WouldBlock
-                        || error.kind() == io::ErrorKind::OutOfMemory
-                    {
-                        return Err(io::Error::new(error.kind(), error.to_string()));
-                    }
-                }
-                let _ = self.snow.set(result.map_err(|e| (e.kind(), e.to_string())));
+                    .and_then(|loader| read_snow(loader, &self.map))
+                    .and_then(|snow| {
+                        self.record_snow_content(&snow)?;
+                        Ok(snow)
+                    }),
+            };
+            if let Err(error) = &result
+                && matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::OutOfMemory)
+            {
+                return Err(io::Error::new(error.kind(), error.to_string()));
             }
+            *snow = Some(result.map(Arc::new).map_err(|e| (e.kind(), e.to_string())));
         }
-        self.snow
-            .get()
+        snow.as_ref()
             .expect("completed snow content")
             .as_ref()
+            .map(Arc::clone)
             .map_err(|(kind, reason)| io::Error::new(*kind, reason.clone()))
     }
 }

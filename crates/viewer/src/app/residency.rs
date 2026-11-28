@@ -297,6 +297,14 @@ impl Viewer {
         if let Some(frame) = frame {
             self.free_scene_target(frame);
         }
+        if self.dashboard_active
+            && !self.popout_open
+            && self.dashboard.as_deref().is_none_or(|maps| !maps.holds_views())
+            && let Some(document) = &self.document
+            && let Some(display) = document.products.release_display()
+        {
+            self.retire(display);
+        }
         let Some(mut scene) = self.scene.take() else {
             return;
         };
