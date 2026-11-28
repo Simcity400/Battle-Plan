@@ -151,7 +151,7 @@ export const nativeDashboardClient: DashboardClient = {
           else if (data.reason) fail(data.reason);
         };
         reader.onerror = event => fail(event.message);
-        reader.postMessage({ ports, session }, [...ports]);
+        reader.postMessage({ ports, session, panelDeltas: !IS_EXPORT_WINDOW }, [...ports]);
       });
       const done = busy('follow');
       return { ready: ready.finally(done), close: () => { done(); close(); }, retireLane };

@@ -4,7 +4,7 @@ use dashboard_core::config::{ContentOptions, LoadContext};
 use dashboard_follow::{
     Follow, Identity, Message, Query, SeriesMode, StepStats,
     live::CELLS,
-    panel::{PanelData, ProductReader, ProductStep, Wake, dated, product::Delivery},
+    panel::{PanelData, ProductReader, ProductStep, Wake, dated, product::Delivery, wire::PanelBodies},
 };
 use playhead::{Declared, Hook, Lanes, Piece, Playhead, Step, pages::WorldPages};
 use serde::{Deserialize, Serialize};
@@ -199,6 +199,8 @@ struct View {
     slots: BTreeMap<u32, String>,
     held: BTreeMap<u32, blake3::Hash>,
     reasons: BTreeMap<u32, String>,
+    panel_encoder: PanelBodies,
+    panel_decoder: PanelBodies,
 }
 
 impl View {
@@ -293,6 +295,8 @@ impl View {
                 slots,
                 held: BTreeMap::new(),
                 reasons: BTreeMap::new(),
+                panel_encoder: PanelBodies::default(),
+                panel_decoder: PanelBodies::default(),
             },
             reasons,
         )
@@ -359,6 +363,7 @@ impl View {
             let packet = packet?;
             counts.rows += packet.rows;
             counts.bytes += packet.bytes;
+            counts.clock_only += packet.clock_only;
             if let Some(payload) = packet.payload {
                 if let Reader::Direct(direct) = reader {
                     counts.exact_requests += 1;
@@ -375,8 +380,15 @@ impl View {
         if let Some(batch) = panels {
             let (bytes, service) = measured(|| batch.finish(Some(hour)));
             counts.add(service);
-            counts.bytes += bytes.len() as u64;
-            for record in dated::records(&bytes)? {
+            let (patch, transport) = measured(|| self.panel_encoder.encode(&bytes));
+            counts.panel_delta_cpu_ns += transport.cpu_ns;
+            let patch = patch.filter(|patch| patch.len() + 12 < bytes.len());
+            counts.bytes += patch.as_ref().map_or(bytes.len(), |patch| patch.len() + 12) as u64;
+            let restored = self.panel_decoder.decode(patch.as_deref().unwrap_or(&bytes))?;
+            if restored.as_ref().is_some_and(|restored| *restored != bytes) {
+                return Err(io::Error::other("Panel transport did not restore the exact dated batch"));
+            }
+            for record in dated::records(restored.as_deref().unwrap_or(&bytes))? {
                 if record.kind == dated::COMPLETED {
                     panel_through = Some(record.hour);
                     continue;
@@ -442,6 +454,7 @@ struct StepContext<'a, 'lane> {
 struct Packet {
     rows: u64,
     bytes: u64,
+    clock_only: u64,
     payload: Option<Payload>,
 }
 
@@ -547,8 +560,12 @@ impl Panel {
             hour
         };
         self.input = Some(reading.value);
+        let mut clock_only = 0;
         if let Some((kind, body)) = self.delivery.update(reset, &value) {
             batch.changed(id, at, kind, body);
+            if kind == dated::DATA && !reset && self.delivered.as_ref().is_some_and(|previous| differs_only_in_hour(previous, &value)) {
+                clock_only = 1;
+            }
         } else if unread_from.is_some_and(|next| from > next) {
             batch.changed(id, at, dated::AGAIN, &[]);
         }
@@ -557,9 +574,17 @@ impl Panel {
         self.delivered = Some(value);
         Ok(Packet {
             rows,
+            clock_only,
             ..Packet::default()
         })
     }
+}
+
+fn differs_only_in_hour(previous: &PanelData, next: &PanelData) -> bool {
+    let (Some(previous), Some(next)) = (previous.as_ref().ok().and_then(Value::as_object), next.as_ref().ok().and_then(Value::as_object)) else { return false; };
+    previous.len() == next.len()
+        && matches!((previous.get("hour").and_then(Value::as_i64), next.get("hour").and_then(Value::as_i64)), (Some(old), Some(new)) if old != new)
+        && previous.iter().all(|(key, value)| key == "hour" || next.get(key) == Some(value))
 }
 
 impl Direct {
@@ -613,6 +638,8 @@ struct Counts {
     restores: u64,
     bytes: u64,
     exact_requests: u64,
+    clock_only: u64,
+    panel_delta_cpu_ns: u64,
 }
 
 impl Counts {

@@ -623,7 +623,10 @@ fn main() {
             }
             match request.uri().path() {
                 "/follow" => {
-                    if pull::param(&request, "session").as_deref().is_some_and(dashboard_follow::registry::is_export_session) {
+                    if let Some(serial) = pull::param(&request, "whole") {
+                        let Ok(serial) = serial.parse() else { return pull::refuse(responder, StatusCode::BAD_REQUEST, "A full panel batch names its serial"); };
+                        follow_push::repair(&context.app_handle().state::<follow_push::FollowPush>(), &request, serial, responder);
+                    } else if pull::param(&request, "session").as_deref().is_some_and(dashboard_follow::registry::is_export_session) {
                         context.app_handle().state::<follow_push::ExportFollowPush>().ask(&request, responder);
                     } else {
                         context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder);

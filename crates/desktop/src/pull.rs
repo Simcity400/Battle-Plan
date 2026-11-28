@@ -11,6 +11,7 @@ use tauri::{
 pub trait Outbox: Default {
     fn take(&mut self) -> Vec<Vec<u8>>;
     fn restart(&mut self, session: &str);
+    fn take_body(&mut self) -> Vec<u8> { frame(&self.take()) }
 }
 
 pub struct Asks<O, R> {
@@ -28,11 +29,12 @@ impl<O: Default, R> Default for Asks<O, R> {
 
 pub type Answer<R> = (R, Vec<u8>);
 
-fn frame(payloads: Vec<Vec<u8>>) -> Vec<u8> {
-    let mut body = Vec::with_capacity(payloads.iter().map(|payload| payload.len() + 4).sum());
+pub fn frame<B: AsRef<[u8]>>(payloads: &[B]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(payloads.iter().map(|payload| payload.as_ref().len() + 4).sum());
     for payload in payloads {
+        let payload = payload.as_ref();
         body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        body.extend_from_slice(&payload);
+        body.extend_from_slice(payload);
     }
     body
 }
@@ -53,11 +55,11 @@ fn is_older_session(incoming: &str, current: &str) -> bool {
 impl<O: Outbox, R> Asks<O, R> {
     pub fn offered(&mut self) -> Option<Answer<R>> {
         self.parked.as_ref()?;
-        let payloads = self.outbox.take();
-        if payloads.is_empty() {
+        let body = self.outbox.take_body();
+        if body.is_empty() {
             return None;
         }
-        Some((self.parked.take().expect("held"), frame(payloads)))
+        Some((self.parked.take().expect("held"), body))
     }
 
     pub fn ask(&mut self, session: String, asker: R) -> Result<Vec<Answer<R>>, R> {
@@ -74,11 +76,11 @@ impl<O: Outbox, R> Asks<O, R> {
             answers.push((asker, Vec::new()));
             return Ok(answers);
         }
-        let payloads = self.outbox.take();
-        if payloads.is_empty() {
+        let body = self.outbox.take_body();
+        if body.is_empty() {
             self.parked = Some(asker);
         } else {
-            answers.push((asker, frame(payloads)));
+            answers.push((asker, body));
         }
         Ok(answers)
     }
@@ -94,7 +96,7 @@ impl<O: Default> Default for Pull<O> {
     }
 }
 
-fn respond((responder, body): Answer<UriSchemeResponder>) {
+pub fn respond((responder, body): Answer<UriSchemeResponder>) {
     let mut response = Response::new(body);
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
