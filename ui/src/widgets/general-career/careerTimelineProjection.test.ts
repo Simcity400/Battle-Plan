@@ -224,14 +224,14 @@ test('leader career reply validates causality and paints once per day while quie
   assert.equal(careerTimelineDeclaration.kind, 'general-career');
 });
 
-const projectAt = (hour: LeaderHourReply | undefined, career: LeaderCareerReply) => careerTimelineProjection.project(createBoundedReadView({
-  hour: career.hour,
+const projectAt = (hour: LeaderHourReply | undefined, career: LeaderCareerReply, { shownHour = career.hour, firstHour = OPTIONS.firstHour } = {}) => careerTimelineProjection.project(createBoundedReadView({
+  hour: shownHour,
   identity: datedIdentity({ JAP: [{ from: FIRST, name: 'Imperial Japan' }] }),
   panels: new Map([['main', {
     ...(hour ?? { reference: career.reference, missing: 'Lead details are unavailable', warnings: [] }),
     career: validateLeaderCareer(career),
   }]]),
-}), OPTIONS);
+}), { ...OPTIONS, firstHour });
 
 test('partial career results withhold the wide and compact header win rates', () => {
   const hour = hourReply();
@@ -299,7 +299,7 @@ test('a career reply shown after its read hour runs its service and coverage on 
     runs: [{ firstHour: FIRST, lastHour: read, role, skill: 7, components: [6, 5, 5, 4] }],
     battles: careerReply().battles.slice(0, 2) };
   const shown = H(1938, 1, 20);
-  const model = careerTimelineProjection.project(createBoundedReadView({ hour: shown, panels: new Map<string, unknown>([['career', validateLeaderCareer(career)]]) }), OPTIONS);
+  const model = projectAt(undefined, career, { shownHour: shown });
   assert.deepEqual(model.unobserved, [], 'nothing is hatched inside the proven interval');
   const bar = model.lanes.find(lane => lane.key === 'battles')!.spans[0]!;
   assert.equal(bar.lastHour, shown, 'the month bar advances to the shown hour');
@@ -313,8 +313,7 @@ test('a battle dated in a month with no recorded hour in service draws no bar bu
 });
 
 test('with a Range, trait gains before it are not piled onto its first hour', () => {
-  const model = careerTimelineProjection.project(createBoundedReadView({ hour: AT, panels: new Map<string, unknown>([['career', validateLeaderCareer(careerReply())]]) }),
-    { ...OPTIONS, firstHour: H(1938, 1, 1) });
+  const model = projectAt(undefined, careerReply(), { firstHour: H(1938, 1, 1) });
   const traits = model.lanes.find(lane => lane.key === 'traits')!.spans;
   assert.deepEqual(traits.map(span => span.firstHour), [H(1938, 4, 1)], 'the gain held before 1936 lies outside the Range');
 });
