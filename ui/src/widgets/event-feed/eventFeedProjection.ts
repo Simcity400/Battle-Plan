@@ -292,9 +292,6 @@ function buildFeedTableRow(
       ? (event.participants ? event.participants[0] : (event.tags[0] ?? null))
       : (event.participants ? event.participants[1] : (event.tags[0] ?? null));
     const flag = recipient ? identityFlags(readView, 'country', [recipient], { atHour: event.nameHour, boundary })[0] : undefined;
-    const countryName = recipient
-      ? spokenValue(resolveName(readView, 'country', recipient, { atHour: event.nameHour, boundary }).value)
-      : null;
     const awaiting = !page.choice && (page.status === 'awaiting' || page.live);
     const noChoiceReason = chosenOrdinal !== null
       ? null
@@ -312,7 +309,7 @@ function buildFeedTableRow(
       asOfHour: displayedHour,
       title: item?.name ?? null,
       countryTag: recipient,
-      countryName,
+      countryName: null,
       countryNameHour: event.nameHour,
       flagUrl: flag?.art.status === 'ready' ? flag.art.url : undefined,
       flagPending: flag?.art.status === 'pending',

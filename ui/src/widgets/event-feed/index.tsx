@@ -35,8 +35,8 @@ function EventFeedView(props: FamilyViewProps) {
     setInstalledState(prev => (prev.scope === scope && prev.hour === hour ? prev : { scope, hour }));
   }, [scope]);
   const shown = opened && opened.scope === scope ? opened.subject : null;
-  const recipient = useCountryNameAt(props.runtime.client, track, shown?.countryTag ?? null, shown?.countryNameHour ?? null, shown !== null);
-  const named = shown?.countryTag && recipient.known !== undefined ? {
+  const recipient = useCountryNameAt(props.runtime.client, track, shown?.countryTag ?? null, shown?.countryNameHour ?? null, shown !== null, { exact: true });
+  const named = shown?.countryTag ? {
     ...shown,
     countryName: recipient.nameDetail ? `${recipient.name}. ${recipient.nameDetail}` : recipient.name,
   } : shown;

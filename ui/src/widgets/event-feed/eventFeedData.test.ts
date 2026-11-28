@@ -42,7 +42,7 @@ const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Par
   id: `native:1:${serial++}`, hour, readHour: hour, nameHour: hour, exact: true, category: 'warsPeace', kind, tags,
   participants: [tags[0] ?? null, tags[1] ?? null], item: null, amount: null, ...more });
 
-test('event feed preserves the dated state and recipient names and their read status', () => {
+test('event feed preserves dated state readings and the recipient name date', () => {
   const transfer = row('stateTransferred', 101, [], { cause: { state: 42, notes: [] } });
   const strike = row('nuclearStrike', 102, [], { strike: { province: 201, state: 42, manpowerLost: null,
     buildingLevels: null, warSupport: null, units: null, equipmentLost: null, notRecorded: [] } });
@@ -73,7 +73,8 @@ test('event feed preserves the dated state and recipient names and their read st
     } });
     const model = eventFeedProjection.project(view, { categories: ['warsPeace'], artwork: false });
     const subject = model.rows.find(entry => entry.key === firing.id)!.meta as FeedDetailSubject;
-    assert.match(subject.countryName ?? '', /Recipient name missing in the recording/);
+    assert.equal(subject.countryTag, 'BBB');
+    assert.equal(subject.countryName, null);
     assert.equal(subject.countryNameHour, 102);
     const flat = resolveTableRows(model, tableSettingsOf(undefined, model.columns, LOG_TABLE_BASE));
     const mirror = deriveTableMirror(flat, model.columns, false);

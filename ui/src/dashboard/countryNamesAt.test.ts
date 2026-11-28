@@ -43,7 +43,8 @@ test('dated fact hooks own independent reads and mask switched clients immediate
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'dated-fact-owner-fixture', enforce: 'pre',
       transform(source, id) {
         if (id.replaceAll('\\', '/').endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0;';
-        if (id.replaceAll('\\', '/').endsWith('/dashboard/countryNamesAt.ts'))
+        if (id.replaceAll('\\', '/').endsWith('/dashboard/countrySlots.ts')) return 'export const useSlotTags = () => undefined;';
+        if (/\/dashboard\/(countryNamesAt|reachedProduct)\.ts$/.test(id.replaceAll('\\', '/')))
           return source.replace(/import \{ ([^}]+) \} from 'react';/, (_match, names: string) => names.split(',').map(name =>
             `const ${name.trim()} = (...args) => globalThis.__datedFactHooks.${name.trim()}(...args);`).join('\n'));
       } }] });
@@ -76,6 +77,32 @@ test('dated fact hooks own independent reads and mask switched clients immediate
       b.begin(); assert.equal(hook(nextClient, track, wanted, true, spec).get(nameKey(100, 'A')), 'Recorded name'); b.commit();
       b.dispose();
     }
+
+    const { useCountryNameAt } = await vite.ssrLoadModule('/ui/src/dashboard/reachedProduct.ts') as typeof import('./reachedProduct.ts');
+    const eventTrack: BoundTrack = { ...track, branch: { ...track.branch, firstHour: 90, lastHour: 200, gaps: [] } };
+    const event = hooks();
+    host.__datedFactHooks = event;
+    const replies = new Map<number, (name: string) => void>();
+    const client = { product: (request: ProductRequest) => new Promise<ProductReply<unknown>>(resolve => {
+      replies.set(Number(request.params.hour), name => resolve({ ...request, data: { styles: [{ tag: 'AAA', name }] } }));
+    }) } as unknown as DashboardClient;
+    const open = (hour: number) => {
+      event.begin();
+      const named = useCountryNameAt(client, eventTrack, 'AAA', hour, true, { exact: true });
+      event.commit();
+      return named;
+    };
+    assert.equal(open(110).known, undefined);
+    replies.get(110)!('Old Republic');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(open(110).name, 'Old Republic');
+    const second = open(120);
+    assert.equal(second.known, undefined, 'the second event cannot borrow the first event’s name');
+    assert.equal(second.name, 'Loading name…');
+    replies.get(120)!('New Republic');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(open(120).name, 'New Republic');
+    event.dispose();
   } finally { delete host.__datedFactHooks; await vite.close(); }
 });
 
