@@ -6138,7 +6138,7 @@ needRaw: string,
  */
 heldRaw: string, };
 export type TrainingQueueParamsAtHour = TrainingQueueParams & { hour: number };
-export type LeaderCareerParams = { branchId: string, reference?: string, selection?: LeaderSelection,
+export type LeaderCareerParams = { branchId: string, reference?: string, selection?: LeaderSelection, includeLeader?: boolean,
 /**
  * The hour answered: nothing recorded after it is read into the reply.
  */
@@ -6551,6 +6551,7 @@ export const PANEL_KEYS = [
   "territory-share",
   "trade-flow",
   "training-queue",
+  "unit-leader-career",
   "unit-leader-hour",
   "unit-leaders",
   "volunteer-flow",
@@ -7153,7 +7154,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "territory-transfers": { "branchId": "leaf", "through": "leaf" },
   "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "resource": "leaf", "sideTotalsOnly": "leaf", "subject": "any", "table": "leaf", "top": "leaf" },
   "training-queue": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "unit-leader-career": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
+  "unit-leader-career": { "branchId": "leaf", "hour": "leaf", "includeLeader": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "unit-leader-choices": { "branchId": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "unit-leader-hour": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "unit-leader-portraits": { "branchId": "leaf", "edge": "leaf", "hour": "leaf", "references": "node", "references[]": "leaf" },

@@ -4,9 +4,9 @@ use super::{
     cell_number, cell_text, handle, held_traits_for, leader_thumbnail, parse_branch,
 };
 use super::membership::Served;
-use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt}}, queries::country_ids::{Names, RunLinks}};
+use dashboard_base::{Source, products::{Finish, LoadContext, Product, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt, exact_panel, product_panel}}, queries::country_ids::{Names, RunLinks}};
 use dashboard_intelligence::products::intelligence::Tags;
-use dashboard_follow::live::Source as Cell;
+use dashboard_follow::{live::Source as Cell, panel::{ExactReader, Panel, PanelData, ProductReader}};
 use dashboard_query::{Query, log::{FacetFilter, Reader}};
 use replay_lanes::lanes::{Cell as Step, History, Keys as LaneKeys};
 use replay_data::{
@@ -16,10 +16,11 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -43,6 +44,9 @@ pub struct LeaderCareerParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub selection: Option<LeaderSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub include_leader: Option<bool>,
     #[doc = " The hour answered: nothing recorded after it is read into the reply."]
     pub hour: i32,
 }
@@ -385,16 +389,16 @@ struct Full {
 }
 
 #[derive(Default)]
-struct Careers(HashMap<(u64, u64), std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<Full>>>>>);
+struct Careers(HashMap<(u64, u64), Arc<Mutex<Option<Arc<Full>>>>>);
 
-fn full_career(source: &Source, query: &Query<'_>, leader: u64, cancelled: &AtomicBool) -> io::Result<std::sync::Arc<Full>> {
-    let slot = std::sync::Arc::clone(source.state::<Careers>().lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.entry((query.timeline.id, leader)).or_default());
-    let mut held = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+fn full_career(source: &Source, query: &Query<'_>, leader: u64, cancelled: &AtomicBool) -> io::Result<Arc<Full>> {
+    let slot = Arc::clone(source.state::<Careers>().lock().unwrap_or_else(PoisonError::into_inner).0.entry((query.timeline.id, leader)).or_default());
+    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(full) = held.as_ref() {
         return Ok(std::sync::Arc::clone(full));
     }
-    let full = std::sync::Arc::new(read_full(source, query, leader, cancelled)?);
-    *held = Some(std::sync::Arc::clone(&full));
+    let full = Arc::new(read_full(source, query, leader, cancelled)?);
+    *held = Some(Arc::clone(&full));
     Ok(full)
 }
 
@@ -415,7 +419,7 @@ fn read_full(source: &Source, query: &Query<'_>, leader: u64, cancelled: &Atomic
     let (mut runs, mut seen, mut commands) = (Vec::new(), Vec::new(), Vec::new());
     for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let links: std::sync::Arc<RunLinks> = dashboard_base::queries::links(source, stretch.run)?;
+        let links: Arc<RunLinks> = dashboard_base::queries::links(source, stretch.run)?;
         let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, TableId::UnitLeaders, &ascending, LaneKeys::These(&[key]), stretch.first, stretch.last))?;
         let steps: Vec<(i32, Option<RunValues>)> = history
             .keys
@@ -544,20 +548,15 @@ fn resolve_selection_at(
     }
 }
 
-impl Product for LeaderCareer {
-    const KEY: &'static str = "unit-leader-career";
-    const CONTENT_DEPENDENT: bool = true;
-    const INTERACTIVE: bool = true;
-    type Params = LeaderCareerParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, reference, selection, "selection.countries[]", hour: Read];
-    type Reply = LeaderCareerReply;
+impl LeaderCareer {
+    pub const KEY: &'static str = "unit-leader-career";
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![LeaderCareerParams::decl(), CareerRun::decl(), CareerBattle::decl(), CommandKind::decl(), LeaderCommand::decl(), LeaderCareerReply::decl()]
     }
 
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+    fn validate(params: &LeaderCareerParams) -> Result<(), &'static str> {
         parse_branch(&params.branch_id)?;
         match (&params.reference, &params.selection) {
             (Some(text), None) => reference(text).map(|_| ()),
@@ -566,7 +565,7 @@ impl Product for LeaderCareer {
         }
     }
 
-    fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+    pub(super) fn load(source: &Source, params: &LeaderCareerParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<LeaderCareerReply> {
         let query = dashboard_base::queries::query(source, parse_branch(&params.branch_id).map_err(dashboard_core::invalid)?)?;
         let hour = params.hour.min(query.timeline.last);
         let mut next = NextHour(None, hour);
@@ -607,112 +606,238 @@ impl Product for LeaderCareer {
             }
             _ => return Err(dashboard_core::invalid("Ask for one leader by reference or for the top general of a selection")),
         };
-        let key = u128::from(leader);
         let content = Content::load(source, load);
-        let recording = query.replay.recording();
         let full = full_career(source, &query, leader, cancelled)?;
-        for stretch in &query.timeline.stretches {
-            next.span(stretch.first, stretch.last);
+        career_at(&query, &content, &full, leader, next, selection_warnings, None)
+    }
+}
+
+fn career_at(query: &Query<'_>, content: &Content, full: &Full, leader: u64, mut next: NextHour, mut warnings: Vec<String>, current_name: Option<Option<&str>>) -> io::Result<LeaderCareerReply> {
+    let hour = next.1;
+    let key = u128::from(leader);
+    let recording = query.replay.recording();
+    for stretch in &query.timeline.stretches {
+        next.span(stretch.first, stretch.last);
+    }
+    let last_seen = full.seen.iter().rfind(|seen| seen.1 <= hour).map(|&(run, _, last)| (run, last.min(hour)));
+    let mut traits = TraitList::default();
+    let mut trait_gains = Vec::new();
+    for (gain_hour, token, gain_class) in &full.gains {
+        next.see(*gain_hour);
+        if *gain_hour <= hour {
+            trait_gains.push((*gain_hour, traits.index(token, content), *gain_class));
         }
-        let last_seen = full.seen.iter().rfind(|seen| seen.1 <= hour).map(|&(run, _, last)| (run, last.min(hour)));
-        let mut traits = TraitList::default();
-        let mut trait_gains = Vec::new();
-        for (gain_hour, token, gain_class) in &full.gains {
-            next.see(*gain_hour);
-            if *gain_hour <= hour {
-                trait_gains.push((*gain_hour, traits.index(token, &content), *gain_class));
-            }
+    }
+    let mut battles = Vec::new();
+    for battle in &full.battles {
+        let visible_at = battle.start.max(battle.read);
+        next.see(visible_at);
+        if let Some(rr) = battle.result_read {
+            let res_at = battle.result_hour.map_or(rr, |rh| rh.max(rr));
+            next.see(res_at);
         }
-        let mut battles = Vec::new();
-        for battle in &full.battles {
-            let visible_at = battle.start.max(battle.read);
-            next.see(visible_at);
-            if let Some(rr) = battle.result_read {
-                let res_at = battle.result_hour.map_or(rr, |rh| rh.max(rr));
-                next.see(res_at);
-            }
-            if visible_at > hour {
-                continue;
-            }
-            let result_known = battle.result_read.is_some_and(|rr| rr <= hour) && battle.result_hour.is_none_or(|rh| rh <= hour);
-            battles.push(CareerBattle {
-                won: if result_known { battle.won } else { None },
-                result_hour: if result_known { battle.result_hour } else { None },
-                result_read: if result_known { battle.result_read } else { None },
-                ..battle.clone()
+        if visible_at > hour {
+            continue;
+        }
+        let result_known = battle.result_read.is_some_and(|rr| rr <= hour) && battle.result_hour.is_none_or(|rh| rh <= hour);
+        battles.push(CareerBattle {
+            won: if result_known { battle.won } else { None },
+            result_hour: if result_known { battle.result_hour } else { None },
+            result_read: if result_known { battle.result_read } else { None },
+            ..battle.clone()
+        });
+    }
+    let mut runs = Vec::new();
+    for (first, last, tag, values) in &full.runs {
+        next.span(*first, *last);
+        if *first <= hour {
+            runs.push(CareerRun { first_hour: *first, last_hour: (*last).min(hour), role: content.role(tag.clone(), values.kind, values.category, values.skill), skill: values.skill, components: values.components });
+        }
+    }
+    let mut commands = Vec::new();
+    for (first, last, formation, kind, name) in &full.commands {
+        next.span(*first, *last);
+        if *first <= hour {
+            commands.push(LeaderCommand {
+                first_hour: *first,
+                last_hour: (*last).min(hour),
+                formation: formation.to_string(),
+                kind: command_kind(*kind),
+                name: name.as_deref().and_then(|bytes| stored_name(content, bytes)),
             });
         }
-        let mut runs = Vec::new();
-        for (first, last, tag, values) in &full.runs {
-            next.span(*first, *last);
-            if *first <= hour {
-                runs.push(CareerRun { first_hour: *first, last_hour: (*last).min(hour), role: content.role(tag.clone(), values.kind, values.category, values.skill), skill: values.skill, components: values.components });
-            }
-        }
-        let mut commands = Vec::new();
-        for (first, last, formation, kind, name) in &full.commands {
-            next.span(*first, *last);
-            if *first <= hour {
-                commands.push(LeaderCommand {
-                    first_hour: *first,
-                    last_hour: (*last).min(hour),
-                    formation: formation.to_string(),
-                    kind: command_kind(*kind),
-                    name: name.as_deref().and_then(|bytes| stored_name(&content, bytes)),
-                });
-            }
-        }
-        if let Some(partial_at) = full.partial {
-            next.see(partial_at);
-        }
-        let battles_partial_from = full.partial.filter(|&at| at <= hour);
-        let (name, portrait_hour, missing) = match last_seen {
-            Some((run, seen_hour)) => {
-                let leaders = [key];
-                let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, seen_hour, &[replay_lanes::at::Read { table: TableId::UnitLeaders, columns: None, keys: replay_lanes::at::Keys::These(&leaders) }, replay_lanes::at::Read::all(TableId::LexicalTokens)]))?;
-                let character = frame.complete::<tables::UnitLeaders>().ok().and_then(|rows| rows.iter().find(|row| handle(row) == leader).map(|row| row.character_id));
-                let characters: Vec<u128> = character.into_iter().map(u128::from).collect();
-                let people = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, seen_hour, &[replay_lanes::at::Read { table: TableId::Characters, columns: None, keys: replay_lanes::at::Keys::These(&characters) }]))?;
-                let person = character.and_then(|id| {
-                    people.complete::<tables::Characters>().ok().and_then(|rows| {
-                        rows.binary_search_by_key(&id, |row| row.id)
-                            .ok()
-                            .or_else(|| rows.iter().position(|row| row.id == id))
-                            .map(|at| &rows[at])
-                    })
-                });
-                let name = content.person_name(person, frame.complete::<tables::LexicalTokens>().ok());
-                (name, Some(seen_hour), None)
-            }
-            None => (None, None, Some("This leader is not recorded on this timeline by this hour".to_owned())),
-        };
-        let observed = query
-            .timeline
-            .stretches
-            .iter()
-            .filter(|stretch| stretch.first <= hour)
-            .map(|stretch| (stretch.first, stretch.last.min(hour)))
-            .collect();
-        let mut warnings = selection_warnings;
-        warnings.extend(content.missing());
-        Ok(LeaderCareerReply {
-            reference: Some(leader.to_string()),
-            hour,
-            next_change: next.0.filter(|&at| at <= query.timeline.last),
-            name,
-            portrait_hour,
-            runs,
-            trait_gains,
-            traits: traits.traits,
-            commands,
-            battles,
-            observed,
-            battles_partial_from,
-            results_missing: RESULTS_MISSING.into(),
-            missing,
-            warnings,
-        })
     }
+    if let Some(partial_at) = full.partial {
+        next.see(partial_at);
+    }
+    let battles_partial_from = full.partial.filter(|&at| at <= hour);
+    let (name, portrait_hour, missing) = match last_seen {
+        Some((_, seen_hour)) if seen_hour == hour && current_name.is_some() => (current_name.flatten().map(str::to_owned), Some(seen_hour), None),
+        Some((run, seen_hour)) => {
+            let leaders = [key];
+            let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, seen_hour, &[replay_lanes::at::Read { table: TableId::UnitLeaders, columns: None, keys: replay_lanes::at::Keys::These(&leaders) }, replay_lanes::at::Read::all(TableId::LexicalTokens)]))?;
+            let character = frame.complete::<tables::UnitLeaders>().ok().and_then(|rows| rows.iter().find(|row| handle(row) == leader).map(|row| row.character_id));
+            let characters: Vec<u128> = character.into_iter().map(u128::from).collect();
+            let people = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, seen_hour, &[replay_lanes::at::Read { table: TableId::Characters, columns: None, keys: replay_lanes::at::Keys::These(&characters) }]))?;
+            let person = character.and_then(|id| {
+                people.complete::<tables::Characters>().ok().and_then(|rows| {
+                    rows.binary_search_by_key(&id, |row| row.id)
+                        .ok()
+                        .or_else(|| rows.iter().position(|row| row.id == id))
+                        .map(|at| &rows[at])
+                })
+            });
+            let name = content.person_name(person, frame.complete::<tables::LexicalTokens>().ok());
+            (name, Some(seen_hour), None)
+        }
+        None => (None, None, Some("This leader is not recorded on this timeline by this hour".to_owned())),
+    };
+    let observed = query
+        .timeline
+        .stretches
+        .iter()
+        .filter(|stretch| stretch.first <= hour)
+        .map(|stretch| (stretch.first, stretch.last.min(hour)))
+        .collect();
+    warnings.extend(content.missing());
+    Ok(LeaderCareerReply {
+        reference: Some(leader.to_string()),
+        hour,
+        next_change: next.0.filter(|&at| at <= query.timeline.last),
+        name,
+        portrait_hour,
+        runs,
+        trait_gains,
+        traits: traits.traits,
+        commands,
+        battles,
+        observed,
+        battles_partial_from,
+        results_missing: RESULTS_MISSING.into(),
+        missing,
+        warnings,
+    })
+}
+
+pub struct LeaderCareerAt;
+
+#[derive(Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(untagged)]
+pub enum LeaderCareerAtReply {
+    History(LeaderCareerReply),
+    WithLeader(CareerWithLeader),
+}
+
+#[derive(Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+pub struct CareerWithLeader {
+    #[serde(flatten)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
+    data: serde_json::Map<String, Value>,
+    warnings: Vec<String>,
+}
+
+impl dashboard_base::products::ReplyWarnings for LeaderCareerAtReply {
+    fn warnings_mut(&mut self) -> &mut Vec<String> {
+        match self {
+            Self::History(reply) => &mut reply.warnings,
+            Self::WithLeader(reply) => &mut reply.warnings,
+        }
+    }
+}
+
+impl Product for LeaderCareerAt {
+    const KEY: &'static str = LeaderCareer::KEY;
+    const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, reference, selection, "selection.countries[]", includeLeader, hour: Read];
+    type Params = LeaderCareerParams;
+    type Reply = LeaderCareerAtReply;
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> { LeaderCareer::types() }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> { LeaderCareer::validate(params) }
+
+    fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        if params.include_leader != Some(true) {
+            return LeaderCareer::load(source, params, load, cancelled).map(LeaderCareerAtReply::History);
+        }
+        let asked = serde_json::to_value(LeaderHourParams { branch_id: params.branch_id.clone(), reference: params.reference.clone(), selection: params.selection.clone() })?;
+        let panel = exact_panel::<LeaderHour>(source, load, &asked).map_err(dashboard_core::refused)?;
+        let mut current = (panel.exact().expect("leader hour reader").cold)(params.hour, cancelled).map_err(dashboard_core::refused)?;
+        let content = Content::load(source, load);
+        let finish = Finish::new(source, load, Self::CONTENT_DEPENDENT);
+        let branch = parse_branch(&params.branch_id).map_err(dashboard_core::invalid)?;
+        let career = followed_career(source, &content, &finish, branch, params.hour, &current, cancelled)?;
+        current["career"] = serde_json::to_value(career)?;
+        let current = current.as_object_mut().expect("leader hour reply");
+        let warnings = serde_json::from_value(current.remove("warnings").unwrap_or_default())?;
+        Ok(LeaderCareerAtReply::WithLeader(CareerWithLeader { data: std::mem::take(current), warnings }))
+    }
+}
+
+fn followed_career(source: &Source, content: &Content, finish: &Finish, branch: u64, hour: i32, current: &Value, cancelled: &AtomicBool) -> io::Result<Option<LeaderCareerReply>> {
+    let Some(reference) = current["reference"].as_str() else { return Ok(None); };
+    let leader = reference.parse().map_err(|_| dashboard_core::invalid("Invalid leader reference"))?;
+    source.in_scope(|| finish.reply(|| {
+        let query = dashboard_base::queries::query(source, branch)?;
+        let full = full_career(source, &query, leader, cancelled)?;
+        let name = current["missing"].is_null().then(|| current["name"].as_str());
+        career_at(&query, content, &full, leader, NextHour(None, hour), Vec::new(), name)
+    })).map(Some)
+}
+
+pub fn career_panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
+    let panel = exact_panel::<LeaderHour>(source, load, asked)?;
+    let readers = panel.exact().ok_or("The current leader cannot be followed")?;
+    let branch = dashboard_query::branch(asked).map_err(|error| error.to_string())?;
+    let (finish, content) = Finish::open(source, load, true, || Content::load(source, load));
+    let source = Arc::clone(source);
+    let history = Arc::new(move |hour, current: &Value, cancelled: &AtomicBool| -> PanelData {
+        let reply = followed_career(&source, &content, &finish, branch, hour, current, cancelled).map_err(|error| error.to_string())?;
+        serde_json::to_value(reply).map_err(|error| error.to_string())
+    });
+    let exact = readers.cold.clone();
+    let cold_history = history.clone();
+    let cold: ExactReader = Arc::new(move |hour, cancelled| {
+        let mut current = exact(hour, cancelled)?;
+        current["career"] = cold_history(hour, &current, cancelled)?;
+        Ok(current)
+    });
+    let current = readers.advance.clone();
+    let held = Mutex::new(None::<(Arc<PanelData>, Arc<PanelData>)>);
+    let advance: ProductReader = Arc::new(move |hour, values, cancelled, step| {
+        let mut read = current(hour, values, cancelled, step);
+        let Ok(data) = read.value.as_ref() else { return read; };
+        if read.pending { return read; }
+        let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
+        let career = held.as_ref().and_then(|(input, output)| {
+            let output = output.as_ref().as_ref().ok()?;
+            let input = input.as_ref().as_ref().ok()?;
+            let cached = &output["career"];
+            let compatible = ["reference", "missing", "name"].iter().all(|key| input[*key] == data[*key]);
+            let covers = cached.is_null() || (cached["hour"].as_i64().is_some_and(|first| first <= i64::from(hour))
+                && cached["nextChange"].as_i64().is_none_or(|end| end > i64::from(hour)));
+            (compatible && covers).then_some(cached)
+        });
+        let combined = match (career, held.as_ref()) {
+            (Some(_), Some((input, output))) if Arc::ptr_eq(input, &read.value) => output.clone(),
+            (career, _) => Arc::new(career.cloned().map_or_else(|| history(hour, data, cancelled), Ok).map(|career| {
+                let mut output = data.clone();
+                output["career"] = career;
+                output
+            })),
+        };
+        if let Ok(output) = combined.as_ref() && let Some(from) = output["career"]["hour"].as_i64() {
+            read.from = read.from.max(from as i32);
+        }
+        *held = Some((read.value, combined.clone()));
+        read.value = combined;
+        read
+    });
+    Ok(product_panel(advance, cold))
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

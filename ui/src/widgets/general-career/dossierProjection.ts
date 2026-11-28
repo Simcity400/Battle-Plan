@@ -13,6 +13,7 @@ import { knownValue, notRecorded, partialValue, type Value } from '../../familie
 import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
 import type { LeaderHourReply, LeaderSelection, LeaderServiceStart, LeaderTrait } from '../../generated/dashboard';
 import { experienceText, experienceWhole } from './experience.ts';
+import { portraitArt } from '../generals/generalsData.ts';
 
 export const DOSSIER_VIEW = 'dossier';
 
@@ -100,6 +101,7 @@ function header(readView: Parameters<CardProjection['project']>[0], reply: Leade
         ? { label: 'Country', pendingReason: owner.name.reason }
         : { label: 'Country', missingReason: 'reason' in owner.name ? owner.name.reason : 'Country name not recorded' };
   const serviceStart = serviceStartItem(reply.serviceStart);
+  const portrait = portraitArt(readView, reply.portrait);
   const items: TooltipListItem[] = [
     countryItem,
     { label: 'Rank', value: rank },
@@ -116,7 +118,7 @@ function header(readView: Parameters<CardProjection['project']>[0], reply: Leade
     kind: 'item',
     key: 'leader',
     subject: reference,
-    art: { kind: 'art', art: readView.art({ kind: 'portrait', leader: reference, hour }), ...(name ? { name } : {}) },
+    art: { kind: 'art', art: portrait, ...(name ? { name } : {}) },
     title: name ? knownValue(name) : notRecorded('The name was not recorded'),
     subtitle: `${rank} · ${skill}`,
     ...(owner ? { subtitleFlag: { ...owner.media, name: ownerName } } : {}),

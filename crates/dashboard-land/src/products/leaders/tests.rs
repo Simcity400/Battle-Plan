@@ -399,7 +399,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     };
     use dashboard_base::{
         Source, SourceKey,
-        products::{LoadContext, Product, at_hour::{At, AtHour}},
+        products::{LoadContext, at_hour::{At, AtHour}},
         test_fixtures::{CAMPAIGN, snapshot_records, source},
     };
     use replay::campaign::Replay;
@@ -502,7 +502,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     .unwrap();
     let career_tied = LeaderCareer::load(
         &src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 100 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 100 },
         &load,
         &cancelled,
     )
@@ -518,7 +518,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     .unwrap();
     let career_unknown = LeaderCareer::load(
         &src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 101 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 101 },
         &load,
         &cancelled,
     )
@@ -534,7 +534,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     .unwrap();
     let career_withheld = LeaderCareer::load(
         &src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 102 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 102 },
         &load,
         &cancelled,
     )
@@ -556,7 +556,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     .unwrap();
     let career_no_tags = LeaderCareer::load(
         &src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 103 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 103 },
         &load,
         &cancelled,
     )
@@ -567,7 +567,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     assert_eq!(career_no_tags.next_change, Some(104), "recovering Countries wakes the missing career at 104");
     let career_recovered = LeaderCareer::load(
         &src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 104 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 104 },
         &load,
         &cancelled,
     )
@@ -575,7 +575,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     assert_eq!(career_recovered.reference.as_deref(), Some(expected.as_str()));
     let career_captured = LeaderCareer::load(
         &src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 105 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 105 },
         &load,
         &cancelled,
     )
@@ -584,7 +584,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     assert_eq!(career_captured.next_change, Some(106), "a visibility-only captured change wakes the career at 106");
     let career_freed = LeaderCareer::load(
         &src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger), hour: 106 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(ger), hour: 106 },
         &load,
         &cancelled,
     )
@@ -710,7 +710,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     }
     let cached_career = LeaderCareer::load(
         &cond_src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(cond_ger.clone()), hour: 100 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(cond_ger.clone()), hour: 100 },
         &cond_load,
         &cancelled,
     )
@@ -719,7 +719,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     assert_eq!(cached_career.next_change, Some(101), "reusing a cached conditioned verdict must still wake at H + 1");
     let visible_career = LeaderCareer::load(
         &cond_src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(cond_ger), hour: 101 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(cond_ger), hour: 101 },
         &cond_load,
         &cancelled,
     )
@@ -924,7 +924,7 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
 
     let early = LeaderCareer::load(
         &src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: Some(handle_ref.clone()), selection: None, hour: 105 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: Some(handle_ref.clone()), selection: None, hour: 105 },
         &load,
         &cancelled,
     )
@@ -934,7 +934,7 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
     assert_eq!((early.runs[0].first_hour, early.runs[0].last_hour, early.runs[0].skill), (100, 105, Some(3)));
     assert_eq!(early.portrait_hour, Some(105));
     assert_eq!(early.observed, vec![(100, 105)]);
-    let ask = |hour| LeaderCareer::load(&src, &LeaderCareerParams { branch_id: "1".into(), reference: Some(handle_ref.clone()), selection: None, hour }, &load, &cancelled).unwrap();
+    let ask = |hour| LeaderCareer::load(&src, &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: Some(handle_ref.clone()), selection: None, hour }, &load, &cancelled).unwrap();
     let reads = || super::career::FULL_READS.with(std::cell::Cell::get);
     let before = reads();
     ask(111);
@@ -943,7 +943,7 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
 
     let late = LeaderCareer::load(
         &src,
-        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 115 },
+        &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 115 },
         &load,
         &cancelled,
     )
@@ -952,17 +952,41 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
     assert_eq!((late.hour, late.next_change), (115, Some(117)), "a change in what ranks the generals ends the top general's career");
     assert_eq!(late.runs.len(), 2);
     assert_eq!(late.runs[1].skill, Some(5));
-    let overtaken = LeaderCareer::load(&src, &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 117 }, &load, &cancelled).unwrap();
+    let overtaken = LeaderCareer::load(&src, &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 117 }, &load, &cancelled).unwrap();
     assert_eq!(overtaken.reference, Some(((43u64 << 32) | 1).to_string()), "the tie of equal skill turns to the rival once its components are higher");
     assert_eq!(overtaken.next_change, Some(118), "a general's character link is an input of its name, so of the order");
-    let relinked = LeaderCareer::load(&src, &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 118 }, &load, &cancelled).unwrap();
+    let relinked = LeaderCareer::load(&src, &LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 118 }, &load, &cancelled).unwrap();
     assert_eq!(relinked.next_change, Some(119), "so is the spelling of its name token");
+
+    use super::career::LeaderCareerAt;
+    let source = Arc::new(src);
+    let request = serde_json::json!({ "panel": "unit-leader-career", "branchId": "1", "selection": { "kind": "all" } });
+    let panel = (crate::registrations::LEADERS_CAREER_LEADERCAREER.panel.unwrap().open)(&source, &load, &request).unwrap();
+    let followed = panel.exact().unwrap();
+    let advance = |hour| (followed.advance)(hour, false, &cancelled, None).value;
+    let first = advance(115);
+    let quiet = advance(116);
+    assert_eq!(first.as_ref().as_ref().unwrap()["career"], quiet.as_ref().as_ref().unwrap()["career"], "a quiet step reuses the history slice");
+    let next = advance(117);
+    let next = next.as_ref().as_ref().unwrap();
+    assert_eq!(next["reference"], next["career"]["reference"]);
+    assert_eq!(next["reference"].as_str(), overtaken.reference.as_deref());
+    let paused = (followed.cold)(116, &cancelled).unwrap();
+    let mut params = LeaderCareerParams { include_leader: Some(true), branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 116 };
+    let exact = LeaderCareerAt::load(&source, &params, &load, &cancelled).unwrap();
+    assert_eq!(paused, serde_json::to_value(exact).unwrap());
+    assert_eq!(paused["career"]["hour"], 116);
+
+    params.include_leader = None;
+    let plain = LeaderCareerAt::load(&source, &params, &load, &cancelled).unwrap();
+    let legacy = LeaderCareer::load(&source, &params, &load, &cancelled).unwrap();
+    assert_eq!(serde_json::to_vec(&plain).unwrap(), serde_json::to_vec(&legacy).unwrap());
 }
 
 #[test]
 fn top_general_follows_recorded_faction_membership() {
     use super::career::{LeaderCareer, LeaderCareerParams};
-    use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures::{CAMPAIGN, ownership_frame, snapshot_records}};
+    use dashboard_base::{Source, SourceKey, products::LoadContext, test_fixtures::{CAMPAIGN, ownership_frame, snapshot_records}};
     use replay::campaign::Replay;
     use replay_data::rows::{FactionMemberRow, FactionRow, LandCombatDetailsRow, LandCombatSideDetails, TableId, TableRows, UnitLeaderRow, UnitLeaderTraitExperienceRow};
     use replay_frame::frame::TableView;
@@ -1108,7 +1132,7 @@ fn top_general_follows_recorded_faction_membership() {
             if hour == 200 { assert_eq!(head["fought"], 1, "the visitor fought before joining"); }
             let followed = played.iter().find(|read| read.hour == hour).unwrap().value.as_ref().as_ref().unwrap();
             assert_eq!((&followed["reference"], &followed["missing"]), (&head["reference"], &head["missing"]));
-            let params = LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(selection.clone()), hour };
+            let params = LeaderCareerParams { include_leader: None, branch_id: "1".into(), reference: None, selection: Some(selection.clone()), hour };
             let career = LeaderCareer::load(&source, &params, &load, &cancelled).unwrap();
             assert_eq!((head["reference"].as_str(), head["missing"].as_str()), (winner.map(String::as_str), missing), "{membership} at {hour}");
             assert_eq!((career.reference.as_ref(), career.missing.as_deref(), career.next_change), (winner, missing, next), "{membership} at {hour}");

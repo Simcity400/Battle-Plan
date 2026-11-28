@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveKey } from '../../charts/live.ts';
+import { readyArt } from '../../families/art/types.ts';
 import { engineHour, firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
+import type { FollowQuery } from '../../dashboard/regionTime.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { compileFollowPlan } from '../../families/broker.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import { assertQuietFrames, LANE_THEME } from '../../families/laneRuntime.fixture.ts';
@@ -12,12 +15,11 @@ import type { LeaderCareerReply, LeaderHourReply, LeaderRole } from '../../gener
 import {
   careerTimelineDeclaration,
   careerTimelineProjection,
-  leaderCareerProof,
   TIMELINE_VIEW,
   validateLeaderCareer,
   type CareerTimelineOptions,
 } from './careerTimelineProjection.ts';
-import { dossierDeclaration } from './dossierProjection.ts';
+import { dossierDeclaration, dossierProjection } from './dossierProjection.ts';
 import { choicesSelection, leaderChoices } from './choicesData.ts';
 
 const H = (year: number, month = 1, day = 1) => engineHour({ year, month, day, hour: 1 })!;
@@ -37,7 +39,7 @@ const hourReply = (): LeaderHourReply => ({
   reference: '42',
   missing: null,
   name: 'Tomoyuki Yamashita',
-  portrait: null,
+  portrait: { image: 'yamashita.png', missing: null },
   role,
   skill: 7,
   components: [6, 5, 5, 4],
@@ -91,6 +93,48 @@ const careerReply = (hour = AT, nextChange: number | null = AT + 500): LeaderCar
 
 const OPTIONS: CareerTimelineOptions = { reference: '42', firstHour: FIRST, surface: '#161616' };
 
+test('the dossier uses portrait artwork carried by the followed leader', () => {
+  const requested: string[] = [];
+  for (const hour of [AT, AT + 24]) {
+    const view = createBoundedReadView({
+      hour,
+      panels: new Map([['main', hourReply()]]),
+      art: { resolve: handle => {
+        assert.notEqual(handle.kind, 'portrait');
+        if (handle.kind === 'url') requested.push(handle.url);
+        return readyArt('portrait');
+      } },
+    });
+    const [row] = dossierProjection.project(view, { reference: '42' }).rows;
+    assert.equal(row?.kind, 'item');
+  }
+  assert.deepEqual(requested, ['yamashita.png', 'yamashita.png']);
+});
+
+test('career playback follows one panel for the leader and their past', () => {
+  const ctx = {
+    track: { source: { id: 's', revision: 1 }, axisOffset: 0 }, branch: { id: '1' }, options: {},
+    widget: { countries: { kind: 'all' } }, countries: { all: true, tags: [] },
+  } as unknown as Parameters<typeof careerTimelineDeclaration.sources>[0];
+  const { entries } = careerTimelineDeclaration.sources(ctx, { following: true, staticSpan: null });
+  assert.equal(entries.length, 1, 'one native witness supplies both parts at each answer hour');
+  const read = entries[0]!.read;
+  assert.equal(read.shape, 'point');
+  assert.equal(read.followQuery?.panel, 'unit-leader-career');
+  assert.equal(read.params?.includeLeader, true);
+  const { subscriptions } = compileFollowPlan({ owner: 'career', entries }, query => ({ query: query as FollowQuery | null, refused: null }));
+  assert.deepEqual(subscriptions.map(({ channel, product }) => ({ channel, product })), [{ channel: 'panel', product: 'unit-leader-career' }]);
+  for (const hour of [AT, AT + 24]) {
+    const view = createBoundedReadView({
+      hour,
+      panels: new Map([['main', { ...hourReply(), career: careerReply() }]]),
+    });
+    const model = careerTimelineProjection.project(view, OPTIONS);
+    assert.equal(model.header?.title, hourReply().name);
+    assert.equal(model.lanes[0]?.spans.at(-1)?.lastHour, hour);
+  }
+});
+
 test('the career, hour and leader choices requests keep the faction and its membership rule', () => {
   for (const membership of ['hour', 'ever'] as const) {
     const group = { type: 'faction', id: '9' };
@@ -99,13 +143,13 @@ test('the career, hour and leader choices requests keep the faction and its memb
       widget: { countries: { kind: 'group', group, membership } }, countries: { all: false, tags: ['AAA', 'BBB'] },
     } as unknown as Parameters<typeof careerTimelineDeclaration.sources>[0];
     const selection = { kind: 'group', group: { ...group, membership } };
-    for (const [view, names] of [[careerTimelineDeclaration, ['hour', 'career']], [dossierDeclaration, ['main']]] as const) {
+    for (const view of [careerTimelineDeclaration, dossierDeclaration]) {
       const { entries } = view.sources(ctx, { following: true, staticSpan: null });
-      assert.deepEqual(entries.map(entry => entry.name), names);
+      assert.deepEqual(entries.map(entry => entry.name), ['main']);
       for (const { read } of entries) {
-        assert.ok(read.shape === 'point' || read.shape === 'branch-to-hour');
+        assert.equal(read.shape, 'point');
         assert.deepEqual(read.params?.selection, selection);
-        if (read.shape === 'point') assert.deepEqual(read.followQuery?.selection, selection);
+        assert.deepEqual(read.followQuery?.selection, selection);
       }
     }
     assert.deepEqual(choicesSelection({ kind: 'group', group: { type: 'faction', id: '9' }, membership, aggregate: false }, []), selection,
@@ -131,8 +175,8 @@ test('general career timeline projects leader header KPIs, command bars, battle 
   const view = createBoundedReadView({
     hour: AT,
     identity,
-    panels: new Map<string, unknown>([['hour', hourReply()], ['career', validateLeaderCareer(careerReply())]]),
-    live: new Map([['hour', { get: k => live.get(k), missing: () => '' }]]),
+    panels: new Map([['main', { ...hourReply(), career: validateLeaderCareer(careerReply()) }]]),
+    live: new Map([['main', { get: k => live.get(k), missing: () => '' }]]),
   });
   const model = careerTimelineProjection.project(view, OPTIONS);
   assert.equal(model.axisPosition, 'top');
@@ -153,10 +197,8 @@ test('general career timeline projects leader header KPIs, command bars, battle 
   ]);
 });
 
-test('leader career reply validates causality, proves quiet stretches up to nextChange, and paints once per day while quiet', () => {
+test('leader career reply validates causality and paints once per day while quiet', () => {
   const data = validateLeaderCareer(careerReply(AT, AT + 500));
-  assert.deepEqual(leaderCareerProof(data, [FIRST, AT], AT + 100), [AT, AT + 499]);
-  assert.equal(leaderCareerProof(data, [FIRST, AT], AT + 500), null);
   assert.throws(() => validateLeaderCareer({ ...data, nextChange: AT }), /malformed/);
 
   const binding: FamilyTimelineBinding<CareerTimelineOptions> = {
@@ -165,7 +207,7 @@ test('leader career reply validates causality, proves quiet stretches up to next
     view: TIMELINE_VIEW,
     options: OPTIONS,
     sources: {},
-    staticPanels: { hour: hourReply(), career: data },
+    staticPanels: { main: { ...hourReply(), career: data } },
     width: 680,
     height: 360,
     scrollTop: 0,
@@ -179,16 +221,16 @@ test('leader career reply validates causality, proves quiet stretches up to next
   const surface = { width: 680, height: 360, dpr: 1 };
   const nextWake = assertQuietFrames(() => createLaneView(timelineLane, () => {}), { label: 'career-timeline quiet', binding, hour: AT }, 30, surface);
   assert.equal(nextWake, nextDayStart(AT));
-  for (let h = AT; h <= AT + 30; h++) {
-    assert.deepEqual(leaderCareerProof(data, [FIRST, h], h), [AT, AT + 499]);
-  }
   assert.equal(careerTimelineDeclaration.kind, 'general-career');
 });
 
 const projectAt = (hour: LeaderHourReply | undefined, career: LeaderCareerReply) => careerTimelineProjection.project(createBoundedReadView({
   hour: career.hour,
   identity: datedIdentity({ JAP: [{ from: FIRST, name: 'Imperial Japan' }] }),
-  panels: new Map<string, unknown>([...(hour ? [['hour', hour] as const] : []), ['career', validateLeaderCareer(career)]]),
+  panels: new Map([['main', {
+    ...(hour ?? { reference: career.reference, missing: 'Lead details are unavailable', warnings: [] }),
+    career: validateLeaderCareer(career),
+  }]]),
 }), OPTIONS);
 
 test('partial career results withhold the wide and compact header win rates', () => {
@@ -281,7 +323,7 @@ test('the month of battles still running is an open bar that follows the playhea
   const read = H(1938, 1, 10);
   const career: LeaderCareerReply = { ...careerReply(read, H(1938, 3, 1)), observed: [[FIRST, read]],
     runs: [{ firstHour: FIRST, lastHour: read, role, skill: 7, components: [6, 5, 5, 4] }], battles: careerReply().battles.slice(0, 2) };
-  const model = careerTimelineProjection.project(createBoundedReadView({ hour: read, panels: new Map<string, unknown>([['career', validateLeaderCareer(career)]]) }), OPTIONS);
+  const model = projectAt(undefined, career);
   const bar = model.lanes.find(lane => lane.key === 'battles')!.spans[0]!;
   assert.equal(bar.open, true, 'painted to the playhead on each day redraw');
   assert.equal(model.nextChangeAt, firstHourOfMonth(monthIndex(gameDate(read)!) + 1), 'projected again when the month ends');
@@ -291,7 +333,7 @@ test('the open month bar names the displayed hour as its end in its tooltip', ()
   const read = H(1938, 1, 10);
   const career: LeaderCareerReply = { ...careerReply(read, H(1938, 3, 1)), observed: [[FIRST, read]],
     runs: [{ firstHour: FIRST, lastHour: read, role, skill: 7, components: [6, 5, 5, 4] }], battles: careerReply().battles.slice(0, 2) };
-  const model = careerTimelineProjection.project(createBoundedReadView({ hour: read, panels: new Map<string, unknown>([['career', validateLeaderCareer(career)]]) }), OPTIONS);
+  const model = projectAt(undefined, career);
   const bar = model.lanes.find(lane => lane.key === 'battles')!.spans[0]!;
   const later = H(1938, 1, 20);
   const tip = careerTimelineProjection.tooltip!(model, { kind: 'span', laneKey: 'battles', spanId: bar.id, hour: later }, createBoundedReadView({ hour: later }), OPTIONS);
