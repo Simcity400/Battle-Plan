@@ -1464,7 +1464,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
     let mut readers = lock(&shared.readers);
     let mut published = false;
     for &place in places {
-        let Some(reading) = readers.get(place) else { continue };
+        let Some(reading) = readers.get(place).filter(|reading| reading.open) else { continue };
         if republishing && reading.stands() == Some((hour, epoch)) && reading.frame().is_some_and(|frame| frame.branch == branch) && !reading.keys_moved() {
             continue;
         }

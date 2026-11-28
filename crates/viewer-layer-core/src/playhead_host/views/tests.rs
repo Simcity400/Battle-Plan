@@ -847,17 +847,39 @@ fn keyed_view_replacement_clears_whole_view_failure_for_same_table() {
     );
 }
 
+#[cfg(test)]
+fn recording_without_divisions(name: &str) -> Units {
+    use playhead::pages::EntryRef;
+
+    struct OlderRecording(Arc<dyn Pages>);
+
+    impl Pages for OlderRecording {
+        fn extents(&self, run: usize) -> &dyn Extents { self.0.extents(run) }
+        fn runs(&self) -> &[Run] { self.0.runs() }
+        fn kinds(&self, table: usize) -> Option<&[Kind]> { self.0.kinds(table) }
+
+        fn table_entry(&self, run: usize, block: usize, table: usize) -> io::Result<EntryRef> {
+            if table == TableId::Divisions.index() { Ok(EntryRef::empty()) } else { self.0.table_entry(run, block, table) }
+        }
+    }
+
+    let mut units = record(name, 1);
+    units.pages = Arc::new(OlderRecording(units.pages));
+    units
+}
+
 #[test]
 fn posting_after_a_selection_change_does_not_publish_the_same_reply_twice() {
     use std::sync::Mutex;
 
     let table = TableId::Divisions;
-    let entry = open(record("selected reply post race", 1), hourly_steps()).unwrap();
+    let entry = open(recording_without_divisions("selected reply post race"), hourly_steps()).unwrap();
     let mut store = Store::new(&entry);
     let reader = store.reader("selected reply post race", &[Need::every(table)]);
     let mirrors = Arc::new(Mirrors::default());
     reader.declare_keyed(table, Arc::new(BTreeSet::new()));
     store.post(&mirrors, 0, RECORDING.branch, 0, false);
+    assert!(reader.frame().is_some(), "the initial empty selection was published");
     let published = reader.published();
     let store = Arc::new(Mutex::new(store));
     let weak = Arc::downgrade(&store);
@@ -881,7 +903,7 @@ fn posting_after_a_selection_change_does_not_publish_the_same_reply_twice() {
 
 #[test]
 fn an_unrecorded_selection_is_answered_once() {
-    let entry = open(record("unrecorded selection", 1), hourly_steps()).unwrap();
+    let entry = open(recording_without_divisions("unrecorded selection"), hourly_steps()).unwrap();
     entry.set_capture(CaptureMode::Full);
     let mut store = Store::new(&entry);
     let reader = store.reader("unrecorded divisions", &[Need::every(TableId::Divisions)]);
