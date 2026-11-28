@@ -1,10 +1,12 @@
 import { createRoot } from 'react-dom/client';
+import { flushSync } from 'react-dom';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
 import type { FamilyViewProps, WidgetRuntime } from '../../dashboard/definitions';
 import { createWidget, type BoundTrack, type CountrySelection } from '../../dashboard/model';
 import { PlaybackController } from '../../dashboard/playback';
 import { datedPanel } from '../../dashboard/follow/messages.fixture.ts';
 import { packet, splitForLanes } from '../../dashboard/follow/split.ts';
+import { installedModel, pipelineOf } from '../../dashboard/follow/useFollowed.ts';
 import type { EngineFrame, FrameEngine } from '../../engine/frame';
 import type { FamilyPlanContext } from '../../families/contract';
 import type { CountryGroupReply } from '../../generated/dashboard';
@@ -24,13 +26,25 @@ const groups = { branchId: '1', countryIdentities: identities, humans: members,
   factions: [{ id: '31', firstHour: FIRST, lastHour: LAST, name: 'Probe group', nameReason: null, recordedName: 'Probe group', names: [], members, leaders: [], incomplete: [] }],
   wars: members.map(run => ({ first: 'CCC', second: run.tag, firstHour: run.firstHour, lastHour: run.lastHour })),
   unobserved: { humans: [], factions: [], wars: [], unattributed: [] }, warnings: [], warStarts: [], capitulations: [], identityChanges: [] } as unknown as CountryGroupReply;
-const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+function whenShown(container: HTMLElement, ready: () => Element | null) {
+  if (ready()) return Promise.resolve();
+  return new Promise<void>(resolve => {
+    const observer = new MutationObserver(() => {
+      if (!ready()) return;
+      observer.disconnect();
+      resolve();
+    });
+    observer.observe(container, { childList: true, subtree: true, attributes: true });
+  });
+}
 
 async function run(selection: CountrySelection, integrated: boolean, hours = 0, unknownMembership = false, hoursPerFrame = 1) {
   const asked: ProductRequest[] = [];
   let ports: readonly MessagePort[] = [];
   let follow: { id: number; route: number; query: Record<string, any>; previous?: string } | null = null;
+  let lastConfirmation: number | null = null;
   let now = 1000;
+  const realNow = performance.now;
   performance.now = () => now;
   const tasks = new Set<{ phase: string; run: (frame: EngineFrame) => boolean | void }>();
   const engine = { every: (phase: string, run: (frame: EngineFrame) => boolean | void) => {
@@ -53,7 +67,9 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
     const hour = clock.getHour();
     const data = activity(FIRST, follow.query.binHours, hour);
     const value = JSON.stringify(data);
-    const bytes = datedPanel(follow.id, hour, follow.previous === value ? undefined : data, clock.getSnapshot().seekSequence, follow.route);
+    const confirmed = follow.previous === value;
+    if (confirmed) lastConfirmation = hour;
+    const bytes = datedPanel(follow.id, hour, confirmed ? undefined : data, clock.getSnapshot().seekSequence, follow.route);
     follow.previous = value;
     const split = splitForLanes(bytes, ports.length);
     split.lanes.forEach((part, lane) => {
@@ -95,43 +111,63 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
   root.render(integrated
     ? <EventFeed.render {...{ widget, runtime, active: true, options: { politics: true, warsPeace: false, diplomacy: false, milestones: false }, manifestDeclaration: eventFeedDeclaration } as unknown as FamilyViewProps} />
     : <EventFeedActivityStrip {...{ widget, track, runtime, active: true, categories: ['politics'], from: 100, pinnedHour: 191, context }} />);
-  for (let at = 0; at < 100; at++) {
-    await frame();
-    if (container.querySelector('.efs-strip') || integrated && container.querySelector('[data-state="refused"]')) break;
+  const pipeline = pipelineOf(clock, client);
+  try {
+    await whenShown(container, () => container.querySelector(hours > 0 || !integrated ? '.efs-strip' : '.efs-strip, [data-state="refused"]'));
+    const before = asked.filter(request => request.product === 'event-feed-activity').length;
+    const beforeBins = container.querySelectorAll('.efs-bars > span').length;
+    if (hours > 0) {
+      const placement = [...pipeline.page.widgets.keys()].find(id => installedModel(pipeline.view(id), follow?.id));
+      if (placement === undefined) throw new Error('The followed activity strip has no installed panel');
+      const target = FIRST + hours;
+      let stop = () => {};
+      const delivered = new Promise<void>(resolve => {
+        stop = pipeline.onDate(placement, () => {
+          if (pipeline.view(placement)?.through === target) resolve();
+        });
+      });
+      const runPhase = (phase: string) => {
+        for (const task of [...tasks]) if (task.phase === phase) task.run({ now } as EngineFrame);
+      };
+      let tick: number;
+      const advance = () => {
+        const elapsed = Math.min(hoursPerFrame, target - clock.getHour());
+        now += 1000 * elapsed;
+        runPhase('clock');
+        if (elapsed > 0) push();
+        runPhase('paint');
+        tick = requestAnimationFrame(advance);
+      };
+      clock.setPlaying(true);
+      tick = requestAnimationFrame(advance);
+      try {
+        await delivered;
+        flushSync(() => {});
+      } finally {
+        cancelAnimationFrame(tick);
+        stop();
+      }
+    }
+    return {
+      hour: clock.getSnapshot().hour, beforeBins, lastConfirmation,
+      before, count: asked.filter(request => request.product === 'event-feed-activity').length,
+      activities: asked.filter(request => request.product === 'event-feed-activity').map(request => request.params),
+      followed: asked.flatMap(request => {
+        const query = (request.params as { query?: Record<string, unknown> } | undefined)?.query;
+        return request.product === 'follow' && query?.panel === 'event-feed-activity' ? [query] : [];
+      }),
+      bins: container.querySelectorAll('.efs-bars > span').length,
+      tails: asked.filter(request => request.product === 'event-feed-tail').map(request => request.params),
+      groups: asked.filter(request => request.product === 'country-groups').length,
+      strip: container.querySelector('.efs-strip')?.textContent,
+      statuses: [...container.querySelectorAll('.efs-strip[role="status"], .widget-state-title')].map(node => node.textContent),
+      partial: container.querySelectorAll('.efs-bar.is-partial').length,
+      missing: container.querySelectorAll('.efs-gap[title="Not recorded"]').length,
+    };
+  } finally {
+    clock.stop(); root.unmount(); container.remove(); pipeline.close();
+    performance.now = realNow;
   }
-  const before = asked.filter(request => request.product === 'event-feed-activity').length;
-  clock.setPlaying(true);
-  for (let played = 0; played < hours; played += hoursPerFrame) {
-    now += 1000 * Math.min(hoursPerFrame, hours - played);
-    for (const task of [...tasks]) if (task.phase === 'clock') task.run({ now } as EngineFrame);
-    push();
-    for (const task of [...tasks]) if (task.phase === 'paint') task.run({ now } as EngineFrame);
-    await frame();
-  }
-  for (let at = 0; at < 100 && hours > 0; at++) {
-    for (const task of [...tasks]) if (task.phase === 'paint') task.run({ now } as EngineFrame);
-    await frame();
-    const count = container.querySelectorAll('.efs-bars > span').length;
-    if (count === Math.floor((clock.getHour() - 96) / 24) + 1) break;
-  }
-  const result = {
-    hour: clock.getSnapshot().hour,
-    before, count: asked.filter(request => request.product === 'event-feed-activity').length,
-    activities: asked.filter(request => request.product === 'event-feed-activity').map(request => request.params),
-    followed: asked.flatMap(request => {
-      const query = (request.params as { query?: Record<string, unknown> } | undefined)?.query;
-      return request.product === 'follow' && query?.panel === 'event-feed-activity' ? [query] : [];
-    }),
-    bins: container.querySelectorAll('.efs-bars > span').length,
-    tails: asked.filter(request => request.product === 'event-feed-tail').map(request => request.params),
-    groups: asked.filter(request => request.product === 'country-groups').length,
-    strip: container.querySelector('.efs-strip')?.textContent,
-    statuses: [...container.querySelectorAll('.efs-strip[role="status"], .widget-state-title')].map(node => node.textContent),
-    partial: container.querySelectorAll('.efs-bar.is-partial').length,
-    missing: container.querySelectorAll('.efs-gap[title="Not recorded"]').length,
-  };
-  clock.stop(); root.unmount(); container.remove();
-  return result;
 }
 
 Object.assign(window, { activityStripFixture: { run } });

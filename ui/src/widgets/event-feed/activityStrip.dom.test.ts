@@ -7,6 +7,7 @@ interface Result {
   before: number; count: number; activities: Record<string, unknown>[]; tails: Record<string, unknown>[]; groups: number;
   strip: string; statuses: string[]; partial: number; missing: number;
   followed: Record<string, unknown>[]; bins: number;
+  beforeBins: number; lastConfirmation: number | null;
 }
 
 test('the activity request uses the family plan references without reading country groups again and keeps partial and missing holder bins', () =>
@@ -57,6 +58,8 @@ test('a native confirmation advances activity into a quiet new day', () =>
   withNativePage('activity-quiet', '/ui/src/widgets/event-feed/activityStrip.dom.fixture.tsx', page => page.stage('quiet day', async () => {
     const result = await page.evaluate<Result>('window.activityStripFixture.run({kind:"all"}, true, 20)');
     assert.equal(result.hour, 120);
+    assert.equal(result.beforeBins, 1);
+    assert.equal(result.lastConfirmation, 120);
     assert.equal(result.count, 0);
     assert.equal(result.followed.length, 1);
     assert.equal(result.bins, 2);
