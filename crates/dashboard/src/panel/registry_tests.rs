@@ -167,7 +167,6 @@ fn military_ranks_reuse_reading_runs_and_keep_the_exact_reply() {
             rows.push(CountryLinkRow { id: 9002, canonical_slot: 8 });
         }
         let value = |slot| match (hour - first, slot) {
-            (3, 8) => Recorded::NotRecorded,
             (2, _) => Recorded::Value(30),
             (6..=7, 8) => Recorded::Value(i64::from(hour) + 100),
             (_, 7) => Recorded::Value(i64::from(hour) + 20),
@@ -177,8 +176,14 @@ fn military_ranks_reuse_reading_runs_and_keep_the_exact_reply() {
         let casualties = [7, 8].map(|slot| CasualtyTotalRow {
             slot, id: 8994 + slot, dealt: Recorded::Value(12), taken: value(slot), unknown: Recorded::Value(1), partial: u8::from(slot == 8),
         });
-        *frame.tables[TableId::ArmyTotals.index()] = TableView::Complete(TableRows::ArmyTotals(army.into()));
-        *frame.tables[TableId::CasualtyTotals.index()] = TableView::Complete(TableRows::CasualtyTotals(casualties.into()));
+        for rows in [TableRows::ArmyTotals(army.into()), TableRows::CasualtyTotals(casualties.into())] {
+            let table = rows.table();
+            *frame.tables[table.index()] = if hour == second + 3 {
+                TableView::Unavailable { reason: "fixture military readings unavailable".into() }
+            } else {
+                TableView::Complete(rows)
+            };
+        }
         frame
     }).collect();
     let current = replay_recording::schema::columns_at(replay_data::FORMAT_VERSION).unwrap();
@@ -204,8 +209,8 @@ fn military_ranks_reuse_reading_runs_and_keep_the_exact_reply() {
             let panel = open(&source, &load, &ask).unwrap();
             let rank = panel.exact().unwrap();
             let steps = if top == 2 {
-                vec![(first + 1, false), (first + 2, true), (first + 3, false), (edge - 1, true), (edge, false),
-                    (second - 1, false), (second, false), (second + 1, true), (second, false), (second + 1, true)]
+                vec![(first + 1, false), (first + 2, true), (edge - 1, true), (edge, false), (second - 1, false),
+                    (second, false), (second + 1, true), (second + 3, false), (second, false), (second + 1, true)]
             } else {
                 vec![(first + 4, false), (first + 5, true), (first + 6, false), (first + 7, true)]
             };
@@ -229,8 +234,11 @@ fn military_ranks_reuse_reading_runs_and_keep_the_exact_reply() {
                         assert_eq!(readings[2]["run"]["valueRaw"], "30");
                     }
                 }
-                if hour == first + 3 || hour == second - 1 {
+                if hour == second - 1 {
                     assert!(exact["refused"].as_str().is_some(), "{kind}/{measure} at {hour}");
+                }
+                if hour == second + 3 {
+                    assert!(exact["refused"].as_str().unwrap().contains("fixture military readings unavailable"));
                 }
                 if top == 1 {
                     assert_eq!(exact["rows"][0]["country"], if hour < first + 6 { "GER" } else { "ITA" });
