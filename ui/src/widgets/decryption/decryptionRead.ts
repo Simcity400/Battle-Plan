@@ -85,10 +85,10 @@ function resolveCountry(readView: BoundedReadView, country: Country, hour: numbe
   return { key: String(country.id), tag, name, ...(colour ? { colour } : {}), flag };
 }
 
-export function readCipherNumbers(live: ReturnType<BoundedReadView['live']>, pair: CipherPair): CipherNumbers {
+export function readCipherNumbers(live: ReturnType<BoundedReadView['live']>, pair: CipherPair, includeBonus = true): CipherNumbers {
   const key = pairKey(pair);
   const rawAmt = live?.get(liveKey(key, 'amount'));
-  const rawBonus = live?.get(liveKey(key, 'bonusDays'));
+  const rawBonus = includeBonus ? live?.get(liveKey(key, 'bonusDays')) : undefined;
   const amount = typeof rawAmt === 'bigint' ? rawAmt : typeof rawAmt === 'number' && Number.isSafeInteger(rawAmt) ? BigInt(rawAmt) : undefined;
   const bonusDays = typeof rawBonus === 'number' ? rawBonus : typeof rawBonus === 'bigint' ? Number(rawBonus) : undefined;
   return {
