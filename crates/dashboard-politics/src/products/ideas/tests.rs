@@ -224,6 +224,20 @@ fn at_an_hour_a_holding_is_named_from_its_own_first_run_and_bounded_by_what_the_
     assert_eq!(ideas.templates.keys().copied().collect::<Vec<_>>(), [2, 4, 7], "a holder's template is read for each run it begins, never taken from a later one");
     assert_eq!((ideas.next_change(112), ideas.next_change(115), ideas.next_change(120)), (Some(115), Some(116), Some(LAST + 1)));
     assert_eq!(ideas.warnings.get(super::TOKENLESS_SEATS), Some(&125), "a warning is dated to the hour it was first read");
+
+    let mut kept = super::Presentation::default();
+    let before_gap = kept.holdings(&ideas, 112);
+    assert!(Arc::ptr_eq(&before_gap, &kept.holdings(&ideas, 113)));
+    let gap = kept.holdings(&ideas, 115);
+    assert!(!Arc::ptr_eq(&before_gap, &gap));
+    assert!(!Arc::ptr_eq(&before_gap, &kept.holdings(&ideas, 112)));
+    for hour in (FIRST..=LAST).chain((FIRST..=LAST).rev()) {
+        let mut reconstructed = kept.holdings(&ideas, hour).to_vec();
+        for holding in &mut reconstructed {
+            holding.last_hour = holding.last_at(hour);
+        }
+        assert_eq!(reconstructed, ideas.at(hour), "holding structure at hour {hour}");
+    }
 }
 
 #[test]
