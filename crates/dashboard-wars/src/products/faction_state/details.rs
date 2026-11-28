@@ -444,7 +444,7 @@ impl DetailContent {
 pub(super) fn goals_only_in(frame: &DecodedFrame, world: &DecodedFrame, params: &FactionDetailParams, faction: u64, filter: GoalFilter, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {
     let mut reply = blank(params);
     let cat = at.context.catalogue.as_ref().map(Arc::as_ref);
-    let texts = cat.ok().map(|cat| Texts::new(world, faction, cat, &at.context.art, params.viewpoint.as_ref()));
+    let texts = cat.ok().map(|cat| Texts::new_in(frame, world, faction, cat, &at.context.art, params.viewpoint.as_ref()));
     goal_lists(frame, faction, texts.as_ref(), cat.err().map(String::as_str), &mut reply, at.live, Some(filter))?;
     if let Some(texts) = &texts {
         reply.warnings.extend(texts.warnings());
