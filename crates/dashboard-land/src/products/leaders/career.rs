@@ -725,7 +725,7 @@ pub struct LeaderCareerAt;
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(untagged)]
 pub enum LeaderCareerAtReply {
-    History(LeaderCareerReply),
+    History(Box<LeaderCareerReply>),
     WithLeader(CareerWithLeader),
 }
 
@@ -762,7 +762,8 @@ impl Product for LeaderCareerAt {
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         if params.include_leader != Some(true) {
-            return LeaderCareer::load(source, params, load, cancelled).map(LeaderCareerAtReply::History);
+            return LeaderCareer::load(source, params, load, cancelled)
+                .map(|reply| LeaderCareerAtReply::History(Box::new(reply)));
         }
         let asked = serde_json::to_value(LeaderHourParams { branch_id: params.branch_id.clone(), reference: params.reference.clone(), selection: params.selection.clone() })?;
         let panel = exact_panel::<LeaderHour>(source, load, &asked).map_err(dashboard_core::refused)?;
