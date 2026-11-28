@@ -2610,6 +2610,20 @@ impl Viewer {
         self.playhead_map.as_ref().is_some_and(|side| side.on_screen().is_some_and(|on| on.drawn.is_some()))
     }
 
+    fn complete_first_picture(&mut self, playback: &mut viewer_playback::playback::Playback) {
+        if self.shown_whole || !self.playhead.is_some_and(|head| self.picture_whole(head, self.playing)) {
+            return;
+        }
+        self.shown_whole = true;
+        if (self.embedded.is_some() || self.dashboard_map)
+            && self.capture.is_none()
+            && !self.options.window_dump
+            && let Some(frame) = playback.release_bootstrap_frame()
+        {
+            self.retire(frame);
+        }
+    }
+
     fn presentation_ready(&self, target: Playhead, playing: bool) -> bool {
         self.rendered.is_some_and(|rendered| rendered.branch == target.branch)
             && self.picture_whole(target, playing)
@@ -7181,7 +7195,7 @@ impl Viewer {
                 }
             }
         }
-        self.shown_whole = self.shown_whole || self.playhead.is_some_and(|head| self.picture_whole(head, self.playing));
+        self.complete_first_picture(&mut document.playback);
         if !self.shown_whole {
             let cover = rect.intersect(ui.clip_rect());
             ui.painter().rect_filled(cover, 0.0, ui.visuals().panel_fill);

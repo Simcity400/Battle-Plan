@@ -110,6 +110,7 @@ fn campaign_holds(frame: &DecodedFrame, campaign: &[u8]) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Current {
     Frame(Arc<DecodedFrame>),
+    Published,
     Gap {
         branch: BranchId,
         hour: Hour,

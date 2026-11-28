@@ -658,6 +658,7 @@ impl Viewer {
                         .iter()
                         .flat_map(|side| side.with_side(crate::playhead_host::details::of_map)),
                 ),
+                viewer_playback::map_source::Current::Published => {}
                 viewer_playback::map_source::Current::Gap { reason, .. } => {
                     messages.push(format!("Gap: {reason}"))
                 }
