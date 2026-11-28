@@ -160,30 +160,10 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 fn entity_refusal(roster: &mesh::Roster, name: &str) -> Option<String> {
-    if roster.unreadable_names.is_empty() {
-        return None;
-    }
-    let mut pending = vec![name];
-    let mut seen = BTreeSet::new();
-    while let Some(current) = pending.pop() {
-        if !seen.insert(current) {
-            continue;
-        }
-        if let Some(path) = roster.unreadable_names.get(current) {
-            return Some(format!(
-                "entity {name} reaches {current}, whose declaration is undecided after unreadable descriptor {path}"
-            ));
-        }
-        if let Some(entity) = roster.descriptors.inherit(current) {
-            pending.extend(
-                entity
-                    .attachments
-                    .into_iter()
-                    .map(|attachment| attachment.entity.as_str()),
-            );
-        }
-    }
-    None
+    let (reached, path) = roster.unreadable_attachment(name)?;
+    Some(format!(
+        "entity {name} reaches {reached}, whose declaration is undecided after unreadable descriptor {path}"
+    ))
 }
 
 
@@ -659,11 +639,9 @@ impl UnitModelAssets {
             geography,
             camouflage,
             registered: roster
-                .descriptors
-                .entities
-                .keys()
-                .chain(roster.unreadable_names.keys())
-                .cloned()
+                .entity_names()
+                .chain(roster.unreadable_names.keys().map(String::as_str))
+                .map(str::to_owned)
                 .collect(),
             ships,
             dynamic_tags: content_reader_key_names::country_tags::read_definitions(layers)
@@ -1107,7 +1085,7 @@ impl UnitModelAssets {
             ModelLibrary::load_profiled(
                 &self.layers,
                 decode,
-                &self.roster.descriptors,
+                self.roster.descriptor_job().view(),
                 &own,
                 &mut warnings,
                 spans,
@@ -1168,7 +1146,7 @@ impl UnitModelAssets {
         let recorded = self.layers.recorded_descriptor_roster().ok().flatten();
         if recorded.is_some_and(|recorded| {
             entity_refusal(&recorded, name).is_none()
-                && recorded.descriptors.entities.contains_key(name)
+                && recorded.has_entity(name)
         }) {
             return None;
         }

@@ -1421,8 +1421,8 @@ fn a_name_an_unreadable_descriptor_holds_is_refused_not_skipped() {
     assert_eq!(roster.refused_declaration("plane_entity"), None);
 
     let declared = declared_planes(&roster, &BTreeSet::from(["plane"]));
-    assert!(declared.contains(&"GER_plane_entity".to_owned()));
-    assert!(declared.contains(&"plane_entity".to_owned()));
+    assert!(declared.contains("GER_plane_entity"));
+    assert!(declared.contains("plane_entity"));
     let mut warnings = Vec::new();
     let (_, unusable) = plane_library(
         &ResolvedLayers::default(),
@@ -1486,7 +1486,7 @@ fn an_unreadable_file_s_cr_comments_and_escaped_names_still_refuse() {
             roster.unreadable_names.insert(name, path.to_owned());
         }
         let declared = declared_planes(&roster, &BTreeSet::from([key]));
-        assert!(declared.contains(&country), "{country}");
+        assert!(declared.contains(country.as_str()), "{country}");
         let mut warnings = Vec::new();
         let (_, unusable) = plane_library(
             &ResolvedLayers::default(),
@@ -1517,22 +1517,25 @@ fn an_unreadable_file_s_cr_comments_and_escaped_names_still_refuse() {
 #[test]
 fn a_scenario_using_a_possibly_hidden_parent_mesh_or_animation_is_refused() {
     let roster = read_roster("scenario", &["hidden_parent_entity", "hidden_animation"]);
+    let job = roster.descriptor_job();
     assert_eq!(
-        scenario_refusal(&roster, "fighter_1_patrol_entity", "default"),
+        scenario_refusal(&roster, job.view(), "fighter_1_patrol_entity", "default"),
         Some(format!("it {}", why()))
     );
     assert_eq!(
-        scenario_refusal(&roster, "fighter_3_patrol_entity", "default"),
+        scenario_refusal(&roster, job.view(), "fighter_3_patrol_entity", "default"),
         Some(format!("its animation hidden_animation {}", why()))
     );
     let roster = read_roster("scenario_mesh", &["animated_mesh"]);
+    let job = roster.descriptor_job();
     assert_eq!(
-        scenario_refusal(&roster, "fighter_3_patrol_entity", "default"),
+        scenario_refusal(&roster, job.view(), "fighter_3_patrol_entity", "default"),
         Some(format!("its mesh animated_mesh {}", why()))
     );
     let roster = read_roster("scenario_other", &["clean_animation"]);
+    let job = roster.descriptor_job();
     assert_eq!(
-        scenario_refusal(&roster, "fighter_3_patrol_entity", "default"),
+        scenario_refusal(&roster, job.view(), "fighter_3_patrol_entity", "default"),
         None
     );
 }

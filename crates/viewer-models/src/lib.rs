@@ -45,7 +45,9 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use content_reader_layers::ResolvedLayers;
-use content_reader_mesh::mesh::{self, DescriptorView, Descriptors};
+use content_reader_mesh::mesh::{self, DescriptorView};
+#[cfg(test)]
+use content_reader_mesh::mesh::Descriptors;
 use content_reader_image::{Rgba8Image, dds, native::Decode};
 
 use viewer_scene_base::shadow::DEPTH_MAP_FORMAT;
@@ -533,10 +535,10 @@ impl ModelLibrary {
         Self::load_with(layers, decode, descriptors, names, warnings, |_, _| None)
     }
 
-    pub fn load_profiled(
+    pub fn load_profiled<'a>(
         layers: &ResolvedLayers,
         decode: Decode,
-        descriptors: &Descriptors,
+        descriptors: impl Into<DescriptorView<'a>>,
         names: &[String],
         warnings: &mut Vec<content_reader_parser::Diagnostic>,
         spans: &mut BuilderSpans,
@@ -560,7 +562,7 @@ impl ModelLibrary {
         descriptors: impl Into<DescriptorView<'a>>,
         names: &[String],
         warnings: &mut Vec<content_reader_parser::Diagnostic>,
-        refused: fn(&mesh::Roster, &str) -> Option<String>,
+        refused: fn(&mesh::DescriptorJob<'_>, &str) -> Option<String>,
     ) -> io::Result<Self> {
         Self::load_with_spans(
             layers,
@@ -583,7 +585,7 @@ impl ModelLibrary {
         descriptors: DescriptorView<'_>,
         names: &[String],
         warnings: &mut Vec<content_reader_parser::Diagnostic>,
-        refused: fn(&mesh::Roster, &str) -> Option<String>,
+        refused: fn(&mesh::DescriptorJob<'_>, &str) -> Option<String>,
         spans: &mut BuilderSpans,
         labels: BakeLabels,
     ) -> io::Result<Self> {
@@ -654,7 +656,7 @@ impl ModelLibrary {
             if !missing.is_empty() {
                 let names: Vec<String> = missing
                     .iter()
-                    .filter(|(name, _)| refused(&roster, name).is_none())
+                    .filter(|(name, _)| refused(&recorded_job, name).is_none())
                     .map(|(name, _)| name.clone())
                     .collect();
                 let baked = Self::load_with_spans(
@@ -683,7 +685,7 @@ impl ModelLibrary {
             let visual: Vec<String> = library
                 .meshes
                 .iter()
-                .filter(|mesh| mesh.visual && refused(&roster, &mesh.name).is_none())
+                .filter(|mesh| mesh.visual && refused(&recorded_job, &mesh.name).is_none())
                 .map(|mesh| mesh.name.clone())
                 .collect();
             if !visual.is_empty() {

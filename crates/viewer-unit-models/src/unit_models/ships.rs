@@ -55,7 +55,8 @@ impl ShipAssets {
         if let Some(reason) = entity_refusal(roster, &formation) {
             return Err(invalid(reason));
         }
-        let descriptors = &roster.descriptors;
+        let job = roster.descriptor_job();
+        let descriptors = job.view();
         let (root, nodes) = formation_nodes(layers, descriptors, &formation)?;
         let combat = combat_content::CombatAssets::load(descriptors, &config)
             .map_err(|error| error.to_string());
@@ -84,7 +85,7 @@ fn read_formation(
 
 fn formation_nodes(
     layers: &ResolvedLayers,
-    descriptors: &mesh::Descriptors,
+    descriptors: mesh::DescriptorView<'_>,
     formation: &str,
 ) -> io::Result<(Option<mesh::Transform>, Vec<mesh::Transform>)> {
     let entity = descriptors

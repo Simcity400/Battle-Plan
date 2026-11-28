@@ -1032,7 +1032,7 @@ fn units(
                 log.notes("viewer.country_tags", Kind::Warning, &[warning]);
             }
             let is_tag = |tag: &str| tags.files.contains_key(tag);
-            let has_entity = |entity: &str| roster.descriptors.entities.contains_key(entity);
+            let has_entity = |entity: &str| roster.has_entity(entity);
             if let Some(database) = log.read("train_gfx", || {
                 content_reader_gui::train_gfx::Database::read(
                     layers,
@@ -1172,10 +1172,9 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         }
     }
     if let Ok(roster) = layers.descriptor_roster() {
-        let named: BTreeSet<&str> = roster
-            .descriptors
-            .entities
-            .values()
+        let job = roster.descriptor_job();
+        let named: BTreeSet<&str> = job
+            .entities()
             .flat_map(|entity| &entity.states)
             .flat_map(|state| &state.events)
             .filter_map(|event| event.sound.as_deref())
