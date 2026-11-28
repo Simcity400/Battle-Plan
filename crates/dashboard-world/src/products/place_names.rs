@@ -665,24 +665,15 @@ impl PlaceHistory {
         };
         check_cancel(cancelled)?;
         let (links, country_statuses, slot_tags) = if want_provinces {
-            let nonzero = |cells: &[Cell]| cell_number(cells[0]).and_then(|id| u32::try_from(id).ok()).filter(|&id| id != 0);
-            let selected = |history: &History| history.keys.iter().flat_map(|(_, steps)| steps)
-                .filter_map(|step| nonzero(step.cells.as_deref()?)).collect::<BTreeSet<_>>();
+            let nonzero_id = |step: &lanes::Step| u32::try_from(cell_number(step.cells.as_deref()?[0])?).ok().filter(|&id| id != 0);
+            let selected = |history: &History| history.keys.iter().flat_map(|(_, steps)| steps.iter().filter_map(nonzero_id)).collect::<BTreeSet<_>>();
             let owners: Vec<_> = selected(&states).into_iter().map(u128::from).collect();
-            let links = if owners.is_empty() { History::default() } else {
-                read(TableId::CountryLinks, &["canonical_slot"], Keys::These(&owners))?
-            };
+            let links = (!owners.is_empty()).then(|| read(TableId::CountryLinks, &["canonical_slot"], Keys::These(&owners))).transpose()?.unwrap_or_default();
             let slots = selected(&links);
-            let mut countries = if slots.is_empty() { History::default() } else {
-                read(TableId::Countries, &["canonical_slot", "tag"], Keys::All)?
-            };
-            countries.keys.retain(|(_, steps)| steps.iter().any(|step| {
-                step.cells.as_deref().and_then(nonzero).is_some_and(|slot| slots.contains(&slot))
-            }));
+            let mut countries = (!slots.is_empty()).then(|| read(TableId::Countries, &["canonical_slot", "tag"], Keys::All)).transpose()?.unwrap_or_default();
+            countries.keys.retain(|(_, steps)| steps.iter().filter_map(nonzero_id).any(|slot| slots.contains(&slot)));
             let ids: Vec<_> = countries.keys.iter().map(|(id, _)| *id).collect();
-            let appearance = if ids.is_empty() { History::default() } else {
-                read(TableId::CountryAppearance, &["original_tag", "original_tag_reference"], Keys::These(&ids))?
-            };
+            let appearance = (!ids.is_empty()).then(|| read(TableId::CountryAppearance, &["original_tag", "original_tag_reference"], Keys::These(&ids))).transpose()?.unwrap_or_default();
             let reserved = read(TableId::ReservedCountryNaming, &["tag", "original_tag", "original_tag_reference"], Keys::All)?;
             let slot_tags = build_slot_tags(recording, run, &countries, &appearance, &reserved, mode, first, last)?;
             (links, countries.statuses, slot_tags)
@@ -697,7 +688,8 @@ impl PlaceHistory {
         self.country_statuses.get(at).is_some_and(|run| run.first <= hour && matches!(run.status, Status::Complete))
     }
 
-    fn tag_at(&self, slot: u32, hour: i32) -> Result<String, String> {
+    fn victory_point_tag_at(&self, id: u32, state: u32, hour: i32) -> Result<String, String> {
+        let slot = if state == 0 { 0 } else { self.state_owner_slot_at(id, state, hour)? };
         if let Some(tag) = self.slot_tags.get(&slot).and_then(|steps| step_at(steps, hour)) {
             return tag.clone();
         }
@@ -718,17 +710,16 @@ impl PlaceHistory {
         }
     }
 
-    fn victory_point_tag_at(&self, id: u32, state: u32, hour: i32) -> Result<String, String> {
-        if state == 0 { return self.tag_at(0, hour); }
+    fn state_owner_slot_at(&self, id: u32, state: u32, hour: i32) -> Result<u32, String> {
         let Reading::Cells(c) = self.states.reading(u128::from(state), hour) else {
             let (status, reason) = status_at(&self.states, hour);
             return Err(format!("province {id}: state {state} has no States row: {}", status_gap(status, reason, self.mode)));
         };
         let owner = cell_number(c[0]).and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
-        if owner == 0 { return self.tag_at(0, hour); }
+        if owner == 0 { return Ok(0); }
         match self.links.reading(u128::from(owner), hour) {
             Reading::Cells(link) => match cell_number(link[0]).and_then(|v| u32::try_from(v).ok()) {
-                Some(slot) => self.tag_at(slot, hour),
+                Some(slot) => Ok(slot),
                 None => Err(format!("province {id}: state owner's link {owner} resolves to no country")),
             },
             Reading::Absent => Err(format!("province {id}: state owner's link {owner} resolves to no country")),
