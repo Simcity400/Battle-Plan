@@ -453,24 +453,22 @@ export class Page<B extends Bitmap = Bitmap> {
     this.holding.delete(entry);
   }
 
-  private resetFollowed(id: number, reset: number) {
-    const route = this.route(id);
-    if (reset <= route.reset) return;
-    route.reset = reset;
-    for (const map of this.laneConfirmed) {
-      const held = map.get(id);
-      if (held) held.followed = { hour: -Infinity };
-    }
-    for (const widget of this.byRoute.get(id) ?? []) {
-      this.stats.visited++;
-      if (widget.installed?.follows && widget.installed.gen.reset < reset) this.clear(widget, 'reading');
-    }
-  }
-
   private commit() {
     const queue = this.queue;
     this.queue = [];
-    for (const presentation of queue) for (const [id, reset] of presentation.resets ?? []) this.resetFollowed(id, reset);
+    for (const presentation of queue) for (const [id, reset] of presentation.resets ?? []) {
+      const route = this.route(id);
+      if (reset <= route.reset) continue;
+      route.reset = reset;
+      for (const map of this.laneConfirmed) {
+        const held = map.get(id);
+        if (held) held.followed = { hour: -Infinity };
+      }
+      for (const widget of this.byRoute.get(id) ?? []) {
+        this.stats.visited++;
+        if (widget.installed?.follows && widget.installed.gen.reset < reset) this.clear(widget, 'reading');
+      }
+    }
     const earlyByWidget = new Map<number, Entry<B>[]>();
     if (this.earlyWidgets.size) {
       for (const widget of this.earlyWidgets) {
@@ -617,17 +615,14 @@ export class Page<B extends Bitmap = Bitmap> {
       if (lane >= 0) { this.stats.rejected.unmounted = (this.stats.rejected.unmounted ?? 0) + 1; this.refusals[lane]!.push({ widget: entry.widget, id: entry.id, reason: 'unmounted' }); }
       return;
     }
-    const route = this.route(widget.route);
-    let why = this.reject(widget, entry);
-    if (why === null && entry.gen.reset > route.reset) {
-      this.resetFollowed(widget.route, entry.gen.reset);
-      why = this.reject(widget, entry);
-    }
+    const why = this.reject(widget, entry);
     if (why === 'early') {
       this.parkEarly(widget, entry);
       return;
     }
     if (why) { this.refuse(widget, entry, why); return; }
+    const route = this.route(widget.route);
+    if (entry.gen.reset > route.reset) route.reset = entry.gen.reset;
     if (route.failed && entry.gen.seek > route.failed.seek) route.failed = null;
     try {
       if (entry.mode !== 'picture') {

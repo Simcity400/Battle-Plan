@@ -941,7 +941,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           keep.artShown = shownKey;
           keep.art.requestVisible(shown, keep.artUrls ?? projected.artUrls);
         }
-        const canKeep = !input.restorePlayback && !slotDirty && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame);
+        const canKeep = input.keepPlaybackPixels
+          || (!input.restorePlayback && !slotDirty && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame));
         const painted = canKeep ? { drew: false, next: false } : drawCanvas();
         const incremental = typeof painted === 'object';
         repainted = !incremental || painted.drew;
@@ -963,10 +964,11 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         const validUntil = keep.validUntil;
         const base = sceneSources(binding, projection.validateTail);
         let cache: { parts: ReturnType<typeof snapshotPictures>; from: number; until: number; model: TModel }[] = [];
-        const modelAt = (sample: PlaybackPicture): TModel | null => {
-          if (sample.hour >= validFrom && sample.hour < validUntil && samePictures(parts, sample.pictures, true)) return model;
+        const original = { model, until: validUntil };
+        const modelAt = (sample: PlaybackPicture) => {
+          if (sample.hour >= validFrom && sample.hour < validUntil && samePictures(parts, sample.pictures, true)) return original;
           const found = cache.find(item => sample.hour >= item.from && sample.hour < item.until && samePictures(item.parts, sample.pictures, true));
-          if (found) return found.model;
+          if (found) return found;
           try {
             const result = projectScene({ ...input, pictures: sample.pictures }, base, sample.hour, readers, read => projection.project(read, binding.options));
             const until = Math.min(
@@ -974,11 +976,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
               family.boundary(result.model, sample.hour), result.boundary,
             );
             if (family.status(result.model) !== 'picture') return null;
-            cache = [
-              { parts: snapshotPictures(sample.pictures), from: sample.hour, until: Math.max(sample.hour + 1, until), model: result.model },
-              ...cache.slice(0, 1),
-            ];
-            return result.model;
+            const projected = { parts: snapshotPictures(sample.pictures), from: sample.hour, until: Math.max(sample.hour + 1, until), model: result.model };
+            cache = [projected, ...cache.slice(0, 1)];
+            return projected;
           } catch {
             return null;
           }
@@ -986,17 +986,22 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         let lastModel: TModel | null = null;
         let lastNext: TModel | null = null;
         let lastFraction = 0;
-        playback = (current, next, fraction, target) => {
-          const from = modelAt(current), to = modelAt(next);
-          if (!from || !to) return 'cut';
-          if (lastModel === from && lastNext === to && lastFraction === fraction) return false;
+        let lastArtRevision = keep.artRevision;
+        let lastInspect = input.inspect;
+        playback = (current, next, fraction, target, inspect) => {
+          const currentModel = modelAt(current), nextModel = modelAt(next);
+          if (!currentModel || !nextModel || currentModel.until < next.hour) return 'cut';
+          const from = currentModel.model, to = nextModel.model;
+          if (lastModel === from && lastNext === to && lastFraction === fraction && lastArtRevision === keep.artRevision && lastInspect === inspect) return false;
           const shown = animation.frame(frame, from, to, fraction);
           if (!shown || (shown.model === from && lastModel !== null)) return 'cut';
           if (shown.model === from) return false;
-          drawCanvas(shown, target);
+          drawCanvas(inspect === shown.inspect ? shown : { ...shown, inspect }, target);
           lastModel = from;
           lastNext = to;
           lastFraction = fraction;
+          lastArtRevision = keep.artRevision;
+          lastInspect = inspect;
           return true;
         };
       }

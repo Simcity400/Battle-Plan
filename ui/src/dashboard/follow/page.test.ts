@@ -147,25 +147,6 @@ test('review 3: an empty same-seek reset withdraws a follow picture in that comm
   assert.deepEqual([p.widgets.get(1)!.content, (p.widgets.get(1)!.surfaces[0] as FakeSurface).content], [{}, null], 'pixels, fields and content ids go together');
 });
 
-test('the first accepted post-reset entry retires stale followed siblings in that commit', () => {
-  const { p, offer, view } = page();
-  p.mount(2, { route: 9, lane: 1, surfaces: [surface()] });
-  p.mount(3, { route: 9, lane: 1, surfaces: [surface()] });
-  offer(entry({ id: 1, h: 0, c: 50 }), entry({ id: 2, widget: 2, n: 1, h: 0, c: 50 }),
-    entry({ id: 3, widget: 3, n: 1, h: 0, c: 50, follows: false }));
-  p.publish(10, { playing: true });
-  assert.equal(p.view(2).id, 2);
-  offer(entry({ id: 4, h: 10, c: 50, gen: { seek: 0, reset: 1 } }));
-  p.publish(11);
-  assert.equal(view().id, 4);
-  assert.equal(p.view(2).mode, 'reading');
-  assert.equal((p.widgets.get(2)!.surfaces[0] as FakeSurface).content, null);
-  assert.equal(p.view(3).id, 3);
-  p.offer({ lane: 1, serial: 1, resets: [[9, 1]], entries: [] });
-  p.frame();
-  assert.equal(view().id, 4);
-});
-
 test('review 3: after an uncovered rewind a SAME entry naming the vanished base is refused, never read from a missing base', () => {
   const { p, offer, view } = page();
   offer(entry({ id: 1, h: 50, c: 60, content: 'K' })); p.publish(55);

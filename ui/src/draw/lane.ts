@@ -130,6 +130,7 @@ export interface PaintInput extends Scene {
   inspect: string | null;
   now: number;
   restorePlayback?: boolean;
+  keepPlaybackPixels?: boolean;
   workerCanvas?: WorkerCanvasInfo;
   sharedSurface?: { readonly lane: SharedLaneCanvas; readonly slot: SharedSurfaceSlot; readonly dirty: boolean };
 }
@@ -137,6 +138,8 @@ export interface PaintInput extends Scene {
 export interface PlaybackPicture {
   readonly hour: number;
   readonly pictures: readonly Picture<Value>[];
+  readonly from: number;
+  readonly through: number;
 }
 
 export type PlaybackPaint = (
@@ -144,6 +147,7 @@ export type PlaybackPaint = (
   next: PlaybackPicture,
   fraction: number,
   target: PaintInput['sharedSurface'],
+  inspect: string | null,
 ) => boolean | 'cut';
 
 export interface Painted {
@@ -228,7 +232,7 @@ interface Widget {
   validWindow: Window | null;
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; deferrals: number; halted: number | null; parked: Sent | null;
   withdrawn: number | null;
-  playback?: { paint: PlaybackPaint; binding: Binding; supply: number; seek: number; canvas: OffscreenCanvas; cut?: true };
+  playback?: { paint: PlaybackPaint; binding: Binding; supply: number; seek: number; canvas: OffscreenCanvas; cut?: true; previewHour?: number };
 }
 
 interface Held { kind: 'follow' | 'panels'; native: number; seek: number; hour: number; id: number; records: Uint8Array[]; size: number; completed?: number }
@@ -2038,6 +2042,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const dated = widget.binding.dated;
     if (dated && (hour < dated.h || hour > dated.c)) return null;
     const pictures: Picture<Value>[] = [];
+    let from = dated?.h ?? -Infinity;
+    let through = dated?.c ?? Infinity;
     for (const id of widget.subs) {
       const sub = this.subs.get(id);
       if (!sub || this.failedSubs.has(id) || (sub.route !== null && this.failed.has(sub.route))) return null;
@@ -2045,8 +2051,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (!picture || picture.carried || picture.h > hour || picture.c < hour
         || stopOf(picture) !== null || refusalOf(picture) !== null) return null;
       pictures.push(picture);
+      from = Math.max(from, picture.h);
+      through = Math.min(through, picture.c);
     }
-    return pictures.length || dated ? { hour, pictures } : null;
+    return pictures.length || dated ? { hour, pictures, from, through } : null;
   }
 
   private paintPlayback() {
@@ -2074,13 +2082,18 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const hour = Math.floor(pos);
       try {
         const current = this.playbackPicture(widget, hour);
-        const next = current && this.playbackPicture(widget, hour + 1);
-        const painted = current && next ? held.paint(current, next, pos - hour, target.shared) : 'cut';
+        const end = current ? current.through + 1 : Infinity;
+        const next = Number.isFinite(end) && end <= (clock.lastHour ?? Infinity) + widget.binding.offset
+          ? this.playbackPicture(widget, end) : null;
+        const painted = current && next
+          ? held.paint({ ...current, hour: current.from }, next, (pos - current.from) / (end - current.from), target.shared, widget.inspect)
+          : 'cut';
         if (painted === 'cut') {
           if (this.previewedWidgets.has(id)) held.cut = true;
           continue;
         }
         if (painted) {
+          held.previewHour = hour;
           this.previewedWidgets.add(id);
           changed++;
         }
@@ -2112,6 +2125,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const playback = widget.playback;
     return this.previewedWidgets.has(widget.id) && (request.speed === 0 || !playback || playback.cut || playback.seek !== request.seek
       || playback.binding !== widget.binding || playback.supply !== widget.supply);
+  }
+
+  private keepPlaybackPixels(widget: Widget, request: FrameRequest, hour: number) {
+    const held = widget.playback;
+    return request.speed > 0 && held?.previewHour !== undefined && this.previewedWidgets.has(widget.id)
+      && held.seek === request.seek && held.binding === widget.binding && held.supply === widget.supply
+      && this.playbackTarget(widget.id)?.canvas === held.canvas && !this.isDirectSlotDirty(widget.id)
+      && (hour < held.previewHour || (hour === held.previewHour && !held.cut));
   }
 
   private rememberPlayback(widget: Widget, painted: Painted, seek: number) {
@@ -2321,9 +2342,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const wid of this.dirtyWorkerCanvases) if (!sharedReady || !shared.slots.get(wid)?.visible) dirty.add(wid);
     for (const wid of this.dirtyWidgets) if (this.widgets.get(wid)?.forceFull && this.isDirectTarget(wid)) dirty.add(wid);
     for (const wid of dirty) {
-      if (request.speed === 0 && this.previewedWidgets.has(wid)) continue;
       const widget = this.widgets.get(wid);
-      if (widget) this.paintKeptDirect(widget, request, now);
+      if (widget && !this.restorePlayback(widget, request) && !this.keepPlaybackPixels(widget, request, this.requestHourFor(widget, request))) {
+        this.paintKeptDirect(widget, request, now);
+      }
     }
   }
 
@@ -2356,7 +2378,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private settleKept(widget: Widget, request: FrameRequest, now: number) {
     this.previewedWidgets.delete(widget.id);
-    if (widget.playback) delete widget.playback.cut;
+    if (widget.playback) {
+      delete widget.playback.cut;
+      delete widget.playback.previewHour;
+    }
     this.paintKeptDirect(widget, request, now);
   }
 
@@ -2500,10 +2525,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const wid of this.dirtyWidgets) candidates.add(wid);
     this.dirtyWidgets.clear();
     for (const wid of this.motionWidgets) candidates.add(wid);
-    if (request.speed > 0) for (const wid of this.previewedWidgets) {
-      const widget = this.widgets.get(wid);
-      if (widget && this.restorePlayback(widget, request)) candidates.add(wid);
-    }
     for (const wid of this.ephemeralWidgets) {
       const widget = this.widgets.get(wid);
       const active = widget?.inflight ?? widget?.installed;
@@ -2579,7 +2600,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const refresh = widget.playback !== undefined && widget.motion;
       const route = this.routeOf(widget);
       const selected = this.select(widget, target);
-      const restore = this.restorePlayback(widget, request);
+      const restore = this.restorePlayback(widget, request) && !this.keepPlaybackPixels(widget, request, target);
       if (!selected) {
         let next = Infinity;
         if (!widget.subs.length) {
@@ -2612,10 +2633,17 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
       return { widget, selected, motion: shown && !widget.forceFull && !slotDirty, target, refresh };
     };
-    const settling = request.speed === 0 && this.previewedWidgets.size ? this.previewedWidgets.values() : null;
+    const restorations = new Set<number>();
+    for (const wid of this.previewedWidgets) {
+      const widget = this.widgets.get(wid);
+      if (widget && this.restorePlayback(widget, request) && !this.keepPlaybackPixels(widget, request, this.requestHourFor(widget, request))) {
+        restorations.add(wid);
+      }
+    }
+    const settling = restorations.size ? restorations.values() : null;
     const due: NonNullable<ReturnType<typeof nextCandidate>>[] = [];
     for (const wid of candidates) {
-      if (settling && this.previewedWidgets.has(wid)) continue;
+      if (restorations.has(wid)) continue;
       const candidate = nextCandidate(wid);
       if (candidate) due.push(candidate);
     }
@@ -2653,12 +2681,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         }
         tried++;
         if (!candidate) {
-          if (this.previewedWidgets.size && tried > 1 && elapsed >= budget) {
+          const item = settling!.next();
+          if (item.done) break;
+          if (tried > 1 && elapsed >= budget) {
             deferred = true;
             break;
           }
-          const item = settling!.next();
-          if (item.done) break;
           candidate = nextCandidate(item.value);
           if (!candidate) {
             const widget = this.widgets.get(item.value);
@@ -2676,7 +2704,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           continue;
         }
         const initialOpen = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
-        const restorePlayback = this.restorePlayback(widget, request);
+        const keepPlaybackPixels = this.keepPlaybackPixels(widget, request, target);
+        const restorePlayback = !keepPlaybackPixels && this.restorePlayback(widget, request);
         const slotDirty = this.isDirectSlotDirty(widget.id) || restorePlayback;
         if (!refresh && !motion && !widget.motion && !widget.forceFull && !slotDirty && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.supply, widget.inspect, request.seek)) {
           const redated = this.redateEntry(widget, widget.installed, selected, request.seek, initialOpen);
@@ -2708,12 +2737,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
             const sharedArg = shared && sharedSlot && sharedSlot.visible
               ? { lane: shared, slot: sharedSlot, dirty: shared.dirtySlots.has(widget.id) }
               : undefined;
-            if (sharedArg || wc) unpresentedDirect.add(widget.id);
+            if ((sharedArg || wc) && !keepPlaybackPixels) unpresentedDirect.add(widget.id);
             painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: activeSelected.pictures, model: widget.model, ...widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {},
               hour: activeSelected.window[0], seek: request.seek, speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start,
               ...(wc && !sharedArg ? { workerCanvas: this.dirtyWorkerCanvases.has(widget.id) ? { ...wc, dirty: true } : wc } : {}),
               ...(sharedArg ? { sharedSurface: sharedArg } : {}),
-              ...(restorePlayback ? { restorePlayback } : {}) }, widget.state, this.content);
+              ...(restorePlayback ? { restorePlayback } : {}),
+              ...(keepPlaybackPixels ? { keepPlaybackPixels } : {}) }, widget.state, this.content);
             if (sharedArg && shared) shared.dirtySlots.delete(widget.id);
             if (wc && !sharedArg) this.dirtyWorkerCanvases.delete(widget.id);
             mode = painted.mode ?? 'picture'; reason = painted.reason; failureOrigin = undefined;
@@ -2749,7 +2779,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         }
         if (failedLocally) continue;
         if (restorePlayback && (mode !== 'picture' || painted.waiting)) this.settleKept(widget, request, start);
-        this.rememberPlayback(widget, mode === 'picture' && !painted.waiting ? painted : { ...painted, playback: undefined }, request.seek);
+        if (!keepPlaybackPixels || painted.repainted) {
+          this.rememberPlayback(widget, mode === 'picture' && !painted.waiting ? painted : { ...painted, playback: undefined }, request.seek);
+        }
         if (painted.waiting) {
           widget.validWindow = null;
           widget.motion = false;

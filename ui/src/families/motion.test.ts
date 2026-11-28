@@ -333,9 +333,9 @@ function fixture(budget: number) {
   const record = (hour: number, value?: Sample, seek = 1) => lane.receive('panels', datedPanel(1, hour, value, seek, 9));
   let serial = 0;
   const drain = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
-  const request = async (hour: number, speed = 0, seek = 1, acknowledge = false, exact = speed === 0) => {
+  const request = async (hour: number, speed = 0, seek = 1, acknowledge = false, exact = speed === 0, target = hour) => {
     const installed = acknowledge ? (presented.at(-1)?.entries ?? []).map(({ widget, binding, id }) => ({ widget, binding, id })) : [];
-    lane.frame({ type: 'frame', serial: ++serial, seek, now: hour, target: hour, exact, speed, installed, refused: [], inspect: [[1, 'row:GER']] });
+    lane.frame({ type: 'frame', serial: ++serial, seek, now: hour, target, exact, speed, installed, refused: [], inspect: [[1, 'row:GER']] });
     await drain();
   };
   const clock = (anchorPosition: number, speed: number, seek = 1) => lane.setClock(baseClock({
@@ -361,9 +361,28 @@ function fixture(budget: number) {
 }
 
 describe('Ordered bar playback', () => {
+  it('uses the visible hour for an active bar even when the page requests a different future picture', async () => withLane(async f => {
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200 });
+    f.record(103, { value: 400, key: 'ENG' });
+    f.clock(100.5, 1);
+    await f.request(100, 1, 1, false, true);
+    const exact = f.barWidth();
+    f.lane.touch(1);
+    await f.request(100, 1, 1, true, false, 103);
+    f.tick(0);
+    assert.ok(Math.abs(f.barWidth() - exact * 1.5) < 1);
+    assert.equal(f.presented.at(-1)?.entries[0]?.lo, 100);
+    f.clock(101.5, 0);
+    await f.request(101);
+    assert.ok(Math.abs(f.barWidth() - exact * 2) < 1);
+    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '200'));
+  }));
+
   it('uses a cached confirmed bracket at maximum speed and immediately paints the paused hour', async () => withLane(async f => {
     f.record(100, { value: 100 });
-    f.record(109);
+    f.record(108);
+    f.record(109, { value: 100 });
     f.record(110, { value: 200 });
     await f.request(100);
     const start = f.barWidth();
@@ -380,6 +399,31 @@ describe('Ordered bar playback', () => {
     f.canvas.clearOps();
     f.tick(16);
     assert.equal(f.operations().length, 0);
+  }));
+
+  it('repaints every maximum-speed tick between changing confirmed samples across native step intervals', async () => withLane(async f => {
+    for (let at = 0; at <= 6; at++) {
+      const hour = 100 + 24 * at;
+      f.record(hour, { value: 40 + 40 * at });
+      f.record(hour + 23);
+    }
+    f.clock(100, 1440);
+    await f.request(100, 1440);
+    const presents = f.presented.length;
+    let previous = f.barWidth();
+    for (let tick = 0; tick < 8; tick++) {
+      f.tick(1000 / 95);
+      const width = f.barWidth();
+      assert.ok(width > previous, `tick ${tick + 1} advances the visible bar`);
+      previous = width;
+    }
+    assert.equal(f.served.filter(frame => frame.motion).reduce((count, frame) => count + frame.changed, 0), 8);
+    assert.equal(f.presented.length, presents);
+    f.clock(221, 0);
+    await f.request(221);
+    f.tick(1000 / 95);
+    assert.equal(f.served.filter(frame => frame.motion).length, 8);
+    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '240'));
   }));
 
   it('leaves missing readings and row boundaries to the first ordinary paint', async () => withLane(async f => {
@@ -431,7 +475,8 @@ describe('Ordered bar playback', () => {
     const first = f.presented.flatMap(reply => reply.entries).at(-1);
     assert.ok(first?.repainted, 'the ordinary page request paints the direct slot');
     assert.ok(first?.fields);
-    const exact = JSON.stringify(first.fields);
+    const { mirror, tooltip, audit } = first.fields;
+    const exact = JSON.stringify({ mirror, tooltip, audit });
     assert.match(exact, /100/);
     assert.match(exact, /mirror/);
     assert.match(exact, /tooltip/);
@@ -586,25 +631,45 @@ describe('Ordered bar playback', () => {
     assert.deepEqual(f.painted, [1]);
   }));
 
-  it('artwork completion after a boundary never paints the previous page hour', async () => withLane(async f => {
+  it('keeps the later preview when artwork completes before an older page request', async () => withLane(async f => {
     f.record(100, { value: 30, art: true });
-    f.record(101, { value: 60, key: 'ENG', art: true });
-    f.record(102, { value: 100, key: 'ENG', art: true });
+    f.record(101, { value: 60, art: true });
+    f.record(102, { value: 100, art: true });
     f.clock(100.5, 1);
     await f.request(100, 1);
     const width = f.barWidth();
     f.clock(101.5, 1);
     f.tick(0);
-    await f.drain();
-    f.canvas.clearOps();
+    const preview = f.barWidth();
+    assert.ok(Math.abs(preview / width - 80 / 30) < .01);
     const entries = f.presented.length;
     f.finishArtwork();
     await f.drain();
-    assert.equal(f.operations().length, 0);
     assert.equal(f.presented.length, entries);
-    await f.request(101, 1);
-    assert.equal(f.barWidth(), width * 2);
+    await f.request(100, 1);
+    assert.equal(f.barWidth(), preview);
+    f.tick(0);
+    assert.equal(f.barWidth(), preview);
     assert.ok(f.operations().some(op => op.op === 'drawImage'));
+  }));
+
+  it('publishes exact recorded metadata without replacing a later preview on an ordinary request', async () => withLane(async f => {
+    f.record(100, { value: 30 });
+    f.record(101, { value: 60 });
+    f.record(102, { value: 100 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const width = f.barWidth();
+    f.clock(101.5, 1);
+    f.tick(0);
+    const preview = f.barWidth();
+    assert.ok(Math.abs(preview / width - 80 / 30) < .01);
+    await f.request(101, 1);
+    assert.equal(f.barWidth(), preview);
+    const entry = f.presented.at(-1)?.entries[0];
+    assert.equal(entry?.lo, 101);
+    assert.match(JSON.stringify(entry?.fields.audit), /60/);
+    assert.ok(!entry?.repainted);
   }));
 
   it('several expensive artwork wakes do no work between exact playing page requests', async () => withLane(async f => {
@@ -703,6 +768,24 @@ describe('Ordered bar playback', () => {
       await f.drain();
     }
     assert.deepEqual(f.painted, [4, 1, 2, 3]);
+  }, 10));
+
+  it('gives a sibling its ordinary paint before selecting bars that simultaneously lose coverage', async () => withLane(async f => {
+    f.mount(4, true);
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200 });
+    f.clock(100.5, 1);
+    await f.request(100, 1);
+    f.tick(0);
+    assert.deepEqual(f.sampled, [1, 2, 3]);
+    f.clock(101.5, 1);
+    f.tick(0);
+    f.lane.touch(4);
+    f.painted.length = 0;
+    f.selectionCost(6);
+    await f.request(101, 1);
+    assert.equal(f.painted[0], 4);
+    assert.ok(f.selections() <= 2);
   }, 10));
 
   it('interpolates a recorded number zero to a recorded whole-number bigint', async () => withLane(async f => {
