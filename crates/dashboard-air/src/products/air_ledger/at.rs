@@ -381,7 +381,7 @@ pub(crate) fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> 
         at_hour::at_hour(&mut request, hour);
         let params: MilitaryAirAtParams = dashboard_query::named::named(&request)?;
         MilitaryAirAt::validate(&params).map_err(dashboard_core::invalid)?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         dashboard_base::test_fixtures::product_called();
         let (reply, rows) = at_hour::counted(|| finish.reply(|| MilitaryAirAt::load(&source, &params, &load, cancelled)));
         let reply = reply?;
