@@ -5,8 +5,12 @@ use crate::{
     products::{
         ContentOptions,
         at_hour::{self, ReadDates},
+        read_ahead,
     },
 };
+
+mod variable_values;
+use variable_values::ScopeValues;
 use content_reader_localisation::localisation::{Argument, Localisation};
 use dashboard_text::{
     scripted_text::{
@@ -23,7 +27,7 @@ use replay_lanes::at::{CompleteCursor, LexicalCursor};
 use replay_recording::{cells::TableReader, columnar_frames::TableCoverage};
 use std::{
     borrow::BorrowMut,
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     io,
     sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}},
 };
@@ -118,14 +122,95 @@ pub(crate) fn read_with_lexical<F: BorrowMut<DecodedFrame>>(
 pub struct KeyedVariables {
     replay: Arc<Replay>,
     reader: Mutex<Option<(u32, TableReader)>>,
+    scope: Mutex<PreparedScope>,
+}
+
+#[derive(Default)]
+struct PreparedScope {
+    run: Option<u32>,
+    building: bool,
+    bytes: usize,
+    values: BTreeMap<u128, Option<ScopeValues>>,
+}
+
+const SCOPE_BYTES: usize = 4 * 1024 * 1024;
+const SCOPE_ENTRY_BYTES: usize = 2048;
+
+impl PreparedScope {
+    fn reserve(&mut self, run: u32, scope: u128) -> Option<usize> {
+        if self.run != Some(run) {
+            *self = Self { run: Some(run), building: self.building, ..Self::default() };
+        }
+        if self.building || self.values.contains_key(&scope) || SCOPE_BYTES - self.bytes <= SCOPE_ENTRY_BYTES {
+            return None;
+        }
+        self.values.insert(scope, None);
+        self.bytes += SCOPE_ENTRY_BYTES;
+        Some(SCOPE_BYTES - self.bytes)
+    }
+
+    fn publish(&mut self, run: u32, scope: u128, values: Option<ScopeValues>) {
+        self.building = false;
+        if self.run == Some(run) && let Some(cached) = self.values.get_mut(&scope) {
+            self.bytes += values.as_ref().map_or(0, ScopeValues::bytes);
+            *cached = values;
+        }
+    }
+
+    fn launched(&mut self, scope: u128, started: io::Result<()>) {
+        self.building = started.is_ok();
+        if !self.building && self.values.remove(&scope).is_some() {
+            self.bytes -= SCOPE_ENTRY_BYTES;
+        }
+    }
+
+    fn read(&self, run: u32, hour: i32, key: Option<u128>) -> Option<Option<i64>> {
+        let scope = match key {
+            Some(key) => self.values.get(&(key >> 32))?.as_ref()?,
+            None => self.values.values().find_map(Option::as_ref)?,
+        };
+        scope.read(run, hour, key)
+    }
 }
 
 impl KeyedVariables {
     pub fn new(replay: Arc<Replay>) -> Self {
-        Self { replay, reader: Mutex::new(None) }
+        Self { replay, reader: Mutex::new(None), scope: Mutex::default() }
+    }
+
+    pub fn for_source(source: &Source) -> Arc<Self> {
+        let state = source.state::<Option<Arc<Self>>>();
+        Arc::clone(state.lock().unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(|| Arc::new(Self::new(source.replay()))))
+    }
+
+    pub fn prepare_country(self: &Arc<Self>, run: u32, raw: u32) {
+        let mut held = self.scope.lock().unwrap_or_else(|e| e.into_inner());
+        let scope = (1_u128 << 32) | u128::from(raw);
+        let Some(budget) = held.reserve(run, scope) else { return };
+        let replay = Arc::clone(&self.replay);
+        let state = Arc::downgrade(self);
+        let started = read_ahead::spawn("recorded country variable values", move || {
+            job_priority::background_thread();
+            let values = ScopeValues::load(replay.recording(), run, scope, budget);
+            if let Some(state) = state.upgrade() {
+                state.scope.lock().unwrap_or_else(|e| e.into_inner()).publish(run, scope, values);
+            }
+        });
+        held.launched(scope, started);
+    }
+
+    pub fn release_prepared(&self) {
+        let mut held = self.scope.lock().unwrap_or_else(|e| e.into_inner());
+        *held = PreparedScope { building: held.building, ..PreparedScope::default() };
     }
 
     fn read(&self, run: u32, hour: i32, key: Option<u128>) -> Option<Option<i64>> {
+        if let Some(value) = self.scope.lock().unwrap_or_else(|e| e.into_inner())
+            .read(run, hour, key)
+        {
+            return Some(value);
+        }
         let recording = self.replay.recording();
         let table = VARIABLES.index();
         if recording.columns()[table] != VARIABLES.schema().len()
@@ -152,10 +237,7 @@ impl KeyedVariables {
 }
 
 fn recorded_variable(cells: &TableState, key: Option<u128>) -> Option<Option<i64>> {
-    let ColumnState::Number { unrecorded, .. } = cells.column(0)? else { return None };
-    if unrecorded.as_ref().is_some_and(|bits| bits.ones().any(|slot| cells.live().get(slot))) {
-        return None;
-    }
+    complete_values(cells).then_some(())?;
     if let Some(slot) = key.and_then(|key| cells.find(key)) {
         at_hour::count_rows(|| 1);
         if let Value::Number(raw) = cells.value(0, slot) {
@@ -164,6 +246,11 @@ fn recorded_variable(cells: &TableState, key: Option<u128>) -> Option<Option<i64
         return None;
     }
     Some(None)
+}
+
+fn complete_values(cells: &TableState) -> bool {
+    matches!(cells.column(0), Some(ColumnState::Number { unrecorded, .. })
+        if unrecorded.as_ref().is_none_or(|bits| !bits.ones().any(|slot| cells.live().get(slot))))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -954,6 +1041,40 @@ mod tests {
         let cells = store.table_state(0).unwrap();
         assert_eq!(recorded_variable(cells, Some(1)), None);
         assert_eq!(recorded_variable(cells, Some(3)), None);
+    }
+
+    #[test]
+    fn prepared_variable_values_answer_for_their_carrier_at_the_requested_hour() {
+        let replay = recorded_variables(100..=114, true);
+        let store = 1_u128 << 32 | 9001;
+        let keyed = KeyedVariables::new(Arc::clone(&replay));
+        let mut cache = keyed.scope.lock().unwrap();
+        let budget = cache.reserve(0, store).unwrap();
+        cache.launched(store, Err(io::Error::other("Thread creation refused")));
+        assert_eq!(cache.reserve(0, store), Some(budget));
+        let points = ScopeValues::load(replay.recording(), 0, store, budget).unwrap();
+        let key = store << 32 | 1;
+        assert_eq!(points.read(0, 109, Some(key)), Some(Some(100_000)));
+        assert_eq!(points.read(0, 110, Some(key)), Some(Some(200_000)));
+        assert_eq!(points.read(0, 110, Some(store << 32 | 2)), Some(None));
+        assert_eq!(points.read(0, 110, Some((store + 1) << 32 | 1)), None);
+        assert_eq!(points.read(0, 115, Some(key)), None);
+
+        cache.publish(0, store, Some(points));
+        let other = store + 1;
+        let budget = cache.reserve(0, other).unwrap();
+        cache.publish(0, other, ScopeValues::load(replay.recording(), 0, other, budget));
+        assert_eq!(cache.read(0, 110, Some(other << 32 | 1)), Some(Some(110_000)));
+        assert!(cache.bytes <= SCOPE_BYTES);
+        drop(cache);
+        let (value, reads) = replay_recording::cells::count_reads(|| keyed.read(0, 110, Some(key)));
+        assert_eq!(value, Some(Some(200_000)));
+        assert!(reads.is_empty());
+        keyed.release_prepared();
+        assert!(keyed.scope.lock().unwrap().reserve(0, store).is_some());
+
+        let partial = recorded_variables(100..=115, true);
+        assert!(ScopeValues::load(partial.recording(), 0, store, SCOPE_BYTES).is_none());
     }
 
     #[test]
