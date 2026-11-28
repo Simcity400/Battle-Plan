@@ -20,7 +20,7 @@ self.onmessage = ({ data }: MessageEvent<{ session: string; ports: MessagePort[]
     const response = await fetch(`${PUSH}follow?session=${encodeURIComponent(session)}&whole=${serial}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`The full panel batch could not be read: ${response.status}.`);
     return payloads(await response.arrayBuffer());
-  }) : async buffers => {
+  }) : async (buffers: ArrayBuffer[]) => {
     for (const buffer of buffers) dispatcher!.dispatch(buffer);
   };
   void readStream({ session,

@@ -91,8 +91,8 @@ class PanelBodies {
         record.set(next, 16);
         pieces.push(record);
       } else {
-        if (kind === 1) this.remember(id, route, seek, body.slice());
-        else if (kind === 0 || kind === 7) this.forget(id);
+        if (kind === 1 && body.length <= MAX_BASE_BYTES) this.remember(id, route, seek, body.slice());
+        else if (kind === 0 || kind === 1 || kind === 7) this.forget(id);
         if (patched) pieces.push(bytes.subarray(at, end));
       }
       at = end;

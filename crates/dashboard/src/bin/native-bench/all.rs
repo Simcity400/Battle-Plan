@@ -363,7 +363,12 @@ impl View {
             let packet = packet?;
             counts.rows += packet.rows;
             counts.bytes += packet.bytes;
-            counts.clock_only += packet.clock_only;
+            if let Reader::Panel(panel) = reader
+                && let (Some(previous), Some(current)) = (packet.previous.as_deref(), panel.delivered.as_deref())
+                && differs_only_in_hour(previous, current)
+            {
+                counts.clock_only += 1;
+            }
             if let Some(payload) = packet.payload {
                 if let Reader::Direct(direct) = reader {
                     counts.exact_requests += 1;
@@ -382,6 +387,7 @@ impl View {
             counts.add(service);
             let (patch, transport) = measured(|| self.panel_encoder.encode(&bytes));
             counts.panel_delta_cpu_ns += transport.cpu_ns;
+            counts.add(transport);
             let patch = patch.filter(|patch| patch.len() + 12 < bytes.len());
             counts.bytes += patch.as_ref().map_or(bytes.len(), |patch| patch.len() + 12) as u64;
             let restored = self.panel_decoder.decode(patch.as_deref().unwrap_or(&bytes))?;
@@ -454,7 +460,7 @@ struct StepContext<'a, 'lane> {
 struct Packet {
     rows: u64,
     bytes: u64,
-    clock_only: u64,
+    previous: Option<Arc<PanelData>>,
     payload: Option<Payload>,
 }
 
@@ -560,21 +566,24 @@ impl Panel {
             hour
         };
         self.input = Some(reading.value);
-        let mut clock_only = 0;
-        if let Some((kind, body)) = self.delivery.update(reset, &value) {
-            batch.changed(id, at, kind, body);
-            if kind == dated::DATA && !reset && self.delivered.as_ref().is_some_and(|previous| differs_only_in_hour(previous, &value)) {
-                clock_only = 1;
+        let changed = match self.delivery.update(reset, &value) {
+            Some((kind, body)) => {
+                batch.changed(id, at, kind, body);
+                kind == dated::DATA && !reset
             }
-        } else if unread_from.is_some_and(|next| from > next) {
-            batch.changed(id, at, dated::AGAIN, &[]);
-        }
+            None => {
+                if unread_from.is_some_and(|next| from > next) {
+                    batch.changed(id, at, dated::AGAIN, &[]);
+                }
+                false
+            }
+        };
         self.confirmed = Some((epoch, hour));
         self.delivery.commit();
-        self.delivered = Some(value);
+        let previous = self.delivered.replace(value).filter(|_| changed);
         Ok(Packet {
             rows,
-            clock_only,
+            previous,
             ..Packet::default()
         })
     }
