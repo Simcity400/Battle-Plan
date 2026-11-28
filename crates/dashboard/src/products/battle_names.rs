@@ -53,6 +53,14 @@ impl Names {
         self.titles.get(id)
     }
 
+    pub(super) fn reading(&self, id: &str) -> BattleName {
+        match self.get(id) {
+            Some(Ok(name)) => BattleName { name: Some(name.to_string()), missing: None },
+            Some(Err(reason)) => BattleName::missing(reason.to_string()),
+            None => BattleName::missing("Battle identity not recorded".into()),
+        }
+    }
+
     pub fn naval(&self, combat: u64, hour: i32) -> Option<&Title> {
         let (&(id, _), (last, title)) = self.live.range(..=(combat, hour)).next_back()?;
         (id == combat && hour <= *last).then_some(title)
@@ -156,6 +164,7 @@ struct Cached {
 #[derive(Default)]
 struct Build {
     ready: Arc<Preparation>,
+    ready_for_rows: OnceLock<Arc<Preparation>>,
     names: OnceLock<Arc<Names>>,
 }
 
@@ -189,6 +198,31 @@ fn start(source: &Arc<Source>, branch: u64, load: &LoadContext, retry: bool) -> 
 
 fn result(build: &Build) -> io::Result<Option<Arc<Names>>> {
     build.ready.result().map(|made| made.map(|()| Arc::clone(build.names.get().expect("completed battle titles")))).transpose()
+}
+
+fn held(source: &Source, branch: u64, load: &LoadContext) -> Option<Arc<Build>> {
+    let generation = load.content.as_ref()?.presentation.binding().generation;
+    let state = source.state::<Ahead>();
+    let held = state.lock().unwrap_or_else(PoisonError::into_inner);
+    (held.0 == generation).then(|| held.1.get(&branch).cloned()).flatten()
+}
+
+pub(super) fn prepare_for_rows(source: &Arc<Source>, branch: u64, load: &LoadContext) -> io::Result<Option<Arc<Preparation>>> {
+    let Some(build) = start(source, branch, load, false)? else { return Ok(None) };
+    build.ready_for_rows.get_or_init(|| {
+        let ready = Arc::<Preparation>::default();
+        let notify = Arc::clone(&ready);
+        build.ready.on_ready(Box::new(move |_| notify.publish(Ok(()))));
+        ready
+    }).pending()
+}
+
+pub(super) fn for_rows(source: &Source, branch: u64, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Names>> {
+    if let Some(build) = held(source, branch, load) {
+        build.ready.wait()?;
+        return Ok(Arc::clone(build.names.get().expect("completed battle titles")));
+    }
+    read(source, branch, load, cancelled)
 }
 
 pub fn ahead(source: &Arc<Source>, branch: u64, load: &LoadContext) -> io::Result<Option<Arc<Names>>> {
@@ -233,8 +267,14 @@ pub struct BattleNamesParams {
 #[derive(Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct BattleName {
-    name: Option<String>,
-    missing: Option<String>,
+    pub(super) name: Option<String>,
+    pub(super) missing: Option<String>,
+}
+
+impl BattleName {
+    pub(super) fn missing(reason: String) -> Self {
+        Self { name: None, missing: Some(reason) }
+    }
 }
 
 #[derive(Serialize)]
@@ -269,22 +309,11 @@ impl Product for BattleNames {
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid battle names branch"))?;
-        let state = source.state::<Ahead>();
-        let build = load.content.as_ref().and_then(|content| {
-            let held = state.lock().unwrap_or_else(PoisonError::into_inner);
-            (held.0 == content.presentation.binding().generation).then(|| held.1.get(&branch).cloned()).flatten()
-        });
+        let build = held(source, branch, load);
         let Some(names) = build.as_deref().map_or_else(|| read(source, branch, load, cancelled).map(Some), result)? else {
             return Ok(BattleNamesReply { titles: BTreeMap::new(), loading: Some("Loading battle titles…".into()), warnings: Vec::new() });
         };
-        let titles = params.battles.iter().map(|key| {
-            let title = match names.get(key) {
-                Some(Ok(name)) => BattleName { name: Some(name.to_string()), missing: None },
-                Some(Err(reason)) => BattleName { name: None, missing: Some(reason.to_string()) },
-                None => BattleName { name: None, missing: Some("Battle identity not recorded".into()) },
-            };
-            (key.clone(), title)
-        }).collect();
+        let titles = params.battles.iter().map(|key| (key.clone(), names.reading(key))).collect();
         Ok(BattleNamesReply { titles, loading: None, warnings: Vec::new() })
     }
 }

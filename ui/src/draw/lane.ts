@@ -1,6 +1,6 @@
 import { positionAt, type MotionClock } from '../families/motion.ts';
 import { Facts, changeWindow, followsChannel, joinComponents, samePicture, type Channel, type PanelRecord, type Picture, type Window } from '../dashboard/follow/facts.ts';
-import { SAME, type Ack, type Bitmap, type Entry, type FailureOrigin, type FrameRequest, type Refusal } from '../dashboard/follow/page.ts';
+import { MAX_EARLY, SAME, type Ack, type Bitmap, type Entry, type FailureOrigin, type FrameRequest, type Refusal } from '../dashboard/follow/page.ts';
 import { parseAnswer, parseDatedPanelRecord, parseFollowedFrame, type FollowedAnswer } from '../dashboard/follow/message.ts';
 import { patchAnswer } from '../dashboard/follow/tables.ts';
 import { sectionOf } from '../dashboard/follow/liveCells.ts';
@@ -63,6 +63,20 @@ type SlotDeviceGeometry = {
   readonly inner: DeviceRect;
   readonly box: DeviceRect;
 };
+
+type StagedSlot = {
+  readonly lane: SharedLaneCanvas;
+  readonly slot: SharedSurfaceSlot;
+  readonly left: number;
+  readonly top: number;
+  readonly scratch: SharedLaneCanvas;
+  readonly relative: SharedSurfaceSlot;
+};
+
+type StagedPicture = {
+  readonly slot: StagedSlot; readonly pixels: ImageBitmap; readonly overwroteDirect: boolean; readonly playback?: PlaybackPaint;
+};
+const MAX_STAGED_PICTURES = MAX_EARLY + 1;
 
 function slotDeviceGeometry(slot: SharedSurfaceSlot, dpr: number): SlotDeviceGeometry {
   const bx = slot.bx ?? slot.x;
@@ -222,6 +236,7 @@ interface Sent {
   contents: Record<string, string>; fieldKeys: string[]; surfaceCount: number; mode: Entry['mode']; reason?: string;
   open?: 'followed' | 'panel'; viewport?: InstalledViewport; inspect: string | null; hit?: Painted['hit']; supply: number;
   model: unknown; bindingSnapshot: Binding; subsSnapshot: readonly Sub[];
+  staged?: true;
 }
 
 interface Supplied { stamp: number | undefined; statics: Readonly<Record<string, unknown>> | null; identity: { readonly id: number; readonly snapshot: unknown } | null }
@@ -232,7 +247,8 @@ interface Widget {
   validWindow: Window | null;
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; deferrals: number; halted: number | null; parked: Sent | null;
   withdrawn: number | null;
-  playback?: { paint: PlaybackPaint; binding: Binding; supply: number; seek: number; canvas: OffscreenCanvas; cut?: true; previewHour?: number };
+  playback?: { paint: PlaybackPaint; binding: Binding; supply: number; seek: number; canvas: OffscreenCanvas; from: number; cut?: true; previewHour?: number };
+  playbackPending?: number;
 }
 
 interface Held { kind: 'follow' | 'panels'; native: number; seek: number; hour: number; id: number; records: Uint8Array[]; size: number; completed?: number }
@@ -463,6 +479,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private playbackQueued = false;
   private readonly playbackWidgets = new Set<number>();
   private readonly previewedWidgets = new Set<number>();
+  private stagingSurface: SharedLaneCanvas | null = null;
+  private readonly staged = new Map<number, Map<number, StagedPicture>>();
+  private readonly stagedViews = new Set<number>();
+  private readonly directPainted = new Map<number, number>();
+  private pageSeek = 0;
+  private keptOnSeek = new Set<number>();
   private readonly subWidgets = new Map<number, Set<number>>();
   private readonly routeWidgets = new Map<number, Set<number>>();
   private readonly dirtyWidgets = new Set<number>();
@@ -601,7 +623,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const finiteValid = !!w && (Number.isFinite(w[0]) || Number.isFinite(w[1]));
     if (widget.binding.pin === null && (finiteActive || finiteValid)) {
       this.windowedWidgets.add(widget.id);
-      const cur = this.isDirectTarget(widget.id) ? this.lastNow : this.lastTarget;
+      const cur = this.requestBaseFor(widget.id, this.lastNow, this.lastTarget);
       if (Number.isFinite(cur)) {
         let lo = this.windowSafeLo, hi = this.windowSafeHi;
         if (w) [lo, hi] = this.clampSafeRange(lo, hi, w[0], w[1], widget.binding.offset, cur);
@@ -889,7 +911,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       shared.slots.delete(widget);
       shared.dirtySlots.delete(widget);
     }
-    for (const [id, owner] of this.presented) if (owner.widget === widget) this.presented.delete(id);
+    for (const [id, owner] of this.presented) if (owner.widget === widget) this.forgetPresentation(id);
+    this.stagedViews.delete(widget);
+    this.directPainted.delete(widget);
   }
 
   setCanvas(widget: number, canvas: OffscreenCanvas, opaque: boolean) {
@@ -935,11 +959,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   setLaneSurface(canvas: OffscreenCanvas, opaque: boolean) {
+    const shared = this.createLaneSurface(canvas, opaque);
+    if (shared) this.sharedSurface = shared;
+    else this.host.failLaneSurface?.();
+  }
+
+  private createLaneSurface(canvas: OffscreenCanvas, opaque: boolean): SharedLaneCanvas | null {
     const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      this.host.failLaneSurface?.();
-      return;
-    }
+    if (!ctx) return null;
     const activeSlot = {
       ox: 0,
       oy: 0,
@@ -980,7 +1007,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         ctx.fillStyle = prev;
       };
     }
-    this.sharedSurface = {
+    return {
       canvas,
       ctx,
       rawSetTransform,
@@ -1016,6 +1043,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     shared.slots.clear();
     shared.dirtySlots.clear();
     this.sharedSurface = null;
+    this.stagingSurface = null;
+    for (const pictures of this.staged.values()) for (const picture of pictures.values()) picture.pixels.close();
+    this.staged.clear();
+    this.stagedViews.clear();
     this.windowSafeDirty = true;
     this.wake();
   }
@@ -2002,6 +2033,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   frame(request: FrameRequest) {
+    if (request.seek !== this.pageSeek || request.keptOnSeek) this.keptOnSeek = new Set(request.keptOnSeek);
+    this.pageSeek = request.seek;
     this.pageRequests++;
     if (this.lastSpeed !== request.speed) {
       this.lastSpeed = request.speed;
@@ -2059,7 +2092,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private paintPlayback() {
     const clock = this.playbackClock;
-    if (!clock?.playing || this.seekSuperseded(clock.seek)) return;
+    if (!clock?.playing || clock.seek < this.pageSeek || this.seekSuperseded(clock.seek)) return;
     const began = this.time();
     const position = positionAt(clock, performance.timeOrigin + began);
     const budget = this.host.budget ?? 10;
@@ -2078,8 +2111,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (held.cut || widget.binding !== held.binding || widget.supply !== held.supply || clock.seek !== held.seek
         || widget.halted === widget.binding.generation || this.failedWidgets.has(id)
         || target?.canvas !== held.canvas || this.isDirectSlotDirty(id)) continue;
+      const pending = this.staged.get(id);
+      if (pending && [...pending.keys()].some(entry => entry > (this.directPainted.get(id) ?? 0))) continue;
       const pos = position + widget.binding.offset;
       const hour = Math.floor(pos);
+      if (hour < held.from) { keepGoing = true; continue; }
       try {
         const current = this.playbackPicture(widget, hour);
         const end = current ? current.through + 1 : Infinity;
@@ -2135,14 +2171,16 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       && (hour < held.previewHour || (hour === held.previewHour && !held.cut));
   }
 
-  private rememberPlayback(widget: Widget, painted: Painted, seek: number) {
+  private rememberPlayback(widget: Widget, painted: Pick<Painted, 'playback' | 'repainted'>, seek: number, from: number) {
     if (painted.repainted) this.previewedWidgets.delete(widget.id);
     const target = painted.playback && this.playbackTarget(widget.id);
+    const held = widget.playback;
+    const pending = widget.playbackPending;
+    delete widget.playbackPending;
     if (painted.playback && target) {
-      const held = widget.playback;
       if (painted.repainted || !held || held.binding !== widget.binding || held.supply !== widget.supply
         || held.seek !== seek || held.canvas !== target.canvas) {
-        widget.playback = { paint: painted.playback, binding: widget.binding, supply: widget.supply, seek, canvas: target.canvas };
+        widget.playback = { paint: painted.playback, binding: widget.binding, supply: widget.supply, seek, canvas: target.canvas, from };
       }
       this.playbackWidgets.add(widget.id);
       this.armPlayback();
@@ -2150,6 +2188,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       delete widget.playback;
       this.playbackWidgets.delete(widget.id);
     }
+    if (pending !== undefined || Boolean(held) !== Boolean(widget.playback)) this.windowSafeDirty = true;
   }
 
   private wake() {
@@ -2231,10 +2270,37 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.presented.delete(ack.id);
       const widget = owner === undefined ? undefined : this.widgets.get(owner.widget);
       if (!widget || !owner) continue;
+      const staged = this.takeStaged(widget.id, ack.id);
+      const stagedSeekChanged = owner.sent.staged && owner.sent.seek !== this.pageSeek;
+      const stillDated = !stagedSeekChanged || this.keptOnSeek.has(ack.id);
+      if (!stillDated) {
+        const discarded = (sent: Sent | null) => sent && sent.seek !== this.pageSeek && !this.keptOnSeek.has(sent.id);
+        if (discarded(widget.installed)) widget.installed = null;
+        if (discarded(widget.shown)) widget.shown = null;
+        widget.sent = { ...widget.installed?.contents ?? {} };
+        this.markDirectDirty(widget.id);
+      }
       const sameOwner = owner.sent.owner === undefined || widget.binding.owner === undefined || owner.sent.owner === widget.binding.owner;
-      if (sameOwner && widget.withdrawn === null && (!widget.shown || widget.shown.id < owner.sent.id)) widget.shown = owner.sent;
-      if (owner.sent.binding !== widget.binding.generation) continue;
-      if (!widget.installed || widget.installed.id < owner.sent.id) widget.installed = owner.sent;
+      if (stillDated && sameOwner && widget.withdrawn === null && (!widget.shown || widget.shown.id < owner.sent.id)) widget.shown = owner.sent;
+      const current = owner.sent.binding === widget.binding.generation;
+      if (stillDated && current && (!widget.installed || widget.installed.id < owner.sent.id)) {
+        widget.installed = owner.sent;
+        if (owner.sent.staged && sameOwner && widget.withdrawn === null) {
+          if (!staged || stagedSeekChanged || this.seekSuperseded(owner.sent.seek)) this.markDirectDirty(widget.id);
+          else {
+            const shown = this.showStaged(widget.id, owner.sent.id, staged);
+            const currentProof = owner.sent.bindingSnapshot === widget.binding && owner.sent.supply === widget.supply;
+            if (shown && (staged.playback || widget.playback)) {
+              this.rememberPlayback(widget, { playback: currentProof ? staged.playback : undefined, repainted: true }, owner.sent.seek, owner.sent.lo);
+            } else if (!shown && staged.playback && currentProof && owner.sent.id > (this.directPainted.get(widget.id) ?? 0)) {
+              widget.playbackPending = owner.sent.id;
+              this.windowSafeDirty = true;
+            }
+          }
+        }
+      }
+      staged?.pixels.close();
+      if (!current) continue;
       if (widget.inflight?.id === ack.id) widget.inflight = null;
       for (const sub of widget.subs) this.schedulePrune(sub);
       this.syncWindowTracking(widget);
@@ -2242,11 +2308,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const refusal of refused) {
       const owner = this.presented.get(refusal.id);
       this.presented.delete(refusal.id);
+      const staged = this.takeStaged(refusal.widget, refusal.id);
+      staged?.pixels.close();
       this.stats.refused[refusal.reason] = (this.stats.refused[refusal.reason] ?? 0) + 1;
       const widget = this.widgets.get(refusal.widget);
       if (!widget) continue;
       if (widget.inflight?.id === refusal.id) widget.inflight = null;
-      if (this.isDirectTarget(widget.id)) this.markDirectDirty(widget.id);
+      if ((!staged || staged.overwroteDirect) && this.isDirectTarget(widget.id)) this.markDirectDirty(widget.id);
       if (!owner || owner.sent.binding !== widget.binding.generation || (widget.installed && refusal.id < widget.installed.id)) {
         for (const sub of widget.subs) this.schedulePrune(sub);
         this.syncWindowTracking(widget);
@@ -2361,7 +2429,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       return;
     }
     try {
-      this.host.views(widget.view).paint({
+      const painted = this.host.views(widget.view).paint({
         widget: wid, subs: kept.subsSnapshot, pictures: kept.pictures, model: kept.model,
         ...(kept.owner !== undefined ? { owner: kept.owner } : {}),
         hour: kept.lo, seek: request.seek, speed: request.speed, binding: kept.bindingSnapshot, inspect: kept.inspect, now,
@@ -2370,7 +2438,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       }, widget.state, this.content);
       if (shared) shared.lane.dirtySlots.delete(wid);
       if (worker && !shared) this.dirtyWorkerCanvases.delete(wid);
+      this.stagedViews.delete(wid);
       widget.forceFull = false;
+      if (widget.playbackPending === kept.id && kept.bindingSnapshot === widget.binding && kept.supply === widget.supply
+        && kept.seek === request.seek && !painted.waiting) {
+        this.rememberPlayback(widget, painted, request.seek, kept.lo);
+      }
     } catch {
       this.stats.restoreFailures++;
     }
@@ -2410,8 +2483,75 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return this.activeWorkerCanvas(widgetId) !== undefined && this.dirtyWorkerCanvases.has(widgetId);
   }
 
+  private requestBaseFor(widgetId: number, now: number, ahead: number): number {
+    const shared = this.sharedSurface;
+    if (shared && shared.width > 0 && shared.height > 0 && shared.slots.get(widgetId)?.visible) {
+      const widget = this.widgets.get(widgetId);
+      return widget?.playback || (widget?.installed && widget.playbackPending === widget.installed.id) ? now : ahead;
+    }
+    return this.activeWorkerCanvas(widgetId) ? now : ahead;
+  }
+
   private requestHourFor(widget: Widget, request: FrameRequest): number {
-    return this.targetOf(widget, this.isDirectTarget(widget.id) ? request.now : request.target);
+    return this.targetOf(widget, this.requestBaseFor(widget.id, request.now, request.target));
+  }
+
+  private stageSlot(lane: SharedLaneCanvas, slot: SharedSurfaceSlot): StagedSlot | null {
+    if ((this.staged.get(slot.widget)?.size ?? 0) >= MAX_STAGED_PICTURES) return null;
+    const { box } = slotDeviceGeometry(slot, lane.dpr);
+    const left = Math.max(0, box.left), top = Math.max(0, box.top);
+    const width = Math.min(lane.canvas.width, box.right) - left, height = Math.min(lane.canvas.height, box.bottom) - top;
+    if (width <= 0 || height <= 0) return null;
+    const scratch = this.stagingSurface ??= this.createLaneSurface(new OffscreenCanvas(1, 1), lane.opaque);
+    if (!scratch) return null;
+    if (scratch.canvas.width !== width) scratch.canvas.width = width;
+    if (scratch.canvas.height !== height) scratch.canvas.height = height;
+    scratch.rawSetTransform(1, 0, 0, 1, 0, 0);
+    scratch.rawClearRect(0, 0, width, height);
+    scratch.dpr = lane.dpr;
+    scratch.cornerRadius = lane.cornerRadius;
+    const dx = left / lane.dpr, dy = top / lane.dpr;
+    return { lane, slot, left, top, scratch, relative: { ...slot, x: slot.x - dx, y: slot.y - dy, bx: (slot.bx ?? slot.x) - dx, by: (slot.by ?? slot.y) - dy } };
+  }
+
+  private takeStaged(widget: number, id: number): StagedPicture | undefined {
+    const pictures = this.staged.get(widget);
+    const picture = pictures?.get(id);
+    if (picture) {
+      pictures!.delete(id);
+      if (!pictures!.size) this.staged.delete(widget);
+    }
+    return picture;
+  }
+
+  private forgetPresentation(id: number) {
+    const owner = this.presented.get(id);
+    if (owner) this.takeStaged(owner.widget, id)?.pixels.close();
+    this.presented.delete(id);
+  }
+
+  private showStaged(widget: number, id: number, { slot: { lane, slot, left, top }, pixels }: StagedPicture) {
+    if ((this.directPainted.get(widget) ?? 0) > id) return false;
+    if (lane !== this.sharedSurface || lane.slots.get(widget) !== slot || lane.dirtySlots.has(widget)) {
+      this.markDirectDirty(widget);
+      return false;
+    }
+    lane.ctx.save();
+    try {
+      lane.rawSetTransform(1, 0, 0, 1, 0, 0);
+      lane.ctx.beginPath();
+      lane.ctx.rect(left, top, pixels.width, pixels.height);
+      lane.ctx.clip();
+      lane.ctx.globalCompositeOperation = 'copy';
+      lane.ctx.drawImage(pixels, left, top);
+      this.directPainted.set(widget, id);
+      return true;
+    } catch {
+      this.markDirectDirty(widget);
+      return false;
+    } finally {
+      lane.ctx.restore();
+    }
   }
 
   private select(widget: Widget, target: number): Selected | null {
@@ -2559,7 +2699,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         this.stats.visited++;
         const widget = this.widgets.get(wid);
         if (!widget) continue;
-        const base = this.isDirectTarget(wid) ? request.now : request.target;
+        const base = this.requestBaseFor(wid, request.now, request.target);
         const target = this.targetOf(widget, base);
         const w = widget.validWindow;
         const active = widget.inflight ?? widget.installed;
@@ -2723,6 +2863,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         let painted: Painted = { surfaces: [], fields: {}, motion: false };
         let mode: Entry['mode'] = 'picture', reason: string | undefined, failureOrigin: FailureOrigin | undefined;
         let failedLocally = false;
+        let staged: StagedSlot | null = null;
+        let heldForStage = false;
+        let drewDirect = false;
         for (let pass = 0; pass < 4; pass++) {
           try {
             const stops = activeSelected.pictures.map(stopOf).filter(stop => stop !== null);
@@ -2734,17 +2877,32 @@ export class Lane<B extends { readonly width: number; close(): void }> {
             const wc = this.activeWorkerCanvas(widget.id);
             const shared = this.sharedSurface;
             const sharedSlot = shared && shared.width > 0 && shared.height > 0 ? shared.slots.get(widget.id) : undefined;
-            const sharedArg = shared && sharedSlot && sharedSlot.visible
-              ? { lane: shared, slot: sharedSlot, dirty: shared.dirtySlots.has(widget.id) }
+            const sharedArg = shared && sharedSlot?.visible
+              ? { lane: shared, slot: sharedSlot, dirty: shared.dirtySlots.has(widget.id) || this.stagedViews.has(widget.id) }
               : undefined;
-            if ((sharedArg || wc) && !keepPlaybackPixels) unpresentedDirect.add(widget.id);
+            staged = null;
+            if (sharedArg && activeSelected.window[0] > this.targetOf(widget, request.now)) {
+              staged = this.stageSlot(sharedArg.lane, sharedArg.slot);
+              if (!staged) {
+                this.dirtyWidgets.add(widget.id);
+                heldForStage = true;
+                break;
+              }
+              this.stagedViews.add(widget.id);
+            } else if ((sharedArg || wc) && !keepPlaybackPixels) {
+              unpresentedDirect.add(widget.id);
+              drewDirect = true;
+            }
             painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: activeSelected.pictures, model: widget.model, ...widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {},
               hour: activeSelected.window[0], seek: request.seek, speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start,
               ...(wc && !sharedArg ? { workerCanvas: this.dirtyWorkerCanvases.has(widget.id) ? { ...wc, dirty: true } : wc } : {}),
-              ...(sharedArg ? { sharedSurface: sharedArg } : {}),
+              ...(sharedArg ? { sharedSurface: staged ? { lane: staged.scratch, slot: staged.relative, dirty: true } : sharedArg } : {}),
               ...(restorePlayback ? { restorePlayback } : {}),
               ...(keepPlaybackPixels ? { keepPlaybackPixels } : {}) }, widget.state, this.content);
-            if (sharedArg && shared) shared.dirtySlots.delete(widget.id);
+            if (sharedArg && !staged) {
+              sharedArg.lane.dirtySlots.delete(widget.id);
+              this.stagedViews.delete(widget.id);
+            }
             if (wc && !sharedArg) this.dirtyWorkerCanvases.delete(widget.id);
             mode = painted.mode ?? 'picture'; reason = painted.reason; failureOrigin = undefined;
             const refusals = activeSelected.pictures.map(refusalOf);
@@ -2777,10 +2935,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           }
           break;
         }
-        if (failedLocally) continue;
+        if (failedLocally || heldForStage) continue;
         if (restorePlayback && (mode !== 'picture' || painted.waiting)) this.settleKept(widget, request, start);
-        if (!keepPlaybackPixels || painted.repainted) {
-          this.rememberPlayback(widget, mode === 'picture' && !painted.waiting ? painted : { ...painted, playback: undefined }, request.seek);
+        if (!staged && (!keepPlaybackPixels || painted.repainted)) {
+          this.rememberPlayback(widget, mode === 'picture' && !painted.waiting ? painted : { repainted: painted.repainted }, request.seek, activeSelected.window[0]);
         }
         if (painted.waiting) {
           widget.validWindow = null;
@@ -2788,6 +2946,18 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           this.motionWidgets.delete(widget.id);
           this.syncWindowTracking(widget);
           continue;
+        }
+        let pixels: ImageBitmap | undefined;
+        if (staged && mode === 'picture') {
+          try { pixels = staged.scratch.canvas.transferToImageBitmap(); }
+          catch (error) {
+            reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
+            if (this.host.failWidget) {
+              this.failWidget(widget, reason, widget.supplied.stamp);
+              continue;
+            }
+            mode = 'failed'; failureOrigin = 'local';
+          }
         }
         widget.validWindow = activeSelected.window;
         const paintMs = this.time() - start;
@@ -2797,6 +2967,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         widget.served = this.requests + Math.min(4, Math.floor(paintMs / budget));
         if (motion) this.stats.motion++;
         if (this.targetOf(widget, request.now) > activeSelected.window[1]) {
+          pixels?.close();
           this.syncWindowTracking(widget);
           continue;
         }
@@ -2804,7 +2975,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         const parts: (B | typeof SAME | null)[] = [];
         const emitted = mode === 'picture' ? painted : { ...painted, surfaces: [] };
         if (refresh && widget.inflight) widget.forceFull = true;
-        const entry = this.entry(widget, activeSelected, emitted, mode, reason, parts, request.seek, paintMs, open, failureOrigin);
+        const entry = this.entry(widget, activeSelected, emitted, mode, reason, parts, request.seek, paintMs, open, failureOrigin, pixels !== undefined);
+        if (staged && pixels) {
+          let pictures = this.staged.get(widget.id);
+          if (!pictures) this.staged.set(widget.id, pictures = new Map());
+          pictures.set(entry.id, { slot: staged, pixels, overwroteDirect: drewDirect, ...(painted.playback ? { playback: painted.playback } : {}) });
+        } else if (drewDirect) this.directPainted.set(widget.id, entry.id);
         if (mode === 'picture') {
           painted.surfaces.forEach((surface, k) => {
             if (!surface || parts[k] === SAME) return;
@@ -2861,7 +3037,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           for (const e of failedEntries) {
             const { widget } = made[e]!;
             const orig = entries[e]!;
-            this.presented.delete(orig.id);
+            this.forgetPresentation(orig.id);
             const route = this.routeOf(widget);
             const stillCurrent = this.widgets.get(widget.id) === widget && widget.binding.generation === orig.binding && (route === null || this.facts.generation(route).seek === orig.gen.seek);
             if (stillCurrent) this.failWidget(widget, reason, orig.stamp);
@@ -2870,7 +3046,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         } else {
           for (const e of new Set(slots.map(([e]) => e))) {
             const { widget, selected } = made[e]!;
-            this.presented.delete(entries[e]!.id);
+            this.forgetPresentation(entries[e]!.id);
             widget.sent = { ...widget.installed?.contents ?? {} };
             entries[e] = this.entry(widget, selected, { surfaces: [], fields: {}, motion: false }, 'failed', reason, [], request.seek, 0, undefined, 'local');
             surfaces[e] = [];
@@ -2883,7 +3059,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         for (let e = 0; e < entries.length; e++) {
           const orig = entries[e]!;
           const { widget } = made[e]!;
-          this.presented.delete(orig.id);
+          this.forgetPresentation(orig.id);
           if (this.widgets.get(widget.id) === widget) {
             if (widget.inflight?.id === orig.id) widget.inflight = null;
             if (widget.binding.generation === orig.binding) { widget.forceFull = true; widget.sent = {}; }
@@ -2956,7 +3132,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       ...open ? { open } : {}, ...(base.viewport ? { viewport: base.viewport } : {}), surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms: 0, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
   }
 
-  private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, open?: 'followed' | 'panel', failureOrigin?: FailureOrigin): Entry<B> {
+  private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, open?: 'followed' | 'panel', failureOrigin?: FailureOrigin, staged = false): Entry<B> {
     const id = this.host.lane + 1 + this.host.lanes * this.nextEntry++, contents: Record<string, string> = { hour: String(selected.window[0]) };
     const full = widget.forceFull;
     if (mode === 'picture') widget.forceFull = false;
@@ -2982,7 +3158,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const viewport = painted.viewport ?? (primarySurface ? { width: primarySurface.width, height: primarySurface.height, dpr: primarySurface.dpr, scrollLeft: 0, scrollTop: 0 } : undefined);
     const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.pageRequests, seek, ephemeral: painted.ephemeral === true, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       binding: widget.binding.generation, contents, fieldKeys, surfaceCount: painted.surfaces.length, mode, reason, open, ...(viewport ? { viewport } : {}), inspect: widget.inspect, hit: painted.hit, supply: widget.supply,
-      model: widget.model, bindingSnapshot: widget.binding, subsSnapshot: widget.subs.map(id => this.subs.get(id)!) };
+      model: widget.model, bindingSnapshot: widget.binding, subsSnapshot: widget.subs.map(id => this.subs.get(id)!), ...(staged ? { staged: true } : {}) };
     widget.withdrawn = null;
     widget.sent = { ...contents };
     widget.inflight = sent;

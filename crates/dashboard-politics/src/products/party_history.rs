@@ -363,6 +363,9 @@ type NamingReads = [Vec<(i32, i32)>; NAMING.len()];
 struct Naming {
     hours: Vec<i32>,
     reads: NamingReads,
+    country_ids: Vec<u128>,
+    #[cfg(test)]
+    country_histories: usize,
 }
 
 fn read_at(reads: &[(i32, i32)], hour: i32) -> bool {
@@ -376,13 +379,15 @@ fn naming_changes(recording: &replay_recording::columnar_frames::Recording, run:
     }
     let raws: Vec<u128> = ruling_tags(parties, columns).into_iter().map(u128::from).collect();
     if raws.is_empty() {
-        return Ok(Naming { hours: Vec::new(), reads });
+        return Ok(Naming { hours: Vec::new(), reads, country_ids: Vec::new(), #[cfg(test)] country_histories: 0 });
     }
     let mut hours = Vec::new();
     let links = unless_withheld(lanes::history(recording, run, TableId::CountryLinks, &[columns.link], Keys::These(&raws), first, last))?;
     steps_into(&links, &mut hours);
     let slots = numbers(&links, columns.link);
-    let countries = unless_withheld(lanes::history(recording, run, TableId::Countries, &columns.country, Keys::All, first, last))?;
+    let own = [u128::from(who.1)];
+    let keys = if slots.iter().all(|&slot| slot == who.0) { Keys::These(&own) } else { Keys::All };
+    let countries = unless_withheld(lanes::history(recording, run, TableId::Countries, &columns.country, keys, first, last))?;
     let mut ids = Vec::new();
     if let Ok(slot) = countries.columns.binary_search(&columns.country[0]) {
         for (key, steps) in &countries.keys {
@@ -404,7 +409,7 @@ fn naming_changes(recording: &replay_recording::columnar_frames::Recording, run:
     for held in &reads[..if reserved { NAMING.len() } else { NAMING.len() - 1 }] {
         read_bounds_into(held, &mut hours);
     }
-    Ok(Naming { hours: settled(hours, first, last), reads })
+    Ok(Naming { hours: settled(hours, first, last), reads, country_ids: ids, #[cfg(test)] country_histories: countries.keys.len() })
 }
 
 #[derive(Default)]
@@ -620,15 +625,15 @@ impl Parties {
                 reads.get(unread[source]).is_some_and(|&(from, _)| from <= hour)
             });
             let changed = [renames.hours.binary_search(&hour).is_ok(), recasts.hours.binary_search(&hour).is_ok()];
-            self.observe(query, &mut frames, run, (hour, end), who, (asked, &renames.reads, &recasts), columns, read, changed, [&held, &looks, &politics])?;
+            self.observe(query, &mut frames, (hour, end), who, (asked, &renames, &recasts), columns, read, changed, [&held, &looks, &politics])?;
         }
         Ok(())
     }
 
-    fn observe(&mut self, query: &Query<'_>, frames: &mut at_hour::Frames<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), (asked, naming, characters): (&Country, &NamingReads, &Recasts), columns: &Columns, read: [bool; SOURCES.len()], [renamed, recast]: [bool; 2], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
+    fn observe(&mut self, query: &Query<'_>, frames: &mut at_hour::Frames<'_>, (hour, end): (i32, i32), who: (u32, u32), (asked, naming, characters): (&Country, &Naming, &Recasts), columns: &Columns, read: [bool; SOURCES.len()], [renamed, recast]: [bool; 2], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
         let [parties_read, looks_read, politics_read] = read;
         if parties_read {
-            self.observe_parties(query, run, (hour, end), who, (asked, naming), columns, renamed, held)?;
+            self.observe_parties(query, frames, (hour, end), who, (asked, naming), columns, renamed, held)?;
         } else {
             mark(&mut self.unobserved, hour, end);
             self.last = None;
@@ -644,7 +649,7 @@ impl Parties {
         Ok(())
     }
 
-    fn observe_parties(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), (asked, reads): (&Country, &NamingReads), columns: &Columns, renamed: bool, held: &Stepper<'_>) -> io::Result<()> {
+    fn observe_parties(&mut self, query: &Query<'_>, frames: &mut at_hour::Frames<'_>, (hour, end): (i32, i32), who: (u32, u32), (asked, naming): (&Country, &Naming), columns: &Columns, renamed: bool, held: &Stepper<'_>) -> io::Result<()> {
         let continues = self.last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
         self.last = Some((end, who));
         let places = columns.party.map(|column| held.place(column));
@@ -665,7 +670,7 @@ impl Parties {
                 }
                 let raw = number(cells[party_tag]).and_then(|raw| u32::try_from(raw).ok()).unwrap_or_default();
                 let key = (number(cells[default]) == Some(0)).then(|| held.text(cells[name]).map(|name| String::from_utf8_lossy(name).into_owned()).unwrap_or_default());
-                self.ruling.observe(token, raw, key, (hour, end), continues, renamed, || party_tags(query, run, hour, raw, who, &query.holders.name(asked, hour), reads))?;
+                self.ruling.observe(token, raw, key, (hour, end), continues, renamed, || party_tags(frames, hour, raw, who, &query.holders.name(asked, hour), naming))?;
             }
         }
         Ok(())
@@ -725,9 +730,20 @@ impl Parties {
     }
 }
 
-fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32), tag: &str, reads: &NamingReads) -> io::Result<(Option<String>, Result<String, String>)> {
-    let mut frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, &NAMING.map(replay_lanes::at::Read::all)))?;
-    for (table, held) in NAMING.into_iter().zip(reads) {
+fn party_tags(frames: &mut at_hour::Frames<'_>, hour: i32, raw: u32, who: (u32, u32), tag: &str, naming: &Naming) -> io::Result<(Option<String>, Result<String, String>)> {
+    let reserved = at_hour::Read::all(TableId::ReservedCountryNaming);
+    let wanted = if raw == 0 {
+        vec![reserved]
+    } else {
+        vec![
+            at_hour::Read::these(TableId::Countries, naming.country_ids.iter().copied()),
+            at_hour::Read::these(TableId::CountryLinks, [u128::from(raw)]),
+            at_hour::Read::these(TableId::CountryAppearance, naming.country_ids.iter().copied()),
+            reserved,
+        ]
+    };
+    let mut frame = frames.frame(hour, &wanted, "Party names")?;
+    for (table, held) in NAMING.into_iter().zip(&naming.reads) {
         if !read_at(held, hour) {
             frame.tables[table.index()] = TableView::Unavailable { reason: "not read at this hour".into() }.into();
         }

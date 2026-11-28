@@ -624,16 +624,55 @@ fn a_table_learned_while_a_stepped_frame_holds_the_head_reads_at_that_head() {
 }
 
 #[test]
+fn a_typed_view_spare_keeps_only_the_next_patch_candidate() {
+    let entry = open(record("spare lifetime", 4), hourly_steps()).unwrap();
+    let width = entry.kinds()[COUNTRIES.index()].len();
+    let columns: Vec<_> = (0..width).collect();
+    let mut lane = playhead::lane::Lane::new(Arc::clone(&entry.pages), 0, COUNTRIES.index(), &columns, true).unwrap();
+    lane.seek(0).unwrap();
+    let mirror = Mirror::rebuild(&lane, &columns);
+    let make = || SharedView::from(super::view::make(COUNTRIES, &mirror, (&entry.kinds()[COUNTRIES.index()], super::view::EVERY), false, &mut Vec::new()).0);
+    let (first, second) = (make(), make());
+    let mut made = super::Columns::new();
+    let TableView::Complete(rows) = first.held() else { panic!("expected recorded countries") };
+    made.rows = rows.len();
+    made.keep(first.clone(), &[]);
+    made.keep(second.clone(), &[]);
+
+    assert!(!first.is_shared(), "the first snapshot can drop when its last reader lets go");
+    assert!(second.is_shared(), "the predecessor can still supply the next patch");
+
+    made.built = Some((made.stamp, make()));
+    made.touched = Ok(super::Touched::default());
+    made.make(COUNTRIES.index(), super::view::EVERY, (&mirror, &entry.kinds()[COUNTRIES.index()], false), &mut Vec::new(), &mut super::Made::default());
+    assert!(!second.is_shared(), "a step that reuses the current view releases the spare");
+}
+
+#[test]
 fn a_mirror_short_of_the_posted_hour_makes_no_frame_of_that_hour() {
     let entry = open(record("stalled short", 8), hourly_steps()).unwrap();
     entry.set_capture(CaptureMode::Full);
     entry.playhead().seek(2);
     let mut apart = Apart::new(&entry, RECORDING.branch).unwrap();
-    let reader = apart.store().handle().reader_at("short", &[Need::every(COMBATS)], Pace::Step);
+    let views = apart.store().handle();
+    let reader = views.reader_at("short", &[Need::every(COMBATS)], Pace::Step);
     assert!(apart.drive(3), "the store never reached hour 3");
     reader.wait(|frame| frame.hour == 3, LIMIT).unwrap_or_else(|error| panic!("the rows of hour 3: {error}"));
     apart.post_at(4);
     assert_eq!(reader.frame().map(|frame| frame.hour), Some(3), "no frame of hour 4 from mirrors standing at 3");
+    assert!(views.held().iter().any(|&(table, bytes)| table == COMBATS && bytes > 0));
+    {
+        let mut jobs = super::lock(&views.shared.jobs);
+        jobs.made.told.push((COMBATS.index(), super::view::EVERY, Some(vec![(1, 1)])));
+        jobs.running += 1;
+    }
+    drop(apart);
+    assert!(views.held().is_empty(), "a handle outliving its store cannot keep the built views alive");
+    assert!(reader.frame().is_none());
+    let mut jobs = super::lock(&views.shared.jobs);
+    assert!(jobs.made.told.is_empty(), "a retired store keeps no pending row changes");
+    assert_eq!(jobs.running, 1, "a reader still republishing can finish after the store has retired");
+    jobs.running -= 1;
 }
 
 #[test]

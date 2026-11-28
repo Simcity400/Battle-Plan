@@ -6,7 +6,7 @@ use dashboard_base::products::{
     check_reply_budget,
     idea_format::{self, LocalisedText, ModifierFormat},
     politics_content::{PoliticsContent, politics_content},
-    scoped_text::{self, Scope, ScopedText, Validity},
+    scoped_text::{self, KeyedVariables, Scope, ScopedText, Validity},
     validate_country,
 };
 use dashboard_core::dto::Artwork;
@@ -26,7 +26,7 @@ use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{CharacterRow, LexicalTokenRow, ModifierDefinitionRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io,
     sync::{Arc, Mutex, PoisonError, Weak, atomic::AtomicBool},
 };
@@ -96,7 +96,7 @@ pub struct IdeaHolding {
     pub look: u32,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaLook {
@@ -217,7 +217,7 @@ pub struct CategoryInfo {
     pub slots: Vec<SlotInfo>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaHistoryReply {
@@ -969,7 +969,50 @@ pub(crate) fn present(
     content: &Arc<PoliticsContent>,
     asked: &Asked<'_>,
     read: &Read,
+    recorded: Option<&Arc<RecordedDefinitions>>,
+    cancelled: &AtomicBool,
+) -> io::Result<IdeaHistoryReply> {
+    check_cancel(cancelled)?;
+    let mut kept = read.presentation.lock().unwrap_or_else(PoisonError::into_inner);
+    if !kept.content.upgrade().is_some_and(|held| Arc::ptr_eq(&held, content)) {
+        *kept = Presentation { content: Arc::downgrade(content), ..Presentation::default() };
+    }
+    let definitions = recorded.map_or_else(Weak::new, Arc::downgrade);
+    let mut reply = if let Some(cached) = kept.exact.as_ref().filter(|cached|
+        cached.hour == asked.hour && cached.branch == asked.params.branch_id
+            && cached.tag == asked.tag && cached.unrecorded.as_deref() == asked.unrecorded.as_deref()
+            && cached.definitions.ptr_eq(&definitions)
+    ) {
+        let (reply, noted): (IdeaHistoryReply, catalogue::OwnRefusals) = serde_json::from_slice(&cached.bytes)?;
+        catalogue::credit(&noted);
+        reply
+    } else {
+        let (reply, noted) = catalogue::capture(|| present_new(query, content, asked, read, recorded.and_then(|defs| defs.as_ref().as_ref()), &mut kept, cancelled));
+        let reply = reply?;
+        if let Ok(bytes) = serde_json::to_vec(&(&reply, noted))
+            && bytes.len() <= PRESENTATION_BYTES
+        {
+            kept.exact = Some(Exact {
+                hour: asked.hour, branch: asked.params.branch_id.clone(), tag: asked.tag.to_owned(),
+                unrecorded: asked.unrecorded.clone(), definitions,
+                bytes: bytes.into_boxed_slice(),
+            });
+        }
+        reply
+    };
+    reply.warnings.extend(content.catalogue.refusal_lines());
+    reply.categories = categories(content);
+    Ok(reply)
+}
+
+#[expect(clippy::too_many_arguments, reason = "presentation uses the recorded history and its bounded cache")]
+fn present_new(
+    query: &Query<'_>,
+    content: &Arc<PoliticsContent>,
+    asked: &Asked<'_>,
+    read: &Read,
     recorded: Option<&BTreeMap<String, ModifierDefinitionRow>>,
+    kept: &mut Presentation,
     cancelled: &AtomicBool,
 ) -> io::Result<IdeaHistoryReply> {
     let (tag, hour) = (asked.tag, asked.hour);
@@ -982,7 +1025,7 @@ pub(crate) fn present(
         warnings.push(format!("Idea categories and laws may be incomplete: {gap}."));
     }
     warnings.extend(ideas.warnings.iter().filter(|(_, at)| **at <= hour).map(|(warning, _)| (*warning).to_owned()));
-    let scoped = ScopedText::new(query.replay, &content.catalogue);
+    let scoped = ScopedText::new(query.replay, &content.catalogue).with_keyed_variables(Arc::clone(&read.variables));
     let mut validity = Validity::default();
     let unnamed = NamingCountry::default();
     let mut looks: Vec<IdeaLook> = Vec::new();
@@ -1015,11 +1058,18 @@ pub(crate) fn present(
                     Some(at_hour) => {
                         let scope_target = slot_at(at_hour);
                         let track = holding.end == HoldingEnd::Held;
-                        let mut resolve = |key: &str| match scope_target {
-                            Some((run, slot)) => scoped.localise(run, at_hour, Scope::Country(slot), key, &[], track.then_some(&mut validity)),
-                            None => Err(format!("localisation {key}: country scope is unavailable at hour {at_hour}")),
+                        let look = |mut validity: Option<&mut Validity>| {
+                            let mut resolve = |key: &str| match scope_target {
+                                Some((run, slot)) => scoped.localise(run, at_hour, Scope::Country(slot), key, &[], validity.as_deref_mut()),
+                                None => Err(format!("localisation {key}: country scope is unavailable at hour {at_hour}")),
+                            };
+                            look_with(content, span, ideas.templates.get(&holding.span), named.for_tag(holding_tag), Some(&mut resolve), true)
                         };
-                        look_with(content, span, ideas.templates.get(&holding.span), named.for_tag(holding_tag), Some(&mut resolve), true)
+                        if track {
+                            look(Some(&mut validity))
+                        } else {
+                            kept.past((holding.span, at_hour, scope_target, holding_tag.into()), || look(None))?
+                        }
                     }
                     None => read.looked(content, holding_tag, holding.span),
                 };
@@ -1069,7 +1119,6 @@ pub(crate) fn present(
     let (modifiers, format_warnings) = idea_format::modifier_formats_with(recorded, &modifier_keys, content, &mut localise_text);
     warnings.extend(format_warnings);
     let texts = idea_format::texts_with(&text_keys, &mut |key| localise_text(key, &[]));
-    warnings.extend(content.catalogue.refusal_lines());
     let unobserved = ideas
         .unobserved
         .iter()
@@ -1113,7 +1162,7 @@ pub(crate) fn present(
         holdings,
         held,
         looks,
-        categories: categories(content),
+        categories: Vec::new(),
         unobserved,
         modifiers,
         texts,
@@ -1123,12 +1172,57 @@ pub(crate) fn present(
 
 type Looked = (IdeaLook, Option<String>);
 type CachedLook = (String, Looked, catalogue::OwnRefusals);
+type HistoricalKey = (usize, i32, Option<(u32, u32)>, Box<str>);
+
+const PRESENTATION_BYTES: usize = 512 * 1024;
+
+struct Exact {
+    hour: i32,
+    branch: String,
+    tag: String,
+    unrecorded: Option<String>,
+    definitions: Weak<RecordedDefinitions>,
+    bytes: Box<[u8]>,
+}
+
+#[derive(Default)]
+struct Presentation {
+    content: Weak<PoliticsContent>,
+    exact: Option<Exact>,
+    past: VecDeque<(HistoricalKey, Box<[u8]>)>,
+    bytes: usize,
+}
+
+impl Presentation {
+    fn past(&mut self, key: HistoricalKey, make: impl FnOnce() -> Looked) -> io::Result<Looked> {
+        if let Some((_, bytes)) = self.past.iter().find(|(held, _)| *held == key) {
+            let (look, noted): (Looked, catalogue::OwnRefusals) = serde_json::from_slice(bytes)?;
+            catalogue::credit(&noted);
+            return Ok(look);
+        }
+        let (look, noted) = catalogue::capture(make);
+        if let Ok(bytes) = serde_json::to_vec(&(&look, noted)) {
+            let size = bytes.len() + key.3.len() + std::mem::size_of::<(HistoricalKey, Box<[u8]>)>();
+            if size <= PRESENTATION_BYTES {
+                while self.bytes + size > PRESENTATION_BYTES {
+                    let (key, bytes) = self.past.pop_front().expect("retained bytes");
+                    self.bytes -= bytes.len() + key.3.len() + std::mem::size_of::<(HistoricalKey, Box<[u8]>)>();
+                }
+                self.bytes += size;
+                self.past.push_back((key, bytes.into_boxed_slice()));
+            }
+        }
+        Ok(look)
+    }
+}
 
 pub(crate) struct Read {
     pub ideas: Ideas,
     pub naming: Vec<NamingCountry>,
     looks: Mutex<(Weak<PoliticsContent>, Vec<Vec<CachedLook>>)>,
     dates: Arc<Mutex<ReadDates>>,
+    variables: Arc<KeyedVariables>,
+    presentation: Mutex<Presentation>,
 }
 
 impl Read {
@@ -1192,7 +1286,11 @@ pub(crate) fn history(source: &Source, branch: u64, tag: &Country) -> io::Result
         .zip(&ideas.starts)
         .map(|(&hour, &(_, _, id))| naming_at(&mut frames, hour, id))
         .collect::<io::Result<Vec<_>>>()?;
-    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: source.state::<ReadDates>() });
+    let state = source.state::<Option<Arc<KeyedVariables>>>();
+    let variables = Arc::clone(state.lock().unwrap_or_else(PoisonError::into_inner)
+        .get_or_insert_with(|| Arc::new(KeyedVariables::new(source.replay()))));
+    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: source.state::<ReadDates>(),
+        variables, presentation: Mutex::default() });
     *held = Some(Arc::clone(&read));
     Ok(read)
 }
@@ -1362,7 +1460,7 @@ impl Product for IdeaHistory {
         };
         let tag = query.holders.name(&params.country, hour);
         let asked = Asked { params, tag: &tag, hour, unrecorded };
-        let reply = present(&query, &content, &asked, &read, (*recorded).as_ref(), cancelled)?;
+        let reply = present(&query, &content, &asked, &read, Some(&recorded), cancelled)?;
         check_reply_budget(&reply)?;
         Ok(reply)
     }

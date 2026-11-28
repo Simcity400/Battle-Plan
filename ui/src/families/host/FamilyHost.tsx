@@ -9,7 +9,7 @@ import type { WidgetBase } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import { StripPageContext, type StripWidget } from '../../dashboard/strip/driver.ts';
 import { EMPTY_STRIP_RECEIPT } from '../../dashboard/strip/store.ts';
-import type { TiledLine } from '../../dashboard/tiles/view';
+import { TILE_ROSTER_FIELD, type TiledLine, type TileRosters } from '../../dashboard/tiles/view.ts';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
@@ -257,6 +257,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onHoverHour?: (hour: number | null, drawnKeys?: DrawnKeys) => void;
   readonly onTooltipRow?: (subject: string | null, by: TooltipRowSource) => void;
   readonly onInstalledHour?: (hour: number | null) => void;
+  readonly onFollowedTileRanks?: (hour: number, proof: readonly [number, number], ranks: TileRosters | undefined) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onPointsNavigate?: (request: PointsNavigateRequest) => boolean;
@@ -271,6 +272,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly extraWarnings?: readonly string[];
   readonly blockedState?: ReactNode;
   readonly blockedLoading?: boolean;
+  readonly bodyStatus?: string;
   readonly held?: boolean;
   readonly loadingLabel?: string;
   readonly className?: string;
@@ -325,6 +327,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   onHoverHour,
   onTooltipRow,
   onInstalledHour,
+  onFollowedTileRanks,
   selectedKey = null,
   onActivate,
   onPointsNavigate,
@@ -339,6 +342,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   extraWarnings,
   blockedState = null,
   blockedLoading = false,
+  bodyStatus,
   held = false,
   loadingLabel,
   className = '',
@@ -356,7 +360,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const contextMenuRef = useRef(contextMenu);
   contextMenuRef.current = contextMenu;
 
-  const frameRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLDivElement & { playbackDiagnostics?: { bodyStatus?: string; metaMode?: string; installedBinding?: number } }>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const listboxMirrorRef = useRef<HTMLDivElement>(null);
   const accessibleTableRef = useRef<HTMLTableElement>(null);
@@ -583,6 +587,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     onHoverHour,
     onTooltipRow,
     onInstalledHour,
+    onFollowedTileRanks,
     selectedKey,
     onActivate,
     onPointsNavigate,
@@ -1237,6 +1242,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const install = () => {
       const shown = pipeline.view(pipe);
       const frameNode = frameRef.current;
+      if (perfLog && frameNode) (frameNode.playbackDiagnostics ??= {}).installedBinding = shown?.installedBinding;
       const cur = latestRef.current;
       const activeAdapter = cur.adapter;
       holdElement(frameNode, !!shown?.dim);
@@ -1280,6 +1286,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
 
       if (!visible || !fields || shown?.id === undefined) {
+        if (cur.onFollowedTileRanks) {
+          const hour = shown?.target ?? runtime.clock.getHour();
+          cur.onFollowedTileRanks(hour, [hour, hour], undefined);
+        }
         recordRef.current = null;
         if (lastInstalledHourRef.current !== null) {
           lastInstalledHourRef.current = null;
@@ -1326,6 +1336,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       };
       const record = recordInstalled(installed, fields, selectionsRef.current.at(installed.generation.binding));
       recordRef.current = record;
+      if (cur.onFollowedTileRanks && !shown.dim) {
+        cur.onFollowedTileRanks(installedHour, installed.validInterval, fields[TILE_ROSTER_FIELD] as TileRosters | undefined);
+      }
       if (lastHoverHourRef.current !== null) publishHoverHour(lastHoverHourRef.current);
       const rawSummary = rawMeta?.empty ? null : resolveHeaderSummary({
         summaryText: rawMeta?.summaryText ?? null,
@@ -1640,6 +1653,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       clearHoverRef.current = () => {};
       stopPointer();
       stopInstall();
+      if (frameRef.current?.playbackDiagnostics) delete frameRef.current.playbackDiagnostics.installedBinding;
       auditWatch.dispose();
       clearMirrorRef.current();
       recordRef.current = null;
@@ -1988,6 +2002,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       lastMirrorCaptionRef.current = null;
     }
   }, [blockedState, rowsFocus, syncTableTabIndex]);
+
+  useLayoutEffect(() => {
+    if (!perfLog || !frameRef.current) return;
+    const diagnostics = frameRef.current.playbackDiagnostics ??= {};
+    diagnostics.bodyStatus = bodyStatus ?? (blockedState ? 'blocked' : 'ready');
+    diagnostics.metaMode = meta.mode;
+  }, [bodyStatus, blockedState, meta.mode]);
 
   return (
     <div ref={frameRef} data-tooltip-owner={tooltipOwner} className={className ? `fh-frame ${className}` : 'fh-frame'}>

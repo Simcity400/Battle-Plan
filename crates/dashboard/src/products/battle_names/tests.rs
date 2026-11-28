@@ -13,6 +13,8 @@ fn title_preparation_retries_failures_and_refuses_a_retired_binding() {
     for _ in 0..2 {
         assert_eq!(ahead(&source, 1, &load).err().unwrap().to_string(), "Synthetic title failure");
     }
+    assert!(prepare_for_rows(&source, 1, &load).unwrap().is_none());
+    assert_eq!(for_rows(&source, 1, &load, &false.into()).err().unwrap().to_string(), "Synthetic title failure");
 
     let retry = start(&source, 1, &load, true).unwrap().unwrap();
     assert!(!Arc::ptr_eq(&retry, &failed));
@@ -148,4 +150,68 @@ fn a_gap_keeps_the_sequence_and_each_lineage_counts_its_own_battles() {
     assert_eq!(main.get("battle:3:29").unwrap().as_ref().unwrap_err().as_ref(), "Province names were truncated");
     assert_eq!(fork.get("battle:1:10").unwrap().as_deref(), Ok("Battle of Copper Hollow"));
     assert!(fork.get("battle:4:30").is_none());
+}
+
+#[test]
+fn named_battle_rows_match_the_brokers_at_the_recorded_hours() {
+    use dashboard_base::test_fixtures::{source, source_with_content, visual_mods};
+    use dashboard_land::registrations::LAND_BATTLES_TAIL;
+    use dashboard_world::products::place_name_runs::{PlaceNameRuns, PlaceNameRunsParams};
+    use replay_data::rows::{LandCombatRow, ProvinceRow, StateRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+
+    let game = visual_mods::Machine::new("named_land_rows");
+    let frames = (100..=103).map(|hour| {
+        let mut frame = source(1, hour, Some(1));
+        for (table, rows) in [
+            (TableId::LandCombats, TableRows::LandCombats(vec![LandCombatRow { id: hour as u64, province: 3, ..Default::default() }])),
+            (TableId::Provinces, TableRows::Provinces(vec![ProvinceRow { id: 3, state: 7, ..Default::default() }])),
+            (TableId::States, TableRows::States(vec![StateRow {
+                id: 7, custom_name: if hour == 100 { b"Copper Hollow".to_vec() } else { b"Glass Shore".to_vec() }, ..Default::default()
+            }])),
+        ] {
+            frame.metrics.table_ns[table.index()] = 1;
+            *frame.tables[table.index()] = TableView::Complete(rows);
+        }
+        frame
+    }).collect();
+    let (source, load) = source_with_content(frames, &game.root);
+    let source = Arc::new(source);
+    let cancel = AtomicBool::new(false);
+    let binding = load.content.as_ref().unwrap().presentation.binding();
+    let build = Arc::<Build>::default();
+    let mut refused = named(Key::Land(102, 102, None), 102, "");
+    refused.1 = Err("Province names were truncated".into());
+    let found = named(Key::Land(100, 100, None), 100, "Battle of Copper Hollow");
+    let renamed = named(Key::Land(101, 101, None), 101, "Battle of Glass Shore");
+    assert!(build.names.set(Arc::new(number(vec![found, renamed, refused]))).is_ok());
+    build.ready.publish(Ok(()));
+    *source.state::<Ahead>().lock().unwrap() = Ahead(binding.generation, HashMap::from([(1, build)]));
+    let product = crate::products::find("land-battles-tail").unwrap();
+    let panel = crate::panel::open(&source, &load, &json!({"panel": "land-battles-tail", "branchId": "1", "rowNames": true, "limit": 1})).unwrap();
+    let advance = &panel.exact().unwrap().advance;
+    let places = source.in_scope(|| PlaceNameRuns::load(&source, &PlaceNameRunsParams {
+        branch_id: "1".into(), land: false, from: 100, to: 103, states: vec![7], provinces: vec![],
+    }, &load, &cancel)).unwrap();
+    for hour in 100..=103 {
+        let plain = json!({"branchId": "1", "limit": 1, "hour": hour});
+        assert_eq!((product.load)(&source, "test", plain.clone(), &load, &cancel).unwrap(),
+            (LAND_BATTLES_TAIL.load)(&source, "test", plain.clone(), &load, &cancel).unwrap());
+        let mut request = plain;
+        request["rowNames"] = true.into();
+        let named = source.in_scope(|| product.answer(&source, request, &load, &cancel)).unwrap();
+        let followed = advance(hour, false, &cancel, None);
+        assert_eq!(followed.value.as_ref().as_ref().unwrap(), &named);
+        let row = &named["rows"][0];
+        assert_eq!(row["hour"], hour);
+        let id = format!("battle:{hour}:{hour}");
+        let title = BattleNames::load(&source, &BattleNamesParams { branch_id: "1".into(), battles: vec![id.clone()] }, &load, &cancel).unwrap();
+        let title = &title.titles[&id];
+        assert_eq!(row["title"].as_str(), title.name.as_deref());
+        assert_eq!(row["titleMissing"].as_str(), title.missing.as_deref());
+        let state = places.states[0].runs.iter().find(|run| run.first_hour <= hour && hour <= run.last_hour).unwrap();
+        assert_eq!(row["placeName"].as_str(), state.name.as_deref());
+        assert_eq!(row["placeMissing"].as_str(), state.missing.as_deref());
+    }
 }

@@ -1,3 +1,4 @@
+import type { TileRosters } from '../../dashboard/tiles/view.ts';
 import type { FamilyAuditRow } from '../auditRow.ts';
 import type { DrawnKeys } from '../host/installed.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
@@ -259,6 +260,7 @@ export interface TimeChartModel {
   readonly yAxis: ChartYAxisSpec;
   readonly series: readonly TimeChartSeriesModel[];
   readonly drawnKeys?: DrawnKeys;
+  readonly followedTileRanks?: TileRosters;
   readonly stack?: ChartStackModel;
   readonly columns?: ChartColumnModel;
   readonly rows?: readonly ChartRowModel[];

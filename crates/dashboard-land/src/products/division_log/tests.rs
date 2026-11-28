@@ -209,6 +209,10 @@ fn unresolved_owner_and_undated_removal_keep_honest_identity_and_last_sighting()
     );
     assert_eq!((removal_detail.killer_slot, removal_detail.killer_tag.as_deref(), removal_detail.killer_division.as_deref()), (None, None, None));
     assert_eq!(removal_detail.matched_deaths, Some(0));
+    let mut named = serde_json::to_value(ask(105, json!({"events": "lost", "placeNames": true}))).unwrap();
+    let row = named["rows"][0].as_object_mut().unwrap();
+    assert_eq!(row.remove("placeMissing"), Some(json!("Place names need the recorded content stack and language")));
+    assert_eq!(named, serde_json::to_value(lost).unwrap(), "the optional name adds only the settled place reading");
 }
 
 #[test]

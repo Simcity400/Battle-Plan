@@ -75,10 +75,11 @@ export function militaryAirSources(owner: string, ctx: FamilyPlanContext, params
       offset: ctx.track.axisOffset,
       read: {
         shape: 'point',
-        channel: 'followed',
+        channel: 'panel',
         coverage: top != null ? { mode: 'population', form: 'top', limit: top } : keyed ? { mode: 'keyed', keys: ctx.countries.tags } : { mode: 'population', form: 'all' },
         product: MILITARY_AIR_AT,
-        followQuery: null,
+        exactProduct: MILITARY_AIR_AT,
+        followQuery: { panel: MILITARY_AIR_AT, ...params },
         params,
         dynamicKeys: ['hour'],
         provenInterval: (data, hour) => {

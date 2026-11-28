@@ -403,6 +403,7 @@ export default function DeclaredFamilyWidget<
       staticProof={plan.staticProof}
       pagedRows={plan.pagedRows}
       tiledSeries={hasPixelBinned ? plan.tiledSeries : undefined}
+      {...(plan.onFollowedTileRanks ? { onFollowedTileRanks: plan.onFollowedTileRanks } : {})}
       hovers={plan.hovers}
       laneArt={laneArt}
       extent={extent}
@@ -432,6 +433,7 @@ export default function DeclaredFamilyWidget<
       extraWarnings={combinedWarnings}
       blockedState={blockedState}
       blockedLoading={plan.bodyStatus.kind === 'loading'}
+      bodyStatus={plan.bodyStatus.kind}
       held={plan.staticHeld}
       loadingLabel={plan.loadingLabel}
     />

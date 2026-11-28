@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Lane, type Bitmapped, type LaneHost, type Presented } from '../draw/lane.ts';
 import { contextWidgetKey } from '../draw/kit.ts';
 import { datedPanel, datedRecord, message } from '../dashboard/follow/messages.fixture.ts';
-import { Page } from '../dashboard/follow/page.ts';
+import { Page, type Ack } from '../dashboard/follow/page.ts';
 import type { FamilyTheme } from './contract.ts';
 import { createLaneView } from './laneRuntime.ts';
 import { type MotionClock } from './motion.ts';
@@ -195,6 +195,9 @@ function makeRecordingCanvas(width = 960, height = 300) {
     snapshotOps(): CanvasOp[][] {
       return [...opsByWidget.values()].map(list => list.slice());
     },
+    stagedCopies() {
+      return [...ownOps, ...[...opsByWidget.values()].flat()].filter(op => op.op === 'drawImage' && Array.isArray(op.args[0]));
+    },
   };
 }
 
@@ -240,11 +243,17 @@ async function withLane(run: (value: ReturnType<typeof fixture>) => Promise<void
       width: number;
       height: number;
       readonly getContext: () => OffscreenCanvasRenderingContext2D | null;
+      readonly transferToImageBitmap: () => ImageBitmap;
       constructor(w: number, h: number) {
         this.width = w;
         this.height = h;
-        const { canvas } = makeRecordingCanvas(w, h);
+        const { canvas, snapshotOps, clearOps } = makeRecordingCanvas(w, h);
         this.getContext = () => canvas.getContext('2d');
+        this.transferToImageBitmap = () => {
+          const bitmap = { width: this.width, height: this.height, __bpOps: snapshotOps().flat(), close() {} };
+          clearOps();
+          return bitmap as ImageBitmap;
+        };
       }
     },
     configurable: true,
@@ -333,8 +342,9 @@ function fixture(budget: number) {
   const record = (hour: number, value?: Sample, seek = 1) => lane.receive('panels', datedPanel(1, hour, value, seek, 9));
   let serial = 0;
   const drain = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
-  const request = async (hour: number, speed = 0, seek = 1, acknowledge = false, exact = speed === 0, target = hour) => {
-    const installed = acknowledge ? (presented.at(-1)?.entries ?? []).map(({ widget, binding, id }) => ({ widget, binding, id })) : [];
+  const request = async (hour: number, speed = 0, seek = 1, acknowledge: boolean | Ack[] = false, exact = speed === 0, target = hour) => {
+    const installed = Array.isArray(acknowledge) ? acknowledge
+      : acknowledge ? (presented.at(-1)?.entries ?? []).map(({ widget, binding, id }) => ({ widget, binding, id })) : [];
     lane.frame({ type: 'frame', serial: ++serial, seek, now: hour, target, exact, speed, installed, refused: [], inspect: [[1, 'row:GER']] });
     await drain();
   };
@@ -361,6 +371,71 @@ function fixture(budget: number) {
 }
 
 describe('Ordered bar playback', () => {
+  it('hands a staged slot to playback only after acceptance and never paints behind its accepted date', async () => withLane(async f => {
+    f.record(100, { value: 30, target: true });
+    f.record(123);
+    f.record(124, { value: 60 });
+    f.record(147);
+    f.record(148, { value: 100 });
+    f.clock(100.5, 1);
+    await f.request(100, 1, 1, false, true);
+    const exact = f.barWidth();
+    await f.request(101, 1, 1, true, false, 124);
+    const staged = f.presented.at(-1)?.entries[0];
+    assert.equal(staged?.lo, 124);
+    assert.equal(f.barWidth(), exact);
+    f.tick(0);
+    assert.deepEqual(f.sampled, []);
+    assert.equal(f.canvas.stagedCopies().length, 0);
+    await f.request(124, 1, 1, [staged!], false, 148);
+    assert.equal(f.canvas.stagedCopies().length, 1);
+    f.tick(0);
+    assert.deepEqual(f.sampled, []);
+    f.clock(136, 1);
+    f.tick(0);
+    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
+    assert.ok(Math.abs(f.barWidth() / exact - 80 / 30) < .01);
+    f.clock(148, 0);
+    await f.request(148);
+    assert.ok(Math.abs(f.barWidth() / exact - 100 / 30) < .01);
+    assert.equal(f.canvas.stagedCopies().length, 1);
+  }));
+
+  it('does not copy a delayed staged acknowledgement over a newer live bar', async () => withLane(async f => {
+    f.record(100, { value: 30 });
+    f.record(123);
+    f.record(124, { value: 60 });
+    f.record(147);
+    f.record(148, { value: 100 });
+    f.clock(100.5, 1);
+    await f.request(100, 1, 1, false, false, 124);
+    const staged = f.presented.at(-1)?.entries[0];
+    assert.equal(staged?.lo, 124);
+    await f.request(100, 1, 1, false, true);
+    f.clock(136, 1);
+    f.tick(0);
+    const width = f.barWidth();
+    await f.request(124, 1, 1, [staged!], false, 148);
+    assert.equal(f.canvas.stagedCopies().length, 0);
+    assert.equal(f.barWidth(), width);
+  }));
+
+  it('starts playback from a first staged picture that needs an exact live redraw on acceptance', async () => withLane(async f => {
+    f.record(124, { value: 60 });
+    f.record(147);
+    f.record(148, { value: 100 });
+    f.clock(100, 1);
+    await f.request(100, 1, 1, false, false, 124);
+    const staged = f.presented.at(-1)?.entries[0];
+    assert.equal(staged?.lo, 124);
+    f.clock(124, 1);
+    await f.request(124, 1, 1, [staged!], false, 148);
+    const exact = f.barWidth();
+    assert.equal(f.canvas.stagedCopies().length, 0);
+    f.tick(12000);
+    assert.ok(Math.abs(f.barWidth() / exact - 80 / 60) < .01);
+  }));
+
   it('uses the visible hour for an active bar even when the page requests a different future picture', async () => withLane(async f => {
     f.record(100, { value: 100 });
     f.record(101, { value: 200 });
@@ -410,20 +485,47 @@ describe('Ordered bar playback', () => {
     f.clock(100, 1440);
     await f.request(100, 1440);
     const presents = f.presented.length;
+    const unitWidth = f.barWidth() / 40;
     let previous = f.barWidth();
     for (let tick = 0; tick < 8; tick++) {
+      f.canvas.clearOps();
       f.tick(1000 / 95);
       const width = f.barWidth();
+      const elapsedHours = (tick + 1) * 1440 / 95;
+      const expected = 40 + elapsedHours * 40 / 24;
+      const recorded = 40 + Math.floor(elapsedHours / 24) * 40;
       assert.ok(width > previous, `tick ${tick + 1} advances the visible bar`);
+      assert.ok(Math.abs(width / unitWidth - expected) < .01);
+      const rowLabels = f.operations().filter(op => op.op === 'fillText' && Math.abs(Number(op.args[2]) - Number(f.bar().args[1])) < 20);
+      assert.ok(rowLabels.some(op => op.args[0] === String(recorded)));
+      assert.ok(!rowLabels.some(op => op.args[0] === String(Math.round(expected))));
       previous = width;
     }
     assert.equal(f.served.filter(frame => frame.motion).reduce((count, frame) => count + frame.changed, 0), 8);
     assert.equal(f.presented.length, presents);
-    f.clock(221, 0);
-    await f.request(221);
+    f.clock(244, 1440);
+    await f.request(244, 1440);
+    assert.ok(Math.abs(f.barWidth() / unitWidth - 280) < .01);
+    f.clock(244, 0);
+    await f.request(244);
     f.tick(1000 / 95);
     assert.equal(f.served.filter(frame => frame.motion).length, 8);
-    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '240'));
+    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '280'));
+  }));
+
+  it('does not interpolate a long confirmed value toward a reading beyond an unproven hour', async () => withLane(async f => {
+    f.record(100, { value: 60 });
+    f.record(123);
+    f.record(126, { value: 100 });
+    f.clock(100, 1440);
+    await f.request(100, 1440);
+    const exact = f.barWidth();
+    f.tick(1000 / 95);
+    assert.equal(f.barWidth(), exact);
+    assert.ok(!f.served.some(frame => frame.motion));
+    f.clock(126, 1440);
+    await f.request(126, 1440);
+    assert.ok(Math.abs(f.barWidth() / exact - 100 / 60) < .01);
   }));
 
   it('leaves missing readings and row boundaries to the first ordinary paint', async () => withLane(async f => {

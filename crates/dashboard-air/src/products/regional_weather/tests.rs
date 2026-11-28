@@ -219,6 +219,19 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
         assert!(matches!(&r1.readout, Some(WeatherReadout::NotRecorded { reason }) if reason.contains(&format!("hour {}", 3 * DAY))), "{show:?}: {:?}", r1.readout);
     }
 
+    let ranked = RegionalWeatherParams { pinned_regions: None, top: Some(1), ..params(Show::Modifier, 3) };
+    let reply = history(&query, &ranked, &weather, None, &false.into()).unwrap();
+    assert_eq!(reply.regions.len(), 3);
+    assert_eq!(reply.columns.regions[0].id, "3");
+    assert_eq!(GRIDS_FOLDED.get(), 1);
+
+    let run = query.timeline.at(2).unwrap().run;
+    for hour in [6, 2, 3] {
+        let sampled = region_sample_frame(&source, &query, run, hour).unwrap();
+        let exact = at_hour::frame(&query, hour, &[at_hour::Read::all(TableId::WeatherRegions)], "Regional weather").unwrap();
+        assert_eq!(*sampled.tables[TableId::WeatherRegions.index()], *exact.tables[TableId::WeatherRegions.index()]);
+    }
+
     let temp_unavailable = history(&query, &params(Show::Temperature, 2 * DAY - 1), &weather, None, &AtomicBool::new(false)).unwrap();
     let r1 = temp_unavailable.columns.regions.iter().find(|region| region.id == "1").unwrap();
     assert!(

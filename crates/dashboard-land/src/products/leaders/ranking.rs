@@ -1,5 +1,7 @@
 use super::*;
 use dashboard_base::products::at_hour::{Edits, Held};
+use dashboard_follow::live::{Live, Source as Cell};
+use replay_data::rows::LeaderBattleTotalRow;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -83,6 +85,7 @@ type Top = Result<u64, Option<String>>;
 pub(super) struct Ranking {
     order: Vec<u64>,
     shown: HashMap<u64, Rank>,
+    shown_ids: BTreeSet<u32>,
     withheld: BTreeMap<u64, LeaderWithheld>,
     people: HashMap<u32, BTreeSet<u64>>,
     tokens: HashMap<u32, BTreeSet<u32>>,
@@ -94,13 +97,55 @@ pub(super) struct Ranking {
     pub(super) notes: Notes,
 }
 
+pub(super) fn battle_rows(totals: &[LeaderBattleTotalRow], id: u32) -> &[LeaderBattleTotalRow] {
+    let owner = |row: &LeaderBattleTotalRow| (row.leader >> 32) as u32;
+    &totals[totals.partition_point(|row| owner(row) < id)..totals.partition_point(|row| owner(row) <= id)]
+}
+
+pub(super) fn follow_battles(totals: &[LeaderBattleTotalRow], at: &At<'_, LeadersContext>, leaders: &mut [LeaderRow]) {
+    let held = at.context.tally_history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let history = held.as_ref().expect("a ranked board has a tally");
+    let table = TableId::LeaderBattleTotals;
+    for row in leaders {
+        let id = (row.reference.parse::<u64>().expect("recorded handle") >> 32) as u32;
+        let keys = battle_rows(totals, id);
+        if keys.is_empty() { continue; }
+        let past = history.past.battles(id);
+        let mut offset = [past.fought, past.won, past.lost].map(|count| count as i64);
+        let before = history.before.partition_point(|row| (row.0 >> 32) < u64::from(id));
+        for (_, counts) in history.before[before..].iter().take_while(|row| row.0 >> 32 == u64::from(id)) {
+            for (base, count) in offset.iter_mut().zip(counts) { *base -= *count as i64; }
+        }
+        for (column, name) in ["fought", "won", "lost"].into_iter().enumerate() {
+            let cells: Vec<_> = keys.iter().map(|key| Cell { table, column, key: key.leader.into() }).collect();
+            at.live.sum(&row.reference, name, &cells, 1.);
+        }
+        row.battle_offset = Some(offset);
+        row.fought = 0;
+        row.won = 0;
+        row.lost = 0;
+    }
+}
+
 impl Ranking {
+    pub(super) fn holds_battle_cells(&mut self, frame: &DecodedFrame, context: &LeadersContext, edits: &Edits, live: &Live) -> bool {
+        let table = TableId::LeaderBattleTotals;
+        let Ok(rows) = frame.complete::<tables::LeaderBattleTotals>() else { return false; };
+        let same_keys = edits.tables.get(&table).into_iter().flat_map(|changes| changes.keys()).filter(|key| self.shown_ids.contains(&((**key >> 32) as u32))).all(|&key| {
+            let present = rows.binary_search_by_key(&(key as u64), |row| row.leader).is_ok();
+            let followed = live.groups.iter().any(|group| group.table == table && group.keys.binary_search(&key).is_ok());
+            present == followed
+        });
+        same_keys && self.affected(frame, edits, None, context, true).is_some_and(|keys| keys.is_empty())
+    }
+
     pub(super) fn seed(frame: &DecodedFrame, evaluated: &EvaluatedLeaders<'_>, context: &LeadersContext, notes: Notes) -> Self {
         let mut rank = Self {
             revision: UnitLeaders::context_revision(context),
             notes,
             order: evaluated.leaders.iter().map(|l| l.handle).collect(),
             shown: evaluated.leaders.iter().map(|l| (l.handle, Rank::of(l))).collect(),
+            shown_ids: evaluated.leaders.iter().map(|l| l.row.id).collect(),
             withheld: evaluated.withheld.iter().map(|l| (l.reference.parse().expect("recorded handle"), l.clone())).collect(),
             ..Self::default()
         };
@@ -128,7 +173,7 @@ impl Ranking {
         self.traits.clone_from(&reply.traits);
     }
 
-    fn affected(&mut self, frame: &DecodedFrame, edits: &Edits, winner: Option<u64>, context: &LeadersContext) -> Option<BTreeSet<u64>> {
+    fn affected(&mut self, frame: &DecodedFrame, edits: &Edits, winner: Option<u64>, context: &LeadersContext, live_battles: bool) -> Option<BTreeSet<u64>> {
         if !edits.replaced.is_empty() || !frame.tables[TableId::Clock.index()].held().is_not_selected() { return None; }
         let leaders = frame.complete::<tables::UnitLeaders>().ok()?;
         let mut affected = BTreeSet::new();
@@ -157,6 +202,7 @@ impl Ranking {
                         }
                     }
                 }
+                TableId::LeaderBattleTotals if live_battles => {}
                 TableId::LeaderBattleTotals => {
                     for key in rows.keys() {
                         let id = (key >> 32) as u32;
@@ -181,6 +227,11 @@ impl Ranking {
                             }
                         }
                         if let Ok(index) = characters.binary_search_by_key(&id, |row| row.id) { self.watch_spelling(&characters[index]); }
+                    }
+                }
+                TableId::CharacterPortraits => {
+                    for key in rows.keys() {
+                        if let Some(handles) = self.people.get(&(*key as u32)) { affected.extend(handles); }
                     }
                 }
                 TableId::LexicalTokens => {
@@ -261,7 +312,7 @@ impl Ranking {
     pub(super) fn top_step(&mut self, frame: &DecodedFrame, params: &UnitLeadersParams, at: &At<'_, LeadersContext>, edits: &Edits, data: &Held<'_>) -> io::Result<bool> {
         let before = self.top();
         let same_proof = self.revision == UnitLeaders::context_revision(at.context);
-        let Some(keys) = self.affected(frame, edits, before.as_ref().ok().copied(), at.context) else { return Ok(false) };
+        let Some(keys) = self.affected(frame, edits, before.as_ref().ok().copied(), at.context, false) else { return Ok(false) };
         if keys.is_empty() { return Ok(true); }
         if same_proof && edits.tables.len() == 1 && edits.tables.contains_key(&TableId::LeaderBattleTotals) {
             let changes = self.battle_changes(frame, at, &keys)?;
@@ -286,7 +337,7 @@ impl Ranking {
 
     pub(super) fn board_step(&mut self, frame: &DecodedFrame, params: &UnitLeadersParams, at: &At<'_, LeadersContext>, edits: &Edits, data: &mut Held<'_>) -> io::Result<bool> {
         let same_proof = self.revision == UnitLeaders::context_revision(at.context);
-        let Some(keys) = self.affected(frame, edits, None, at.context) else { return Ok(false) };
+        let Some(keys) = self.affected(frame, edits, None, at.context, false) else { return Ok(false) };
         if keys.is_empty() { return Ok(true); }
         if same_proof && edits.tables.len() == 1 && edits.tables.contains_key(&TableId::LeaderBattleTotals) {
             let moves = self.battle_changes(frame, at, &keys)?;

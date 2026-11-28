@@ -132,7 +132,7 @@ pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, ca
                 (at, named, noted)
             }).collect::<Vec<_>>();
             let named = match event.as_ref() {
-                Some(event) => in_scripted_world(query, event, whole_countries, cancelled, |world| evaluate(Some(event), Some(world)))?,
+                Some(event) => in_scripted_world(&mut frames, event, whole_countries, cancelled, |world| evaluate(Some(event), Some(world)))?,
                 None => None,
             };
             named_here.extend(named.unwrap_or_else(|| evaluate(None, None)));
@@ -241,8 +241,7 @@ fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow
     Ok(frame)
 }
 
-fn in_scripted_world<T>(query: &Query<'_>, event: &DecodedFrame, whole_countries: bool, cancelled: &AtomicBool, evaluate: impl Fn(&DecodedFrame) -> T) -> io::Result<Option<T>> {
-    let mut frames = at_hour::Frames::new(query)?;
+fn in_scripted_world<T>(frames: &mut at_hour::Frames<'_>, event: &DecodedFrame, whole_countries: bool, cancelled: &AtomicBool, evaluate: impl Fn(&DecodedFrame) -> T) -> io::Result<Option<T>> {
     let mut world = event.clone();
     for &table in dashboard_text::scripted_text::TABLES {
         if !WHOLE.contains(&table) {

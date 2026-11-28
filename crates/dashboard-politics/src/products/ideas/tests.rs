@@ -26,6 +26,8 @@ fn cached_idea_looks_keep_overlay_notes() {
         naming: Vec::new(),
         looks: std::sync::Mutex::new((std::sync::Weak::new(), Vec::new())),
         dates: std::sync::Arc::default(),
+        variables: Arc::new(super::KeyedVariables::new(source.replay())),
+        presentation: Default::default(),
     };
     let reply = || {
         let mut own = catalogue::OwnRefusals::default();
@@ -360,6 +362,7 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
         (
             "common/ideas/synth.txt",
             concat!(
+                "idea_categories = { synth_category = {} }\n",
                 "ideas = {\n",
                 "  country = {\n",
                 "    synth_dynamic = { modifier = { custom_modifier_tooltip = synth_tip } }\n",
@@ -376,6 +379,7 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
                 " AAA_ADJ:0 \"Alphan\"\n",
                 " BBB:0 \"Beta\"\n",
                 " BBB_ADJ:0 \"Betan\"\n",
+                " synth_category:0 \"\u{a4}Country category\"\n",
                 " SYNTH_LOW:0 \"Level Low\"\n",
                 " SYNTH_HIGH:0 \"Level High\"\n",
                 " synth_dynamic:0 \"[synth_level_loc]\"\n",
@@ -391,7 +395,14 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
     let reply_at = |hour: i32| {
         let params = super::IdeaHistoryParams { branch_id: "1".into(), country: "AAA".into(), hour };
         let asked = super::Asked { params: &params, tag: "AAA", hour, unrecorded: None };
-        super::present(&query, &content, &asked, &read, None, &AtomicBool::new(false)).unwrap()
+        let mut noted = dashboard_base::catalogue::OwnRefusals::default();
+        dashboard_base::catalogue::own_refusals(&mut noted, || {
+            let reply = super::present(&query, &content, &asked, &read, None, &AtomicBool::new(false)).unwrap();
+            assert!(reply.categories.iter().any(|category| category.token == "synth_category"));
+            assert!(!reply.warnings.iter().any(|line| line.contains("0x14")));
+            assert!(content.catalogue.refusal_lines().iter().any(|line| line.contains("0x14")));
+            reply
+        })
     };
 
     let r100 = reply_at(100);
@@ -414,6 +425,10 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
         "{:?}",
         refused_100.info.name_missing
     );
+
+    let (repeat, rows) = dashboard_base::products::at_hour::counted(|| reply_at(100));
+    assert_eq!(serde_json::to_vec(&repeat).unwrap(), serde_json::to_vec(&r100).unwrap());
+    assert_eq!(rows, 0, "another subscription at the same hour reuses the exact reply");
 
     let r110 = reply_at(110);
     let dyn_110 = r110.looks.iter().find(|l| l.info.token == "synth_dynamic").unwrap();

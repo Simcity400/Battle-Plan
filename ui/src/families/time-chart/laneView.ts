@@ -1,4 +1,5 @@
 import { canvasMeasureText, type MeasureText } from '../../charts/textWidth.ts';
+import { TILE_ROSTER_FIELD } from '../../dashboard/tiles/view.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { formatDateOnly } from '../valueFormat.ts';
@@ -202,8 +203,10 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
   },
   structure({ layout }) {
     const { model, base } = layout;
+    const ranks = model.followedTileRanks ? { [TILE_ROSTER_FIELD]: model.followedTileRanks } : {};
     if (!base || model.empty) {
       return {
+        ...ranks,
         drawnKeys: model.drawnKeys ?? { main: [] },
         meta: {
           empty: model.empty?.message ?? null,
@@ -216,6 +219,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
       };
     }
     return {
+      ...ranks,
       drawnKeys: model.drawnKeys ?? { main: (model.stack?.bands ?? model.series).map(line => line.key) },
       meta: {
         empty: null,

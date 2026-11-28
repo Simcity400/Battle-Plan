@@ -31,6 +31,8 @@ pub const KIND_ARMY: u8 = engine_native::cunit_leader::KIND_ARMY;
 pub const KIND_NAVY: u8 = engine_native::cunit_leader::KIND_NAVY;
 const PORTRAIT_ARMY: u32 = 1;
 const PORTRAIT_NAVY: u32 = 2;
+const PORTRAIT_THUMBNAIL_EDGE: u32 = 96;
+const PORTRAITS_NOT_RECORDED: &str = "Character portraits were not recorded at this hour";
 pub const RESULTS_MISSING: &str = "Outcomes require a recorded native result linked to the observed combat. Unfinished combats and missing result coverage remain unknown.";
 const UNCONFIGURED: &str = "Game content is not configured";
 
@@ -558,12 +560,49 @@ pub struct LeadersContext {
     replay: Arc<Replay>,
     index: Arc<dashboard_query::Index>,
     lifetimes: HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
+    portraits: HashMap<u32, Vec<PortraitCoverage>>,
     verdicts: Arc<std::sync::Mutex<Verdicts>>,
     roster: Option<Arc<Roster>>,
     visibility: std::sync::Mutex<visibility::Visibility>,
     ranking: std::sync::Mutex<ranking::Ranking>,
     tally_history: std::sync::Mutex<Option<TallyHistory>>,
     battle_coverage: Option<(u64, Option<i32>)>,
+}
+
+struct PortraitCoverage {
+    first: i32,
+    last: i32,
+    missing: Option<String>,
+}
+
+fn portrait_gap(frame: &DecodedFrame) -> Option<String> {
+    use replay_frame::frame::TableView;
+    match frame.tables[TableId::CharacterPortraits.index()].held() {
+        TableView::Complete(_) => None,
+        TableView::Unavailable { reason } => Some(reason.clone()),
+        TableView::NotRecorded { .. } => Some(PORTRAITS_NOT_RECORDED.into()),
+        TableView::Truncated { missing, .. } => Some(format!("Character portraits were only partly recorded ({missing} missing)")),
+    }
+}
+
+fn portrait_coverage(source: &Source, run: u32, first: i32, last: i32) -> Vec<PortraitCoverage> {
+    let recording = source.replay_ref().recording();
+    let table = TableId::CharacterPortraits;
+    let reason_at = |hour| {
+        replay_lanes::at::frame(recording, run, hour, &[replay_lanes::at::Read::all(table)])
+            .map_or_else(|error| Some(error.to_string()), |frame| portrait_gap(&frame))
+    };
+    match replay_lanes::lanes::statuses(recording, run, table, first, last) {
+        Ok(statuses) => {
+            let uncovered = statuses.first().map_or(last, |status| status.first - 1);
+            let prefix = (first <= uncovered).then(|| PortraitCoverage { first, last: uncovered, missing: reason_at(first) });
+            prefix.into_iter().chain(statuses.into_iter().map(|status| PortraitCoverage {
+                first: status.first, last: status.last,
+                missing: if matches!(status.status, replay_columnar::manifest::Status::Complete) { None } else { reason_at(status.first) },
+            })).collect()
+        }
+        Err(error) => vec![PortraitCoverage { first, last, missing: reason_at(first).or_else(|| Some(error.to_string())) }],
+    }
 }
 
 impl LeadersContext {
@@ -577,6 +616,14 @@ impl LeadersContext {
             }
         }
         let content = Content::load(source, load);
+        let mut portraits = HashMap::new();
+        if content.politics.is_ok() {
+            let recording = source.replay_ref().recording();
+            for &run in lifetimes.keys() {
+                let bounds = recording.run(run)?;
+                portraits.insert(run, portrait_coverage(source, run, bounds.first_hour, bounds.last_hour()));
+            }
+        }
         let verdicts = source.state::<Verdicts>();
         {
             let mut held = verdicts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -585,7 +632,7 @@ impl LeadersContext {
                 *held = Verdicts { catalogue: catalogue.cloned(), at: HashMap::new() };
             }
         }
-        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts, roster: None, visibility: Default::default(), ranking: Default::default(), tally_history: Default::default(), battle_coverage: None })
+        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, portraits, verdicts, roster: None, visibility: Default::default(), ranking: Default::default(), tally_history: Default::default(), battle_coverage: None })
     }
 
     fn for_selection(source: &Source, load: &LoadContext, branch: &str, selection: Option<&LeaderSelection>, cancelled: &AtomicBool) -> io::Result<Self> {
@@ -630,6 +677,11 @@ impl LeadersContext {
         let lives = self.lifetimes.get(&run)?;
         let start = lives.partition_point(|life| life.0 < key);
         lives[start..].iter().take_while(|life| life.0 == key).find(|life| life.1 <= i64::from(hour) && i64::from(hour) <= life.2).and_then(|life| i32::try_from(life.1).ok())
+    }
+
+    fn portrait_window(&self, run: u32, hour: i32) -> Option<&PortraitCoverage> {
+        let spans = self.portraits.get(&run)?;
+        spans.get(spans.partition_point(|span| span.last < hour)).filter(|span| span.first <= hour)
     }
 
     fn tally(&self, query: &Query<'_>, frame: &DecodedFrame, asked: Asked<'_>) -> io::Result<Tally> {
@@ -686,6 +738,9 @@ pub struct UnitLeadersParams {
     pub branch_id: String,
     pub selection: LeaderSelection,
     pub leaders: LeaderKinds,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub follow_battles: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -694,6 +749,7 @@ pub struct UnitLeadersParams {
 pub struct LeaderRow {
     pub reference: String,
     pub name: Option<String>,
+    pub portrait: LeaderPortraitThumbnail,
     pub role: LeaderRole,
     pub skill: Option<i32>,
     pub components: [i32; 4],
@@ -709,6 +765,9 @@ pub struct LeaderRow {
     pub won: u64,
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
     pub lost: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional, type = "[number, number, number]"))]
+    pub battle_offset: Option<[i64; 3]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -919,6 +978,7 @@ impl UnitLeaders {
             out.push(LeaderRow {
                 reference: leader.handle.to_string(),
                 name: leader.name,
+                portrait: leader_thumbnail(frame, leader.row, context, evaluated.run),
                 role,
                 skill: leader.skill,
                 components: leader.row.components,
@@ -930,6 +990,7 @@ impl UnitLeaders {
                 fought: leader.battles.fought,
                 won: leader.battles.won,
                 lost: leader.battles.lost,
+                battle_offset: None,
             });
         }
         let (icons, icon_warnings) = match notes { Some(notes) => notes.icons(|| content.skill_icons()), None => content.skill_icons() };
@@ -1115,7 +1176,10 @@ fn leader_plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::
 }
 
 fn reply_through(context: &LeadersContext, frame: &DecodedFrame, missing: Option<&str>, warnings: &[String]) -> i32 {
-    context.through(frame.hour).min(dashboard_base::products::at_hour::warnings_through(frame.hour, missing.into_iter().chain(warnings.iter().map(String::as_str))))
+    let through = context.through(frame.hour).min(dashboard_base::products::at_hour::warnings_through(frame.hour, missing.into_iter().chain(warnings.iter().map(String::as_str))));
+    if context.portraits.is_empty() { return through; }
+    context.query(frame.branch).ok().and_then(|query| query.timeline.at(frame.hour)
+        .and_then(|stretch| context.portrait_window(stretch.run, frame.hour)).map(|span| span.last.min(through))).unwrap_or(through)
 }
 
 impl AtHour for UnitLeaders {
@@ -1123,13 +1187,13 @@ impl AtHour for UnitLeaders {
     const TITLE: &'static str = "Generals leaderboard";
     const CONTENT_DEPENDENT: bool = true;
     type Params = UnitLeadersParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, selection, leaders, "selection.countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, selection, leaders, followBattles, "selection.countries[]"];
     type Reply = UnitLeadersReply;
     type Context = LeadersContext;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![UnitLeadersParams::decl(), LeaderSelection::decl(), LeaderKinds::decl(), LeaderTrait::decl(), LeaderRole::decl(), LeaderWithheld::decl(), LeaderRow::decl(), LeaderSkillIcons::decl(), UnitLeadersReply::decl()]
+        vec![UnitLeadersParams::decl(), LeaderSelection::decl(), LeaderKinds::decl(), LeaderTrait::decl(), LeaderRole::decl(), LeaderWithheld::decl(), LeaderRow::decl(), LeaderPortraitThumbnail::decl(), LeaderSkillIcons::decl(), UnitLeadersReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -1143,7 +1207,7 @@ impl AtHour for UnitLeaders {
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         let mut tables: Vec<TableId> = BASE_TABLES.to_vec();
         tables.extend(RECORDED_TABLES.iter().copied().filter(|table| !BASE_TABLES.contains(table)));
-        tables.extend([TableId::LeaderBattleTotals, TableId::LeaderTraitDates]);
+        tables.extend([TableId::LeaderBattleTotals, TableId::LeaderTraitDates, TableId::CharacterPortraits]);
         if !tables.contains(&TableId::UnitLeaderTraits) { tables.push(TableId::UnitLeaderTraits); }
         tables
     }
@@ -1164,7 +1228,9 @@ impl AtHour for UnitLeaders {
             2 => return visibility::prepare(params, held, at),
             _ => Vec::new(),
         };
-        (reads, at.context.through(at.hour))
+        let through = at.context.through(at.hour);
+        let portrait_through = at.context.portrait_window(at.run, at.hour).map_or(i32::MAX, |span| span.last);
+        (reads, if stage == 1 { through.min(portrait_through) } else { through })
     }
 
     const UPDATES_REVISION: bool = true;
@@ -1180,22 +1246,37 @@ impl AtHour for UnitLeaders {
         career::leader_columns(table, plan)
     }
 
-    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+        if !live.is_empty() {
+            return Ok(at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).holds_battle_cells(frame, at.context, edits, live));
+        }
+        if params.follow_battles == Some(true) && edits.tables.contains_key(&TableId::LeaderBattleTotals) { return Ok(false); }
         at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).board_step(frame, params, at, edits, data)
     }
 
     fn playback_reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut notes = ranking::Notes::default();
-        let evaluated = Self::evaluate_keys(frame, params, at, None, Some(&mut notes))?;
+        let mut evaluated = Self::evaluate_keys(frame, params, at, None, Some(&mut notes))?;
+        let totals = frame.complete::<tables::LeaderBattleTotals>().ok().filter(|totals| params.follow_battles == Some(true) && evaluated.leaders.iter()
+            .any(|leader| !ranking::battle_rows(totals, leader.row.id).is_empty()));
+        if totals.is_some() {
+            evaluated.leaders.sort_unstable_by(|a, b| leader_rank_cmp(a.skill, 0, 0, a.row.components, a.name.as_deref(), a.handle,
+                b.skill, 0, 0, b.row.components, b.name.as_deref(), b.handle));
+        }
         let mut ranking = ranking::Ranking::seed(frame, &evaluated, at.context, notes);
-        let reply = Self::board(frame, evaluated, at, Some(&mut ranking.notes))?;
+        let mut reply = Self::board(frame, evaluated, at, Some(&mut ranking.notes))?;
+        if let Some(totals) = totals {
+            ranking::follow_battles(totals, at, &mut reply.leaders);
+        }
         ranking.seed_traits(&reply);
         *at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ranking;
         Ok(reply)
     }
 
     fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
-        reply_through(at.context, frame, reply.missing.as_deref(), &reply.warnings)
+        let through = reply_through(at.context, frame, reply.missing.as_deref(), &reply.warnings);
+        if !reply.leaders.iter().any(|row| row.battle_offset.is_some()) { return through; }
+        at.context.query(frame.branch).ok().and_then(|query| query.timeline.at(at.hour).map(|stretch| stretch.last.min(through))).unwrap_or(at.hour)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -1241,6 +1322,30 @@ pub struct LeaderPortraitsReply {
     pub warnings: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+pub struct LeaderPortraitThumbnail {
+    pub image: Option<String>,
+    pub missing: Option<String>,
+}
+
+fn leader_thumbnail(frame: &DecodedFrame, row: &UnitLeaderRow, context: &LeadersContext, run: Option<u32>) -> LeaderPortraitThumbnail {
+    let resolution = match &context.content.politics {
+        Ok(politics) => {
+            let missing = if frame.tables[TableId::CharacterPortraits.index()].held().is_not_selected() {
+                Some(run.and_then(|run| context.portrait_window(run, frame.hour)).and_then(|span| span.missing.clone())
+                    .unwrap_or_else(|| PORTRAITS_NOT_RECORDED.into()))
+            } else { portrait_gap(frame) };
+            match missing {
+                Some(reason) => ArtResolution::Unavailable { reason },
+                None => portrait_of(frame, row, politics, PORTRAIT_THUMBNAIL_EDGE),
+            }
+        }
+        Err(reason) => ArtResolution::Failed { reason: reason.clone(), retryable: true },
+    };
+    LeaderPortraitThumbnail { image: resolution.url().map(str::to_owned), missing: resolution.reason().map(str::to_owned) }
+}
+
 fn portrait(frame: &DecodedFrame, reference: u64, politics: &PoliticsContent, edge: u32) -> ArtResolution {
     let unrecorded = |reason: String| ArtResolution::Unavailable { reason };
     let leaders = match frame.complete::<tables::UnitLeaders>() {
@@ -1250,6 +1355,11 @@ fn portrait(frame: &DecodedFrame, reference: u64, politics: &PoliticsContent, ed
     let Some(row) = leaders.binary_search_by_key(&reference, handle).ok().map(|at| &leaders[at]) else {
         return ArtResolution::NoArtExpected;
     };
+    portrait_of(frame, row, politics, edge)
+}
+
+fn portrait_of(frame: &DecodedFrame, row: &UnitLeaderRow, politics: &PoliticsContent, edge: u32) -> ArtResolution {
+    let unrecorded = |reason: String| ArtResolution::Unavailable { reason };
     let holders = match frame.complete::<tables::CharacterPortraits>() {
         Ok(holders) => holders,
         Err(error) => return unrecorded(error.to_string()),

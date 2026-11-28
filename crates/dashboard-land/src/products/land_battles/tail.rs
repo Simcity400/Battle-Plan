@@ -54,6 +54,9 @@ pub struct LandBattlesTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub sort: Option<OccurrenceSort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub row_names: Option<bool>,
     pub limit: u32,
 }
 
@@ -84,6 +87,18 @@ pub struct LandBattleLogRow {
     pub losses_so_far: bool,
     pub divisions: [Option<u32>; 2],
     pub result: LandBattleStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub title_missing: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub place_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub place_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -466,7 +481,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
 #[derive(Default)]
 struct Branches(HashMap<u64, Arc<Index<Line>>>);
 
-struct Prepared {
+pub struct Prepared {
     branch: u64,
     index: Arc<Index<Line>>,
     selection: Option<Selection>,
@@ -531,14 +546,14 @@ pub fn battles(query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Vec<Batt
     }).collect())
 }
 
-fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &LandBattlesTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
+pub fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &LandBattlesTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
     let index = index(source, query, cancelled)?;
     let selection =
         dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
     Ok(Prepared { branch: query.timeline.id, index, selection })
 }
 
-fn reply(prepared: &Prepared, holders: &Holders, params: &LandBattlesTailParams, hour: i32) -> io::Result<LandBattlesTailReply> {
+pub fn reply(prepared: &Prepared, holders: &Holders, params: &LandBattlesTailParams, hour: i32) -> io::Result<LandBattlesTailReply> {
     let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
     let (order, _) = occurrences::order(params.sort.as_ref(), SORT_COLUMNS)?;
     let mut ask = Ask {
@@ -602,6 +617,10 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &LandBattlesTailParams,
                 countries_unknown: sides.map_or([true; 2], |s| s.1.unknown),
                 countries_hour: sides.map_or([entry.observed; 2], |(h, s)| s.read.map(|at| at.unwrap_or(*h))),
                 result,
+                title: None,
+                title_missing: None,
+                place_name: None,
+                place_missing: None,
             }
         })
         .collect();
@@ -642,7 +661,7 @@ impl Product for LandBattlesTail {
     const INTERACTIVE: bool = true;
     type Params = LandBattlesTailParams;
     const FIELDS: dashboard_base::products::Fields =
-        dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, offset, sort, limit];
+        dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, offset, sort, rowNames, limit];
     type Reply = LandBattlesTailReply;
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {

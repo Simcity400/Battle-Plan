@@ -75,7 +75,7 @@ interface DayTilesSpec {
   readonly product: PanelKey;
   readonly span: (base: Params, first: number, last: number) => Params;
   readonly now: DaySource;
-  readonly tile: DaySource;
+  readonly tile: DaySource & { readonly panel?: PanelKey };
 }
 
 export function dayTileEntries(ctx: FamilyPlanContext, spec: DayTilesSpec): SourceEntry[] {
@@ -97,8 +97,11 @@ export function dayTileEntries(ctx: FamilyPlanContext, spec: DayTilesSpec): Sour
     const first = Math.max(spanFirst, branch.firstHour, origin + k * DAY_TILE_HOURS);
     const last = Math.min(branch.lastHour, origin + (k + 1) * DAY_TILE_HOURS - 1);
     const closes = dayStartOf(last) + 24;
+    const terminal = Math.min(last, dayStartOf(branch.lastHour) - 1);
     return entry(name, spec.tile, {
-      followQuery: null,
+      followQuery: spec.tile.panel && first <= terminal
+        ? { panel: spec.tile.panel, ...spec.span(spec.tile.params, first, terminal) }
+        : null,
       dayTile: true,
       buildExactParams: (base, hour) => {
         const to = Math.min(last, dayStartOf(hour) - 1);

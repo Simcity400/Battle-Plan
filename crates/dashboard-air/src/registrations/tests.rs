@@ -236,6 +236,28 @@ fn the_current_air_day_follows_score_changes_and_dates_the_held_readouts() {
 }
 
 #[test]
+fn the_followed_air_tile_matches_each_exact_closed_day_prefix() {
+    let registration = AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE;
+    let source = recording(&[1]);
+    let load = LoadContext { content: None };
+    let request = |last_hour| json!({"branchId": "1", "mode": "sides", "every": true, "firstHour": 100, "lastHour": last_hour});
+    let mut subscription = request(143);
+    subscription["panel"] = registration.key.into();
+    let panel = (registration.panel.unwrap().open)(&source, &load, &subscription).unwrap();
+    let exact = panel.exact().unwrap();
+    let before = Value::Null;
+    let prefix = registration.answer(&source, request(119), &load, &false.into()).unwrap();
+    let closed = registration.answer(&source, request(143), &load, &false.into()).unwrap();
+    let reads = played(source.replay_ref(), exact, 100, 149);
+    for read in &reads {
+        let expected = if read.hour < 120 { &before } else if read.hour < 144 { &prefix } else { &closed };
+        assert!(!read.pending);
+        assert_eq!(read.value.as_ref().as_ref().unwrap(), expected, "prefix at {}", read.hour);
+    }
+    assert_eq!(reads.iter().filter(|read| read.fresh && read.hour > 100).map(|read| read.hour).collect::<Vec<_>>(), [120, 144]);
+}
+
+#[test]
 fn the_air_day_rebuilds_on_read_errors_gaps_and_new_runs() {
     let segments = [(1, 96..=107), (2, 109..=125)].map(|(branch, hours)| {
         records(branch, hours.map(|hour| {
@@ -276,4 +298,53 @@ fn the_air_day_rebuilds_on_read_errors_gaps_and_new_runs() {
     assert!(!reply(100)["rows"].as_array().unwrap().iter().any(|row| row["region"] == 22));
     assert!(reply(101)["rows"].as_array().unwrap().iter().any(|row| row["region"] == 22), "the summary can retain a deleted score at the bucket close");
     assert_eq!(reply(108)["gaps"], json!([{"firstHour": 108, "lastHour": 108}]));
+}
+
+#[test]
+fn military_air_head_follows_changes_and_dates_quiet_replies_without_reloading() {
+    let frames = (100..=120).map(|hour| {
+        let mut frame = source(1, hour, Some(i64::from(hour)));
+        let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+        countries.push(CountryRow { id: 9002, canonical_slot: 8, tag: b"SOV".to_vec(), ..Default::default() });
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
+        let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
+        links.push(CountryLinkRow { id: 9002, canonical_slot: 8 });
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links));
+        let events = match hour {
+            100 => Some((1, 9001, 200_000)),
+            107 => Some((2, 9002, 100_000)),
+            112 => Some((3, 9001, 100_000)),
+            _ => None,
+        }.into_iter().map(|(id, country, amount_raw)| AirLossEventRow {
+            id, game_hour: hour, country, region: 1, native_cause: 1, amount_raw, ..Default::default()
+        }).collect();
+        *frame.tables[TableId::AirLossEvents.index()] = TableView::Complete(TableRows::AirLossEvents(events));
+        frame.metrics.table_ns[TableId::AirLossEvents.index()] = 1;
+        frame
+    }).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Arc::new(Source::from_replay(SourceKey { source_id: "military-air-head".into(), revision: "1".into() }, "air.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
+    let load = LoadContext { content: None };
+    let registration = AIR_LEDGER_AT_MILITARYAIRAT;
+    for (ranked, selection) in [(false, json!({"countries":["GER"]})), (true, json!({"top":1}))] {
+        let mut request = selection;
+        request["branchId"] = "1".into();
+        request["family"] = "airLosses".into();
+        request["metric"] = "taken".into();
+        let mut follow_request = request.clone();
+        follow_request["panel"] = registration.key.into();
+        let follow = (registration.panel.unwrap().open)(&source, &load, &follow_request).unwrap();
+        for read in played(source.replay_ref(), follow.exact().unwrap(), 100, 120) {
+            request["hour"] = read.hour.into();
+            let reply = registration.answer(&source, request.clone(), &load, &false.into()).unwrap();
+            assert_eq!(read.value.as_ref().as_ref().unwrap(), &reply, "{follow_request} at {}", read.hour);
+            match read.hour {
+                100 if ranked => assert!(reply["validUntil"].as_i64().unwrap() >= 107, "the runner-up does not change the shown rank"),
+                101..=106 => assert_eq!(read.product_calls, 0, "quiet hour {}", read.hour),
+                107 => assert_eq!(read.product_calls, u64::from(ranked), "a ranked proof stops at the runner-up's event"),
+                112 => assert_eq!(read.product_calls, 1, "the new event is included at its read hour"),
+                _ => {}
+            }
+        }
+    }
 }

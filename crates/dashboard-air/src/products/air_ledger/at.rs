@@ -1,8 +1,10 @@
 use super::{MilitaryAirCauseName, MilitaryAirFamily, MilitaryAirMetric, MilitaryAirParams, MilitaryAirReply, air_loss_cause, window_reply};
 use dashboard_query::series::ranked::{GroupSelection, Members};
-use dashboard_base::products::{Country, LoadContext, Product, validate_country};
+use dashboard_base::products::{Country, LoadContext, Product, at_hour, validate_country};
+use dashboard_follow::panel::{Panel, PanelData};
 use dashboard_base::{Source, span::HourSpan};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::{HashMap, VecDeque},
     io,
@@ -87,6 +89,8 @@ pub struct MilitaryAirAtReply {
     pub counted_from: Option<i32>,
     #[doc = " The last hour this answer holds for."]
     pub valid_until: i32,
+    #[serde(skip)]
+    proof_through: i32,
     #[doc = " Why nothing is known at the hour."]
     pub missing: Option<String>,
     #[doc = " Why the rows are not in rank order: the population is not fully read since the totals' start."]
@@ -193,6 +197,7 @@ const HELD_STEPS: usize = 48;
 
 pub(super) fn answer_held(reply: &MilitaryAirReply, params: &MilitaryAirAtParams, members: Option<&Members>) -> io::Result<MilitaryAirAtReply> {
     let mut out = answer(reply, params, members)?;
+    out.proof_through = out.valid_until.min(at_hour::before(params.from_hour.filter(|&from| from > params.hour)));
     let limit = reply.last_hour.min(members.map_or(i32::MAX, |members| members.until));
     for _ in 0..HELD_STEPS {
         if out.valid_until >= limit {
@@ -215,6 +220,7 @@ pub fn answer(reply: &MilitaryAirReply, params: &MilitaryAirAtParams, members: O
         hour,
         counted_from: reply.counted_from,
         valid_until: hour,
+        proof_through: hour,
         missing: None,
         rank_missing: None,
         rows: Vec::new(),
@@ -362,6 +368,22 @@ pub(super) fn window(source: &Source, params: &MilitaryAirAtParams, branch: u64,
         kept.0.pop_front();
     }
     Ok(made)
+}
+
+pub(crate) fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
+    let date = |data: &mut Arc<PanelData>, hour: i32| {
+        if data.as_ref().as_ref().ok().and_then(|reply| reply["hour"].as_i64()) != Some(i64::from(hour))
+            && let Ok(reply) = Arc::make_mut(data)
+        {
+            reply["hour"] = hour.into();
+        }
+    };
+    at_hour::dated_product::<MilitaryAirAt>(
+        source, load, asked, at_hour::at_hour,
+        |_, reply| reply.proof_through.min(reply.valid_until),
+        date,
+        |source, params, load, cancelled, _| MilitaryAirAt::load(source, params, load, cancelled),
+    )
 }
 
 impl Product for MilitaryAirAt {

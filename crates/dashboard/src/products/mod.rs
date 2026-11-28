@@ -1,6 +1,7 @@
 use dashboard_base::products::Registered;
 
 pub mod battle_names;
+mod land_battle_rows;
 
 pub static PRODUCTS: std::sync::LazyLock<Vec<Registered>> = std::sync::LazyLock::new(|| {
     let mut products = [
@@ -17,6 +18,9 @@ pub static PRODUCTS: std::sync::LazyLock<Vec<Registered>> = std::sync::LazyLock:
         dashboard_world::registrations::PRODUCTS,
         battle_names::PRODUCTS,
     ].concat();
+    if let Some(entry) = products.iter_mut().find(|entry| entry.key == land_battle_rows::PRODUCT.key) {
+        *entry = land_battle_rows::PRODUCT;
+    }
     products.sort_unstable_by_key(|product| product.key);
     products
 });

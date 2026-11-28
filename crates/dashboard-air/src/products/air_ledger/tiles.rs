@@ -806,6 +806,32 @@ mod tests {
         assert_eq!(ranking.refused, None);
         assert_eq!(ranking.hour, 10);
         assert_eq!(ranking.until, 11);
+        for (regions, causes) in [(Vec::new(), Vec::new()), (vec![1], vec![1])] {
+            for top in [None, Some(5)] {
+                let mut request = top_params.clone();
+                request["family"]["regions"] = serde_json::json!(regions);
+                request["family"]["causes"] = serde_json::json!(causes);
+                request.as_object_mut().unwrap().remove("top");
+                if let Some(top) = top {
+                    request["top"] = serde_json::json!(top);
+                }
+                let mut ranked = tile(&src, &q, &request, &load, &cancelled).unwrap();
+                assert!(ranked.ranking.take().unwrap().refused.is_none());
+                let params = MilitaryAirAtParams {
+                    branch_id: "1".into(), family: MilitaryAirFamily::AirLosses, regions: regions.clone(), causes: causes.clone(),
+                    from_hour: None, hour: 10, metric: MilitaryAirMetric::Dealt, top, countries: None, group: None,
+                };
+                let window = at::window(&src, &params, q.timeline.id, &load, &cancelled).unwrap();
+                let head = at::answer_held(&window, &params, None).unwrap();
+                let keys: Vec<_> = head.rows.iter().map(|row| slot_of_identity(&row.identity, &row.tag)).collect();
+                assert!(!keys.is_empty());
+                request.as_object_mut().unwrap().remove("top");
+                request.as_object_mut().unwrap().remove("hour");
+                request["countries"] = serde_json::json!(keys);
+                let keyed = tile(&src, &q, &request, &load, &cancelled).unwrap();
+                assert_eq!(serde_json::to_value(keyed).unwrap(), serde_json::to_value(ranked).unwrap());
+            }
+        }
         assert_eq!(
             top_reply.lines[0].missing,
             vec![MissingSpan { first_hour: 15, last_hour: 17, reason: LINKS_NOT_RECORDED.to_owned() }],

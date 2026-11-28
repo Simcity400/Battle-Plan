@@ -36,23 +36,31 @@ impl Follow {
         let mut through = limit;
         for piece in pieces.into_iter().filter(|piece| piece.last >= from && piece.first <= hour) {
             let mut piece = Piece { first: piece.first.max(from), ..piece };
-            let (window, read) = match self.window.take() {
-                Some((window, read)) if window.covers(&piece) => (window, read),
-                _ => {
-                    let links = links_of(query, &mut self.links, piece.run)?;
-                    let read = match read_piece(query, links, &piece) {
-                        Err(_) if piece.last > hour => {
-                            piece.last = hour;
-                            read_piece(query, links, &piece)?
-                        }
-                        read => read?,
-                    };
-                    (piece.clone(), read)
+            if let Some((window, read)) = self.window.take() {
+                let prefix = Piece { last: piece.last.min(window.last), ..piece };
+                if prefix.first <= prefix.last && window.covers(&prefix) {
+                    let last = see_piece(&mut self.facts, &prefix, &read, hour, cancelled)?;
+                    if last < window.last {
+                        self.window = Some((window, read));
+                    }
+                    if last >= hour || last == piece.last {
+                        if piece.last >= hour { through = last; }
+                        continue;
+                    }
+                    piece.first = last.saturating_add(1);
                 }
+            }
+            let links = links_of(query, &mut self.links, piece.run)?;
+            let read = match read_piece(query, links, &piece) {
+                Err(_) if piece.last > hour => {
+                    piece.last = hour;
+                    read_piece(query, links, &piece)?
+                }
+                read => read?,
             };
             let last = see_piece(&mut self.facts, &piece, &read, hour, cancelled)?;
-            if last < window.last && window.last.saturating_sub(window.first) < replay_columnar::unit::BLOCK as i32 {
-                self.window = Some((window, read));
+            if last < piece.last && piece.last.saturating_sub(piece.first) < replay_columnar::unit::BLOCK as i32 {
+                self.window = Some((piece, read));
             }
             if piece.last >= hour {
                 through = last;
@@ -80,7 +88,7 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
         let mut held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (answer, rows) = at_hour::counted(|| engine_executable::executable_tables::scope(executable, || -> io::Result<_> {
             let stretch = timeline.at(hour).ok_or_else(|| dashboard_core::refused("Special projects hour is not recorded"))?;
-            if reset || held.is_none() {
+            if held.as_ref().is_none_or(|s| hour < s.first) {
                 *held = Some(Followed { follow: Follow::new(timeline.first), first: hour, spelling: None, data: Arc::new(Err(String::new())) });
             }
             let s = held.as_mut().expect("a followed state");
@@ -101,7 +109,7 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
                 s.data = Arc::new(Ok(serde_json::to_value(reply)?));
                 s.first = hour;
             }
-            Ok((s.data.clone(), fresh, s.first))
+            Ok((s.data.clone(), reset || fresh, if reset { hour } else { s.first }))
         }));
         let (value, fresh, from) = answer.unwrap_or_else(|e| {
             *held = None;

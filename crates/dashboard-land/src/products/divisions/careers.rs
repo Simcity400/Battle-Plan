@@ -142,6 +142,8 @@ pub struct DecoratedContext {
     content: Content,
     looks: Result<BranchLooks, String>,
     ranking: Mutex<Option<PreparedRanking>>,
+    filtered: bool,
+    by: DecoratedRank,
 }
 
 const RANKS: [DecoratedRank; 3] = [DecoratedRank::Medals, DecoratedRank::Experience, DecoratedRank::CasualtiesTaken];
@@ -254,11 +256,11 @@ impl AtHour for DecoratedDivisions {
         match stage {
             0 => [TableId::Divisions, TableId::Countries, TableId::CountryLinks].map(Read::all).into(),
             1 => {
-                let countries = Countries::witnessed(frame).0.named(at.holders, at.hour);
                 let filter = selected_tags(params, at.hour);
+                let countries = filter.as_ref().map(|_| Countries::witnessed(frame).0.named(at.holders, at.hour));
                 let ids: Vec<_> = frame.complete::<tables::Divisions>().unwrap_or(&[]).iter()
                     .filter(|row| row.reveal_skip == 0 && filter.as_ref().is_none_or(|tags|
-                        countries.tag(attributed(row, ArmyAttribution::Owner)).is_some_and(|tag| tags.contains(tag.as_str()))))
+                        countries.as_ref().and_then(|countries| countries.tag(attributed(row, ArmyAttribution::Owner))).is_some_and(|tag| tags.contains(tag.as_str()))))
                     .map(|row| u128::from(row.id)).collect();
                 let mut reads = vec![
                     Read::these(TableId::DivisionStatus, ids.iter().copied()),
@@ -273,8 +275,9 @@ impl AtHour for DecoratedDivisions {
             }
             2 => {
                 let divisions = frame.complete::<tables::Divisions>().unwrap_or(&[]);
-                let countries = Countries::witnessed(frame).0.named(at.holders, at.hour);
-                let (placement, refusals) = catalogue::capture(|| place(frame, params, at.context, &countries, divisions, None));
+                let countries = (params.countries.is_some() || params.by == DecoratedRank::CountryName)
+                    .then(|| Countries::witnessed(frame).0.named(at.holders, at.hour));
+                let (placement, refusals) = catalogue::capture(|| place(frame, params, at.context, countries.as_ref(), divisions, None));
                 let placement = placement.expect("planning does not cancel");
                 let first = &placement.winners;
                 let templates = first.iter().filter_map(|rank| find(Some(divisions), rank.id, |row| row.id)).map(|row| u128::from(row.template));
@@ -320,13 +323,17 @@ impl AtHour for DecoratedDivisions {
         (Self::reads_in(params, owner, stage, frame, at), through)
     }
 
-    fn plan_changes(stage: usize, edits: &Edits, _frame: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
-        let eligibility = edits.fields(TableId::Divisions, mask::<DivisionRow>(&["roster_owner", "expeditionary_owner", "reveal_skip"]))
+    fn plan_changes(stage: usize, edits: &Edits, _frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> bool {
+        let revealed = || edits.fields(TableId::Divisions, mask::<DivisionRow>(&["reveal_skip"]));
+        let ownership = || edits.fields(TableId::Divisions, mask::<DivisionRow>(&["roster_owner", "expeditionary_owner"]))
             || edits.fields(TableId::CountryLinks, u64::MAX);
         match stage {
-            1 => eligibility,
-            2 => eligibility || edits.fields(TableId::Divisions, mask::<DivisionRow>(&["template"]))
-                || edits.fields(TableId::DivisionStatus, u64::MAX) || edits.fields(TableId::DivisionLandInputs, u64::MAX)
+            1 => revealed() || at.context.filtered && ownership(),
+            2 => revealed() || (at.context.filtered || at.context.by == DecoratedRank::CountryName) && ownership()
+                || edits.fields(TableId::Divisions, mask::<DivisionRow>(&["template"]))
+                || edits.fields(TableId::DivisionStatus, mask::<DivisionStatusRow>(&["experience", "career_counter"]))
+                || at.context.by == DecoratedRank::DivisionName && edits.fields(TableId::DivisionStatus, mask::<DivisionStatusRow>(&["name", "naming", "country_ordinal"]))
+                || edits.fields(TableId::DivisionLandInputs, u64::MAX)
                 || edits.fields(TableId::DivisionKills, u64::MAX)
                 || edits.fields(TableId::DivisionHistory, mask::<DivisionHistoryRow>(&["available", "amount", "medal_token", "medal_enabled"])),
             _ => false,
@@ -354,7 +361,7 @@ impl AtHour for DecoratedDivisions {
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(DecoratedContext { content: Content::load(source, load), looks: Err("Country names need the campaign's branch".into()), ranking: Mutex::default() })
+        Ok(DecoratedContext { content: Content::load(source, load), looks: Err("Country names need the campaign's branch".into()), ranking: Mutex::default(), filtered: false, by: DecoratedRank::Medals })
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
@@ -366,7 +373,7 @@ impl AtHour for DecoratedDivisions {
         } else {
             Err("Country names are read only to rank by them".into())
         };
-        Ok(DecoratedContext { content: Content::load(source, load), looks, ranking: Mutex::default() })
+        Ok(DecoratedContext { content: Content::load(source, load), looks, ranking: Mutex::default(), filtered: params.countries.is_some(), by: params.by })
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -535,8 +542,11 @@ fn status_of(frame: &DecodedFrame, division: u64) -> Option<&DivisionStatusRow> 
 }
 
 fn manpower_of(frame: &DecodedFrame, division: u64) -> Option<i32> {
-    let row = witnessed::<tables::DivisionLandInputs>(frame, u128::from(division)).row()?;
-    Some(row.manpower.iter().fold(0i32, |sum, part| sum.wrapping_add(part.amount)))
+    witnessed::<tables::DivisionLandInputs>(frame, u128::from(division)).row().map(manpower)
+}
+
+fn manpower(row: &DivisionLandInputsRow) -> i32 {
+    row.manpower.iter().fold(0i32, |sum, part| sum.wrapping_add(part.amount))
 }
 
 #[derive(Clone, Debug)]
@@ -648,7 +658,11 @@ fn rank_word(by: DecoratedRank) -> &'static str {
 }
 
 fn summary_medals(history: &[SharedDivisionHistoryRow]) -> Option<i32> {
-    history.first().filter(|row| row.list == DivisionHistoryRow::SUMMARY && row.available != 0).map(|row| row.amount)
+    history.first().and_then(summary_amount)
+}
+
+fn summary_amount(row: &SharedDivisionHistoryRow) -> Option<i32> {
+    (row.list == DivisionHistoryRow::SUMMARY && row.available != 0).then_some(row.amount)
 }
 
 fn rank_name(by: DecoratedRank, content: &Content, looks: &Result<BranchLooks, String>, status: Option<&DivisionStatusRow>, tag: Option<&str>, hour: i32) -> Option<(String, String)> {
@@ -663,19 +677,38 @@ fn selected_tags(params: &DecoratedDivisionsParams, hour: i32) -> Option<HashSet
     params.countries.as_ref().map(|spans| spans.iter().filter(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.tag.as_str()).collect())
 }
 
+fn rank_row<'a, R>(rows: &mut &'a [R], id: u64, key: impl Fn(&R) -> u64) -> Option<&'a R> {
+    while let Some((row, rest)) = rows.split_first() {
+        let held = key(row);
+        if held > id {
+            break;
+        }
+        *rows = rest;
+        if held == id {
+            return Some(row);
+        }
+    }
+    None
+}
+
 fn place(
     frame: &DecodedFrame, params: &DecoratedDivisionsParams, context: &DecoratedContext,
-    countries: &Countries<'_>, divisions: &[DivisionRow], cancelled: Option<&std::sync::atomic::AtomicBool>,
+    countries: Option<&Countries<'_>>, divisions: &[DivisionRow], cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> io::Result<Placement> {
     let passing = selected_tags(params, frame.hour);
-    let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
+    let mut history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
+    let mut statuses = dashboard_query::coverage::witnessed_selection::<tables::DivisionStatus>(frame).rows;
+    let mut inputs = dashboard_query::coverage::witnessed_selection::<tables::DivisionLandInputs>(frame).rows;
+    let mut kills = (params.by == DecoratedRank::EnemyKilled)
+        .then(|| frame.complete::<tables::DivisionKills>().ok()).flatten();
     let mut measured = Vec::new();
     let (mut unplaced, mut unmeasured) = (0usize, 0usize);
     for (seen, division) in divisions.iter().filter(|row| row.reveal_skip == 0).enumerate() {
         if seen.is_multiple_of(4096) && let Some(cancelled) = cancelled {
             dashboard_text::metadata::check_cancel(cancelled)?;
         }
-        let tag = (passing.is_some() || params.by == DecoratedRank::CountryName).then(|| countries.tag(attributed(division, ArmyAttribution::Owner))).flatten();
+        let tag = (passing.is_some() || params.by == DecoratedRank::CountryName)
+            .then(|| countries.and_then(|countries| countries.tag(attributed(division, ArmyAttribution::Owner)))).flatten();
         if let Some(passing) = &passing {
             match &tag {
                 Some(tag) if passing.contains(tag.as_str()) => {}
@@ -686,13 +719,19 @@ fn place(
                 }
             }
         }
-        let status = status_of(frame, division.id);
+        let id = division.id;
+        let status = rank_row(&mut statuses, id, |row| row.division);
+        let men_at = rank_row(&mut inputs, id, |row| row.division).map(manpower);
         let measures = Measures {
-            id: division.id,
-            medals: summary_medals(history_of(history, division.id)),
-            experience: status.zip(manpower_of(frame, division.id)).and_then(|(status, manpower)| status.normalized_experience(manpower)),
+            id,
+            medals: rank_row(&mut history, id, |row| row.division).and_then(summary_amount),
+            experience: status.zip(men_at).and_then(|(status, manpower)| status.normalized_experience(manpower)),
             casualties_taken: status.and_then(DivisionStatusRow::casualties_taken),
-            enemy_killed: (params.by == DecoratedRank::EnemyKilled).then(|| enemy_killed(frame, division.id).killed).flatten(),
+            enemy_killed: kills.as_mut().and_then(|rows| match rank_row(rows, id, |row| row.division) {
+                Some(row) if row.incomplete_from.is_some() => None,
+                Some(row) => Some(men(row.killed_raw)),
+                None => Some(0),
+            }),
             name: rank_name(params.by, &context.content, &context.looks, status, tag.as_deref(), frame.hour),
         };
         unmeasured += usize::from(!measures.known(params.by));
@@ -741,7 +780,7 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
             catalogue::credit(&rank.refusals);
             rank.placement
         }
-        None => place(frame, params, at.context, &countries, divisions, Some(at.cancelled))?,
+        None => place(frame, params, at.context, Some(&countries), divisions, Some(at.cancelled))?,
     };
     reply.partial = partial;
     reply.missing = missing;

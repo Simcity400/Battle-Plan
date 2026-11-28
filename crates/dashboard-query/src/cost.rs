@@ -57,6 +57,23 @@ pub fn take() -> u64 {
     STORAGE.replace(0)
 }
 
+pub fn add(nanos: u64) {
+    STORAGE.set(STORAGE.get().wrapping_add(nanos));
+}
+
+pub fn measure<T>(work: impl FnOnce() -> T) -> (T, u64) {
+    struct Restore(u64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            STORAGE.set(STORAGE.get().wrapping_add(self.0));
+        }
+    }
+    let _restore = Restore(STORAGE.replace(0));
+    let value = work();
+    let spent = STORAGE.replace(0);
+    (value, spent)
+}
+
 #[cfg(test)]
 pub fn take_calls() -> u64 {
     CALLS.replace(0)

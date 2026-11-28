@@ -18,10 +18,12 @@ fn exact_project_reads_advance_history_shared_with_the_load_path() {
     use dashboard_base::test_fixtures::visual_mods::Machine;
 
     let (first, previous, requested) = (100, 850, 1020);
+    let block_hours = replay_columnar::unit::BLOCK as i32;
+    let edge = first + block_hours;
     let machine = Machine::new("project_exact_history");
     machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
     machine.write("common/special_projects/projects/fixture.txt", b"fixture_project={}");
-    let frames: Vec<_> = (first..=requested).map(|at| {
+    let frames: Vec<_> = (first..edge + block_hours).map(|at| {
         let mut frame = frame(at, &hour(at, RUNNING));
         *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 40, literal: b"fixture_project".to_vec() }]));
         frame
@@ -56,6 +58,26 @@ fn exact_project_reads_advance_history_shared_with_the_load_path() {
         assert!((1..=forward_limit).contains(&forward) && forward < rebuilt,
             "{table:?} walked {forward} stretches advancing (limit {forward_limit}) and {rebuilt} rebuilding");
         assert!(repeated_reads.get(&table).is_none_or(|reads| reads.stretches == 0), "{table:?} walked history at the same hour");
+    }
+
+    let panel = dated_panel(&source, &load, &serde_json::json!({"panel":"special-projects", "branchId":"1", "country":"GER"})).unwrap();
+    let exact = panel.exact().unwrap();
+    let opens = |counts: &replay_recording::cells::ReadCounts, table| counts.get(&table).map_or(0, |stats| stats.opened);
+    let seed = (exact.advance)(edge - 48, true, &cancelled, None);
+    let same = (exact.advance)(edge - 48, true, &cancelled, None);
+    assert!(same.fresh && Arc::ptr_eq(&seed.value, &same.value), "a repeated seed reuses the dated reply");
+    let (reseeded, reseed_reads) = count_reads(|| (exact.advance)(edge - 24, true, &cancelled, None));
+    let (crossed, crossing_reads) = count_reads(|| (exact.advance)(edge + 3, false, &cancelled, None));
+    let (continued, continued_reads) = count_reads(|| (exact.advance)(edge + 27, false, &cancelled, None));
+    assert!(reseeded.fresh);
+    for table in [TableId::Projects, TableId::ProjectHistory, TableId::SliceReads] {
+        assert_eq!(opens(&reseed_reads, table), 0, "{table:?} reopens on a forward reset");
+        assert!(opens(&crossing_reads, table) > 0, "{table:?} enters a new block");
+        assert_eq!(opens(&continued_reads, table), 0, "{table:?} reopens the block it just entered");
+    }
+    for (at, reply) in [(edge - 24, reseeded), (edge + 3, crossed), (edge + 27, continued)] {
+        let cold = (exact.cold)(at, &cancelled).unwrap();
+        assert_eq!(materialized_at(reply.value.as_ref().clone().unwrap(), at), cold, "hour {at}");
     }
 }
 
@@ -1509,7 +1531,7 @@ fn current_special_projects_names_the_unknown_holder_reason_at_the_requested_hou
             let at = step.hour;
             let data = step.value.as_ref().as_ref().unwrap().clone();
             assert_eq!(materialized_at(data, at), (exact.cold)(at, &cancelled).unwrap(), "current={current} at {at}");
-            assert_eq!(step.product_calls, u64::from(matches!(at, 20 | 25 | 29 | 32)), "current={current} at {at}");
+            assert_eq!(step.product_calls, u64::from(matches!(at, 25 | 29 | 32)), "current={current} at {at}");
         }
         let sought = (exact.advance)(22, true, &cancelled, None);
         assert!(sought.fresh);

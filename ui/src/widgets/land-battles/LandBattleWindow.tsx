@@ -2,10 +2,9 @@ import { useCallback, useId, useMemo, type ReactNode, type RefObject } from 'rea
 import { colour, distance, readableColour } from '../../charts/palette.ts';
 import type { Run } from '../../charts/series';
 import { BattleGameWindow, BattleViewer, type BattleSpan } from '../../components/BattleViewer.tsx';
-import { BattleTitleHeading } from '../../components/BattleTitleHeading.tsx';
-import { landBattleTitleKey } from '../../components/battleTitle.ts';
 import type { BattleClock } from '../../components/battleClock.ts';
 import { CountryFlagUrl } from '../../components/CountryFlag';
+import { ValueState } from '../../components/ValueState.tsx';
 import { formatDateRange, formatDateTime, formatDay } from '../../dashboard/calendar';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -336,7 +335,8 @@ export default function LandBattleWindow({ opened, track, runtime, anchor, onClo
     return <BattleGameWindow key={row.key} runtime={runtime} track={track} clock={clock} combat={combat} lead={lead} live={covered} until={until} ended={ended} />;
   };
 
-  return <BattleViewer subject={row.key} title={<BattleTitleHeading client={runtime.client} track={track} battle={landBattleTitleKey(row.key)} />} day={day} closeLabel="Close battle viewer" anchor={anchor}
+  const title = row.title ?? <ValueState kind="missing" reason={row.titleMissing ?? 'Name not recorded'} />;
+  return <BattleViewer subject={row.key} title={title} day={day} closeLabel="Close battle viewer" anchor={anchor}
     returnFocus={mirrorRowSelector(row.key)} runtime={runtime} track={track} province={row.province} span={span} unplayable={unplayable}
     gaps={gaps} fallbackHour={first} onClose={onClose}
     sides={hour => <SidesAt runtime={runtime} track={track} hour={hour} subject={subject} keys={sideKeys} run={!data ? failed ? 'unread' : 'pending' : settled(hour) ? null : runCovering(data, hour) ?? 'gap'} figures={figuresAt(hour)} />}

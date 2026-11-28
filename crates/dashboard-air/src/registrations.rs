@@ -6,7 +6,7 @@ mod tests;
 dashboard_base::register_products! {
     AIRCRAFT_CATALOGUE_AIRCRAFTCATALOGUE => crate::products::aircraft_catalogue::AircraftCatalogue,
     AIR_LEDGER_MILITARYAIRLEDGER => crate::products::air_ledger::MilitaryAirLedger,
-    AIR_LEDGER_AT_MILITARYAIRAT => crate::products::air_ledger::at::MilitaryAirAt,
+    AIR_LEDGER_AT_MILITARYAIRAT => crate::products::air_ledger::at::MilitaryAirAt; panel(crate::products::air_ledger::at::panel),
     AIR_LEDGER_BREAKDOWN_BOMBINGDAMAGEBREAKDOWN => crate::products::air_ledger::breakdown::BombingDamageBreakdown; interval(at_hour, |r| r.through),
     REGIONAL_WEATHER_REGIONALWEATHER => crate::products::regional_weather::RegionalWeather; panel(crate::products::regional_weather::panel),
     AIR_SUPERIORITY_AIRSUPERIORITYCHOICES => crate::products::air_superiority::AirSuperiorityChoices,

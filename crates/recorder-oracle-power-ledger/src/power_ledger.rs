@@ -465,18 +465,165 @@ mod tests {
         assert!(parts25.iter().all(|part| part.holder != TagHolderRow::NONE), "linking 103 withdraws its batch from NONE");
         let moved = parts25.iter().find(|part| part.holder == 8 && part.ordinal == 0).expect("moved open part");
         assert_eq!((moved.spent, moved.payments), (Recorded::Value(Q / 5), 1));
-        for hour in [48, 49] {
-            let frame = at(hour);
-            let totals = frame.complete::<tables::PowerSpendTotals>().unwrap();
-            let shared_total = totals.iter().find(|row| row.holder == 7 && row.ordinal == 0).expect("shared settled total");
-            assert_eq!(
-                (shared_total.days, shared_total.day_payments, shared_total.day_charge),
-                (Recorded::Value(1), Recorded::Value(2), Recorded::Value(Q / 2 + Q / 4)),
-                "shared item settles both applications once and ignores late revision at hour {hour}"
-            );
-            let moved_total = totals.iter().find(|row| row.holder == 8 && row.ordinal == 0).expect("moved settled total");
-            assert_eq!((moved_total.days, moved_total.day_payments, moved_total.day_charge), (Recorded::Value(1), Recorded::Value(1), Recorded::Value(Q / 5)));
-            assert!(totals.iter().all(|row| row.holder != TagHolderRow::NONE || row.ordinal == PowerSpendTotalRow::GAINS), "no cost settles under NONE");
+        let f48 = at(48);
+        assert!(f48.complete::<tables::PowerSpendTotals>().is_err(), "PowerSpendTotals is retired in format 155");
+        let days48 = f48.complete::<tables::PowerSpendDays>().unwrap();
+        let shared_day = days48.iter().find(|row| row.holder == 7 && row.ordinal == 0).expect("shared settled day");
+        assert_eq!(
+            (shared_day.days, shared_day.payments, shared_day.charge, shared_day.day),
+            (1, 2, Recorded::Value(Q / 2 + Q / 4), 24),
+            "shared item settles both applications once at hour 48"
+        );
+        let moved_day = days48.iter().find(|row| row.holder == 8 && row.ordinal == 0).expect("moved settled day");
+        assert_eq!((moved_day.days, moved_day.payments, moved_day.charge, moved_day.day), (1, 1, Recorded::Value(Q / 5), 24));
+        assert!(days48.iter().all(|row| row.holder != TagHolderRow::NONE), "no cost settles under NONE");
+        let f49 = at(49);
+        assert!(f49.complete::<tables::PowerSpendDays>().unwrap().is_empty(), "late revision at hour 49 does not settle again");
+    }
+
+    #[test]
+    fn summary_logs_match_raw_payments_instant_gains_cap_losses_and_daily_gains() {
+        use replay::campaign::{Replay, SeekResult};
+        use replay_capture_spool::spool::Record;
+        use replay_data::identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification};
+        use replay_frame::{
+            branches::{BranchReason, BranchStart, Parentage},
+            frame::{FrameEncoder, Metrics, TableView},
+        };
+        const Q: i64 = 100_000;
+        let session = SessionStart {
+            id: 1,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 10_000_000,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
+            identity: Identity {
+                game_version: "synthetic".into(),
+                exe_hash: [1; 32],
+                exe_size: 1,
+                vanilla_hash: [2; 32],
+                dlc: Vec::new(),
+                mods: Vec::new(),
+                coverage_policy: 1,
+                language: "l_english".into(),
+                recorder_version: "test".into(),
+                collector_hash: [3; 32],
+                verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+            },
+        };
+        let mut records = vec![
+            Record::SessionStart(session),
+            Record::BranchStart(BranchStart {
+                id: 1,
+                session: 1,
+                loaded_hour: None,
+                first_hour: 0,
+                parent: Parentage::Unknown,
+                reason: BranchReason::SessionStart,
+            }),
+        ];
+        let mut encoder = FrameEncoder::new();
+        for hour in 0..=48 {
+            let mut tables: [TableView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside oracle fixture".into() });
+            tables[TableId::Campaign.index()] = TableView::Complete(TableRows::Campaign(vec![CampaignRow { id: b"campaign".to_vec() }]));
+            tables[TableId::Clock.index()] = TableView::Complete(TableRows::Clock(vec![ClockRow { hour, seed: 7, ..Default::default() }]));
+            tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![CountryRow { id: 101, canonical_slot: 7, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
+            tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow { id: 101, canonical_slot: 7 }]));
+            tables[TableId::CountryCommandPower.index()] = TableView::Complete(TableRows::CountryCommandPower(Vec::new()));
+            tables[TableId::PoliticsCaptureCoverage.index()] = TableView::Complete(TableRows::PoliticsCaptureCoverage(vec![
+                PoliticsCaptureCoverageRow { country: 101, epoch: 1, since_hour: 0, through_hour: hour, streams: PoliticsCaptureCoverageRow::ALL_STREAMS, ..Default::default() },
+            ]));
+            let changes = match hour {
+                5 => vec![
+                    CountryPowerChangeRow {
+                        country: 101,
+                        sequence: 10,
+                        epoch: 1,
+                        hour: 5,
+                        currency: PowerCurrency::Political,
+                        operation: PowerOperation::Subtract,
+                        balance_before_raw: 100 * Q,
+                        realized_delta_raw: Recorded::Value(-50 * Q),
+                        requested_delta_raw: Some(-50 * Q),
+                        cause: PowerCause::Decision,
+                        site: PowerSite::AddPoliticalPower,
+                        ..Default::default()
+                    },
+                    CountryPowerChangeRow {
+                        country: 101,
+                        sequence: 11,
+                        epoch: 1,
+                        hour: 5,
+                        currency: PowerCurrency::Political,
+                        operation: PowerOperation::Add,
+                        balance_before_raw: 1990 * Q,
+                        realized_delta_raw: Recorded::Value(10 * Q),
+                        requested_delta_raw: Some(25 * Q),
+                        cause: PowerCause::Focus,
+                        site: PowerSite::AddPoliticalPower,
+                        ..Default::default()
+                    },
+                    CountryPowerChangeRow {
+                        country: 101,
+                        sequence: 12,
+                        epoch: 1,
+                        hour: 5,
+                        currency: PowerCurrency::Command,
+                        operation: PowerOperation::AllocationClamp,
+                        balance_before_raw: 90 * Q,
+                        realized_delta_raw: Recorded::Value(-10 * Q),
+                        requested_delta_raw: None,
+                        cause: PowerCause::Allocation,
+                        site: PowerSite::AllocateCommandPower,
+                        ..Default::default()
+                    },
+                ],
+                _ => Vec::new(),
+            };
+            tables[TableId::CountryPowerChanges.index()] = TableView::Complete(TableRows::CountryPowerChanges(changes));
+            let days = if (24..=47).contains(&hour) {
+                vec![CountryPowerDailyRow {
+                    country: 101,
+                    epoch: 1,
+                    day_hour: 24,
+                    pp_gross_gain_raw: Some(3 * Q),
+                    pp_cost_raw: Some(0),
+                    pp_net_gain_raw: Some(3 * Q),
+                    pp_realized_delta_raw: Some(2 * Q),
+                    pp_sequence: Some(50),
+                    ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            tables[TableId::CountryPowerDaily.index()] = TableView::Complete(TableRows::CountryPowerDaily(days));
+            tables[TableId::CountryPowerDailyCosts.index()] = TableView::Complete(TableRows::CountryPowerDailyCosts(Vec::new()));
+            let frame = DecodedFrame { branch: 1, hour, metrics: Metrics::default(), tables: tables.map(Into::into) };
+            records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
         }
+        let (replay, _) = Replay::from_records_derived(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap();
+        let at = |hour: i32| match replay.seek(1, hour).unwrap() {
+            SeekResult::Frame(frame) => frame,
+            other => panic!("expected frame at hour {hour}, got {other:?}"),
+        };
+        let f5 = at(5);
+        let payments5 = f5.complete::<tables::PowerSpendPayments>().unwrap();
+        assert_eq!(payments5.len(), 1);
+        assert_eq!((payments5[0].holder, payments5[0].currency, payments5[0].ordinal, payments5[0].payments, payments5[0].known, payments5[0].latest_hour, payments5[0].latest_sequence), (7, PowerCurrency::Political as u8, 0, 1, Recorded::Value(50 * Q), Some(5), Some(10)));
+        let gains5 = f5.complete::<tables::PowerSpendGains>().unwrap();
+        assert_eq!(gains5.len(), 2);
+        let pp_gain = gains5.iter().find(|row| row.currency == PowerCurrency::Political as u8).expect("instant PP gain");
+        assert_eq!((pp_gain.event_hour, pp_gain.gained, pp_gain.capped, pp_gain.days, pp_gain.unknown_days), (Some(5), Recorded::Value(25 * Q), Recorded::Value(15 * Q), 0, 0));
+        let cp_clamp = gains5.iter().find(|row| row.currency == PowerCurrency::Command as u8).expect("CP allocation clamp");
+        assert_eq!((cp_clamp.event_hour, cp_clamp.gained, cp_clamp.capped, cp_clamp.days, cp_clamp.unknown_days), (Some(5), Recorded::Value(0), Recorded::Value(10 * Q), 0, 0));
+        assert!(at(6).complete::<tables::PowerSpendPayments>().unwrap().is_empty(), "log rows live only their read hour");
+        assert!(at(6).complete::<tables::PowerSpendGains>().unwrap().is_empty(), "gain log rows live only their read hour");
+        let f48 = at(48);
+        let gains48 = f48.complete::<tables::PowerSpendGains>().unwrap();
+        let pp_day = gains48.iter().find(|row| row.currency == PowerCurrency::Political as u8).expect("daily PP gain");
+        assert_eq!((pp_day.event_hour, pp_day.gained, pp_day.capped, pp_day.days, pp_day.unknown_days, pp_day.unmatched), (None, Recorded::Value(3 * Q), Recorded::Value(Q), 1, 0, 0));
+        let cp_unread = gains48.iter().find(|row| row.currency == PowerCurrency::Command as u8).expect("unread CP day");
+        assert_eq!((cp_unread.event_hour, cp_unread.gained, cp_unread.capped, cp_unread.days, cp_unread.unknown_days), (None, Recorded::Value(0), Recorded::Value(0), 0, 1));
     }
 }

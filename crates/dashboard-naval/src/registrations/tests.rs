@@ -48,6 +48,10 @@ fn recording(name: &str, branches: &[u64]) -> (Machine, Arc<Source>, LoadContext
 }
 
 fn recording_with(name: &str, branches: &[u64], read: impl Fn(u64, i32) -> DecodedFrame) -> (Machine, Arc<Source>, LoadContext) {
+    recording_hours(name, branches, 122, read)
+}
+
+fn recording_hours(name: &str, branches: &[u64], last: i32, read: impl Fn(u64, i32) -> DecodedFrame) -> (Machine, Arc<Source>, LoadContext) {
     let machine = Machine::new(name);
     machine.write("hoi4.exe", b"test");
     machine.write("user/settings.txt", b"language=l_english force_pow2_textures=no");
@@ -55,7 +59,7 @@ fn recording_with(name: &str, branches: &[u64], read: impl Fn(u64, i32) -> Decod
     let (options, identity) = content_identity(&machine.root);
     let mut input = Vec::new();
     for &branch in branches {
-        let mut part = records(branch, (100..=122).map(|hour| read(branch, hour)).collect());
+        let mut part = records(branch, (100..=last).map(|hour| read(branch, hour)).collect());
         let Record::SessionStart(session) = &mut part[0] else { unreachable!() };
         session.identity = identity.clone();
         input.extend(part);
@@ -181,4 +185,34 @@ fn current_day_supremacy_follows_control_and_only_the_ships_in_the_shown_regions
             }
         }
     }
+}
+
+#[test]
+fn naval_history_follows_exact_closed_days_without_future_warnings() {
+    let warning = "naval dominance raw country link 9009 is missing";
+    let (_content, source, load) = recording_hours("naval-history-follow", &[1], 167, |branch, hour| {
+        let mut frame = frame(branch, hour);
+        let rows = (hour >= 140).then_some(NavalSupremacyRow { country: 9009, region: 7, current: 1, ..Default::default() });
+        *frame.tables[TableId::NavalSupremacy.index()] = TableView::Complete(TableRows::NavalSupremacy(rows.into_iter().collect()));
+        frame.metrics.table_ns[TableId::NavalSupremacy.index()] = 1;
+        frame
+    });
+    let registration = NAVAL_SUPREMACY_NAVALSUPREMACY;
+    let asked = json!({"panel":"naval-supremacy","branchId":"1","country":"GER","firstHour":100,"lastHour":143});
+    let panel = (registration.panel.unwrap().open)(&source, &load, &asked).unwrap();
+    let reader = panel.exact().unwrap();
+    let mut fresh = Vec::new();
+    for hour in 100..=167 {
+        let read = (reader.advance)(hour, hour == 100, &false.into(), None);
+        let expected = if hour < 120 {
+            Value::Null
+        } else {
+            let last = (hour.div_euclid(24) * 24 - 1).min(143);
+            registration.answer(&source, json!({"branchId":"1","country":"GER","firstHour":100,"lastHour":last}), &load, &false.into()).unwrap()
+        };
+        assert_eq!(read.value.as_ref().as_ref().unwrap(), &expected, "history at {hour}");
+        assert_eq!(expected.to_string().contains(warning), hour >= 144, "refusal becomes visible only after its day closes");
+        if read.fresh { fresh.push(hour); }
+    }
+    assert_eq!(fresh, [100, 120, 144]);
 }

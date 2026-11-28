@@ -251,7 +251,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::SURRENDER_INPUTS_FORMAT
+            crate::rows::compatibility::POWER_SPEND_SUMMARY_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
@@ -260,6 +260,12 @@ mod tests {
             }
             let format = FormatVersion::read(version).unwrap();
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version >= crate::rows::compatibility::POWER_SPEND_SUMMARY_FORMAT {
+                expected.push(TableId::PowerSpendTotals);
+            }
+            if version < crate::rows::compatibility::POWER_SPEND_SUMMARY_FORMAT {
+                expected.extend([TableId::PowerSpendPayments, TableId::PowerSpendGains]);
+            }
             if version < crate::rows::compatibility::DIVISION_DAMAGE_FORMAT {
                 expected.extend([TableId::LandDivisionDamage, TableId::DivisionKills]);
             }

@@ -212,7 +212,8 @@ fn a_quiet_hour_of_decorated_divisions_visits_no_row_while_a_division_moves_and_
 #[test]
 fn decorated_divisions_use_the_ranking_for_their_own_frame_at_the_same_hour() {
     use super::careers::{DecoratedDivisions, DecoratedDivisionsParams, DecoratedRank};
-    use dashboard_base::{products::{LoadContext, at_hour::{At, AtHour, ReadsAt}}, queries::query};
+    use dashboard_base::{products::{LoadContext, at_hour::{At, AtHour, Edits, ReadsAt}}, queries::query};
+    use replay_data::rows::TableId;
 
     let hour = 1_000;
     let first = decorated_world(hour, |id| 30 * id as i64);
@@ -224,6 +225,9 @@ fn decorated_divisions_use_the_ranking_for_their_own_frame_at_the_same_hour() {
     let reads_at = ReadsAt { holders: &query.holders, context: &context, run: query.timeline.at(hour).unwrap().run, hour, since: None };
     let at = At { owner: None, holders: &query.holders, hour, context: &context, cancelled: &false.into(), live: &Default::default() };
 
+    let links_only = Edits { replaced: [TableId::CountryLinks].into(), ..Edits::default() };
+    assert!(!DecoratedDivisions::plan_changes(1, &links_only, &first, &reads_at));
+    assert!(!DecoratedDivisions::plan_changes(2, &links_only, &first, &reads_at));
     let _ = DecoratedDivisions::reads_in(&params, None, 2, &first, &reads_at);
     let _ = DecoratedDivisions::reads_in(&params, None, 2, &second, &reads_at);
     let reply = |frame| DecoratedDivisions::reply(frame, &params, &at).unwrap();

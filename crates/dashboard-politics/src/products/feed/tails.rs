@@ -20,7 +20,7 @@ use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
     identity::{Country, Holders},
-    log::occurrence::{Answer, Ask, Chip, Index, Order, PlacedGap, Selection, Shown},
+    log::occurrence::{Answer, Ask, Chip, DatedCursor, Index, Order, PlacedGap, Selection, Shown},
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
@@ -528,7 +528,9 @@ fn notices_for(prepared: &Prepared, unattributed: u64, windows: bool, from: i32,
     }
 }
 
-fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<EventFeedTailReply> {
+type DatedFeed = (DatedCursor<Item>, fold::Pages);
+
+fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailParams, hour: i32, followed: Option<&mut Option<DatedFeed>>, cancelled: &AtomicBool) -> io::Result<EventFeedTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
     let index = prepared.index.as_ref();
@@ -570,11 +572,23 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             limit,
             chips: &[],
         };
-        let (folded, live, unattributed, mut next) = if let Order::Date(direction) = order { index.with_dated(&query.holders, &ask, |dated| {
-            let (live, unattributed, until) = (dated.live, dated.unattributed, dated.until);
-            let folded = fold::page(feed, dated, direction, offset, limit, params.expanded.as_deref(), params.full.as_deref());
-            (folded, live, unattributed, until)
-        })? } else {
+        let (folded, live, unattributed, mut next) = if let Order::Date(direction) = order {
+            if let Some(held) = followed {
+                if held.is_none() {
+                    *held = Some((prepared.index.dated_cursor(&query.holders, &ask)?, fold::Pages::new(feed)));
+                }
+                let (cursor, pages) = held.as_mut().expect("the dated feed cursor was prepared");
+                let update = cursor.advance(hour);
+                let window = fold::Window { direction, offset, limit, expanded: params.expanded.as_deref(), full: params.full.as_deref() };
+                (pages.advance(feed, &update, &window), update.live, update.unattributed, update.until)
+            } else {
+                index.with_dated(&query.holders, &ask, |dated| {
+                    let (live, unattributed, until) = (dated.live, dated.unattributed, dated.until);
+                    let folded = fold::page(feed, dated, direction, offset, limit, params.expanded.as_deref(), params.full.as_deref());
+                    (folded, live, unattributed, until)
+                })?
+            }
+        } else {
             let answer = index.ask(&query.holders, &ask)?;
             let lines = answer.rows.iter().map(|shown| PlannedLine::Event { at: shown.at, parent: None }).collect();
             (fold::FoldedPage { total: answer.total, offset: answer.offset, lines, gaps: answer.gaps }, answer.live, answer.unattributed, answer.next_change)
@@ -981,7 +995,7 @@ impl Product for EventFeedTail {
         let query = dashboard_base::queries::query(source, branch)?;
         let hour = occurrences::cutoff(&query, params.hour)?;
         let prepared = prepare(source, &query, branch, context, None, asked!(params), cancelled)?;
-            load_feed_at(&prepared, &query, params, hour, cancelled)
+            load_feed_at(&prepared, &query, params, hour, None, cancelled)
     }
 }
 
@@ -997,21 +1011,19 @@ pub fn event_feed_dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, None, asked!(params), &AtomicBool::new(false)));
-    let held = Mutex::new((finish, Arc::new(prepared.map_err(|error| error.to_string())?)));
+    let held = Mutex::new((finish, prepared.map_err(|error| error.to_string())?, None));
     let owned = Owned::of(&query, source.replay());
     let (shared, load) = (Arc::clone(source), LoadContext { content: load.content.clone() });
     Ok(dashboard_base::products::at_hour::interval_panel(source.tables(), move |hour, cancelled| {
         let query = owned.query();
         let hour = occurrences::cutoff(&query, Some(hour))?;
-        let (finish, prepared) = {
-            let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if held.1.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
-                let (finish, prepared) = dashboard_base::products::Finish::open(&shared, &load, EventFeedTail::CONTENT_DEPENDENT, || prepare(&shared, &query, branch, &load, None, asked!(params), cancelled));
-                *held = (finish, Arc::new(prepared.map_err(|error| dashboard_core::duplicate(&error))?));
-            }
-            (held.0.clone(), Arc::clone(&held.1))
-        };
-        let reply = finish.reply(|| load_feed_at(&prepared, &query, &params, hour, cancelled))?;
+        let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.1.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
+            let (finish, prepared) = dashboard_base::products::Finish::open(&shared, &load, EventFeedTail::CONTENT_DEPENDENT, || prepare(&shared, &query, branch, &load, None, asked!(params), cancelled));
+            *held = (finish, prepared.map_err(|error| dashboard_core::duplicate(&error))?, None);
+        }
+        let (finish, prepared, pages) = &mut *held;
+        let reply = finish.reply(|| load_feed_at(prepared, &query, &params, hour, Some(pages), cancelled))?;
         let through = match prepared.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
             true => hour.saturating_sub(1),
             false => reply.next_change().map_or(i32::MAX, |next| next.saturating_sub(1)),

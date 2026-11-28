@@ -60,10 +60,9 @@ pub struct Content {
 }
 
 struct Regions {
-    by_region: BTreeMap<u32, Result<String, String>>,
-    by_province: BTreeMap<u32, Result<String, String>>,
+    definitions: Arc<content_reader_regions::regions::StrategicRegions>,
+    by_region: BTreeMap<u32, OnceLock<Result<String, String>>>,
     region_of: BTreeMap<u32, Result<u32, String>>,
-    notes: Vec<String>,
 }
 
 struct NavalContent {
@@ -86,21 +85,16 @@ impl Content {
         }
         let regions = dashboard_base::content::strategic_regions(&cat.content.layers)
             .map(|regions| {
-                let (mut by_region, mut by_province, mut region_of) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+                let mut region_of = BTreeMap::new();
                 for (&id, region) in &regions.regions {
-                    let name = crate::products::region_names::region_name(&cat, &regions, id);
                     for province in region.native_provinces(|_| true) {
-                        if by_province.insert(province, name.clone()).is_some() {
-                            let err = format!("province {province}: multiple strategic-region memberships refused");
-                            by_province.insert(province, Err(err.clone()));
-                            region_of.insert(province, Err(err));
-                        } else {
-                            region_of.insert(province, Ok(id));
+                        if region_of.insert(province, Ok(id)).is_some() {
+                            region_of.insert(province, Err(format!("province {province}: multiple strategic-region memberships refused")));
                         }
                     }
-                    by_region.insert(id, name);
                 }
-                Regions { by_region, by_province, region_of, notes: regions.notes.clone() }
+                let by_region = regions.regions.keys().map(|&id| (id, OnceLock::new())).collect();
+                Regions { definitions: regions, by_region, region_of }
             })
             .map_err(|error| format!("Strategic-region names unavailable: {error}"));
         let content = Arc::new(Self { cat: Arc::clone(&cat), regions, naval: OnceLock::new() });
@@ -110,17 +104,17 @@ impl Content {
 
     pub fn region(&self, id: u32) -> Result<String, String> {
         let regions = self.regions.as_ref().map_err(Clone::clone)?;
-        regions.by_region.get(&id).cloned().unwrap_or_else(|| Err(format!("region {id}: no content-defined strategic region")))
+        let name = regions.by_region.get(&id).ok_or_else(|| format!("region {id}: no content-defined strategic region"))?;
+        name.get_or_init(|| crate::products::region_names::region_name(&self.cat, &regions.definitions, id)).clone()
     }
 
     fn province_region(&self, id: u32) -> Result<String, String> {
-        let regions = self.regions.as_ref().map_err(Clone::clone)?;
-        regions.by_province.get(&id).cloned().unwrap_or_else(|| Err(format!("province {id}: no content-defined strategic region")))
+        self.province_region_or_none(id)?.ok_or_else(|| format!("province {id}: no content-defined strategic region"))
     }
 
     fn province_region_or_none(&self, id: u32) -> Result<Option<String>, String> {
         let regions = self.regions.as_ref().map_err(Clone::clone)?;
-        regions.by_province.get(&id).cloned().transpose()
+        regions.region_of.get(&id).cloned().transpose()?.map(|region| self.region(region)).transpose()
     }
 
     fn province_region_id(&self, id: u32) -> Result<u32, String> {
@@ -177,7 +171,7 @@ impl Content {
     pub fn warnings(&self) -> Vec<String> {
         let mut out: Vec<String> = self.cat.verification.iter().chain(&self.cat.warnings).cloned().collect();
         match &self.regions {
-            Ok(regions) => out.extend(regions.notes.iter().cloned()),
+            Ok(regions) => out.extend(regions.definitions.notes.iter().cloned()),
             Err(reason) => out.push(reason.clone()),
         }
         if let Err(reason) = self.cat.cached_states() { out.push(reason); }
