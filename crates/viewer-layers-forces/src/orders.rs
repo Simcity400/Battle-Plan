@@ -105,6 +105,16 @@ struct Held {
     on_wait: Option<Box<dyn FnOnce() + Send>>,
 }
 
+impl Held {
+    fn continuing(&self) -> io::Result<()> {
+        if self.stop {
+            Err(io::Error::new(io::ErrorKind::Interrupted, "The map's orders layer is retiring"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 struct Shared {
     held: Mutex<Held>,
     done: Condvar,
@@ -116,15 +126,8 @@ impl Shared {
     }
 
     fn wait(&self, until: Instant, published: u64, reader: &views::Reader, hour: Hour, strict: bool) -> io::Result<()> {
-        let continuing = |held: &Held| {
-            if held.stop {
-                Err(io::Error::new(io::ErrorKind::Interrupted, "The map's orders layer is retiring"))
-            } else {
-                Ok(())
-            }
-        };
         let held = self.lock();
-        continuing(&held)?;
+        held.continuing()?;
         if held.published != published || held.stopped.as_ref().is_some() || !rows_cover(reader, hour, strict) {
             return Ok(());
         }
@@ -138,7 +141,7 @@ impl Shared {
         };
         let (held, _) = self.done.wait_timeout(held, until.saturating_duration_since(Instant::now()))
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        continuing(&held)
+        held.continuing()
     }
 
     fn stop(&self) {
@@ -431,7 +434,7 @@ impl Orders {
             }
             if !rows_cover(&rows, hour, strict) {
                 viewer_runtime::view_record::add("arrows", "joins_left_rows_pending", 1);
-                return Ok(());
+                return self.shared.lock().continuing();
             }
             if viewer_runtime::view_record::on() {
                 let held = rows.newest().is_some_and(|(frame, _)| frame.hour >= hour);
@@ -548,7 +551,13 @@ impl Drop for Orders {
 impl Layer for Orders {
     fn retirement(&self) -> Option<Retirement> {
         let shared = Arc::clone(&self.shared);
-        Some(Box::new(move || shared.stop()))
+        let rows = self.rows.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(Arc::downgrade);
+        Some(Box::new(move || {
+            shared.stop();
+            if let Some(reader) = rows.and_then(|reader| reader.upgrade()) {
+                reader.notify_progress();
+            }
+        }))
     }
 
     fn name(&self) -> &'static str {
