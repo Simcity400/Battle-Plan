@@ -7,7 +7,6 @@ import { createBoundedReadView, displayedHour } from '../../families/boundedView
 import { compileFollowPlan, hoverAsks, readPlanExact } from '../../families/broker.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import { unitEntries } from '../../families/readUnits.ts';
-import type { FrozenGate } from '../../families/sources.ts';
 import { DEFAULT_LINE_SETTINGS } from '../../families/time-chart/settings.ts';
 import type { NavalLossesAtReply } from '../../generated/dashboard';
 import {
@@ -24,11 +23,6 @@ const SOURCE = {
   lastHour: 500,
   branches: [{ id: '1', firstHour: 0, lastHour: 500 }],
 } as unknown as DashboardSource;
-
-const GATE: FrozenGate = {
-  recorded: (hour: number | null | undefined) => (typeof hour === 'number' ? hour : null) as never,
-  span: (firstHour: number, lastHour: number) => (firstHour <= lastHour ? { firstHour, lastHour } : null) as never,
-};
 
 function makeCtx(overrides: Partial<FamilyPlanContext> = {}): FamilyPlanContext {
   return {
