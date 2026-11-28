@@ -317,6 +317,31 @@ test('browser widget classifier expression delegates directly to classifyWidgetS
   });
 });
 
+test('the final playback snapshot keeps a held picture and catches newly visible loading', async () => {
+  const windowEnd = '} else await sleep(PLAY_SECONDS * 1000);';
+  const first = source.indexOf(windowEnd) + windowEnd.length;
+  const snapshot = source.slice(first, source.indexOf('await pausePlayback()', first));
+  const finish = new Function(`return async (app, dashboardInventory, mergeWidgetOutcomes, widgets) => {
+    ${snapshot}
+    return widgets;
+  }`)();
+  const calls = [];
+  const app = { evaluate: async expr => {
+    calls.push(typeof expr === 'string' ? 'end watcher' : 'snapshot');
+    return typeof expr === 'string' ? { failed: { outcome: 'error', detail: 'original failure' } } : expr;
+  } };
+  const inventory = playback => ['held', 'loading', 'failed'].map(id => ({
+    id, ...classifyWidgetSnapshot({ probeState: id === 'held' && playback ? 'content' : 'loading' }, playback),
+  }));
+  const widgets = ['held', 'loading', 'failed'].map(id => ({ id, outcome: 'content' }));
+  assert.deepEqual(await finish(app, inventory, mergeWidgetOutcomes, widgets), [
+    { id: 'held', outcome: 'content' },
+    { id: 'loading', outcome: 'error', detail: 'still loading' },
+    { id: 'failed', outcome: 'error', detail: 'original failure' },
+  ]);
+  assert.deepEqual(calls, ['snapshot', 'end watcher'], 'the watcher covers the final snapshot');
+});
+
 test('playback unsettled probe ignores hidden screen-reader aria-busy mirrors while flagging visible loading widgets', () => {
   const start = source.indexOf('const unsettled = `(() => {');
   const end = source.indexOf('})()`;', start);

@@ -817,11 +817,11 @@ await phase('playback', async () => {
             if (endHour > line.max || !await s.until(`${Session.CLOCK_HOUR} >= ${endHour}`, 2 * PLAY_SECONDS * 1000 + 5000))
               windowReasons.push('Playback did not cover the requested game hours');
           } else await sleep(PLAY_SECONDS * 1000);
+          const endInventory = await app.evaluate(dashboardInventory(true)).catch(() => null);
           const observedOutcomes = await app.evaluate('__e2e.endWidgetOutcomes?.() ?? {}').catch(() => ({}));
-          const endInventory = await app.evaluate(dashboardInventory()).catch(() => null);
           widgets = mergeWidgetOutcomes(widgets, observedOutcomes);
           if (Array.isArray(endInventory)) {
-            const byId = Object.fromEntries(endInventory.map(w => [w.id, w]));
+            const byId = Object.fromEntries(endInventory.map(w => [w.id, w.outcome === 'loading' ? { ...w, outcome: 'error' } : w]));
             widgets = mergeWidgetOutcomes(widgets, byId);
           }
           await pausePlayback();
