@@ -8,6 +8,7 @@ interface Result {
   strip: string; statuses: string[]; partial: number; missing: number;
   followed: Record<string, unknown>[]; bins: number;
   beforeBins: number; lastConfirmation: number | null;
+  audits?: { hour: number; error: string | null }[];
 }
 
 test('the activity request uses the family plan references without reading country groups again and keeps partial and missing holder bins', () =>
@@ -56,13 +57,17 @@ test('one followed log widget receives activity over 1000 played hours without e
 
 test('a native confirmation advances activity into a quiet new day', () =>
   withNativePage('activity-quiet', '/ui/src/widgets/event-feed/activityStrip.dom.fixture.tsx', page => page.stage('quiet day', async () => {
-    const result = await page.evaluate<Result>('window.activityStripFixture.run({kind:"all"}, true, 20)');
+    const result = await page.evaluate<Result>('window.activityStripFixture.run({kind:"all"}, false, 20, false, 1, true)');
     assert.equal(result.hour, 120);
     assert.equal(result.beforeBins, 1);
     assert.equal(result.lastConfirmation, 120);
     assert.equal(result.count, 0);
     assert.equal(result.followed.length, 1);
     assert.equal(result.bins, 2);
+    assert.ok(result.audits);
+    assert.ok(result.audits.some(sample => sample.hour === 120 && sample.error === null), 'the quiet new day agrees with the exact product');
+    const mismatches = result.audits.filter(sample => sample.error !== null);
+    assert.deepEqual([...new Set(mismatches.map(sample => sample.hour))].sort(), [118, 119], 'the audit catches changed counts and changed coverage');
   })));
 
 test('the family refreshes a followed group strip at unknown-membership boundaries inside a day', () =>
