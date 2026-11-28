@@ -790,6 +790,16 @@ impl Lane {
         self.texts.clear();
     }
 
+    pub(crate) fn report_status(&self, out: &mut Changes) {
+        out.status = Some(self.status);
+        if let Status::Unavailable { reason } = self.status.0
+            && !out.texts.ids.contains(&reason)
+            && let Some(text) = self.reason()
+        {
+            out.texts.push(reason, text);
+        }
+    }
+
     pub(crate) fn show_known(&mut self) -> Texts {
         std::mem::replace(&mut self.texts, self.known.texts())
     }
@@ -1019,7 +1029,7 @@ impl Lane {
         out.status_left = self.status_left(held.0)?;
         self.read_status()?;
         if self.status != held {
-            out.status = Some(self.status);
+            self.report_status(out);
         }
         if self.status.0 == held.0 && matches!(self.status.0, Status::Truncated { .. }) {
             #[cfg(test)]

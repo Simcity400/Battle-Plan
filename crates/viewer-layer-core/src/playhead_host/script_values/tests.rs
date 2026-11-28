@@ -16,7 +16,7 @@ fn a_bad_key_is_refused_on_restore_and_on_advance() {
     });
     let entry = open(units, hourly_steps()).unwrap();
     let source = ScriptValues::new(&entry, TableWritten::Written);
-    let (decoded, _) = source.snapshot(1, 1, None, &mut Vec::new());
+    let (decoded, _) = source.columns.snapshot(1, 1, None, &mut Vec::new());
     let TableView::Unavailable { reason } = decoded.held() else { panic!("the decoder accepted the wide key") };
     assert!(reason.contains("row key exceeds native width"));
     let refused = |key| matches!(source.read(1, Some(key)), KeyedNumber::Unavailable(why) if why.contains("ScriptVariableValues") && why.contains("row key exceeds native width"));
@@ -38,6 +38,6 @@ fn reading_forward_drops_each_passed_part() {
     assert_eq!(source.read(0, Some(0)), KeyedNumber::Value(Some(0)));
     assert_eq!(source.read(through, Some(0)), KeyedNumber::Value(Some(i64::from(through) * 1237)));
     let mut retired = Vec::new();
-    lock(&source.lane).as_mut().unwrap().as_mut().unwrap().retire_into(&mut retired);
+    lock(&source.columns.lane).as_mut().unwrap().as_mut().unwrap().retire_into(&mut retired);
     assert!(retired.is_empty(), "the source kept passed parts after a completed lookup");
 }

@@ -210,8 +210,12 @@ pub fn record_with(name: &str, hours: u32, hour: impl FnMut(&mut ColumnarStore, 
     record_with_settings(name, hours, Writing::at(3), hour)
 }
 
-pub fn record_with_settings(name: &str, hours: u32, settings: Writing, mut hour: impl FnMut(&mut ColumnarStore, u32)) -> Units {
+pub fn record_with_settings(name: &str, hours: u32, settings: Writing, hour: impl FnMut(&mut ColumnarStore, u32)) -> Units {
     let kinds = replay_recording::schema::schema().unwrap();
+    record_with_kinds(name, hours, settings, kinds, hour)
+}
+
+pub fn record_with_kinds(name: &str, hours: u32, settings: Writing, kinds: Vec<Vec<Kind>>, mut hour: impl FnMut(&mut ColumnarStore, u32)) -> Units {
     let mut store = ColumnarStore::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, settings).unwrap());
     let mut memory = Memory::default();
