@@ -22,6 +22,25 @@ pub const MEMBERSHIP_UNKNOWN: &str = "Group membership is unavailable at this ti
 
 const KEPT_SIGNATURES: usize = 16;
 
+impl super::Reader<'_, '_> {
+    pub fn visit_indexed_state_records(
+        &self, run: u32, points: &[(i32, u128)], mut visit: impl FnMut(u128, &[super::Cell]) -> io::Result<()>,
+    ) -> io::Result<bool> {
+        if points.is_empty() {
+            return Ok(true);
+        }
+        let recording = self.query.replay.recording();
+        if !matches!(recording.table_coverage(self.log.table.index(), run), super::TableCoverage::Valid) || self.is_log_table(run)? {
+            return Ok(false);
+        }
+        let entries = points.iter().map(|&(hour, key)| super::BucketEntry { hour, key, facet: 0, log_ordinal: None }).collect::<Vec<_>>();
+        for row in self.materialize(run, &entries)? {
+            visit(row.key, &row.cells)?;
+        }
+        Ok(true)
+    }
+}
+
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }

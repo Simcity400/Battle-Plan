@@ -583,6 +583,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source
     let (order, _newest) = occurrences::order(params.sort.as_ref(), &["country", "item"])?;
     let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
     let opened = params.row.is_some();
+    let indexed_records = followed.is_some() && prepared.scanned.unique_record_keys;
     let (total, reply_offset, live_total, unattributed, gaps, base_next, planned) = if let Some(row_key) = params.row.as_deref() {
         let located = prepared.scanned.locate(row_key).and_then(|key| index.find(key)).or_else(|| index::family_at(index, row_key));
         match located {
@@ -647,7 +648,12 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source
         }
         (folded.total, folded.offset, live, unattributed, folded.gaps, next, folded.lines)
     };
-    let read = index::read_events(query, &planned_locators(index, &planned, hour))?;
+    let locators = planned_locators(index, &planned, hour);
+    let indexed = if indexed_records { index::read_indexed_events(query, &locators)? } else { None };
+    let read = match indexed {
+        Some(read) => read,
+        None => index::read_events(query, &locators)?,
+    };
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
     let presenter = Presenter::new(query, content_from(&prepared.content, &mut notices), Arc::clone(&prepared.kept));
