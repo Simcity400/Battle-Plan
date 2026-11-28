@@ -116,14 +116,20 @@ fn the_balance_reply_holds_through_unrelated_country_fields_and_live_values() {
     use serde_json::json;
 
     let frames = (FIRST..=FIRST + 6).map(|hour| {
-        let mut frame = frame(hour);
+        let mut frame = source(1, hour, Some(1_000));
         if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
-            rows[1].political_power_raw = Some(i64::from(hour));
+            rows.push(CountryRow { id: ENG, canonical_slot: 8, tag: b"ENG".to_vec(), political_power_raw: Some(i64::from(hour)), border_land_doctrine_level: Recorded::Value(None), ..Default::default() });
         }
-        if let TableView::Complete(TableRows::PowerBalances(rows)) = &mut *frame.tables[TableId::PowerBalances.index()] {
-            rows[0].value_raw += i64::from(hour - FIRST);
-            if hour >= FIRST + 4 { rows[0].active_range = b"GER_high".to_vec(); }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *frame.tables[TableId::CountryLinks.index()] {
+            rows.push(CountryLinkRow { id: ENG, canonical_slot: 8 });
         }
+        set(&mut frame, TableId::PowerBalances, TableRows::PowerBalances(vec![PowerBalanceRow {
+            value_raw: 5_000 + i64::from(hour - FIRST),
+            balance: b"GER_bop".to_vec(),
+            active_range: if hour < FIRST + 4 { b"GER_low".to_vec() } else { b"GER_high".to_vec() },
+            ..Default::default()
+        }]));
+        set(&mut frame, TableId::PowerBalanceMembers, TableRows::PowerBalanceMembers(vec![PowerBalanceMemberRow { country: GER, ..Default::default() }]));
         if hour < FIRST + 5 {
             set(&mut frame, TableId::ModifierDefinitions, TableRows::ModifierDefinitions(Vec::new()));
         }
