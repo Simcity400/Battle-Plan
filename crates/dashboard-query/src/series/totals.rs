@@ -679,6 +679,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn produced_day_steps_reuse_point_readers_and_match_exact_after_seeking() {
+        use crate::identity::{HolderRun, Holders};
+        use crate::timeline::{Join, Stretch, Timeline};
+        use replay_data::rows::{ProducedValueRow, Recorded, TableId};
+        use replay_journal::synthetic::{Input, Sample};
+        use replay_recording::cells::count_reads;
+        use std::sync::Mutex;
+
+        let (first, last) = (100, 236);
+        let replay = crate::fixture::bare(first, last, |frame, hour| {
+            let sample = first + (hour - first).div_euclid(24) * 24;
+            let rows = [
+                ProducedValueRow { country: 7, archetype: ProducedValueRow::REST, units: Recorded::Value(i64::from(sample)), ..Default::default() },
+                ProducedValueRow { country: ProducedValueRow::CLOCK, since: Some(first), as_of: Some(sample), ..Default::default() },
+            ];
+            frame.table(TableId::ProducedValues, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit })
+        }).unwrap();
+        let holders = Holders::new([("AAA".into(), vec![HolderRun { first, last, holder: Holder::Found { slot: 7, id: 7 }, starts_segment: true }])].into(), Vec::new());
+        let timeline = Timeline { id: 1, first, last, stretches: vec![
+            Stretch { run: 0, first, last: 182, join: Join::Start },
+            Stretch { run: 0, first: 191, last, join: Join::Start },
+        ], unheld: Vec::new() };
+        let query = crate::Query { replay: &replay, timeline: timeline.into(), holders: holders.into() };
+        let series = dashboard_declare::series("produced-values").unwrap();
+        let cold = Line::new(&query, series, series.measure("units").unwrap()).unwrap();
+        let readers = Mutex::default();
+        let warm = Line::new(&query, series, series.measure("units").unwrap()).unwrap().with_total_readers(Some(&readers));
+        let ask = |line: &Line<'_, '_>, hour| {
+            let clock = line.clock_at(hour).unwrap();
+            let rank = line.totals_ranked(hour, 5, &|_| vec![], Some(&|read| Some(read - 24)), &|value| value > 0).unwrap();
+            let totals = line.totals_at(&[Country::Slot(7)], &|_| vec![], Some(&|read| Some(read - 24)), hour).unwrap();
+            ((clock.read, clock.since, clock.since_from, clock.next_change), rank, totals)
+        };
+
+        assert_eq!(ask(&warm, 127), ask(&cold, 127));
+        for hour in [151, 175] {
+            let (old, old_reads) = count_reads(|| ask(&cold, hour));
+            let (new, new_reads) = count_reads(|| ask(&warm, hour));
+            assert_eq!(new, old);
+            let old_reads = old_reads[&TableId::ProducedValues];
+            let new_reads = new_reads.get(&TableId::ProducedValues).copied().unwrap_or_default();
+            assert_eq!((old_reads.opened, old_reads.restores), (17, 17));
+            assert_eq!(new_reads.opened, 0);
+            assert!(new_reads.restores < old_reads.restores);
+        }
+        for hour in [127, 185, 199, 223, 151] {
+            assert_eq!(ask(&warm, hour), ask(&cold, hour), "hour {hour}");
+        }
+    }
+
+    #[test]
     fn single_hour_batch_matches_the_selected_totals_and_their_gaps() {
         use crate::identity::{HolderRun, Holders};
         use crate::timeline::{Join, Stretch, Timeline};
