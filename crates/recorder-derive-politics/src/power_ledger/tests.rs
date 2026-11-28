@@ -713,9 +713,10 @@ fn aggregate_settlement_matches_repeated_payments_in_constant_steps() {
     let mut credits = PaymentEvent::default();
     credits.unknown_credit(large);
     assert_eq!((credits.payments, credits.unknown), (0, large));
-    let mut gains = GainEvent::default();
-    gains.add_unmatched(large);
-    assert_eq!(gains.unmatched, large);
+    let mut gains = Vec::new();
+    push_gain(&mut gains, Some(0), Some(0), 0, 0, large);
+    assert_eq!(gains.len(), 1);
+    assert_eq!(gains[0].unmatched, large);
 }
 
 #[test]
@@ -1070,11 +1071,12 @@ fn its_blob_holds_hours_links_recovery_settled_days_and_open_batches_and_a_damag
         settled: [(1, runs), (2, DayRuns(vec![(48, 48)]))].into(),
         item_days: [((10, POLITICAL, 0), ItemDays { counted: item_counted, uncovered: item_uncovered })].into(),
         batches: [(key, batch)].into(),
+        seen_gains: [((1, 1), SeqRuns(vec![(1, 2), (5, 5)]))].into(),
         ..PowerLedger::default()
     };
     let mut blob = Bytes::new();
     ledger.save(&mut blob).unwrap();
-    assert!(blob.bytes().len() <= 80, "two hours, a flag, links, mismatch, settled runs, item days and one open batch");
+    assert!(blob.bytes().len() <= 96, "two hours, a flag, links, mismatch, settled runs, item days, one open batch and seen gains");
     let mut loaded = PowerLedger::default();
     loaded.load(blob.bytes()).unwrap();
     assert!(loaded.rebuild && loaded.recover);
@@ -1084,6 +1086,7 @@ fn its_blob_holds_hours_links_recovery_settled_days_and_open_batches_and_a_damag
     assert_eq!(loaded.settled, ledger.settled);
     assert_eq!(loaded.item_days, ledger.item_days);
     assert_eq!(loaded.batches, ledger.batches);
+    assert_eq!(loaded.seen_gains, ledger.seen_gains);
     assert_eq!(loaded.raw_batches(1), [key]);
     assert_eq!(loaded.holder_batches(10), [key]);
     assert_eq!(loaded.aliases.get(&10).map(Vec::as_slice), Some(&[1, 2][..]), "the holders are rebuilt from the links");
@@ -2237,4 +2240,65 @@ fn shared_holder_mismatch_stays_isolated_and_overflowing_sum_is_uncovered() {
     let view27 = h27.view(TableId::PowerDayParts.index());
     assert_eq!(view27.bool(column::<Part>("covered"), view27.slot(part_key(10, POLITICAL, 0)).expect("a row")), Some(true), "and country 2's own balanced part on holder 10 kept its coverage");
     assert_resumes_match(&[24, 25, 26], 27, scenario);
+}
+
+#[test]
+fn republished_instant_gains_are_deduped_large_gains_split_and_idle_unavailable_hours_stay_unavailable() {
+    let half = 1_i64 << 62;
+    let grant = |seq: u64, amount: i64| CountryPowerChangeRow {
+        country: 1,
+        epoch: 7,
+        sequence: seq,
+        hour: 3,
+        currency: PowerCurrency::Political,
+        operation: PowerOperation::Add,
+        balance_before_raw: 0,
+        realized_delta_raw: Recorded::Value(amount),
+        requested_delta_raw: Some(amount),
+        cause: PowerCause::Focus,
+        site: PowerSite::AddPoliticalPower,
+        ..Default::default()
+    };
+    let scenario = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10)], &[1]);
+        match hour {
+            2 => {
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+            }
+            3 => {
+                testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 10).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(20, half), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(21, half), TEXTS).unwrap();
+            }
+            4 => {
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let (h3, _) = run_custom(3, scenario);
+    let gain_keys = keys(&h3, TableId::PowerSpendGains);
+    assert_eq!(gain_keys.len(), 2, "two 2^62 gains in one bucket split across two PowerSpendGains entries instead of overflowing to NotRecorded");
+    let total_gained: i128 = gain_keys
+        .iter()
+        .map(|&key| i128::from(cell::<SpendGain>(&h3, TableId::PowerSpendGains, key, "gained").expect("each split entry is exact")))
+        .sum();
+    assert_eq!(total_gained, i128::from(half) * 2);
+    let (h4, _) = run_custom(4, scenario);
+    assert!(keys(&h4, TableId::PowerSpendGains).is_empty(), "republishing an instant gain with the same country, sequence and epoch must not count it twice");
+    assert_resumes_match(&[2, 3], 4, scenario);
+
+    let idle_unavailable = |store: &mut Store, hour: i32| {
+        if hour >= 2 {
+            store.status(TableId::CountryPowerChanges.index(), Status::Unavailable { reason: 1 }, false, None, false).unwrap();
+        }
+    };
+    let (u3, _) = run_custom(3, idle_unavailable);
+    for derived in [TableId::PowerDayParts, TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
+        assert_eq!(
+            u3.view(derived.index()).status(),
+            Status::Unavailable { reason: 1 },
+            "second consecutive idle unavailable hour must keep {derived:?} unavailable"
+        );
+    }
 }

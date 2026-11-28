@@ -47,6 +47,61 @@ fn note_read(table: TableId, update: impl FnOnce(&mut TableReadStats)) {
     });
 }
 
+pub struct ReadCarry {
+    #[cfg(any(test, feature = "test-support"))]
+    counting: bool,
+}
+
+pub struct ReadSample {
+    #[cfg(any(test, feature = "test-support"))]
+    counts: Option<ReadCounts>,
+}
+
+pub fn capture_reads_context() -> ReadCarry {
+    ReadCarry {
+        #[cfg(any(test, feature = "test-support"))]
+        counting: COUNTING.get(),
+    }
+}
+
+pub fn run_with_reads<T>(_carry: &ReadCarry, work: impl FnOnce() -> T) -> (T, ReadSample) {
+    #[cfg(any(test, feature = "test-support"))]
+    if _carry.counting {
+        let (value, counts) = count_reads(work);
+        return (value, ReadSample { counts: Some(counts) });
+    }
+    (
+        work(),
+        ReadSample {
+            #[cfg(any(test, feature = "test-support"))]
+            counts: None,
+        },
+    )
+}
+
+pub fn merge_read_sample(_sample: ReadSample) {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(counts) = _sample.counts {
+        if !COUNTING.get() {
+            return;
+        }
+        COUNTS.with(|held| {
+            if let Some(target) = held.borrow_mut().as_mut() {
+                for (table, stats) in counts {
+                    let entry = target.entry(table).or_default();
+                    entry.opened += stats.opened;
+                    entry.restores += stats.restores;
+                    entry.stretches += stats.stretches;
+                    entry.backward_seeks += stats.backward_seeks;
+                    entry.visited_ordinals += stats.visited_ordinals;
+                    entry.pinned += stats.pinned;
+                    entry.columns += stats.columns;
+                }
+            }
+        });
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn count_reads<T>(work: impl FnOnce() -> T) -> (T, ReadCounts) {
     struct Guard {

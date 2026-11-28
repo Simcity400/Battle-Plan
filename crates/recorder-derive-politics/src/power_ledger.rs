@@ -488,36 +488,35 @@ impl Default for GainEvent {
 }
 
 impl GainEvent {
-    fn add_opt(cell: &mut Recorded<i64>, amount: Option<i128>) {
-        match (*cell, amount) {
-            (Recorded::Value(held), Some(add)) => {
-                *cell = i64::try_from(i128::from(held) + add).map_or(Recorded::NotRecorded, Recorded::Value);
-            }
-            _ => *cell = Recorded::NotRecorded,
+    fn try_add_opt(cell: Recorded<i64>, amount: Option<i128>) -> Option<Recorded<i64>> {
+        match (cell, amount) {
+            (Recorded::Value(held), Some(add)) => i64::try_from(i128::from(held) + add).ok().map(Recorded::Value),
+            _ => Some(Recorded::NotRecorded),
         }
     }
 
-    fn push_day(&mut self, (gained, capped, read): tally::GainDay) {
-        match gained {
-            Some(gained) => DayEvent::add(&mut self.gained, i128::from(gained)),
-            None => self.unknown_days = self.unknown_days.saturating_add(1),
-        }
-        DayEvent::add(&mut self.capped, i128::from(capped));
-        if read {
-            self.days = self.days.saturating_add(1);
-        }
-    }
-
-    fn push_instant(&mut self, gained: Option<i128>, capped: Option<i128>, unknown_days: i64) {
-        Self::add_opt(&mut self.gained, gained);
-        Self::add_opt(&mut self.capped, capped);
-        self.unknown_days = self.unknown_days.saturating_add(unknown_days);
-    }
-
-    fn add_unmatched(&mut self, times: i64) {
-        if times > 0 {
-            self.unmatched = self.unmatched.saturating_add(times);
-        }
+    fn try_merge(&mut self, gained: Option<i128>, capped: Option<i128>, days: i64, unknown_days: i64, unmatched: i64) -> bool {
+        let Some(next_gained) = Self::try_add_opt(self.gained, gained) else {
+            return false;
+        };
+        let Some(next_capped) = Self::try_add_opt(self.capped, capped) else {
+            return false;
+        };
+        let Some(next_days) = self.days.checked_add(days) else {
+            return false;
+        };
+        let Some(next_unknown) = self.unknown_days.checked_add(unknown_days) else {
+            return false;
+        };
+        let Some(next_unmatched) = self.unmatched.checked_add(unmatched) else {
+            return false;
+        };
+        self.gained = next_gained;
+        self.capped = next_capped;
+        self.days = next_days;
+        self.unknown_days = next_unknown;
+        self.unmatched = next_unmatched;
+        true
     }
 
     fn is_nonempty(&self) -> bool {
@@ -526,6 +525,86 @@ impl GainEvent {
             || self.unmatched > 0
             || self.gained != Recorded::Value(0)
             || self.capped != Recorded::Value(0)
+    }
+}
+
+fn push_gain(events: &mut Vec<GainEvent>, gained: Option<i128>, capped: Option<i128>, days: i64, unknown_days: i64, unmatched: i64) {
+    if let Some(last) = events.last_mut()
+        && last.try_merge(gained, capped, days, unknown_days, unmatched)
+    {
+        return;
+    }
+    let mut rem_gained = gained.unwrap_or(0);
+    let mut rem_capped = capped.unwrap_or(0);
+    let mut first = true;
+    loop {
+        let g = match gained {
+            Some(_) => {
+                let piece = rem_gained.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                rem_gained -= i128::from(piece);
+                Recorded::Value(piece)
+            }
+            None if first => Recorded::NotRecorded,
+            None => Recorded::Value(0),
+        };
+        let c = match capped {
+            Some(_) => {
+                let piece = rem_capped.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                rem_capped -= i128::from(piece);
+                Recorded::Value(piece)
+            }
+            None if first => Recorded::NotRecorded,
+            None => Recorded::Value(0),
+        };
+        let event = GainEvent {
+            gained: g,
+            capped: c,
+            days: if first { days } else { 0 },
+            unknown_days: if first { unknown_days } else { 0 },
+            unmatched: if first { unmatched } else { 0 },
+        };
+        if event.is_nonempty() {
+            events.push(event);
+        }
+        first = false;
+        if rem_gained == 0 && rem_capped == 0 {
+            break;
+        }
+    }
+}
+
+fn push_gain_day(events: &mut Vec<GainEvent>, (gained, capped, read): tally::GainDay) {
+    let (gained, unknown_days) = match gained {
+        Some(gained) => (Some(i128::from(gained)), 0),
+        None => (Some(0), 1),
+    };
+    push_gain(events, gained, Some(i128::from(capped)), i64::from(read), unknown_days, 0);
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SeqRuns(Vec<(u64, u64)>);
+
+impl SeqRuns {
+    fn insert(&mut self, seq: u64) -> bool {
+        let at = self.0.partition_point(|&(_, last)| last < seq);
+        if let Some(&(first, last)) = self.0.get(at)
+            && first <= seq
+            && seq <= last
+        {
+            return false;
+        }
+        let merge_prev = at > 0 && self.0[at - 1].1.checked_add(1) == Some(seq);
+        let merge_next = self.0.get(at).is_some_and(|&(first, _)| seq.checked_add(1) == Some(first));
+        match (merge_prev, merge_next) {
+            (true, true) => {
+                self.0[at - 1].1 = self.0[at].1;
+                self.0.remove(at);
+            }
+            (true, false) => self.0[at - 1].1 = seq,
+            (false, true) => self.0[at].0 = seq,
+            (false, false) => self.0.insert(at, (seq, seq)),
+        }
+        true
     }
 }
 
@@ -590,7 +669,7 @@ fn instant_gain(row: &CountryPowerChangeRow) -> Option<(Option<i128>, Option<i12
 struct Pending {
     day_events: BTreeMap<(u32, u8, u32, i32), DayEvent>,
     payment_events: BTreeMap<(u32, u8, u32), PaymentEvent>,
-    gain_events: BTreeMap<(u32, u8, Option<i32>), GainEvent>,
+    gain_events: BTreeMap<(u32, u8, Option<i32>), Vec<GainEvent>>,
     items: Vec<(Item, ItemId)>,
     fresh: HashMap<(u32, u64), Vec<usize>>,
     change_parts: BTreeMap<u128, Part>,
@@ -630,6 +709,7 @@ pub struct PowerLedger {
     item_days: HashMap<(u32, u8, u32), ItemDays>,
     holds: HashMap<u32, Holds>,
     mismatched: HashSet<u32>,
+    seen_gains: HashMap<(u32, u64), SeqRuns>,
     idle: bool,
 }
 
@@ -846,7 +926,9 @@ impl PowerLedger {
             return Ok(());
         }
         if part.ordinal == Total::GAINS {
-            pending.gain_events.entry((part.holder, POLITICAL, None)).or_default().add_unmatched(part.payments);
+            if part.payments > 0 {
+                push_gain(pending.gain_events.entry((part.holder, POLITICAL, None)).or_default(), Some(0), Some(0), 0, 0, part.payments);
+            }
             return Ok(());
         }
         let Some(sequence) = part.sequence else { return Ok(()) };
@@ -1169,6 +1251,11 @@ impl PowerLedger {
         let changes = inputs::changes(hour)?;
         pending.backlog = changes.backlog;
         if changes.backlog {
+            for row in changes.rows {
+                if instant_gain(&row).is_some() {
+                    self.seen_gains.entry((row.country, row.epoch)).or_default().insert(row.sequence);
+                }
+            }
             return Ok(());
         }
         for row in changes.rows {
@@ -1185,12 +1272,17 @@ impl PowerLedger {
                 pending.holds.push(HoldRow { row: row.clone(), covered });
             }
             let holder = self.slot(row.country);
-            if let Some((gained, capped, unknown_days)) = instant_gain(&row) {
-                pending
-                    .gain_events
-                    .entry((holder, row.currency as u8, Some(row.hour)))
-                    .or_default()
-                    .push_instant(gained, capped, unknown_days);
+            if let Some((gained, capped, unknown_days)) = instant_gain(&row)
+                && self.seen_gains.entry((row.country, row.epoch)).or_default().insert(row.sequence)
+            {
+                push_gain(
+                    pending.gain_events.entry((holder, row.currency as u8, Some(row.hour))).or_default(),
+                    gained,
+                    capped,
+                    0,
+                    unknown_days,
+                    0,
+                );
             }
             let charge = charge(&row);
             if charge.is_none() && skipped(row.cause) {
@@ -1258,7 +1350,7 @@ impl PowerLedger {
             if day.day_hour > run_first {
                 let holder = self.slot(day.country);
                 for (currency, gain) in tally::day_gains(&day).iter().enumerate() {
-                    pending.gain_events.entry((holder, currency as u8, None)).or_default().push_day(*gain);
+                    push_gain_day(pending.gain_events.entry((holder, currency as u8, None)).or_default(), *gain);
                 }
             }
         }
@@ -1953,6 +2045,51 @@ fn read_day_runs(reader: &mut Reader<'_>, limit: usize, allow_empty: bool) -> io
     Ok(DayRuns(runs))
 }
 
+fn write_seq_runs(blob: &mut Bytes, runs: &SeqRuns) -> io::Result<()> {
+    blob.varint(runs.0.len() as u64)?;
+    let mut prev_last: Option<u64> = None;
+    for &(first, last) in &runs.0 {
+        if last < first {
+            return Err(invalid("PowerLedger's state holds an inverted sequence run"));
+        }
+        let delta = match prev_last {
+            None => first,
+            Some(prev) => prev
+                .checked_add(2)
+                .and_then(|min| first.checked_sub(min))
+                .ok_or_else(|| invalid("PowerLedger's state holds unsorted, overlapping or unmerged sequence runs"))?,
+        };
+        blob.varint(delta)?;
+        blob.varint(last - first)?;
+        prev_last = Some(last);
+    }
+    Ok(())
+}
+
+fn read_seq_runs(reader: &mut Reader<'_>, limit: usize) -> io::Result<SeqRuns> {
+    let run_count = reader.count()?;
+    if run_count == 0 || run_count > limit {
+        return Err(invalid("PowerLedger's state holds an invalid sequence run count"));
+    }
+    let mut runs = Vec::with_capacity(run_count);
+    let mut prev_last: Option<u64> = None;
+    for _ in 0..run_count {
+        let delta = reader.varint()?;
+        let first = match prev_last {
+            None => delta,
+            Some(prev) => prev
+                .checked_add(2)
+                .and_then(|min| min.checked_add(delta))
+                .ok_or_else(|| invalid("PowerLedger's state holds a sequence run past u64"))?,
+        };
+        let span = reader.varint()?;
+        let last = first.checked_add(span).ok_or_else(|| invalid("PowerLedger's state holds a sequence run past u64"))?;
+        prev_last = Some(last);
+        runs.push((first, last));
+    }
+    Ok(SeqRuns(runs))
+}
+
 fn validate_batch_parts(batch: &CostBatch) -> io::Result<()> {
     if batch.parts.is_empty() {
         return Err(invalid("PowerLedger's state names an empty open batch"));
@@ -2021,6 +2158,7 @@ impl Writer for PowerLedger {
         let adjacent = !hour.fresh && self.last.and_then(|last| last.checked_add(1)) == Some(at);
         let rolls = self.batches.keys().any(|key| key.day != midnight(at)) || self.change_parts.values().any(|(day, _)| *day != midnight(at));
         if !whole && self.idle && !rolls && !moved(hour) {
+            partial(hour, out);
             self.last = Some(at);
             return Ok(());
         }
@@ -2151,34 +2289,42 @@ impl Writer for PowerLedger {
         let mut logged_gains = false;
         let mut previous_group: Option<(u32, u8)> = None;
         let mut entry = 0u32;
-        for ((holder, currency, event_hour), event) in pending.gain_events {
-            if !event.is_nonempty() {
-                continue;
+        for ((holder, currency, event_hour), events) in pending.gain_events {
+            for event in events {
+                if !event.is_nonempty() {
+                    continue;
+                }
+                logged_gains = true;
+                if previous_group == Some((holder, currency)) {
+                    entry = entry.checked_add(1).ok_or_else(|| invalid(format!("Holder {holder}'s power spend gains pass u32 entries in one hour")))?;
+                } else {
+                    previous_group = Some((holder, currency));
+                    entry = 0;
+                }
+                let row = SpendGain {
+                    holder,
+                    hour: at,
+                    currency,
+                    entry,
+                    event_hour,
+                    gained: event.gained,
+                    capped: event.capped,
+                    days: event.days,
+                    unknown_days: event.unknown_days,
+                    unmatched: event.unmatched,
+                };
+                let cells = cells(&row, out)?;
+                out.append(TableId::PowerSpendGains, row.key(), cells);
             }
-            logged_gains = true;
-            if previous_group == Some((holder, currency)) {
-                entry = entry.checked_add(1).ok_or_else(|| invalid(format!("Holder {holder}'s power spend gains pass u32 entries in one hour")))?;
-            } else {
-                previous_group = Some((holder, currency));
-                entry = 0;
-            }
-            let row = SpendGain {
-                holder,
-                hour: at,
-                currency,
-                entry,
-                event_hour,
-                gained: event.gained,
-                capped: event.capped,
-                days: event.days,
-                unknown_days: event.unknown_days,
-                unmatched: event.unmatched,
-            };
-            let cells = cells(&row, out)?;
-            out.append(TableId::PowerSpendGains, row.key(), cells);
         }
         partial(hour, out);
-        self.idle = !current && self.holds.is_empty() && !logged_days && !logged_payments && !logged_gains;
+        self.idle = !current
+            && self.holds.is_empty()
+            && !logged_days
+            && !logged_payments
+            && !logged_gains
+            && inputs::changes_complete(hour)
+            && inputs::costs_complete(hour);
         self.rebuild = false;
         self.last = Some(at);
         Ok(())
@@ -2246,6 +2392,14 @@ impl Writer for PowerLedger {
                 blob.varint(u64::from(part.cost_ordinal))?;
                 blob.varint(u64::from(part.read as u32))?;
             }
+        }
+        let mut seen_gains: Vec<((u32, u64), &SeqRuns)> = self.seen_gains.iter().filter(|(_, runs)| !runs.0.is_empty()).map(|(&key, runs)| (key, runs)).collect();
+        seen_gains.sort_unstable_by_key(|&(key, _)| key);
+        blob.varint(seen_gains.len() as u64)?;
+        for ((country, epoch), runs) in seen_gains {
+            blob.varint(u64::from(country))?;
+            blob.varint(epoch)?;
+            write_seq_runs(blob, runs)?;
         }
         Ok(())
     }
@@ -2368,6 +2522,18 @@ impl Writer for PowerLedger {
             let key = BatchKey { raw, epoch, day, sequence };
             if self.batches.insert(key, batch).is_some() {
                 return Err(invalid("PowerLedger's state holds a duplicate open batch"));
+            }
+        }
+        let seen_gains = reader.count()?;
+        if seen_gains > blob.len() {
+            return Err(invalid("PowerLedger's state counts more seen gain histories than it holds"));
+        }
+        for _ in 0..seen_gains {
+            let country = reader.varint_u32()?;
+            let epoch = reader.varint()?;
+            let runs = read_seq_runs(&mut reader, blob.len())?;
+            if self.seen_gains.insert((country, epoch), runs).is_some() {
+                return Err(invalid(format!("PowerLedger's state repeats seen gains for country {country} epoch {epoch}")));
             }
         }
         reader.finish()?;

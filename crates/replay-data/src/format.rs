@@ -260,7 +260,9 @@ mod tests {
             }
             let format = FormatVersion::read(version).unwrap();
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
-            expected.push(TableId::PowerSpendTotals);
+            if version >= crate::rows::compatibility::POWER_SPEND_SUMMARY_FORMAT {
+                expected.push(TableId::PowerSpendTotals);
+            }
             if version < crate::rows::compatibility::POWER_SPEND_SUMMARY_FORMAT {
                 expected.extend([TableId::PowerSpendPayments, TableId::PowerSpendGains]);
             }

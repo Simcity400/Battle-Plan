@@ -4202,10 +4202,9 @@ impl LastChange {
     pub fn gap(&self, table: TableId, format: u16) -> Option<TableGap> {
         let cause = if format < self.introduced {
             GapCause::Introduced(self.introduced)
-        } else if let Some(retired) = self
-            .retired
-            .filter(|retired| *retired <= crate::FORMAT_VERSION)
-        {
+        } else if let Some(retired) = self.retired.filter(|&retired| {
+            format >= retired || (retired == RETIRED_INPUTS_FORMAT && retired <= crate::FORMAT_VERSION)
+        }) {
             GapCause::Retired(retired)
         } else if format < self.format && self.kind != ChangeKind::AppendedOnly {
             GapCause::Changed(self.format)
@@ -4938,7 +4937,14 @@ mod tests {
         let spend_totals = TableId::PowerSpendTotals.last_change();
         assert_eq!(spend_totals.retired, Some(POWER_SPEND_SUMMARY_FORMAT));
         assert!(spend_totals.present(SURRENDER_INPUTS_FORMAT));
+        assert!(spend_totals.table_gap(TableId::PowerSpendTotals, SURRENDER_INPUTS_FORMAT).is_none());
         assert!(!spend_totals.present(POWER_SPEND_SUMMARY_FORMAT));
+        assert!(
+            spend_totals
+                .table_gap(TableId::PowerSpendTotals, POWER_SPEND_SUMMARY_FORMAT)
+                .unwrap()
+                .contains("retired at format 155")
+        );
         for table in [TableId::PowerSpendPayments, TableId::PowerSpendGains] {
             let change = table.last_change();
             assert_eq!(change.introduced, POWER_SPEND_SUMMARY_FORMAT, "{table:?}");
