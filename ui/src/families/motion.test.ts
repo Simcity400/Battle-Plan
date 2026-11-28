@@ -205,7 +205,7 @@ function makeRecordingCanvas(width = 960, height = 300) {
 const KIND = 'worker-motion-test';
 const TARGET_KIND = `${KIND}-target`;
 const BLUE = '#4f86f7';
-type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: number | true; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renames?: readonly number[]; france?: number; sectionAt?: number; showSectionCount?: boolean };
+type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: number | true; zeroTarget?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renames?: readonly number[]; france?: number; sectionAt?: number; showSectionCount?: boolean };
 
 const testProjection = registerFamilyProjection({
   family: 'bars',
@@ -233,8 +233,10 @@ const testProjection = registerFamilyProjection({
         art: readyArt('art://motion-fixture', { frame: defaultArtFrame(20, 13) }) } } : {}),
       ...(target === undefined ? {} : {
         target: { numeric: target, value: knownValue(target), ...(shortfall === null ? {} : { shortfall: knownValue(shortfall) }) },
-        readout: { primary: String(numeric), secondary: `/ ${target} a day`, ...(shortfall === null ? {} : { shortfall: `\u2212${shortfall}` }) },
       }),
+      ...(target !== undefined || sample?.zeroTarget ? {
+        readout: { primary: String(numeric), secondary: `/ ${target ?? 0} a day`, ...(shortfall === null ? {} : { shortfall: `\u2212${shortfall}` }) },
+      } : {}),
       ...(sample?.segments ? { segments: [{ key: 'part', label: 'Part', share: 1, color: BLUE, value }] } : {}),
     }];
     if (sample?.france !== undefined) {
@@ -1189,10 +1191,10 @@ describe('Ordered bar playback', () => {
   }));
 
   it('moves delivered and target positions while keeping the recorded fuel readout', async () => {
-    for (const [nextValue, scale] of [[40, 400], [60, 400], [60, 800]] as const) await withLane(async f => {
+    for (const nextValue of [40, 60]) await withLane(async f => {
       f.bind(1, 1, false, 'target');
       f.record(100, { value: 40, target: 100 });
-      f.record(101, { value: nextValue, target: 180, scale });
+      f.record(101, { value: nextValue, target: 180 });
       await f.request(100);
       const targetWidth = () => {
         const gap = f.operations().find(op => op.op === 'roundRect' && op.globalAlpha === 0.16);
@@ -1231,11 +1233,44 @@ describe('Ordered bar playback', () => {
     });
   });
 
+  it('tweens target and delivered edges to the cold endpoint when the readout changes the plot width', async () => {
+    const small = { value: 50, target: 100, scale: 100 };
+    const large = { value: 505, target: 1000, scale: 1000 };
+    for (const [first, next] of [[small, large], [large, small]] as const) await withLane(async f => {
+      f.bind(1, 1, false, 'target');
+      f.record(100, first);
+      f.record(101, next);
+      await f.request(100);
+      const edges = () => {
+        const gap = f.operations().find(op => op.op === 'roundRect' && op.globalAlpha === 0.16);
+        assert.ok(gap);
+        return [Number(f.bar().args[0]) + f.barWidth(), Number(gap.args[0]) + Number(gap.args[2])];
+      };
+      const start = edges();
+      f.canvas.clearOps();
+      await f.request(101);
+      const cold = edges();
+      assert.ok(Math.abs(start[1]! - cold[1]!) > 4, 'the readout shifts the plot edge');
+      for (const fraction of [.5, .99]) {
+        f.canvas.clearOps();
+        f.clock(100 + fraction, 1);
+        f.tick(0);
+        for (const [i, edge] of edges().entries()) {
+          const expected = start[i]! + (cold[i]! - start[i]!) * fraction;
+          assert.ok(Math.abs(edge - expected) < .02, `edge ${i} at ${fraction}, got ${edge}, expected ${expected}`);
+        }
+        const labels = f.operations().filter(op => op.op === 'fillText').map(op => op.args[0]);
+        assert.ok(labels.includes(String(first.value)));
+        assert.ok(labels.includes(`/ ${first.target} a day`));
+      }
+    });
+  });
+
   it('cuts target motion when a marker disappears or proof has a gap', async () => {
     for (const [hour, target] of [[101, undefined], [102, 180]] as const) await withLane(async f => {
       f.bind(1, 1, false, 'target');
       f.record(100, { value: 40, target: 100 });
-      f.record(hour, { value: 80, ...(target === undefined ? {} : { target }) });
+      f.record(hour, target === undefined ? { value: 0, zeroTarget: true } : { value: 80, target });
       await f.request(100);
       const width = f.barWidth();
       f.clock(100.5, 1, 1, true);
@@ -1245,8 +1280,8 @@ describe('Ordered bar playback', () => {
       f.clock(hour, 1);
       f.canvas.clearOps();
       f.tick(0);
-      assert.ok(f.barWidth() > width);
-      assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '80'));
+      const recorded = target === undefined ? '/ 0 a day' : '80';
+      assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === recorded));
       assert.equal(f.operations().some(op => op.op === 'roundRect' && op.globalAlpha === 0.16), target !== undefined);
     });
   });

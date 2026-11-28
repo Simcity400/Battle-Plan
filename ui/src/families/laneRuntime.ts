@@ -111,7 +111,7 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
     enabled(binding: TBinding): boolean;
     supports(model: TModel, form: BarsPlaybackForm): boolean;
     unavailable(model: TModel): boolean;
-    frame(frame: LaneFrame<TBinding, TModel, TLayout>, next: TModel, fraction: number, diagnostic?: MotionSampleDiagnostic): LaneFrame<TBinding, TModel, TLayout> | false | null;
+    frame(frame: LaneFrame<TBinding, TModel, TLayout>, next: TModel, fraction: number, nextLayout: () => TLayout, diagnostic?: MotionSampleDiagnostic): LaneFrame<TBinding, TModel, TLayout> | false | null;
   };
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
   keepsCanvas?(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean;
@@ -997,6 +997,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         type Visual = { parts: ReturnType<typeof snapshotPictures>; dates: readonly number[]; start: number; from: number; until: number; model: TModel; projected: typeof frame.projected; layout?: TLayout };
         const cache: Visual[] = [];
         let artRevision = keep.artRevision;
+        const layoutOf = (visual: Visual) => visual.layout ??= family.layout(
+          visual.model, binding, surface, theme, keep.ctx, visual.from, { previous: null, now: effectiveNow, speed: 0 },
+        );
         const modelAt = (sample: PlaybackPicture): Visual | null => {
           if (invalidPlayback.has(binding)) return null;
           if (artRevision !== keep.artRevision) {
@@ -1043,9 +1046,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           const to = !unavailable && next && position > begin && position < next.hour && exact.until >= next.hour ? modelAt(next) : null;
           if (invalidPlayback.has(binding)) return 'release';
           const fraction = to && next ? (position - begin) / (next.hour - begin) : 0;
-          exact.layout ??= family.layout(exact.model, binding, surface, theme, keep.ctx, exact.from, { previous: null, now: effectiveNow, speed: 0 });
-          const recorded = { ...frame, hour: exact.from, model: exact.model, layout: exact.layout, projected: exact.projected, inspect };
-          const moving = to && !animation.unavailable(to.model) ? animation.frame(recorded, to.model, fraction, diagnostic) : null;
+          const recorded = { ...frame, hour: exact.from, model: exact.model, layout: layoutOf(exact), projected: exact.projected, inspect };
+          const moving = to && !animation.unavailable(to.model) ? animation.frame(recorded, to.model, fraction, () => layoutOf(to), diagnostic) : null;
           if (diagnostic && next) {
             diagnostic.reason = position <= begin ? 'recordedHour' : !to ? 'modelValidity' : moving === null ? 'incompatible' : 'unchanged';
           }

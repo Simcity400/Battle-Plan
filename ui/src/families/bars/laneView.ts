@@ -256,12 +256,29 @@ function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSa
   return endpoints;
 }
 
-function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, diagnostic?: MotionSampleDiagnostic): BarsFrame | false | null {
+function targetMotionLayout(start: BarsLayout, end: BarsLayout, fraction: number) {
+  const interpolate = (first: number, second: number) => first + (second - first) * fraction;
+  const plotWidth = interpolate(start.plotWidth, end.plotWidth);
+  const plotLeft = interpolate(start.plotLeft, end.plotLeft);
+  const startWeight = (1 - fraction) * start.plotWidth / start.scaleMax;
+  const endWeight = fraction * end.plotWidth / end.scaleMax;
+  const pixelsPerUnit = startWeight + endWeight;
+  return {
+    fraction: endWeight / pixelsPerUnit,
+    layout: { ...start, plotWidth, plotLeft, plotRight: plotLeft + plotWidth, scaleMax: plotWidth / pixelsPerUnit },
+  };
+}
+
+function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, nextLayout: () => BarsLayout, diagnostic?: MotionSampleDiagnostic): BarsFrame | false | null {
   const current = frame.model;
   const endpoints = matchingRows(current, next, diagnostic);
   if (!endpoints) return null;
+  const endLayout = current.rows.some(row => row.kind === 'data' && row.target) ? nextLayout() : undefined;
+  const targetLayout = endLayout && targetMotionLayout(frame.layout, endLayout, fraction);
+  const amountFraction = targetLayout?.fraction ?? fraction;
   const rows: BarsModel['rows'][number][] = [];
-  let changed = false;
+  let changed = endLayout !== undefined && (frame.layout.plotWidth !== endLayout.plotWidth
+    || frame.layout.plotLeft !== endLayout.plotLeft || frame.layout.scaleMax !== endLayout.scaleMax);
   for (let i = 0; i < current.rows.length; i++) {
     const row = current.rows[i]!;
     const end = endpoints[i]!;
@@ -274,20 +291,20 @@ function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, diag
     if (target && end.target) {
       if (!measuredTarget(target) || !measuredTarget(end.target)) return null;
       if (target.numeric !== end.target.numeric) {
-        target = { ...target, numeric: target.numeric + (end.target.numeric - target.numeric) * fraction };
+        target = { ...target, numeric: target.numeric + (end.target.numeric - target.numeric) * amountFraction };
       }
     }
     if (row.numeric === end.numeric && target === row.target) { rows.push(row); continue; }
     changed = true;
-    rows.push({ ...row, numeric: row.numeric + (end.numeric - row.numeric) * fraction, ...(target ? { target } : {}) });
+    rows.push({ ...row, numeric: row.numeric + (end.numeric - row.numeric) * amountFraction, ...(target ? { target } : {}) });
   }
   if (!changed) return false;
   const currentScale = frame.layout.scaleMax;
-  const endScale = barsScales(next, frame.layout.showAxis).scaleMax;
+  const endScale = endLayout?.scaleMax ?? barsScales(next, frame.layout.showAxis).scaleMax;
   return {
     ...frame,
     model: { ...current, rows },
-    layout: { ...frame.layout, scaleMax: currentScale + (endScale - currentScale) * fraction },
+    layout: targetLayout?.layout ?? { ...frame.layout, scaleMax: currentScale + (endScale - currentScale) * fraction },
   };
 }
 
