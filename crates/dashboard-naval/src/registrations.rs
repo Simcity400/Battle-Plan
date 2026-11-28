@@ -1,3 +1,5 @@
+use dashboard_base::products::at_hour::at_hour;
+
 #[cfg(test)]
 mod tests;
 
@@ -7,7 +9,7 @@ dashboard_base::register_products! {
     NAVAL_BATTLES_COURSE => crate::products::naval::battles::tail::NavalBattleCourse,
     NAVAL_BATTLES_NAVALBATTLEDETAILS => crate::products::naval::battles::NavalBattleDetails,
     NAVAL_SUNK_TAIL => crate::products::naval::sunk::tail::ShipsSunkTail; panel(crate::products::naval::sunk::tail::dated_panel),
-    NAVAL_LOSSES_NAVALLOSSESAT => crate::products::naval::losses::NavalLossesAt,
+    NAVAL_LOSSES_NAVALLOSSESAT => crate::products::naval::losses::NavalLossesAt; interval(at_hour, |reply| reply.last_hour),
 
     @hourly
     MINEFIELDS_MINEFIELDS => exact<crate::products::minefields::Minefields>,

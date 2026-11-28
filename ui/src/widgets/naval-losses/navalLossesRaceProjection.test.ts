@@ -94,6 +94,10 @@ test('every race and mix view sends a group whole, and naval losses keys each ro
     const asked = (read.buildExactParams ? read.buildExactParams(read.params!, 500 as never, 'static') : read.params) as { group?: unknown; countries?: readonly unknown[]; top?: unknown };
     assert.deepEqual(asked.group, { type: 'faction', id: '42', membership: 'hour' }, `${kind} ${view}: the group`);
     assert.ok(!asked.countries?.length && asked.top == null, `${kind} ${view}: never its members or a top`);
+    if (kind === 'naval-losses') {
+      const { hour: _hour, ...params } = asked as typeof asked & { hour: number };
+      assert.deepEqual(read.followQuery, { panel: 'naval-losses-at', ...params });
+    }
     assert.equal((declaration.projectionOptions(ctx(view), { extent: [0, 0], surface: '#1e1e1e' }) as { group?: boolean }).group, true);
   }
   const reply: NavalLossesAtReply = {

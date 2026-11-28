@@ -1,9 +1,8 @@
 import { tailColour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import type { GatedHour } from '../../dashboard/regionTime';
 import { artUrlOf, flagChoiceArt } from '../../families/art/provider.ts';
 import { auditRow, type FamilyAuditRow } from '../../families/auditRow.ts';
-import { forceSelection, validateNavalLossesAtReply, type ForceSelection } from '../../families/bars/forceAtRace.ts';
+import { forceSelection, validateNavalLossesAtReply } from '../../families/bars/forceAtRace.ts';
 import {
   FutureDataError,
   type BoundedReadView,
@@ -67,20 +66,6 @@ export interface NavalLossesLinesOptions {
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
 }
-
-interface NavalLossesHeadBase {
-  readonly branchId: string;
-  readonly selection: ForceSelection['params'];
-  readonly attribution: NavalAttribution;
-  readonly kind: NavalKind;
-  readonly period: NavalPeriod;
-}
-
-function buildHeadParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> {
-  const cfg = base as unknown as NavalLossesHeadBase;
-  return { branchId: cfg.branchId, hour, ...cfg.selection, attribution: cfg.attribution, kind: cfg.kind, period: cfg.period };
-}
-
 
 function rowKeyOf(row: Pick<ForceAtRow, 'slot' | 'country'>): string {
   return row.slot != null ? countryKey(row.slot) : countryKey(row.country);
@@ -380,13 +365,7 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
       attribution,
       period,
     };
-    const headBase: NavalLossesHeadBase = {
-      branchId: ctx.branch.id,
-      selection: selection.params,
-      attribution,
-      kind,
-      period,
-    };
+    const headParams = { branchId: ctx.branch.id, ...selection.params, attribution, kind, period };
     const hoverParams: Record<string, unknown> = {
       branchId: ctx.branch.id,
       attribution,
@@ -415,13 +394,12 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
         ...common,
         read: {
           shape: 'point',
-          channel: 'followed',
+          channel: 'panel',
           coverage: selection.coverage,
           product: 'naval-losses-at',
           exactProduct: 'naval-losses-at',
-          followQuery: null,
-          params: headBase as unknown as Readonly<Record<string, unknown>>,
-          buildExactParams: buildHeadParams,
+          followQuery: { panel: 'naval-losses-at', ...headParams },
+          params: headParams,
           provenInterval: navalLossesAtProof,
           dynamicKeys: ['hour', 'countries'],
           validate: validateNavalLossesAtReply,

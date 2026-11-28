@@ -816,6 +816,49 @@ mod at_tests {
     }
 
     #[test]
+    fn quiet_naval_losses_do_not_reopen_totals_during_playback() {
+        use crate::registrations::NAVAL_LOSSES_NAVALLOSSESAT;
+        use dashboard_base::{SourceKey, test_fixtures::{CAMPAIGN, played, records, source}};
+        use replay::campaign::Replay;
+        use replay_data::rows::{SunkShipEntry, SunkShipsRow, TableRows};
+        use replay_frame::frame::TableView;
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let first = HOUR_EPOCH + 100;
+        let frames = (first..=first + 20).map(|hour| {
+            let mut frame = source(1, hour, Some(i64::from(hour)));
+            let entries = [first + 5, first + 12].into_iter().filter(|&sink_hour| sink_hour <= hour).map(|sink_hour| {
+                SunkShipEntry { sink_hour, victim_country: 9001, ship_name: sink_hour.to_string().into_bytes(), ..Default::default() }
+            }).collect();
+            *frame.tables[TableId::SunkShips.index()] = TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow { entries }]));
+            frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
+            frame
+        }).collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Arc::new(Source::from_replay(SourceKey { source_id: "quiet-naval-losses".into(), revision: "1".into() }, "naval.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
+        let load = LoadContext { content: None };
+        let registration = NAVAL_LOSSES_NAVALLOSSESAT;
+        for period in ["running", "month"] {
+            let mut asked = json!({"branchId":"1","countries":["GER"],"attribution":"lost","kind":"ships","period":period});
+            let mut follow = asked.clone();
+            follow["panel"] = registration.key.into();
+            let panel = (registration.panel.unwrap().open)(&source, &load, &follow).unwrap();
+            for read in played(source.replay_ref(), panel.exact().unwrap(), first, first + 20) {
+                asked["hour"] = read.hour.into();
+                let expected = registration.answer(&source, asked.clone(), &load, &false.into()).unwrap();
+                assert_eq!(read.value.as_ref().as_ref().unwrap(), &expected, "{period} at {}", read.hour);
+                let offset = read.hour - first;
+                if matches!(offset, 5 | 12) {
+                    assert_eq!(read.product_calls, 1, "new sinking at {}", read.hour);
+                } else if offset > 0 {
+                    assert_eq!((read.product_calls, read.visited), (0, 0), "quiet hour {}", read.hour);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn next_month_start_advances_exactly_one_calendar_month() {
         let jan_15 = HOUR_EPOCH + 14 * 24 + 5;
         assert_eq!(month_start(jan_15), HOUR_EPOCH);
