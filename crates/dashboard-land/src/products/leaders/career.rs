@@ -1,7 +1,7 @@
 
 use super::{
-    Asked, Content, EvaluatedLeader, LeaderKinds, LeaderRole, LeaderSelection, LeaderTrait, LeadersContext, RESULTS_MISSING, Tally, TopLeader, TraitList, UnitLeaders, UnitLeadersParams,
-    cell_number, cell_text, handle, held_traits_for, parse_branch,
+    Asked, Content, EvaluatedLeader, LeaderKinds, LeaderPortraitThumbnail, LeaderRole, LeaderSelection, LeaderTrait, LeadersContext, RESULTS_MISSING, Tally, TopLeader, TraitList, UnitLeaders, UnitLeadersParams,
+    cell_number, cell_text, handle, held_traits_for, leader_thumbnail, parse_branch,
 };
 use super::membership::Served;
 use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt}}, queries::country_ids::{Names, RunLinks}};
@@ -774,6 +774,7 @@ pub struct LeaderHourReply {
     #[doc = " Why the leader is not shown at this hour, when it is not."]
     pub missing: Option<String>,
     pub name: Option<String>,
+    pub portrait: Option<LeaderPortraitThumbnail>,
     pub role: Option<LeaderRole>,
     pub skill: Option<i32>,
     pub components: [i32; 4],
@@ -812,6 +813,9 @@ pub(super) fn member_details(asked: &UnitLeadersParams, held: &DecodedFrame, at:
     let ranges = leader_ranges(handles(), 32);
     reads.push(Read { table: TableId::UnitLeaderTraits, keys: Keys::Ranges(ranges.clone()) });
     if !kept.is_empty() {
+        if at.context.portrait_window(at.run, at.hour).is_some_and(|span| span.missing.is_none()) {
+            reads.push(Read::these(TableId::CharacterPortraits, kept.iter().map(|row| u128::from(row.character_id))));
+        }
         if progress { reads.push(Read { table: TableId::UnitLeaderTraitExperience, keys: Keys::Ranges(leader_ranges(handles(), 33)) }); }
         reads.push(Read { table: TableId::LeaderBattleTotals, keys: Keys::Ranges(leader_ranges(kept.iter().map(|row| u64::from(row.id)), 32)) });
         reads.push(Read { table: TableId::LeaderTraitDates, keys: Keys::Ranges(ranges) });
@@ -875,6 +879,7 @@ impl AtHour for LeaderHour {
             TableId::UnitLeaderTraits,
             TableId::UnitLeaderTraitExperience,
             TableId::Characters,
+            TableId::CharacterPortraits,
             TableId::LexicalTokens,
             TableId::Countries,
             TableId::CountryLinks,
@@ -888,7 +893,13 @@ impl AtHour for LeaderHour {
     }
 
     fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
-        let Some(selection) = &params.selection else { return Self::reads(params, owner, step, held) };
+        let Some(selection) = &params.selection else {
+            let mut reads = Self::reads(params, owner, step, held);
+            if step == 1 && at.context.portrait_window(at.run, at.hour).is_some_and(|span| span.missing.is_none()) && let Some(read) = reads.first() {
+                reads.push(Read { table: TableId::CharacterPortraits, keys: read.keys.clone() });
+            }
+            return reads;
+        };
         let asked = top_asked(&params.branch_id, selection);
         if step == 1 { return member_details(&asked, held, at, true); }
         UnitLeaders::reads_in(&asked, owner, step, held, at)
@@ -932,7 +943,9 @@ impl AtHour for LeaderHour {
             (3.., Some(_)) => Vec::new(),
             _ => Self::reads_in(params, owner, stage, held, at),
         };
-        (reads, at.context.through(at.hour))
+        let through = at.context.through(at.hour);
+        let portrait_through = at.context.portrait_window(at.run, at.hour).map_or(i32::MAX, |span| span.last);
+        (reads, if stage == 1 { through.min(portrait_through) } else { through })
     }
 
     const UPDATES_REVISION: bool = true;
@@ -1034,6 +1047,7 @@ fn empty_hour(missing: Option<String>, battles_partial_from: Option<i32>, warnin
         reference: None,
         missing,
         name: None,
+        portrait: None,
         role: None,
         skill: None,
         components: [0; 4],
@@ -1126,6 +1140,7 @@ fn one_leader(frame: &DecodedFrame, branch_id: &str, leader: u64, at: &At<'_, Le
                     reference: Some(leader.to_string()),
                     missing: Some("This leader is not serving at this hour".into()),
                     name: None,
+                    portrait: None,
                     role: None,
                     skill: None,
                     components: [0; 4],
@@ -1148,6 +1163,7 @@ fn one_leader(frame: &DecodedFrame, branch_id: &str, leader: u64, at: &At<'_, Le
                 reference: Some(leader.to_string()),
                 missing: Some(error.to_string()),
                 name: None,
+                portrait: None,
                 role: None,
                 skill: None,
                 components: [0; 4],
@@ -1241,6 +1257,7 @@ fn finish_one_leader(
         reference: Some(leader.to_string()),
         missing: None,
         name: evaluated.name.clone(),
+        portrait: Some(leader_thumbnail(frame, row, context, query.timeline.at(at.hour).map(|stretch| stretch.run))),
         role: Some(content.role(evaluated.owner.clone(), row.kind, row.category, evaluated.skill)),
         skill: evaluated.skill,
         components: row.components,
@@ -1259,7 +1276,7 @@ fn finish_one_leader(
 }
 
 fn top_asked(branch_id: &str, selection: &LeaderSelection) -> UnitLeadersParams {
-    UnitLeadersParams { branch_id: branch_id.to_owned(), selection: selection.clone(), leaders: LeaderKinds::Land }
+    UnitLeadersParams { branch_id: branch_id.to_owned(), selection: selection.clone(), leaders: LeaderKinds::Land, follow_battles: None }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

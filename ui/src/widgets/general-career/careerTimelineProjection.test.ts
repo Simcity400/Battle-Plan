@@ -37,6 +37,7 @@ const hourReply = (): LeaderHourReply => ({
   reference: '42',
   missing: null,
   name: 'Tomoyuki Yamashita',
+  portrait: null,
   role,
   skill: 7,
   components: [6, 5, 5, 4],
