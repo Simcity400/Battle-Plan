@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { createReadStream, existsSync, rmSync } from 'node:fs';
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, sep } from 'node:path';
@@ -10,64 +11,41 @@ import type { Duplex } from 'node:stream';
 import { setTimeout as pause } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { parseAst } from 'rolldown/parseAst';
+import { Agent, fetch } from 'undici';
 import { build, createLogger, createServer, type PluginOption } from 'vite';
 import { browserStage, ownedEdgeProcesses, stopBrowser, stopOwnedProfile } from './canvas-page.ts';
+import { NativeCdp } from './native-cdp.ts';
 
-function cdp(endpoint: string, method: string, params: Record<string, unknown> = {}, signal?: AbortSignal) {
-  signal?.throwIfAborted();
-  return new Promise<any>((done, reject) => {
-    const socket = new WebSocket(endpoint);
-    const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); socket.close(); };
-    const abort = () => { cleanup(); reject(signal!.reason); };
-    const timeout = signal ? undefined : setTimeout(() => { cleanup(); reject(new Error(`${method} timed out`)); }, 30_000);
-    signal?.addEventListener('abort', abort, { once: true });
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method, params })));
-    socket.addEventListener('message', event => {
-      const message = JSON.parse(String(event.data)); if (message.id !== 1) return;
-      cleanup();
-      if (message.error) reject(new Error(JSON.stringify(message.error))); else done(message.result);
-    });
-    socket.addEventListener('error', () => { cleanup(); reject(new Error(`${method} connection failed`)); });
+export async function navigate(cdp: NativeCdp, url: string, signal: AbortSignal, ignoreCache = false) {
+  const until = AbortSignal.any([signal, cdp.disconnected]);
+  let finish!: () => void;
+  const loadedPage = new Promise<void>(done => { finish = done; });
+  const abort = () => finish();
+  const loaded = new Set<string>();
+  let loader: string | undefined;
+  const off = cdp.onEvent(({ method, params }) => {
+    if (method !== 'Page.lifecycleEvent' || params.name !== 'load') return;
+    loaded.add(params.loaderId);
+    if (params.loaderId === loader) finish();
   });
-}
-
-export function navigate(endpoint: string, url: string, signal: AbortSignal, ignoreCache = false) {
-  signal.throwIfAborted();
-  return new Promise<void>((done, reject) => {
-    const socket = new WebSocket(endpoint);
-    const calls = [
-      { id: 1, method: 'Page.enable' },
-      { id: 2, method: 'Page.setLifecycleEventsEnabled', params: { enabled: true } },
-      ...(ignoreCache ? [{ id: 3, method: 'Network.enable' }, { id: 4, method: 'Network.setCacheDisabled', params: { cacheDisabled: true } }] : []),
-      { id: ignoreCache ? 5 : 3, method: 'Page.navigate', params: { url } },
-    ];
-    const navigateId = calls.at(-1)!.id;
-    const loaded = new Set<string>();
-    let loader: string | undefined, settled = false;
-    const finish = (error?: unknown) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', abort); socket.close();
-      if (error) reject(error); else done();
-    };
-    const abort = () => finish(signal.reason);
-    signal.addEventListener('abort', abort, { once: true });
-    socket.addEventListener('open', () => { for (const call of calls) socket.send(JSON.stringify(call)); });
-    socket.addEventListener('message', event => {
-      const message = JSON.parse(String(event.data));
-      if (message.error) finish(new Error(`${calls[message.id - 1]?.method ?? 'CDP'}: ${JSON.stringify(message.error)}`));
-      else if (message.id === navigateId && message.result.errorText) finish(new Error(`Page.navigate to ${url}: ${message.result.errorText}`));
-      else if (message.id === navigateId) {
-        loader = message.result.loaderId;
-        if (loader !== undefined && loaded.has(loader)) finish();
-      } else if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') {
-        loaded.add(message.params.loaderId);
-        if (message.params.loaderId === loader) finish();
-      }
-    });
-    socket.addEventListener('error', () => finish(new Error('Page.navigate connection failed')));
-    socket.addEventListener('close', () => finish(new Error('Page.navigate connection closed before the page loaded')));
-  });
+  until.addEventListener('abort', abort, { once: true });
+  try {
+    await cdp.send('Page.enable', {}, until);
+    await cdp.send('Page.setLifecycleEventsEnabled', { enabled: true }, until);
+    if (ignoreCache) {
+      await cdp.send('Network.enable', {}, until);
+      await cdp.send('Network.setCacheDisabled', { cacheDisabled: true }, until);
+    }
+    const result = await cdp.send('Page.navigate', { url }, until);
+    if (result.errorText) throw new Error(`Page.navigate to ${url}: ${result.errorText}`);
+    loader = result.loaderId;
+    if (loader === undefined || !loaded.has(loader)) await loadedPage;
+    until.throwIfAborted();
+    if (ignoreCache) await cdp.send('Network.setCacheDisabled', { cacheDisabled: false }, until);
+  } finally {
+    until.removeEventListener('abort', abort);
+    off();
+  }
 }
 
 type ReplyFormat = { FORMAT_FILE: string; formatOf(text: string): { lines: string[]; digest: string } };
@@ -191,17 +169,27 @@ const JS_MIME_TYPES = new Set([
   'text/x-javascript',
 ]);
 
+async function withHttpProbe<T>(work: (dispatcher: Agent) => Promise<T>): Promise<T> {
+  const dispatcher = new Agent({ connections: 1 });
+  try {
+    return await work(dispatcher);
+  } finally {
+    await dispatcher.destroy();
+  }
+}
+
 async function fetchFixtureModule(
   target: string,
   fixture: string,
   failures: ServerFailure[],
+  dispatcher: Agent,
   signal?: AbortSignal,
 ): Promise<{ code: string; url: string }> {
   const before = failures.length;
-  let response: Response;
+  let response: Awaited<ReturnType<typeof fetch>>;
   let text: string;
   try {
-    response = await fetch(target, { signal });
+    response = await fetch(target, { dispatcher, signal });
     if (!response.ok) {
       const body = (await response.text().catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, 512);
       const serverSeen = failures.slice(before);
@@ -238,81 +226,46 @@ export async function runFixtureLoadStage(
   }
 }
 
-export function loadFixture(
-  endpoint: string,
+export async function loadFixture(
+  cdp: NativeCdp,
   served: Pick<ServedFixture, 'fixture' | 'failures'>,
   signal: AbortSignal,
   networkFailures: BrowserNetworkFailure[] = [],
 ): Promise<void> {
-  signal.throwIfAborted();
   const failuresBefore = served.failures.length;
-  return new Promise<void>((done, reject) => {
-    const socket = new WebSocket(endpoint);
-    const requestUrls = new Map<string, string>();
-    const httpFailedUrls = new Set<string>();
-    let settled = false;
-    const finish = (error?: unknown) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', abort);
-      socket.close();
-      if (error) reject(error); else done();
-    };
-    const abort = () => finish(formatFixtureLoadError(served.fixture, errorDetail(signal.reason), served.failures.slice(failuresBefore), networkFailures));
-    signal.addEventListener('abort', abort, { once: true });
-    socket.addEventListener('open', () => {
-      socket.send(JSON.stringify({ id: 1, method: 'Network.enable' }));
-    });
-    socket.addEventListener('message', event => {
-      const message = JSON.parse(String(event.data));
-      if (message.id === 1) {
-        if (message.error) {
-          finish(formatFixtureLoadError(served.fixture, `Network.enable: ${JSON.stringify(message.error)}`, served.failures.slice(failuresBefore), networkFailures));
-          return;
-        }
-        socket.send(JSON.stringify({
-          id: 2,
-          method: 'Runtime.evaluate',
-          params: { expression: `import(${JSON.stringify(served.fixture)}).then(() => true)`, awaitPromise: true, returnByValue: true },
-        }));
-        return;
+  const requestUrls = new Map<string, string>();
+  const httpFailedUrls = new Set<string>();
+  const off = cdp.onEvent(({ method, params }) => {
+    if (method === 'Network.requestWillBeSent') {
+      requestUrls.set(params.requestId, params.request.url);
+    } else if (method === 'Network.responseReceived') {
+      const { url, status, statusText } = params.response;
+      if (status >= 400 && !url.endsWith('/favicon.ico')) {
+        httpFailedUrls.add(url);
+        networkFailures.push({ url, status, reason: statusText || 'HTTP error' });
       }
-      if (message.method === 'Network.requestWillBeSent') {
-        requestUrls.set(message.params.requestId, message.params.request.url);
-        return;
+    } else if (method === 'Network.loadingFailed') {
+      const url = requestUrls.get(params.requestId) ?? '<unknown>';
+      requestUrls.delete(params.requestId);
+      if (!url.endsWith('/favicon.ico') && !(params.canceled && httpFailedUrls.has(url))) {
+        networkFailures.push({ url, reason: params.errorText || 'loading failed' });
       }
-      if (message.method === 'Network.responseReceived') {
-        const { url, status, statusText } = message.params.response;
-        if (status >= 400 && !String(url).endsWith('/favicon.ico')) {
-          httpFailedUrls.add(url);
-          networkFailures.push({ url, status, reason: statusText || 'HTTP error' });
-        }
-        return;
-      }
-      if (message.method === 'Network.loadingFailed') {
-        const url = requestUrls.get(message.params.requestId) ?? '<unknown>';
-        if (!url.endsWith('/favicon.ico') && !(message.params.canceled && httpFailedUrls.has(url))) {
-          networkFailures.push({ url, reason: message.params.errorText || 'loading failed' });
-        }
-        return;
-      }
-      if (message.id === 2) {
-        if (message.error) {
-          finish(formatFixtureLoadError(served.fixture, JSON.stringify(message.error), served.failures.slice(failuresBefore), networkFailures));
-          return;
-        }
-        const exception = message.result?.exceptionDetails;
-        if (exception) {
-          const detail = exception.exception?.description ?? exception.text ?? JSON.stringify(exception);
-          finish(formatFixtureLoadError(served.fixture, detail, served.failures.slice(failuresBefore), networkFailures));
-          return;
-        }
-        finish();
-      }
-    });
-    socket.addEventListener('error', () => finish(formatFixtureLoadError(served.fixture, 'CDP connection failed while loading fixture', served.failures.slice(failuresBefore), networkFailures)));
-    socket.addEventListener('close', () => finish(formatFixtureLoadError(served.fixture, 'CDP connection closed before the fixture finished loading', served.failures.slice(failuresBefore), networkFailures)));
+    } else if (method === 'Network.loadingFinished') {
+      requestUrls.delete(params.requestId);
+    }
   });
+  try {
+    await cdp.send('Network.enable', {}, signal);
+    const result = await cdp.send('Runtime.evaluate', {
+      expression: `import(${JSON.stringify(served.fixture)}).then(() => true)`, awaitPromise: true, returnByValue: true,
+    }, signal);
+    const exception = result?.exceptionDetails;
+    if (exception) throw new Error(exception.exception?.description ?? exception.text ?? JSON.stringify(exception));
+  } catch (error) {
+    throw formatFixtureLoadError(served.fixture, errorDetail(error), served.failures.slice(failuresBefore), networkFailures);
+  } finally {
+    off();
+  }
 }
 
 function staticImportsOf(code: string, fromUrl: string): string[] {
@@ -339,6 +292,38 @@ const PAGE_LOAD_MS = 180_000;
 const TYPES: Readonly<Record<string, string>> = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.webp': 'image/webp', '.wasm': 'application/wasm', '.woff2': 'font/woff2' };
 const builds = new Map<string, Promise<string>>();
+
+function fixtureClose(server: Server, record: (url: string, status: number | undefined, reason: string) => void,
+  dispose?: () => Promise<void>) {
+  const sockets = new Map<Duplex, Promise<void>>();
+  server.on('connection', socket => {
+    sockets.set(socket, new Promise<void>(done => socket.once('close', () => { sockets.delete(socket); done(); })));
+  });
+  server.keepAliveTimeout = PAGE_LOAD_MS;
+  server.headersTimeout = PAGE_LOAD_MS + 1_000;
+  server.on('clientError', handleClientError(record));
+  let closing: Promise<void> | undefined;
+  return () => closing ??= (async () => {
+    const listenerClosed = server.listening ? once(server, 'close') : undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const disposed = dispose && Promise.race([
+        dispose(),
+        new Promise<void>(done => { timer = setTimeout(done, 500); }),
+      ]);
+      if (server.listening) server.close();
+      const closed = [...sockets].map(([socket, done]) => { socket.destroy(); return done; });
+      const results = await Promise.allSettled([listenerClosed, ...closed, disposed]);
+      assert.equal(server.listening, false, 'fixture listener still open after teardown');
+      assert.equal(sockets.size, 0, 'fixture connections still open after teardown');
+      for (const result of results) {
+        if (result.status === 'rejected') throw result.reason;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+}
 
 function builtFixture(name: string, fixture: string, plugins: PluginOption[]): Promise<string> {
   const held = builds.get(fixture) ?? (async () => {
@@ -411,27 +396,23 @@ export async function builtServer(name: string, route: string, out: string): Pro
       response.end(reason);
     });
   });
-  const sockets = new Set<Duplex>();
-  server.on('connection', socket => {
-    sockets.add(socket);
-    socket.once('close', () => sockets.delete(socket));
-  });
-  server.keepAliveTimeout = PAGE_LOAD_MS;
-  server.headersTimeout = PAGE_LOAD_MS + 1_000;
-  server.on('clientError', handleClientError(record));
-  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
-  const address = server.address(); assert.ok(address && typeof address !== 'string');
-  return {
-    port: address.port,
-    fixture: '/fixture.js',
-    failures,
-    ready: async signal => { await fetchFixtureModule(`http://127.0.0.1:${address.port}/fixture.js`, '/fixture.js', failures, signal); },
-    close: () => new Promise<void>(done => {
-      server.close(() => done());
-      server.closeAllConnections();
-      for (const socket of sockets) socket.destroy();
-    }),
-  };
+  const close = fixtureClose(server, record);
+  try {
+    await once(server.listen(0, '127.0.0.1'), 'listening');
+    const address = server.address(); assert.ok(address && typeof address !== 'string');
+    return {
+      port: address.port,
+      fixture: '/fixture.js',
+      failures,
+      ready: signal => withHttpProbe(async dispatcher => {
+        await fetchFixtureModule(`http://127.0.0.1:${address.port}/fixture.js`, '/fixture.js', failures, dispatcher, signal);
+      }),
+      close,
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }
 
 export async function devServer(name: string, route: string, fixture: string, profile: string, plugins: PluginOption[]): Promise<ServedFixture> {
@@ -522,21 +503,18 @@ export async function devServer(name: string, route: string, fixture: string, pr
     optimizeDeps: { include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-grid-layout'], noDiscovery: true },
     server: { host: '127.0.0.1', port: 0, watch: null, hmr: false, ws: false },
     plugins: [capturePlugin, ...plugins, routePlugin] });
-  await vite.listen();
-  const httpServer = vite.httpServer!;
-  const sockets = new Set<Duplex>();
-  httpServer.on('connection', socket => {
-    sockets.add(socket);
-    socket.once('close', () => sockets.delete(socket));
-  });
-  if ('keepAliveTimeout' in httpServer) {
-    httpServer.keepAliveTimeout = PAGE_LOAD_MS;
-    httpServer.headersTimeout = PAGE_LOAD_MS + 1_000;
+  const httpServer = vite.httpServer as Server;
+  const close = fixtureClose(httpServer, record, () => vite.close());
+  let address;
+  try {
+    await vite.listen();
+    address = httpServer.address(); assert.ok(address && typeof address !== 'string');
+  } catch (error) {
+    await close();
+    throw error;
   }
-  httpServer.on('clientError', handleClientError(record));
-  const address = httpServer.address(); assert.ok(address && typeof address !== 'string');
   const origin = `http://127.0.0.1:${address.port}`;
-  const ready = async (signal?: AbortSignal) => {
+  const ready = (signal?: AbortSignal) => withHttpProbe(async dispatcher => {
     const seen = new Set<string>();
     const queue = [new URL(fixture, origin).href];
     while (queue.length > 0) {
@@ -544,37 +522,14 @@ export async function devServer(name: string, route: string, fixture: string, pr
       const url = queue.shift()!;
       if (seen.has(url)) continue;
       seen.add(url);
-      const fetched = await fetchFixtureModule(url, fixture, failures, signal);
+      const fetched = await fetchFixtureModule(url, fixture, failures, dispatcher, signal);
       seen.add(fetched.url);
       for (const imported of staticImportsOf(fetched.code, fetched.url)) {
         if (!seen.has(imported)) queue.push(imported);
       }
     }
-  };
-  return {
-    port: address.port,
-    fixture,
-    failures,
-    ready,
-    close: async () => {
-      const closing = vite.close().catch(() => {});
-      if ('closeAllConnections' in httpServer) httpServer.closeAllConnections();
-      for (const socket of sockets) socket.destroy();
-      const listenerClosed = new Promise<void>(done => {
-        if (!httpServer.listening) { done(); return; }
-        httpServer.close(() => done());
-      });
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          Promise.all([closing, listenerClosed]),
-          new Promise<void>(done => { timer = setTimeout(done, 500); }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
-    },
-  };
+  });
+  return { port: address.port, fixture, failures, ready, close };
 }
 
 export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>, plugins: PluginOption[] = [], built = false, browserArgs: readonly string[] = []): Promise<void> {
@@ -584,16 +539,20 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
   assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLEPLAN_CANVAS_BROWSER to its executable');
   const profile = await mkdtemp(resolve(tmpdir(), `${name}-`));
   const route = `/${name}-page`;
-  const served = built ? await builtServer(name, route, await builtFixture(name, fixture, plugins)) : await devServer(name, route, fixture, profile, plugins);
   const readyAbort = new AbortController();
-  const ready = served.ready(readyAbort.signal).then(() => null, error => error as unknown);
-  let browser: ReturnType<typeof spawn> | undefined, endpoint = '', browserPid: number | undefined;
+  let ready: Promise<unknown> | undefined;
+  let closeFixture: (() => Promise<void>) | undefined;
+  let browser: ReturnType<typeof spawn> | undefined, browserPid: number | undefined;
+  let browserCdp: NativeCdp | undefined, pageCdp: NativeCdp | undefined;
   try {
+    const served = built ? await builtServer(name, route, await builtFixture(name, fixture, plugins)) : await devServer(name, route, fixture, profile, plugins);
+    closeFixture = served.close;
+    const warming = ready = served.ready(readyAbort.signal).then(() => null, error => error as unknown);
     const address = { port: served.port };
     browser = spawn(edge, ['--headless', '--disable-gpu', '--no-first-run', '--no-proxy-server', '--disable-background-networking',
       '--edge-skip-compat-layer-relaunch', '--remote-debugging-port=0', `--user-data-dir=${profile}`, ...browserArgs], { windowsHide: true });
     browser.stdout?.resume(); browser.stderr?.resume();
-    endpoint = await browserStage(browser, `${name} Edge startup`, async signal => {
+    const endpoint = await browserStage(browser, `${name} Edge startup`, async signal => {
       for (;;) {
         signal.throwIfAborted();
         try {
@@ -603,15 +562,20 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
         await pause(50, undefined, { signal });
       }
     });
-    const processes = await cdp(endpoint, 'SystemInfo.getProcessInfo');
+    const control = browserCdp = new NativeCdp(endpoint);
+    const processes = await control.send('SystemInfo.getProcessInfo');
     browserPid = processes.processInfo.find((entry: { type: string }) => entry.type === 'browser')?.id;
     assert.ok(browserPid && Number.isSafeInteger(browserPid));
-    const { targetId } = await cdp(endpoint, 'Target.createTarget', { url: 'about:blank' });
-    const targets = await fetch(`http://127.0.0.1:${new URL(endpoint).port}/json/list`).then(response => response.json()) as { id: string; webSocketDebuggerUrl: string }[];
+    const { targetId } = await control.send('Target.createTarget', { url: 'about:blank' });
+    const targets = await withHttpProbe(async dispatcher => {
+      const response = await fetch(`http://127.0.0.1:${new URL(endpoint).port}/json/list`, { dispatcher, signal: AbortSignal.timeout(30_000) });
+      return await response.json() as { id: string; webSocketDebuggerUrl: string }[];
+    });
     const target = targets.find(target => target.id === targetId)!.webSocketDebuggerUrl;
+    const session = pageCdp = new NativeCdp(target);
     const guard = new AsyncLocalStorage<AbortSignal>();
     const evaluate = async <T = any,>(expression: string): Promise<T> => {
-      const result = await cdp(target, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, guard.getStore());
+      const result = await session.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, guard.getStore());
       assert.equal(result.exceptionDetails, undefined, JSON.stringify(result.exceptionDetails));
       return result.result.value as T;
     };
@@ -625,27 +589,27 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
           const onAbort = () => readyAbort.abort(signal.reason);
           signal.addEventListener('abort', onAbort, { once: true });
           try {
-            const readyError = await ready;
+            const readyError = await warming;
             if (readyError) throw readyError;
           } finally {
             signal.removeEventListener('abort', onAbort);
           }
         }
-        await navigate(target, pageUrl, signal, ignoreCache);
-        await loadFixture(target, served, signal, networkFailures);
+        await navigate(session, pageUrl, signal, ignoreCache);
+        await loadFixture(session, served, signal, networkFailures);
       }, PAGE_LOAD_MS);
     await loadPage(`${name} page load`, false, true);
     const reload = () => loadPage(`${name} page reload`, true);
     const press = async (key: NativeKey, shift = false) => {
-      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0,
+      await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0,
         ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) }, guard.getStore());
-      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 }, guard.getStore());
+      await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 }, guard.getStore());
     };
     await run({ evaluate, press, reload, page: target, stage });
   } finally {
     readyAbort.abort();
     try {
-      if (browser) await stopBrowser(browser, async (_budget, signal) => { if (endpoint) await cdp(endpoint, 'Browser.close', {}, signal); }, async budget => {
+      if (browser) await stopBrowser(browser, async (_budget, signal) => { await browserCdp?.send('Browser.close', {}, signal); }, async budget => {
         if (process.platform === 'win32') {
           await stopOwnedProfile(profile, browser!.exitCode !== null || browser!.signalCode !== null ? undefined : browser!.pid, browserPid, ownedEdgeProcesses, budget); return;
         }
@@ -655,7 +619,9 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
         if (!browserPid) return browser!.exitCode !== null || browser!.signalCode !== null;
         try { process.kill(browserPid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true; throw error; }
       }, { profile });
-    } finally { await served.close(); }
+    } finally {
+      await Promise.all([ready, closeFixture?.(), pageCdp?.close(), browserCdp?.close()]);
+    }
     assert.ok(profile.startsWith(resolve(tmpdir()) + sep));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
