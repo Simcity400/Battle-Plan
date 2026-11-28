@@ -3352,7 +3352,13 @@ impl Viewer {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
-        let result = self.loading.as_ref().map(|receiver| receiver.try_recv());
+        let result = self.loading.as_ref().map(|receiver| {
+            if self.private_playhead {
+                receiver.recv().map_err(|_| mpsc::TryRecvError::Disconnected)
+            } else {
+                receiver.try_recv()
+            }
+        });
         if (self.embedded_open.is_some() || self.options.replay.is_none())
             && result
                 .as_ref()
@@ -4316,12 +4322,7 @@ impl Viewer {
         Option<viewer_combat::Asking>,
     ) {
         let drawing = self.last_view.is_some() && self.picture_ready();
-        let at = head_wanted(
-            self.capture.as_ref().map(|capture| capture.paced),
-            self.playhead.map(|head| head.hour),
-            self.options.window_dump,
-            drawing,
-        );
+        let at = self.head_wanted(drawing);
         let view = viewer_layer_core::layers::View {
             map_mode: self.map_mode.clone(),
             perspective: self.perspective.clone(),
@@ -4371,6 +4372,15 @@ impl Viewer {
         let combat_ask = self.combat.asking(&document.combat, &document.playback.roster_sampler(), &self.perspective, self.counter_view.settings.nato);
         self.overlay_asked = overlay_ask.as_ref().map(|ask| ask.shown(&document.content.counters.defines));
         (view, at, overlay_ask, combat_ask)
+    }
+
+    fn head_wanted(&self, drawing: bool) -> crate::playhead_host::Head {
+        head_wanted(
+            self.capture.as_ref().map(|capture| capture.paced),
+            self.playhead.map(|head| head.hour),
+            self.options.window_dump,
+            drawing || self.private_playhead,
+        )
     }
 
     fn ask_live(&mut self, document: &Document) {
@@ -4448,7 +4458,9 @@ impl Viewer {
                 Err(error) => self.playhead_refused = Some(refusal(&error)),
             }
         }
-        if let Some(made) = self.playhead_opening.as_ref().and_then(crate::playhead_host::Opening::poll) {
+        if let Some(made) = self.playhead_opening.as_ref().and_then(|opening| {
+            if self.private_playhead { Some(opening.wait()) } else { opening.poll() }
+        }) {
             self.playhead_opening = None;
             let wake: Arc<dyn Fn() + Send + Sync> = {
                 let ctx = ui.ctx().clone();
@@ -4478,12 +4490,7 @@ impl Viewer {
         self.hover_rows.playing = self.playing && !self.saves_a_frame();
         if self.playhead_map.is_some() {
             let drawing = self.last_view.is_some() && self.picture_ready();
-            let at = head_wanted(
-                self.capture.as_ref().map(|capture| capture.paced),
-                self.playhead.map(|head| head.hour),
-                self.options.window_dump,
-                drawing,
-            );
+            let at = self.head_wanted(drawing);
             let stepped = matches!(at, crate::playhead_host::Head::Stepped(_)).then(|| self.side_ask(document));
             let wanted = builds_warnings(self.diagnostics, self.capture.as_ref());
             let saved = self.saves_a_frame();

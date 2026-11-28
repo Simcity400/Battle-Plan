@@ -1430,6 +1430,10 @@ impl Overlaying<Products> for Overlay {
         Overlay::ask(self, ask)
     }
 
+    fn asked(&self) -> bool {
+        self.ask.is_some()
+    }
+
     fn stepped(&mut self) {
         Overlay::stepped(self)
     }

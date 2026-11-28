@@ -182,6 +182,7 @@ struct StubOverlay {
 
 impl viewer_layer_core::playhead_host::Overlaying<crate::map_open::Products> for StubOverlay {
     fn ask(&mut self, _ask: crate::overlay::Ask) {}
+    fn asked(&self) -> bool { true }
     fn ask_step(&mut self, side: viewer_layer_core::playhead_host::OverlayStep<'_>, _whole: bool, _lay: bool, _moved: Arc<viewer_unit_reads::counter_move::MovedHours>) -> bool {
         self.hour = side.applied;
         true

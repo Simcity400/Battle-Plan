@@ -14,6 +14,7 @@ pub(super) struct PendingScene<C, S> {
     result: mpsc::Receiver<Result<S, String>>,
     keep: Arc<AtomicBool>,
     was_hidden: bool,
+    whole: bool,
 }
 
 impl<C, S> PendingScene<C, S> {
@@ -145,7 +146,12 @@ fn reconcile<C, S>(
         Wanted::Build => {
             if let Some(pending) = build.as_mut() {
                 pending.keep.store(true, Ordering::Release);
-                match pending.result.try_recv() {
+                let result = if pending.whole {
+                    pending.result.recv().map_err(|_| mpsc::TryRecvError::Disconnected)
+                } else {
+                    pending.result.try_recv()
+                };
+                match result {
                     Ok(Ok(scene)) => {
                         *build = None;
                         return Action::Install(scene);
@@ -348,6 +354,7 @@ impl Viewer {
             result,
             keep,
             was_hidden: false,
+            whole: self.private_playhead,
         };
         let spawned = std::thread::Builder::new()
             .name("native map scene".into())
@@ -408,6 +415,7 @@ mod tests {
                 result,
                 keep: Arc::clone(&keep),
                 was_hidden: false,
+                whole: false,
             },
             sender,
             keep,

@@ -285,6 +285,10 @@ impl<P: PlaybackProducts> Opening<P> {
             Err(TryRecvError::Disconnected) => Some(Err(io::Error::other("its opening thread stopped before it was made"))),
         }
     }
+
+    pub fn wait(&self) -> io::Result<MapSide<P>> {
+        self.made.recv().map_err(|_| io::Error::other("its opening thread stopped before it was made"))?
+    }
 }
 
 pub const OPENING: &str = "map reader opening";
@@ -641,6 +645,7 @@ fn counters_at(names: &[&'static str]) -> Option<usize> {
 
 pub trait Overlaying<P: PlaybackProducts>: Send {
     fn ask(&mut self, ask: P::OverlayAsk);
+    fn asked(&self) -> bool;
     fn ask_step(&mut self, side: OverlayStep<'_>, whole: bool, lay: bool, moved: Arc<viewer_unit_reads::counter_move::MovedHours>) -> bool;
     fn join(&mut self, layers: &[Box<dyn Layer>], perspective: &viewer_foundation::perspective::Choice, branch: Option<replay_data::BranchId>, settling: Settling) -> bool;
     fn stepped(&mut self);
@@ -1803,7 +1808,7 @@ impl<P: PlaybackProducts> MapSide<P> {
     }
 
     fn overlay_whole(&mut self, head: Hour) -> io::Result<bool> {
-        if self.overlay.is_none() {
+        if self.overlay.as_deref().is_none_or(|overlay| !overlay.asked()) {
             return Ok(true);
         }
         let until = Instant::now() + HANDS_BACK;
