@@ -57,6 +57,8 @@ fn one_malformed_original_tag_preserves_the_other_countrys_tag_across_readers() 
         id, canonical_slot, tag: tag.to_vec(), ..Default::default()
     });
     let links = country_ids.map(|(id, canonical_slot, _)| CountryLinkRow { id, canonical_slot });
+    let states = [StateRow { id: 64, owner: 9001, ..Default::default() }, StateRow { id: 65, owner: 9002, ..Default::default() }];
+    let provinces = [ProvinceRow { id: 17, state: 64, ..Default::default() }, ProvinceRow { id: 18, state: 65, ..Default::default() }];
     let appearances = [(9001, true), (9002, false)].map(|(country, malformed)| {
         Appearance(CountryAppearanceRow {
             country,
@@ -71,6 +73,8 @@ fn one_malformed_original_tag_preserves_the_other_countrys_tag_across_readers() 
         frame.table(TableId::Campaign, snapshot(&[CampaignRow { id: CAMPAIGN.into() }]))?;
         frame.table(TableId::Countries, snapshot(&countries))?;
         frame.table(TableId::CountryLinks, snapshot(&links))?;
+        frame.table(TableId::States, snapshot(&states))?;
+        frame.table(TableId::Provinces, snapshot(&provinces))?;
         frame.table(TableId::CountryAppearance, snapshot(&appearances))
     }).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "malformed-original-tag".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
@@ -79,7 +83,7 @@ fn one_malformed_original_tag_preserves_the_other_countrys_tag_across_readers() 
     let decoded = read_hour(&query, &mut frames, hour, &[], &[]).unwrap();
     let places = Places::new(&decoded);
     let run = query.timeline.stretches[0].run;
-    let history = PlaceHistory::load(query.replay.recording(), run, hour, hour, Keys::All, Keys::These(&[]), false, &false.into()).unwrap();
+    let history = PlaceHistory::load(query.replay.recording(), run, hour, hour, Keys::These(&[17, 18]), Keys::These(&[]), false, &false.into()).unwrap();
     let recording = query.replay.recording();
     let table = TableId::CountryAppearance;
     let columns = crate::products::equipment_names::naming_columns(table).unwrap();
@@ -91,7 +95,7 @@ fn one_malformed_original_tag_preserves_the_other_countrys_tag_across_readers() 
     let equipment_places = Places::new(&dated_frame);
     for (reader, [bad, good]) in [
         ("frame", [places.tag(7), places.tag(8)]),
-        ("history", [history.tag_at(7, hour), history.tag_at(8, hour)]),
+        ("history", [history.victory_point_tag_at(17, 64, hour), history.victory_point_tag_at(18, 65, hour)]),
         ("equipment naming", [equipment_places.tag(7), equipment_places.tag(8)]),
     ] {
         assert_eq!(bad.unwrap_err(), "original tag of country appearance not recorded", "{reader}");

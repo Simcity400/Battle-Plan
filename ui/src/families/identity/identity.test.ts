@@ -995,6 +995,35 @@ test('leader, state, province, region and battle asks each start their product r
   broker.dispose();
 });
 
+test('battle names stay pending through preparation and appear on the next read', async () => {
+  const timers: Array<() => void> = [];
+  let reads = 0;
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: () => deferred<CountryFactsReply>().promise,
+    loadIdentities: () => deferred<CountryIdentitiesReply>().promise,
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: () => deferred<CountryFlagReply>().promise,
+    loadBattleNames: async () => ++reads === 1
+      ? { loading: 'Loading battle titles…', titles: {}, warnings: [] }
+      : { titles: { 'result:7': { name: 'Second Battle of Coral Reach', missing: null } }, warnings: [] },
+  };
+  const broker = new IdentityBroker({ transport, clock: { now: () => 0, after: (_ms, wake) => { timers.push(wake); return () => {}; } } });
+  const provider = createBrokerIdentityProvider(broker, SCOPE, {}, { branchBounds: [0, 500], needFlags: false });
+  const ask = () => createBoundedReadView({ hour: 200, identity: provider }).who('battle', 'result:7', 20).name;
+  assert.equal(ask().status, 'pending');
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(ask().status, 'pending');
+  assert.equal(reads, 1);
+  assert.equal(timers.length, 1);
+  timers.shift()!();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(reads, 2);
+  assert.deepEqual(ask(), { status: 'ready', value: 'Second Battle of Coral Reach' });
+  broker.dispose();
+});
+
 test('coalesced sparse identity runs stay missing on unrecorded gaps outside known spans', () => {
   const index = new IdentityIndex(SCOPE, [0, 40]);
   index.setFacts({ ...sampleFacts(), known: [[10, 10], [30, 30]] }, true);

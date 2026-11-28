@@ -54,7 +54,7 @@ pub struct RaidAssets {
     pub catalog: Catalog,
     pub tooltip: tooltips::content::Content,
     pub priority: i8,
-    pub geometry: ProvinceGeometry,
+    pub geometry: Arc<ProvinceGeometry>,
     pub paths: Result<paths::PathSearch, String>,
     pub moves: Result<content_reader_unit_path::unit_path::MoveGraph, String>,
     pub(crate) recorded_indexes: launch::RecordedIndexes,

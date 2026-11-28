@@ -153,6 +153,36 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
 }
 
 #[test]
+fn a_dated_place_does_not_open_an_original_tag_reader_for_another_country() {
+    use replay_data::rows::CountryRow;
+
+    let mut at = frame(105);
+    set::<tables::Countries>(&mut at, vec![
+        CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..Default::default() },
+        CountryRow { id: 9002, canonical_slot: 8, tag: b"ENG".to_vec(), ..Default::default() },
+    ]);
+    set::<tables::CountryLinks>(&mut at, vec![
+        CountryLinkRow { id: 9001, canonical_slot: 7 },
+        CountryLinkRow { id: 9002, canonical_slot: 8 },
+    ]);
+    set::<tables::CountryAppearance>(&mut at, vec![
+        CountryAppearanceRow { country: 9001, original_tag_reference: Recorded::Value(Some(0)), ..Default::default() },
+        CountryAppearanceRow { country: 9002, original_tag_reference: Recorded::Value(Some(1)), original_tag: Recorded::Value(Some(b"ORI".to_vec())), ..Default::default() },
+    ]);
+    let (source, load, saved, _folder) = fixture_source(vec![at]);
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let content = Content::read(&source, &load).unwrap();
+    let run = query.timeline.stretches[0].run;
+    let (history, reads) = replay_recording::cells::count_reads(|| {
+        PlaceHistory::load(query.replay.recording(), run, 105, 105, Keys::These(&[17]), Keys::These(&[]), false, &false.into()).unwrap()
+    });
+    assert_eq!(history.land_battle_title(&content, 17, 105).as_deref(), Ok("Battle of Own-tag town"));
+    assert_eq!(reads[&TableId::CountryAppearance].opened, 1);
+    drop(source);
+    std::fs::remove_dir_all(saved).unwrap();
+}
+
+#[test]
 fn truncated_tables_use_witnessed_rows_refuse_absent_renames_and_preserve_vp_tag_fallback_for_place_mode() {
     let frames: Vec<_> = (99..=103)
         .map(|hour| {

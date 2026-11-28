@@ -7,6 +7,10 @@ use crate::{
 };
 use std::sync::{Arc, PoisonError, Weak, atomic::Ordering};
 
+pub fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    std::thread::Builder::new().name(name.into()).spawn_carried(move || job_priority::confined(work)).map(drop)
+}
+
 #[derive(Default)]
 struct ReadAhead(bool);
 

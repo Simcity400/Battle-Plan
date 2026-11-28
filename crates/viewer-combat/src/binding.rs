@@ -23,6 +23,7 @@ pub struct Bindings {
     pub(super) tactics: super::tactics::Menu,
     pub entries: [Vec<(u64, Values)>; 4],
     pub warnings: Vec<String>,
+    pub(super) pending_title: Option<&'static str>,
     pub naval_entries: Vec<NavalEntry>,
     pub(super) naval_penalties: [Option<Result<NavalPenalty, String>>; 2],
     refused: BTreeMap<String, usize>,

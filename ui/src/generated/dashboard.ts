@@ -1173,7 +1173,7 @@ missing: string | null, warnings: Array<string>, };
 export type AutonomyLevelsParamsAtHour = AutonomyLevelsParams & { hour: number };
 export type BattleNamesParams = { branchId: string, battles: Array<string>, };
 export type BattleName = { name: string | null, missing: string | null, };
-export type BattleNamesReply = { titles: { [key in string]?: BattleName }, warnings: Array<string>, };
+export type BattleNamesReply = { titles: { [key in string]?: BattleName }, loading?: string, warnings: Array<string>, };
 export type BombingDirection = "taken" | "dealt";
 export type BombingDamageBreakdownParams = { branchId: string, country: CountryRef, hour: number, direction: BombingDirection, };
 export type BombingDamageBreakdownReply = { from: number, hour: number, through: number, direction: BombingDirection, breakdown: Breakdown, warnings: Array<string>, };

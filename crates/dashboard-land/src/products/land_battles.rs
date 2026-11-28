@@ -411,12 +411,17 @@ fn decode_ended_rows(ended: &lanes::History, out: &mut BTreeMap<Key, Battle>) {
     }
 }
 
-fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>, out: &mut BTreeMap<Key, Battle>) -> io::Result<()> {
+fn ending_history(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>) -> io::Result<lanes::History> {
     let recording = query.replay.recording();
     let range = combat.map(|combat| (u128::from(combat) << 33, u128::from(combat) << 33 | 0x1_FFFF_FFFF));
-    let ended = dashboard_query::cost::storage(|| {
+    dashboard_query::cost::storage(|| {
         lanes::history(recording, run, TableId::LandBattleEnds, &columns.ends, range.map_or(Keys::All, |(low, high)| Keys::Range(low, high)), from, to)
-    })?;
+    })
+}
+
+fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>, out: &mut BTreeMap<Key, Battle>) -> io::Result<()> {
+    let recording = query.replay.recording();
+    let ended = ending_history(query, columns, run, from, to, combat)?;
     decode_ended_rows(&ended, out);
     let asks: Vec<(i32, u128)> = written_ends(&ended).map(|(_, key, hour, _)| (hour, key)).collect();
     if !asks.is_empty() {

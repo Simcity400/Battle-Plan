@@ -295,8 +295,7 @@ impl BattleView {
             return state;
         };
         state.close_requests = (held.close_requests > 0).then_some(held.close_requests);
-        if held.window.loading_art() { return state; }
-        let hour = match (&held.refused, held.shown) {
+        let hour = match picture_reply(held.refused.as_ref(), || held.shown.filter(|_| !held.window.loading_art() && !held.window.loading_title())) {
             (Some((hour, _)), _) => Some(*hour),
             (None, Some(shown)) => {
                 state.notes.clone_from(&held.notes);
@@ -315,6 +314,10 @@ impl BattleView {
     }
 }
 
+fn picture_reply<T>(refused: Option<&(Hour, String)>, answer: impl FnOnce() -> Option<T>) -> (Option<&(Hour, String)>, Option<T>) {
+    (refused, if refused.is_none() { answer() } else { None })
+}
+
 fn memory(name: &str, frame: &eframe::Frame) {
     if !crate::perf_log::enabled() {
         return;
@@ -325,6 +328,30 @@ fn memory(name: &str, frame: &eframe::Frame) {
         "gpu_allocated": gpu.as_ref().map(|report| report.total_allocated_bytes),
         "gpu_reserved": gpu.as_ref().map(|report| report.total_reserved_bytes),
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_seek_refusal_answers_while_the_previous_naval_title_is_pending() {
+        let refusal = (105, "This hour was not recorded".to_owned());
+        let shown = Some(OnScreen { branch: 1, hour: 104, seek: 1 });
+        let title_pending = true;
+        let presented = || shown.filter(|_| !title_pending);
+        assert_eq!(picture_reply(None, presented), (None, None));
+        assert_eq!(picture_reply::<OnScreen>(Some(&refusal), || panic!("a refusal never waits for a title")), (Some(&refusal), None));
+    }
+
+    #[test]
+    fn a_seek_refusal_reports_its_reason_while_previous_art_is_pending() {
+        let refusal = (105, "This hour was not recorded".to_owned());
+        assert_eq!(picture_reply(None, || Some(())), (None, Some(())));
+        let (refused, art) = picture_reply::<()>(Some(&refusal), || panic!("a refusal never waits for art"));
+        assert_eq!(refused.map(|(_, why)| why.as_str()), Some("This hour was not recorded"));
+        assert!(art.is_none());
+    }
 }
 
 fn note(ui: &mut egui::Ui, body: egui::Rect, ink: egui::Color32, text: &str) {
@@ -450,7 +477,7 @@ impl Held {
         let why = [matches!(prepared, Prepared::Read(_)), self.drew != Some((extent, version)), input.is_some(), animating && since.is_none_or(|since| since >= ANIMATION_FRAME)];
         let redraw = match prepared {
             Prepared::Read(_) => true,
-            Prepared::Kept => why[1] || why[2] || why[3],
+            Prepared::Kept => why[1] || why[2] || why[3] || self.window.loading_title(),
             Prepared::Loading | Prepared::Closed => false,
         };
         if redraw {
@@ -463,7 +490,7 @@ impl Held {
             self.animated = self.window.gui_active().then(Instant::now);
             if self.drew.is_none() {
                 ctx.request_repaint();
-            } else if self.animated.is_some() {
+            } else if self.animated.is_some() || self.window.loading_title() {
                 ctx.request_repaint_after(ANIMATION_FRAME);
             }
             if !self.window.is_open() {
@@ -497,10 +524,11 @@ impl Held {
             pool.dropper().drop_later(retired);
         }
         self.settle_art(ctx, pool);
-        if self.window.loading_art() {
+        let (refused, art) = picture_reply(self.refused.as_ref(), || self.window.loading_art().then_some(()));
+        if art.is_some() {
             return Ok(Some("Loading battle window art...".into()));
         }
-        if let Some((_, why)) = &self.refused {
+        if let Some((_, why)) = refused {
             return Ok(Some(why.clone()));
         }
         if self.picture.is_none() {

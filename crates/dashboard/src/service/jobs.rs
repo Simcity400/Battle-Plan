@@ -617,6 +617,9 @@ impl Inner {
         let context = LoadContext {
             content: self.content_for(source, work(product.content_dependent, request)),
         };
+        if product.key == "battle-names" && let Some(branch) = body.params.get("branchId").and_then(|id| id.as_str()).and_then(|id| id.parse().ok()) {
+            crate::products::battle_names::ahead(source, branch, &context)?;
+        }
         (product.load)(source, lease_id, body.params, &context, &request.cancelled)
     }
 
@@ -779,12 +782,11 @@ fn read_naming_ahead(source: &Arc<Source>) {
 
 fn read_feed_scope_ahead(source: &Arc<Source>, content: Option<ContentOptions>) {
     let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) else { return };
+    let _ = crate::products::battle_names::ahead(source, branch, &LoadContext { content: source.admit(dashboard_base::source::Work::Recorded) });
     let source = Arc::downgrade(source);
-    let _ = std::thread::Builder::new().name("feed scope ahead".into()).spawn_carried(move || {
-        job_priority::confined(|| {
-            let Some(source) = source.upgrade() else { return };
-            let _ = source.in_scope(|| dashboard_politics::products::feed::index::warm(&source, branch, &LoadContext { content }));
-        })
+    let _ = dashboard_base::products::read_ahead::spawn("feed scope ahead", move || {
+        let Some(source) = source.upgrade() else { return };
+        let _ = source.in_scope(|| dashboard_politics::products::feed::index::warm(&source, branch, &LoadContext { content }));
     });
 }
 

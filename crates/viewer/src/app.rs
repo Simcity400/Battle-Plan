@@ -2142,7 +2142,7 @@ impl Viewer {
             return Ok(false);
         }
         let named = self.options.combat.is_some();
-        if self.combat.loading_art() { return Ok(false); }
+        if self.combat.loading_art() || self.combat.loading_title() { return Ok(false); }
         if self.combat.selection.is_some() && self.combat.is_loading() {
             return match live_of(&self.playhead_map).and_then(|side| side.products().combat_whole.clone()) {
                 Some(Err(why)) => Err(format!("its read was not made: {why}")),
@@ -7053,6 +7053,7 @@ impl Viewer {
         if let Some((drag, stroke)) = box_stroke {
             ui.painter().with_clip_rect(rect).rect_stroke(drag, 0.0, stroke, egui::StrokeKind::Middle);
         }
+        if self.combat.loading_title() { ui.ctx().request_repaint_after(Duration::from_millis(50)); }
         let loading_art = if self.combat.loading_art() {
             Some("Loading combat window art...")
         } else if self.combat.is_loading() {

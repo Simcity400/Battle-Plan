@@ -10,7 +10,7 @@ use viewer_engagements::engaged::Ambiguity;
 use viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap as NavySources;
 
 pub type NavySourcesOf = Arc<dyn Fn(&replay_frame::frame::DecodedFrame, u32, u32) -> NavySources + Send + Sync>;
-pub type BattleTitleSource = Arc<dyn Fn(replay_data::BranchId, replay_data::Hour, Selection) -> Result<String, String> + Send + Sync>;
+pub type BattleTitleSource = Arc<dyn Fn(replay_data::BranchId, replay_data::Hour, Selection) -> Result<Option<String>, String> + Send + Sync>;
 
 pub type RuleRelations = Arc<
     dyn Fn(
@@ -412,6 +412,10 @@ impl Window {
 
     pub fn loading_art(&self) -> bool {
         self.selection.is_some() && self.loading_art
+    }
+
+    pub fn loading_title(&self) -> bool {
+        self.selection.is_some() && self.cached.as_ref().filter(|cached| cached.shown).and_then(|cached| cached.contents.as_ref()).is_some_and(|(_, bindings)| bindings.pending_title.is_some())
     }
 
     pub fn is_loading(&self) -> bool {
@@ -864,11 +868,15 @@ impl Window {
         let Some(cached) = self.cached.as_mut() else {
             return Ok(None);
         };
-        let Some((_, bindings)) = cached.contents.as_ref().filter(|_| cached.shown) else {
+        let Some((at, bindings)) = cached.contents.as_mut().filter(|_| cached.shown) else {
             self.gui_time = None;
             self.refused.clear();
             return Ok(None);
         };
+        if let Some(key) = bindings.pending_title {
+            bind_title(bindings, key, at, self.battle_title_source.as_ref());
+            if bindings.pending_title.is_none() { cached.generation = cached.generation.wrapping_add(1); }
+        }
         let assets = document.assets.as_ref();
         let windows = document.window_cache.at(extent.map(|value| value as u32))?;
         let inventory = cached.gui_assets.as_mut().expect("refreshed with bindings");
@@ -1114,12 +1122,7 @@ impl Asking {
                 _ => return Ok(fresh),
             };
             if bindings.values.get(key).is_some_and(|widget| widget.hidden) { return Ok(fresh); }
-            let name = self.battle_title_source.as_ref().ok_or_else(|| "Battle name source unavailable".into())
-                .and_then(|source| source(branch, hour, self.family.selection)).unwrap_or_else(|reason| {
-                    bindings.refuse(reason);
-                    "Battle name not recorded".into()
-                });
-            bindings.bind(key, binding::TEXT, Ok(name));
+            bind_title(bindings, key, &fresh.now, self.battle_title_source.as_ref());
         }
         Ok(fresh)
     }
@@ -1128,6 +1131,16 @@ impl Asking {
         let Family { selection, perspective, playing, nato, .. } = &self.family;
         Request { content: Arc::clone(&self.content), branch, hour, frame, selection: *selection, perspective: perspective.clone(), engaged, nato: *nato, playing: *playing, air: self.air.clone(), details: self.details, navy_sources_of: self.navy_sources_of.clone(), rule_relations: self.rule_relations.clone(), strict: self.strict }
     }
+}
+
+fn bind_title(bindings: &mut Bindings, key: &'static str, at: &Scope, source: Option<&BattleTitleSource>) {
+    let title = source.ok_or_else(|| "Battle name source unavailable".into())
+        .and_then(|source| source(at.branch, at.hour, at.selection)).unwrap_or_else(|reason| {
+            bindings.refuse(reason);
+            Some("Battle name not recorded".into())
+        });
+    bindings.pending_title = title.is_none().then_some(key);
+    bindings.bind(key, binding::TEXT, Ok(title.unwrap_or_else(|| "Loading battle titles…".into())));
 }
 
 #[derive(Debug)]
@@ -1578,6 +1591,26 @@ mod tests {
             playing: false,
             nato: false,
         }
+    }
+
+    #[test]
+    fn a_preparing_naval_title_is_visible_and_can_settle_while_paused() {
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let answer = Arc::clone(&ready);
+        let source: super::BattleTitleSource = Arc::new(move |_, _, _| {
+            Ok(answer.load(std::sync::atomic::Ordering::Relaxed).then(|| "First Battle of Coral Reach".into()))
+        });
+        let mut bindings = super::Bindings::default();
+        let key = "header_container/naval_battle_title";
+        let at = scope(1, 105, 3);
+        super::bind_title(&mut bindings, key, &at, Some(&source));
+        assert_eq!(bindings.pending_title, Some(key));
+        assert_eq!(bindings.values[key].text.as_deref(), Some("Loading battle titles…"));
+        assert!(bindings.refused().is_empty());
+        ready.store(true, std::sync::atomic::Ordering::Relaxed);
+        super::bind_title(&mut bindings, key, &at, Some(&source));
+        assert_eq!(bindings.pending_title, None);
+        assert_eq!(bindings.values[key].text.as_deref(), Some("First Battle of Coral Reach"));
     }
 
     #[test]
