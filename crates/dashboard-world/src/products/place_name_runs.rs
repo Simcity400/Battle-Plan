@@ -1,4 +1,4 @@
-use crate::products::place_names::{Content, Name, PlaceHistory, ProvinceMode};
+use crate::products::place_names::{Content, Name, PlaceHistory, ProvinceMode, RowHistory};
 use dashboard_base::{
     Source,
     catalogue::Refusals,
@@ -120,6 +120,57 @@ impl PlacePoint {
 const BROKER_WINDOW_HOURS: i64 = 720;
 
 pub fn names_at(source: &Source, query: &dashboard_query::Query<'_>, load: &LoadContext, points: &BTreeSet<PlacePoint>, cancelled: &AtomicBool) -> io::Result<BTreeMap<PlacePoint, Name>> {
+    names_at_with(source, query, load, points, cancelled, None)
+}
+
+#[derive(Default)]
+pub struct RowNames {
+    held: BTreeMap<PlacePoint, Name>,
+    history: Option<RowHistoryWindows>,
+}
+
+#[derive(Default)]
+struct RowHistoryWindows {
+    recent: [RowHistory; 2],
+    hints: Vec<(i64, PlacePoint)>,
+}
+
+impl RowNames {
+    pub fn following() -> Self {
+        Self { history: Some(RowHistoryWindows::default()), ..Self::default() }
+    }
+
+    pub fn hints(&mut self, points: impl IntoIterator<Item = PlacePoint>) {
+        let Some(history) = &mut self.history else { return };
+        let limit = dashboard_base::products::MAX_PRODUCT_REPLY_BYTES / std::mem::size_of::<(i64, PlacePoint)>();
+        history.hints = points.into_iter().take(limit).map(|point| {
+            let bucket = i64::from(point.hour()).div_euclid(BROKER_WINDOW_HOURS);
+            let id = match point { PlacePoint::State(id, _) => PlacePoint::State(id, 0), PlacePoint::Province(id, _) => PlacePoint::Province(id, 0) };
+            (bucket, id)
+        }).collect();
+        history.hints.sort_unstable();
+        history.hints.dedup();
+        history.hints.shrink_to_fit();
+    }
+
+    pub fn update(&mut self, source: &Source, query: &dashboard_query::Query<'_>, load: &LoadContext, points: BTreeSet<PlacePoint>, cancelled: &AtomicBool) -> io::Result<()> {
+        self.held.retain(|point, _| points.contains(point));
+        let needed = points.into_iter().filter(|point| !self.held.contains_key(point)).collect();
+        self.held.extend(names_at_with(source, query, load, &needed, cancelled, self.history.as_mut())?);
+        Ok(())
+    }
+
+    pub fn get(&self, point: &PlacePoint) -> Option<&Name> {
+        self.held.get(point)
+    }
+
+    pub fn trim(&mut self) {
+        let bytes = self.held.values().map(|name| name.name.as_ref().map_or(0, String::capacity) + name.missing.as_ref().map_or(0, String::capacity)).sum::<usize>();
+        if bytes > dashboard_base::products::MAX_PRODUCT_REPLY_BYTES { self.held.clear(); }
+    }
+}
+
+fn names_at_with(source: &Source, query: &dashboard_query::Query<'_>, load: &LoadContext, points: &BTreeSet<PlacePoint>, cancelled: &AtomicBool, mut cache: Option<&mut RowHistoryWindows>) -> io::Result<BTreeMap<PlacePoint, Name>> {
     let mut names = BTreeMap::new();
     let missing = |reason: String| Name { name: None, missing: Some(reason) };
     let mut windows = BTreeMap::<_, Vec<_>>::new();
@@ -142,7 +193,7 @@ pub fn names_at(source: &Source, query: &dashboard_query::Query<'_>, load: &Load
                 PlacePoint::Province(id, _) => params.provinces.push(id),
             }
         }
-        let runs = PlaceNameRuns::load(source, &params, load, cancelled);
+        let runs = PlaceNameRuns::read(source, query, &params, load, cancelled, cache.as_deref_mut());
         for point in asked {
             check_cancel(cancelled)?;
             let hour = point.hour();
@@ -260,6 +311,12 @@ impl Product for PlaceNameRuns {
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid place name runs branch"))?;
         let query = dashboard_base::queries::query(source, branch)?;
+        Self::read(source, &query, params, load, cancelled, None)
+    }
+}
+
+impl PlaceNameRuns {
+    fn read(source: &Source, query: &dashboard_query::Query<'_>, params: &PlaceNameRunsParams, load: &LoadContext, cancelled: &AtomicBool, mut cache: Option<&mut RowHistoryWindows>) -> io::Result<PlaceNameRunsReply> {
         let content = Content::read(source, load)?;
         let (from, to) = (params.from.max(query.timeline.first), params.to.min(query.timeline.last));
         if from > to {
@@ -283,16 +340,37 @@ impl Product for PlaceNameRuns {
         let scoped = ScopedText::new(query.replay, &content.cat);
         for stretch in query.timeline.stretches.iter().filter(|stretch| stretch.first <= to && stretch.last >= from) {
             let (first, last) = (stretch.first.max(from), stretch.last.min(to));
-            let history = PlaceHistory::load(
-                recording,
-                stretch.run,
-                first,
-                last,
-                Keys::These(&province_keys),
-                Keys::These(&state_keys),
-                false,
-                cancelled,
-            )?;
+            let keys = (Keys::These(&province_keys), Keys::These(&state_keys));
+            let history = if let Some(cache) = cache.as_deref_mut() {
+                let bucket = i64::from(to).div_euclid(BROKER_WINDOW_HOURS);
+                let end = ((bucket + 1) * BROKER_WINDOW_HOURS - 1).min(i64::from(stretch.last)) as i32;
+                let window = (stretch.run, first, end);
+                if cache.recent[0].bucket != Some(bucket) {
+                    cache.recent.swap(0, 1);
+                }
+                let history = &mut cache.recent[0];
+                history.select(bucket);
+                if !history.holds(window) {
+                    let start = cache.hints.partition_point(|(at, _)| *at < bucket);
+                    let mut provinces = Vec::new();
+                    let mut states = Vec::new();
+                    for (_, point) in cache.hints[start..].iter().take_while(|(at, _)| *at == bucket) {
+                        match *point {
+                            PlacePoint::State(id, _) => states.push(u128::from(id)),
+                            PlacePoint::Province(id, _) => provinces.push(u128::from(id)),
+                        }
+                    }
+                    if !provinces.is_empty() || !states.is_empty() {
+                        let keys = (Keys::These(&provinces), Keys::These(&states));
+                        let _ = PlaceHistory::load_with(recording, window, keys, (false, true), cancelled,
+                            |table, fields, keys| history.read(recording, window, end, (table, fields, keys)));
+                    }
+                }
+                PlaceHistory::load_with(recording, (stretch.run, first, last), keys, (false, false), cancelled,
+                    |table, fields, keys| history.read(recording, window, last, (table, fields, keys)))?
+            } else {
+                PlaceHistory::load(recording, stretch.run, first, last, keys.0, keys.1, false, cancelled)?
+            };
             for (ids, book, is_state) in [(&states, &mut state_book, true), (&provinces, &mut province_book, false)] {
                 for &id in ids {
                     let changes = if is_state { history.state_change_hours(id, first, last) } else { history.province_change_hours(id, first, last) };
@@ -423,7 +501,7 @@ mod tests {
         let query = dashboard_base::queries::query(&source, 1).unwrap();
         let points = BTreeSet::from([
             PlacePoint::State(7, 100), PlacePoint::State(7, 103), PlacePoint::State(8, 102),
-            PlacePoint::State(11, 100), PlacePoint::Province(1, 103),
+            PlacePoint::State(9, 103), PlacePoint::State(11, 100), PlacePoint::Province(1, 103),
         ]);
         let cancelled = AtomicBool::new(false);
         let actual = engine_executable::executable_tables::scope(Some(executable), || names_at(&source, &query, &load, &points, &cancelled)).unwrap();
@@ -437,6 +515,25 @@ mod tests {
                 .find(|run| run.first_hour <= hour && hour <= run.last_hour).unwrap();
             assert_eq!(actual[point], Name { name: expected.name.clone(), missing: expected.missing.clone() }, "{point:?}");
         }
+        let mut held = RowNames::following();
+        let mut timeline = (*query.timeline).clone();
+        let recorded = timeline.stretches[0];
+        timeline.stretches = [(100, 100), (101, 102), (103, 104)].map(|(first, last)| {
+            dashboard_query::timeline::Stretch { first, last, ..recorded }
+        }).into();
+        let sliced = dashboard_query::Query { timeline: std::sync::Arc::new(timeline), holders: query.holders.clone(), replay: query.replay };
+        let first = BTreeSet::from([PlacePoint::State(7, 103), PlacePoint::Province(1, 103)]);
+        let later = BTreeSet::from([PlacePoint::State(7, 104), PlacePoint::Province(1, 104), PlacePoint::State(9, 104)]);
+        held.hints(first.iter().chain(&later).copied());
+        engine_executable::executable_tables::scope(Some(executable), || {
+            held.update(&source, &sliced, &load, first, &cancelled).unwrap();
+            let reads = held.history.as_ref().unwrap().recent[0].reads;
+            assert!(reads > 0);
+            held.update(&source, &sliced, &load, later.clone(), &cancelled).unwrap();
+            assert_eq!(held.history.as_ref().unwrap().recent[0].reads, reads, "a newly shown place reuses all three stretches of the window");
+            let expected = names_at(&source, &sliced, &load, &later, &cancelled).unwrap();
+            for point in later { assert_eq!(held.get(&point), expected.get(&point)); }
+        });
         let no_content = LoadContext { content: None };
         let reason = PlaceNameRuns::load(&source, &params, &no_content, &cancelled).unwrap_err().to_string();
         let withheld = names_at(&source, &query, &no_content, &points, &cancelled).unwrap();
@@ -458,6 +555,10 @@ mod tests {
         let missing = &reply.provinces[0].runs[0].missing;
         assert!(missing.as_deref().is_some_and(|reason| reason.contains("hour 100")), "{missing:?}");
         assert_eq!(&points[&wanted].missing, missing, "an interior point keeps the run's exact refusal reason");
+        let mut followed = RowNames::following();
+        followed.hints([wanted]);
+        followed.update(&source, &query, &load, BTreeSet::from([wanted]), &cancelled).unwrap();
+        assert_eq!(followed.get(&wanted), Some(&points[&wanted]));
     }
 
     #[test]

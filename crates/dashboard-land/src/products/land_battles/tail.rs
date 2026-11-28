@@ -487,6 +487,17 @@ pub struct Prepared {
     selection: Option<Selection>,
 }
 
+impl Prepared {
+    pub fn place_points(&self) -> impl Iterator<Item = dashboard_world::products::place_name_runs::PlacePoint> + '_ {
+        (0..self.index.len() as u32).flat_map(|at| {
+            let entry = self.index.get(at);
+            entry.payload.place.iter().filter_map(|&(_, (_, state))| {
+                state.map(|id| dashboard_world::products::place_name_runs::PlacePoint::State(id, entry.date))
+            })
+        })
+    }
+}
+
 fn index(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Arc<Index<Line>>> {
     let state = source.state::<Branches>();
     let mut branches = state.lock().unwrap_or_else(PoisonError::into_inner);
