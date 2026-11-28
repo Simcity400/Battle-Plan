@@ -277,3 +277,41 @@ fn the_air_day_rebuilds_on_read_errors_gaps_and_new_runs() {
     assert!(reply(101)["rows"].as_array().unwrap().iter().any(|row| row["region"] == 22), "the summary can retain a deleted score at the bucket close");
     assert_eq!(reply(108)["gaps"], json!([{"firstHour": 108, "lastHour": 108}]));
 }
+
+#[test]
+fn military_air_head_follows_changes_and_dates_quiet_replies_without_reloading() {
+    let frames = (100..=120).map(|hour| {
+        let mut frame = source(1, hour, Some(i64::from(hour)));
+        let events = match hour {
+            100 | 107 => vec![AirLossEventRow {
+                id: if hour == 100 { 1 } else { 2 },
+                game_hour: hour,
+                country: 9001,
+                region: 1,
+                native_cause: 1,
+                amount_raw: 100_000,
+                ..Default::default()
+            }],
+            _ => Vec::new(),
+        };
+        *frame.tables[TableId::AirLossEvents.index()] = TableView::Complete(TableRows::AirLossEvents(events));
+        frame.metrics.table_ns[TableId::AirLossEvents.index()] = 1;
+        frame
+    }).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Arc::new(Source::from_replay(SourceKey { source_id: "military-air-head".into(), revision: "1".into() }, "air.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
+    let load = LoadContext { content: None };
+    let registration = AIR_LEDGER_AT_MILITARYAIRAT;
+    let mut request = json!({"branchId":"1","family":"airLosses","metric":"taken","countries":["GER"]});
+    let follow = (registration.panel.unwrap().open)(&source, &load, &json!({"panel":"military-air-at","branchId":"1","family":"airLosses","metric":"taken","countries":["GER"]})).unwrap();
+    for read in played(source.replay_ref(), follow.exact().unwrap(), 100, 120) {
+        request["hour"] = read.hour.into();
+        let reply = registration.answer(&source, request.clone(), &load, &false.into()).unwrap();
+        assert_eq!(read.value.as_ref().as_ref().unwrap(), &reply, "air ledger at {}", read.hour);
+        if (101..=106).contains(&read.hour) {
+            assert_eq!(read.product_calls, 0, "quiet hour {}", read.hour);
+        } else if read.hour == 107 {
+            assert_eq!(read.product_calls, 1, "the new event is included at its read hour");
+        }
+    }
+}

@@ -4,11 +4,11 @@ import type { DashboardSource } from '../../dashboard/client';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { TiledLine } from '../../dashboard/tiles/view.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
-import { hoverAsks, readPlanExact } from '../../families/broker.ts';
+import { compileFollowPlan, hoverAsks, readPlanExact } from '../../families/broker.ts';
 import type { ArtHandle, ArtProvider, FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import { buildTooltipContent } from '../../families/host/tooltips.ts';
 import { SceneTiles, serializeTiledBySource } from '../../families/sceneTiles.ts';
-import { ReadTarget, type TargetClock, type TargetConfig } from '../../families/readUnits.ts';
+import { unitEntries } from '../../families/readUnits.ts';
 import type { FrozenGate } from '../../families/sources.ts';
 import { deriveTimeChartTooltip, sampleSeriesValueAt } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
@@ -291,57 +291,13 @@ test('the exact audit reads the dated head, so a correct picture has an exact re
   }
 });
 
-test('a quiet stretch of played hours makes no extra military-air-at request', async () => {
+test('the military air head follows changes without an exact playback request', () => {
   const ctx = makeCtx();
   const plan = airKillsLossesLinesDeclaration.sources(ctx, { following: true, staticSpan: null });
-  const headEntry = plan.entries.find(e => e.name === 'head')!;
-  assert.ok(headEntry);
+  const { subscriptions } = compileFollowPlan(plan, query => ({ query, refused: null }));
+  assert.deepEqual(subscriptions.map(sub => [sub.name, sub.query.panel]), [['head', 'military-air-at']]);
+  assert.ok(unitEntries(plan, true, subscriptions).every(entry => entry.name !== 'head'));
   assert.deepEqual(airKillsLossesProvenInterval(airReply({ hour: 100, validUntil: 250 }), 100), [100, 250]);
-
-  let hour = 100;
-  const watches = new Set<{ lo: number; hi: number; left: () => void }>();
-  const clock: TargetClock = {
-    now: () => hour,
-    playing: () => true,
-    seek: () => 0,
-    subscribe: () => () => {},
-    watch([lo, hi], left) {
-      const w = { lo, hi, left };
-      watches.add(w);
-      return () => { watches.delete(w); };
-    },
-  };
-  let requests = 0;
-  const target = new ReadTarget(clock, async () => {
-    requests++;
-    return airReply({ hour, validUntil: 250 });
-  });
-  const config: TargetConfig = {
-    inputs: 'air-quiet',
-    following: true,
-    entries: [headEntry],
-    active: true,
-    content: 0,
-    trackOffset: 0,
-    subscribed: false,
-    playback: () => ({ branch: { firstHour: 0, lastHour: 500 }, effectiveEndHour: 500, gate: GATE }),
-  };
-  target.configure(config);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(requests, 1);
-
-  for (let h = 101; h <= 250; h++) {
-    hour = h;
-    for (const w of [...watches]) {
-      if (hour < w.lo || hour > w.hi) {
-        watches.delete(w);
-        w.left();
-      }
-    }
-    await new Promise<void>(resolve => setImmediate(resolve));
-  }
-  assert.equal(requests, 1, 'no requests during the proven quiet stretch 100..250');
-  target.dispose();
 });
 
 test('partial tile spans keep drawing the witnessed subtotal and report partial state on hover, and air end labels demand and collect flag art', () => {

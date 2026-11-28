@@ -496,11 +496,11 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
       ...common,
       read: {
         shape: 'point',
-        channel: 'followed',
+        channel: 'panel',
         coverage: headCoverage,
         product: 'military-air-at',
         exactProduct: 'military-air-at',
-        followQuery: null,
+        followQuery: { panel: 'military-air-at', ...headParams },
         params: headParams,
         dynamicKeys: ['hour'],
         provenInterval: airKillsLossesProvenInterval,
