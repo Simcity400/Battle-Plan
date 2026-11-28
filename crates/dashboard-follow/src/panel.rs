@@ -13,6 +13,8 @@ pub mod product;
 pub use playhead::Declared;
 
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
+pub type OnPrepared = Box<dyn FnOnce(Wake) + Send>;
+pub type PendingPreparation = Arc<dyn Fn(Hour) -> Option<OnPrepared> + Send + Sync>;
 
 #[derive(Clone, Copy)]
 pub struct ProductStep<'a> {
@@ -54,6 +56,7 @@ impl Panel for AtHour {
 
 pub trait Panel: Send {
     fn exact(&self) -> Option<&AtHour> { None }
+    fn pending_preparation(&self) -> Option<&PendingPreparation> { None }
     fn tables(&self) -> &[TableId];
     fn data(&mut self, frame: &DecodedFrame) -> PanelData;
     fn live(&self) -> Option<&Live> {

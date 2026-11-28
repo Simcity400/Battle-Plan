@@ -73,7 +73,11 @@ fn an_interval_seed_can_join_preparation_before_it_has_a_wake() {
     let sought = (exact.advance)(101, true, &cancelled, None);
     assert!(!sought.pending && sought.fresh);
     assert!((exact.advance)(100, true, &cancelled, None).pending);
+    let (send, woke) = std::sync::mpsc::channel();
+    panel.pending_preparation().unwrap()(100).unwrap()(Arc::new(move || send.send(()).unwrap()));
+    assert!(woke.try_recv().is_err());
     source.state::<Arc<Preparation>>().lock().unwrap().publish(Ok(()));
+    assert_eq!(woke.try_recv(), Ok(()));
     let ready = (exact.advance)(100, true, &cancelled, None);
     assert!(!ready.pending && ready.fresh);
     assert_eq!(ready.value.as_ref().as_ref().unwrap()["slot"], 7);
@@ -115,7 +119,11 @@ fn an_exact_panel_and_request_use_the_same_hourly_preparation() {
     assert!(read(100, true, &cancelled, None).pending);
     assert_eq!(read(101, true, &cancelled, None).value.as_ref().as_ref().unwrap()["slot"], 101);
     assert!(read(100, true, &cancelled, None).pending);
+    let (send, woke) = std::sync::mpsc::channel();
+    panel.pending_preparation().unwrap()(100).unwrap()(Arc::new(move || send.send(()).unwrap()));
+    assert!(woke.try_recv().is_err());
     held.publish(Ok(()));
+    assert_eq!(woke.try_recv(), Ok(()));
     assert!(prepare(&source, &request, &load).unwrap().is_none());
     let answer = read(100, true, &cancelled, None);
     assert!(!answer.pending && answer.fresh);

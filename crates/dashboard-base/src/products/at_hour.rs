@@ -3,7 +3,7 @@ use super::{Finish, LoadContext, PanelReader, Registered, ReplyWarnings, read_ah
 use crate::Source;
 use dashboard_follow::{
     live::{Cells, Group, GroupState, Live},
-    panel::{Declared, Panel, PanelData, ProductRead, ProductReader, Wake},
+    panel::{Declared, OnPrepared, Panel, PanelData, PendingPreparation, ProductRead, ProductReader, Wake},
 };
 use dashboard_query::{
     Query,
@@ -394,10 +394,12 @@ where P::Params: Sync, P::Context: Sync {
     let params = Arc::new(params);
     let pool = placed::Pool::of(source).map_err(|e| e.to_string())?;
     let advance = shared_reader(source, load, P::KEY, asked, || incremental::reader::<P>(source, pool.clone(), params.clone(), context.clone(), Query { replay: query.replay, holders: query.holders.clone(), timeline: query.timeline.clone() }, finish.clone()));
-    let advance = if let Some((prepare, source)) = P::PREPARE.zip(owned) {
+    let (advance, waiting) = if let Some((prepare, source)) = P::PREPARE.zip(owned) {
         let (source, params, load) = (Arc::clone(source), Arc::clone(&params), LoadContext { content: load.content.clone() });
-        prepare_reader(advance, move |hour| source.in_scope(|| prepare(&source, &params, &load, hour)))
-    } else { advance };
+        let waiting = Arc::new(Awaiting::default());
+        let reader = prepare_reader(advance, waiting.clone(), move |hour| source.in_scope(|| prepare(&source, &params, &load, hour)));
+        (reader, Some(waiting))
+    } else { (advance, None) };
     let (replay, holders, timeline, executable) = (source.replay(), query.holders, query.timeline, source.tables());
     let cold: dashboard_follow::panel::ExactReader = Arc::new(move |hour, cancelled| {
         let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
@@ -405,13 +407,20 @@ where P::Params: Sync, P::Context: Sync {
             answered::<P, _>(&query, &pool, &params, hour, || Ok(context.as_ref()), cancelled).map(|(reply, live)| WithLive { reply, live }))).map_err(|e| e.to_string())?;
         serde_json::to_value(reply).map_err(|e| e.to_string())
     });
-    Ok(product_panel(advance, cold))
+    Ok(with_pending_preparation(product_panel(advance, cold), waiting))
 }
 
 #[derive(Default)]
 struct Awaiting(Mutex<Option<(i32, Arc<Preparation>, bool)>>);
 
 impl Awaiting {
+    fn on_prepared(&self, hour: i32) -> Option<OnPrepared> {
+        let waiting = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_, build, _) = waiting.as_ref().filter(|(asked, ..)| *asked == hour)?;
+        let build = Arc::clone(build);
+        Some(Box::new(move |wake| build.on_ready(Box::new(move |_| wake()))))
+    }
+
     fn check(&self, hour: i32, wake: Option<&Wake>, prepare: impl FnOnce() -> io::Result<Option<Arc<Preparation>>>) -> io::Result<()> {
         let mut waiting = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if waiting.as_ref().is_none_or(|(asked, ..)| *asked != hour) {
@@ -434,8 +443,7 @@ impl Awaiting {
     }
 }
 
-fn prepare_reader(read: ProductReader, prepare: impl Fn(i32) -> io::Result<Option<Arc<Preparation>>> + Send + Sync + 'static) -> ProductReader {
-    let waiting = Awaiting::default();
+fn prepare_reader(read: ProductReader, waiting: Arc<Awaiting>, prepare: impl Fn(i32) -> io::Result<Option<Arc<Preparation>>> + Send + Sync + 'static) -> ProductReader {
     Arc::new(move |hour, seed, cancelled, step| {
         match waiting.check(hour, step.and_then(|step| step.wake), || prepare(hour)) {
             Ok(()) => read(hour, seed, cancelled, step),
@@ -446,6 +454,25 @@ fn prepare_reader(read: ProductReader, prepare: impl Fn(i32) -> io::Result<Optio
             }
         }
     })
+}
+
+struct PreparedPanel {
+    panel: Box<dyn Panel>,
+    prepare: PendingPreparation,
+}
+
+impl Panel for PreparedPanel {
+    fn exact(&self) -> Option<&dashboard_follow::panel::AtHour> { self.panel.exact() }
+    fn pending_preparation(&self) -> Option<&PendingPreparation> { Some(&self.prepare) }
+    fn tables(&self) -> &[TableId] { self.panel.tables() }
+    fn data(&mut self, frame: &DecodedFrame) -> PanelData { self.panel.data(frame) }
+}
+
+fn with_pending_preparation(panel: Box<dyn Panel>, waiting: Option<Arc<Awaiting>>) -> Box<dyn Panel> {
+    match waiting {
+        Some(waiting) => Box::new(PreparedPanel { panel, prepare: Arc::new(move |hour| waiting.on_prepared(hour)) }),
+        None => panel,
+    }
 }
 
 pub fn interval_panel(
@@ -585,8 +612,9 @@ pub fn dated_product<P: super::Product>(
     let source = Arc::clone(source);
     let load = LoadContext { content: load.content.clone() };
     let finish = Finish::new(&source, &load, P::CONTENT_DEPENDENT);
-    let waiting = Awaiting::default();
-    Ok(dated_interval(source.tables(), P::PREPARE.is_some(), move |hour, cancelled, step| {
+    let waiting = P::PREPARE.map(|_| Arc::new(Awaiting::default()));
+    let pending = waiting.clone();
+    let panel = dated_interval(source.tables(), pending.is_some(), move |hour, cancelled, step| {
         let mut request = params.clone();
         date(&mut request, hour);
         let params = dashboard_query::named::named::<P::Params>(&request)?;
@@ -595,7 +623,7 @@ pub fn dated_product<P: super::Product>(
         crate::test_fixtures::product_called();
         let (reply, rows) = counted(|| finish.reply(|| {
             let Some(step) = step else { return P::load(&source, &params, &load, cancelled) };
-            if let Some(prepare) = P::PREPARE {
+            if let Some((prepare, waiting)) = P::PREPARE.zip(pending.as_ref()) {
                 waiting.check(hour, step.step.and_then(|step| step.wake), || prepare(&source, &params, &load))?;
             }
             load_step(&source, &params, &load, cancelled, step)
@@ -603,7 +631,8 @@ pub fn dated_product<P: super::Product>(
         let reply = reply?;
         let through = valid_through(&params, &reply);
         Ok((serde_json::to_value(reply)?, hour..=through, rows))
-    }, date_held))
+    }, date_held);
+    Ok(with_pending_preparation(panel, waiting))
 }
 
 pub fn product_panel(advance: dashboard_follow::panel::ProductReader, cold: dashboard_follow::panel::ExactReader) -> Box<dyn Panel> {

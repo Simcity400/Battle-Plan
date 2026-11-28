@@ -110,16 +110,29 @@ test('a prepared client reads into its base\'s caches, its requests apart from w
   assert.deepEqual(again, { product: 'prepared' });
   assert.deepEqual(asked, ['prepared'], 'the page reads what the lane read, asking nothing');
   const pageBusy = busy('requests');
-  const joined = request('joined');
-  const waiting = loadProduct(lane, joined, new AbortController().signal);
-  await flush();
-  assert.deepEqual(asked, ['prepared'], 'waits while the page has its own in flight');
-  const page = loadProduct(base, joined, new AbortController().signal);
-  await flush();
-  assert.deepEqual(asked, ['prepared', 'joined'], 'sent once the page joined it');
-  assert.deepEqual(await page, { product: 'joined' });
-  assert.deepEqual(await waiting, { product: 'joined' });
-  pageBusy();
+  try {
+    for (const product of ['joined', 'same-turn']) {
+      const joined = request(product);
+      const controller = new AbortController();
+      const waiting = loadProduct(lane, joined, controller.signal);
+      if (product === 'joined') {
+        await flush();
+        assert.deepEqual(asked, ['prepared'], 'waits while the page has its own in flight');
+      }
+      const page = loadProduct(base, joined, controller.signal);
+      try {
+        await flush();
+        assert.equal(asked.filter(sent => sent === product).length, 1, 'sent once the page joined it');
+        assert.deepEqual(await page, { product });
+        assert.deepEqual(await waiting, { product });
+      } finally {
+        controller.abort();
+        await Promise.allSettled([waiting, page]);
+      }
+    }
+  } finally {
+    pageBusy();
+  }
 });
 
 test('a prepared read already sent finishes into the shared cache when its asker leaves, so seeks in a row start one read per key and a waiting one leaves with its asker', async () => {

@@ -3,7 +3,7 @@ use crate::{answer, invalid, panel};
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
-    sync::{Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak},
     time::Instant,
 };
 
@@ -129,6 +129,8 @@ struct Queued {
 
 struct State {
     charge: playhead::Charge,
+    reply_charge: playhead::Charge,
+    reply_leads: Vec<Weak<dyn Fn() + Send + Sync>>,
     queue: VecDeque<Queued>,
     bytes: usize,
     sent: u64,
@@ -160,7 +162,9 @@ fn lock(held: &Mutex<State>) -> MutexGuard<'_, State> {
 
 impl State {
     fn new(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
-        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit: budget.limit() / 2, session: 0, heads: std::collections::HashMap::new(), admitted: std::collections::HashMap::new(), next: 0, pressed: None, stopped: false, failed: None, counters: PushCounters::default() }
+        let credit = budget.limit() / 2;
+        let reply_charge = playhead::ByteBudget::new(credit / 2).charge();
+        Self { charge: budget.charge(), reply_charge, reply_leads: Vec::new(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit, session: 0, heads: std::collections::HashMap::new(), admitted: std::collections::HashMap::new(), next: 0, pressed: None, stopped: false, failed: None, counters: PushCounters::default() }
     }
 
     fn reached(&self, stream: Stream) -> bool {
@@ -176,6 +180,21 @@ impl State {
 
     fn charged(&mut self) {
         self.charge.resize(self.bytes + self.in_flight());
+        self.charge_replies();
+    }
+
+    fn charge_replies(&mut self) {
+        let full = self.reply_charge.full();
+        self.reply_charge.resize(self.bytes + self.in_flight());
+        if full && !self.reply_charge.full() { self.wake_reply_leads(); }
+    }
+
+    fn wake_reply_leads(&mut self) {
+        self.reply_leads.retain(|wake| {
+            let Some(wake) = wake.upgrade() else { return false };
+            wake();
+            true
+        });
     }
 
     fn sendable(&self) -> Option<usize> {
@@ -314,6 +333,7 @@ impl Push {
         let session = state.session;
         state.queue.push_back(Queued { stream, kind, bytes, sequence, offered: Instant::now(), kept: false, session });
         state.compact(stream);
+        if stream == Stream::Notice { state.charge_replies(); }
         state.counters.most_queued = state.counters.most_queued.max(state.queue.len() as u64);
         drop(state);
         self.ready.notify_one();
@@ -365,6 +385,18 @@ impl Push {
             }
             state = self.ready.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
+    }
+
+    pub(crate) fn watch_reply_lead(&self, wake: &panel::Wake) {
+        let mut state = lock(&self.state);
+        state.reply_leads.retain(|wake| wake.strong_count() != 0);
+        state.reply_leads.push(Arc::downgrade(wake));
+    }
+
+    pub(crate) fn reply_lead_full(&self) -> Result<bool, ()> {
+        let state = lock(&self.state);
+        if state.stopped { return Err(()); }
+        Ok(state.reply_charge.full())
     }
 
     pub fn head(&self, route: u32, seek: u32, hour: i32) {
@@ -425,7 +457,10 @@ impl Push {
     }
 
     pub fn stop(&self) {
-        lock(&self.state).stopped = true;
+        let mut state = lock(&self.state);
+        state.stopped = true;
+        state.wake_reply_leads();
+        drop(state);
         self.ready.notify_all();
     }
 
@@ -450,6 +485,8 @@ impl Push {
                 state.bytes = 0;
                 state.released = state.sent;
                 state.charge.resize(0);
+                state.reply_charge.resize(0);
+                state.wake_reply_leads();
                 return Err(error);
             }
         }
