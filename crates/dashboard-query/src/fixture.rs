@@ -222,7 +222,11 @@ fn branch_start(branch: u64, first: i32) -> BranchStart {
 }
 
 pub(crate) fn bare(first: i32, last: i32, write: impl FnMut(&mut Synthetic, i32) -> io::Result<()>) -> io::Result<Replay> {
-    Replay::from_synthetic(recorder_derive_framework::framework::Writers::new(Vec::new()), b"bare".to_vec(), session(1), branch_start(1, first), last, write)
+    bare_runs(&[first..=last], write)
+}
+
+pub(crate) fn bare_runs(runs: &[RangeInclusive<i32>], write: impl FnMut(&mut Synthetic, i32) -> io::Result<()>) -> io::Result<Replay> {
+    Replay::from_synthetic_runs(recorder_derive_framework::framework::Writers::new(Vec::new()), b"bare".to_vec(), session(1), branch_start(1, *runs[0].start()), runs, write)
 }
 
 pub(crate) fn segment(branch: u64, first: i32, hours: i32) -> Vec<Record> {

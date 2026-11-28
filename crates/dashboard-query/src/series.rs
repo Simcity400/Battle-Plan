@@ -5,6 +5,7 @@ use crate::{
     identity::{Country, Holder},
     log::{self, Pattern},
     read,
+    timeline::Stretch,
 };
 use dashboard_declare::{Measure, Series};
 use replay_recording::{cells::TableReader, columnar_frames::Recording};
@@ -467,6 +468,7 @@ pub struct Line<'q, 'a> {
     query: &'q Query<'a>,
     series: &'static Series,
     measure: &'static Measure,
+    total_readers: Option<(&'q Mutex<totals::TotalReaders>, Stretch)>,
     source: Source,
     column: u32,
     drops: Option<log::Reader<'q, 'a>>,
@@ -568,6 +570,7 @@ impl<'q, 'a> Line<'q, 'a> {
             query,
             series,
             measure,
+            total_readers: None,
             source: dashboard_declare::source(series.table, measure)?,
             column: dashboard_declare::summary_id(series.table, measure)?,
             drops,
