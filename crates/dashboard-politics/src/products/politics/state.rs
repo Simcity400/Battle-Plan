@@ -1,7 +1,7 @@
 
 use dashboard_effects::ScriptedEffects;
 use super::token;
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{Country, LoadContext, at_hour::{At, AtHour, Owner, Read, ReadsAt, field_columns}}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{Country, LoadContext, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt, field_columns, warnings_through}}};
 use crate::products::country_people::{self, Links};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::Holder;
@@ -267,9 +267,15 @@ impl AtHour for PoliticsState {
             .collect()
     }
 
-    fn projection(params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+    fn projection(params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         if params.view == PoliticsView::Balances {
-            return None;
+            let fields: &[&str] = match table {
+                TableId::Countries => &["canonical_slot", "tag"],
+                TableId::PowerBalances => &["balance", "left", "right", "trending", "active_range"],
+                _ => return None,
+            };
+            let scripted = plan.get(1).is_some_and(|(reads, _)| reads.iter().any(|read| read.table == TableId::LexicalTokens && read.keys == Keys::All));
+            return (!scripted).then(|| field_columns(table, fields));
         }
         let fields: &[&str] = match table {
             TableId::Countries => &["canonical_slot", "tag"],
@@ -282,15 +288,21 @@ impl AtHour for PoliticsState {
         Some(field_columns(table, fields))
     }
 
-    fn valid_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+    fn valid_through(frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
         if params.view == PoliticsView::Exiles {
             return if frame.complete::<tables::CountryStabilityInputs>().is_ok() { i32::MAX } else { frame.hour };
         }
-        let Some(Ok(catalogue)) = at.context.catalogue.as_ref().map(|held| held.as_deref()) else { return i32::MAX };
-        if !names_read_the_date(frame, catalogue) {
+        if frame.tables[TableId::LexicalTokens.index()].keys() != &Keys::All {
             return i32::MAX;
         }
         frame.hour.div_euclid(24).saturating_add(1).saturating_mul(24).saturating_sub(1)
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        if partial { return frame.hour; }
+        let through = Self::valid_through(frame, params, at);
+        if params.view == PoliticsView::Exiles { return through; }
+        through.min(warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -535,10 +547,6 @@ pub(super) fn balance_words(frame: &DecodedFrame, catalogue: Option<&Catalogue>,
     let tokens = frame.complete::<tables::ModifierDefinitions>().into_iter().flatten()
         .filter(|row| row.token != 0).map(|row| u128::from(row.token));
     Read::these(TableId::LexicalTokens, tokens)
-}
-
-pub(super) fn names_read_the_date(frame: &DecodedFrame, catalogue: &Catalogue) -> bool {
-    scripted_names(frame, catalogue, None)
 }
 
 fn scripted_names(frame: &DecodedFrame, catalogue: &Catalogue, selected: Option<&BTreeSet<u32>>) -> bool {

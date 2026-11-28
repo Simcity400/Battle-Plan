@@ -111,6 +111,53 @@ fn balance_reads_only_the_modifier_words_it_can_name() {
 }
 
 #[test]
+fn the_balance_reply_holds_through_unrelated_country_fields_and_live_values() {
+    use dashboard_base::{products::{LoadContext, at_hour::exact_panel}, test_fixtures::{played, records, streamed}};
+    use serde_json::json;
+
+    let frames = (FIRST..=FIRST + 6).map(|hour| {
+        let mut frame = source(1, hour, Some(1_000));
+        if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
+            rows.push(CountryRow { id: ENG, canonical_slot: 8, tag: b"ENG".to_vec(), political_power_raw: Some(i64::from(hour)), border_land_doctrine_level: Recorded::Value(None), ..Default::default() });
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *frame.tables[TableId::CountryLinks.index()] {
+            rows.push(CountryLinkRow { id: ENG, canonical_slot: 8 });
+        }
+        set(&mut frame, TableId::PowerBalances, TableRows::PowerBalances(vec![PowerBalanceRow {
+            value_raw: 5_000 + i64::from(hour - FIRST),
+            balance: b"GER_bop".to_vec(),
+            active_range: if hour < FIRST + 4 { b"GER_low".to_vec() } else { b"GER_high".to_vec() },
+            ..Default::default()
+        }]));
+        set(&mut frame, TableId::PowerBalanceMembers, TableRows::PowerBalanceMembers(vec![PowerBalanceMemberRow { country: GER, ..Default::default() }]));
+        if hour < FIRST + 5 {
+            set(&mut frame, TableId::ModifierDefinitions, TableRows::ModifierDefinitions(Vec::new()));
+        }
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(Vec::new()));
+        frame
+    }).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "balance-held".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+    let panel = exact_panel::<state::PoliticsState>(&source, &LoadContext { content: None }, &json!({"branchId":"1", "view":"balances", "country":"GER"})).unwrap();
+    let exact = panel.exact().unwrap();
+    let reads = played(source.replay_ref(), exact, FIRST, FIRST + 6);
+    assert_eq!(reads.len(), 7);
+    for read in reads {
+        assert!(!read.pending && read.value.is_ok(), "reply at {}", read.hour);
+        if (FIRST + 1..FIRST + 4).contains(&read.hour) {
+            assert_eq!((read.rows, read.product_calls), (0, 0), "the unrelated fields and the live value need no typed rows or reply at {}", read.hour);
+        }
+        if read.hour == FIRST + 4 { assert_eq!(read.product_calls, 1, "the active range changes the reply"); }
+        let cold = (exact.cold)(read.hour, &false.into());
+        if read.hour >= FIRST + 5 {
+            assert!(cold.as_ref().unwrap()["warnings"].as_array().unwrap().iter().any(|warning| warning.as_str().unwrap().contains(&format!("hour {} ModifierDefinitions", read.hour))));
+        }
+        assert_eq!(streamed(&read.value, read.fresh), streamed(&cold, read.fresh), "reply at {}", read.hour);
+        assert_eq!((exact.advance)(read.hour, true, &false.into(), None).value.as_ref(), &cold, "live value at {}", read.hour);
+    }
+}
+
+#[test]
 fn exile_playback_recomputes_for_host_edits_and_matches_the_exact_reply() {
     use dashboard_base::{products::{LoadContext, at_hour::exact_panel}, test_fixtures::{played, records, streamed}};
     use replay_data::rows::CountryStabilityInputRow;
@@ -685,13 +732,13 @@ fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusa
     let selected = |hour: i32| {
         let frame = make_frame(hour);
         let reply = state::read(&frame, &state::PoliticsStateParams { branch_id: "1".into(), view: state::PoliticsView::Balances, country: None }, Some(Ok(catalogue.as_ref())), &Cells::default()).unwrap();
-        assert!(state::names_read_the_date(&frame, catalogue.as_ref()), "a scripted name bounds the reply at the next day");
+        assert!(matches!(state::balance_words(&frame, Some(&catalogue), false, None).keys, dashboard_base::products::at_hour::Keys::All), "a scripted name keeps its operands and bounds the reply at the next day");
         reply
     };
     let early = selected(105);
     assert_eq!(early.balances[0].left.name.as_deref(), Some("Fascist Council"));
     {
-        use dashboard_base::products::at_hour::Keys;
+        use dashboard_base::products::{LoadContext, at_hour::{AtHour, Keys}};
         let mut mixed = make_frame(105);
         let mut balances = mixed.complete::<replay_data::rows::tables::PowerBalances>().unwrap().to_vec();
         balances.push(PowerBalanceRow { ordinal: 1, balance: b"ENG_bop".to_vec(), ..Default::default() });
@@ -701,7 +748,14 @@ fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusa
             PowerBalanceMemberRow { record: 1, ordinal: 0, country: ENG, ..Default::default() },
         ]));
         assert!(matches!(state::balance_words(&mixed, Some(&catalogue), true, Some(8)).keys, Keys::These(_)));
-        assert!(matches!(state::balance_words(&mixed, Some(&catalogue), true, Some(7)).keys, Keys::All));
+        let words = state::balance_words(&mixed, Some(&catalogue), true, Some(7));
+        assert!(matches!(words.keys, Keys::All));
+        let plan = [(Vec::new(), i32::MAX), (vec![words], i32::MAX)];
+        let params = state::PoliticsStateParams { branch_id: "1".into(), view: state::PoliticsView::Balances, country: Some("GER".into()) };
+        let context = state::PoliticsState::context(&src, &LoadContext { content: None }).unwrap();
+        for table in [TableId::Countries, TableId::PowerBalances] {
+            assert_eq!(state::PoliticsState::projection(&params, table, &plan, &context), None, "scripted names may use {table:?} fields outside the balance rows");
+        }
     }
     assert_eq!(early.balances[0].range.as_ref().unwrap().name.as_deref(), Some("GER low"));
     let late = selected(125);
