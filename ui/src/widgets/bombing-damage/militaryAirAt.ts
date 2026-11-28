@@ -15,8 +15,10 @@ const text = (value: unknown) => value === null || typeof value === 'string';
 const countryRef = (value: unknown) => typeof value === 'string' || Number.isSafeInteger(value);
 const causeName = (cause: Record<string, unknown>) => Number.isSafeInteger(cause.cause) && text(cause.name) && text(cause.missing) && (cause.name === null) !== (cause.missing === null);
 
-export function validateMilitaryAirAt(value: unknown): MilitaryAirAtReply {
-  if (!object(value) || !Number.isSafeInteger(value.hour) || !Number.isSafeInteger(value.validUntil)
+export type MilitaryAirContent = Omit<MilitaryAirAtReply, 'hour' | 'validUntil'>;
+
+export function validateMilitaryAirContent(value: unknown): MilitaryAirContent {
+  if (!object(value)
     || !(value.countedFrom === null || Number.isSafeInteger(value.countedFrom)) || !text(value.missing) || !text(value.rankMissing)
     || !Array.isArray(value.unattributed) || value.unattributed.length !== 2 || !value.unattributed.every(whole)
     || !Array.isArray(value.absent) || !value.absent.every(countryRef)
@@ -25,6 +27,13 @@ export function validateMilitaryAirAt(value: unknown): MilitaryAirAtReply {
       && text(row.partial) && (row.complete === (row.partial === null)) && (row.ratioHundredths === null || whole(row.ratioHundredths))
       && Array.isArray(row.causes) && row.causes.every(cause => object(cause) && causeName(cause) && whole(cause.taken))))
     throw new Error('The military air reply is malformed.');
+  return value as unknown as MilitaryAirContent;
+}
+
+export function validateMilitaryAirAt(value: unknown): MilitaryAirAtReply {
+  if (!object(value) || !Number.isSafeInteger(value.hour) || !Number.isSafeInteger(value.validUntil))
+    throw new Error('The military air reply is malformed.');
+  validateMilitaryAirContent(value);
   return value as unknown as MilitaryAirAtReply;
 }
 
@@ -135,13 +144,13 @@ function slotKeyOf(row: MilitaryAirAtRow): string {
   return countryKey(Number(row.identity.split(':')[0]));
 }
 
-function rowMeta(row: MilitaryAirAtRow, reply: MilitaryAirAtReply, options: MilitaryAirAtOptions): MilitaryAirRowMeta {
+function rowMeta(row: MilitaryAirAtRow, reply: MilitaryAirContent, options: MilitaryAirAtOptions): MilitaryAirRowMeta {
   return { tag: row.tag, identity: row.identity, countedFrom: reply.countedFrom, filters: options.filters };
 }
 
 const ABSENT = 'This country is not present at this date.';
 
-function absentRows(readView: BoundedReadView, reply: MilitaryAirAtReply, shape: 'two-sided' | 'stacked'): BarsDataRow[] {
+function absentRows(readView: BoundedReadView, reply: MilitaryAirContent, shape: 'two-sided' | 'stacked'): BarsDataRow[] {
   return reply.absent.map(country => {
     const key = countryKey(country);
     const pres = countryRowPresentation(readView, key);
@@ -153,21 +162,21 @@ function absentRows(readView: BoundedReadView, reply: MilitaryAirAtReply, shape:
   });
 }
 
-function unattributedNote(reply: MilitaryAirAtReply, options: MilitaryAirAtOptions): string | null {
+function unattributedNote(reply: MilitaryAirContent, options: MilitaryAirAtOptions): string | null {
   const [dealt, taken] = reply.unattributed;
   if (dealt === '0' && taken === '0') return null;
   const field = (raw: string) => formatBarsValueField(militaryAirAmount(raw, null, options)).text;
   return `No recorded country: ${options.leftHeader} ${field(taken)}, ${options.rightHeader} ${field(dealt)}`;
 }
 
-type Read = { readonly reply: MilitaryAirAtReply } | { readonly model: Pick<BarsModel, 'rows' | 'empty' | 'emptyKind' | 'warnings' | 'notes'> };
+type Read = { readonly reply: MilitaryAirContent } | { readonly model: Pick<BarsModel, 'rows' | 'empty' | 'emptyKind' | 'warnings' | 'notes'> };
 
 function readReply(readView: BoundedReadView, options: MilitaryAirAtOptions): Read {
   const refused = readView.refused('main');
   if (refused) return { model: { rows: [], empty: refused, emptyKind: 'unavailable' } };
   const panel = readView.panel('main');
   if (panel === undefined) return { model: { rows: [] } };
-  const reply = validateMilitaryAirAt(panel);
+  const reply = validateMilitaryAirContent(panel);
   if (reply.missing !== null) return { model: { rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings } };
   const note = unattributedNote(reply, options);
   if (reply.rankMissing !== null && reply.rows.length === 0) {
@@ -176,7 +185,7 @@ function readReply(readView: BoundedReadView, options: MilitaryAirAtOptions): Re
   return { reply };
 }
 
-function notes(reply: MilitaryAirAtReply, options: MilitaryAirAtOptions): readonly string[] | undefined {
+function notes(reply: MilitaryAirContent, options: MilitaryAirAtOptions): readonly string[] | undefined {
   const list = [reply.rankMissing, unattributedNote(reply, options)].filter((item): item is string => item !== null);
   return list.length ? list : undefined;
 }

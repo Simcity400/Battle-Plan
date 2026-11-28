@@ -162,13 +162,17 @@ test('air kills & losses lines projects slot-keyed dual lines, whole-number axis
     [k1]: { name: 'German Reich', color: '#6d7874' },
     [k2]: { name: 'Soviet Union', color: '#993333' },
   });
+  const { hour, validUntil, ...content } = airReply();
+  const options = makeOptions({ rankMetric: 'taken' });
   const readView = createBoundedReadView({
-    hour: displayedHour(100),
-    panels: new Map([['head', airReply()]]),
+    hour: displayedHour(hour),
+    panels: new Map([['head', content]]),
     identity,
   });
 
-  const model = airKillsLossesLinesProjection.project(readView, makeOptions({ rankMetric: 'taken' }));
+  const model = airKillsLossesLinesProjection.project(readView, options);
+  const exact = createBoundedReadView({ hour: displayedHour(hour), panels: new Map([['head', { ...content, hour, validUntil }]]), identity });
+  assert.deepEqual(model, airKillsLossesLinesProjection.project(exact, options));
   const plan = airKillsLossesLinesDeclaration.sources(makeCtx(), { following: true, staticSpan: null });
   const asks = hoverAsks(plan, 90, name => model.drawnKeys?.[name] ?? [countryKey(3)]);
   assert.deepEqual(model.drawnKeys, { dealt: [k1, k2], taken: [k1, k2] });
