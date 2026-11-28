@@ -87,6 +87,7 @@ impl FrameAssets {
         let mut names = Vec::new();
         let job = roster.descriptor_job();
         let descriptors = job.view();
+        let registered = |name: &str| descriptors.has_entity(name) || descriptors.meshes.contains_key(name);
         for (kind_index, kind) in types.iter().enumerate() {
             let condition = kind
                 .dlc
@@ -102,11 +103,9 @@ impl FrameAssets {
                 continue;
             }
             let condition_error = condition.err().map(|e| e.to_string());
-            let inherited = descriptors.inherit(&kind.entity);
-            let mesh = descriptors.resolve(&kind.entity).is_some();
             let reason = if let Some(error) = condition_error.as_deref() {
                 Some(error)
-            } else if !mesh && inherited.is_none() {
+            } else if !registered(&kind.entity) {
                 Some("no entity or mesh declaration")
             } else {
                 None
@@ -139,10 +138,7 @@ impl FrameAssets {
         names.extend(
             strike_effects::Assets::names()
                 .into_iter()
-                .filter(|name| {
-                    descriptors.resolve(name).is_some()
-                        || descriptors.inherit(name).is_some()
-                })
+                .filter(|name| registered(name))
                 .map(str::to_owned),
         );
         let mut model_warnings = Vec::new();

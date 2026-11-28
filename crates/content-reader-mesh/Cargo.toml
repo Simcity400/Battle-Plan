@@ -13,6 +13,8 @@ doctest = false
 workspace = true
 
 [dependencies]
+rmp-serde.workspace = true
+serde.workspace = true
 sha2.workspace = true
 content-reader-defines.workspace = true
 content-reader-layers.workspace = true

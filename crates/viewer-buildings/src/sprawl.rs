@@ -812,6 +812,7 @@ impl Sprawl {
             library.merge(ModelLibrary::load_recorded(
                 layers,
                 decode,
+                None,
                 &from_recording,
                 |entity| format!("a descriptor that does not parse may declare {entity}"),
             )?);

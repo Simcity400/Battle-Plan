@@ -172,7 +172,7 @@ fn memo_primary_index_and_kept_placements_keep_fixed_multi_hour_aircraft_and_fai
                             Ok(Some("Graphical".into()))
                         },
                         &|| panic!("unreached country ladder"),
-                        &|name| assets.roster.descriptors.entities.contains_key(name),
+                        &|name| assets.roster.has_entity(name),
                     )
                 })
             };

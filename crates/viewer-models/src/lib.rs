@@ -751,7 +751,7 @@ impl ModelLibrary {
         let mut meshless = Vec::new();
         for mesh in &library.meshes {
             if mesh.path.is_empty()
-                && let Some(entity) = descriptors.inherit(&mesh.name)
+                && let Some(entity) = descriptors.prepared().inherit(&mesh.name)
             {
                 meshless.push(missing_mesh(&entity, &mesh.name));
             }
@@ -790,15 +790,17 @@ impl ModelLibrary {
     pub fn load_recorded(
         layers: &ResolvedLayers,
         decode: Decode,
+        prepared: Option<&mesh::DescriptorJob<'_>>,
         names: &[String],
         why: impl Fn(&str) -> String,
     ) -> io::Result<Self> {
-        Self::load_recorded_profiled(layers, decode, names, why, &mut BuilderSpans::new(false))
+        Self::load_recorded_profiled(layers, decode, prepared, names, why, &mut BuilderSpans::new(false))
     }
 
     pub fn load_recorded_profiled(
         layers: &ResolvedLayers,
         decode: Decode,
+        prepared: Option<&mesh::DescriptorJob<'_>>,
         names: &[String],
         why: impl Fn(&str) -> String,
         spans: &mut BuilderSpans,
@@ -814,7 +816,7 @@ impl ModelLibrary {
             &recorded,
             layers,
             decode,
-            job.view(),
+            prepared.unwrap_or(&job).view(),
             names,
             &mut Vec::new(),
             |_, _| None,

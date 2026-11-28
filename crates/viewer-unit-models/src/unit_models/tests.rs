@@ -1669,7 +1669,7 @@ fn lazy_bake_assets(name: &str) -> (std::path::PathBuf, UnitModelAssets) {
     );
     let mut assets = UnitModelAssets::off(String::new());
     assets.roster = layers.descriptor_roster().unwrap();
-    assets.registered = assets.roster.descriptors.entities.keys().cloned().collect();
+    assets.registered = assets.roster.entity_names().map(str::to_owned).collect();
     assets.layers = layers;
     (root, assets)
 }
@@ -1730,11 +1730,13 @@ fn unsuccessful_unit_bakes_are_not_retried() {
     assets.ensure(&["missing".into()]);
     assert!(assets.library().slot("missing").is_none());
     assert!(*assets.bakes.lock().unwrap()["missing"].lock().unwrap());
-    let readable = assets.roster.descriptors.entities["first"].clone();
-    Arc::make_mut(&mut assets.roster)
-        .descriptors
-        .entities
-        .insert("missing".into(), readable);
+    let readable = assets.roster.descriptor_job().view().entity("first").unwrap().clone();
+    let roster = Arc::make_mut(&mut assets.roster);
+    roster.descriptors = mesh::Descriptors {
+        meshes: std::mem::take(&mut roster.descriptors.meshes),
+        animations: std::mem::take(&mut roster.descriptors.animations),
+        entities: BTreeMap::from([("missing".into(), readable)]),
+    }.into();
     assets.ensure(&["missing".into()]);
     assert!(assets.library().slot("missing").is_none());
     std::fs::remove_dir_all(root).unwrap();
@@ -1756,7 +1758,7 @@ fn lazy_bakes_keep_named_attachment_refusals_for_the_layer_report() {
     );
     let mut assets = UnitModelAssets::off(String::new());
     assets.roster = layers.descriptor_roster().unwrap();
-    assets.registered = assets.roster.descriptors.entities.keys().cloned().collect();
+    assets.registered = assets.roster.entity_names().map(str::to_owned).collect();
     assets.layers = layers;
     assets.ensure(&["armed".into()]);
     assets.ensure(&["armed".into()]);
@@ -1800,7 +1802,7 @@ fn concurrent_demand_schedules_keep_stable_groups_events_and_sound_creation_orde
         let mut assets = UnitModelAssets::off(String::new());
         assets.registered = ["first".into(), "second".into()].into();
         assets.roster = Arc::new(mesh::Roster {
-            descriptors: descriptors.clone(),
+            descriptors: descriptors.clone().into(),
             ..Default::default()
         });
         assets.ensure(&[first.into()]);

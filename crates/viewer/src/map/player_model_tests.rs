@@ -16,9 +16,7 @@ fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io
     let aircraft = document
         .aircraft
         .roster()
-        .descriptors
-        .entities
-        .keys()
+        .entity_names()
         .find_map(|name| document.aircraft.player(name).ok())
         .ok_or_else(|| invalid("the content registers no entity that can be flown"))?;
     scene.set_graphics(dashboard_core::protocol::MapGraphics {

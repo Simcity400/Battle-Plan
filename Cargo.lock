@@ -3754,6 +3754,8 @@ dependencies = [
  "engine-heap",
  "num-traits",
  "replay-identity",
+ "rmp-serde",
+ "serde",
  "sha2",
  "smallvec",
  "test-unify",

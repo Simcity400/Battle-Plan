@@ -1053,7 +1053,7 @@ fn baked(layers: &ResolvedLayers, name: &str) -> ModelLibrary {
     let library = ModelLibrary::load(
         layers,
         Decode::default(),
-        &roster.descriptors,
+        roster.descriptor_job().view(),
         &[name.to_owned()],
         &mut warnings,
     )
@@ -1062,7 +1062,7 @@ fn baked(layers: &ResolvedLayers, name: &str) -> ModelLibrary {
         library.slot(name).is_some(),
         "{name} does not bake: {warnings:?}; {:?} {:?}",
         roster.logged,
-        roster.descriptors.entities.keys().collect::<Vec<_>>()
+        roster.entity_names().collect::<Vec<_>>()
     );
     library
 }
@@ -1529,7 +1529,7 @@ fn visual_fallback_and_refusal_identities_survive_opposite_demand_orders() {
         let library = ModelLibrary::load(
             presentation,
             Decode::default(),
-            &roster.descriptors,
+            roster.descriptor_job().view(),
             &names.map(str::to_owned),
             &mut warnings,
         )

@@ -3,7 +3,7 @@ use super::*;
 
 fn roster(source: &[u8]) -> mesh::Roster {
     mesh::Roster {
-        descriptors: mesh::parse_descriptors(source, "gfx/entities/known.asset").unwrap(),
+        descriptors: mesh::parse_descriptors(source, "gfx/entities/known.asset").unwrap().into(),
         unreadable_names: BTreeMap::from([("uncertain".into(), "gfx/entities/later.asset".into())]),
         ..Default::default()
     }
