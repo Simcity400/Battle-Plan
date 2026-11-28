@@ -1,5 +1,6 @@
-import { datedPanel } from '../dashboard/follow/messages.fixture.ts';
-import { Lane } from '../draw/lane.ts';
+import { datedPanel, datedRecord } from '../dashboard/follow/messages.fixture.ts';
+import type { Refusal } from '../dashboard/follow/page.ts';
+import { Lane, type Presented } from '../draw/lane.ts';
 import { DEFAULT_SEEDS, deriveColors } from '../shell/appearance/themes.ts';
 import { defaultArtFrame, readyArt } from './art/types.ts';
 import { barsLane, type FamilyBarsBinding } from './bars/laneView.ts';
@@ -20,10 +21,11 @@ const theme: FamilyTheme = {
 function rig(kind: string, dpr: number) {
   let now = 1000;
   let serial = 0;
+  let presented: Presented<ImageBitmap> | undefined;
   const queued: (() => void)[] = [];
   const view = createLaneView(barsLane, () => {});
   const lane = new Lane<ImageBitmap>({
-    lane: 0, lanes: 1, views: () => view, crop: async () => [], present() {}, release() {},
+    lane: 0, lanes: 1, views: () => view, crop: async () => [], present: picture => { presented = picture; }, release() {},
     fail: reason => { throw new Error(reason); }, later: draw => queued.push(draw), clock: () => now,
   });
   const canvas = new OffscreenCanvas(1, 1);
@@ -40,18 +42,24 @@ function rig(kind: string, dpr: number) {
   });
   lane.receive('panels', datedPanel(1, 100, 30));
   lane.receive('panels', datedPanel(1, 101, 150));
-  const request = async (now: number) => {
-    lane.frame({ type: 'frame', serial: ++serial, now, target: now, exact: true, seek: 1, speed: 0, installed: [], refused: [], inspect: [] });
+  const request = async (now: number, speed = 0, acknowledge = false, refused: Refusal[] = []) => {
+    const installed = acknowledge ? (presented?.entries ?? []).map(({ id, widget, binding }) => ({ id, widget, binding })) : [];
+    lane.frame({ type: 'frame', serial: ++serial, now, target: now, exact: true, seek: 1, speed, installed, refused, inspect: [] });
     for (let i = 0; i < 12; i++) await Promise.resolve();
   };
-  const clock = (playing: boolean) => lane.setClock({
-    playing, speed: playing ? 1 : 0, anchorPosition: 100, anchorTimeMs: performance.timeOrigin + now, seek: 1, exactHour: 100,
+  const clock = (playing: boolean, position = 100, speed = playing ? 1 : 0) => lane.setClock({
+    playing, speed, anchorPosition: position, anchorTimeMs: performance.timeOrigin + now, seek: 1, exactHour: Math.floor(position),
   });
-  const step = () => {
-    now += 200;
+  const step = (elapsed = 200) => {
+    now += elapsed;
     for (const draw of queued.splice(0)) draw();
   };
-  return { request, clock, step, pixels: () => canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data };
+  return {
+    request, clock, step, pixels: () => canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data,
+    later: () => lane.receive('panels', datedPanel(1, 104, 185)),
+    revoke: () => lane.receive('panels', datedRecord(1, 101, 0, 'Withdrawn')),
+    lastEntry: () => presented?.entries.at(-1),
+  };
 }
 
 function changedBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
@@ -99,8 +107,37 @@ async function checkSettledPixels() {
     await cold.request(100);
     results.push({ dpr, moving, paused: changedBytes(cold.pixels(), played.pixels()) });
   }
+  const histories = [];
+  for (const revoked of [false, true]) {
+    const cold = rig(kind, 1.25);
+    if (revoked) cold.revoke();
+    await cold.request(revoked ? 100 : 101);
+    const expected = cold.pixels();
+    for (const history of ['skip', 'midpoint', 'late-ack', 'speed-change'] as const) {
+      const played = rig(kind, 1.25);
+      played.clock(true);
+      await played.request(100, 1);
+      await played.request(100, 1, true);
+      if (history !== 'skip') played.step(500);
+      if (history === 'late-ack') await played.request(101, 1);
+      if (revoked) played.revoke();
+      if (history === 'late-ack') {
+        const entry = played.lastEntry()!;
+        await played.request(102, 1, !revoked, revoked ? [{ widget: 1, id: entry.id, reason: 'kept content' }] : []);
+      }
+      if (history === 'speed-change' && !revoked) {
+        played.later();
+        cold.later();
+        played.clock(true, 104);
+        played.step(0);
+      }
+      played.clock(true, 102, history === 'speed-change' ? 24 : 1);
+      played.step(0);
+      histories.push({ revoked, history, difference: changedBytes(expected, played.pixels()) });
+    }
+  }
   bitmap.close();
-  return results;
+  return { results, histories };
 }
 
 (window as unknown as { checkSettledPixels: typeof checkSettledPixels }).checkSettledPixels = checkSettledPixels;

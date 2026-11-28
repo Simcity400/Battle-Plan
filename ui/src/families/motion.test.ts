@@ -482,6 +482,39 @@ describe('Ordered bar playback', () => {
     assert.ok(Math.abs(f.barWidth() / unit - 80) < .01);
   }));
 
+  it('rebuilds the exact paused picture and renderer for direct, staged, extended and never-owned slots', async () => {
+    for (const history of ['direct', 'staged', 'extended', 'never-owned']) await withLane(async f => {
+      f.record(100, { value: 30, target: true });
+      f.record(123);
+      f.record(124, { value: 60 });
+      f.record(147);
+      f.record(148, { value: 100 });
+      if (history === 'extended') f.lane.supply(1, { dated: { h: 100, c: 148 } });
+      f.clock(100, 1);
+      await f.request(100, 1);
+      const unit = f.barWidth() / 30;
+      f.clock(124, 1);
+      if (history === 'direct') await f.request(124, 1, 1, true);
+      else await f.request(100, 1, 1, true, false, 124);
+      const ready = f.presented.at(-1)!.entries[0]!;
+      assert.equal(ready.lo, 124);
+      if (history === 'extended' || history === 'staged') await f.request(100, 1, 1, false, true);
+      if (history === 'extended') f.lane.supply(1, { dated: { h: 100, c: 149 } });
+      f.canvas.clearOps();
+      f.clock(124, 0);
+      await f.request(124, 0, 1, history === 'never-owned' ? [] : [ready]);
+      const widths = f.operations()
+        .filter(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE)
+        .map(op => Number(op.args[2]) / unit);
+      assert.equal(widths.length, 1, history);
+      assert.ok(Math.abs(widths[0]! - 60) < .01, history);
+      f.clock(136, 1);
+      await f.request(136, 1, 1, true);
+      f.tick(0);
+      assert.ok(Math.abs(f.barWidth() / unit - 80) < .01, history);
+    });
+  });
+
   it('settles to the proven endpoint when the clock skips beyond it before any acknowledgement', async () => withLane(async f => {
     f.record(100, { value: 30 });
     f.record(101, { value: 60 });
@@ -550,7 +583,7 @@ describe('Ordered bar playback', () => {
     assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
   }));
 
-  it('hands a staged slot to playback only after acceptance and never paints behind its accepted date', async () => withLane(async f => {
+  it('hands a staged slot to playback at the accepted hour', async () => withLane(async f => {
     f.record(100, { value: 30, target: true });
     f.record(123);
     f.record(124, { value: 60 });
@@ -566,10 +599,12 @@ describe('Ordered bar playback', () => {
     f.tick(0);
     assert.deepEqual(f.sampled, []);
     assert.equal(f.canvas.stagedCopies().length, 0);
+    f.clock(124, 1);
     await f.request(124, 1, 1, [staged!], false, 148);
     assert.equal(f.canvas.stagedCopies().length, 0);
     f.tick(0);
-    assert.deepEqual(f.sampled, []);
+    assert.equal(f.sampled.length, 1);
+    assert.ok(Math.abs(f.barWidth() / exact - 60 / 30) < .01);
     f.clock(136, 1);
     f.tick(0);
     assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
@@ -721,7 +756,7 @@ describe('Ordered bar playback', () => {
     const start = f.barWidth();
     f.canvas.clearOps();
     f.tick(0);
-    assert.equal(f.operations().length, 0);
+    assert.equal(f.barWidth(), start);
     f.clock(101.5, 168, 1, true);
     f.tick(0);
     assert.ok(f.operations().some(op => op.op === 'fillText' && String(op.args[0]).includes('recorded')));
@@ -797,7 +832,7 @@ describe('Ordered bar playback', () => {
     for (const position of [100.5, 101.5, 102.5]) {
       f.clock(position, 1);
       f.tick(0);
-      assert.equal(f.operations().length, 0);
+      assert.equal(f.barWidth(), start);
     }
     f.clock(103.5, 1);
     f.tick(0);

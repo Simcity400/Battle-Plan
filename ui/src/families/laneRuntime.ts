@@ -498,6 +498,18 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     ...(held.artResolutions ? { artResolutions: held.artResolutions } : {}),
     artRevision: held.artRevision,
   });
+  const projectAt = (scene: Scene, hour: number, binding: TBinding, projection: FamilyProjection<TModel, unknown>,
+    base: SceneSources, readers: SceneReaders, tiles: SceneTiles) => {
+    const series = tiles.series(scene, base, binding, hour);
+    const projected = projectScene(scene, series ? { ...base, series } : base, hour, readers, view => projection.project(view, binding.options));
+    let until = Math.min(
+      projection.nextChange?.(projected.view, binding.options) ?? Infinity,
+      family.boundary(projected.model, hour),
+      projected.boundary,
+    );
+    for (const lines of series?.values() ?? []) for (const line of lines.values()) until = Math.min(until, line.validInterval[1] + 1);
+    return { projected, until: until > hour ? until : hour + 1 };
+  };
 
   const clearColorGetters = new WeakMap<OffscreenCanvasRenderingContext2D, () => string>();
 
@@ -734,16 +746,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (reuse && !samePictures(keep.parts, input.pictures, true)) keep.parts = snapshotPictures(input.pictures);
       if (!reuse) {
         const base = sceneSources(binding, projection.validateTail);
-        const series = keep.tiles.series(input, base, binding, hour);
-        const projected = projectScene(input, series ? { ...base, series } : base, hour, readers, view => projection.project(view, binding.options));
-        let seriesUntil = Infinity;
-        for (const lines of series?.values() ?? []) for (const line of lines.values()) seriesUntil = Math.min(seriesUntil, line.validInterval[1] + 1);
-        const until = Math.min(
-          projection.nextChange ? projection.nextChange(projected.view, binding.options) : Infinity,
-          family.boundary(projected.model, hour),
-          projected.boundary,
-          seriesUntil,
-        );
+        const { projected, until } = projectAt(input, hour, binding, projection, base, readers, keep.tiles);
         if (keep.kind !== binding.kind || keep.viewName !== binding.view || keep.owner !== input.owner) {
           resetMirror(keep);
         }
@@ -756,7 +759,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.windowKey = windowKeyOf(binding);
         keep.parts = snapshotPictures(input.pictures);
         keep.validFrom = hour;
-        keep.validUntil = until > hour ? until : hour + 1;
+        keep.validUntil = until;
         const demands: Record<string, Field> = {};
         if (projected.identityDemands.length) demands.identityDemands = field(keep, 'identityDemands', projected.identityDemands, content);
         if (projected.artAsks.length) demands.artDemands = field(keep, 'artDemands', projected.artAsks, content);
@@ -778,8 +781,10 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
 
       const shared = input.sharedSurface;
       const animation = (shared || keep.workerCanvas) && input.binding.pin === null && family.playback?.supports(model, binding) ? family.playback : undefined;
-      const playbackOwnsPixels = animation !== undefined && input.playbackOwnsPixels === true;
+      const playbackOwnsPixels = input.playbackOwnsPixels === 'refused' || (animation !== undefined && input.playbackOwnsPixels === true);
       const status = family.status(model);
+      if (input.pausePlayback === 'only' && (!animation || status !== 'picture')) return EMPTY;
+      const settlePlayback = input.restorePlayback || (input.pausePlayback !== undefined && animation !== undefined);
       if (status === 'waiting') {
         resetMirror(keep);
         return WAITING;
@@ -837,7 +842,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const speedRedraw = speedChanged && keep.content !== '' && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame) === false;
       keep.speed = effectiveSpeed;
       const drawChanged = !sameKey(keep.drawKey, drawKey);
-      const shouldPaint = input.restorePlayback || (input.playbackOwnsPixels && !animation)
+      const shouldPaint = settlePlayback || (input.playbackOwnsPixels && !animation)
         || slotDirty || keep.motion || effectiveNow >= keep.expiry || speedRedraw || drawChanged;
       const drawCanvas = (shown = frame, sharedTarget = shared) => {
         if (sharedTarget) {
@@ -945,7 +950,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           keep.art.requestVisible(shown, keep.artUrls ?? projected.artUrls);
         }
         const canKeep = playbackOwnsPixels
-          || (!input.restorePlayback && !input.playbackOwnsPixels && !slotDirty && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame));
+          || (!settlePlayback && !input.playbackOwnsPixels && !slotDirty && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame));
         const painted = canKeep ? { drew: false, next: false } : drawCanvas();
         const incremental = typeof painted === 'object';
         repainted = !incremental || painted.drew;
@@ -962,68 +967,56 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
 
       let playback: PlaybackPaint | undefined;
       if (animation && !playbackOwnsPixels) {
-        const parts = keep.parts;
-        const validFrom = keep.validFrom;
-        const validUntil = keep.validUntil;
         const base = sceneSources(binding, projection.validateTail);
-        type Visual = { parts: ReturnType<typeof snapshotPictures>; from: number; until: number; model: TModel; projected: typeof frame.projected; layout?: TLayout };
-        const original: Visual = { parts, from: validFrom, until: validUntil, model, projected: frame.projected, layout };
-        let cache: Visual[] = [original];
-        const modelAt = (sample: PlaybackPicture, hour: number): Visual | null => {
-          const found = cache.find(item => hour >= item.from && hour < item.until && samePictures(item.parts, sample.pictures, true));
-          if (found) return found;
+        const tiles = new SceneTiles();
+        type Visual = { parts: ReturnType<typeof snapshotPictures>; dates: readonly number[]; start: number; from: number; until: number; model: TModel; projected: typeof frame.projected; layout?: TLayout };
+        const cache: Visual[] = [];
+        let artRevision = keep.artRevision;
+        const modelAt = (sample: PlaybackPicture): Visual | null => {
+          let found: Visual | undefined;
+          const dates = binding.tiledBySource ? sample.pictures.map(picture => picture.c) : [];
+          for (const item of cache) {
+            if (item.start === sample.from && item.from <= sample.hour && (!found || item.from > found.from)
+              && sameKey(item.dates, dates) && samePictures(item.parts, sample.pictures, true)) found = item;
+          }
+          if (found && sample.hour < found.until) return found;
+          let hour = found?.until ?? sample.from;
           try {
-            const result = projectScene({ ...input, pictures: sample.pictures }, base, hour, readers, read => projection.project(read, binding.options));
-            const until = Math.min(
-              projection.nextChange?.(result.view, binding.options) ?? Infinity,
-              family.boundary(result.model, hour), result.boundary,
-            );
-            const visual = { parts: snapshotPictures(sample.pictures), from: hour, until: Math.max(hour + 1, until), model: result.model, projected: result.view };
-            cache = [visual, ...cache.slice(0, 2)];
-            return visual;
+            while (hour <= sample.hour) {
+              const { projected, until } = projectAt({ ...input, pictures: sample.pictures }, hour, binding, projection, base, readersOf(keep), tiles);
+              if (sample.hour < until) {
+                const visual = { parts: snapshotPictures(sample.pictures), dates, start: sample.from, from: hour, until, model: projected.model, projected: projected.view };
+                cache.unshift(visual);
+                if (cache.length > 3) cache.pop();
+                return visual;
+              }
+              hour = until;
+            }
           } catch {
             return null;
           }
+          return null;
         };
-        let last: Visual | null = repainted ? original : null;
-        let lastNext: Visual | null = null;
-        let endpoint: { visual: Visual; hour: number } | null = null;
-        let lastFraction = 0;
-        let lastArtRevision = keep.artRevision;
-        let lastInspect = input.inspect;
-        playback = (current, next, position, target, inspect, dirty, diagnostic) => {
-          let exact = original;
-          if (current) {
-            let actual = modelAt(current, current.from);
-            while (actual && current.hour >= actual.until) actual = modelAt(current, actual.until);
-            if (!actual || family.status(actual.model) !== 'picture' || !animation.supports(actual.model, binding)) {
-              if (diagnostic) diagnostic.reason = actual ? 'notEligible' : 'modelValidity';
-              return 'release';
-            }
-            exact = actual;
+        playback = (current, next, position, target, inspect, diagnostic) => {
+          if (artRevision !== keep.artRevision) {
+            cache.length = 0;
+            artRevision = keep.artRevision;
           }
-          if (!current?.proven) {
-            if (endpoint && position >= endpoint.hour && endpoint.hour > exact.from) exact = endpoint.visual;
-            if (last && last.from > exact.from) exact = last;
+          const exact = modelAt(current);
+          if (!exact || family.status(exact.model) !== 'picture' || !animation.supports(exact.model, binding)) {
+            if (diagnostic) diagnostic.reason = exact ? 'notEligible' : 'modelValidity';
+            return 'release';
           }
-          const begin = current ? Math.max(current.from, exact.from) : position;
-          const to = next && position > begin && position < next.hour && exact.until >= next.hour ? modelAt(next, next.hour) : null;
+          const begin = exact.from;
+          const to = next && position > begin && position < next.hour && exact.until >= next.hour ? modelAt(next) : null;
           const fraction = to && next ? (position - begin) / (next.hour - begin) : 0;
           exact.layout ??= family.layout(exact.model, binding, surface, theme, keep.ctx, exact.from, { previous: null, now: effectiveNow, speed: 0 });
           const recorded = { ...frame, hour: exact.from, model: exact.model, layout: exact.layout, projected: exact.projected, inspect };
           const moving = to ? animation.frame(recorded, to.model, fraction) : null;
-          if (moving && to && next) endpoint = { visual: to, hour: next.hour };
           if (diagnostic && next) {
             diagnostic.reason = position <= begin ? 'recordedHour' : !to ? 'modelValidity' : moving === null ? 'incompatible' : 'unchanged';
           }
-          const nextDrawn = moving ? to : null, fractionDrawn = moving ? fraction : 0;
-          if (!dirty && last === exact && lastNext === nextDrawn && lastFraction === fractionDrawn && lastArtRevision === keep.artRevision && lastInspect === inspect) return false;
           drawCanvas(moving || recorded, target);
-          last = exact;
-          lastNext = nextDrawn;
-          lastFraction = fractionDrawn;
-          lastArtRevision = keep.artRevision;
-          lastInspect = inspect;
           return moving ? 'interpolated' : 'exact';
         };
       }
