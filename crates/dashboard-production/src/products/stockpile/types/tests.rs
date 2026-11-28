@@ -54,6 +54,36 @@ fn stockpile_type_list_distinguishes_empty_from_unread_stock_and_keeps_witnesses
 }
 
 #[test]
+fn followed_stockpile_bars_keep_unchanged_naming_rows_between_dated_replies() {
+    use dashboard_base::{SourceKey, test_fixtures::{played, replay, slot_hour, stockpile_frame}};
+    use replay_data::rows::TableId;
+    use std::sync::Arc;
+
+    let first = slot_hour(TableId::Stockpiles) + 24;
+    let replay = replay((first - 1..=first + 3)
+        .map(|hour| stockpile_frame(hour, true, &[(20, 100_000)], Some(&[])))
+        .collect()).into_timelines(&Default::default()).unwrap();
+    let cancelled = false.into();
+    let source = Arc::new(super::Source::from_replay(SourceKey { source_id: "stockpile-bars-warm-names".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap());
+    let context = super::LoadContext { content: None };
+    let panel = super::panel(&source, &context, &serde_json::json!({ "panel": "equipment-stockpile-types", "branchId": "1", "country": 7 })).unwrap();
+    let steps = played(source.replay_ref(), panel.exact().unwrap(), first, first + 3);
+    let mut warm = 0;
+    for step in steps {
+        let params = super::StockpileTypesParams { branch_id: "1".into(), country: super::Country::Slot(7), hour: step.hour };
+        let exact = <super::EquipmentStockpileTypes as super::Product>::load(&source, &params, &context, &cancelled).unwrap();
+        assert!(!exact.rows.is_empty(), "the requested stock is present");
+        assert_eq!(step.value.as_ref(), &Ok(serde_json::to_value(exact).unwrap()));
+        if step.hour > first {
+            assert_eq!(step.rows, 0, "the numeric and naming inputs were held");
+            warm += 1;
+        }
+    }
+    assert!(warm > 0);
+}
+
+#[test]
 fn each_type_answers_stored_produced_need_and_balance_with_shortages_first_worst_first() {
     let types = [kind("rifles", None), kind("trucks", None), kind("tanks", None), kind("guns", None)];
     let variants = [
