@@ -28,11 +28,6 @@ function validateResourceMonths(raw: unknown): ResourceMonthsReply {
   return reply;
 }
 
-const resourceMonthsProvenInterval = (data: unknown, hour: number): readonly [number, number] => {
-  const next = (data as ResourceMonthsReply | null)?.nextChange;
-  return [hour, next == null ? Infinity : next - 1];
-};
-
 export const resourceTimeProjection: TimeChartProjection<ResourceTimeOptions> = registerFamilyProjection<TimeChartProjection<ResourceTimeOptions>>({
   kind: 'resource-balance',
   family: 'time-chart',
@@ -87,6 +82,7 @@ export const resourceTimeDeclaration: TimeChartWidgetDeclaration<ResourceTimeOpt
     const tag = ctx.countries.tags[0];
     const owner = `resource-balance:time:${ctx.track.source.id}:${ctx.branch.id}:${tag ?? ''}`;
     if (!tag) return { owner, entries: [] };
+    const params = { branchId: ctx.branch.id, country: countryFromKey(tag) };
     return {
       owner,
       entries: [{
@@ -99,9 +95,8 @@ export const resourceTimeDeclaration: TimeChartWidgetDeclaration<ResourceTimeOpt
           channel: 'panel',
           coverage: { mode: 'keyed', keys: [tag] },
           product: 'resource-balance-months',
-          followQuery: null,
-          params: { branchId: ctx.branch.id, country: countryFromKey(tag) },
-          provenInterval: resourceMonthsProvenInterval,
+          followQuery: { panel: 'resource-balance-months', ...params },
+          params,
           dynamicKeys: ['hour'],
           validate: validateResourceMonths,
         },

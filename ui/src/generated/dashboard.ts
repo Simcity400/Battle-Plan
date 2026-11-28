@@ -6539,6 +6539,7 @@ export const PANEL_KEYS = [
   "regional-weather",
   "research-slots",
   "resource-balance",
+  "resource-balance-months",
   "series-rank",
   "ships-sunk-tail",
   "special-project-details",

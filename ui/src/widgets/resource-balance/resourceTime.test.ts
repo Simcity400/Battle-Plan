@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { FollowQuery } from '../../dashboard/regionTime.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import type { FamilyPlanContext, PointSourceRead } from '../../families/plan.ts';
+import { compileFollowPlan, readsWithoutFollow } from '../../families/broker.ts';
+import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
@@ -40,9 +42,11 @@ test('the resource Time view reads one month reply at the hour and draws a row o
   const declaration = spec.declaration as TimeChartWidgetDeclaration<unknown>;
   const projection = spec.projection as TimeChartProjection<unknown>;
   const plan = declaration.sources(context(), { width: 800, height: 400 } as never);
-  const read = plan.entries[0]!.read as PointSourceRead;
-  assert.equal(read.product, 'resource-balance-months');
-  assert.deepEqual(read.provenInterval?.(REPLY, HOUR), [HOUR, HOUR + 19]);
+  assert.equal(plan.entries.filter(entry => readsWithoutFollow(entry.read)).length, 0);
+  const { subscriptions } = compileFollowPlan(plan, query => ({ query: query as FollowQuery, refused: null }));
+  assert.deepEqual(subscriptions.map(sub => [sub.channel, sub.product, sub.query]), [
+    ['panel', 'resource-balance-months', { panel: 'resource-balance-months', branchId: '7', country: 'GER' }],
+  ]);
 
   const model = projection.project(createBoundedReadView({ hour: HOUR, panels: new Map([['months', REPLY]]) }), declaration.projectionOptions(context(), { extent: [FIRST, HOUR], surface: '#111111' }));
   assert.equal(model.mode, 'rows');

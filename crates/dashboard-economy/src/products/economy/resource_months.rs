@@ -148,8 +148,30 @@ dashboard_base::reply_warnings!(ResourceMonthsReply);
 
 struct Held {
     infos: Vec<ResourceInfo>,
-    lines: Vec<(Vec<ChartRun>, Vec<MissingSpan>)>,
+    lines: Vec<ResourceHistory>,
     warnings: Vec<String>,
+}
+
+struct ResourceHistory {
+    runs: Vec<ChartRun>,
+    missing: Vec<MissingSpan>,
+    months: Vec<ResourceMonth>,
+}
+
+impl ResourceHistory {
+    fn new(runs: Vec<ChartRun>, missing: Vec<MissingSpan>, from: i32, to: i32) -> Self {
+        let months = months(&runs, &missing, from, to);
+        Self { runs, missing, months }
+    }
+
+    fn through(&self, hour: i32) -> Vec<ResourceMonth> {
+        let closed = self.months.partition_point(|month| month.last_hour <= hour);
+        let mut out = self.months[..closed].to_vec();
+        if let Some(open) = self.months.get(closed) {
+            out.extend(months(&self.runs, &self.missing, open.first_hour, hour));
+        }
+        out
+    }
 }
 
 #[derive(Default)]
@@ -175,7 +197,9 @@ fn held(source: &Source, query: &Query<'_>, country: &Country, load: &LoadContex
     let asks: Vec<(Ask, Vec<(i32, i32)>)> = infos.iter().map(|info| (Ask { country: country.clone(), part: parts.key(0, u128::from(info.id)) }, vec![(from, to)])).collect();
     let width = u32::try_from(i64::from(to) - i64::from(from) + 1).map_err(|_| dashboard_core::invalid("The branch is too long"))?;
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let lines = line.summaries_within(&asks, from, to, width)?.into_iter().map(|(summary, missing)| (summary.runs.unwrap_or_default(), missing)).collect();
+    let lines = line.summaries_within(&asks, from, to, width)?.into_iter()
+        .map(|(summary, missing)| ResourceHistory::new(summary.runs.unwrap_or_default(), missing, from, to))
+        .collect();
     let made = Arc::new(Held { infos, lines, warnings });
     state.lock().unwrap_or_else(PoisonError::into_inner).held.insert(key, Arc::clone(&made));
     Ok(made)
@@ -211,14 +235,14 @@ impl Product for ResourceMonths {
             .infos
             .iter()
             .zip(&held.lines)
-            .map(|(info, (runs, missing))| {
-                next = next.into_iter().chain(next_change(runs, hour).filter(|at| *at <= query.timeline.last)).min();
-                let net = value_at(runs, hour);
+            .map(|(info, history)| {
+                next = next.into_iter().chain(next_change(&history.runs, hour).filter(|at| *at <= query.timeline.last)).min();
+                let net = value_at(&history.runs, hour);
                 ResourceMonthRow {
                     resource: info.clone(),
                     net,
-                    missing: net.is_none().then(|| if named { reason_at(missing, hour).unwrap_or(NOT_RECORDED) } else { NOT_HELD }.to_owned()),
-                    months: months(runs, missing, query.timeline.first, hour),
+                    missing: net.is_none().then(|| if named { reason_at(&history.missing, hour).unwrap_or(NOT_RECORDED) } else { NOT_HELD }.to_owned()),
+                    months: history.through(hour),
                 }
             })
             .collect();
@@ -252,5 +276,21 @@ mod tests {
         assert_eq!(next_change(&runs, january + 3), Some(january + 10 * DAY));
         assert_eq!(next_change(&runs, january + 12 * DAY), Some(january + 20 * DAY));
         assert_eq!(next_change(&runs, february + 6 * DAY), None);
+    }
+
+    #[test]
+    fn resource_history_reuses_closed_months_and_projects_the_open_month_at_the_hour() {
+        let january = month_first(month_of(HOUR_EPOCH + 1936 * YEAR));
+        let february = month_first(month_of(january) + 1);
+        let from = january + 4;
+        let to = february + 2 * DAY + 5;
+        let runs = [run(january, february - 1, 0.1), run(february + DAY, to, 3.0)];
+        let missing = [MissingSpan { first_hour: february, last_hour: february + DAY - 1, reason: "Not read".into() }];
+        let held = ResourceHistory::new(runs.to_vec(), missing.to_vec(), from, to);
+        for hour in [from - 1, from, february - 1, february, february + DAY + 2, to] {
+            assert_eq!(held.through(hour), months(&runs, &missing, from, hour));
+        }
+        let held = ResourceHistory { runs: Vec::new(), missing: Vec::new(), months: held.months };
+        assert_eq!(held.through(february)[0], months(&runs, &missing, from, february)[0], "showing February never reads the days of January again");
     }
 }
