@@ -446,7 +446,8 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
     if scan_first <= clip && !keys.is_empty() {
         let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
         let measure_decl = series.measure(produced_measure(family.count, family.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
-        let line = Line::new(query, series, measure_decl)?;
+        let clocks = source.state::<totals::HistoryClocks>();
+        let line = Line::new(query, series, measure_decl)?.with_history_clocks(&clocks);
         let baseline = range_baseline(&line, query, family.measure, family.from_hour)?;
         let unavailable = match baseline {
             Baseline::Unavailable(reason) => Some(reason),

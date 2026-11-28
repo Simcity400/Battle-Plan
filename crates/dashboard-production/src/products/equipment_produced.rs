@@ -8,7 +8,7 @@ use dashboard_query::{
     Query, cost,
     identity::Holder,
     read::{self, CoveredValue},
-    series::{ranked::GroupSelection, totals::{Gap, TotalReaders}},
+    series::{ranked::GroupSelection, totals::{Gap, HistoryClocks, TotalReaders}},
 };
 use replay_lanes::lanes::{self, Keys};
 use replay_columnar::manifest::Status;
@@ -543,6 +543,7 @@ pub(crate) fn forget(source: &Source) {
     source.state::<ModelSnapshots>().lock().unwrap_or_else(PoisonError::into_inner).0.clear();
     *source.state::<Option<Arc<DatedDesigns>>>().lock().unwrap_or_else(PoisonError::into_inner) = None;
     *source.state::<TotalReaders>().lock().unwrap_or_else(PoisonError::into_inner) = TotalReaders::default();
+    *source.state::<HistoryClocks>().lock().unwrap_or_else(PoisonError::into_inner) = HistoryClocks::default();
 }
 
 fn model_snapshot(source: &Source, query: &Query<'_>, run: u32, hour: i32, ids: &BTreeSet<u32>) -> io::Result<Arc<ModelSnapshot>> {
