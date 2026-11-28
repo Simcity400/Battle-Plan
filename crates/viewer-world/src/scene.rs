@@ -2791,6 +2791,7 @@ impl Scene {
             device,
             &viewer_terrain::terrain_shader::terrain_readers(self.graphics.high_gfx_shaders),
         );
+        let [shadow_casters, shadow_receivers] = viewer_scene_base::shadow::stages(&camera, !no_shadows);
         let shadow_screen = self.shadow_screen_wanted(device);
         let mut passes = passes::Frame::new(&mut self.pass_diagnostics);
         self.arena.reset();
@@ -2833,7 +2834,7 @@ impl Scene {
             t.size() != size || t.world_size() != world_size || t.sea_bed() != sea_bed
         });
         if generation_changed
-            || !self.shadow.sized(size, shadow_screen)
+            || !self.shadow.sized(size, shadow_screen, [shadow_casters, shadow_receivers])
             || !self.post.prepared(size, world_size)
         {
             let made = viewer_gpu::gpu_contract::scoped(
@@ -2853,7 +2854,9 @@ impl Scene {
                         .as_ref()
                         .or(self.targets.as_ref())
                         .expect("made or kept");
-                    self.shadow.resize(device, size, shadow_screen);
+                    self.shadow.resize(
+                        device, size, shadow_screen, [shadow_casters, shadow_receivers],
+                    );
                     self.post.prepare(device, targets, generation_changed);
                     Ok(made)
                 },
@@ -3187,7 +3190,6 @@ impl Scene {
             shadow_matrix: [[0.0; 4]; 4],
             light_grid: self.point_light_tiles.grid,
         };
-        let [shadow_casters, shadow_receivers] = viewer_scene_base::shadow::stages(&camera, !no_shadows);
         let shadow_prepared = self.shadow.prepare(&globals.frame, camera, size);
         let shadow_matrix = shadow_prepared.map(|prepared| prepared.texture_matrix);
         globals.shadow_matrix = shadow_matrix.unwrap_or([[0.0; 4]; 4]);

@@ -245,8 +245,8 @@ pub fn stages(camera: &Camera, shadows_enabled: bool) -> [bool; 2] {
 }
 
 struct Buffers {
-    depth_map: wgpu::TextureView,
-    depth_map_depth: wgpu::TextureView,
+    depth_map: Option<wgpu::TextureView>,
+    depth_map_depth: Option<wgpu::TextureView>,
     buffer: wgpu::TextureView,
     buffer_depth: wgpu::TextureView,
     scratch: wgpu::TextureView,
@@ -349,20 +349,10 @@ impl Buffers {
         };
         let attachment =
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let square = wgpu::Extent3d {
-            width: DEPTH_MAP_SIZE,
-            height: DEPTH_MAP_SIZE,
-            depth_or_array_layers: 1,
-        };
         let screen_extent = extent(screen.size(size));
         Self {
-            depth_map: target("shadow depth map", DEPTH_MAP_FORMAT, square, attachment),
-            depth_map_depth: target(
-                "shadow depth map (z)",
-                DEPTH_FORMAT,
-                square,
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
-            ),
+            depth_map: None,
+            depth_map_depth: None,
             buffer: target("shadow buffer", BUFFER_FORMAT, screen_extent, attachment),
             buffer_depth: target(
                 "shadow buffer (z)",
@@ -384,15 +374,42 @@ impl Buffers {
         }
     }
 
+    fn prepare_casters(&mut self, device: &wgpu::Device, [casters, receivers]: [bool; 2]) {
+        let target = |label, format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: extent([DEPTH_MAP_SIZE; 2]),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            }).create_view(&Default::default())
+        };
+        let attachment = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if casters || receivers {
+            self.depth_map.get_or_insert_with(|| target(
+                "shadow depth map", DEPTH_MAP_FORMAT, attachment | wgpu::TextureUsages::TEXTURE_BINDING,
+            ));
+        }
+        if casters {
+            self.depth_map_depth.get_or_insert_with(|| target(
+                "shadow depth map (z)", DEPTH_FORMAT, attachment,
+            ));
+        }
+    }
+
     fn depth_pass<'a>(
         &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
         load: wgpu::LoadOp<f32>,
-    ) -> wgpu::RenderPass<'a> {
-        encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
+    ) -> Option<wgpu::RenderPass<'a>> {
+        let color = self.depth_map.as_ref()?;
+        Some(encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("shadow depth map"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.depth_map,
+                view: color,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -404,8 +421,8 @@ impl Buffers {
                     store: wgpu::StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_map_depth,
+            depth_stencil_attachment: self.depth_map_depth.as_ref().map(|view| wgpu::RenderPassDepthStencilAttachment {
+                view,
                 depth_ops: Some(wgpu::Operations {
                     load,
                     store: wgpu::StoreOp::Store,
@@ -418,7 +435,7 @@ impl Buffers {
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
-        })
+        }))
     }
 
     fn buffer_pass<'a>(
@@ -473,6 +490,9 @@ impl Buffers {
         encoder: &mut wgpu::CommandEncoder,
         casters: Option<(CasterKey, bool)>,
     ) -> bool {
+        if self.depth_map.is_none() {
+            return false;
+        }
         let ready = self.depth_map_held.borrow_mut().ready(casters);
         if matches!(ready, Ready::Draw | Ready::Clear) {
             drop(self.depth_pass(encoder, wgpu::LoadOp::Clear(1.0)));
@@ -540,17 +560,19 @@ impl ShadowPass {
         self.buffers = None;
     }
 
-    pub fn sized(&self, size: [u32; 2], screen: Screen) -> bool {
-        self.buffers
-            .as_ref()
-            .is_some_and(|b| b.size == size && b.screen == screen)
+    pub fn sized(&self, size: [u32; 2], screen: Screen, [casters, receivers]: [bool; 2]) -> bool {
+        self.buffers.as_ref().is_some_and(|b| {
+            b.size == size && b.screen == screen
+                && (!(casters || receivers) || b.depth_map.is_some())
+                && (!casters || b.depth_map_depth.is_some())
+        })
     }
 
-    pub fn resize(&mut self, device: &wgpu::Device, size: [u32; 2], screen: Screen) {
-        if self.sized(size, screen) {
-            return;
+    pub fn resize(&mut self, device: &wgpu::Device, size: [u32; 2], screen: Screen, stages: [bool; 2]) {
+        if self.buffers.as_ref().is_none_or(|b| b.size != size || b.screen != screen) {
+            self.buffers = Some(Buffers::new(device, size, screen));
         }
-        self.buffers = Some(Buffers::new(device, size, screen));
+        self.buffers.as_mut().expect("shadow screen targets").prepare_casters(device, stages);
     }
 
     pub fn screen(&self) -> Option<Screen> {
@@ -589,7 +611,7 @@ impl ShadowPass {
         encoder: &'a mut wgpu::CommandEncoder,
         load: wgpu::LoadOp<f32>,
     ) -> Option<wgpu::RenderPass<'a>> {
-        Some(self.buffers.as_ref()?.depth_pass(encoder, load))
+        self.buffers.as_ref()?.depth_pass(encoder, load)
     }
 
     pub fn ready_depth_map(
@@ -708,7 +730,7 @@ impl ShadowPass {
     }
 
     pub fn caster_texture(&self) -> Option<&wgpu::TextureView> {
-        self.buffers.as_ref().map(|buffers| &buffers.depth_map)
+        self.buffers.as_ref()?.depth_map.as_ref()
     }
 
     pub fn lit_texture(&self) -> &wgpu::TextureView {
@@ -1215,14 +1237,20 @@ mod tests {
             ([1, 1], Screen::Half, [1, 1]),
             ([7, 5], Screen::Full, [7, 5]),
         ] {
-            let buffers = Buffers::new(&device, view, screen);
+            let mut buffers = Buffers::new(&device, view, screen);
             assert_eq!(buffers.size, view);
             for target in [&buffers.buffer, &buffers.buffer_depth, &buffers.scratch] {
                 assert_eq!(side(target), made, "{view:?} {screen:?}");
             }
-            for target in [&buffers.depth_map, &buffers.depth_map_depth] {
-                assert_eq!(side(target), [DEPTH_MAP_SIZE; 2]);
-            }
+            assert!(buffers.depth_map.is_none());
+            assert!(buffers.depth_map_depth.is_none());
+            buffers.prepare_casters(&device, [false, true]);
+            let color = buffers.depth_map.clone().unwrap();
+            assert_eq!(side(&color), [DEPTH_MAP_SIZE; 2]);
+            assert!(buffers.depth_map_depth.is_none());
+            buffers.prepare_casters(&device, [true, true]);
+            assert_eq!(side(buffers.depth_map_depth.as_ref().unwrap()), [DEPTH_MAP_SIZE; 2]);
+            assert_eq!(buffers.depth_map.as_ref(), Some(&color));
         }
     }
 

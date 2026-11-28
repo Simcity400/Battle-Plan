@@ -35,6 +35,7 @@ pub struct Inputs<'a> {
 pub struct Run<'a> {
     pub vertices: &'a wgpu::Buffer,
     pub indices: &'a wgpu::Buffer,
+    pub index_format: wgpu::IndexFormat,
     pub range: std::ops::Range<u32>,
 }
 
@@ -249,7 +250,7 @@ impl Border {
                 shader_pipeline::gpu::stats::state();
                 pass.set_vertex_buffer(0, run.vertices.slice(..));
                 shader_pipeline::gpu::stats::state();
-                pass.set_index_buffer(run.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_index_buffer(run.indices.slice(..), run.index_format);
                 shader_pipeline::gpu::stats::draw();
                 pass.draw_indexed(run.range.clone(), 0, 0..1);
             }
