@@ -2204,6 +2204,16 @@ impl Scene {
         self.visibility = visibility;
     }
 
+    fn gradient_binding(texture: wgpu::Texture) -> Bound {
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(format),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+            ..Default::default()
+        });
+        Bound::with_view(texture, view, format)
+    }
+
     pub fn warm_political(
         &mut self,
         device: &wgpu::Device,
@@ -2277,8 +2287,8 @@ impl Scene {
         };
         if political.set_strategic_styles(device, queue, styles)? {
             let [first, second] = political.textures().cloned().expect("shown above");
-            self.gradient1 = Bound::of(first);
-            self.gradient2 = Bound::of(second);
+            self.gradient1 = Self::gradient_binding(first);
+            self.gradient2 = Self::gradient_binding(second);
         }
         Ok(())
     }
@@ -2350,8 +2360,8 @@ impl Scene {
             return Ok(());
         }
         let [first, second] = political.textures().cloned().expect("shown above");
-        *gradient1 = Bound::of(first);
-        *gradient2 = Bound::of(second);
+        *gradient1 = Self::gradient_binding(first);
+        *gradient2 = Self::gradient_binding(second);
         Ok(())
     }
 
