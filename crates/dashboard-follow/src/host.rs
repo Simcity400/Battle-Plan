@@ -1165,7 +1165,7 @@ fn check_parked_panel(release: &str) {
         Arc::new(move || gate.wake())
     }, jobs: Mutex::default() });
     push.watch_reply_lead(&parking.wake);
-    push.clock(route, seek, head, false);
+    push.clock(route, seek, head + 90, false);
     push.offer_kind(PANEL, future);
     assert!(push.try_take().is_some());
 
