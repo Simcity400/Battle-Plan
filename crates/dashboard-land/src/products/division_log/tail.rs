@@ -21,7 +21,7 @@ use dashboard_query::{
     series::{MissingSpan, ranked::GroupSelection},
 };
 use dashboard_text::metadata::check_cancel;
-use dashboard_world::products::{place_name_runs::{PlacePoint, names_at}, place_names::Name};
+use dashboard_world::products::place_name_runs::{PlacePoint, RowNames};
 use replay_data::rows::{DivisionEventRow, TableId};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -530,7 +530,7 @@ struct Prepared {
     tail: Arc<Tail>,
     index: Arc<Index<Line>>,
     selection: Option<Selection>,
-    places: Mutex<BTreeMap<PlacePoint, Name>>,
+    places: Mutex<RowNames>,
     dated: Option<Mutex<Dated>>,
 }
 
@@ -707,9 +707,7 @@ fn checked_reply(
         };
         let points: BTreeSet<_> = reply.rows.iter().filter_map(|row| point(row.event.as_ref()?)).collect();
         let mut held = prepared.places.lock().unwrap_or_else(PoisonError::into_inner);
-        held.retain(|point, _| points.contains(point));
-        let needed = points.into_iter().filter(|point| !held.contains_key(point)).collect();
-        held.extend(names_at(source, query, load, &needed, cancelled)?);
+        held.update(source, query, load, points, cancelled)?;
         for row in &mut reply.rows {
             let Some(event) = &row.event else { continue };
             if let Some(name) = point(event).and_then(|point| held.get(&point)) {
@@ -720,10 +718,7 @@ fn checked_reply(
                 reply.next_change = reply.next_change.into_iter().chain([at]).min();
             }
         }
-        let text_bytes = held.values().map(|name| {
-            name.name.as_ref().map_or(0, String::capacity) + name.missing.as_ref().map_or(0, String::capacity)
-        }).sum::<usize>();
-        if text_bytes > dashboard_base::products::MAX_PRODUCT_REPLY_BYTES { held.clear(); }
+        held.trim();
     }
     dashboard_base::products::check_reply_budget(&reply)?;
     Ok(reply)
@@ -784,6 +779,18 @@ pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json:
         .then(|| prepared.index.dated_cursor(&query.holders, &count_ask(&ask, &count_chips())))
         .transpose().map_err(|error| error.to_string())?;
     prepared.dated = Some(Mutex::new(Dated { display, counts }));
+    if params.place_names == Some(true) {
+        let mut places = RowNames::following();
+        places.hints((0..prepared.index.len() as u32).filter_map(|at| {
+            let entry = prepared.index.get(at);
+            let event = &prepared.tail.events[entry.payload.event()];
+            if !matches!(entry.state_at(event.observed), Some(SINGLE | CHILD)) { return None; }
+            let id = event.recorded.number(column::PROVINCE)? as u32;
+            let hour = event.recorded.number(column::PLACE_HOUR)? as i32;
+            Some(PlacePoint::Province(id, hour))
+        }));
+        prepared.places = Mutex::new(places);
+    }
     let (timeline, holders) = (query.timeline, query.holders);
     let (first, last) = (timeline.first, timeline.last);
     let load = LoadContext { content: load.content.clone() };

@@ -3,9 +3,9 @@ use dashboard_base::{Source, catalogue::{self, OwnRefusals}, products::{self, Lo
 use dashboard_core::{QueryError, presentation::Admitted};
 use dashboard_follow::panel::Panel;
 use dashboard_land::{products::land_battles::tail::{self, LandBattlesTail, LandBattlesTailParams, LandBattlesTailReply}, registrations::LAND_BATTLES_TAIL};
-use dashboard_world::products::{place_name_runs::{PlacePoint, names_at}, place_names::Name};
+use dashboard_world::products::place_name_runs::{PlacePoint, RowNames};
 use serde_json::Value;
-use std::{collections::{BTreeMap, BTreeSet}, io, sync::{Arc, Mutex, PoisonError, atomic::AtomicBool}};
+use std::{io, sync::{Arc, Mutex, PoisonError, atomic::AtomicBool}};
 
 pub(super) const PRODUCT: Registered = Registered {
     content_dependent: true,
@@ -30,7 +30,7 @@ fn open(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<d
     if asked["rowNames"].as_bool() != Some(true) {
         return tail::dated_panel(source, load, asked);
     }
-    let page = Mutex::new(Page::default());
+    let page = Mutex::new(Page { places: RowNames::following(), ..Page::default() });
     at_hour::dated_product::<Named>(source, load, asked, at_hour::at_hour, |_, reply| at_hour::before(reply.next_change), |_, _| {},
         move |source, params, load, cancelled, _| page.lock().unwrap_or_else(PoisonError::into_inner).read(source, params, load, cancelled))
 }
@@ -63,7 +63,7 @@ fn branch(params: &LandBattlesTailParams) -> io::Result<u64> {
 #[derive(Default)]
 struct Page {
     prepared: Option<(tail::Prepared, OwnRefusals)>,
-    places: BTreeMap<PlacePoint, Name>,
+    places: RowNames,
 }
 
 impl Page {
@@ -75,20 +75,21 @@ impl Page {
         if self.prepared.is_none() {
             let mut notes = OwnRefusals::default();
             let prepared = catalogue::own_refusals(&mut notes, || tail::prepare(source, &query, load, params, cancelled))?;
+            self.places.hints(prepared.place_points());
             self.prepared = Some((prepared, notes));
         }
         let (prepared, notes) = self.prepared.as_ref().expect("prepared page");
         catalogue::credit(notes);
         let mut reply = tail::reply(prepared, &query.holders, params, hour)?;
         at_hour::count_rows(|| reply.rows.len() as u64);
-        if reply.rows.is_empty() { self.places.clear(); return Ok(reply); }
+        if reply.rows.is_empty() {
+            self.places.update(source, &query, load, Default::default(), cancelled)?;
+            return Ok(reply);
+        }
         let titles = battle_names::for_rows(source, branch, load, cancelled).map_err(|reason| reason.to_string());
         dashboard_base::metadata::check_cancel(cancelled)?;
         let point = |row: &tail::LandBattleLogRow| row.state.map(|id| PlacePoint::State(id, row.hour));
-        let points: BTreeSet<_> = reply.rows.iter().filter_map(point).collect();
-        self.places.retain(|point, _| points.contains(point));
-        let needed = points.into_iter().filter(|point| !self.places.contains_key(point)).collect();
-        self.places.extend(names_at(source, &query, load, &needed, cancelled)?);
+        self.places.update(source, &query, load, reply.rows.iter().filter_map(point).collect(), cancelled)?;
         for row in &mut reply.rows {
             let id = row.key.split_once(':').map_or(row.key.as_str(), |(_, id)| id);
             let title = match &titles {
@@ -104,8 +105,7 @@ impl Page {
                 row.place_missing = Some("Province state not recorded".into());
             }
         }
-        let bytes = self.places.values().map(|place| place.name.as_ref().map_or(0, String::capacity) + place.missing.as_ref().map_or(0, String::capacity)).sum::<usize>();
-        if bytes > products::MAX_PRODUCT_REPLY_BYTES { self.places.clear(); }
+        self.places.trim();
         products::check_reply_budget(&reply)?;
         Ok(reply)
     }

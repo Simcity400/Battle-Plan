@@ -454,6 +454,87 @@ fn read_history(recording: &Recording, run: u32, table: TableId, fields: &[&str]
     Ok(history)
 }
 
+#[derive(Default)]
+pub(super) struct RowHistory {
+    pub(super) bucket: Option<i64>,
+    entries: Vec<((u32, i32, i32), TableId, Option<Vec<u128>>, History)>,
+    bytes: usize,
+    #[cfg(test)]
+    pub reads: usize,
+}
+
+impl RowHistory {
+    pub(super) fn select(&mut self, bucket: i64) {
+        if self.bucket != Some(bucket) { *self = Self { bucket: Some(bucket), ..Self::default() }; }
+    }
+
+    pub(super) fn holds(&self, stretch: (u32, i32, i32)) -> bool {
+        self.entries.iter().any(|(at, ..)| *at == stretch)
+    }
+
+    pub(super) fn read(&mut self, recording: &Recording, window: (u32, i32, i32), to: i32, (table, fields, keys): (TableId, &[&str], Keys<'_>)) -> io::Result<History> {
+        let (run, from, end) = window;
+        let asked = match keys {
+            Keys::All => None,
+            Keys::These(keys) => Some(keys),
+            _ => return read_history(recording, run, table, fields, keys, from, to),
+        };
+        let covers = |saved: &Option<Vec<u128>>| match (saved, asked) {
+            (None, _) => true,
+            (Some(saved), Some(asked)) => asked.iter().all(|key| saved.binary_search(key).is_ok()),
+            _ => false,
+        };
+        if let Some((.., history)) = self.entries.iter().rev().find(|(at, id, saved, _)| *at == window && *id == table && covers(saved)) {
+            return Ok(history_prefix(history, asked, to));
+        }
+        #[cfg(test)]
+        { self.reads += 1; }
+        let full = match read_history(recording, run, table, fields, keys, from, end) {
+            Ok(full) => full,
+            Err(_) if to < end => return read_history(recording, run, table, fields, keys, from, to),
+            Err(error) => return Err(error),
+        };
+        let prefix = history_prefix(&full, asked, to);
+        let bytes = std::mem::size_of_val(&full)
+            + asked.map_or(0, std::mem::size_of_val)
+            + full.columns.capacity() * std::mem::size_of::<usize>()
+            + full.keys.capacity() * std::mem::size_of::<(u128, Vec<lanes::Step>)>()
+            + full.keys.iter().map(|(_, steps)| steps.capacity() * std::mem::size_of::<lanes::Step>()
+                + steps.iter().filter_map(|step| step.cells.as_deref()).map(std::mem::size_of_val).sum::<usize>()).sum::<usize>()
+            + full.texts.capacity() * std::mem::size_of::<Box<[u8]>>()
+            + full.texts.iter().map(|text| text.len()).sum::<usize>()
+            + full.statuses.capacity() * std::mem::size_of::<StatusRun>()
+            + full.reasons.capacity() * std::mem::size_of::<(u32, String)>()
+            + full.reasons.values().map(String::capacity).sum::<usize>();
+        if self.bytes.saturating_add(bytes) <= dashboard_base::products::MAX_PRODUCT_REPLY_BYTES / 2 {
+            self.entries.push((window, table, asked.map(<[u128]>::to_vec), full));
+            self.bytes += bytes;
+        }
+        Ok(prefix)
+    }
+}
+
+fn history_prefix(history: &History, keys: Option<&[u128]>, to: i32) -> History {
+    let key_and_steps = |(key, steps): &(u128, Vec<lanes::Step>)| {
+        let end = steps.partition_point(|step| step.hour <= to);
+        (end != 0).then(|| (*key, steps[..end].to_vec()))
+    };
+    let keys = match keys {
+        Some(keys) => keys.iter().filter_map(|key| history.keys.binary_search_by_key(key, |(id, _)| *id).ok())
+            .filter_map(|at| key_and_steps(&history.keys[at])).collect(),
+        None => history.keys.iter().filter_map(key_and_steps).collect(),
+    };
+    History {
+        to,
+        keys,
+        statuses: history.statuses.iter().take_while(|run| run.first <= to)
+            .map(|run| StatusRun { last: run.last.min(to), ..*run }).collect(),
+        columns: history.columns.clone(),
+        texts: history.texts.clone(),
+        reasons: history.reasons.clone(),
+    }
+}
+
 fn decode_written_tags(recording: &Recording, run: u32, table: TableId, history: &History, orig: usize, ref_col: usize) -> io::Result<HashMap<(i32, u128), Option<Vec<u8>>>> {
     let stored = recording.run(run)?;
     let mut asks = Vec::new();
@@ -631,9 +712,13 @@ pub struct PlaceHistory {
 impl PlaceHistory {
     #[expect(clippy::too_many_arguments, reason = "stretch bounds, key sets and mode flags come from distinct callers")]
     pub fn load(recording: &Recording, run: u32, first: i32, last: i32, province_keys: Keys<'_>, state_keys: Keys<'_>, with_victory_points: bool, cancelled: &AtomicBool) -> io::Result<Self> {
+        Self::load_with(recording, (run, first, last), (province_keys, state_keys), (with_victory_points, false), cancelled,
+            |table, fields, keys| read_history(recording, run, table, fields, keys, first, last))
+    }
+
+    pub(super) fn load_with(recording: &Recording, (run, first, last): (u32, i32, i32), (province_keys, state_keys): (Keys<'_>, Keys<'_>), (with_victory_points, warm): (bool, bool), cancelled: &AtomicBool, mut read: impl FnMut(TableId, &[&str], Keys<'_>) -> io::Result<History>) -> io::Result<Self> {
         check_cancel(cancelled)?;
         let mode = CaptureMode::from_byte(recording.root_identity().capture_mode)?;
-        let read = |table, fields: &[&str], keys: Keys<'_>| read_history(recording, run, table, fields, keys, first, last);
         let want_provinces = !matches!(province_keys, Keys::These([]));
         let province_fields: &[&str] = if with_victory_points { &["state", "victory_points"] } else { &["state"] };
         let provinces = if want_provinces { read(TableId::Provinces, province_fields, province_keys)? } else { History::default() };
@@ -669,7 +754,7 @@ impl PlaceHistory {
             let ids: Vec<_> = countries.keys.iter().map(|(id, _)| *id).collect();
             let appearance = (!ids.is_empty()).then(|| read(TableId::CountryAppearance, &["original_tag", "original_tag_reference"], Keys::These(&ids))).transpose()?.unwrap_or_default();
             let reserved = read(TableId::ReservedCountryNaming, &["tag", "original_tag", "original_tag_reference"], Keys::All)?;
-            let slot_tags = build_slot_tags(recording, run, &countries, &appearance, &reserved, mode, first, last)?;
+            let slot_tags = if warm { HashMap::new() } else { build_slot_tags(recording, run, &countries, &appearance, &reserved, mode, first, last)? };
             (links, countries.statuses, slot_tags)
         } else {
             (History::default(), Vec::new(), HashMap::new())
