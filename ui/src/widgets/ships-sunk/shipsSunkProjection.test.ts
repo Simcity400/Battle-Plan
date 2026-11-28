@@ -1,34 +1,37 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { FollowQuery } from '../../dashboard/regionTime.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import type { IdentityProvider } from '../../families/plan.ts';
+import { buildTailPageRequest, compileFollowPlan } from '../../families/broker.ts';
+import type { FamilyPlanContext, IdentityProvider } from '../../families/plan.ts';
 import { ART_STATUS_ROW, deriveRowTooltip, type TableRow } from '../../families/table/model.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import type { ShipsSunkTailReply, SinkingRow } from '../../generated/dashboard';
 import { SHIPS_SUNK_COLUMNS } from './definition.ts';
-import { shipsSunkProjection } from './shipsSunkProjection.ts';
+import { shipsSunkDeclaration, shipsSunkProjection } from './shipsSunkProjection.ts';
 
-const titles: IdentityProvider = {
+let battleNameRequests = 0;
+const identities: IdentityProvider = {
   resolve(kind, key, atHour) {
-    const name = kind === 'battle' && key === 'combat:20:5' ? 'Second Battle of Mod Strait' : undefined;
+    if (kind === 'battle') battleNameRequests++;
     return {
       kind, key, atHour,
       holder: { status: 'ready', value: key }, tag: { status: 'ready', value: key },
-      name: name ? { status: 'ready', value: name } : { status: 'absent', reason: 'Name not recorded' },
+      name: kind === 'battle' ? { status: 'pending' } : { status: 'absent', reason: 'Name not recorded' },
       colour: { status: 'absent', reason: 'Colour not recorded' }, flagChoice: { status: 'absent', reason: 'Flag not recorded' },
       validInterval: [0, 1000], nextChangeAt: Infinity,
     };
   },
 };
 
-function project(rows: SinkingRow[]) {
+function project(rows: SinkingRow[], hour = 20) {
   const head: ShipsSunkTailReply = {
     branchId: '1', total: String(rows.length), offset: '0', rows,
     classes: [{ firstHour: 20, class: { token: 17, name: null, key: 'mod_corvette', icon: null } }],
     nextChange: null, missing: [], warnings: [],
   };
-  const source = buildRowSourceFromHead('branch', head, undefined, 20)!;
-  const view = createBoundedReadView({ hour: 20, rows: new Map([['main', source]]), identity: titles });
+  const source = buildRowSourceFromHead('branch', head, undefined, hour)!;
+  const view = createBoundedReadView({ hour, rows: new Map([['main', source]]), identity: identities });
   return shipsSunkProjection.project(view, { prefix: 'branch:', selected: [] });
 }
 
@@ -64,12 +67,16 @@ test('ship rows name the class and keep the victim dimmed, with the missing mark
 });
 
 test('a battle row names the battle in bold with its recorded killer beside it, and only the battle when the killer is not recorded', () => {
-  const model = project([
-    sinking('0', { battle: linked, sinkingCause: { kind: 'ship', name: 'Mod Raider', classKey: 'mod_raider_hull', className: null, assisted: false } }),
-    sinking('1', { battle: linked }),
-    sinking('2', { battle: { ...linked, id: 'combat:22:6', liveId: 'combat:22:6', firstHour: 6 },
+  const title = 'Second Battle of Mod Strait';
+  const rows = [
+    sinking('0', { battle: linked, title, sinkingCause: { kind: 'ship', name: 'Mod Raider', classKey: 'mod_raider_hull', className: null, assisted: false } }),
+    sinking('1', { battle: linked, title }),
+    sinking('2', { battle: { ...linked, id: 'combat:22:6', liveId: 'combat:22:6', firstHour: 6 }, titleMissing: 'Battle province not recorded',
       sinkingCause: { kind: 'airWing', carrierName: null, carrierClassKey: null, carrierClassName: null, assisted: false } }),
-  ]);
+  ];
+  const model = project(rows);
+  for (let hour = 21; hour <= 24; hour++) project(rows, hour);
+  assert.equal(battleNameRequests, 0, 'playing the named rows never asks for a battle name');
   const [known, unknown, unnamed] = model.rows;
   assert.deepEqual(known!.cells.cause?.value, { kind: 'known', value: 'Second Battle of Mod Strait' });
   assert.equal(known!.cells.cause?.strong, true);
@@ -83,13 +90,32 @@ test('a battle row names the battle in bold with its recorded killer beside it, 
   assert.deepEqual(knownTip.value('Victim'), { kind: 'partial', value: 'BBB', reason: 'Name not recorded' }, 'a country whose name is not recorded keeps its tag, marked partial, never as a known name');
   assert.equal(unknown!.cells.cause?.inlineSubtext, undefined);
   assert.deepEqual(tooltip(unknown!).value('Sunk by'), { kind: 'notRecorded', reason: 'Killer not recorded' });
-  assert.deepEqual(unnamed!.cells.cause?.value, { kind: 'notRecorded', reason: 'Name not recorded' });
+  assert.deepEqual(unnamed!.cells.cause?.value, { kind: 'notRecorded', reason: 'Battle province not recorded' });
   assert.equal(unnamed!.cells.cause?.inlineSubtext, 'by aircraft');
   assert.equal(tooltip(unnamed!).value('Battle')?.kind, 'notRecorded');
   assert.equal(known!.cells.action?.actionLabel, 'Watch', 'a sinking in a recorded battle offers Watch on that battle');
-  assert.deepEqual(known!.meta, { hour: known!.rowHour, battle: { key: linked.id } });
-  assert.deepEqual(unnamed!.meta, { hour: unnamed!.rowHour, battle: { key: 'combat:22:6' } });
+  assert.deepEqual(known!.meta, { hour: known!.rowHour, battle: { key: linked.id, title: known!.cells.cause?.value } });
+  assert.deepEqual(unnamed!.meta, { hour: unnamed!.rowHour, battle: { key: 'combat:22:6', title: unnamed!.cells.cause?.value } });
   const [alone] = project([sinking('3', {})]).rows;
   assert.equal(alone!.cells.action?.blank, true, 'a sinking with no recorded battle has nothing to watch');
   assert.deepEqual(alone!.meta, { hour: alone!.rowHour, battle: null });
+});
+
+test('played heads and exact pages both request the attached battle names', () => {
+  const ctx = {
+    track: { source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign' } }, axisOffset: 0 },
+    branch: { id: '1' },
+    widget: { time: { mode: 'follow' }, countries: { kind: 'all' } },
+    countries: { all: true },
+    options: {},
+    following: true,
+  } as unknown as FamilyPlanContext;
+  const plan = shipsSunkDeclaration.sources(ctx, { following: true, staticSpan: null });
+  const { subscriptions } = compileFollowPlan(plan, query => ({ query: query as FollowQuery | null, refused: null }));
+  assert.equal(subscriptions[0]?.channel, 'panel');
+  assert.equal(subscriptions[0]?.query.panel, 'ships-sunk-tail');
+  assert.equal(subscriptions[0]?.query.rowNames, true);
+  const page = buildTailPageRequest(plan.entries[0]!, { hour: 20, offset: 64, limit: 64 });
+  assert.equal(page?.product, 'ships-sunk-tail');
+  assert.equal(page?.params.rowNames, true);
 });

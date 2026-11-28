@@ -1,7 +1,7 @@
 import { useRef, useState, type RefObject } from 'react';
 import { jumpItem } from '../../charts/jump.ts';
 import { BattleViewer } from '../../components/BattleViewer.tsx';
-import { BattleTitleHeading } from '../../components/BattleTitleHeading.tsx';
+import { ValueState } from '../../components/ValueState.tsx';
 import { formatDay } from '../../dashboard/calendar';
 import type { FamilyViewProps, FamilyViewRenderer, WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
@@ -33,8 +33,11 @@ function SunkBattle({ asked, track, runtime, anchor, onClose }: {
   const course = useProduct(runtime.client, productRequest({ sourceId: track.source.id, revision: track.source.revision,
     product: 'naval-battle-course', params: { branchId: track.branch.id, key: asked.battle.key, hour: asked.hour as GatedHour } }), true, validateNavalBattleCourse);
   const row = course.data?.row;
+  const titleRead = asked.battle.title;
+  const title = titleRead.kind === 'known' ? titleRead.value
+    : <ValueState kind="missing" reason={'reason' in titleRead ? titleRead.reason : 'Battle title not recorded'} />;
   if (row) {
-    return <NavalBattleWindow opened={{ scope: asked.scope, subject: { row }, hour: asked.hour, start: asked.sunk }}
+    return <NavalBattleWindow title={title} opened={{ scope: asked.scope, subject: { row }, hour: asked.hour, start: asked.sunk }}
       track={track} runtime={runtime} anchor={anchor} returnFocus={mirrorRowSelector(asked.row)} onClose={onClose} />;
   }
   const reason = course.error ? failureText(course.error, 'The battle couldn’t be read.')
@@ -43,7 +46,7 @@ function SunkBattle({ asked, track, runtime, anchor, onClose }: {
     <span className="bv-missing" data-tooltip={reason} tabIndex={0}><i className="bv-hatch" aria-hidden="true" />Battle not available</span>
     {course.error && classifyFailure(course.error)?.kind === 'retryable' && <button type="button" className="button small" onClick={course.retry}>Try again</button>}
   </> : <span className="lb-note" aria-busy="true">Reading the battle…</span>;
-  return <BattleViewer subject={asked.battle.key} title={<BattleTitleHeading client={runtime.client} track={track} battle={asked.battle.key} />} day={<span className="bv-when"><time>{formatDay(asked.sunk)}</time></span>}
+  return <BattleViewer subject={asked.battle.key} title={title} day={<span className="bv-when"><time>{formatDay(asked.sunk)}</time></span>}
     closeLabel="Close battle viewer" anchor={anchor} returnFocus={mirrorRowSelector(asked.row)} runtime={runtime} track={track} province={null}
     span={null} unplayable={unplayable} gaps={[]} fallbackHour={asked.sunk} onClose={onClose} views={['battle']}
     sides={() => null} battle={() => null} />;
