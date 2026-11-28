@@ -329,7 +329,7 @@ const stopOf = (picture: Picture<Value>): string | null => {
   return value.kind === 'panel' ? value.stopped ?? null : null;
 };
 
-const isPlaybackFact = (picture: Picture<Value>) => !picture.carried && stopOf(picture) === null && refusalOf(picture) === null;
+const isPlaybackReading = (picture: Picture<Value>) => !picture.carried && stopOf(picture) === null && refusalOf(picture) === null;
 
 const BUFFER = 8 << 20;
 const HELD_COST = 32;
@@ -2140,8 +2140,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const pictures: Picture<Value>[] = [];
       let from = dated?.h ?? -Infinity;
       let through = dated?.c ?? Infinity;
+      const accepts = (picture: Picture<Value>) => at === hour && hour <= picture.c ? !picture.carried : isPlaybackReading(picture);
       for (const id of widget.subs) {
-        const picture = this.facts.select(id, at, isPlaybackFact);
+        const picture = this.facts.select(id, at, accepts);
         if (!picture) return null;
         pictures.push(picture);
         from = Math.max(from, picture.h);
@@ -2182,18 +2183,18 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const hour = Math.floor(pos);
       try {
         const current = this.playbackPicture(widget, hour);
-        const end = current?.proven ? current.through + 1 : Infinity;
+        const end = current?.proven && current.pictures.every(isPlaybackReading) ? current.through + 1 : Infinity;
         const next = Number.isFinite(end) && end <= (clock.lastHour ?? Infinity) + widget.binding.offset
           ? this.playbackPicture(widget, end) : null;
         const diagnostic: { reason?: MotionSkip } | undefined = diagnostics ? {} : undefined;
-        const nextProven = next?.proven ? next : null;
-        const painted = current
+        const nextProven = next?.proven && next.pictures.every(isPlaybackReading) ? next : null;
+        const painted = current && current.pictures.every(picture => stopOf(picture) === null)
           ? held.paint(current, nextProven, pos, target.shared, widget.inspect, diagnostic)
-          : 'exact';
-        if (!current || painted === 'empty') this.clearDirectSlot(target.shared?.lane ?? null, target.shared?.slot, target.shared ? undefined : this.activeWorkerCanvas(id));
+          : 'empty';
+        if (painted === 'empty') this.clearDirectSlot(target.shared?.lane ?? null, target.shared?.slot, target.shared ? undefined : this.activeWorkerCanvas(id));
         if (diagnostics) {
           if (current) diagnostics.proof = { widget: id, from: current.from, through: current.through, next: nextProven?.hour ?? null };
-          if (painted !== 'interpolated') skip(painted === 'empty' ? 'modelValidity' : !current ? 'noBracket' : !current.proven ? 'unproven' : !nextProven ? 'noBracket' : diagnostic?.reason ?? 'unchanged');
+          if (painted !== 'interpolated') skip(!current ? 'noBracket' : painted === 'empty' ? 'modelValidity' : !current.proven ? 'unproven' : !nextProven ? 'noBracket' : diagnostic?.reason ?? 'unchanged');
         }
         if (painted === 'release') {
           this.rememberPlayback(widget, undefined, clock.seek, false);
@@ -2851,18 +2852,23 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const widget = this.widgets.get(wid);
       if (widget && !this.pausedBars.has(wid) && this.restorePlayback(widget, request)) pendingBars.add(wid);
     }
-    const due: NonNullable<ReturnType<typeof nextCandidate>>[] = [];
+    const due: (NonNullable<ReturnType<typeof nextCandidate>> | { widget: Widget; motion: false; selectInBudget: true })[] = [];
     for (const wid of candidates) {
       if (this.pausedBars.has(wid) || this.playbackOwners.has(wid)) { pendingBars.add(wid); continue; }
       const candidate = nextCandidate(wid);
       if (candidate) due.push(candidate);
     }
-    const settling = pendingBars.values();
+    for (const wid of pendingBars) {
+      const widget = this.widgets.get(wid);
+      if (widget) due.push({ widget, motion: false, selectInBudget: true });
+    }
     const starved = (w: Widget) => w.deferrals >= 3 ? 0 : 1;
     due.sort((a, b) => {
       const sa = starved(a.widget), sb = starved(b.widget);
       if (sa !== sb) return sa - sb;
       if (sa === 0) return b.widget.deferrals - a.widget.deferrals || a.widget.served - b.widget.served || Number(a.motion) - Number(b.motion) || a.widget.order - b.widget.order;
+      if ('selectInBudget' in a) return 'selectInBudget' in b ? 0 : 1;
+      if ('selectInBudget' in b) return -1;
       return Number(a.motion) - Number(b.motion) || a.widget.served - b.widget.served || a.widget.order - b.widget.order;
     });
     const budget = this.host.budget ?? 10;
@@ -2873,11 +2879,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     let tried = 0;
     let deferred = false;
     try {
-      for (let i = 0; i < due.length || pendingBars.size; i++) {
-        let candidate: ReturnType<typeof nextCandidate> | undefined = due[i];
+      for (let i = 0; i < due.length; i++) {
+        const work = due[i]!;
         const elapsed = this.time() - began;
-        if (candidate && tried > 0 && elapsed + candidate.widget.cost > budget) {
-          const { widget } = candidate;
+        const overBudget = 'selectInBudget' in work ? elapsed >= budget : elapsed + work.widget.cost > budget;
+        if (tried > 0 && overBudget) {
+          const { widget } = work;
           deferred = true;
           widget.deferrals++;
           this.dirtyWidgets.add(widget.id);
@@ -2891,23 +2898,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           continue;
         }
         tried++;
+        const candidate = 'selectInBudget' in work ? nextCandidate(work.widget.id) : work;
+        work.widget.deferrals = 0;
         if (!candidate) {
-          const item = settling.next();
-          if (item.done) break;
-          if (tried > 1 && elapsed >= budget) {
-            deferred = true;
-            break;
-          }
-          pendingBars.delete(item.value);
-          candidate = nextCandidate(item.value);
-          if (!candidate) {
-            const widget = this.widgets.get(item.value);
-            if (widget && this.restorePlayback(widget, request)) this.settleKept(widget, request, this.time());
-            continue;
-          }
+          if (this.restorePlayback(work.widget, request)) this.settleKept(work.widget, request, this.time());
+          continue;
         }
         const { widget, selected, motion, target, refresh } = candidate;
-        widget.deferrals = 0;
         const start = this.time();
         widget.served = this.requests;
         if (!selected) {
@@ -3101,7 +3098,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         made.push({ widget, selected: activeSelected });
         surfaces.push(parts);
       }
-      for (const wid of pendingBars) this.dirtyWidgets.add(wid);
       const resets: [number, number][] = [];
       const toldMoved: [number, number | undefined][] = [];
       let moved = false;

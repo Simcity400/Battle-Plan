@@ -84,6 +84,8 @@ async function checkSettledPixels() {
     family: 'bars', kind,
     singleValueBars: () => true,
     project(view): BarsModel {
+      const refused = view.refused('main');
+      if (refused) return { form: 'ordered', hour: view.hour, rows: [], empty: refused, emptyKind: 'unavailable' };
       const value = Number(view.panel('main'));
       return {
         form: 'ordered', hour: view.hour, scaleMax: 200, showAxis: true,
@@ -151,8 +153,19 @@ async function checkSettledPixels() {
   const afterResize = region().some(value => value !== 0);
   geometry.step(0);
   const afterTick = changedBytes(moving, region());
+  const refused = rig(kind, 1.25);
+  refused.clock(true);
+  await refused.request(100, 1);
+  refused.step(500);
+  refused.revoke();
+  refused.clock(true, 101.5);
+  refused.step(0);
+  const coldRefusal = rig(kind, 1.25);
+  coldRefusal.revoke();
+  await coldRefusal.request(101);
+  const afterRefusal = changedBytes(refused.pixels(), coldRefusal.pixels());
   bitmap.close();
-  return { results, histories, afterScroll, afterResize, afterTick };
+  return { results, histories, afterScroll, afterResize, afterTick, afterRefusal };
 }
 
 (window as unknown as { checkSettledPixels: typeof checkSettledPixels }).checkSettledPixels = checkSettledPixels;

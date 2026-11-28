@@ -211,6 +211,8 @@ const testProjection = registerFamilyProjection({
   kind: KIND,
   singleValueBars: () => true,
   project(view, options): BarsModel {
+    const refused = view.refused('s');
+    if (refused) return { form: 'ordered', hour: view.hour, rows: [], empty: refused, emptyKind: 'unavailable' };
     const sample = view.panel('s') as Sample;
     const nextRename = sample?.renames?.find(at => view.hour < at);
     const name = sample?.renames?.filter(at => view.hour >= at).length;
@@ -282,6 +284,7 @@ function fixture(budget: number) {
   let selections = 0;
   let ready = true;
   let paintCost = 0;
+  let siblingCost = 0;
   let now = 1000;
   let settleArtwork!: (bitmap: ImageBitmap) => void;
   const artwork = new Promise<ImageBitmap>(resolve => { settleArtwork = resolve; });
@@ -303,6 +306,7 @@ function fixture(budget: number) {
   const lane = new Lane<TestBitmap>({
     lane: 0, lanes: 1,
     views: kind => kind === 'bars' ? workerView : { paint: input => {
+      now += siblingCost;
       painted.push(input.widget);
       return { surfaces: [], fields: {}, motion: false };
     } },
@@ -380,6 +384,7 @@ function fixture(budget: number) {
     finishArtwork: () => settleArtwork({ width: 20, height: 13, close() {} } as ImageBitmap),
     ready: (value: boolean) => { ready = value; },
     paintCost: (value: number) => { paintCost = value; },
+    siblingCost: (value: number) => { siblingCost = value; },
   };
 }
 
@@ -929,22 +934,25 @@ describe('Ordered bar playback', () => {
     assert.equal(f.barWidth(), width);
   }));
 
-  it('leaves gaps and refusals to the recorded painter', async () => withLane(async f => {
+  it('draws an exact refusal within its proof and cuts across adjacent gaps', async () => withLane(async f => {
     f.record(100, { value: 100 });
     f.lane.receive('panels', datedRecord(1, 101, 0, 'Unavailable'));
     f.record(103, { value: 300 });
     await f.request(100);
     const start = f.barWidth();
-    f.canvas.clearOps();
-    for (const position of [100.5, 101.5, 102.5]) {
-      f.clock(position, 1);
+    for (const [position, unavailable] of [[100.5, false], [101.5, true], [102.5, false]] as const) {
+      f.canvas.clearOps();
+      f.clock(position, 1, 1, true);
       f.tick(0);
-      assert.equal(f.barWidth(), start);
+      if (unavailable) {
+        assert.equal(f.served.at(-1)?.motionDiagnostics?.recorded, 1);
+        assert.ok(!f.operations().some(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE));
+      } else assert.equal(f.barWidth(), start);
     }
     f.clock(103.5, 1);
     f.tick(0);
     assert.equal(f.barWidth(), start * 3);
-    assert.ok(!f.served.some(frame => frame.motion));
+    assert.ok(!f.served.some(frame => frame.motion && frame.changed));
   }));
 
   it('repaints a changed measure exactly when the old bracket is no longer confirmed', async () => withLane(async f => {
@@ -1254,6 +1262,28 @@ describe('Ordered bar playback', () => {
     await f.request(101, 1);
     assert.equal(f.painted[0], 4);
     assert.ok(f.selections() <= 2);
+  }, 10));
+
+  it('restores a deferred playback renderer even when a sibling fills each lane slice', async () => withLane(async f => {
+    f.mount(2, true);
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const exact = f.barWidth();
+    await f.request(100, 1, 1, true);
+    f.lane.supply(1, { statics: {} });
+    f.painted.length = 0;
+    f.siblingCost(11);
+    for (let i = 0; i < 4; i++) {
+      f.lane.touch(2);
+      await f.request(100, 1, 1, true);
+    }
+    assert.equal(f.painted[0], 2);
+    assert.equal(f.painted.filter(id => id === 1).length, 1);
+    f.clock(100.5, 1);
+    f.tick(0);
+    assert.ok(Math.abs(f.barWidth() / exact - 1.5) < .01);
   }, 10));
 
   it('draws without posting a playback message when performance recording is off', async () => withLane(async f => {
