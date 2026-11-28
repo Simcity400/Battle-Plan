@@ -282,18 +282,20 @@ fn the_air_day_rebuilds_on_read_errors_gaps_and_new_runs() {
 fn military_air_head_follows_changes_and_dates_quiet_replies_without_reloading() {
     let frames = (100..=120).map(|hour| {
         let mut frame = source(1, hour, Some(i64::from(hour)));
+        let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+        countries.push(CountryRow { id: 9002, canonical_slot: 8, tag: b"SOV".to_vec(), ..Default::default() });
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
+        let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
+        links.push(CountryLinkRow { id: 9002, canonical_slot: 8 });
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links));
         let events = match hour {
-            100 | 107 => vec![AirLossEventRow {
-                id: if hour == 100 { 1 } else { 2 },
-                game_hour: hour,
-                country: 9001,
-                region: 1,
-                native_cause: 1,
-                amount_raw: 100_000,
-                ..Default::default()
-            }],
-            _ => Vec::new(),
-        };
+            100 => Some((1, 9001, 200_000)),
+            107 => Some((2, 9002, 100_000)),
+            112 => Some((3, 9001, 100_000)),
+            _ => None,
+        }.into_iter().map(|(id, country, amount_raw)| AirLossEventRow {
+            id, game_hour: hour, country, region: 1, native_cause: 1, amount_raw, ..Default::default()
+        }).collect();
         *frame.tables[TableId::AirLossEvents.index()] = TableView::Complete(TableRows::AirLossEvents(events));
         frame.metrics.table_ns[TableId::AirLossEvents.index()] = 1;
         frame
@@ -302,16 +304,25 @@ fn military_air_head_follows_changes_and_dates_quiet_replies_without_reloading()
     let source = Arc::new(Source::from_replay(SourceKey { source_id: "military-air-head".into(), revision: "1".into() }, "air.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
     let load = LoadContext { content: None };
     let registration = AIR_LEDGER_AT_MILITARYAIRAT;
-    let mut request = json!({"branchId":"1","family":"airLosses","metric":"taken","countries":["GER"]});
-    let follow = (registration.panel.unwrap().open)(&source, &load, &json!({"panel":"military-air-at","branchId":"1","family":"airLosses","metric":"taken","countries":["GER"]})).unwrap();
-    for read in played(source.replay_ref(), follow.exact().unwrap(), 100, 120) {
-        request["hour"] = read.hour.into();
-        let reply = registration.answer(&source, request.clone(), &load, &false.into()).unwrap();
-        assert_eq!(read.value.as_ref().as_ref().unwrap(), &reply, "air ledger at {}", read.hour);
-        if (101..=106).contains(&read.hour) {
-            assert_eq!(read.product_calls, 0, "quiet hour {}", read.hour);
-        } else if read.hour == 107 {
-            assert_eq!(read.product_calls, 1, "the new event is included at its read hour");
+    for (ranked, selection) in [(false, json!({"countries":["GER"]})), (true, json!({"top":1}))] {
+        let mut request = selection;
+        request["branchId"] = "1".into();
+        request["family"] = "airLosses".into();
+        request["metric"] = "taken".into();
+        let mut follow_request = request.clone();
+        follow_request["panel"] = registration.key.into();
+        let follow = (registration.panel.unwrap().open)(&source, &load, &follow_request).unwrap();
+        for read in played(source.replay_ref(), follow.exact().unwrap(), 100, 120) {
+            request["hour"] = read.hour.into();
+            let reply = registration.answer(&source, request.clone(), &load, &false.into()).unwrap();
+            assert_eq!(read.value.as_ref().as_ref().unwrap(), &reply, "{follow_request} at {}", read.hour);
+            match read.hour {
+                100 if ranked => assert!(reply["validUntil"].as_i64().unwrap() >= 107, "the runner-up does not change the shown rank"),
+                101..=106 => assert_eq!(read.product_calls, 0, "quiet hour {}", read.hour),
+                107 => assert_eq!(read.product_calls, u64::from(ranked), "a ranked proof stops at the runner-up's event"),
+                112 => assert_eq!(read.product_calls, 1, "the new event is included at its read hour"),
+                _ => {}
+            }
         }
     }
 }

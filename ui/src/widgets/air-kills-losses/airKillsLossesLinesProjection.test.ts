@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DashboardSource } from '../../dashboard/client';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import type { FollowQuery } from '../../dashboard/regionTime.ts';
 import type { TiledLine } from '../../dashboard/tiles/view.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import { compileFollowPlan, hoverAsks, readPlanExact } from '../../families/broker.ts';
@@ -294,8 +295,8 @@ test('the exact audit reads the dated head, so a correct picture has an exact re
 test('the military air head follows changes without an exact playback request', () => {
   const ctx = makeCtx();
   const plan = airKillsLossesLinesDeclaration.sources(ctx, { following: true, staticSpan: null });
-  const { subscriptions } = compileFollowPlan(plan, query => ({ query, refused: null }));
-  assert.deepEqual(subscriptions.map(sub => [sub.name, sub.query.panel]), [['head', 'military-air-at']]);
+  const { subscriptions } = compileFollowPlan(plan, query => ({ query: query as FollowQuery | null, refused: null }));
+  assert.deepEqual(subscriptions.map(sub => [sub.name, sub.channel, sub.product]), [['head', 'panel', 'military-air-at']]);
   assert.ok(unitEntries(plan, true, subscriptions).every(entry => entry.name !== 'head'));
   assert.deepEqual(airKillsLossesProvenInterval(airReply({ hour: 100, validUntil: 250 }), 100), [100, 250]);
 });
