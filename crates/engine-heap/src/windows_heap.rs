@@ -64,8 +64,8 @@ pub(super) fn committed() -> Option<usize> {
             let kernel = GetModuleHandleW(windows_sys::w!("kernel32.dll"));
             GetProcAddress(kernel, c"HeapSummary".as_ptr().cast())
         }?;
-        // SAFETY: the system export uses the HeapSummary signature when present.
-        Some(unsafe { std::mem::transmute::<_, HeapSummary>(address) })
+        // SAFETY: GetProcAddress resolved the system's HeapSummary export with this signature.
+        Some(unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, HeapSummary>(address) })
     }))?;
     // SAFETY: the handle is live and summary is writable with the size HeapSummary requires.
     let read = unsafe { summary_fn(heap.handle(), 0, &raw mut summary) };
