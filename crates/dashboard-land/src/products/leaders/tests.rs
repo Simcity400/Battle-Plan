@@ -133,11 +133,54 @@ fn changed_leaders_share_the_completed_run_on_a_loaded_branch() {
     assert_eq!(live.groups[0].keys, [u128::from(key)]);
     let mut edits = Edits::default();
     edits.tables.entry(TableId::LeaderBattleTotals).or_default().insert(key.into(), 1);
-    let mut ranking = context.ranking.lock().unwrap();
+    let ranking = context.ranking.lock().unwrap();
     *frame.tables[TableId::LeaderBattleTotals.index()] = counts(105);
-    assert!(ranking.holds_battle_cells(&frame, &context, &edits, &live), "a counter edit keeps the board");
+    assert!(ranking.same_battle_cells(&frame, &edits, &live), "a counter edit keeps the bindings");
     *frame.tables[TableId::LeaderBattleTotals.index()] = TableView::Complete(TableRows::empty(TableId::LeaderBattleTotals));
-    assert!(!ranking.holds_battle_cells(&frame, &context, &edits, &live), "a removed counter changes the cell binding");
+    assert!(!ranking.same_battle_cells(&frame, &edits, &live), "a removed counter changes the cell binding");
+}
+
+#[test]
+fn changes_to_the_roster_keep_live_cells_in_fresh_board_order() {
+    use super::UnitLeaders;
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, at_hour::exact_panel}, test_fixtures::{CAMPAIGN, ownership_frame, played, records}};
+    use recorder_derive_framework::framework::Writers;
+    use replay::campaign::Replay;
+    use replay_data::rows::{LeaderBattleTotalRow, TableId, TableRows, UnitLeaderRow};
+    use replay_frame::frame::TableView;
+    use std::sync::Arc;
+
+    let leader = |id, skill_level| UnitLeaderRow { id, skill_level, skill_valid: 1, owner: 9001, kind: KIND_ARMY, ..Default::default() };
+    for second_has_totals in [false, true] {
+        let totals = |id: u64| LeaderBattleTotalRow { leader: id << 32, fought: 10, won: 7, ..Default::default() };
+        let frames = (100..=102).map(|hour| {
+            let mut frame = ownership_frame(1, hour, 9001);
+            for table in [TableId::Characters, TableId::LexicalTokens, TableId::UnitLeaderTraits, TableId::LeaderTraitDates] {
+                frame.tables[table.index()] = TableView::Complete(TableRows::empty(table)).into();
+            }
+            let mut leaders = vec![leader(1, 3), leader(2, hour.min(101) - 97)];
+            if hour == 102 { leaders.push(leader(3, 5)); }
+            frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(leaders)).into();
+            let mut battles = vec![totals(1)];
+            if second_has_totals { battles.push(totals(2)); }
+            frame.tables[TableId::LeaderBattleTotals.index()] = TableView::Complete(TableRows::LeaderBattleTotals(battles)).into();
+            frame
+        }).collect();
+        let replay = Arc::new(Replay::from_records(Writers::new(Vec::new()), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap());
+        let open = |id: &str| {
+            let source = Source::from_replay(SourceKey { source_id: id.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::clone(&replay), &false.into()).unwrap();
+            exact_panel::<UnitLeaders>(&source, &LoadContext { content: None },
+                &serde_json::json!({"branchId":"1","selection":{"kind":"all"},"leaders":"land","followBattles":true})).unwrap()
+        };
+        let panel = open("advanced-generals");
+        let steps = played(&replay, panel.exact().unwrap(), 100, 102);
+        for step in steps.iter().filter(|step| step.hour > 100) {
+            let full = open("fresh-generals");
+            let full = (full.exact().unwrap().advance)(step.hour, true, &false.into(), None);
+            assert_eq!(step.value, full.value, "hour {}, second leader bound {second_has_totals}", step.hour);
+            assert_eq!(step.product_calls, u64::from(second_has_totals && step.hour == 101));
+        }
+    }
 }
 
 #[test]

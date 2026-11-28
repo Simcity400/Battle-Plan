@@ -896,6 +896,11 @@ pub(crate) struct EvaluatedLeaders<'a> {
 }
 
 impl EvaluatedLeaders<'_> {
+    fn sort_without_battles(&mut self) {
+        self.leaders.sort_unstable_by(|a, b| leader_rank_cmp(a.skill, 0, 0, a.row.components, a.name.as_deref(), a.handle,
+            b.skill, 0, 0, b.row.components, b.name.as_deref(), b.handle));
+    }
+
     pub(crate) fn top(&self) -> TopLeader<'_> {
         if let Some(reason) = &self.missing {
             return TopLeader::Missing(reason.clone());
@@ -965,6 +970,7 @@ impl UnitLeaders {
             warnings.push(format!("Leaders' traits are not recorded at this hour: {why}"));
         }
         let mut traits = TraitList::default();
+        let mut roles = HashMap::new();
         let mut out = Vec::with_capacity(evaluated.leaders.len());
         for leader in evaluated.leaders {
             let tokens = held.as_ref().ok().map(|held| held_traits_for(held, leader.handle));
@@ -973,12 +979,21 @@ impl UnitLeaders {
                 .flatten()
                 .map(|token| evaluated.tally.as_ref().and_then(|tally| tally.date(leader.handle, token)))
                 .collect();
-            let role = || content.role(leader.owner, leader.row.kind, leader.row.category, leader.skill);
-            let role = match &mut notes { Some(notes) => notes.role(leader.handle, role), None => role() };
+            let appearance = || {
+                let key = (leader.row.kind, leader.row.category, leader.skill);
+                let (role, diagnostics) = roles.entry(key).or_insert_with(|| {
+                    catalogue::capture_isolated(|| content.role(None, key.0, key.1, key.2))
+                });
+                catalogue::credit(diagnostics);
+                let mut role = role.clone();
+                role.owner = leader.owner;
+                (role, leader_thumbnail(frame, leader.row, context, evaluated.run))
+            };
+            let (role, portrait) = match &mut notes { Some(notes) => notes.appearance(leader.handle, appearance), None => appearance() };
             out.push(LeaderRow {
                 reference: leader.handle.to_string(),
                 name: leader.name,
-                portrait: leader_thumbnail(frame, leader.row, context, evaluated.run),
+                portrait,
                 role,
                 skill: leader.skill,
                 components: leader.row.components,
@@ -1247,11 +1262,8 @@ impl AtHour for UnitLeaders {
     }
 
     fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
-        if !live.is_empty() {
-            return Ok(at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).holds_battle_cells(frame, at.context, edits, live));
-        }
-        if params.follow_battles == Some(true) && edits.tables.contains_key(&TableId::LeaderBattleTotals) { return Ok(false); }
-        at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).board_step(frame, params, at, edits, data)
+        if live.is_empty() && params.follow_battles == Some(true) && edits.tables.contains_key(&TableId::LeaderBattleTotals) { return Ok(false); }
+        at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).board_step(frame, params, at, edits, live, data)
     }
 
     fn playback_reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -1260,15 +1272,14 @@ impl AtHour for UnitLeaders {
         let totals = frame.complete::<tables::LeaderBattleTotals>().ok().filter(|totals| params.follow_battles == Some(true) && evaluated.leaders.iter()
             .any(|leader| !ranking::battle_rows(totals, leader.row.id).is_empty()));
         if totals.is_some() {
-            evaluated.leaders.sort_unstable_by(|a, b| leader_rank_cmp(a.skill, 0, 0, a.row.components, a.name.as_deref(), a.handle,
-                b.skill, 0, 0, b.row.components, b.name.as_deref(), b.handle));
+            evaluated.sort_without_battles();
         }
-        let mut ranking = ranking::Ranking::seed(frame, &evaluated, at.context, notes);
+        let mut ranking = ranking::Ranking::seed(frame, &evaluated, at.context, notes, totals.is_some());
         let mut reply = Self::board(frame, evaluated, at, Some(&mut ranking.notes))?;
         if let Some(totals) = totals {
             ranking::follow_battles(totals, at, &mut reply.leaders);
         }
-        ranking.seed_traits(&reply);
+        ranking.seed_board(&reply);
         *at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ranking;
         Ok(reply)
     }

@@ -3,8 +3,8 @@ use dashboard_base::products::at_hour::{Read, ReadsAt};
 use dashboard_text::triggers::{RECORDED_TABLES, inputs::{self, TableRead}};
 use replay::campaign::{HourCursor, SeekResult};
 use replay_data::rows::{TableId, tables};
-use replay_frame::frame::{DecodedFrame, ViewIdentity, discovering, not_declared};
-use std::{collections::{BTreeSet, HashMap}, io};
+use replay_frame::frame::{DecodedFrame, Keys, TableView, ViewIdentity, discovering, not_declared};
+use std::{collections::{BTreeMap, BTreeSet, HashMap}, io};
 
 #[derive(Default)]
 pub(super) struct Visibility {
@@ -85,6 +85,9 @@ impl Changes {
             return Ok(Self { status: Vec::new(), rows: Vec::new() });
         }
         let cols: Vec<_> = (0..read.table.schema().len().min(64)).filter(|i| read.fields & (1 << i) != 0).collect();
+        if !read.ends && let Ok(Some(changes)) = Self::complete(replay, run, read.table, &cols, first, last) {
+            return Ok(changes);
+        }
         let history = lanes::history(replay.recording(), run, read.table, &cols, Keys::All, first, last)?;
         let status = history.statuses.iter().map(|s| s.first).collect();
         let end = read.ends.then(|| history.columns.iter().position(|&c| read.table.field_name(c) == Some("end_hour"))).flatten();
@@ -93,6 +96,31 @@ impl Changes {
             (!changes.is_empty()).then_some((key, changes))
         }).collect();
         Ok(Self { status, rows })
+    }
+
+    fn complete(replay: &replay::campaign::Replay, run: u32, table: TableId, columns: &[usize], first: i32, last: i32) -> io::Result<Option<Self>> {
+        use replay_columnar::manifest::Status;
+        use replay_recording::cells::TableReader;
+        let recording = replay.recording();
+        let Some(start) = recording.run(run)?.ordinal(first) else { return Ok(None) };
+        let mut reader = TableReader::new(recording, run, table, Some(columns))?;
+        reader.seek(recording, start)?;
+        if reader.status() != Status::Complete { return Ok(None); }
+        let mut dates = BTreeMap::<u128, Vec<i32>>::new();
+        for previous in first..last {
+            let hour = previous + 1;
+            if !reader.step(recording)? || reader.status() != Status::Complete || reader.changes().anew {
+                return Ok(None);
+            }
+            let changes = reader.changes();
+            let keys = changes.inserted.iter().chain(changes.written.iter().flatten())
+                .filter_map(|&slot| reader.cells().key(slot));
+            for key in keys.chain(changes.deleted.iter().map(|&(_, key)| key)) {
+                let dates = dates.entry(key).or_default();
+                if dates.last() != Some(&hour) { dates.push(hour); }
+            }
+        }
+        Ok(Some(Self { status: Vec::new(), rows: dates.into_iter().collect() }))
     }
 
     fn through(&self, read: &TableRead, frame: &DecodedFrame, last: i32) -> i32 {
@@ -107,6 +135,43 @@ impl Changes {
             if let Some(&at) = dates.get(dates.partition_point(|&h| h <= hour)) { next = Some(next.map_or(at, |n| n.min(at))); }
         }
         next.map_or(last, |n| n - 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dashboard_base::test_fixtures::{CAMPAIGN, snapshot_records, source};
+    use replay::campaign::Replay;
+    use replay_data::rows::{ScriptFlagRow, TableRows};
+    use replay_lanes::lanes::{self, Keys};
+
+    #[test]
+    fn complete_proofs_index_membership_and_selected_column_edits() {
+        let table = TableId::ScriptFlags;
+        let frames = [Some(1), Some(0), Some(0), None, Some(1)]
+            .into_iter()
+            .zip(100..)
+            .map(|(value, hour)| {
+                let mut frame = source(1, hour, None);
+                let rows = value.into_iter().map(|value| ScriptFlagRow {
+                    scope_kind: 3, scope_id: 9, token: 900, value, ..Default::default()
+                }).collect();
+                frame.tables[table.index()] = TableView::Complete(TableRows::ScriptFlags(rows)).into();
+                frame
+            }).collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)])
+            .unwrap().into_timelines(&Default::default()).unwrap();
+        let run = replay.block_at(1, 100).unwrap().run;
+        let field = dashboard_declare::field(table, "value").unwrap();
+        for columns in [&[][..], &[field][..]] {
+            let proof = Changes::complete(&replay, run, table, columns, 100, 104).unwrap().unwrap();
+            let history = lanes::history(replay.recording(), run, table, columns, Keys::All, 100, 104).unwrap();
+            let expected: Vec<_> = history.keys.into_iter()
+                .map(|(key, rows)| (key, rows.into_iter().filter_map(|row| (row.hour > 100).then_some(row.hour)).collect()))
+                .collect();
+            assert_eq!(proof.rows, expected);
+        }
     }
 }
 
@@ -141,14 +206,20 @@ impl Visibility {
                 .map(|index| (&rows[index], *role)).map_err(|_| io::Error::other("Conditioned leader is not in the selected rows")))
             .collect::<io::Result<_>>()?;
         if !stale.is_empty() {
+            let lexical = &frame.tables[TableId::LexicalTokens.index()];
+            let literal = replay_data::rows::mask::<replay_data::rows::LexicalTokenRow>(&["literal"]);
+            let reuse_lexical = matches!(lexical.keys(), Keys::All)
+                && matches!(lexical.held(), TableView::Complete(_))
+                && lexical.fields().is_none_or(|fields| fields & literal == literal);
             loop {
-                let asked: Vec<_> = tables.iter().copied().collect();
+                let asked: Vec<_> = tables.iter().copied().filter(|&table| !reuse_lexical || table != TableId::LexicalTokens).collect();
                 if self.cursor.as_ref().is_none_or(|(prior, _)| prior != &asked) {
                     self.cursor = Some((asked.clone(), HourCursor::new(replay.clone(), &asked, false)));
                 }
-                let SeekResult::Frame(recorded) = self.cursor.as_mut().expect("selected world").1.seek(frame.branch, at.hour)? else {
+                let SeekResult::Frame(mut recorded) = self.cursor.as_mut().expect("selected world").1.seek(frame.branch, at.hour)? else {
                     return Err(io::Error::other("Leader visibility hour is not recorded"));
                 };
+                if reuse_lexical { recorded.tables[TableId::LexicalTokens.index()] = lexical.clone(); }
                 let world = world_of(&recorded, &at.context.content).map_err(io::Error::other)?;
                 let gap = core_gap(&recorded);
                 let mut bounds = HashMap::new();
@@ -180,7 +251,7 @@ impl Visibility {
                     };
                     made.push((handle(row), Proof { run: at.run, owner: row.owner, role, first: at.hour, through, decision }));
                 }
-                if tables.len() != asked.len() { continue; }
+                if tables.iter().any(|table| !asked.contains(table) && (!reuse_lexical || *table != TableId::LexicalTokens)) { continue; }
                 self.proofs.extend(made);
                 break;
             }

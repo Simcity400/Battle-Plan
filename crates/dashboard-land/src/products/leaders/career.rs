@@ -1140,7 +1140,7 @@ impl AtHour for LeaderHour {
         }
         let mut notes = super::ranking::Notes::default();
         let evaluated = UnitLeaders::evaluate_keys(frame, &top_asked(&params.branch_id, selection), at, None, Some(&mut notes))?;
-        *rank = super::ranking::Ranking::seed(frame, &evaluated, at.context, notes);
+        *rank = super::ranking::Ranking::seed(frame, &evaluated, at.context, notes, false);
         Self::from_evaluated(frame, params, evaluated, at)
     }
 }

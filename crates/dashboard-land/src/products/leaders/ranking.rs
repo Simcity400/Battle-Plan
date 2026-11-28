@@ -24,8 +24,9 @@ struct Rank {
 }
 
 impl Rank {
-    fn of(leader: &EvaluatedLeader<'_>) -> Self {
-        Self { handle: leader.handle, skill: leader.skill, battles: leader.battles, components: leader.row.components, name: leader.name.clone() }
+    fn of(leader: &EvaluatedLeader<'_>, live_battles: bool) -> Self {
+        let battles = if live_battles { Battles::default() } else { leader.battles };
+        Self { handle: leader.handle, skill: leader.skill, battles, components: leader.row.components, name: leader.name.clone() }
     }
 
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -37,7 +38,7 @@ impl Rank {
 #[derive(Default)]
 pub(super) struct Notes {
     leaders: HashMap<u64, catalogue::OwnRefusals>,
-    roles: HashMap<u64, catalogue::OwnRefusals>,
+    appearance: HashMap<u64, catalogue::OwnRefusals>,
     traits: HashMap<String, catalogue::OwnRefusals>,
     icons: catalogue::OwnRefusals,
 }
@@ -47,8 +48,8 @@ impl Notes {
         Self::observe(&mut self.leaders, key, read);
     }
 
-    pub(super) fn role(&mut self, key: u64, read: impl FnOnce() -> LeaderRole) -> LeaderRole {
-        Self::observe(&mut self.roles, key, read)
+    pub(super) fn appearance(&mut self, key: u64, read: impl FnOnce() -> (LeaderRole, LeaderPortraitThumbnail)) -> (LeaderRole, LeaderPortraitThumbnail) {
+        Self::observe(&mut self.appearance, key, read)
     }
 
     pub(super) fn trait_info(&mut self, key: &str, read: impl FnOnce() -> LeaderTrait) -> LeaderTrait {
@@ -70,12 +71,12 @@ impl Notes {
 
     fn combined(&self) -> catalogue::OwnRefusals {
         let mut notes = self.icons.clone();
-        for item in self.leaders.values().chain(self.roles.values()).chain(self.traits.values()) { notes.merge(item); }
+        for item in self.leaders.values().chain(self.appearance.values()).chain(self.traits.values()) { notes.merge(item); }
         notes
     }
 
     fn forget(&mut self, keys: &BTreeSet<u64>) {
-        for key in keys { self.leaders.remove(key); self.roles.remove(key); }
+        for key in keys { self.leaders.remove(key); self.appearance.remove(key); }
     }
 }
 
@@ -86,6 +87,8 @@ pub(super) struct Ranking {
     order: Vec<u64>,
     shown: HashMap<u64, Rank>,
     shown_ids: BTreeSet<u32>,
+    battle_offsets: HashMap<u64, [i64; 3]>,
+    live_battles: bool,
     withheld: BTreeMap<u64, LeaderWithheld>,
     people: HashMap<u32, BTreeSet<u64>>,
     tokens: HashMap<u32, BTreeSet<u32>>,
@@ -128,24 +131,24 @@ pub(super) fn follow_battles(totals: &[LeaderBattleTotalRow], at: &At<'_, Leader
 }
 
 impl Ranking {
-    pub(super) fn holds_battle_cells(&mut self, frame: &DecodedFrame, context: &LeadersContext, edits: &Edits, live: &Live) -> bool {
+    pub(super) fn same_battle_cells(&self, frame: &DecodedFrame, edits: &Edits, live: &Live) -> bool {
         let table = TableId::LeaderBattleTotals;
         let Ok(rows) = frame.complete::<tables::LeaderBattleTotals>() else { return false; };
-        let same_keys = edits.tables.get(&table).into_iter().flat_map(|changes| changes.keys()).filter(|key| self.shown_ids.contains(&((**key >> 32) as u32))).all(|&key| {
+        edits.tables.get(&table).into_iter().flat_map(|changes| changes.keys()).filter(|key| self.shown_ids.contains(&((**key >> 32) as u32))).all(|&key| {
             let present = rows.binary_search_by_key(&(key as u64), |row| row.leader).is_ok();
             let followed = live.groups.iter().any(|group| group.table == table && group.keys.binary_search(&key).is_ok());
             present == followed
-        });
-        same_keys && self.affected(frame, edits, None, context, true).is_some_and(|keys| keys.is_empty())
+        })
     }
 
-    pub(super) fn seed(frame: &DecodedFrame, evaluated: &EvaluatedLeaders<'_>, context: &LeadersContext, notes: Notes) -> Self {
+    pub(super) fn seed(frame: &DecodedFrame, evaluated: &EvaluatedLeaders<'_>, context: &LeadersContext, notes: Notes, live_battles: bool) -> Self {
         let mut rank = Self {
             revision: UnitLeaders::context_revision(context),
             notes,
             order: evaluated.leaders.iter().map(|l| l.handle).collect(),
-            shown: evaluated.leaders.iter().map(|l| (l.handle, Rank::of(l))).collect(),
+            shown: evaluated.leaders.iter().map(|l| (l.handle, Rank::of(l, live_battles))).collect(),
             shown_ids: evaluated.leaders.iter().map(|l| l.row.id).collect(),
+            live_battles,
             withheld: evaluated.withheld.iter().map(|l| (l.reference.parse().expect("recorded handle"), l.clone())).collect(),
             ..Self::default()
         };
@@ -169,8 +172,13 @@ impl Ranking {
         self.spellings.insert(row.id, tokens);
     }
 
-    pub(super) fn seed_traits(&mut self, reply: &UnitLeadersReply) {
+    pub(super) fn seed_board(&mut self, reply: &UnitLeadersReply) {
         self.traits.clone_from(&reply.traits);
+        self.battle_offsets = reply.leaders.iter().filter_map(|row| Some((row.reference.parse().expect("recorded handle"), row.battle_offset?))).collect();
+    }
+
+    fn bound_order(&self) -> impl Iterator<Item = u64> + '_ {
+        self.order.iter().copied().filter(|key| self.battle_offsets.contains_key(key))
     }
 
     fn affected(&mut self, frame: &DecodedFrame, edits: &Edits, winner: Option<u64>, context: &LeadersContext, live_battles: bool) -> Option<BTreeSet<u64>> {
@@ -285,7 +293,7 @@ impl Ranking {
         for row in &evaluated.withheld { self.withheld.insert(row.reference.parse().expect("recorded handle"), row.clone()); }
         let mut inserted = Vec::new();
         for leader in &evaluated.leaders {
-            let rank = Rank::of(leader);
+            let rank = Rank::of(leader, self.live_battles);
             let i = self.order.partition_point(|h| self.shown[h].cmp(&rank).is_lt());
             self.order.insert(i, leader.handle);
             self.shown.insert(leader.handle, rank);
@@ -335,11 +343,12 @@ impl Ranking {
         Ok(false)
     }
 
-    pub(super) fn board_step(&mut self, frame: &DecodedFrame, params: &UnitLeadersParams, at: &At<'_, LeadersContext>, edits: &Edits, data: &mut Held<'_>) -> io::Result<bool> {
+    pub(super) fn board_step(&mut self, frame: &DecodedFrame, params: &UnitLeadersParams, at: &At<'_, LeadersContext>, edits: &Edits, live: &Live, data: &mut Held<'_>) -> io::Result<bool> {
+        if self.live_battles && !self.same_battle_cells(frame, edits, live) { return Ok(false); }
         let same_proof = self.revision == UnitLeaders::context_revision(at.context);
-        let Some(keys) = self.affected(frame, edits, None, at.context, false) else { return Ok(false) };
+        let Some(keys) = self.affected(frame, edits, None, at.context, self.live_battles) else { return Ok(false) };
         if keys.is_empty() { return Ok(true); }
-        if same_proof && edits.tables.len() == 1 && edits.tables.contains_key(&TableId::LeaderBattleTotals) {
+        if !self.live_battles && same_proof && edits.tables.len() == 1 && edits.tables.contains_key(&TableId::LeaderBattleTotals) {
             let moves = self.battle_changes(frame, at, &keys)?;
             if moves.is_empty() { return Ok(true); }
             let rows = data["leaders"].as_array_mut().expect("leader board");
@@ -360,10 +369,22 @@ impl Ranking {
         }
         let prior_notes = self.notes.combined();
         self.notes.forget(&keys);
-        let evaluated = UnitLeaders::evaluate_keys(frame, params, at, Some(&keys), Some(&mut self.notes))?;
+        let mut evaluated = UnitLeaders::evaluate_keys(frame, params, at, Some(&keys), Some(&mut self.notes))?;
         if evaluated.missing.is_some() { return Ok(false); }
+        let prior_bound = if self.live_battles {
+            let totals = frame.complete::<tables::LeaderBattleTotals>()?;
+            if evaluated.leaders.iter().any(|leader| !self.shown.contains_key(&leader.handle) && !battle_rows(totals, leader.row.id).is_empty()) {
+                return Ok(false);
+            }
+            evaluated.sort_without_battles();
+            Some(self.bound_order().collect::<Vec<_>>())
+        } else { None };
         let withheld_changed = keys.iter().any(|k| self.withheld.contains_key(k)) || !evaluated.withheld.is_empty();
         let (removed, inserted) = self.change(&keys, &evaluated);
+        if let Some(prior) = prior_bound {
+            if self.bound_order().ne(prior) { return Ok(false); }
+            self.shown_ids = self.shown.keys().map(|handle| (handle >> 32) as u32).collect();
+        }
         if removed.is_empty() && inserted.is_empty() && !withheld_changed && self.notes.combined() == prior_notes { return Ok(true); }
         let update = UnitLeaders::board(frame, evaluated, at, Some(&mut self.notes))?;
         let mut catalog = HashMap::new();
@@ -377,6 +398,12 @@ impl Ranking {
         for i in removed { rows.remove(i); }
         for (i, mut row) in inserted.into_iter().zip(update.leaders) {
             if let Some(traits) = &mut row.traits { for t in traits { *t = lookup[*t as usize]; } }
+            if self.live_battles && let Some(&offset) = self.battle_offsets.get(&row.reference.parse::<u64>().expect("recorded handle")) {
+                row.battle_offset = Some(offset);
+                row.fought = 0;
+                row.won = 0;
+                row.lost = 0;
+            }
             rows.insert(i, serde_json::to_value(row)?);
         }
         self.order_traits(data)?;
