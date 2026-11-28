@@ -564,6 +564,9 @@ pub struct DiplomacyPact {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomacyPactsReply {
+    #[serde(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
+    held_through: i32,
     #[doc = " The hour answered, never after the branch's last hour."]
     pub hour: i32,
     #[doc = " The first hour after `hour` at which a pact, its end, a partner's tag or an unread stretch changes; null"]
@@ -647,8 +650,9 @@ pub(crate) fn pacts(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunPacts>, A
     (out, counts)
 }
 
-fn next_change(query: &Query<'_>, held: &HashMap<u32, (Arc<RunPacts>, Arc<RunLinks>)>, ids: &[(u32, i32, i32)], unobserved: &[HourSpan], hour: i32) -> Option<i32> {
+fn next_change(query: &Query<'_>, held: &HashMap<u32, (Arc<RunPacts>, Arc<RunLinks>)>, ids: &[(u32, i32, i32)], unobserved: &[HourSpan], hour: i32) -> (Option<i32>, i32) {
     let mut next = i32::MAX;
+    let mut link_change = None;
     let mut after = |at: i32| {
         if at > hour && at < next {
             next = at;
@@ -667,16 +671,28 @@ fn next_change(query: &Query<'_>, held: &HashMap<u32, (Arc<RunPacts>, Arc<RunLin
     for stretch in &query.timeline.stretches {
         after(stretch.first);
         after(stretch.last.saturating_add(1));
-        let Some((pacts, _)) = held.get(&stretch.run) else { continue };
-        for &(id, _, _) in ids {
+        let Some((pacts, links)) = held.get(&stretch.run) else { continue };
+        for &(id, first, last) in ids {
             let mine = |key: u128| (key >> 80) as u32 == id || (key >> 48) as u32 == id;
             for run in pacts.rows.iter().filter(|(key, _)| mine(*key)).flat_map(|(_, runs)| runs) {
                 after(run.first.max(stretch.first));
                 after(run.last.min(stretch.last).saturating_add(1));
+                if run.first.max(stretch.first).max(first) <= hour && hour <= run.last.min(stretch.last).min(last) {
+                    for raw in [run.endpoints.0, run.endpoints.1] {
+                        if let Some(runs) = links.slots.get(&raw)
+                            && let Some(&(a, b, _)) = runs.get(runs.partition_point(|run| run.1 < hour))
+                        {
+                            let edge = if hour < a { a } else { b.saturating_add(1) };
+                            if edge > hour { link_change = Some(link_change.map_or(edge, |held: i32| held.min(edge))); }
+                        }
+                    }
+                }
             }
         }
     }
-    (next != i32::MAX).then_some(next)
+    let next = (next != i32::MAX).then_some(next);
+    let before = dashboard_base::products::at_hour::before;
+    (next, before(next).min(before(link_change)))
 }
 
 pub(crate) fn unproven(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunPacts>, Arc<RunLinks>)>) -> Vec<HourSpan> {
@@ -761,10 +777,29 @@ impl Product for DiplomaticPacts {
         let mut unobserved = dashboard_world::products::subjects::unknown_hours(&query);
         unobserved.extend(unproven(&query.timeline.stretches, &held));
         let unobserved = dashboard_world::products::subjects::settle(unobserved);
-        let next_change = next_change(&query, &held, &ids, &unobserved, hour);
+        let (next_change, held_through) = next_change(&query, &held, &ids, &unobserved, hour);
         let unobserved = unobserved.into_iter().filter(|gap| gap.first_hour <= hour).map(|gap| HourSpan { first_hour: gap.first_hour, last_hour: gap.last_hour.min(hour) }).collect();
-        Ok(DiplomacyPactsReply { hour, next_change, kinds, pacts, unobserved, warnings })
+        Ok(DiplomacyPactsReply { hour, next_change, kinds, pacts, unobserved, warnings, held_through })
     }
+}
+
+pub(crate) fn dated_pacts(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
+    use dashboard_base::products::at_hour;
+    at_hour::dated_product::<DiplomaticPacts>(source, load, asked, at_hour::at_hour, |_, reply| reply.held_through,
+        |data, hour| {
+            if data.as_ref().as_ref().is_ok_and(|value| value["hour"].as_i64() == Some(i64::from(hour))) { return; }
+            let Ok(value) = Arc::make_mut(data) else { return };
+            let old = value["hour"].as_i64();
+            value["hour"] = hour.into();
+            for pact in value["pacts"].as_array_mut().into_iter().flatten() {
+                if pact["held"].as_bool() == Some(true) { pact["lastSeen"] = hour.into(); }
+            }
+            if let Some(gap) = value["unobserved"].as_array_mut().and_then(|gaps| gaps.last_mut())
+                && gap["lastHour"].as_i64() == old
+            {
+                gap["lastHour"] = hour.into();
+            }
+        }, |source, params, load, cancelled, _| DiplomaticPacts::load(source, params, load, cancelled))
 }
 
 #[cfg(test)]

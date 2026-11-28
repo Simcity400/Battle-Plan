@@ -246,6 +246,55 @@ fn a_relation_kind_the_content_cannot_title_keeps_its_id_with_why_and_its_count(
 }
 
 #[test]
+fn following_pacts_redates_active_rows_and_unread_spans_and_rereads_on_a_link_change() {
+    use dashboard_base::test_fixtures::{CAMPAIGN, played, records, source};
+    use replay_data::rows::{CountryLinkRow, CountryRow, LexicalTokenRow, RelationTupleRow, TableRows};
+
+    let frames = (100..=108).map(|hour| {
+        let mut frame = source(1, hour, Some(1));
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+            CountryRow { id: 9001, canonical_slot: 1, tag: b"AAA".to_vec(), ..Default::default() },
+            CountryRow { id: 9002, canonical_slot: 2, tag: b"BBB".to_vec(), ..Default::default() },
+            CountryRow { id: 9003, canonical_slot: 3, tag: b"CCC".to_vec(), ..Default::default() },
+        ]));
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow { id: 9001, canonical_slot: 1 },
+            CountryLinkRow { id: 9002, canonical_slot: 2 },
+            CountryLinkRow { id: 9003, canonical_slot: 3 },
+            CountryLinkRow { id: 9004, canonical_slot: if hour < 103 { 2 } else { 3 } },
+        ]));
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow { token: 7, literal: b"guarantee".to_vec() },
+        ]));
+        *frame.tables[TableId::RelationTuples.index()] = if hour >= 106 {
+            TableView::Unavailable { reason: "Agreements unread".into() }
+        } else {
+            TableView::Complete(TableRows::RelationTuples(vec![RelationTupleRow {
+                owner_country: 9001, target_country: 9004, type_id: 7, first_country: 9001, second_country: 9004,
+                start_hour: 90, ..Default::default()
+            }]))
+        };
+        frame
+    }).collect();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let source = Arc::new(Source::from_replay(dashboard_base::SourceKey { source_id: "pact-steps".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap());
+    let open = crate::registrations::DIPLOMACY_DIPLOMATICPACTS.panel.expect("pacts follow playback").open;
+    let panel = open(&source, &LoadContext { content: None }, &serde_json::json!({"branchId": "1", "country": "AAA"})).unwrap();
+    let exact = panel.exact().unwrap();
+    let steps = played(source.replay_ref(), exact, 100, 108);
+    for step in &steps {
+        let cold = (exact.cold)(step.hour, &cancelled).unwrap();
+        assert_eq!(step.value.as_ref().as_ref().unwrap(), &cold, "pacts at {}", step.hour);
+    }
+    let at = |hour| steps.iter().find(|step| step.hour == hour).unwrap();
+    assert_eq!(at(102).value.as_ref().as_ref().unwrap()["pacts"][0]["second"], "BBB");
+    assert_eq!(at(103).value.as_ref().as_ref().unwrap()["pacts"][0]["second"], "CCC");
+    assert_eq!(at(108).value.as_ref().as_ref().unwrap()["unobserved"][0]["lastHour"], 108);
+    assert_eq!(steps.iter().filter(|step| step.hour > 100).map(|step| step.product_calls).sum::<u64>(), 2);
+}
+
+#[test]
 fn a_countrys_pacts_include_those_other_countries_rows_name_it_in_once_each() {
     let key = |owner: u32, target: u32, kind: u32| u128::from(owner) << 80 | u128::from(target) << 48 | u128::from(kind) << 16;
     let run = |first, last, endpoints, dates| PactRun { first, last, endpoints, dates };

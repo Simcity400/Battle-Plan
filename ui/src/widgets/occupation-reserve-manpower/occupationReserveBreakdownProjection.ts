@@ -21,7 +21,6 @@ import type { CountryIdentitiesReply, OccupationReserveReply, ReserveHistoryRepl
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import {
   holderOf,
-  reserveHistoryProof,
   reserveHistoryProvenLast,
   segmentAt,
   segmentParts,
@@ -616,6 +615,9 @@ export const occupationReserveBreakdownDeclaration: TimeChartWidgetDeclaration<O
     if (!holder) return { owner, entries: [], allowEmptyFollow: true, valid };
     const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
     const hoverCountry = holder.slot !== undefined ? holder.slot : countryFromKey(holder.tag);
+    const product = 'occupation-reserve-history';
+    const params = { branchId: ctx.branch.id, holder: holder.id };
+    const coverage = { mode: 'keyed', keys: [holder.slot !== undefined ? countryKey(holder.slot) : holder.tag] } as const;
     return {
       owner,
       valid,
@@ -623,14 +625,16 @@ export const occupationReserveBreakdownDeclaration: TimeChartWidgetDeclaration<O
         {
           name: 'history',
           ...common,
-          read: {
+          read: view.following ? {
+            shape: 'point', channel: 'panel', coverage, product, params,
+            followQuery: { panel: product, ...params }, validate: validateReserveHistory,
+          } : {
             shape: 'branch-to-hour',
-            coverage: { mode: 'keyed', keys: [holder.slot !== undefined ? countryKey(holder.slot) : holder.tag] },
-            product: 'occupation-reserve-history',
+            coverage,
+            product,
             followQuery: null,
-            params: { branchId: ctx.branch.id, holder: holder.id },
-            buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
-            provenInterval: reserveHistoryProof,
+            params,
+            buildSpanParams: (base, span) => ({ ...base, hour: span.lastHour }),
             dynamicKeys: ['hour'],
             validate: validateReserveHistory,
           },

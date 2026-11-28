@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
-import { reserveHistoryProof, segmentParts, segmentTotal, sourceTagAt, UNADMITTED_RESERVE_REASON, validateOccupationReserve, validateReserveHistory } from './occupationReserveData.ts';
+import { segmentParts, segmentTotal, sourceTagAt, UNADMITTED_RESERVE_REASON, validateOccupationReserve, validateReserveHistory } from './occupationReserveData.ts';
 
 const country = (id: number, tag: string | null = `T${id}`) => ({ id, tag });
 const reply: OccupationReserveReply = {
@@ -67,8 +67,6 @@ test('reserve history helpers validate bounded segments, prove intervals to next
   assert.equal(sourceTagAt(history, 8, 60), null, 'proven interval stops before nextChange');
   assert.equal(sourceTagAt(history, 9, 12), null);
   assert.equal(sourceTagAt(history, 9, 16), 'BBB');
-  assert.deepEqual(reserveHistoryProof(history, [0, 49], 55), [49, 59]);
-  assert.equal(reserveHistoryProof(history, [0, 49], 60), null);
   assert.throws(() => validateReserveHistory({ ...history, segments: [history.segments[1]!, history.segments[0]!] }));
   assert.throws(() => validateReserveHistory({ ...history, hour: 15 }));
   assert.throws(() => validateReserveHistory({ ...history, nextChange: 49 }));
