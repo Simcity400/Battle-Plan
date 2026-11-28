@@ -11,7 +11,7 @@ use replay_data::{Hour, rows::TableId, scope::CaptureMode};
 fn unnamed(reason: u32) -> Box<str> {
     format!("reason {reason}, whose text the recording did not name here").into()
 }
-use std::{collections::HashMap, io, sync::Arc};
+use std::{collections::HashMap, io, sync::{Arc, OnceLock}};
 
 const ABSENT: u16 = u16::MAX;
 pub const UNREAD_REASON: &str = "its recorded reason was not read";
@@ -433,7 +433,7 @@ pub struct Mirror {
     position: Vec<u16>,
     live: Bits,
     keys: Option<Vec<u128>>,
-    index: Option<HashMap<u128, u32, Keys>>,
+    index: OnceLock<HashMap<u128, u32, Keys>>,
     text: bool,
     texts: HashMap<u32, Box<[u8]>, Keys>,
     texts_bytes: usize,
@@ -462,7 +462,6 @@ impl Mirror {
         let slots = cells.slots() as usize;
         let live: Vec<u32> = cells.rows().collect();
         let mut keys = lane.keyed().then(|| vec![0; slots]);
-        let mut index = lane.keyed().then(|| HashMap::with_capacity_and_hasher(live.len(), Keys::default()));
         let mut words = cells.live().words().to_vec();
         let wanted_words = slots.div_ceil(64);
         if words.len() < wanted_words {
@@ -471,11 +470,9 @@ impl Mirror {
             words.truncate(wanted_words);
         }
         let bits = Bits(words);
-        if let (Some(keys), Some(index)) = (&mut keys, &mut index) {
+        if let Some(keys) = &mut keys {
             for &slot in &live {
-                let key = cells.key(slot).expect("a live row has a key");
-                keys[slot as usize] = key;
-                index.insert(key, slot);
+                keys[slot as usize] = cells.key(slot).expect("a live row has a key");
             }
         }
         for column in &mut held {
@@ -491,6 +488,9 @@ impl Mirror {
             _ => None,
         };
         let listed = lane.log().map(|_| HashMap::default());
+        let index = keys.as_ref().filter(|_| listed.is_some()).map_or_else(OnceLock::new, |keys| {
+            OnceLock::from(live.iter().map(|&slot| (keys[slot as usize], slot)).collect::<HashMap<_, _, Keys>>())
+        });
         Self {
             table: lane.table(),
             columns: held,
@@ -532,7 +532,7 @@ impl Mirror {
                     keys.resize(place + 1, 0);
                 }
                 keys[place] = rows.keys()[place];
-                if let Some(index) = &mut self.index {
+                if let Some(index) = self.index.get_mut() {
                     index.insert(keys[place], place as u32);
                 }
             }
@@ -565,7 +565,7 @@ impl Mirror {
                     keys.resize(slot + 1, 0);
                 }
                 keys[slot] = held[place as usize];
-                if let Some(index) = &mut self.index {
+                if let Some(index) = self.index.get_mut() {
                     index.insert(keys[slot], slot as u32);
                 }
             }
@@ -584,7 +584,7 @@ impl Mirror {
             for ordinal in run.from..run.to {
                 let Some(slot) = listed.remove(&ordinal) else { continue };
                 self.live.set(slot as usize, false);
-                if let (Some(keys), Some(index)) = (&self.keys, &mut self.index)
+                if let (Some(keys), Some(index)) = (&self.keys, self.index.get_mut())
                     && let Some(&key) = keys.get(slot as usize)
                     && index.get(&key) == Some(&slot)
                 {
@@ -600,7 +600,7 @@ impl Mirror {
         let deleted = changes.deleted();
         for &slot in deleted.slots() {
             self.live.set(slot as usize, false);
-            if let (Some(keys), Some(index)) = (&self.keys, &mut self.index)
+            if let (Some(keys), Some(index)) = (&self.keys, self.index.get_mut())
                 && let Some(&key) = keys.get(slot as usize)
                 && index.get(&key) == Some(&slot)
             {
@@ -616,7 +616,7 @@ impl Mirror {
                 }
                 let key = inserted.keys().map_or(0, |held| held[at]);
                 keys[slot as usize] = key;
-                if let Some(index) = &mut self.index {
+                if let Some(index) = self.index.get_mut() {
                     index.insert(key, slot);
                 }
             }
@@ -678,7 +678,7 @@ impl Mirror {
                 keys[new] = keys.get(from as usize).copied().unwrap_or(0);
             }
             keys.truncate(old.len());
-            if let Some(index) = &mut self.index {
+            if let Some(index) = self.index.get_mut() {
                 for slot in (first..old.len()).filter(|&slot| self.live.get(slot)) {
                     index.insert(keys[slot], slot as u32);
                 }
@@ -729,7 +729,13 @@ impl Mirror {
     pub fn slot(&self, key: u128) -> Option<u32> {
         #[cfg(any(test, feature = "test-support"))]
         probe::read();
-        self.index.as_ref().and_then(|index| index.get(&key).copied())
+        let keys = self.keys.as_ref()?;
+        let index = self.index.get_or_init(|| {
+            let mut index = HashMap::with_capacity_and_hasher(self.live.count(), Keys::default());
+            index.extend(self.live.ones().map(|slot| (keys[slot as usize], slot)));
+            index
+        });
+        index.get(&key).copied()
     }
 
     #[inline]
@@ -938,7 +944,7 @@ impl Mirror {
             .sum();
         self.live.bytes()
             + self.keys.as_ref().map_or(0, |keys| keys.capacity() * 16)
-            + self.index.as_ref().map_or(0, |index| index.capacity() * 24)
+            + self.index.get().map_or(0, |index| index.capacity() * 24)
             + columns
             + self.position.capacity() * 2
             + self.texts.values().map(|text| text.len() + 40).sum::<usize>()
@@ -948,7 +954,7 @@ impl Mirror {
     pub fn bytes(&self) -> usize {
         self.live.bytes()
             + self.keys.as_ref().map_or(0, |keys| keys.capacity() * 16)
-            + self.index.as_ref().map_or(0, |index| index.capacity() * 24)
+            + self.index.get().map_or(0, |index| index.capacity() * 24)
             + self.columns.iter().map(Column::bytes).sum::<usize>()
             + self.position.capacity() * 2
             + self.texts_bytes

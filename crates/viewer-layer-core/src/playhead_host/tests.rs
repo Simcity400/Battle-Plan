@@ -1117,10 +1117,13 @@ fn mirror_key_hasher_randomizes_instances_and_bounds_adversarial_keys() {
     let mut lane = Lane::new(Arc::clone(&pages), 0, 0, &columns, true).unwrap();
     lane.seek(0).unwrap();
     let mut mirror = Mirror::rebuild(&lane, &columns);
+    let mut unindexed = mirror.clone();
+    let before_lookup = mirror.bytes();
     for (slot, &key) in adversarial.iter().take(256).enumerate() {
         assert_eq!(mirror.slot(key), Some(slot as u32));
         assert_eq!(mirror.key(slot as u32), Some(key));
     }
+    assert!(mirror.bytes() > before_lookup, "walking row keys needs no reverse index before the first lookup");
     assert_eq!(mirror.slot(adversarial[256]), None);
     let mut changes = Changes::default();
     let (mut to, mut renumbered) = (99, 0);
@@ -1128,9 +1131,12 @@ fn mirror_key_hasher_randomizes_instances_and_bounds_adversarial_keys() {
         lane.fetch_through(to).unwrap();
         let head = lane.step(to, &mut changes).unwrap();
         mirror.apply(&changes);
+        unindexed.apply(&changes);
         assert_eq!(differ(&mirror, lane.cells(), &columns), None, "after step to hour {head}");
         if changes.renumber().is_some() {
             renumbered += 1;
+            assert_eq!(unindexed.slot(adversarial[0]), None, "first lookup sees the deletion before packing");
+            assert_eq!(unindexed.slot(adversarial[200]), Some(0), "first lookup uses the new slot order");
             let live: Vec<u32> = mirror.rows().collect();
             assert_eq!(live, (0..120u32).collect::<Vec<_>>());
             for &key in &adversarial[..200] {
