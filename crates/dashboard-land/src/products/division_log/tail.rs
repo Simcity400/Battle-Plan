@@ -16,7 +16,7 @@ use dashboard_query::{
     identity::{Country, Holders},
     log::{
         Reader, Row,
-        occurrence::{Ask, Chip, Direction, Index, Occurrence, Order, PlacedGap, Role, Selection},
+        occurrence::{Answer, Ask, Chip, DatedCursor, DatedUpdate, Direction, Index, Occurrence, Order, PlacedGap, Role, Selection, Shown},
     },
     series::{MissingSpan, ranked::GroupSelection},
 };
@@ -25,6 +25,7 @@ use dashboard_world::products::{place_name_runs::{PlacePoint, names_at}, place_n
 use replay_data::rows::{DivisionEventRow, TableId};
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp::Reverse,
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{Arc, Mutex, OnceLock, PoisonError, atomic::AtomicBool},
@@ -530,6 +531,7 @@ struct Prepared {
     index: Arc<Index<Line>>,
     selection: Option<Selection>,
     places: Mutex<BTreeMap<PlacePoint, Name>>,
+    dated: Option<Mutex<Dated>>,
 }
 
 fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &DivisionLogTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
@@ -560,13 +562,11 @@ fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &Divi
     let index = tail.index(filters, cancelled)?;
     let selection =
         dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
-    Ok(Prepared { tail, index, selection, places: Mutex::default() })
+    Ok(Prepared { tail, index, selection, places: Mutex::default(), dated: None })
 }
 
-fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams, hour: i32) -> io::Result<DivisionLogTailReply> {
-    let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
-    let tail = &prepared.tail;
-    let ask = Ask {
+fn page_ask<'a>(prepared: &'a Prepared, params: &DivisionLogTailParams, hour: i32, (offset, limit): (u64, u32)) -> Ask<'a> {
+    Ask {
         hour,
         from: params.from,
         to: params.to,
@@ -581,25 +581,71 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams,
         offset,
         limit,
         chips: &[],
+    }
+}
+
+fn count_chips() -> [Chip; 4] {
+    [DivisionEventRow::CREATED, DivisionEventRow::LOST, DivisionEventRow::TRANSFER, DivisionEventRow::VANISHED]
+        .map(|kind| Chip { kinds: Some(vec![u16::from(kind)]), states: None })
+}
+
+fn count_ask<'a>(page: &Ask<'a>, chips: &'a [Chip]) -> Ask<'a> {
+    Ask { offset: 0, limit: 1, states: Some(&[SINGLE, CHILD, HIDDEN_CHILD, VANISHED]), chips, ..page.clone() }
+}
+
+struct Dated {
+    display: DatedCursor<Line>,
+    counts: Option<DatedCursor<Line>>,
+}
+
+fn dated_window(index: &Index<Line>, ask: &Ask<'_>, mut update: DatedUpdate<'_>) -> Answer {
+    let total = update.newest_first().len() as u64;
+    let offset = ask.offset.min(total);
+    let rows = update.newest_first().skip(offset as usize).take(ask.limit as usize).enumerate().map(|(ordinal, at)| Shown {
+        at, ordinal: offset + ordinal as u64, live: update.is_live(at), state: index.get(at).state_at(ask.hour),
+    }).collect();
+    let mut gaps = std::mem::take(&mut update.gaps);
+    gaps.sort_by_key(|gap| Reverse((gap.last_hour, gap.first_hour)));
+    let mut displayed = update.newest_first().peekable();
+    let mut before = 0u64;
+    let gaps = gaps.into_iter().map(|gap| {
+        while displayed.next_if(|&at| index.get(at).date > gap.last_hour).is_some() { before += 1; }
+        PlacedGap { first_hour: gap.first_hour, last_hour: gap.last_hour, reason: gap.reason, before: before.to_string() }
+    }).collect();
+    Answer { rows, total, offset, gaps, unattributed: update.unattributed, next_change: update.until, chips: Vec::new(), hour: ask.hour, live: update.live }
+}
+
+fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams, hour: i32) -> io::Result<DivisionLogTailReply> {
+    let ask = page_ask(prepared, params, hour, occurrences::window(params.offset.as_deref(), params.limit)?);
+    let tail = &prepared.tail;
+    let mut dated = prepared.dated.as_ref().map(|dated| dated.lock().unwrap_or_else(PoisonError::into_inner));
+    let answer = match dated.as_mut() {
+        Some(dated) => dated_window(&prepared.index, &ask, dated.display.advance(hour)),
+        None => prepared.index.ask(holders, &ask)?,
     };
-    let answer = prepared.index.ask(holders, &ask)?;
     let mut warnings = tail.warnings.clone();
     let mut next_change = answer.next_change.into_iter().chain(tail.first_read.filter(|&at| at > hour)).min();
     let counts = if params.totals == Some(true) || tail.has_vanished {
-        let chips = [DivisionEventRow::CREATED, DivisionEventRow::LOST, DivisionEventRow::TRANSFER, DivisionEventRow::VANISHED]
-            .map(|kind| Chip { kinds: Some(vec![u16::from(kind)]), states: None });
-        let counted = prepared
-            .index
-            .ask(holders, &Ask { offset: 0, limit: 1, states: Some(&[SINGLE, CHILD, HIDDEN_CHILD, VANISHED]), chips: &chips, ..ask })?;
-        next_change = next_change.into_iter().chain(counted.next_change).min();
-        let vanished = counted.chips[3];
+        let (counts, until) = if let Some(cursor) = dated.as_mut().and_then(|dated| dated.counts.as_mut()) {
+            let update = cursor.advance(hour);
+            (update.chips.to_vec(), update.until)
+        } else {
+            let counted = prepared.index.ask(holders, &count_ask(&ask, &count_chips()))?;
+            (counted.chips, counted.next_change)
+        };
+        next_change = next_change.into_iter().chain(until).min();
+        let vanished = counts[3];
         if vanished > 0 {
             warnings.push(format!("{vanished} divisions left the census without a recorded removal."));
         }
-        if params.totals == Some(true) { occurrences::counts(&counted, &["created", "lost", "transferred"]) } else { Vec::new() }
+        if params.totals == Some(true) {
+            ["created", "lost", "transferred"].into_iter().zip(counts)
+                .map(|(key, total)| OccurrenceCount { key: key.into(), total: total.to_string(), missing: None }).collect()
+        } else { Vec::new() }
     } else {
         Vec::new()
     };
+    drop(dated);
     let rows = answer
         .rows
         .iter()
@@ -731,7 +777,13 @@ pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json:
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, DivisionLogTail::CONTENT_DEPENDENT, || prepare(source, &query, load, &params, &AtomicBool::new(false)));
-    let prepared = prepared.map_err(|error| error.to_string())?;
+    let mut prepared = prepared.map_err(|error| error.to_string())?;
+    let ask = page_ask(&prepared, &params, query.timeline.first, (0, 1));
+    let display = prepared.index.dated_cursor(&query.holders, &ask).map_err(|error| error.to_string())?;
+    let counts = (params.totals == Some(true) || prepared.tail.has_vanished)
+        .then(|| prepared.index.dated_cursor(&query.holders, &count_ask(&ask, &count_chips())))
+        .transpose().map_err(|error| error.to_string())?;
+    prepared.dated = Some(Mutex::new(Dated { display, counts }));
     let (timeline, holders) = (query.timeline, query.holders);
     let (first, last) = (timeline.first, timeline.last);
     let load = LoadContext { content: load.content.clone() };

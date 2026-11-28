@@ -48,8 +48,9 @@ fn sightings_and_removals_follow_the_observation_hour_with_separate_coverage() {
                 (TableId::DivisionEquipmentDeletions, TableRows::DivisionEquipmentDeletions(deletions), 106),
             ] {
                 frame.metrics.table_ns[id.index()] = 1;
-                *frame.tables[id.index()] =
-                    if hour == missing { TableView::Unavailable { reason: "fixture gap".into() } } else { TableView::Complete(rows) };
+                *frame.tables[id.index()] = if hour == missing || id == TableId::DivisionEquipmentDeletions && hour == 104 {
+                    TableView::Unavailable { reason: "fixture gap".into() }
+                } else { TableView::Complete(rows) };
             }
             frame
         })
@@ -98,10 +99,32 @@ fn sightings_and_removals_follow_the_observation_hour_with_separate_coverage() {
     assert_eq!(lost.rows.len(), 1);
     assert_eq!(lost.rows[0].event.as_ref().unwrap().status, "merged");
     assert!(lost.missing.iter().any(|gap| gap.first_hour == 106 && gap.reason.contains("deletions")));
+    assert!(lost.missing.iter().any(|gap| gap.first_hour == 104 && gap.before == "1"));
     let created = ask(107, json!({"events": "created"}));
     assert!(created.missing.iter().all(|gap| !gap.reason.contains("deletions")));
     assert!(created.missing.iter().any(|gap| gap.first_hour == 107 && gap.reason.contains("census")));
     assert_eq!(created.total, "2");
+
+    let source = Arc::new(source);
+    for options in [
+        json!({"countries": [7], "totals": true, "limit": 1, "offset": "2", "expanded": [&group.key]}),
+        json!({"events": "lost", "templates": [2]}),
+        json!({"events": "lost"}),
+        json!({"events": "created", "from": 102, "to": 106}),
+    ] {
+        let mut params = json!({ "branchId": "1", "limit": 10 });
+        params.as_object_mut().unwrap().extend(options.as_object().unwrap().clone());
+        let mut request = params.clone();
+        request["panel"] = "division-log-tail".into();
+        let panel = dated_panel(&source, &load, &request).unwrap();
+        let advance = &panel.exact().unwrap().advance;
+        for hour in [100, 102, 103, 104, 105, 106, 107, 102] {
+            params["hour"] = hour.into();
+            let exact = DivisionLogTail::load(&source, &serde_json::from_value(params.clone()).unwrap(), &load, &cancel).unwrap();
+            let followed = advance(hour, false, &cancel, None);
+            assert_eq!(followed.value.as_ref().as_ref().unwrap(), &serde_json::to_value(exact).unwrap(), "hour {hour} with {options}");
+        }
+    }
 }
 
 #[test]
@@ -210,6 +233,10 @@ fn unresolved_owner_and_undated_removal_keep_honest_identity_and_last_sighting()
     assert_eq!((removal_detail.killer_slot, removal_detail.killer_tag.as_deref(), removal_detail.killer_division.as_deref()), (None, None, None));
     assert_eq!(removal_detail.matched_deaths, Some(0));
     let mut named = serde_json::to_value(ask(105, json!({"events": "lost", "placeNames": true}))).unwrap();
+    let source = Arc::new(source);
+    let panel = dated_panel(&source, &load, &json!({"panel": "division-log-tail", "branchId": "1", "events": "lost", "placeNames": true, "limit": 10})).unwrap();
+    let streamed = (panel.exact().unwrap().advance)(105, false, &cancel, None);
+    assert_eq!(streamed.value.as_ref().as_ref().unwrap(), &named);
     let row = named["rows"][0].as_object_mut().unwrap();
     assert_eq!(row.remove("placeMissing"), Some(json!("Place names need the recorded content stack and language")));
     assert_eq!(named, serde_json::to_value(lost).unwrap(), "the optional name adds only the settled place reading");
