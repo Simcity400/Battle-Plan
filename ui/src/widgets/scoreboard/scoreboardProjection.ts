@@ -262,6 +262,11 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
   project(readView: BoundedReadView, options: ScoreboardProjectionOptions): TableModel {
     const hour = readView.hour;
     const panel = readView.panel('main');
+    const refused = readView.refused('main');
+    if (refused) {
+      return { columns: scoreboardColumnsSpec(options.shown, options.top), rows: [], hour, rowTimeBoundaries: false,
+        empty: refused, emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers };
+    }
 
     if (panel !== undefined) {
       const columns = scoreboardColumnsSpec(options.shown, options.top);
@@ -540,7 +545,7 @@ function scoreboardSources(ctx: FamilyPlanContext<ScoreboardColumnsReply>): Sour
     tags: ctx.countries.tags,
     membership: ctx.countries.membership,
   };
-  const exactEntry: SourceEntry = {
+  const exactEntry = {
     name: 'main',
     source: ctx.track.source,
     branch: ctx.branch.id,
@@ -557,7 +562,7 @@ function scoreboardSources(ctx: FamilyPlanContext<ScoreboardColumnsReply>): Sour
       dynamicKeys: ['hour', 'countries'],
       validate: raw => validateScoreboardReply(raw, shown.length),
     },
-  };
+  } satisfies SourceEntry;
 
   if (top != null && !rank?.family) {
     return {
@@ -569,26 +574,27 @@ function scoreboardSources(ctx: FamilyPlanContext<ScoreboardColumnsReply>): Sour
     };
   }
 
-  const entries: SourceEntry[] = [];
   if (top != null && rank?.family) {
-    entries.push({
-      name: RANK_SOURCE,
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'followed',
-        coverage,
-        product: 'series-state',
-        followQuery: { product: 'series-state', params: { branchId: ctx.branch.id, family: rank.family, top, least: descending ? undefined : true } },
-        params: null,
-      },
-    });
+    return {
+      owner,
+      entries: [{
+        ...exactEntry,
+        read: {
+          ...exactEntry.read,
+          channel: 'panel',
+          followQuery: {
+            panel: 'scoreboard', branchId: ctx.branch.id, columns: shown.map(column => column.key),
+            countries: [], top: { count: top, sort: rank.key, descending },
+          },
+        },
+      }],
+      staticEntry: exactEntry,
+      exactEntry,
+    };
   }
 
-  const reads = top != null ? 'every' : ctx.countries.tags.length ? ctx.countries.tags.map(tag => ({ country: countryFromKey(tag) })) : null;
-  const rowCoverage = top == null ? { coverage: 'row' } : {};
+  const entries: SourceEntry[] = [];
+  const reads = ctx.countries.tags.length ? ctx.countries.tags.map(tag => ({ country: countryFromKey(tag) })) : null;
   if (reads) {
     for (const column of shown) {
       if (column.family) {
@@ -602,7 +608,7 @@ function scoreboardSources(ctx: FamilyPlanContext<ScoreboardColumnsReply>): Sour
             channel: 'followed',
             coverage,
             product: 'series-state',
-            followQuery: { product: 'series-state', ...rowCoverage, params: { branchId: ctx.branch.id, family: column.family, reads } },
+            followQuery: { product: 'series-state', coverage: 'row', params: { branchId: ctx.branch.id, family: column.family, reads } },
             params: null,
           },
         });
@@ -618,7 +624,7 @@ function scoreboardSources(ctx: FamilyPlanContext<ScoreboardColumnsReply>): Sour
             channel: 'followed',
             coverage,
             product: 'series-state',
-            followQuery: { product: 'series-state', ...rowCoverage, params: { branchId: ctx.branch.id, family: column.partial, reads } },
+            followQuery: { product: 'series-state', coverage: 'row', params: { branchId: ctx.branch.id, family: column.partial, reads } },
             params: null,
           },
         });
@@ -631,7 +637,7 @@ function scoreboardSources(ctx: FamilyPlanContext<ScoreboardColumnsReply>): Sour
     entries,
     staticEntry: exactEntry,
     exactEntry,
-    allowEmptyFollow: top == null && entries.length === 0,
+    allowEmptyFollow: entries.length === 0,
   };
 }
 

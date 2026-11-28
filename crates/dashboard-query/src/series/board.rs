@@ -6,7 +6,9 @@ use crate::{
 };
 use replay_lanes::lanes::Keys;
 use replay_columnar::{manifest::Status, summary::Computed};
-use std::io;
+use replay_data::rows::TableId;
+use replay_recording::cells::TableReader;
+use std::{collections::{HashMap, hash_map::Entry}, io, sync::{Arc, Weak}};
 
 pub struct Column<'q, 'a> {
     pub line: Line<'q, 'a>,
@@ -61,6 +63,61 @@ pub fn measure_unrecorded(tag: &str, measure: &str) -> String {
 }
 
 pub fn at(columns: &[Column<'_, '_>], rows: Rows<'_>, hour: i32) -> io::Result<Board> {
+    at_with(columns, rows, hour, None)
+}
+
+#[derive(Default)]
+pub struct Readers {
+    recording: Option<(Weak<replay_recording::columnar_frames::Source>, replay::campaign::Revision)>,
+    tables: HashMap<TableId, (Vec<usize>, TableReader)>,
+}
+
+pub fn top_with_readers(columns: &[Column<'_, '_>], by: usize, n: usize, least: bool, hour: i32, readers: &mut Readers) -> io::Result<Board> {
+    let rows = || Rows::Top { by, n, least };
+    match at_with(columns, rows(), hour, Some(readers)) {
+        Ok(board) => Ok(board),
+        Err(_) => {
+            readers.tables.clear();
+            at(columns, rows(), hour)
+        }
+    }
+}
+
+impl Readers {
+    fn at(&mut self, line: &Line<'_, '_>, lines: &[&Line<'_, '_>], run: u32, hour: i32) -> io::Result<&TableReader> {
+        let recording = line.query().replay.recording();
+        let source = Arc::downgrade(&recording.source());
+        let revision = recording.revision();
+        if self.recording.as_ref().is_none_or(|(held, at)| !Weak::ptr_eq(held, &source) || *at != revision) {
+            self.tables.clear();
+            self.recording = Some((source, revision));
+        }
+        let table = line.series().table;
+        let mut columns: Vec<_> = lines.iter().filter(|line| line.series().table == table).flat_map(|line| read::columns_of(&line.source())).collect();
+        columns.sort_unstable();
+        columns.dedup();
+        let ordinal = read::ordinal(recording, run, hour)?;
+        crate::cost::storage(|| {
+            let (_, reader) = match self.tables.entry(table) {
+                Entry::Occupied(entry) if entry.get().1.run() == run && columns.iter().all(|column| entry.get().0.binary_search(column).is_ok()) => entry.into_mut(),
+                entry => {
+                    if let Entry::Occupied(held) = &entry {
+                        columns.extend_from_slice(&held.get().0);
+                        columns.sort_unstable();
+                        columns.dedup();
+                    }
+                    let mut reader = TableReader::new(recording, run, table, Some(&columns))?;
+                    reader.index_keys();
+                    entry.insert_entry((columns, reader)).into_mut()
+                }
+            };
+            reader.go_to(recording, ordinal)?;
+            Ok(&*reader)
+        })
+    }
+}
+
+fn at_with(columns: &[Column<'_, '_>], rows: Rows<'_>, hour: i32, retained: Option<&mut Readers>) -> io::Result<Board> {
     let Some(first) = columns.first() else {
         return Err(invalid("A board names no column"));
     };
@@ -76,11 +133,28 @@ pub fn at(columns: &[Column<'_, '_>], rows: Rows<'_>, hour: i32) -> io::Result<B
             (held, read.into_iter())
         }
         Rows::Top { by, n, least } => {
-            let held: Vec<Country> = match columns.get(by).ok_or_else(|| invalid("A board ranks by a column it does not hold"))?.line.rank_at(hour, n, least)? {
-                Ok(ranked) => ranked.into_iter().map(Country::from).collect(),
+            let rank = &columns.get(by).ok_or_else(|| invalid("A board ranks by a column it does not hold"))?.line;
+            let mut retained = retained;
+            let ranked = match retained.as_deref_mut() {
+                Some(readers) => {
+                    rank.owners_only("a rank at an hour")?;
+                    if let Some(reason) = rank.withheld_at(stretch.run, hour) {
+                        Err(reason.to_owned())
+                    } else {
+                        let reader = readers.at(rank, &lines, stretch.run, hour)?;
+                        match table_unrecorded(rank.series().table, reader.status(), reader_reason(reader)) {
+                            Some(reason) => Err(reason),
+                            None => rank.population_in(&reader.view(), hour, Some(n), least),
+                        }
+                    }
+                }
+                None => rank.rank_at(hour, n, least)?,
+            };
+            let held = match ranked {
+                Ok(ranked) => ranked,
                 Err(reason) => return Ok(Board { rows: Vec::new(), missing: Some(reason) }),
             };
-            let read = values_table(&lines, &held, hour, stretch.run)?;
+            let read = values_table(&lines, &held, hour, stretch.run, retained)?;
             (held, read.into_iter())
         }
     };
@@ -108,7 +182,7 @@ struct TableGroup {
     snapshot: Option<replay_lanes::lanes::Snapshot>,
 }
 
-fn read_table_groups(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -> io::Result<(Vec<Vec<Result<u128, String>>>, Vec<TableGroup>)> {
+fn read_table_groups(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32, cold: bool) -> io::Result<(Vec<Vec<Result<u128, String>>>, Vec<TableGroup>)> {
     let query = lines[0].query();
     let recording = query.replay.recording();
     let keys: Vec<Vec<Result<u128, String>>> = lines
@@ -143,10 +217,9 @@ fn read_table_groups(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, 
         let mut wanted: Vec<u128> = group.iter().flat_map(|&line| keys[line].iter().filter_map(|key| key.as_ref().ok().copied())).collect();
         wanted.sort_unstable();
         wanted.dedup();
-        let snapshot = match wanted.is_empty() {
-            true => None,
-            false => Some(crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, table, hour, Some(&asked), Keys::These(&wanted)))?),
-        };
+        let snapshot = (cold && !wanted.is_empty())
+            .then(|| crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, table, hour, Some(&asked), Keys::These(&wanted))))
+            .transpose()?;
         groups.push(TableGroup { table, lines: group, snapshot });
     }
     Ok((keys, groups))
@@ -159,6 +232,13 @@ fn unavailable_reason(snapshot: &replay_lanes::lanes::Snapshot) -> Option<&str> 
     }
 }
 
+fn reader_reason(reader: &TableReader) -> Option<&str> {
+    match reader.status() {
+        Status::Unavailable { reason } => reader.strings().get(reason).and_then(|text| std::str::from_utf8(text).ok()),
+        _ => None,
+    }
+}
+
 fn read_cell(line: &Line<'_, '_>, view: &replay_columnar::store::TableView<'_>, slot: u32, tag: &str) -> Result<i64, String> {
     match line.source().read(view, slot) {
         Computed::Value(value) => Ok(value),
@@ -167,14 +247,17 @@ fn read_cell(line: &Line<'_, '_>, view: &replay_columnar::store::TableView<'_>, 
     }
 }
 
-fn values_table(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -> io::Result<Vec<Vec<Result<i64, String>>>> {
+fn values_table(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32, mut retained: Option<&mut Readers>) -> io::Result<Vec<Vec<Result<i64, String>>>> {
     let query = lines[0].query();
-    let (keys, groups) = read_table_groups(lines, countries, hour, run)?;
+    let (keys, groups) = read_table_groups(lines, countries, hour, run, retained.is_none())?;
     let mut out: Vec<Option<Vec<Result<i64, String>>>> = vec![None; lines.len()];
     for group in groups {
-        let status_reason = group.snapshot.as_ref().and_then(unavailable_reason);
-        let unrecorded = group.snapshot.as_ref().and_then(|snapshot| table_unrecorded(group.table, snapshot.status, status_reason));
-        let view = group.snapshot.as_ref().map(|snapshot| snapshot.view());
+        let snapshot = group.snapshot.as_ref();
+        let reader = retained.as_deref_mut().filter(|_| group.lines.iter().any(|&line| keys[line].iter().any(Result::is_ok)))
+            .map(|readers| readers.at(lines[group.lines[0]], lines, run, hour)).transpose()?;
+        let view = reader.map(TableReader::view).or_else(|| snapshot.map(|snapshot| snapshot.view()));
+        let unrecorded = reader.and_then(|reader| table_unrecorded(group.table, reader.status(), reader_reason(reader)))
+            .or_else(|| snapshot.and_then(|snapshot| table_unrecorded(group.table, snapshot.status, unavailable_reason(snapshot))));
         for line in group.lines {
             let measure = lines[line].measure_name();
             out[line] = Some(
@@ -187,12 +270,14 @@ fn values_table(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: 
                             return Err(reason.clone());
                         }
                         let tag = query.holders.name(country, hour);
-                        let snapshot = group.snapshot.as_ref().expect("a read table");
-                        let slot = snapshot.rows.binary_search_by_key(&key, |&(k, _)| k).ok().map(|at| snapshot.rows[at].1);
+                        let view = view.as_ref().expect("a read view");
+                        let slot = snapshot.map_or_else(|| view.slot(key), |snapshot| {
+                            snapshot.rows.binary_search_by_key(&key, |&(k, _)| k).ok().map(|at| snapshot.rows[at].1)
+                        });
                         let Some(slot) = slot else {
                             return if lines[line].series().absent_none { Ok(0) } else { Err(measure_unrecorded(&tag, measure)) };
                         };
-                        read_cell(lines[line], view.as_ref().expect("a read view"), slot, &tag)
+                        read_cell(lines[line], view, slot, &tag)
                     })
                     .collect(),
             );
@@ -203,7 +288,7 @@ fn values_table(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: 
 
 fn values_row(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -> io::Result<Vec<Vec<Result<i64, String>>>> {
     let query = lines[0].query();
-    let (keys, groups) = read_table_groups(lines, countries, hour, run)?;
+    let (keys, groups) = read_table_groups(lines, countries, hour, run, true)?;
     let mut out: Vec<Option<Vec<Result<i64, String>>>> = vec![None; lines.len()];
     for group in groups {
         let status_reason = group.snapshot.as_ref().and_then(unavailable_reason);
