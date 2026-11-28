@@ -1,3 +1,13 @@
+pub(crate) fn product_keys<'a>(contract: &'a str, name: &str) -> Vec<&'a str> {
+    let (_, declaration) = contract.split_once(&format!("export const {name} = [")).expect("the product list is exported");
+    let (keys, _) = declaration.split_once("] as const;").expect("the product list has a closing bracket");
+    keys.split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(|key| key.strip_prefix('"').and_then(|key| key.strip_suffix('"')).expect("product keys are quoted"))
+        .collect()
+}
+
 #[test]
 fn the_ui_holds_the_current_contract() {
     let folder = std::env::var_os("CARGO_MANIFEST_DIR").expect("tests run with the crate's folder");
