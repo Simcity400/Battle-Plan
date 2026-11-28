@@ -456,7 +456,7 @@ impl LoggedStore {
     fn record_hour(&mut self) {
         assert!(keys(&self.store, TableId::PowerSpendTotals).is_empty(), "PowerSpendTotals is retired in format 155");
         let view = self.store.view(TableId::PowerSpendDays.index());
-        if view.status() == Status::Complete {
+        if matches!(view.status(), Status::Complete | Status::Truncated { .. }) {
             for row in inputs::every::<SpendDay>(&view).unwrap() {
                 let entry = self.days.entry((row.holder, row.currency, row.ordinal)).or_default();
                 entry.days += row.days;
@@ -474,7 +474,7 @@ impl LoggedStore {
             }
         }
         let view = self.store.view(TableId::PowerSpendPayments.index());
-        if view.status() == Status::Complete {
+        if matches!(view.status(), Status::Complete | Status::Truncated { .. }) {
             for row in inputs::every::<SpendPayment>(&view).unwrap() {
                 let entry = self.payments.entry((row.holder, row.currency, row.ordinal)).or_default();
                 if let Recorded::Value(known) = row.known {
@@ -490,7 +490,7 @@ impl LoggedStore {
             }
         }
         let view = self.store.view(TableId::PowerSpendGains.index());
-        if view.status() == Status::Complete {
+        if matches!(view.status(), Status::Complete | Status::Truncated { .. }) {
             for row in inputs::every::<SpendGain>(&view).unwrap() {
                 let entry = self.gains.entry((row.holder, row.currency)).or_default();
                 if let Recorded::Value(gained) = row.gained {
@@ -1270,6 +1270,23 @@ fn late_revision_of_a_settled_day_does_not_settle_again() {
                 put_daily(store, hour, &daily(72, 3 * Q, Q / 4, 72));
                 testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 0, PowerDailyCostKind::Relation, Q / 4, 72), TEXTS).unwrap();
             }
+            120 => {
+                put_daily(store, hour, &daily(120, 3 * Q, Q / 2 - Q / 10, 120));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 0, PowerDailyCostKind::Relation, Q / 2, 120), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 1, PowerDailyCostKind::MioResearch, -Q / 10, 120), TEXTS).unwrap();
+            }
+            143 => {
+                store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+            }
+            144 => {
+                complete(store, TableId::CountryLinks);
+                store.status(TableId::CountryPowerChanges.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+                store.status(TableId::CountryPowerDailyCosts.index(), Status::Truncated { missing: 1 }, true, Some(hour), false).unwrap();
+            }
+            145 => {
+                complete(store, TableId::CountryPowerChanges);
+                complete(store, TableId::CountryPowerDailyCosts);
+            }
             _ => {}
         }
     };
@@ -1310,7 +1327,23 @@ fn late_revision_of_a_settled_day_does_not_settle_again() {
             "a late revision after unknown-withheld settlement does not settle day 72 again ({name})"
         );
     }
-    assert_resumes_match(&[48, 49, 96], 97, scenario);
+    let (withheld_both, _) = run_custom(144, scenario);
+    assert_eq!(
+        withheld_both.view(TableId::PowerSpendDays.index()).status(),
+        Status::Truncated { missing: 1 },
+        "simultaneous changes unavailability and daily-cost truncation must keep truncation on PowerSpendDays"
+    );
+    assert_eq!(
+        withheld_both.view(TableId::PowerSpendPayments.index()).status(),
+        Status::Complete,
+        "an unknown negative daily credit emitted at midnight must not be wiped when CountryPowerChanges is unavailable"
+    );
+    assert_eq!(
+        (spend(&withheld_both, 10, POLITICAL, 0, "days"), spend(&withheld_both, 10, POLITICAL, 0, "day_unknown"), spend(&withheld_both, 10, POLITICAL, 1, "unknown")),
+        (Some(3), Some(2), Some(1)),
+        "day 120 preserves both its unknown positive day and its unknown negative credit"
+    );
+    assert_resumes_match(&[48, 49, 96, 144], 145, scenario);
 }
 
 #[test]

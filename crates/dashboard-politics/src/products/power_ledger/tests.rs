@@ -1404,9 +1404,21 @@ fn format_155_summary_logs_skip_legacy_walks_and_surface_log_gaps() {
         let countries = decoded.complete::<replay_data::rows::tables::Countries>()?;
         synthetic.table(TableId::Countries, Input::Snapshot { rows: countries, partial: None, read: true, sample: Sample::FromReadBit })?;
         let links = decoded.complete::<replay_data::rows::tables::CountryLinks>()?;
-        let links_read = decoded.hour != 115;
-        synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: links, partial: None, read: links_read, sample: Sample::FromReadBit })?;
-        synthetic.table(TableId::CountryPowerChanges, Input::Snapshot { rows: &[] as &[CountryPowerChangeRow], partial: None, read: true, sample: Sample::FromReadBit })?;
+        if decoded.hour == 117 {
+            synthetic.table::<CountryLinkRow>(TableId::CountryLinks, Input::Unavailable { reason: "links lost", read: false, sample: Sample::FromReadBit })?;
+        } else {
+            let links_read = decoded.hour != 115;
+            synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: links, partial: None, read: links_read, sample: Sample::FromReadBit })?;
+        }
+        if decoded.hour == 113 {
+            synthetic.table::<CountryPowerChangeRow>(TableId::CountryPowerChanges, Input::Unavailable { reason: "politics observation restarted", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 114 || decoded.hour == 116 {
+            synthetic.table::<CountryPowerChangeRow>(TableId::CountryPowerChanges, Input::Unavailable { reason: "hook paused", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 117 {
+            synthetic.table(TableId::CountryPowerChanges, Input::Snapshot { rows: &[] as &[CountryPowerChangeRow], partial: Some(1), read: true, sample: Sample::FromReadBit })?;
+        } else {
+            synthetic.table(TableId::CountryPowerChanges, Input::Snapshot { rows: &[] as &[CountryPowerChangeRow], partial: None, read: true, sample: Sample::FromReadBit })?;
+        }
         let slot = if decoded.hour < 118 { SLOT } else { next_slot };
         let coverage = [PowerSpendCoverageRow {
             holder: slot,
@@ -1420,22 +1432,36 @@ fn format_155_summary_logs_skip_legacy_walks_and_surface_log_gaps() {
         synthetic.table(TableId::PowerSpendCoverage, Input::Snapshot { rows: &coverage, partial: None, read: true, sample: Sample::FromReadBit })?;
         if decoded.hour == 110 {
             synthetic.table::<replay_data::rows::PowerSpendDayRow>(TableId::PowerSpendDays, Input::Unavailable { reason: "days lost", read: false, sample: Sample::FromReadBit })?;
-        } else if decoded.hour == 112 {
+        } else if decoded.hour == 112 || decoded.hour == 116 {
             synthetic.table::<replay_data::rows::PowerSpendDayRow>(TableId::PowerSpendDays, Input::Unavailable { reason: "writer withheld", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 113 {
+            synthetic.table::<replay_data::rows::PowerSpendDayRow>(TableId::PowerSpendDays, Input::Unavailable { reason: "politics observation restarted", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 114 {
+            synthetic.table::<replay_data::rows::PowerSpendDayRow>(TableId::PowerSpendDays, Input::Unavailable { reason: "hook paused", read: false, sample: Sample::FromReadBit })?;
         } else {
             synthetic.table(TableId::PowerSpendDays, Input::Snapshot { rows: &[] as &[replay_data::rows::PowerSpendDayRow], partial: None, read: true, sample: Sample::FromReadBit })?;
         }
         if decoded.hour == 110 {
             synthetic.table::<replay_data::rows::PowerSpendPaymentRow>(TableId::PowerSpendPayments, Input::Unavailable { reason: "payments lost", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 113 {
+            synthetic.table::<replay_data::rows::PowerSpendPaymentRow>(TableId::PowerSpendPayments, Input::Unavailable { reason: "politics observation restarted", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 116 {
+            synthetic.table::<replay_data::rows::PowerSpendPaymentRow>(TableId::PowerSpendPayments, Input::Unavailable { reason: "writer withheld", read: false, sample: Sample::FromReadBit })?;
         } else if decoded.hour == 120 {
             synthetic.table::<replay_data::rows::PowerSpendPaymentRow>(TableId::PowerSpendPayments, Input::Unavailable { reason: "second piece lost", read: false, sample: Sample::FromReadBit })?;
         } else {
             synthetic.table(TableId::PowerSpendPayments, Input::Snapshot { rows: &[] as &[replay_data::rows::PowerSpendPaymentRow], partial: None, read: true, sample: Sample::FromReadBit })?;
         }
-        if decoded.hour == 112 {
+        if decoded.hour == 112 || decoded.hour == 116 {
             synthetic.table::<PowerSpendGainRow>(TableId::PowerSpendGains, Input::Unavailable { reason: "writer withheld", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 113 {
+            synthetic.table::<PowerSpendGainRow>(TableId::PowerSpendGains, Input::Unavailable { reason: "politics observation restarted", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 114 {
+            synthetic.table::<PowerSpendGainRow>(TableId::PowerSpendGains, Input::Unavailable { reason: "gains corrupted", read: false, sample: Sample::FromReadBit })?;
         } else if decoded.hour == 115 {
             synthetic.table::<PowerSpendGainRow>(TableId::PowerSpendGains, Input::Unavailable { reason: "gains lost", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 117 {
+            synthetic.table(TableId::PowerSpendGains, Input::Snapshot { rows: &[] as &[PowerSpendGainRow], partial: Some(1), read: true, sample: Sample::FromReadBit })?;
         } else if decoded.hour == 122 {
             let split = [
                 PowerSpendGainRow { holder: next_slot, hour: 122, currency: 0, entry: 0, event_hour: Some(122), gained: Recorded::Value(half), capped: Recorded::Value(0), days: 0, unknown_days: 0, unmatched: 0 },
@@ -1476,8 +1502,57 @@ fn format_155_summary_logs_skip_legacy_walks_and_surface_log_gaps() {
         "a shared writer refusal on PowerSpendDays and PowerSpendGains while raw inputs are complete must still mark gain_coverage uncovered: {:?}",
         reply.gain_coverage
     );
-    assert!(reply.warnings.iter().any(|w| w.contains("Daily spending log unavailable: writer withheld (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(reply.warnings.iter().any(|w| w.contains("Daily spending log unavailable: writer withheld (hours: 2)")), "warnings: {:?}", reply.warnings);
     assert!(!reply.warnings.iter().any(|w| w.contains("Spending gains log unavailable: writer withheld")), "identical shared refusal warning is deduplicated: {:?}", reply.warnings);
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered
+                && span.first_hour == 116
+                && span.last_hour == 116
+                && span.reason.as_deref().is_some_and(|r| r.contains("Power changes unavailable") && r.contains("Spending gains log unavailable: writer withheld"))
+        }),
+        "a shared writer refusal across all three logs overlapping a different CountryPowerChanges outage must still surface in gain_coverage: {:?}",
+        reply.gain_coverage
+    );
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered
+                && span.first_hour == 117
+                && span.last_hour == 117
+                && span.reason.as_deref().is_some_and(|r| r.contains("Power changes was read in part: 1 missing") && r.contains("Spending gains log was read in part: 1 missing"))
+        }),
+        "when CountryLinks is unavailable, a matching CountryPowerChanges truncation must not suppress an independent PowerSpendGains truncation: {:?}",
+        reply.gain_coverage
+    );
+    assert!(reply.warnings.iter().any(|w| w.contains("Spending gains log was read in part: 1 missing (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered && span.first_hour == 113 && span.last_hour == 113 && span.reason.as_deref() == Some("Power changes unavailable")
+        }),
+        "a propagated CountryPowerChanges outage across PowerSpendDays and PowerSpendGains must not duplicate its reason in gain_coverage: {:?}",
+        reply.gain_coverage
+    );
+    assert!(
+        reply.coverage.iter().any(|span| {
+            !span.covered && span.first_hour == 113 && span.last_hour == 113 && span.reason.as_deref() == Some("Daily spending log unavailable: politics observation restarted")
+        }),
+        "a propagated CountryPowerChanges outage with differing per-table reason IDs must still deduplicate PowerSpendPayments against PowerSpendDays: {:?}",
+        reply.coverage
+    );
+    assert!(reply.warnings.iter().any(|w| w.contains("Daily spending log unavailable: politics observation restarted (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(!reply.warnings.iter().any(|w| w.contains("Spending payments log unavailable: politics observation restarted")), "warnings: {:?}", reply.warnings);
+    assert!(!reply.warnings.iter().any(|w| w.contains("Spending gains log unavailable: politics observation restarted")), "warnings: {:?}", reply.warnings);
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered
+                && span.first_hour == 114
+                && span.last_hour == 114
+                && span.reason.as_deref().is_some_and(|r| r.contains("Power changes unavailable") && r.contains("Spending gains log unavailable: gains corrupted"))
+        }),
+        "a distinct PowerSpendGains failure overlapping a CountryPowerChanges outage must preserve both reasons in gain_coverage: {:?}",
+        reply.gain_coverage
+    );
+    assert!(reply.warnings.iter().any(|w| w.contains("Spending gains log unavailable: gains corrupted (hours: 1)")), "warnings: {:?}", reply.warnings);
     assert!(
         reply.gain_coverage.iter().any(|span| {
             !span.covered

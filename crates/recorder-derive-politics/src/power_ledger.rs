@@ -1979,31 +1979,28 @@ fn moved(hour: &Hour<'_>) -> bool {
     })
 }
 
-fn partial(hour: &Hour<'_>, out: &mut Rows, logged_gains: bool) {
+fn partial(hour: &Hour<'_>, out: &mut Rows, logged_days: bool, logged_payments: bool, logged_gains: bool) {
     let changes = hour.status(TableId::CountryPowerChanges);
+    let costs = hour.status(TableId::CountryPowerDailyCosts);
+    let set = |out: &mut Rows, derived: TableId, status: Status, not_recorded: &[u8]| match status {
+        Status::NotRecorded => out.unavailable(derived, not_recorded),
+        other => out.status(derived, other),
+    };
     if changes != Status::Complete {
-        for derived in [TableId::PowerDayParts, TableId::PowerSpendDays, TableId::PowerSpendPayments] {
-            match changes {
-                Status::NotRecorded => out.unavailable(derived, b"CountryPowerChanges is not recorded"),
-                other => out.status(derived, other),
-            }
+        set(out, TableId::PowerDayParts, changes, b"CountryPowerChanges is not recorded");
+        if !logged_payments || matches!(changes, Status::Truncated { .. }) {
+            set(out, TableId::PowerSpendPayments, changes, b"CountryPowerChanges is not recorded");
         }
         if !logged_gains || matches!(changes, Status::Truncated { .. }) {
-            match changes {
-                Status::NotRecorded => out.unavailable(TableId::PowerSpendGains, b"CountryPowerChanges is not recorded"),
-                other => out.status(TableId::PowerSpendGains, other),
-            }
+            set(out, TableId::PowerSpendGains, changes, b"CountryPowerChanges is not recorded");
         }
-        return;
+    } else if costs != Status::Complete {
+        set(out, TableId::PowerDayParts, costs, b"CountryPowerDailyCosts is not recorded");
     }
-    let costs = hour.status(TableId::CountryPowerDailyCosts);
-    if costs != Status::Complete {
-        for derived in [TableId::PowerDayParts, TableId::PowerSpendDays] {
-            match costs {
-                Status::NotRecorded => out.unavailable(derived, b"CountryPowerDailyCosts is not recorded"),
-                other => out.status(derived, other),
-            }
-        }
+    if changes != Status::Complete && (!logged_days || matches!(changes, Status::Truncated { .. })) {
+        set(out, TableId::PowerSpendDays, changes, b"CountryPowerChanges is not recorded");
+    } else if costs != Status::Complete && (!logged_days || matches!(costs, Status::Truncated { .. })) {
+        set(out, TableId::PowerSpendDays, costs, b"CountryPowerDailyCosts is not recorded");
     }
 }
 
@@ -2203,7 +2200,7 @@ impl Writer for PowerLedger {
         let adjacent = !hour.fresh && self.last.and_then(|last| last.checked_add(1)) == Some(at);
         let rolls = self.batches.keys().any(|key| key.day != midnight(at)) || self.change_parts.values().any(|(day, _)| *day != midnight(at));
         if !whole && self.idle && !rolls && !moved(hour) {
-            partial(hour, out, false);
+            partial(hour, out, false, false, false);
             self.last = Some(at);
             return Ok(());
         }
@@ -2362,7 +2359,7 @@ impl Writer for PowerLedger {
                 out.append(TableId::PowerSpendGains, row.key(), cells);
             }
         }
-        partial(hour, out, logged_gains);
+        partial(hour, out, logged_days, logged_payments, logged_gains);
         self.idle = !current
             && self.holds.is_empty()
             && !logged_days

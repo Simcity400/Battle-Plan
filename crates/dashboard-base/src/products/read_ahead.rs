@@ -100,6 +100,8 @@ mod tests {
                  NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
             ),
             ("common/ideas/work.txt", "ideas={country={mod_a={}}}"),
+            ("common/buildings/work.txt", "buildings={mod_building={}}"),
+            ("common/terrain/work.txt", "categories={mod_terrain={}}"),
         ];
         all.extend_from_slice(files);
         let (_catalogue, folder) = catalogue::tests::folder_catalogue(&all);

@@ -628,6 +628,75 @@ fn log_gap_reason(gap: &lanes::LogGap, label: &str) -> String {
     }
 }
 
+fn same_gap_cause(a: &lanes::LogGap, b: &lanes::LogGap) -> bool {
+    match (a.status, b.status) {
+        (Status::Unavailable { .. }, Status::Unavailable { .. }) => a.reason == b.reason,
+        (left, right) => left == right && a.reason == b.reason,
+    }
+}
+
+fn push_propagated_gap(out: &mut Vec<lanes::LogGap>, gap: lanes::LogGap) {
+    if gap.first > gap.last {
+        return;
+    }
+    match out.last_mut() {
+        Some(last) if last.last.checked_add(1) == Some(gap.first) && same_gap_cause(last, &gap) => last.last = gap.last,
+        _ => out.push(gap),
+    }
+}
+
+fn propagated_input_gap(table: TableId, first: i32, last: i32, status: Status, reasons: &HashMap<u32, String>) -> Option<lanes::LogGap> {
+    match status {
+        Status::Complete => None,
+        Status::Unavailable { reason } => Some(lanes::LogGap { first, last, status, reason: reasons.get(&reason).cloned() }),
+        Status::NotRecorded => {
+            let reason = match table {
+                TableId::CountryPowerChanges => "CountryPowerChanges is not recorded".to_owned(),
+                _ => format!("{}: not recorded", table.words()),
+            };
+            Some(lanes::LogGap { first, last, status: Status::Unavailable { reason: 0 }, reason: Some(reason) })
+        }
+        Status::Truncated { missing } => match table {
+            TableId::CountryPowerChanges => Some(lanes::LogGap { first, last, status, reason: None }),
+            _ => Some(lanes::LogGap {
+                first,
+                last,
+                status: Status::Unavailable { reason: 0 },
+                reason: Some(format!("{}: read only in part ({missing} rows not read)", table.words())),
+            }),
+        },
+    }
+}
+
+fn exclude_gap_hours(gaps: &[lanes::LogGap], mask: &[lanes::LogGap]) -> Vec<lanes::LogGap> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    for gap in gaps {
+        let mut cursor = gap.first;
+        let mut done = false;
+        while at < mask.len() && mask[at].last < cursor {
+            at += 1;
+        }
+        let mut idx = at;
+        while idx < mask.len() && mask[idx].first <= gap.last {
+            let cut = &mask[idx];
+            if cursor < cut.first {
+                out.push(lanes::LogGap { first: cursor, last: cut.first - 1, status: gap.status, reason: gap.reason.clone() });
+            }
+            if cut.last >= gap.last {
+                done = true;
+                break;
+            }
+            cursor = cut.last + 1;
+            idx += 1;
+        }
+        if !done && cursor <= gap.last {
+            out.push(lanes::LogGap { first: cursor, last: gap.last, status: gap.status, reason: gap.reason.clone() });
+        }
+    }
+    out
+}
+
 fn uncovered_gaps(gaps: &[lanes::LogGap], covered: &[lanes::LogGap]) -> Vec<lanes::LogGap> {
     let mut out = Vec::new();
     let mut at = 0usize;
@@ -640,7 +709,7 @@ fn uncovered_gaps(gaps: &[lanes::LogGap], covered: &[lanes::LogGap]) -> Vec<lane
         let mut idx = at;
         while idx < covered.len() && covered[idx].first <= gap.last {
             let cut = &covered[idx];
-            if cut.status != gap.status || cut.reason != gap.reason {
+            if !same_gap_cause(cut, gap) {
                 idx += 1;
                 continue;
             }
@@ -864,16 +933,40 @@ fn push_status_run(out: &mut Vec<(i32, i32, Option<String>)>, a: i32, b: i32, re
 }
 
 fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i32, label: &str) -> io::Result<Vec<(i32, i32, Option<String>)>> {
+    Ok(status_runs_and_propagated_gaps(query, run, table, first, last, label, false)?.0)
+}
+
+fn status_runs_and_propagated_gaps(
+    query: &Query<'_>,
+    run: u32,
+    table: TableId,
+    first: i32,
+    last: i32,
+    label: &str,
+    collect_propagated: bool,
+) -> io::Result<(Vec<(i32, i32, Option<String>)>, Vec<lanes::LogGap>)> {
     if first > last {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let recording = query.replay.recording();
     if recording.predates(table.index()).is_some() {
-        return Ok(vec![(first, last, Some(format!("{label} was not recorded in this format")))]);
+        let mut propagated = Vec::new();
+        if collect_propagated
+            && let Some(gap) = propagated_input_gap(table, first, last, Status::NotRecorded, &HashMap::new())
+        {
+            propagated.push(gap);
+        }
+        return Ok((vec![(first, last, Some(format!("{label} was not recorded in this format")))], propagated));
     }
     let runs = dashboard_query::cost::storage(|| lanes::statuses(recording, run, table, first, last))?;
     let reads = dashboard_query::cost::storage(|| lanes::reads(recording, run, table, first, last))?;
+    let reasons = if collect_propagated && runs.iter().any(|run| matches!(run.status, Status::Unavailable { .. })) {
+        dashboard_query::cost::storage(|| lanes::status_reasons(recording, run, table, &runs))?
+    } else {
+        HashMap::new()
+    };
     let mut out: Vec<(i32, i32, Option<String>)> = Vec::new();
+    let mut propagated: Vec<lanes::LogGap> = Vec::new();
     let mut read_at = 0usize;
     let mut cursor = first;
     for run in runs {
@@ -883,6 +976,11 @@ fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i3
         }
         if cursor < a {
             push_status_run(&mut out, cursor, a - 1, Some(format!("{label} was not recorded")));
+            if collect_propagated
+                && let Some(gap) = propagated_input_gap(table, cursor, a - 1, Status::NotRecorded, &reasons)
+            {
+                push_propagated_gap(&mut propagated, gap);
+            }
         }
         match status_reason(run.status, label) {
             None => {
@@ -909,14 +1007,26 @@ fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i3
                     push_status_run(&mut out, complete_cursor, b, Some(format!("{label} was not read at this hour")));
                 }
             }
-            Some(reason) => push_status_run(&mut out, a, b, Some(reason)),
+            Some(reason) => {
+                push_status_run(&mut out, a, b, Some(reason));
+                if collect_propagated
+                    && let Some(gap) = propagated_input_gap(table, a, b, run.status, &reasons)
+                {
+                    push_propagated_gap(&mut propagated, gap);
+                }
+            }
         }
         cursor = b.saturating_add(1);
     }
     if cursor <= last {
         push_status_run(&mut out, cursor, last, Some(format!("{label} was not recorded")));
+        if collect_propagated
+            && let Some(gap) = propagated_input_gap(table, cursor, last, Status::NotRecorded, &reasons)
+        {
+            push_propagated_gap(&mut propagated, gap);
+        }
     }
-    Ok(out)
+    Ok((out, propagated))
 }
 
 fn intersect_status_runs(a: &[(i32, i32, Option<String>)], b: &[(i32, i32, Option<String>)]) -> Vec<(i32, i32, Option<String>)> {
@@ -1395,12 +1505,12 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
                 || {
                     rayon::join(
                         || {
-                            parallel_read(&carry, || -> io::Result<(Vec<SpendCoverage>, Vec<(i32, i32, Option<String>)>)> {
+                            parallel_read(&carry, || -> io::Result<(Vec<SpendCoverage>, Vec<(i32, i32, Option<String>)>, Vec<lanes::LogGap>, Vec<lanes::LogGap>)> {
                                 let mut cov = Vec::new();
                                 coverage(query, piece, currency, &mut cov)?;
-                                let change_statuses = status_runs(query, piece.run, TableId::CountryPowerChanges, piece.first, piece.last, "Power changes")?;
-                                let link_statuses = status_runs(query, piece.run, TableId::CountryLinks, piece.first, piece.last, "Country links")?;
-                                Ok((cov, intersect_status_runs(&change_statuses, &link_statuses)))
+                                let (change_statuses, change_propagated) = status_runs_and_propagated_gaps(query, piece.run, TableId::CountryPowerChanges, piece.first, piece.last, "Power changes", true)?;
+                                let (link_statuses, link_propagated) = status_runs_and_propagated_gaps(query, piece.run, TableId::CountryLinks, piece.first, piece.last, "Country links", true)?;
+                                Ok((cov, intersect_status_runs(&change_statuses, &link_statuses), change_propagated, link_propagated))
                             })
                         },
                         || {
@@ -1442,7 +1552,7 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
                 dashboard_query::cost::add(ns);
                 replay_recording::cells::merge_read_sample(sample);
             }
-            let (mut piece_cov, gain_runs) = cov_res?;
+            let (mut piece_cov, gain_runs, change_propagated, link_propagated) = cov_res?;
             let mut piece_gain_cov = Vec::with_capacity(gain_runs.len());
             for (first_hour, last_hour, reason) in gain_runs {
                 push_coverage(&mut piece_gain_cov, SpendCoverage { first_hour, last_hour, covered: reason.is_none(), reason });
@@ -1468,8 +1578,10 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
             let extra_payment_gaps = uncovered_gaps(&payment_gaps, &day_gaps);
             apply_log_gaps(&mut piece_cov, &extra_payment_gaps, "Spending payments log");
             count_log_gap_hours(&extra_payment_gaps, "Spending payments log", &mut day_gap_hours);
-            apply_log_gaps(&mut piece_gain_cov, &gain_gaps, "Spending gains log");
-            let extra_gain_gaps = uncovered_gaps(&gain_gaps, &day_gaps);
+            let effective_change_propagated = exclude_gap_hours(&change_propagated, &link_propagated);
+            let gain_cov_gaps = uncovered_gaps(&uncovered_gaps(&gain_gaps, &link_propagated), &effective_change_propagated);
+            apply_log_gaps(&mut piece_gain_cov, &gain_cov_gaps, "Spending gains log");
+            let extra_gain_gaps = uncovered_gaps(&uncovered_gaps(&gain_gaps, &day_gaps), &payment_gaps);
             count_log_gap_hours(&extra_gain_gaps, "Spending gains log", &mut day_gap_hours);
             for span in piece_cov {
                 push_coverage(&mut reply.coverage, span);
