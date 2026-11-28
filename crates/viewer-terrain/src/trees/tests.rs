@@ -563,11 +563,11 @@ fn tree_lookup_uses_direct_pdxmesh_even_when_an_entity_has_the_same_name() {
         "gfx/custom/arbitrary.gfx",
     )
     .unwrap();
-    let definition = tree_definition(&descriptors, 3).unwrap();
+    let definition = tree_definition(&descriptors.meshes, 3).unwrap();
     assert_eq!(definition.file, "gfx/models/canopy.mesh");
     assert_eq!(definition.scale, 0.7);
     assert!(
-        tree_definition(&descriptors, 4)
+        tree_definition(&descriptors.meshes, 4)
             .unwrap_err()
             .to_string()
             .contains("mapobject_4")

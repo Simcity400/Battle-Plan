@@ -85,6 +85,8 @@ impl FrameAssets {
         let mut refused = Vec::new();
         let mut candidates = Vec::new();
         let mut names = Vec::new();
+        let job = roster.descriptor_job();
+        let descriptors = job.view();
         for (kind_index, kind) in types.iter().enumerate() {
             let condition = kind
                 .dlc
@@ -100,8 +102,8 @@ impl FrameAssets {
                 continue;
             }
             let condition_error = condition.err().map(|e| e.to_string());
-            let inherited = roster.descriptors.inherit(&kind.entity);
-            let mesh = roster.descriptors.resolve(&kind.entity).is_some();
+            let inherited = descriptors.inherit(&kind.entity);
+            let mesh = descriptors.resolve(&kind.entity).is_some();
             let reason = if let Some(error) = condition_error.as_deref() {
                 Some(error)
             } else if !mesh && inherited.is_none() {
@@ -138,8 +140,8 @@ impl FrameAssets {
             strike_effects::Assets::names()
                 .into_iter()
                 .filter(|name| {
-                    roster.descriptors.resolve(name).is_some()
-                        || roster.descriptors.inherit(name).is_some()
+                    descriptors.resolve(name).is_some()
+                        || descriptors.inherit(name).is_some()
                 })
                 .map(str::to_owned),
         );
@@ -147,7 +149,7 @@ impl FrameAssets {
         let library = ModelLibrary::load(
             layers,
             decode,
-            &roster.descriptors,
+            descriptors,
             &names,
             &mut model_warnings,
         )?;

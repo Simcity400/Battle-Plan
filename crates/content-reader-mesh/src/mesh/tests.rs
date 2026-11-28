@@ -12,7 +12,7 @@ fn aliases_borrow_the_roster_and_override_only_the_named_entities() {
     let mut alias = descriptors.entities["base"].clone();
     alias.default_state = Some("damaged".into());
     let aliases = BTreeMap::from([("base".into(), alias)]);
-    let view = descriptors.with_aliases(&aliases);
+    let view = DescriptorView::from(&descriptors).with_aliases(&aliases);
 
     assert!(std::ptr::eq(view.entity("child").unwrap(), &raw const descriptors.entities["child"]));
     assert!(std::ptr::eq(view.entity("base").unwrap(), &raw const aliases["base"]));

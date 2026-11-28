@@ -461,13 +461,6 @@ pub struct InheritedEntity<'a> {
 }
 
 impl Descriptors {
-    pub fn with_aliases<'a>(&'a self, aliases: &'a BTreeMap<String, EntityDefinition>) -> DescriptorView<'a> {
-        DescriptorView {
-            aliases: Some(aliases),
-            ..self.into()
-        }
-    }
-
     pub fn inherit(&self, name: &str) -> Option<InheritedEntity<'_>> {
         DescriptorView::from(self).inherit(name)
     }
@@ -478,6 +471,10 @@ impl Descriptors {
 }
 
 impl<'a> DescriptorView<'a> {
+    pub fn with_aliases(self, aliases: &'a BTreeMap<String, EntityDefinition>) -> Self {
+        Self { aliases: Some(aliases), ..self }
+    }
+
     pub fn entity(self, name: &str) -> Option<&'a EntityDefinition> {
         self.aliases.and_then(|aliases| aliases.get(name)).or_else(|| self.entities.get(name))
     }
@@ -486,13 +483,16 @@ impl<'a> DescriptorView<'a> {
         self.aliases.is_some_and(|aliases| aliases.contains_key(name)) || self.entities.contains_key(name)
     }
 
+    pub fn entity_count(self) -> usize {
+        self.entities.len() + self.aliases.map_or(0, BTreeMap::len)
+    }
+
     pub fn inherit(self, name: &str) -> Option<InheritedEntity<'a>> {
         let mut out = InheritedEntity::default();
         let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
         let mut current = self.entity(name)?;
         let mut chain = Vec::new();
-        let count = self.entities.len() + self.aliases.map_or(0, BTreeMap::len);
-        for _ in 0..=count {
+        for _ in 0..=self.entity_count() {
             chain.push(current);
             out.sources.extend(&current.sources);
             out.mesh = out.mesh.or(current.mesh.as_deref());
@@ -585,6 +585,12 @@ pub struct ResolvedEntity<'a> {
 
 impl Descriptors {
     pub fn resolve(&self, name: &str) -> Option<ResolvedMesh<'_>> {
+        DescriptorView::from(self).resolve(name)
+    }
+}
+
+impl<'a> DescriptorView<'a> {
+    pub fn resolve(self, name: &str) -> Option<ResolvedMesh<'a>> {
         self.resolve_entity(name).map(|entity| ResolvedMesh {
             definition: entity.definition,
             scale: entity.scale,
@@ -1060,6 +1066,16 @@ pub struct Roster {
     pub clones: BTreeMap<String, String>,
 }
 
+pub struct DescriptorJob<'a> {
+    descriptors: &'a Descriptors,
+}
+
+impl DescriptorJob<'_> {
+    pub fn view(&self) -> DescriptorView<'_> {
+        self.descriptors.into()
+    }
+}
+
 const OBJECTS: [&str; 4] = ["pdxmesh", "arrowType", "animatedmaptext", "pdxparticle"];
 
 const ANIMATION_NAME: usize = 63;
@@ -1072,6 +1088,18 @@ struct ParsedFile {
 }
 
 impl Roster {
+    pub fn descriptor_job(&self) -> DescriptorJob<'_> {
+        DescriptorJob { descriptors: &self.descriptors }
+    }
+
+    pub fn has_entity(&self, name: &str) -> bool {
+        self.descriptors.entities.contains_key(name)
+    }
+
+    pub fn mesh_definitions(&self) -> &BTreeMap<String, MeshDefinition> {
+        &self.descriptors.meshes
+    }
+
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut roster = Self::default();
         let interface = layers.descriptor_paths("interface", &[".gfx"])?;

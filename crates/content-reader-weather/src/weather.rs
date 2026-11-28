@@ -6,7 +6,7 @@ use content_reader_script::native::{self, Shape};
 use crate::{
     ResolvedLayers,
     fields::{block, invalid},
-    mesh::{self, Descriptors},
+    mesh::{self, DescriptorView},
     particles::{Catalog, Particle},
 };
 
@@ -461,17 +461,17 @@ pub fn temperature_ranges(layers: &ResolvedLayers) -> io::Result<TemperatureRang
     })
 }
 
-fn entity_particles(
+fn entity_particles<'a>(
     name: &str,
-    entities: &Descriptors,
+    entities: impl Into<DescriptorView<'a>>,
     catalog: &Catalog,
 ) -> io::Result<(Vec<EffectParticle>, EffectParent)> {
+    let entities = entities.into();
     let refuse = |why: &str| invalid(format!("weather entity {name}: {why}"));
     let mut link = name;
-    for _ in 0..=entities.entities.len() {
+    for _ in 0..=entities.entity_count() {
         let entity = entities
-            .entities
-            .get(link)
+            .entity(link)
             .ok_or_else(|| refuse(&format!("missing entity {link}")))?;
         match entity.clone.as_deref() {
             Some(parent) => link = parent,
@@ -558,6 +558,7 @@ pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects
     let names = effect_names(&document)
         .map_err(|error| invalid(format!("{PATH}: {error}")))?;
     let roster = layers.descriptor_roster()?;
+    let job = roster.descriptor_job();
     let resolve = |name: &Option<String>| -> io::Result<(Vec<EffectParticle>, Option<EffectParent>)> {
         match name {
             Some(name) => {
@@ -566,7 +567,7 @@ pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects
                         "weather entity {name}: unreadable descriptor {path}"
                     )));
                 }
-                let (particles, parent) = entity_particles(name, &roster.descriptors, catalog)?;
+                let (particles, parent) = entity_particles(name, job.view(), catalog)?;
                 Ok((particles, Some(parent)))
             }
             None => Ok((Vec::new(), None)),

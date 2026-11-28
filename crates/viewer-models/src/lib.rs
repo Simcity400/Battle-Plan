@@ -650,6 +650,7 @@ impl ModelLibrary {
         if let Some(recorded) = layers.without_overlays()
             && let Some(roster) = layers.recorded_descriptor_roster()?
         {
+            let recorded_job = roster.descriptor_job();
             if !missing.is_empty() {
                 let names: Vec<String> = missing
                     .iter()
@@ -660,7 +661,7 @@ impl ModelLibrary {
                     &recorded,
                     session,
                     decode,
-                    (&roster.descriptors).into(),
+                    recorded_job.view(),
                     &names,
                     &mut Vec::new(),
                     |_, _| None,
@@ -690,7 +691,7 @@ impl ModelLibrary {
                     &recorded,
                     session,
                     decode,
-                    (&roster.descriptors).into(),
+                    recorded_job.view(),
                     &visual,
                     &mut Vec::new(),
                     |_, _| None,
@@ -806,11 +807,12 @@ impl ModelLibrary {
         ) else {
             return Ok(Self::empty(decode));
         };
+        let job = roster.descriptor_job();
         let baked = Self::load_with_spans(
             &recorded,
             layers,
             decode,
-            (&roster.descriptors).into(),
+            job.view(),
             names,
             &mut Vec::new(),
             |_, _| None,
