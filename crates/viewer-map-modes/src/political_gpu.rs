@@ -208,14 +208,14 @@ impl Static {
         );
         layer.region_opacity = 0;
         layer.no_region_color = field.navy_neutral;
-        let mut gpu = PoliticalGpu::new(device, map, &layer)?;
+        let mut gpu = PoliticalGpu::new_shared(device, map, &layer, None, None, true)?;
         gpu.update(device, queue, &layer)?;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("warm strategic gradient"),
         });
-        gpu.dispatch(&mut encoder, None);
+        gpu.dispatch(&mut encoder, FieldOutput::Seed);
         queue.submit([encoder.finish()]);
-        let scratch = Arc::new(Scratch::new(device, &gpu.params, false)?);
+        let scratch = Arc::new(Scratch::new(device, &gpu.params, 4)?);
         Ok(Self {
             strategic: gpu,
             scratch,
@@ -263,7 +263,7 @@ impl Static {
             })
         });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("strategic gradient copy"),
+            label: Some("restore strategic gradient"),
         });
         let naval = self.strategic.resumed(
             device,
@@ -271,14 +271,6 @@ impl Static {
             &mut encoder,
             Arc::clone(&self.scratch),
         )?;
-        let params = &self.strategic.params;
-        self.strategic.copy(
-            &mut encoder,
-            [&textures[0], &textures[1]],
-            0,
-            &[[0, 0, params.width / 2, params.height / 2]],
-        );
-        queue.submit([encoder.finish()]);
         let storage_views = textures.each_ref().map(|texture| {
             texture.create_view(&wgpu::TextureViewDescriptor {
                 usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
@@ -296,6 +288,25 @@ impl Static {
                 }),
             },
         );
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("restore strategic gradient"),
+                timestamp_writes: None,
+            });
+            let seed = &self.strategic;
+            shader_pipeline::gpu::stats::pipeline();
+            pass.set_pipeline(&seed.kernel.restore_seed);
+            shader_pipeline::gpu::stats::bind();
+            pass.set_bind_group(0, &seed.group, &[]);
+            shader_pipeline::gpu::stats::bind();
+            pass.set_bind_group(1, &outputs, &[]);
+            pass.dispatch_workgroups(
+                (seed.params.width / 2).div_ceil(8),
+                (seed.params.height / 2).div_ceil(8),
+                1,
+            );
+        }
+        queue.submit([encoder.finish()]);
         let state = Arc::new(State {
             textures,
             outputs,
@@ -776,7 +787,7 @@ impl View {
         ]) {
             let mask = usize::from(held[0] == layer) | (usize::from(held[1] == layer) << 1);
             if mask != 0 {
-                *recorded = gpu.dispatch(encoder, Some((&state.outputs, mask - 1)));
+                *recorded = gpu.dispatch(encoder, FieldOutput::Textures(&state.outputs, mask - 1));
             }
         }
         layers.contains(&true).then(|| Encoded {
@@ -835,7 +846,7 @@ struct Scratch {
 }
 
 impl Scratch {
-    fn new(device: &wgpu::Device, params: &Params, keep_output: bool) -> io::Result<Self> {
+    fn new(device: &wgpu::Device, params: &Params, output_bytes: u64) -> io::Result<Self> {
         let rw = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let cells = u64::from(params.columns) * u64::from(params.rows);
         Ok(Self {
@@ -843,7 +854,7 @@ impl Scratch {
             output: zero_buffer(
                 device,
                 "political output bytes",
-                if keep_output { u64::from(params.stride) * u64::from(params.height) * 4 } else { 4 },
+                output_bytes,
                 rw | wgpu::BufferUsages::COPY_SRC,
             )?,
         })
@@ -857,9 +868,10 @@ impl Scratch {
 
 struct Kernel {
     layout: wgpu::BindGroupLayout,
-    pipelines: [wgpu::ComputePipeline; 5],
+    pipelines: [wgpu::ComputePipeline; 6],
     outputs_layout: wgpu::BindGroupLayout,
     texture_pipelines: [wgpu::ComputePipeline; 3],
+    restore_seed: wgpu::ComputePipeline,
 }
 
 impl Kernel {
@@ -901,6 +913,7 @@ impl Kernel {
             "distance_to_b",
             "distance_to_a",
             "field",
+            "field_seed",
         ]
         .map(|entry| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -930,7 +943,7 @@ impl Kernel {
             bind_group_layouts: &[Some(&layout), Some(&outputs_layout)],
             immediate_size: 0,
         });
-        let texture_pipelines = ["field_top", "field_bottom", "field_both"].map(|entry| {
+        let texture_pipeline = |entry| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(entry),
                 layout: Some(&textures),
@@ -939,9 +952,23 @@ impl Kernel {
                 compilation_options: Default::default(),
                 cache: None,
             })
-        });
-        Self { layout, pipelines, outputs_layout, texture_pipelines }
+        };
+        let texture_pipelines = ["field_top", "field_bottom", "field_both"].map(texture_pipeline);
+        let restore_seed = texture_pipeline("restore_seed");
+        Self {
+            layout,
+            pipelines,
+            outputs_layout,
+            texture_pipelines,
+            restore_seed,
+        }
     }
+}
+
+enum FieldOutput<'a> {
+    Buffer,
+    Seed,
+    Textures(&'a wgpu::BindGroup, usize),
 }
 
 pub struct PoliticalGpu {
@@ -986,7 +1013,7 @@ pub struct PoliticalGpu {
 
 impl PoliticalGpu {
     pub fn new(device: &wgpu::Device, map: ProvinceMap<'_>, layer: &Layer<'_>) -> io::Result<Self> {
-        Self::new_shared(device, map, layer, None, None)
+        Self::new_shared(device, map, layer, None, None, false)
     }
 
     #[cfg(test)]
@@ -1010,6 +1037,7 @@ impl PoliticalGpu {
             layer,
             Some(self),
             scratch,
+            false,
         )
     }
 
@@ -1115,6 +1143,7 @@ impl PoliticalGpu {
         layer: &Layer<'_>,
         shared: Option<&Self>,
         scratch: Option<Arc<Scratch>>,
+        seed: bool,
     ) -> io::Result<Self> {
         if shared.is_none() {
             map.validate()?;
@@ -1250,7 +1279,14 @@ impl PoliticalGpu {
         )?;
         let scratch = match scratch {
             Some(scratch) => scratch,
-            None => Arc::new(Scratch::new(device, &params, true)?),
+            None => {
+                let (words, rows) = if seed {
+                    ((params.width / 2).div_ceil(4), params.height / 2)
+                } else {
+                    (params.stride, params.height)
+                };
+                Arc::new(Scratch::new(device, &params, u64::from(words) * u64::from(rows) * 4)?)
+            }
         };
         let dirty_buffer = zero_buffer(device, "political dirty cells", cell_count as u64 * 4, rw)?;
         let indirect = buffer(
@@ -1920,7 +1956,7 @@ impl PoliticalGpu {
         textures: [&wgpu::Texture; 2],
         origin_y: u32,
     ) -> bool {
-        if !self.dispatch(encoder, None) {
+        if !self.dispatch(encoder, FieldOutput::Buffer) {
             return false;
         }
         let rectangles = copy_rects(
@@ -1936,7 +1972,7 @@ impl PoliticalGpu {
     fn dispatch(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        output: Option<(&wgpu::BindGroup, usize)>,
+        output: FieldOutput<'_>,
     ) -> bool {
         if !self.pending || self.recorded {
             return false;
@@ -1966,14 +2002,16 @@ impl PoliticalGpu {
             for step in 0..self.params.distance_cap - 1 {
                 dispatch(if step % 2 == 0 { 2 } else { 3 }, false);
             }
-            if let Some((group, layer)) = output {
-                shader_pipeline::gpu::stats::pipeline();
-                pass.set_pipeline(&self.kernel.texture_pipelines[layer]);
-                shader_pipeline::gpu::stats::bind();
-                pass.set_bind_group(1, group, &[]);
-                pass.dispatch_workgroups_indirect(&self.indirect, 0);
-            } else {
-                dispatch(4, true);
+            match output {
+                FieldOutput::Buffer => dispatch(4, true),
+                FieldOutput::Seed => dispatch(5, true),
+                FieldOutput::Textures(group, layer) => {
+                    shader_pipeline::gpu::stats::pipeline();
+                    pass.set_pipeline(&self.kernel.texture_pipelines[layer]);
+                    shader_pipeline::gpu::stats::bind();
+                    pass.set_bind_group(1, group, &[]);
+                    pass.dispatch_workgroups_indirect(&self.indirect, 0);
+                }
             }
         }
         self.recorded = true;
