@@ -772,7 +772,7 @@ impl Lane {
         for (written, &column) in out.columns.iter_mut().zip(self.columns.iter()) {
             written.fill(self.cells.column(column).expect("a selected column"))?;
         }
-        self.report_status(out);
+        out.status = Some(self.status);
         out.set_head(head, 0, false);
         Ok(())
     }

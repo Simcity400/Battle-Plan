@@ -623,7 +623,7 @@ fn variant_views_follow_the_recording_without_a_full_map_mirror() {
     use replay_recording::columnar_frames::Recording;
 
     let variants = TableId::VariantDefinitions;
-    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"variant views", &[(1, 0, 7)], &[TableId::Countries, variants], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"variant views", &[(1, 0, 1)], &[TableId::Countries, variants], |synthetic, _, ordinal| {
         let countries = [CountryRow { id: 7, tag: b"TST".to_vec(), ..Default::default() }];
         let token = if ordinal < 2 { 9 } else { 10 };
         let name = if ordinal == 0 { b"before".to_vec() } else { b"after".to_vec() };
@@ -702,30 +702,29 @@ fn variant_views_follow_the_recording_without_a_full_map_mirror() {
 
 #[test]
 fn variant_views_keep_recorded_fields_before_design_was_appended() {
-    use super::script_values::ExactColumns;
-    use playhead::pages::{Span, TableWritten, WorldPages};
-    use replay_data::rows::{VariantDefinitionRow, compatibility::DESIGN_STATE_FORMAT, tables};
-    use replay_journal::{fixtures, synthetic::{Input, Sample}};
-    use replay_recording::columnar_frames::Recording;
+    use super::{script_values::ExactColumns, views::tests::{Put, STRINGS, record_with_kinds, write_rows}};
+    use playhead::pages::TableWritten;
+    use replay_data::rows::{compatibility::DESIGN_STATE_FORMAT, tables};
 
     let table = TableId::VariantDefinitions;
-    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, DESIGN_STATE_FORMAT - 1, b"variants before design", &[(1, 0, 1)], &[table], |synthetic, _, _| {
-        let rows = [VariantDefinitionRow { id: 42, equipment_token: 9, explicit_entity: b"recorded".to_vec(), ..Default::default() }];
-        synthetic.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    let format = DESIGN_STATE_FORMAT - 1;
+    let mut kinds = replay_recording::schema::schema_at(format).unwrap();
+    kinds[table.index()].truncate(table.last_change().framed_fields(table, format));
+    let units = record_with_kinds("variants before design", 1, Writing::at(3), kinds, |store, _| {
+        let cells = [Cell::U32(9), Cell::U32(0), Cell::U32(0), Cell::U8(0), Cell::U8(0), Cell::U64(0), Cell::U32(0),
+            Cell::Bytes(0), Cell::Bytes(0), Cell::Bytes(1), Cell::U32(0), Cell::U8(0), Cell::U32(0), Cell::Bytes(0), Cell::U8(0)];
+        store.status(table.index(), Status::Complete, true, Some(0), true).unwrap();
+        write_rows(store, table, &[(42, cells.into_iter().map(Put::Cell).collect())]);
     });
-    let opened = Arc::new(WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap());
-    let kinds = Arc::new(opened.schema().to_vec());
-    let pages: Arc<dyn Pages> = opened;
-    let timeline = Timeline::whole(&*pages).unwrap();
-    let hour = timeline.first();
-    let entry = open(Units { name: "variants before design".into(), pages, timeline, kinds }, quick()).unwrap();
+    let hour = units.timeline.first();
+    let entry = open(units, quick()).unwrap();
     let columns = ExactColumns::new(&entry, table, TableWritten::Written);
     let (view, made) = columns.decoded(hour, table.full_mask(), None, &mut Vec::new());
     assert!(made.failure.is_none(), "{:?}", made.failure);
     let replay_frame::frame::TableView::Complete(rows) = view else { panic!("the recorded variant must be available") };
-    let &[ref row] = rows.rows::<tables::VariantDefinitions>().unwrap() else { panic!("expected one recorded variant") };
+    let [row] = rows.rows::<tables::VariantDefinitions>().unwrap() else { panic!("expected one recorded variant") };
     assert_eq!(row.equipment_token, 9);
-    assert_eq!(row.explicit_entity, b"recorded");
+    assert_eq!(row.explicit_entity, STRINGS[1]);
     assert!(matches!(row.design, replay_data::rows::Recorded::NotRecorded));
 }
 
