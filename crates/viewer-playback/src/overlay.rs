@@ -51,6 +51,9 @@ const UNIT_COUNTERS: &[TableId] = &[
 
 const LAND_COMBATS: &[TableId] = &[TableId::LandCombatDivisions, TableId::LandCombatSides, TableId::LandCombatDetails];
 
+const NAVAL_LOOKUPS: &[TableId] = &[TableId::NavalMissionCommanders, TableId::NavalMissionCountries, TableId::ModifierDefinitions];
+const AIR_LOOKUPS: &[TableId] = &[TableId::AirCountryRelations];
+
 const NAVAL_MISSIONS: &[TableId] = &[
     TableId::NavalMissionLedgers,
     TableId::NavalMissionTaskForces,
@@ -96,13 +99,9 @@ const OVERLAY: &[TableId] = &[
     TableId::NavalResultCountries,
     TableId::NavalTransferUnits,
     TableId::NavalAccidentReports,
-    TableId::NavalMissionCommanders,
-    TableId::NavalMissionCountries,
-    TableId::ModifierDefinitions,
     TableId::Capitulation,
     TableId::CountryGameScoreInputs,
     TableId::AirRegionalMissions,
-    TableId::AirCountryRelations,
     TableId::VariantDefinitions,
     TableId::RaidAirSites,
     TableId::RaidAirScores,
@@ -172,7 +171,9 @@ pub fn tables_shown(shown: Shown) -> Vec<TableId> {
         .chain(family(shown.units, UNIT_COUNTERS))
         .chain(family(shown.land_combats, LAND_COMBATS))
         .chain(family(shown.naval_missions, NAVAL_MISSIONS))
+        .chain(family(shown.naval_missions, NAVAL_LOOKUPS))
         .chain(family(shown.bases, BASE_ICONS))
+        .chain(family(shown.bases, AIR_LOOKUPS))
         .copied()
         .collect();
     tables.sort_unstable_by_key(|table| table.index());
@@ -1201,6 +1202,7 @@ impl Maker {
 
     fn declare_now(&mut self, shown: Shown) {
         let mut tables = tables_shown(shown);
+        tables.extend(NAVAL_LOOKUPS.iter().chain(AIR_LOOKUPS).copied());
         tables.extend(self.learned.iter().copied());
         tables.sort_unstable_by_key(|table| table.index());
         tables.dedup();
