@@ -10,6 +10,7 @@ pub type PanelData = Result<Value, String>;
 pub type ExactReader = Arc<dyn Fn(Hour, &std::sync::atomic::AtomicBool) -> PanelData + Send + Sync>;
 
 pub mod product;
+mod delta;
 pub use playhead::Declared;
 
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
