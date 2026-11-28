@@ -1,5 +1,5 @@
 
-use std::{collections::BTreeMap, io};
+use std::{borrow::Borrow, collections::BTreeMap, io, sync::Arc};
 
 use content_reader_script::native::Kind as TokenKind;
 use content_reader_parser::parser::read_bool;
@@ -390,6 +390,7 @@ pub struct Sprites {
     pub cursor_offset: Option<[i32; 2]>,
     pub selection_offset: Option<[i32; 2]>,
     pub refusals: Vec<Refusal>,
+    pub overlay_fallback: Option<String>,
 }
 
 impl Sprites {
@@ -459,7 +460,9 @@ pub fn gfx_order(layers: &ResolvedLayers) -> io::Result<Vec<Vec<u8>>> {
     Ok(order)
 }
 
-pub fn read_layers(layers: &ResolvedLayers) -> io::Result<Vec<(String, Sprites)>> {
+pub type SpriteFile = (String, Arc<Sprites>);
+
+pub fn read_layers(layers: &ResolvedLayers) -> io::Result<Vec<SpriteFile>> {
     read_paths(layers, gfx_order(layers)?)
 }
 
@@ -473,57 +476,49 @@ pub fn object_gfx_order(layers: &ResolvedLayers) -> io::Result<Vec<Vec<u8>>> {
     Ok(order)
 }
 
-pub fn read_object_layers(layers: &ResolvedLayers) -> io::Result<Vec<(String, Sprites)>> {
+pub fn read_object_layers(layers: &ResolvedLayers) -> io::Result<Vec<SpriteFile>> {
     read_paths(layers, object_gfx_order(layers)?)
 }
 
-fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<(String, Sprites)>> {
-    let dynamic = DynamicTokens::read(layers)?;
-    let recorded = layers.without_overlays();
-    let mut files = Vec::new();
-    let read = content_reader_layers::parallel::map(&order, |bytes| {
-        layers.product("interface file", 1, bytes, |layers| {
+fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<SpriteFile>> {
+    DynamicTokens::read(layers)?;
+    let files = content_reader_layers::parallel::map(&order, |bytes| {
+        let path = String::from_utf8_lossy(bytes).into_owned();
+        let file = layers.product("interface file", 2, bytes, |layers| {
             let dynamic = DynamicTokens::read(layers)?;
-            layers.read_path(bytes).map(|text| read_sprites_with(&text, &dynamic))
-        }).map(|file| file.as_ref().clone())
-    });
-    for (bytes, file) in order.into_iter().zip(read) {
-        let mut file = file?;
-        let path = String::from_utf8_lossy(&bytes).into_owned();
-        if let Some(refusal) = refusals_of(&file)
-            && layers.supplied_by_visual_mod(&bytes)
-            && let Some(recorded) = &recorded
-            && let Ok(recorded_bytes) = recorded.read_path(&bytes)
-        {
-            let recorded_file = read_sprites_with(&recorded_bytes, &dynamic);
-            if refusals_of(&recorded_file).is_none() {
-                layers.note_overlay_refusal(format!("interface file {path} ({refusal})"));
-                file = recorded_file;
+            let mut file = read_sprites_with(&layers.read_path(bytes)?, &dynamic);
+            if let Some(refusal) = refusals_of(&file)
+                && layers.supplied_by_visual_mod(bytes)
+                && let Some(recorded) = layers.without_overlays()
+                && let Ok(recorded_bytes) = recorded.read_path(bytes)
+            {
+                let recorded_file = read_sprites_with(&recorded_bytes, &dynamic);
+                if refusals_of(&recorded_file).is_none() {
+                    file = recorded_file;
+                    file.overlay_fallback = Some(format!("interface file {path} ({refusal})"));
+                }
             }
+            for refusal in file.refusals.iter_mut()
+                .chain(file.sprites.iter_mut().flat_map(|sprite| &mut sprite.refusals))
+                .chain(file.objects.iter_mut().flat_map(|object| &mut object.refusals))
+            {
+                refusal.path = if refusal.path.is_empty() {
+                    path.clone()
+                } else {
+                    format!("{path}: {}", refusal.path)
+                };
+            }
+            Ok(file)
+        })?;
+        Ok::<_, io::Error>((path, file))
+    });
+    files.into_iter().map(|file| {
+        let (path, file) = file?;
+        if let Some(refusal) = &file.overlay_fallback {
+            layers.note_overlay_refusal(refusal.clone());
         }
-        for refusal in file
-            .refusals
-            .iter_mut()
-            .chain(
-                file.sprites
-                    .iter_mut()
-                    .flat_map(|sprite| &mut sprite.refusals),
-            )
-            .chain(
-                file.objects
-                    .iter_mut()
-                    .flat_map(|object| &mut object.refusals),
-            )
-        {
-            refusal.path = if refusal.path.is_empty() {
-                path.clone()
-            } else {
-                format!("{path}: {}", refusal.path)
-            };
-        }
-        files.push((path, file));
-    }
-    Ok(files)
+        Ok((path, file))
+    }).collect()
 }
 
 fn refusals_of(file: &Sprites) -> Option<String> {
@@ -1805,10 +1800,11 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     }
 }
 
-pub fn refusals(files: &[(String, Sprites)]) -> Vec<&Refusal> {
+pub fn refusals(files: &[(String, impl Borrow<Sprites>)]) -> Vec<&Refusal> {
     files
         .iter()
         .flat_map(|(_, file)| {
+            let file = file.borrow();
             file.refusals
                 .iter()
                 .chain(file.sprites.iter().flat_map(|sprite| &sprite.refusals))
@@ -1817,20 +1813,20 @@ pub fn refusals(files: &[(String, Sprites)]) -> Vec<&Refusal> {
         .collect()
 }
 
-pub fn registry(files: &[(String, Sprites)]) -> BTreeMap<Vec<u8>, &SpriteFacts> {
+pub fn registry(files: &[(String, impl Borrow<Sprites>)]) -> BTreeMap<Vec<u8>, &SpriteFacts> {
     let mut registry = BTreeMap::new();
     for (_, file) in files {
-        for sprite in &file.sprites {
+        for sprite in &file.borrow().sprites {
             registry.insert(sprite.name.clone(), sprite);
         }
     }
     registry
 }
 
-pub fn object_registry(files: &[(String, Sprites)]) -> BTreeMap<Vec<u8>, &ObjectFacts> {
+pub fn object_registry(files: &[(String, impl Borrow<Sprites>)]) -> BTreeMap<Vec<u8>, &ObjectFacts> {
     let mut registry = BTreeMap::new();
     for (_, file) in files {
-        for object in &file.objects {
+        for object in &file.borrow().objects {
             registry.insert(object.name.clone(), object);
         }
     }

@@ -143,7 +143,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         "common/units/equipment/a.txt",
         "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } }",
     )])
-    .0;
+    .0.into();
     let mut frame = hour(countries);
     let provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
     assets.trigger_content.state_provinces = BTreeMap::new();

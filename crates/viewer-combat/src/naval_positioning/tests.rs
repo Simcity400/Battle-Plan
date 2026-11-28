@@ -401,7 +401,7 @@ fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa(
     let content = naval_air_groups::Content::load(
         &layers,
         &mut warnings,
-        content_reader_key_names::equipment::Database::default(),
+        Default::default(),
     );
     std::fs::remove_dir_all(root).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");

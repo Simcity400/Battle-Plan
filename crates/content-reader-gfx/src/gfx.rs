@@ -196,11 +196,12 @@ impl Declared {
 }
 
 impl SpriteSet {
-    pub fn new(files: &[(String, Sprites)]) -> Self {
+    pub fn new(files: &[(String, impl std::borrow::Borrow<Sprites>)]) -> Self {
         let mut sprites = BTreeMap::new();
         let mut refused_names = BTreeMap::new();
         let mut refused = Vec::new();
         for (path, file) in files {
+            let file = file.borrow();
             refused.extend(
                 file.refusals
                     .iter()

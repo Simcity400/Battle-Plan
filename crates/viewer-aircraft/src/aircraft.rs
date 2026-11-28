@@ -1114,7 +1114,7 @@ impl AircraftAssets {
         regions: &BTreeMap<u32, StrategicRegion>,
         warnings: &mut Vec<content_reader_parser::Diagnostic>,
     ) -> io::Result<Self> {
-        let database = content_reader_key_names::equipment::Database::load_complete(layers)?;
+        let database = content_reader_key_names::equipment::Database::shared_complete(layers)?;
         let text = |bytes: &[u8], what: &str| {
             content_reader_parser::parser::text(bytes)
                 .map(str::to_owned)

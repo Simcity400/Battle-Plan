@@ -92,6 +92,17 @@ fn d16_equipment_reuse_keeps_the_complete_database_refusal() {
 }
 
 #[test]
+fn equipment_units_reuses_the_recorded_database() {
+    let (catalogue, _folder) = equipment_catalogue(&[(
+        "common/units/equipment/synthetic.txt",
+        "equipments={synthetic_type={}}",
+    )]);
+    let recorded = Database::shared(&catalogue.content.layers).unwrap();
+    let dashboard = super::equipment_units(&catalogue).unwrap();
+    assert!(Arc::ptr_eq(&recorded, &dashboard));
+}
+
+#[test]
 fn icon_content_reads_only_files_the_store_key_stamps() {
     use crate::products::equipment_icon::inputs_stamped;
     let (catalogue, _folder) = equipment_catalogue(&[

@@ -167,7 +167,7 @@ impl Registry {
     }
 
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
-        let equipment = content_reader_key_names::equipment::Database::load_complete(layers)?;
+        let equipment = content_reader_key_names::equipment::Database::shared_complete(layers)?;
         let mut registry = Self {
             equipment: equipment_pool_roster(&equipment),
             terrains: content_reader_key_names::terrain::read_definitions(layers)?

@@ -932,7 +932,7 @@ impl Assets {
                 lazy_sprites.len()
             ));
         }
-        let equipment = content_reader_key_names::equipment::Database::load(layers)?;
+        let equipment = content_reader_key_names::equipment::Database::shared(layers)?;
         let (convoy_weapon_bound, misreads) =
             super::naval_environment::convoy_weapon_bound_from_database(&equipment);
         warnings.extend(misreads.into_iter().map(|misread| {

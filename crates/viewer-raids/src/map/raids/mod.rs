@@ -74,7 +74,7 @@ pub struct RaidAssets {
     pub avoid_enemy: bool,
     sites: BTreeMap<(u32, Site), Vec<u32>>,
     refused_sites: Option<String>,
-    pub equipment: content_reader_key_names::equipment::Database,
+    pub equipment: Arc<content_reader_key_names::equipment::Database>,
     pub equipment_groups: content_reader_key_names::equipment::Groups,
     pub equipment_lost: Option<String>,
     pub defines: RaidDefines,
@@ -286,7 +286,7 @@ impl RaidAssets {
                 format!("Raids: tag aliases: {reason}."),
             )
         }));
-        let equipment = content_reader_key_names::equipment::Database::load(layers)?;
+        let equipment = content_reader_key_names::equipment::Database::shared(layers)?;
         let equipment_groups = content_reader_key_names::equipment::Groups::load(layers)?;
         let equipment_lost = match (&equipment.lost, &equipment_groups.lost) {
             (Some(lost), _) => Some(format!(

@@ -405,7 +405,7 @@ impl IconContent {
                             }
                             Ok(Arc::clone(database))
                         }
-                        _ => Database::load_complete(layers).map(Arc::new),
+                        _ => Database::shared_complete(layers),
                     }
                 }
             });
