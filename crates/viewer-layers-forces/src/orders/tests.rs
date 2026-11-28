@@ -55,13 +55,33 @@ fn retiring_a_map_interrupts_an_orders_join_whose_rows_have_not_arrived() {
     layer.shared.lock().on_wait = Some(Box::new(move || waiting.send(()).unwrap()));
 
     let outcome = std::thread::scope(|scope| {
-        let join = scope.spawn(move || layer.settle_at(1, Settling::still()));
+        let join = scope.spawn(move || layer.settle_at(1, Settling::Whole));
         at_wait.recv().unwrap();
         retire();
         join.join().unwrap()
     });
 
     assert_eq!(outcome.unwrap_err().kind(), io::ErrorKind::Interrupted);
+}
+
+#[test]
+fn live_playback_keeps_the_last_plan_while_new_orders_rows_are_missing() {
+    use viewer_layer_core::layers::Settling;
+
+    let entry = open(recorded::record("short orders", 2, campaign), Settings::default()).unwrap();
+    entry.set_capture(CaptureMode::Full);
+    let mut fed = Apart::new(&entry, 0).unwrap();
+    let mut layer = Orders::new(Arc::new(Links));
+    layer.set_views(fed.store()).unwrap();
+    layer.set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
+    entry.playhead().seek(0);
+    assert!(fed.drive(0));
+    layer.settle_at(0, Settling::Whole).unwrap();
+    assert_eq!(layer.made_for(), Some(0));
+    layer.shared.lock().on_wait = Some(Box::new(|| panic!("a live frame waits only after the orders rows arrive")));
+
+    layer.settle_at(1, Settling::still()).unwrap();
+    assert_eq!(layer.made_for(), Some(0));
 }
 
 #[test]
