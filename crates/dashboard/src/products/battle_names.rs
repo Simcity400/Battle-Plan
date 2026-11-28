@@ -5,7 +5,7 @@ use dashboard_query::{Query, read::Keys};
 use dashboard_world::products::place_names::{Content, PlaceHistory};
 use dashboard_text::metadata::check_cancel;
 use serde::{Deserialize, Serialize};
-use std::{collections::{BTreeMap, HashMap}, io, sync::{Arc, PoisonError, atomic::AtomicBool}};
+use std::{collections::{BTreeMap, HashMap}, io, sync::{Arc, OnceLock, PoisonError, atomic::AtomicBool}};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -153,6 +153,37 @@ struct Cached {
     branches: HashMap<u64, Arc<Names>>,
 }
 
+type Build = Arc<OnceLock<io::Result<Arc<Names>>>>;
+
+#[derive(Default)]
+struct Ahead(u64, HashMap<u64, Build>);
+
+pub fn ahead(source: &Arc<Source>, branch: u64, load: &LoadContext) -> io::Result<Option<Arc<Names>>> {
+    let Some(content) = &load.content else { return read(source, branch, load, &false.into()).map(Some) };
+    let generation = content.presentation.binding().generation;
+    let state = source.state::<Ahead>();
+    let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
+    if held.0 != generation { *held = Ahead(generation, HashMap::new()); }
+    if let std::collections::hash_map::Entry::Vacant(slot) = held.1.entry(branch) {
+        let build = Build::default();
+        let (source, load, pending) = (Arc::downgrade(source), LoadContext { content: Some(content.clone()) }, Arc::clone(&build));
+        dashboard_base::products::read_ahead::spawn("battle titles ahead", move || {
+            job_priority::background_thread();
+            if let Some(source) = source.upgrade() {
+                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.in_scope(|| read(&source, branch, &load, &false.into()))))
+                    .unwrap_or_else(|_| Err(io::Error::other("Battle title preparation failed")));
+                let _ = pending.set(made);
+            }
+        })?;
+        slot.insert(build);
+    }
+    result(&held.1[&branch])
+}
+
+fn result(build: &Build) -> io::Result<Option<Arc<Names>>> {
+    build.get().map(|made| made.as_ref().map(Arc::clone).map_err(dashboard_core::duplicate)).transpose()
+}
+
 pub fn read(source: &Source, branch: u64, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Names>> {
     let mut recorded = LoadContext { content: load.content.clone() };
     if let Some(options) = &mut recorded.content {
@@ -190,6 +221,9 @@ pub struct BattleName {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct BattleNamesReply {
     titles: BTreeMap<String, BattleName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    loading: Option<String>,
     warnings: Vec<String>,
 }
 
@@ -211,7 +245,18 @@ impl Product for BattleNames {
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid battle names branch"))?;
-        let names = read(source, branch, load, cancelled)?;
+        let state = source.state::<Ahead>();
+        let build = load.content.as_ref().and_then(|content| {
+            let held = state.lock().unwrap_or_else(PoisonError::into_inner);
+            (held.0 == content.presentation.binding().generation).then(|| held.1.get(&branch).cloned()).flatten()
+        });
+        let names = match build {
+            Some(build) => match result(&build)? {
+                Some(names) => names,
+                None => return Ok(BattleNamesReply { titles: BTreeMap::new(), loading: Some("Loading battle titles…".into()), warnings: Vec::new() }),
+            },
+            None => read(source, branch, load, cancelled)?,
+        };
         let titles = params.battles.iter().map(|key| {
             let title = match names.get(key) {
                 Some(Ok(name)) => BattleName { name: Some(name.to_string()), missing: None },
@@ -220,7 +265,7 @@ impl Product for BattleNames {
             };
             (key.clone(), title)
         }).collect();
-        Ok(BattleNamesReply { titles, warnings: Vec::new() })
+        Ok(BattleNamesReply { titles, loading: None, warnings: Vec::new() })
     }
 }
 

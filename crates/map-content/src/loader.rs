@@ -294,7 +294,7 @@ impl TriggerLoader {
         &self,
     ) -> io::Result<(
         Result<content_reader_map::province_graph::ProvinceGraph, String>,
-        content_reader_map::province_geometry::ProvinceGeometry,
+        Arc<content_reader_map::province_geometry::ProvinceGeometry>,
     )> {
         let result = self.checked(graph(&self.layers))?;
         if let Err(error) = &result.0 {
@@ -510,13 +510,13 @@ pub fn graph(
     layers: &ResolvedLayers,
 ) -> io::Result<(
     Result<content_reader_map::province_graph::ProvinceGraph, String>,
-    content_reader_map::province_geometry::ProvinceGeometry,
+    Arc<content_reader_map::province_geometry::ProvinceGeometry>,
 )> {
-    match content_reader_map::province_graph::ProvinceGraph::read(layers) {
+    match content_reader_map::province_graph::ProvinceGraph::read_shared(layers) {
         Ok((graph, geometry)) => Ok((Ok(graph), geometry)),
         Err(error) => Ok((
             Err(error.to_string()),
-            content_reader_map::province_geometry::ProvinceGeometry::read(layers)?,
+            content_reader_map::province_geometry::ProvinceGeometry::shared(layers)?,
         )),
     }
 }

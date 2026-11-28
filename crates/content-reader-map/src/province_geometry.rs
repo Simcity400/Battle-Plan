@@ -2,6 +2,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
+    sync::Arc,
 };
 
 use content_reader_layers::ResolvedLayers;
@@ -37,6 +38,14 @@ impl ProvinceGeometry {
             &layers.read(&files.file("provinces")?)?,
         )?;
         Ok(Self::from_map(&map))
+    }
+
+    pub fn shared(layers: &ResolvedLayers) -> io::Result<Arc<Self>> {
+        Self::keep(layers, || Self::read(layers))
+    }
+
+    pub(crate) fn keep(layers: &ResolvedLayers, load: impl FnOnce() -> io::Result<Self>) -> io::Result<Arc<Self>> {
+        layers.product("province geometry", 1, &[], |_| load())
     }
 
     pub(crate) fn from_map(map: &EngineMap) -> Self {

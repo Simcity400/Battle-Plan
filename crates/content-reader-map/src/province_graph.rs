@@ -5,6 +5,7 @@ mod terrain_cost;
 use std::{
     collections::{BTreeMap, HashMap},
     io,
+    sync::Arc,
 };
 
 pub use crate::adjacencies::{IMPASSABLE, SEA_CROSSING};
@@ -30,6 +31,10 @@ pub struct Crossing {
 
 impl ProvinceGraph {
     pub fn read(layers: &ResolvedLayers) -> io::Result<(Self, ProvinceGeometry)> {
+        Self::read_shared(layers).map(|(graph, geometry)| (graph, geometry.as_ref().clone()))
+    }
+
+    pub fn read_shared(layers: &ResolvedLayers) -> io::Result<(Self, Arc<ProvinceGeometry>)> {
         let files = content_reader_key_names::terrain::read_default_map(layers)?;
         let map = engine_map(
             &layers.read(&files.file("definitions")?)?,
@@ -42,7 +47,7 @@ impl ProvinceGraph {
                 .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))?,
         )
         .map_err(|error| invalid(format!("{path}: {error}")))?;
-        let geometry = ProvinceGeometry::from_map(&map);
+        let geometry = ProvinceGeometry::keep(layers, || Ok(ProvinceGeometry::from_map(&map)))?;
         let terrain = TerrainCosts::read(layers, &files)?;
         let rules = crate::adjacency_rules::read_map(layers, &files)?;
         let mut graph = derive(&map, &geometry, &rows, &terrain)?;

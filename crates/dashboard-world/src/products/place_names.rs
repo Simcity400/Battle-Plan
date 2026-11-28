@@ -67,9 +67,8 @@ struct Regions {
 }
 
 struct NavalContent {
-    width: i32,
+    geometry: Arc<ProvinceGeometry>,
     defines: Result<[i64; 2], String>,
-    centroids: BTreeMap<u32, [i32; 2]>,
     candidates: BTreeMap<u32, Vec<u32>>,
 }
 
@@ -134,13 +133,13 @@ impl Content {
             .get_or_init(|| {
                 let regions = dashboard_base::content::strategic_regions(&self.cat.content.layers).map_err(|e| format!("Strategic regions unavailable: {e}"))?;
                 let states = self.cat.cached_states()?;
-                let geometry = ProvinceGeometry::read(&self.cat.content.layers).map_err(|e| format!("Province geometry unavailable: {e}"))?;
+                let geometry = ProvinceGeometry::shared(&self.cat.content.layers).map_err(|e| format!("Province geometry unavailable: {e}"))?;
                 let defines = self.cat.defines().and_then(|d| Ok([
                     d.fixed5("NNavy", "BATTLE_NAME_VP_FACTOR").map_err(|e| e.to_string())?,
                     d.fixed5("NNavy", "BATTLE_NAME_VP_CUTOFF").map_err(|e| e.to_string())?,
                 ]));
                 let candidates = battle_name_candidates(&regions.regions, states.states.definitions(), &|p| geometry.centroids.contains_key(&p));
-                Ok(NavalContent { width: geometry.width, defines, centroids: geometry.centroids, candidates })
+                Ok(NavalContent { geometry, defines, candidates })
             })
             .as_ref()
             .map_err(String::as_str)
@@ -666,9 +665,24 @@ impl PlaceHistory {
         };
         check_cancel(cancelled)?;
         let (links, country_statuses, slot_tags) = if want_provinces {
-            let links = read(TableId::CountryLinks, &["canonical_slot"], Keys::All)?;
-            let countries = read(TableId::Countries, &["canonical_slot", "tag"], Keys::All)?;
-            let appearance = read(TableId::CountryAppearance, &["original_tag", "original_tag_reference"], Keys::All)?;
+            let nonzero = |cells: &[Cell]| cell_number(cells[0]).and_then(|id| u32::try_from(id).ok()).filter(|&id| id != 0);
+            let selected = |history: &History| history.keys.iter().flat_map(|(_, steps)| steps)
+                .filter_map(|step| nonzero(step.cells.as_deref()?)).collect::<BTreeSet<_>>();
+            let owners: Vec<_> = selected(&states).into_iter().map(u128::from).collect();
+            let links = if owners.is_empty() { History::default() } else {
+                read(TableId::CountryLinks, &["canonical_slot"], Keys::These(&owners))?
+            };
+            let slots = selected(&links);
+            let mut countries = if slots.is_empty() { History::default() } else {
+                read(TableId::Countries, &["canonical_slot", "tag"], Keys::All)?
+            };
+            countries.keys.retain(|(_, steps)| steps.iter().any(|step| {
+                step.cells.as_deref().and_then(nonzero).is_some_and(|slot| slots.contains(&slot))
+            }));
+            let ids: Vec<_> = countries.keys.iter().map(|(id, _)| *id).collect();
+            let appearance = if ids.is_empty() { History::default() } else {
+                read(TableId::CountryAppearance, &["original_tag", "original_tag_reference"], Keys::These(&ids))?
+            };
             let reserved = read(TableId::ReservedCountryNaming, &["tag", "original_tag", "original_tag_reference"], Keys::All)?;
             let slot_tags = build_slot_tags(recording, run, &countries, &appearance, &reserved, mode, first, last)?;
             (links, countries.statuses, slot_tags)
@@ -782,7 +796,7 @@ impl PlaceHistory {
         let naval = content.naval().map_err(str::to_owned)?;
         let [factor, cutoff] = *naval.defines.as_ref().map_err(|r| format!("the NNavy battle name defines are unavailable ({r})"))?;
         let candidates = naval.candidates.get(&region).map_or(&[][..], Vec::as_slice);
-        let position = |id: u32| naval.centroids.get(&id).copied().unwrap_or([0, 0]);
+        let position = |id: u32| naval.geometry.centroids.get(&id).copied().unwrap_or([0, 0]);
         let victory_points = |id: u32| -> Result<i32, String> {
             if !self.with_victory_points { return Err("victory points were not loaded for naval battle naming".into()); }
             match self.provinces.reading(u128::from(id), hour) {
@@ -791,7 +805,7 @@ impl PlaceHistory {
                 Reading::Unread { .. } => Err(format!("the Provinces table is incomplete this hour, so province {id}'s victory points are unknown")),
             }
         };
-        let picker = Picker { width: naval.width, factor, cutoff, position: &position, victory_points: &victory_points };
+        let picker = Picker { width: naval.geometry.width, factor, cutoff, position: &position, victory_points: &victory_points };
         let place = match picker.pick(province, candidates)? {
             None => region_name,
             Some(picked) => {

@@ -76,7 +76,7 @@ pub fn unnamed_assets() -> RaidAssets {
             ..Default::default()
         },
         priority: 30,
-        geometry: shared.geometry,
+        geometry: shared.geometry.into(),
         paths: Err("no province graph in the test".into()),
         moves: shared.moves,
         recorded_indexes: Default::default(),
@@ -255,7 +255,7 @@ pub fn path_assets() -> RaidAssets {
         graph.edges.insert(id, next);
     }
     let mut assets = assets();
-    assets.geometry.land = BTreeSet::from([3, 4]);
+    std::sync::Arc::make_mut(&mut assets.geometry).land = BTreeSet::from([3, 4]);
     assets.moves = Ok(content_reader_unit_path::unit_path::MoveGraph::new(
         &graph,
         &assets.geometry,

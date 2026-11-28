@@ -820,18 +820,25 @@ export class IdentityBroker {
     }
   }
 
-  private loadEntityRequest(state: ScopeState, request: EntityRequest, keys: ReadonlyMap<string, EntityIdentityKey>, signal: AbortSignal, transport = this.transport): Promise<() => void> {
+  private async loadEntityRequest(state: ScopeState, request: EntityRequest, keys: ReadonlyMap<string, EntityIdentityKey>, signal: AbortSignal, transport = this.transport): Promise<() => void> {
     const index = state.index;
     switch (request.kind) {
       case 'battles': {
         const battles = [...keys.values()].flatMap(key => key.kind === 'battle' ? [key.id] : []);
-        return transport.loadBattleNames(state.scope, battles, signal, state.recording).then(reply => () => {
+        const read = () => transport.loadBattleNames(state.scope, battles, signal, state.recording);
+        let reply = await read();
+        while (reply.loading) {
+          await new Promise<void>(done => this.clock.after(retryDelay(1), done));
+          signal.throwIfAborted();
+          reply = await read();
+        }
+        return () => {
           for (const id of battles) {
             const title = reply.titles[id];
             index.setEntityRuns({ kind: 'battle', id }, [{ firstHour: request.from, lastHour: request.to,
               name: title?.name ?? null, ...(title?.name == null ? { nameReason: title?.missing ?? 'Battle name not answered' } : {}), warnings: reply.warnings }]);
           }
-        });
+        };
       }
       case 'regions':
         return transport.loadRegions(state.scope, signal, state.recording).then(reply => () => {

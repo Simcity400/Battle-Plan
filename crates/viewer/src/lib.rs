@@ -69,12 +69,12 @@ fn battle_title_source(document: &viewer_playback::document::Document) -> Option
     let source = Arc::downgrade(source);
     Some(Arc::new(move |branch, hour, selection| {
         let source = source.upgrade().ok_or("Recording was closed")?;
-        let names = source.in_scope(|| dashboard::products::battle_names::read(&source, branch, &load, &false.into())).map_err(|error| error.to_string())?;
+        let Some(names) = dashboard::products::battle_names::ahead(&source, branch, &load).map_err(|error| error.to_string())? else { return Ok(None) };
         match selection {
             Selection::Naval(id) => names.naval(id, hour),
             Selection::NavalResult(id) => names.get(&format!("result:{id}")),
             _ => None,
-        }.ok_or("Battle identity not recorded")?.as_ref().map(|title| title.to_string()).map_err(|reason| reason.to_string())
+        }.ok_or("Battle identity not recorded")?.as_ref().map(|title| Some(title.to_string())).map_err(|reason| reason.to_string())
     }))
 }
 
