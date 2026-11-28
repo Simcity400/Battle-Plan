@@ -1053,17 +1053,56 @@ fn present_new(
             })
         })
     };
-    let held_structure = kept.holdings(ideas, hour);
-    for holding in held_structure.iter() {
-        check_cancel(cancelled)?;
+    let describe = |holding: &Holding| {
         let span = &ideas.spans[holding.span];
         let identity = ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1);
         let named = identity.and_then(|identity| read.naming.get(identity)).unwrap_or(&unnamed);
-        let held = span.character.as_ref().map(|holder| ((!holder.token.is_empty()).then_some(holder.token.as_str()), holder.name.as_str()));
         let at_hour = holding.last_at(hour);
         let holding_tag = query.holders.tag_at(&asked.params.country, at_hour).unwrap_or(tag);
-        let is_scripted = content.idea_is_scripted(&span.token, held.and_then(|(s, _)| s), named.for_tag(holding_tag), held.map(|(_, saved)| saved));
-        let eval_hour = is_scripted.then_some(at_hour);
+        (span, identity, named.for_tag(holding_tag), at_hour, holding_tag)
+    };
+    let scripted = |span: &IdeaSpan, country| {
+        let character = span.character.as_ref();
+        let token = character.map(|holder| holder.token.as_str()).filter(|token| !token.is_empty());
+        content.idea_is_scripted(&span.token, token, country, character.map(|holder| holder.name.as_str()))
+    };
+    let scoped_look = |holding: &Holding, country, at_hour, scope_target, mut validity: Option<&mut Validity>| {
+        let mut resolve = |key: &str| match scope_target {
+            Some((run, slot)) => scoped.localise(run, at_hour, Scope::Country(slot), key, &[], validity.as_deref_mut()),
+            None => Err(format!("localisation {key}: country scope is unavailable at hour {at_hour}")),
+        };
+        look_with(content, &ideas.spans[holding.span], ideas.templates.get(&holding.span), country, Some(&mut resolve), true)
+    };
+    let previous = kept.holdings.as_ref().filter(|plan| plan.through < hour).map(|plan| plan.hour);
+    let held_structure = kept.holdings(ideas, hour);
+    let current_scope = slot_at(hour);
+    let mut finished = BTreeMap::new();
+    if let Some(previous) = previous
+        && let Some((run, _)) = current_scope
+        && query.timeline.at(previous).is_some_and(|stretch| stretch.run == run)
+    {
+        let mut ended: Vec<_> = held_structure.iter().filter(|holding| {
+            holding.end != HoldingEnd::Held && (previous..hour).contains(&holding.last_hour)
+        }).collect();
+        ended.sort_by_key(|holding| holding.last_hour);
+        for holding in ended {
+            check_cancel(cancelled)?;
+            let (span, _, country, at_hour, holding_tag) = describe(holding);
+            let scope_target = slot_at(at_hour);
+            let (look, noted) = catalogue::capture_isolated(|| {
+                scripted(span, country).then(|| {
+                    kept.past((holding.span, at_hour, scope_target, holding_tag.into()), || scoped_look(holding, country, at_hour, scope_target, None))
+                }).transpose()
+            });
+            if let Some(look) = look? {
+                finished.insert(holding.span, (look, noted));
+            }
+        }
+    }
+    for holding in held_structure.iter() {
+        check_cancel(cancelled)?;
+        let (span, identity, country, at_hour, holding_tag) = describe(holding);
+        let eval_hour = scripted(span, country).then_some(at_hour);
         let key = (holding_key(span), identity, eval_hour, holding_tag);
         let at = match keyed.get(&key) {
             Some(&at) => at,
@@ -1071,18 +1110,13 @@ fn present_new(
                 let (found, problem) = match eval_hour {
                     Some(at_hour) => {
                         let scope_target = slot_at(at_hour);
-                        let track = holding.end == HoldingEnd::Held;
-                        let look = |mut validity: Option<&mut Validity>| {
-                            let mut resolve = |key: &str| match scope_target {
-                                Some((run, slot)) => scoped.localise(run, at_hour, Scope::Country(slot), key, &[], validity.as_deref_mut()),
-                                None => Err(format!("localisation {key}: country scope is unavailable at hour {at_hour}")),
-                            };
-                            look_with(content, span, ideas.templates.get(&holding.span), named.for_tag(holding_tag), Some(&mut resolve), true)
-                        };
-                        if track {
-                            look(Some(&mut validity))
+                        if holding.end == HoldingEnd::Held {
+                            scoped_look(holding, country, at_hour, scope_target, Some(&mut validity))
+                        } else if let Some((look, noted)) = finished.remove(&holding.span) {
+                            catalogue::credit(&noted);
+                            look
                         } else {
-                            kept.past((holding.span, at_hour, scope_target, holding_tag.into()), || look(None))?
+                            kept.past((holding.span, at_hour, scope_target, holding_tag.into()), || scoped_look(holding, country, at_hour, scope_target, None))?
                         }
                     }
                     None => read.looked(content, holding_tag, holding.span),
@@ -1121,7 +1155,6 @@ fn present_new(
     held.sort_unstable();
     let held = held.into_iter().map(|(_, _, _, at)| index(at)).collect::<io::Result<Vec<_>>>()?;
     let (modifier_keys, text_keys) = effect_keys(looks.iter().map(|look| &look.info));
-    let current_scope = slot_at(hour);
     let mut localise_text = |key: &str, args: &[(&str, content_reader_localisation::localisation::Argument<'_>)]| {
         if let Some((run, slot)) = current_scope
             && scoped_text::key_needs_scope(&content.catalogue.localisation, key, args)

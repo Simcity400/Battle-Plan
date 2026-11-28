@@ -272,7 +272,7 @@ fn tokenless_holder_clears_sprite_and_sets_per_look_artwork_missing() {
 fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_change_hour() {
     use replay_data::rows::{
         CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticsRow, Recorded,
-        ScriptVariableEntry, ScriptVariablesRow, StateRow,
+        ScriptVariableNameRow, ScriptVariableValueRow, ScriptVariablesRow, StateRow,
     };
 
     let tables = dashboard_text::catalogue::tests::script_game::executable().build();
@@ -329,19 +329,24 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
                     scope_kind: 1,
                     scope_id: GER,
                     seed: Recorded::Value(None),
-                    entries: vec![ScriptVariableEntry {
-                        name: b"synth_level".to_vec(),
-                        value_raw: if hour < 110 { 100_000 } else { 200_000 },
-                    }],
+                    entries: Vec::new(),
                 }]),
             );
+            set(&mut frame, TableId::ScriptVariableNames, TableRows::ScriptVariableNames(vec![
+                ScriptVariableNameRow { id: 1, name: b"synth_level".to_vec() },
+            ]));
+            set(&mut frame, TableId::ScriptVariableValues, TableRows::ScriptVariableValues(vec![
+                ScriptVariableValueRow { scope_kind: 1, scope_id: GER, var_id: 1, value_raw: if hour < 110 { 100_000 } else { 200_000 } },
+            ]));
+            let mut active = vec![ActiveIdeaRow { country: GER, ordinal: 0, token: b"synth_dynamic".to_vec() }];
+            if hour < 109 {
+                active.push(ActiveIdeaRow { country: GER, ordinal: 1, token: b"synth_refused".to_vec() });
+                active.push(ActiveIdeaRow { country: GER, ordinal: 2, token: b"synth_ending".to_vec() });
+            }
             set(
                 &mut frame,
                 TableId::ActiveIdeas,
-                TableRows::ActiveIdeas(vec![
-                    ActiveIdeaRow { country: GER, ordinal: 0, token: b"synth_dynamic".to_vec() },
-                    ActiveIdeaRow { country: GER, ordinal: 1, token: b"synth_refused".to_vec() },
-                ]),
+                TableRows::ActiveIdeas(active),
             );
             set(&mut frame, TableId::HiredAdvisors, TableRows::HiredAdvisors(Vec::new()));
             set(&mut frame, TableId::Characters, TableRows::Characters(Vec::new()));
@@ -383,6 +388,7 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
                 "  country = {\n",
                 "    synth_dynamic = { modifier = { custom_modifier_tooltip = synth_tip } }\n",
                 "    synth_refused = {}\n",
+                "    synth_ending = {}\n",
                 "  }\n",
                 "}\n",
             ),
@@ -402,6 +408,7 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
                 " synth_dynamic_desc:0 \"[ROOT.GetName] brief\"\n",
                 " synth_tip:0 \"[1.owner.GetAdjective] bonus\"\n",
                 " synth_refused:0 \"[(ROOT.GetName?a:b)]\"\n",
+                " synth_ending:0 \"[synth_level_loc]\"\n",
             ),
         ),
     ]);
@@ -428,7 +435,7 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
     assert_eq!(dyn_100.info.name_missing, None);
     let tip_100 = r100.texts.iter().find(|t| t.key == "synth_tip").unwrap();
     assert_eq!(tip_100.text.as_deref(), Some("Alphan bonus"));
-    assert_eq!(r100.next_change, Some(110), "validity holds until the exact change hour 110, not 101");
+    assert_eq!(r100.next_change, Some(109));
 
     let refused_100 = r100.looks.iter().find(|l| l.info.token == "synth_refused").unwrap();
     assert_eq!(refused_100.artwork.name, None);
@@ -446,7 +453,16 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
     assert_eq!(serde_json::to_vec(&repeat).unwrap(), serde_json::to_vec(&r100).unwrap());
     assert_eq!(rows, 0, "another subscription at the same hour reuses the exact reply");
 
+    let (r109, reads) = replay_recording::cells::count_reads(|| reply_at(109));
+    assert_eq!(reads[&TableId::ScriptVariableValues].backward_seeks, 0);
+    let ending = r109.holdings.iter().find(|h| h.token == "synth_ending").unwrap();
+    assert_eq!(ending.last_hour, 108);
+    assert_eq!(r109.next_change, Some(110), "validity holds until the exact variable change");
+    assert!(r109.warnings.iter().any(|warning| warning.contains("synth_refused")));
+
     let r110 = reply_at(110);
+    let ending = r110.holdings.iter().find(|h| h.token == "synth_ending").unwrap();
+    assert_eq!(r110.looks[ending.look as usize].artwork.name.as_deref(), Some("Level Low"));
     let dyn_110 = r110.looks.iter().find(|l| l.info.token == "synth_dynamic").unwrap();
     assert_eq!(dyn_110.artwork.name.as_deref(), Some("Level High"));
     let tip_110 = r110.texts.iter().find(|t| t.key == "synth_tip").unwrap();
