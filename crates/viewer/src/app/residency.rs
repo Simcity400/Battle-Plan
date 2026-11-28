@@ -731,6 +731,7 @@ mod tests {
             result,
             keep: Arc::clone(&keep),
             was_hidden: false,
+            whole: false,
         });
         viewer.scene_error = Some("stale scene failure".into());
         viewer.playhead_opened = true;

@@ -1076,6 +1076,7 @@ impl<P: PlaybackProducts> MapSide<P> {
     }
 
     fn join_overlay(&mut self, settling: Settling) -> bool {
+        self.views.made();
         let at = self.counter_at.unwrap_or(0);
         self.overlay.as_deref_mut().is_some_and(|overlay| overlay.join(&self.layers[at..], &self.view.perspective, self.branch, settling))
     }
@@ -1792,7 +1793,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             if let Some(error) = self.entry.playhead.error() {
                 return Err(io::Error::other(format!("The playhead stopped: {error}")));
             }
-            let local = self.composing || frame.swapped.is_some() || self.pending.front().is_some_and(|step| step.last() <= target);
+            let local = self.composing || frame.steps > 0 || frame.swapped.is_some() || self.pending.front().is_some_and(|step| step.last() <= target);
             if Instant::now() < until && (local || self.wait_whole_progress(until)) {
                 continue;
             }
@@ -1894,6 +1895,7 @@ impl<P: PlaybackProducts> MapSide<P> {
 
     fn whole_ready_at(&self, head: Hour) -> bool {
         self.applied == Some(head) && !self.composing && !self.superseded && self.makers_home()
+            && self.epoch == self.entry.playhead.epoch()
             && self.ready.iter().zip(&self.reads).all(|(&ready, reads)| ready || reads.is_err()) && self.head_products_reached(head)
     }
 
