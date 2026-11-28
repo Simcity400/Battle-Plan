@@ -87,9 +87,10 @@ fn a_leaders_traits_are_listed_in_their_recorded_order() {
 
 #[test]
 fn changed_leaders_share_the_completed_run_on_a_loaded_branch() {
-    use dashboard_base::{Source, SourceKey, products::LoadContext, test_fixtures::{CAMPAIGN, records, source}};
+    use super::{UnitLeaders, UnitLeadersParams};
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, at_hour::{At, AtHour, Edits}}, test_fixtures::{CAMPAIGN, ownership_frame, records, source}};
     use replay::campaign::Replay;
-    use replay_data::rows::{LeaderBattleTotalRow, TableId, TableRows};
+    use replay_data::rows::{LeaderBattleTotalRow, TableId, TableRows, UnitLeaderRow};
     use replay_frame::frame::TableView;
     use std::sync::Arc;
 
@@ -113,6 +114,30 @@ fn changed_leaders_share_the_completed_run_on_a_loaded_branch() {
             assert_eq!(TALLY_SNAPSHOTS.get(), usize::from(hour == 103 && id == 1), "prior run reads at {hour} for leader {id}");
         }
     }
+
+    let mut frame = ownership_frame(1, 104, 9001);
+    let key = 1u64 << 32;
+    let leader = UnitLeaderRow { id: 1, kind: KIND_ARMY, owner: 9001, ..Default::default() };
+    *frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![leader]));
+    for table in [TableId::Clock, TableId::UnitLeaderTraits, TableId::LeaderTraitDates] {
+        frame.tables[table.index()] = if table == TableId::Clock { replay_frame::frame::not_selected() } else { TableView::Complete(TableRows::empty(table)).into() };
+    }
+    let counts = |fought| TableView::Complete(TableRows::LeaderBattleTotals(vec![LeaderBattleTotalRow { leader: key, fought, ..Default::default() }]));
+    *frame.tables[TableId::LeaderBattleTotals.index()] = counts(104);
+    let params = UnitLeadersParams { branch_id: "1".into(), selection: LeaderSelection::All, leaders: LeaderKinds::Land, follow_battles: Some(true) };
+    let cells = dashboard_follow::live::Cells::default();
+    let at = At { owner: None, holders: &query.holders, hour: 104, context: &context, cancelled: &false.into(), live: &cells };
+    let board = UnitLeaders::playback_reply(&frame, &params, &at).unwrap();
+    assert_eq!(board.leaders[0].battle_offset, Some([0; 3]));
+    let live = cells.finish();
+    assert_eq!(live.groups[0].keys, [u128::from(key)]);
+    let mut edits = Edits::default();
+    edits.tables.entry(TableId::LeaderBattleTotals).or_default().insert(key.into(), 1);
+    let mut ranking = context.ranking.lock().unwrap();
+    *frame.tables[TableId::LeaderBattleTotals.index()] = counts(105);
+    assert!(ranking.holds_battle_cells(&frame, &context, &edits, &live), "a counter edit keeps the board");
+    *frame.tables[TableId::LeaderBattleTotals.index()] = TableView::Complete(TableRows::empty(TableId::LeaderBattleTotals));
+    assert!(!ranking.holds_battle_cells(&frame, &context, &edits, &live), "a removed counter changes the cell binding");
 }
 
 #[test]
@@ -196,7 +221,7 @@ fn a_leader_whose_role_may_have_conditions_reads_its_character_first_and_the_tri
     let mut held = source(1, 100, Some(1_000));
     let leader = UnitLeaderRow { id: 1, kind: KIND_ARMY, owner: 11, character_id: 5, visibility_choice: 1, ..Default::default() };
     held.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![leader])).into();
-    let params = UnitLeadersParams { branch_id: "1".into(), selection: LeaderSelection::All, leaders: LeaderKinds::Land };
+    let params = UnitLeadersParams { branch_id: "1".into(), selection: LeaderSelection::All, leaders: LeaderKinds::Land, follow_battles: None };
     let holders = dashboard_query::identity::Holders::new(Default::default(), Vec::new());
     let at = ReadsAt { holders: &holders, context: &context, run, hour: 100, since: None };
     let first: Vec<TableId> = UnitLeaders::reads_in(&params, None, 1, &held, &at).iter().map(|read| read.table).collect();
@@ -459,7 +484,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
 
     let board = UnitLeaders::reply(
         &frame_tied,
-        &UnitLeadersParams { branch_id: "1".into(), selection: ger.clone(), leaders: LeaderKinds::Land },
+        &UnitLeadersParams { branch_id: "1".into(), selection: ger.clone(), leaders: LeaderKinds::Land, follow_battles: None },
         &at(100),
     )
     .unwrap();
@@ -519,7 +544,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
 
     let board_no_tags = UnitLeaders::reply(
         &frame_no_tags,
-        &UnitLeadersParams { branch_id: "1".into(), selection: ger.clone(), leaders: LeaderKinds::Land },
+        &UnitLeadersParams { branch_id: "1".into(), selection: ger.clone(), leaders: LeaderKinds::Land, follow_battles: None },
         &at(103),
     )
     .unwrap();
@@ -664,7 +689,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     let warm_at = At { owner: None, holders: &holders, context: &cond_context, hour: 100, cancelled: &cancelled, live: &live };
     let warm_board = UnitLeaders::reply(
         &cond_frames[0],
-        &UnitLeadersParams { branch_id: "1".into(), selection: cond_ger.clone(), leaders: LeaderKinds::Land },
+        &UnitLeadersParams { branch_id: "1".into(), selection: cond_ger.clone(), leaders: LeaderKinds::Land, follow_battles: None },
         &warm_at,
     )
     .unwrap();
@@ -675,7 +700,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
         "verdict cache must be warm before calling LeaderCareer"
     );
     let run = cond_context.query(1).unwrap().timeline.stretches[0].run;
-    let selection = UnitLeadersParams { branch_id: "1".into(), selection: cond_ger.clone(), leaders: LeaderKinds::Land };
+    let selection = UnitLeadersParams { branch_id: "1".into(), selection: cond_ger.clone(), leaders: LeaderKinds::Land, follow_battles: None };
     for (frame, hour) in cond_frames[..2].iter().zip(100..=101) {
         let at = dashboard_base::products::at_hour::ReadsAt { context: &cond_context, holders: &holders, run, hour, since: (hour > 100).then_some(100) };
         super::visibility::prepare(&selection, frame, &at);

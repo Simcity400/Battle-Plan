@@ -6,6 +6,7 @@ import type { ArtHandle, IdentityResult } from '../../families/plan.ts';
 import { cellBarFraction, resolveTableRows } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableDefaults } from '../../families/table/settings.ts';
 import type { LeaderRow, UnitLeadersReply } from '../../generated/dashboard';
+import { liveKey } from '../../charts/live.ts';
 import { catalogueEntries, widgetGroups } from '../../dashboard/widgetCategories.ts';
 import { followedTitle, resolveOptions } from '../../dashboard/options.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
@@ -18,7 +19,7 @@ const land = { owner: 'GER', kind: 1, category: 0, rank: 'General', attributeNam
 const navy = { ...land, owner: 'ENG', kind: 2, rank: 'Admiral', attributeNames: ['Attack', 'Defense', 'Maneuvering', 'Coordination'] as LeaderRow['role']['attributeNames'] };
 
 function leader(reference: string, role: LeaderRow['role'], extra: Partial<LeaderRow> = {}): LeaderRow {
-  return { reference, name: `Leader ${reference}`, role, skill: 3, components: [4, 5, 6, 7], traits: [], traitDates: [], firstSeenHour: 10, fought: 4, won: 3, lost: 1, ...extra };
+  return { reference, name: `Leader ${reference}`, portrait: { image: `${reference}.png`, missing: null }, role, skill: 3, components: [4, 5, 6, 7], traits: [], traitDates: [], firstSeenHour: 10, fought: 4, won: 3, lost: 1, ...extra };
 }
 
 const reply = (leaders: LeaderRow[], partialFrom: number | null = null): UnitLeadersReply => ({
@@ -123,18 +124,43 @@ test('equal-skill leaders keep the product’s order rather than alphabetical ti
   assert.deepEqual(flat.map(row => row.key), ['1', '2']);
 });
 
-test('a commander is named as at the hour, the portrait is the art cache’s, and a rename is the next change', () => {
-  const readView = view(reply([leader('1', land), leader('2', land, { name: null }), leader('3', land, { name: 'Roster Fallback' })]), { 'GER:1': ['Erwin Rommel', 250] });
+test('commander names and portraits advance with the followed roster', () => {
+  const readView = view(reply([
+    leader('1', land, { name: 'Erwin Rommel' }),
+    leader('2', land, { name: null, portrait: { image: null, missing: 'Portrait holder not recorded' } }),
+  ]), { 'GER:1': ['Older name', 250] });
   const model = generalsProjection.project(readView, OPTIONS);
-  const [row, unnamedPending, fallbackPending] = model.rows;
+  const [row, unnamed] = model.rows;
   assert.deepEqual(row!.cells.commander!.value, { kind: 'known', value: 'Erwin Rommel' });
   assert.deepEqual(row!.cells.country!.value, { kind: 'pending', reason: 'Name is loading' });
-  assert.deepEqual(unnamedPending!.cells.commander!.value, { kind: 'pending', reason: 'Name is loading' });
-  assert.equal(unnamedPending!.name, 'Loading name…');
-  assert.deepEqual(fallbackPending!.cells.commander!.value, { kind: 'known', value: 'Roster Fallback' });
+  assert.deepEqual(unnamed!.cells.commander!.value, { kind: 'notRecorded', reason: 'Character name unavailable' });
+  assert.deepEqual(unnamed!.cells.portrait!.art, { status: 'unavailable', reason: 'Portrait holder not recorded' });
   assert.equal(row!.cells.commander!.subtext, 'General');
-  assert.equal(row!.cells.portrait!.art?.status === 'ready' ? row!.cells.portrait!.art.url : undefined, `art:${artHandleKey({ kind: 'portrait', leader: '1', hour: 10 })}`);
-  assert.equal(generalsProjection.nextChange!(readView, OPTIONS), 250);
+  assert.equal(row!.cells.portrait!.art?.status === 'ready' ? row!.cells.portrait!.art.url : undefined, `art:${artHandleKey({ kind: 'url', url: '1.png' })}`);
+  assert.equal(generalsProjection.nextChange!(readView, OPTIONS), Infinity);
+  const renamed = generalsProjection.project(view(reply([leader('1', land, { name: 'New recorded name', portrait: { image: 'new.png', missing: null } })])), OPTIONS);
+  assert.deepEqual(renamed.rows[0]!.cells.commander!.value, { kind: 'known', value: 'New recorded name' });
+  const nextPortrait = renamed.rows[0]!.cells.portrait!.art;
+  assert.equal(nextPortrait?.status === 'ready' ? nextPortrait.url : undefined, `art:${artHandleKey({ kind: 'url', url: 'new.png' })}`);
+});
+
+test('battle counters reorder equal-skill leaders without a new roster reply', () => {
+  const data = reply([
+    leader('1', land, { won: 0, fought: 0, lost: 0, battleOffset: [5, 2, 1] }),
+    leader('2', land, { won: 0, fought: 0, lost: 0, battleOffset: [0, 0, 0] }),
+  ]);
+  const scores = new Map<string, number>();
+  const read = () => createBoundedReadView({ hour: 100, panels: new Map([['main', data]]), live: new Map([['main', { get: key => scores.get(key), missing: () => 'Battles not recorded at this hour' }]]) });
+  for (const [key, fought, won, lost] of [['1', 1, 0, 1], ['2', 3, 1, 1]] as const) {
+    for (const [column, count] of [['fought', fought], ['won', won], ['lost', lost]] as const) scores.set(liveKey(key, column), count);
+  }
+  const ranked = () => generalsProjection.project(read(), OPTIONS).rows;
+  assert.deepEqual(ranked().map(row => row.key), ['1', '2']);
+  assert.deepEqual(ranked()[0]?.cells.won?.value, { kind: 'known', value: 2 });
+  scores.set(liveKey('2', 'won'), 3);
+  assert.deepEqual(ranked().map(row => row.key), ['2', '1']);
+  scores.delete(liveKey('2', 'won'));
+  assert.deepEqual(ranked().find(row => row.key === '2')?.cells.won?.value, { kind: 'notRecorded', reason: 'Battles not recorded at this hour' });
 });
 
 test('battle counts from a partly recorded battle log are partial and withhold win rate and its rank; exact logs split won against lost', () => {

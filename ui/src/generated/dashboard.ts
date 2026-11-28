@@ -6187,12 +6187,12 @@ export type LeaderHourReply = { reference: string | null,
 /**
  * Why the leader is not shown at this hour, when it is not.
  */
-missing: string | null, name: string | null, role: LeaderRole | null, skill: number | null, components: [number, number, number, number], traits: Array<number> | null, traitDates: Array<[number, number] | null>, traitCatalogue: Array<LeaderTrait>, fought: number, won: number, lost: number, battlesPartialFrom: number | null, firstSeenHour: number | null, serviceStart: LeaderServiceStart | null, progress: LeaderProgress | null, warnings: Array<string>, };
+missing: string | null, name: string | null, portrait: LeaderPortraitThumbnail | null, role: LeaderRole | null, skill: number | null, components: [number, number, number, number], traits: Array<number> | null, traitDates: Array<[number, number] | null>, traitCatalogue: Array<LeaderTrait>, fought: number, won: number, lost: number, battlesPartialFrom: number | null, firstSeenHour: number | null, serviceStart: LeaderServiceStart | null, progress: LeaderProgress | null, warnings: Array<string>, };
 export type LeaderHourParamsAtHour = LeaderHourParams & { hour: number };
 export type LeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
 export type LeaderPortrait = { reference: string, image: string | null, missing: string | null, resolution: ArtResolution, };
 export type LeaderPortraitsReply = { portraits: Array<LeaderPortrait>, warnings: Array<string>, };
-export type UnitLeadersParams = { branchId: string, selection: LeaderSelection, leaders: LeaderKinds, };
+export type UnitLeadersParams = { branchId: string, selection: LeaderSelection, leaders: LeaderKinds, followBattles?: boolean, };
 export type LeaderSelection = { "kind": "all" } | { "kind": "countries", countries: Array<CountryRef>, } | { "kind": "group", group: GroupSelection, };
 export type LeaderKinds = "land" | "navy";
 export type LeaderTrait = { token: string, name: string | null, icon: string | null,
@@ -6202,7 +6202,7 @@ export type LeaderTrait = { token: string, name: string | null, icon: string | n
 missing: string | null, };
 export type LeaderRole = { owner: string | null, kind: number, category: number, rank: string | null, attributeNames: [string | null, string | null, string | null, string | null], maximumSkill: number | null, };
 export type LeaderWithheld = { reference: string, owner: string | null, kind: number, name: string | null, reason: string, };
-export type LeaderRow = { reference: string, name: string | null, role: LeaderRole, skill: number | null, components: [number, number, number, number],
+export type LeaderRow = { reference: string, name: string | null, portrait: LeaderPortraitThumbnail, role: LeaderRole, skill: number | null, components: [number, number, number, number],
 /**
  * The traits held, by place in the reply's `traits`; none where they were not recorded.
  */
@@ -6211,7 +6211,8 @@ traits: Array<number> | null,
  * Each held trait's date, aligned with `traits`: [hour, class] (0 held before, 1 gained, 2
  * first observed); none where the logs hold none.
  */
-traitDates: Array<[number, number] | null>, firstSeenHour: number | null, fought: number, won: number, lost: number, };
+traitDates: Array<[number, number] | null>, firstSeenHour: number | null, fought: number, won: number, lost: number, battleOffset?: [number, number, number], };
+export type LeaderPortraitThumbnail = { image: string | null, missing: string | null, };
 export type LeaderSkillIcons = {
 /**
  * Skill, attack, defense, planning and logistics from the installed leader interface; none where it draws none.
@@ -6802,7 +6803,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "unit-leader-choices": { "branchId": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "unit-leader-hour": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "unit-leader-portraits": { "branchId": "leaf", "edge": "leaf", "hour": "leaf", "references": "node", "references[]": "leaf" },
-  "unit-leaders": { "branchId": "leaf", "hour": "leaf", "leaders": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
+  "unit-leaders": { "branchId": "leaf", "followBattles": "leaf", "hour": "leaf", "leaders": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "volunteer-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "sideTotalsOnly": "leaf", "subject": "any", "top": "leaf" },
   "war-contribution-history": { "branchId": "leaf", "throughHour": "leaf", "viewpoint": "any", "warId": "leaf" },
   "war-contributions": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },

@@ -5,7 +5,7 @@ import type { LeaderRole, LeaderRow, UnitLeadersReply } from '../../generated/da
 
 const role = (owner: string | null, kind = 1): LeaderRole => ({ owner, kind, category: 0, rank: 'Field Marshal', attributeNames: ['A', 'D', 'P', 'L'], maximumSkill: 9 });
 const row = (reference: string, owner: string | null, skill: number | null, counts: [number, number, number], kind = 1): LeaderRow => ({
-  reference, name: `Leader ${reference}`, role: role(owner, kind), skill, components: [1, 2, 3, 4], traits: [0], traitDates: [[100, 1]],
+  reference, name: `Leader ${reference}`, portrait: { image: null, missing: null }, role: role(owner, kind), skill, components: [1, 2, 3, 4], traits: [0], traitDates: [[100, 1]],
   firstSeenHour: 50, fought: counts[0], won: counts[1], lost: counts[2],
 });
 const reply = (leaders: LeaderRow[], partialFrom: number | null = null): UnitLeadersReply => ({

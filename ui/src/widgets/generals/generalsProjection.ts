@@ -1,17 +1,18 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { artHandleKey, unavailableArt, type ArtResult } from '../../families/art/types.ts';
+import type { LiveValues } from '../../charts/live.ts';
 import { nextChangeAfter } from '../../families/holders.ts';
 import type { ArtHandle, BoundedReadView } from '../../families/plan.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { cellArt, LOADING_NAME, NAME_LOADING, resolveIdentity, type CellArt } from '../../families/table/identityCell.ts';
+import { resolveIdentity, type CellArt } from '../../families/table/identityCell.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableCellIconItem, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, pendingValue, textValue, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, textValue, zeroValue, type Value } from '../../families/value.ts';
 import type { LeaderKinds, LeaderSelection, SpriteFrame, UnitLeadersReply } from '../../generated/dashboard';
 import { COLUMNS, LEADERS_OPTION, TABLE_BASE } from './definition.ts';
-import { attributeNames, leaderRows, traitDateText, validateLeaders, withheldLeaderState, withheldLeaders, type LeaderRow } from './generalsData.ts';
+import { leaderRows, portraitArt, traitDateText, validateLeaders, withheldLeaderState, withheldLeaders, type LeaderRow } from './generalsData.ts';
 
 export interface GeneralsOptions {
   readonly filter: DeclaredCountryFilter;
@@ -51,31 +52,21 @@ export function leaderSelection(filter: DeclaredCountryFilter): LeaderSelection 
   return filter.passing === null ? { kind: 'all' } : { kind: 'countries', countries: Object.keys(filter.passing).sort().map(countryFromKey) };
 }
 
-const identityKey = (row: LeaderRow) => (row.role.owner === null ? null : `${row.role.owner}:${row.key}`);
-
-function datedName(readView: BoundedReadView, row: LeaderRow, hour: number): Value<string> {
-  const key = identityKey(row);
-  const recorded = textValue(row.row.name, 'Character name unavailable');
-  if (key === null) return recorded;
-  const who = readView.who('leader', key, hour);
-  if (who.name.status === 'ready' && who.name.value.trim()) return knownValue(who.name.value);
-  if (who.name.status === 'pending') return recorded.kind === 'known' ? recorded : pendingValue(NAME_LOADING);
-  if (recorded.kind === 'known') return recorded;
-  return notRecorded(who.name.status === 'ready' ? 'Character name unavailable' : who.name.reason);
-}
-
 const count = (value: number, partial: boolean): Value<number> =>
   partial ? partialValue(value, PARTIAL) : value === 0 ? zeroValue(0) : knownValue(value);
 
-function shownRows(reply: UnitLeadersReply, hour: number, options: GeneralsOptions): LeaderRow[] {
-  return leaderRows(reply, hour, passingAt(options.filter, hour), options.kind);
+function shownRows(reply: UnitLeadersReply, hour: number, options: GeneralsOptions, live?: LiveValues<number | bigint | string> | null): LeaderRow[] {
+  return leaderRows(reply, hour, passingAt(options.filter, hour), options.kind, live);
 }
+
+const battleCount = (row: LeaderRow, value: number) => row.battlesMissing ? notRecorded(row.battlesMissing) : count(value, row.foughtPartial);
+const rateMissing = (row: LeaderRow) => row.battlesMissing ?? (row.foughtPartial ? PARTIAL : null);
 
 function columnNames(reply: UnitLeadersReply, options: GeneralsOptions): readonly (string | undefined)[] {
   const kind = options.kind === 'navy' ? KIND_NAVY : KIND_ARMY;
   const roles = reply.leaders.filter(row => row.role.kind === kind);
   return [0, 1, 2, 3].map(i => {
-    const names = [...new Set(roles.map(row => attributeNames(row.role)[i]!))];
+    const names = [...new Set(roles.map(row => row.role.attributeNames[i] ?? 'Name not recorded'))];
     return names.length ? names.join(' / ') : undefined;
   });
 }
@@ -116,25 +107,30 @@ function generalsColumns(reply: UnitLeadersReply, options: GeneralsOptions): rea
       value: row => row.leader.row.traits === null ? notRecorded('Traits not recorded') : row.traits.length ? knownValue(row.traits.length) : zeroValue(0) },
     { ...WON!, priority: 1, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
       bar: row => row.leader.foughtPartial ? null : undefined,
-      value: row => count(row.leader.won ?? 0, row.leader.foughtPartial) },
+      value: row => battleCount(row.leader, row.leader.won ?? 0) },
     { ...LOST!, priority: 2, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
       bar: row => row.leader.foughtPartial ? null : undefined,
-      value: row => count(row.leader.lost ?? 0, row.leader.foughtPartial) },
+      value: row => battleCount(row.leader, row.leader.lost ?? 0) },
     { ...WIN_RATE!, priority: 1, numeric: true, cellKind: 'winRate', barEligible: false,
-      extra: row => ({ secondaryValue: row.leader.foughtPartial ? notRecorded(PARTIAL) : count(row.leader.lost ?? 0, false) }),
-      sortValue: row => row.leader.foughtPartial
-        ? notRecorded(PARTIAL)
-        : row.leader.winRate === null
-          ? notApplicable('No battles with known results')
-          : knownValue(row.leader.winRate),
-      value: row => row.leader.foughtPartial ? notRecorded(PARTIAL) : count(row.leader.won ?? 0, false) },
+      extra: row => ({ secondaryValue: battleRateValue(row.leader, row.leader.lost ?? 0) }),
+      sortValue: row => {
+        const missing = rateMissing(row.leader);
+        return missing ? notRecorded(missing) : row.leader.winRate === null
+          ? notApplicable('No battles with known results') : knownValue(row.leader.winRate);
+      },
+      value: row => battleRateValue(row.leader, row.leader.won ?? 0) },
     { ...FOUGHT!, priority: 6, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
       bar: row => row.leader.foughtPartial ? null : undefined,
-      value: row => count(row.leader.fought, row.leader.foughtPartial) },
+      value: row => battleCount(row.leader, row.leader.fought) },
     { ...UNRESOLVED!, priority: 6, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
       bar: row => row.leader.foughtPartial ? null : undefined,
-      value: row => count(row.leader.unresolved, row.leader.foughtPartial) },
+      value: row => battleCount(row.leader, row.leader.unresolved) },
   ];
+}
+
+function battleRateValue(row: LeaderRow, value: number) {
+  const missing = rateMissing(row);
+  return missing ? notRecorded(missing) : count(value, false);
 }
 
 function traitRows(row: LeaderRow): TooltipExtraRow[] {
@@ -150,20 +146,11 @@ function traitRows(row: LeaderRow): TooltipExtraRow[] {
 export const generalsProjection: TableProjection<GeneralsOptions> = declareTableProjection<UnitLeadersReply, GeneralRow, GeneralsOptions>({
   kind: 'generals',
   validate: validateLeaders,
-  nextChange: (readView, options) => {
-    let next = nextChangeAfter(options.filter.bounds, readView.hour);
-    const raw = readView.panel('main');
-    if (!raw) return next;
-    for (const row of shownRows(validateLeaders(raw), readView.hour, options)) {
-      const key = identityKey(row);
-      if (key !== null) next = Math.min(next, readView.who('leader', key, readView.hour).nextChangeAt);
-    }
-    return next;
-  },
+  nextChange: (readView, options) => nextChangeAfter(options.filter.bounds, readView.hour),
   columns: generalsColumns,
   rowHeightMode: 'media',
   productTieBreak: true,
-  rows: (reply, _live, hour, options, readView) => {
+  rows: (reply, live, hour, options, readView) => {
     if (reply.missing !== null) return { rows: [], empty: 'Leaders weren’t recorded at this time.', emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
     const unrecorded = options.filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;
     if (options.filter.passing && unrecorded !== null) return { rows: [], empty: unrecorded, emptyKind: 'unavailable', warnings: reply.warnings };
@@ -171,14 +158,17 @@ export const generalsProjection: TableProjection<GeneralsOptions> = declareTable
     const land = skillArt(reply.skillIcons.land);
     const navy = skillArt(reply.skillIcons.navy);
     const traitArt = reply.traits.map(trait => (trait.icon ? readView.art({ kind: 'url', url: trait.icon }) : unavailableArt('Trait icon unavailable')));
-    const shown = shownRows(reply, hour, options);
+    const shown = shownRows(reply, hour, options, live);
+    const owners = new Map<string, ReturnType<typeof resolveIdentity>>();
     const rows = shown.map((leader): GeneralRow => {
       const owner = leader.role.owner;
-      const presented = owner === null ? null : resolveIdentity(readView, 'country', owner, { atHour: hour });
-      const portrait = cellArt(readView, { kind: 'portrait', leader: leader.key, hour: leader.row.firstSeenHour ?? hour }, 'Portrait unavailable');
+      const presented = owner === null ? null : (owners.get(owner) ?? resolveIdentity(readView, 'country', owner, { atHour: hour }));
+      if (owner !== null && presented) owners.set(owner, presented);
+      const thumbnail = leader.row.portrait;
+      const portrait = { art: portraitArt(readView, thumbnail), ...(thumbnail?.image ? { artKey: artHandleKey({ kind: 'url', url: thumbnail.image }) } : {}) };
       return {
         leader,
-        name: datedName(readView, leader, hour),
+        name: textValue(leader.row.name, 'Character name unavailable'),
         portrait,
         flag: presented?.art,
         ...(presented?.artKey ? { flagKey: presented.artKey } : {}),
@@ -208,7 +198,7 @@ export const generalsProjection: TableProjection<GeneralsOptions> = declareTable
     };
   },
   rowKey: row => row.leader.key,
-  rowName: row => row.name.kind === 'known' ? row.name.value : row.name.kind === 'pending' ? LOADING_NAME : row.leader.name,
+  rowName: row => row.leader.name,
   tooltipExtra: row => traitRows(row.leader),
   tooltipNote: row => (row.leader.foughtPartial ? PARTIAL : undefined),
 });
@@ -239,7 +229,7 @@ export const generalsDeclaration: TableWidgetDeclaration<GeneralsOptions> = {
           channel: 'panel',
           coverage: { mode: 'population', form: 'all' },
           product: 'unit-leaders',
-          followQuery: { panel: 'unit-leaders', ...params },
+          followQuery: { panel: 'unit-leaders', ...params, followBattles: true },
           params,
           validate: validateLeaders,
         },
