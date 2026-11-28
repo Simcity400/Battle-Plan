@@ -161,9 +161,9 @@ test('stockpile history loads keyed tiles for the followed type roster', async (
   const tiles = new TileView(new TileCache(), lane, () => {});
   tiles.setView(viewport);
   const options = declaration.projectionOptions(ctx, { extent: [FIRST, HOUR + 48], surface: '#111111' });
-  for (const [i, keys] of [['mod#tanks', 'rifles'], ['rifles', 'mod#tanks'], ['rifles', 'radio'], []].entries()) {
+  for (const [i, keys] of [['mod#tanks', 'rifles'], ['rifles', 'mod#tanks'], ['rifles', 'radio'], [], []].entries()) {
     const hour = HOUR + i * 12;
-    const refused = i === 3 ? 'Stockpile rank was not recorded' : null;
+    const refused = i === 4 ? 'Stockpile rank was not recorded' : null;
     const head = reply(hour, {}, { keys, refused });
     const readView = createBoundedReadView({ hour, panels: new Map([['lines', head]]) });
     const rank = projection.project(readView, options).followedTileRanks?.lines;
@@ -171,7 +171,9 @@ test('stockpile history loads keyed tiles for the followed type roster', async (
     tiles.setHour(hour, true);
     tiles.setFollowedRank(hour, { ...rank!, hour, from: hour, until: head.nextChange! - 1 });
     await new Promise<void>(resolve => setImmediate(resolve));
-    assert.deepEqual([...(tiles.current?.keys() ?? [])], keys);
+    assert.equal(tiles.settled, true);
+    assert.ok(tiles.current);
+    assert.deepEqual([...tiles.current.keys()], keys);
   }
   assert.equal(requests.filter(request => request.top !== undefined).length, 0);
   assert.deepEqual(requests.map(request => request.countries), [['mod#tanks', 'rifles'], ['radio']]);
