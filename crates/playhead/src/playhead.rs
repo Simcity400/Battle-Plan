@@ -1387,7 +1387,7 @@ impl Playhead {
     }
 
     pub fn clock_state_at(&self, now: Instant) -> (u64, Hour, bool) {
-        let clock = lock_clock(&self.shared.clock);
+        let mut clock = lock_clock(&self.shared.clock);
         (self.epoch(), clock.frame(now), clock.playing() && clock.held().is_none())
     }
 
